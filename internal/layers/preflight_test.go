@@ -53,6 +53,21 @@ func TestPreflight_NoScopesRequired(t *testing.T) {
 	assert.True(t, result.OK())
 }
 
+func TestPreflight_InstallationToken(t *testing.T) {
+	client := &forge.FakeClient{
+		InstallationToken: true,
+	}
+	stack := NewStack(
+		&mockLayer{name: "a", scopes: map[Operation][]string{OpInstall: {"repo", "workflow"}}},
+	)
+
+	result, err := stack.Preflight(context.Background(), OpInstall, client)
+	require.NoError(t, err)
+	assert.True(t, result.OK(), "installation tokens should skip OAuth scope preflight")
+	assert.True(t, result.Skipped)
+	assert.Equal(t, []string{"repo", "workflow"}, result.Required)
+}
+
 func TestPreflight_NilScopes_FineGrainedToken(t *testing.T) {
 	// Fine-grained tokens return nil for GetTokenScopes.
 	// Preflight should let the operation proceed (we can't validate).

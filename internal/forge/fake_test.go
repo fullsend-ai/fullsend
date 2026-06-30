@@ -73,6 +73,41 @@ func TestFakeClient_CreateFileOnBranch(t *testing.T) {
 	assert.Equal(t, "feature", fc.CreatedFiles[0].Branch)
 }
 
+func TestFakeClient_DeleteFiles(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{
+		FileContents: map[string][]byte{
+			"owner/repo/a.txt": []byte("a"),
+			"owner/repo/b.txt": []byte("b"),
+		},
+	}
+
+	deleted, err := fc.DeleteFiles(ctx, "owner", "repo", "cleanup", []string{"a.txt", "missing.txt", "b.txt"})
+	require.NoError(t, err)
+	assert.Equal(t, 2, deleted)
+	assert.Len(t, fc.DeletedFiles, 2)
+	_, ok := fc.FileContents["owner/repo/a.txt"]
+	assert.False(t, ok)
+}
+
+func TestFakeClient_GetWorkflow(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{
+		Workflows: map[string]*Workflow{
+			"owner/repo/ci.yml": {Name: "CI", Path: ".github/workflows/ci.yml", State: "active"},
+		},
+	}
+
+	wf, err := fc.GetWorkflow(ctx, "owner", "repo", "ci.yml")
+	require.NoError(t, err)
+	assert.Equal(t, "CI", wf.Name)
+
+	wf, err = fc.GetWorkflow(ctx, "owner", "repo", "other.yml")
+	require.NoError(t, err)
+	assert.Equal(t, "other.yml", wf.Name)
+	assert.Equal(t, "active", wf.State)
+}
+
 func TestFakeClient_GetFileContent(t *testing.T) {
 	ctx := context.Background()
 
@@ -159,6 +194,27 @@ func TestFakeClient_GetAuthenticatedUser(t *testing.T) {
 	user, err := fc.GetAuthenticatedUser(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "test-bot", user)
+}
+
+func TestFakeClient_GetAuthenticatedUserIdentity(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns configured identity", func(t *testing.T) {
+		fc := &FakeClient{
+			AuthenticatedUserIdentity: &UserIdentity{Name: "Test User", Email: "test@example.com"},
+		}
+		id, err := fc.GetAuthenticatedUserIdentity(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, "Test User", id.Name)
+		assert.Equal(t, "test@example.com", id.Email)
+	})
+
+	t.Run("returns ErrNotFound when not configured", func(t *testing.T) {
+		fc := &FakeClient{}
+		_, err := fc.GetAuthenticatedUserIdentity(ctx)
+		require.Error(t, err)
+		assert.True(t, IsNotFound(err))
+	})
 }
 
 func TestFakeClient_Secrets(t *testing.T) {
@@ -385,6 +441,57 @@ func TestFakeClient_CreateOrUpdateOrgVariable(t *testing.T) {
 	assert.True(t, exists)
 }
 
+func TestFakeClient_GetOrgVariable(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{
+		OrgVariables:      map[string]bool{"myorg/FOREIGN": true},
+		OrgVariableValues: map[string]string{"myorg/FOREIGN": "caller/repo"},
+	}
+
+	value, exists, err := fc.GetOrgVariable(ctx, "myorg", "FOREIGN")
+	require.NoError(t, err)
+	assert.True(t, exists)
+	assert.Equal(t, "caller/repo", value)
+
+	_, exists, err = fc.GetOrgVariable(ctx, "myorg", "MISSING")
+	require.NoError(t, err)
+	assert.False(t, exists)
+}
+
+func TestFakeClient_ListOrgVariables(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{
+		OrgVariables:      map[string]bool{"myorg/A": true, "myorg/B": true, "other/C": true},
+		OrgVariableValues: map[string]string{"myorg/A": "1", "myorg/B": "2"},
+	}
+
+	vars, err := fc.ListOrgVariables(ctx, "myorg")
+	require.NoError(t, err)
+	require.Len(t, vars, 2)
+}
+
+func TestFakeClient_IsInstallationToken(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{InstallationToken: true}
+	ok, err := fc.IsInstallationToken(ctx)
+	require.NoError(t, err)
+	assert.True(t, ok)
+
+	fc.InstallationToken = false
+	ok, err = fc.IsInstallationToken(ctx)
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+func TestFakeClient_CreateOrUpdateOrgVariableAll(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{}
+	require.NoError(t, fc.CreateOrUpdateOrgVariableAll(ctx, "myorg", "FOREIGN", "caller"))
+	exists, err := fc.OrgVariableExists(ctx, "myorg", "FOREIGN")
+	require.NoError(t, err)
+	assert.True(t, exists)
+}
+
 func TestFakeClient_DeleteOrgVariable(t *testing.T) {
 	ctx := context.Background()
 	fc := &FakeClient{}
@@ -418,6 +525,11 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		}},
 		{"ListRepoPullRequests", func(fc *FakeClient) error { _, err := fc.ListRepoPullRequests(ctx, "o", "r"); return err }},
 		{"GetAuthenticatedUser", func(fc *FakeClient) error { _, err := fc.GetAuthenticatedUser(ctx); return err }},
+		{"GetAuthenticatedUserIdentity", func(fc *FakeClient) error {
+			fc.AuthenticatedUserIdentity = &UserIdentity{Name: "n", Email: "e"}
+			_, err := fc.GetAuthenticatedUserIdentity(ctx)
+			return err
+		}},
 		{"CreateRepoSecret", func(fc *FakeClient) error { return fc.CreateRepoSecret(ctx, "o", "r", "n", "v") }},
 		{"RepoSecretExists", func(fc *FakeClient) error { _, err := fc.RepoSecretExists(ctx, "o", "r", "n"); return err }},
 		{"CreateOrUpdateRepoVariable", func(fc *FakeClient) error {
@@ -454,8 +566,29 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 			_, err := fc.OrgVariableExists(ctx, "o", "n")
 			return err
 		}},
+		{"GetOrgVariable", func(fc *FakeClient) error { _, _, err := fc.GetOrgVariable(ctx, "o", "n"); return err }},
+		{"ListOrgVariables", func(fc *FakeClient) error { _, err := fc.ListOrgVariables(ctx, "o"); return err }},
+		{"IsInstallationToken", func(fc *FakeClient) error { _, err := fc.IsInstallationToken(ctx); return err }},
 		{"DeleteOrgVariable", func(fc *FakeClient) error {
 			return fc.DeleteOrgVariable(ctx, "o", "n")
+		}},
+		{"SetOrgVariableRepos", func(fc *FakeClient) error {
+			return fc.SetOrgVariableRepos(ctx, "o", "n", nil)
+		}},
+		{"GetOrgVariableRepos", func(fc *FakeClient) error {
+			_, err := fc.GetOrgVariableRepos(ctx, "o", "n")
+			return err
+		}},
+		{"DeleteIssueComment", func(fc *FakeClient) error {
+			return fc.DeleteIssueComment(ctx, "o", "r", 1)
+		}},
+		{"ListDirectoryContents", func(fc *FakeClient) error {
+			_, err := fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
+			return err
+		}},
+		{"GetFileContentAtRef", func(fc *FakeClient) error {
+			_, err := fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")
+			return err
 		}},
 	}
 
@@ -508,6 +641,7 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_, _ = fc.CreateChangeProposal(ctx, "o", "r", "t", "b", "h", "base")
 			_, _ = fc.ListRepoPullRequests(ctx, "o", "r")
 			_, _ = fc.GetAuthenticatedUser(ctx)
+			_, _ = fc.GetAuthenticatedUserIdentity(ctx)
 			_ = fc.CreateRepoSecret(ctx, "o", "r", "n", "v")
 			_, _ = fc.RepoSecretExists(ctx, "o", "r", "secret")
 			_ = fc.CreateOrUpdateRepoVariable(ctx, "o", "r", "n", "v")
@@ -522,8 +656,119 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_ = fc.CreateOrUpdateOrgVariable(ctx, "o", "n", "v", []int64{1})
 			_, _ = fc.OrgVariableExists(ctx, "o", "var")
 			_ = fc.DeleteOrgVariable(ctx, "o", "n")
+			_ = fc.SetOrgVariableRepos(ctx, "o", "n", []int64{1, 2})
+			_, _ = fc.GetOrgVariableRepos(ctx, "o", "n")
+			_ = fc.DeleteIssueComment(ctx, "o", "r", 1)
+			_, _ = fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
+			_, _ = fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")
 		}(i)
 	}
 
 	wg.Wait()
+}
+
+func TestFakeClient_FindExistingFork(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns fork owner and repo when entry exists", func(t *testing.T) {
+		fc := &FakeClient{
+			ExistingForks: map[string]string{
+				"upstream/repo": "contributor",
+			},
+		}
+		forkOwner, forkRepo, err := fc.FindExistingFork(ctx, "upstream", "repo")
+		require.NoError(t, err)
+		assert.Equal(t, "contributor", forkOwner)
+		assert.Equal(t, "repo", forkRepo)
+	})
+
+	t.Run("returns empty when no entry exists", func(t *testing.T) {
+		fc := &FakeClient{}
+		forkOwner, forkRepo, err := fc.FindExistingFork(ctx, "upstream", "repo")
+		require.NoError(t, err)
+		assert.Empty(t, forkOwner)
+		assert.Empty(t, forkRepo)
+	})
+
+	t.Run("returns error when injected", func(t *testing.T) {
+		fc := &FakeClient{
+			Errors: map[string]error{
+				"FindExistingFork": errors.New("api error"),
+			},
+		}
+		_, _, err := fc.FindExistingFork(ctx, "upstream", "repo")
+		require.Error(t, err)
+	})
+}
+
+func TestFakeClient_CreateFork(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("uses ForkOwner when set", func(t *testing.T) {
+		fc := &FakeClient{
+			ForkOwner: "org-fork",
+		}
+		forkOwner, forkRepo, err := fc.CreateFork(ctx, "upstream", "repo")
+		require.NoError(t, err)
+		assert.Equal(t, "org-fork", forkOwner)
+		assert.Equal(t, "repo", forkRepo)
+		assert.Equal(t, []string{"upstream/repo"}, fc.CreatedForks)
+	})
+
+	t.Run("falls back to AuthenticatedUser", func(t *testing.T) {
+		fc := &FakeClient{
+			AuthenticatedUser: "contributor",
+		}
+		forkOwner, forkRepo, err := fc.CreateFork(ctx, "upstream", "repo")
+		require.NoError(t, err)
+		assert.Equal(t, "contributor", forkOwner)
+		assert.Equal(t, "repo", forkRepo)
+		assert.Equal(t, []string{"upstream/repo"}, fc.CreatedForks)
+	})
+
+	t.Run("returns error when injected", func(t *testing.T) {
+		fc := &FakeClient{
+			Errors: map[string]error{
+				"CreateFork": errors.New("api error"),
+			},
+		}
+		_, _, err := fc.CreateFork(ctx, "upstream", "repo")
+		require.Error(t, err)
+	})
+}
+
+func TestFakeClient_CreateBranch_PerRepoErrors(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns per-repo error over generic error", func(t *testing.T) {
+		fc := &FakeClient{
+			CreateBranchErrors: map[string]error{
+				"upstream/repo": ErrForbidden,
+			},
+			Errors: map[string]error{
+				"CreateBranch": errors.New("generic"),
+			},
+		}
+		err := fc.CreateBranch(ctx, "upstream", "repo", "branch")
+		require.Error(t, err)
+		assert.True(t, IsForbidden(err))
+	})
+
+	t.Run("falls through to generic error", func(t *testing.T) {
+		fc := &FakeClient{
+			Errors: map[string]error{
+				"CreateBranch": ErrAlreadyExists,
+			},
+		}
+		err := fc.CreateBranch(ctx, "upstream", "repo", "branch")
+		require.Error(t, err)
+		assert.True(t, IsAlreadyExists(err))
+	})
+}
+
+func TestIsForbidden(t *testing.T) {
+	assert.True(t, IsForbidden(ErrForbidden))
+	assert.True(t, IsForbidden(errors.Join(errors.New("wrapper"), ErrForbidden)))
+	assert.False(t, IsForbidden(errors.New("some error")))
+	assert.False(t, IsForbidden(nil))
 }

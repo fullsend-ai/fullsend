@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  GITHUB_USER_UNAUTHORIZED_EVENT,
-  notifyGitHubUserUnauthorized,
-} from "./githubUnauthorized";
+import { GITHUB_USER_UNAUTHORIZED_EVENT, notifyGitHubUserUnauthorized } from "./githubUnauthorized";
 
 describe("notifyGitHubUserUnauthorized", () => {
   it("dispatches the shared event name", () => {

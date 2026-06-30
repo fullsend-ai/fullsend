@@ -25,7 +25,7 @@ The most sophisticated decomposition in the field. Uses specialized agents in pa
 
 **Infrastructure:** Each review spins up an isolated, sandboxed, short-lived environment (Cloud Run microVMs + Jailkit + cgroups). Torn down after review. Multi-model orchestration selects models for different review concerns.
 
-**Relevance to fullsend:** CodeRabbit's decomposition and context engineering are the closest to our sub-agent model. Their intent/environment/history split maps loosely to our intent alignment agent / correctness agent / drift detection concerns. However, they stop at review — no merge authority. Their verification layer (agent checking other agents' work) is a practical implementation of the kind of inter-agent validation we need, though without zero-trust principles.
+**Relevance to fullsend:** CodeRabbit's decomposition and context engineering are the closest to our sub-agent model. Their intent/environment/history split maps loosely to our intent & coherence sub-agent / correctness sub-agent / drift detection concerns. However, they stop at review — no merge authority. Their verification layer (agent checking other agents' work) is a practical implementation of the kind of inter-agent validation we need, though without zero-trust principles.
 
 ### Greptile
 
@@ -75,7 +75,7 @@ Uses "a series of AI code reviewers, each with different specialties" — e.g., 
 
 **Honest about limitations:** Their own blog concedes early comments ranged from useful to "dead wrong." Multi-check validator improved usefulness from low-40% to about 60%. Reviews changed files only — cannot reason about the rest of the codebase. Misses cross-file dependencies.
 
-**Relevance to fullsend:** Sourcery's candor about their limitations is informative. Their specialized-reviewer approach validates our sub-agent decomposition, but their inability to reason about the broader codebase illustrates why context management per sub-agent matters. A correctness agent needs repo context; an injection defense agent needs raw PR content; an intent alignment agent needs the intent repo. Different agents, different context.
+**Relevance to fullsend:** Sourcery's candor about their limitations is informative. Their specialized-reviewer approach validates our sub-agent decomposition, but their inability to reason about the broader codebase illustrates why context management per sub-agent matters. A correctness sub-agent needs repo context; a security sub-agent needs raw PR content; an intent & coherence sub-agent needs the intent repo. Different sub-agents, different context.
 
 ### GitHub Copilot Code Review
 

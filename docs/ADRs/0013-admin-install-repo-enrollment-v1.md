@@ -1,6 +1,6 @@
 ---
 title: "13. Admin install: repository enrollment v1"
-status: Proposed
+status: Accepted
 relates_to:
   - agent-infrastructure
   - repo-readiness
@@ -16,7 +16,7 @@ Date: 2026-04-05
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 

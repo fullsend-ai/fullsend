@@ -1,0 +1,12 @@
+[
+  {
+    "number": 10,
+    "body": "closes #100 and partial-fix #200",
+    "closingIssuesReferences": { "nodes": [{ "number": 100 }] }
+  },
+  {
+    "number": 11,
+    "body": "fixes #999",
+    "closingIssuesReferences": { "nodes": [] }
+  }
+]

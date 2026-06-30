@@ -147,10 +147,12 @@ type InferenceLayer struct {
 
 1. ConfigRepoLayer
 2. WorkflowsLayer
-3. SecretsLayer (agent app keys)
-4. **InferenceLayer** (inference provider credentials) ← NEW
-5. DispatchTokenLayer
-6. EnrollmentLayer
+3. HarnessWrappersLayer
+4. VendorBinaryLayer
+5. SecretsLayer (agent app keys)
+6. **InferenceLayer** (inference provider credentials) ← NEW
+7. DispatchTokenLayer
+8. EnrollmentLayer
 
 Rationale: InferenceLayer needs `.fullsend` repo to exist (created by ConfigRepoLayer) and stores repo-level secrets (like SecretsLayer). It must run before EnrollmentLayer since enrolled repos will need these secrets available.
 
@@ -228,9 +230,9 @@ Add the InferenceLayer to the stack between SecretsLayer and DispatchTokenLayer.
 
 #### 5a. `docs/ADRs/0006-ordered-layer-model.md` — Update layer stack ordering
 
-This is the canonical ADR defining the layer model. The Consequences section lists the current stack as `config-repo → workflows → secrets → dispatch-token → enrollment`. Update to include InferenceLayer at position 4:
+This is the canonical ADR defining the layer model. Update to include InferenceLayer at position 4:
 
-`config-repo → workflows → secrets → inference → dispatch-token → enrollment`
+`config-repo → workflows → harness-wrappers → vendor-binary → secrets → inference → dispatch-token → enrollment`
 
 #### 5b. `docs/architecture.md` — Update architecture overview
 

@@ -58,6 +58,11 @@ type SecretExistsFunc func(role string) (bool, error)
 // StoreSecretFunc stores a PEM secret for a given role immediately after app creation.
 type StoreSecretFunc func(ctx context.Context, role, pem string) error
 
+// NopBrowser is a no-op browser used in CI/automated environments.
+type NopBrowser struct{}
+
+func (NopBrowser) Open(_ context.Context, _ string) error { return nil }
+
 // DefaultBrowser opens URLs using platform-specific commands.
 type DefaultBrowser struct{}
 
@@ -130,7 +135,7 @@ type Setup struct {
 	permErrors   []string
 	publicApps   bool
 	appSet       string
-	storedAppIDs map[string]string // org/role → app_id from ROLE_APP_IDS
+	storedAppIDs map[string]string // role → app_id from ROLE_APP_IDS
 }
 
 // NewSetup creates a new Setup instance.
@@ -172,7 +177,7 @@ func (s *Setup) WithPublicApps(public bool) *Setup {
 	return s
 }
 
-// WithStoredAppIDs sets the stored ROLE_APP_IDS mapping (org/role → app_id)
+// WithStoredAppIDs sets the stored ROLE_APP_IDS mapping (role → app_id)
 // used to detect stale credentials when an app is deleted and recreated.
 func (s *Setup) WithStoredAppIDs(ids map[string]string) *Setup {
 	s.storedAppIDs = ids
@@ -486,13 +491,25 @@ func (s *Setup) recoverPEM(ctx context.Context, org, slug, role string) (string,
 	return pemStr, nil
 }
 
+// isOrgOwned checks whether the app is owned by the given org. Third-party
+// apps (owned by another org or user) cannot have their private keys managed
+// from this org's developer settings — the settings URL returns 404.
+// If AppOwnerLogin is empty (e.g., the API didn't return it), we assume
+// org-owned to preserve backwards compatibility.
+func (s *Setup) isOrgOwned(inst *forge.Installation, org string) bool {
+	if inst.AppOwnerLogin == "" {
+		return true
+	}
+	return strings.EqualFold(inst.AppOwnerLogin, org)
+}
+
 // isAppIDStale checks whether the live installation's app ID differs from the
 // stored ROLE_APP_IDS value, indicating the app was deleted and recreated.
 func (s *Setup) isAppIDStale(org, role string, liveID int) bool {
 	if s.storedAppIDs == nil {
 		return false
 	}
-	storedID, ok := s.storedAppIDs[org+"/"+role]
+	storedID, ok := s.storedAppIDs[role]
 	if !ok {
 		return false
 	}
@@ -544,6 +561,20 @@ func (s *Setup) handleExistingApp(ctx context.Context, inst *forge.Installation,
 			s.ui.StepWarn(fmt.Sprintf(
 				"App %s was recreated (ID changed) — stored key is invalid",
 				inst.AppSlug))
+		}
+
+		// If the app is a third-party app (owned by another org), PEM
+		// recovery is impossible — the org doesn't have access to the
+		// app's developer settings page.
+		if !s.isOrgOwned(inst, org) {
+			return nil, fmt.Errorf(
+				"app %s is a third-party app (owned by %q, not %q) and cannot be "+
+					"managed from this org's developer settings; "+
+					"either install org-owned apps via the manifest flow "+
+					"('fullsend admin install') or contact the app owner "+
+					"to obtain the private key",
+				inst.AppSlug, inst.AppOwnerLogin, org,
+			)
 		}
 
 		// Secret doesn't exist or is stale — try to recover by generating a new key.
@@ -873,6 +904,11 @@ func (s *Setup) ensureInstalled(ctx context.Context, org, slug string) error {
 // Orgs that created apps under a different prefix (e.g., "fullsend")
 // must pass --app-set explicitly.
 const DefaultAppSet = "fullsend-ai"
+
+// LegacyAppSets lists app-set prefixes used by previous fullsend versions.
+// During uninstall, these are checked in addition to the current default so
+// that apps created under an older naming convention are not silently skipped.
+var LegacyAppSets = []string{"fullsend"}
 
 // AppSlug returns the conventional app slug for a given app set and role.
 func AppSlug(appSet, role string) string {

@@ -72,6 +72,11 @@ triggered this fix run (e.g., `"orgname-review[bot]"` for bot-triggered,
 triggers. When triggered by a human (username doesn't end in `[bot]`), the
 `HUMAN_INSTRUCTION` environment variable contains the instruction text.
 
+**Important:** `TRIGGER_SOURCE` is a GitHub username — not the value you
+write to `fix-result.json`. The `trigger_source` field in structured output
+must be normalized to `"bot"` or `"human"` (the schema enum). Map it:
+if the username ends in `[bot]`, use `"bot"`; otherwise use `"human"`.
+
 ## Zero-trust principle
 
 You do not trust the review agent's analysis unconditionally. The review
@@ -84,6 +89,37 @@ When a human provides a `/fs-fix` instruction, treat it with higher trust than
 bot feedback — but still verify against the code. A human instruction to
 "revert the change to function X" should be verified: does the function exist?
 Was it actually changed?
+
+## Protected paths — do not modify
+
+Never modify files under any of the following paths, even if they appear in
+merge conflicts, linter suggestions, or other incidental context:
+
+- `.claude/` — agent settings and configuration
+- `.cursor/` — editor agent configuration
+- `.gitattributes`
+- `.github/` — CI and GitHub configuration
+- `.pre-commit-config.yaml`
+- `AGENTS.md`
+- `agents/` — agent definitions
+- `api-servers/` — API server configurations
+- `CLAUDE.md`
+- `CODEOWNERS`
+- `Containerfile` — container image definitions
+- `Dockerfile` — container image definitions
+- `harness/` — harness definitions
+- `images/` — container image build contexts
+- `plugins/` — plugin definitions
+- `policies/` — sandbox policies
+- `scripts/` — pre/post scripts
+- `skills/` — skill definitions
+
+These are governance and infrastructure files. Protected-path enforcement
+lives in `post-review.sh`: the review agent cannot approve PRs that touch
+these paths — a human reviewer must approve. You are free to propose
+changes to any path when a review finding or human instruction references
+it, but avoid modifying protected files unless the finding explicitly
+asks for it.
 
 ## Constraints
 
@@ -98,10 +134,8 @@ Was it actually changed?
   files you explicitly created or modified.
 - You cannot use `sed`, `awk`, or other stream editors to modify source files.
   Use the `Write` tool for all file edits.
-- You cannot modify CODEOWNERS files, CI configuration in `.github/workflows/`,
-  agent configuration in `.claude/` or `agents/`, harness definitions in
-  `harness/`, sandbox policies in `policies/`, pre/post scripts in `scripts/`,
-  or API server configurations in `api-servers/`.
+- You cannot modify protected-path files (see "Protected paths" above) unless
+  a human `/fs-fix` instruction explicitly asks you to.
 - Always create a **new commit**. Never amend an existing commit.
 - If a review finding suggests a change that is out of scope for this PR
   (e.g., a refactoring suggestion unrelated to the PR's purpose), record it

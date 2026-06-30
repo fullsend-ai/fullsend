@@ -1,11 +1,7 @@
 import { derived, writable } from "svelte/store";
 import { clearAllAdminSessionCaches } from "./adminSessionCaches";
 import { loadToken } from "./tokenStore";
-import {
-  fetchGitHubUser,
-  GitHubUserRequestError,
-  type GitHubUser,
-} from "../github/user";
+import { fetchGitHubUser, GitHubUserRequestError, type GitHubUser } from "../github/user";
 
 /** Cached GitHub profile from `refreshSession()` (single `/api/github/user` source). */
 export const githubUser = writable<GitHubUser | null>(null);

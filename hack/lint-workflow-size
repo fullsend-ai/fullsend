@@ -33,7 +33,6 @@ check_files() {
     [[ -e "${file}" ]] || continue
 
     lines=$(wc -l < "${file}")
-    filename=$(basename "${file}")
     relpath="${file}"
 
     # Check for per-file override

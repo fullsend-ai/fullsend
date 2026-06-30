@@ -24,7 +24,7 @@ import sys
 import unicodedata
 from datetime import UTC, datetime
 
-FINDINGS_PATH = "/tmp/workspace/.security/findings.jsonl"
+FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 MAX_DECODED_LOG = 200
 
 # --- Unicode categories to detect ---
@@ -39,7 +39,10 @@ _CHECKS: list[tuple[str, str, re.Pattern]] = [
     (
         "zero_width",
         "high",
-        re.compile("[\u200b-\u200d\ufeff\u00ad\u2060-\u2064]+"),
+        re.compile(
+            "[\u00ad\u034f\u061c\u0600-\u0605\u070f\u0890-\u0891\u08e2\u180e"
+            "\u200b-\u200f\u2028\u2029\u2060-\u2064\u206a-\u206f\ufeff\ufff9-\ufffb]+"
+        ),
     ),
     (
         "bidi_override",
@@ -57,13 +60,13 @@ _CHECKS: list[tuple[str, str, re.Pattern]] = [
         "medium",
         re.compile(r"\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]"),
     ),
-    # OSC: terminal hyperlinks, window title injection.
+    # ST-terminated: OSC (ESC ]), DCS (ESC P), APC (ESC _), PM (ESC ^).
     # Uses negated class [^\x1b\x07]* instead of .*? to avoid O(n^2)
-    # backtracking on dense unterminated ESC] sequences.
+    # backtracking on dense unterminated sequences.
     (
         "osc_escape",
         "medium",
-        re.compile(r"\x1b\][^\x1b\x07]*(?:\x1b\\|\x07)"),
+        re.compile(r"\x1b[\]P_^][^\x1b\x07]*(?:\x1b\\|\x07)"),
     ),
     (
         "null_byte",
@@ -128,6 +131,18 @@ def scan_text(text: str) -> tuple[str, list[dict]]:
         )
 
         result = pattern.sub("", result)
+
+    # Supplementary variation selectors (VS17-VS256, U+E0100-U+E01EF).
+    supp_vs = [c for c in result if 0xE0100 <= ord(c) <= 0xE01EF]
+    if supp_vs:
+        findings.append(
+            {
+                "name": "variation_selector",
+                "severity": "medium",
+                "detail": (f"{len(supp_vs)} supplementary variation selector character(s) removed"),
+            }
+        )
+        result = "".join(c for c in result if not (0xE0100 <= ord(c) <= 0xE01EF))
 
     # NFKC normalization (fullwidth -> ASCII, compatibility decomposition).
     nfkc = unicodedata.normalize("NFKC", result)

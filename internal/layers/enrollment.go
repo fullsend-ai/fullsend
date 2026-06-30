@@ -2,10 +2,14 @@ package layers
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -14,6 +18,13 @@ const (
 
 	// repoMaintenanceWorkflow is the workflow file that handles enrollment.
 	repoMaintenanceWorkflow = "repo-maintenance.yml"
+
+	workflowRegistrationMaxWait = 5 * time.Minute
+	workflowRegistrationPoll    = 5 * time.Second
+
+	workflowDispatchRetryAttempts = 24
+	workflowDispatchRetryInitial  = 3 * time.Second
+	workflowDispatchRetryMax      = 15 * time.Second
 )
 
 // EnrollmentLayer monitors workflow-driven enrollment of target repos.
@@ -21,11 +32,12 @@ const (
 // which creates PRs with shim workflows in response to config.yaml changes.
 // This layer dispatches that workflow and reports the results.
 type EnrollmentLayer struct {
-	org           string
-	client        forge.Client
-	enabledRepos  []string
-	disabledRepos []string
-	ui            *ui.Printer
+	org             string
+	client          forge.Client
+	enabledRepos    []string
+	disabledRepos   []string
+	ui              *ui.Printer
+	scaffoldPending bool
 }
 
 // Compile-time check that EnrollmentLayer implements Layer.
@@ -42,6 +54,14 @@ func NewEnrollmentLayer(org string, client forge.Client, enabledRepos, disabledR
 	}
 }
 
+// WithScaffoldPending marks that scaffold files were delivered via PR and
+// have not yet been merged to the default branch. Enrollment is deferred
+// until the scaffold PR is merged and repo-maintenance triggers on push.
+func (l *EnrollmentLayer) WithScaffoldPending() *EnrollmentLayer {
+	l.scaffoldPending = true
+	return l
+}
+
 func (l *EnrollmentLayer) Name() string {
 	return "enrollment"
 }
@@ -53,7 +73,10 @@ func (l *EnrollmentLayer) RequiredScopes(op Operation) []string {
 		// Enrollment dispatches repo-maintenance.yml on .fullsend.
 		return []string{"repo"}
 	case OpUninstall:
-		return nil // no-op
+		if len(l.disabledRepos) > 0 {
+			return []string{"repo"}
+		}
+		return nil
 	case OpAnalyze:
 		return []string{"repo"}
 	default:
@@ -69,18 +92,33 @@ func (l *EnrollmentLayer) Install(ctx context.Context) error {
 		return nil
 	}
 
+	if l.scaffoldPending {
+		l.ui.StepInfo("scaffold PR pending — enrollment will run automatically when the PR is merged")
+		return nil
+	}
+
 	dispatchTime := time.Now().UTC().Add(-30 * time.Second)
 
 	l.ui.StepStart("dispatching repo-maintenance workflow for enrollment")
-	err := l.client.DispatchWorkflow(ctx, l.org, forge.ConfigRepoName, repoMaintenanceWorkflow, "main", nil)
-	if err != nil {
-		return fmt.Errorf("dispatching repo-maintenance: %w", err)
+	if err := l.awaitWorkflowRegistration(ctx); err != nil {
+		return fmt.Errorf("waiting for repo-maintenance workflow: %w", err)
 	}
-	l.ui.StepDone("dispatched repo-maintenance workflow")
+	dispatchErr := l.dispatchRepoMaintenanceWithRetry(ctx)
+	if dispatchErr != nil {
+		if !isWorkflowDispatchNotReady(dispatchErr) {
+			return fmt.Errorf("dispatching repo-maintenance: %w", dispatchErr)
+		}
+		l.ui.StepWarn(fmt.Sprintf("workflow dispatch failed (%v); waiting for push-triggered run", dispatchErr))
+	} else {
+		l.ui.StepDone("dispatched repo-maintenance workflow")
+	}
 
 	// Wait for the workflow run to complete.
 	run, err := l.awaitWorkflowRun(ctx, dispatchTime)
 	if err != nil {
+		if dispatchErr != nil {
+			return fmt.Errorf("dispatching repo-maintenance: %w", dispatchErr)
+		}
 		l.ui.StepWarn(fmt.Sprintf("could not confirm enrollment: %v", err))
 		l.ui.StepInfo("check the repo-maintenance workflow in .fullsend for results")
 		return nil // non-fatal — enrollment may still succeed
@@ -98,6 +136,81 @@ func (l *EnrollmentLayer) Install(ctx context.Context) error {
 	l.reportReconciliationPRs(ctx)
 
 	return nil
+}
+
+func (l *EnrollmentLayer) dispatchRepoMaintenanceWithRetry(ctx context.Context) error {
+	delay := workflowDispatchRetryInitial
+	var lastErr error
+
+	for attempt := range workflowDispatchRetryAttempts {
+		if attempt > 0 {
+			l.ui.StepInfo(fmt.Sprintf("workflow dispatch not ready, retrying in %s (attempt %d/%d)", delay, attempt+1, workflowDispatchRetryAttempts))
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+			delay += workflowDispatchRetryInitial
+			if delay > workflowDispatchRetryMax {
+				delay = workflowDispatchRetryMax
+			}
+		}
+
+		lastErr = l.client.DispatchWorkflow(ctx, l.org, forge.ConfigRepoName, repoMaintenanceWorkflow, "main", nil)
+		if lastErr == nil {
+			return nil
+		}
+		if !isWorkflowDispatchNotReady(lastErr) {
+			return lastErr
+		}
+	}
+
+	return lastErr
+}
+
+func (l *EnrollmentLayer) awaitWorkflowRegistration(ctx context.Context) error {
+	deadline := time.Now().Add(workflowRegistrationMaxWait)
+	attempt := 0
+
+	for {
+		attempt++
+		wf, err := l.client.GetWorkflow(ctx, l.org, forge.ConfigRepoName, repoMaintenanceWorkflow)
+		if err == nil && wf.State == "active" {
+			if attempt > 1 {
+				l.ui.StepInfo(fmt.Sprintf("repo-maintenance workflow registered (state: active, attempt %d)", attempt))
+			}
+			return nil
+		}
+		if err != nil && !forge.IsNotFound(err) {
+			return fmt.Errorf("checking repo-maintenance workflow registration: %w", err)
+		}
+
+		if time.Now().After(deadline) {
+			state := "not found"
+			if wf != nil {
+				state = wf.State
+			}
+			return fmt.Errorf("repo-maintenance workflow not ready after %s (last state: %s)", workflowRegistrationMaxWait, state)
+		}
+
+		l.ui.StepInfo(fmt.Sprintf("waiting for repo-maintenance workflow registration (attempt %d)...", attempt))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(workflowRegistrationPoll):
+		}
+	}
+}
+
+func isWorkflowDispatchNotReady(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *gh.APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != 422 {
+		return false
+	}
+	return strings.Contains(apiErr.Message, "workflow_dispatch")
 }
 
 // awaitWorkflowRun polls for a repo-maintenance workflow run created after
@@ -176,9 +289,88 @@ func (l *EnrollmentLayer) reportPRByTitle(ctx context.Context, repo, title strin
 	}
 }
 
-// Uninstall is a no-op. Individual repo cleanup is not automated —
-// repos keep their shim workflows.
-func (l *EnrollmentLayer) Uninstall(_ context.Context) error {
+// Uninstall updates config.yaml to mark all repos as disabled and
+// dispatches the repo-maintenance workflow to create unenrollment PRs
+// that remove shim workflows from enrolled repos. This runs before
+// ConfigRepoLayer deletes the .fullsend repo (layers uninstall in
+// reverse order), so the workflow is still available to dispatch.
+//
+// Errors during unenrollment are non-fatal — the user is informed but
+// the uninstall continues. Repos that cannot be unenrolled
+// automatically will need manual removal of .github/workflows/fullsend.yaml.
+func (l *EnrollmentLayer) Uninstall(ctx context.Context) error {
+	if len(l.disabledRepos) == 0 {
+		l.ui.StepInfo("no repositories to unenroll")
+		return nil
+	}
+
+	// Read current config and mark all repos as disabled so the
+	// reconcile script knows to create unenrollment PRs.
+	cfgData, err := l.client.GetFileContent(ctx, l.org, forge.ConfigRepoName, "config.yaml")
+	if err != nil {
+		if forge.IsNotFound(err) {
+			l.ui.StepInfo("config repo unavailable, skipping unenrollment")
+			return nil
+		}
+		l.ui.StepWarn(fmt.Sprintf("could not read config for unenrollment: %v", err))
+		return nil
+	}
+
+	cfg, err := config.ParseOrgConfig(cfgData)
+	if err != nil {
+		l.ui.StepWarn(fmt.Sprintf("could not parse config for unenrollment: %v", err))
+		return nil
+	}
+
+	for name, rc := range cfg.Repos {
+		rc.Enabled = false
+		cfg.Repos[name] = rc
+	}
+
+	data, err := cfg.Marshal()
+	if err != nil {
+		l.ui.StepWarn(fmt.Sprintf("could not marshal config for unenrollment: %v", err))
+		return nil
+	}
+
+	l.ui.StepStart("Updating config to disable all repos")
+	err = l.client.CreateOrUpdateFile(ctx, l.org, forge.ConfigRepoName, "config.yaml",
+		"chore: disable all repos for uninstall", data)
+	if err != nil {
+		l.ui.StepWarn(fmt.Sprintf("could not update config: %v", err))
+		return nil
+	}
+	l.ui.StepDone("Disabled all repos in config")
+
+	// Dispatch repo-maintenance to create unenrollment PRs.
+	dispatchTime := time.Now().UTC().Add(-30 * time.Second)
+	l.ui.StepStart("Dispatching repo-maintenance for unenrollment")
+	err = l.client.DispatchWorkflow(ctx, l.org, forge.ConfigRepoName, repoMaintenanceWorkflow, "main", nil)
+	if err != nil {
+		l.ui.StepWarn(fmt.Sprintf("could not dispatch unenrollment workflow: %v", err))
+		l.ui.StepInfo("repos may need manual cleanup of .github/workflows/fullsend.yaml")
+		return nil
+	}
+	l.ui.StepDone("Dispatched repo-maintenance for unenrollment")
+
+	// Wait for the workflow run to complete.
+	run, err := l.awaitWorkflowRun(ctx, dispatchTime)
+	if err != nil {
+		l.ui.StepWarn(fmt.Sprintf("could not confirm unenrollment: %v", err))
+		l.ui.StepInfo("check the repo-maintenance workflow in .fullsend for results")
+		return nil
+	}
+
+	if run.Conclusion == "success" {
+		l.ui.StepDone("Unenrollment completed successfully")
+	} else {
+		l.ui.StepWarn(fmt.Sprintf("unenrollment workflow completed with conclusion: %s", run.Conclusion))
+		l.showWorkflowLogs(ctx, run.ID)
+	}
+	l.ui.StepInfo(fmt.Sprintf("workflow run: %s", run.HTMLURL))
+
+	l.reportReconciliationPRs(ctx)
+
 	return nil
 }
 

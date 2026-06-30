@@ -49,3 +49,34 @@ echo "Input validation passed:"
 echo "  PR_NUMBER=${PR_NUMBER}"
 echo "  REPO_FULL_NAME=${REPO_FULL_NAME}"
 echo "  GITHUB_PR_URL=${GITHUB_PR_URL}"
+
+# ---------------------------------------------------------------------------
+# Check PR state — skip review on merged or closed PRs
+# ---------------------------------------------------------------------------
+# Use REVIEW_TOKEN if available (set by the harness), fall back to GH_TOKEN.
+_TOKEN="${REVIEW_TOKEN:-${GH_TOKEN:-}}"
+if [[ -z "${_TOKEN}" ]]; then
+  echo "No token available — skipping PR state check"
+  exit 0
+fi
+
+PR_STATE="$(GH_TOKEN="${_TOKEN}" gh pr view "${PR_NUMBER}" \
+  --repo "${REPO_FULL_NAME}" --json state --jq '.state' 2>/dev/null || true)"
+
+if [[ -n "${PR_STATE}" && "${PR_STATE}" != "OPEN" ]]; then
+  echo "::notice::PR #${PR_NUMBER} is ${PR_STATE} — skipping review"
+
+  STATE_LOWER="$(echo "${PR_STATE}" | tr '[:upper:]' '[:lower:]')"
+  COMMENT_BODY="Review skipped — this PR is already **${STATE_LOWER}**.
+
+The \`/fs-review\` command only reviews open pull requests.
+
+<sub>Posted by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> pre-review check</sub>"
+
+  printf '%s' "${COMMENT_BODY}" | GH_TOKEN="${_TOKEN}" gh issue comment "${PR_NUMBER}" \
+    --repo "${REPO_FULL_NAME}" --body-file - 2>/dev/null || true
+
+  exit 0
+fi
+
+echo "PR #${PR_NUMBER} is open — proceeding with review agent"

@@ -1,6 +1,6 @@
 ---
 title: "28. GitLab Support Architecture"
-status: Proposed
+status: Deprecated
 relates_to:
   - agent-infrastructure
   - agent-architecture
@@ -17,7 +17,11 @@ Date: 2026-04-29
 
 ## Status
 
-Proposed
+Deprecated — the harness-level forge-specific vs. forge-neutral split
+is now addressed by [ADR 0045](0045-forge-portable-harness-schema.md)
+(forge-portable harness schema). The broader GitLab support architecture
+(CI/CD pipeline mapping, PAT-based auth, webhook bridging) documented
+here remains reference material.
 
 ## Context
 

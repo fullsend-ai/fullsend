@@ -12,20 +12,20 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version-file: go.mod
 
-      - uses: actions/setup-python@v6.2.0
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: "3.12"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7.6.0
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Install pre-commit and test dependencies
         run: uv pip install --system pre-commit jsonschema
@@ -36,19 +36,56 @@ jobs:
           echo "1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a  /tmp/lychee.tar.gz" | sha256sum -c
           tar xzf /tmp/lychee.tar.gz -C /usr/local/bin --strip-components=1 lychee-x86_64-unknown-linux-gnu/lychee
 
-      - run: make test
+      - name: Install pinact
+        run: |
+          curl -sSfL "https://github.com/suzuki-shunsuke/pinact/releases/download/v4.1.0/pinact_linux_amd64.tar.gz" -o /tmp/pinact.tar.gz
+          echo "8fcbf1b3e95551c82fd995535e3c1defa70e23299ce36eb3afd6c98778de6ca0  /tmp/pinact.tar.gz" | sha256sum -c
+          tar xzf /tmp/pinact.tar.gz -C /usr/local/bin pinact
+
+      - run: make lint-all
+
+      - name: Run Go tests with coverage
+        run: go test -race -coverprofile=coverage.out ./...
+        env:
+          GH_TOKEN: ""
+          GITHUB_TOKEN: ""
+
+      - run: make script-test
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          files: coverage.out
+
+  test-sandbox-darwin:
+    # Run Go tests on macOS to exercise darwin-specific behavior (e.g. bsdtar
+    # AppleDouble suppression via COPYFILE_DISABLE=1 in UploadDir).
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+
+      - run: go test -race ./internal/sandbox/...
+        env:
+          GH_TOKEN: ""
+          GITHUB_TOKEN: ""
 
   commit-lint:
-    # On pull_request: lint the PR title (which becomes the merge commit
-    # subject on squash-merge). On push/merge_group: lint each commit.
-    runs-on: ubuntu-latest
+    # Lint the PR title and individual commits on pull_request.
+    # Lint each commit on push/merge_group.
+    # The merge queue uses merge (not squash), so individual commit
+    # messages matter — catch bad prefixes before the merge queue rejects them.
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7.6.0
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Lint PR title
         if: github.event_name == 'pull_request'
@@ -56,27 +93,29 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           echo "${PR_TITLE}" > /tmp/pr-title.txt
-          uvx --from gitlint gitlint --config .gitlint --ignore B6 --msg-filename /tmp/pr-title.txt
+          uvx --from gitlint-core gitlint --config .gitlint --ignore B6 --msg-filename /tmp/pr-title.txt
 
       - name: Lint commits
-        if: github.event_name != 'pull_request'
         env:
           EVENT_NAME: ${{ github.event_name }}
           PUSH_BEFORE: ${{ github.event.before }}
           PUSH_AFTER: ${{ github.sha }}
           MQ_BASE: ${{ github.event.merge_group.base_sha }}
           MQ_HEAD: ${{ github.event.merge_group.head_sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
-          if [ "${EVENT_NAME}" = "push" ]; then
-            RANGE="${PUSH_BEFORE}..${PUSH_AFTER}"
-          else
-            RANGE="${MQ_BASE}..${MQ_HEAD}"
-          fi
+          case "${EVENT_NAME}" in
+            push)          RANGE="${PUSH_BEFORE}..${PUSH_AFTER}" ;;
+            merge_group)   RANGE="${MQ_BASE}..${MQ_HEAD}" ;;
+            pull_request)  RANGE="${PR_BASE}..${PR_HEAD}" ;;
+            *)             echo "Unknown event: ${EVENT_NAME}"; exit 1 ;;
+          esac
 
           FAILED=false
           for sha in $(git rev-list --no-merges "${RANGE}"); do
             git log --format='%s' -1 "${sha}" > /tmp/commit-msg.txt
-            if ! uvx --from gitlint gitlint --config .gitlint --ignore B6 --msg-filename /tmp/commit-msg.txt; then
+            if ! uvx --from gitlint-core gitlint --config .gitlint --ignore B6 --msg-filename /tmp/commit-msg.txt; then
               echo "::error::Commit ${sha} does not follow Conventional Commits format"
               FAILED=true
             fi
@@ -86,11 +125,11 @@ jobs:
           fi
 
   web:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22"
           cache: npm

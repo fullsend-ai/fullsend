@@ -96,6 +96,33 @@ After subagents return their findings, use your main context to:
 3. Form hypotheses about root causes
 4. Decide what changes to propose and where
 
+## Before proposing: check for existing issues
+
+**This step is mandatory.** Before including any proposal in your output, verify that no open issue already covers the same improvement. The retro agent is the primary source of systemic proposals — without this check, repeated runs produce duplicate issues that waste human triage time.
+
+For each candidate proposal, dispatch a subagent:
+
+> "Search `<target_repo>` for open GitHub issues related to `<topic keywords>`. Return the title, number, URL, and a one-sentence description of each result. I need to know whether any of them already propose the same change I'm considering: `<proposed_change_summary>`."
+
+The subagent should run:
+
+```bash
+# Broad keyword search across title and body
+gh api \
+  "search/issues?q=<topic+keywords>+repo:<target_repo>+is:issue+is:open&per_page=20" \
+  --jq '.items[] | {number: .number, title: .title, url: .html_url, body: .body}'
+```
+
+Use multiple searches with different keyword combinations if the first returns no results — the same idea can be filed under different titles.
+
+**Evaluation criteria** (apply these yourself, not the subagent):
+
+- **Skip the proposal** if an existing open issue proposes the same or a substantially overlapping change. Reference the existing issue in your summary instead.
+- **Skip the proposal** if a recently closed issue addressed the same problem (closed in the last 90 days) — the fix may already be in flight.
+- **Include the proposal** only if you are confident no existing issue covers it, or if your proposal meaningfully refines an existing one in a way that warrants a new issue.
+
+When skipping, note the duplicate in your `summary` field so the human understands what was filtered and why.
+
 ## Localization guidance
 
 When deciding where a proposed change belongs:

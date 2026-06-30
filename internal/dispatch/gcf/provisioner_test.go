@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -42,194 +43,18 @@ func newTestProvisioner(cfg Config, gcpAPI GCFClient) *Provisioner {
 	return p
 }
 
-// fakeGCFClient records calls and returns preset responses.
-type fakeGCFClient struct {
-	calls []string
-	errs  map[string]error
-
-	// Return values
-	projectNumber string
-	functionInfo  *FunctionInfo
-	functionURL   string
-
-	// Track GetFunction call count to return different results.
-	getFunctionCalls int
-	// functionInfoAfterCreate is returned on the second GetFunction call
-	// (after CreateFunction). If nil, functionInfo is always returned.
-	functionInfoAfterCreate *FunctionInfo
-
-	// Captured WIF provider config and ID for assertion.
-	lastWIFProviderConfig OIDCProviderConfig
-	lastWIFProviderID     string
-
-	// WIF provider state for GetWIFProvider.
-	wifProvider *WIFProviderInfo
-
-	// Track secret names written via AddSecretVersion.
-	secretVersionNames []string
-
-	// Per-secret state for CopyAgentPEM tests.
-	secretData map[string][]byte // secretID → payload
-	secrets    map[string]bool   // secretID → exists
-
-	// Captured env vars from the last CreateFunction or UpdateFunction call.
-	lastCreateFunctionEnvVars map[string]string
-
-	// Captured env vars from the last UpdateFunctionEnvVars call.
-	lastUpdateFunctionEnvVars map[string]string
-
-	// Captured project IAM binding arguments.
-	projectIAMBindings []projectIAMBinding
-}
-
-type projectIAMBinding struct {
-	ProjectID string
-	Member    string
-	Role      string
-}
-
-func newFakeGCFClient() *fakeGCFClient {
-	return &fakeGCFClient{
-		errs:          make(map[string]error),
-		projectNumber: "123456789",
-	}
-}
-
-func (f *fakeGCFClient) record(method string) error {
-	f.calls = append(f.calls, method)
-	return f.errs[method]
-}
-
-func (f *fakeGCFClient) CreateServiceAccount(_ context.Context, _, _, _ string) error {
-	return f.record("CreateServiceAccount")
-}
-func (f *fakeGCFClient) CreateWIFPool(_ context.Context, _, _, _ string) error {
-	return f.record("CreateWIFPool")
-}
-func (f *fakeGCFClient) CreateWIFProvider(_ context.Context, _, _, providerID string, cfg OIDCProviderConfig) error {
-	f.lastWIFProviderConfig = cfg
-	f.lastWIFProviderID = providerID
-	return f.record("CreateWIFProvider")
-}
-func (f *fakeGCFClient) GetWIFProvider(_ context.Context, _, _, _ string) (*WIFProviderInfo, error) {
-	f.calls = append(f.calls, "GetWIFProvider")
-	if err := f.errs["GetWIFProvider"]; err != nil {
-		return nil, err
-	}
-	return f.wifProvider, nil
-}
-func (f *fakeGCFClient) UpdateWIFProvider(_ context.Context, _, _, _ string, cfg OIDCProviderConfig) error {
-	f.lastWIFProviderConfig = cfg
-	return f.record("UpdateWIFProvider")
-}
-func (f *fakeGCFClient) GetSecret(_ context.Context, _ string, sid string) error {
-	f.calls = append(f.calls, "GetSecret")
-	if err := f.errs["GetSecret"]; err != nil {
-		return err
-	}
-	if f.secrets != nil {
-		if !f.secrets[sid] {
-			return ErrSecretNotFound
-		}
-	}
-	return nil
-}
-func (f *fakeGCFClient) CreateSecret(_ context.Context, _ string, sid string) error {
-	if f.secrets != nil {
-		f.secrets[sid] = true
-	}
-	return f.record("CreateSecret")
-}
-func (f *fakeGCFClient) AddSecretVersion(_ context.Context, _ string, secretID string, data []byte) error {
-	f.secretVersionNames = append(f.secretVersionNames, secretID)
-	if f.secretData != nil {
-		f.secretData[secretID] = append([]byte(nil), data...)
-	}
-	return f.record("AddSecretVersion")
-}
-func (f *fakeGCFClient) AccessSecretVersion(_ context.Context, _ string, sid string) ([]byte, error) {
-	f.calls = append(f.calls, "AccessSecretVersion")
-	if err := f.errs["AccessSecretVersion"]; err != nil {
-		return nil, err
-	}
-	if f.secretData != nil {
-		if data, ok := f.secretData[sid]; ok {
-			return data, nil
-		}
-	}
-	return nil, fmt.Errorf("secret %s: %w", sid, ErrSecretNotFound)
-}
-func (f *fakeGCFClient) SetSecretIAMBinding(_ context.Context, _, _, _ string) error {
-	return f.record("SetSecretIAMBinding")
-}
-func (f *fakeGCFClient) SetProjectIAMBinding(_ context.Context, projectID, member, role string) error {
-	f.projectIAMBindings = append(f.projectIAMBindings, projectIAMBinding{projectID, member, role})
-	return f.record("SetProjectIAMBinding")
-}
-func (f *fakeGCFClient) SetCloudRunInvoker(_ context.Context, _, _, _ string) error {
-	return f.record("SetCloudRunInvoker")
-}
-func (f *fakeGCFClient) GetFunction(_ context.Context, _, _, _ string) (*FunctionInfo, error) {
-	f.calls = append(f.calls, "GetFunction")
-	f.getFunctionCalls++
-	if err := f.errs["GetFunction"]; err != nil {
-		return nil, err
-	}
-	// On the second call (after CreateFunction), return the post-deploy info.
-	if f.getFunctionCalls > 1 && f.functionInfoAfterCreate != nil {
-		return f.functionInfoAfterCreate, nil
-	}
-	return f.functionInfo, nil
-}
-func (f *fakeGCFClient) UploadFunctionSource(_ context.Context, _, _ string, _ []byte) (json.RawMessage, error) {
-	f.calls = append(f.calls, "UploadFunctionSource")
-	if err := f.errs["UploadFunctionSource"]; err != nil {
-		return nil, err
-	}
-	return json.RawMessage(`{"bucket":"test-bucket","object":"source.zip"}`), nil
-}
-func (f *fakeGCFClient) CreateFunction(_ context.Context, _, _, _ string, cfg FunctionConfig) (string, error) {
-	f.calls = append(f.calls, "CreateFunction")
-	f.lastCreateFunctionEnvVars = cfg.EnvVars
-	if err := f.errs["CreateFunction"]; err != nil {
-		return "", err
-	}
-	return "operations/123", nil
-}
-func (f *fakeGCFClient) UpdateFunction(_ context.Context, _, _, _ string, cfg FunctionConfig) (string, error) {
-	f.calls = append(f.calls, "UpdateFunction")
-	f.lastCreateFunctionEnvVars = cfg.EnvVars
-	if err := f.errs["UpdateFunction"]; err != nil {
-		return "", err
-	}
-	return "operations/update-456", nil
-}
-func (f *fakeGCFClient) UpdateFunctionEnvVars(_ context.Context, _, _, _ string, envVars map[string]string) (string, error) {
-	f.calls = append(f.calls, "UpdateFunctionEnvVars")
-	f.lastUpdateFunctionEnvVars = envVars
-	if err := f.errs["UpdateFunctionEnvVars"]; err != nil {
-		return "", err
-	}
-	return "operations/envvar-update-789", nil
-}
-func (f *fakeGCFClient) WaitForOperation(_ context.Context, _ string) error {
-	return f.record("WaitForOperation")
-}
-func (f *fakeGCFClient) GetProjectNumber(_ context.Context, _ string) (string, error) {
-	f.calls = append(f.calls, "GetProjectNumber")
-	if err := f.errs["GetProjectNumber"]; err != nil {
-		return "", err
-	}
-	return f.projectNumber, nil
-}
-
 // --- helpers ---
 
 func fakeFunctionSourceDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test\n\ngo 1.23\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test\n\ngo 1.23\n\nrequire mintcore v0.0.0\n\nreplace mintcore => ../mintcore\n"), 0644)
 	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package function\n"), 0644)
+	// bundleFunctionSource expects a sibling mintcore directory at ../mintcore.
+	mintcoreDir := filepath.Join(dir, "..", "mintcore")
+	os.MkdirAll(mintcoreDir, 0755)
+	os.WriteFile(filepath.Join(mintcoreDir, "go.mod"), []byte("module mintcore\n\ngo 1.23\n"), 0644)
+	os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644)
 	return dir
 }
 
@@ -243,8 +68,8 @@ func singleRoleAppIDs() map[string]string {
 
 func multiRolePEMs() map[string][]byte {
 	return map[string][]byte{
-		"coder":   []byte("coder-pem"),
-		"triage":  []byte("triage-pem"),
+		"coder":  []byte("coder-pem"),
+		"triage": []byte("triage-pem"),
 	}
 }
 
@@ -291,8 +116,20 @@ func TestProvisioner_CustomConfig(t *testing.T) {
 }
 
 func TestSecretID(t *testing.T) {
-	assert.Equal(t, "fullsend-test-org--coder-app-pem", secretID("test-org", "coder"))
-	assert.Equal(t, "fullsend-acme--triage-app-pem", secretID("acme", "triage"))
+	assert.Equal(t, "fullsend-coder-app-pem", secretID("coder"))
+	assert.Equal(t, "fullsend-coder-app-pem", secretID("fix"))
+	assert.Equal(t, "fullsend-triage-app-pem", secretID("triage"))
+}
+
+func TestStoreAgentPEM_FixRoleUsesCoderSecret(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetSecret"] = ErrSecretNotFound
+
+	p := newTestProvisioner(Config{ProjectID: "my-project"}, fake)
+	err := p.StoreAgentPEM(context.Background(), "fix", []byte("pem-data"))
+	require.NoError(t, err)
+
+	assert.Equal(t, "fullsend-coder-app-pem", fake.secretVersionNames[len(fake.secretVersionNames)-1])
 }
 
 // --- StoreAgentPEM tests ---
@@ -302,7 +139,7 @@ func TestStoreAgentPEM_CreatesNewSecret(t *testing.T) {
 	fake.errs["GetSecret"] = ErrSecretNotFound
 
 	p := newTestProvisioner(Config{ProjectID: "my-project"}, fake)
-	err := p.StoreAgentPEM(context.Background(), "test-org", "coder", []byte("pem-data"))
+	err := p.StoreAgentPEM(context.Background(), "coder", []byte("pem-data"))
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{
@@ -317,7 +154,7 @@ func TestStoreAgentPEM_ExistingSecretSkipsCreate(t *testing.T) {
 	fake := newFakeGCFClient()
 
 	p := newTestProvisioner(Config{ProjectID: "my-project"}, fake)
-	err := p.StoreAgentPEM(context.Background(), "test-org", "coder", []byte("pem-data"))
+	err := p.StoreAgentPEM(context.Background(), "coder", []byte("pem-data"))
 	require.NoError(t, err)
 
 	assert.Contains(t, fake.calls, "GetSecret")
@@ -328,7 +165,7 @@ func TestStoreAgentPEM_ExistingSecretSkipsCreate(t *testing.T) {
 
 func TestStoreAgentPEM_MissingProjectID(t *testing.T) {
 	p := newTestProvisioner(Config{}, newFakeGCFClient())
-	err := p.StoreAgentPEM(context.Background(), "test-org", "coder", []byte("pem"))
+	err := p.StoreAgentPEM(context.Background(), "coder", []byte("pem"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "GCP project ID is required")
 }
@@ -336,11 +173,11 @@ func TestStoreAgentPEM_MissingProjectID(t *testing.T) {
 func TestStoreAgentPEM_InvalidRole(t *testing.T) {
 	p := newTestProvisioner(Config{ProjectID: "my-project"}, newFakeGCFClient())
 	for _, role := range []string{"CODER", "co der", "../escape", "role;drop"} {
-		err := p.StoreAgentPEM(context.Background(), "test-org", role, []byte("pem"))
+		err := p.StoreAgentPEM(context.Background(), role, []byte("pem"))
 		require.Error(t, err, "role %q should be rejected", role)
 		assert.Contains(t, err.Error(), "invalid role name")
 	}
-	err := p.StoreAgentPEM(context.Background(), "test-org", "coder", []byte("pem"))
+	err := p.StoreAgentPEM(context.Background(), "coder", []byte("pem"))
 	require.NoError(t, err)
 }
 
@@ -349,9 +186,26 @@ func TestStoreAgentPEM_GetSecretNonNotFoundError(t *testing.T) {
 	fake.errs["GetSecret"] = fmt.Errorf("permission denied")
 
 	p := newTestProvisioner(Config{ProjectID: "my-project"}, fake)
-	err := p.StoreAgentPEM(context.Background(), "test-org", "coder", []byte("pem"))
+	err := p.StoreAgentPEM(context.Background(), "coder", []byte("pem"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "permission denied")
+}
+
+func TestEnsureMintServiceAccount(t *testing.T) {
+	fake := newFakeGCFClient()
+	p := newTestProvisioner(Config{ProjectID: "my-project"}, fake)
+
+	err := p.EnsureMintServiceAccount(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"CreateServiceAccount"}, fake.calls)
+}
+
+func TestEnsureMintServiceAccount_MissingProjectID(t *testing.T) {
+	p := newTestProvisioner(Config{}, newFakeGCFClient())
+	err := p.EnsureMintServiceAccount(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "project ID is required")
 }
 
 // --- self-managed provision tests ---
@@ -364,9 +218,9 @@ func TestProvisioner_Provision_FullFlow(t *testing.T) {
 		State: "ACTIVE",
 		URI:   "https://fullsend-mint-abc123.run.app",
 		EnvVars: map[string]string{
-			"ALLOWED_ORGS":          "test-org",
-			"ROLE_APP_IDS":          `{"test-org/coder":"12345"}`,
-			"ALLOWED_ROLES":         "coder",
+			"ALLOWED_ORGS":           "test-org",
+			"ROLE_APP_IDS":           `{"coder":"12345"}`,
+			"ALLOWED_ROLES":          "coder",
 			"ALLOWED_WORKFLOW_FILES": "*",
 		},
 	}
@@ -398,7 +252,8 @@ func TestProvisioner_Provision_FullFlow(t *testing.T) {
 		"CreateFunction",
 		"WaitForOperation",
 		"GetFunction",
-		"GetFunction", // EnsureOrgInMint checks env vars (no-op after first deploy)
+		"GetFunction",              // EnsureOrgInMint checks function metadata
+		"GetServiceTrafficEnvVars", // EnsureOrgInMint reads traffic-serving env vars (no-op after first deploy)
 		"SetCloudRunInvoker",
 	}
 	assert.Equal(t, expected, fake.calls)
@@ -507,13 +362,13 @@ func TestProvisioner_Provision_SkipsRedeployWhenUnchanged(t *testing.T) {
 		URI:   "https://fullsend-mint-abc123.run.app",
 		EnvVars: map[string]string{
 			"GCP_PROJECT_NUMBER":     "123456789",
-			"WIF_POOL_NAME":         "fullsend-pool",
-			"WIF_PROVIDER_NAME":     "github-oidc",
-			"ALLOWED_ORGS":          "test-org",
-			"OIDC_AUDIENCE":         "fullsend-mint",
-			"ALLOWED_ROLES":         "coder",
-			"ROLE_APP_IDS":          `{"test-org/coder":"12345"}`,
-			"FULLSEND_SOURCE_HASH":  srcHash,
+			"WIF_POOL_NAME":          "fullsend-pool",
+			"WIF_PROVIDER_NAME":      "github-oidc",
+			"ALLOWED_ORGS":           "test-org",
+			"OIDC_AUDIENCE":          "fullsend-mint",
+			"ALLOWED_ROLES":          "coder",
+			"ROLE_APP_IDS":           `{"coder":"12345"}`,
+			"FULLSEND_SOURCE_HASH":   srcHash,
 			"ALLOWED_WORKFLOW_FILES": "*",
 		},
 	}
@@ -550,13 +405,13 @@ func TestProvisioner_Provision_SameHashAutoRoutesToExistingMint(t *testing.T) {
 		URI:   "https://fullsend-mint-abc123.run.app",
 		EnvVars: map[string]string{
 			"GCP_PROJECT_NUMBER":     "123456789",
-			"WIF_POOL_NAME":         "fullsend-pool",
-			"WIF_PROVIDER_NAME":     "github-oidc",
-			"ALLOWED_ORGS":          "test-org",
-			"OIDC_AUDIENCE":         "fullsend-mint",
-			"ALLOWED_ROLES":         "coder",
-			"ROLE_APP_IDS":          `{"test-org/coder":"12345"}`,
-			"FULLSEND_SOURCE_HASH":  srcHash,
+			"WIF_POOL_NAME":          "fullsend-pool",
+			"WIF_PROVIDER_NAME":      "github-oidc",
+			"ALLOWED_ORGS":           "test-org",
+			"OIDC_AUDIENCE":          "fullsend-mint",
+			"ALLOWED_ROLES":          "coder",
+			"ROLE_APP_IDS":           `{"coder":"12345"}`,
+			"FULLSEND_SOURCE_HASH":   srcHash,
 			"ALLOWED_WORKFLOW_FILES": "*",
 		},
 	}
@@ -611,7 +466,7 @@ func TestProvisioner_Provision_SkipDeployReusesExisting(t *testing.T) {
 	assert.NotContains(t, fake.calls, "UpdateFunction")
 
 	// EnsureOrgInMint still registers the org via env-var-only update.
-	assert.Contains(t, fake.calls, "UpdateFunctionEnvVars")
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
 	assert.Equal(t, "https://fullsend-mint-abc123.run.app", vars["FULLSEND_MINT_URL"])
 }
 
@@ -640,13 +495,13 @@ func TestProvisioner_Provision_CodeChanged_UpdatesFunction(t *testing.T) {
 		URI:   "https://fullsend-mint-abc123.run.app",
 		EnvVars: map[string]string{
 			"GCP_PROJECT_NUMBER":     "123456789",
-			"WIF_POOL_NAME":         "fullsend-pool",
-			"WIF_PROVIDER_NAME":     "github-oidc",
-			"ALLOWED_ORGS":          "test-org",
-			"OIDC_AUDIENCE":         "fullsend-mint",
-			"ALLOWED_ROLES":         "coder",
-			"ROLE_APP_IDS":          `{"test-org/coder":"12345"}`,
-			"FULLSEND_SOURCE_HASH":  "old-hash-that-wont-match",
+			"WIF_POOL_NAME":          "fullsend-pool",
+			"WIF_PROVIDER_NAME":      "github-oidc",
+			"ALLOWED_ORGS":           "test-org",
+			"OIDC_AUDIENCE":          "fullsend-mint",
+			"ALLOWED_ROLES":          "coder",
+			"ROLE_APP_IDS":           `{"coder":"12345"}`,
+			"FULLSEND_SOURCE_HASH":   "old-hash-that-wont-match",
 			"ALLOWED_WORKFLOW_FILES": "*",
 		},
 	}
@@ -688,13 +543,13 @@ func TestProvisioner_Provision_SameCodeNewOrg_EnvVarOnlyUpdate(t *testing.T) {
 		URI:   "https://fullsend-mint-abc123.run.app",
 		EnvVars: map[string]string{
 			"GCP_PROJECT_NUMBER":     "123456789",
-			"WIF_POOL_NAME":         "fullsend-pool",
-			"WIF_PROVIDER_NAME":     "github-oidc",
-			"ALLOWED_ORGS":          "existing-org",
-			"OIDC_AUDIENCE":         "fullsend-mint",
-			"ALLOWED_ROLES":         "coder",
-			"ROLE_APP_IDS":          `{"existing-org/coder":"99999"}`,
-			"FULLSEND_SOURCE_HASH":  srcHash,
+			"WIF_POOL_NAME":          "fullsend-pool",
+			"WIF_PROVIDER_NAME":      "github-oidc",
+			"ALLOWED_ORGS":           "existing-org",
+			"OIDC_AUDIENCE":          "fullsend-mint",
+			"ALLOWED_ROLES":          "coder",
+			"ROLE_APP_IDS":           `{"coder":"99999"}`,
+			"FULLSEND_SOURCE_HASH":   srcHash,
 			"ALLOWED_WORKFLOW_FILES": "*",
 		},
 	}
@@ -716,11 +571,11 @@ func TestProvisioner_Provision_SameCodeNewOrg_EnvVarOnlyUpdate(t *testing.T) {
 	assert.NotContains(t, fake.calls, "UpdateFunction")
 
 	// EnsureOrgInMint adds the new org via env-var-only update.
-	assert.Contains(t, fake.calls, "UpdateFunctionEnvVars")
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
 
 	// Verify new org was added to ALLOWED_ORGS alongside existing.
-	require.NotNil(t, fake.lastUpdateFunctionEnvVars)
-	allowedOrgs := fake.lastUpdateFunctionEnvVars["ALLOWED_ORGS"]
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+	allowedOrgs := fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"]
 	assert.Contains(t, allowedOrgs, "new-org")
 	assert.Contains(t, allowedOrgs, "existing-org")
 
@@ -780,19 +635,19 @@ func TestProvisioner_Provision_BundledMode(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.errs["GetSecret"] = ErrSecretNotFound
 	fake.functionInfo = &FunctionInfo{
-		Name: "projects/shared-project/locations/us-central1/functions/fullsend-mint",
+		Name:  "projects/shared-project/locations/us-central1/functions/fullsend-mint",
 		State: "ACTIVE",
-		URI:  "https://fullsend-mint-shared.run.app",
+		URI:   "https://fullsend-mint-shared.run.app",
 		EnvVars: map[string]string{
 			"ALLOWED_ORGS": "test-org",
 		},
 	}
 
 	p := newTestProvisioner(Config{
-		ProjectID: "shared-project",
+		ProjectID:  "shared-project",
 		GitHubOrgs: []string{"test-org"},
-		AgentPEMs: singleRolePEMs(),
-		MintURL:   "https://fullsend-mint-shared.run.app",
+		AgentPEMs:  singleRolePEMs(),
+		MintURL:    "https://fullsend-mint-shared.run.app",
 	}, fake)
 
 	vars, err := p.Provision(context.Background())
@@ -813,8 +668,8 @@ func TestProvisioner_Provision_BundledMode(t *testing.T) {
 func TestProvisioner_Provision_BundledMode_MissingProjectID(t *testing.T) {
 	p := newTestProvisioner(Config{
 		GitHubOrgs: []string{"test-org"},
-		AgentPEMs: singleRolePEMs(),
-		MintURL:   "https://fullsend-mint-shared.run.app",
+		AgentPEMs:  singleRolePEMs(),
+		MintURL:    "https://fullsend-mint-shared.run.app",
 	}, newFakeGCFClient())
 
 	_, err := p.Provision(context.Background())
@@ -835,10 +690,10 @@ func TestProvisioner_Provision_BundledMode_InvalidMintURL(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			p := newTestProvisioner(Config{
-				ProjectID: "shared-project",
+				ProjectID:  "shared-project",
 				GitHubOrgs: []string{"test-org"},
-				AgentPEMs: singleRolePEMs(),
-				MintURL:   tc.mintURL,
+				AgentPEMs:  singleRolePEMs(),
+				MintURL:    tc.mintURL,
 			}, newFakeGCFClient())
 
 			_, err := p.Provision(context.Background())
@@ -970,16 +825,16 @@ func TestProvisioner_Provision_BundledMode_NoPEMs_SecretsExist(t *testing.T) {
 		URI:   "https://fullsend-mint-shared.run.app",
 		EnvVars: map[string]string{
 			"ALLOWED_ORGS": "test-org",
-			"ROLE_APP_IDS": `{"test-org/coder":"12345"}`,
+			"ROLE_APP_IDS": `{"coder":"12345"}`,
 		},
 	}
 
 	p := newTestProvisioner(Config{
-		ProjectID:  "shared-project",
-		GitHubOrgs: []string{"test-org"},
-		AgentPEMs:  nil,
+		ProjectID:   "shared-project",
+		GitHubOrgs:  []string{"test-org"},
+		AgentPEMs:   nil,
 		AgentAppIDs: singleRoleAppIDs(),
-		MintURL:    "https://fullsend-mint-shared.run.app",
+		MintURL:     "https://fullsend-mint-shared.run.app",
 	}, fake)
 
 	vars, err := p.Provision(context.Background())
@@ -995,16 +850,16 @@ func TestProvisioner_Provision_BundledMode_NoPEMs_SecretsMissing(t *testing.T) {
 	fake.errs["GetSecret"] = ErrSecretNotFound
 
 	p := newTestProvisioner(Config{
-		ProjectID:  "shared-project",
-		GitHubOrgs: []string{"test-org"},
-		AgentPEMs:  nil,
+		ProjectID:   "shared-project",
+		GitHubOrgs:  []string{"test-org"},
+		AgentPEMs:   nil,
 		AgentAppIDs: singleRoleAppIDs(),
-		MintURL:    "https://fullsend-mint-shared.run.app",
+		MintURL:     "https://fullsend-mint-shared.run.app",
 	}, fake)
 
 	_, err := p.Provision(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no PEM provided and no existing PEM found to copy")
+	assert.Contains(t, err.Error(), "has no PEM and secret")
 }
 
 func TestProvisioner_Provision_BundledMode_NoPEMs_APIError(t *testing.T) {
@@ -1012,11 +867,11 @@ func TestProvisioner_Provision_BundledMode_NoPEMs_APIError(t *testing.T) {
 	fake.errs["GetSecret"] = fmt.Errorf("permission denied")
 
 	p := newTestProvisioner(Config{
-		ProjectID:  "shared-project",
-		GitHubOrgs: []string{"test-org"},
-		AgentPEMs:  nil,
+		ProjectID:   "shared-project",
+		GitHubOrgs:  []string{"test-org"},
+		AgentPEMs:   nil,
 		AgentAppIDs: singleRoleAppIDs(),
-		MintURL:    "https://fullsend-mint-shared.run.app",
+		MintURL:     "https://fullsend-mint-shared.run.app",
 	}, fake)
 
 	_, err := p.Provision(context.Background())
@@ -1033,7 +888,7 @@ func TestProvisioner_Provision_BundledMode_PartialPEMs(t *testing.T) {
 		URI:   "https://fullsend-mint-shared.run.app",
 		EnvVars: map[string]string{
 			"ALLOWED_ORGS": "test-org",
-			"ROLE_APP_IDS": `{"test-org/coder":"12345","test-org/triage":"67890"}`,
+			"ROLE_APP_IDS": `{"coder":"12345","triage":"67890"}`,
 		},
 	}
 
@@ -1270,7 +1125,7 @@ func TestProvisioner_Provision_SetProjectIAMBindingError(t *testing.T) {
 
 	_, err := p.Provision(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "granting Vertex AI access for org org")
+	assert.Contains(t, err.Error(), "granting Agent Platform access for org org")
 	assert.Contains(t, err.Error(), "project iam denied")
 }
 
@@ -1351,6 +1206,11 @@ func TestProvisioner_Provision_GetFunctionError(t *testing.T) {
 
 func TestBundleFunctionSource_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
+	// Create sibling mintcore dir so addDirToZip doesn't fail first.
+	mintcoreDir := filepath.Join(dir, "..", "mintcore")
+	os.MkdirAll(mintcoreDir, 0755)
+	os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644)
+
 	_, err := bundleFunctionSource(dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no deployable source files")
@@ -1359,6 +1219,11 @@ func TestBundleFunctionSource_EmptyDir(t *testing.T) {
 func TestBundleFunctionSource_MissingGoMod(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(dir+"/main.go", []byte("package main"), 0644)
+	// Create sibling mintcore dir so addDirToZip doesn't fail first.
+	mintcoreDir := filepath.Join(dir, "..", "mintcore")
+	os.MkdirAll(mintcoreDir, 0755)
+	os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644)
+
 	_, err := bundleFunctionSource(dir)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing go.mod")
@@ -1367,9 +1232,13 @@ func TestBundleFunctionSource_MissingGoMod(t *testing.T) {
 func TestBundleFunctionSource_SkipsTestFiles(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(dir+"/main.go", []byte("package main"), 0644)
-	os.WriteFile(dir+"/go.mod", []byte("module test"), 0644)
+	os.WriteFile(dir+"/go.mod", []byte("module test\n\nreplace mintcore => ../mintcore\n"), 0644)
 	os.WriteFile(dir+"/main_test.go", []byte("package main"), 0644)
 	os.WriteFile(dir+"/.hidden", []byte("hidden"), 0644)
+	// Create sibling mintcore dir so addDirToZip doesn't fail first.
+	mintcoreDir := filepath.Join(dir, "..", "mintcore")
+	os.MkdirAll(mintcoreDir, 0755)
+	os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644)
 
 	data, err := bundleFunctionSource(dir)
 	require.NoError(t, err)
@@ -1437,12 +1306,25 @@ func TestBundleEmbeddedMintSource(t *testing.T) {
 	assert.Contains(t, names, "go.mod")
 	assert.Contains(t, names, "go.sum")
 	assert.Contains(t, names, "main.go")
-	assert.Len(t, names, 3)
+	assert.Contains(t, names, "mintcore/go.mod")
+	assert.Contains(t, names, "mintcore/gcp_pem.go")
+	assert.Contains(t, names, "mintcore/github.go")
+	assert.Contains(t, names, "mintcore/jwks_verifier.go")
+	assert.Contains(t, names, "mintcore/claims.go")
+	assert.Contains(t, names, "mintcore/patterns.go")
+	assert.Contains(t, names, "mintcore/sts_verifier.go")
+	assert.Contains(t, names, "mintcore/wif.go")
+	assert.Contains(t, names, "mintcore/handler.go")
+	assert.Contains(t, names, "mintcore/foreign.go")
+	assert.Contains(t, names, "mintcore/interfaces.go")
+	assert.Contains(t, names, "mintcore/go.sum")
+	assert.Len(t, names, 15)
 }
 
 func TestEmbeddedMintSource_MatchesOriginal(t *testing.T) {
 	// origDir is internal/mint/ relative to this test's package (internal/dispatch/gcf/).
 	origDir := filepath.Join("..", "..", "mint")
+	mintcoreDir := filepath.Join("..", "..", "mintcore")
 	entries, err := os.ReadDir(origDir)
 	if os.IsNotExist(err) {
 		t.Skipf("original mint source not available at %s (running outside repo)", origDir)
@@ -1451,14 +1333,26 @@ func TestEmbeddedMintSource_MatchesOriginal(t *testing.T) {
 
 	// Check that every embedded file matches its original.
 	for embeddedName, realName := range embeddedMintFiles {
-		orig, err := os.ReadFile(filepath.Join(origDir, realName))
+		var origPath string
+		if strings.HasPrefix(realName, "mintcore/") {
+			origPath = filepath.Join(mintcoreDir, strings.TrimPrefix(realName, "mintcore/"))
+		} else {
+			origPath = filepath.Join(origDir, realName)
+		}
+
+		orig, err := os.ReadFile(origPath)
 		require.NoError(t, err, "reading original %s", realName)
 
 		embedded, err := embeddedMintSource.ReadFile("mintsrc/" + embeddedName)
 		require.NoError(t, err, "reading embedded %s", embeddedName)
 
+		// The embedded go.mod uses ./mintcore while the original uses ../mintcore.
+		if realName == "go.mod" {
+			orig = []byte(strings.Replace(string(orig), "=> ../mintcore", "=> ./mintcore", 1))
+		}
+
 		assert.Equal(t, string(orig), string(embedded),
-			"mintsrc/%s is out of sync with internal/mint/%s — copy to internal/dispatch/gcf/mintsrc/%s to update",
+			"mintsrc/%s is out of sync with original %s — copy to internal/dispatch/gcf/mintsrc/%s to update",
 			embeddedName, realName, embeddedName)
 	}
 
@@ -1473,6 +1367,23 @@ func TestEmbeddedMintSource_MatchesOriginal(t *testing.T) {
 		}
 		if !knownReals[entry.Name()] {
 			t.Errorf("internal/mint/%s exists but is not in embeddedMintFiles — add it to mintsrc/ with .embed suffix", entry.Name())
+		}
+	}
+
+	// Check mintcore files too.
+	// file_pem.go is standalone-mint-only and excluded from the GCF bundle.
+	gcfSkip := map[string]bool{"file_pem.go": true}
+	mintcoreEntries, err := os.ReadDir(mintcoreDir)
+	if err == nil {
+		for _, entry := range mintcoreEntries {
+			if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || strings.HasSuffix(entry.Name(), "_test.go") || gcfSkip[entry.Name()] {
+				continue
+			}
+			// go.sum is now included in embeddedMintFiles.
+			expected := "mintcore/" + entry.Name()
+			if !knownReals[expected] {
+				t.Errorf("internal/mintcore/%s exists but is not in embeddedMintFiles — add it to mintsrc/mintcore/ with .embed suffix", entry.Name())
+			}
 		}
 	}
 }
@@ -1561,7 +1472,7 @@ func TestProvisioner_Provision_MultiOrg_PEMStorage(t *testing.T) {
 	_, err := p.Provision(context.Background())
 	require.NoError(t, err)
 
-	// PEMs are stored per org×role (org-scoped secrets), so 2 orgs × 1 role = 2 GetSecret + 2 AddSecretVersion.
+	// PEMs are stored once per role (shared across orgs), so 1 role = 1 GetSecret + 1 AddSecretVersion.
 	getSecretCount := 0
 	addVersionCount := 0
 	for _, call := range fake.calls {
@@ -1572,16 +1483,19 @@ func TestProvisioner_Provision_MultiOrg_PEMStorage(t *testing.T) {
 			addVersionCount++
 		}
 	}
-	assert.Equal(t, 2, getSecretCount, "expected GetSecret called once per org×role")
-	assert.Equal(t, 2, addVersionCount, "expected AddSecretVersion called once per org×role")
+	assert.Equal(t, 1, getSecretCount, "expected GetSecret called once per role")
+	assert.Equal(t, 1, addVersionCount, "expected AddSecretVersion called once per role")
 }
 
 func TestProvisioner_Provision_MultiOrg_MergeDoesNotOverwriteExistingPEMs(t *testing.T) {
 	fake := newFakeGCFClient()
 	// Simulate an existing deployed function from a previous org's install.
 	fake.functionInfo = &FunctionInfo{
-		URI:     "https://mint.run.app",
-		EnvVars: map[string]string{"ROLE_APP_IDS": `{"existing-org/coder":"999"}`},
+		URI: "https://mint.run.app",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "existing-org",
+			"ROLE_APP_IDS": `{"coder":"999"}`,
+		},
 	}
 	// Simulate existing WIF provider with existing-org already configured.
 	fake.wifProvider = &WIFProviderInfo{
@@ -1599,23 +1513,21 @@ func TestProvisioner_Provision_MultiOrg_MergeDoesNotOverwriteExistingPEMs(t *tes
 	_, err := p.Provision(context.Background())
 	require.NoError(t, err)
 
-	// PEMs must only be stored for new-org, not for existing-org.
+	// PEMs are stored once per role regardless of installing org.
 	require.NotEmpty(t, fake.secretVersionNames, "expected at least one PEM to be stored")
 	for _, name := range fake.secretVersionNames {
-		assert.Contains(t, name, "new-org", "PEM should only be stored for installing org")
-		assert.NotContains(t, name, "existing-org", "PEM must not overwrite existing org's secrets")
+		assert.Equal(t, "fullsend-coder-app-pem", name)
 	}
 
 	// WIF condition should include both orgs.
 	assert.Equal(t, "assertion.repository_owner in ['existing-org', 'new-org']",
 		fake.lastWIFProviderConfig.AttributeCondition)
 
-	// ROLE_APP_IDS should preserve existing-org's entries and add new-org's.
-	// After the refactor, code deploy preserves existing env vars, and
-	// EnsureOrgInMint merges the new org's entries via UpdateFunctionEnvVars.
-	require.NotNil(t, fake.lastUpdateFunctionEnvVars, "expected EnsureOrgInMint to update env vars")
-	assert.Contains(t, fake.lastUpdateFunctionEnvVars["ROLE_APP_IDS"], `"existing-org/coder":"999"`)
-	assert.Contains(t, fake.lastUpdateFunctionEnvVars["ROLE_APP_IDS"], `"new-org/coder"`)
+	// EnsureOrgInMint only updates ALLOWED_ORGS; shared ROLE_APP_IDS are unchanged.
+	require.NotNil(t, fake.lastUpdateServiceEnvVars, "expected EnsureOrgInMint to update env vars")
+	assert.Contains(t, fake.lastUpdateServiceEnvVars["ROLE_APP_IDS"], `"coder":"999"`)
+	assert.Contains(t, fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"], "new-org")
+	assert.Contains(t, fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"], "existing-org")
 }
 
 // --- ProvisionWIF tests ---
@@ -1672,7 +1584,7 @@ func TestProvisionWIF_IAMBindingFails(t *testing.T) {
 
 	_, err := p.ProvisionWIF(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "granting Vertex AI access for org acme")
+	assert.Contains(t, err.Error(), "granting Agent Platform access for org acme")
 }
 
 func TestProvisionWIF_MultipleOrgs(t *testing.T) {
@@ -2005,11 +1917,37 @@ func TestBuildRepoProviderID(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.owner+"/"+tt.repo, func(t *testing.T) {
-			got := BuildRepoProviderID(tt.owner, tt.repo)
+			got := mintcore.BuildRepoProviderID(tt.owner, tt.repo)
 			assert.Equal(t, tt.want, got)
 			assert.GreaterOrEqual(t, len(got), 4)
 			assert.LessOrEqual(t, len(got), 32)
 			assert.NotEqual(t, '-', rune(got[len(got)-1]))
+		})
+	}
+}
+
+// --- stripPlaceholderOrg tests ---
+
+func TestStripPlaceholderOrg(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"empty string", "", ""},
+		{"only placeholder", PlaceholderOrg, ""},
+		{"placeholder with real orgs", "acme," + PlaceholderOrg + ",widgetco", "acme,widgetco"},
+		{"no placeholder", "acme,widgetco", "acme,widgetco"},
+		{"placeholder at start", PlaceholderOrg + ",acme", "acme"},
+		{"placeholder at end", "acme," + PlaceholderOrg, "acme"},
+		{"multiple placeholders", PlaceholderOrg + "," + PlaceholderOrg, ""},
+		{"whitespace around entries", " acme , " + PlaceholderOrg + " , widgetco ", "acme,widgetco"},
+		{"single real org", "acme", "acme"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripPlaceholderOrg(tc.input)
+			assert.Equal(t, tc.want, got)
 		})
 	}
 }
@@ -2020,86 +1958,10 @@ func TestProvisioner_ImplementsDispatcher(t *testing.T) {
 	var _ interface {
 		Name() string
 		Provision(context.Context) (map[string]string, error)
-		StoreAgentPEM(context.Context, string, string, []byte) error
+		StoreAgentPEM(context.Context, string, []byte) error
 		OrgSecretNames() []string
 		OrgVariableNames() []string
 	} = (*Provisioner)(nil)
-}
-
-func TestCopyAgentPEM_CopiesSecret(t *testing.T) {
-	fakePEM := []byte("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAK...\n-----END RSA PRIVATE KEY-----")
-	fake := newFakeGCFClient()
-	fake.secrets = map[string]bool{
-		"fullsend-srcorg--triage-app-pem": true,
-	}
-	fake.secretData = map[string][]byte{
-		"fullsend-srcorg--triage-app-pem": fakePEM,
-	}
-	fake.errs["GetSecret"] = nil
-
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
-	err := p.CopyAgentPEM(context.Background(), "srcorg", "dstorg", "triage")
-	require.NoError(t, err)
-
-	assert.True(t, fake.secrets["fullsend-dstorg--triage-app-pem"])
-	assert.Equal(t, fakePEM, fake.secretData["fullsend-dstorg--triage-app-pem"])
-}
-
-func TestCopyAgentPEM_DestinationExists_EnsuresIAM(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.secrets = map[string]bool{
-		"fullsend-srcorg--triage-app-pem": true,
-		"fullsend-dstorg--triage-app-pem": true,
-	}
-	fake.secretData = map[string][]byte{}
-
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
-	err := p.CopyAgentPEM(context.Background(), "srcorg", "dstorg", "triage")
-	require.NoError(t, err)
-	assert.NotContains(t, fake.calls, "AccessSecretVersion")
-	assert.Contains(t, fake.calls, "SetSecretIAMBinding")
-}
-
-func TestCopyAgentPEM_DestinationCheckError_Propagated(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.errs = map[string]error{
-		"GetSecret": fmt.Errorf("permission denied"),
-	}
-
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
-	err := p.CopyAgentPEM(context.Background(), "srcorg", "dstorg", "triage")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "checking destination secret")
-	assert.NotContains(t, fake.calls, "AccessSecretVersion")
-}
-
-func TestCopyAgentPEM_SourceMissing_Error(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.secrets = map[string]bool{}
-	fake.secretData = map[string][]byte{}
-
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
-	err := p.CopyAgentPEM(context.Background(), "srcorg", "dstorg", "triage")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "reading source secret")
-}
-
-func TestCopyAgentPEM_InvalidOrg(t *testing.T) {
-	fake := newFakeGCFClient()
-	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
-
-	err := p.CopyAgentPEM(context.Background(), "bad org!", "dstorg", "triage")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "invalid org name")
-}
-
-func TestCopyAgentPEM_MissingProjectID(t *testing.T) {
-	fake := newFakeGCFClient()
-	p := NewProvisioner(Config{}, fake)
-
-	err := p.CopyAgentPEM(context.Background(), "srcorg", "dstorg", "triage")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "GCP project ID is required")
 }
 
 func TestGetExistingRoleAppIDs_ReturnsMap(t *testing.T) {
@@ -2107,7 +1969,7 @@ func TestGetExistingRoleAppIDs_ReturnsMap(t *testing.T) {
 	fake.functionInfo = &FunctionInfo{
 		URI: "https://example.com",
 		EnvVars: map[string]string{
-			"ROLE_APP_IDS": `{"nonflux/triage":"123","nonflux/coder":"456"}`,
+			"ROLE_APP_IDS": `{"triage":"123","coder":"456"}`,
 		},
 	}
 
@@ -2115,8 +1977,8 @@ func TestGetExistingRoleAppIDs_ReturnsMap(t *testing.T) {
 	m, err := p.GetExistingRoleAppIDs(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{
-		"nonflux/triage": "123",
-		"nonflux/coder":  "456",
+		"triage": "123",
+		"coder":  "456",
 	}, m)
 }
 
@@ -2237,25 +2099,17 @@ func TestProvisioner_Provision_NonActiveFunction_TriggersDeploy(t *testing.T) {
 
 // --- PEM auto-copy in provisionWithExistingMint ---
 
-func TestProvisioner_Provision_BundledMode_PEMAutoCopy(t *testing.T) {
+func TestProvisioner_Provision_BundledMode_RequiresExistingPEM(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.functionInfo = &FunctionInfo{
 		URI: "https://fullsend-mint-abc123.run.app",
 		EnvVars: map[string]string{
-			"ROLE_APP_IDS":  `{"source-org/coder":"12345"}`,
+			"ROLE_APP_IDS":  `{"coder":"12345"}`,
 			"ALLOWED_ORGS":  "source-org",
 			"ALLOWED_ROLES": "coder",
 		},
 	}
-	// SecretExists returns false for target-org's coder PEM (triggers auto-copy).
-	// GetSecret uses the secrets map; missing key → ErrSecretNotFound.
-	fake.secrets = map[string]bool{
-		"fullsend-source-org--coder-app-pem": true,
-	}
-	// AccessSecretVersion uses the secretData map for the source org's PEM.
-	fake.secretData = map[string][]byte{
-		"fullsend-source-org--coder-app-pem": []byte("test-pem-data"),
-	}
+	fake.secrets = map[string]bool{}
 
 	p := newTestProvisioner(Config{
 		ProjectID:   "my-project",
@@ -2264,13 +2118,10 @@ func TestProvisioner_Provision_BundledMode_PEMAutoCopy(t *testing.T) {
 		MintURL:     "https://fullsend-mint-abc123.run.app",
 	}, fake)
 
-	vars, err := p.Provision(context.Background())
-	require.NoError(t, err)
-	assert.Equal(t, "https://fullsend-mint-abc123.run.app", vars["FULLSEND_MINT_URL"])
-
-	// Verify CopyAgentPEM was called (AccessSecretVersion + AddSecretVersion).
-	assert.Contains(t, fake.calls, "AccessSecretVersion")
-	assert.Contains(t, fake.calls, "AddSecretVersion")
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no PEM")
+	assert.NotContains(t, fake.calls, "AccessSecretVersion")
 }
 
 // --- EnsureOrgInMint tests ---
@@ -2281,18 +2132,15 @@ func TestEnsureOrgInMint_OrgAlreadyCovered(t *testing.T) {
 		URI: "https://mint.example.com",
 		EnvVars: map[string]string{
 			"ALLOWED_ORGS":  "acme-corp",
-			"ROLE_APP_IDS":  `{"acme-corp/coder":"111","acme-corp/reviewer":"222"}`,
+			"ROLE_APP_IDS":  `{"coder":"111","reviewer":"222"}`,
 			"ALLOWED_ROLES": "coder,reviewer",
 		},
 	}
 
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
-	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme-corp", map[string]string{
-		"acme-corp/coder":    "111",
-		"acme-corp/reviewer": "222",
-	})
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme-corp")
 	require.NoError(t, err)
-	assert.NotContains(t, fake.calls, "UpdateFunctionEnvVars")
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
 }
 
 func TestEnsureOrgInMint_AddsNewOrg(t *testing.T) {
@@ -2301,32 +2149,24 @@ func TestEnsureOrgInMint_AddsNewOrg(t *testing.T) {
 		URI: "https://mint.example.com",
 		EnvVars: map[string]string{
 			"ALLOWED_ORGS":  "existing-org",
-			"ROLE_APP_IDS":  `{"existing-org/coder":"100"}`,
+			"ROLE_APP_IDS":  `{"coder":"100"}`,
 			"ALLOWED_ROLES": "coder",
 		},
 	}
 
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
-	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org", map[string]string{
-		"new-org/coder":    "200",
-		"new-org/reviewer": "201",
-	})
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
 	require.NoError(t, err)
-	assert.Contains(t, fake.calls, "UpdateFunctionEnvVars")
-	assert.Contains(t, fake.calls, "WaitForOperation")
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+	assert.NotContains(t, fake.calls, "WaitForOperation")
 
-	require.NotNil(t, fake.lastUpdateFunctionEnvVars)
-	assert.Contains(t, fake.lastUpdateFunctionEnvVars["ALLOWED_ORGS"], "new-org")
-	assert.Contains(t, fake.lastUpdateFunctionEnvVars["ALLOWED_ORGS"], "existing-org")
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+	assert.Contains(t, fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"], "new-org")
+	assert.Contains(t, fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"], "existing-org")
 
 	var roleAppIDs map[string]string
-	require.NoError(t, json.Unmarshal([]byte(fake.lastUpdateFunctionEnvVars["ROLE_APP_IDS"]), &roleAppIDs))
-	assert.Equal(t, "200", roleAppIDs["new-org/coder"])
-	assert.Equal(t, "201", roleAppIDs["new-org/reviewer"])
-	assert.Equal(t, "100", roleAppIDs["existing-org/coder"])
-
-	assert.Contains(t, fake.lastUpdateFunctionEnvVars["ALLOWED_ROLES"], "coder")
-	assert.Contains(t, fake.lastUpdateFunctionEnvVars["ALLOWED_ROLES"], "reviewer")
+	require.NoError(t, json.Unmarshal([]byte(fake.lastUpdateServiceEnvVars["ROLE_APP_IDS"]), &roleAppIDs))
+	assert.Equal(t, "100", roleAppIDs["coder"])
 }
 
 func TestEnsureOrgInMint_FunctionNotFound(t *testing.T) {
@@ -2334,9 +2174,7 @@ func TestEnsureOrgInMint_FunctionNotFound(t *testing.T) {
 	fake.errs["GetFunction"] = fmt.Errorf("function not found")
 
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
-	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme-corp", map[string]string{
-		"acme-corp/coder": "111",
-	})
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme-corp")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "getting mint function")
 }
@@ -2351,36 +2189,26 @@ func TestEnsureOrgInMint_URLMismatch(t *testing.T) {
 	}
 
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
-	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme-corp", map[string]string{
-		"acme-corp/coder": "111",
-	})
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme-corp")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "mint URL mismatch")
 }
 
-func TestEnsureOrgInMint_PartialCoverage(t *testing.T) {
+func TestEnsureOrgInMint_OrgAlreadyEnrolled_NoRoleChange(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.functionInfo = &FunctionInfo{
 		URI: "https://mint.example.com",
 		EnvVars: map[string]string{
 			"ALLOWED_ORGS":  "acme-corp",
-			"ROLE_APP_IDS":  `{"acme-corp/coder":"111"}`,
+			"ROLE_APP_IDS":  `{"coder":"111"}`,
 			"ALLOWED_ROLES": "coder",
 		},
 	}
 
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
-	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme-corp", map[string]string{
-		"acme-corp/coder":    "111",
-		"acme-corp/reviewer": "222",
-	})
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme-corp")
 	require.NoError(t, err)
-	assert.Contains(t, fake.calls, "UpdateFunctionEnvVars")
-
-	var roleAppIDs map[string]string
-	require.NoError(t, json.Unmarshal([]byte(fake.lastUpdateFunctionEnvVars["ROLE_APP_IDS"]), &roleAppIDs))
-	assert.Equal(t, "111", roleAppIDs["acme-corp/coder"])
-	assert.Equal(t, "222", roleAppIDs["acme-corp/reviewer"])
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
 }
 
 func TestEnsureOrgInMint_UpdateFails(t *testing.T) {
@@ -2389,17 +2217,34 @@ func TestEnsureOrgInMint_UpdateFails(t *testing.T) {
 		URI: "https://mint.example.com",
 		EnvVars: map[string]string{
 			"ALLOWED_ORGS": "existing-org",
-			"ROLE_APP_IDS": `{"existing-org/coder":"100"}`,
+			"ROLE_APP_IDS": `{"coder":"100"}`,
 		},
 	}
-	fake.errs["UpdateFunctionEnvVars"] = fmt.Errorf("permission denied")
+	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("permission denied")
 
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
-	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org", map[string]string{
-		"new-org/coder": "200",
-	})
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "updating mint env vars")
+}
+
+func TestEnsureOrgInMint_PartialFailureSurfacesRevision(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "existing-org",
+			"ROLE_APP_IDS": `{"coder":"100"}`,
+		},
+	}
+	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("traffic routing failed")
+	fake.updateServiceRevision = "fullsend-mint-00115-abc"
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "revision fullsend-mint-00115-abc created but traffic routing may have failed")
+	assert.Contains(t, err.Error(), "traffic routing failed")
 }
 
 func TestEnsureOrgInMint_EmptyRoleAppIDs(t *testing.T) {
@@ -2412,15 +2257,10 @@ func TestEnsureOrgInMint_EmptyRoleAppIDs(t *testing.T) {
 	}
 
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
-	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org", map[string]string{
-		"new-org/coder": "200",
-	})
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
 	require.NoError(t, err)
-	assert.Contains(t, fake.calls, "UpdateFunctionEnvVars")
-
-	var roleAppIDs map[string]string
-	require.NoError(t, json.Unmarshal([]byte(fake.lastUpdateFunctionEnvVars["ROLE_APP_IDS"]), &roleAppIDs))
-	assert.Equal(t, "200", roleAppIDs["new-org/coder"])
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+	assert.Contains(t, fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"], "new-org")
 }
 
 func TestEnsureOrgInMint_NilReturn(t *testing.T) {
@@ -2428,71 +2268,9 @@ func TestEnsureOrgInMint_NilReturn(t *testing.T) {
 	// functionInfo defaults to nil, simulating a 404 (nil, nil) return.
 
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
-	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme-corp", map[string]string{
-		"acme-corp/coder": "111",
-	})
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme-corp")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not found in project")
-}
-
-func TestEnsureOrgInMint_WaitFails(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.functionInfo = &FunctionInfo{
-		URI: "https://mint.example.com",
-		EnvVars: map[string]string{
-			"ALLOWED_ORGS": "existing-org",
-			"ROLE_APP_IDS": `{"existing-org/coder":"100"}`,
-		},
-	}
-	fake.errs["WaitForOperation"] = fmt.Errorf("operation timed out")
-
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
-	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org", map[string]string{
-		"new-org/coder": "200",
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "waiting for mint env vars update")
-}
-
-func TestEnsureOrgInMint_MalformedRoleAppIDs(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.functionInfo = &FunctionInfo{
-		URI: "https://mint.example.com",
-		EnvVars: map[string]string{
-			"ALLOWED_ORGS": "acme-corp",
-			"ROLE_APP_IDS": `{invalid json`,
-		},
-	}
-
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
-	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme-corp", map[string]string{
-		"acme-corp/coder": "111",
-	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing existing ROLE_APP_IDS")
-}
-
-func TestEnsureOrgInMint_ValueMismatchTriggersUpdate(t *testing.T) {
-	fake := newFakeGCFClient()
-	fake.functionInfo = &FunctionInfo{
-		URI: "https://mint.example.com",
-		EnvVars: map[string]string{
-			"ALLOWED_ORGS":  "acme-corp",
-			"ROLE_APP_IDS":  `{"acme-corp/coder":"111"}`,
-			"ALLOWED_ROLES": "coder",
-		},
-	}
-
-	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
-	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme-corp", map[string]string{
-		"acme-corp/coder": "222",
-	})
-	require.NoError(t, err)
-	assert.Contains(t, fake.calls, "UpdateFunctionEnvVars")
-
-	var roleAppIDs map[string]string
-	require.NoError(t, json.Unmarshal([]byte(fake.lastUpdateFunctionEnvVars["ROLE_APP_IDS"]), &roleAppIDs))
-	assert.Equal(t, "222", roleAppIDs["acme-corp/coder"])
 }
 
 func TestEnsureOrgInMint_LowercasesOrg(t *testing.T) {
@@ -2501,19 +2279,17 @@ func TestEnsureOrgInMint_LowercasesOrg(t *testing.T) {
 		URI: "https://mint.example.com",
 		EnvVars: map[string]string{
 			"ALLOWED_ORGS":  "existing-org",
-			"ROLE_APP_IDS":  `{"existing-org/coder":"100"}`,
+			"ROLE_APP_IDS":  `{"coder":"100"}`,
 			"ALLOWED_ROLES": "coder",
 		},
 	}
 
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
-	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "AcmeCorp", map[string]string{
-		"acmecorp/coder": "200",
-	})
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "AcmeCorp")
 	require.NoError(t, err)
-	assert.Contains(t, fake.calls, "UpdateFunctionEnvVars")
-	assert.Contains(t, fake.lastUpdateFunctionEnvVars["ALLOWED_ORGS"], "acmecorp")
-	assert.NotContains(t, fake.lastUpdateFunctionEnvVars["ALLOWED_ORGS"], "AcmeCorp")
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+	assert.Contains(t, fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"], "acmecorp")
+	assert.NotContains(t, fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"], "AcmeCorp")
 }
 
 func TestEnsureOrgInMint_DefaultsAllowedWorkflowFiles(t *testing.T) {
@@ -2522,17 +2298,15 @@ func TestEnsureOrgInMint_DefaultsAllowedWorkflowFiles(t *testing.T) {
 		URI: "https://mint.example.com",
 		EnvVars: map[string]string{
 			"ALLOWED_ORGS":  "existing-org",
-			"ROLE_APP_IDS":  `{"existing-org/coder":"100"}`,
+			"ROLE_APP_IDS":  `{"coder":"100"}`,
 			"ALLOWED_ROLES": "coder",
 		},
 	}
 
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
-	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org", map[string]string{
-		"new-org/coder": "200",
-	})
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
 	require.NoError(t, err)
-	assert.Equal(t, "*", fake.lastUpdateFunctionEnvVars["ALLOWED_WORKFLOW_FILES"])
+	assert.Equal(t, "*", fake.lastUpdateServiceEnvVars["ALLOWED_WORKFLOW_FILES"])
 }
 
 func TestEnsureOrgInMint_PreservesExistingAllowedWorkflowFiles(t *testing.T) {
@@ -2541,18 +2315,108 @@ func TestEnsureOrgInMint_PreservesExistingAllowedWorkflowFiles(t *testing.T) {
 		URI: "https://mint.example.com",
 		EnvVars: map[string]string{
 			"ALLOWED_ORGS":           "existing-org",
-			"ROLE_APP_IDS":           `{"existing-org/coder":"100"}`,
+			"ROLE_APP_IDS":           `{"coder":"100"}`,
 			"ALLOWED_ROLES":          "coder",
 			"ALLOWED_WORKFLOW_FILES": ".github/workflows/ci.yml",
 		},
 	}
 
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
-	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org", map[string]string{
-		"new-org/coder": "200",
-	})
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
 	require.NoError(t, err)
-	assert.Equal(t, ".github/workflows/ci.yml", fake.lastUpdateFunctionEnvVars["ALLOWED_WORKFLOW_FILES"])
+	assert.Equal(t, ".github/workflows/ci.yml", fake.lastUpdateServiceEnvVars["ALLOWED_WORKFLOW_FILES"])
+}
+
+func TestEnsureOrgInMint_ReadsFromTrafficServingRevision(t *testing.T) {
+	// When the service template has diverged from the traffic-serving
+	// revision (e.g., template has empty ALLOWED_ORGS while the serving
+	// revision has 20 orgs), EnsureOrgInMint should read from the
+	// traffic-serving revision so the merge preserves existing orgs.
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		// Service template (via GetFunction) — stale/empty.
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS":  "",
+			"ROLE_APP_IDS":  `{}`,
+			"ALLOWED_ROLES": "",
+		},
+	}
+	// Traffic-serving revision has the real data.
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS":  "org-a,org-b,org-c",
+		"ROLE_APP_IDS":  `{"coder":"100"}`,
+		"ALLOWED_ROLES": "coder",
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "GetServiceTrafficEnvVars")
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+
+	// All existing orgs must be preserved, not clobbered.
+	allowedOrgs := fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"]
+	assert.Contains(t, allowedOrgs, "org-a")
+	assert.Contains(t, allowedOrgs, "org-b")
+	assert.Contains(t, allowedOrgs, "org-c")
+	assert.Contains(t, allowedOrgs, "new-org")
+
+	// Existing role app IDs must be preserved.
+	var roleAppIDs map[string]string
+	require.NoError(t, json.Unmarshal([]byte(fake.lastUpdateServiceEnvVars["ROLE_APP_IDS"]), &roleAppIDs))
+	assert.Equal(t, "100", roleAppIDs["coder"])
+}
+
+func TestEnsureOrgInMint_TrafficEnvVarsError(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI:     "https://mint.example.com",
+		EnvVars: map[string]string{},
+	}
+	fake.errs["GetServiceTrafficEnvVars"] = fmt.Errorf("Cloud Run API unavailable")
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading traffic-serving env vars")
+}
+
+func TestMergeAllowedOrgs_EmptyExisting(t *testing.T) {
+	// When existing ALLOWED_ORGS is empty (e.g., from a diverged template),
+	// the merge must still preserve the desired orgs rather than silently
+	// skipping.
+	existing := map[string]string{"ALLOWED_ORGS": ""}
+	desired := map[string]string{"ALLOWED_ORGS": "new-org"}
+	mergeAllowedOrgs(existing, desired)
+	assert.Equal(t, "new-org", desired["ALLOWED_ORGS"])
+}
+
+func TestMergeAllowedOrgs_BothEmpty(t *testing.T) {
+	existing := map[string]string{"ALLOWED_ORGS": ""}
+	desired := map[string]string{"ALLOWED_ORGS": ""}
+	mergeAllowedOrgs(existing, desired)
+	assert.Equal(t, "", desired["ALLOWED_ORGS"])
+}
+
+func TestEnsureOrgInMint_ProceedsOnFirstEnrollment(t *testing.T) {
+	// When ALLOWED_ORGS is empty and ROLE_APP_IDS is also empty (or has
+	// only the enrolling org), this is a genuine first enrollment — proceed.
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI:     "https://mint.example.com",
+		EnvVars: map[string]string{},
+	}
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": "",
+		"ROLE_APP_IDS": `{}`,
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+	assert.Equal(t, "new-org", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
 }
 
 func TestRegisterPerRepoWIF_AddsNewRepo(t *testing.T) {
@@ -2565,8 +2429,8 @@ func TestRegisterPerRepoWIF_AddsNewRepo(t *testing.T) {
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
 	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/my-service")
 	require.NoError(t, err)
-	assert.Contains(t, fake.calls, "UpdateFunctionEnvVars")
-	assert.Equal(t, "acme-corp/my-service", fake.lastUpdateFunctionEnvVars["PER_REPO_WIF_REPOS"])
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+	assert.Equal(t, "acme-corp/my-service", fake.lastUpdateServiceEnvVars["PER_REPO_WIF_REPOS"])
 }
 
 func TestRegisterPerRepoWIF_AppendsToExisting(t *testing.T) {
@@ -2581,7 +2445,7 @@ func TestRegisterPerRepoWIF_AppendsToExisting(t *testing.T) {
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
 	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/second-repo")
 	require.NoError(t, err)
-	assert.Equal(t, "acme-corp/first-repo,acme-corp/second-repo", fake.lastUpdateFunctionEnvVars["PER_REPO_WIF_REPOS"])
+	assert.Equal(t, "acme-corp/first-repo,acme-corp/second-repo", fake.lastUpdateServiceEnvVars["PER_REPO_WIF_REPOS"])
 }
 
 func TestRegisterPerRepoWIF_Idempotent(t *testing.T) {
@@ -2596,7 +2460,7 @@ func TestRegisterPerRepoWIF_Idempotent(t *testing.T) {
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
 	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/my-service")
 	require.NoError(t, err)
-	assert.NotContains(t, fake.calls, "UpdateFunctionEnvVars")
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
 }
 
 func TestRegisterPerRepoWIF_FunctionNotFound(t *testing.T) {
@@ -2619,7 +2483,7 @@ func TestRegisterPerRepoWIF_LowercasesRepo(t *testing.T) {
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
 	err := p.RegisterPerRepoWIF(context.Background(), "Acme-Corp/My-Service")
 	require.NoError(t, err)
-	assert.Equal(t, "acme-corp/my-service", fake.lastUpdateFunctionEnvVars["PER_REPO_WIF_REPOS"])
+	assert.Equal(t, "acme-corp/my-service", fake.lastUpdateServiceEnvVars["PER_REPO_WIF_REPOS"])
 }
 
 func TestRegisterPerRepoWIF_RejectsInvalidFormat(t *testing.T) {
@@ -2651,7 +2515,7 @@ func TestRegisterPerRepoWIF_NilEnvVars(t *testing.T) {
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
 	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/my-service")
 	require.NoError(t, err)
-	assert.Equal(t, "acme-corp/my-service", fake.lastUpdateFunctionEnvVars["PER_REPO_WIF_REPOS"])
+	assert.Equal(t, "acme-corp/my-service", fake.lastUpdateServiceEnvVars["PER_REPO_WIF_REPOS"])
 }
 
 func TestRegisterPerRepoWIF_GetFunctionError(t *testing.T) {
@@ -2662,4 +2526,747 @@ func TestRegisterPerRepoWIF_GetFunctionError(t *testing.T) {
 	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/my-service")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "getting mint function")
+}
+
+func TestRegisterPerRepoWIF_PartialFailureSurfacesRevision(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI:     "https://mint.example.com",
+		EnvVars: map[string]string{},
+	}
+	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("traffic routing failed")
+	fake.updateServiceRevision = "fullsend-mint-00116-def"
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/my-service")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "revision fullsend-mint-00116-def created but traffic routing may have failed")
+	assert.Contains(t, err.Error(), "traffic routing failed")
+}
+
+func TestRegisterPerRepoWIF_ReadsFromTrafficServingRevision(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		// Template has stale/empty data.
+		EnvVars: map[string]string{},
+	}
+	// Traffic-serving revision has existing repos.
+	fake.trafficEnvVars = map[string]string{
+		"PER_REPO_WIF_REPOS": "existing-org/existing-repo",
+		"ALLOWED_ORGS":       "existing-org",
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RegisterPerRepoWIF(context.Background(), "new-org/new-repo")
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "GetServiceTrafficEnvVars")
+	// Must preserve existing repos from traffic-serving revision.
+	assert.Equal(t, "existing-org/existing-repo,new-org/new-repo", fake.lastUpdateServiceEnvVars["PER_REPO_WIF_REPOS"])
+	// Must also preserve other env vars from traffic-serving revision.
+	assert.Equal(t, "existing-org", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
+}
+
+// --- RemoveOrgFromMint tests ---
+
+func TestRemoveOrgFromMint_RemovesOrgOnly(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS":  "acme,other-org",
+			"ROLE_APP_IDS":  `{"coder":"111","triage":"222"}`,
+			"ALLOWED_ROLES": "coder,triage",
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RemoveOrgFromMint(context.Background(), "acme")
+	require.NoError(t, err)
+
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+	assert.NotContains(t, fake.calls, "WaitForOperation")
+
+	// acme should be removed from ALLOWED_ORGS.
+	assert.Equal(t, "other-org", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
+
+	// ROLE_APP_IDS are shared and unchanged.
+	var roleAppIDs map[string]string
+	require.NoError(t, json.Unmarshal([]byte(fake.lastUpdateServiceEnvVars["ROLE_APP_IDS"]), &roleAppIDs))
+	assert.Equal(t, "111", roleAppIDs["coder"])
+	assert.Equal(t, "222", roleAppIDs["triage"])
+	assert.Equal(t, "coder,triage", fake.lastUpdateServiceEnvVars["ALLOWED_ROLES"])
+}
+
+func TestRemoveOrgFromMint_FunctionNotFound(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = nil
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RemoveOrgFromMint(context.Background(), "acme")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not found")
+}
+
+func TestRemoveOrgFromMint_GetFunctionError(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetFunction"] = fmt.Errorf("permission denied")
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RemoveOrgFromMint(context.Background(), "acme")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "getting mint function")
+}
+
+func TestRemoveOrgFromMint_LowercasesOrg(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "acme",
+			"ROLE_APP_IDS": `{"coder":"111"}`,
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RemoveOrgFromMint(context.Background(), "ACME")
+	require.NoError(t, err)
+
+	assert.Equal(t, "", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
+}
+
+func TestRemoveOrgFromMint_ReadsFromTrafficServingRevision(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		// Template has stale/empty data.
+		EnvVars: map[string]string{},
+	}
+	// Traffic-serving revision has the real data.
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS":  "acme,keep-org,remove-org",
+		"ROLE_APP_IDS":  `{"coder":"111"}`,
+		"ALLOWED_ROLES": "coder",
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RemoveOrgFromMint(context.Background(), "remove-org")
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "GetServiceTrafficEnvVars")
+
+	// Remaining orgs must be preserved from traffic-serving revision.
+	assert.Contains(t, fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"], "acme")
+	assert.Contains(t, fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"], "keep-org")
+	assert.NotContains(t, fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"], "remove-org")
+
+	var roleAppIDs map[string]string
+	require.NoError(t, json.Unmarshal([]byte(fake.lastUpdateServiceEnvVars["ROLE_APP_IDS"]), &roleAppIDs))
+	assert.Equal(t, "111", roleAppIDs["coder"])
+}
+
+func TestRemoveOrgFromMint_UpdateFails(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "acme",
+			"ROLE_APP_IDS": `{"coder":"111"}`,
+		},
+	}
+	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("permission denied")
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RemoveOrgFromMint(context.Background(), "acme")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "removing org from mint env vars")
+}
+
+func TestRemoveOrgFromMint_PartialFailureSurfacesRevision(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "acme",
+			"ROLE_APP_IDS": `{"coder":"111"}`,
+		},
+	}
+	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("traffic routing failed")
+	fake.updateServiceRevision = "fullsend-mint-00117-ghi"
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RemoveOrgFromMint(context.Background(), "acme")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "revision fullsend-mint-00117-ghi created but traffic routing may have failed")
+	assert.Contains(t, err.Error(), "traffic routing failed")
+}
+
+// --- RemoveRepoFromMint tests ---
+
+func TestRemoveRepoFromMint_RemovesRepo(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"PER_REPO_WIF_REPOS": "acme/first,acme/second",
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RemoveRepoFromMint(context.Background(), "acme/first")
+	require.NoError(t, err)
+
+	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
+	assert.Equal(t, "acme/second", fake.lastUpdateServiceEnvVars["PER_REPO_WIF_REPOS"])
+}
+
+func TestRemoveRepoFromMint_LastRepo(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"PER_REPO_WIF_REPOS": "acme/only",
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RemoveRepoFromMint(context.Background(), "acme/only")
+	require.NoError(t, err)
+
+	assert.Equal(t, "", fake.lastUpdateServiceEnvVars["PER_REPO_WIF_REPOS"])
+}
+
+func TestRemoveRepoFromMint_FunctionNotFound(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = nil
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RemoveRepoFromMint(context.Background(), "acme/repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mint function not found")
+}
+
+func TestRemoveRepoFromMint_ReadsFromTrafficServingRevision(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		// Template has stale/empty data.
+		EnvVars: map[string]string{},
+	}
+	// Traffic-serving revision has the real data.
+	fake.trafficEnvVars = map[string]string{
+		"PER_REPO_WIF_REPOS": "acme/keep-repo,acme/remove-repo",
+		"ALLOWED_ORGS":       "acme",
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RemoveRepoFromMint(context.Background(), "acme/remove-repo")
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "GetServiceTrafficEnvVars")
+	assert.Equal(t, "acme/keep-repo", fake.lastUpdateServiceEnvVars["PER_REPO_WIF_REPOS"])
+	// Must preserve other env vars from traffic-serving revision.
+	assert.Equal(t, "acme", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
+}
+
+func TestRemoveRepoFromMint_LowercasesRepo(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"PER_REPO_WIF_REPOS": "acme/widget",
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RemoveRepoFromMint(context.Background(), "Acme/Widget")
+	require.NoError(t, err)
+
+	assert.Equal(t, "", fake.lastUpdateServiceEnvVars["PER_REPO_WIF_REPOS"])
+}
+
+func TestRemoveRepoFromMint_PartialFailureSurfacesRevision(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"PER_REPO_WIF_REPOS": "acme/first,acme/second",
+		},
+	}
+	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("traffic routing failed")
+	fake.updateServiceRevision = "fullsend-mint-00118-jkl"
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RemoveRepoFromMint(context.Background(), "acme/first")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "revision fullsend-mint-00118-jkl created but traffic routing may have failed")
+	assert.Contains(t, err.Error(), "traffic routing failed")
+}
+
+// --- DisableWIFProvider tests ---
+
+func TestDisableWIFProvider_Success(t *testing.T) {
+	fake := newFakeGCFClient()
+	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
+	err := p.DisableWIFProvider(context.Background(), "gh-acme-widget")
+	require.NoError(t, err)
+
+	assert.Contains(t, fake.calls, "GetProjectNumber")
+	assert.Contains(t, fake.calls, "DisableWIFProvider")
+}
+
+func TestDisableWIFProvider_GetProjectNumberError(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetProjectNumber"] = fmt.Errorf("permission denied")
+
+	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
+	err := p.DisableWIFProvider(context.Background(), "gh-acme-widget")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "getting project number")
+}
+
+// --- DeleteWIFProvider tests ---
+
+func TestDeleteWIFProvider_Success(t *testing.T) {
+	fake := newFakeGCFClient()
+	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
+	err := p.DeleteWIFProvider(context.Background(), "gh-acme-widget")
+	require.NoError(t, err)
+
+	assert.Contains(t, fake.calls, "GetProjectNumber")
+	assert.Contains(t, fake.calls, "DeleteWIFProvider")
+}
+
+func TestDeleteWIFProvider_GetProjectNumberError(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetProjectNumber"] = fmt.Errorf("permission denied")
+
+	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
+	err := p.DeleteWIFProvider(context.Background(), "gh-acme-widget")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "getting project number")
+}
+
+// --- ValidateProjectID and ValidateRegion tests ---
+
+func TestValidateProjectID(t *testing.T) {
+	assert.True(t, ValidateProjectID("my-project-id"))
+	assert.True(t, ValidateProjectID("project-123456"))
+	assert.False(t, ValidateProjectID("BAD"))
+	assert.False(t, ValidateProjectID(""))
+	assert.False(t, ValidateProjectID("ab")) // too short
+}
+
+func TestValidateRegion(t *testing.T) {
+	assert.True(t, ValidateRegion("us-central1"))
+	assert.True(t, ValidateRegion("europe-west4"))
+	assert.False(t, ValidateRegion("invalid"))
+	assert.False(t, ValidateRegion(""))
+}
+
+// --- Cloud Run revision awareness tests ---
+
+func TestProvisioner_GetServiceRevisionInfo(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.revisionInfo = &ServiceRevisionInfo{
+		TrafficRevision:        "projects/p/locations/r/services/s/revisions/fullsend-mint-00114-fm9",
+		TrafficRevisionShort:   "fullsend-mint-00114-fm9",
+		TrafficAllocType:       "TRAFFIC_TARGET_ALLOCATION_TYPE_REVISION",
+		TemplateMatchesTraffic: true,
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID: "my-project",
+		Region:    "us-central1",
+	}, fake)
+
+	info, err := p.GetServiceRevisionInfo(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "fullsend-mint-00114-fm9", info.TrafficRevisionShort)
+	assert.Contains(t, fake.calls, "GetServiceRevisionInfo")
+}
+
+func TestProvisioner_GetServiceTrafficEnvVars(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": "acme",
+		"ROLE_APP_IDS": `{"coder":"111"}`,
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID: "my-project",
+		Region:    "us-central1",
+	}, fake)
+
+	envVars, err := p.GetServiceTrafficEnvVars(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "acme", envVars["ALLOWED_ORGS"])
+	assert.Contains(t, fake.calls, "GetServiceTrafficEnvVars")
+}
+
+func TestProvisioner_EnsureOrgInMint_PreservesInfraKeysFromTrafficRevision(t *testing.T) {
+	// UpdateServiceEnvVars on main uses REVISION-pinned routing, so the
+	// traffic-serving revision always contains the full env var set including
+	// infrastructure keys. EnsureOrgInMint builds the updated env vars
+	// entirely from the traffic-serving revision state.
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI:     "https://fullsend-mint-abc123.run.app",
+		EnvVars: map[string]string{},
+	}
+	// Traffic revision has both infra keys and org data.
+	fake.trafficEnvVars = map[string]string{
+		"GCP_PROJECT_NUMBER":     "123456789",
+		"WIF_POOL_NAME":          "fullsend-pool",
+		"WIF_PROVIDER_NAME":      "github-oidc",
+		"OIDC_AUDIENCE":          "fullsend-mint",
+		"FULLSEND_SOURCE_HASH":   "abc123",
+		"ALLOWED_ORGS":           "existing-org",
+		"ROLE_APP_IDS":           `{"coder":"99999"}`,
+		"ALLOWED_WORKFLOW_FILES": "*",
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:  "my-project",
+		GitHubOrgs: []string{"new-org"},
+	}, fake)
+
+	err := p.EnsureOrgInMint(context.Background(), "https://fullsend-mint-abc123.run.app", "new-org")
+	require.NoError(t, err)
+
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+
+	// Infrastructure keys from traffic revision should be preserved.
+	assert.Equal(t, "123456789", fake.lastUpdateServiceEnvVars["GCP_PROJECT_NUMBER"])
+	assert.Equal(t, "fullsend-pool", fake.lastUpdateServiceEnvVars["WIF_POOL_NAME"])
+	assert.Equal(t, "github-oidc", fake.lastUpdateServiceEnvVars["WIF_PROVIDER_NAME"])
+	assert.Equal(t, "fullsend-mint", fake.lastUpdateServiceEnvVars["OIDC_AUDIENCE"])
+	assert.Equal(t, "abc123", fake.lastUpdateServiceEnvVars["FULLSEND_SOURCE_HASH"])
+
+	// Org-relevant keys should include both existing and new org.
+	assert.Contains(t, fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"], "existing-org")
+	assert.Contains(t, fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"], "new-org")
+}
+
+func TestMergeRoleAppIDsJSON_EmptyExistingPreservesDesired(t *testing.T) {
+	merged, err := mergeRoleAppIDsJSON("", map[string]string{"coder": "111"})
+	require.NoError(t, err)
+	assert.Equal(t, `{"coder":"111"}`, merged)
+}
+
+func TestMergeRoleAppIDsJSON_MergesRoleOnlyAndIgnoresLegacy(t *testing.T) {
+	existing := `{"acme/coder":"999","coder":"100","triage":"200"}`
+	merged, err := mergeRoleAppIDsJSON(existing, map[string]string{"coder": "300", "review": "400"})
+	require.NoError(t, err)
+
+	var ids map[string]string
+	require.NoError(t, json.Unmarshal([]byte(merged), &ids))
+	assert.Equal(t, "300", ids["coder"])
+	assert.Equal(t, "200", ids["triage"])
+	assert.Equal(t, "400", ids["review"])
+	assert.Equal(t, "999", ids["acme/coder"])
+}
+
+func TestDeriveAllowedRoles_IgnoresLegacyOrgScopedKeys(t *testing.T) {
+	roles := deriveAllowedRoles(`{"acme/coder":"1","coder":"2","triage":"3"}`)
+	assert.Equal(t, "coder,triage", roles)
+}
+
+func TestDeriveAllowedRoles_InvalidJSON(t *testing.T) {
+	assert.Equal(t, "", deriveAllowedRoles("{bad"))
+}
+
+func TestDeriveAllowedRoles_LegacyOnlyKeys(t *testing.T) {
+	assert.Equal(t, "", deriveAllowedRoles(`{"acme/coder":"100"}`))
+}
+
+func TestMergeRoleAppIDsJSON_InvalidJSON(t *testing.T) {
+	_, err := mergeRoleAppIDsJSON("{bad", map[string]string{"coder": "1"})
+	require.Error(t, err)
+}
+
+func TestMarshalRoleAppIDs_Empty(t *testing.T) {
+	raw, err := marshalRoleAppIDs(nil)
+	require.NoError(t, err)
+	assert.Equal(t, "{}", raw)
+}
+
+func TestMarshalRoleAppIDs_SortsKeys(t *testing.T) {
+	raw, err := marshalRoleAppIDs(map[string]string{"triage": "2", "coder": "1"})
+	require.NoError(t, err)
+	assert.Equal(t, `{"coder":"1","triage":"2"}`, raw)
+}
+
+func TestEnsureOrgInMint_DerivesAllowedRolesWhenEmpty(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+	}
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": "",
+		"ROLE_APP_IDS": `{"coder":"100","triage":"200"}`,
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
+	require.NoError(t, err)
+	assert.Equal(t, "coder,triage", fake.lastUpdateServiceEnvVars["ALLOWED_ROLES"])
+}
+
+func TestEnsureOrgInWIFCondition_AddsOrgAndStripsPlaceholder(t *testing.T) {
+	fake := NewFakeGCFClient(
+		WithFakeWIFProvider(&WIFProviderInfo{
+			AttributeCondition: "assertion.repository_owner in ['" + PlaceholderOrg + "']",
+		}),
+	)
+	p := NewProvisioner(Config{
+		ProjectID:   "proj1",
+		Region:      "us-central1",
+		WIFPoolName: "fullsend-pool",
+		WIFProvider: "github-oidc",
+	}, fake)
+
+	err := p.EnsureOrgInWIFCondition(context.Background(), "Acme")
+	require.NoError(t, err)
+	assert.Contains(t, fake.(*fakeGCFClient).calls, "UpdateWIFProvider")
+	assert.Contains(t, fake.(*fakeGCFClient).lastWIFProviderConfig.AttributeCondition, "'acme'")
+	assert.NotContains(t, fake.(*fakeGCFClient).lastWIFProviderConfig.AttributeCondition, PlaceholderOrg)
+}
+
+func TestEnsureOrgInWIFCondition_NoOpWhenAlreadyPresent(t *testing.T) {
+	condition := "assertion.repository_owner == 'acme'"
+	fake := NewFakeGCFClient(WithFakeWIFProvider(&WIFProviderInfo{AttributeCondition: condition}))
+	p := NewProvisioner(Config{
+		ProjectID:   "proj1",
+		Region:      "us-central1",
+		WIFPoolName: "fullsend-pool",
+		WIFProvider: "github-oidc",
+	}, fake)
+
+	err := p.EnsureOrgInWIFCondition(context.Background(), "acme")
+	require.NoError(t, err)
+	assert.NotContains(t, fake.(*fakeGCFClient).calls, "UpdateWIFProvider")
+}
+
+func TestRemoveOrgFromWIFCondition_RemovesOrgAndAddsPlaceholder(t *testing.T) {
+	fake := NewFakeGCFClient(WithFakeWIFProvider(&WIFProviderInfo{
+		AttributeCondition: "assertion.repository_owner in ['acme', 'other']",
+	}))
+	p := NewProvisioner(Config{
+		ProjectID:   "proj1",
+		Region:      "us-central1",
+		WIFPoolName: "fullsend-pool",
+		WIFProvider: "github-oidc",
+	}, fake)
+
+	err := p.RemoveOrgFromWIFCondition(context.Background(), "acme")
+	require.NoError(t, err)
+	assert.Contains(t, fake.(*fakeGCFClient).calls, "UpdateWIFProvider")
+	assert.Contains(t, fake.(*fakeGCFClient).lastWIFProviderConfig.AttributeCondition, "'other'")
+	assert.NotContains(t, fake.(*fakeGCFClient).lastWIFProviderConfig.AttributeCondition, "'acme'")
+}
+
+func TestRemoveOrgFromWIFCondition_NoOpWhenOrgAbsent(t *testing.T) {
+	fake := NewFakeGCFClient(WithFakeWIFProvider(&WIFProviderInfo{
+		AttributeCondition: "assertion.repository_owner in ['other']",
+	}))
+	p := NewProvisioner(Config{
+		ProjectID:   "proj1",
+		Region:      "us-central1",
+		WIFPoolName: "fullsend-pool",
+		WIFProvider: "github-oidc",
+	}, fake)
+
+	err := p.RemoveOrgFromWIFCondition(context.Background(), "acme")
+	require.NoError(t, err)
+	assert.NotContains(t, fake.(*fakeGCFClient).calls, "UpdateWIFProvider")
+}
+
+// --- Role management tests ---
+
+func TestRemoveRoleFromAppIDsJSON(t *testing.T) {
+	t.Parallel()
+	out, err := removeRoleFromAppIDsJSON(`{"coder":"1","review":"2","acme/coder":"9"}`, "coder")
+	require.NoError(t, err)
+	var m map[string]string
+	require.NoError(t, json.Unmarshal([]byte(out), &m))
+	assert.Equal(t, map[string]string{"review": "2", "acme/coder": "9"}, m)
+}
+
+func TestAddRoleToMint_MergesRoleAppIDs(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS":  "acme-corp",
+			"ROLE_APP_IDS":  `{"coder":"100"}`,
+			"ALLOWED_ROLES": "coder",
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.AddRoleToMint(context.Background(), "review", "200")
+	require.NoError(t, err)
+
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+	var roleAppIDs map[string]string
+	require.NoError(t, json.Unmarshal([]byte(fake.lastUpdateServiceEnvVars["ROLE_APP_IDS"]), &roleAppIDs))
+	assert.Equal(t, "100", roleAppIDs["coder"])
+	assert.Equal(t, "200", roleAppIDs["review"])
+	assert.Equal(t, "coder,review", fake.lastUpdateServiceEnvVars["ALLOWED_ROLES"])
+}
+
+func TestAddRoleToMint_MissingProjectID(t *testing.T) {
+	p := NewProvisioner(Config{}, newFakeGCFClient())
+	err := p.AddRoleToMint(context.Background(), "coder", "123")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GCP project ID is required")
+}
+
+func TestRemoveRoleFromMint_PrunesRoleAppIDs(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"100","review":"200"}`,
+			"ALLOWED_ROLES": "coder,review",
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RemoveRoleFromMint(context.Background(), "review")
+	require.NoError(t, err)
+
+	require.NotNil(t, fake.lastUpdateServiceEnvVars)
+	var roleAppIDs map[string]string
+	require.NoError(t, json.Unmarshal([]byte(fake.lastUpdateServiceEnvVars["ROLE_APP_IDS"]), &roleAppIDs))
+	assert.Equal(t, map[string]string{"coder": "100"}, roleAppIDs)
+	assert.Equal(t, "coder", fake.lastUpdateServiceEnvVars["ALLOWED_ROLES"])
+}
+
+func TestDeleteAgentPEM(t *testing.T) {
+	fake := newFakeGCFClient()
+	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
+	err := p.DeleteAgentPEM(context.Background(), "coder")
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "DeleteSecret")
+}
+
+func TestDeleteAgentPEM_FixRoleUsesCoderSecret(t *testing.T) {
+	fake := newFakeGCFClient()
+	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
+	err := p.DeleteAgentPEM(context.Background(), "fix")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"fullsend-coder-app-pem"}, fake.deletedSecretIDs)
+}
+
+func TestDeleteAgentPEM_MissingProjectID(t *testing.T) {
+	p := NewProvisioner(Config{}, newFakeGCFClient())
+	err := p.DeleteAgentPEM(context.Background(), "coder")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GCP project ID is required")
+}
+
+func TestRemoveRoleFromMint_MissingProjectID(t *testing.T) {
+	p := NewProvisioner(Config{}, newFakeGCFClient())
+	err := p.RemoveRoleFromMint(context.Background(), "coder")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GCP project ID is required")
+}
+
+func TestAddRoleToMint_InvalidRole(t *testing.T) {
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, newFakeGCFClient())
+	err := p.AddRoleToMint(context.Background(), "BAD", "123")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid role name")
+}
+
+func TestAddRoleToMint_EmptyAppID(t *testing.T) {
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, newFakeGCFClient())
+	err := p.AddRoleToMint(context.Background(), "coder", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "app ID is required")
+}
+
+func TestAddRoleToMint_MalformedExistingJSON(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.trafficEnvVars = map[string]string{"ROLE_APP_IDS": "not-json"}
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.AddRoleToMint(context.Background(), "coder", "123")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "merging ROLE_APP_IDS")
+}
+
+func TestAddRoleToMint_UpdateEnvVarsError(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI:     "https://mint.example.com",
+		EnvVars: map[string]string{"ROLE_APP_IDS": `{"coder":"100"}`},
+	}
+	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("permission denied")
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.AddRoleToMint(context.Background(), "review", "200")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "updating mint env vars")
+}
+
+func TestRemoveRoleFromMint_InvalidRole(t *testing.T) {
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, newFakeGCFClient())
+	err := p.RemoveRoleFromMint(context.Background(), "BAD")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid role name")
+}
+
+func TestRemoveRoleFromMint_MalformedExistingJSON(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.trafficEnvVars = map[string]string{"ROLE_APP_IDS": "not-json"}
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RemoveRoleFromMint(context.Background(), "coder")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pruning ROLE_APP_IDS")
+}
+
+func TestDeleteAgentPEM_InvalidRole(t *testing.T) {
+	p := NewProvisioner(Config{ProjectID: "proj1"}, newFakeGCFClient())
+	err := p.DeleteAgentPEM(context.Background(), "BAD")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid role name")
+}
+
+func TestDeleteAgentPEM_DeleteFails(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["DeleteSecret"] = fmt.Errorf("permission denied")
+	p := NewProvisioner(Config{ProjectID: "proj1"}, fake)
+	err := p.DeleteAgentPEM(context.Background(), "coder")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deleting secret")
+}
+
+func TestAddRoleToMint_RevisionRoutingFails(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI:     "https://mint.example.com",
+		EnvVars: map[string]string{"ROLE_APP_IDS": `{"coder":"100"}`},
+	}
+	fake.updateServiceRevision = "fullsend-mint-00099"
+	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("routing failed")
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.AddRoleToMint(context.Background(), "review", "200")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "traffic routing may have failed")
+	assert.Contains(t, err.Error(), "fullsend-mint-00099")
+}
+
+func TestRemoveRoleFromMint_UpdateEnvVarsError(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"100","review":"200"}`,
+			"ALLOWED_ROLES": "coder,review",
+		},
+	}
+	fake.errs["UpdateServiceEnvVars"] = fmt.Errorf("permission denied")
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RemoveRoleFromMint(context.Background(), "review")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "updating mint env vars")
 }

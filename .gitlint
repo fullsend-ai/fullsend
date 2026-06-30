@@ -2,8 +2,11 @@
 # Enable conventional commits title check
 contrib=CT1
 
+[title-max-length]
+line-length=100
+
 # Conventional commit types allowed in this repo.
-# Matches the types documented in CONTRIBUTING.md and parsed by
+# Matches the types documented in COMMITS.md and parsed by
 # GoReleaser for release notes.
 [contrib-title-conventional-commits]
-types=feat,fix,refactor,docs,test,chore,ci,perf
+types=feat,fix,refactor,docs,test,chore,ci,perf,build

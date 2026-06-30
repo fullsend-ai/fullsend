@@ -104,6 +104,41 @@ func TestAccessToken_WithTokenFunc(t *testing.T) {
 	assert.Equal(t, "custom-token", token)
 }
 
+func TestDoRequest_QuotaProjectHeader(t *testing.T) {
+	t.Run("sets x-goog-user-project when QuotaProject is non-empty", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "target-project", r.Header.Get("x-goog-user-project"))
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+
+		c := NewClient()
+		c.tokenFunc = func(_ context.Context) (string, error) { return "test-token", nil }
+		c.QuotaProject = "target-project"
+
+		resp, err := c.DoRequest(context.Background(), http.MethodGet, srv.URL+"/test", "")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+
+	t.Run("omits x-goog-user-project when QuotaProject is empty", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Empty(t, r.Header.Get("x-goog-user-project"))
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+
+		c := NewClient()
+		c.tokenFunc = func(_ context.Context) (string, error) { return "test-token", nil }
+
+		resp, err := c.DoRequest(context.Background(), http.MethodGet, srv.URL+"/test", "")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		assert.Equal(t, http.StatusOK, resp.StatusCode)
+	})
+}
+
 func TestAccessToken_ErrorPropagation(t *testing.T) {
 	c := NewClient()
 	c.tokenFunc = func(_ context.Context) (string, error) {

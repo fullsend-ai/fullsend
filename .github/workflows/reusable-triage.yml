@@ -1,5 +1,9 @@
-# Reusable triage agent workflow. Called by thin callers in .fullsend repos
-# via workflow_call. Runs in the caller's repo context (secrets, checkout).
+# Reusable triage agent workflow. Called by dispatch workflows via workflow_call.
+# Runs in the caller's repo context (secrets, checkout).
+#
+# Concurrency: agent-scoped cancel-in-progress group (distinct from dispatch/thin
+# caller groups so workflow_call parent runs are not cancelled). Latest agent
+# run for an issue wins.
 name: Triage Agent
 
 on:
@@ -23,21 +27,35 @@ on:
       fullsend_version:
         required: false
         type: string
-        default: 'latest'
+        default: "latest"
       install_mode:
         required: false
         type: string
-        default: 'per-org'
+        default: "per-org"
+      fullsend_ai_ref:
+        description: "Deprecated: upstream defaults now use job.workflow_sha. Kept for per-org caller compatibility."
+        type: string
+        required: false
+        default: v0
+      runner_image:
+        description: GitHub Actions runner image for agent jobs.
+        type: string
+        required: false
+        default: "ubuntu-24.04"
     secrets:
       FULLSEND_GCP_WIF_PROVIDER:
         required: true
       FULLSEND_GCP_PROJECT_ID:
         required: true
 
+concurrency:
+  group: fullsend-triage-agent-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number || fromJSON(inputs.event_payload).pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   triage:
     name: Triage
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner_image }}
     permissions:
       actions: write
       contents: read
@@ -46,16 +64,21 @@ jobs:
 
     steps:
       - name: Checkout config repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Checkout upstream defaults
-        uses: actions/checkout@v6
+        if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          repository: fullsend-ai/fullsend
-          ref: v0
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
           path: .defaults
+          fetch-depth: 1
           sparse-checkout: |
+            .github/actions/
+            .github/scripts/
             internal/scaffold/fullsend-repo/
+            action.yml
 
       - name: Prepare workspace (upstream defaults + org/repo overrides)
         env:
@@ -90,25 +113,25 @@ jobs:
           done
           mkdir -p .github/scripts
           cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
-          rm -rf .defaults
+
 
       - name: Validate enrollment and extract repo metadata
         id: repo-parts
-        uses: fullsend-ai/fullsend/.github/actions/validate-enrollment@v0
+        uses: ./.defaults/.github/actions/validate-enrollment
         with:
           source_repo: ${{ inputs.source_repo }}
           install_mode: ${{ inputs.install_mode }}
 
       - name: Mint triage token
         id: app-token
-        uses: fullsend-ai/fullsend/.github/actions/mint-token@v0
+        uses: ./.defaults/.github/actions/mint-token
         with:
           role: triage
           repos: ${{ steps.repo-parts.outputs.name }}
           mint_url: ${{ inputs.mint_url }}
 
       - name: Checkout target repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: ${{ inputs.source_repo }}
           token: ${{ steps.app-token.outputs.token }}
@@ -117,7 +140,7 @@ jobs:
           persist-credentials: false
 
       - name: Setup GCP and prepare credentials
-        uses: fullsend-ai/fullsend/.github/actions/setup-gcp@v0
+        uses: ./.defaults/.github/actions/setup-gcp
         with:
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -125,16 +148,20 @@ jobs:
       - name: Setup agent environment
         env:
           AGENT_PREFIX: TRIAGE_
-          TRIAGE_GH_TOKEN: ${{ steps.app-token.outputs.token }}
           TRIAGE_TARGET_REPO_DIR: target-repo
           TRIAGE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           TRIAGE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run triage agent
-        uses: fullsend-ai/fullsend@v0
+        uses: ./.defaults/
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
+          REPO_FULL_NAME: ${{ inputs.source_repo }}
         with:
           agent: triage
           version: ${{ inputs.fullsend_version }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          status-repo: ${{ inputs.source_repo }}
+          status-number: ${{ fromJSON(inputs.event_payload).issue.number }}
+          mint-url: ${{ inputs.mint_url }}

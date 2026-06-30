@@ -1,6 +1,6 @@
 ---
 title: "29. Central token mint and shared apps for a secretless .fullsend"
-status: Proposed
+status: Accepted
 relates_to:
   - agent-infrastructure
   - security-threat-model
@@ -18,7 +18,7 @@ Date: 2026-05-05
 
 ## Status
 
-Proposed
+Accepted
 
 <!-- Once this ADR is Accepted, its content is frozen. Do not edit the Context,
      Decision, or Consequences sections. If circumstances change, write a new

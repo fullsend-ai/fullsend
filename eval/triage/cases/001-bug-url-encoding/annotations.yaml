@@ -1,0 +1,40 @@
+# Expected fixture state after triage agent runs.
+state: open
+
+labels:
+  required:
+    - ready-to-code
+    - bug
+
+max_turns: 30
+max_cost_usd: 2.00
+
+# Guidance for the LLM judge — what a good triage looks like for this case.
+triage_expectations: |
+  This issue reports a 500 when logging in with a + in the email address.
+  The repo contains the actual source code the agent should inspect.
+
+  Key observations a strong triage should surface:
+
+  1. The regex in validators.py actually accepts '+' — it's in the
+     character class [._%+-]. The docstring claiming otherwise is wrong.
+     A good triage should notice the code doesn't match the bug report's
+     assumption about the regex.
+
+  2. The real root cause is likely URL decoding: '+' in a query parameter
+     is decoded as a space by standard URL parsers. So the email arrives
+     at validate_email as "user tag@example.com", which the regex rejects.
+     The issue author hints at this but doesn't confirm it.
+
+  3. The stack trace line numbers (42, 118) don't match the actual file
+     lengths (13 and 14 lines). A careful triage might note this
+     discrepancy, but it's not critical.
+
+  4. login_handler has no error handling — ValueError from validate_email
+     propagates as a 500 instead of returning a 400. This is a secondary
+     finding but a real one.
+
+  A score of 5 requires noticing that the regex actually accepts '+' and
+  identifying URL decoding as the likely real cause. A score of 3 is
+  appropriate if the agent just accepts the issue at face value without
+  examining the code critically.

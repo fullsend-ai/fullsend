@@ -12,6 +12,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/github-api-csma.sh
+source "${SCRIPT_DIR}/lib/github-api-csma.sh"
+
 : "${GITHUB_ISSUE_URL:?GITHUB_ISSUE_URL must be set}"
 : "${GH_TOKEN:?GH_TOKEN must be set}"
 : "${ORG:?ORG must be set}"
@@ -19,7 +23,7 @@ set -euo pipefail
 
 # Validate URL format early, before any parsing or API calls.
 if [[ ! "${GITHUB_ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
-  echo "ERROR: GITHUB_ISSUE_URL does not match expected pattern: ${GITHUB_ISSUE_URL}"
+  echo "ERROR: GITHUB_ISSUE_URL does not match expected pattern: ${GITHUB_ISSUE_URL}" >&2
   exit 1
 fi
 
@@ -32,14 +36,14 @@ for dir in iteration-*/output; do
 done
 
 if [[ -z "${RESULT_FILE}" ]]; then
-  echo "ERROR: agent-result.json not found in any iteration output directory"
+  echo "ERROR: agent-result.json not found in any iteration output directory" >&2
   exit 1
 fi
 
 echo "Reading RICE result from: ${RESULT_FILE}"
 
 if ! jq empty "${RESULT_FILE}" 2>/dev/null; then
-  echo "ERROR: ${RESULT_FILE} is not valid JSON"
+  echo "ERROR: ${RESULT_FILE} is not valid JSON" >&2
   exit 1
 fi
 
@@ -67,16 +71,16 @@ REASONING_EFFORT=$(jq -r '.reasoning.effort' "${RESULT_FILE}" | sed 's/<[^>]*>//
 # --- Write scores to the project board ---
 
 # Resolve project and item IDs.
-PROJECT_ID=$(gh project view "${PROJECT_NUMBER}" --owner "${ORG}" --format json | jq -r '.id')
+PROJECT_ID=$(github_csma_run graphql project view "${PROJECT_NUMBER}" --owner "${ORG}" --format json | jq -r '.id')
 
 # Parse repo and issue number from URL.
 REPO=$(echo "${GITHUB_ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
 ISSUE_NUMBER=$(basename "${GITHUB_ISSUE_URL}")
-ISSUE_NODE_ID=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.node_id')
+ISSUE_NODE_ID=$(github_csma_run core api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.node_id')
 
 # Find the project item ID for this issue via the issue's projectItems connection.
 # This is a single API call regardless of project size, avoiding pagination and timeouts.
-ITEM_RESPONSE=$(gh api graphql -f query='
+ITEM_RESPONSE=$(github_csma_run graphql api graphql -f query='
   query($issueId: ID!) {
     node(id: $issueId) {
       ... on Issue {
@@ -95,12 +99,12 @@ ITEM_ID=$(echo "${ITEM_RESPONSE}" | jq -r --arg pid "${PROJECT_ID}" \
   '(.data.node.projectItems.nodes // [])[] | select(.project.id == $pid) | .id')
 
 if [[ -z "${ITEM_ID}" || "${ITEM_ID}" == "null" ]]; then
-  echo "ERROR: issue ${GITHUB_ISSUE_URL} not found on project board"
+  echo "ERROR: issue ${GITHUB_ISSUE_URL} not found on project board (project: ${PROJECT_NUMBER}, org: ${ORG})" >&2
   exit 1
 fi
 
 # Get field IDs for all RICE fields.
-FIELDS_JSON=$(gh project field-list "${PROJECT_NUMBER}" --owner "${ORG}" --format json)
+FIELDS_JSON=$(github_csma_run graphql project field-list "${PROJECT_NUMBER}" --owner "${ORG}" --format json)
 
 get_field_id() {
   echo "${FIELDS_JSON}" | jq -r --arg name "$1" '.fields[] | select(.name == $name) | .id'
@@ -114,7 +118,7 @@ SCORE_FIELD_ID=$(get_field_id "RICE Score")
 
 for fid_var in REACH_FIELD_ID IMPACT_FIELD_ID CONFIDENCE_FIELD_ID EFFORT_FIELD_ID SCORE_FIELD_ID; do
   if [[ -z "${!fid_var}" ]]; then
-    echo "ERROR: ${fid_var} not found on project board. Run scripts/setup-prioritize.sh first."
+    echo "ERROR: ${fid_var} not found on project board (project: ${PROJECT_NUMBER}, org: ${ORG}). Run scripts/setup-prioritize.sh first." >&2
     exit 1
   fi
 done
@@ -134,10 +138,10 @@ update_field() {
     '{
       query: "mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: Float!) { updateProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId, value: { number: $value } }) { projectV2Item { id } } }",
       variables: {projectId: $pid, itemId: $iid, fieldId: $fid, value: $val}
-    }' | gh api graphql --input -
+    }' | github_csma_run_pipe graphql api graphql --input -
 }
 
-echo "Writing scores to project board..."
+echo "Writing scores to project board (CSMA-aware)..."
 update_field "${REACH_FIELD_ID}" "${REACH}"
 update_field "${IMPACT_FIELD_ID}" "${IMPACT}"
 update_field "${CONFIDENCE_FIELD_ID}" "${CONFIDENCE}"
@@ -182,5 +186,10 @@ COMMENT=$(jq -n \
 </details>"')
 
 echo "Posting RICE comment..."
-printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:prioritize-agent -->" --token "${GH_TOKEN}" --result -
+printf '%s' "${COMMENT}" | github_csma_run_cmd core fullsend post-comment \
+  --repo "${REPO}" \
+  --number "${ISSUE_NUMBER}" \
+  --marker "<!-- fullsend:prioritize-agent -->" \
+  --token "${GH_TOKEN}" \
+  --result - >/dev/null
 echo "Post-prioritize complete."

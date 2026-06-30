@@ -41,20 +41,9 @@ ADRs live in `docs/ADRs/` and follow the naming convention
 
 Each ADR has a Status field. Valid statuses are:
 
-- **Proposed** -- A decision has been drafted but not yet discussed or agreed
-  upon.
-- **Undecided** -- The problem is identified, options are described, but no
-  decision has been made yet. These ADRs can be merged and iterated on. They
-  must include an Options section describing the alternatives under
-  consideration.
 - **Accepted** -- The decision has been made.
 - **Deprecated** -- The decision is no longer relevant.
 - **Superseded** -- The decision has been replaced by a later ADR.
-
-The Undecided status is a deliberate part of our workflow. It lets us merge ADRs
-that frame a decision and its options, so the community can discuss and refine
-the options over time without pressure to decide prematurely. When consensus
-forms, the ADR is updated to Accepted with a Decision section filled in.
 
 Each ADR includes YAML frontmatter with structured metadata:
 
@@ -77,8 +66,7 @@ runs in CI to validate statuses, number uniqueness, and frontmatter correctness
 
 - Problem documents in `docs/problems/` remain the place for open-ended
   exploration. ADRs are for when a specific decision point has been identified.
-- Contributors can propose ADRs in the Undecided state to start structured
-  discussion around a specific choice.
+- Contributors propose ADRs via pull requests for discussion before merging.
 - The linting ensures ADRs follow the expected format, catching mistakes early.
 - We inherit a proven format from the broader konflux-ci organization, making it
   familiar to contributors who work across repos.

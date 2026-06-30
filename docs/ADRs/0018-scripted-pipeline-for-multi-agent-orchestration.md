@@ -1,6 +1,6 @@
 ---
 title: "18. Scripted pipeline for multi-agent orchestration"
-status: Proposed
+status: Accepted
 relates_to:
   - agent-architecture
   - agent-infrastructure
@@ -16,7 +16,7 @@ Date: 2026-04-08
 
 ## Status
 
-Proposed
+Accepted
 
 <!-- Once this ADR is Accepted, its content is frozen. Do not edit the Context,
      Decision, or Consequences sections. If circumstances change, write a new

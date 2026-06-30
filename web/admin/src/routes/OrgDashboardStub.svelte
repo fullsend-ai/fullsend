@@ -19,15 +19,18 @@
   .stub {
     max-width: 40rem;
   }
+
   .stub h1 {
     margin: 0 0 0.5rem;
     font-size: 1.2rem;
   }
+
   .lede {
     margin: 0 0 1rem;
     line-height: 1.5;
     color: #333;
   }
+
   .back {
     color: #0969da;
   }

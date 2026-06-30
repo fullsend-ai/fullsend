@@ -31,12 +31,13 @@ func New(w io.Writer) *Printer {
 	return &Printer{w: w}
 }
 
-// Banner prints the fullsend brand banner with tagline.
-func (p *Printer) Banner() {
+// Banner prints the fullsend brand banner with version and tagline.
+func (p *Printer) Banner(version string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	brand := lipgloss.NewStyle().Bold(true).Foreground(ColorBrand).Render("fullsend")
-	fmt.Fprintf(p.w, "\u26a1 %s\n", brand)
+	ver := lipgloss.NewStyle().Foreground(ColorMuted).Render(version)
+	fmt.Fprintf(p.w, "\u26a1 %s %s\n", brand, ver)
 	tagline := lipgloss.NewStyle().Foreground(ColorMuted).Render("Autonomous agentic development for GitHub organizations")
 	fmt.Fprintf(p.w, "  %s\n", tagline)
 }

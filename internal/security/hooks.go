@@ -4,7 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 
-	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/sandbox"
 )
 
 //go:embed hooks/ssrf_pretool.py
@@ -50,11 +50,11 @@ type claudeSettings struct {
 
 // SandboxHooksDir is the path where hook scripts are installed inside the
 // sandbox. Must match sandbox.SandboxWorkspace + "/.claude/hooks".
-const SandboxHooksDir = "/tmp/workspace/.claude/hooks"
+const SandboxHooksDir = sandbox.SandboxWorkspace + "/.claude/hooks"
 
 // GenerateClaudeSettings produces a .claude/settings.json with security hooks
-// configured according to the harness SecurityConfig. Returns the JSON bytes.
-func GenerateClaudeSettings(h *harness.Harness) ([]byte, error) {
+// configured according to hooks. Returns the JSON bytes.
+func GenerateClaudeSettings(hooks ClaudeSandboxHooks) ([]byte, error) {
 	settings := claudeSettings{
 		Hooks: make(map[string][]hookMatcher),
 	}
@@ -62,10 +62,8 @@ func GenerateClaudeSettings(h *harness.Harness) ([]byte, error) {
 	var preToolMatchers []hookMatcher
 	var postToolMatchers []hookMatcher
 
-	sec := h.Security // may be nil — callers should check SecurityEnabled() first
-
 	// Tirith PreToolUse hook (Bash commands).
-	if tirithEnabled(sec) {
+	if tirithEnabled(hooks) {
 		preToolMatchers = append(preToolMatchers, hookMatcher{
 			Matcher: "Bash",
 			Hooks: []hookEntry{
@@ -75,7 +73,7 @@ func GenerateClaudeSettings(h *harness.Harness) ([]byte, error) {
 	}
 
 	// SSRF PreToolUse hook (Bash + WebFetch).
-	if ssrfPreToolEnabled(sec) {
+	if ssrfPreToolEnabled(hooks) {
 		preToolMatchers = append(preToolMatchers, hookMatcher{
 			Matcher: "Bash|WebFetch",
 			Hooks: []hookEntry{
@@ -88,7 +86,7 @@ func GenerateClaudeSettings(h *harness.Harness) ([]byte, error) {
 	// canary token via tool inputs before data leaves the sandbox.
 	// Uses * to cover MCP tools (issue comments, PR bodies, etc.)
 	// in addition to Bash and WebFetch.
-	if canaryPreToolEnabled(sec) {
+	if canaryPreToolEnabled(hooks) {
 		preToolMatchers = append(preToolMatchers, hookMatcher{
 			Matcher: "*",
 			Hooks: []hookEntry{
@@ -98,7 +96,7 @@ func GenerateClaudeSettings(h *harness.Harness) ([]byte, error) {
 	}
 
 	// Tool allowlist PreToolUse hook (all tools). Disabled by default.
-	if toolAllowlistPreToolEnabled(sec) {
+	if toolAllowlistPreToolEnabled(hooks) {
 		preToolMatchers = append(preToolMatchers, hookMatcher{
 			Matcher: "*",
 			Hooks: []hookEntry{
@@ -110,22 +108,24 @@ func GenerateClaudeSettings(h *harness.Harness) ([]byte, error) {
 	// PostToolUse hooks for Bash|WebFetch|Read. Combined into a single matcher
 	// so Claude Code chains them sequentially (separate matchers run in parallel
 	// on the original result, which would cause modifications to conflict).
-	// Order: context suppress (compacts verbose success output) → secret redact
-	// → unicode scan. Suppressing first avoids scanning text we'd discard.
+	// Order: context suppress (compacts verbose success output) → unicode normalize
+	// → secret redact. Suppressing first avoids scanning text we'd discard.
+	// Invariant: unicode normalization must run before secret redaction so
+	// zero-width characters cannot break prefix regexes and reconstruct secrets.
 	var postToolHooks []hookEntry
-	if contextSuppressPostToolEnabled(sec) {
+	if contextSuppressPostToolEnabled(hooks) {
 		postToolHooks = append(postToolHooks, hookEntry{
 			Type: "command", Command: "python3 " + SandboxHooksDir + "/context_suppress_posttool.py",
 		})
 	}
-	if secretRedactPostToolEnabled(sec) {
-		postToolHooks = append(postToolHooks, hookEntry{
-			Type: "command", Command: "python3 " + SandboxHooksDir + "/secret_redact_posttool.py",
-		})
-	}
-	if unicodePostToolEnabled(sec) {
+	if unicodePostToolEnabled(hooks) {
 		postToolHooks = append(postToolHooks, hookEntry{
 			Type: "command", Command: "python3 " + SandboxHooksDir + "/unicode_posttool.py",
+		})
+	}
+	if secretRedactPostToolEnabled(hooks) {
+		postToolHooks = append(postToolHooks, hookEntry{
+			Type: "command", Command: "python3 " + SandboxHooksDir + "/secret_redact_posttool.py",
 		})
 	}
 	if len(postToolHooks) > 0 {
@@ -138,7 +138,7 @@ func GenerateClaudeSettings(h *harness.Harness) ([]byte, error) {
 	// Canary PostToolUse hook (all tools). Separate matcher from the
 	// Bash|WebFetch|Read chain because canary must catch leaks from any
 	// tool including MCP tools.
-	if canaryPostToolEnabled(sec) {
+	if canaryPostToolEnabled(hooks) {
 		postToolMatchers = append(postToolMatchers, hookMatcher{
 			Matcher: "*",
 			Hooks: []hookEntry{
@@ -158,32 +158,31 @@ func GenerateClaudeSettings(h *harness.Harness) ([]byte, error) {
 }
 
 // HookFiles returns a map of filename -> content for all enabled hook scripts.
-func HookFiles(h *harness.Harness) map[string][]byte {
-	sec := h.Security
+func HookFiles(hooks ClaudeSandboxHooks) map[string][]byte {
 	files := make(map[string][]byte)
 
-	if tirithEnabled(sec) {
+	if tirithEnabled(hooks) {
 		files["tirith_check.py"] = TirithCheckHook
 	}
-	if ssrfPreToolEnabled(sec) {
+	if ssrfPreToolEnabled(hooks) {
 		files["ssrf_pretool.py"] = SSRFPreToolHook
 	}
-	if secretRedactPostToolEnabled(sec) {
+	if secretRedactPostToolEnabled(hooks) {
 		files["secret_redact_posttool.py"] = SecretRedactPostToolHook
 	}
-	if unicodePostToolEnabled(sec) {
+	if unicodePostToolEnabled(hooks) {
 		files["unicode_posttool.py"] = UnicodePostToolHook
 	}
-	if contextSuppressPostToolEnabled(sec) {
+	if contextSuppressPostToolEnabled(hooks) {
 		files["context_suppress_posttool.py"] = ContextSuppressPostToolHook
 	}
-	if canaryPreToolEnabled(sec) {
+	if canaryPreToolEnabled(hooks) {
 		files["canary_pretool.py"] = CanaryPreToolHook
 	}
-	if canaryPostToolEnabled(sec) {
+	if canaryPostToolEnabled(hooks) {
 		files["canary_posttool.py"] = CanaryPostToolHook
 	}
-	if toolAllowlistPreToolEnabled(sec) {
+	if toolAllowlistPreToolEnabled(hooks) {
 		files["tool_allowlist_pretool.py"] = ToolAllowlistPreToolHook
 	}
 
@@ -198,61 +197,69 @@ func boolDefault(b *bool, def bool) bool {
 	return *b
 }
 
-func tirithEnabled(sec *harness.SecurityConfig) bool {
-	if sec == nil || sec.SandboxHooks == nil || sec.SandboxHooks.Tirith == nil {
+func tirithEnabled(hooks ClaudeSandboxHooks) bool {
+	sh := hooks.sandboxHooks()
+	if sh == nil || sh.Tirith == nil {
 		return true // default: enabled
 	}
-	return boolDefault(sec.SandboxHooks.Tirith.Enabled, true)
+	return boolDefault(sh.Tirith.Enabled, true)
 }
 
-func ssrfPreToolEnabled(sec *harness.SecurityConfig) bool {
-	if sec == nil || sec.SandboxHooks == nil {
+func ssrfPreToolEnabled(hooks ClaudeSandboxHooks) bool {
+	sh := hooks.sandboxHooks()
+	if sh == nil {
 		return true
 	}
-	return boolDefault(sec.SandboxHooks.SSRFPreTool, true)
+	return boolDefault(sh.SSRFPreTool, true)
 }
 
-func secretRedactPostToolEnabled(sec *harness.SecurityConfig) bool {
-	if sec == nil || sec.SandboxHooks == nil {
+func secretRedactPostToolEnabled(hooks ClaudeSandboxHooks) bool {
+	sh := hooks.sandboxHooks()
+	if sh == nil {
 		return true
 	}
-	return boolDefault(sec.SandboxHooks.SecretRedactPostTool, true)
+	return boolDefault(sh.SecretRedactPostTool, true)
 }
 
-func unicodePostToolEnabled(sec *harness.SecurityConfig) bool {
-	if sec == nil || sec.SandboxHooks == nil {
+func unicodePostToolEnabled(hooks ClaudeSandboxHooks) bool {
+	sh := hooks.sandboxHooks()
+	if sh == nil {
 		return true
 	}
-	return boolDefault(sec.SandboxHooks.UnicodePostTool, true)
+	return boolDefault(sh.UnicodePostTool, true)
 }
 
-func contextSuppressPostToolEnabled(sec *harness.SecurityConfig) bool {
-	if sec == nil || sec.SandboxHooks == nil {
+func contextSuppressPostToolEnabled(hooks ClaudeSandboxHooks) bool {
+	sh := hooks.sandboxHooks()
+	if sh == nil {
 		return true
 	}
-	return boolDefault(sec.SandboxHooks.ContextSuppressPostTool, true)
+	return boolDefault(sh.ContextSuppressPostTool, true)
 }
 
-func canaryPreToolEnabled(sec *harness.SecurityConfig) bool {
-	if sec == nil || sec.SandboxHooks == nil {
+func canaryPreToolEnabled(hooks ClaudeSandboxHooks) bool {
+	sh := hooks.sandboxHooks()
+	if sh == nil {
 		return true // default: enabled
 	}
-	return boolDefault(sec.SandboxHooks.CanaryPreTool, true)
+	return boolDefault(sh.CanaryPreTool, true)
 }
 
-func canaryPostToolEnabled(sec *harness.SecurityConfig) bool {
-	if sec == nil || sec.SandboxHooks == nil {
+func canaryPostToolEnabled(hooks ClaudeSandboxHooks) bool {
+	sh := hooks.sandboxHooks()
+	if sh == nil {
 		return true // default: enabled
 	}
-	return boolDefault(sec.SandboxHooks.CanaryPostTool, true)
+	return boolDefault(sh.CanaryPostTool, true)
 }
 
-func toolAllowlistPreToolEnabled(sec *harness.SecurityConfig) bool {
-	if sec == nil || sec.SandboxHooks == nil {
+func toolAllowlistPreToolEnabled(hooks ClaudeSandboxHooks) bool {
+	sh := hooks.sandboxHooks()
+	if sh == nil {
 		return false // default: disabled (opt-in)
 	}
-	if sec.SandboxHooks.ToolAllowlistPreTool == nil {
+	if sh.ToolAllowlistPreTool == nil {
 		return false
 	}
-	return boolDefault(sec.SandboxHooks.ToolAllowlistPreTool.Enabled, false)
+	return boolDefault(sh.ToolAllowlistPreTool.Enabled, false)
 }

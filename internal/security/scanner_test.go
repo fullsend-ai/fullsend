@@ -165,6 +165,75 @@ func TestSecretRedactor(t *testing.T) {
 		assert.False(t, result.Safe)
 		assert.True(t, hasFinding(result, "db_connection_password"))
 	})
+
+	// Bypass vector tests (issue #446)
+
+	t.Run("lowercase env var name redacted", func(t *testing.T) {
+		result := r.Scan("export my_token=s3cr3t_value_here")
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "env_assignment"))
+		assert.NotContains(t, result.Sanitized, "s3cr3t_value_here")
+	})
+
+	t.Run("mixed case env var name redacted", func(t *testing.T) {
+		result := r.Scan("My_Secret_Key=FAKE0000test_value")
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "env_assignment"))
+		assert.NotContains(t, result.Sanitized, "FAKE0000test_value")
+	})
+
+	t.Run("single-quoted json value redacted", func(t *testing.T) {
+		result := r.Scan("{'api_key': 'not-a-prefix-match-value'}")
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, "not-a-prefix-match-value")
+	})
+
+	t.Run("double-quoted json still redacted", func(t *testing.T) {
+		result := r.Scan(`{"password": "my-super-secret-pass-1234"}`)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, "my-super-secret-pass-1234")
+	})
+
+	t.Run("db password with embedded @ redacted", func(t *testing.T) {
+		result := r.Scan("postgres://user:P@ssw0rd1@host:5432/db")
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "db_connection_password"))
+		assert.NotContains(t, result.Sanitized, "P@ssw0rd1")
+	})
+
+	t.Run("short db password not matched", func(t *testing.T) {
+		// Passwords below minimum length (4) should not match
+		result := r.Scan("postgres://user:abc@host:5432/db")
+		assert.True(t, result.Safe || !hasFinding(result, "db_connection_password"))
+	})
+
+	t.Run("db password with multiple @ redacted", func(t *testing.T) {
+		result := r.Scan("postgres://user:P@ss@w0rd@host:5432/db")
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "db_connection_password"))
+		assert.NotContains(t, result.Sanitized, "P@ss@w0rd")
+	})
+
+	t.Run("postgresql scheme redacted", func(t *testing.T) {
+		result := r.Scan("postgresql://admin:hunter2secret@db:5432/app")
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "db_connection_password"))
+		assert.NotContains(t, result.Sanitized, "hunter2secret")
+	})
+
+	t.Run("env var false positive monkey rejected", func(t *testing.T) {
+		result := r.Scan("monkey=abcdefghijklmnop")
+		assert.True(t, result.Safe || !hasFinding(result, "env_assignment"))
+	})
+
+	t.Run("json field substring key redacted", func(t *testing.T) {
+		result := r.Scan(`{"database_password": "my-super-secret-pass-1234"}`)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "json_field"))
+		assert.NotContains(t, result.Sanitized, "my-super-secret-pass-1234")
+	})
 }
 
 func TestSSRFValidator(t *testing.T) {
@@ -225,6 +294,82 @@ func TestPipeline(t *testing.T) {
 		p := OutputPipeline()
 		r := p.Scan("Token: ghp_FAKEtesttoken00000000000000000000000")
 		assert.False(t, r.Safe)
+		assert.NotContains(t, r.Sanitized, "ghp_FAKEtest")
+	})
+
+	t.Run("normalize then redact catches zero-width obfuscated PAT", func(t *testing.T) {
+		p := NewPipeline(NewUnicodeNormalizer(), NewSecretRedactor())
+		plain := "ghp_FAKEtesttoken000000000000000000000000"
+		var obfuscated strings.Builder
+		for _, r := range plain {
+			obfuscated.WriteRune(r)
+			obfuscated.WriteRune('\u200c')
+		}
+		r := p.Scan(obfuscated.String())
+		assert.False(t, r.Safe)
+		assert.True(t, hasFinding(r, "zero_width"))
+		assert.True(t, hasFinding(r, "github_pat"))
+		assert.NotContains(t, r.Sanitized, "ghp_FAKEtest")
+	})
+
+	t.Run("normalize then redact catches LTR mark obfuscated PAT", func(t *testing.T) {
+		p := NewPipeline(NewUnicodeNormalizer(), NewSecretRedactor())
+		plain := "ghp_FAKEtesttoken000000000000000000000000"
+		var obfuscated strings.Builder
+		for _, r := range plain {
+			obfuscated.WriteRune(r)
+			obfuscated.WriteRune('\u200e')
+		}
+		r := p.Scan(obfuscated.String())
+		assert.False(t, r.Safe)
+		assert.True(t, hasFinding(r, "zero_width"))
+		assert.True(t, hasFinding(r, "github_pat"))
+		assert.NotContains(t, r.Sanitized, "ghp_FAKEtest")
+	})
+
+	t.Run("wrong order leaks zero-width obfuscated PAT", func(t *testing.T) {
+		p := NewPipeline(NewSecretRedactor(), NewUnicodeNormalizer())
+		plain := "ghp_FAKEtesttoken000000000000000000000000"
+		var obfuscated strings.Builder
+		for _, r := range plain {
+			obfuscated.WriteRune(r)
+			obfuscated.WriteRune('\u200c')
+		}
+		r := p.Scan(obfuscated.String())
+		assert.True(t, hasFinding(r, "zero_width"))
+		assert.False(t, hasFinding(r, "github_pat"), "redact-before-normalize must not catch obfuscated token")
+	})
+
+	t.Run("normalize then redact catches ALM obfuscated PAT", func(t *testing.T) {
+		p := NewPipeline(NewUnicodeNormalizer(), NewSecretRedactor())
+		plain := "ghp_FAKEtesttoken000000000000000000000000"
+		var obfuscated strings.Builder
+		for _, r := range plain {
+			obfuscated.WriteRune(r)
+			obfuscated.WriteRune('\u061c')
+		}
+		r := p.Scan(obfuscated.String())
+		assert.False(t, r.Safe)
+		assert.True(t, hasFinding(r, "zero_width"))
+		assert.True(t, hasFinding(r, "github_pat"))
+		assert.NotContains(t, r.Sanitized, "ghp_FAKEtest")
+	})
+
+	t.Run("normalize then redact catches fullwidth obfuscated PAT", func(t *testing.T) {
+		p := NewPipeline(NewUnicodeNormalizer(), NewSecretRedactor())
+		plain := "ghp_FAKEtesttoken000000000000000000000000"
+		var fullwidth strings.Builder
+		for _, r := range plain {
+			if r >= 0x21 && r <= 0x7e {
+				fullwidth.WriteRune(r + 0xff00 - 0x20)
+			} else {
+				fullwidth.WriteRune(r)
+			}
+		}
+		r := p.Scan(fullwidth.String())
+		assert.False(t, r.Safe)
+		assert.True(t, hasFinding(r, "fullwidth"))
+		assert.True(t, hasFinding(r, "github_pat"))
 		assert.NotContains(t, r.Sanitized, "ghp_FAKEtest")
 	})
 

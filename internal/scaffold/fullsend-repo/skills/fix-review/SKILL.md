@@ -95,8 +95,14 @@ echo "FIX_ITERATION=${FIX_ITERATION:-1}"
 ```
 
 - `PR_NUMBER` — which PR to fix (required)
-- `TRIGGER_SOURCE` — GitHub username that triggered the fix (e.g., `"orgname-review[bot]"` or `"alice"`)
-- `HUMAN_INSTRUCTION` — the human's instruction text (only when `TRIGGER_SOURCE` doesn't end in `[bot]`)
+- `TRIGGER_SOURCE` — GitHub username that triggered the fix (e.g.,
+  `"orgname-review[bot]"` or `"alice"`). **This is a username, not the
+  value you write to `fix-result.json`.** Derive the normalized trigger
+  type now — you will need it in step 9:
+  - If `TRIGGER_SOURCE` ends in `[bot]` → trigger type is `"bot"`
+  - Otherwise → trigger type is `"human"`
+- `HUMAN_INSTRUCTION` — the human's instruction text (only when
+  `TRIGGER_SOURCE` doesn't end in `[bot]`)
 - `FIX_ITERATION` — which iteration of the review→fix loop this is
 
 If `PR_NUMBER` is not set, stop.
@@ -130,7 +136,7 @@ comment. The workflow pre-fetches this review body before the sandbox starts
 and places it at a known path. Read it:
 
 ```bash
-REVIEW_BODY_FILE="/tmp/workspace/review-body.txt"
+REVIEW_BODY_FILE="/sandbox/workspace/review-body.txt"
 if [ ! -s "${REVIEW_BODY_FILE}" ]; then
   echo "::error::No review body found at ${REVIEW_BODY_FILE}"
   # Fallback: the file may not exist in local testing; check env.
@@ -341,6 +347,13 @@ git diff --cached --stat
 scan-secrets --staged
 ```
 
+**NEVER use `git commit -s` or add `Signed-off-by` trailers.** DCO is a
+human attestation of personhood and legal authority to contribute — agents
+are not people. The DCO app already waives the check for bot authors, so
+the trailer is unnecessary. Including it causes gitlint
+`body-max-line-length` failures because the bot noreply email makes the
+trailer ~90 characters.
+
 **8c. Commit**
 
 The commit message must:
@@ -349,7 +362,7 @@ The commit message must:
 - Note any disagreements with review feedback.
 
 ```bash
-git commit -s -m "fix: address review feedback on PR #${PR_NUMBER}
+git commit -m "fix: address review feedback on PR #${PR_NUMBER}
 
 <summary of changes per review comment>
 
@@ -401,16 +414,29 @@ Write a JSON file to `$FULLSEND_OUTPUT_DIR/fix-result.json`:
 }
 ```
 
+**Schema compliance — read carefully.** The schema uses
+`additionalProperties: false` at both the top level and inside each action
+object. Any extra fields you invent will cause validation to fail. Only use
+the fields shown in this section.
+
+**`trigger_source` field:** This must be the **normalized trigger type** you
+derived in step 1 — either `"bot"` or `"human"`. Do NOT use the raw
+`TRIGGER_SOURCE` environment variable value (the GitHub username). The schema
+enforces an enum of `["bot", "human"]`; any other value fails validation.
+
 **Action types:**
 
-- `fix` — You fixed the code per the reviewer's feedback. The post-script
+- `fix` — You fixed the code per the reviewer's feedback. **Required fields
+  for fix actions:** `type`, `finding`, `description`. The post-script
   includes this in the summary comment.
-- `disagree` — You determined the feedback is incorrect or out of scope. The
-  post-script includes your reason in the summary. The reviewer can insist
-  in the next review cycle.
+- `disagree` — You determined the feedback is incorrect or out of scope.
+  **Required fields for disagree actions:** `type`, `finding`, `reason`.
+  The post-script includes your reason in the summary. The reviewer can
+  insist in the next review cycle.
 
-**Required fields:** `pr_number`, `trigger_source`, `actions`, `summary`,
-`tests_passed`, `files_changed`.
+**Required top-level fields:** `pr_number`, `trigger_source`, `actions`,
+`summary`, `tests_passed`, `files_changed`. The `actions` array must
+contain at least one item.
 
 Write the file using `Bash`:
 

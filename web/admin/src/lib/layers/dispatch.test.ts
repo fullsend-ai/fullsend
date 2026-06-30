@@ -3,9 +3,7 @@ import type { LayerGithub } from "./githubClient";
 import { DISPATCH_TOKEN_SECRET_NAME } from "./constants";
 import { analyzeDispatchTokenLayer } from "./dispatch";
 
-function mockGh(
-  orgSecret: Awaited<ReturnType<LayerGithub["orgSecretExists"]>>,
-): LayerGithub {
+function mockGh(orgSecret: Awaited<ReturnType<LayerGithub["orgSecretExists"]>>): LayerGithub {
   return {
     getRepoExists: async () => true,
     getRepoFileUtf8: async () => null,

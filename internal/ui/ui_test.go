@@ -10,9 +10,19 @@ import (
 func TestBanner(t *testing.T) {
 	var buf bytes.Buffer
 	p := New(&buf)
-	p.Banner()
+	p.Banner("v1.2.3")
 	out := buf.String()
 	assert.Contains(t, out, "fullsend")
+	assert.Contains(t, out, "v1.2.3")
+}
+
+func TestBannerDevVersion(t *testing.T) {
+	var buf bytes.Buffer
+	p := New(&buf)
+	p.Banner("dev")
+	out := buf.String()
+	assert.Contains(t, out, "fullsend")
+	assert.Contains(t, out, "dev")
 }
 
 func TestHeader(t *testing.T) {

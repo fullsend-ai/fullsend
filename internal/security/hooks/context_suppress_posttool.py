@@ -20,7 +20,7 @@ import re
 import sys
 from datetime import UTC, datetime
 
-FINDINGS_PATH = "/tmp/workspace/.security/findings.jsonl"
+FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 MAX_INPUT_BYTES = 10 * 1024 * 1024  # 10 MB
 
 # --- Command pattern matchers ---

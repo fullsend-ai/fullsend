@@ -57,16 +57,20 @@ echo "  GITHUB_ISSUE_URL=${GITHUB_ISSUE_URL}"
 # Skip if GH_TOKEN is not available (best-effort check).
 if [[ -z "${GH_TOKEN:-}" ]]; then
   echo "GH_TOKEN not set — skipping existing-PR check"
+  echo "skipped=false" >> "${GITHUB_OUTPUT:-/dev/null}"
   exit 0
 fi
 
-# Allow override via CODE_FORCE (set when /fs-code --force is used).
-if [[ "${CODE_FORCE:-}" == "true" ]]; then
-  echo "CODE_FORCE=true — skipping existing-PR check"
+# Allow override when --force is in the trigger comment or CODE_FORCE is set.
+echo "Evaluating force override: CODE_FORCE='${CODE_FORCE:-}' COMMENT_BODY='${COMMENT_BODY:-}'"
+if [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${COMMENT_BODY:-}" == *--force* ]]; then
+  echo "Force override — skipping existing-PR check"
+  echo "skipped=false" >> "${GITHUB_OUTPUT:-/dev/null}"
   exit 0
 fi
 
-BOT_LOGIN="${FULLSEND_BOT_LOGIN:-fullsend-ai[bot]}"
+BOT_LOGIN="fullsend-ai[bot]"
+CODER_BOT_LOGIN="fullsend-ai-coder[bot]"
 
 echo "Checking for existing open PRs linked to issue #${ISSUE_NUMBER}..."
 
@@ -76,7 +80,7 @@ echo "Checking for existing open PRs linked to issue #${ISSUE_NUMBER}..."
 HUMAN_PR_LINES="$(gh pr list --repo "${REPO_FULL_NAME}" --state open \
   --search "${ISSUE_NUMBER} in:body,title" \
   --json number,url,author \
-  --jq "[.[] | select(.author.login != \"${BOT_LOGIN}\")] | .[] | \"\(.number)\t\(.author.login)\t\(.url)\"" \
+  --jq "[.[] | select(.author.login != \"${BOT_LOGIN}\" and .author.login != \"${CODER_BOT_LOGIN}\")] | .[] | \"\(.number)\t\(.author.login)\t\(.url)\"" \
   2>/dev/null || true)"
 
 if [[ -n "${HUMAN_PR_LINES}" ]]; then
@@ -95,23 +99,59 @@ if [[ -n "${HUMAN_PR_LINES}" ]]; then
 
   # Build a markdown list of existing PRs.
   PR_LIST_MD=""
-  while IFS=$'\t' read -r pr_num pr_author pr_url; do
+  while IFS=$'\t' read -r pr_num pr_author _pr_url; do
     PR_LIST_MD="${PR_LIST_MD}
 - #${pr_num} by @${pr_author}"
   done <<< "${HUMAN_PR_LINES}"
 
-  COMMENT_BODY="An open PR already addresses this issue — skipping automated implementation.
+  SKIP_COMMENT="An open PR already addresses this issue — skipping automated implementation.
 ${PR_LIST_MD}
 
 To override, comment \`/fs-code --force\` on this issue.
 
 <sub>Posted by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> pre-code check</sub>"
 
-  printf '%s' "${COMMENT_BODY}" | gh issue comment "${ISSUE_NUMBER}" \
+  printf '%s' "${SKIP_COMMENT}" | gh issue comment "${ISSUE_NUMBER}" \
     --repo "${REPO_FULL_NAME}" --body-file - 2>/dev/null || true
 
   echo "Skipping code agent — existing PR(s) found for issue #${ISSUE_NUMBER}"
+  echo "skipped=true" >> "${GITHUB_OUTPUT:-/dev/null}"
   exit 0
 fi
 
 echo "No existing human PRs found — proceeding with code agent"
+echo "skipped=false" >> "${GITHUB_OUTPUT:-/dev/null}"
+
+# ---------------------------------------------------------------------------
+# Auto-detect and install pre-commit tool dependencies
+# ---------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TARGET_REPO="${REPO_DIR:-${GITHUB_WORKSPACE:-}/target-repo}"
+RESOLVE_SCRIPT="${SCRIPT_DIR}/resolve-precommit-tools.py"
+INSTALL_SCRIPT="${SCRIPT_DIR}/install-precommit-tools.sh"
+
+if [ -f "${TARGET_REPO}/.pre-commit-config.yaml" ] \
+   && [ -f "${RESOLVE_SCRIPT}" ] \
+   && [ -f "${INSTALL_SCRIPT}" ]; then
+  echo "Resolving pre-commit tool dependencies..."
+  MANIFEST="$(mktemp)"
+  LOCAL_REG="$(mktemp)"
+  RESOLVE_ARGS=("${TARGET_REPO}")
+  DEFAULT_BR="$(git -C "${TARGET_REPO}" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')" || DEFAULT_BR=""
+  if [ -n "${DEFAULT_BR}" ] \
+     && git -C "${TARGET_REPO}" show "origin/${DEFAULT_BR}:.pre-commit-tools.yaml" > "${LOCAL_REG}" 2>/dev/null; then
+    RESOLVE_ARGS+=("--local-registry" "${LOCAL_REG}")
+  fi
+  if python3 "${RESOLVE_SCRIPT}" "${RESOLVE_ARGS[@]}" > "${MANIFEST}"; then
+    if [ -s "${MANIFEST}" ] && jq -e '.tools | length > 0' "${MANIFEST}" >/dev/null 2>&1; then
+      bash "${INSTALL_SCRIPT}" "${MANIFEST}"
+    else
+      echo "No additional pre-commit tools needed"
+    fi
+  else
+    echo "::warning::Pre-commit tool resolution failed — continuing without auto-install"
+  fi
+  rm -f "${MANIFEST}" "${LOCAL_REG}"
+fi
+export PATH="${HOME}/.local/bin:${PATH}"
+echo "${HOME}/.local/bin" >> "${GITHUB_PATH:-/dev/null}"

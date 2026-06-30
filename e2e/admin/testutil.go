@@ -3,12 +3,18 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,9 +23,6 @@ import (
 )
 
 const (
-	// testOrg is the dedicated GitHub org for e2e tests.
-	testOrg = "halfsend"
-
 	// testRepo is a pre-existing repo in the test org for enrollment testing.
 	testRepo = "test-repo"
 
@@ -27,7 +30,8 @@ const (
 	lockRepo = "e2e-lock"
 
 	// defaultLockTimeout is how long to wait for the lock before giving up.
-	defaultLockTimeout = 2 * time.Minute
+	// This is only used as the fallback if ALL orgs are locked.
+	defaultLockTimeout = 10 * time.Minute
 
 	// lockPollInterval is how often to poll while waiting for the lock.
 	lockPollInterval = 30 * time.Second
@@ -35,17 +39,208 @@ const (
 	// freshLockThreshold is the age below which a lock is considered
 	// "just acquired" and we reset the wait timer.
 	freshLockThreshold = 1 * time.Minute
+
+	// staleLockTimeout is the age above which a lock from a crashed run
+	// is considered stale and eligible for force-reclaim. Must be longer
+	// than the longest expected e2e run (~7 min) but shorter than the
+	// job timeout (30 min).
+	staleLockTimeout = 15 * time.Minute
 )
 
+// orgPool is the set of GitHub orgs available for parallel e2e test runs.
+// Each run acquires a lock on one org before proceeding.
+var orgPool = []string{
+	"halfsend-01",
+	"halfsend-02",
+	"halfsend-03",
+	"halfsend-04",
+	"halfsend-05",
+	"halfsend-06",
+}
+
+// acquireOrg scans the pool for an unlocked org and acquires its lock.
+// Returns the org name and token used to hold the lock.
+func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string, timeout time.Duration, logf func(string, ...any)) (string, string, error) {
+	// Shuffle the pool so concurrent runners don't all compete for the
+	// same first org (thundering herd).
+	shuffled := make([]string, len(pool))
+	copy(shuffled, pool)
+	rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+
+	// First pass: try each org without waiting. If a lock exists but is
+	// stale (older than staleLockTimeout), force-acquire it so we don't
+	// waste pool capacity on crashed runs.
+	for _, org := range shuffled {
+		logf("[org-pool] Trying to acquire %s...", org)
+		token, tokErr := tokenForOrg(ctx, cfg, org)
+		if tokErr != nil {
+			logf("[org-pool] Could not get token for %s: %v", org, tokErr)
+			continue
+		}
+		client := newLiveClient(token)
+
+		acquired, err := tryCreateLock(ctx, client, org, runID, logf)
+		if err != nil {
+			logf("[org-pool] Error trying %s: %v", org, err)
+			// Only attempt stale lock recovery for 422 errors (repo
+			// likely exists). Rate limits, auth failures, and network
+			// errors would just waste more API quota.
+			var apiErr *gh.APIError
+			if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+				logf("[org-pool] 422 on %s — will check for stale lock", org)
+				if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+					return org, token, nil
+				}
+			}
+			continue
+		}
+		if acquired {
+			logf("[org-pool] Acquired %s", org)
+			return org, token, nil
+		}
+		// Lock exists — check if it's stale and force-acquire if so.
+		if token != "" {
+			if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+				return org, token, nil
+			}
+		}
+		logf("[org-pool] %s is locked, trying next", org)
+	}
+
+	// All orgs are locked. Round-robin poll until one frees up or
+	// the shared deadline expires.
+	logf("[org-pool] All %d orgs are locked, polling with timeout %s", len(pool), timeout)
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		wait := min(lockPollInterval, remaining)
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return "", "", ctx.Err()
+		}
+		for _, org := range shuffled {
+			token, tokErr := tokenForOrg(ctx, cfg, org)
+			if tokErr != nil {
+				logf("[org-pool] Could not get token for %s: %v", org, tokErr)
+				continue
+			}
+			client := newLiveClient(token)
+
+			acquired, err := tryCreateLock(ctx, client, org, runID, logf)
+			if err != nil {
+				logf("[org-pool] Error trying %s: %v", org, err)
+				var apiErr *gh.APIError
+				if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+					logf("[org-pool] 422 on %s — will check for stale lock", org)
+					if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+						return org, token, nil
+					}
+				}
+				continue
+			}
+			if acquired {
+				logf("[org-pool] Acquired %s", org)
+				return org, token, nil
+			}
+			// Also try stale reclaim during polling — a lock may
+			// have aged past staleLockTimeout since the first pass.
+			if token != "" {
+				if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+					return org, token, nil
+				}
+			}
+		}
+	}
+
+	return "", "", fmt.Errorf("could not acquire any org from pool after %s (tried %d orgs)", timeout, len(pool))
+}
+
+// acquireOrgWithClient runs pool acquisition using a fixed client (unit tests).
+func acquireOrgWithClient(ctx context.Context, client forge.Client, token, runID string, pool []string, timeout time.Duration, logf func(string, ...any)) (string, error) {
+	org, _, err := acquireOrgFromClient(ctx, client, token, runID, pool, timeout, logf)
+	return org, err
+}
+
+func acquireOrgFromClient(ctx context.Context, client forge.Client, token, runID string, pool []string, timeout time.Duration, logf func(string, ...any)) (string, string, error) {
+	shuffled := make([]string, len(pool))
+	copy(shuffled, pool)
+	rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+
+	for _, org := range shuffled {
+		logf("[org-pool] Trying to acquire %s...", org)
+		acquired, err := tryCreateLock(ctx, client, org, runID, logf)
+		if err != nil {
+			logf("[org-pool] Error trying %s: %v", org, err)
+			var apiErr *gh.APIError
+			if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+				if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+					return org, token, nil
+				}
+			}
+			continue
+		}
+		if acquired {
+			return org, token, nil
+		}
+		if token != "" {
+			if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+				return org, token, nil
+			}
+		}
+	}
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		wait := min(lockPollInterval, remaining)
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return "", "", ctx.Err()
+		}
+		for _, org := range shuffled {
+			acquired, err := tryCreateLock(ctx, client, org, runID, logf)
+			if err != nil {
+				var apiErr *gh.APIError
+				if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+					if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+						return org, token, nil
+					}
+				}
+				continue
+			}
+			if acquired {
+				return org, token, nil
+			}
+			if token != "" {
+				if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+					return org, token, nil
+				}
+			}
+		}
+	}
+	return "", "", fmt.Errorf("could not acquire any org from pool after %s (tried %d orgs)", timeout, len(pool))
+}
+
 // defaultRoles is the standard set of agent roles.
-var defaultRoles = []string{"fullsend", "triage", "coder", "review"}
+var defaultRoles = []string{"fullsend", "triage", "coder", "review", "retro", "prioritize"}
+
+// e2eAppSet is the app set prefix used by the shared public GitHub Apps.
+const e2eAppSet = "fullsend-ai"
 
 // envConfig holds required environment configuration.
 type envConfig struct {
-	sessionFile string
-	password    string
-	totpSecret  string
-	lockTimeout time.Duration
+	mintURL      string
+	useMint      bool
+	gcpProjectID string
+	lockTimeout  time.Duration
 }
 
 // loadEnvConfig reads and validates required env vars. Calls t.Skip if
@@ -54,16 +249,15 @@ type envConfig struct {
 func loadEnvConfig(t *testing.T) envConfig {
 	t.Helper()
 
-	sessionFile := os.Getenv("E2E_GITHUB_SESSION_FILE")
-	if sessionFile == "" {
-		t.Skip("E2E_GITHUB_SESSION_FILE not set, skipping e2e test")
-	}
-	if _, err := os.Stat(sessionFile); err != nil {
-		t.Fatalf("E2E_GITHUB_SESSION_FILE %q does not exist: %v", sessionFile, err)
+	mintURL := resolveMintURL()
+	useMint := runningInGitHubActions()
+	if !useMint {
+		if _, err := resolveLocalToken(); err != nil {
+			t.Skip("no local GitHub token (gh auth login), skipping e2e test")
+		}
 	}
 
-	password := os.Getenv("E2E_GITHUB_PASSWORD")
-	totpSecret := os.Getenv("E2E_GITHUB_TOTP_SECRET")
+	gcpProjectID := os.Getenv("E2E_GCP_PROJECT_ID")
 
 	lockTimeout := defaultLockTimeout
 	if v := os.Getenv("E2E_LOCK_TIMEOUT"); v != "" {
@@ -75,10 +269,10 @@ func loadEnvConfig(t *testing.T) envConfig {
 	}
 
 	return envConfig{
-		sessionFile: sessionFile,
-		password:    password,
-		totpSecret:  totpSecret,
-		lockTimeout: lockTimeout,
+		mintURL:      mintURL,
+		useMint:      useMint,
+		gcpProjectID: gcpProjectID,
+		lockTimeout:  lockTimeout,
 	}
 }
 
@@ -120,24 +314,132 @@ func getRepoCreatedAt(ctx context.Context, token, org, repo string) (time.Time, 
 	return result.CreatedAt, nil
 }
 
-// e2eDispatcher is a no-op dispatch.Dispatcher for e2e tests. It returns a
-// dummy mint URL so the OIDC dispatch layer can create org variables without
-// provisioning real cloud infrastructure.
-type e2eDispatcher struct{}
+func ensureRepoLabel(ctx context.Context, token, owner, repo, label string) error {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/labels", owner, repo)
+	payload, err := json.Marshal(map[string]string{
+		"name":  label,
+		"color": "5319e7",
+	})
+	if err != nil {
+		return fmt.Errorf("encoding label payload: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("creating label request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
 
-func (d *e2eDispatcher) Name() string { return "e2e-test" }
-
-func (d *e2eDispatcher) Provision(_ context.Context) (map[string]string, error) {
-	return map[string]string{"FULLSEND_MINT_URL": "https://e2e-test.example.com/mint"}, nil
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("creating repo label: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusUnprocessableEntity {
+		return nil
+	}
+	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("unexpected status %d creating label %q: %s", resp.StatusCode, label, body)
 }
 
-func (d *e2eDispatcher) StoreAgentPEM(_ context.Context, _, _ string, _ []byte) error { return nil }
+func addIssueLabel(ctx context.Context, token, owner, repo string, issueNum int, label string) error {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/labels", owner, repo, issueNum)
+	payload, err := json.Marshal(map[string][]string{"labels": {label}})
+	if err != nil {
+		return fmt.Errorf("encoding issue label payload: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("creating issue label request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
 
-func (d *e2eDispatcher) OrgSecretNames() []string { return nil }
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("adding issue label: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("unexpected status %d adding label %q: %s", resp.StatusCode, label, body)
+}
 
-func (d *e2eDispatcher) OrgVariableNames() []string { return []string{"FULLSEND_MINT_URL"} }
+// buildCLIBinary compiles the fullsend CLI binary once per test run.
+func buildCLIBinary(t *testing.T) string {
+	t.Helper()
+	modRoot, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
+	if err != nil {
+		t.Fatalf("finding module root: %v", err)
+	}
+	binary := filepath.Join(t.TempDir(), "fullsend")
+	cmd := exec.Command("go", "build", "-o", binary, "./cmd/fullsend/")
+	cmd.Dir = strings.TrimSpace(string(modRoot))
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("building fullsend binary: %s\n%s", err, out)
+	}
+	return binary
+}
 
-// retryOnNotFound retries an operation up to maxAttempts times with exponential
+// runCLI executes the fullsend CLI with the given args, passing GITHUB_TOKEN.
+// By default the working directory is the module root. Use runCLIFromDir to
+// run from a subdirectory (GOMOD discovery makes this work for vendoring).
+func runCLI(t *testing.T, binary, token string, args ...string) string {
+	return runCLIFromDir(t, binary, token, moduleRoot(t), args...)
+}
+
+// runCLIFromDir runs the CLI with cwd set to dir.
+func runCLIFromDir(t *testing.T, binary, token, dir string, args ...string) string {
+	t.Helper()
+	t.Logf("[cli] fullsend %s (cwd=%s)", strings.Join(args, " "), dir)
+
+	cmd := exec.Command(binary, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GITHUB_TOKEN="+token, "CI=true")
+	out, runErr := cmd.CombinedOutput()
+	output := string(out)
+	t.Logf("[cli] output:\n%s", output)
+	if runErr != nil {
+		t.Fatalf("[cli] fullsend %s failed: %v\n%s", strings.Join(args, " "), runErr, output)
+	}
+	return output
+}
+
+// tryRunCLI is like runCLI but returns an error instead of calling t.Fatalf.
+// Use this when the caller needs to retry on transient failures (e.g., GitHub
+// propagation delays after repo creation).
+func tryRunCLI(t *testing.T, binary, token string, args ...string) (string, error) {
+	t.Helper()
+	dir := moduleRoot(t)
+	t.Logf("[cli] fullsend %s (cwd=%s)", strings.Join(args, " "), dir)
+
+	cmd := exec.Command(binary, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GITHUB_TOKEN="+token, "CI=true")
+	out, runErr := cmd.CombinedOutput()
+	output := string(out)
+	t.Logf("[cli] output:\n%s", output)
+	if runErr != nil {
+		return output, fmt.Errorf("[cli] fullsend %s failed: %w\n%s", strings.Join(args, " "), runErr, output)
+	}
+	return output, nil
+}
+
+func moduleRoot(t *testing.T) string {
+	t.Helper()
+	modRoot, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
+	if err != nil {
+		t.Fatalf("finding module root: %v", err)
+	}
+	return strings.TrimSpace(string(modRoot))
+}
+
+// retryOnNotFound retries an operation up to maxAttempts times with linear
 // backoff when it returns a not-found error (GitHub eventual consistency).
 func retryOnNotFound(ctx context.Context, maxAttempts int, fn func() error) error {
 	var err error

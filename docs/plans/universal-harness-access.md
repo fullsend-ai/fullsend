@@ -35,7 +35,7 @@ pre_script: scripts/pre-code.sh
 post_script: scripts/post-code.sh
 host_files:
   - src: env/gcp-vertex.env
-    dest: /tmp/workspace/.env.d/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
 ```
 
 Resolution logic (`internal/harness/harness.go`):
@@ -44,7 +44,7 @@ Resolution logic (`internal/harness/harness.go`):
 - All paths must resolve within the `.fullsend` directory tree
 - No network fetches; all resources must exist locally
 
-Skills are directories with a `SKILL.md` file. Policies are OpenShell YAML files. Agent definitions are Markdown files with YAML frontmatter.
+Skills are directories containing `SKILL.md` plus optional companion files (`scripts/`, `sub-agents/`, `assets/`). The entire directory tree is uploaded to the sandbox. When referenced via URL, skills require forge API access (e.g., GitHub Contents API) to discover and fetch all files in the directory. Policies are OpenShell YAML files. Agent definitions are Markdown files with YAML frontmatter.
 
 ## Proposed Design
 
@@ -63,7 +63,7 @@ Examples (note: `#sha256=...` hash fragments omitted for brevity; all remote URL
 agent: https://github.com/fullsend-ai/library/agents/code.md
 policy: policies/local-code-policy.yaml  # local override
 skills:
-  - https://github.com/fullsend-ai/skills/rust-conventions/SKILL.md
+  - https://github.com/fullsend-ai/skills/tree/8cd3799.../rust-conventions#sha256=<tree-hash>...
   - skills/org-specific-skill  # local skill
 pre_script: scripts/pre-code.sh  # scripts must be local (security)
 ```
@@ -74,7 +74,7 @@ pre_script: scripts/pre-code.sh  # scripts must be local (security)
 |---------------|----------------|-----------|
 | Agent definition (`.md`) | ✅ Yes | Declarative; validated by schema |
 | Policy (`.yaml`) | ✅ Yes | Declarative; validated by schema |
-| Skill (`SKILL.md`) | ✅ Yes | Declarative; scanned for injection |
+| Skill (directory)     | ✅ Yes (forge only) | Directory uploaded as tree; requires forge API |
 | Schema (`.json`) | ✅ Yes | Declarative; validated before use |
 | Pre/post scripts (`.sh`) | ❌ No | Executable on host; must be local |
 | Host files (certs, env) | ❌ No | Configuration; must be local |
@@ -98,7 +98,7 @@ When a harness or resource is fetched from a URL, relative paths within that res
 
 **Path traversal protection:** URL-based relative paths follow RFC 3986 semantics, including `../` traversal. Example:
 
-A skill at `https://github.com/fullsend-ai/library/skills/rust/SKILL.md` referencing:
+A skill directory at `https://github.com/fullsend-ai/library/tree/8cd3799.../skills/rust` whose `SKILL.md` references:
 
 ```yaml
 policy: ../../../../attacker-org/evil-repo/policy.yaml
@@ -121,16 +121,16 @@ The normalized URL `https://github.com/attacker-org/evil-repo/policy.yaml` does 
 agent: agents/code.md                    # → https://github.com/fullsend-ai/harnesses/agents/code.md
 policy: ../policies/code-policy.yaml     # → https://github.com/fullsend-ai/policies/code-policy.yaml
 skills:
-  - skills/rust-linting/SKILL.md         # → https://github.com/fullsend-ai/harnesses/skills/rust-linting/SKILL.md
+  - skills/rust-linting                  # → local skill directory (skills/rust-linting/)
 ```
 
 **Example 2: Skill fetched from URL**
 ```yaml
-# Skill at: https://github.com/fullsend-ai/skills/rust-conventions/SKILL.md
+# Skill directory at: https://github.com/fullsend-ai/skills/tree/8cd3799.../rust-conventions
+# SKILL.md within that directory contains:
 ---
 dependencies:
-  - ../common/cargo-integration/SKILL.md  # → https://github.com/fullsend-ai/skills/common/cargo-integration/SKILL.md
-policy: policies/rust-sandbox.yaml        # → https://github.com/fullsend-ai/skills/rust-conventions/policies/rust-sandbox.yaml
+  - ../common/cargo-integration#sha256=<tree-hash>...  # → sibling directory https://github.com/fullsend-ai/skills/tree/8cd3799.../common/cargo-integration
 ---
 ```
 
@@ -150,12 +150,12 @@ policy: policies/rust-sandbox.yaml        # → https://github.com/fullsend-ai/s
 A URL-referenced skill can itself reference other resources:
 
 ```yaml
-# https://github.com/fullsend-ai/skills/rust-conventions/SKILL.md
+# SKILL.md inside directory https://github.com/fullsend-ai/skills/tree/8cd3799.../rust-conventions
 ---
 name: rust-conventions
-policy: https://github.com/fullsend-ai/policies/rust-sandbox.yaml
 dependencies:
-  - https://github.com/fullsend-ai/skills/cargo-integration/SKILL.md
+  - ../cargo-integration#sha256=<tree-hash>...
+  - https://github.com/fullsend-ai/skills/tree/8cd3799.../common/formatting#sha256=<tree-hash>...
 ---
 # skill content
 ```
@@ -174,9 +174,15 @@ Fetched resources are cached in the repository's workspace using content address
 ```
 .fullsend-cache/resources/
   sha256/
-    abc123.../
-      metadata.json       # {url, fetch_time, content_type, headers}
-      content             # the actual fetched content
+    abc123.../               # single-file resource (agent, policy)
+      metadata.json          # {url, fetch_time, content_type, sha256}
+      content                # the actual fetched content
+    def456.../               # directory resource (skill)
+      metadata.json          # {url, fetch_time, type: "directory", sha256}
+      tree/
+        SKILL.md
+        scripts/
+          helper.sh
 ```
 
 **Cache location:** The cache is stored in the repository's workspace (`.fullsend-cache/` directory). In ephemeral CI/CD environments like GitHub Actions, the cache is rebuilt on each run unless the platform's native caching mechanisms (e.g., GitHub Actions cache, GitLab CI cache) are used to persist it across workflow runs.
@@ -288,9 +294,9 @@ harness/code.yaml
   │   └─ (no dependencies)
   ├─ skills/code-implementation (local)
   │   └─ (no dependencies)
-  └─ https://github.com/fullsend-ai/skills/rust-conventions/SKILL.md
+  └─ https://github.com/fullsend-ai/skills/tree/8cd3799.../rust-conventions
       ├─ https://github.com/fullsend-ai/policies/rust-sandbox.yaml
-      └─ https://github.com/fullsend-ai/skills/cargo-integration/SKILL.md
+      └─ https://github.com/fullsend-ai/skills/tree/8cd3799.../cargo-integration
           └─ (no dependencies)
 ```
 
@@ -299,15 +305,17 @@ Resolution algorithm:
 1. Parse the harness YAML to extract all references
 2. For each reference:
    - If local path, validate it exists
-   - If URL, fetch and cache
+   - If URL for a single-file resource (agent, policy): fetch via HTTPS, cache as `content` file
+   - If URL for a directory resource (skill): use forge API (`ListDirectoryContents`, `GetFileContentAtRef`) to discover and fetch all files, cache as `tree/` directory, verify tree hash
+   - Non-forge HTTPS URLs for skills are rejected (HTTP has no standard directory listing)
 3. Parse fetched resources to extract their references
 4. Repeat step 2 for new references (depth-first traversal)
 5. Detect cycles (if skill A references skill B, and skill B references skill A, reject)
 6. Fail if any resource cannot be fetched or validated
 
-**Output:** A `ResolvedHarness` struct containing absolute paths or cache paths for all resources.
+**Output:** The harness is modified in place, replacing URL fields with local cache paths. Returns `([]Dependency, error)` listing the resolved resources.
 
-**Implementation:** New package `internal/resolve/` provides `ResolveHarness(h *harness.Harness) (*ResolvedHarness, error)`.
+**Implementation:** New package `internal/resolve/` provides `ResolveHarness(ctx, h *harness.Harness, opts ResolveOpts) ([]Dependency, error)`.
 
 ### Runtime Dependency Loading (Future)
 
@@ -315,13 +323,13 @@ The current design requires all dependencies to be declared in the harness. A fu
 
 ```markdown
 # Agent encounters unfamiliar code
-The agent uses Bash to run: fullsend-fetch-skill rust-conventions
+The agent uses Bash to run: fullsend fetch-skill https://github.com/org/skills/tree/abc/rust-conventions#sha256=...
 The runner fetches the skill if it matches allowed_remote_resources
 ```
 
 This requires:
 
-1. **Runtime fetch API:** A `fullsend-fetch-skill` binary available in the sandbox, which sends a fetch request to the runner over a Unix socket.
+1. **Runtime fetch API:** The `fullsend fetch-skill` subcommand available in the sandbox, which sends an HTTP request to the runner's fetch service using `FULLSEND_FETCH_URL` and `FULLSEND_FETCH_TOKEN` (per ADR-0046).
 2. **Access policy enforcement:** The harness declares `allowed_remote_resources: ["https://github.com/fullsend-ai/skills/"]`. Runtime fetches are allowed only if the URL matches a declared prefix.
 3. **Audit logging:** All runtime fetches are logged with the agent's trace ID.
 
@@ -332,7 +340,7 @@ This requires:
 - Fetch requests are rate-limited (max 10 per agent run)
 - Anomalous fetch patterns trigger alerts
 
-**Status:** Not implemented in initial design. Tracked in a future issue.
+**Status:** Implemented in Phase 4. Harness schema fields (`allow_runtime_fetch`, `max_runtime_fetches`) and CLI wiring added. See `docs/plans/universal-harness-access-phase4.md`.
 
 ### Access Policy Model
 
@@ -351,7 +359,7 @@ allowed_remote_resources:
   - https://github.com/fullsend-ai/library/
   - https://github.com/myorg/agent-resources/
 skills:
-  - https://github.com/fullsend-ai/library/skills/rust-conventions/SKILL.md
+  - https://github.com/fullsend-ai/library/tree/8cd3799.../skills/rust-conventions#sha256=<tree-hash>...
 ```
 
 The runner enforces:
@@ -372,7 +380,7 @@ allow_runtime_fetch: true
 max_runtime_fetches: 10
 ```
 
-During execution, the agent can fetch `https://github.com/fullsend-ai/library/skills/python-linting/SKILL.md` because it matches an allowed prefix. The runner validates and caches it.
+During execution, the agent can fetch `https://github.com/fullsend-ai/library/tree/8cd3799.../skills/python-linting#sha256=<tree-hash>...` because it matches an allowed prefix. The runner uses the forge API to list and fetch the skill directory, validates the tree hash, and caches it.
 
 **Audit:** All fetches (static and runtime) are logged:
 
@@ -380,9 +388,9 @@ During execution, the agent can fetch `https://github.com/fullsend-ai/library/sk
 {
   "trace_id": "abc123",
   "fetch_time": "2026-05-07T12:34:56Z",
-  "url": "https://github.com/fullsend-ai/library/skills/rust-conventions/SKILL.md",
+  "url": "https://github.com/fullsend-ai/library/tree/8cd3799.../skills/rust-conventions",
   "sha256": "def456...",
-  "fetch_type": "static",  // or "runtime"
+  "fetch_type": "static",  // "static", "runtime", "base_script", "base_resource", or "base_skill"
   "allowed_by": "allowed_remote_resources[0]"
 }
 ```
@@ -494,7 +502,7 @@ allowed_remote_resources:
   - https://github.com/fullsend-ai/library/
   - https://github.com/myorg/agent-resources/
 skills:
-  - https://github.com/fullsend-ai/library/skills/rust-conventions/SKILL.md
+  - https://github.com/fullsend-ai/library/tree/8cd3799.../skills/rust-conventions#sha256=<tree-hash>...
 ```
 
 **File:** `internal/harness/harness.go`
@@ -547,7 +555,7 @@ func (h *Harness) Validate(orgAllowlist []string) error {
 
 ### 2. URL Detection and Classification
 
-**File:** `internal/harness/url.go` (new)
+**File:** `internal/harness/url.go`
 
 ```go
 package harness
@@ -558,60 +566,44 @@ import (
     "strings"
 )
 
-// IsURL returns true if s is a valid HTTPS URL.
-// Only https:// URLs are accepted for remote resources. http:// URLs are rejected
-// to avoid confusion and provide clear error messages.
-// Rejects malformed URLs (empty host, userinfo, etc.)
 func IsURL(s string) bool {
+    if s == "" {
+        return false
+    }
     u, err := url.Parse(s)
     if err != nil || u.Scheme != "https" {
         return false
     }
-    // Reject malformed URLs that url.Parse accepts but shouldn't be allowed:
-    // - Empty host (https:, https://, https:///path)
-    // - Userinfo (e.g., https://user:pass@host/ - credentials in URL)
-    // Note: url.Parse sets u.User for standard userinfo forms (https://user@host/), but may
-    // not catch all edge cases (e.g., https://@host/ on some Go versions). Production
-    // implementation should add strings.Contains(s, "@") check before hostname validation
-    // as belt-and-suspenders defense.
     if u.Host == "" || u.User != nil {
         return false
     }
-    // Validate hostname is non-empty (u.Hostname() returns "" for malformed hosts)
     if u.Hostname() == "" {
+        return false
+    }
+    if strings.Contains(u.Host, "@") {
         return false
     }
     return true
 }
 
-// isAbsPath returns true if s is an absolute file path.
-func isAbsPath(s string) bool {
+func IsAbsPath(s string) bool {
     return filepath.IsAbs(s)
 }
 
-// isRelPath returns true if s is a relative file path.
-func isRelPath(s string) bool {
-    return !IsURL(s) && !isAbsPath(s)
+func IsRelPath(s string) bool {
+    return s != "" && !IsURL(s) && !IsAbsPath(s)
 }
 
-// ParseIntegrityHash extracts the SHA256 hash from a URL fragment.
-// Example: https://example.com/file.md#sha256=abc123... -> "abc123..."
-// Returns an error if the hash is not a valid 64-character lowercase hex string.
-func ParseIntegrityHash(rawURL string) (urlWithoutHash, hash string, hasHash bool) {
-    u, err := url.Parse(rawURL)
-    if err != nil {
+func ParseIntegrityHash(rawURL string) (cleanURL, hash string, hasHash bool) {
+    idx := strings.LastIndex(rawURL, "#")
+    if idx == -1 {
         return rawURL, "", false
     }
-    if u.Fragment == "" {
+    fragment := rawURL[idx+1:]
+    if !strings.HasPrefix(fragment, "sha256=") {
         return rawURL, "", false
     }
-    if !strings.HasPrefix(u.Fragment, "sha256=") {
-        return rawURL, "", false
-    }
-    hash = strings.TrimPrefix(u.Fragment, "sha256=")
-
-    // Validate hash format: must be exactly 64 lowercase hex characters
-    // This prevents path traversal attacks like #sha256=../../etc/shadow
+    hash = strings.ToLower(strings.TrimPrefix(fragment, "sha256="))
     if len(hash) != 64 {
         return rawURL, "", false
     }
@@ -620,11 +612,15 @@ func ParseIntegrityHash(rawURL string) (urlWithoutHash, hash string, hasHash boo
             return rawURL, "", false
         }
     }
-
-    u.Fragment = ""
-    return u.String(), hash, true
+    return rawURL[:idx], hash, true
 }
 ```
+
+Key implementation details vs. original plan:
+- `IsURL` guards against empty string and includes belt-and-suspenders `@` check on `u.Host`
+- `IsRelPath` returns `false` for empty strings to prevent misclassifying missing values
+- `ParseIntegrityHash` normalizes uppercase hex via `strings.ToLower` (SHA-256 hashes are commonly rendered with mixed case)
+- `ParseIntegrityHash` uses `strings.LastIndex` for fragment extraction instead of `url.Parse` to correctly handle non-URL inputs (relative paths)
 
 ### 3. Resource Fetcher with SSRF Protection
 
@@ -928,7 +924,117 @@ func CachePut(workspaceRoot, url string, content []byte) error {
 
     return nil
 }
+
+// CachePutDir stores a directory tree (skill) in the cache.
+// The directory is stored under tree/ within the cache entry.
+func CachePutDir(workspaceRoot, url string, files map[string][]byte) error {
+    treeHash := ComputeTreeHash(files)
+    dir := CachePath(workspaceRoot, treeHash)
+
+    if err := os.MkdirAll(filepath.Join(dir, "tree"), 0700); err != nil {
+        return err
+    }
+
+    for relPath, content := range files {
+        fullPath := filepath.Join(dir, "tree", relPath)
+        if err := os.MkdirAll(filepath.Dir(fullPath), 0700); err != nil {
+            return err
+        }
+        if err := os.WriteFile(fullPath, content, 0600); err != nil {
+            return err
+        }
+    }
+
+    entry := CacheEntry{
+        URL:       url,
+        FetchTime: time.Now(),
+        SHA256:    treeHash,
+        Type:      "directory",
+    }
+    metaData, _ := json.MarshalIndent(entry, "", "  ")
+    return os.WriteFile(filepath.Join(dir, "metadata.json"), metaData, 0600)
+}
+
+// CacheGetDir retrieves a cached directory tree by hash. Returns the tree/ path.
+func CacheGetDir(workspaceRoot, hash string) (string, *CacheEntry, error) {
+    dir := CachePath(workspaceRoot, hash)
+    treePath := filepath.Join(dir, "tree")
+    metaPath := filepath.Join(dir, "metadata.json")
+
+    if _, err := os.Stat(metaPath); os.IsNotExist(err) {
+        return "", nil, nil
+    }
+    if _, err := os.Stat(treePath); os.IsNotExist(err) {
+        return "", nil, nil
+    }
+
+    metaData, err := os.ReadFile(metaPath)
+    if err != nil {
+        return "", nil, err
+    }
+    var entry CacheEntry
+    if err := json.Unmarshal(metaData, &entry); err != nil {
+        return "", nil, err
+    }
+
+    return treePath, &entry, nil
+}
+
+// ComputeTreeHash computes a deterministic hash over a directory tree.
+// Files are sorted by path, then each file's path and SHA256 are hashed.
+func ComputeTreeHash(files map[string][]byte) string {
+    // Sort file paths for deterministic ordering
+    paths := make([]string, 0, len(files))
+    for p := range files {
+        paths = append(paths, p)
+    }
+    sort.Strings(paths)
+
+    h := sha256.New()
+    for _, p := range paths {
+        fmt.Fprintf(h, "%s:%s\n", p, ComputeSHA256(files[p]))
+    }
+    return hex.EncodeToString(h.Sum(nil))
+}
 ```
+
+### 4a. Forge Interface Extension for Skill Directories
+
+**File:** `internal/forge/forge.go` (additions to the forge.Client interface)
+
+Skills are directories, not single files. To fetch a skill from a forge URL, the resolver must list the directory contents and fetch each file. This requires forge API support.
+
+```go
+// ListDirectoryContents returns the list of files in a directory at a given ref.
+// For GitHub, this uses the Trees API or Contents API.
+ListDirectoryContents(ctx context.Context, owner, repo, path, ref string) ([]FileEntry, error)
+
+// GetFileContentAtRef fetches a single file's content at a specific ref.
+// For GitHub, this uses the Contents API with a ref parameter.
+GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
+```
+
+```go
+type FileEntry struct {
+    Path string // relative path within the directory
+    SHA  string // git blob SHA
+    Size int64
+}
+```
+
+**File:** `internal/forge/github/directory.go` (new)
+
+GitHub implementation using the Contents API (`GET /repos/{owner}/{repo}/contents/{path}?ref={ref}`) for directory listing and file retrieval.
+
+**File:** `internal/fetch/forgeurl.go` (new)
+
+```go
+// ParseForgeURL extracts forge components (owner, repo, path, ref) from a
+// directory URL like https://github.com/fullsend-ai/library/tree/8cd3799.../skills/rust
+func ParseForgeURL(rawURL string) (host, owner, repo, path, ref string, err error)
+```
+
+**Why non-forge HTTPS URLs are rejected for skills:** HTTP has no standard mechanism for listing directory contents. A URL like `https://example.com/skills/rust/` might serve an HTML index page, but there is no reliable way to discover all files in the directory. Forge APIs (GitHub Contents API, GitLab Repository Files API) provide structured directory listings. Skills from non-forge URLs are rejected at validation time with a clear error message.
 
 ### 5. Dependency Resolver
 
@@ -946,74 +1052,53 @@ import (
 
     "github.com/fullsend-ai/fullsend/internal/fetch"
     "github.com/fullsend-ai/fullsend/internal/harness"
-    "github.com/fullsend-ai/fullsend/internal/security"
 )
 
-type ResolvedHarness struct {
-    Harness      *harness.Harness
-    AgentPath    string   // absolute path or cache path
-    PolicyPath   string
-    SkillPaths   []string
-    Dependencies []Dependency
-}
-
 type Dependency struct {
-    URL        string
-    LocalPath  string // cache path
-    SHA256     string
-    FetchedAt  time.Time
+    URL       string
+    LocalPath string
+    SHA256    string
+    FetchedAt time.Time
+    CacheHit  bool
 }
 
-// ResolveHarness resolves all resources (local and remote) and returns paths.
-func ResolveHarness(ctx context.Context, workspaceRoot string, h *harness.Harness, policy fetch.FetchPolicy) (*ResolvedHarness, error) {
-    resolved := &ResolvedHarness{Harness: h}
-    resourceCount := 0
-
-    // Resolve agent
-    var err error
-    resolved.AgentPath, err = resolveResourceWithLimits(ctx, workspaceRoot, h.Agent, h.AllowedRemoteResources, policy, 0, &resourceCount, "")
-    if err != nil {
-        return nil, fmt.Errorf("resolving agent: %w", err)
-    }
-
-    // Resolve policy
-    if h.Policy != "" {
-        resolved.PolicyPath, err = resolveResourceWithLimits(ctx, workspaceRoot, h.Policy, h.AllowedRemoteResources, policy, 0, &resourceCount, "")
-        if err != nil {
-            return nil, fmt.Errorf("resolving policy: %w", err)
-        }
-    }
-
-    // Resolve skills
-    // Phase 1: Single-level only (skills themselves cannot reference URLs)
-    // Phase 2+: Each skill may have transitive dependencies (code below)
-    for _, skill := range h.Skills {
-        skillPath, err := resolveResourceWithLimits(ctx, workspaceRoot, skill, h.AllowedRemoteResources, policy, 0, &resourceCount, "")
-        if err != nil {
-            return nil, fmt.Errorf("resolving skill %s: %w", skill, err)
-        }
-        resolved.SkillPaths = append(resolved.SkillPaths, skillPath)
-
-        // Phase 2+: Parse skill to extract transitive dependencies
-        // (skill format TBD — may have a dependencies: field in frontmatter)
-        // Recursively resolve those dependencies
-    }
-
-    return resolved, nil
+type ResolveOpts struct {
+    WorkspaceRoot string
+    FetchPolicy   fetch.FetchPolicy
+    TraceID       string
+    AuditLogPath  string
 }
 
-// resolveResourceWithLimits resolves a single resource with depth and count limits.
-// Phase 1: depth is always 0 (no transitive resolution), parentRef is unused
-// Phase 2+: depth tracking prevents cycles and runaway recursion, parentRef enables relative path resolution
-func resolveResourceWithLimits(ctx context.Context, workspaceRoot, ref string, allowedPrefixes []string, policy fetch.FetchPolicy, depth int, resourceCount *int, parentRef string) (string, error) {
-    // Phase 2+: Check depth limit (Phase 1 always passes since depth=0)
-    if depth > policy.MaxDepth {
-        return "", fmt.Errorf("exceeded maximum dependency depth of %d", policy.MaxDepth)
+// ResolveHarness resolves URL-referenced declarative fields (Agent, Policy,
+// Skills) in the harness to local cache paths. Local paths are left unchanged.
+// The harness is modified in place. Transitive deps supported via MaxDepth.
+func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) ([]Dependency, error) {
+    var deps []Dependency
+
+    if h.Agent != "" && harness.IsURL(h.Agent) {
+        dep, localPath, err := resolveURL(ctx, "agent", h.Agent, h, opts)
+        if err != nil {
+            return nil, fmt.Errorf("resolving agent: %w", err)
+        }
+        h.Agent = localPath
+        deps = append(deps, dep)
+    }
+
+    // Similar for h.Policy and h.Skills...
+    return deps, nil
+}
+
+// Note: pseudocode below is illustrative. The implemented API uses resolveURL +
+// resolveTransitiveDeps with explicit depth parameters and opts.MaxDepth/MaxResources.
+// resolveResourceWithLimits was the design placeholder name; it was not shipped.
+func resolveResourceWithLimits(ctx context.Context, workspaceRoot, ref string, allowedPrefixes []string, opts ResolveOpts, depth int, resourceCount *int, parentRef string) (string, error) {
+    if depth > opts.MaxDepth {
+        return "", fmt.Errorf("exceeded maximum dependency depth of %d", opts.MaxDepth)
     }
 
     // Check resource count limit (applies to all phases)
-    if *resourceCount >= policy.MaxResources {
-        return "", fmt.Errorf("exceeded maximum resource count of %d", policy.MaxResources)
+    if *resourceCount >= opts.MaxResources {
+        return "", fmt.Errorf("exceeded maximum resource count of %d", opts.MaxResources)
     }
 
     if harness.IsURL(ref) {
@@ -1147,12 +1232,14 @@ if err := h.ResolveRelativeTo(absFullsendDir); err != nil {
 // NEW: Resolve remote resources
 fetchPolicy := fetch.DefaultPolicy
 // TODO: Load allowed domains from config.yaml
-resolved, err := resolve.ResolveHarness(ctx, workspaceRoot, h, fetchPolicy)
+deps, err := resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
+    WorkspaceRoot: workspaceRoot,
+    FetchPolicy:   fetchPolicy,
+})
 if err != nil {
     return fmt.Errorf("resolving remote resources: %w", err)
 }
-
-// Use resolved.AgentPath, resolved.PolicyPath, etc. instead of h.Agent, h.Policy
+// h.Agent, h.Policy, h.Skills are now local cache paths
 ```
 
 ### 7. Security Scanner Integration
@@ -1187,12 +1274,14 @@ var RemoteResourcePolicy = ScanPolicy{
 
 ### 8. Audit Logging
 
-**File:** `internal/audit/fetch_log.go` (new)
+**File:** `internal/fetch/audit.go`
 
-All fetches are logged to a structured log:
+All fetches are logged to a structured JSONL log. The caller provides the log
+path directly (better separation of concerns than env-var resolution inside the
+logger). File permissions use `0o600` to match `security.AppendFinding`.
 
 ```go
-package audit
+package fetch
 
 import (
     "encoding/json"
@@ -1202,44 +1291,34 @@ import (
     "time"
 )
 
-type FetchLog struct {
-    TraceID    string    `json:"trace_id"`
-    FetchTime  time.Time `json:"fetch_time"`
-    URL        string    `json:"url"`
-    SHA256     string    `json:"sha256"`
-    FetchType  string    `json:"fetch_type"`  // "static" or "runtime"
-    AllowedBy  string    `json:"allowed_by"`  // which allowed_remote_resources entry matched
+type FetchAuditEntry struct {
+    TraceID   string    `json:"trace_id"`
+    FetchTime time.Time `json:"fetch_time"`
+    URL       string    `json:"url"`
+    SHA256    string    `json:"sha256"`
+    FetchType string    `json:"fetch_type"`
+    AllowedBy string    `json:"allowed_by"`
+    CacheHit  bool      `json:"cache_hit"`
 }
 
-// LogFetch appends a fetch record to the audit log.
-// Note: Audit logs are kept in user home directory for persistence across workspaces.
-// This is configurable via FULLSEND_AUDIT_DIR environment variable.
-func LogFetch(log FetchLog) error {
-    logDir := os.Getenv("FULLSEND_AUDIT_DIR")
-    if logDir == "" {
-        home, err := os.UserHomeDir()
-        if err != nil {
-            return fmt.Errorf("getting home directory for audit logs: %w", err)
-        }
-        logDir = filepath.Join(home, ".cache", "fullsend", "audit")
-    }
-    if err := os.MkdirAll(logDir, 0755); err != nil {
+func AppendFetchAudit(logPath string, entry FetchAuditEntry) error {
+    if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
         return fmt.Errorf("creating audit log directory: %w", err)
     }
-
-    logPath := filepath.Join(logDir, "fetches.jsonl")
-    f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+    f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
     if err != nil {
-        return err
+        return fmt.Errorf("opening audit log: %w", err)
     }
     defer f.Close()
 
-    data, err := json.Marshal(log)
+    data, err := json.Marshal(entry)
     if err != nil {
-        return fmt.Errorf("marshaling fetch log: %w", err)
+        return fmt.Errorf("marshaling audit entry: %w", err)
     }
-    _, err = f.Write(append(data, '\n'))
-    return err
+    if _, err := fmt.Fprintf(f, "%s\n", data); err != nil {
+        return fmt.Errorf("writing audit entry: %w", err)
+    }
+    return nil
 }
 ```
 
@@ -1258,7 +1337,10 @@ fetchPolicy := fetch.DefaultPolicy
 if offline {
     fetchPolicy.Offline = true
 }
-resolved, err := resolve.ResolveHarness(ctx, workspaceRoot, h, fetchPolicy)
+deps, err := resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
+    WorkspaceRoot: workspaceRoot,
+    FetchPolicy:   fetchPolicy,
+})
 ```
 
 ## Migration Path
@@ -1317,12 +1399,19 @@ harnesses:
         path: policies/local-code-policy.yaml  # local paths recorded for completeness
         sha256: "789abc..."
       skills:
-        - url: https://github.com/fullsend-ai/library/skills/rust/SKILL.md
-          sha256: "123def..."
+        - url: https://github.com/fullsend-ai/library/tree/8cd3799.../skills/rust
+          sha256: "<tree-hash>..."
+          type: directory
           resolved_at: "2026-05-12T14:29:56Z"
+          files:
+            - path: SKILL.md
+              sha256: "abc123..."
+            - path: scripts/check.sh
+              sha256: "def456..."
           transitive_deps:
             - url: https://github.com/prodsec/agent-skills/security-baseline.md
               sha256: "456789..."
+              type: file
               resolved_at: "2026-05-12T14:29:57Z"
 ```
 
@@ -1333,7 +1422,7 @@ harnesses:
 
 ### Phase 4: Runtime dependency loading
 
-- Implement `fullsend-fetch-skill` binary for sandbox use
+- Implement `fullsend fetch-skill` subcommand for sandbox use
 - Add `allow_runtime_fetch: true` flag to harness schema
 - Enforce runtime fetches against `allowed_remote_resources`
 - Audit log all runtime fetches
@@ -1420,6 +1509,10 @@ If a skill references `policy: rust-sandbox@v2` (a name+version, not a URL), how
 
 ## Related Documents
 
+- **[Implementation Plan — Phase 1](universal-harness-access-phase1.md)** — Phased PR breakdown for Phase 1 (MVP)
+- **[Implementation Plan — Phase 2](universal-harness-access-phase2.md)** — Phased PR breakdown for Phase 2 (transitive dependency resolution)
+- **[Implementation Plan — Phase 3](universal-harness-access-phase3.md)** — Lock files for reproducible harness execution
+- **[Implementation Plan — Phase 4](universal-harness-access-phase4.md)** — Runtime dependency loading
 - **[ADR-0024: Harness Definitions](../ADRs/0024-harness-definitions.md)** — Current harness schema and resolution logic
 - **[ADR-0022: Output Schema Enforcement](../ADRs/0022-harness-level-output-schema-enforcement.md)** — Security validation of agent output
 - **[ADR-0017: Credential Isolation](../ADRs/0017-credential-isolation-for-sandboxed-agents.md)** — Sandbox security model

@@ -16,8 +16,6 @@ describe("createLayerGithub getRepoFileUtf8", () => {
     } as unknown as Octokit;
 
     const gh = createLayerGithub(octokit);
-    await expect(gh.getRepoFileUtf8("o", "r", "p")).rejects.toThrow(
-      /not valid base64/i,
-    );
+    await expect(gh.getRepoFileUtf8("o", "r", "p")).rejects.toThrow(/not valid base64/i);
   });
 });

@@ -1,0 +1,33 @@
+# The agent should identify this as a duplicate of the seed issue (#1).
+state: open
+
+labels:
+  required:
+    - duplicate
+  forbidden:
+    - ready-to-code
+    - needs-info
+    - triaged
+
+max_turns: 30
+max_cost_usd: 2.00
+
+triage_expectations: |
+  The seed issue (#1) describes the exact same problem — 500 on login
+  with a + in the email. This new issue is a duplicate filed with
+  slightly different wording.
+
+  A good triage should:
+
+  1. Search open issues and find seed issue #1.
+  2. Recognize the semantic overlap — same root problem, different
+     wording ("plus sign" vs "contains +").
+  3. Choose action "duplicate" with duplicate_of pointing to #1.
+  4. Post a kind comment explaining the duplicate finding and linking
+     to the original issue.
+
+  A score of 1 means the agent triaged this as a new bug.
+  A score of 3 means it found the duplicate but the comment was
+  unhelpful or dismissive.
+  A score of 5 means it correctly identified the duplicate, linked to
+  the original, and was respectful to the reporter.

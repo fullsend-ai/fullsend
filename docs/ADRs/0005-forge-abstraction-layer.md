@@ -34,3 +34,5 @@ No code outside `internal/forge/` imports forge-specific packages directly.
 - Forge-neutral naming occasionally feels awkward (e.g., `ChangeProposal`), but prevents GitHub-centric thinking from leaking into the model.
 - The interface will grow as new operations are needed; keeping it cohesive requires discipline.
 - The `FakeClient` enables deterministic testing of every layer without network calls.
+- Sentinel errors (`ErrNotFound`, `ErrBranchProtected`, `ErrAlreadyExists`) with `errors.Is()` helpers provide forge-agnostic error classification. `ErrNotFound` and `ErrAlreadyExists` are mapped in `APIError.Unwrap()` for automatic propagation. `ErrBranchProtected` is wrapped contextually at the call site (e.g., `commitFilesTo`) where the operation context disambiguates branch-protection 422s from other validation failures.
+- `CommitFilesToBranch` complements `CommitFiles` (default branch) by targeting a specific branch, enabling the protected-branch fallback path where scaffold files are committed to a feature branch and delivered via PR.

@@ -1,1603 +1,926 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Fullsend Document Graph</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.30.4/cytoscape.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/layout-base@2.0.1/layout-base.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/cose-base@2.2.0/cose-base.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/cytoscape-cose-bilkent@4.1.0/cytoscape-cose-bilkent.min.js"></script>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Fullsend — Autonomous SDLC Agents</title>
+<meta name="description" content="Fullsend deploys autonomous agents across your GitHub repos. They triage issues, write code, review PRs, and ship to production."/>
+<link rel="icon" type="image/png" href="/docs/img/favicon.png"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"/>
+<script>
+(function(){var t=localStorage.getItem('theme')||(window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')})();
+</script>
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1e1e1e; color: #c9d1d9; }
-  #cy { width: 100%; height: 100vh; cursor: grab; position: relative; z-index: 0; }
-  #cy:active { cursor: grabbing; }
-  #dot-overlay {
-    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-    pointer-events: none; z-index: 5;
+/* --- Design tokens --- */
+:root{
+  --font-body:'Plus Jakarta Sans',system-ui,sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,monospace;
+  --bg:#f8fafc;
+  --bg-elevated:#ffffff;
+  --bg-card:rgba(0,0,0,0.02);
+  --border:#e2e8f0;
+  --text:#1e293b;
+  --text-dim:#475569;
+  --text-muted:#64748b;
+  --accent:#4d7c0f;
+  --accent-dim:#3f6212;
+  --accent-contrast:#fff;
+  --blue:#2563eb;
+  --purple:#7c3aed;
+  color-scheme:light;
+}
+[data-theme="dark"]{
+  --bg:#0c1220;
+  --bg-elevated:#131c2e;
+  --bg-card:rgba(255,255,255,0.03);
+  --border:#1e3050;
+  --text:#e8edf4;
+  --text-dim:#8ba0be;
+  --text-muted:#5a7294;
+  --accent:#c4ff0e;
+  --accent-dim:#92bf0a;
+  --accent-contrast:#0c1220;
+  --blue:#5cb3ff;
+  --purple:#a78bfa;
+  color-scheme:dark;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  font-family:var(--font-body);
+  background:var(--bg);
+  color:var(--text);
+  line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* --- Navigation --- */
+nav{
+  position:fixed;top:0;left:0;right:0;z-index:100;
+  height:3.5rem;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 2rem;
+  background:rgba(255,255,255,0.85);
+  backdrop-filter:blur(16px);
+  border-bottom:1px solid var(--border);
+}
+[data-theme="dark"] nav{
+  background:rgba(12,18,32,0.85);
+}
+.nav-brand{
+  font-weight:800;font-size:1.1rem;
+  color:var(--accent);text-decoration:none;
+  letter-spacing:-0.02em;
+}
+.nav-links{display:flex;gap:1.5rem;align-items:center}
+.nav-links a{
+  font-size:0.9rem;font-weight:500;
+  color:var(--text-dim);text-decoration:none;
+  transition:color 0.15s;
+}
+.nav-links a:hover{color:var(--text)}
+.nav-cta{
+  font-size:0.85rem;font-weight:600;
+  padding:0.45rem 1.1rem;border-radius:6px;
+  background:var(--accent);color:var(--accent-contrast);
+  text-decoration:none;transition:opacity 0.15s;
+}
+.nav-cta:hover{opacity:0.85}
+.theme-toggle{
+  background:none;border:1px solid var(--border);
+  border-radius:6px;padding:0.35rem;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  color:var(--text-dim);transition:color 0.15s,border-color 0.15s;
+}
+.theme-toggle:hover{color:var(--text);border-color:var(--text-muted)}
+.theme-toggle svg{width:16px;height:16px;fill:currentColor}
+.nav-hamburger{
+  display:none;
+  background:none;border:1px solid var(--border);
+  border-radius:6px;padding:0.35rem;
+  cursor:pointer;align-items:center;justify-content:center;
+  color:var(--text-dim);
+}
+.nav-hamburger svg{width:20px;height:20px;stroke:currentColor;fill:none}
+.theme-toggle .icon-moon{display:none}
+[data-theme="dark"] .theme-toggle .icon-sun{display:none}
+[data-theme="dark"] .theme-toggle .icon-moon{display:block}
+
+/* --- Hero (two-column: text left, timeline right) --- */
+.hero{
+  min-height:100vh;
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  align-items:start;
+  gap:3rem;
+  padding:7rem 4rem 4rem;
+  max-width:1280px;
+  margin:0 auto;
+  position:relative;
+  overflow:hidden;
+}
+.hero::before{
+  content:'';position:absolute;inset:0;
+  background:radial-gradient(ellipse 60% 50% at 30% 40%,rgba(101,163,13,0.04),transparent 70%);
+  pointer-events:none;
+}
+[data-theme="dark"] .hero::before{
+  background:radial-gradient(ellipse 60% 50% at 30% 40%,rgba(196,255,14,0.04),transparent 70%);
+}
+.hero-text{position:relative;z-index:1;padding-top:1.5rem}
+.hero-badge{
+  display:inline-block;
+  font-family:var(--font-mono);
+  font-size:0.8rem;font-weight:500;
+  padding:0.35rem 0.9rem;border-radius:20px;
+  background:rgba(196,255,14,0.08);
+  border:1px solid rgba(196,255,14,0.15);
+  color:var(--accent);
+  margin-bottom:1.5rem;
+  letter-spacing:0.03em;
+}
+.hero h1{
+  font-size:clamp(2.2rem,5vw,3.8rem);
+  font-weight:800;
+  letter-spacing:-0.04em;
+  line-height:1.05;
+  margin-bottom:1.25rem;
+}
+.hero h1 .accent{color:var(--accent)}
+.hero-sub{
+  font-size:clamp(1.05rem,1.5vw,1.15rem);
+  color:var(--text-dim);
+  max-width:520px;
+  margin-bottom:1.5rem;
+  line-height:1.7;
+}
+.hero-highlights{
+  display:flex;flex-wrap:wrap;gap:0.5rem;
+  margin-bottom:2rem;
+}
+.hero-highlights span{
+  font-family:var(--font-mono);
+  font-size:0.8rem;font-weight:500;
+  padding:0.35rem 0.8rem;border-radius:6px;
+  background:var(--bg-elevated);
+  border:1px solid var(--border);
+  color:var(--text-dim);
+  letter-spacing:0.02em;
+}
+.hero-actions{display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:2.5rem}
+.hero-stats{
+  display:flex;gap:2rem;
+  padding-top:1.5rem;
+  border-top:1px solid var(--border);
+}
+.hero-stat{display:flex;flex-direction:column;gap:0.15rem}
+.hero-stat-value{
+  font-family:var(--font-mono);
+  font-size:0.95rem;font-weight:700;
+  color:var(--accent);
+}
+.hero-stat-label{
+  font-size:0.8rem;color:var(--text-muted);
+  letter-spacing:0.02em;
+}
+.hero-timeline{position:relative;z-index:1}
+.btn-primary{
+  display:inline-flex;align-items:center;gap:0.4rem;
+  font-family:var(--font-body);font-size:1rem;font-weight:600;
+  padding:0.75rem 1.75rem;border-radius:8px;
+  background:var(--accent);color:var(--accent-contrast);
+  text-decoration:none;border:none;cursor:pointer;
+  transition:opacity 0.15s;
+}
+.btn-primary:hover{opacity:0.85}
+.btn-secondary{
+  display:inline-flex;align-items:center;gap:0.5rem;
+  font-family:var(--font-body);font-size:1rem;font-weight:500;
+  padding:0.75rem 1.75rem;border-radius:8px;
+  background:transparent;color:var(--text);
+  border:1px solid var(--border);text-decoration:none;
+  transition:border-color 0.15s;
+}
+.btn-secondary:hover{border-color:var(--text-muted)}
+.btn-secondary svg{width:18px;height:18px;fill:currentColor}
+
+/* --- GitHub activity timeline (embedded in hero) --- */
+.gh-demo-inner{max-width:100%}
+.gh-demo-label{
+  font-family:var(--font-mono);
+  font-size:0.75rem;font-weight:500;
+  text-transform:uppercase;letter-spacing:0.15em;
+  color:var(--accent);margin-bottom:0.5rem;
+}
+.gh-demo-title{
+  font-size:1.25rem;
+  font-weight:700;letter-spacing:-0.02em;
+  margin-bottom:0.4rem;
+}
+.gh-demo-desc{
+  color:var(--text-dim);
+  font-size:0.9rem;max-width:480px;
+  margin-bottom:1.25rem;
+}
+.gh-issue-bar{
+  display:flex;align-items:center;gap:0.6rem;
+  padding:0.6rem 1rem;
+  border-radius:10px 10px 0 0;
+  background:var(--bg-elevated);
+  border:1px solid var(--border);
+  border-bottom:none;
+}
+.gh-issue-icon{
+  width:16px;height:16px;
+  border-radius:50%;
+  background:var(--accent);
+  flex-shrink:0;
+}
+.gh-issue-title{
+  font-size:0.9rem;font-weight:600;
+  color:var(--text);
+}
+.gh-issue-number{
+  font-family:var(--font-mono);
+  font-size:0.85rem;color:var(--text-muted);
+}
+.gh-timeline{
+  border:1px solid var(--border);
+  border-radius:0 0 10px 10px;
+  background:var(--bg-elevated);
+  padding:1rem 1.25rem;
+  display:flex;flex-direction:column;gap:0;
+}
+.gh-event{
+  display:flex;gap:0.75rem;
+  padding:0.85rem 0;
+  border-bottom:1px solid var(--border);
+  opacity:0;transform:translateY(12px);
+  transition:opacity 0.5s ease,transform 0.5s ease;
+}
+.gh-event:last-child{border-bottom:none}
+.gh-event.visible{opacity:1;transform:translateY(0)}
+.gh-avatar{
+  flex-shrink:0;
+  width:32px;height:32px;
+  border-radius:50%;overflow:hidden;
+  border:1px solid var(--border);
+}
+.gh-avatar img{width:100%;height:100%;object-fit:cover;display:block}
+.gh-event-content{flex:1;min-width:0}
+.gh-event-header{
+  display:flex;flex-wrap:wrap;
+  align-items:center;gap:0.4rem;
+  margin-bottom:0.1rem;
+}
+.gh-bot-name{
+  font-family:var(--font-mono);
+  font-size:0.875rem;font-weight:600;
+  color:var(--text);
+}
+.gh-bot-badge{
+  font-family:var(--font-mono);
+  font-size:0.65rem;font-weight:600;
+  padding:0.1rem 0.35rem;border-radius:3px;
+  background:rgba(0,0,0,0.04);
+  color:var(--text-muted);
+  text-transform:uppercase;letter-spacing:0.04em;
+  border:1px solid var(--border);
+}
+[data-theme="dark"] .gh-bot-badge{
+  background:rgba(255,255,255,0.06);
+}
+.gh-event-action{font-size:0.875rem;color:var(--text-dim)}
+.gh-event-time{
+  font-size:0.8rem;color:var(--text-muted);
+  margin-left:auto;white-space:nowrap;
+}
+.gh-event-body{
+  margin-top:0.4rem;
+  padding:0.65rem 0.85rem;
+  border-radius:8px;
+  background:var(--bg-card);
+  border:1px solid var(--border);
+  font-size:0.875rem;color:var(--text-dim);
+  line-height:1.6;
+}
+.gh-event-body code{
+  font-family:var(--font-mono);font-size:0.8rem;
+  padding:0.12rem 0.35rem;border-radius:4px;
+  background:rgba(0,0,0,0.05);color:var(--text);
+}
+[data-theme="dark"] .gh-event-body code{
+  background:rgba(255,255,255,0.05);
+}
+.gh-event-body .gh-pr-link{color:var(--blue);font-weight:600}
+.gh-event-body .gh-check{color:var(--accent);font-weight:600}
+
+/* --- Section layout --- */
+section{position:relative;z-index:1;padding:7rem 2rem}
+.section-inner{max-width:1100px;margin:0 auto}
+.section-label{
+  font-family:var(--font-mono);
+  font-size:0.8rem;font-weight:500;
+  text-transform:uppercase;letter-spacing:0.15em;
+  color:var(--accent);margin-bottom:1rem;
+}
+.section-title{
+  font-size:clamp(2rem,4vw,3rem);
+  font-weight:800;letter-spacing:-0.03em;
+  line-height:1.15;margin-bottom:1rem;
+}
+.section-desc{
+  font-size:1.05rem;color:var(--text-dim);
+  max-width:560px;line-height:1.7;
+  margin-bottom:3rem;
+}
+
+/* --- SDLC Cycle --- */
+.cycle-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+  gap:1px;
+  background:var(--border);
+  border-radius:12px;overflow:hidden;
+}
+.cycle-step{
+  background:var(--bg-elevated);
+  padding:1.5rem;
+  display:flex;flex-direction:column;gap:0.4rem;
+}
+.cycle-num{
+  font-family:var(--font-mono);
+  font-size:0.8rem;font-weight:600;
+  color:var(--accent);
+  letter-spacing:0.1em;
+}
+.cycle-cron{
+  background:rgba(196,255,14,0.1);
+  padding:0.15rem 0.4rem;border-radius:4px;
+  display:inline-block;
+}
+.cycle-name{font-size:1.1rem;font-weight:700}
+.cycle-desc{font-size:0.9rem;color:var(--text-dim);line-height:1.6}
+
+/* --- Agent cards --- */
+.agents-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+  gap:1rem;
+}
+.agent-card{
+  background:var(--bg-elevated);
+  border:1px solid var(--border);
+  border-radius:10px;padding:1.25rem;
+  transition:border-color 0.2s;
+}
+.agent-card:hover{border-color:var(--accent)}
+.agent-icon{
+  width:36px;height:36px;
+  border-radius:50%;overflow:hidden;
+  margin-bottom:0.75rem;
+  border:1px solid var(--border);
+}
+.agent-icon img{width:100%;height:100%;object-fit:cover;display:block}
+.agent-name{
+  font-family:var(--font-mono);
+  font-size:0.95rem;font-weight:600;
+  margin-bottom:0.35rem;
+}
+.agent-desc{font-size:0.9rem;color:var(--text-dim);line-height:1.6}
+
+/* --- Setup steps --- */
+.setup-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+  gap:1.25rem;
+}
+.setup-card{
+  background:var(--bg-elevated);
+  border:1px solid var(--border);
+  border-radius:10px;padding:1.5rem;
+}
+.setup-num{
+  font-family:var(--font-mono);
+  font-size:0.8rem;font-weight:600;
+  color:var(--accent);margin-bottom:0.5rem;
+  letter-spacing:0.1em;
+}
+.setup-title{font-size:1.1rem;font-weight:700;margin-bottom:0.4rem}
+.setup-desc{font-size:0.9rem;color:var(--text-dim);line-height:1.6;margin-bottom:0.75rem}
+.setup-code{
+  font-family:var(--font-mono);
+  font-size:0.85rem;
+  padding:0.5rem 0.75rem;
+  border-radius:6px;
+  background:rgba(0,0,0,0.05);
+  color:var(--accent);
+  display:block;
+  overflow-x:auto;
+}
+[data-theme="dark"] .setup-code{
+  background:rgba(0,0,0,0.3);
+}
+
+/* --- Principles --- */
+.principles-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+  gap:1.25rem;
+}
+.principle-card{
+  background:var(--bg-elevated);
+  border:1px solid var(--border);
+  border-radius:10px;padding:1.5rem;
+}
+.principle-icon{margin-bottom:0.6rem;width:28px;height:28px;color:var(--accent)}
+.principle-title{font-size:1.1rem;font-weight:700;margin-bottom:0.35rem}
+.principle-desc{font-size:0.9rem;color:var(--text-dim);line-height:1.6}
+
+/* --- CTA --- */
+.cta{
+  text-align:center;
+  padding:6rem 2rem;
+  background:linear-gradient(180deg,var(--bg-elevated) 0%,var(--bg) 100%);
+}
+.cta-title{
+  font-size:clamp(2rem,4vw,3rem);
+  font-weight:800;letter-spacing:-0.03em;
+  margin-bottom:1rem;
+}
+.cta-desc{
+  font-size:1.1rem;color:var(--text-dim);
+  max-width:460px;margin:0 auto 2rem;
+}
+.cta .hero-actions{justify-content:center}
+
+/* --- Footer --- */
+footer{
+  padding:3.5rem 2rem 2rem;
+  border-top:1px solid var(--border);
+  font-size:0.875rem;
+  color:var(--text-muted);
+}
+.footer-inner{
+  max-width:1100px;margin:0 auto;
+  display:grid;
+  grid-template-columns:1.5fr 1fr 1fr;
+  gap:3rem;
+}
+.footer-brand{display:flex;flex-direction:column;gap:0.75rem}
+.footer-logo{
+  font-weight:800;font-size:1.15rem;
+  color:var(--accent);letter-spacing:-0.02em;
+}
+.footer-tagline{
+  font-size:0.875rem;color:var(--text-dim);
+  line-height:1.6;max-width:340px;
+}
+.footer-license{
+  font-family:var(--font-mono);
+  font-size:0.75rem;color:var(--text-muted);
+}
+.footer-col h4{
+  font-family:var(--font-mono);
+  font-size:0.75rem;font-weight:600;
+  text-transform:uppercase;letter-spacing:0.15em;
+  color:var(--text-dim);margin-bottom:0.75rem;
+}
+.footer-col ul{list-style:none}
+.footer-col li{margin-bottom:0.5rem}
+.footer-col a{
+  color:var(--text-muted);text-decoration:none;
+  font-size:0.875rem;transition:color 0.15s;
+}
+.footer-col a:hover{color:var(--text)}
+.footer-bottom{
+  max-width:1100px;margin:2.5rem auto 0;
+  padding-top:1.5rem;
+  border-top:1px solid var(--border);
+  text-align:center;
+  font-size:0.8rem;color:var(--text-muted);
+}
+
+/* --- Focus styles --- */
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+.btn-primary:focus-visible,.btn-secondary:focus-visible,.nav-cta:focus-visible{outline-offset:3px}
+
+/* --- Scroll reveal --- */
+.reveal{opacity:0;transform:translateY(20px);transition:opacity 0.6s ease,transform 0.6s ease}
+.reveal.visible{opacity:1;transform:translateY(0)}
+
+/* --- Responsive --- */
+@media(max-width:900px){
+  .hero{
+    grid-template-columns:1fr;
+    padding:5rem 1.5rem 3rem;
+    text-align:center;
   }
-  #labels {
-    position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-    pointer-events: none; z-index: 6; overflow: hidden;
+  .hero-sub{margin-left:auto;margin-right:auto}
+  .hero-actions{justify-content:center}
+  .footer-inner{grid-template-columns:1fr;gap:2rem}
+}
+@media(max-width:640px){
+  nav{padding:0 1rem}
+  .nav-links{
+    display:none;flex-direction:column;
+    position:absolute;top:3.5rem;left:0;right:0;
+    background:var(--bg-elevated);
+    border-bottom:1px solid var(--border);
+    padding:1rem;gap:0.75rem;
+    box-shadow:0 4px 12px rgba(0,0,0,0.08);
   }
-  .node-label {
-    position: absolute; white-space: nowrap; font-size: 11px; color: #dadada;
-    transform: translate(-50%, 0); pointer-events: none;
-    text-shadow: 0 0 4px #1e1e1e, 0 0 4px #1e1e1e, 0 0 2px #1e1e1e;
-    transition: opacity 0.1s;
-  }
-  #controls {
-    position: absolute; top: 16px; left: 16px; z-index: 10;
-    display: flex; flex-direction: column; gap: 8px; max-width: 300px;
-  }
-  .graph-input {
-    padding: 8px 12px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1);
-    background: rgba(30,30,30,0.85); color: #dadada; font-size: 14px; width: 240px;
-    backdrop-filter: blur(8px);
-  }
-  .graph-input:focus { border-color: rgba(255,255,255,0.3); outline: none; }
-  .graph-input::placeholder { color: #666; }
-  #search { position: relative; z-index: 11; pointer-events: auto; }
-  .btn {
-    padding: 6px 14px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1);
-    background: rgba(30,30,30,0.85); color: #bababa; font-size: 13px; cursor: pointer;
-    text-align: left; transition: background 0.15s, border-color 0.15s;
-    backdrop-filter: blur(8px);
-  }
-  .btn:hover { background: rgba(60,60,60,0.85); }
-  .btn.active { background: rgba(127,109,242,0.6); border-color: rgba(127,109,242,0.5); color: #fff; }
-  #legend {
-    position: absolute; bottom: 16px; left: 16px; z-index: 10;
-    background: rgba(30,30,30,0.8); border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 8px; padding: 12px 16px; font-size: 12px;
-    backdrop-filter: blur(8px);
-  }
-  #legend h4 { margin-bottom: 8px; font-size: 13px; color: #dadada; }
-  .legend-item { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
-  .legend-item[data-group], .legend-item[data-pr-filter] { cursor: pointer; padding: 2px 6px; border-radius: 4px; transition: opacity 0.15s; }
-  .legend-item[data-group]:hover, .legend-item[data-pr-filter]:hover { background: rgba(255,255,255,0.06); }
-  .legend-item[data-group].legend-off, .legend-item[data-pr-filter].legend-off { opacity: 0.3; }
-  .legend-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
-  #loading {
-    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-    z-index: 20; text-align: center; font-size: 16px;
-  }
-  .spinner {
-    width: 40px; height: 40px; border: 3px solid #333; border-top-color: #7f6df2;
-    border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 12px;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  #error-banner {
-    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-    z-index: 20; background: #161b22; border: 1px solid #da3633; color: #c9d1d9;
-    padding: 24px 32px; border-radius: 12px; font-size: 14px; max-width: 480px;
-    display: none; text-align: center; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
-  }
-  #error-banner h3 { color: #da3633; margin-bottom: 12px; font-size: 16px; }
-  #error-banner .error-login { margin-top: 16px; }
-  #sidebar {
-    position: absolute; top: 0; right: 0; width: 340px; height: 100vh; z-index: 30;
-    background: rgba(26,26,26,0.95); border-left: 1px solid rgba(255,255,255,0.08);
-    backdrop-filter: blur(12px); transform: translateX(100%);
-    transition: transform 0.2s ease; overflow-y: auto; padding: 20px;
-    font-size: 13px; color: #bababa;
-  }
-  #sidebar.open { transform: translateX(0); }
-  #sidebar .close {
-    position: absolute; top: 12px; right: 14px; cursor: pointer;
-    color: #666; font-size: 20px; line-height: 1;
-  }
-  #sidebar .close:hover { color: #dadada; }
-  #sidebar h3 { font-size: 15px; color: #dadada; margin-bottom: 4px; word-break: break-word; }
-  #sidebar .path { font-size: 11px; color: #666; margin-bottom: 16px; word-break: break-all; }
-  #sidebar a { color: #58a6ff; text-decoration: none; }
-  #sidebar a:hover { text-decoration: underline; }
-  #sidebar .section { margin-top: 16px; }
-  #sidebar .section h4 { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
-  #sidebar .pr-item {
-    padding: 8px 0; border-top: 1px solid rgba(255,255,255,0.06);
-  }
-  #sidebar .pr-item:first-child { border-top: none; }
-  #sidebar .pr-number { color: #58a6ff; font-weight: 500; }
-  #sidebar .pr-title { color: #dadada; }
-  #sidebar .pr-author { color: #666; font-size: 12px; }
-  #sidebar .pr-badge {
-    display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 3px;
-    margin-left: 6px; font-weight: 500;
-  }
-  #sidebar .pr-badge.added { background: rgba(63,185,80,0.15); color: #3fb950; }
-  #sidebar .pr-badge.removed { background: rgba(218,54,51,0.15); color: #da3633; }
-  #sidebar .pr-badge.modified { background: rgba(210,168,255,0.15); color: #d2a8ff; }
-  #sidebar .open-github {
-    display: inline-block; margin-top: 12px; padding: 6px 14px; border-radius: 6px;
-    background: rgba(255,255,255,0.08); color: #dadada; font-size: 13px;
-    border: 1px solid rgba(255,255,255,0.1); transition: background 0.15s;
-  }
-  #sidebar .open-github:hover { background: rgba(255,255,255,0.14); text-decoration: none; }
-  #auth {
-    position: absolute; top: 16px; right: 16px; z-index: 10;
-    display: flex; align-items: center; gap: 8px;
-  }
-  #auth-user { font-size: 13px; color: #8b949e; }
-  #auth-user strong { color: #c9d1d9; }
-  #token-modal {
-    position: fixed; top: 0; left: 0; width: 100%; height: 100%; z-index: 50;
-    background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center;
-  }
-  #token-modal .modal-box {
-    background: #161b22; border: 1px solid #30363d; border-radius: 12px;
-    padding: 32px; max-width: 420px;
-  }
-  #token-modal h3 { font-size: 18px; color: #e6edf3; margin-bottom: 8px; }
-  #token-modal p { font-size: 13px; color: #8b949e; margin: 8px 0; line-height: 1.5; }
-  #token-modal a { color: #58a6ff; text-decoration: none; }
-  #token-modal a:hover { text-decoration: underline; }
-  #token-modal input[type="password"] {
-    width: 100%; padding: 8px 12px; border-radius: 6px; border: 1px solid #30363d;
-    background: #0d1117; color: #c9d1d9; font-size: 14px; font-family: monospace;
-    margin: 12px 0;
-  }
-  #token-modal .modal-buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
-  #token-modal .btn-primary {
-    background: #238636; border-color: #238636; color: #fff;
-  }
-  #token-modal .btn-primary:hover { background: #2ea043; }
+  .nav-links.open{display:flex}
+  .nav-hamburger{display:flex}
+  section{padding:4rem 1.5rem}
+}
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  .gh-event{opacity:1;transform:none;transition:none}
+  .reveal{opacity:1;transform:none;transition:none}
+  .agent-card,.nav-links a,.btn-secondary,.theme-toggle{transition:none}
+}
 </style>
 </head>
 <body>
 
-<div id="loading"><div class="spinner"></div>Loading document graph...</div>
-<div id="error-banner"></div>
-
-<div id="controls">
-  <input id="search" class="graph-input" type="text" placeholder="Search documents...">
-  <button id="refit-btn" class="btn" style="display:none;">Refit layout</button>
-  <div id="pr-status" class="btn" style="display:none; cursor:default; opacity:0.7;">Loading PRs...</div>
-  <button id="pr-toggle" class="btn" style="display:none;">Show PR changes</button>
-  <input id="pr-search" class="graph-input" type="text" placeholder="Filter PRs (#number or title)..." style="display:none;">
-</div>
-
-<div id="legend">
-  <h4>Directories</h4>
-  <div class="legend-item" data-group="problem"><span class="legend-dot" style="background:#6a9fd8;"></span> problems</div>
-  <div class="legend-item" data-group="applied"><span class="legend-dot" style="background:#5cb87a;"></span> problems-applied</div>
-  <div class="legend-item" data-group="adr"><span class="legend-dot" style="background:#d4a054; border-radius:2px;"></span> ADRs</div>
-  <div class="legend-item" data-group="plan"><span class="legend-dot" style="background:#a06ad8;"></span> plans</div>
-  <div class="legend-item" data-group="docs,root"><span class="legend-dot" style="background:#c0c0c0;"></span> other</div>
-  <div id="legend-pr" style="display:none;">
-    <hr style="border-color:rgba(255,255,255,0.08); margin:8px 0;">
-    <h4>PR changes</h4>
-    <div class="legend-item" data-pr-filter="added-node"><span class="legend-dot" style="background:transparent; border:2px solid #3fb950;"></span> Added node</div>
-    <div class="legend-item" data-pr-filter="removed-node"><span class="legend-dot" style="background:transparent; border:2px solid #da3633;"></span> Removed node</div>
-    <div class="legend-item" data-pr-filter="modified-node"><span class="legend-dot" style="background:repeating-linear-gradient(-45deg, #959595, #959595 2px, transparent 2px, transparent 4px);"></span> Modified node</div>
-    <div class="legend-item" data-pr-filter="added-link"><span style="display:inline-block; width:16px; height:0; border-top:2px dashed #3fb950; flex-shrink:0;"></span> Added link</div>
-    <div class="legend-item" data-pr-filter="removed-link"><span style="display:inline-block; width:16px; height:0; border-top:2px dashed #da3633; flex-shrink:0;"></span> Removed link</div>
+<!-- Navigation -->
+<nav>
+  <a class="nav-brand" href="/">Fullsend</a>
+  <button class="nav-hamburger" id="nav-hamburger" aria-label="Open menu" aria-expanded="false"><svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
+  <div class="nav-links" id="nav-links">
+    <a href="/docs/">Docs</a>
+    <a href="/docs/agents/">Agents</a>
+    <a href="/docs/cli/">CLI</a>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+      <svg class="icon-sun" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 18a6 6 0 1 1 0-12 6 6 0 0 1 0 12zm0-2a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0-12a1 1 0 0 1 1 1v2a1 1 0 0 1-2 0V5a1 1 0 0 1 1-1zm0 15a1 1 0 0 1 1 1v2a1 1 0 0 1-2 0v-2a1 1 0 0 1 1-1zm7.071-14.071a1 1 0 0 1 0 1.414l-1.414 1.414a1 1 0 1 1-1.414-1.414l1.414-1.414a1 1 0 0 1 1.414 0zm-11.314 11.314a1 1 0 0 1 0 1.414l-1.414 1.414a1 1 0 0 1-1.414-1.414l1.414-1.414a1 1 0 0 1 1.414 0zM23 12a1 1 0 0 1-1 1h-2a1 1 0 0 1 0-2h2a1 1 0 0 1 1 1zM6 12a1 1 0 0 1-1 1H3a1 1 0 0 1 0-2h2a1 1 0 0 1 1 1zm13.071 7.071a1 1 0 0 1-1.414 0l-1.414-1.414a1 1 0 0 1 1.414-1.414l1.414 1.414a1 1 0 0 1 0 1.414zM7.757 7.757a1 1 0 0 1-1.414 0L4.929 6.343a1 1 0 0 1 1.414-1.414l1.414 1.414a1 1 0 0 1 0 1.414z"/></svg>
+      <svg class="icon-moon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg>
+    </button>
+    <a class="nav-cta" href="/docs/">Get Started</a>
   </div>
-</div>
+</nav>
 
-<div id="auth">
-  <span id="auth-user"></span>
-  <button id="login-btn" class="btn">Login with GitHub</button>
-  <button id="logout-btn" class="btn" style="display:none;">Logout</button>
-</div>
-
-<div id="token-modal">
-  <div class="modal-box">
-    <h3>Login with GitHub</h3>
-    <p>Paste a <a href="https://github.com/settings/tokens/new?scopes=repo&description=fullsend-mindmap" target="_blank">Personal Access Token</a> with <code>repo</code> scope. It is stored only in your browser's localStorage.</p>
-    <input id="token-input" type="password" placeholder="ghp_...">
-    <div id="token-error" style="color:#da3633; font-size:13px; display:none;"></div>
-    <div class="modal-buttons">
-      <button id="token-cancel" class="btn">Cancel</button>
-      <button id="token-save" class="btn btn-primary">Login</button>
+<!-- Hero: text left + timeline right -->
+<div class="hero">
+  <div class="hero-text">
+    <div class="hero-badge">Open source &middot; Agentic SDLC &middot; Beyond Git</div>
+    <h1>Ship code on<br/><span class="accent">autopilot.</span></h1>
+    <p class="hero-sub">The autonomous development lifecycle (ADLC) platform. Fullsend deploys purpose-built agents across your GitHub repos that triage issues, write code, review PRs, fix findings, and ship to production&mdash;continuously.</p>
+    <div class="hero-highlights">
+      <span>Agentic SDLC</span>
+      <span>Multi-agent pipeline</span>
+      <span>GitHub-native</span>
+      <span>Self-host supported</span>
+      <span>OpenShell Sandbox</span>
+    </div>
+    <div class="hero-actions">
+      <a class="btn-primary" href="/docs/">Get Started</a>
+      <a class="btn-secondary" href="https://github.com/fullsend-ai/fullsend">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+        Star on GitHub
+      </a>
+    </div>
+    <div class="hero-stats">
+      <div class="hero-stat">
+        <span class="hero-stat-value">6 Agents</span>
+        <span class="hero-stat-label">E2E SDLC coverage</span>
+      </div>
+      <div class="hero-stat">
+        <span class="hero-stat-value">Apache 2.0</span>
+        <span class="hero-stat-label">Open source</span>
+      </div>
+      <div class="hero-stat">
+        <span class="hero-stat-value">Linux &amp; macOS</span>
+        <span class="hero-stat-label">CLI platforms</span>
+      </div>
     </div>
   </div>
+
+  <div class="hero-timeline">
+  <div class="gh-demo-inner">
+    <div class="gh-demo-label">How it works</div>
+    <div class="gh-demo-title">From issue to production.</div>
+    <p class="gh-demo-desc">Watch the full agent pipeline handle an issue end-to-end, right inside your GitHub repo.</p>
+
+    <div class="gh-issue-bar">
+      <div class="gh-issue-icon"></div>
+      <span class="gh-issue-title">Add rate limiting to API</span>
+      <span class="gh-issue-number">#847</span>
+    </div>
+
+    <div class="gh-timeline" id="timeline">
+      <div class="gh-event" data-delay="0">
+        <div class="gh-avatar"><img src="https://avatars.githubusercontent.com/in/3478490?v=4" alt="triage bot" loading="lazy"></div>
+        <div class="gh-event-content">
+          <div class="gh-event-header">
+            <span class="gh-bot-name">fullsend-ai-triage[bot]</span>
+            <span class="gh-bot-badge">bot</span>
+            <span class="gh-event-action">triaged this issue</span>
+            <span class="gh-event-time">2 min ago</span>
+          </div>
+          <div class="gh-event-body">Scope: medium, type: feature. Suggested fix: wrap handler with sliding-window middleware. Good candidate for quick resolution.<br><strong>Labels:</strong> <code>type/feature</code> <code>component/api</code> <code>ready-to-code</code></div>
+        </div>
+      </div>
+
+      <div class="gh-event" data-delay="800">
+        <div class="gh-avatar"><img src="https://avatars.githubusercontent.com/in/3478495?v=4" alt="coder bot" loading="lazy"></div>
+        <div class="gh-event-content">
+          <div class="gh-event-header">
+            <span class="gh-bot-name">fullsend-ai-coder[bot]</span>
+            <span class="gh-bot-badge">bot</span>
+            <span class="gh-event-action">opened a pull request</span>
+            <span class="gh-event-time">1 min ago</span>
+          </div>
+          <div class="gh-event-body"><span class="gh-pr-link">#848</span> feat: add sliding-window rate limiter<br>wrote <code>middleware/ratelimit.go</code> + <code>ratelimit_test.go</code></div>
+        </div>
+      </div>
+
+      <div class="gh-event" data-delay="1800">
+        <div class="gh-avatar"><img src="https://avatars.githubusercontent.com/in/3478501?v=4" alt="review bot" loading="lazy"></div>
+        <div class="gh-event-content">
+          <div class="gh-event-header">
+            <span class="gh-bot-name">fullsend-ai-review[bot]</span>
+            <span class="gh-bot-badge">bot</span>
+            <span class="gh-event-action">reviewed PR #848</span>
+            <span class="gh-event-time">45 sec ago</span>
+          </div>
+          <div class="gh-event-body">Reviewed across correctness, security, performance, and intent. 1 finding: potential race condition in <code>CreateBranch</code> under concurrent requests.</div>
+        </div>
+      </div>
+
+      <div class="gh-event" data-delay="2600">
+        <div class="gh-avatar"><img src="https://avatars.githubusercontent.com/in/3478495?v=4" alt="coder bot" loading="lazy"></div>
+        <div class="gh-event-content">
+          <div class="gh-event-header">
+            <span class="gh-bot-name">fullsend-ai-coder[bot]</span>
+            <span class="gh-bot-badge">bot</span>
+            <span class="gh-event-action">pushed a fix</span>
+            <span class="gh-event-time">30 sec ago</span>
+          </div>
+          <div class="gh-event-body">&#x1f527; Fix agent &mdash; iteration 1. Fixed race-condition finding from review: added retry with backoff after <code>CreateBranch</code>. Tests passed.</div>
+        </div>
+      </div>
+
+      <div class="gh-event" data-delay="3400">
+        <div class="gh-avatar"><img src="https://avatars.githubusercontent.com/in/3689659?v=4" alt="retro bot" loading="lazy"></div>
+        <div class="gh-event-content">
+          <div class="gh-event-header">
+            <span class="gh-bot-name">fullsend-ai-retro[bot]</span>
+            <span class="gh-bot-badge">bot</span>
+            <span class="gh-event-action">analyzed the workflow</span>
+            <span class="gh-event-time">just now</span>
+          </div>
+          <div class="gh-event-body">PR <span class="gh-pr-link">#848</span> merged in 5m34s. 1 review finding fixed by fix agent, approved on re-review. 1 proposal filed: add rate limit headers to error responses.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  </div>
 </div>
 
-<div id="sidebar"><span class="close">&times;</span><div id="sidebar-content"></div></div>
+<!-- SDLC Cycle -->
+<section>
+  <div class="section-inner">
+    <div class="section-label">The Loop</div>
+    <div class="section-title">Full SDLC, fully autonomous.</div>
+    <p class="section-desc">Every stage of the software development lifecycle handled by purpose-built agents that collaborate through your existing GitHub workflow.</p>
+    <div class="cycle-grid reveal">
+      <div class="cycle-step">
+        <div class="cycle-num">01</div>
+        <div class="cycle-name">Triage</div>
+        <div class="cycle-desc">Classify incoming issues, assess scope, suggest fixes, and apply labels automatically.</div>
+      </div>
+      <div class="cycle-step">
+        <div class="cycle-num cycle-cron">CRON</div>
+        <div class="cycle-name">Prioritize</div>
+        <div class="cycle-desc">Score issues using the RICE framework and rank your project board by value automatically.</div>
+      </div>
+      <div class="cycle-step">
+        <div class="cycle-num">02</div>
+        <div class="cycle-name">Code</div>
+        <div class="cycle-desc">Generate implementation PRs with tests, following your repo's conventions and patterns.</div>
+      </div>
+      <div class="cycle-step">
+        <div class="cycle-num">03</div>
+        <div class="cycle-name">Review</div>
+        <div class="cycle-desc">Multi-dimensional review across correctness, security, performance, and intent alignment.</div>
+      </div>
+      <div class="cycle-step">
+        <div class="cycle-num">04</div>
+        <div class="cycle-name">Fix</div>
+        <div class="cycle-desc">Address review findings automatically, push fixes, and re-run tests until clean.</div>
+      </div>
+      <div class="cycle-step">
+        <div class="cycle-num">05</div>
+        <div class="cycle-name">Retro</div>
+        <div class="cycle-desc">Analyze completed workflows, surface insights, and file improvement proposals.</div>
+      </div>
+    </div>
+  </div>
+</section>
 
-<div id="cy"></div>
-<canvas id="dot-overlay"></canvas>
-<div id="labels"></div>
+<!-- Agent Cards -->
+<section style="background:var(--bg-elevated)">
+  <div class="section-inner">
+    <div class="section-label">Agents</div>
+    <div class="section-title">Meet the team.</div>
+    <p class="section-desc">Each agent is purpose-built for its role. They share context through GitHub&mdash;issues, PRs, and comments&mdash;just like human developers.</p>
+    <div class="agents-grid reveal">
+      <div class="agent-card">
+        <div class="agent-icon"><img src="https://avatars.githubusercontent.com/in/3478490?v=4" alt="triage" loading="lazy"></div>
+        <div class="agent-name">Triage</div>
+        <div class="agent-desc">Reads every new issue, classifies scope and type, suggests a fix path, and applies labels so nothing falls through the cracks.</div>
+      </div>
+      <div class="agent-card">
+        <div class="agent-icon"><img src="https://avatars.githubusercontent.com/in/3478495?v=4" alt="coder" loading="lazy"></div>
+        <div class="agent-name">Code</div>
+        <div class="agent-desc">Picks up ready-to-code issues, generates implementation PRs with tests, following your repo's style and conventions.</div>
+      </div>
+      <div class="agent-card">
+        <div class="agent-icon"><img src="https://avatars.githubusercontent.com/in/3478501?v=4" alt="review" loading="lazy"></div>
+        <div class="agent-name">Review</div>
+        <div class="agent-desc">Reviews every PR across correctness, security, performance, and intent. Posts inline comments with specific, actionable findings.</div>
+      </div>
+      <div class="agent-card">
+        <div class="agent-icon"><img src="https://avatars.githubusercontent.com/in/3478495?v=4" alt="fix" loading="lazy"></div>
+        <div class="agent-name">Fix</div>
+        <div class="agent-desc">Reads review findings, applies code fixes, pushes commits, and re-runs tests. Iterates until the review passes clean.</div>
+      </div>
+      <div class="agent-card">
+        <div class="agent-icon"><img src="https://avatars.githubusercontent.com/in/3689657?v=4" alt="prioritize" loading="lazy"></div>
+        <div class="agent-name">Prioritize</div>
+        <div class="agent-desc">Scores issues using the RICE framework&mdash;Reach, Impact, Confidence, Effort&mdash;and ranks your project board by value.</div>
+      </div>
+      <div class="agent-card">
+        <div class="agent-icon"><img src="https://avatars.githubusercontent.com/in/3689659?v=4" alt="retro" loading="lazy"></div>
+        <div class="agent-name">Retro</div>
+        <div class="agent-desc">After merge, analyzes the full workflow&mdash;timing, iterations, patterns&mdash;and files proposals for process improvements.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Setup Steps -->
+<section>
+  <div class="section-inner">
+    <div class="section-label">Getting Started</div>
+    <div class="section-title">Three steps to autonomous.</div>
+    <p class="section-desc">Deploy the full agent pipeline to your GitHub organization in minutes. No infrastructure to manage.</p>
+    <div class="setup-grid reveal">
+      <div class="setup-card">
+        <div class="setup-num">01</div>
+        <div class="setup-title">Install the GitHub App</div>
+        <div class="setup-desc">Add fullsend to your GitHub organization. Select which repos the agents can access and what permissions to grant.</div>
+      </div>
+      <div class="setup-card">
+        <div class="setup-num">02</div>
+        <div class="setup-title">Enroll your repos</div>
+        <div class="setup-desc">Enable specific repos for the agent pipeline. Customize agent config, agent model, and LLM provider per repo.</div>
+        <code class="setup-code">$ fullsend github setup</code>
+      </div>
+      <div class="setup-card">
+        <div class="setup-num">03</div>
+        <div class="setup-title">File an issue</div>
+        <div class="setup-desc">Create a GitHub issue. The triage agent picks it up, the code agent writes a PR, review validates, fix cleans up, retro learns. Autonomous.</div>
+        <code class="setup-code">$ gh issue create --title "Add rate limiting"</code>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Design Principles -->
+<section style="background:var(--bg-elevated)">
+  <div class="section-inner">
+    <div class="section-label">Design Principles</div>
+    <div class="section-title">Built for trust.</div>
+    <p class="section-desc">Fullsend is designed around safety, transparency, and human oversight at every step.</p>
+    <div class="principles-grid reveal">
+      <div class="principle-card">
+        <div class="principle-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-2"/><rect x="7" y="8" width="10" height="8" rx="1"/><path d="M12 8v8"/><path d="M7 12h10"/></svg></div>
+        <div class="principle-title">OpenShell Sandbox</div>
+        <div class="principle-desc">Agents run inside <a href="https://github.com/NVIDIA/OpenShell" style="color:var(--accent)">NVIDIA OpenShell</a> sandboxed environments with policy-enforced egress routing, filesystem isolation, and process constraints.</div>
+      </div>
+      <div class="principle-card">
+        <div class="principle-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 14.14 14.14"/></svg></div>
+        <div class="principle-title">Prompt injection defense</div>
+        <div class="principle-desc">Agent inputs are sanitized and validated before execution. Malicious payloads in issues, PRs, and comments are detected and blocked.</div>
+      </div>
+      <div class="principle-card">
+        <div class="principle-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+        <div class="principle-title">Guarded paths</div>
+        <div class="principle-desc">Agents operate within explicit guardrails you configure: coding API, gating policies, and safety checks. Every action is traceable.</div>
+      </div>
+      <div class="principle-card">
+        <div class="principle-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6V4m0 2a2 2 0 1 0 0 4m0-4a2 2 0 1 1 0 4m-6 8a2 2 0 1 0 0-4m0 4a2 2 0 1 1 0-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 1 0 0-4m0 4a2 2 0 1 1 0-4m0 4v2m0-6V4"/></svg></div>
+        <div class="principle-title">Fully customizable</div>
+        <div class="principle-desc">Choose your LLM provider, set agent behavior per repo, define policies, and configure which agents run and when.</div>
+      </div>
+      <div class="principle-card">
+        <div class="principle-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></div>
+        <div class="principle-title">Transparent by default</div>
+        <div class="principle-desc">Every agent action is visible in GitHub. Comments, commits, reviews&mdash;all in the open, all auditable.</div>
+      </div>
+      <div class="principle-card">
+        <div class="principle-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+        <div class="principle-title">Human in the loop</div>
+        <div class="principle-desc">Agents propose, humans approve. You stay in control of merges, deployments, and critical decisions.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<div class="cta">
+  <div class="cta-title reveal">Ready to ship?</div>
+  <p class="cta-desc">Deploy autonomous agents to your GitHub repos today. Open source, self-hosted, fully yours.</p>
+  <div class="hero-actions">
+    <a class="btn-primary" href="/docs/">Get Started</a>
+    <a class="btn-secondary" href="https://github.com/fullsend-ai/fullsend">View Source</a>
+  </div>
+</div>
+
+<!-- Footer -->
+<footer>
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <div class="footer-logo">Fullsend</div>
+      <p class="footer-tagline">Autonomous SDLC agents that triage issues, write code, review PRs, and ship to production across your GitHub repos.</p>
+      <div class="footer-license">Apache 2.0 &middot; fullsend-ai</div>
+    </div>
+    <div class="footer-col">
+      <h4>Project</h4>
+      <ul>
+        <li><a href="https://github.com/fullsend-ai/fullsend">GitHub</a></li>
+        <li><a href="https://github.com/fullsend-ai/fullsend/releases">Releases</a></li>
+        <li><a href="/docs/cli/">CLI Reference</a></li>
+        <li><a href="/docs/agents/">Agents</a></li>
+      </ul>
+    </div>
+    <div class="footer-col">
+      <h4>Resources</h4>
+      <ul>
+        <li><a href="/docs/">Documentation</a></li>
+        <li><a href="/docs/guides/getting-started">Getting Started</a></li>
+        <li><a href="https://github.com/fullsend-ai/fullsend/issues">Issues</a></li>
+        <li><a href="https://github.com/fullsend-ai">Organization</a></li>
+        <li><a href="/graph.html">Agent Graph</a></li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer-bottom"></div>
+</footer>
 
 <script>
-// Register cose-bilkent layout extension
-cytoscape.use(cytoscapeCoseBilkent);
-
-// ── Configuration ──────────────────────────────────────────────────
-// Change these to point at your repository.
-const OWNER = 'fullsend-ai';
-const REPO = 'fullsend';
-const BRANCH = 'main';
-const API = 'https://api.github.com';
-const RAW = 'https://raw.githubusercontent.com';
-
-const TOKEN_KEY = 'fullsend-mindmap-token';
-
-// ── Auth ───────────────────────────────────────────────────────────
-let authToken = localStorage.getItem(TOKEN_KEY) || '';
-
-function authHeaders() {
-  if (!authToken) return {};
-  return { 'Authorization': `token ${authToken}` };
-}
-
-async function verifyToken() {
-  if (!authToken) return false;
-  try {
-    const resp = await fetch(`${API}/user`, { headers: authHeaders() });
-    if (resp.ok) {
-      const user = await resp.json();
-      document.getElementById('auth-user').innerHTML = `<strong>${esc(user.login)}</strong>`;
-      document.getElementById('login-btn').style.display = 'none';
-      document.getElementById('logout-btn').style.display = 'block';
-      return true;
-    }
-    authToken = '';
-    localStorage.removeItem(TOKEN_KEY);
-    return false;
-  } catch { return false; }
-}
-
-const tokenModal = document.getElementById('token-modal');
-const tokenInput = document.getElementById('token-input');
-const tokenError = document.getElementById('token-error');
-
-document.getElementById('token-cancel').addEventListener('click', () => { tokenModal.style.display = 'none'; });
-
-document.getElementById('token-save').addEventListener('click', async () => {
-  const token = tokenInput.value.trim();
-  if (!token) { tokenError.textContent = 'Please paste a token.'; tokenError.style.display = 'block'; return; }
-
-  const resp = await fetch(`${API}/user`, { headers: { 'Authorization': `token ${token}` } });
-  if (!resp.ok) { tokenError.textContent = 'Invalid token. Check scopes and try again.'; tokenError.style.display = 'block'; return; }
-
-  authToken = token;
-  localStorage.setItem(TOKEN_KEY, authToken);
-  tokenModal.style.display = 'none';
-  location.reload();
-});
-
-tokenInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') document.getElementById('token-save').click(); });
-
-function showTokenModal() {
-  tokenInput.value = '';
-  tokenError.style.display = 'none';
-  tokenModal.style.display = 'flex';
-  tokenInput.focus();
-}
-
-// ── Helpers ────────────────────────────────────────────────────────
-function esc(str) {
-  const d = document.createElement('div');
-  d.textContent = str;
-  return d.innerHTML;
-}
-
-const LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g;
-
-// Group by directory (for coloring)
-function nodeGroup(path) {
-  if (path.startsWith('docs/problems/applied/')) return 'applied';
-  if (path.startsWith('docs/problems/'))         return 'problem';
-  if (path.startsWith('docs/ADRs/'))             return 'adr';
-  if (path.startsWith('docs/plans/'))            return 'plan';
-  if (path.startsWith('docs/'))                  return 'docs';
-  return 'root';
-}
-
-// Muted grayish colors per directory
-const GROUP_COLORS = {
-  problem:    '#8a95a5',
-  applied:    '#8a9e8f',
-  adr:        '#a5988a',
-  plan:       '#958aa5',
-  docs:       '#959595',
-  root:       '#959595',
-};
-// Bright versions for hover
-const GROUP_COLORS_BRIGHT = {
-  problem:    '#6a9fd8',
-  applied:    '#5cb87a',
-  adr:        '#d4a054',
-  plan:       '#a06ad8',
-  docs:       '#c0c0c0',
-  root:       '#c0c0c0',
-};
-
-// Shape by node type
-function nodeShape(path) {
-  if (path.startsWith('docs/ADRs/')) return 'round-rectangle';
-  return 'ellipse';
-}
-
-function label(path) {
-  const base = path.replace(/\.md$/, '').split('/').pop();
-  if (path.startsWith('docs/ADRs/')) {
-    const m = base.match(/^(\d{4})-/);
-    return m ? `ADR ${parseInt(m[1])}` : base;
+// Theme toggle with localStorage + system preference
+(function(){
+  const toggle=document.getElementById('theme-toggle');
+  const html=document.documentElement;
+  function getPreferred(){
+    const stored=localStorage.getItem('theme');
+    if(stored) return stored;
+    return window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';
   }
-  // READMEs: show parent directory name
-  if (base === 'README') {
-    if (path === 'README.md') return 'fullsend';
-    const parts = path.replace(/\/README\.md$/, '').split('/');
-    return parts[parts.length - 1];
+  function apply(t){
+    if(t==='dark') html.setAttribute('data-theme','dark');
+    else html.removeAttribute('data-theme');
   }
-  // Just the filename
-  return base;
-}
-
-function resolvePath(from, to) {
-  if (to.startsWith('http://') || to.startsWith('https://') || to.startsWith('#')) return null;
-  const target = to.split('#')[0];
-  if (!target || !target.endsWith('.md')) return null;
-  const dir = from.substring(0, from.lastIndexOf('/') + 1);
-  const parts = (dir + target).split('/');
-  const resolved = [];
-  for (const p of parts) {
-    if (p === '..') resolved.pop();
-    else if (p !== '.' && p !== '') resolved.push(p);
-  }
-  return resolved.join('/');
-}
-
-function parseFrontmatterRelatesTo(content) {
-  if (!content.startsWith('---\n') && !content.startsWith('---\r\n')) return [];
-  const end = content.indexOf('\n---\n', 4);
-  if (end === -1) return [];
-  const fm = content.substring(4, end);
-  const relates = [];
-  let inRelates = false;
-  for (const line of fm.split('\n')) {
-    if (line.match(/^relates_to\s*:/)) {
-      inRelates = true;
-      const inline = line.replace(/^relates_to\s*:\s*/, '').trim();
-      if (inline.startsWith('[')) {
-        try {
-          const arr = JSON.parse(inline.replace(/'/g, '"'));
-          return arr.filter(x => x !== '*');
-        } catch { /* fall through to list parsing */ }
-      }
-      continue;
-    }
-    if (inRelates) {
-      if (line.match(/^\s+-\s+/)) {
-        const val = line.replace(/^\s+-\s+/, '').trim().replace(/^["']|["']$/g, '');
-        if (val !== '*') relates.push(val);
-      } else if (!line.match(/^\s*$/)) {
-        break;
-      }
-    }
-  }
-  return relates;
-}
-
-function extractLinks(filePath, content) {
-  const edges = new Set();
-  let match;
-  LINK_RE.lastIndex = 0;
-  while ((match = LINK_RE.exec(content)) !== null) {
-    const resolved = resolvePath(filePath, match[2]);
-    if (resolved) edges.add(resolved);
-  }
-  // ADR frontmatter relates_to
-  if (filePath.startsWith('docs/ADRs/')) {
-    for (const ref of parseFrontmatterRelatesTo(content)) {
-      edges.add('docs/problems/' + ref + '.md');
-    }
-  }
-  return [...edges];
-}
-
-async function fetchJSON(url) {
-  const headers = url.startsWith(API) ? authHeaders() : {};
-  const resp = await fetch(url, { headers });
-  if (resp.status === 403 || resp.status === 429) {
-    const isAuth = !!authToken;
-    throw new Error(isAuth
-      ? 'GitHub API rate limit reached (authenticated). Please wait a minute and reload.'
-      : 'GitHub API rate limit reached. Login with GitHub for higher limits (5,000 req/hour).');
-  }
-  if (!resp.ok) throw new Error(`GitHub API error: ${resp.status} ${resp.statusText}`);
-  return resp.json();
-}
-
-async function fetchText(url) {
-  const headers = url.startsWith(API) ? authHeaders() : {};
-  const resp = await fetch(url, { headers });
-  if (!resp.ok) return null;
-  return resp.text();
-}
-
-function showError(msg) {
-  const el = document.getElementById('error-banner');
-  const isRateLimit = msg.includes('rate limit');
-  el.innerHTML = `<h3>${isRateLimit ? 'Rate limit reached' : 'Error'}</h3><p>${esc(msg)}</p>`;
-  if (isRateLimit && !authToken) {
-    el.innerHTML += `<div class="error-login"><button class="btn" onclick="showTokenModal()" style="background:#238636;border-color:#238636;color:#fff;">Login with GitHub</button></div>`;
-  }
-  el.style.display = 'block';
-}
-
-// ── Main ───────────────────────────────────────────────────────────
-async function main() {
-  // Auth setup
-  document.getElementById('login-btn').addEventListener('click', showTokenModal);
-  document.getElementById('logout-btn').addEventListener('click', () => {
-    authToken = '';
-    localStorage.removeItem(TOKEN_KEY);
-    location.reload();
+  apply(getPreferred());
+  toggle.addEventListener('click',()=>{
+    const next=html.getAttribute('data-theme')==='dark'?'light':'dark';
+    localStorage.setItem('theme',next);
+    apply(next);
   });
-
-  // Check existing token
-  await verifyToken();
-
-  const loading = document.getElementById('loading');
-
-  try {
-    // 1. Fetch repo tree
-    const tree = await fetchJSON(`${API}/repos/${OWNER}/${REPO}/git/trees/${BRANCH}?recursive=1`);
-    const mdFiles = tree.tree
-      .filter(f => f.type === 'blob' && f.path.endsWith('.md'))
-      .filter(f => f.path === 'README.md' || f.path.startsWith('docs/'))
-      .map(f => f.path);
-
-    // 2. Fetch all file contents in parallel
-    const contents = {};
-    await Promise.all(mdFiles.map(async (path) => {
-      const text = await fetchText(`${RAW}/${OWNER}/${REPO}/${BRANCH}/${path}`);
-      if (text !== null) contents[path] = text;
-    }));
-
-    // 3. Build graph
-    const nodes = new Set(Object.keys(contents));
-    const edgeSet = new Set();
-    const edges = [];
-
-    // Only include edges where the target is within scope (docs/ or README.md)
-    const mdFileSet = new Set(mdFiles);
-    for (const [filePath, content] of Object.entries(contents)) {
-      for (const target of extractLinks(filePath, content)) {
-        if (!mdFileSet.has(target)) continue; // skip links outside scope
-        const key = `${filePath}→${target}`;
-        if (!edgeSet.has(key)) {
-          edgeSet.add(key);
-          edges.push({ source: filePath, target });
-        }
-      }
+  window.matchMedia('(prefers-color-scheme:dark)').addEventListener('change',e=>{
+    if(!localStorage.getItem('theme')){
+      apply(e.matches?'dark':'light');
     }
-
-    // 4. Calculate in-degrees
-    const inDegree = {};
-    for (const path of nodes) inDegree[path] = 0;
-    for (const e of edges) {
-      if (e.target in inDegree) inDegree[e.target]++;
-    }
-    const maxInDegree = Math.max(1, ...Object.values(inDegree));
-
-    // 5. Build Cytoscape elements
-    const cyNodes = [...nodes].map(path => {
-      const g = nodeGroup(path);
-      return {
-        data: {
-          id: path,
-          label: label(path),
-          group: g,
-          color: GROUP_COLORS[g] || '#959595',
-          colorBright: GROUP_COLORS_BRIGHT[g] || '#c0c0c0',
-          shape: nodeShape(path),
-          inDegree: inDegree[path] || 0,
-          exists: path in contents,
-          prs: [],
-          githubUrl: `https://github.com/${OWNER}/${REPO}/blob/${BRANCH}/${path}`,
-        },
-      };
-    });
-
-    const cyEdges = edges.map((e, i) => ({
-      data: {
-        id: `e${i}`,
-        source: e.source,
-        target: e.target,
-        prs: [],
-        prType: null, // 'added' | 'removed' | null
-      },
-    }));
-
-    // 6. Render graph
-    loading.style.display = 'none';
-
-    const LAYOUT_OPTIONS = {
-      name: 'cose-bilkent',
-      animate: false,
-      idealEdgeLength: 200,
-      nodeRepulsion: 50000,
-      nestingFactor: 0.1,
-      gravity: 0.2,
-      gravityRange: 1.5,
-      nodeDimensionsIncludeLabels: true,
-      numIter: 5000,
-      padding: 80,
-    };
-
-    const cy = cytoscape({
-      container: document.getElementById('cy'),
-      pixelRatio: 'auto',
-      wheelSensitivity: 0.3,
-      textureOnViewport: false,
-      elements: [...cyNodes, ...cyEdges],
-      style: [
-        {
-          selector: 'node',
-          style: {
-            'label': '',
-            'background-color': 'data(color)',
-            'shape': 'data(shape)',
-            'width': `mapData(inDegree, 0, ${maxInDegree}, 14, 48)`,
-            'height': `mapData(inDegree, 0, ${maxInDegree}, 14, 48)`,
-            'border-width': 0,
-            'transition-property': 'opacity, border-width, border-color, background-color',
-            'transition-duration': '0.15s',
-          },
-        },
-        {
-          selector: 'node[!exists]',
-          style: {
-            'border-width': 2,
-            'border-color': '#484f58',
-            'border-style': 'dashed',
-            'background-opacity': 0.3,
-            'background-color': '#484f58',
-          },
-        },
-        {
-          selector: 'edge',
-          style: {
-            'width': 0.3,
-            'line-color': '#3a3a3a',
-            'target-arrow-color': '#3a3a3a',
-            'target-arrow-shape': 'triangle',
-            'curve-style': 'straight',
-            'arrow-scale': 0.4,
-            'opacity': 0.4,
-            'transition-property': 'opacity, width, line-color',
-            'transition-duration': '0.15s',
-          },
-        },
-        {
-          selector: '.dimmed',
-          style: { 'opacity': 0.12 },
-        },
-        {
-          selector: '.highlighted',
-          style: { 'opacity': 1 },
-        },
-        // Direct neighbors: full bright fill
-        {
-          selector: 'node.hover-highlighted',
-          style: {
-            'opacity': 1,
-            'background-color': 'data(colorBright)',
-            'border-width': 0,
-          },
-        },
-        {
-          selector: 'edge.hover-highlighted',
-          style: {
-            'width': 1.2,
-            'line-color': '#777',
-            'target-arrow-color': '#777',
-            'opacity': 0.8,
-          },
-        },
-        // Same group: border only (not filled bright)
-        {
-          selector: 'node.hover-group',
-          style: {
-            'opacity': 0.7,
-            'border-width': 2,
-            'border-color': 'data(colorBright)',
-            'background-color': 'data(color)',
-          },
-        },
-        {
-          selector: '.hover-dimmed',
-          style: { 'opacity': 0.12 },
-        },
-        {
-          selector: '.legend-highlight',
-          style: { 'background-color': 'data(colorBright)' },
-        },
-        // PR overlay — only green/red, thin and subtle
-        {
-          selector: '.pr-new-node',
-          style: {
-            'border-width': 2,
-            'border-color': '#3fb950',
-            'background-opacity': 0.5,
-          },
-        },
-        {
-          selector: '.pr-removed-node',
-          style: {
-            'border-width': 2,
-            'border-color': '#da3633',
-            'background-opacity': 0.3,
-          },
-        },
-        {
-          selector: '.pr-added-edge',
-          style: {
-            'line-color': '#3fb950',
-            'line-style': 'dashed',
-            'target-arrow-color': '#3fb950',
-            'width': 0.3,
-            'opacity': 0.4,
-          },
-        },
-        {
-          selector: '.pr-removed-edge',
-          style: {
-            'line-color': '#da3633',
-            'line-style': 'dashed',
-            'target-arrow-color': '#da3633',
-            'width': 0.3,
-            'opacity': 0.4,
-          },
-        },
-        {
-          selector: '.has-pr-badge',
-          style: {
-            'background-image': 'data:image/svg+xml;utf8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="6" height="6"><line x1="0" y1="6" x2="6" y2="0" stroke="rgba(255,255,255,0.2)" stroke-width="1"/></svg>'),
-            'background-image-opacity': 1,
-            'background-fit': 'none',
-            'background-repeat': 'repeat',
-          },
-        },
-        // PR elements intensify on hover
-        {
-          selector: '.pr-added-edge.hover-highlighted',
-          style: {
-            'line-color': '#3fb950',
-            'target-arrow-color': '#3fb950',
-            'width': 1.2,
-            'opacity': 1,
-          },
-        },
-        {
-          selector: '.pr-removed-edge.hover-highlighted',
-          style: {
-            'line-color': '#da3633',
-            'target-arrow-color': '#da3633',
-            'width': 1.2,
-            'opacity': 1,
-          },
-        },
-        {
-          selector: '.pr-new-node.hover-highlighted',
-          style: {
-            'border-color': '#3fb950',
-            'border-width': 3,
-            'background-opacity': 0.8,
-            'opacity': 1,
-          },
-        },
-        {
-          selector: '.pr-removed-node.hover-highlighted',
-          style: {
-            'border-color': '#da3633',
-            'border-width': 3,
-            'background-opacity': 0.6,
-            'opacity': 1,
-          },
-        },
-      ],
-      layout: LAYOUT_OPTIONS,
-    });
-
-    const LAYOUT_ANIMATED = { ...LAYOUT_OPTIONS, animate: 'end', animationDuration: 500, fit: true };
-
-    // ── Search ───────────────────────────────────────────────────
-    const searchInput = document.getElementById('search');
-    searchInput.addEventListener('input', () => {
-      const q = searchInput.value.trim().toLowerCase();
-      if (!q) {
-        cy.elements().removeClass('dimmed highlighted');
-        cy.elements().style('display', 'element');
-        resetAllLabels();
-        updateLabelPositions();
-        return;
-      }
-      const matched = cy.nodes().filter(n => n.data('label').toLowerCase().includes(q) || n.data('id').toLowerCase().includes(q));
-      const connectedEdges = matched.connectedEdges();
-      const neighbors = connectedEdges.connectedNodes().difference(matched);
-      const visible = matched.union(connectedEdges).union(neighbors);
-      cy.elements().style('display', 'none');
-      visible.style('display', 'element');
-      visible.removeClass('highlighted dimmed');
-      matched.addClass('highlighted');
-      neighbors.addClass('dimmed');
-      connectedEdges.addClass('dimmed');
-      // Update DOM labels to match
-      labelEls.forEach(el => { el.style.display = 'none'; });
-      matched.forEach(n => { setLabelOpacity(n.id(), '1'); const el = labelEls.get(n.id()); if (el) el.style.display = ''; });
-      neighbors.forEach(n => { setLabelOpacity(n.id(), '0.3'); const el = labelEls.get(n.id()); if (el) el.style.display = ''; });
-      updateLabelPositions();
-    });
-
-    // ── Legend filter ─────────────────────────────────────────────
-    const hiddenGroups = new Set();
-    document.querySelectorAll('.legend-item[data-group]').forEach(item => {
-      item.addEventListener('click', () => {
-        const groups = item.dataset.group.split(',');
-        const isOff = item.classList.toggle('legend-off');
-        groups.forEach(g => isOff ? hiddenGroups.add(g) : hiddenGroups.delete(g));
-        applyLegendFilter();
-      });
-      item.addEventListener('mouseenter', () => {
-        if (searchInput.value.trim()) return;
-        const groups = new Set(item.dataset.group.split(','));
-        cy.nodes().forEach(n => {
-          if (groups.has(n.data('group'))) n.addClass('legend-highlight');
-        });
-      });
-      item.addEventListener('mouseleave', () => {
-        cy.nodes('.legend-highlight').removeClass('legend-highlight');
-      });
-    });
-
-    // PR legend filter
-    const hiddenPrFilters = new Set();
-    const PR_FILTER_CLASSES = {
-      'added-node': 'pr-new-node',
-      'removed-node': 'pr-removed-node',
-      'modified-node': 'has-pr-badge',
-      'added-link': 'pr-added-edge',
-      'removed-link': 'pr-removed-edge',
-    };
-    document.querySelectorAll('.legend-item[data-pr-filter]').forEach(item => {
-      item.addEventListener('click', () => {
-        const filter = item.dataset.prFilter;
-        const isOff = item.classList.toggle('legend-off');
-        isOff ? hiddenPrFilters.add(filter) : hiddenPrFilters.delete(filter);
-        applyLegendFilter();
-      });
-    });
-
-    function applyLegendFilter() {
-      // Reset everything visible first
-      cy.elements().style('display', 'element');
-      labelEls.forEach(el => { el.style.display = ''; });
-
-      // Apply directory group filters
-      if (hiddenGroups.size > 0) {
-        cy.nodes().forEach(n => {
-          if (hiddenGroups.has(n.data('group'))) {
-            n.style('display', 'none');
-            const el = labelEls.get(n.id());
-            if (el) el.style.display = 'none';
-          }
-        });
-      }
-
-      // Apply PR filters
-      for (const [filter, cls] of Object.entries(PR_FILTER_CLASSES)) {
-        if (hiddenPrFilters.has(filter)) {
-          cy.elements('.' + cls).forEach(el => {
-            el.style('display', 'none');
-            if (el.isNode()) {
-              const lbl = labelEls.get(el.id());
-              if (lbl) lbl.style.display = 'none';
-            }
-          });
-        }
-      }
-
-      // Hide edges with hidden endpoints
-      cy.edges().forEach(e => {
-        if (e.style('display') === 'none') return;
-        const srcVisible = e.source().style('display') !== 'none';
-        const tgtVisible = e.target().style('display') !== 'none';
-        if (!srcVisible || !tgtVisible) e.style('display', 'none');
-      });
-
-      updateLabelPositions();
-    }
-
-    // ── Hover (Obsidian-style) ─────────────────────────────────────
-    let hoverActive = false;
-    function clearHoverState() {
-      hoverActive = false;
-      cy.elements().removeClass('hover-dimmed hover-highlighted hover-group');
-      resetAllLabels();
-      stopHoverRepulsion();
-      stopDotAnimation();
-    }
-    function setLabelOpacity(nodeId, opacity) {
-      const el = labelEls.get(nodeId);
-      if (el) el.style.opacity = opacity;
-    }
-    function showFullPath(nodeId) {
-      const el = labelEls.get(nodeId);
-      if (el) {
-        const full = nodeId.replace(/\.md$/, '');
-        // READMEs: show parent/README (e.g. fullsend/README, problems/README)
-        if (full.endsWith('/README') || full === 'README') {
-          const parts = full === 'README' ? ['fullsend', 'README'] : full.split('/');
-          const parent = parts[parts.length - 2];
-          el.textContent = parent + '/README';
-        } else {
-          el.textContent = full;
-        }
-        el.style.fontSize = '13px';
-      }
-    }
-    function resetAllLabels() {
-      cy.nodes().forEach(n => {
-        const el = labelEls.get(n.id());
-        if (el) { el.style.opacity = ''; el.style.fontSize = '11px'; el.textContent = n.data('label'); }
-      });
-    }
-
-    cy.on('mouseover', 'node', (evt) => {
-      if (searchInput.value.trim()) return;
-      hoverActive = true;
-      const node = evt.target;
-      const neighborhood = node.closedNeighborhood();
-      const hoveredGroup = node.data('group');
-
-      // Dim everything first
-      cy.elements().addClass('hover-dimmed');
-      labelEls.forEach(el => { el.style.opacity = '0.12'; });
-
-      // Direct neighbors: full bright fill + show full path
-      neighborhood.removeClass('hover-dimmed').addClass('hover-highlighted');
-      neighborhood.nodes().forEach(n => {
-        setLabelOpacity(n.id(), '1');
-        showFullPath(n.id());
-      });
-
-      // Same group (not neighbors): border-only highlight
-      cy.nodes().filter(n => n.data('group') === hoveredGroup && !neighborhood.contains(n))
-        .removeClass('hover-dimmed').addClass('hover-group');
-
-      // Push non-neighbors away
-      startHoverRepulsion(node);
-
-      // Animate dots along connected edges
-      startDotAnimation(neighborhood.edges().toArray());
-    });
-
-    // ── Hover repulsion (push non-neighbors away) ──────────────────
-    let hoverRAF = null;
-    let hoverNode = null;
-    const HOVER_REPULSE_RADIUS = 180;
-    const HOVER_REPULSE_STRENGTH = 2.5;
-    const savedPositions = new Map();
-
-    function startHoverRepulsion(node) {
-      hoverNode = node;
-      const neighborhood = node.closedNeighborhood().nodes();
-      const others = cy.nodes().not(neighborhood);
-
-      // Save original positions for smooth return
-      others.forEach(n => {
-        if (!savedPositions.has(n.id())) {
-          savedPositions.set(n.id(), { ...n.position() });
-        }
-      });
-
-      function repulse() {
-        if (!hoverNode) return;
-        const gp = hoverNode.position();
-        others.forEach(n => {
-          const np = n.position();
-          const dx = np.x - gp.x;
-          const dy = np.y - gp.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist < HOVER_REPULSE_RADIUS && dist > 1) {
-            const force = HOVER_REPULSE_STRENGTH * (1 - dist / HOVER_REPULSE_RADIUS);
-            n.position({
-              x: np.x + (dx / dist) * force,
-              y: np.y + (dy / dist) * force,
-            });
-          }
-        });
-        hoverRAF = requestAnimationFrame(repulse);
-      }
-      hoverRAF = requestAnimationFrame(repulse);
-    }
-
-    function stopHoverRepulsion() {
-      hoverNode = null;
-      if (hoverRAF) { cancelAnimationFrame(hoverRAF); hoverRAF = null; }
-      // Animate nodes back to saved positions
-      savedPositions.forEach((pos, id) => {
-        const n = cy.getElementById(id);
-        if (n.length) n.animate({ position: pos }, { duration: 200 });
-      });
-      savedPositions.clear();
-    }
-
-    // ── Animated dots along edges (show direction on hover) ──────
-    const dotCanvas = document.getElementById('dot-overlay');
-    const dotCtx = dotCanvas.getContext('2d');
-    let dotRAF = null;
-    let dotEdges = []; // edges to animate dots on
-    const DOT_SPEED = 0.003; // progress per frame (0→1)
-    const DOT_COUNT = 5; // dots per edge
-    const DOT_RADIUS = 2.5;
-    let dotPhase = 0;
-
-    function resizeDotCanvas() {
-      dotCanvas.width = dotCanvas.offsetWidth;
-      dotCanvas.height = dotCanvas.offsetHeight;
-    }
-    resizeDotCanvas();
-    window.addEventListener('resize', resizeDotCanvas);
-
-    function startDotAnimation(edges) {
-      dotEdges = edges;
-      dotPhase = 0;
-      if (dotRAF) cancelAnimationFrame(dotRAF);
-      function drawDots() {
-        dotCtx.clearRect(0, 0, dotCanvas.width, dotCanvas.height);
-        dotPhase = (dotPhase + DOT_SPEED) % 1;
-        const pan = cy.pan();
-        const zoom = cy.zoom();
-        dotEdges.forEach(edge => {
-          if (!edge.visible()) return;
-
-          // Use model coordinates + pan/zoom (same system as labels)
-          const srcPos = edge.source().position();
-          const tgtPos = edge.target().position();
-          const sx = srcPos.x * zoom + pan.x;
-          const sy = srcPos.y * zoom + pan.y;
-          const tx = tgtPos.x * zoom + pan.x;
-          const ty = tgtPos.y * zoom + pan.y;
-
-          const isPrAdded = edge.hasClass('pr-added-edge');
-          const isPrRemoved = edge.hasClass('pr-removed-edge');
-          const dotColor = isPrAdded ? '#3fb950' : isPrRemoved ? '#da3633' : '#aaa';
-
-          for (let i = 0; i < DOT_COUNT; i++) {
-            const t = (dotPhase + i / DOT_COUNT) % 1;
-            const px = sx + (tx - sx) * t;
-            const py = sy + (ty - sy) * t;
-
-            dotCtx.beginPath();
-            dotCtx.arc(px, py, DOT_RADIUS, 0, Math.PI * 2);
-            dotCtx.fillStyle = dotColor;
-            dotCtx.globalAlpha = 0.7 + 0.3 * (1 - Math.abs(t - 0.5) * 2);
-            dotCtx.fill();
-          }
-        });
-        dotCtx.globalAlpha = 1;
-        dotRAF = requestAnimationFrame(drawDots);
-      }
-      dotRAF = requestAnimationFrame(drawDots);
-    }
-
-    function stopDotAnimation() {
-      if (dotRAF) { cancelAnimationFrame(dotRAF); dotRAF = null; }
-      dotCtx.clearRect(0, 0, dotCanvas.width, dotCanvas.height);
-      dotEdges = [];
-    }
-
-    cy.on('mouseout', 'node', () => {
-      if (!hoverActive) return;
-      clearHoverState();
-    });
-
-    cy.on('mouseover', 'edge', (evt) => {
-      if (searchInput.value.trim()) return;
-      hoverActive = true;
-      const edge = evt.target;
-      const connected = edge.connectedNodes().union(edge);
-      cy.elements().addClass('hover-dimmed');
-      connected.removeClass('hover-dimmed').addClass('hover-highlighted');
-      labelEls.forEach(el => { el.style.opacity = '0.12'; });
-      connected.nodes().forEach(n => {
-        setLabelOpacity(n.id(), '1');
-        showFullPath(n.id());
-      });
-      startDotAnimation([edge]);
-    });
-
-    cy.on('mouseout', 'edge', () => {
-      if (!hoverActive) return;
-      clearHoverState();
-    });
-
-    // ── DOM labels (crisp at any zoom) ──────────────────────────────
-    const labelsContainer = document.getElementById('labels');
-    const labelEls = new Map();
-
-    cy.nodes().forEach(n => {
-      const el = document.createElement('div');
-      el.className = 'node-label';
-      el.textContent = n.data('label');
-      labelsContainer.appendChild(el);
-      labelEls.set(n.id(), el);
-    });
-
-    function updateLabelPositions() {
-      const pan = cy.pan();
-      const zoom = cy.zoom();
-      cy.nodes().forEach(n => {
-        const el = labelEls.get(n.id());
-        if (!el) return;
-        const pos = n.position();
-        const rh = n.renderedHeight();
-        const x = pos.x * zoom + pan.x;
-        const y = pos.y * zoom + pan.y + rh / 2 + 12;
-        el.style.left = x + 'px';
-        el.style.top = y + 'px';
-        el.style.display = n.visible() ? '' : 'none';
-      });
-    }
-    updateLabelPositions();
-    cy.on('pan zoom position resize layoutstop', updateLabelPositions);
-
-    // ── Drag repulsion (nodes escape when you drag one around) ────
-    const DRAG_REPULSE_RADIUS = 150;
-    const DRAG_REPULSE_STRENGTH = 3;
-    let dragRAF = null;
-    cy.on('grab', 'node', () => {
-      function repulse() {
-        const grabbed = cy.nodes(':grabbed');
-        if (grabbed.length === 0) return;
-        const gp = grabbed.position();
-        cy.nodes().not(grabbed).forEach(n => {
-          if (n.grabbed()) return;
-          const np = n.position();
-          const dx = np.x - gp.x;
-          const dy = np.y - gp.y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist < DRAG_REPULSE_RADIUS && dist > 1) {
-            const force = DRAG_REPULSE_STRENGTH * (1 - dist / DRAG_REPULSE_RADIUS);
-            n.position({
-              x: np.x + (dx / dist) * force,
-              y: np.y + (dy / dist) * force,
-            });
-          }
-        });
-        dragRAF = requestAnimationFrame(repulse);
-      }
-      dragRAF = requestAnimationFrame(repulse);
-    });
-    cy.on('free', 'node', () => {
-      if (dragRAF) { cancelAnimationFrame(dragRAF); dragRAF = null; }
-    });
-
-    // ── Refit layout ──────────────────────────────────────────────
-    const refitBtn = document.getElementById('refit-btn');
-    refitBtn.style.display = 'block';
-    refitBtn.addEventListener('click', () => {
-      cy.layout(LAYOUT_ANIMATED).run();
-    });
-
-    // ── Sidebar ──────────────────────────────────────────────────
-    const sidebar = document.getElementById('sidebar');
-    const sidebarContent = document.getElementById('sidebar-content');
-    sidebar.querySelector('.close').addEventListener('click', () => { sidebar.classList.remove('open'); });
-    cy.on('tap', (evt) => {
-      if (evt.target === cy) sidebar.classList.remove('open');
-    });
-
-    // SVG icon for a node (matches shape + group color)
-    function nodeIcon(n, size) {
-      const s = size || 12;
-      const color = n.data('colorBright');
-      const shape = n.data('shape');
-      if (shape === 'triangle') {
-        return `<svg width="${s}" height="${s}" viewBox="0 0 12 12"><polygon points="6,1 11,11 1,11" fill="${color}"/></svg>`;
-      } else if (shape === 'round-rectangle') {
-        return `<svg width="${s}" height="${s}" viewBox="0 0 12 12"><rect x="1" y="1" width="10" height="10" rx="2" fill="${color}"/></svg>`;
-      }
-      return `<svg width="${s}" height="${s}" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5" fill="${color}"/></svg>`;
-    }
-
-    function nodeCard(n, opts) {
-      const isLink = opts && opts.link;
-      const tag = isLink ? 'a href="#"' : 'div';
-      const endTag = isLink ? 'a' : 'div';
-      const dataAttr = isLink ? ` data-node="${esc(n.id())}"` : '';
-      return `<${tag}${dataAttr} style="display:flex; align-items:center; gap:10px; padding:8px 12px; border-radius:6px; background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); text-decoration:none; transition:background 0.15s; margin-bottom:4px;">`
-        + `${nodeIcon(n)}`
-        + `<span style="color:#dadada; font-size:13px;">${esc(n.data('label'))}</span>`
-        + `</${endTag}>`;
-    }
-
-    function renderPRList(prs) {
-      if (!prs || prs.length === 0) return '';
-      // Sort by updatedAt descending (newest first)
-      const sorted = [...prs].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
-
-      // Compute age range for color interpolation
-      const now = Date.now();
-      const ages = sorted.map(pr => now - new Date(pr.updatedAt).getTime());
-      const maxAge = Math.max(...ages);
-
-      let html = `<div class="section"><h4>Open PRs (${sorted.length})</h4>`;
-      for (let i = 0; i < sorted.length; i++) {
-        const pr = sorted[i];
-        const date = new Date(pr.updatedAt);
-        const dateStr = date.toISOString().slice(0, 10); // YYYY-MM-DD
-
-        // Color: pink (#d86a9e) for recent → grey (#888) for old
-        const t = maxAge > 0 ? ages[i] / maxAge : 0;
-        const r = Math.round(216 + (136 - 216) * t);
-        const g = Math.round(106 + (136 - 106) * t);
-        const b = Math.round(158 + (136 - 158) * t);
-        const accentColor = `rgb(${r},${g},${b})`;
-
-        html += `<div class="pr-item" style="border-left:3px solid ${accentColor}; padding-left:10px; margin-bottom:8px;">`;
-        html += `<a href="${esc(pr.url)}" target="_blank"><span class="pr-number" style="color:${accentColor};">#${pr.number}</span> <span class="pr-title">${esc(pr.title)}</span></a>`;
-        html += `<div style="display:flex; gap:12px; margin-top:3px;">`;
-        html += `<span class="pr-author">by @${esc(pr.author)}</span>`;
-        html += `<span style="color:#666; font-size:12px;">${dateStr}</span>`;
-        html += `</div>`;
-        html += `</div>`;
-      }
-      html += `</div>`;
-      return html;
-    }
-
-    function openSidebar(node) {
-      const path = node.id();
-      const name = node.data('label');
-      const githubUrl = node.data('githubUrl');
-      const prs = node.data('prs') || [];
-
-      // Outgoing links
-      const outEdges = node.outgoers('edge');
-      const outNodes = outEdges.targets();
-      // Incoming links
-      const inEdges = node.incomers('edge');
-      const inNodes = inEdges.sources();
-
-      // Header with icon
-      let html = `<div style="display:flex; align-items:center; gap:10px; margin-bottom:4px;">`;
-      html += nodeIcon(node, 18);
-      html += `<h3 style="margin:0;">${esc(name)}</h3>`;
-      html += `</div>`;
-      html += `<div class="path">${esc(path)}</div>`;
-      html += `<a href="${esc(githubUrl)}" target="_blank" class="open-github">Open on GitHub</a>`;
-
-      // Links to
-      if (outNodes.length > 0) {
-        html += `<div class="section"><h4>Links to (${outNodes.length})</h4>`;
-        outNodes.forEach(n => { html += nodeCard(n, { link: true }); });
-        html += `</div>`;
-      }
-
-      // Linked from
-      if (inNodes.length > 0) {
-        html += `<div class="section"><h4>Linked from (${inNodes.length})</h4>`;
-        inNodes.forEach(n => { html += nodeCard(n, { link: true }); });
-        html += `</div>`;
-      }
-
-      // PRs
-      html += renderPRList(prs);
-
-      // PR new/removed status
-      if (node.hasClass('pr-new-node')) {
-        html += `<div class="section"><span class="pr-badge added">New in PR</span></div>`;
-      }
-      if (node.hasClass('pr-removed-node')) {
-        html += `<div class="section"><span class="pr-badge removed">Removed in PR</span></div>`;
-      }
-
-      showSidebar(html);
-    }
-
-    // ── Click to open sidebar ───────────────────────────────────
-    cy.on('tap', 'node', (evt) => {
-      openSidebar(evt.target);
-    });
-
-    cy.on('tap', 'edge', (evt) => {
-      openEdgeSidebar(evt.target);
-    });
-
-    function openEdgeSidebar(edge) {
-      const srcId = edge.data('source');
-      const tgtId = edge.data('target');
-      const srcNode = cy.getElementById(srcId);
-      const tgtNode = cy.getElementById(tgtId);
-      const prs = edge.data('prs') || [];
-      const prType = edge.data('prType');
-
-      let html = `<h3>Link</h3>`;
-      html += `<div style="display:flex; flex-direction:column; align-items:center; margin:24px 0; gap:4px;">`;
-      if (srcNode.length) html += nodeCard(srcNode, { link: true });
-      else html += `<div style="padding:8px 12px; color:#888;">${esc(srcId)}</div>`;
-      html += `<svg width="20" height="32" viewBox="0 0 20 32" style="flex-shrink:0; opacity:0.4;">`;
-      html += `<line x1="10" y1="2" x2="10" y2="24" stroke="#888" stroke-width="1.5"/>`;
-      html += `<polygon points="4,22 10,30 16,22" fill="#888"/>`;
-      html += `</svg>`;
-      if (tgtNode.length) html += nodeCard(tgtNode, { link: true });
-      else html += `<div style="padding:8px 12px; color:#888;">${esc(tgtId)}</div>`;
-      html += `</div>`;
-
-      if (prType === 'added') {
-        html += `<div class="section"><span class="pr-badge added">Added in PR</span></div>`;
-      } else if (prType === 'removed') {
-        html += `<div class="section"><span class="pr-badge removed">Removed in PR</span></div>`;
-      }
-
-      html += renderPRList(prs);
-
-      showSidebar(html);
-    }
-
-    // Wire up sidebar link hover/click behavior
-    function showSidebar(html) {
-      sidebarContent.innerHTML = html;
-      sidebar.classList.add('open');
-
-      sidebarContent.querySelectorAll('a[data-node]').forEach(a => {
-        a.addEventListener('mouseenter', () => {
-          const targetNode = cy.getElementById(a.dataset.node);
-          if (!targetNode.length || searchInput.value.trim()) return;
-          hoverActive = true;
-          const neighborhood = targetNode.closedNeighborhood();
-          const hoveredGroup = targetNode.data('group');
-          cy.elements().addClass('hover-dimmed');
-          labelEls.forEach(el => { el.style.opacity = '0.12'; });
-          neighborhood.removeClass('hover-dimmed').addClass('hover-highlighted');
-          neighborhood.nodes().forEach(n => {
-            setLabelOpacity(n.id(), '1');
-            showFullPath(n.id());
-          });
-          cy.nodes().filter(n => n.data('group') === hoveredGroup && !neighborhood.contains(n))
-            .removeClass('hover-dimmed').addClass('hover-group');
-          startHoverRepulsion(targetNode);
-          startDotAnimation(neighborhood.edges().toArray());
-        });
-        a.addEventListener('mouseleave', () => {
-          if (!hoverActive) return;
-          clearHoverState();
-        });
-        a.addEventListener('click', (e) => {
-          e.preventDefault();
-          clearHoverState();
-          const targetNode = cy.getElementById(a.dataset.node);
-          if (targetNode.length) {
-            cy.animate({ center: { eles: targetNode }, zoom: cy.zoom() }, { duration: 300 });
-            openSidebar(targetNode);
-          }
-        });
-      });
-    }
-
-    // ── PR Overlay ───────────────────────────────────────────────
-    let prData = null;
-    let prOverlayActive = false; // set to true once PR data loads
-    const prToggle = document.getElementById('pr-toggle');
-    const prStatus = document.getElementById('pr-status');
-
-    async function loadPRData() {
-      try {
-        const pulls = await fetchJSON(`${API}/repos/${OWNER}/${REPO}/pulls?state=open&per_page=100`);
-        if (pulls.length === 0) return null;
-
-        const prInfo = [];
-        for (const pr of pulls) {
-          prInfo.push({
-            number: pr.number,
-            title: pr.title,
-            author: pr.user.login,
-            url: pr.html_url,
-            updatedAt: pr.updated_at,
-            headSha: pr.head.sha,
-            headRef: pr.head.ref,
-          });
-        }
-
-        // Fetch changed files for each PR
-        const prFiles = await Promise.all(prInfo.map(async (pr) => {
-          const files = await fetchJSON(`${API}/repos/${OWNER}/${REPO}/pulls/${pr.number}/files?per_page=300`);
-          const mdFiles = files.filter(f => f.filename.endsWith('.md') && (f.filename === 'README.md' || f.filename.startsWith('docs/')));
-          return { ...pr, files: mdFiles };
-        }));
-
-        // Fetch PR branch content for changed md files and parse links
-        const newEdges = []; // {source, target, prs:[]}
-        const removedEdges = []; // {source, target, prs:[]}
-        const newNodes = new Map(); // path -> [pr]
-        const removedNodes = new Map(); // path -> [pr]
-        const touchedNodes = new Map(); // path -> [pr]
-
-        // Collect all file-fetch tasks, then run in parallel
-        const fetchTasks = [];
-        for (const pr of prFiles) {
-          for (const file of pr.files) {
-            const prMeta = { number: pr.number, title: pr.title, author: pr.author, url: pr.url, updatedAt: pr.updatedAt };
-
-            if (file.status === 'added') {
-              if (!newNodes.has(file.filename)) newNodes.set(file.filename, []);
-              newNodes.get(file.filename).push(prMeta);
-            } else if (file.status === 'removed') {
-              if (!removedNodes.has(file.filename)) removedNodes.set(file.filename, []);
-              removedNodes.get(file.filename).push(prMeta);
-              continue; // no content to fetch
-            }
-
-            if (!touchedNodes.has(file.filename)) touchedNodes.set(file.filename, []);
-            touchedNodes.get(file.filename).push(prMeta);
-
-            fetchTasks.push({ file, pr, prMeta });
-          }
-        }
-
-        await Promise.all(fetchTasks.map(async ({ file, pr, prMeta }) => {
-          const prContent = await fetchText(`${RAW}/${OWNER}/${REPO}/${pr.headSha}/${file.filename}`);
-          if (prContent === null) return;
-
-          const prLinks = new Set(extractLinks(file.filename, prContent));
-          const baseLinks = new Set(contents[file.filename] ? extractLinks(file.filename, contents[file.filename]) : []);
-
-          for (const link of prLinks) {
-            if (!baseLinks.has(link)) {
-              newEdges.push({ source: file.filename, target: link, pr: prMeta });
-            }
-          }
-          for (const link of baseLinks) {
-            if (!prLinks.has(link)) {
-              removedEdges.push({ source: file.filename, target: link, pr: prMeta });
-            }
-          }
-        }));
-
-        return { newEdges, removedEdges, newNodes, removedNodes, touchedNodes };
-      } catch (e) {
-        console.warn('PR data fetch failed:', e.message);
-        return null;
-      }
-    }
-
-    // Kick off PR loading in background — show status while loading
-    prStatus.style.display = 'block';
-    loadPRData().then(data => {
-      prStatus.style.display = 'none';
-      if (!data) return;
-      prData = data;
-
-      const hasPRContent = data.newEdges.length > 0 || data.removedEdges.length > 0 ||
-                           data.newNodes.size > 0 || data.removedNodes.size > 0 || data.touchedNodes.size > 0;
-      if (hasPRContent) {
-        // Store PR metadata on nodes (but don't apply visual styles yet)
-        for (const [path, prs] of data.touchedNodes) {
-          const node = cy.getElementById(path);
-          if (node.length) node.data('prs', prs);
-        }
-
-        prToggle.style.display = 'block';
-      }
-    }).catch(() => {
-      prStatus.textContent = 'PR data unavailable';
-      setTimeout(() => { prStatus.style.display = 'none'; }, 3000);
-    });
-
-    // Create a DOM label for a newly added node
-    function addLabelForNode(node) {
-      if (labelEls.has(node.id())) return;
-      const el = document.createElement('div');
-      el.className = 'node-label';
-      el.textContent = node.data('label');
-      labelsContainer.appendChild(el);
-      labelEls.set(node.id(), el);
-    }
-    // Remove a DOM label for a removed node
-    function removeLabelForNode(nodeId) {
-      const el = labelEls.get(nodeId);
-      if (el) { el.remove(); labelEls.delete(nodeId); }
-    }
-
-    // Apply / remove PR overlay
-    function applyPROverlay() {
-      if (!prData) return;
-
-      // Add badges to touched nodes
-      for (const [path] of prData.touchedNodes) {
-        const node = cy.getElementById(path);
-        if (node.length) node.addClass('has-pr-badge');
-      }
-
-      // Add new nodes
-      for (const [path, prs] of prData.newNodes) {
-        if (cy.getElementById(path).length === 0) {
-          const g = nodeGroup(path);
-          const added = cy.add({
-            data: {
-              id: path, label: label(path), group: g,
-              color: GROUP_COLORS[g] || '#768390',
-              colorBright: GROUP_COLORS_BRIGHT[g] || '#c0c0c0',
-              shape: nodeShape(path),
-              inDegree: 0, exists: true, prs: prs,
-              githubUrl: `https://github.com/${OWNER}/${REPO}/blob/${BRANCH}/${path}`,
-            },
-            classes: 'pr-new-node',
-          });
-          addLabelForNode(added);
-        } else {
-          cy.getElementById(path).addClass('pr-new-node');
-        }
-      }
-
-      // Mark removed nodes
-      for (const [path] of prData.removedNodes) {
-        const node = cy.getElementById(path);
-        if (node.length) node.addClass('pr-removed-node');
-      }
-
-      // Add new edges
-      for (let i = 0; i < prData.newEdges.length; i++) {
-        const e = prData.newEdges[i];
-        const id = `pr-new-e${i}`;
-        if (cy.getElementById(id).length === 0) {
-          if (cy.getElementById(e.target).length === 0) {
-            const tg = nodeGroup(e.target);
-            const addedTarget = cy.add({
-              data: {
-                id: e.target, label: label(e.target), group: tg,
-                color: GROUP_COLORS[tg] || '#768390',
-                colorBright: GROUP_COLORS_BRIGHT[tg] || '#c0c0c0',
-                shape: nodeShape(e.target),
-                inDegree: 0, exists: false, prs: [e.pr],
-                githubUrl: `https://github.com/${OWNER}/${REPO}/blob/${BRANCH}/${e.target}`,
-              },
-              classes: 'pr-new-node',
-            });
-            addLabelForNode(addedTarget);
-          }
-          cy.add({
-            data: { id, source: e.source, target: e.target, prs: [e.pr], prType: 'added' },
-            classes: 'pr-added-edge',
-          });
-        }
-      }
-
-      // Add removed edges
-      for (let i = 0; i < prData.removedEdges.length; i++) {
-        const e = prData.removedEdges[i];
-        const id = `pr-rm-e${i}`;
-        if (cy.getElementById(id).length === 0) {
-          cy.add({
-            data: { id, source: e.source, target: e.target, prs: [e.pr], prType: 'removed' },
-            classes: 'pr-removed-edge',
-          });
-        }
-      }
-
-      cy.layout(LAYOUT_ANIMATED).run();
-    }
-
-    function removePROverlay() {
-      if (!prData) return;
-      // Clear PR data from touched nodes so popups stop showing
-      for (const [path] of prData.touchedNodes) {
-        const node = cy.getElementById(path);
-        if (node.length) node.data('prs', []);
-      }
-      cy.elements('.has-pr-badge').removeClass('has-pr-badge');
-      cy.elements('.pr-new-node').forEach(el => {
-        if (prData.newNodes.has(el.id())) { removeLabelForNode(el.id()); cy.remove(el); }
-        else el.removeClass('pr-new-node');
-      });
-      cy.elements('.pr-removed-node').removeClass('pr-removed-node');
-      cy.remove('.pr-added-edge');
-      cy.remove('.pr-removed-edge');
-      cy.layout(LAYOUT_ANIMATED).run();
-    }
-
-    // Toggle PR overlay
-    const prSearchInput = document.getElementById('pr-search');
-    prToggle.addEventListener('click', () => {
-      if (!prData) return;
-      prOverlayActive = !prOverlayActive;
-      prToggle.classList.toggle('active', prOverlayActive);
-      prToggle.textContent = prOverlayActive ? 'Hide PR changes' : 'Show PR changes';
-      document.getElementById('legend-pr').style.display = prOverlayActive ? 'block' : 'none';
-      prSearchInput.style.display = prOverlayActive ? 'block' : 'none';
-      if (!prOverlayActive) prSearchInput.value = '';
-      if (prOverlayActive) applyPROverlay();
-      else removePROverlay();
-    });
-
-    // PR search filter — matches PR number, title, or author; shows only affected nodes
-    prSearchInput.addEventListener('input', () => {
-      if (!prData || !prOverlayActive) return;
-      const q = prSearchInput.value.trim().toLowerCase();
-
-      // Reset: show everything and remove dimming
-      cy.elements().removeClass('hover-dimmed');
-      cy.elements().style('display', 'element');
-      labelEls.forEach(el => { el.style.display = ''; el.style.opacity = ''; });
-
-      if (!q) { applyLegendFilter(); updateLabelPositions(); return; }
-
-      // Find matching PR numbers
-      const matchingPRs = new Set();
-      // Search through all PR sources
-      const allPrs = new Map();
-      for (const [, prs] of prData.touchedNodes) {
-        for (const pr of prs) allPrs.set(pr.number, pr);
-      }
-      for (const e of prData.newEdges) allPrs.set(e.pr.number, e.pr);
-      for (const e of prData.removedEdges) allPrs.set(e.pr.number, e.pr);
-      for (const [, prs] of prData.newNodes) {
-        for (const pr of prs) allPrs.set(pr.number, pr);
-      }
-      for (const [, prs] of prData.removedNodes) {
-        for (const pr of prs) allPrs.set(pr.number, pr);
-      }
-      for (const [num, pr] of allPrs) {
-        if ((`#${num}`).includes(q) || pr.title.toLowerCase().includes(q) || pr.author.toLowerCase().includes(q)) {
-          matchingPRs.add(num);
-        }
-      }
-
-      // Collect affected node IDs
-      const affectedNodes = new Set();
-      for (const [path, prs] of prData.touchedNodes) {
-        if (prs.some(p => matchingPRs.has(p.number))) affectedNodes.add(path);
-      }
-      for (const [path, prs] of prData.newNodes) {
-        if (prs.some(p => matchingPRs.has(p.number))) affectedNodes.add(path);
-      }
-      for (const [path, prs] of prData.removedNodes) {
-        if (prs.some(p => matchingPRs.has(p.number))) affectedNodes.add(path);
-      }
-      for (const e of prData.newEdges) {
-        if (matchingPRs.has(e.pr.number)) { affectedNodes.add(e.source); affectedNodes.add(e.target); }
-      }
-      for (const e of prData.removedEdges) {
-        if (matchingPRs.has(e.pr.number)) { affectedNodes.add(e.source); affectedNodes.add(e.target); }
-      }
-
-      // Dim everything, highlight affected
-      cy.elements().addClass('hover-dimmed');
-      labelEls.forEach(el => { el.style.opacity = '0.12'; });
-
-      affectedNodes.forEach(id => {
-        const n = cy.getElementById(id);
-        if (n.length) {
-          n.removeClass('hover-dimmed');
-          const el = labelEls.get(id);
-          if (el) el.style.opacity = '1';
-        }
-      });
-
-      // Show matching PR edges, dim non-matching
-      cy.edges('.pr-added-edge, .pr-removed-edge').forEach(e => {
-        const edgePrs = e.data('prs') || [];
-        if (edgePrs.some(p => matchingPRs.has(p.number))) {
-          e.removeClass('hover-dimmed');
-        }
-      });
-
-      // Show edges between affected nodes
-      cy.edges().forEach(e => {
-        if (affectedNodes.has(e.data('source')) && affectedNodes.has(e.data('target'))) {
-          e.removeClass('hover-dimmed');
-        }
-      });
-
-      updateLabelPositions();
-    });
-
-  } catch (e) {
-    loading.style.display = 'none';
-    showError(e.message);
-  }
+  });
+})();
+// Mobile nav toggle
+(function(){
+  const btn=document.getElementById('nav-hamburger');
+  const links=document.getElementById('nav-links');
+  btn.addEventListener('click',()=>{
+    const open=links.classList.toggle('open');
+    btn.setAttribute('aria-expanded',String(open));
+    btn.setAttribute('aria-label',open?'Close menu':'Open menu');
+  });
+})();
+// Timeline staggered reveal + scroll reveal (skip if reduced motion)
+if(!window.matchMedia('(prefers-reduced-motion:reduce)').matches){
+  document.querySelectorAll('.gh-event').forEach(ev=>{
+    const delay=parseInt(ev.dataset.delay)||0;
+    setTimeout(()=>ev.classList.add('visible'),400+delay);
+  });
+  const ro=new IntersectionObserver((entries)=>{
+    entries.forEach(e=>{if(e.isIntersecting){e.target.classList.add('visible');ro.unobserve(e.target)}});
+  },{threshold:0.15});
+  document.querySelectorAll('.reveal').forEach(el=>ro.observe(el));
+} else {
+  document.querySelectorAll('.gh-event,.reveal').forEach(el=>el.classList.add('visible'));
 }
-
-main();
 </script>
 </body>
 </html>

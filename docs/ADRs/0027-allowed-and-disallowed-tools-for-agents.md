@@ -1,6 +1,6 @@
 ---
 title: "27. Allowed and Disallowed Tools for Agents"
-status: Proposed
+status: Accepted
 relates_to:
   - agent-architecture
   - security-threat-model
@@ -16,7 +16,7 @@ Date: 2026-04-21
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 

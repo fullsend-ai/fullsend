@@ -1,6 +1,6 @@
 ---
 title: "14. Admin install: GitHub Apps and `.fullsend` credential surface (v1)"
-status: Proposed
+status: Accepted
 relates_to:
   - governance
   - agent-architecture
@@ -17,7 +17,7 @@ Date: 2026-04-05
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 

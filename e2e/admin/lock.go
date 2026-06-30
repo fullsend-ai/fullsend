@@ -59,7 +59,9 @@ func acquireLock(ctx context.Context, client forge.Client, token, org, runID str
 		// content like "# e2e-lock"), treat the lock as stale.
 		if !isValidUUID(holder) {
 			logf("[e2e-lock] Lock contains invalid holder %q, force-acquiring", truncateUUID(holder))
-			_ = client.DeleteRepo(ctx, org, lockRepo)
+			if delErr := client.DeleteRepo(ctx, org, lockRepo); delErr != nil {
+				logf("[e2e-lock] Warning: failed to delete invalid lock repo: %v", delErr)
+			}
 			acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 			if err != nil {
 				return fmt.Errorf("force-acquiring invalid lock: %w", err)
@@ -77,9 +79,11 @@ func acquireLock(ctx context.Context, client forge.Client, token, org, runID str
 				age := time.Since(createdAt)
 
 				// Stale lock recovery.
-				if age > timeout {
-					logf("[e2e-lock] Lock appears stale (age: %s), force-acquiring", age)
-					_ = client.DeleteRepo(ctx, org, lockRepo)
+				if age > staleLockTimeout {
+					logf("[e2e-lock] Lock appears stale (age: %s > %s), force-acquiring", age, staleLockTimeout)
+					if delErr := client.DeleteRepo(ctx, org, lockRepo); delErr != nil {
+						logf("[e2e-lock] Warning: failed to delete stale lock repo: %v", delErr)
+					}
 					acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 					if err != nil {
 						return fmt.Errorf("force-acquiring stale lock: %w", err)
@@ -115,11 +119,19 @@ func acquireLock(ctx context.Context, client forge.Client, token, org, runID str
 // tryCreateLock attempts to create the lock repo and write our UUID.
 // Returns (true, nil) if the lock was successfully acquired.
 func tryCreateLock(ctx context.Context, client forge.Client, org, runID string, logf func(string, ...any)) (bool, error) {
+	logf("[e2e-lock] Attempting to create lock repo %s/%s", org, lockRepo)
 	_, err := client.CreateRepo(ctx, org, lockRepo, "E2E test lock — do not delete manually", false)
 	if err != nil {
-		// Repo already exists (409 or similar) — someone else got it.
-		return false, nil
+		if isRepoAlreadyExists(err) {
+			logf("[e2e-lock] Lock repo %s/%s already exists (repo locked by another run)", org, lockRepo)
+			return false, nil
+		}
+		// Unexpected error (rate limit, auth failure, network). Propagate
+		// so acquireOrg can distinguish "locked" from "broken".
+		return false, fmt.Errorf("creating lock repo in %s: %w", org, err)
 	}
+
+	logf("[e2e-lock] Lock repo %s/%s created, writing run ID", org, lockRepo)
 
 	// Use CreateOrUpdateFile since auto_init creates a default README.md.
 	// Retry — newly created repos may not be immediately ready for file
@@ -128,21 +140,39 @@ func tryCreateLock(ctx context.Context, client forge.Client, org, runID string, 
 		return client.CreateOrUpdateFile(ctx, org, lockRepo, "README.md", "acquire lock", []byte(runID))
 	})
 	if createErr != nil {
-		_ = client.DeleteRepo(ctx, org, lockRepo)
+		logf("[e2e-lock] Failed to write lock file, cleaning up repo: %v", createErr)
+		if delErr := client.DeleteRepo(ctx, org, lockRepo); delErr != nil {
+			logf("[e2e-lock] Warning: cleanup delete of %s/%s also failed: %v", org, lockRepo, delErr)
+		}
 		return false, fmt.Errorf("writing lock file after retries: %w", createErr)
 	}
 
 	// Verify we actually got the lock (handle race between two creators).
-	content, err := client.GetFileContent(ctx, org, lockRepo, "README.md")
-	if err != nil {
-		return false, fmt.Errorf("verifying lock: %w", err)
-	}
-	if strings.TrimSpace(string(content)) == runID {
-		logf("[e2e-lock] Lock acquired (run: %s)", truncateUUID(runID))
-		return true, nil
+	// Retry the read because GitHub's auto_init may serve stale default
+	// README content ("# e2e-lock") briefly after CreateOrUpdateFile succeeds.
+	for i := range 5 {
+		if i > 0 {
+			select {
+			case <-time.After(time.Duration(i+1) * time.Second):
+			case <-ctx.Done():
+				return false, ctx.Err()
+			}
+		}
+		content, err := client.GetFileContent(ctx, org, lockRepo, "README.md")
+		if err != nil {
+			return false, fmt.Errorf("verifying lock: %w", err)
+		}
+		holder := strings.TrimSpace(string(content))
+		if holder == runID {
+			logf("[e2e-lock] Lock acquired (run: %s)", truncateUUID(runID))
+			return true, nil
+		}
+		logf("[e2e-lock] Verification read %d/5: got %q, expected %s (auto_init race?)", i+1, truncateUUID(holder), truncateUUID(runID))
 	}
 
-	// Lost the race.
+	// After retries, still not our content — genuinely lost the race.
+	content, _ := client.GetFileContent(ctx, org, lockRepo, "README.md")
+	logf("[e2e-lock] Lost lock race for %s/%s (holder: %s)", org, lockRepo, truncateUUID(strings.TrimSpace(string(content))))
 	return false, nil
 }
 
@@ -150,7 +180,7 @@ func tryCreateLock(ctx context.Context, client forge.Client, org, runID string, 
 func releaseLock(ctx context.Context, client forge.Client, org, runID string, t *testing.T) {
 	content, err := client.GetFileContent(ctx, org, lockRepo, "README.md")
 	if err != nil {
-		t.Logf("[e2e-lock] Could not read lock file during release: %v", err)
+		t.Logf("warning: [e2e-lock] could not read lock file during release: %v", err)
 		return
 	}
 
@@ -160,10 +190,42 @@ func releaseLock(ctx context.Context, client forge.Client, org, runID string, t 
 	}
 
 	if err := client.DeleteRepo(ctx, org, lockRepo); err != nil {
-		t.Logf("[e2e-lock] Failed to release lock: %v", err)
+		t.Logf("warning: [e2e-lock] failed to release lock: %v", err)
 		return
 	}
 	t.Logf("[e2e-lock] Lock released (run: %s)", truncateUUID(runID))
+}
+
+// tryReclaimStaleLock checks whether the lock on org is stale (older than
+// staleLockTimeout) and force-acquires it if so. Returns true if the lock
+// was reclaimed. This runs during the first pass so stale locks from
+// crashed runs don't waste pool capacity.
+func tryReclaimStaleLock(ctx context.Context, client forge.Client, token, org, runID string, logf func(string, ...any)) bool {
+	createdAt, err := getRepoCreatedAt(ctx, token, org, lockRepo)
+	if err != nil {
+		logf("[org-pool] Could not check lock age for %s: %v", org, err)
+		return false
+	}
+	age := time.Since(createdAt)
+	if age <= staleLockTimeout {
+		logf("[org-pool] %s lock is fresh (age: %s), skipping", org, age.Round(time.Second))
+		return false
+	}
+	logf("[org-pool] %s lock is stale (age: %s > %s), deleting stale lock repo", org, age.Round(time.Second), staleLockTimeout)
+	if delErr := client.DeleteRepo(ctx, org, lockRepo); delErr != nil {
+		if !forge.IsNotFound(delErr) {
+			logf("[org-pool] Warning: failed to delete stale lock repo %s/%s: %v", org, lockRepo, delErr)
+			return false
+		}
+		logf("[org-pool] Stale lock repo %s/%s already deleted", org, lockRepo)
+	}
+	logf("[org-pool] Stale lock repo %s/%s deleted, attempting re-creation", org, lockRepo)
+	acquired, err := tryCreateLock(ctx, client, org, runID, logf)
+	if err != nil {
+		logf("[org-pool] Error force-acquiring %s: %v", org, err)
+		return false
+	}
+	return acquired
 }
 
 // truncateUUID returns the first 8 chars of a UUID for log readability.
@@ -178,4 +240,14 @@ func truncateUUID(u string) string {
 func isValidUUID(s string) bool {
 	_, err := uuid.Parse(s)
 	return err == nil
+}
+
+// isRepoAlreadyExists reports whether the error indicates that CreateRepo
+// failed because the repository already exists (422 from GitHub API or
+// "already exists" from the fake client).
+func isRepoAlreadyExists(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "already exists")
 }

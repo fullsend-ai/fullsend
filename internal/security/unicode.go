@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
@@ -22,9 +23,9 @@ func NewUnicodeNormalizer() *UnicodeNormalizer {
 func (u *UnicodeNormalizer) Name() string { return "unicode_normalizer" }
 
 var (
-	// Zero-width and invisible characters.
+	// Zero-width and invisible format characters (aligned with unicode_posttool.py).
 	reZeroWidth = regexp.MustCompile(
-		"[\u200B\u200C\u200D\uFEFF\u00AD\u2060-\u2064]+",
+		"[\u00AD\u034F\u061C\u0600-\u0605\u070F\u0890-\u0891\u08E2\u180E\u200B-\u200F\u2028\u2029\u2060-\u2064\u206A-\u206F\uFEFF\uFFF9-\uFFFB]+",
 	)
 
 	// Bidirectional override characters.
@@ -32,15 +33,33 @@ var (
 		"[\u202A-\u202E\u2066-\u2069]+",
 	)
 
-	// ANSI escape sequences.
-	reANSI = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+	// ANSI CSI escape sequences (ECMA-48 compliant).
+	reANSI = regexp.MustCompile(`\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]`)
+
+	// ST-terminated escape sequences: OSC (ESC ]), DCS (ESC P), APC (ESC _), PM (ESC ^).
+	reSTTerminated = regexp.MustCompile(`\x1b[\]P_^][^\x1b\x07]*(?:\x1b\\|\x07)`)
 
 	// Null bytes.
 	reNull = regexp.MustCompile("\x00+")
 
-	// Variation selectors.
+	// BMP variation selectors (VS1-VS16).
 	reVariation = regexp.MustCompile("[\uFE00-\uFE0F]+")
 )
+
+// stripTerminalEscapes removes ANSI CSI and OSC sequences from text.
+func stripTerminalEscapes(text string) (string, int, int) {
+	ansiCount := 0
+	current := reANSI.ReplaceAllStringFunc(text, func(string) string {
+		ansiCount++
+		return ""
+	})
+	stCount := 0
+	current = reSTTerminated.ReplaceAllStringFunc(current, func(string) string {
+		stCount++
+		return ""
+	})
+	return current, ansiCount, stCount
+}
 
 func (u *UnicodeNormalizer) Scan(text string) ScanResult {
 	result := ScanResult{Safe: true, Sanitized: text}
@@ -62,15 +81,25 @@ func (u *UnicodeNormalizer) Scan(text string) ScanResult {
 		current = reNull.ReplaceAllString(current, "")
 	}
 
-	// ANSI escapes
-	if matches := reANSI.FindAllString(current, -1); len(matches) > 0 {
-		findings = append(findings, Finding{
-			Scanner:  "unicode_normalizer",
-			Name:     "ansi_escape",
-			Severity: "medium",
-			Detail:   fmt.Sprintf("%d ANSI escape sequences removed", len(matches)),
-		})
-		current = reANSI.ReplaceAllString(current, "")
+	// ANSI and ST-terminated escapes (OSC, DCS, APC, PM).
+	if stripped, ansiCount, stCount := stripTerminalEscapes(current); ansiCount > 0 || stCount > 0 {
+		if ansiCount > 0 {
+			findings = append(findings, Finding{
+				Scanner:  "unicode_normalizer",
+				Name:     "ansi_escape",
+				Severity: "medium",
+				Detail:   fmt.Sprintf("%d ANSI escape sequences removed", ansiCount),
+			})
+		}
+		if stCount > 0 {
+			findings = append(findings, Finding{
+				Scanner:  "unicode_normalizer",
+				Name:     "osc_escape",
+				Severity: "medium",
+				Detail:   fmt.Sprintf("%d ST-terminated escape sequences removed", stCount),
+			})
+		}
+		current = stripped
 	}
 
 	// Zero-width characters
@@ -130,7 +159,7 @@ func (u *UnicodeNormalizer) Scan(text string) ScanResult {
 		current = tagStripped.String()
 	}
 
-	// Variation selectors
+	// BMP variation selectors (VS1-VS16)
 	if locs := reVariation.FindAllStringIndex(current, -1); len(locs) > 0 {
 		count := 0
 		for _, loc := range locs {
@@ -143,6 +172,46 @@ func (u *UnicodeNormalizer) Scan(text string) ScanResult {
 			Detail:   fmt.Sprintf("%d variation selectors removed", count),
 		})
 		current = reVariation.ReplaceAllString(current, "")
+	}
+
+	// Supplementary variation selectors (VS17-VS256, U+E0100-U+E01EF).
+	var suppVSStripped strings.Builder
+	suppVSCount := 0
+	for _, r := range current {
+		if r >= 0xE0100 && r <= 0xE01EF {
+			suppVSCount++
+		} else {
+			suppVSStripped.WriteRune(r)
+		}
+	}
+	if suppVSCount > 0 {
+		findings = append(findings, Finding{
+			Scanner:  "unicode_normalizer",
+			Name:     "variation_selector",
+			Severity: "medium",
+			Detail:   fmt.Sprintf("%d supplementary variation selectors removed", suppVSCount),
+		})
+		current = suppVSStripped.String()
+	}
+
+	// Remaining Cf (format) category characters (e.g. U+061C Arabic Letter Mark).
+	var cfStripped strings.Builder
+	cfCount := 0
+	for _, r := range current {
+		if unicode.Is(unicode.Cf, r) {
+			cfCount++
+		} else {
+			cfStripped.WriteRune(r)
+		}
+	}
+	if cfCount > 0 {
+		findings = append(findings, Finding{
+			Scanner:  "unicode_normalizer",
+			Name:     "zero_width",
+			Severity: "high",
+			Detail:   fmt.Sprintf("%d format (Cf) characters removed", cfCount),
+		})
+		current = cfStripped.String()
 	}
 
 	// NFKC normalization (fullwidth -> ASCII, compatibility decomposition)
@@ -177,6 +246,27 @@ func (u *UnicodeNormalizer) Scan(text string) ScanResult {
 			Detail:   fmt.Sprintf("NFKC normalization applied (%d characters affected)", diffCount),
 		})
 		current = nfkc
+
+		// NFKC can reconstruct escape sequences from fullwidth characters.
+		if stripped, ansiCount, stCount := stripTerminalEscapes(current); ansiCount > 0 || stCount > 0 {
+			if ansiCount > 0 {
+				findings = append(findings, Finding{
+					Scanner:  "unicode_normalizer",
+					Name:     "ansi_escape",
+					Severity: "medium",
+					Detail:   fmt.Sprintf("%d ANSI escape sequences removed (post-NFKC)", ansiCount),
+				})
+			}
+			if stCount > 0 {
+				findings = append(findings, Finding{
+					Scanner:  "unicode_normalizer",
+					Name:     "osc_escape",
+					Severity: "medium",
+					Detail:   fmt.Sprintf("%d ST-terminated escape sequences removed (post-NFKC)", stCount),
+				})
+			}
+			current = stripped
+		}
 	}
 
 	result.Findings = findings

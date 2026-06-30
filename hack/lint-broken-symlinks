@@ -16,15 +16,21 @@ info() { echo "INFO: $1"; }
 
 cd "$REPO_ROOT"
 
+trap 'echo "lint-broken-symlinks: aborted unexpectedly at line $LINENO" >&2' ERR
+
 info "Checking for broken symlinks..."
 
 # Check only tracked symlinks (git mode 120000) to avoid false positives
 # from development artifacts in .venv/, bin/, etc.
 broken_symlinks=()
 while IFS= read -r symlink; do
-    if [[ ! -e "$symlink" ]]; then
-        target=$(readlink "$symlink")
-        broken_symlinks+=("$symlink -> $target")
+    if [[ -L "$symlink" ]]; then
+        if [[ ! -e "$symlink" ]]; then
+            target=$(readlink "$symlink" || echo "<unreadable>")
+            broken_symlinks+=("$symlink -> $target")
+        fi
+    else
+        broken_symlinks+=("$symlink (tracked as symlink but not a symlink on disk)")
     fi
 done < <(git ls-files -s | awk '$1 == "120000" {print $4}')
 

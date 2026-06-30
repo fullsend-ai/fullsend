@@ -1,0 +1,150 @@
+name: Check E2E Authorization
+description: >-
+  Authorize PR-triggered e2e runs for trusted authors or a fresh ok-to-test label.
+  Removes stale ok-to-test labels and posts a sticky PR comment when unauthorized.
+
+inputs:
+  pr_number:
+    description: Pull request number to authorize
+    required: true
+  repository:
+    description: Repository in owner/name form
+    required: true
+  pr_updated_at:
+    description: github.event.pull_request.updated_at (server-side push time)
+    required: false
+    default: ""
+  event_action:
+    description: github.event.action
+    required: false
+    default: ""
+  pr_author_association:
+    description: github.event.pull_request.author_association (frozen event payload)
+    required: false
+    default: ""
+  pr_author_login:
+    description: github.event.pull_request.user.login (for collaborator permission API fallback)
+    required: false
+    default: ""
+  docs_url:
+    description: Link to e2e testing documentation
+    required: false
+    default: https://github.com/fullsend-ai/fullsend/blob/main/docs/guides/dev/e2e-testing.md#ci-authorization
+
+outputs:
+  authorized:
+    description: Whether e2e tests may run for this PR
+    value: ${{ steps.check.outputs.authorized }}
+  reason:
+    description: Authorization outcome reason code
+    value: ${{ steps.check.outputs.reason }}
+  label_removed:
+    description: Whether a stale ok-to-test label was removed
+    value: ${{ steps.check.outputs.label_removed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check authorization
+      id: check
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PR_NUMBER: ${{ inputs.pr_number }}
+        REPOSITORY: ${{ inputs.repository }}
+        PR_UPDATED_AT: ${{ inputs.pr_updated_at }}
+        EVENT_ACTION: ${{ inputs.event_action }}
+        PR_AUTHOR_ASSOCIATION: ${{ inputs.pr_author_association }}
+        PR_AUTHOR_LOGIN: ${{ inputs.pr_author_login }}
+      run: bash "${GITHUB_WORKSPACE}/scripts/check-e2e-authorization.sh" "${PR_NUMBER}" "${REPOSITORY}"
+
+    - name: Post gate comment
+      if: steps.check.outputs.authorized != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPOSITORY: ${{ inputs.repository }}
+        PR_NUMBER: ${{ inputs.pr_number }}
+        REASON: ${{ steps.check.outputs.reason }}
+        LABEL_REMOVED: ${{ steps.check.outputs.label_removed }}
+        DOCS_URL: ${{ inputs.docs_url }}
+        BOT_LOGIN: github-actions[bot]
+      run: |
+        set -euo pipefail
+
+        marker='<!-- e2e-gate -->'
+        owner="${REPOSITORY%%/*}"
+        repo="${REPOSITORY#*/}"
+
+        body="${marker}
+        ## E2E tests did not run
+
+        "
+
+        case "${REASON}" in
+          stale_ok_to_test)
+            body+="The \`ok-to-test\` label was removed because new commits landed after it was applied. A maintainer must re-apply \`ok-to-test\` after reviewing the latest changes.
+        "
+            ;;
+          error)
+            body+="The authorization check failed (GitHub API error). Re-run the workflow when the API is available; if this persists, contact a maintainer.
+        "
+            ;;
+          *)
+            body+="E2E tests run automatically for org/repo **members and collaborators** on pull requests.
+
+        For other contributors, a maintainer must add the \`ok-to-test\` label **after** the latest push.
+        "
+            ;;
+        esac
+
+        if [[ "${LABEL_REMOVED}" == "true" ]]; then
+          body+="
+        > **Note:** \`ok-to-test\` was cleared due to new commits.
+        "
+        fi
+
+        body+="
+        See [E2E testing guide](${DOCS_URL}) for details."
+
+        existing_id="$(gh api "repos/${owner}/${repo}/issues/${PR_NUMBER}/comments" --paginate \
+          | jq -r --arg login "${BOT_LOGIN}" --arg marker "${marker}" \
+            '.[] | select(.user.login == $login and (.body | contains($marker))) | .id' \
+          | head -n1 || true)"
+
+        if [[ -n "${existing_id}" ]]; then
+          jq -n --arg body "${body}" '{body: $body}' | \
+            gh api -X PATCH "repos/${owner}/${repo}/issues/comments/${existing_id}" --input - >/dev/null
+        else
+          jq -n --arg body "${body}" '{body: $body}' | \
+            gh api -X POST "repos/${owner}/${repo}/issues/${PR_NUMBER}/comments" --input - >/dev/null
+        fi
+
+    - name: Clear gate comment
+      if: steps.check.outputs.authorized == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPOSITORY: ${{ inputs.repository }}
+        PR_NUMBER: ${{ inputs.pr_number }}
+        BOT_LOGIN: github-actions[bot]
+      run: |
+        set -euo pipefail
+
+        marker='<!-- e2e-gate -->'
+        owner="${REPOSITORY%%/*}"
+        repo="${REPOSITORY#*/}"
+
+        existing_id="$(gh api "repos/${owner}/${repo}/issues/${PR_NUMBER}/comments" --paginate \
+          | jq -r --arg login "${BOT_LOGIN}" --arg marker "${marker}" \
+            '.[] | select(.user.login == $login and (.body | contains($marker))) | .id' \
+          | head -n1 || true)"
+
+        if [[ -n "${existing_id}" ]]; then
+          body="${marker}
+        ## E2E tests are running
+
+        Authorization passed for this commit. See the **E2E Tests** workflow for results."
+          jq -n --arg body "${body}" '{body: $body}' | \
+            gh api -X PATCH "repos/${owner}/${repo}/issues/comments/${existing_id}" --input - >/dev/null
+        fi

@@ -1,0 +1,49 @@
+# Renovate dependency update bot.
+#
+# Required setup:
+#   1. Create a GitHub App with permissions: contents:write,
+#      pull-requests:write, issues:read+write, checks:write.
+#   2. Install the App on the target org/repos.
+#   3. Set repository variable RENOVATE_APP_ID to the App ID.
+#   4. Set repository secret RENOVATE_PRIVATE_KEY to the App's PEM private key.
+#
+# See: https://docs.renovatebot.com/getting-started/running/#github-app
+name: Renovate
+
+on:
+  schedule:
+    - cron: "13 3,15 * * *"
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Run Renovate in dry-run mode"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - full
+
+permissions: {}
+
+jobs:
+  renovate:
+    if: github.repository_owner == 'fullsend-ai'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        id: app-token
+        with:
+          app-id: ${{ vars.RENOVATE_APP_ID }}
+          private-key: ${{ secrets.RENOVATE_PRIVATE_KEY }}
+
+      - uses: renovatebot/github-action@6d859fc95779be83a0335ca704879b47e5d79641 # v46.1.16
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          configurationFile: renovate.json
+        env:
+          LOG_LEVEL: info
+          RENOVATE_REPOSITORIES: ${{ github.repository }}
+          RENOVATE_DRY_RUN: ${{ inputs.dry-run || 'false' }}

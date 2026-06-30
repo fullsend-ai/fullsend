@@ -90,11 +90,11 @@ See BOOKMARKS.md for architectural context and external standards.
 
 ### Code review
 
-The platform security and content security review sub-agents have Konflux-specific concerns:
+The Security review sub-agent covers two Konflux-specific concerns within a single dimension:
 
-**Platform security agent** — Reviews changes for threats to Konflux itself: RBAC and authorization changes, authentication flows, data exposure risks, privilege escalation paths, injection vulnerabilities.
+**Platform security** — Reviews changes for threats to Konflux itself: RBAC and authorization changes, authentication flows, data exposure risks, privilege escalation paths, injection vulnerabilities.
 
-**Content security agent** — Reviews changes that affect the CI/CD content passing through Konflux — protecting Konflux's users:
+**Content security** — Reviews changes that affect the CI/CD content passing through Konflux — protecting Konflux's users:
 - Pipeline definition handling — can a user's pipeline definition escape its sandbox?
 - Build configuration — can build parameters be manipulated?
 - Release policy — can release gates be bypassed?

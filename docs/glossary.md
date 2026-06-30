@@ -83,7 +83,7 @@ See [architecture.md](architecture.md) and [agent-architecture.md](problems/agen
 
 ### Label State Machine
 
-The set of valid label transitions on issues and PRs that encode workflow state. Labels like `ready-to-code`, `ready-for-review`, `ready-for-merge`, and `requires-manual-review` are control markers that drive agent dispatch and enforce ordering. The label state machine guard validates that transitions are legal and enforces mutual exclusion — for example, starting a triage run clears downstream labels so stale state does not carry forward.
+The set of valid label transitions on issues and PRs that encode workflow state. Labels like `ready-for-triage`, `ready-to-code`, and `ready-for-review` drive agent dispatch; others such as `ready-for-merge` and `requires-manual-review` encode review outcomes. In per-repo installs, `ready-for-review` on a PR also triggers review; applying it to a standalone issue does not. Per-org installs still accept legacy issue-side review triggers pending a follow-up. The label state machine guard validates that transitions are legal and enforces mutual exclusion — for example, starting a triage run clears downstream labels so stale state does not carry forward.
 See [ADR 0002](ADRs/0002-initial-fullsend-design.md) building block 3.
 
 ## M
@@ -137,7 +137,7 @@ See [architecture.md](architecture.md) and [#101](https://github.com/fullsend-ai
 
 ### Skill
 
-A markdown file (optionally with a `scripts/` directory) that gives an agent context and tool authorizations for a specific task. Skills are not general "agent capabilities" — they are concrete, scoped instruction sets. A skill can declare which tools it is authorized to use; when a user or system approves the skill, they implicitly authorize those tools. Skills are assembled by the [harness](#harness) and are the primary mechanism for encoding agent behavior.
+A directory containing a `SKILL.md` file and optional companion files (scripts, sub-agents, assets) that gives an agent context and tool authorizations for a specific task. Skills are not general "agent capabilities" — they are concrete, scoped instruction sets. A skill can declare which tools it is authorized to use; when a user or system approves the skill, they implicitly authorize those tools. Skills are assembled by the [harness](#harness) and are the primary mechanism for encoding agent behavior.
 See [architecture.md](architecture.md) and [codebase-context.md](problems/codebase-context.md).
 
 ### Stage

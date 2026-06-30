@@ -1,6 +1,6 @@
 ---
 title: "3. Org-level configuration lives in a conventional repo"
-status: Proposed
+status: Accepted
 relates_to:
   - governance
   - codebase-context
@@ -20,7 +20,7 @@ Date: 2026-03-25
 
 ## Status
 
-Proposed
+Accepted
 
 ## Context
 

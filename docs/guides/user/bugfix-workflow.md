@@ -1,27 +1,27 @@
 # Bugfix workflow
 
-How fullsend handles a bug report from issue creation to merged fix, end to end. This guide is for developers working in a repo where fullsend is [installed and enrolled](../admin/installation.md).
+How fullsend handles a bug report from issue creation to merged fix, end to end. This guide is for developers working in a repo where fullsend is [installed and enrolled](../getting-started/).
 
 ## Overview
 
-When someone files a bug, fullsend's agent pipeline processes it through three stages:
+When someone files a bug, fullsend's agent pipeline processes it through four stages:
 
 1. **Triage** — validates the issue, checks for duplicates, attempts reproduction
 2. **Code** — implements a fix, writes tests, opens a PR, passes CI
 3. **Review** — multiple review agents evaluate the PR independently, a coordinator decides the outcome
+4. **Fix** — addresses review feedback automatically or on human command, then loops back to review
 
 Each stage is triggered by labels and can be restarted with slash commands. The pipeline uses GitHub's native primitives (issues, PRs, labels, branch protection) as its coordination layer — there is no central orchestrator. See [ADR 0002](../../ADRs/0002-initial-fullsend-design.md) for the full design.
 
 ```
 Issue filed → Triage → ready-to-code → Code Agent → PR opened → Review → ready-for-merge → Merge
-                │                          ↑                                │
-                │                          └── changes requested (planned) ─┘
+                │                                                  │ ↑
+                │                                                  │ │
+                │                                           Fix ───┘ └─── Re-review
                 ├── blocked → waiting for dependency
                 ├── duplicate → closed
                 └── needs-info → waiting for info
 ```
-
-> **Note:** The automated rework loop (Review → Code Agent on "changes requested") is not yet implemented. Today, a "changes requested" outcome requires human intervention. The planned [fix agent (#197)](https://github.com/fullsend-ai/fullsend/issues/197) will automate this loop.
 
 ## What you need to know as a developer
 
@@ -46,7 +46,7 @@ These labels track where an issue is in the pipeline:
 | `feature` | Issue categorized as a feature request | Waits for human prioritization before coding |
 | `triaged` | Triage passed but not auto-promoted | Waits for human review (applies to features and uncategorized issues) |
 | `ready-to-code` | Triage passed (bug, docs, performance) | Code agent picks it up |
-| `ready-for-review` | PR ready for review (manual trigger) | Review agents evaluate the PR |
+| `ready-for-review` | PR ready for review | Per-repo: triggers review when applied to a PR; also runs automatically via PR events |
 | `ready-for-merge` | All reviewers unanimously approved | PR can be merged per governance policy |
 | `requires-manual-review` | Reviewers disagreed or flagged security concerns | Human must decide |
 
@@ -61,7 +61,14 @@ You can control the pipeline from issue or PR comments:
 | `/fs-triage` | Issue comment | Re-runs triage from scratch (clears all labels, reopens if closed) |
 | `/fs-code` | Issue comment | Hands off to the code agent (expects `ready-to-code` or forces with human ack) |
 | `/fs-review` | PR comment | Enqueues a new review round for the current PR head |
+| `/fs-fix` | PR comment | Triggers the [fix agent](../../agents/fix.md) on the PR; accepts optional free-text instruction |
+| `/fs-fix-stop` | PR comment | Disables bot-triggered fix runs for this PR (human `/fs-fix` still works) |
 | `/fs-retro` | Issue or PR comment | Triggers a retrospective analysis of the workflow |
+
+All slash commands require write-level repository permission (admin,
+maintain, or write), verified via the collaborator permission API.
+Bot-to-bot agent handoffs are not affected because they use label-based
+triggers, not slash commands.
 
 ### What to expect from agent PRs
 
@@ -86,12 +93,10 @@ Agent PRs go through the same review process as human PRs:
 The review stage runs N independent review agents in parallel. One is randomly selected as coordinator. The coordinator collects verdicts and applies one of three outcomes:
 
 - **Unanimous approve:** All reviewers agree the PR is good. Label `ready-for-merge` is applied. The PR can be merged per your org's governance policy.
-- **Unanimous rework:** All reviewers agree changes are needed. Label `ready-to-code` is re-applied. Today, a human must address the review feedback manually. When the [fix agent (#197)](https://github.com/fullsend-ai/fullsend/issues/197) is implemented, this rework loop will be automated.
+- **Unanimous rework:** All reviewers agree changes are needed. The [fix agent](../../agents/fix.md) triggers automatically, reads the consolidated review body, and pushes fixes to the existing PR. After the fix, a new review round begins.
 - **Split or conflicting:** Reviewers disagree, or there are conflicting security assessments. Label `requires-manual-review` is applied. A human must decide.
 
 Every push to a PR in the review stage triggers a new review round. This means `ready-for-merge` is never stale — it always reflects the current PR head.
-
-> **Planned:** The **fix agent** ([#197](https://github.com/fullsend-ai/fullsend/issues/197)) will handle the rework loop automatically. When a review agent requests changes or a human posts `/fs-fix [instruction]`, the fix agent reads the review feedback and pushes fixes to the existing PR — no manual coding required. The fix agent is a separate workflow from the code agent, with its own prompt scoped to "read review feedback, fix existing PR."
 
 ## The stages in detail
 
@@ -102,12 +107,12 @@ Every push to a PR in the review stage triggers a new review round. This means `
 The triage agent:
 
 1. **Checks for duplicates.** Searches existing issues by title, body, and metadata. If it finds a match with high confidence, it labels `duplicate`, posts a comment linking the canonical issue, and closes this one.
-2. **Checks for blocking dependencies.** Searches for open issues or PRs (in this repo or upstream) that must be resolved before work can start. If a blocker is found, it labels `blocked` and posts a comment linking to the blocking issue or PR. On re-triage, it checks whether existing blockers have been resolved.
+2. **Checks for blocking dependencies.** Searches for open issues or PRs (in this repo or upstream) that must be resolved before work can start. If a prerequisite is found, it labels `blocked` and posts a comment linking to it. When no upstream tracking issue exists, the triage agent can also create one in the upstream repo (controlled by `create_issues.allow_targets` in config). On re-triage, it checks whether existing prerequisites have been resolved.
 3. **Checks information sufficiency.** If the issue body is missing steps to reproduce, expected behavior, or other critical details, it labels `needs-info` and posts a comment explaining what's missing.
 4. **Produces a test artifact.** When possible, writes a failing test case aligned with the repo's test framework.
 5. **Hands off.** Labels `ready-to-code` with a summary comment.
 
-**If triage gets it wrong:** Add a comment with the missing information, or edit the issue body. Edits to the title or body trigger triage automatically. You can also use `/fs-triage` to force a fresh run — this clears all previous labels and starts from scratch.
+**If triage gets it wrong:** Add a comment with the missing information, or edit the issue body. Edits to the title or body trigger triage automatically. You can also use `/fs-triage` to force a fresh run — this clears previous triage labels and re-evaluates, building on any prior triage analysis rather than discarding it.
 
 ### Stage 2: Code
 
@@ -124,15 +129,30 @@ The code agent:
 
 ### Stage 3: Review
 
-**Triggered by:** `pull_request_target` events (PR opened, push to PR branch, or marked ready for review), `/fs-review` command, or `ready-for-review` label.
+**Triggered by:** `pull_request_target` events (PR opened, push to PR branch, or marked ready for review), `/fs-review` on a PR comment, or applying `ready-for-review` to a PR (per-repo installs enforce PR context for the latter two).
 
 The review swarm:
 
 1. **N independent reviewers** evaluate the PR in parallel (configurable count).
 2. **One coordinator** (randomly selected) collects verdicts and posts a consolidated comment.
-3. **Outcome** is applied as a label: `ready-for-merge`, `ready-to-code` (rework), or `requires-manual-review`.
+3. **Outcome** is applied as a label (`ready-for-merge` or `requires-manual-review`) or triggers the [fix agent](../../agents/fix.md) (rework).
 
 Re-review happens automatically on every push to the PR. The `ready-for-merge` label is scoped to the PR head SHA at the time of review — it is cleared and re-evaluated on each new round.
+
+### Stage 4: Fix
+
+**Triggered by:** review agent submitting a "changes requested" review, or human `/fs-fix` command.
+
+The [fix agent](../../agents/fix.md):
+
+1. **Reads the review feedback.** For bot-triggered runs, the consolidated review body is the primary input. For human-triggered runs, the `/fs-fix` instruction text takes precedence.
+2. **Implements targeted fixes.** Addresses each actionable finding from the review, following repo conventions from `AGENTS.md`.
+3. **Verifies.** Runs the test suite and linters before committing.
+4. **Pushes a fix commit.** Posts a summary comment on the PR detailing what was fixed, what was disagreed with, and test results.
+
+After the fix commit, the review agents automatically re-review. This loop repeats until the reviewers approve, the iteration cap is reached, or a human intervenes with `/fs-fix-stop`.
+
+For details on what the fix agent reads, what it ignores, and how URLs in instructions behave, see the [fix agent reference](../../agents/fix.md).
 
 ### After merge
 
@@ -152,6 +172,7 @@ The **retro agent** ([#131](https://github.com/fullsend-ai/fullsend/issues/131))
 - `/fs-triage` — wipes all labels, reopens the issue, runs triage fresh.
 - `/fs-code` — restarts the code agent from the current issue state.
 - `/fs-review` — enqueues a new review round.
+- `/fs-fix [instruction]` — triggers the fix agent with an optional human directive.
 
 ### Taking over manually
 
@@ -167,5 +188,5 @@ Fullsend does not lock you out. The labels are the state machine, and you have f
 
 - [ADR 0002](../../ADRs/0002-initial-fullsend-design.md) — initial fullsend design (full workflow specification)
 - [Architecture overview](../../architecture.md) — component vocabulary and execution stack
-- [Installing fullsend](../admin/installation.md) — prerequisite: admin setup guide
+- [Installing fullsend](../getting-started/) — prerequisite: setup guide
 - [Security threat model](../../problems/security-threat-model.md) — how fullsend thinks about security
