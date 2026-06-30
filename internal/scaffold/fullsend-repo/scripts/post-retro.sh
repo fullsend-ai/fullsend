@@ -93,6 +93,15 @@ for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
     echo "::warning::proposal[$i] targets a .fullsend repo (${TARGET_REPO}). Filing in .fullsend repos is discouraged until per-repo customization patterns are stable. Consider filing in the source repo or fullsend-ai/fullsend upstream instead."
   fi
 
+  # Ensure the label exists in the target repo before applying it.
+  # Follows the same pattern as post-review.sh for ready-for-merge.
+  # --force makes this idempotent (no error if the label already exists).
+  gh label create "ready-for-triage" \
+    --repo "${TARGET_REPO}" \
+    --description "Retro-filed issue awaiting triage agent" \
+    --color "ededed" \
+    --force 2>/dev/null || true
+
   echo "Filing issue in ${TARGET_REPO}: ${TITLE}"
   if ! ISSUE_URL=$(gh issue create \
     --repo "${TARGET_REPO}" \
