@@ -68,7 +68,10 @@ slice in the test code. No architectural changes are needed.
   `test-repo` for enrollment testing.
 - A crashed run leaves a stale lock that self-heals via the age-based
   staleness check.
-- The single `botsend` test account and its stored browser session are shared
-  across all orgs; session export and PAT creation remain per-run.
+- Each pool org must install the `fullsend-ai-e2e` app and authorize CI via
+  `FULLSEND_FOREIGN_E2E_REPOS` on the target org — see
+  [ADR 0060](0060-cross-org-mint-authorization-via-org-variables.md).
+- CI acquires per-org tokens via cross-org mint ([#2155](https://github.com/fullsend-ai/fullsend/issues/2155));
+  local runs use a user token with pool-org admin access (`gh auth login`).
 - Pool expansion is an operational task (provision org, update one slice
   literal), not an architectural change.

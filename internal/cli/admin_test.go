@@ -1261,6 +1261,16 @@ func TestCheckInstallScopes_FineGrainedToken(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestCheckInstallScopes_InstallationToken(t *testing.T) {
+	client := &forge.FakeClient{
+		InstallationToken: true,
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := checkInstallScopes(context.Background(), client, printer)
+	require.NoError(t, err)
+}
+
 func TestCheckInstallScopes_GetTokenScopesError(t *testing.T) {
 	client := &forge.FakeClient{
 		Errors: map[string]error{"GetTokenScopes": errors.New("network error")},
@@ -1316,6 +1326,16 @@ func TestCheckPerRepoScopes_Missing(t *testing.T) {
 func TestCheckPerRepoScopes_FineGrainedToken(t *testing.T) {
 	client := &forge.FakeClient{
 		TokenScopes: nil,
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := checkPerRepoScopes(context.Background(), client, printer)
+	require.NoError(t, err)
+}
+
+func TestCheckPerRepoScopes_InstallationToken(t *testing.T) {
+	client := &forge.FakeClient{
+		InstallationToken: true,
 	}
 	printer := ui.New(&discardWriter{})
 
@@ -2807,6 +2827,39 @@ func TestLoadKnownSlugs_RoleWithoutSlug_WarnsAndSkips(t *testing.T) {
 
 	assert.Nil(t, slugs)
 	assert.Contains(t, buf.String(), "both must be set")
+}
+
+func TestCheckTokenScopes_InstallationTokenSkipped(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.InstallationToken = true
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	err := checkTokenScopes(context.Background(), client, printer, []string{"repo", "delete_repo", "workflow"})
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "installation token")
+}
+
+func TestCheckTokenScopes_MissingScopes(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.TokenScopes = []string{"repo"}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	err := checkTokenScopes(context.Background(), client, printer, []string{"repo", "delete_repo"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "delete_repo")
+}
+
+func TestCheckTokenScopes_InstallationTokenProbeFails(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Errors["IsInstallationToken"] = fmt.Errorf("network down")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	err := checkTokenScopes(context.Background(), client, printer, []string{"repo"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "detecting installation token")
 }
 
 func TestLoadKnownSlugs_HardError_ReturnsNil(t *testing.T) {

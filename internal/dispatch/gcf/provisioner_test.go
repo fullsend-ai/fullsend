@@ -1315,9 +1315,10 @@ func TestBundleEmbeddedMintSource(t *testing.T) {
 	assert.Contains(t, names, "mintcore/sts_verifier.go")
 	assert.Contains(t, names, "mintcore/wif.go")
 	assert.Contains(t, names, "mintcore/handler.go")
+	assert.Contains(t, names, "mintcore/foreign.go")
 	assert.Contains(t, names, "mintcore/interfaces.go")
 	assert.Contains(t, names, "mintcore/go.sum")
-	assert.Len(t, names, 14)
+	assert.Len(t, names, 15)
 }
 
 func TestEmbeddedMintSource_MatchesOriginal(t *testing.T) {

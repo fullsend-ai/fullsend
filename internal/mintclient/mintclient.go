@@ -24,10 +24,11 @@ const defaultAudience = "fullsend-mint"
 
 // MintRequest holds the parameters for minting a token via the fullsend mint service.
 type MintRequest struct {
-	MintURL  string
-	Role     string
-	Repos    []string
-	Audience string
+	MintURL   string
+	Role      string
+	Repos     []string // optional: omit for installation-wide token (all repos on the installation)
+	TargetOrg string   // optional: cross-org mint when set and differs from caller org
+	Audience  string
 }
 
 // MintResult holds the minted token and its expiry.
@@ -60,10 +61,6 @@ func MintToken(ctx context.Context, req MintRequest) (*MintResult, error) {
 	if req.Role == "" {
 		return nil, fmt.Errorf("role is required")
 	}
-	if len(req.Repos) == 0 {
-		return nil, fmt.Errorf("at least one repo is required")
-	}
-
 	audience := req.Audience
 	if audience == "" {
 		audience = defaultAudience
@@ -74,7 +71,7 @@ func MintToken(ctx context.Context, req MintRequest) (*MintResult, error) {
 		return nil, fmt.Errorf("fetching OIDC JWT: %w", err)
 	}
 
-	result, err := callMint(ctx, req.MintURL, oidcJWT, req.Role, req.Repos)
+	result, err := callMint(ctx, req.MintURL, oidcJWT, req)
 	if err != nil {
 		return nil, fmt.Errorf("calling mint service: %w", err)
 	}
@@ -154,14 +151,16 @@ func fetchOIDCJWT(ctx context.Context, audience string) (string, error) {
 }
 
 type mintRequestBody struct {
-	Role  string   `json:"role"`
-	Repos []string `json:"repos"`
+	Role      string   `json:"role"`
+	TargetOrg string   `json:"target_org,omitempty"`
+	Repos     []string `json:"repos,omitempty"`
 }
 
-func callMint(ctx context.Context, mintURL, oidcJWT, role string, repos []string) (*MintResult, error) {
+func callMint(ctx context.Context, mintURL, oidcJWT string, req MintRequest) (*MintResult, error) {
 	reqBody := mintRequestBody{
-		Role:  role,
-		Repos: repos,
+		Role:      req.Role,
+		TargetOrg: req.TargetOrg,
+		Repos:     req.Repos,
 	}
 
 	bodyBytes, err := json.Marshal(reqBody)

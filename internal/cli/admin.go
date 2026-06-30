@@ -49,6 +49,7 @@ func newAdminCmd() *cobra.Command {
 	cmd.AddCommand(newAnalyzeCmd())
 	cmd.AddCommand(newEnableCmd())
 	cmd.AddCommand(newDisableCmd())
+	cmd.AddCommand(newForeignCmd())
 	return cmd
 }
 
@@ -109,8 +110,9 @@ func validateOrgName(org string) error {
 var githubOwnerPattern = regexp.MustCompile(`^[a-zA-Z0-9](-?[a-zA-Z0-9])*$`)
 
 // githubRepoPattern matches valid GitHub repository names
-// (alphanumeric, hyphens, dots, and underscores).
-var githubRepoPattern = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$`)
+// (alphanumeric, hyphens, dots, and underscores). Dot-prefixed repos such as
+// .fullsend (config repo convention) are allowed.
+var githubRepoPattern = regexp.MustCompile(`^(?:\.[a-zA-Z][a-zA-Z0-9._-]*|[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?)$`)
 
 // perOrgOnlyFlags are flags that only apply to per-org mode.
 var perOrgOnlyFlags = []string{
@@ -2723,6 +2725,16 @@ func checkPerRepoScopes(ctx context.Context, client forge.Client, printer *ui.Pr
 // checkTokenScopes verifies the token has all required OAuth scopes.
 func checkTokenScopes(ctx context.Context, client forge.Client, printer *ui.Printer, required []string) error {
 	printer.StepStart("Checking token permissions")
+
+	isInstallation, err := client.IsInstallationToken(ctx)
+	if err != nil {
+		printer.StepFail("Could not verify token permissions")
+		return fmt.Errorf("detecting installation token: %w", err)
+	}
+	if isInstallation {
+		printer.StepWarn("Preflight skipped: installation token (OAuth scopes do not apply)")
+		return nil
+	}
 
 	granted, err := client.GetTokenScopes(ctx)
 	if err != nil {

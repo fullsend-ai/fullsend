@@ -70,7 +70,7 @@ func TestAcquireOrg_FirstOrgAvailable(t *testing.T) {
 
 	pool := []string{"test-org-1", "test-org-2", "test-org-3"}
 
-	org, err := acquireOrg(ctx, fake, "", "run-1", pool, 5*time.Second, t.Logf)
+	org, err := acquireOrgWithClient(ctx, fake, "", "run-1", pool, 5*time.Second, t.Logf)
 	require.NoError(t, err)
 	assert.Contains(t, pool, org, "should acquire one of the pool orgs")
 
@@ -93,7 +93,7 @@ func TestAcquireOrg_SkipsLockedOrg(t *testing.T) {
 	})
 	fake.FileContents["test-org-1/"+lockRepo+"/README.md"] = []byte("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 
-	org, err := acquireOrg(ctx, fake, "", "run-2", pool, 5*time.Second, t.Logf)
+	org, err := acquireOrgWithClient(ctx, fake, "", "run-2", pool, 5*time.Second, t.Logf)
 	require.NoError(t, err)
 	assert.NotEqual(t, "test-org-1", org, "should skip locked test-org-1")
 	assert.Contains(t, []string{"test-org-2", "test-org-3"}, org, "should acquire an unlocked org")
@@ -116,7 +116,7 @@ func TestAcquireOrg_AllLockedTimesOut(t *testing.T) {
 	}
 
 	// Use a very short timeout so the test doesn't block.
-	_, err := acquireOrg(ctx, fake, "", "run-3", pool, 1*time.Second, t.Logf)
+	_, err := acquireOrgWithClient(ctx, fake, "", "run-3", pool, 1*time.Second, t.Logf)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "could not acquire any org")
 }
@@ -132,6 +132,6 @@ func TestAcquireOrg_PropagatesErrors(t *testing.T) {
 
 	// The error from tryCreateLock should be logged and the function
 	// should fall through to the timeout path.
-	_, err := acquireOrg(ctx, fake, "", "run-4", pool, 1*time.Second, t.Logf)
+	_, err := acquireOrgWithClient(ctx, fake, "", "run-4", pool, 1*time.Second, t.Logf)
 	require.Error(t, err)
 }
