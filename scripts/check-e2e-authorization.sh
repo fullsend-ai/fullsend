@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # check-e2e-authorization.sh — Decide whether a PR may run e2e tests in CI.
 #
-# Authorized when the PR author is OWNER/MEMBER/COLLABORATOR, or when the
-# collaborator permission API confirms write+ access, or when a fresh
-# ok-to-test label was applied after the latest push.
+# Authorized when the PR author is OWNER/MEMBER/COLLABORATOR, when the author
+# is a trusted bot (e.g. renovate-fullsend[bot]), when the collaborator
+# permission API confirms write+ access, or when a fresh ok-to-test label was
+# applied after the latest push.
 #
 # The author_association field from the event payload can misreport org members
 # whose membership visibility is private (returns CONTRIBUTOR/NONE instead of
@@ -31,6 +32,7 @@ PR_NUMBER="${1:?PR number required}"
 REPOSITORY="${2:?repository (owner/repo) required}"
 
 TRUSTED_ASSOCIATIONS="OWNER MEMBER COLLABORATOR"
+TRUSTED_BOT_LOGINS="renovate-fullsend[bot]"
 OK_TO_TEST_LABEL="ok-to-test"
 
 write_error_output() {
@@ -51,6 +53,14 @@ is_trusted_author() {
   local assoc="$1"
   case " ${TRUSTED_ASSOCIATIONS} " in
     *" ${assoc} "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_trusted_bot() {
+  local login="${1:-}"
+  case " ${TRUSTED_BOT_LOGINS} " in
+    *" ${login} "*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -89,6 +99,9 @@ fi
 if is_trusted_author "${author_association}"; then
   authorized=true
   reason="trusted_author"
+elif is_trusted_bot "${PR_AUTHOR_LOGIN:-}"; then
+  authorized=true
+  reason="trusted_bot"
 elif has_write_permission "${PR_AUTHOR_LOGIN:-}" 2>/dev/null; then
   # author_association was wrong (e.g. private org membership); collaborator
   # permission API confirms write+ access.
