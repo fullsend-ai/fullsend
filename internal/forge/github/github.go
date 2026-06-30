@@ -900,6 +900,7 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	if err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+			// Check order matters: protection messages can contain "fast forward"
 			if isBranchProtectionError(apiErr) {
 				return false, fmt.Errorf("%w: %w", forge.ErrBranchProtected, err)
 			}

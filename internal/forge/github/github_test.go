@@ -1082,7 +1082,7 @@ func TestIsNonFastForwardError(t *testing.T) {
 			want:   false,
 		},
 		{
-			name: "branch protection with fast forward text",
+			name: "overlaps with branch protection (caller checks protection first)",
 			apiErr: &APIError{
 				StatusCode: 422,
 				Message:    "Update is not a fast forward",

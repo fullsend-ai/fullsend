@@ -772,3 +772,39 @@ func TestIsForbidden(t *testing.T) {
 	assert.False(t, IsForbidden(errors.New("some error")))
 	assert.False(t, IsForbidden(nil))
 }
+
+func TestIsNonFastForward(t *testing.T) {
+	assert.True(t, IsNonFastForward(ErrNonFastForward))
+	assert.True(t, IsNonFastForward(errors.Join(errors.New("wrapper"), ErrNonFastForward)))
+	assert.False(t, IsNonFastForward(errors.New("some error")))
+	assert.False(t, IsNonFastForward(nil))
+}
+
+func TestFakeClient_CommitFilesErrSeq(t *testing.T) {
+	ctx := context.Background()
+	files := []TreeFile{{Path: "f.txt", Content: []byte("x"), Mode: "100644"}}
+
+	t.Run("first call errors, second succeeds", func(t *testing.T) {
+		fc := &FakeClient{
+			CommitFilesErrSeq: []error{ErrNonFastForward},
+		}
+		_, err := fc.CommitFiles(ctx, "o", "r", "m", files)
+		require.ErrorIs(t, err, ErrNonFastForward)
+
+		changed, err := fc.CommitFiles(ctx, "o", "r", "m", files)
+		require.NoError(t, err)
+		assert.True(t, changed)
+	})
+
+	t.Run("nil entry means no error for that call", func(t *testing.T) {
+		fc := &FakeClient{
+			CommitFilesErrSeq: []error{nil, ErrNonFastForward},
+		}
+		changed, err := fc.CommitFiles(ctx, "o", "r", "m", files)
+		require.NoError(t, err)
+		assert.True(t, changed)
+
+		_, err = fc.CommitFiles(ctx, "o", "r", "m", files)
+		require.ErrorIs(t, err, ErrNonFastForward)
+	})
+}
