@@ -298,7 +298,7 @@ func (c *OrgConfig) Validate() error {
 	if err := validateStatusNotifications(c.Defaults.StatusNotifications); err != nil {
 		return err
 	}
-	if err := validateAgentEntries(c.Agents, c.AllowedRemoteResources); err != nil {
+	if err := ValidateAgentEntries(c.Agents, c.AllowedRemoteResources); err != nil {
 		return err
 	}
 	if err := validateCreateIssues(c.CreateIssues); err != nil {
@@ -307,12 +307,12 @@ func (c *OrgConfig) Validate() error {
 	return nil
 }
 
-// validateAgentEntries checks agent entries for structural correctness.
+// ValidateAgentEntries checks agent entries for structural correctness.
 // Uses urlutil.IsURL, urlutil.ParseIntegrityHash, and
 // urlutil.MatchingAllowedPrefixInList for consistency with runtime
 // resolution (case-insensitive scheme, percent-decoding, dot-segment
 // cleaning).
-func validateAgentEntries(agents []AgentEntry, allowlist []string) error {
+func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 	seen := make(map[string]bool, len(agents))
 	for i, entry := range agents {
 		if entry.Source == "" {
@@ -474,7 +474,7 @@ func (c *PerRepoConfig) Validate() error {
 		}
 		seen[role] = true
 	}
-	if err := validateAgentEntries(c.Agents, c.AllowedRemoteResources); err != nil {
+	if err := ValidateAgentEntries(c.Agents, c.AllowedRemoteResources); err != nil {
 		return err
 	}
 	if err := validateCreateIssues(c.CreateIssues); err != nil {

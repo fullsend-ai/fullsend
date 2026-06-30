@@ -1288,7 +1288,7 @@ func TestCheckInstallScopes_SyncWithLayers(t *testing.T) {
 	stack := layers.NewStack(
 		layers.NewConfigRepoLayer("test-org", nil, emptyCfg, ui.New(&discardWriter{}), false),
 		layers.NewWorkflowsLayer("test-org", nil, ui.New(&discardWriter{}), "", "test-version", false),
-		layers.NewHarnessWrappersLayer("test-org", nil, ui.New(&discardWriter{}), nil, "dev"),
+		layers.NewHarnessWrappersLayer("test-org", nil, ui.New(&discardWriter{}), nil, "dev", nil),
 		layers.NewSecretsLayer("test-org", nil, nil, ui.New(&discardWriter{})),
 		layers.NewInferenceLayer("test-org", nil, nil, ui.New(&discardWriter{})),
 		layers.NewOIDCDispatchLayer("test-org", nil, nil, nil, ui.New(&discardWriter{})),

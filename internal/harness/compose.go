@@ -1116,3 +1116,15 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 		child.ValidationLoop = base.ValidationLoop
 	}
 }
+
+// FetchAgentHarness fetches a URL-sourced agent harness using the same
+// infrastructure as base composition (ADR 0038). It downloads the content,
+// verifies the integrity hash, caches it, and returns the local cache path
+// so the caller can pass it to LoadWithBase.
+func FetchAgentHarness(ctx context.Context, rawURL string, opts ComposeOpts) (localPath string, dep Dependency, err error) {
+	dep, _, err = fetchBaseURL(ctx, rawURL, opts.OrgAllowlist, opts)
+	if err != nil {
+		return "", Dependency{}, fmt.Errorf("fetching agent harness %s: %w", rawURL, err)
+	}
+	return dep.LocalPath, dep, nil
+}

@@ -171,12 +171,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// 1. Resolve and load harness.
-	harnessPath, err := resolveHarnessPath(absFullsendDir, agentName, printer)
-	if err != nil {
-		return err
-	}
 	harnessStart := time.Now()
-	printer.StepStart("Loading harness: " + harnessPath)
 
 	forgePlatform, err := detectForgePlatform(forgeFlag)
 	if err != nil {
@@ -188,14 +183,39 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	policy.Offline = rFlags.offline
 
 	// Best-effort org config loading — provides the allowlist for base
-	// harness fetching. If the file is missing or unparseable we proceed
-	// without it; HasURLReferences will enforce its presence later if needed.
+	// harness fetching and the agent registry for config-driven resolution.
+	// If the file is missing or unparseable we proceed without it;
+	// HasURLReferences will enforce its presence later if needed.
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
 	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
 	var orgAllowlist []string
 	if orgCfg != nil {
 		orgAllowlist = orgCfg.AllowedRemoteResources
 	}
+
+	var composeForgeClient forge.Client
+	if rFlags.forgeClient != nil {
+		composeForgeClient = rFlags.forgeClient
+	} else if token, tokenErr := resolveToken(); tokenErr == nil {
+		composeForgeClient = gh.New(token)
+	}
+
+	composeOpts := harness.ComposeOpts{
+		WorkspaceRoot: absFullsendDir,
+		FetchPolicy:   policy,
+		AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
+		ForgePlatform: forgePlatform,
+		OrgAllowlist:  orgAllowlist,
+		ForgeClient:   composeForgeClient,
+	}
+
+	// Resolve agent source: config agents take precedence over disk harnesses.
+	harnessPath, fetchDeps, err := resolveAgentSource(ctx, absFullsendDir, agentName, orgCfg, composeOpts, printer)
+	if err != nil {
+		return err
+	}
+
+	printer.StepStart("Loading harness: " + harnessPath)
 
 	// If the harness has a URL base and org config failed to load,
 	// load it strictly now so LoadWithBase gets a proper error path
@@ -207,31 +227,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if err != nil {
 				return err
 			}
-			orgAllowlist = orgCfg.AllowedRemoteResources
+			composeOpts.OrgAllowlist = orgCfg.AllowedRemoteResources
 		}
 	}
 
-	var composeForgeClient forge.Client
-	if rFlags.forgeClient != nil {
-		composeForgeClient = rFlags.forgeClient
-	} else if token, tokenErr := resolveToken(); tokenErr == nil {
-		composeForgeClient = gh.New(token)
-	}
-
-	h, baseDeps, err := harness.LoadWithBase(ctx, harnessPath, harness.ComposeOpts{
-		WorkspaceRoot: absFullsendDir,
-		FetchPolicy:   policy,
-		AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
-		ForgePlatform: forgePlatform,
-		OrgAllowlist:  orgAllowlist,
-		ForgeClient:   composeForgeClient,
-	})
+	h, baseDeps, err := harness.LoadWithBase(ctx, harnessPath, composeOpts)
 	if err != nil {
 		printer.StepFail("Failed to load harness")
 		return fmt.Errorf("loading harness: %w", err)
 	}
 
-	for _, dep := range baseDeps {
+	allDeps := append(fetchDeps, baseDeps...)
+	for _, dep := range allDeps {
 		if dep.CacheHit {
 			printer.StepInfo(fmt.Sprintf("Base: %s (cache hit)", dep.URL))
 		} else {
@@ -2343,4 +2350,86 @@ func validateRepoNames(repos []string) error {
 		}
 	}
 	return nil
+}
+
+// resolveAgentSource resolves the harness path for an agent, checking
+// config-registered agents before falling back to disk-based lookup.
+// Returns the local filesystem path to the harness (cached for URL sources)
+// and any fetch dependencies from URL-based agent resolution.
+func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, orgCfg *config.OrgConfig, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, error) {
+	if orgCfg == nil || len(orgCfg.Agents) == 0 {
+		path, err := resolveHarnessPath(fullsendDir, agentName, printer)
+		return path, nil, err
+	}
+
+	if err := config.ValidateAgentEntries(orgCfg.Agents, orgCfg.AllowedRemoteResources); err != nil {
+		return "", nil, fmt.Errorf("invalid agent config: %w", err)
+	}
+
+	sha := commitSHA
+	if sha == "dev" {
+		sha = ""
+	}
+	scaffoldNames, snErr := scaffold.HarnessNames()
+	if snErr != nil {
+		return "", nil, fmt.Errorf("listing scaffold harnesses: %w", snErr)
+	}
+
+	merged, err := config.MergedAgents(scaffoldNames, sha, orgCfg.Agents, scaffold.HarnessBaseURLWithHash)
+	if err != nil {
+		return "", nil, fmt.Errorf("building merged agent set: %w", err)
+	}
+
+	agent := config.LookupMergedAgent(merged, agentName)
+	if agent == nil || !agent.IsConfig {
+		path, err := resolveHarnessPath(fullsendDir, agentName, printer)
+		return path, nil, err
+	}
+
+	if harness.IsURL(agent.Source) {
+		printer.StepStart(fmt.Sprintf("Fetching agent harness: %s", agent.Name))
+		localPath, dep, err := harness.FetchAgentHarness(ctx, agent.Source, composeOpts)
+		if err != nil {
+			printer.StepFail("Failed to fetch agent harness")
+			return "", nil, fmt.Errorf("resolving config agent %s: %w", agent.Name, err)
+		}
+		printer.StepDone(fmt.Sprintf("Agent %s resolved from config (URL)", agent.Name))
+		return localPath, []harness.Dependency{dep}, nil
+	}
+
+	contained, err := containedLocalPath(fullsendDir, agent.Source)
+	if err != nil {
+		return "", nil, fmt.Errorf("config agent %s: %w", agent.Name, err)
+	}
+	if _, err := os.Stat(contained); err != nil {
+		return "", nil, fmt.Errorf("config agent %s: local path %s: %w", agent.Name, agent.Source, err)
+	}
+	printer.StepDone(fmt.Sprintf("Agent %s resolved from config (local path)", agent.Name))
+	return contained, nil, nil
+}
+
+// containedLocalPath resolves a relative source path against baseDir and
+// verifies the result stays within baseDir. Returns an error for absolute
+// paths or paths that escape via traversal.
+func containedLocalPath(baseDir, source string) (string, error) {
+	if filepath.IsAbs(source) {
+		return "", fmt.Errorf("local path must be relative, not absolute")
+	}
+	resolved := filepath.Clean(filepath.Join(baseDir, source))
+	if rel, err := filepath.Rel(baseDir, resolved); err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("local path %q escapes fullsend directory", source)
+	}
+	// Resolve symlinks and re-check containment to prevent symlink escape.
+	real, err := filepath.EvalSymlinks(resolved)
+	if err != nil {
+		return "", err
+	}
+	realBase, err := filepath.EvalSymlinks(baseDir)
+	if err != nil {
+		return "", err
+	}
+	if rel, err := filepath.Rel(realBase, real); err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("local path %q escapes fullsend directory via symlink", source)
+	}
+	return real, nil
 }
