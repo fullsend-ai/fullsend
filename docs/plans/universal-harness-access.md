@@ -555,7 +555,7 @@ func (h *Harness) Validate(orgAllowlist []string) error {
 
 ### 2. URL Detection and Classification
 
-**File:** `internal/harness/url.go`
+**File:** `internal/harness/url.go` (canonical implementations now in `internal/urlutil/urlutil.go`)
 
 ```go
 package harness

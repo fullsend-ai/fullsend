@@ -2,9 +2,7 @@ package harness
 
 import (
 	"fmt"
-	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -12,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/urlutil"
 )
 
 var (
@@ -683,13 +682,13 @@ func (h *Harness) ValidateAllowedRemoteResources(orgAllowlist []string) error {
 		if strings.Contains(strings.ToLower(entry), "%25") {
 			return fmt.Errorf("allowed_remote_resources[%d]: %q contains double-encoded sequence", i, entry)
 		}
-		normEntry, entryOK := normalizeURLPath(strings.ToLower(entry))
+		normEntry, entryOK := urlutil.NormalizeURLPath(strings.ToLower(entry))
 		if !entryOK {
 			return fmt.Errorf("allowed_remote_resources[%d]: %q cannot be normalized", i, entry)
 		}
 		covered := false
 		for _, orgEntry := range orgAllowlist {
-			normOrg, orgOK := normalizeURLPath(strings.ToLower(orgEntry))
+			normOrg, orgOK := urlutil.NormalizeURLPath(strings.ToLower(orgEntry))
 			if !orgOK {
 				continue
 			}
@@ -829,12 +828,12 @@ func (h *Harness) MatchingAllowedPrefix(rawURL string) string {
 	if strings.Contains(lower, "%25") {
 		return ""
 	}
-	normalized, ok := normalizeURLPath(lower)
+	normalized, ok := urlutil.NormalizeURLPath(lower)
 	if !ok {
 		return ""
 	}
 	for _, prefix := range h.AllowedRemoteResources {
-		normPrefix, prefixOK := normalizeURLPath(strings.ToLower(prefix))
+		normPrefix, prefixOK := urlutil.NormalizeURLPath(strings.ToLower(prefix))
 		if !prefixOK {
 			continue
 		}
@@ -848,47 +847,5 @@ func (h *Harness) MatchingAllowedPrefix(rawURL string) string {
 // MatchingAllowedPrefixInList checks if a URL matches any prefix in the given allowlist.
 // Returns the matching prefix or "" if none match. Standalone version of MatchingAllowedPrefix.
 func MatchingAllowedPrefixInList(rawURL string, allowlist []string) string {
-	lower := strings.ToLower(rawURL)
-	if strings.Contains(lower, "%25") {
-		return ""
-	}
-	normalized, ok := normalizeURLPath(lower)
-	if !ok {
-		return ""
-	}
-	for _, prefix := range allowlist {
-		normPrefix, prefixOK := normalizeURLPath(strings.ToLower(prefix))
-		if !prefixOK {
-			continue
-		}
-		if strings.HasPrefix(normalized, normPrefix) {
-			return prefix
-		}
-	}
-	return ""
-}
-
-// normalizeURLPath parses a URL, percent-decodes and cleans its path, and
-// returns the reconstructed URL string. Returns false if parsing fails.
-func normalizeURLPath(rawURL string) (string, bool) {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return "", false
-	}
-	unescaped, err := url.PathUnescape(parsed.Path)
-	if err != nil {
-		return "", false
-	}
-	if strings.ContainsRune(unescaped, '\\') {
-		return "", false
-	}
-	rawPath := parsed.Path
-	parsed.Path = path.Clean(unescaped)
-	parsed.RawPath = ""
-	if parsed.Path == "." {
-		parsed.Path = "/"
-	} else if strings.HasSuffix(rawPath, "/") && !strings.HasSuffix(parsed.Path, "/") {
-		parsed.Path += "/"
-	}
-	return parsed.String(), true
+	return urlutil.MatchingAllowedPrefixInList(rawURL, allowlist)
 }

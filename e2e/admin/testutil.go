@@ -56,6 +56,12 @@ var orgPool = []string{
 	"halfsend-04",
 	"halfsend-05",
 	"halfsend-06",
+	"halfsend-07",
+	"halfsend-08",
+	"halfsend-09",
+	"halfsend-10",
+	"halfsend-11",
+	"halfsend-12",
 }
 
 // acquireOrg scans the pool for an unlocked org and acquires its lock.
