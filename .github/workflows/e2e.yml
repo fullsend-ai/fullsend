@@ -22,6 +22,7 @@ on:
       - 'Makefile'
       - '.github/scripts/**'
       - '.github/workflows/e2e.yml'
+      - 'action.yml'
       - '.github/actions/check-e2e-authorization/**'
       - 'scripts/check-e2e-authorization.sh'
   pull_request_target:
@@ -114,7 +115,7 @@ jobs:
               exit 0
             }
           fi
-          if echo "$FILES" | grep -qE '\.go$|^go\.(mod|sum)$|^e2e/|^internal/scaffold/fullsend-repo/|^internal/security/hooks/|^internal/dispatch/gcf/mintsrc/|^internal/sentencetoken/english\.json$|^Makefile$|^\.github/scripts/|^\.github/workflows/e2e\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
+          if echo "$FILES" | grep -qE '\.go$|^go\.(mod|sum)$|^e2e/|^internal/scaffold/fullsend-repo/|^internal/security/hooks/|^internal/dispatch/gcf/mintsrc/|^internal/sentencetoken/english\.json$|^Makefile$|^\.github/scripts/|^\.github/workflows/e2e\.yml$|^action\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No e2e-relevant files changed — skipping tests"
