@@ -23,6 +23,16 @@ For each finding, return a JSON array as follows
 }
 ```
 
+**Line number accuracy:** For the `line` field, cite the exact line
+number where the problematic code or text appears. After determining
+your finding, re-read the file at the line number you plan to cite and
+verify the content at that line matches what your finding describes. If
+the content at the cited line does not match, search for the correct
+line before emitting the finding. If you cannot confidently determine
+the correct line, omit the `line` field rather than guessing — a
+finding with no line number is better than one that points to the wrong
+code.
+
 ## Severity anchoring (re-reviews only)
 
 - If prior findings are provided, match each to the current code by

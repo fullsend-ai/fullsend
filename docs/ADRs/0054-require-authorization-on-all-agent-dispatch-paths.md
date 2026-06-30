@@ -140,10 +140,10 @@ inference compute on them automatically.
 
 Agent-to-agent handoffs use label-based triggers, not slash commands.
 When one agent completes a stage, its post-script applies a label
-(e.g., `ready-to-code`, `ready-for-review`) which triggers the next
-stage via the `issues.labeled` dispatch path. Label application requires
-write access — an implicit authorization gate — so no explicit
-`is_authorized` check is needed on that path.
+(e.g., `ready-for-triage`, `ready-to-code`, `ready-for-review`) which
+triggers the next stage via the `issues.labeled` dispatch path. Label
+application requires write access — an implicit authorization gate — so
+no explicit `is_authorized` check is needed on that path.
 
 The `COMMENT_USER_TYPE != "Bot"` check in the slash command guard means
 bot accounts cannot invoke slash commands at all (the condition

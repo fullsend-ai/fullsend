@@ -318,7 +318,8 @@ func TestRunAgent_WithURLBase(t *testing.T) {
 	baseHash := fetch.ComputeSHA256(baseContent)
 
 	srv, policy := newLockTestServer(t, map[string][]byte{
-		"/base.yaml": baseContent,
+		"/base.yaml":        baseContent,
+		"/agents/shared.md": []byte("# shared agent"),
 	})
 
 	dir := t.TempDir()
@@ -1346,6 +1347,117 @@ func TestBootstrapEnv_SkipsFetchVarsWhenEmpty(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "copying .env file to sandbox")
+}
+
+func TestBuildSandboxEnvLines_FromEnvSandbox(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"GITHUB_PR_URL": "https://github.com/org/repo/pull/1",
+				"GH_TOKEN":      "tok123",
+			},
+		},
+	}
+
+	lines := buildSandboxEnvLines(h)
+	assert.Contains(t, lines, "export GH_TOKEN='tok123'")
+	assert.Contains(t, lines, "export GITHUB_PR_URL='https://github.com/org/repo/pull/1'")
+}
+
+func TestBuildSandboxEnvLines_NilEnv(t *testing.T) {
+	h := &harness.Harness{Agent: "agents/test.md", Role: "test"}
+	lines := buildSandboxEnvLines(h)
+	assert.Nil(t, lines)
+}
+
+func TestBuildSandboxEnvLines_EmptySandbox(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env:   &harness.EnvConfig{Runner: map[string]string{"FOO": "bar"}},
+	}
+	lines := buildSandboxEnvLines(h)
+	assert.Nil(t, lines)
+}
+
+func TestBuildSandboxEnvLines_EscapesSingleQuotes(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{"MSG": "it's a test"},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export MSG='it'\\''s a test'", lines[0])
+}
+
+func TestBuildSandboxEnvLines_SortedKeys(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"ZZZ": "last",
+				"AAA": "first",
+			},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 2)
+	assert.Equal(t, "export AAA='first'", lines[0])
+	assert.Equal(t, "export ZZZ='last'", lines[1])
+}
+
+func TestBuildSandboxEnvLines_SkipsInvalidKeys(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"VALID_KEY":  "ok",
+				"bad key":    "spaces",
+				"'; rm -rf ": "inject",
+			},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export VALID_KEY='ok'", lines[0])
+}
+
+func TestBuildSandboxEnvLines_EmptyValue(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{"EMPTY": ""},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export EMPTY=''", lines[0])
+}
+
+func TestBuildSandboxEnvLines_SkipsReservedKeys(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"CUSTOM_VAR":           "allowed",
+				"PATH":                 "/evil",
+				"FULLSEND_FETCH_TOKEN": "stolen",
+				"FULLSEND_OUTPUT_DIR":  "/tmp/bad",
+			},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
 }
 
 func TestShouldStartFetchService_AllowRuntimeFetch(t *testing.T) {

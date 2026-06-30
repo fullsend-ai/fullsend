@@ -82,16 +82,18 @@ fullsend
 
 ### Command Decomposition
 
-The `admin install` command performs all setup in a single invocation. The `mint`, `inference`, and `github` subcommands break this into role-specific operations for organizations that separate GCP and GitHub responsibilities:
+The `mint`, `inference`, and `github` subcommands decompose setup into role-specific operations for organizations that separate GCP and GitHub responsibilities:
 
-| `admin install` Phase | Standalone Command | Required Access |
-|-----------------------|--------------------|-----------------|
+| Install Phase | Standalone Command | Required Access |
+|---------------|--------------------|-----------------|
 | Phases 1-3: Mint deployment | `fullsend mint deploy` | GCP project (mint): `roles/iam.serviceAccountAdmin`, `roles/iam.workloadIdentityPoolAdmin`, `roles/cloudfunctions.developer`, `roles/run.admin`; with `--pem-dir` also `roles/secretmanager.admin`, `roles/resourcemanager.projectIamAdmin` |
 | Phases 1-3: Mint enrollment | `fullsend mint enroll` | GCP project (mint): `roles/cloudfunctions.viewer`, `roles/run.admin`, `roles/iam.workloadIdentityPoolAdmin`; per-repo mode also needs `roles/resourcemanager.projectIamAdmin` |
 | Phase 4: WIF provisioning | `fullsend inference provision` | GCP project (inference): `roles/iam.workloadIdentityPoolAdmin`, `roles/resourcemanager.projectIamAdmin` |
 | Phases 5-7: GitHub setup + enrollment | `fullsend github setup` | GitHub only |
 
-The typical handoff: a GCP admin runs `mint deploy`, `mint enroll`, and `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`. See [Setting up with pre-provisioned infrastructure](../../reference/github-setup.md).
+The typical handoff: a GCP admin runs `mint deploy`, `mint enroll`, and `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`. See [Advanced setup](../infrastructure/advanced-setup.md).
+
+> **Note:** The legacy `admin install` command wraps all phases into a single invocation but is deprecated. The standalone commands above are the recommended path. See the [Unified Installation Flow](#unified-installation-flow) section below for how the phases are structured internally.
 
 ### Token Resolution Chain
 
@@ -272,7 +274,7 @@ Linux binary resolution for `fullsend run` and vendoring lives in `internal/bina
 | `ResolveForVendor` | Cross-compile → matching release (released CLI only) → fail (no latest) |
 | `ResolveExplicit` | Validate linux/{arch} ELF for `--fullsend-binary` |
 
-Vendoring commit messages use title + body (upload and stale delete). `admin analyze` reports stale vendored assets at `bin/fullsend` or `.fullsend/bin/fullsend` without install-intent flags.
+Vendoring commit messages use title + body (upload and stale delete). `github status` reports stale vendored assets at `bin/fullsend` or `.fullsend/bin/fullsend` without install-intent flags.
 
 ---
 
@@ -393,6 +395,9 @@ Vendoring commit messages use title + body (upload and stale delete). `admin ana
 SandboxWorkspace    = "/sandbox/workspace"
 SandboxClaudeConfig = "/sandbox/claude-config"
 ```
+
+For sandbox workspace layout, agent rule layering, and security scanning
+details, see [Agent runtimes](../../runtimes.md).
 
 ### Key Sandbox Operations
 
@@ -544,6 +549,7 @@ var executableFiles = map[string]struct{}{
 | `internal/cli/github.go` | ~966 | GitHub setup/set/status/uninstall/sync-scaffold/enroll/unenroll |
 | `internal/cli/run.go` | ~1923 | Agent execution lifecycle |
 | `internal/mint/main.go` | ~95 | GCF token mint entry point (wiring only) |
+| `cmd/mint/` | ~285 | Standalone mint server (no GCP dependency) |
 | `internal/mintcore/` | ~1425 | Shared mint library (handler, OIDC verifiers, GitHub API) |
 | `internal/dispatch/gcf/provisioner.go` | ~1959 | GCP infrastructure provisioner |
 | `internal/sandbox/sandbox.go` | ~459 | OpenShell sandbox operations |
@@ -560,8 +566,8 @@ var executableFiles = map[string]struct{}{
 ## See Also
 
 - [Running agents locally](../user/running-agents-locally.md) — Run agents locally (binary download, GCP credentials, per-agent env vars)
-- [Installing fullsend](../../reference/installation.md) — End-user setup and all-in-one admin install
-- [Setting up with pre-provisioned infrastructure](../../reference/github-setup.md) — GitHub-only setup guide
+- [Getting Started](../getting-started/) — Standard per-repo installation
+- [Advanced setup](../infrastructure/advanced-setup.md) — Alternative installation paths and setup flags
 - [Mint service administration](../infrastructure/mint-administration.md) — Deploying and managing the token mint
 - [Infrastructure Reference](../infrastructure/infrastructure-reference.md) — Infrastructure details
 - [Customizing Agents](../user/customizing-agents.md) — User customization guide

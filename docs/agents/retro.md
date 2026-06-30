@@ -1,6 +1,6 @@
 # Retro Agent
 
-<img src="icons/retro.png" alt="Retro agent icon" width="80">
+![Retro agent icon](icons/retro.png)
 
 Performs retrospectives on agent workflows — analyzes what happened, identifies improvement opportunities, and proposes changes as structured GitHub issues.
 
@@ -41,7 +41,9 @@ The retro agent also runs automatically when a PR is closed (merged or not).
 
 ## Control labels
 
-The retro agent does not apply or consume control labels.
+| Label | Meaning |
+|-------|---------|
+| `ready-for-triage` | Applied by the post-script to proposal issues so they enter the [triage](triage.md) pipeline automatically. |
 
 ## Configuration and extension
 

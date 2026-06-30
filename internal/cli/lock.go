@@ -122,13 +122,7 @@ func runLock(ctx context.Context, agentName, fullsendDir, forgeFlag string, upda
 	}
 	printer.StepDone(fmt.Sprintf("Locked %d dependencies for %s -> %s", len(result.deps), agentName, lockPath))
 
-	for _, dep := range result.deps {
-		if dep.CacheHit {
-			printer.StepInfo(fmt.Sprintf("  %s: %s (cached)", dep.Field, dep.URL))
-		} else {
-			printer.StepInfo(fmt.Sprintf("  %s: %s (fetched)", dep.Field, dep.URL))
-		}
-	}
+	printResolvedDeps(printer, result.deps)
 
 	return nil
 }
@@ -137,6 +131,19 @@ func runLock(ctx context.Context, agentName, fullsendDir, forgeFlag string, upda
 type lockResult struct {
 	harnessLock lock.HarnessLock
 	deps        []resolve.Dependency
+}
+
+func printResolvedDeps(printer *ui.Printer, deps []resolve.Dependency) {
+	for _, dep := range deps {
+		if dep.CacheHit {
+			printer.StepInfo(fmt.Sprintf("  %s: %s (cached)", dep.Field, dep.URL))
+		} else {
+			printer.StepInfo(fmt.Sprintf("  %s: %s (fetched)", dep.Field, dep.URL))
+		}
+		if dep.Warning != "" {
+			printer.StepWarn(fmt.Sprintf("  %s: %s", dep.Field, dep.Warning))
+		}
+	}
 }
 
 // lockOneAgent resolves dependencies for a single harness and returns the
@@ -190,6 +197,13 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 	seen := make(map[string]bool)
 	linted := make(map[string]bool) // track reported lint diagnostics to avoid duplicates across forge variants
 
+	var composeForgeClient forge.Client
+	if rFlags.forgeClient != nil {
+		composeForgeClient = rFlags.forgeClient
+	} else if token, tokenErr := resolveToken(); tokenErr == nil {
+		composeForgeClient = gh.New(token)
+	}
+
 	for _, platform := range forgePlatforms {
 		h, baseDeps, loadErr := harness.LoadWithBase(ctx, harnessPath, harness.ComposeOpts{
 			WorkspaceRoot: absFullsendDir,
@@ -197,6 +211,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
 			ForgePlatform: platform,
 			OrgAllowlist:  orgAllowlist,
+			ForgeClient:   composeForgeClient,
 		})
 		if loadErr != nil {
 			printer.StepFail(fmt.Sprintf("Failed to load harness (forge: %s)", platform))
@@ -230,6 +245,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 					FetchedAt: bd.FetchedAt,
 					CacheHit:  bd.CacheHit,
 					Type:      bd.Type,
+					Warning:   bd.Warning,
 				})
 			}
 		}
@@ -417,6 +433,7 @@ func runLockAll(ctx context.Context, fullsendDir, forgeFlag string, update bool,
 			return fmt.Errorf("%s: %w", name, lockErr)
 		}
 		if result != nil {
+			printResolvedDeps(printer, result.deps)
 			lf.SetHarness(name, result.harnessLock)
 			locked = append(locked, name)
 		} else if entry := lf.Lookup(name); entry != nil {

@@ -46,7 +46,7 @@ on:
         type: string
         default: "latest"
       fullsend_ai_ref:
-        description: Ref of fullsend-ai/fullsend to load actions from. Must match the ref used in the `uses:` line that calls this workflow.
+        description: "Deprecated: stage workflows now use job.workflow_sha. Kept so existing shims that pass this input do not break."
         type: string
         required: false
         default: v0
@@ -55,6 +55,11 @@ on:
         required: false
         type: string
         default: ""
+      runner_image:
+        description: GitHub Actions runner image for agent jobs.
+        type: string
+        required: false
+        default: "ubuntu-24.04"
     secrets:
       FULLSEND_GCP_WIF_PROVIDER:
         required: false
@@ -64,7 +69,7 @@ on:
 jobs:
   route:
     name: Route
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner_image }}
     permissions:
       contents: read
       pull-requests: read
@@ -236,7 +241,9 @@ jobs:
                   STAGE="triage"
                 fi
               elif [[ "${EVENT_ACTION}" == "labeled" ]]; then
-                if [[ "${TRIGGERING_LABEL}" == "ready-to-code" ]]; then
+                if [[ "${TRIGGERING_LABEL}" == "ready-for-triage" ]]; then
+                  STAGE="triage"
+                elif [[ "${TRIGGERING_LABEL}" == "ready-to-code" ]]; then
                   STAGE="code"
                 elif [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
                   if [[ "${ISSUE_IS_PR}" == "true" ]]; then
@@ -422,7 +429,7 @@ jobs:
       group: fullsend-triage-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
       cancel-in-progress: true
     # @v0 is hardcoded — GHA does not support expressions in uses:.
-    # fullsend_ai_ref controls the ref for composite actions inside stage workflows.
+    # Stage workflows use job.workflow_sha to self-checkout upstream defaults.
     uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@v0
     with:
       event_type: ${{ github.event_name }}
@@ -432,7 +439,7 @@ jobs:
       mint_url: ${{ inputs.mint_url }}
       gcp_region: ${{ inputs.gcp_region }}
       fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
+      runner_image: ${{ inputs.runner_image }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -453,7 +460,7 @@ jobs:
       mint_url: ${{ inputs.mint_url }}
       gcp_region: ${{ inputs.gcp_region }}
       fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
+      runner_image: ${{ inputs.runner_image }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -474,7 +481,7 @@ jobs:
       mint_url: ${{ inputs.mint_url }}
       gcp_region: ${{ inputs.gcp_region }}
       fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
+      runner_image: ${{ inputs.runner_image }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -496,7 +503,7 @@ jobs:
       mint_url: ${{ inputs.mint_url }}
       gcp_region: ${{ inputs.gcp_region }}
       fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
+      runner_image: ${{ inputs.runner_image }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -517,7 +524,7 @@ jobs:
       mint_url: ${{ inputs.mint_url }}
       gcp_region: ${{ inputs.gcp_region }}
       fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
+      runner_image: ${{ inputs.runner_image }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -539,7 +546,7 @@ jobs:
       gcp_region: ${{ inputs.gcp_region }}
       project_number: ${{ inputs.project_number }}
       fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
+      runner_image: ${{ inputs.runner_image }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}

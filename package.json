@@ -13,13 +13,13 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run --config vite.config.ts && vitest run --config cloudflare_site/worker/vitest.config.mts",
-    "check": "svelte-check --tsconfig web/admin/tsconfig.json && svelte-check --tsconfig web/docs/tsconfig.json",
-    "lint": "eslint web/admin/src/ web/docs/src/",
-    "lint:fix": "eslint web/admin/src/ web/docs/src/ --fix",
-    "format": "prettier --write 'web/{admin,docs}/src/**/*.{svelte,ts,js,css}'",
-    "format:check": "prettier --check 'web/{admin,docs}/src/**/*.{svelte,ts,js,css}'",
-    "stylelint": "stylelint 'web/{admin,docs}/src/**/*.{svelte,css}'",
-    "stylelint:fix": "stylelint 'web/{admin,docs}/src/**/*.{svelte,css}' --fix"
+    "check": "svelte-check --tsconfig web/admin/tsconfig.json",
+    "lint": "eslint web/admin/src/",
+    "lint:fix": "eslint web/admin/src/ --fix",
+    "format": "prettier --write 'web/admin/src/**/*.{svelte,ts,js,css}' 'website/.vitepress/**/*.{vue,ts,js,css}'",
+    "format:check": "prettier --check 'web/admin/src/**/*.{svelte,ts,js,css}' 'website/.vitepress/**/*.{vue,ts,js,css}'",
+    "stylelint": "stylelint 'web/admin/src/**/*.{svelte,css}' 'website/.vitepress/**/*.{vue,css}'",
+    "stylelint:fix": "stylelint 'web/admin/src/**/*.{svelte,css}' 'website/.vitepress/**/*.{vue,css}' --fix"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.14.7",
@@ -53,16 +53,27 @@
     "wrangler": "^4.36.0"
   },
   "lint-staged": {
-    "web/{admin,docs}/src/**/*.{ts,js}": [
+    "web/admin/src/**/*.{ts,js}": [
       "eslint --fix",
       "prettier --write"
     ],
-    "web/{admin,docs}/src/**/*.svelte": [
+    "web/admin/src/**/*.svelte": [
       "eslint --fix",
       "stylelint --fix",
       "prettier --write"
     ],
-    "web/{admin,docs}/src/**/*.css": [
+    "web/admin/src/**/*.css": [
+      "stylelint --fix",
+      "prettier --write"
+    ],
+    "website/.vitepress/**/*.{ts,js}": [
+      "prettier --write"
+    ],
+    "website/.vitepress/**/*.vue": [
+      "stylelint --fix",
+      "prettier --write"
+    ],
+    "website/.vitepress/**/*.css": [
       "stylelint --fix",
       "prettier --write"
     ]

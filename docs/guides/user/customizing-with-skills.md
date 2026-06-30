@@ -78,31 +78,63 @@ your-repo/
   .claude/skills -> ../.agents/skills
 ```
 
-## Skill overloading
+## Extending agents with repo skills
 
-Each fullsend agent ships with built-in skills. You can **overload** any of
-these by providing your own skill with the same name. Your version replaces
-the built-in one at runtime — no other configuration needed.
+Skills you add to your repository are available to all fullsend agents
+alongside the built-in skills. This is the primary way to give agents
+domain-specific capabilities — linting rules, deployment checklists,
+architecture constraints — without modifying any fullsend configuration.
 
-This is the most precise way to tune agent behavior. An overloaded skill is only
-loaded by the agent that uses it, unlike `AGENTS.md` instructions which are
-loaded by every agent.
+Repo skills **extend** the agent's skill set. They do not replace built-in
+skills. If a repo skill has the same name as a built-in skill, the built-in
+version takes precedence and the repo version is silently ignored. Use a
+unique name to ensure your skill is discoverable.
 
-### How overloading works
+### Skill precedence
 
-Fullsend uses a layered content resolution model
-([ADR 0035](../../ADRs/0035-layered-content-resolution.md)). At runtime, the
-agent's workspace is assembled by copying upstream defaults first, then
-overlaying org-level customizations on top. When you provide a skill with the
-same name as a built-in one, yours wins.
+Fullsend uploads built-in skills to the agent's personal-level config
+directory (`CLAUDE_CONFIG_DIR/skills/`). Repo skills live in the project-level
+`.claude/skills/` directory. Claude Code resolves name collisions using
+precedence:
 
-To overload a skill, create it in your `.fullsend` config repo at
-`customized/skills/<skill-name>/SKILL.md`. The directory name must match the
-built-in skill name exactly.
+```
+Personal (CLAUDE_CONFIG_DIR/skills/)  >  Project (.claude/skills/)
+         fullsend built-in skills            repo skills
+```
+
+A repo skill with a novel name (no collision) is always available. A repo
+skill with a name matching a built-in skill is shadowed — the agent never
+sees it.
+
+### Extension points
+
+Some agents recognize skill names that do not ship with fullsend. Providing
+these unlocks additional capabilities. See each agent's documentation for the
+skills it supports — for example, the
+[prioritize agent](../../agents/prioritize.md) uses a `customer-research` skill
+when available.
+
+## Overriding built-in skills
+
+To intentionally **replace** a built-in skill with your own version, use the
+`customized/` overlay ([ADR 0035](../../ADRs/0035-layered-content-resolution.md)).
+This replaces the skill at the config layer before the agent starts — the
+built-in version is never uploaded to the sandbox.
+
+Create the override in your `.fullsend` config repo (per-org mode) or in
+`.fullsend/customized/` in the target repo (per-repo mode). The directory
+name must match the built-in skill name exactly:
+
+```
+customized/skills/code-review/SKILL.md    # replaces the built-in code-review
+```
+
+This is an org-sanctioned operation — it goes through the content overlay
+engine, not through project-level skill discovery.
 
 ### Built-in skills
 
-These skills ship with fullsend and can be overloaded:
+These skills ship with fullsend and can be overridden via `customized/skills/`:
 
 | Agent | Skill | Purpose |
 |-------|-------|---------|
@@ -112,14 +144,6 @@ These skills ship with fullsend and can be overloaded:
 | [Fix](../../agents/fix.md) | `fix-review` | Review feedback interpretation and fix strategy |
 | [Prioritize](../../agents/prioritize.md) | `customer-research` | Customer data gathering for RICE scoring (extension point) |
 | [Retro](../../agents/retro.md) | `retro-analysis`, `finding-agent-runs` | Workflow analysis and proposal generation |
-
-### Extension points
-
-Some agents recognize skill names that do not ship with fullsend. Providing
-these unlocks additional capabilities. See each agent's documentation for the
-skills it supports — for example, the
-[prioritize agent](../../agents/prioritize.md) uses a `customer-research` skill
-when available.
 
 ## When to use skills vs. AGENTS.md
 

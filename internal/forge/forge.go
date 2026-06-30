@@ -41,6 +41,15 @@ func IsBranchProtected(err error) bool {
 	return errors.Is(err, ErrBranchProtected)
 }
 
+// ErrForbidden indicates that the operation was denied due to
+// insufficient permissions (e.g., the user lacks push access).
+var ErrForbidden = errors.New("forbidden")
+
+// IsForbidden reports whether err indicates a permission denial.
+func IsForbidden(err error) bool {
+	return errors.Is(err, ErrForbidden)
+}
+
 // ErrNoChanges indicates that a change proposal could not be created
 // because there are no differences between the head and base branches.
 var ErrNoChanges = errors.New("no changes between branches")
@@ -66,6 +75,8 @@ type ChangeProposal struct {
 	URL    string
 	Title  string
 	Number int
+	Head   string
+	Base   string
 }
 
 // WorkflowRun represents a CI/CD workflow execution.
@@ -154,6 +165,12 @@ type Installation struct {
 	Permissions   map[string]string
 }
 
+// OrgVariable is an org-level GitHub Actions variable.
+type OrgVariable struct {
+	Name  string
+	Value string
+}
+
 // UserIdentity holds a forge user's display name and email, used for
 // constructing Signed-off-by trailers in commit messages.
 type UserIdentity struct {
@@ -201,6 +218,37 @@ type Client interface {
 	GetRepo(ctx context.Context, owner, repo string) (*Repository, error)
 	CreateRepo(ctx context.Context, org, name, description string, private bool) (*Repository, error)
 	DeleteRepo(ctx context.Context, owner, repo string) error
+
+	// FindExistingFork checks whether the authenticated user already has
+	// a fork of owner/repo. It returns the fork owner login and repo
+	// name if found, or empty strings when no fork exists. The repo
+	// name may differ from the upstream name when the user already has
+	// an unrelated repo with the same name (GitHub appends a suffix
+	// like "-1"). Only actual API errors are returned as err; "not
+	// found" is not an error.
+	//
+	// Cross-forge contract: implementations must check for an existing
+	// fork owned by the authenticated user. The semantics of "fork" are
+	// platform-specific (e.g., GitHub forks vs GitLab project forks).
+	// Returning ("", "", nil) signals no fork exists. Implementations
+	// must not return ErrNotFound for missing forks — that is the
+	// empty-string convention.
+	FindExistingFork(ctx context.Context, owner, repo string) (forkOwner, forkRepo string, err error)
+
+	// CreateFork creates a fork of the given repository under the
+	// authenticated user's account. It returns the fork owner login
+	// and the actual repo name of the fork. The repo name may differ
+	// from the upstream name when the user already has an unrelated
+	// repo with the same name (GitHub appends a suffix like "-1").
+	// If a fork already exists, it returns the existing fork's owner
+	// and repo name without error (idempotent).
+	//
+	// Cross-forge contract: implementations must create a personal
+	// fork of the upstream repo. The call must be idempotent — if the
+	// fork already exists, return its metadata without error.
+	// Implementations should return both owner and repo name from the
+	// API response, not assume the repo name matches the upstream.
+	CreateFork(ctx context.Context, owner, repo string) (forkOwner, forkRepo string, err error)
 
 	// File operations
 	CreateFile(ctx context.Context, owner, repo, path, message string, content []byte) error
@@ -274,6 +322,11 @@ type Client interface {
 	// Returns nil (not an error) if the forge doesn't support scope introspection.
 	GetTokenScopes(ctx context.Context) ([]string, error)
 
+	// IsInstallationToken reports whether the current token is a GitHub App
+	// installation access token (as opposed to a user PAT or OAuth token).
+	// Used to skip OAuth scope preflight, which does not apply to installation tokens.
+	IsInstallationToken(ctx context.Context) (bool, error)
+
 	// Secrets and variables
 	CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error
 	RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error)
@@ -292,7 +345,12 @@ type Client interface {
 
 	// Org-level variables (for dispatch function URL)
 	CreateOrUpdateOrgVariable(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error
+	// CreateOrUpdateOrgVariableAll creates or updates an org-wide Actions variable
+	// (visibility all). Used for mint FOREIGN policy variables read via the org API.
+	CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error
 	OrgVariableExists(ctx context.Context, org, name string) (bool, error)
+	GetOrgVariable(ctx context.Context, org, name string) (value string, exists bool, err error)
+	ListOrgVariables(ctx context.Context, org string) ([]OrgVariable, error)
 	DeleteOrgVariable(ctx context.Context, org, name string) error
 	SetOrgVariableRepos(ctx context.Context, org, name string, repoIDs []int64) error
 	// GetOrgVariableRepos returns the list of repository IDs that have access

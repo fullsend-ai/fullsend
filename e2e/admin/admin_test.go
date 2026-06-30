@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/playwright-community/playwright-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -32,7 +31,6 @@ import (
 type e2eEnv struct {
 	cfg           envConfig
 	org           string // the org acquired from the pool
-	page          playwright.Page
 	client        *gh.LiveClient
 	token         string
 	runID         string
@@ -40,8 +38,7 @@ type e2eEnv struct {
 	binary        string
 }
 
-// setupE2ETest performs the common Playwright, login, PAT, lock, and cleanup
-// steps. Returns the shared env.
+// setupE2ETest performs lock acquisition, cleanup, and shared test setup.
 func setupE2ETest(t *testing.T) *e2eEnv {
 	t.Helper()
 	if testing.Short() {
@@ -55,72 +52,25 @@ func setupE2ETest(t *testing.T) *e2eEnv {
 	}
 	_ = os.MkdirAll(screenshotDir, 0o755)
 
-	// Build CLI binary early so we fail fast on compilation errors.
 	binary := buildCLIBinary(t)
 
-	// --- Playwright setup ---
-	pw, err := playwright.Run()
-	require.NoError(t, err, "starting Playwright")
-	t.Cleanup(func() {
-		if stopErr := pw.Stop(); stopErr != nil {
-			t.Logf("warning: could not stop Playwright: %v", stopErr)
-		}
-	})
-
-	browser, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
-		Headless: playwright.Bool(os.Getenv("E2E_HEADED") != "true"),
-	})
-	require.NoError(t, err, "launching Playwright browser")
-	t.Cleanup(func() { _ = browser.Close() })
-
-	// Load pre-authenticated session via storageState (ADR 0010).
-	t.Logf("Loading browser session from %s", cfg.sessionFile)
-	browserCtx, err := browser.NewContext(playwright.BrowserNewContextOptions{
-		StorageStatePath: playwright.String(cfg.sessionFile),
-	})
-	require.NoError(t, err, "creating browser context with storageState")
-	t.Cleanup(func() { _ = browserCtx.Close() })
-
-	page, err := browserCtx.NewPage()
-	require.NoError(t, err, "creating Playwright page")
-
-	// Verify the session is valid by navigating to a page that requires auth.
-	err = verifyGitHubSession(page, screenshotDir, t.Logf)
-	require.NoError(t, err, "verifying GitHub session — session may be expired, re-export it locally")
-
-	// Generate a PAT for API access.
-	patNote := fmt.Sprintf("fullsend-e2e-%d", time.Now().Unix())
-	t.Logf("Creating PAT: %s", patNote)
-	token, err := createPAT(page, patNote, cfg.password, cfg.totpSecret, screenshotDir, t.Logf)
-	require.NoError(t, err, "creating PAT")
-	t.Cleanup(func() {
-		t.Log("Deleting PAT...")
-		if delErr := deletePAT(page, patNote, t.Logf); delErr != nil {
-			t.Logf("warning: could not delete PAT: %v", delErr)
-		}
-	})
-
-	// --- GitHub client ---
-	client := newLiveClient(token)
-
-	// Acquire an org from the pool.
 	runID := uuid.New().String()
 	t.Logf("E2E run ID: %s", runID)
 
-	org, err := acquireOrg(context.Background(), client, token, runID, orgPool, cfg.lockTimeout, t.Logf)
+	org, token, err := acquireOrg(context.Background(), cfg, runID, orgPool, cfg.lockTimeout, t.Logf)
 	require.NoError(t, err, "acquiring org from pool")
 	t.Logf("Acquired org: %s", org)
+
+	client := newLiveClient(token)
 	t.Cleanup(func() {
 		releaseLock(context.Background(), client, org, runID, t)
 	})
 
-	// Teardown-first cleanup.
 	cleanupStaleResources(context.Background(), client, token, org, t)
 
 	return &e2eEnv{
 		cfg:           cfg,
 		org:           org,
-		page:          page,
 		client:        client,
 		token:         token,
 		runID:         runID,
@@ -147,6 +97,14 @@ func TestAdminInstallUninstall(t *testing.T) {
 	if env.cfg.gcpProjectID != "" {
 		installArgs = append(installArgs, "--inference-project", env.cfg.gcpProjectID)
 	}
+	// Mint installation tokens authenticate as the App bot, not the org owner.
+	// The default PR path forks within the org and fails PR creation (422) in CI.
+	// Direct push still exercises install; PR-based delivery is covered on main
+	// and in local runs with a user token (gh auth login).
+	useDirectScaffold := env.cfg.useMint
+	if useDirectScaffold {
+		installArgs = append(installArgs, "--direct")
+	}
 	runCLI(t, env.binary, env.token, installArgs...)
 
 	// Verify install artifacts that exist regardless of delivery mode.
@@ -159,11 +117,13 @@ func TestAdminInstallUninstall(t *testing.T) {
 	// Register .fullsend cleanup (in case later phases fail).
 	registerRepoCleanup(t, env.client, env.org, forge.ConfigRepoName)
 
-	// Phase 1.5: Merge the scaffold PR.
-	// Default install mode creates a PR instead of pushing directly.
-	// Merge it so scaffold files land on the default branch.
-	t.Log("=== Phase 1.5: Merge Scaffold PR ===")
-	mergeScaffoldPR(t, env)
+	if !useDirectScaffold {
+		// Phase 1.5: Merge the scaffold PR.
+		// Default install mode creates a PR instead of pushing directly.
+		// Merge it so scaffold files land on the default branch.
+		t.Log("=== Phase 1.5: Merge Scaffold PR ===")
+		mergeScaffoldPR(t, env)
+	}
 
 	// Verify scaffold files on the default branch after merge.
 	cfgData, err := env.client.GetFileContent(ctx, env.org, forge.ConfigRepoName, "config.yaml")
@@ -527,9 +487,15 @@ Segmentation fault (core dumped)
 **Additional context:**
 This started happening after the v2.3.0 -> v2.3.1 upgrade. Files under 64KB save fine.
 Files over 64KB save fine if they contain only ASCII characters.`
+	// Bot-authored issues skip issues.opened dispatch (ADR 0054). Apply
+	// ready-for-triage in a follow-up call so the shim receives issues.labeled
+	// (#2636).
 	issue, err := env.client.CreateIssue(ctx, env.org, testRepo, issueTitle, issueBody)
 	require.NoError(t, err, "creating test issue")
 	t.Logf("Created test issue #%d: %s", issue.Number, issue.URL)
+	require.NoError(t, ensureRepoLabel(ctx, env.token, env.org, testRepo, "ready-for-triage"))
+	triggerTime := time.Now()
+	require.NoError(t, addIssueLabel(ctx, env.token, env.org, testRepo, issue.Number, "ready-for-triage"))
 	t.Cleanup(func() {
 		t.Log("Closing test issue...")
 		if closeErr := env.client.CloseIssue(ctx, env.org, testRepo, issue.Number); closeErr != nil {
@@ -538,11 +504,10 @@ Files over 64KB save fine if they contain only ASCII characters.`
 	})
 
 	// Wait for the triage workflow to be dispatched in .fullsend.
-	// The shim fires on issues:opened and dispatches to triage.yml.
-	// The shim typically fires within ~5s of the issue being created,
+	// The shim fires on issues.labeled with ready-for-triage and dispatches to triage.yml.
+	// The shim typically fires within ~5s of the label being applied,
 	// so 12 attempts at 5s intervals (60s total) is generous.
 	// Filter by CreatedAt to avoid false positives from previous runs.
-	issueCreatedAt := time.Now()
 	t.Log("Waiting for triage workflow to be dispatched...")
 	var triageRun *forge.WorkflowRun
 	for attempt := 0; attempt < 12; attempt++ {
@@ -558,7 +523,7 @@ Files over 64KB save fine if they contain only ASCII characters.`
 				t.Logf("Attempt %d: run %d has unparseable CreatedAt %q: %v", attempt+1, run.ID, run.CreatedAt, parseErr)
 				continue
 			}
-			if runTime.Before(issueCreatedAt) {
+			if runTime.Before(triggerTime) {
 				t.Logf("Attempt %d: run %d created at %s is from before our issue, skipping", attempt+1, run.ID, run.CreatedAt)
 				continue
 			}
@@ -826,7 +791,7 @@ func runUnenrollmentTest(t *testing.T, env *e2eEnv) {
 	// watches the repo-maintenance workflow to completion before returning,
 	// so the removal PR should already exist when this returns.
 	output := runCLI(t, env.binary, env.token,
-		"admin", "disable", "repos", env.org, testRepo, "--yolo")
+		"admin", "disable", "repos", env.org, testRepo, "--yolo", "--direct")
 	t.Logf("Disable repos output:\n%s", output)
 
 	// Always capture the repo-maintenance run's logs. Even when the run

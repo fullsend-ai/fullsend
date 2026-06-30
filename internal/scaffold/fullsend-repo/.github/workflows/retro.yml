@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   debounce:
-    runs-on: ubuntu-latest
+    runs-on: __GH_RUNNER__
     permissions: {}
     steps:
       - run: sleep 60
@@ -42,7 +42,7 @@ jobs:
       mint_url: ${{ vars.FULLSEND_MINT_URL }}
       gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
       install_mode: per-org
-      fullsend_ai_ref: __FULLSEND_AI_REF__
+      runner_image: __GH_RUNNER__
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}

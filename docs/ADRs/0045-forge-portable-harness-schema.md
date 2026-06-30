@@ -710,9 +710,12 @@ forge-specific artifact. The harness and agent definition are portable.
   `agent: agents/triage.md`) resolved? Options: (a) reject relative paths
   in URL-referenced bases (require all paths to be URLs or absolute),
   (b) resolve relative to the base URL's path prefix, (c) resolve
-  relative to the child harness's directory. Option (c) is the simplest
-  for Phase 1 and works because scripts are scaffolded locally — `base`
-  handles declarative config, scripts stay local.
+  relative to the child harness's directory. **Resolved: Option (b).**
+  `resolveBaseResources` fetches agent, policy, and skills relative to the
+  base URL's path prefix, caches them content-addressed, and rewrites the
+  fields to local cache paths. Scripts already used this approach via
+  `resolveBaseScripts`; extending it to declarative resources closes the
+  gap where inherited resources would fail `ValidateFilesExist`.
 
 - **host_files merge edge cases.** The merge rules specify
   last-writer-wins deduplication by `dest` path when base and child both
@@ -739,3 +742,4 @@ forge-specific artifact. The harness and agent definition are portable.
 - [Issue #101](https://github.com/fullsend-ai/fullsend/issues/101): Forge-agnostic agent interface
 - [Issue #322](https://github.com/fullsend-ai/fullsend/issues/322): Platform-specific component identification
 - [Issue #1986](https://github.com/fullsend-ai/fullsend/issues/1986): Default agents should use the same delivery mechanism as custom agents
+- [ADR 0058](0058-agent-registration.md): Agent registration — re-adds `agents` config key with URL/path semantics (supersedes the role/name/slug schema removed in Phase 4)

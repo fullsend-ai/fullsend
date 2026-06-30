@@ -4,7 +4,6 @@ import ts from "typescript-eslint";
 import svelte from "eslint-plugin-svelte";
 import globals from "globals";
 import adminSvelteConfig from "./web/admin/svelte.config.js";
-import docsSvelteConfig from "./web/docs/svelte.config.js";
 
 export default defineConfig([
   // Global ignores must be first entry
@@ -26,7 +25,7 @@ export default defineConfig([
   svelte.configs.prettier,
 
   {
-    files: ["web/admin/src/**/*.{ts,js,svelte}", "web/docs/src/**/*.{ts,js,svelte}"],
+    files: ["web/admin/src/**/*.{ts,js,svelte}"],
     languageOptions: {
       globals: {
         ...globals.browser,
@@ -44,16 +43,6 @@ export default defineConfig([
       },
     },
   },
-  {
-    files: ["web/docs/**/*.svelte", "web/docs/**/*.svelte.ts", "web/docs/**/*.svelte.js"],
-    languageOptions: {
-      parserOptions: {
-        parser: ts.parser,
-        svelteConfig: docsSvelteConfig,
-      },
-    },
-  },
-
   // Custom rules for all linted files
   {
     rules: {
@@ -94,7 +83,7 @@ export default defineConfig([
 
   // Svelte component file-length limit
   {
-    files: ["web/admin/src/**/*.svelte", "web/docs/src/**/*.svelte"],
+    files: ["web/admin/src/**/*.svelte"],
     rules: {
       "max-lines": ["warn", { max: 150, skipBlankLines: true, skipComments: true }],
     },

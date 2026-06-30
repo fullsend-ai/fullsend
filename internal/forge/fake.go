@@ -3,6 +3,7 @@ package forge
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -119,8 +120,18 @@ type FakeClient struct {
 	Secrets                   map[string]bool             // key: "owner/repo/name"
 	PullRequests              map[string][]ChangeProposal // key: "owner/repo"
 	TokenScopes               []string                    // scopes returned by GetTokenScopes
+	InstallationToken         bool                        // IsInstallationToken return value
 	VariablesExist            map[string]bool             // key: "owner/repo/name"
 	VariableValues            map[string]string           // key: "owner/repo/name"
+
+	// ForkOwner controls the return value of CreateFork. When non-empty,
+	// CreateFork returns this value as the fork owner login. When empty,
+	// CreateFork uses AuthenticatedUser.
+	ForkOwner string
+
+	// ExistingForks maps "owner/repo" to the fork owner login returned
+	// by FindExistingFork. Entries simulate an already-existing fork.
+	ExistingForks map[string]string
 
 	// App client IDs for GetAppClientID
 	AppClientIDs map[string]string // key: app slug → client ID
@@ -142,6 +153,10 @@ type FakeClient struct {
 
 	// Error injection: key is method name, value is error to return.
 	Errors map[string]error
+
+	// CreateBranchErrors injects per-repo errors for CreateBranch.
+	// Key is "owner/repo", checked before the generic Errors map.
+	CreateBranchErrors map[string]error
 
 	// Issue comments for ListIssueComments / UpdateIssueComment.
 	IssueComments map[string][]IssueComment // key: "owner/repo/number"
@@ -188,7 +203,8 @@ type FakeClient struct {
 	DismissedReviews       []DismissedReviewRecord
 	CommittedFiles         []CommitFilesRecord
 	CommittedFilesToBranch []CommitFilesToBranchRecord
-	DeletedComments        []int // comment IDs
+	CreatedForks           []string // "owner/repo"
+	DeletedComments        []int    // comment IDs
 
 	// internal counters
 	proposalCounter int
@@ -315,6 +331,38 @@ func (f *FakeClient) DeleteRepo(_ context.Context, owner, repo string) error {
 	}
 
 	return nil
+}
+
+func (f *FakeClient) FindExistingFork(_ context.Context, owner, repo string) (string, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("FindExistingFork"); e != nil {
+		return "", "", e
+	}
+
+	if f.ExistingForks != nil {
+		if forkOwner, ok := f.ExistingForks[owner+"/"+repo]; ok {
+			return forkOwner, repo, nil
+		}
+	}
+	return "", "", nil
+}
+
+func (f *FakeClient) CreateFork(_ context.Context, owner, repo string) (string, string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CreateFork"); e != nil {
+		return "", "", e
+	}
+
+	f.CreatedForks = append(f.CreatedForks, owner+"/"+repo)
+
+	if f.ForkOwner != "" {
+		return f.ForkOwner, repo, nil
+	}
+	return f.AuthenticatedUser, repo, nil
 }
 
 func (f *FakeClient) CreateFile(_ context.Context, owner, repo, path, message string, content []byte) error {
@@ -517,6 +565,11 @@ func (f *FakeClient) CreateBranch(_ context.Context, owner, repo, branchName str
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	if f.CreateBranchErrors != nil {
+		if e, ok := f.CreateBranchErrors[owner+"/"+repo]; ok {
+			return e
+		}
+	}
 	if e := f.err("CreateBranch"); e != nil {
 		return e
 	}
@@ -581,6 +634,8 @@ func (f *FakeClient) CreateChangeProposal(_ context.Context, owner, repo, title,
 		URL:    fmt.Sprintf("https://forge.example.com/%s/%s/pull/%d", owner, repo, f.proposalCounter),
 		Title:  title,
 		Number: f.proposalCounter,
+		Head:   head,
+		Base:   base,
 	}
 	f.CreatedProposals = append(f.CreatedProposals, cp)
 	return &cp, nil
@@ -650,6 +705,17 @@ func (f *FakeClient) GetTokenScopes(_ context.Context) ([]string, error) {
 	}
 
 	return f.TokenScopes, nil
+}
+
+func (f *FakeClient) IsInstallationToken(_ context.Context) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("IsInstallationToken"); e != nil {
+		return false, e
+	}
+
+	return f.InstallationToken, nil
 }
 
 func (f *FakeClient) CreateRepoSecret(_ context.Context, owner, repo, name, value string) error {
@@ -1251,18 +1317,61 @@ func (f *FakeClient) CreateOrUpdateOrgVariable(_ context.Context, org, name, val
 	return nil
 }
 
-func (f *FakeClient) OrgVariableExists(_ context.Context, org, name string) (bool, error) {
+func (f *FakeClient) CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error {
+	return f.CreateOrUpdateOrgVariable(ctx, org, name, value, nil)
+}
+
+func (f *FakeClient) OrgVariableExists(ctx context.Context, org, name string) (bool, error) {
+	f.mu.Lock()
+	e := f.err("OrgVariableExists")
+	f.mu.Unlock()
+	if e != nil {
+		return false, e
+	}
+	_, exists, err := f.GetOrgVariable(ctx, org, name)
+	return exists, err
+}
+
+func (f *FakeClient) GetOrgVariable(_ context.Context, org, name string) (string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if e := f.err("OrgVariableExists"); e != nil {
-		return false, e
+	if e := f.err("GetOrgVariable"); e != nil {
+		return "", false, e
 	}
 
-	if f.OrgVariables == nil {
-		return false, nil
+	key := org + "/" + name
+	if f.OrgVariables == nil || !f.OrgVariables[key] {
+		return "", false, nil
 	}
-	return f.OrgVariables[org+"/"+name], nil
+	if f.OrgVariableValues == nil {
+		return "", true, nil
+	}
+	return f.OrgVariableValues[key], true, nil
+}
+
+func (f *FakeClient) ListOrgVariables(_ context.Context, org string) ([]OrgVariable, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListOrgVariables"); e != nil {
+		return nil, e
+	}
+
+	prefix := org + "/"
+	var out []OrgVariable
+	for key, ok := range f.OrgVariables {
+		if !ok || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		name := strings.TrimPrefix(key, prefix)
+		val := ""
+		if f.OrgVariableValues != nil {
+			val = f.OrgVariableValues[key]
+		}
+		out = append(out, OrgVariable{Name: name, Value: val})
+	}
+	return out, nil
 }
 
 func (f *FakeClient) SetOrgVariableRepos(_ context.Context, org, name string, repoIDs []int64) error {

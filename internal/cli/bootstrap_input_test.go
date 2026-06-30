@@ -18,12 +18,13 @@ func TestNewHarnessBootstrap_WithoutSecurity(t *testing.T) {
 			Enabled: &disabled,
 		},
 	}
-	boot := newHarnessBootstrap(h, "sandbox-1")
+	boot := newHarnessBootstrap(h, "sandbox-1", "test")
 
 	_, ok := boot.(agentruntime.ClaudeHooksBootstrap)
 	assert.False(t, ok)
 	assert.Equal(t, "sandbox-1", boot.SandboxName())
 	assert.Equal(t, "agents/test.md", boot.AgentPath())
+	assert.Equal(t, "test", boot.AgentName())
 }
 
 func TestNewHarnessBootstrap_WithSecurity(t *testing.T) {
@@ -33,7 +34,7 @@ func TestNewHarnessBootstrap_WithSecurity(t *testing.T) {
 			SandboxHooks: &harness.SandboxHooks{},
 		},
 	}
-	boot := newHarnessBootstrap(h, "sandbox-1")
+	boot := newHarnessBootstrap(h, "sandbox-1", "test")
 
 	_, ok := boot.(agentruntime.ClaudeHooksBootstrap)
 	require.True(t, ok)

@@ -88,9 +88,13 @@ repos:
           - -ignore
           - property "workflow_repository" is not defined
           - -ignore
+          - property "workflow_sha" is not defined
+          - -ignore
           - SC2016
           - -ignore
           - '__REUSABLE_(WORKFLOW|DISPATCH)__'
+          - -ignore
+          - '__GH_RUNNER__'
 
   - repo: local
     hooks:
@@ -175,5 +179,5 @@ repos:
         name: lint-staged (web)
         entry: npx lint-staged --allow-empty
         language: system
-        files: ^web/(admin|docs)/src/
+        files: ^(web/admin/src/|website/\.vitepress/)
         pass_filenames: false

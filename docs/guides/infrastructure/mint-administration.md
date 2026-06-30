@@ -12,7 +12,7 @@ This guide covers deploying and managing the fullsend token mint Cloud Function.
 | `mint status` | Inspect mint health, enrolled orgs, and PEM secrets |
 | `mint token` | Exchange a GitHub Actions OIDC token for an installation token |
 
-> **This guide is for platform operators** who deploy, manage, or troubleshoot the token mint Cloud Function. If you are an end user setting up fullsend for your organization, see [Installing fullsend](../../reference/installation.md) instead — the mint is typically deployed once by a platform operator, and organizations are enrolled as needed.
+> **This guide is for platform operators** who deploy, manage, or troubleshoot the token mint Cloud Function. If you are an end user setting up fullsend for your organization, see [Getting Started](../getting-started/) instead — the mint is typically deployed once by a platform operator, and organizations are enrolled as needed.
 
 ## Hosted mint
 
@@ -26,7 +26,7 @@ The fullsend team operates a public hosted mint service. If your organization is
 https://fullsend-mint-gljhbkcloq-uc.a.run.app
 ```
 
-Pass this URL as `--mint-url` when running `fullsend admin install`, or set the `FULLSEND_MINT_URL` repository/org variable in GitHub. If you are using the hosted mint, the rest of this guide (deploying, enrolling, troubleshooting) is handled by the fullsend team — you do not need to manage mint infrastructure yourself.
+Pass this URL as `--mint-url` when running `fullsend github setup`, or set the `FULLSEND_MINT_URL` repository/org variable in GitHub. If you are using the hosted mint, the rest of this guide (deploying, enrolling, troubleshooting) is handled by the fullsend team — you do not need to manage mint infrastructure yourself.
 
 ## Prerequisites
 
@@ -118,7 +118,7 @@ The deploy command automatically detects when the deployed function is up-to-dat
 
 ### Bootstrapping PEMs (first-time only)
 
-For first-time setup, the optional `--pem-dir` flag seeds the default app set's PEM secrets during deployment. This allows `mint enroll` to work immediately without running `admin install` first.
+For first-time setup, the optional `--pem-dir` flag seeds the default app set's PEM secrets during deployment. This allows `mint enroll` to work immediately without a separate `mint add-role` step.
 
 ```bash
 # First-time bootstrap with PEMs:
@@ -239,7 +239,7 @@ fullsend mint enroll acme-corp --project="$GCP_PROJECT"
 fullsend mint enroll acme-corp/my-repo --project="$GCP_PROJECT"
 ```
 
-Enrollment does **not** grant Agent Platform (inference) access — use `fullsend inference provision` separately after enrollment. See [Installing fullsend](../../reference/installation.md) for the end-user inference setup path.
+Enrollment does **not** grant Agent Platform (inference) access — use `fullsend inference provision` separately after enrollment. See [Getting Started](../getting-started/) for the end-user inference setup path.
 
 ### Flags
 
@@ -251,7 +251,7 @@ Enrollment does **not** grant Agent Platform (inference) access — use `fullsen
 
 ### Migration from per-org app ID flags
 
-Prior versions of `mint enroll` accepted `--app-set`, `--role-app-ids`, `--roles`, and `--source-org` to copy per-org app ID mappings into `ROLE_APP_IDS`. App IDs are now **shared per role** on the mint (like PEM secrets) and are set at deploy time via `mint deploy --pem-dir`, `fullsend admin install`, or per-role via `mint add-role`. Enrollment only adds the org to `ALLOWED_ORGS` and updates WIF — remove those flags from scripts and ensure the mint already has role-keyed `ROLE_APP_IDS` before enrolling.
+Prior versions of `mint enroll` accepted `--app-set`, `--role-app-ids`, `--roles`, and `--source-org` to copy per-org app ID mappings into `ROLE_APP_IDS`. App IDs are now **shared per role** on the mint (like PEM secrets) and are set at deploy time via `mint deploy --pem-dir` or per-role via `mint add-role`. Enrollment only adds the org to `ALLOWED_ORGS` and updates WIF — remove those flags from scripts and ensure the mint already has role-keyed `ROLE_APP_IDS` before enrolling.
 
 ### What enrollment does
 
@@ -260,7 +260,7 @@ Prior versions of `mint enroll` accepted `--app-set`, `--role-app-ids`, `--roles
 3. Runs post-enrollment verification (see below)
 4. Configures the mint-side WIF provider to accept OIDC tokens from the organization's repositories
 
-Role PEM secrets and `ROLE_APP_IDS` must already exist on the mint, created during `mint deploy --pem-dir`, `fullsend admin install`, or `mint add-role`. Enrollment does not create, copy, or modify PEM secrets or app ID mappings.
+Role PEM secrets and `ROLE_APP_IDS` must already exist on the mint, created during `mint deploy --pem-dir` or `mint add-role`. Enrollment does not create, copy, or modify PEM secrets or app ID mappings.
 
 ### Post-enrollment verification
 
@@ -367,15 +367,26 @@ The command prints the token to stdout for shell capture. When running in GitHub
 
 A single token mint can serve multiple GitHub organizations. The first org deploys the mint infrastructure and creates **public unlisted** GitHub Apps; additional orgs reuse the existing mint and install the same apps.
 
-**First org (deploys mint + creates public apps):**
+**First org (deploys mint + provisions inference + configures GitHub):**
 
 ```bash
 export FIRST_ORG="<first-github-org>"
 export GCP_PROJECT="<your-gcp-project>"
 
-fullsend admin install "$FIRST_ORG" \
+# 1. Deploy the token mint
+fullsend mint deploy --project="$GCP_PROJECT" --pem-dir=/path/to/pems
+
+# 2. Enroll the first org in the mint
+fullsend mint enroll "$FIRST_ORG" --project="$GCP_PROJECT"
+
+# 3. Provision inference WIF
+fullsend inference provision "$FIRST_ORG" --project="$GCP_PROJECT"
+
+# 4. Configure GitHub with public apps (installable by other orgs)
+fullsend github setup "$FIRST_ORG" \
+  --mint-url "$(fullsend mint status --project="$GCP_PROJECT" -o url)" \
+  --inference-wif-provider "$(fullsend inference status "$FIRST_ORG" --project="$GCP_PROJECT" -o provider)" \
   --inference-project "$GCP_PROJECT" \
-  --mint-project "$GCP_PROJECT" \
   --public
 ```
 
@@ -384,41 +395,51 @@ The `--public` flag creates GitHub Apps as public unlisted — they won't appear
 When the first org uses a custom app set prefix, pass `--app-set` so the apps are named accordingly:
 
 ```bash
-fullsend admin install "$FIRST_ORG" \
+fullsend github setup "$FIRST_ORG" \
+  --mint-url "$MINT_URL" \
+  --inference-wif-provider "$WIF_PROVIDER" \
   --inference-project "$GCP_PROJECT" \
-  --mint-project "$GCP_PROJECT" \
   --public \
   --app-set "$FIRST_ORG"
 ```
 
 This creates public apps named `{first-org}-fullsend`, `{first-org}-coder`, etc.
 
-**Additional orgs (install existing public apps):**
+**Additional orgs (enroll in existing mint + install existing public apps):**
 
 ```bash
 export ADDITIONAL_ORG="<additional-github-org>"
 ```
 
-`GCP_PROJECT` and `FIRST_ORG` carry over from the first-org step above.
+`GCP_PROJECT` carries over from the first-org step above.
 
 ```bash
-fullsend admin install "$ADDITIONAL_ORG" \
-  --inference-project "$GCP_PROJECT" \
-  --mint-project "$GCP_PROJECT"
+# 1. Enroll the additional org in the existing mint
+fullsend mint enroll "$ADDITIONAL_ORG" --project="$GCP_PROJECT"
+
+# 2. Provision inference WIF for the additional org
+fullsend inference provision "$ADDITIONAL_ORG" --project="$GCP_PROJECT"
+
+# 3. Configure GitHub — auto-detects shared public apps
+fullsend github setup "$ADDITIONAL_ORG" \
+  --mint-url "$MINT_URL" \
+  --inference-wif-provider "$WIF_PROVIDER" \
+  --inference-project "$GCP_PROJECT"
 ```
 
-The installer auto-detects shared public apps by matching installed app IDs against the mint's `ROLE_APP_IDS`. It records the actual app slug in `config.yaml`, so subsequent operations find the correct app regardless of naming convention.
+The setup command auto-detects shared public apps by matching installed app IDs against the mint's `ROLE_APP_IDS`. It records the actual app slug in `config.yaml`, so subsequent operations find the correct app regardless of naming convention.
 
 If the public apps were created with a custom `--app-set`, pass the same value so the CLI uses the correct slug prefix for convention-based lookups:
 
 ```bash
-fullsend admin install "$ADDITIONAL_ORG" \
+fullsend github setup "$ADDITIONAL_ORG" \
+  --mint-url "$MINT_URL" \
+  --inference-wif-provider "$WIF_PROVIDER" \
   --inference-project "$GCP_PROJECT" \
-  --mint-project "$GCP_PROJECT" \
   --app-set "$FIRST_ORG"
 ```
 
-You can also pass `--mint-url "$MINT_URL"` explicitly to skip the auto-discovery step. PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, shared across orgs on the mint.
+PEMs use role-only naming (`fullsend-{role}-app-pem`) — one secret per role, shared across orgs on the mint.
 
 > **Note:** Multi-org with `--public` requires all orgs to share the same GitHub Apps. Private apps (the default) are single-org only.
 
@@ -496,7 +517,7 @@ You can also pass `--mint-url "$MINT_URL"` explicitly to skip the auto-discovery
 
 **Common causes:**
 
-- Role PEM secrets were never bootstrapped — run `mint deploy --pem-dir` or `fullsend admin install` first
+- Role PEM secrets were never bootstrapped — run `mint deploy --pem-dir` or `mint add-role` first
 - The enrolled roles in `ROLE_APP_IDS` reference apps whose PEM secrets do not exist in Secret Manager
 
 ### Debugging with gcloud
@@ -543,7 +564,8 @@ gcloud functions logs read fullsend-mint \
 
 ## See Also
 
-- [Installing fullsend](../../reference/installation.md) — End-user setup (inference + GitHub)
-- [Setting up with pre-provisioned infrastructure](../../reference/github-setup.md) — GitHub-only setup when GCP is already provisioned
+- [Getting Started](../getting-started/) — End-user setup (inference + GitHub)
+- [Advanced setup](./advanced-setup.md) — Alternative installation paths and setup flags
+- [Standalone Mint](standalone-mint.md) — Running the mint without GCP, with custom agent roles
 - [Infrastructure Reference](infrastructure-reference.md) — Token mint, WIF, and secrets deployment details
 - [CLI Internals](../dev/cli-internals.md) — Command structure and implementation details

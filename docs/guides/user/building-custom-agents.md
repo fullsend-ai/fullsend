@@ -370,7 +370,7 @@ concurrency:
 
 jobs:
   run:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository for harness reading
         uses: actions/checkout@v6
@@ -492,7 +492,7 @@ jobs:
     if: >-
       github.event.comment.user.type != 'Bot'
       && startsWith(github.event.comment.body, '/my-command')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Dispatch
         env:

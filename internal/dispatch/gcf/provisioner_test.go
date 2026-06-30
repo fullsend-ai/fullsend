@@ -1315,9 +1315,10 @@ func TestBundleEmbeddedMintSource(t *testing.T) {
 	assert.Contains(t, names, "mintcore/sts_verifier.go")
 	assert.Contains(t, names, "mintcore/wif.go")
 	assert.Contains(t, names, "mintcore/handler.go")
+	assert.Contains(t, names, "mintcore/foreign.go")
 	assert.Contains(t, names, "mintcore/interfaces.go")
 	assert.Contains(t, names, "mintcore/go.sum")
-	assert.Len(t, names, 14)
+	assert.Len(t, names, 15)
 }
 
 func TestEmbeddedMintSource_MatchesOriginal(t *testing.T) {
@@ -1370,10 +1371,12 @@ func TestEmbeddedMintSource_MatchesOriginal(t *testing.T) {
 	}
 
 	// Check mintcore files too.
+	// file_pem.go is standalone-mint-only and excluded from the GCF bundle.
+	gcfSkip := map[string]bool{"file_pem.go": true}
 	mintcoreEntries, err := os.ReadDir(mintcoreDir)
 	if err == nil {
 		for _, entry := range mintcoreEntries {
-			if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || strings.HasSuffix(entry.Name(), "_test.go") {
+			if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") || strings.HasSuffix(entry.Name(), "_test.go") || gcfSkip[entry.Name()] {
 				continue
 			}
 			// go.sum is now included in embeddedMintFiles.

@@ -14,6 +14,8 @@ const (
 	DefaultUpstreamRepo = "fullsend-ai/fullsend"
 	// DefaultUpstreamRef is the default tag for layered upstream workflow calls.
 	DefaultUpstreamRef = "v0"
+	// DefaultGHRunner is the default GitHub Actions runner image for scaffold workflows.
+	DefaultGHRunner = "ubuntu-24.04"
 )
 
 // DispatchConfig configures how agent work is dispatched.
@@ -128,6 +130,7 @@ func NewOrgConfig(allRepos, enabledRepos, roles []string, inferenceProvider, org
 		// Default allowlist for base: composition in harness wrappers (ADR-0045 Phase 2).
 		AllowedRemoteResources: []string{
 			"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
+			"https://raw.githubusercontent.com/fullsend-ai/agents/",
 		},
 	}
 	if inferenceProvider != "" {

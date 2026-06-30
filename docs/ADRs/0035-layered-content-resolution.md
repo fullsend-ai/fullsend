@@ -61,7 +61,9 @@ they are populated at runtime from upstream.
 "Prepare workspace" step that checks out upstream defaults from
 `fullsend-ai/fullsend` at the ref supplied via `fullsend_ai_ref` (PR #1278
 replaced the earlier checkout at `@v0` with a checkout at a
-caller-controlled ref), copies them into the main dirs (`agents/`, `skills/`,
+caller-controlled ref; since superseded by `job.workflow_sha` which
+eliminates the need for the caller to pass a ref — see PR #2689),
+copies them into the main dirs (`agents/`, `skills/`,
 etc.), then copies customizations on top so override files replace upstream
 defaults. When `--vendor` has committed upstream mirror content under
 `.defaults/`, the sparse checkout is skipped (see

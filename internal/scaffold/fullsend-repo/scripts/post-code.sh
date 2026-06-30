@@ -274,14 +274,19 @@ if [ -f .pre-commit-config.yaml ] \
    && [ -f "${RESOLVE_SCRIPT}" ] \
    && [ -f "${INSTALL_SCRIPT}" ]; then
   MANIFEST="$(mktemp)"
-  if python3 "${RESOLVE_SCRIPT}" "." > "${MANIFEST}"; then
+  LOCAL_REG="$(mktemp)"
+  RESOLVE_ARGS=(".")
+  if git show "origin/${TARGET_BRANCH}:.pre-commit-tools.yaml" > "${LOCAL_REG}" 2>/dev/null; then
+    RESOLVE_ARGS+=("--local-registry" "${LOCAL_REG}")
+  fi
+  if python3 "${RESOLVE_SCRIPT}" "${RESOLVE_ARGS[@]}" > "${MANIFEST}"; then
     if [ -s "${MANIFEST}" ] && jq -e '.tools | length > 0' "${MANIFEST}" >/dev/null 2>&1; then
       bash "${INSTALL_SCRIPT}" "${MANIFEST}"
     fi
   else
     echo "::warning::Pre-commit tool resolution failed — continuing without auto-install"
   fi
-  rm -f "${MANIFEST}"
+  rm -f "${MANIFEST}" "${LOCAL_REG}"
 fi
 export PATH="${HOME}/.local/bin:${PATH}"
 
@@ -451,3 +456,14 @@ rm -f "${PR_CREATE_STDERR}"
 
 echo "PR created: ${PR_URL}"
 echo "pr_url=${PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
+
+# Apply ready-for-review label so the review agent is dispatched via the
+# issues.labeled path. The pull_request_target.opened event requires the PR
+# author to pass is_event_actor_authorized, which fails for bot accounts
+# (GitHub App bots have no collaborator role). The label-based path has no
+# explicit auth gate — label application itself requires write access.
+PR_NUMBER_FROM_URL="${PR_URL##*/}"
+gh issue edit "${PR_NUMBER_FROM_URL}" \
+  --repo "${REPO_FULL_NAME}" \
+  --add-label "ready-for-review" 2>/dev/null || \
+  echo "::warning::Failed to apply ready-for-review label to PR #${PR_NUMBER_FROM_URL}"

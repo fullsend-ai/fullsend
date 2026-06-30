@@ -1,5 +1,5 @@
 ---
-# lint-workflow-size: max-lines=470
+# lint-workflow-size: max-lines=475
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -18,7 +18,7 @@ permissions: {}
 
 jobs:
   dispatch:
-    runs-on: ubuntu-latest
+    runs-on: __GH_RUNNER__
     permissions:
       actions: write
       contents: read
@@ -185,7 +185,9 @@ jobs:
                   STAGE="triage"
                 fi
               elif [[ "${EVENT_ACTION}" == "labeled" ]]; then
-                if [[ "${TRIGGERING_LABEL}" == "ready-to-code" ]]; then
+                if [[ "${TRIGGERING_LABEL}" == "ready-for-triage" ]]; then
+                  STAGE="triage"
+                elif [[ "${TRIGGERING_LABEL}" == "ready-to-code" ]]; then
                   STAGE="code"
                 elif [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
                   if [[ "${ISSUE_HAS_PR}" == "true" ]]; then

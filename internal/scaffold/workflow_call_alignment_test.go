@@ -275,6 +275,7 @@ func TestReusableWorkflowsShareCommonInputs(t *testing.T) {
 		"fullsend_version",
 		"install_mode",
 		"fullsend_ai_ref",
+		"runner_image",
 	}
 
 	commonSecrets := []string{

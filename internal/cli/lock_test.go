@@ -934,11 +934,12 @@ func TestRunLock_URLBaseOnlyDeps(t *testing.T) {
 	// A child harness with a URL base and no other URL references.
 	// The baseDeps conversion loop runs and the base-only-deps path is taken
 	// (skip ResolveHarness, still record deps in lock file).
-	baseContent := []byte("agent: agents/shared.md\nrole: test\nskills:\n  - skills/common\n")
+	baseContent := []byte("agent: agents/shared.md\nrole: test\n")
 	baseHash := fetch.ComputeSHA256(baseContent)
 
 	srv, policy := newLockTestServer(t, map[string][]byte{
-		"/base.yaml": baseContent,
+		"/base.yaml":        baseContent,
+		"/agents/shared.md": []byte("# shared agent"),
 	})
 
 	dir := t.TempDir()
@@ -969,21 +970,27 @@ func TestRunLock_URLBaseOnlyDeps(t *testing.T) {
 	entry := lf.Lookup("urlbase")
 	require.NotNil(t, entry)
 
-	// Should have exactly one dependency: the URL base.
-	require.Len(t, entry.Dependencies, 1)
+	// Dependencies: base + agent resource
+	require.Len(t, entry.Dependencies, 2)
 	assert.Equal(t, "base", entry.Dependencies[0].Field)
 	assert.Equal(t, fmt.Sprintf("%s/base.yaml", srv.URL), entry.Dependencies[0].URL)
 	assert.Equal(t, baseHash, entry.Dependencies[0].SHA256)
+	assert.Equal(t, "file", entry.Dependencies[0].Type)
+
+	assert.Equal(t, "agent", entry.Dependencies[1].Field)
+	assert.Equal(t, fmt.Sprintf("%s/agents/shared.md", srv.URL), entry.Dependencies[1].URL)
+	assert.Equal(t, "resource", entry.Dependencies[1].Type)
 }
 
 func TestRunLock_URLBaseOnlyDepsWithPlatform(t *testing.T) {
 	// Same as above but with a forge platform set, exercising the platform != "" branch
 	// in the base-only-deps logging path.
-	baseContent := []byte("agent: agents/shared.md\nrole: test\nskills:\n  - skills/common\n")
+	baseContent := []byte("agent: agents/shared.md\nrole: test\n")
 	baseHash := fetch.ComputeSHA256(baseContent)
 
 	srv, policy := newLockTestServer(t, map[string][]byte{
-		"/base.yaml": baseContent,
+		"/base.yaml":        baseContent,
+		"/agents/shared.md": []byte("# shared agent"),
 	})
 
 	dir := t.TempDir()
@@ -1013,7 +1020,7 @@ func TestRunLock_URLBaseOnlyDepsWithPlatform(t *testing.T) {
 
 	entry := lf.Lookup("urlbase-forge")
 	require.NotNil(t, entry)
-	require.Len(t, entry.Dependencies, 1)
+	require.Len(t, entry.Dependencies, 2)
 	assert.Equal(t, "base", entry.Dependencies[0].Field)
 }
 

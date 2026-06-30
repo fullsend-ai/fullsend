@@ -151,7 +151,7 @@ func (l *WorkflowsLayer) Install(ctx context.Context) error {
 
 	committed, err := CommitScaffoldFiles(ctx, l.client, l.ui,
 		l.org, forge.ConfigRepoName, cfgRepo.DefaultBranch,
-		commitMsg, prTitle, prBody, files, l.direct)
+		commitMsg, prTitle, prBody, files, l.direct, nil)
 	if err != nil {
 		return err
 	}

@@ -19,6 +19,9 @@ import (
 func newWorkflowsLayer(t *testing.T, client *forge.FakeClient, vendored bool) (*WorkflowsLayer, *bytes.Buffer) {
 	t.Helper()
 	ensureFakeConfigRepo(client)
+	if client.AuthenticatedUser == "" {
+		client.AuthenticatedUser = "test-org"
+	}
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
 	layer := NewWorkflowsLayer("test-org", client, printer, "admin-user", "test-version", vendored).WithDirect(true)
@@ -91,6 +94,7 @@ func TestWorkflowsLayer_Install_WritesAllFiles(t *testing.T) {
 
 func TestWorkflowsLayer_Install_DefaultCreatesPR(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "test-org"
 	ensureFakeConfigRepo(client)
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
@@ -259,7 +263,7 @@ func TestWorkflowsLayer_Install_PinnedSHA(t *testing.T) {
 	require.NotEmpty(t, triageContent, "triage.yml should have been written")
 	assert.Contains(t, triageContent, "@abc123def456abc123def456abc123def456abcd")
 	assert.Contains(t, triageContent, "# v0.19.0")
-	assert.Contains(t, triageContent, "fullsend_ai_ref: abc123def456abc123def456abc123def456abcd # v0.19.0")
+	assert.NotContains(t, triageContent, "fullsend_ai_ref:")
 	assert.NotContains(t, triageContent, "@v0")
 }
 
@@ -353,7 +357,7 @@ func TestWorkflowsLayer_Install_ProtectedBranch_ScaffoldBranchAlsoProtected(t *t
 
 	err := layer.Install(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "scaffold branch")
+	assert.Contains(t, err.Error(), "is protected")
 	assert.Contains(t, err.Error(), "configure branch protection")
 }
 
@@ -402,6 +406,7 @@ func TestWorkflowsLayer_Install_ProtectedBranch_BranchUpToDate(t *testing.T) {
 
 func TestWorkflowsLayer_Install_DefaultPR_NoChanges(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "test-org"
 	ensureFakeConfigRepo(client)
 	client.Errors = map[string]error{
 		"CreateChangeProposal": fmt.Errorf("PR: %w", forge.ErrNoChanges),
@@ -563,6 +568,7 @@ func TestManagedPathsMatchLayeredScaffold(t *testing.T) {
 
 func TestWorkflowsLayer_Install_SignOffTrailer(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "test-org"
 	ensureFakeConfigRepo(client)
 	var buf bytes.Buffer
 	printer := ui.New(&buf)

@@ -18,6 +18,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -65,15 +66,60 @@ var canonicalRolePermissions = map[string]map[string]string{
 	"prioritize": {"contents": "read", "issues": "write", "organization_projects": "write", "metadata": "read"},
 	"fullsend":   {"actions": "write", "actions_variables": "read", "contents": "write", "pull_requests": "write", "workflows": "write", "metadata": "read"},
 	"e2e": {
-		"actions": "write", "actions_variables": "read", "administration": "write",
+		"actions": "write", "actions_variables": "write", "administration": "write",
 		"contents": "write", "issues": "write", "members": "write", "metadata": "read",
-		"organization_administration": "write", "pull_requests": "write",
-		"secrets": "write", "workflows": "write",
+		"organization_actions_variables": "write", "organization_administration": "write",
+		"pull_requests": "write", "secrets": "write", "workflows": "write",
 	},
 }
 
-// RolePermissions returns a deep copy of the role-to-permissions map,
-// preventing callers from mutating the canonical permission definitions.
+// customRoles stores user-defined role permissions. Written once at startup
+// via RegisterCustomRolePermissions, read concurrently by request handlers.
+// Lives in mintcore (not cmd/mint) so that RolePermissionsFor, HasRole, and
+// RolePermissions return a unified view — callers like CreateInstallationToken
+// need not distinguish built-in from custom roles.
+var customRoles atomic.Value // holds map[string]map[string]string
+
+func loadCustomRoles() map[string]map[string]string {
+	v := customRoles.Load()
+	if v == nil {
+		return nil
+	}
+	return v.(map[string]map[string]string)
+}
+
+// RegisterCustomRolePermissions adds user-defined role permissions that are
+// checked alongside the canonical built-in permissions. Pass nil to clear.
+// Returns an error if any custom role name collides with a built-in role.
+// Used by cmd/mint (standalone mint) only; the GCF mint uses canonical roles.
+func RegisterCustomRolePermissions(perms map[string]map[string]string) error {
+	if perms == nil {
+		customRoles.Store(map[string]map[string]string(nil))
+		return nil
+	}
+	safe := make(map[string]map[string]string, len(perms))
+	for role, p := range perms {
+		if err := ValidateRoleName(role); err != nil {
+			return fmt.Errorf("custom role name invalid: %w", err)
+		}
+		if _, ok := canonicalRolePermissions[role]; ok {
+			return fmt.Errorf("custom role %q collides with built-in role", role)
+		}
+		cp := make(map[string]string, len(p))
+		for k, v := range p {
+			if v != "read" && v != "write" {
+				return fmt.Errorf("custom role %q: permission %q has invalid level %q (must be read or write)", role, k, v)
+			}
+			cp[k] = v
+		}
+		safe[role] = cp
+	}
+	customRoles.Store(safe)
+	return nil
+}
+
+// RolePermissions returns a deep copy of the combined canonical and custom
+// role-to-permissions map. Custom roles are included alongside canonical ones.
 func RolePermissions() map[string]map[string]string {
 	out := make(map[string]map[string]string, len(canonicalRolePermissions))
 	for role, perms := range canonicalRolePermissions {
@@ -83,27 +129,55 @@ func RolePermissions() map[string]map[string]string {
 		}
 		out[role] = cp
 	}
+	if custom := loadCustomRoles(); len(custom) > 0 {
+		for role, perms := range custom {
+			cp := make(map[string]string, len(perms))
+			for k, v := range perms {
+				cp[k] = v
+			}
+			out[role] = cp
+		}
+	}
 	return out
 }
 
 // RolePermissionsFor returns the permissions for a specific role, or nil if
-// the role is not defined. The returned map is a copy.
+// the role is not defined. Canonical roles are checked first (avoids atomic
+// load on the hot path), then custom roles. Name collisions are rejected at
+// registration time so lookups are unambiguous. The returned map is a copy.
 func RolePermissionsFor(role string) map[string]string {
-	perms, ok := canonicalRolePermissions[role]
-	if !ok {
-		return nil
+	if perms, ok := canonicalRolePermissions[role]; ok {
+		cp := make(map[string]string, len(perms))
+		for k, v := range perms {
+			cp[k] = v
+		}
+		return cp
 	}
-	cp := make(map[string]string, len(perms))
-	for k, v := range perms {
-		cp[k] = v
+	if custom := loadCustomRoles(); custom != nil {
+		if perms, ok := custom[role]; ok {
+			cp := make(map[string]string, len(perms))
+			for k, v := range perms {
+				cp[k] = v
+			}
+			return cp
+		}
 	}
-	return cp
+	return nil
 }
 
-// HasRole reports whether the given role has a permissions entry.
+// HasRole reports whether the given role has a permissions entry,
+// checking canonical roles first (avoids atomic load on the hot path),
+// then custom roles.
 func HasRole(role string) bool {
-	_, ok := canonicalRolePermissions[role]
-	return ok
+	if _, ok := canonicalRolePermissions[role]; ok {
+		return true
+	}
+	if custom := loadCustomRoles(); custom != nil {
+		if _, ok := custom[role]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // GenerateAppJWT creates a signed RS256 JWT for GitHub App authentication.
@@ -202,6 +276,148 @@ func FindInstallation(ctx context.Context, httpClient HTTPDoer, githubBaseURL, j
 	return inst.ID, nil
 }
 
+// FindOrgInstallation looks up a GitHub App's installation ID for an organization.
+func FindOrgInstallation(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt, org string) (int64, error) {
+	reqURL := fmt.Sprintf("%s/orgs/%s/installation", githubBaseURL, org)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return 0, fmt.Errorf("creating org installation request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("getting org installation: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return 0, fmt.Errorf("getting org installation for %s returned status %d", org, resp.StatusCode)
+	}
+
+	var inst installationResponse
+	if err := json.NewDecoder(resp.Body).Decode(&inst); err != nil {
+		return 0, fmt.Errorf("decoding org installation: %w", err)
+	}
+
+	if inst.ID == 0 {
+		return 0, fmt.Errorf("no installation found for org %s", org)
+	}
+
+	if !strings.EqualFold(inst.Account.Login, org) {
+		return 0, fmt.Errorf("installation for org %s belongs to %s, not %s",
+			org, inst.Account.Login, org)
+	}
+
+	return inst.ID, nil
+}
+
+// orgVariableResponse is the response from GET /orgs/{org}/actions/variables/{name}.
+type orgVariableResponse struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// GetOrgVariable reads an org-level Actions variable using an installation token.
+func GetOrgVariable(ctx context.Context, httpClient HTTPDoer, githubBaseURL, installationToken, org, name string) (value string, exists bool, err error) {
+	reqURL := fmt.Sprintf("%s/orgs/%s/actions/variables/%s", githubBaseURL, org, name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return "", false, fmt.Errorf("creating org variable request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+installationToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", false, fmt.Errorf("getting org variable: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return "", false, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return "", false, fmt.Errorf("getting org variable %s returned status %d", name, resp.StatusCode)
+	}
+
+	var varResp orgVariableResponse
+	if err := json.NewDecoder(resp.Body).Decode(&varResp); err != nil {
+		return "", false, fmt.Errorf("decoding org variable: %w", err)
+	}
+	return varResp.Value, true, nil
+}
+
+// foreignPolicyPermissions are requested when reading FULLSEND_FOREIGN_* org variables.
+var foreignPolicyPermissions = map[string]string{
+	"organization_actions_variables": "read",
+}
+
+// createInstallationTokenWithPermissions creates an installation access token with explicit permissions.
+func createInstallationTokenWithPermissions(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt string, installationID int64, perms map[string]string, repos []string) (string, error) {
+	tokenReqBody := map[string]interface{}{
+		"permissions": perms,
+	}
+	if len(repos) > 0 {
+		tokenReqBody["repositories"] = repos
+	}
+
+	tokenReqBytes, err := json.Marshal(tokenReqBody)
+	if err != nil {
+		return "", fmt.Errorf("marshaling token request: %w", err)
+	}
+
+	reqURL := fmt.Sprintf("%s/app/installations/%d/access_tokens", githubBaseURL, installationID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(tokenReqBytes))
+	if err != nil {
+		return "", fmt.Errorf("creating token request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+jwt)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("creating installation token: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return "", fmt.Errorf("creating installation token returned status %d", resp.StatusCode)
+	}
+
+	var tokenResp installationTokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+		return "", fmt.Errorf("decoding token response: %w", err)
+	}
+	if tokenResp.Token == "" {
+		return "", fmt.Errorf("empty installation token returned")
+	}
+	return tokenResp.Token, nil
+}
+
+// ReadForeignAllowlist reads FULLSEND_FOREIGN_<role>_REPOS from the target org.
+func ReadForeignAllowlist(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt string, installationID int64, targetOrg, role string) ([]string, error) {
+	policyToken, err := createInstallationTokenWithPermissions(ctx, httpClient, githubBaseURL, jwt, installationID,
+		foreignPolicyPermissions, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating policy check token: %w", err)
+	}
+
+	value, exists, err := GetOrgVariable(ctx, httpClient, githubBaseURL, policyToken, targetOrg, ForeignVariableName(role))
+	if err != nil {
+		return nil, err
+	}
+	if !exists || strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	return ParseForeignAllowlist(value), nil
+}
+
 // CreateInstallationToken exchanges a JWT for an installation access token,
 // scoped to the given repos and role-specific permissions.
 func CreateInstallationToken(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt string, installationID int64, role string, repos []string) (string, string, *GrantedScope, error) {
@@ -210,8 +426,10 @@ func CreateInstallationToken(ctx context.Context, httpClient HTTPDoer, githubBas
 		return "", "", nil, fmt.Errorf("no permissions defined for role %q", role)
 	}
 	tokenReqBody := map[string]interface{}{
-		"repositories": repos,
-		"permissions":  perms,
+		"permissions": perms,
+	}
+	if len(repos) > 0 {
+		tokenReqBody["repositories"] = repos
 	}
 
 	tokenReqBytes, err := json.Marshal(tokenReqBody)

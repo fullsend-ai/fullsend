@@ -20,6 +20,10 @@ Date: 2026-04-07
 
 Accepted
 
+*Amended by [ADR 0055](0055-unified-env-var-delivery.md), which introduces a
+unified `env:` key with `runner`/`sandbox` sub-maps and deprecates `runner_env`
+and the manual `.env` file convention.*
+
 ## Context
 
 Each agent invocation requires configuration that ties together several moving

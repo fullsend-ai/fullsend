@@ -115,7 +115,17 @@ if [ -f "${TARGET_REPO}/.pre-commit-config.yaml" ] \
    && [ -f "${INSTALL_SCRIPT}" ]; then
   echo "Resolving pre-commit tool dependencies..."
   MANIFEST="$(mktemp)"
-  if python3 "${RESOLVE_SCRIPT}" "${TARGET_REPO}" > "${MANIFEST}"; then
+  LOCAL_REG="$(mktemp)"
+  RESOLVE_ARGS=("${TARGET_REPO}")
+  _BASE_BR="${TARGET_BRANCH:-}"
+  if [ -z "${_BASE_BR}" ]; then
+    _BASE_BR="$(git -C "${TARGET_REPO}" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')" || _BASE_BR=""
+  fi
+  if [ -n "${_BASE_BR}" ] \
+     && git -C "${TARGET_REPO}" show "origin/${_BASE_BR}:.pre-commit-tools.yaml" > "${LOCAL_REG}" 2>/dev/null; then
+    RESOLVE_ARGS+=("--local-registry" "${LOCAL_REG}")
+  fi
+  if python3 "${RESOLVE_SCRIPT}" "${RESOLVE_ARGS[@]}" > "${MANIFEST}"; then
     if [ -s "${MANIFEST}" ] && jq -e '.tools | length > 0' "${MANIFEST}" >/dev/null 2>&1; then
       bash "${INSTALL_SCRIPT}" "${MANIFEST}"
     else
@@ -124,7 +134,7 @@ if [ -f "${TARGET_REPO}/.pre-commit-config.yaml" ] \
   else
     echo "::warning::Pre-commit tool resolution failed — continuing without auto-install"
   fi
-  rm -f "${MANIFEST}"
+  rm -f "${MANIFEST}" "${LOCAL_REG}"
 fi
 export PATH="${HOME}/.local/bin:${PATH}"
 echo "${HOME}/.local/bin" >> "${GITHUB_PATH:-/dev/null}"

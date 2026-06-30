@@ -47,8 +47,24 @@ func TestRenderPerRepoShimVendored(t *testing.T) {
 	})
 	require.NoError(t, err)
 	out := string(rendered)
-	assert.Contains(t, out, "uses: ./.fullsend/.github/workflows/reusable-dispatch.yml")
+	assert.Contains(t, out, "uses: ./.github/workflows/reusable-dispatch.yml")
 	assert.NotContains(t, out, "distribution_mode")
+}
+
+func TestRenderThinCallerVendoredPerRepo(t *testing.T) {
+	raw, err := FullsendRepoFile(".github/workflows/triage.yml")
+	require.NoError(t, err)
+
+	rendered, err := RenderTemplate(".github/workflows/triage.yml", raw, RenderOptions{
+		Vendored: true,
+		PerRepo:  true,
+	})
+	require.NoError(t, err)
+	out := string(rendered)
+	// GitHub Actions requires local reusable workflow references to be under .github/workflows/.
+	assert.Contains(t, out, "uses: ./.github/workflows/reusable-triage.yml")
+	assert.NotContains(t, out, ".fullsend/")
+	assertFreeOfRenderPlaceholders(t, out)
 }
 
 func TestRenderPrioritizeThinCallerVendored(t *testing.T) {
@@ -96,8 +112,8 @@ func TestRenderDispatchPerRepoStagePaths(t *testing.T) {
 	require.NotEmpty(t, raw)
 
 	rendered := RenderDispatchPerRepoStagePaths(raw)
-	assert.Contains(t, string(rendered), "uses: ./.fullsend/.github/workflows/reusable-triage.yml")
-	assert.Contains(t, string(rendered), "uses: ./.fullsend/.github/workflows/reusable-prioritize.yml")
+	assert.Contains(t, string(rendered), "uses: ./.github/workflows/reusable-triage.yml")
+	assert.Contains(t, string(rendered), "uses: ./.github/workflows/reusable-prioritize.yml")
 	assert.NotContains(t, string(rendered), "uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@v0")
 }
 
@@ -109,6 +125,7 @@ func assertFreeOfRenderPlaceholders(t *testing.T, out string) {
 		"__UPSTREAM_REF__",
 		"__DISTRIBUTION_MODE__",
 		"__FULLSEND_AI_REF__",
+		"__GH_RUNNER__",
 	} {
 		assert.NotContains(t, out, placeholder)
 	}
@@ -156,7 +173,7 @@ func TestRenderThinCallerPinnedSHA(t *testing.T) {
 	out := string(rendered)
 	assert.Contains(t, out, "uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@abc123def456")
 	assert.Contains(t, out, "# v0.19.0")
-	assert.Contains(t, out, "fullsend_ai_ref: abc123def456 # v0.19.0")
+	assert.NotContains(t, out, "fullsend_ai_ref:")
 	assertFreeOfRenderPlaceholders(t, out)
 }
 
@@ -173,8 +190,47 @@ func TestRenderPerRepoShimPinnedSHA(t *testing.T) {
 	out := string(rendered)
 	assert.Contains(t, out, "uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@abc123def456")
 	assert.Contains(t, out, "# v0.19.0")
-	assert.Contains(t, out, "fullsend_ai_ref: abc123def456 # v0.19.0")
+	assert.NotContains(t, out, "fullsend_ai_ref:")
 	assertFreeOfRenderPlaceholders(t, out)
+}
+
+func TestRenderDefaultRunner(t *testing.T) {
+	raw, err := FullsendRepoFile(".github/workflows/triage.yml")
+	require.NoError(t, err)
+
+	rendered, err := RenderTemplate(".github/workflows/triage.yml", raw, RenderOptions{})
+	require.NoError(t, err)
+	out := string(rendered)
+	assert.Contains(t, out, "runner_image: ubuntu-24.04")
+	assert.NotContains(t, out, "__GH_RUNNER__")
+}
+
+func TestRenderCustomRunner(t *testing.T) {
+	raw, err := FullsendRepoFile(".github/workflows/triage.yml")
+	require.NoError(t, err)
+
+	rendered, err := RenderTemplate(".github/workflows/triage.yml", raw, RenderOptions{
+		RunnerImage: "ubuntu-22.04",
+	})
+	require.NoError(t, err)
+	out := string(rendered)
+	assert.Contains(t, out, "runner_image: ubuntu-22.04")
+	assert.NotContains(t, out, "ubuntu-24.04")
+	assert.NotContains(t, out, "__GH_RUNNER__")
+}
+
+func TestRenderPerRepoShimRunner(t *testing.T) {
+	raw, err := PerRepoShimTemplate()
+	require.NoError(t, err)
+
+	rendered, err := RenderTemplate("templates/shim-per-repo.yaml", raw, RenderOptions{
+		PerRepo: true,
+	})
+	require.NoError(t, err)
+	out := string(rendered)
+	assert.Contains(t, out, "runner_image: ubuntu-24.04")
+	assert.Contains(t, out, "runs-on: ubuntu-24.04")
+	assert.NotContains(t, out, "__GH_RUNNER__")
 }
 
 func TestRenderFallbackToDefaultRef(t *testing.T) {
@@ -185,5 +241,5 @@ func TestRenderFallbackToDefaultRef(t *testing.T) {
 	require.NoError(t, err)
 	out := string(rendered)
 	assert.Contains(t, out, "@v0")
-	assert.Contains(t, out, "fullsend_ai_ref: v0")
+	assert.NotContains(t, out, "fullsend_ai_ref:")
 }

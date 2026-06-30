@@ -11,7 +11,7 @@ Fullsend is a platform for fully autonomous agentic development for GitHub-hoste
 - Keep core problem documents organization-agnostic. Organization-specific details belong in `docs/problems/applied/<org-name>/`.
 - The target audience for problem documents is any contributor community considering autonomous agents — keep language accessible and avoid presuming solutions.
 - Always stage your changes before running `make lint` and fix any failures. Pre-commit only checks staged files — without staging first, it stashes your work and finds nothing to lint.
-- You **must** read and follow [COMMITS.md](COMMITS.md) when writing or reviewing commit messages. Getting the prefix right is not optional — GoReleaser uses it to build release notes.
+- You **must** read and follow [COMMITS.md](COMMITS.md) when writing or reviewing commit messages and PR titles. Getting the prefix right is not optional — GoReleaser uses PR titles to build release notes. Breaking changes **must** carry the `!` suffix in both commit messages and PR titles; a missing `!` is an important-severity review finding.
 - This repository requires a [Developer Certificate of Origin (DCO)](https://developercertificate.org/). Human-proposed commits **must** be signed off: use `git commit -s` (or add `Signed-off-by: Your Name <email>` as a trailer). Human-driven agent sessions (e.g., using Claude Code locally) should also sign off — the human directing the session is the one certifying the DCO. **Autonomous agent commits are exempt** and must never supply the DCO with `-s` or with `Signed-off-by`. These agents commit using the GitHub App's bot identity, which the [Probot DCO app](https://github.com/apps/dco) auto-skips.
 - Never commit secrets (tokens, API keys, PEM keys, gcloud credentials) or sensitive data (GCP project names, service account identifiers, Model Armor template names, internal hostnames). Use environment variables with no defaults for sensitive values.
 
@@ -22,6 +22,8 @@ Fullsend is a platform for fully autonomous agentic development for GitHub-hoste
 - `internal/dispatch/gcf/mintsrc/main.go.embed` — the embedded copy deployed as a GCP Cloud Function
 
 When changing `internal/mint/main.go`, always copy it to `internal/dispatch/gcf/mintsrc/main.go.embed`. If `go.mod` or `go.sum` changed, sync those to `go.mod.embed` and `go.sum.embed` too.
+
+**Standalone mint:** `cmd/mint/` is a standalone HTTP server variant of the token mint that serves the same purpose as the GCF mint (`internal/mint/`) but runs without GCP infrastructure. Both use the shared `internal/mintcore/` library for token minting logic; they differ only in deployment model (filesystem PEM vs Secret Manager, JWKS vs STS verification). It supports custom role permissions via `CUSTOM_ROLE_PERMISSIONS` and a fallback proxy to an upstream mint. It has its own `go.mod` and tests run from `cmd/mint/`.
 
 **Mint client:** `internal/mintclient/` is the Go client for calling the mint service at runtime. It exchanges a GitHub Actions OIDC JWT for a role-scoped installation token. Unlike `internal/mint/` and `internal/mintcore/`, it has no embedded copies or sync requirements.
 
@@ -34,18 +36,16 @@ When making changes to Go code under `cmd/` or `internal/`:
 1. **Unit tests:** Run `make go-test` (or `go test ./...`) and fix any failures before committing.
 2. **Coverage:** CI enforces thresholds via [Codecov](https://about.codecov.io/) (see [`.codecov.yml`](.codecov.yml)). **Patch coverage** on changed lines must meet **80%** (with a 5% tolerance). **Project coverage** must not drop more than **1%** below the base branch. `make go-test` runs tests with `-cover` locally but does not enforce these thresholds — a PR can still fail the Codecov status check if new or changed code lacks tests. Add or extend `_test.go` files for logic you introduce or modify.
 3. **Vet:** Run `make go-vet` to catch common issues.
-4. **E2E tests:** Run `make e2e-test` if your changes touch `internal/appsetup/`, `internal/forge/`, `internal/cli/`, or `internal/layers/`. These tests exercise the full admin install/uninstall flow against a live GitHub org using Playwright browser automation.
+4. **E2E tests:** Run `make e2e-test` if your changes touch `internal/appsetup/`, `internal/forge/`, `internal/cli/`, or `internal/layers/`. These tests exercise the full admin install/uninstall flow against live GitHub pool orgs using mint/OIDC authentication.
 
 ### Running e2e tests
 
-The e2e tests require GitHub credentials. There are three ways to provide them:
+The e2e tests mint short-lived GitHub App installation tokens via the central token mint. Pool-org admin operations use mint/OIDC in CI and do not require a dedicated mint URL secret.
 
-- **`E2E_GITHUB_PASSWORD` env var:** Set directly with the password.
-- **`E2E_GITHUB_PASSWORD_FILE` env var:** Set to a file path containing the password (used in devaipod environments where secrets are mounted as files).
-- **`E2E_GITHUB_SESSION_FILE` env var:** Set to a pre-exported Playwright session file (skips login).
-- **`E2E_GITHUB_TOTP_SECRET` env var:** Optional. The TOTP secret (base32) for the test account's 2FA. Required only when the test account has 2FA enabled — used during session export and sudo confirmation.
+- **CI (mint):** Uses the hosted public mint (same default as `fullsend admin --mint-url`) with the workflow's OIDC identity. The e2e workflow exchanges the OIDC JWT for an `e2e`-role installation token on the pool org. Override with `FULLSEND_MINT_URL` if needed.
+- **Local:** Run `gh auth login` (or set `GH_TOKEN` / `GITHUB_TOKEN` with pool-org admin access). Mint uses `FULLSEND_MINT_URL` or the hosted default.
 
-If only `E2E_GITHUB_USERNAME` and a password source are available, `make e2e-test` will automatically generate a session file before running tests. See `make help` for all available targets.
+See `docs/guides/dev/e2e-testing.md` and `make help` for pool org setup and troubleshooting.
 
 ## Shell scripting
 
@@ -100,6 +100,10 @@ These rules apply whenever you touch `docs/ADRs/` or review a PR that does. Full
 **New ADRs in pull requests:** Approval happens at **merge**, not when the branch is created. If the decision is made, set status to **Accepted** in the ADR you are proposing — not a lesser status merely because the PR is open. Valid statuses are **Accepted**, **Deprecated**, and **Superseded**. When status is Accepted, update `docs/architecture.md` and related problem docs in the same PR per the writing-adrs skill.
 
 **When reviewing PRs:** Flag substantial rewrites to Context, Decision, or Consequences on Accepted ADRs already on `main` as a policy violation. Allow minor annotations (cross-references, short notes, typo fixes), status updates, and supersession links. For brand-new ADR files on the PR branch, evaluate whether the recorded decision matches the diff — do not treat **Accepted** on a new file as a mistake if the ADR is ready for human review at merge.
+
+## Documentation site
+
+When adding a new doc under `docs/`, check `website/.vitepress/config.ts` sidebar config. Sections using `getMarkdownFiles()` are auto-discovered. All other sections need a manual `{ text, link }` entry.
 
 ## Key design decisions made
 

@@ -539,7 +539,7 @@ func TestReposEnableCmd_AllIgnoresPositionalArgs(t *testing.T) {
 	printer := ui.New(&discardWriter{})
 
 	// Pass "web-app" as a positional arg, but --all should ignore it and enable both repos
-	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, true, true)
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, true, true, false)
 	require.NoError(t, err)
 
 	// Verify both repos were enabled (--all behavior), not just web-app
@@ -560,7 +560,7 @@ func TestReposDisableCmd_AllIgnoresPositionalArgs(t *testing.T) {
 	printer := ui.New(&discardWriter{})
 
 	// Pass "web-app" as a positional arg, but --all should ignore it and disable both repos
-	err := runDisableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, true, true)
+	err := runDisableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, true, true, false)
 	require.NoError(t, err)
 
 	// Verify both repos were disabled (--all behavior), not just web-app
@@ -619,7 +619,7 @@ func TestRunEnableRepos_EnableSingleRepo(t *testing.T) {
 	client := setupTestClient("testorg", cfg, []string{"web-app", "api"})
 	printer := ui.New(&discardWriter{})
 
-	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true)
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true, false)
 	require.NoError(t, err)
 
 	// Verify config was updated.
@@ -639,7 +639,7 @@ func TestRunEnableRepos_EnableMultipleRepos(t *testing.T) {
 	client := setupTestClient("testorg", cfg, []string{"web-app", "api", "docs"})
 	printer := ui.New(&discardWriter{})
 
-	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app", "docs"}, false, true)
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app", "docs"}, false, true, false)
 	require.NoError(t, err)
 
 	// Verify config was updated.
@@ -659,7 +659,7 @@ func TestRunEnableRepos_EnableAllRepos(t *testing.T) {
 	client := setupTestClient("testorg", cfg, []string{"web-app", "api", "new-repo"})
 	printer := ui.New(&discardWriter{})
 
-	err := runEnableRepos(context.Background(), client, printer, "testorg", nil, true, true)
+	err := runEnableRepos(context.Background(), client, printer, "testorg", nil, true, true, false)
 	require.NoError(t, err)
 
 	// Verify all repos were enabled (excluding .fullsend).
@@ -681,7 +681,7 @@ func TestRunEnableRepos_NoOpWhenAlreadyEnabled(t *testing.T) {
 	client := setupTestClient("testorg", cfg, []string{"web-app"})
 	printer := ui.New(&discardWriter{})
 
-	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true)
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true, false)
 	require.NoError(t, err)
 
 	// Verify no file was created (no changes).
@@ -692,7 +692,7 @@ func TestRunEnableRepos_ErrorWhenFullsendRepoMissing(t *testing.T) {
 	client := forge.NewFakeClient()
 	printer := ui.New(&discardWriter{})
 
-	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true)
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), ".fullsend repository not found")
 }
@@ -701,7 +701,7 @@ func TestRunEnableRepos_ErrorWhenConfigMissing(t *testing.T) {
 	client := setupTestClient("testorg", nil, []string{"web-app"})
 	printer := ui.New(&discardWriter{})
 
-	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true)
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading config.yaml")
 }
@@ -713,7 +713,7 @@ func TestRunEnableRepos_ErrorWhenEnablingFullsend(t *testing.T) {
 	client := setupTestClient("testorg", cfg, []string{"web-app"})
 	printer := ui.New(&discardWriter{})
 
-	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{".fullsend"}, false, true)
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{".fullsend"}, false, true, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot enable .fullsend repository")
 }
@@ -725,7 +725,7 @@ func TestRunEnableRepos_ErrorWhenRepoNotFound(t *testing.T) {
 	client := setupTestClient("testorg", cfg, []string{"web-app"})
 	printer := ui.New(&discardWriter{})
 
-	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"nonexistent"}, false, true)
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"nonexistent"}, false, true, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "repository nonexistent not found")
 }
@@ -738,7 +738,7 @@ func TestRunEnableRepos_CommitMessageFormat(t *testing.T) {
 	client := setupTestClient("testorg", cfg, []string{"web-app", "api"})
 	printer := ui.New(&discardWriter{})
 
-	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app", "api"}, false, true)
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app", "api"}, false, true, false)
 	require.NoError(t, err)
 
 	require.Len(t, client.CreatedFiles, 1)
@@ -773,7 +773,7 @@ func TestRunEnableRepos_UpdatesOrgVariableVisibility(t *testing.T) {
 	printer := ui.New(&discardWriter{})
 
 	// Action: enable repo "api".
-	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"api"}, false, true)
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"api"}, false, true, false)
 	require.NoError(t, err)
 
 	// Assert: SetOrgVariableRepos was called with both enrolled repo IDs
@@ -797,7 +797,7 @@ func TestRunEnableRepos_SkipsVariableSyncWhenNotOIDCMint(t *testing.T) {
 
 	printer := ui.New(&discardWriter{})
 
-	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true)
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true, false)
 	require.NoError(t, err)
 
 	// SetOrgVariableRepos should not have been called.
@@ -826,7 +826,7 @@ func TestRunEnableRepos_VariableSyncErrorDoesNotBlockEnable(t *testing.T) {
 
 	printer := ui.New(&discardWriter{})
 
-	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true)
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true, false)
 	require.NoError(t, err, "enable should succeed even when variable sync fails")
 }
 
@@ -843,7 +843,7 @@ func TestRunEnableRepos_SkipsVariableSyncWhenVariableNotExists(t *testing.T) {
 
 	printer := ui.New(&discardWriter{})
 
-	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true)
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true, false)
 	require.NoError(t, err)
 
 	// SetOrgVariableRepos should not have been called.
@@ -860,7 +860,7 @@ func TestRunDisableRepos_DisableSingleRepo(t *testing.T) {
 	client := setupTestClient("testorg", cfg, []string{"web-app", "api"})
 	printer := ui.New(&discardWriter{})
 
-	err := runDisableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true)
+	err := runDisableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true, false)
 	require.NoError(t, err)
 
 	// Verify config was updated.
@@ -880,7 +880,7 @@ func TestRunDisableRepos_DisableMultipleRepos(t *testing.T) {
 	client := setupTestClient("testorg", cfg, []string{"web-app", "api", "docs"})
 	printer := ui.New(&discardWriter{})
 
-	err := runDisableRepos(context.Background(), client, printer, "testorg", []string{"web-app", "docs"}, false, true)
+	err := runDisableRepos(context.Background(), client, printer, "testorg", []string{"web-app", "docs"}, false, true, false)
 	require.NoError(t, err)
 
 	// Verify config was updated.
@@ -900,7 +900,7 @@ func TestRunDisableRepos_DisableAllRepos(t *testing.T) {
 	client := setupTestClient("testorg", cfg, []string{"web-app", "api"})
 	printer := ui.New(&discardWriter{})
 
-	err := runDisableRepos(context.Background(), client, printer, "testorg", nil, true, true)
+	err := runDisableRepos(context.Background(), client, printer, "testorg", nil, true, true, false)
 	require.NoError(t, err)
 
 	// Verify all repos were disabled.
@@ -918,7 +918,7 @@ func TestRunDisableRepos_NoOpWhenAlreadyDisabled(t *testing.T) {
 	client := setupTestClient("testorg", cfg, []string{"web-app"})
 	printer := ui.New(&discardWriter{})
 
-	err := runDisableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true)
+	err := runDisableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true, false)
 	require.NoError(t, err)
 
 	// Verify no file was created (no changes).
@@ -929,7 +929,7 @@ func TestRunDisableRepos_ErrorWhenFullsendRepoMissing(t *testing.T) {
 	client := forge.NewFakeClient()
 	printer := ui.New(&discardWriter{})
 
-	err := runDisableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true)
+	err := runDisableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), ".fullsend repository not found")
 }
@@ -938,7 +938,7 @@ func TestRunDisableRepos_ErrorWhenConfigMissing(t *testing.T) {
 	client := setupTestClient("testorg", nil, []string{"web-app"})
 	printer := ui.New(&discardWriter{})
 
-	err := runDisableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true)
+	err := runDisableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading config.yaml")
 }
@@ -950,7 +950,7 @@ func TestRunDisableRepos_ErrorWhenDisablingFullsend(t *testing.T) {
 	client := setupTestClient("testorg", cfg, []string{"web-app"})
 	printer := ui.New(&discardWriter{})
 
-	err := runDisableRepos(context.Background(), client, printer, "testorg", []string{".fullsend"}, false, true)
+	err := runDisableRepos(context.Background(), client, printer, "testorg", []string{".fullsend"}, false, true, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot disable .fullsend repository")
 }
@@ -963,7 +963,7 @@ func TestRunDisableRepos_AllowsRepoNotInConfig(t *testing.T) {
 	client := setupTestClient("testorg", cfg, []string{"web-app"})
 	printer := ui.New(&discardWriter{})
 
-	err := runDisableRepos(context.Background(), client, printer, "testorg", []string{"nonexistent"}, false, true)
+	err := runDisableRepos(context.Background(), client, printer, "testorg", []string{"nonexistent"}, false, true, false)
 	require.NoError(t, err)
 	// Should succeed but make no changes (repo not in config, nothing to disable)
 	assert.Len(t, client.CreatedFiles, 0)
@@ -977,11 +977,66 @@ func TestRunDisableRepos_CommitMessageFormat(t *testing.T) {
 	client := setupTestClient("testorg", cfg, []string{"web-app", "api"})
 	printer := ui.New(&discardWriter{})
 
-	err := runDisableRepos(context.Background(), client, printer, "testorg", []string{"web-app", "api"}, false, true)
+	err := runDisableRepos(context.Background(), client, printer, "testorg", []string{"web-app", "api"}, false, true, false)
 	require.NoError(t, err)
 
 	require.Len(t, client.CreatedFiles, 1)
 	assert.Contains(t, client.CreatedFiles[0].Message, "chore: disable 2 repositories")
+}
+
+func TestRunEnableRepos_PRDelivery(t *testing.T) {
+	cfg := setupTestConfig(map[string]bool{
+		"web-app": false,
+		"api":     false,
+	})
+	client := setupTestClient("testorg", cfg, []string{"web-app", "api"})
+	printer := ui.New(&discardWriter{})
+
+	// pr=true should create a branch and PR instead of pushing directly.
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true, true)
+	require.NoError(t, err)
+
+	// PR mode: should create a branch and proposal, not use CreateOrUpdateFile.
+	assert.NotEmpty(t, client.CreatedBranches, "expected a branch to be created for PR delivery")
+	assert.NotEmpty(t, client.CreatedProposals, "expected a PR to be created")
+	// CreatedFiles records CreateOrUpdateFile calls (direct commits).
+	// In PR mode these should be empty.
+	assert.Empty(t, client.CreatedFiles, "expected no direct file commits in PR mode")
+}
+
+func TestRunDisableRepos_PRDelivery(t *testing.T) {
+	cfg := setupTestConfig(map[string]bool{
+		"web-app": true,
+		"api":     true,
+	})
+	client := setupTestClient("testorg", cfg, []string{"web-app", "api"})
+	printer := ui.New(&discardWriter{})
+
+	// pr=true should create a branch and PR instead of pushing directly.
+	err := runDisableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true, true)
+	require.NoError(t, err)
+
+	// PR mode: should create a branch and proposal, not use CreateOrUpdateFile.
+	assert.NotEmpty(t, client.CreatedBranches, "expected a branch to be created for PR delivery")
+	assert.NotEmpty(t, client.CreatedProposals, "expected a PR to be created")
+	assert.Empty(t, client.CreatedFiles, "expected no direct file commits in PR mode")
+}
+
+func TestReposEnableCmd_HasDirectFlag(t *testing.T) {
+	cmd := newEnableReposCmd()
+	directFlag := cmd.Flags().Lookup("direct")
+	require.NotNil(t, directFlag, "expected --direct flag")
+	assert.Equal(t, "false", directFlag.DefValue)
+	// --pr flag should not exist; PR delivery is the default.
+	assert.Nil(t, cmd.Flags().Lookup("pr"), "unexpected --pr flag; PR delivery is the default")
+}
+
+func TestReposDisableCmd_HasDirectFlag(t *testing.T) {
+	cmd := newDisableReposCmd()
+	directFlag := cmd.Flags().Lookup("direct")
+	require.NotNil(t, directFlag, "expected --direct flag")
+	// --pr flag should not exist; PR delivery is the default.
+	assert.Nil(t, cmd.Flags().Lookup("pr"), "unexpected --pr flag; PR delivery is the default")
 }
 
 func TestPromptEnrollment_ChooseAll(t *testing.T) {
@@ -1206,6 +1261,16 @@ func TestCheckInstallScopes_FineGrainedToken(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestCheckInstallScopes_InstallationToken(t *testing.T) {
+	client := &forge.FakeClient{
+		InstallationToken: true,
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := checkInstallScopes(context.Background(), client, printer)
+	require.NoError(t, err)
+}
+
 func TestCheckInstallScopes_GetTokenScopesError(t *testing.T) {
 	client := &forge.FakeClient{
 		Errors: map[string]error{"GetTokenScopes": errors.New("network error")},
@@ -1261,6 +1326,16 @@ func TestCheckPerRepoScopes_Missing(t *testing.T) {
 func TestCheckPerRepoScopes_FineGrainedToken(t *testing.T) {
 	client := &forge.FakeClient{
 		TokenScopes: nil,
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := checkPerRepoScopes(context.Background(), client, printer)
+	require.NoError(t, err)
+}
+
+func TestCheckPerRepoScopes_InstallationToken(t *testing.T) {
+	client := &forge.FakeClient{
+		InstallationToken: true,
 	}
 	printer := ui.New(&discardWriter{})
 
@@ -1806,7 +1881,7 @@ func TestRunAnalyze_WithFakeClient(t *testing.T) {
 
 func TestRunInstall_RequiresAgentCredsWhenMintEnabled(t *testing.T) {
 	client := forge.NewFakeClient()
-	client.AuthenticatedUser = "testuser"
+	client.AuthenticatedUser = "testorg"
 	discovered := []forge.Repository{
 		{Name: forge.ConfigRepoName, FullName: "testorg/" + forge.ConfigRepoName},
 	}
@@ -1829,7 +1904,7 @@ func TestRunInstall_RequiresAgentCredsWhenMintEnabled(t *testing.T) {
 func TestRunInstall_WithSkipMintCheck(t *testing.T) {
 	cfg := setupTestConfig(map[string]bool{"myrepo": false})
 	client := setupTestClient("testorg", cfg, []string{"myrepo"})
-	client.AuthenticatedUser = "testuser"
+	client.AuthenticatedUser = "testorg"
 
 	var agentCreds []layers.AgentCredentials
 	for _, role := range config.DefaultAgentRoles() {
@@ -1854,7 +1929,7 @@ func TestRunInstall_WithSkipMintCheck(t *testing.T) {
 func TestRunInstall_DiscoversRepos(t *testing.T) {
 	cfg := setupTestConfig(map[string]bool{"myrepo": false})
 	client := setupTestClient("testorg", cfg, []string{"myrepo"})
-	client.AuthenticatedUser = "testuser"
+	client.AuthenticatedUser = "testorg"
 
 	var agentCreds []layers.AgentCredentials
 	for _, role := range config.DefaultAgentRoles() {
@@ -1880,7 +1955,7 @@ func TestRunInstall_DiscoversRepos(t *testing.T) {
 
 func TestRunInstall_InvalidEnabledRepo(t *testing.T) {
 	client := forge.NewFakeClient()
-	client.AuthenticatedUser = "testuser"
+	client.AuthenticatedUser = "testorg"
 	discovered := []forge.Repository{
 		{Name: "myrepo", FullName: "testorg/myrepo"},
 	}
@@ -1902,7 +1977,7 @@ func TestRunInstall_InvalidEnabledRepo(t *testing.T) {
 func TestRunInstall_WithVendorAndSkipMint(t *testing.T) {
 	cfg := setupTestConfig(map[string]bool{"myrepo": false})
 	client := setupTestClient("testorg", cfg, []string{"myrepo"})
-	client.AuthenticatedUser = "testuser"
+	client.AuthenticatedUser = "testorg"
 
 	var agentCreds []layers.AgentCredentials
 	for _, role := range config.DefaultAgentRoles() {
@@ -2317,6 +2392,7 @@ func TestInstallCmd_SkipMintCheckStillValidatesWIFProvider(t *testing.T) {
 
 func TestApplyPerRepoScaffold(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	printer := ui.New(&bytes.Buffer{})
 
@@ -2363,6 +2439,7 @@ func TestApplyPerRepoScaffold(t *testing.T) {
 
 func TestApplyPerRepoScaffold_GetRepoError(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Errors["GetRepo"] = errors.New("not found")
 	printer := ui.New(&bytes.Buffer{})
 
@@ -2374,6 +2451,7 @@ func TestApplyPerRepoScaffold_GetRepoError(t *testing.T) {
 
 func TestApplyPerRepoScaffold_CommitFilesError(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = errors.New("permission denied")
 	printer := ui.New(&bytes.Buffer{})
@@ -2392,6 +2470,7 @@ func TestApplyPerRepoScaffold_CommitFilesError(t *testing.T) {
 
 func TestApplyPerRepoScaffold_Idempotent(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	noChange := false
 	client.CommitFilesChanged = &noChange
@@ -2415,6 +2494,7 @@ func TestApplyPerRepoScaffold_Idempotent(t *testing.T) {
 
 func TestApplyPerRepoScaffold_DefaultPR_NoChanges(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors = map[string]error{
 		"CreateChangeProposal": fmt.Errorf("PR: %w", forge.ErrNoChanges),
@@ -2434,6 +2514,7 @@ func TestApplyPerRepoScaffold_DefaultPR_NoChanges(t *testing.T) {
 
 func TestApplyPerRepoScaffold_NonMainBranch(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "develop"}}
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
@@ -2451,6 +2532,7 @@ func TestApplyPerRepoScaffold_NonMainBranch(t *testing.T) {
 
 func TestApplyPerRepoScaffold_CreateVariableError(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors = map[string]error{
 		"CreateOrUpdateRepoVariable": errors.New("rate limited"),
@@ -2465,6 +2547,7 @@ func TestApplyPerRepoScaffold_CreateVariableError(t *testing.T) {
 
 func TestApplyPerRepoScaffold_CreateSecretError(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors = map[string]error{
 		"CreateRepoSecret": errors.New("forbidden"),
@@ -2479,6 +2562,7 @@ func TestApplyPerRepoScaffold_CreateSecretError(t *testing.T) {
 
 func TestApplyPerRepoScaffold_ProtectedBranchFallback(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
 	var buf bytes.Buffer
@@ -2512,6 +2596,7 @@ func TestApplyPerRepoScaffold_ProtectedBranchFallback(t *testing.T) {
 
 func TestApplyPerRepoScaffold_ProtectedBranch_ExistingBranch(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
 	client.Errors["CreateBranch"] = fmt.Errorf("branch: %w", forge.ErrAlreadyExists)
@@ -2532,6 +2617,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_ExistingBranch(t *testing.T) {
 
 func TestApplyPerRepoScaffold_ProtectedBranch_StillSetsVarsAndSecrets(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
 	printer := ui.New(&bytes.Buffer{})
@@ -2552,6 +2638,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_StillSetsVarsAndSecrets(t *testing
 
 func TestApplyPerRepoScaffold_ProtectedBranch_CreateBranchFails(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
 	client.Errors["CreateBranch"] = fmt.Errorf("forbidden")
@@ -2569,6 +2656,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_CreateBranchFails(t *testing.T) {
 
 func TestApplyPerRepoScaffold_ProtectedBranch_CommitToBranchFails(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
 	client.Errors["CommitFilesToBranch"] = fmt.Errorf("server error")
@@ -2586,6 +2674,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_CommitToBranchFails(t *testing.T) 
 
 func TestApplyPerRepoScaffold_ProtectedBranch_ScaffoldBranchAlsoProtected(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
 	client.Errors["CommitFilesToBranch"] = fmt.Errorf("%w: scaffold branch also protected", forge.ErrBranchProtected)
@@ -2598,12 +2687,13 @@ func TestApplyPerRepoScaffold_ProtectedBranch_ScaffoldBranchAlsoProtected(t *tes
 	err := applyPerRepoScaffold(context.Background(), client, printer,
 		"acme", "widget", files, nil, nil, true)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "scaffold branch")
+	assert.Contains(t, err.Error(), "is protected")
 	assert.Contains(t, err.Error(), "configure branch protection")
 }
 
 func TestApplyPerRepoScaffold_ProtectedBranch_CreatePRFails(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
 	client.Errors["CreateChangeProposal"] = fmt.Errorf("forbidden")
@@ -2621,6 +2711,7 @@ func TestApplyPerRepoScaffold_ProtectedBranch_CreatePRFails(t *testing.T) {
 
 func TestApplyPerRepoScaffold_ProtectedBranch_DuplicatePR(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
 	client.Errors["CreateChangeProposal"] = fmt.Errorf("pr: %w", forge.ErrAlreadyExists)
@@ -2738,6 +2829,39 @@ func TestLoadKnownSlugs_RoleWithoutSlug_WarnsAndSkips(t *testing.T) {
 	assert.Contains(t, buf.String(), "both must be set")
 }
 
+func TestCheckTokenScopes_InstallationTokenSkipped(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.InstallationToken = true
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	err := checkTokenScopes(context.Background(), client, printer, []string{"repo", "delete_repo", "workflow"})
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "installation token")
+}
+
+func TestCheckTokenScopes_MissingScopes(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.TokenScopes = []string{"repo"}
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	err := checkTokenScopes(context.Background(), client, printer, []string{"repo", "delete_repo"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "delete_repo")
+}
+
+func TestCheckTokenScopes_InstallationTokenProbeFails(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Errors["IsInstallationToken"] = fmt.Errorf("network down")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	err := checkTokenScopes(context.Background(), client, printer, []string{"repo"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "detecting installation token")
+}
+
 func TestLoadKnownSlugs_HardError_ReturnsNil(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Errors["ListDirectoryContents"] = fmt.Errorf("network timeout")
@@ -2752,6 +2876,7 @@ func TestLoadKnownSlugs_HardError_ReturnsNil(t *testing.T) {
 
 func TestApplyPerRepoScaffold_ProtectedBranch_BranchUpToDate(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
 	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
 	client.Errors["CommitFiles"] = fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected)
 	client.Errors["CreateChangeProposal"] = fmt.Errorf("PR: %w", forge.ErrAlreadyExists)

@@ -37,7 +37,7 @@ jobs:
     if: >-
       github.event_name == 'pull_request_target' &&
       (github.event.action != 'labeled' || github.event.label.name == 'ok-to-test')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -58,6 +58,7 @@ jobs:
           pr_updated_at: ${{ github.event.pull_request.updated_at }}
           event_action: ${{ github.event.action }}
           pr_author_association: ${{ github.event.pull_request.author_association }}
+          pr_author_login: ${{ github.event.pull_request.user.login }}
 
   functional-tests:
     # For pull_request_target, runs only when gate sets authorized=true.
@@ -67,7 +68,7 @@ jobs:
     if: >-
       !cancelled() &&
       (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
       contents: read
@@ -75,18 +76,35 @@ jobs:
     steps:
       - name: Check for functional-test-relevant changes
         id: changes
-        if: github.event_name == 'pull_request_target'
+        if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group'
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
         # SYNC-WITH: push.paths filter above
         run: |
-          FILES=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename') || {
-            echo "::warning::Failed to fetch PR files — running functional tests as a precaution"
-            echo "relevant=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          }
+          if [ "$EVENT_NAME" = "merge_group" ]; then
+            FILES=$(gh api "repos/${REPO}/compare/${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}" --jq '.files[].filename') || {
+              echo "::warning::Failed to fetch merge group files — running functional tests as a precaution"
+              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+            FILE_COUNT=$(echo "$FILES" | wc -l)
+            if [ "$FILE_COUNT" -ge 300 ]; then
+              echo "::warning::Compare API returned $FILE_COUNT files (possible truncation at 300) — running functional tests as a precaution"
+              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            FILES=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename') || {
+              echo "::warning::Failed to fetch PR files — running functional tests as a precaution"
+              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+          fi
           if echo "$FILES" | grep -qE '^eval/|^internal/scaffold/|^\.github/workflows/functional-tests\.yml$|^\.github/scripts/'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
