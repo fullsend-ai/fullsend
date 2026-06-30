@@ -1834,7 +1834,7 @@ func TestCreateOrUpdateFile_NoRetryOnNon5xx(t *testing.T) {
 
 func TestCreateOrUpdateFile_MaxRetriesExceeded(t *testing.T) {
 	// 5xx errors are retried at the do() level, not retryOnRepoRace.
-	// With a persistent 504 on PUT, do() exhausts its 3 attempts and
+	// With a persistent 504 on PUT, do() exhausts its 5 attempts and
 	// returns immediately — retryOnRepoRace does not retry 5xx.
 	callNum := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1854,7 +1854,7 @@ func TestCreateOrUpdateFile_MaxRetriesExceeded(t *testing.T) {
 	client := newTestClient(t, srv)
 	err := client.CreateOrUpdateFile(context.Background(), "owner", "repo", "test.txt", "add", []byte("data"))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "retryable error after 3 attempts")
+	assert.Contains(t, err.Error(), "retryable error after 5 attempts")
 }
 
 func TestIsTransientStatus(t *testing.T) {
@@ -1901,6 +1901,71 @@ func TestDo_RetriesOnServerError(t *testing.T) {
 	require.NoError(t, err)
 	resp.Body.Close()
 	assert.Equal(t, 2, attempt, "expected exactly 2 attempts (1 retry)")
+}
+
+func TestDo_MaxRetries5(t *testing.T) {
+	// do() should attempt up to 5 times before giving up on retryable errors.
+	attempt := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt++
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprintln(w, `{"message":"Bad Gateway"}`)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.get(context.Background(), "/test")
+	require.Error(t, err)
+	assert.Equal(t, 5, attempt, "expected 5 attempts total")
+	assert.Contains(t, err.Error(), "retryable error after 5 attempts")
+}
+
+func TestRetryDelay_HasJitter(t *testing.T) {
+	// retryDelay should add jitter so that repeated calls with the same
+	// inputs produce varying delays, preventing thundering-herd effects.
+	resp := &http.Response{
+		StatusCode: http.StatusBadGateway,
+		Header:     http.Header{},
+	}
+
+	seen := make(map[time.Duration]bool)
+	for range 50 {
+		d := retryDelay(resp, 2) // attempt 2 → base 4s
+		seen[d] = true
+	}
+	assert.Greater(t, len(seen), 1, "retryDelay should produce varying results due to jitter")
+}
+
+func TestRetryDelay_SecondaryRateLimit_HasJitter(t *testing.T) {
+	origBackoff := secondaryRateLimitBackoff
+	defer func() { secondaryRateLimitBackoff = origBackoff }()
+	secondaryRateLimitBackoff = 100 * time.Millisecond
+
+	resp := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     http.Header{},
+	}
+
+	seen := make(map[time.Duration]bool)
+	for range 50 {
+		d := retryDelay(resp, 1)
+		seen[d] = true
+	}
+	assert.Greater(t, len(seen), 1, "secondary rate limit retryDelay should have jitter")
+}
+
+func TestRetryDelay_RespectsRetryAfterHeader(t *testing.T) {
+	// When Retry-After header is present, jitter should NOT apply —
+	// the server told us exactly how long to wait.
+	resp := &http.Response{
+		StatusCode: http.StatusTooManyRequests,
+		Header:     http.Header{"Retry-After": []string{"30"}},
+	}
+
+	for range 10 {
+		d := retryDelay(resp, 0)
+		assert.Equal(t, 30*time.Second, d, "Retry-After should be used exactly, no jitter")
+	}
 }
 
 func TestBlobSHA(t *testing.T) {
