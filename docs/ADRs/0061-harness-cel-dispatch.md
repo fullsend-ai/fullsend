@@ -1,5 +1,5 @@
 ---
-title: "55. Harness CEL triggers and fullsend dispatch drivers"
+title: "61. Harness CEL triggers and fullsend dispatch drivers"
 status: Accepted
 relates_to:
   - agent-architecture
@@ -11,7 +11,7 @@ topics:
   - forge
 ---
 
-# 55. Harness CEL triggers and fullsend dispatch drivers
+# 61. Harness CEL triggers and fullsend dispatch drivers
 
 Date: 2026-06-23
 
@@ -43,6 +43,11 @@ workflows. Routing nuance (slash commands, labels, actor ACLs, fork gates) lives
 in portable expressions over a forge-neutral **`NormalizedEvent`**
 ([normative v1 spec](../normative/normalized-event/v1/)).
 
+CEL evaluation requires knowing which harness files exist. [ADR 0058](0058-agent-registration.md)
+defines config-level agent registration — an `agents` list in org/per-repo config
+merged with scaffold discovery — that `fullsend run` and dispatch use to resolve
+harness paths at runtime.
+
 ## Options
 
 ### Option A: Keep routing in workflow bash (status quo)
@@ -72,13 +77,18 @@ Adopt **Option C**.
   **platform-level gate** after the input driver normalizes the event and
   **before** CEL trigger evaluation. Authorization is not delegated to per-harness
   CEL expressions.
+- **Harness enumeration:** before evaluating CEL `trigger` expressions,
+  `fullsend dispatch` loads the harness set from agent registration per
+  [ADR 0058](0058-agent-registration.md) (config `agents` entries merged with
+  scaffold discovery). Each registered harness path is a candidate for CEL
+  matching.
 - **Harness `trigger`:** optional CEL boolean with root variable `event`. No
   `trigger` → manual `fullsend run` only. Multiple harnesses may match (parallel
   fan-out).
-- **`fullsend dispatch`:** input driver → **authorize** → evaluate harness CEL →
-  project execution ref (unchanged `fullsend run` contract) → output driver
-  (`gha-matrix`, `json`, etc.). Drivers are flagged or auto-detected
-  (`GITHUB_EVENT_PATH` → `gha-event`).
+- **`fullsend dispatch`:** input driver → **authorize** → **enumerate harnesses**
+  → evaluate harness CEL → project execution ref (unchanged `fullsend run`
+  contract) → output driver (`gha-matrix`, `json`, etc.). Drivers are flagged or
+  auto-detected (`GITHUB_EVENT_PATH` → `gha-event`).
 - **Workflow integration:** installations may replace bash stage routing with
   `fullsend dispatch --output-driver gha-matrix` and a dynamic job matrix.
   Reintroduces dynamic agent discovery via CEL (superseding ADR 0041's static

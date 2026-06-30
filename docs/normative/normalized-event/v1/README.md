@@ -1,7 +1,7 @@
 # NormalizedEvent v1
 
 GitHub-oriented routing input for `fullsend dispatch` and harness CEL `trigger`
-expressions ([ADR 0055](../../../ADRs/0055-harness-cel-dispatch.md)).
+expressions ([ADR 0061](../../../ADRs/0061-harness-cel-dispatch.md)).
 
 The field names and transition vocabulary are forge-neutral so future adapters
 can reuse them; **v1 normative scope is GitHub Actions only** (see
@@ -111,7 +111,7 @@ truncated for transport.
 
 This moves instruction extraction from downstream workflow steps (e.g.
 `reusable-fix.yml`) into the input adapter — a behavioral change called out in
-[ADR 0055 Consequences](../../../ADRs/0055-harness-cel-dispatch.md).
+[ADR 0061 Consequences](../../../ADRs/0061-harness-cel-dispatch.md).
 
 ### Actor role mapping (GitHub)
 

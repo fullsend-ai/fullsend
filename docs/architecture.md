@@ -110,7 +110,7 @@ The harness draws its configuration from the adopting organization's **`.fullsen
 - Harness trigger expressions: each harness may declare an optional CEL
   `trigger` boolean evaluated against a forge-neutral `NormalizedEvent`.
   `fullsend dispatch` matches events to harnesses via input/output drivers
-  ([ADR 0055](ADRs/0055-harness-cel-dispatch.md)).
+  ([ADR 0061](ADRs/0061-harness-cel-dispatch.md)).
 
 **Open questions:**
 
@@ -170,7 +170,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
 - Routing moves from workflow bash to harness CEL `trigger` expressions
   evaluated by `fullsend dispatch` with pluggable input/output drivers
   operating on a `NormalizedEvent` struct
-  ([ADR 0055](ADRs/0055-harness-cel-dispatch.md)).
+  ([ADR 0061](ADRs/0061-harness-cel-dispatch.md)).
 
 **Open questions:**
 

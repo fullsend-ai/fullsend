@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://fullsend.ai/normative/normalized-event/v1/normalized-event.schema.json",
   "title": "NormalizedEvent",
-  "description": "GitHub-oriented routing input for fullsend dispatch and harness CEL trigger evaluation (ADR 0055). v1 targets GitHub Actions; other forges are out of scope until a future schema version.",
+  "description": "GitHub-oriented routing input for fullsend dispatch and harness CEL trigger evaluation (ADR 0061). v1 targets GitHub Actions; other forges are out of scope until a future schema version.",
   "type": "object",
   "additionalProperties": false,
   "required": ["repo", "entity", "transition", "actor", "state", "source"],
