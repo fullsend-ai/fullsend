@@ -36,6 +36,9 @@ func TestValidateForeignCaller(t *testing.T) {
 	if err := validateForeignCaller("fullsend-ai"); err != nil {
 		t.Fatalf("bare org: %v", err)
 	}
+	if err := validateForeignCaller("halfsend-01/.fullsend"); err != nil {
+		t.Fatalf("dot-prefixed config repo: %v", err)
+	}
 	if err := validateForeignCaller("bad org/repo"); err == nil {
 		t.Fatal("expected invalid caller")
 	}

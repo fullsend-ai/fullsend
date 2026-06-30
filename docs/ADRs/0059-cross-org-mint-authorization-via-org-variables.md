@@ -1,5 +1,5 @@
 ---
-title: "55. Cross-org mint authorization via org variables"
+title: "59. Cross-org mint authorization via org variables"
 status: Accepted
 relates_to:
   - agent-infrastructure
@@ -11,7 +11,7 @@ topics:
   - cross-org
 ---
 
-# 55. Cross-org mint authorization via org variables
+# 59. Cross-org mint authorization via org variables
 
 Date: 2026-06-07
 
@@ -47,7 +47,7 @@ orgs control over their own policy.
 2. **Cross-org path** applies only when `target_org` is set and differs from the caller org:
    - Resolve the requested role's App installation on `target_org` via org-level installation lookup.
    - Read `FULLSEND_FOREIGN_<role>_REPOS` on the target org using that role's App installation
-     token (`actions_variables: read`).
+     token (`organization_actions_variables: read`).
    - Deny if installation lookup fails, the variable is missing/empty, or the OIDC caller
      (`repository` or bare `repository_owner`) is not on the allowlist.
    - Mint an installation token for the requested repos on the target org, or installation-wide
@@ -71,7 +71,7 @@ orgs control over their own policy.
   per mint instance (key: `target_org/role`, TTL 60s). Cache entries include empty/missing
   allowlists (negative cache) so revoked or unset variables may take up to one TTL window to
   take effect. Cardinality is bounded by enrolled orgs × roles; no explicit eviction beyond TTL.
-- Roles used on the cross-org path need `actions_variables: read` on their App permissions.
+- Roles used on the cross-org path need `organization_actions_variables: read` on their App permissions.
 - The `e2e` role additionally needs `actions_variables: write` and
   `organization_actions_variables: write` so pool tests can set repo/org variables during
   install flows; these writes are scoped to pool orgs that explicitly authorize CI via

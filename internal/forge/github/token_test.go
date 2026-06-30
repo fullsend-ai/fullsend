@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -32,6 +33,13 @@ func TestProbeInstallationToken(t *testing.T) {
 				}
 				if got := r.URL.Query().Get("per_page"); got != "1" {
 					t.Fatalf("per_page = %q, want 1", got)
+				}
+				if tt.status == http.StatusOK {
+					json.NewEncoder(w).Encode(map[string]any{
+						"total_count":   0,
+						"repositories": []any{},
+					})
+					return
 				}
 				w.WriteHeader(tt.status)
 			}))
@@ -70,7 +78,10 @@ func TestLiveClient_IsInstallationToken(t *testing.T) {
 	t.Parallel()
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"total_count":   0,
+			"repositories": []any{},
+		})
 	}))
 	defer srv.Close()
 

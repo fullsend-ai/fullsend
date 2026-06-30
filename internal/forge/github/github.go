@@ -1476,37 +1476,65 @@ func (c *LiveClient) graphqlViewerLogin(ctx context.Context) (string, error) {
 	return result.Data.Viewer.Login, nil
 }
 
-// ProbeInstallationToken reports whether token is a GitHub App installation
-// access token by calling GET /installation/repositories. PATs and OAuth
-// tokens receive 401/403 on that endpoint.
-func ProbeInstallationToken(ctx context.Context, httpClient *http.Client, baseURL, token string) (bool, error) {
+// ListInstallationRepositories returns repository full names when token is a GitHub
+// App installation token (HTTP 200). PATs and OAuth tokens that lack installation
+// access receive 401/403 and return (nil, 0, false, nil).
+func ListInstallationRepositories(ctx context.Context, httpClient *http.Client, baseURL, token string, perPage int) (repos []string, totalCount int, ok bool, err error) {
 	if token == "" {
-		return false, nil
+		return nil, 0, false, nil
+	}
+	if perPage <= 0 {
+		perPage = 100
 	}
 
-	url := baseURL + "/installation/repositories?per_page=1"
+	url := fmt.Sprintf("%s/installation/repositories?per_page=%d", baseURL, perPage)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return false, fmt.Errorf("creating installation token probe request: %w", err)
+		return nil, 0, false, fmt.Errorf("creating installation repositories request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return false, fmt.Errorf("probing installation token: %w", err)
+		return nil, 0, false, fmt.Errorf("listing installation repositories: %w", err)
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return true, nil
+		var result struct {
+			TotalCount   int `json:"total_count"`
+			Repositories []struct {
+				FullName string `json:"full_name"`
+			} `json:"repositories"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nil, 0, false, fmt.Errorf("decoding installation repositories: %w", err)
+		}
+		repos = make([]string, len(result.Repositories))
+		for i, r := range result.Repositories {
+			repos[i] = r.FullName
+		}
+		return repos, result.TotalCount, true, nil
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return false, nil
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return nil, 0, false, nil
 	default:
-		return false, &APIError{StatusCode: resp.StatusCode, Message: "installation token probe failed"}
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return nil, 0, false, &APIError{StatusCode: resp.StatusCode, Message: "installation repositories request failed"}
 	}
+}
+
+// ProbeInstallationToken reports whether token is a GitHub App installation
+// access token by calling GET /installation/repositories. PATs and OAuth
+// tokens receive 401/403 on that endpoint.
+func ProbeInstallationToken(ctx context.Context, httpClient *http.Client, baseURL, token string) (bool, error) {
+	_, _, ok, err := ListInstallationRepositories(ctx, httpClient, baseURL, token, 1)
+	if err != nil {
+		return false, err
+	}
+	return ok, nil
 }
 
 // IsInstallationToken reports whether the client's token is a GitHub App

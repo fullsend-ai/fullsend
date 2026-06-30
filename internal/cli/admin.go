@@ -110,8 +110,9 @@ func validateOrgName(org string) error {
 var githubOwnerPattern = regexp.MustCompile(`^[a-zA-Z0-9](-?[a-zA-Z0-9])*$`)
 
 // githubRepoPattern matches valid GitHub repository names
-// (alphanumeric, hyphens, dots, and underscores).
-var githubRepoPattern = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$`)
+// (alphanumeric, hyphens, dots, and underscores). Dot-prefixed repos such as
+// .fullsend (config repo convention) are allowed.
+var githubRepoPattern = regexp.MustCompile(`^(?:\.[a-zA-Z][a-zA-Z0-9._-]*|[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?)$`)
 
 // perOrgOnlyFlags are flags that only apply to per-org mode.
 var perOrgOnlyFlags = []string{

@@ -59,8 +59,15 @@ type Handler struct {
 	legacyAppIDsOnly bool // ROLE_APP_IDS has org/role keys but no role-only keys
 
 	foreignCache    map[string]foreignCacheEntry
+	foreignInflight map[string]*foreignInflight
 	foreignCacheTTL time.Duration
 	foreignCacheMu  sync.Mutex
+}
+
+type foreignInflight struct {
+	wg        sync.WaitGroup
+	allowlist []string
+	err       error
 }
 
 // NewHandler creates a Handler with the given dependencies.
@@ -78,6 +85,7 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		oidcVerifier:    oidcVerifier,
 		githubBaseURL:   "https://api.github.com",
 		foreignCache:    make(map[string]foreignCacheEntry),
+		foreignInflight: make(map[string]*foreignInflight),
 		foreignCacheTTL: defaultForeignCacheTTL,
 	}
 
@@ -386,8 +394,41 @@ func (h *Handler) loadForeignAllowlist(ctx context.Context, targetOrg, role stri
 		h.foreignCacheMu.Unlock()
 		return allowlist, nil
 	}
+	if inflight, ok := h.foreignInflight[key]; ok {
+		h.foreignCacheMu.Unlock()
+		inflight.wg.Wait()
+		if inflight.err != nil {
+			return nil, inflight.err
+		}
+		return append([]string(nil), inflight.allowlist...), nil
+	}
+	inflight := &foreignInflight{}
+	inflight.wg.Add(1)
+	h.foreignInflight[key] = inflight
 	h.foreignCacheMu.Unlock()
 
+	allowlist, err := h.fetchForeignAllowlist(ctx, targetOrg, role)
+
+	h.foreignCacheMu.Lock()
+	delete(h.foreignInflight, key)
+	if err == nil {
+		h.foreignCache[key] = foreignCacheEntry{
+			allowlist: append([]string(nil), allowlist...),
+			fetchedAt: time.Now(),
+		}
+	}
+	inflight.allowlist = allowlist
+	inflight.err = err
+	inflight.wg.Done()
+	h.foreignCacheMu.Unlock()
+
+	if err != nil {
+		return nil, err
+	}
+	return allowlist, nil
+}
+
+func (h *Handler) fetchForeignAllowlist(ctx context.Context, targetOrg, role string) ([]string, error) {
 	appID, err := h.lookupRoleAppID(role)
 	if err != nil {
 		return nil, fmt.Errorf("looking up app ID for role %s: %v", role, err)
@@ -417,10 +458,6 @@ func (h *Handler) loadForeignAllowlist(ctx context.Context, targetOrg, role stri
 	if err != nil {
 		return nil, err
 	}
-
-	h.foreignCacheMu.Lock()
-	h.foreignCache[key] = foreignCacheEntry{allowlist: append([]string(nil), allowlist...), fetchedAt: time.Now()}
-	h.foreignCacheMu.Unlock()
 
 	return allowlist, nil
 }
