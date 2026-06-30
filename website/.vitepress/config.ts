@@ -59,7 +59,7 @@ function escapeVueSyntax(src: string): string {
   }).join('\n')
 }
 
-const KNOWN_TAGS = /^<\/?(?:a|abbr|address|area|article|aside|audio|b|base|bdi|bdo|blockquote|body|br|button|canvas|caption|cite|code|col|colgroup|data|datalist|dd|del|details|dfn|dialog|div|dl|dt|em|embed|fieldset|figcaption|figure|footer|form|h[1-6]|head|header|hgroup|hr|html|i|iframe|img|input|ins|kbd|label|legend|li|link|main|map|mark|menu|meta|meter|nav|noscript|object|ol|optgroup|option|output|p|param|picture|pre|progress|q|rp|rt|ruby|s|samp|script|search|section|select|slot|small|source|span|strong|style|sub|summary|sup|table|tbody|td|template|textarea|tfoot|th|thead|time|title|tr|track|u|ul|var|video|wbr|svg|path|g|circle|rect|line|polyline|polygon|text|defs|use|symbol)[\s>\/!]/i
+const KNOWN_TAGS = /^<\/?(?:a|abbr|address|area|article|aside|audio|b|base|bdi|bdo|blockquote|body|br|button|canvas|caption|cite|code|col|colgroup|data|datalist|dd|del|details|dfn|dialog|div|dl|dt|em|embed|fieldset|figcaption|figure|footer|form|h[1-6]|head|header|hgroup|hr|html|i|iframe|img|input|ins|kbd|label|legend|li|link|main|map|mark|menu|meta|meter|nav|noscript|object|ol|optgroup|option|output|p|param|picture|pre|progress|q|rp|rt|ruby|s|samp|script|search|section|select|slot|small|source|span|strong|style|sub|summary|sup|table|tbody|td|template|textarea|tfoot|th|thead|time|title|tr|track|u|ul|var|video|wbr|svg|path|g|circle|rect|line|polyline|polygon|text|defs|use|symbol)[\s>/!]/i
 
 function escapeLine(line: string): string {
   let result = ''
@@ -169,7 +169,8 @@ export default defineConfig({
           items: [
             { text: 'Getting Inference', link: '/guides/getting-started/getting-inference' },
             { text: 'Configuring GitHub', link: '/guides/getting-started/configuring-github' },
-            { text: 'Org Mode', link: '/guides/getting-started/org-mode' },
+            { text: 'Per-Org Mode', link: '/guides/getting-started/org-mode' },
+            { text: 'Operations', link: '/guides/getting-started/operations' },
           ],
         },
         {
@@ -209,15 +210,6 @@ export default defineConfig({
           ],
         },
         {
-          text: 'Reference',
-          collapsed: true,
-          link: '/reference/',
-          items: [
-            { text: 'Installation', link: '/reference/installation' },
-            { text: 'GitHub Setup', link: '/reference/github-setup' },
-          ],
-        },
-        {
           text: 'Infrastructure',
           collapsed: true,
           items: [
@@ -226,6 +218,7 @@ export default defineConfig({
             { text: 'Standalone Mint', link: '/guides/infrastructure/standalone-mint' },
             { text: 'Private Repositories', link: '/guides/infrastructure/private-repositories' },
             { text: 'Distributed Tracing', link: '/guides/infrastructure/distributed-tracing' },
+            { text: 'Advanced Setup', link: '/guides/infrastructure/advanced-setup' },
           ],
         },
         {
@@ -303,6 +296,9 @@ export default defineConfig({
       alias: {
         'vue/server-renderer': path.resolve(__dirname, '..', 'node_modules', 'vue', 'server-renderer', 'index.mjs'),
         'vue': path.resolve(__dirname, '..', 'node_modules', 'vue'),
+        // Use mermaid's pre-bundled ESM build; the default entry (mermaid.core.mjs)
+        // externalizes dayjs (CJS-only), which breaks under noExternal: [/./].
+        'mermaid': path.resolve(__dirname, '..', 'node_modules', 'mermaid', 'dist', 'mermaid.esm.mjs'),
       },
       // Prevent VitePress SSR from resolving CJS packages in the
       // repo-root node_modules (which causes ESM default-import
@@ -320,7 +316,7 @@ export default defineConfig({
     },
     preConfig: (md) => {
       const defaultParse = md.parse.bind(md)
-      md.parse = (src: string, env: any) => {
+      md.parse = (src: string, env: Record<string, unknown>) => {
         return defaultParse(escapeVueSyntax(src), env)
       }
     },
@@ -333,6 +329,51 @@ export default defineConfig({
         tokens[idx].attrSet('v-pre', '')
         return defaultCodeInline(tokens, idx, options, env, self)
       }
+
+      // Rewrite relative links that escape the docs/ directory to GitHub
+      // source URLs, and rewrite README.md links to directory index paths
+      // (only for links that stay within docs/).
+      md.core.ruler.push('rewrite-links', (state) => {
+        for (const token of state.tokens) {
+          if (!token.children) continue
+          for (const child of token.children) {
+            if (child.type !== 'link_open') continue
+            const href = child.attrGet('href')
+            if (!href || href.startsWith('http') || href.startsWith('#') || href.startsWith('mailto:')) continue
+
+            // Check if the link escapes docs/ (more ../  than directory depth)
+            const docPath = state.env?.relativePath || ''
+            const docDir = docPath.split('/').slice(0, -1)
+            const parts = href.split('#')
+            const linkPath = parts[0]
+            const anchor = parts[1] ? '#' + parts[1] : ''
+            const segments = linkPath.split('/')
+            let depth = 0
+            for (const s of segments) { if (s === '..') depth++; else break }
+            if (depth > docDir.length) {
+              const remainder = segments.slice(depth).join('/')
+              const prefix = /\.[a-zA-Z0-9]+$/.test(remainder) && !remainder.endsWith('/') ? 'blob' : 'tree'
+              child.attrSet('href', `https://github.com/fullsend-ai/fullsend/${prefix}/main/${remainder}${anchor}`)
+              continue
+            }
+
+            // For links staying within docs/, rewrite README.md to directory index
+            if (/README\.md(#.*)?$/.test(href)) {
+              child.attrSet('href', href.replace(/README\.md(#.*)?$/, (_: string, a: string) => a || './'))
+            }
+          }
+        }
+      })
+
+      const defaultFence = md.renderer.rules.fence!.bind(md.renderer.rules)
+      md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+        if (tokens[idx].info.trim() === 'mermaid') {
+          const encoded = encodeURIComponent(tokens[idx].content)
+          return `<Mermaid id="mermaid-${idx}" graph="${encoded}" />`
+        }
+        return defaultFence(tokens, idx, options, env, self)
+      }
     },
   },
+
 })

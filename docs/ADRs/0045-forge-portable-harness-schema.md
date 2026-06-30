@@ -742,3 +742,4 @@ forge-specific artifact. The harness and agent definition are portable.
 - [Issue #101](https://github.com/fullsend-ai/fullsend/issues/101): Forge-agnostic agent interface
 - [Issue #322](https://github.com/fullsend-ai/fullsend/issues/322): Platform-specific component identification
 - [Issue #1986](https://github.com/fullsend-ai/fullsend/issues/1986): Default agents should use the same delivery mechanism as custom agents
+- [ADR 0058](0058-agent-registration.md): Agent registration — re-adds `agents` config key with URL/path semantics (supersedes the role/name/slug schema removed in Phase 4)

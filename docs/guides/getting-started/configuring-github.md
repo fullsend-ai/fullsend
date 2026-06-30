@@ -66,7 +66,7 @@ Only the listed agents will be configured. Make sure you have installed the
 corresponding GitHub Apps for each agent you enable (see the table above).
 
 For the full list of setup flags, see the
-[GitHub setup reference](../../reference/github-setup.md#setup-flags).
+[CLI reference](../../cli/github.md#flags).
 
 ## Testing Fullsend
 

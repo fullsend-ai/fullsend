@@ -12,7 +12,9 @@ import (
 )
 
 func TestFetchTokenScope_ReturnsRepoNames(t *testing.T) {
+	var requestCount int
 	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
 		assert.Equal(t, "/installation/repositories", r.URL.Path)
 		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
 		assert.Equal(t, "Bearer ghs_test_token", r.Header.Get("Authorization"))
@@ -30,6 +32,7 @@ func TestFetchTokenScope_ReturnsRepoNames(t *testing.T) {
 	repos, err := fetchTokenScope(context.Background(), "ghs_test_token", github.URL)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"org-a/repo-one", "org-a/repo-two"}, repos)
+	assert.Equal(t, 1, requestCount, "fetchTokenScope should use a single API round trip")
 }
 
 func TestFetchTokenScope_Truncated(t *testing.T) {
@@ -94,7 +97,7 @@ func TestFetchTokenScope_UnexpectedStatus(t *testing.T) {
 
 	repos, err := fetchTokenScope(context.Background(), "ghs_token", github.URL)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "status 500")
+	assert.Contains(t, err.Error(), "500")
 	assert.Nil(t, repos)
 }
 

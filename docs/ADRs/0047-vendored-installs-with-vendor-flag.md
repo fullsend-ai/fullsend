@@ -125,7 +125,7 @@ dropped in favor of `--vendor` plus runtime marker detection:
 
 ## References
 
-- [Installation guide](../reference/installation.md)
+- [Advanced setup](../guides/infrastructure/advanced-setup.md)
 - [Testing workflows](../guides/dev/testing-workflows.md)
 - ADR 0031 (reusable workflows for distribution)
 - ADR 0033 (per-repo installation mode)

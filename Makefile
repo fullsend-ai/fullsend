@@ -2,8 +2,7 @@
 .PHONY: help bootstrap lint lint-all check fmt \
        mindmap go-build go-test go-lint go-fmt go-vet go-tidy \
        lint-md-links script-test test \
-       e2e-test e2e-playwright e2e-export-session e2e-upload-session \
-       lint-eval-cases functional-tests
+       e2e-test lint-eval-cases functional-tests
 
 # Let Go automatically download the toolchain version required by go.mod.
 # This ensures local builds use the right version without manual intervention.
@@ -27,10 +26,8 @@ help:
 	@echo "  go-tidy              - Run go mod tidy"
 	@echo "  lint-md-links        - Check markdown files for broken in-repo links and anchors"
 	@echo "  script-test          - Run shell script tests (post-triage, post-code, post-review, pre-fetch-prior-review, reconcile-repos, validate-output-schema)"
-	@echo "  test                 - Run all checks: lint-all, go-test, script-test"
-	@echo "  e2e-test             - Run admin e2e tests (requires E2E_GITHUB_SESSION_FILE or E2E_GITHUB_USERNAME + E2E_GITHUB_PASSWORD)"
-	@echo "  e2e-export-session   - Login to GitHub and export a Playwright session file"
-	@echo "  e2e-upload-session   - Export session and upload it as a GitHub repo secret"
+	@echo "  test                 - Run all checks: lint-all, go-test, script-test, lint-eval-cases"
+	@echo "  e2e-test             - Run admin e2e tests (CI: OIDC mint; local: gh auth login or GH_TOKEN)"
 	@echo "  lint-eval-cases      - Lint eval case definitions (annotations.yaml completeness)"
 	@echo "  functional-tests     - Run functional agent tests (requires EVAL_ORG, FULLSEND_DIR, GH_TOKEN, GCP creds)"
 
@@ -135,35 +132,8 @@ script-test:
 
 test: lint-all go-test script-test lint-eval-cases
 
-E2E_SESSION_FILE ?= $(CURDIR)/.playwright/session.json
-
-e2e-test: e2e-playwright
-	@if [ -n "$$E2E_GITHUB_PASSWORD_FILE" ] && [ -z "$$E2E_GITHUB_PASSWORD" ]; then \
-		export E2E_GITHUB_PASSWORD="$$(cat "$$E2E_GITHUB_PASSWORD_FILE")"; \
-	fi; \
-	if [ -z "$$E2E_GITHUB_SESSION_FILE" ] && [ -n "$$E2E_GITHUB_USERNAME" ] && [ -n "$$E2E_GITHUB_PASSWORD" ]; then \
-		echo "==> No session file set, generating one from credentials..."; \
-		$(MAKE) e2e-export-session; \
-		export E2E_GITHUB_SESSION_FILE="$(E2E_SESSION_FILE)"; \
-	fi; \
+e2e-test:
 	go test -tags e2e -v -count=1 -timeout 30m ./e2e/admin/
-
-e2e-export-session: e2e-playwright
-	@if [ -n "$$E2E_GITHUB_PASSWORD_FILE" ] && [ -z "$$E2E_GITHUB_PASSWORD" ]; then \
-		export E2E_GITHUB_PASSWORD="$$(cat "$$E2E_GITHUB_PASSWORD_FILE")"; \
-	fi; \
-	E2E_GITHUB_SESSION_FILE="$(E2E_SESSION_FILE)" go run ./e2e/cmd/export-session/
-
-e2e-upload-session: e2e-export-session
-	@echo "==> Uploading session to GitHub repo secret..."
-	base64 -w0 "$(E2E_SESSION_FILE)" | gh secret set E2E_GITHUB_SESSION
-	@echo "==> Done. Session uploaded as E2E_GITHUB_SESSION."
-
-e2e-playwright:
-	@if [ -z "$$(ls -d $(HOME)/.cache/ms-playwright/chromium-* 2>/dev/null)" ]; then \
-		echo "==> Installing Playwright Chromium..."; \
-		go run github.com/playwright-community/playwright-go/cmd/playwright install chromium; \
-	fi
 
 # Functional agent evals — run agents against ephemeral GitHub repos and judge results.
 # Required env: EVAL_ORG (GitHub org for ephemeral repos), plus GCP creds for Vertex AI.

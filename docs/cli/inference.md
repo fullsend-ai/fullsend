@@ -83,5 +83,5 @@ Read-only — makes no changes.
 ## See also
 
 - [Getting inference for fullsend](../guides/getting-started/getting-inference.md) — getting started guide
-- [Installation guide](../reference/installation.md) — all-in-one `admin install`
+- [Advanced setup](../guides/infrastructure/advanced-setup.md) — non-standard installation paths and WIF configuration
 - [CLI internals](../guides/dev/cli-internals.md) — command tree and implementation details

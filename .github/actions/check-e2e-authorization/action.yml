@@ -22,6 +22,10 @@ inputs:
     description: github.event.pull_request.author_association (frozen event payload)
     required: false
     default: ""
+  pr_author_login:
+    description: github.event.pull_request.user.login (for collaborator permission API fallback)
+    required: false
+    default: ""
   docs_url:
     description: Link to e2e testing documentation
     required: false
@@ -51,6 +55,7 @@ runs:
         PR_UPDATED_AT: ${{ inputs.pr_updated_at }}
         EVENT_ACTION: ${{ inputs.event_action }}
         PR_AUTHOR_ASSOCIATION: ${{ inputs.pr_author_association }}
+        PR_AUTHOR_LOGIN: ${{ inputs.pr_author_login }}
       run: bash "${GITHUB_WORKSPACE}/scripts/check-e2e-authorization.sh" "${PR_NUMBER}" "${REPOSITORY}"
 
     - name: Post gate comment

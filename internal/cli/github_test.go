@@ -237,7 +237,7 @@ func TestGitHubEnrollCmd_DelegatesCorrectly(t *testing.T) {
 	client := setupTestClient("testorg", cfg, []string{"web-app", "api"})
 	printer := ui.New(&discardWriter{})
 
-	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true)
+	err := runEnableRepos(context.Background(), client, printer, "testorg", []string{"web-app"}, false, true, false)
 	require.NoError(t, err)
 
 	require.Len(t, client.CreatedFiles, 1)
@@ -544,7 +544,7 @@ func TestRunGitHubSyncScaffold_CommitsFiles(t *testing.T) {
 	client.AuthenticatedUser = "testuser"
 	printer := ui.New(&discardWriter{})
 
-	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme")
+	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme", true)
 	require.NoError(t, err)
 
 	// sync-scaffold uses direct mode — files are committed to the default branch.
@@ -563,7 +563,7 @@ func TestRunGitHubSyncScaffold_VendoredMarker(t *testing.T) {
 	}
 	printer := ui.New(&discardWriter{})
 
-	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme")
+	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme", true)
 	require.NoError(t, err)
 	require.NotEmpty(t, client.CommittedFiles)
 }
@@ -577,9 +577,53 @@ func TestRunGitHubSyncScaffold_InvalidConfig(t *testing.T) {
 	}
 	printer := ui.New(&discardWriter{})
 
-	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme")
+	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme", true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parsing config.yaml")
+}
+
+func TestRunGitHubSyncScaffold_DefaultCreatesPR(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: ".fullsend", FullName: "acme/.fullsend", DefaultBranch: "main"},
+	}
+	client.AuthenticatedUser = "acme"
+	printer := ui.New(&discardWriter{})
+
+	// direct=false means PR-based delivery (the default).
+	err := runGitHubSyncScaffold(context.Background(), client, printer, "acme", false)
+	require.NoError(t, err)
+
+	// Should create a branch and PR, not commit directly.
+	assert.NotEmpty(t, client.CreatedBranches, "expected a scaffold branch to be created")
+	assert.NotEmpty(t, client.CreatedProposals, "expected a scaffold PR to be created")
+	assert.Empty(t, client.CommittedFiles, "expected no direct commits when using PR delivery")
+}
+
+func TestGitHubSyncScaffoldCmd_HasDirectFlag(t *testing.T) {
+	cmd := newGitHubSyncScaffoldCmd()
+	directFlag := cmd.Flags().Lookup("direct")
+	require.NotNil(t, directFlag, "expected --direct flag")
+	assert.Equal(t, "false", directFlag.DefValue)
+	// --pr flag should not exist; PR delivery is the default.
+	assert.Nil(t, cmd.Flags().Lookup("pr"), "unexpected --pr flag; PR delivery is the default")
+}
+
+func TestGitHubEnrollCmd_HasDirectFlag(t *testing.T) {
+	cmd := newGitHubEnrollCmd()
+	directFlag := cmd.Flags().Lookup("direct")
+	require.NotNil(t, directFlag, "expected --direct flag")
+	assert.Equal(t, "false", directFlag.DefValue)
+	// --pr flag should not exist; PR delivery is the default.
+	assert.Nil(t, cmd.Flags().Lookup("pr"), "unexpected --pr flag; PR delivery is the default")
+}
+
+func TestGitHubUnenrollCmd_HasDirectFlag(t *testing.T) {
+	cmd := newGitHubUnenrollCmd()
+	directFlag := cmd.Flags().Lookup("direct")
+	require.NotNil(t, directFlag, "expected --direct flag")
+	// --pr flag should not exist; PR delivery is the default.
+	assert.Nil(t, cmd.Flags().Lookup("pr"), "unexpected --pr flag; PR delivery is the default")
 }
 
 func TestRunGitHubSetupPerOrg_DryRun(t *testing.T) {

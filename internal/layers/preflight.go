@@ -64,15 +64,23 @@ func (r *PreflightResult) Error() string {
 // required by the stack's layers for the given operation. It returns a
 // PreflightResult describing what was found.
 //
-// If the forge doesn't support scope introspection (e.g., fine-grained
-// tokens, GitHub App tokens), Preflight returns a result with OK() == true
-// and logs that scope checking was skipped. We can't validate what we
-// can't see, so we let the operation proceed and fail at the point of
-// use if scopes are actually missing.
+// If the token is a GitHub App installation token, or scope introspection
+// is unavailable (e.g., fine-grained PATs), Preflight returns a result with
+// OK() == true and Skipped set. OAuth scope preflight does not apply to
+// installation tokens; for tokens we cannot introspect we let the operation
+// proceed and fail at the point of use if permissions are actually missing.
 func (s *Stack) Preflight(ctx context.Context, op Operation, client forge.Client) (*PreflightResult, error) {
 	required := s.CollectRequiredScopes(op)
 	if len(required) == 0 {
 		return &PreflightResult{}, nil
+	}
+
+	isInstallation, err := client.IsInstallationToken(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("detecting installation token: %w", err)
+	}
+	if isInstallation {
+		return &PreflightResult{Required: required, Skipped: true}, nil
 	}
 
 	granted, err := client.GetTokenScopes(ctx)

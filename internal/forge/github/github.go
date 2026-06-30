@@ -1387,9 +1387,9 @@ func (c *LiveClient) GetOrgPlan(ctx context.Context, org string) (string, error)
 // GetAuthenticatedUser returns the login of the authenticated user.
 //
 // For classic PATs and OAuth tokens the identity comes from GET /user.
-// GitHub App installation tokens cannot call /user, so when that call
-// fails the method falls back to GET /app and constructs the
-// conventional bot login "{slug}[bot]".
+// GitHub App JWTs fall back to GET /app and derive "{slug}[bot]".
+// Installation access tokens cannot use either REST endpoint; those fall
+// back to a GraphQL viewer query, which returns the bot login directly.
 func (c *LiveClient) GetAuthenticatedUser(ctx context.Context) (string, error) {
 	resp, err := c.get(ctx, "/user")
 	if err == nil {
@@ -1402,26 +1402,145 @@ func (c *LiveClient) GetAuthenticatedUser(ctx context.Context) (string, error) {
 		return user.Login, nil
 	}
 
-	// /user is not available for GitHub App installation tokens.
-	// Fall back to /app which returns the app's metadata including
-	// its slug, from which we derive the bot login.
+	userErr := err
+
+	// App JWT auth can resolve the bot identity from GET /app.
 	appResp, appErr := c.get(ctx, "/app")
-	if appErr != nil {
-		// Neither endpoint worked — return the original /user error
-		// because that is the more common path.
-		return "", fmt.Errorf("get authenticated user: %w (app fallback: %v)", err, appErr)
+	if appErr == nil {
+		var app struct {
+			Slug string `json:"slug"`
+		}
+		if decodeErr := decodeJSON(appResp, &app); decodeErr != nil {
+			return "", fmt.Errorf("decode app: %w", decodeErr)
+		}
+		if app.Slug == "" {
+			return "", fmt.Errorf("get authenticated user: /app returned empty slug")
+		}
+		return app.Slug + "[bot]", nil
 	}
 
-	var app struct {
-		Slug string `json:"slug"`
+	// Installation tokens reject /user and /app but support GraphQL viewer.
+	login, graphErr := c.graphqlViewerLogin(ctx)
+	if graphErr == nil {
+		return login, nil
 	}
-	if appErr := decodeJSON(appResp, &app); appErr != nil {
-		return "", fmt.Errorf("decode app: %w", appErr)
+
+	return "", fmt.Errorf("get authenticated user: %w (app fallback: %v; graphql fallback: %v)", userErr, appErr, graphErr)
+}
+
+const graphqlViewerLoginQuery = `query { viewer { login } }`
+
+func (c *LiveClient) graphqlViewerLogin(ctx context.Context) (string, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/graphql", map[string]string{
+		"query": graphqlViewerLoginQuery,
+	})
+	if err != nil {
+		return "", fmt.Errorf("graphql viewer query: %w", err)
 	}
-	if app.Slug == "" {
-		return "", fmt.Errorf("get authenticated user: /app returned empty slug")
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if err != nil {
+		return "", fmt.Errorf("read graphql viewer response: %w", err)
 	}
-	return app.Slug + "[bot]", nil
+
+	if resp.StatusCode != http.StatusOK {
+		var errResp struct {
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(body, &errResp) == nil && errResp.Message != "" {
+			return "", &APIError{StatusCode: resp.StatusCode, Message: errResp.Message}
+		}
+		return "", &APIError{StatusCode: resp.StatusCode, Message: "graphql viewer query failed"}
+	}
+
+	var result struct {
+		Data struct {
+			Viewer struct {
+				Login string `json:"login"`
+			} `json:"viewer"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("decode graphql viewer response: %w", err)
+	}
+	if len(result.Errors) > 0 {
+		return "", fmt.Errorf("graphql viewer query: %s", result.Errors[0].Message)
+	}
+	if result.Data.Viewer.Login == "" {
+		return "", fmt.Errorf("graphql viewer query returned empty login")
+	}
+	return result.Data.Viewer.Login, nil
+}
+
+// ListInstallationRepositories returns repository full names when token is a GitHub
+// App installation token (HTTP 200). PATs and OAuth tokens that lack installation
+// access receive 401/403 and return (nil, 0, false, nil).
+func ListInstallationRepositories(ctx context.Context, httpClient *http.Client, baseURL, token string, perPage int) (repos []string, totalCount int, ok bool, err error) {
+	if token == "" {
+		return nil, 0, false, nil
+	}
+	if perPage <= 0 {
+		perPage = 100
+	}
+
+	url := fmt.Sprintf("%s/installation/repositories?per_page=%d", baseURL, perPage)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("creating installation repositories request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("listing installation repositories: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var result struct {
+			TotalCount   int `json:"total_count"`
+			Repositories []struct {
+				FullName string `json:"full_name"`
+			} `json:"repositories"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nil, 0, false, fmt.Errorf("decoding installation repositories: %w", err)
+		}
+		repos = make([]string, len(result.Repositories))
+		for i, r := range result.Repositories {
+			repos[i] = r.FullName
+		}
+		return repos, result.TotalCount, true, nil
+	case http.StatusUnauthorized, http.StatusForbidden:
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return nil, 0, false, nil
+	default:
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return nil, 0, false, &APIError{StatusCode: resp.StatusCode, Message: "installation repositories request failed"}
+	}
+}
+
+// ProbeInstallationToken reports whether token is a GitHub App installation
+// access token by calling GET /installation/repositories. PATs and OAuth
+// tokens receive 401/403 on that endpoint.
+func ProbeInstallationToken(ctx context.Context, httpClient *http.Client, baseURL, token string) (bool, error) {
+	_, _, ok, err := ListInstallationRepositories(ctx, httpClient, baseURL, token, 1)
+	if err != nil {
+		return false, err
+	}
+	return ok, nil
+}
+
+// IsInstallationToken reports whether the client's token is a GitHub App
+// installation access token.
+func (c *LiveClient) IsInstallationToken(ctx context.Context) (bool, error) {
+	return ProbeInstallationToken(ctx, c.http, c.baseURL, c.token)
 }
 
 // GetAuthenticatedUserIdentity returns the display name and email of
@@ -2546,35 +2665,27 @@ func (c *LiveClient) SetOrgSecretRepos(ctx context.Context, org, name string, re
 // CreateOrUpdateOrgVariable creates or updates an org-level Actions variable
 // scoped to the given repository IDs.
 func (c *LiveClient) CreateOrUpdateOrgVariable(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error {
-	if selectedRepoIDs == nil {
-		selectedRepoIDs = []int64{}
-	}
+	return c.createOrUpdateOrgVariable(ctx, org, name, value, "selected", selectedRepoIDs)
+}
 
-	// Try PATCH first (update existing).
-	patchPayload := map[string]any{
-		"value":                   value,
-		"visibility":              "selected",
-		"selected_repository_ids": selectedRepoIDs,
-	}
+// CreateOrUpdateOrgVariableAll creates or updates an org-level Actions variable
+// visible to all repositories in the org (visibility all).
+func (c *LiveClient) CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error {
+	return c.createOrUpdateOrgVariable(ctx, org, name, value, "all", nil)
+}
 
-	resp, err := c.patch(ctx, fmt.Sprintf("/orgs/%s/actions/variables/%s", org, name), patchPayload)
+func (c *LiveClient) createOrUpdateOrgVariable(ctx context.Context, org, name, value, visibility string, selectedRepoIDs []int64) error {
+	resp, err := c.patch(ctx, fmt.Sprintf("/orgs/%s/actions/variables/%s", org, name), orgVariableBody("", value, visibility, selectedRepoIDs))
 	if err == nil {
 		resp.Body.Close()
 		return nil
 	}
 
-	// If the variable doesn't exist (404), create it.
 	if !isNotFound(err) {
 		return fmt.Errorf("update org variable %s: %w", name, err)
 	}
 
-	createPayload := map[string]any{
-		"name":                    name,
-		"value":                   value,
-		"visibility":              "selected",
-		"selected_repository_ids": selectedRepoIDs,
-	}
-	resp2, err := c.post(ctx, fmt.Sprintf("/orgs/%s/actions/variables", org), createPayload)
+	resp2, err := c.post(ctx, fmt.Sprintf("/orgs/%s/actions/variables", org), orgVariableBody(name, value, visibility, selectedRepoIDs))
 	if err != nil {
 		return fmt.Errorf("create org variable %s: %w", name, err)
 	}
@@ -2582,24 +2693,86 @@ func (c *LiveClient) CreateOrUpdateOrgVariable(ctx context.Context, org, name, v
 	return nil
 }
 
+// orgVariableBody builds a GitHub org Actions variable request body.
+// name is included only for create (POST) requests.
+func orgVariableBody(name, value, visibility string, selectedRepoIDs []int64) map[string]any {
+	body := map[string]any{
+		"value":      value,
+		"visibility": visibility,
+	}
+	if name != "" {
+		body["name"] = name
+	}
+	if visibility == "selected" {
+		if selectedRepoIDs == nil {
+			selectedRepoIDs = []int64{}
+		}
+		body["selected_repository_ids"] = selectedRepoIDs
+	}
+	return body
+}
+
 // OrgVariableExists checks if an org-level variable exists.
 func (c *LiveClient) OrgVariableExists(ctx context.Context, org, name string) (bool, error) {
+	_, exists, err := c.GetOrgVariable(ctx, org, name)
+	return exists, err
+}
+
+// GetOrgVariable reads an org-level Actions variable value.
+func (c *LiveClient) GetOrgVariable(ctx context.Context, org, name string) (string, bool, error) {
 	resp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/orgs/%s/actions/variables/%s", org, name), nil)
 	if err != nil {
-		return false, fmt.Errorf("check org variable %s: %w", name, err)
+		return "", false, fmt.Errorf("get org variable %s: %w", name, err)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return true, nil
+		var varResp struct {
+			Name  string `json:"name"`
+			Value string `json:"value"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&varResp); err != nil {
+			return "", false, fmt.Errorf("decoding org variable %s: %w", name, err)
+		}
+		return varResp.Value, true, nil
 	case http.StatusNotFound:
-		return false, nil
+		return "", false, nil
 	case http.StatusForbidden:
-		return false, &APIError{StatusCode: http.StatusForbidden, Message: "insufficient permissions to check org variable (missing admin:org scope?)"}
+		return "", false, &APIError{StatusCode: http.StatusForbidden, Message: "insufficient permissions to read org variable (missing admin:org scope?)"}
 	default:
-		return false, &APIError{StatusCode: resp.StatusCode, Message: "unexpected status checking org variable"}
+		return "", false, &APIError{StatusCode: resp.StatusCode, Message: "unexpected status reading org variable"}
 	}
+}
+
+// ListOrgVariables lists org-level Actions variables (paginated).
+func (c *LiveClient) ListOrgVariables(ctx context.Context, org string) ([]forge.OrgVariable, error) {
+	var all []forge.OrgVariable
+	page := 1
+	for {
+		path := fmt.Sprintf("/orgs/%s/actions/variables?per_page=100&page=%d", org, page)
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list org variables: %w", err)
+		}
+
+		var result struct {
+			Variables  []forge.OrgVariable `json:"variables"`
+			TotalCount int                 `json:"total_count"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("decoding org variables: %w", err)
+		}
+		resp.Body.Close()
+
+		all = append(all, result.Variables...)
+		if len(all) >= result.TotalCount || len(result.Variables) == 0 {
+			break
+		}
+		page++
+	}
+	return all, nil
 }
 
 // DeleteOrgVariable deletes an org-level variable. It is idempotent: a 404

@@ -165,6 +165,12 @@ type Installation struct {
 	Permissions   map[string]string
 }
 
+// OrgVariable is an org-level GitHub Actions variable.
+type OrgVariable struct {
+	Name  string
+	Value string
+}
+
 // UserIdentity holds a forge user's display name and email, used for
 // constructing Signed-off-by trailers in commit messages.
 type UserIdentity struct {
@@ -316,6 +322,11 @@ type Client interface {
 	// Returns nil (not an error) if the forge doesn't support scope introspection.
 	GetTokenScopes(ctx context.Context) ([]string, error)
 
+	// IsInstallationToken reports whether the current token is a GitHub App
+	// installation access token (as opposed to a user PAT or OAuth token).
+	// Used to skip OAuth scope preflight, which does not apply to installation tokens.
+	IsInstallationToken(ctx context.Context) (bool, error)
+
 	// Secrets and variables
 	CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error
 	RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error)
@@ -334,7 +345,12 @@ type Client interface {
 
 	// Org-level variables (for dispatch function URL)
 	CreateOrUpdateOrgVariable(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error
+	// CreateOrUpdateOrgVariableAll creates or updates an org-wide Actions variable
+	// (visibility all). Used for mint FOREIGN policy variables read via the org API.
+	CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error
 	OrgVariableExists(ctx context.Context, org, name string) (bool, error)
+	GetOrgVariable(ctx context.Context, org, name string) (value string, exists bool, err error)
+	ListOrgVariables(ctx context.Context, org string) ([]OrgVariable, error)
 	DeleteOrgVariable(ctx context.Context, org, name string) error
 	SetOrgVariableRepos(ctx context.Context, org, name string, repoIDs []int64) error
 	// GetOrgVariableRepos returns the list of repository IDs that have access

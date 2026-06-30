@@ -66,6 +66,7 @@ jobs:
           pr_updated_at: ${{ github.event.pull_request.updated_at }}
           event_action: ${{ github.event.action }}
           pr_author_association: ${{ github.event.pull_request.author_association }}
+          pr_author_login: ${{ github.event.pull_request.user.login }}
 
   e2e:
     # For pull_request_target, runs only when gate sets authorized=true.
@@ -133,51 +134,22 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install Playwright system dependencies
-        if: steps.changes.outputs.relevant != 'false'
-        run: npx playwright install-deps chromium
-
-      - name: Check for secrets
-        if: steps.changes.outputs.relevant != 'false'
-        id: secrets-check
-        run: |
-          if [ -z "$E2E_GITHUB_SESSION_B64" ]; then
-            echo "::warning::E2E secrets are not configured. Skipping e2e tests."
-            echo "available=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          fi
-        env:
-          E2E_GITHUB_SESSION_B64: ${{ secrets.E2E_GITHUB_SESSION }}
-
-      - name: Decode session
-        if: steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
-        run: |
-          SESSION_FILE="${RUNNER_TEMP}/github-session.json"
-          printf '%s' "$E2E_GITHUB_SESSION_B64" | base64 -d > "$SESSION_FILE"
-          echo "E2E_GITHUB_SESSION_FILE=${SESSION_FILE}" >> "$GITHUB_ENV"
-        env:
-          E2E_GITHUB_SESSION_B64: ${{ secrets.E2E_GITHUB_SESSION }}
-
       - name: Authenticate to GCP
-        if: steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
+        if: steps.changes.outputs.relevant != 'false'
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
 
       - name: Run e2e tests
-        if: steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
+        if: steps.changes.outputs.relevant != 'false'
         run: make e2e-test
         env:
           E2E_SCREENSHOT_DIR: ${{ runner.temp }}/e2e-screenshots
-          E2E_GITHUB_PASSWORD: ${{ secrets.E2E_GITHUB_PASSWORD }}
-          E2E_GITHUB_TOTP_SECRET: ${{ secrets.E2E_GITHUB_TOTP_SECRET }}
-          E2E_MINT_URL: ${{ secrets.E2E_MINT_URL }}
           E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
 
       - name: Upload debug screenshots
-        if: always() && steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
+        if: always() && steps.changes.outputs.relevant != 'false'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-screenshots-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}

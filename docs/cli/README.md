@@ -8,7 +8,7 @@ The `fullsend` CLI manages the complete fullsend lifecycle: provisioning GCP inf
 
 ## Installation
 
-Download the latest binary from [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases). For detailed installation instructions, see the [installation guide](../reference/installation.md).
+Download the latest binary from [GitHub Releases](https://github.com/fullsend-ai/fullsend/releases). For detailed setup instructions, see [Getting Started](../guides/getting-started/).
 
 ## Command groups
 
@@ -22,11 +22,6 @@ Download the latest binary from [GitHub Releases](https://github.com/fullsend-ai
 
 | Command | Description |
 |---------|-------------|
-| `fullsend admin install <org\|owner/repo>` | All-in-one setup — provisions GCP infrastructure and configures GitHub in a single command. See [installation guide](../reference/installation.md). |
-| `fullsend admin uninstall <org>` | Tear down a fullsend installation |
-| `fullsend admin analyze <org>` | Check installation health (read-only) |
-| `fullsend admin enable repos <org> [repo...]` | Enable agent workflows on repositories |
-| `fullsend admin disable repos <org> [repo...]` | Disable agent workflows on repositories |
 | `fullsend run` | Execute an agent locally in a sandbox. See [running agents locally](../guides/user/running-agents-locally.md). |
 | `fullsend lock [agent-name]` | Pin remote dependencies to `lock.yaml` |
 | `fullsend scan` | Run security scanners on agent input/output |

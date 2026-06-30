@@ -213,7 +213,12 @@ For each issue identified, record:
   `test-weakened`, `tier-mismatch`, `injection-pattern`,
   `unicode-steganography`, `data-exposure`, `naming-convention`
 - **Description:** natural-language explanation of the finding
-- **Location:** relative file path and line number(s)
+- **Location:** relative file path and line number(s). Verify each
+  line number: the content at the cited line must be the specific
+  code or text your finding discusses, not a nearby line in the same
+  section. Re-read the file at the line you plan to cite and confirm
+  the match. If the content does not match, find the correct line. If
+  you cannot determine the correct line, omit it rather than guessing.
 - **Remediation:** suggested fix or action (required for critical/high)
 - **Actionable:** whether the finding should become tracked follow-up
   work if the PR is approved. Use `true` only for concrete low/info

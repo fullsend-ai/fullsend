@@ -525,6 +525,67 @@ func TestGetAuthenticatedUser_FallbackToApp(t *testing.T) {
 	assert.Equal(t, "fullsend-ai-review[bot]", user)
 }
 
+func TestGetAuthenticatedUser_FallbackToGraphQL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/user":
+			w.WriteHeader(http.StatusForbidden)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Resource not accessible by integration",
+			})
+		case "/app":
+			w.WriteHeader(http.StatusUnauthorized)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "A JSON web token could not be decoded",
+			})
+		case "/graphql":
+			assert.Equal(t, http.MethodPost, r.Method)
+			json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"viewer": map[string]any{
+						"login": "fullsend-e2e[bot]",
+					},
+				},
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	user, err := client.GetAuthenticatedUser(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "fullsend-e2e[bot]", user)
+}
+
+func TestGraphQLViewerLogin_GraphQLErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/graphql", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"errors": []map[string]string{{"message": "insufficient permissions"}},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.graphqlViewerLogin(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "insufficient permissions")
+}
+
+func TestGraphQLViewerLogin_HTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		json.NewEncoder(w).Encode(map[string]string{"message": "nope"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.graphqlViewerLogin(context.Background())
+	require.Error(t, err)
+}
+
 func TestGetAuthenticatedUser_BothFail(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
@@ -538,6 +599,7 @@ func TestGetAuthenticatedUser_BothFail(t *testing.T) {
 	_, err := client.GetAuthenticatedUser(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "get authenticated user")
+	assert.Contains(t, err.Error(), "graphql fallback")
 }
 
 func TestGetAuthenticatedUserIdentity(t *testing.T) {
@@ -1534,6 +1596,52 @@ func TestCreateOrUpdateOrgVariable_NilRepoIDs(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestCreateOrUpdateOrgVariableAll_Create(t *testing.T) {
+	callNum := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callNum++
+		switch callNum {
+		case 1:
+			assert.Equal(t, "PATCH", r.Method)
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+		case 2:
+			assert.Equal(t, "POST", r.Method)
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			assert.Equal(t, "FULLSEND_FOREIGN_E2E_REPOS", body["name"])
+			assert.Equal(t, "fullsend-ai/fullsend", body["value"])
+			assert.Equal(t, "all", body["visibility"])
+			_, hasRepoIDs := body["selected_repository_ids"]
+			assert.False(t, hasRepoIDs)
+			w.WriteHeader(http.StatusCreated)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreateOrUpdateOrgVariableAll(context.Background(), "myorg", "FULLSEND_FOREIGN_E2E_REPOS", "fullsend-ai/fullsend")
+	require.NoError(t, err)
+}
+
+func TestCreateOrUpdateOrgVariableAll_Update(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "PATCH", r.Method)
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "fullsend-ai/fullsend", body["value"])
+		assert.Equal(t, "all", body["visibility"])
+		_, hasRepoIDs := body["selected_repository_ids"]
+		assert.False(t, hasRepoIDs)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CreateOrUpdateOrgVariableAll(context.Background(), "myorg", "FULLSEND_FOREIGN_E2E_REPOS", "fullsend-ai/fullsend")
+	require.NoError(t, err)
+}
+
 func TestOrgVariableExists(t *testing.T) {
 	t.Run("exists", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2118,4 +2226,23 @@ func TestDeleteIssueComment(t *testing.T) {
 	client := newTestClient(t, srv)
 	err := client.DeleteIssueComment(context.Background(), "org", "repo", 42)
 	require.NoError(t, err)
+}
+
+func TestListOrgVariables(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/orgs/myorg/actions/variables", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"total_count": 2,
+			"variables": []map[string]string{
+				{"name": "FULLSEND_FOREIGN_E2E_REPOS", "value": "fullsend-ai"},
+				{"name": "OTHER", "value": "x"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	vars, err := client.ListOrgVariables(context.Background(), "myorg")
+	require.NoError(t, err)
+	require.Len(t, vars, 2)
 }

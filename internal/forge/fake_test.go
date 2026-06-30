@@ -441,6 +441,57 @@ func TestFakeClient_CreateOrUpdateOrgVariable(t *testing.T) {
 	assert.True(t, exists)
 }
 
+func TestFakeClient_GetOrgVariable(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{
+		OrgVariables:      map[string]bool{"myorg/FOREIGN": true},
+		OrgVariableValues: map[string]string{"myorg/FOREIGN": "caller/repo"},
+	}
+
+	value, exists, err := fc.GetOrgVariable(ctx, "myorg", "FOREIGN")
+	require.NoError(t, err)
+	assert.True(t, exists)
+	assert.Equal(t, "caller/repo", value)
+
+	_, exists, err = fc.GetOrgVariable(ctx, "myorg", "MISSING")
+	require.NoError(t, err)
+	assert.False(t, exists)
+}
+
+func TestFakeClient_ListOrgVariables(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{
+		OrgVariables:      map[string]bool{"myorg/A": true, "myorg/B": true, "other/C": true},
+		OrgVariableValues: map[string]string{"myorg/A": "1", "myorg/B": "2"},
+	}
+
+	vars, err := fc.ListOrgVariables(ctx, "myorg")
+	require.NoError(t, err)
+	require.Len(t, vars, 2)
+}
+
+func TestFakeClient_IsInstallationToken(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{InstallationToken: true}
+	ok, err := fc.IsInstallationToken(ctx)
+	require.NoError(t, err)
+	assert.True(t, ok)
+
+	fc.InstallationToken = false
+	ok, err = fc.IsInstallationToken(ctx)
+	require.NoError(t, err)
+	assert.False(t, ok)
+}
+
+func TestFakeClient_CreateOrUpdateOrgVariableAll(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{}
+	require.NoError(t, fc.CreateOrUpdateOrgVariableAll(ctx, "myorg", "FOREIGN", "caller"))
+	exists, err := fc.OrgVariableExists(ctx, "myorg", "FOREIGN")
+	require.NoError(t, err)
+	assert.True(t, exists)
+}
+
 func TestFakeClient_DeleteOrgVariable(t *testing.T) {
 	ctx := context.Background()
 	fc := &FakeClient{}
@@ -515,6 +566,9 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 			_, err := fc.OrgVariableExists(ctx, "o", "n")
 			return err
 		}},
+		{"GetOrgVariable", func(fc *FakeClient) error { _, _, err := fc.GetOrgVariable(ctx, "o", "n"); return err }},
+		{"ListOrgVariables", func(fc *FakeClient) error { _, err := fc.ListOrgVariables(ctx, "o"); return err }},
+		{"IsInstallationToken", func(fc *FakeClient) error { _, err := fc.IsInstallationToken(ctx); return err }},
 		{"DeleteOrgVariable", func(fc *FakeClient) error {
 			return fc.DeleteOrgVariable(ctx, "o", "n")
 		}},

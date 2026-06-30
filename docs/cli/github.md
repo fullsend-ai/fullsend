@@ -115,6 +115,6 @@ fullsend github uninstall <org> [--yolo] [--app-set <name>]
 
 ## See also
 
-- [Setting up with pre-provisioned infrastructure](../reference/github-setup.md) — full setup guide for GitHub maintainers
 - [Configuring GitHub for fullsend](../guides/getting-started/configuring-github.md) — getting started guide
-- [Installation guide](../reference/installation.md) — all-in-one `admin install`
+- [Advanced setup](../guides/infrastructure/advanced-setup.md) — non-standard installation paths and setup flags
+- [Operations](../guides/getting-started/operations.md) — day-2 administration (enrollment, status, uninstall)
