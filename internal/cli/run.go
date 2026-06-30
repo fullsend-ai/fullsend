@@ -569,8 +569,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// before the pre-script, so TRACEPARENT can propagate to child processes.
 	// The same id is reused as the security finding/audit trace id (dashed UUID)
 	// and, dash-stripped, as the W3C telemetry trace id — one id across both.
-	traceID := security.GenerateTraceID()
-	wTraceID := telemetry.TraceIDFromUUID(traceID)
+	securityTraceID := security.GenerateTraceID()
+	wTraceID := telemetry.TraceIDFromUUID(securityTraceID)
 	rootSpanID := telemetry.NewSpanID()
 	workItemID := resolveWorkItemID()
 
@@ -702,7 +702,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			FetchPolicy:   fetch.DefaultPolicy,
 			WorkspaceRoot: absFullsendDir,
 			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
-			TraceID:       traceID,
+			TraceID:       securityTraceID,
 			SandboxName:   sandboxName,
 			MaxFetches:    h.EffectiveMaxRuntimeFetches(),
 			Uploader:      &fetchsvc.SandboxUploader{},
@@ -830,8 +830,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// 9a. Display trace ID (generated earlier for fetch service audit logging).
-	printer.KeyValue("Trace ID", traceID)
-	if err := injectTraceID(sandboxName, traceID); err != nil {
+	printer.KeyValue("Trace ID", securityTraceID)
+	if err := injectTraceID(sandboxName, securityTraceID); err != nil {
 		printer.StepWarn("Could not inject trace ID into sandbox: " + err.Error())
 	}
 
@@ -840,7 +840,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// SKILL.md) that were just copied into the sandbox.
 	if h.SecurityEnabled() {
 		printer.StepStart("Running pre-agent security scan")
-		scanCmd := buildScanContextCommand(remoteRepositoryDir, traceID)
+		scanCmd := buildScanContextCommand(remoteRepositoryDir, securityTraceID)
 		stdout, stderr, exitCode, execErr := sandbox.Exec(sandboxName, scanCmd, 60*time.Second)
 		if execErr != nil {
 			printer.StepFail("Security scan failed: " + execErr.Error())
@@ -1103,7 +1103,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// 9f. Post-agent output scan — redact secrets from extracted output.
 	if h.SecurityEnabled() {
 		printer.StepStart("Running post-agent output scan")
-		if err := scanOutputFiles(runDir, traceID, printer); err != nil {
+		if err := scanOutputFiles(runDir, securityTraceID, printer); err != nil {
 			printer.StepWarn("Output scan error: " + err.Error())
 		}
 
@@ -1138,7 +1138,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	printer.KeyValue("Run directory", runDir)
 	printer.KeyValue("Agent exit code", fmt.Sprintf("%d", lastExitCode))
 	printer.KeyValue("Agent runs", fmt.Sprintf("%d", runCount))
-	printer.KeyValue("Trace ID", traceID)
+	printer.KeyValue("Trace ID", securityTraceID)
 	if h.ValidationLoop != nil {
 		if validationPassed {
 			printer.KeyValue("Validation", "passed")
