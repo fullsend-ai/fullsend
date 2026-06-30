@@ -2929,3 +2929,198 @@ func TestFetchBaseSkill_ForgeClient_NarrowAllowlist(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
 }
+
+// --- resolveBaseHostFiles tests ---
+
+func TestLoadWithBase_URLBase_HostFilesFetched(t *testing.T) {
+	envContent := []byte("GCP_PROJECT=test-project\n")
+	triageEnv := []byte("TRIAGE_MODE=auto\n")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+host_files:
+  - src: env/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
+    expand: true
+  - src: env/triage.env
+    dest: /sandbox/workspace/.env.d/triage.env
+    expand: true
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/env/gcp-vertex.env": envContent,
+		"/env/triage.env":     triageEnv,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	// Host files resolved to local cache paths
+	require.Len(t, h.HostFiles, 2)
+	for i, hf := range h.HostFiles {
+		assert.True(t, filepath.IsAbs(hf.Src), "host_files[%d].src should be absolute cache path", i)
+		assert.False(t, IsURL(hf.Src), "host_files[%d].src should not be a URL", i)
+	}
+
+	// Verify cached content
+	content0, err := os.ReadFile(h.HostFiles[0].Src)
+	require.NoError(t, err)
+	assert.Equal(t, envContent, content0)
+
+	content1, err := os.ReadFile(h.HostFiles[1].Src)
+	require.NoError(t, err)
+	assert.Equal(t, triageEnv, content1)
+
+	// Dest and expand preserved
+	assert.Equal(t, "/sandbox/workspace/.env.d/gcp-vertex.env", h.HostFiles[0].Dest)
+	assert.True(t, h.HostFiles[0].Expand)
+
+	// Dependencies include host_files
+	hostFileDeps := []Dependency{}
+	for _, d := range deps {
+		if strings.HasPrefix(d.Field, "host_files[") {
+			hostFileDeps = append(hostFileDeps, d)
+		}
+	}
+	assert.Len(t, hostFileDeps, 2)
+	for _, d := range hostFileDeps {
+		assert.Equal(t, "resource", d.Type)
+	}
+}
+
+func TestLoadWithBase_URLBase_HostFilesMixedEnvVarAndRelative(t *testing.T) {
+	envContent := []byte("KEY=value\n")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+host_files:
+  - src: env/app.env
+    dest: /sandbox/.env.d/app.env
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/env/app.env": envContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+role: test
+base: `+baseURL+`
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.HostFiles, 2)
+
+	// Relative src resolved to cache path
+	assert.True(t, filepath.IsAbs(h.HostFiles[0].Src), "relative src should be resolved")
+
+	// ${VAR} src left unchanged
+	assert.Equal(t, "${GOOGLE_APPLICATION_CREDENTIALS}", h.HostFiles[1].Src)
+}
+
+func TestResolveBaseHostFiles_SkipsEnvVarPaths(t *testing.T) {
+	base := &Harness{
+		HostFiles: []HostFile{
+			{Src: "${HOME}/file.txt", Dest: "/sandbox/file.txt"},
+		},
+	}
+	deps, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "${HOME}/file.txt", base.HostFiles[0].Src)
+}
+
+func TestResolveBaseHostFiles_SkipsAbsolutePaths(t *testing.T) {
+	base := &Harness{
+		HostFiles: []HostFile{
+			{Src: "/absolute/path/file.txt", Dest: "/sandbox/file.txt"},
+		},
+	}
+	deps, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "/absolute/path/file.txt", base.HostFiles[0].Src)
+}
+
+func TestResolveBaseHostFiles_SkipsEmptySrc(t *testing.T) {
+	base := &Harness{
+		HostFiles: []HostFile{
+			{Src: "", Dest: "/sandbox/file.txt"},
+		},
+	}
+	deps, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseHostFiles_RejectsPathTraversal(t *testing.T) {
+	base := &Harness{
+		HostFiles: []HostFile{
+			{Src: "../../etc/passwd", Dest: "/sandbox/passwd"},
+		},
+	}
+	_, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain path traversal")
+	assert.Contains(t, err.Error(), "host_files[0].src")
+}
+
+func TestResolveBaseHostFiles_RejectsNullBytes(t *testing.T) {
+	base := &Harness{
+		HostFiles: []HostFile{
+			{Src: "env/test\x00.env", Dest: "/sandbox/.env"},
+		},
+	}
+	_, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain null bytes")
+	assert.Contains(t, err.Error(), "host_files[0].src")
+}
+
+func TestResolveBaseHostFiles_InvalidBaseURL(t *testing.T) {
+	base := &Harness{
+		HostFiles: []HostFile{
+			{Src: "env/test.env", Dest: "/sandbox/.env"},
+		},
+	}
+	_, err := resolveBaseHostFiles(context.Background(), base, "", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot determine directory")
+}
+
+func TestResolveBaseHostFiles_EmptyHostFiles(t *testing.T) {
+	base := &Harness{}
+	deps, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}

@@ -216,6 +216,15 @@ func loadBaseChain(
 		}
 		deps = append(deps, resourceDeps...)
 
+		// host_files with relative src paths need the same fetch-cache-rewrite
+		// treatment as scripts and resources. Entries using ${VAR} expansion
+		// are left unchanged — they resolve at bootstrap time on the host.
+		hostFileDeps, err := resolveBaseHostFiles(ctx, base, baseRef, allowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving base host_files from %s: %w", cleanURL, err)
+		}
+		deps = append(deps, hostFileDeps...)
+
 		baseDir = childDir
 	} else {
 		// Local path base
@@ -658,6 +667,41 @@ func resolveBaseResources(ctx context.Context, base *Harness, baseURL string, al
 			return nil, err
 		}
 		base.Skills[i] = localDir
+		deps = append(deps, dep)
+	}
+
+	return deps, nil
+}
+
+// resolveBaseHostFiles fetches host_files with relative src paths from a
+// URL-referenced base harness. For each host_files entry whose src is a
+// non-empty relative path (not a ${VAR} reference, URL, or absolute path),
+// the file is fetched from the base URL's directory, cached content-addressed,
+// and the src field is rewritten to the local cache path. This ensures
+// host_files inherited through base: composition resolve correctly at sandbox
+// setup time, the same way scripts and resources do.
+func resolveBaseHostFiles(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
+	baseURLDir := urlParentDirPrefix(baseURL)
+	if baseURLDir == "" {
+		return nil, fmt.Errorf("cannot determine directory from base URL")
+	}
+
+	var deps []Dependency
+
+	for i := range base.HostFiles {
+		src := base.HostFiles[i].Src
+		if src == "" || strings.Contains(src, "${") || IsURL(src) || filepath.IsAbs(src) {
+			continue
+		}
+		fieldName := fmt.Sprintf("host_files[%d].src", i)
+		if err := validateBaseRelPath(fieldName, src); err != nil {
+			return nil, err
+		}
+		dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, src, allowlist, opts, "resource", false)
+		if err != nil {
+			return nil, err
+		}
+		base.HostFiles[i].Src = cachePath
 		deps = append(deps, dep)
 	}
 
