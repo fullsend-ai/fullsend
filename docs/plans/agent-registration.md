@@ -52,7 +52,7 @@ type PerRepoConfig struct {
 }
 ```
 
-Add a `AgentEntry.AgentName()` helper that returns `Name` if set,
+Add a `AgentEntry.DerivedName()` helper that returns `Name` if set,
 otherwise derives it from the `Source` filename.
 
 ### 1b. Validation

@@ -52,8 +52,10 @@ type ComposeOpts struct {
 	// If empty, ResolveForge is a no-op.
 	ForgePlatform string
 
-	// OrgAllowlist is the org-level allowed_remote_resources from config.yaml.
-	// Base URLs must match a prefix in this list.
+	// OrgAllowlist is the allowed_remote_resources from config.yaml (org-level
+	// or per-repo-level). Base URLs and agent source URLs must match a prefix
+	// in this list. Callers should merge org and per-repo allowlists when both
+	// are available.
 	OrgAllowlist []string
 
 	// ForgeClient enables full-directory skill fetches from URL bases.

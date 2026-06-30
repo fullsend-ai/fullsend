@@ -44,7 +44,7 @@ The sandbox has two key directories that map to Claude Code's config levels:
 /sandbox/
 ├── claude-config/                   ← CLAUDE_CONFIG_DIR (personal level)
 │   ├── agents/
-│   │   └── <name>.md                   Agent definition (filename derived from AgentName())
+│   │   └── <name>.md                   Agent definition (filename derived from DerivedName())
 │   ├── skills/
 │   │   ├── code-review/SKILL.md        Built-in skills (personal level — wins on collision)
 │   │   ├── pr-review/SKILL.md
