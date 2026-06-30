@@ -264,7 +264,7 @@ Role PEM secrets and `ROLE_APP_IDS` must already exist on the mint, created duri
 
 ### Public mint mode
 
-When the mint is configured with `ALLOWED_ORGS=*` ([ADR 0059](../../ADRs/0059-public-mint-mode-with-wildcard-allowlists.md)), `mint enroll` is a no-op for org registration — all orgs are already allowed. Per-repo WIF registration (`mint enroll owner/repo`) is not supported in public mode; per-repo installs use the default WIF provider and upstream reusable workflows.
+When the mint is configured with `ALLOWED_ORGS=*` ([ADR 0059](../../ADRs/0059-public-mint-mode-with-wildcard-allowlists.md)), `mint enroll <org>` **succeeds without modifying mint configuration** — org registration is unnecessary because all orgs are already allowed. Scripts can call enroll in both public and tight modes without branching. `mint enroll owner/repo` also succeeds without per-repo WIF changes; per-repo installs use the default WIF provider and upstream reusable workflows.
 
 `mint unenroll` cannot remove individual orgs from a public mint. To restrict access, replace `ALLOWED_ORGS=*` with an explicit org list (config-only rollback; no PEM rotation required).
 

@@ -966,11 +966,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			return fmt.Errorf("provisioning mint: %w", err)
 		}
 		trafficEnv, envErr := mintProvisioner.GetServiceTrafficEnvVars(ctx)
-		if envErr == nil && isPublicMintEnv(trafficEnv["ALLOWED_ORGS"]) {
-			printer.StepDone("Mint validated (public mode — org registration not required)")
-		} else {
-			printer.StepDone("Mint validated and org registered")
-		}
+		printer.StepDone(mintValidationStepDone(trafficEnv, envErr))
 	}
 
 	if needsWIFProvision {

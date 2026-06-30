@@ -665,6 +665,32 @@ func TestProvisioner_Provision_BundledMode(t *testing.T) {
 	assert.Contains(t, fake.calls, "AddSecretVersion")
 }
 
+func TestProvisioner_Provision_BundledMode_PublicMintSkipsPerRepoWIF(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://fullsend-mint-shared.run.app",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "*",
+		},
+	}
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": "*",
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:  "shared-project",
+		GitHubOrgs: []string{"test-org"},
+		AgentPEMs:  singleRolePEMs(),
+		MintURL:    "https://fullsend-mint-shared.run.app",
+		Repo:       "test-org/my-repo",
+	}, fake)
+
+	vars, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://fullsend-mint-shared.run.app", vars["FULLSEND_MINT_URL"])
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
 func TestProvisioner_Provision_BundledMode_MissingProjectID(t *testing.T) {
 	p := newTestProvisioner(Config{
 		GitHubOrgs: []string{"test-org"},
@@ -2416,6 +2442,12 @@ func TestEnsureOrgInMint_ProceedsOnFirstEnrollment(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, fake.calls, "UpdateServiceEnvVars")
 	assert.Equal(t, "new-org", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
+}
+
+func TestParseAllowedOrgsEnv(t *testing.T) {
+	assert.Equal(t, []string{"*"}, parseAllowedOrgsEnv("*"))
+	assert.Equal(t, []string{"org-a", "org-b"}, parseAllowedOrgsEnv(" org-a , org-b "))
+	assert.Nil(t, parseAllowedOrgsEnv(""))
 }
 
 func TestEnsureOrgInMint_PublicModeNoOp(t *testing.T) {

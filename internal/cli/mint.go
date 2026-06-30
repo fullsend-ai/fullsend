@@ -88,6 +88,14 @@ func isPublicMintEnv(allowedOrgs string) bool {
 	return mintcore.IsPublicMint(parseAllowedOrgs(allowedOrgs))
 }
 
+// mintValidationStepDone returns the success message after validating an existing mint.
+func mintValidationStepDone(trafficEnv map[string]string, envErr error) string {
+	if envErr == nil && isPublicMintEnv(trafficEnv["ALLOWED_ORGS"]) {
+		return "Mint validated (public mode — org registration not required)"
+	}
+	return "Mint validated and org registered"
+}
+
 // pemSecretRoles maps enrolled roles to Secret Manager PEM keys, deduplicating
 // aliases (e.g., fix and coder both map to coder).
 func pemSecretRoles(roles []string) []string {

@@ -101,13 +101,13 @@ Mode is inferred from `ALLOWED_ORGS` — there is no separate trust-mode flag. S
 - **job_workflow_ref validation**: `.fullsend` config repo, `fullsend-ai/fullsend` upstream reusables, or registered per-repo workflows (`PER_REPO_WIF_REPOS`)
 - **PER_REPO_WIF_REPOS**: Repos using dedicated WIF providers (repo-scoped isolation)
 
-**Public mint**: `ALLOWED_ORGS` contains `*`.
+**Public mint**: `ALLOWED_ORGS` is `*`.
 
 - **ALLOWED_ORGS**: Any org may mint (cross-org isolation still enforced at installation lookup)
 - **job_workflow_ref validation**: Only `fullsend-ai/fullsend/.github/workflows/` (any ref — tag, branch, or SHA)
 - **PER_REPO_WIF_REPOS**: Leave unset or empty; all repos use `WIF_PROVIDER_NAME`
 - **ALLOWED_WORKFLOW_FILES**: Basename gate is not applied in public mode
-- **mint enroll / unenroll**: No-op for org registration; per-repo WIF registration is rejected
+- **mint enroll**: Succeeds without changing mint configuration (org registration is unnecessary); **mint unenroll** for individual orgs is rejected
 
 - **Minimum permissions**: Tokens are scoped to the role's minimum permission set, not the App's full permissions (both modes)
 
