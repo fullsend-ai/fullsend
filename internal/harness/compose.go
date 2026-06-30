@@ -65,6 +65,14 @@ type ComposeOpts struct {
 	// set GITHUB_TOKEN or use 'fullsend lock' for offline pre-caching.
 	ForgeClient forge.Client
 
+	// SourceURL is the URL from which the harness was fetched (e.g., via
+	// FetchAgentHarness for config-registered agents). When set and the harness
+	// has no base: field, LoadWithBase resolves relative resource paths (agent,
+	// policy, skills, scripts) against this URL using the same infrastructure
+	// as base composition (ADR-0045). If empty, no URL resolution is performed
+	// for no-base harnesses.
+	SourceURL string
+
 	// allowSelfAllowlist permits using the child harness's own AllowedRemoteResources
 	// when OrgAllowlist is empty. This is for testing only; production callers should
 	// always provide OrgAllowlist from config.yaml. Unexported to prevent misuse.
@@ -93,7 +101,25 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	}
 
 	if child.Base == "" {
-		// No base — same as LoadWithOpts
+		// No base — resolve URL-sourced resources if the harness was
+		// fetched from a URL (ADR-0045). Config-registered agents fetched
+		// via FetchAgentHarness have relative paths that must be resolved
+		// against the source URL before validation.
+		var deps []Dependency
+		if opts.SourceURL != "" {
+			scriptDeps, err := resolveBaseScripts(ctx, child, opts.SourceURL, opts.OrgAllowlist, opts)
+			if err != nil {
+				return nil, nil, fmt.Errorf("resolving URL-sourced scripts: %w", err)
+			}
+			deps = append(deps, scriptDeps...)
+
+			resourceDeps, err := resolveBaseResources(ctx, child, opts.SourceURL, opts.OrgAllowlist, opts)
+			if err != nil {
+				return nil, nil, fmt.Errorf("resolving URL-sourced resources: %w", err)
+			}
+			deps = append(deps, resourceDeps...)
+		}
+
 		if err := child.validateForge(); err != nil {
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
 		}
@@ -103,7 +129,7 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		if err := child.Validate(); err != nil {
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
 		}
-		return child, nil, nil
+		return child, deps, nil
 	}
 
 	// Org allowlist is the authority for URL bases.

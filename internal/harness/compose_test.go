@@ -3124,3 +3124,133 @@ func TestResolveBaseHostFiles_EmptyHostFiles(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, deps)
 }
+
+// --- Tests for URL-sourced harnesses without base: field (SourceURL) ---
+
+func TestLoadWithBase_SourceURL_ResolvesResources(t *testing.T) {
+	// A URL-sourced harness with no base: field should have its relative
+	// resource paths resolved against the source URL (ADR-0045).
+	agentContent := []byte("# triage agent definition")
+	policyContent := []byte("# triage policy")
+	preScript := []byte("#!/bin/bash\necho pre")
+	postScript := []byte("#!/bin/bash\necho post")
+
+	harnessContent := []byte(`
+role: triage
+slug: triage
+agent: agents/triage.md
+policy: policies/triage.yaml
+pre_script: scripts/pre-triage.sh
+post_script: scripts/post-triage.sh
+`)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/harness/triage.yaml":
+			w.Write(harnessContent)
+		case "/agents/triage.md":
+			w.Write(agentContent)
+		case "/policies/triage.yaml":
+			w.Write(policyContent)
+		case "/scripts/pre-triage.sh":
+			w.Write(preScript)
+		case "/scripts/post-triage.sh":
+			w.Write(postScript)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	// Write the harness locally (simulating FetchAgentHarness caching it)
+	path := writeTestHarness(t, dir, "triage.yaml", string(harnessContent))
+
+	sourceURL := server.URL + "/harness/triage.yaml"
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		SourceURL:     sourceURL,
+	})
+	require.NoError(t, err)
+
+	// All resource paths should be resolved to local cache paths
+	assert.True(t, filepath.IsAbs(h.Agent), "agent should be absolute cache path, got %s", h.Agent)
+	assert.True(t, filepath.IsAbs(h.Policy), "policy should be absolute cache path, got %s", h.Policy)
+	assert.True(t, filepath.IsAbs(h.PreScript), "pre_script should be absolute cache path")
+	assert.True(t, filepath.IsAbs(h.PostScript), "post_script should be absolute cache path")
+
+	// Verify cached content matches
+	gotAgent, err := os.ReadFile(h.Agent)
+	require.NoError(t, err)
+	assert.Equal(t, agentContent, gotAgent)
+
+	gotPolicy, err := os.ReadFile(h.Policy)
+	require.NoError(t, err)
+	assert.Equal(t, policyContent, gotPolicy)
+
+	gotPre, err := os.ReadFile(h.PreScript)
+	require.NoError(t, err)
+	assert.Equal(t, preScript, gotPre)
+
+	gotPost, err := os.ReadFile(h.PostScript)
+	require.NoError(t, err)
+	assert.Equal(t, postScript, gotPost)
+
+	// Dependencies should include scripts and resources
+	assert.NotEmpty(t, deps)
+	fieldNames := map[string]bool{}
+	for _, d := range deps {
+		fieldNames[d.Field] = true
+	}
+	assert.True(t, fieldNames["pre_script"], "should have pre_script dep")
+	assert.True(t, fieldNames["post_script"], "should have post_script dep")
+	assert.True(t, fieldNames["agent"], "should have agent dep")
+	assert.True(t, fieldNames["policy"], "should have policy dep")
+}
+
+func TestLoadWithBase_SourceURL_NoRelativePaths(t *testing.T) {
+	// A URL-sourced harness with no relative paths should be a no-op.
+	harnessContent := []byte(`
+role: test
+slug: test-agent
+agent: /absolute/path/agent.md
+`)
+
+	dir := t.TempDir()
+	path := writeTestHarness(t, dir, "test.yaml", string(harnessContent))
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		SourceURL: "https://example.com/harness/test.yaml",
+	})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "test", h.Role)
+}
+
+func TestLoadWithBase_NoSourceURL_NoResolution(t *testing.T) {
+	// Without SourceURL, a no-base harness should not attempt URL resolution
+	// (original behavior preserved).
+	harnessContent := []byte(`
+role: test
+agent: agents/test.md
+`)
+
+	dir := t.TempDir()
+	path := writeTestHarness(t, dir, "test.yaml", string(harnessContent))
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "agents/test.md", h.Agent, "agent should remain relative without SourceURL")
+}

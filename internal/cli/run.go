@@ -217,6 +217,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	printer.StepStart("Loading harness: " + harnessPath)
 
+	// If the agent was fetched from a URL, forward the source URL so
+	// LoadWithBase can resolve relative resources even without a base:
+	// field (ADR-0045 resource resolution for config-registered agents).
+	if len(fetchDeps) > 0 && fetchDeps[0].URL != "" {
+		composeOpts.SourceURL = fetchDeps[0].URL
+	}
+
 	// If the harness has a URL base and org config failed to load,
 	// load it strictly now so LoadWithBase gets a proper error path
 	// rather than an unhelpful "URL base requires allowed_remote_resources".
