@@ -1265,6 +1265,23 @@ func (c *LiveClient) DeleteFile(ctx context.Context, owner, repo, path, message 
 	})
 }
 
+// GetBranchRef returns the HEAD commit SHA for the named branch.
+func (c *LiveClient) GetBranchRef(ctx context.Context, owner, repo, branch string) (string, error) {
+	refResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", owner, repo, branch))
+	if err != nil {
+		return "", fmt.Errorf("get branch ref %s/%s@%s: %w", owner, repo, branch, err)
+	}
+	var ref struct {
+		Object struct {
+			SHA string `json:"sha"`
+		} `json:"object"`
+	}
+	if err := decodeJSON(refResp, &ref); err != nil {
+		return "", fmt.Errorf("decode branch ref: %w", err)
+	}
+	return ref.Object.SHA, nil
+}
+
 // CreateBranch creates a new branch from the repository's default branch.
 func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName string) error {
 	// Step 1: Get the default branch name.

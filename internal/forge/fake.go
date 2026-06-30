@@ -21,6 +21,7 @@ func NewFakeClient() *FakeClient {
 		Errors:          make(map[string]error),
 		DirContents:     make(map[string][]DirectoryEntry),
 		FileContentsRef: make(map[string][]byte),
+		BranchRefs:      make(map[string]string),
 	}
 }
 
@@ -150,6 +151,9 @@ type FakeClient struct {
 
 	// File contents at specific refs for GetFileContentAtRef.
 	FileContentsRef map[string][]byte // key: "owner/repo/path@ref"
+
+	// Branch refs for GetBranchRef.
+	BranchRefs map[string]string // key: "owner/repo/branch" → commit SHA
 
 	// Error injection: key is method name, value is error to return.
 	Errors map[string]error
@@ -559,6 +563,22 @@ func (f *FakeClient) CommitFilesToBranch(_ context.Context, owner, repo, branch,
 
 	changed := f.CommitFilesChanged == nil || *f.CommitFilesChanged
 	return changed, nil
+}
+
+func (f *FakeClient) GetBranchRef(_ context.Context, owner, repo, branch string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetBranchRef"); e != nil {
+		return "", e
+	}
+
+	key := owner + "/" + repo + "/" + branch
+	sha, ok := f.BranchRefs[key]
+	if !ok {
+		return "", fmt.Errorf("%w: branch %s in %s/%s", ErrNotFound, branch, owner, repo)
+	}
+	return sha, nil
 }
 
 func (f *FakeClient) CreateBranch(_ context.Context, owner, repo, branchName string) error {
