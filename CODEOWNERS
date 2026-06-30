@@ -1,6 +1,6 @@
 # These users have approval access to all resources (wildcard)
 * @fullsend-ai/core
 
-# Allow the review bot to approve dependency updates
-go.mod @fullsend-ai/core @fullsend-ai-review[bot]
-go.sum @fullsend-ai/core @fullsend-ai-review[bot]
+# Exempt dependency files from CODEOWNERS so any reviewer can approve
+go.mod
+go.sum
