@@ -5,10 +5,12 @@ package admin
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -134,4 +136,48 @@ func TestAcquireOrg_PropagatesErrors(t *testing.T) {
 	// should fall through to the timeout path.
 	_, err := acquireOrgWithClient(ctx, fake, "", "run-4", pool, 1*time.Second, t.Logf)
 	require.Error(t, err)
+}
+
+func TestAcquireOrg_RateLimitSkipsRemainingOrgs(t *testing.T) {
+	fake := forge.NewFakeClient()
+	ctx := context.Background()
+
+	pool := []string{"test-org-1", "test-org-2", "test-org-3"}
+
+	// Inject a rate-limit APIError. Every CreateRepo call will hit this.
+	fake.Errors = map[string]error{
+		"CreateRepo": &gh.APIError{
+			StatusCode: 403,
+			Message:    "API rate limit exceeded for user ID 12345",
+		},
+	}
+
+	// Track how many CreateRepo calls are made per polling round.
+	// With rate-limit detection, the first pass should try org-1,
+	// see the rate limit, and skip orgs 2 and 3 (they share the
+	// same user-level quota). Use a short timeout so we don't block.
+	var logs []string
+	logf := func(format string, args ...any) {
+		msg := fmt.Sprintf(format, args...)
+		logs = append(logs, msg)
+		t.Log(msg)
+	}
+
+	_, err := acquireOrg(ctx, fake, "", "run-5", pool, 2*time.Second, logf)
+	require.Error(t, err)
+
+	// Count how many orgs were attempted before the first "skipping
+	// remaining" message. Without the fix, all 3 would be attempted.
+	// With the fix, only 1 should be attempted before breaking out.
+	firstPassAttempts := 0
+	for _, msg := range logs {
+		if strings.Contains(msg, "skipping remaining") {
+			break
+		}
+		if strings.Contains(msg, "[org-pool] Trying to acquire") {
+			firstPassAttempts++
+		}
+	}
+	assert.Equal(t, 1, firstPassAttempts,
+		"should only attempt 1 org before detecting rate limit and skipping the rest")
 }

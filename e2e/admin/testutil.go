@@ -88,9 +88,15 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 		acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 		if err != nil {
 			logf("[org-pool] Error trying %s: %v", org, err)
+			// Rate limits are per-user, not per-org — trying more orgs
+			// just burns quota and delays recovery. Break immediately.
+			if gh.IsRateLimitError(err) {
+				logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
+				break
+			}
 			// Only attempt stale lock recovery for 422 errors (repo
-			// likely exists). Rate limits, auth failures, and network
-			// errors would just waste more API quota.
+			// likely exists). Auth failures and network errors would
+			// just waste more API quota.
 			var apiErr *gh.APIError
 			if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
 				logf("[org-pool] 422 on %s — will check for stale lock", org)
@@ -139,6 +145,10 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 			acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 			if err != nil {
 				logf("[org-pool] Error trying %s: %v", org, err)
+				if gh.IsRateLimitError(err) {
+					logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
+					break
+				}
 				var apiErr *gh.APIError
 				if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
 					logf("[org-pool] 422 on %s — will check for stale lock", org)

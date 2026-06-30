@@ -100,6 +100,24 @@ func (e *APIError) Unwrap() error {
 	return nil
 }
 
+// IsRateLimitError reports whether err is a GitHub rate-limit error
+// (primary 429, primary-as-403, or secondary 403). It unwraps the
+// error chain, so wrapped errors are detected too.
+func IsRateLimitError(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	if apiErr.StatusCode == http.StatusTooManyRequests {
+		return true
+	}
+	if apiErr.StatusCode == http.StatusForbidden {
+		lower := strings.ToLower(apiErr.Message)
+		return strings.Contains(lower, "rate limit")
+	}
+	return false
+}
+
 const maxRetries = 5
 
 // do performs an HTTP request against the GitHub API with retry on rate limits.
@@ -175,9 +193,9 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 }
 
 // isRetryable returns true for responses that should trigger a retry.
-// GitHub uses 429 for primary rate limits and 403 for secondary rate limits.
-// Secondary rate limits may include a Retry-After header, or may only be
-// identifiable by the response body containing "secondary rate limit".
+// GitHub uses 429 for primary rate limits and 403 for both primary and
+// secondary rate limits. Rate-limit 403s may include a Retry-After header,
+// or may only be identifiable by the response body containing "rate limit".
 // Server errors (500, 502, 503, 504) are also retried as transient failures.
 func isRetryable(resp *http.Response) (bool, []byte) {
 	if resp.StatusCode == http.StatusTooManyRequests {
@@ -194,12 +212,14 @@ func isRetryable(resp *http.Response) (bool, []byte) {
 			io.Copy(io.Discard, resp.Body)
 			return true, nil
 		}
-		// Check body for secondary rate limit without Retry-After header.
+		// Check body for rate limit indicators without Retry-After header.
+		// GitHub returns primary rate limits as 403 with "API rate limit
+		// exceeded" and secondary rate limits with "secondary rate limit".
 		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<16)) // 64KB max
 		if readErr != nil {
 			return false, nil
 		}
-		if strings.Contains(strings.ToLower(string(data)), "secondary rate limit") {
+		if strings.Contains(strings.ToLower(string(data)), "rate limit") {
 			return true, nil
 		}
 		// Not a rate limit — return the body so the caller can still use it.
