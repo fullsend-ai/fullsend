@@ -55,6 +55,7 @@ This is not a product spec. It's an evolving exploration of a hard problem space
   - [Repos Management](docs/plans/repos-management.md) — Implementation plan for declarative multi-repo management
   - [Repos Init](docs/plans/repos-init.md) — Implementation plan for `fullsend repos init` manifest bootstrapping
 - **[docs/guides/](docs/guides/)** — Practical how-to documentation for administrators and developers (see [ADR 0023](docs/ADRs/0023-user-documentation-structure.md))
+- **[docs/spikes/](docs/spikes/)** — Time-boxed investigations and trade-off analyses that inform ADRs (e.g. community mint hosting)
 - **[docs/ADRs/](docs/ADRs/)** — Architecture Decision Records for crystallizing specific decisions (see [ADR 0001](docs/ADRs/0001-use-adrs-for-decision-making.md))
 - **[web/](web/)** — Browser-delivered assets for the public site (document graph today; future Vite app here). Cloudflare Worker config lives in [`cloudflare_site/`](cloudflare_site/) ([ADR 0019](docs/ADRs/0019-web-source-and-cloudflare-site-layout.md)).
 - **[docs/landscape.md](docs/landscape.md)** — Survey of AI code review tools, orchestration patterns, and connectivity gateways; how they relate to our goals (time-sensitive — check the date)
