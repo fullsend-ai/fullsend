@@ -36,9 +36,11 @@ The mint is a GCP Cloud Function that exchanges GitHub OIDC tokens for scoped Gi
 │  │                                                   │           │
 │  │  1. Prevalidate OIDC JWT                          │           │
 │  │     ├─ Check iss == token.actions.githubusercontent.com      │
-│  │     ├─ Extract repository_owner → must be in ALLOWED_ORGS   │
-│  │     └─ Validate job_workflow_ref against                     │
-│  │        ALLOWED_WORKFLOW_FILES (fail-closed)                  │
+│  │     ├─ Extract repository_owner → ALLOWED_ORGS check       │
+│  │     │   (explicit org list, or * for public mint mode)       │
+│  │     └─ Validate job_workflow_ref provenance                  │
+│  │        (tight: .fullsend / upstream / per-repo;              │
+│  │         public: upstream fullsend-ai/fullsend only)          │
 │  │                                                   │           │
 │  │  2. STS Token Exchange                            │           │
 │  │     ├─ POST securitytoken.googleapis.com          │           │
@@ -90,18 +92,33 @@ Custom roles can be registered via the standalone mint's `CUSTOM_ROLE_PERMISSION
 
 ### Mint Security Controls
 
-- **ALLOWED_ORGS**: Allowlist of GitHub orgs that can mint tokens
-- **ALLOWED_WORKFLOW_FILES**: Fail-closed allowlist of workflow filenames permitted to call mint
-- **job_workflow_ref validation**: Only `.fullsend` or `fullsend-ai/fullsend` workflow refs accepted
+Mode is inferred from `ALLOWED_ORGS` — there is no separate trust-mode flag. See [ADR 0059](../../ADRs/0059-public-mint-mode-with-wildcard-allowlists.md) for the full decision.
+
+**Tight mint** (default): explicit comma-separated org list (no `*`).
+
+- **ALLOWED_ORGS**: Only listed orgs may mint tokens
+- **ALLOWED_WORKFLOW_FILES**: Fail-closed allowlist of workflow filenames (use `*` to allow any basename)
+- **job_workflow_ref validation**: `.fullsend` config repo, `fullsend-ai/fullsend` upstream reusables, or registered per-repo workflows (`PER_REPO_WIF_REPOS`)
 - **PER_REPO_WIF_REPOS**: Repos using dedicated WIF providers (repo-scoped isolation)
-- **Minimum permissions**: Tokens are scoped to the role's minimum permission set, not the App's full permissions
+
+**Public mint**: `ALLOWED_ORGS` contains `*`.
+
+- **ALLOWED_ORGS**: Any org may mint (cross-org isolation still enforced at installation lookup)
+- **job_workflow_ref validation**: Only `fullsend-ai/fullsend/.github/workflows/` (any ref — tag, branch, or SHA)
+- **PER_REPO_WIF_REPOS**: Leave unset or empty; all repos use `WIF_PROVIDER_NAME`
+- **ALLOWED_WORKFLOW_FILES**: Basename gate is not applied in public mode
+- **mint enroll / unenroll**: No-op for org registration; per-repo WIF registration is rejected
+
+- **Minimum permissions**: Tokens are scoped to the role's minimum permission set, not the App's full permissions (both modes)
 
 ### Multi-Org Support
 
 A single mint instance can serve multiple orgs:
-- `EnsureOrgInMint()` additively appends orgs to `ALLOWED_ORGS` env var
+
+- **Tight mode:** `EnsureOrgInMint()` additively appends orgs to `ALLOWED_ORGS`
+- **Public mode:** `ALLOWED_ORGS=*` — no per-org registration required; rollback to tight mode is config-only (replace `*` with an explicit org list)
 - `ROLE_APP_IDS` maps `{role}` to GitHub App IDs (shared across all enrolled orgs)
-- Org isolation is enforced via `ALLOWED_ORGS`, WIF conditions, and installation verification — not per-org app ID entries
+- Org isolation at token issuance uses the OIDC `repository_owner` claim and GitHub App installation lookup — not per-org app ID entries
 
 ### Status Endpoint
 

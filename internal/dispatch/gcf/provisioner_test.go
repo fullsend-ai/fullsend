@@ -2418,6 +2418,54 @@ func TestEnsureOrgInMint_ProceedsOnFirstEnrollment(t *testing.T) {
 	assert.Equal(t, "new-org", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
 }
 
+func TestEnsureOrgInMint_PublicModeNoOp(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "*",
+			"ROLE_APP_IDS": `{"coder":"100"}`,
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
+	require.NoError(t, err)
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
+func TestRegisterPerRepoWIF_PublicModeRejected(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "*",
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/my-service")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "public mode")
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
+func TestRemoveOrgFromMint_PublicModeRejected(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "*",
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RemoveOrgFromMint(context.Background(), "acme-corp")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "public mode")
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
 func TestRegisterPerRepoWIF_AddsNewRepo(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.functionInfo = &FunctionInfo{

@@ -58,9 +58,24 @@ func TestValidateOrgAllowed(t *testing.T) {
 	assert.Error(t, ValidateOrgAllowed("unknown", orgs))
 }
 
+func TestIsPublicMint(t *testing.T) {
+	assert.True(t, IsPublicMint([]string{"*"}))
+	assert.True(t, IsPublicMint([]string{"org1", "*"}))
+	assert.False(t, IsPublicMint([]string{"myorg"}))
+	assert.False(t, IsPublicMint(nil))
+}
+
+func TestValidateOrgAllowed_PublicMode(t *testing.T) {
+	public := []string{"*"}
+	assert.NoError(t, ValidateOrgAllowed("anyorg", public))
+	assert.NoError(t, ValidateOrgAllowed("AnotherOrg", public))
+	assert.Error(t, ValidateOrgAllowed("", public))
+}
+
 func TestValidateWorkflowRef(t *testing.T) {
 	perRepo := map[string]bool{"myorg/my-repo": true}
 	allowedFiles := []string{"dispatch.yml", "triage.yml"}
+	tightOrgs := []string{"myorg"}
 
 	tests := []struct {
 		name       string
@@ -115,7 +130,7 @@ func TestValidateWorkflowRef(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := ValidateWorkflowRef(tt.ref, tt.repository, perRepo, allowedFiles)
+			err := ValidateWorkflowRef(tt.ref, tt.repository, tightOrgs, perRepo, allowedFiles)
 			if tt.wantErr == "" {
 				assert.NoError(t, err)
 			} else {
@@ -130,7 +145,75 @@ func TestValidateWorkflowRef_Wildcard(t *testing.T) {
 	err := ValidateWorkflowRef(
 		"myorg/.fullsend/.github/workflows/anything.yml@refs/heads/main",
 		"myorg/.fullsend",
+		[]string{"myorg"},
 		nil, []string{"*"},
 	)
 	assert.NoError(t, err)
+}
+
+func TestValidateWorkflowRef_PublicMode(t *testing.T) {
+	publicOrgs := []string{"*"}
+	perRepo := map[string]bool{"myorg/my-repo": true}
+
+	tests := []struct {
+		name       string
+		ref        string
+		repository string
+		wantErr    string
+	}{
+		{
+			"upstream workflow main",
+			"fullsend-ai/fullsend/.github/workflows/reusable-coder.yml@refs/heads/main",
+			"myorg/my-repo",
+			"",
+		},
+		{
+			"upstream workflow tag",
+			"fullsend-ai/fullsend/.github/workflows/reusable-coder.yml@refs/tags/v1.0.0",
+			"myorg/my-repo",
+			"",
+		},
+		{
+			"upstream workflow sha",
+			"fullsend-ai/fullsend/.github/workflows/reusable-coder.yml@abc123def456",
+			"myorg/my-repo",
+			"",
+		},
+		{
+			"legacy fullsend config repo",
+			"myorg/.fullsend/.github/workflows/dispatch.yml@refs/heads/main",
+			"myorg/.fullsend",
+			"public mint mode",
+		},
+		{
+			"per-repo self workflow",
+			"myorg/my-repo/.github/workflows/triage.yml@refs/heads/main",
+			"myorg/my-repo",
+			"public mint mode",
+		},
+		{
+			"non-workflow path",
+			"fullsend-ai/fullsend/scripts/run.sh@refs/heads/main",
+			"myorg/my-repo",
+			"does not reference a workflow file",
+		},
+		{
+			"basename not in allowlist still passes",
+			"fullsend-ai/fullsend/.github/workflows/custom.yml@refs/heads/main",
+			"myorg/my-repo",
+			"",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateWorkflowRef(tt.ref, tt.repository, publicOrgs, perRepo, []string{"dispatch.yml"})
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			}
+		})
+	}
 }

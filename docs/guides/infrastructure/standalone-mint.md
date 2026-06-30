@@ -103,7 +103,7 @@ The standalone mint is configured entirely through environment variables:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
-| `ALLOWED_ORGS` | Comma-separated list of GitHub orgs allowed to request tokens | `myorg,myorg-sandbox` |
+| `ALLOWED_ORGS` | Comma-separated GitHub orgs allowed to request tokens, or `*` for public mint mode (any org; upstream-only workflow provenance) | `myorg,myorg-sandbox` or `*` |
 | `ROLE_APP_IDS` | JSON map of role name to GitHub App ID (use plain role names, not org-prefixed) | `{"triage":"4087047","scanner":"5555555"}` |
 | `OIDC_AUDIENCE` | OIDC audience claim (must match what workflows send) | `fullsend-mint` |
 | `PEM_DIR` | Path to directory containing `{role}.pem` files | `./pems` |
@@ -117,6 +117,14 @@ The standalone mint is configured entirely through environment variables:
 | `CUSTOM_ROLE_PERMISSIONS` | JSON map of custom role permissions (see below) | `{"scanner":{"contents":"read"}}` |
 | `PER_REPO_WIF_REPOS` | Comma-separated repos requiring per-repo WIF | `myorg/private-repo` |
 | `PORT` | HTTP listen port | `8080` (default) |
+
+### Public mint mode
+
+Set `ALLOWED_ORGS=*` to enable public mint mode ([ADR 0059](../../ADRs/0059-public-mint-mode-with-wildcard-allowlists.md)):
+
+- Any org may request tokens (installation lookup still scopes tokens to the requesting org)
+- `job_workflow_ref` must reference `fullsend-ai/fullsend/.github/workflows/` only
+- Leave `PER_REPO_WIF_REPOS` unset; the basename gate (`ALLOWED_WORKFLOW_FILES`) is not applied
 
 ### Example: local roles with fallback proxy
 

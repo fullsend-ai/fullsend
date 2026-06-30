@@ -84,6 +84,10 @@ func parseAllowedOrgs(allowedOrgs string) []string {
 	return orgs
 }
 
+func isPublicMintEnv(allowedOrgs string) bool {
+	return mintcore.IsPublicMint(parseAllowedOrgs(allowedOrgs))
+}
+
 // pemSecretRoles maps enrolled roles to Secret Manager PEM keys, deduplicating
 // aliases (e.g., fix and coder both map to coder).
 func pemSecretRoles(roles []string) []string {
@@ -590,21 +594,29 @@ func verifyEnrollment(ctx context.Context, printer *ui.Printer, provisioner enro
 
 	orgPresent := false
 	allowedOrgs := verifyEnvVars["ALLOWED_ORGS"]
-	for _, o := range strings.Split(allowedOrgs, ",") {
-		if strings.EqualFold(strings.TrimSpace(o), org) {
-			orgPresent = true
-			break
+	if isPublicMintEnv(allowedOrgs) {
+		orgPresent = true
+	} else {
+		for _, o := range strings.Split(allowedOrgs, ",") {
+			if strings.EqualFold(strings.TrimSpace(o), org) {
+				orgPresent = true
+				break
+			}
 		}
 	}
 
 	if orgPresent {
-		orgCount := 0
-		for _, o := range strings.Split(allowedOrgs, ",") {
-			if strings.TrimSpace(o) != "" && strings.TrimSpace(o) != gcf.PlaceholderOrg {
-				orgCount++
+		if isPublicMintEnv(allowedOrgs) {
+			printer.StepDone("Public mint mode (ALLOWED_ORGS=*) — all orgs allowed")
+		} else {
+			orgCount := 0
+			for _, o := range strings.Split(allowedOrgs, ",") {
+				if strings.TrimSpace(o) != "" && strings.TrimSpace(o) != gcf.PlaceholderOrg {
+					orgCount++
+				}
 			}
+			printer.StepDone(fmt.Sprintf("ALLOWED_ORGS: %d orgs (%s present)", orgCount, org))
 		}
-		printer.StepDone(fmt.Sprintf("ALLOWED_ORGS: %d orgs (%s present)", orgCount, org))
 	} else {
 		printer.StepFail("Post-write verification FAILED")
 		printer.StepInfo(fmt.Sprintf("ALLOWED_ORGS: %s MISSING from traffic-serving revision", org))
@@ -642,6 +654,19 @@ func runMintEnrollOrg(ctx context.Context, printer *ui.Printer, org, project, re
 
 	if len(mintcore.RoleOnlyAppIDs(discovery.RoleAppIDs)) == 0 {
 		return fmt.Errorf("mint has no role app IDs configured — bootstrap with 'mint deploy --pem-dir' or 'admin install' first")
+	}
+
+	trafficEnv, _ := provisioner.GetServiceTrafficEnvVars(ctx)
+	if isPublicMintEnv(trafficEnv["ALLOWED_ORGS"]) {
+		printer.Blank()
+		printer.StepInfo("Mint is in public mode (ALLOWED_ORGS=*) — org registration is not required")
+		printer.Blank()
+		printer.Summary("Enrollment complete", []string{
+			fmt.Sprintf("Organization: %s", org),
+			fmt.Sprintf("Mint URL: %s", discovery.URL),
+			"Mode: public (all orgs allowed)",
+		})
+		return nil
 	}
 
 	if dryRun {
@@ -721,6 +746,20 @@ func runMintEnrollRepo(ctx context.Context, printer *ui.Printer, repoFullName, p
 
 	if len(mintcore.RoleOnlyAppIDs(discovery.RoleAppIDs)) == 0 {
 		return fmt.Errorf("mint has no role app IDs configured — bootstrap with 'mint deploy --pem-dir' or 'admin install' first")
+	}
+
+	trafficEnv, _ := provisioner.GetServiceTrafficEnvVars(ctx)
+	if isPublicMintEnv(trafficEnv["ALLOWED_ORGS"]) {
+		printer.Blank()
+		printer.StepInfo("Mint is in public mode (ALLOWED_ORGS=*) — per-repo WIF registration is not supported")
+		printer.StepInfo("Per-repo installs use the default WIF provider and upstream reusable workflows")
+		printer.Blank()
+		printer.Summary("Enrollment complete", []string{
+			fmt.Sprintf("Repository: %s", repoFullName),
+			fmt.Sprintf("Mint URL: %s", discovery.URL),
+			"Mode: public (all orgs allowed)",
+		})
+		return nil
 	}
 
 	if dryRun {
@@ -1214,7 +1253,14 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 	}
 	roleOnlyIDs := mintcore.RoleOnlyAppIDs(roleAppIDs)
 
-	if org != "" {
+	publicMint := trafficEnv != nil && isPublicMintEnv(trafficEnv["ALLOWED_ORGS"])
+	if publicMint {
+		printer.Blank()
+		printer.Header("Mint Mode")
+		printer.StepInfo("  Public (ALLOWED_ORGS=*)")
+	}
+
+	if org != "" && !publicMint {
 		found := false
 		for _, o := range enrolledOrgs {
 			if o == org {
@@ -1230,7 +1276,9 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 
 	printer.Blank()
 	printer.Header("Enrolled Organizations")
-	if len(enrolledOrgs) == 0 {
+	if publicMint {
+		printer.StepInfo("  * (public mode — all orgs)")
+	} else if len(enrolledOrgs) == 0 {
 		printer.StepInfo("  (none)")
 	} else {
 		for _, o := range enrolledOrgs {

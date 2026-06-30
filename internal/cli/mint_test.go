@@ -637,6 +637,13 @@ func TestParseAllowedOrgs_SkipsPlaceholder(t *testing.T) {
 	assert.Equal(t, []string{"acme", "widget"}, orgs)
 }
 
+func TestIsPublicMintEnv(t *testing.T) {
+	assert.True(t, isPublicMintEnv("*"))
+	assert.True(t, isPublicMintEnv("org1,*"))
+	assert.False(t, isPublicMintEnv("acme,widget"))
+	assert.False(t, isPublicMintEnv(""))
+}
+
 func TestPemSecretRoles_DeduplicatesAliases(t *testing.T) {
 	roles := pemSecretRoles([]string{"fix", "coder", "triage", "fix"})
 	assert.Equal(t, []string{"coder", "triage"}, roles)
@@ -680,6 +687,18 @@ func TestVerifyEnrollment_OrgMissing(t *testing.T) {
 		},
 	}, "widget", "my-project")
 	assert.Contains(t, out.String(), "FAILED")
+}
+
+func TestVerifyEnrollment_PublicMode(t *testing.T) {
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	verifyEnrollment(context.Background(), printer, &fakeEnrollmentVerifier{
+		envVars: map[string]string{
+			"ALLOWED_ORGS": "*",
+		},
+	}, "any-org", "my-project")
+	assert.Contains(t, out.String(), "Public mint mode")
+	assert.NotContains(t, out.String(), "FAILED")
 }
 
 func TestVerifyEnrollment_FallsBackToTrafficEnvVars(t *testing.T) {

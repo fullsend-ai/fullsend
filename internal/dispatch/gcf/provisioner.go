@@ -381,6 +381,26 @@ func (p *Provisioner) GetExistingRoleAppIDs(ctx context.Context) (map[string]str
 	return d.RoleAppIDs, nil
 }
 
+// isTrafficMintPublic reports whether the traffic-serving revision has public mint mode.
+func (p *Provisioner) isTrafficMintPublic(ctx context.Context) (bool, error) {
+	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return false, fmt.Errorf("reading traffic-serving env vars: %w", err)
+	}
+	return mintcore.IsPublicMint(parseAllowedOrgsEnv(trafficEnvVars["ALLOWED_ORGS"])), nil
+}
+
+// parseAllowedOrgsEnv splits a comma-separated ALLOWED_ORGS env value.
+func parseAllowedOrgsEnv(allowedOrgs string) []string {
+	var orgs []string
+	for _, o := range strings.Split(allowedOrgs, ",") {
+		if trimmed := strings.TrimSpace(o); trimmed != "" {
+			orgs = append(orgs, trimmed)
+		}
+	}
+	return orgs
+}
+
 // EnsureOrgInMint validates that a mint function exists at expectedURL and
 // that the given org is registered in ALLOWED_ORGS. If the org is missing,
 // it updates the function's env vars to include it.
@@ -407,6 +427,10 @@ func (p *Provisioner) EnsureOrgInMint(ctx context.Context, expectedURL string, o
 	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
 	if err != nil {
 		return fmt.Errorf("reading traffic-serving env vars: %w", err)
+	}
+
+	if mintcore.IsPublicMint(parseAllowedOrgsEnv(trafficEnvVars["ALLOWED_ORGS"])) {
+		return nil
 	}
 
 	allowedOrgs := trafficEnvVars["ALLOWED_ORGS"]
@@ -477,6 +501,10 @@ func (p *Provisioner) RegisterPerRepoWIF(ctx context.Context, repo string) error
 	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
 	if err != nil {
 		return fmt.Errorf("reading traffic-serving env vars: %w", err)
+	}
+
+	if mintcore.IsPublicMint(parseAllowedOrgsEnv(trafficEnvVars["ALLOWED_ORGS"])) {
+		return fmt.Errorf("per-repo WIF registration is not supported when mint is in public mode (ALLOWED_ORGS=*)")
 	}
 
 	repo = strings.ToLower(repo)
@@ -604,10 +632,16 @@ func (p *Provisioner) provisionWithExistingMint(ctx context.Context) (map[string
 		}
 	}
 
-	// Per-repo WIF registration — when cfg.Repo is set.
+	// Per-repo WIF registration — when cfg.Repo is set (not used in public mint mode).
 	if p.cfg.Repo != "" {
-		if err := p.RegisterPerRepoWIF(ctx, p.cfg.Repo); err != nil {
-			return nil, fmt.Errorf("registering per-repo WIF: %w", err)
+		publicMint, err := p.isTrafficMintPublic(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !publicMint {
+			if err := p.RegisterPerRepoWIF(ctx, p.cfg.Repo); err != nil {
+				return nil, fmt.Errorf("registering per-repo WIF: %w", err)
+			}
 		}
 	}
 
@@ -880,8 +914,14 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	}
 
 	if p.cfg.Repo != "" {
-		if err := p.RegisterPerRepoWIF(ctx, p.cfg.Repo); err != nil {
-			return nil, fmt.Errorf("registering per-repo WIF: %w", err)
+		publicMint, err := p.isTrafficMintPublic(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !publicMint {
+			if err := p.RegisterPerRepoWIF(ctx, p.cfg.Repo); err != nil {
+				return nil, fmt.Errorf("registering per-repo WIF: %w", err)
+			}
 		}
 	}
 
@@ -1460,6 +1500,10 @@ func (p *Provisioner) RemoveOrgFromMint(ctx context.Context, org string) error {
 	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
 	if err != nil {
 		return fmt.Errorf("reading traffic-serving env vars: %w", err)
+	}
+
+	if mintcore.IsPublicMint(parseAllowedOrgsEnv(trafficEnvVars["ALLOWED_ORGS"])) {
+		return fmt.Errorf("cannot remove individual orgs when mint is in public mode (ALLOWED_ORGS=*); set an explicit org list instead")
 	}
 
 	updated := make(map[string]string, len(trafficEnvVars))

@@ -56,8 +56,27 @@ func (a Audience) Contains(aud string) bool {
 	return false
 }
 
+const upstreamRepoPrefix = "fullsend-ai/fullsend/"
+
+// IsPublicMint reports whether ALLOWED_ORGS contains *, enabling public mint mode.
+func IsPublicMint(allowedOrgs []string) bool {
+	for _, entry := range allowedOrgs {
+		if entry == "*" {
+			return true
+		}
+	}
+	return false
+}
+
 // ValidateOrgAllowed checks that org is in the allowed list (case-insensitive).
+// When allowedOrgs contains *, any non-empty org is accepted (public mint mode).
 func ValidateOrgAllowed(org string, allowedOrgs []string) error {
+	if org == "" {
+		return fmt.Errorf("missing repository_owner claim")
+	}
+	if IsPublicMint(allowedOrgs) {
+		return nil
+	}
 	for _, entry := range allowedOrgs {
 		if strings.EqualFold(entry, org) {
 			return nil
@@ -67,17 +86,34 @@ func ValidateOrgAllowed(org string, allowedOrgs []string) error {
 }
 
 // ValidateWorkflowRef checks that a job_workflow_ref claim references an
-// allowed workflow. It validates that the ref belongs to the token owner's
-// .fullsend config repo, the upstream fullsend-ai/fullsend repo, or a
-// registered per-repo repo, and that the workflow file is in the allowed
-// list. The repository parameter is the token's repository claim and is
-// used to cross-check per-repo matches.
-func ValidateWorkflowRef(ref, repository string, perRepoWIFRepos map[string]bool, allowedWorkflowFiles []string) error {
+// allowed workflow. In public mint mode (allowedOrgs contains *), only upstream
+// fullsend-ai/fullsend workflows are accepted and the basename allowlist is
+// skipped. In tight mode, the ref may belong to the token owner's .fullsend
+// config repo, the upstream fullsend-ai/fullsend repo, or a registered
+// per-repo repo, and the workflow file must be in the allowed list. The
+// repository parameter is the token's repository claim and is used to
+// cross-check per-repo matches.
+func ValidateWorkflowRef(ref, repository string, allowedOrgs []string, perRepoWIFRepos map[string]bool, allowedWorkflowFiles []string) error {
 	if ref == "" {
 		return fmt.Errorf("missing job_workflow_ref claim")
 	}
 
 	lowerRef := strings.ToLower(ref)
+
+	if IsPublicMint(allowedOrgs) {
+		if !strings.HasPrefix(lowerRef, upstreamRepoPrefix) {
+			return fmt.Errorf("job_workflow_ref must reference fullsend-ai/fullsend upstream workflows in public mint mode")
+		}
+		relPath := strings.TrimPrefix(lowerRef, upstreamRepoPrefix)
+		if atIdx := strings.Index(relPath, "@"); atIdx > 0 {
+			relPath = relPath[:atIdx]
+		}
+		if !strings.HasPrefix(relPath, ".github/workflows/") {
+			return fmt.Errorf("job_workflow_ref does not reference a workflow file")
+		}
+		return nil
+	}
+
 	var relPath string
 	matched := false
 
@@ -95,9 +131,8 @@ func ValidateWorkflowRef(ref, repository string, perRepoWIFRepos map[string]bool
 	}
 
 	if !matched {
-		upstreamPrefix := "fullsend-ai/fullsend/"
-		if strings.HasPrefix(lowerRef, upstreamPrefix) {
-			relPath = strings.TrimPrefix(lowerRef, upstreamPrefix)
+		if strings.HasPrefix(lowerRef, upstreamRepoPrefix) {
+			relPath = strings.TrimPrefix(lowerRef, upstreamRepoPrefix)
 			matched = true
 		}
 	}

@@ -262,6 +262,12 @@ Prior versions of `mint enroll` accepted `--app-set`, `--role-app-ids`, `--roles
 
 Role PEM secrets and `ROLE_APP_IDS` must already exist on the mint, created during `mint deploy --pem-dir` or `mint add-role`. Enrollment does not create, copy, or modify PEM secrets or app ID mappings.
 
+### Public mint mode
+
+When the mint is configured with `ALLOWED_ORGS=*` ([ADR 0059](../../ADRs/0059-public-mint-mode-with-wildcard-allowlists.md)), `mint enroll` is a no-op for org registration — all orgs are already allowed. Per-repo WIF registration (`mint enroll owner/repo`) is not supported in public mode; per-repo installs use the default WIF provider and upstream reusable workflows.
+
+`mint unenroll` cannot remove individual orgs from a public mint. To restrict access, replace `ALLOWED_ORGS=*` with an explicit org list (config-only rollback; no PEM rotation required).
+
 ### Post-enrollment verification
 
 After updating the mint, the CLI automatically verifies that the enrollment took effect on the traffic-serving revision:
