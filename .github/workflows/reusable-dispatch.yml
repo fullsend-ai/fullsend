@@ -371,7 +371,7 @@ jobs:
           if [[ -n "$ROLES" ]] && ! echo "$ROLES" | grep -Fqx "$STAGE_ROLE"; then
             # Backward compat: "fullsend" in roles implies retro + prioritize
             if [[ "$STAGE" =~ ^(retro|prioritize)$ ]] && echo "$ROLES" | grep -Fqx "fullsend"; then
-              :
+              echo "::notice::Stage '$STAGE' allowed via 'fullsend' role — if customizing roles, add '$STAGE' explicitly"
             else
               echo "::notice::Stage '$STAGE' skipped — role '$STAGE_ROLE' not in configured roles"
               echo "skipped=true" >> "${GITHUB_OUTPUT}"
