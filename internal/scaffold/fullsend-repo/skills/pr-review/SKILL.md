@@ -459,6 +459,27 @@ orchestrator's core value-add — no sub-agent sees findings from other
 dimensions, so only the orchestrator can detect overlaps and
 cross-references.
 
+**Trust subagent investigation results.** Sub-agents perform thorough
+investigation during their dispatch — reading source files, querying
+external APIs (npm, GitHub, etc.), and tracing code paths. Their tool
+call outputs and conclusions are authoritative evidence. During
+synthesis, the orchestrator MUST:
+
+1. **Consume subagent evidence as-is.** Do not re-execute commands
+   that a subagent already ran (e.g., `npm view`, `gh api` for tags,
+   releases, or commits, `curl` to registries). The subagent's output
+   is the evidence — re-running the same command wastes tool calls and
+   adds latency without producing new information.
+2. **Re-investigate only on conflict.** The only justification for
+   re-executing a subagent's command is when two subagents return
+   contradictory findings about the same artifact and the orchestrator
+   needs to resolve the conflict. In that case, note why the
+   re-investigation is necessary.
+3. **Do not re-read files that subagents already read.** If a
+   subagent's findings reference specific file contents or code
+   patterns, trust those references. Use `Read` or `Grep` only for
+   files or lines that no subagent examined.
+
 #### 6a. Group findings by file and line range
 
 Group all findings by file path and overlapping line ranges. Findings
@@ -924,3 +945,9 @@ wins.
 - **In pipeline mode, `gh pr review` is reserved for the post-script.**
   The sandbox token is read-only. Write JSON to
   `$FULLSEND_OUTPUT_DIR/agent-result.json` and exit.
+- **Do not re-execute subagent investigation commands during
+  synthesis.** Subagent tool call outputs are authoritative evidence.
+  The orchestrator must not re-run the same external commands (npm
+  view, gh api, curl, etc.) that a subagent already executed unless
+  resolving a specific conflict between subagent findings. See step 6
+  for details.
