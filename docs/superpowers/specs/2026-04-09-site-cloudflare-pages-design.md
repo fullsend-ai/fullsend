@@ -11,7 +11,7 @@ The repository publishes a **static documentation site**. Today the primary surf
 
 **Implemented:** [`.github/workflows/site-build.yml`](../../../.github/workflows/site-build.yml) and [`.github/workflows/site-deploy.yml`](../../../.github/workflows/site-deploy.yml) use the build → artifact → `workflow_run` deploy split. **Production** uses **`wrangler deploy`** (Worker + static assets). **Pull requests** use **`wrangler versions upload --preview-alias …`** so previews get a stable **`*.workers.dev`** URL without promoting a new production version. The previous GitHub Pages workflow has been **removed**.
 
-**Operator setup:** Cloudflare **Worker**, API token with **Workers** permissions, and GitHub Actions secrets/variables are required; see [`docs/site-deployment.md`](../../site-deployment.md).
+**Operator setup:** Cloudflare **Worker**, API token with **Workers** permissions, and GitHub Actions secrets/variables are required; see [`docs/web-admin-deployment.md`](../../web-admin-deployment.md).
 
 ## Goals
 
@@ -90,7 +90,7 @@ Same as before: minimal auditable build; deploy trusts artifacts from the known 
 
 ## Operator documentation
 
-See [`docs/site-deployment.md`](../../site-deployment.md).
+See [`docs/web-admin-deployment.md`](../../web-admin-deployment.md).
 
 ## Testing and acceptance
 

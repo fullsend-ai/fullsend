@@ -236,7 +236,8 @@ export default defineConfig({
             },
             { text: 'Roadmap', link: '/roadmap' },
             { text: 'Landscape', link: '/landscape' },
-            { text: 'Site Deployment', link: '/site-deployment' },
+            { text: 'Doc Site', link: '/doc-site' },
+            { text: 'Web Admin Deployment (On Hold)', link: '/web-admin-deployment' },
             {
               text: 'Architecture Decisions',
               collapsed: true,
