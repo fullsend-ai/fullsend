@@ -163,7 +163,7 @@ func TestAcquireOrg_RateLimitSkipsRemainingOrgs(t *testing.T) {
 		t.Log(msg)
 	}
 
-	_, err := acquireOrg(ctx, fake, "", "run-5", pool, 2*time.Second, logf)
+	_, err := acquireOrgWithClient(ctx, fake, "", "run-5", pool, 2*time.Second, logf)
 	require.Error(t, err)
 
 	// Count how many orgs were attempted before the first "skipping

@@ -191,6 +191,10 @@ func acquireOrgFromClient(ctx context.Context, client forge.Client, token, runID
 		acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 		if err != nil {
 			logf("[org-pool] Error trying %s: %v", org, err)
+			if gh.IsRateLimitError(err) {
+				logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
+				break
+			}
 			var apiErr *gh.APIError
 			if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
 				if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
@@ -224,6 +228,10 @@ func acquireOrgFromClient(ctx context.Context, client forge.Client, token, runID
 		for _, org := range shuffled {
 			acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 			if err != nil {
+				if gh.IsRateLimitError(err) {
+					logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
+					break
+				}
 				var apiErr *gh.APIError
 				if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
 					if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
