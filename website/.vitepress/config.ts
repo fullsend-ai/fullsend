@@ -247,6 +247,11 @@ export default defineConfig({
               collapsed: true,
               items: getMarkdownFiles('problems', 'problems'),
             },
+            {
+              text: 'Experiments (Exploratory)',
+              collapsed: true,
+              items: getMarkdownFiles('experiments', 'experiments'),
+            },
           ],
         },
         {
@@ -266,11 +271,6 @@ export default defineConfig({
                 ...getMarkdownFiles('superpowers/plans', 'superpowers/plans'),
                 ...getMarkdownFiles('plans', 'plans'),
               ],
-            },
-            {
-              text: 'Experiments',
-              collapsed: true,
-              items: getMarkdownFiles('superpowers/experiments', 'superpowers/experiments'),
             },
           ],
         },
