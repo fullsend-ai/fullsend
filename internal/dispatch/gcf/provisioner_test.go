@@ -1980,7 +1980,7 @@ func TestProvisioner_Provision_PublicMintRedeploy(t *testing.T) {
 		State: "ACTIVE",
 		URI:   "https://fullsend-mint-public.run.app",
 		EnvVars: map[string]string{
-			"ALLOWED_ORGS":         "*",
+			"ALLOWED_ORGS":           "*",
 			"FULLSEND_SOURCE_HASH":   srcHash,
 			"ROLE_APP_IDS":           `{"coder":"12345"}`,
 			"ALLOWED_ROLES":          "coder",

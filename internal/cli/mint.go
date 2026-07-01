@@ -958,6 +958,14 @@ func runMintUnenrollOrg(ctx context.Context, printer *ui.Printer, org, project, 
 	}
 	printer.StepDone("Mint verified")
 
+	trafficEnv, _ := provisioner.GetServiceTrafficEnvVars(ctx)
+	if isPublicMintEnv(trafficEnv["ALLOWED_ORGS"]) {
+		printer.Blank()
+		printer.StepInfo("Mint is in public mode (ALLOWED_ORGS=*) — individual org unenroll is not supported")
+		printer.StepInfo("To restrict access, replace ALLOWED_ORGS=* with an explicit org list")
+		return nil
+	}
+
 	if dryRun {
 		printer.Blank()
 		printer.StepInfo("Dry run — no changes will be made")

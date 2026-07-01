@@ -948,6 +948,16 @@ func TestRunMintUnenrollOrg_DryRun(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRunMintUnenrollOrg_PublicMode(t *testing.T) {
+	withMintGCFClient(t, mintPublicDiscoveryClient())
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintUnenrollOrg(context.Background(), printer, "acme", "my-project", "us-central1", false, true, os.Stdin)
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "public mode")
+	assert.Contains(t, out.String(), "not supported")
+}
+
 func TestRunMintUnenrollOrg_Success(t *testing.T) {
 	client := gcf.NewFakeGCFClient(
 		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
