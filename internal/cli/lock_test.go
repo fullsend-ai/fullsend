@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
-	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
@@ -158,19 +158,15 @@ allowed_remote_resources:
 		0o644,
 	))
 
-	fakeClient := forge.NewFakeClient()
-	fakeClient.DirContents["test-org/test-repo/skills/test@main"] = []forge.DirectoryEntry{
-		{Path: "SKILL.md", Type: "file", Size: len(skillMD)},
-		{Path: "scripts/helper.sh", Type: "file", Size: len(helperSh)},
+	fakeFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return skillFiles, nil
 	}
-	fakeClient.FileContentsRef["test-org/test-repo/skills/test/SKILL.md@main"] = skillMD
-	fakeClient.FileContentsRef["test-org/test-repo/skills/test/scripts/helper.sh@main"] = helperSh
 
 	fetch.DefaultPolicy = policy
 	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
 
 	printer := ui.New(os.Stdout)
-	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{forgeClient: fakeClient}, printer)
+	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{treeFetcher: gitfetch.TreeFetchFunc(fakeFetcher)}, printer)
 	require.NoError(t, err)
 
 	lockPath := filepath.Join(dir, "lock.yaml")
@@ -246,13 +242,9 @@ allowed_remote_resources:
 		0o644,
 	))
 
-	fakeClient := forge.NewFakeClient()
-	fakeClient.DirContents["test-org/test-repo/skills/test@main"] = []forge.DirectoryEntry{
-		{Path: "SKILL.md", Type: "file", Size: len(skillMD)},
-		{Path: "scripts/helper.sh", Type: "file", Size: len(helperSh)},
+	fakeFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return skillFiles, nil
 	}
-	fakeClient.FileContentsRef["test-org/test-repo/skills/test/SKILL.md@main"] = skillMD
-	fakeClient.FileContentsRef["test-org/test-repo/skills/test/scripts/helper.sh@main"] = helperSh
 
 	fetch.DefaultPolicy = policy
 	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
@@ -260,7 +252,7 @@ allowed_remote_resources:
 	printer := ui.New(os.Stdout)
 
 	// Step 1: Generate the lock file.
-	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{forgeClient: fakeClient}, printer)
+	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{treeFetcher: gitfetch.TreeFetchFunc(fakeFetcher)}, printer)
 	require.NoError(t, err)
 
 	lockPath := filepath.Join(dir, "lock.yaml")

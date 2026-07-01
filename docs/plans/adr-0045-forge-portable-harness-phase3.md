@@ -8,7 +8,7 @@ Phase 3 completes the "Deprecate" milestone from the ADR migration path. Specifi
 
 1. **`Lint()` diagnostic method warns on missing `role`** — today `Validate()` returns hard errors only. Phase 3 adds a separate `Lint()` method that returns non-fatal diagnostics (warnings), starting with "role is not set; it will be required in a future version." This keeps `Validate()` callers (which treat all errors as hard stops) unaffected.
 
-2. **Consumers migrate to harness-first discovery** — today `loadKnownSlugs()`, `runUninstall`, and `runGitHubUninstall` read agent identity exclusively from `config.yaml`'s `agents:` block. Phase 3 adds remote harness discovery via `forge.Client.ListDirectoryContents` + `GetFileContentAtRef`, and migrates these consumers to check harness files first, falling back to the `agents:` block.
+2. **Consumers migrate to harness-first discovery** — today `loadKnownSlugs()`, `runUninstall`, and `runGitHubUninstall` read agent identity exclusively from `config.yaml`'s `agents:` block. Phase 3 adds remote harness discovery via `forge.Client.ListDirectoryContents` + `GetFileContentAtRef` (used for harness wrapper discovery in config repos, distinct from skill directory fetching which uses `gitfetch.FetchTree`), and migrates these consumers to check harness files first, falling back to the `agents:` block.
 
 3. **`OrgConfig.Agents` becomes optional** — the `Agents` field gains `omitempty` so config.yaml can omit the `agents:` block. When present during load, a deprecation notice is logged. The dual-write during install continues (Phase 4 stops it).
 

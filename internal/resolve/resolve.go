@@ -10,6 +10,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/skill"
 )
@@ -38,10 +39,13 @@ type ResolveOpts struct {
 	TraceID       string
 	AuditLogPath  string
 
-	// ForgeClient is required when the harness contains URL-referenced skills.
-	// Skills are directories on supported forges; the forge API is used to list
-	// and fetch all files in the skill directory.
-	ForgeClient forge.Client
+	// TreeFetcher fetches all files under a path in a remote repository.
+	// When nil, defaults to gitfetch.FetchTree (git sparse checkout).
+	TreeFetcher gitfetch.TreeFetchFunc
+
+	// GitToken is an optional token for authenticating git fetches.
+	// Empty means unauthenticated (sufficient for public repos).
+	GitToken string
 
 	// MaxDepth controls transitive dependency resolution depth.
 	// 0 disables transitive resolution (Phase 1 behavior).
@@ -71,9 +75,9 @@ type resolveState struct {
 // and h.Skills may grow to include transitively resolved skill dependencies.
 // Returns the deduplicated list of resolved dependencies.
 //
-// Skills are directories: when a skill field is a URL, the resolver uses the
-// forge API (via ForgeClient) to list the directory contents, fetch each file,
-// and cache the reconstructed tree. Only URLs pointing to supported forges
+// Skills are directories: when a skill field is a URL, the resolver uses
+// git sparse checkout (via TreeFetcher / gitfetch.FetchTree) to fetch the
+// directory tree and cache it locally. Only URLs pointing to supported forges
 // (github.com) are accepted for skills. Agents and policies remain single files.
 //
 // Skills with dependencies: frontmatter are recursively resolved up to
@@ -320,35 +324,21 @@ func resolveSkillDirURL(ctx context.Context, field, rawURL string, h *harness.Ha
 	fetchedAt := time.Now().UTC()
 
 	if !cacheHit {
-		if opts.ForgeClient == nil {
-			return Dependency{}, "", fmt.Errorf("%s: ForgeClient is required to resolve skill URL %s (not cached)", field, cleanURL)
-		}
 		if opts.FetchPolicy.Offline {
 			return Dependency{}, "", fmt.Errorf("fetching %s from %s: offline mode, no cache entry", field, cleanURL)
 		}
 
-		dirPath := forgeInfo.Path
-		entries, err := opts.ForgeClient.ListDirectoryContents(ctx, forgeInfo.Owner, forgeInfo.Repo, dirPath, forgeInfo.Ref, true)
-		if err != nil {
-			return Dependency{}, "", fmt.Errorf("listing directory for %s at %s: %w", field, cleanURL, err)
+		fetcher := opts.TreeFetcher
+		if fetcher == nil {
+			fetcher = gitfetch.FetchTree
 		}
 
-		files := make(map[string][]byte)
-		for _, e := range entries {
-			if e.Type != "file" {
-				continue
+		files, err := fetcher(ctx, forgeInfo.CloneURL(), forgeInfo.Path, forgeInfo.Ref, opts.GitToken)
+		if err != nil {
+			if opts.GitToken == "" {
+				return Dependency{}, "", fmt.Errorf("fetching directory for %s at %s: %w (hint: set GH_TOKEN or GITHUB_TOKEN for private repos)", field, cleanURL, err)
 			}
-			var fullPath string
-			if dirPath == "" {
-				fullPath = e.Path
-			} else {
-				fullPath = dirPath + "/" + e.Path
-			}
-			content, err := opts.ForgeClient.GetFileContentAtRef(ctx, forgeInfo.Owner, forgeInfo.Repo, fullPath, forgeInfo.Ref)
-			if err != nil {
-				return Dependency{}, "", fmt.Errorf("fetching file %s for %s: %w", e.Path, field, err)
-			}
-			files[e.Path] = content
+			return Dependency{}, "", fmt.Errorf("fetching directory for %s at %s: %w", field, cleanURL, err)
 		}
 
 		actualHash := fetch.ComputeTreeHash(files)

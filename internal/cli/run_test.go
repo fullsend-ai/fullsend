@@ -24,7 +24,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/fetchsvc"
-	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -1778,14 +1777,17 @@ func TestShouldStartFetchService_NoRemoteResources(t *testing.T) {
 	assert.Empty(t, warning)
 }
 
-func TestSetupFetchService_WithForgeClient(t *testing.T) {
+func TestSetupFetchService_WithTreeFetcher(t *testing.T) {
 	tmpDir := t.TempDir()
 	h := &harness.Harness{Agent: "agents/test.md"}
-	mockClient := &mockForgeClient{}
+	mockFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, nil
+	}
 
 	env, shutdown, err := setupFetchService(
 		context.Background(),
-		mockClient,
+		mockFetcher,
+		"test-token",
 		h,
 		func() (string, error) { return "", fmt.Errorf("should not be called") },
 		fetchsvc.ServiceConfig{
@@ -1803,7 +1805,7 @@ func TestSetupFetchService_WithForgeClient(t *testing.T) {
 	assert.Len(t, env.token, 64)
 }
 
-func TestSetupFetchService_ResolvesTokenWhenNoForgeClient(t *testing.T) {
+func TestSetupFetchService_ResolvesTokenWhenNoGitToken(t *testing.T) {
 	tmpDir := t.TempDir()
 	h := &harness.Harness{
 		Agent:                  "agents/test.md",
@@ -1814,6 +1816,7 @@ func TestSetupFetchService_ResolvesTokenWhenNoForgeClient(t *testing.T) {
 	env, shutdown, err := setupFetchService(
 		context.Background(),
 		nil,
+		"",
 		h,
 		func() (string, error) { tokenResolved = true; return "ghp_test", nil },
 		fetchsvc.ServiceConfig{
@@ -1830,13 +1833,14 @@ func TestSetupFetchService_ResolvesTokenWhenNoForgeClient(t *testing.T) {
 	assert.NotEmpty(t, env.addr)
 }
 
-func TestSetupFetchService_NoForgeClientNoRemoteResources(t *testing.T) {
+func TestSetupFetchService_NoTokenNoRemoteResources(t *testing.T) {
 	tmpDir := t.TempDir()
 	h := &harness.Harness{Agent: "agents/test.md"}
 
 	env, shutdown, err := setupFetchService(
 		context.Background(),
 		nil,
+		"",
 		h,
 		func() (string, error) { return "", fmt.Errorf("should not be called") },
 		fetchsvc.ServiceConfig{
@@ -1863,6 +1867,7 @@ func TestSetupFetchService_TokenResolutionFails(t *testing.T) {
 	env, shutdown, err := setupFetchService(
 		context.Background(),
 		nil,
+		"",
 		h,
 		func() (string, error) { return "", fmt.Errorf("no token available") },
 		fetchsvc.ServiceConfig{
@@ -1899,6 +1904,7 @@ func TestSetupFetchService_CustomMaxFetches(t *testing.T) {
 	env, shutdown, err := setupFetchService(
 		context.Background(),
 		nil,
+		"",
 		h,
 		func() (string, error) { return "ghp_test", nil },
 		cfg,
@@ -1916,10 +1922,6 @@ func TestEffectiveMaxRuntimeFetches_MatchesFetchsvcDefault(t *testing.T) {
 		t.Fatalf("harness default %d != fetchsvc.DefaultMaxFetches %d — update defaultMaxRuntimeFetches in harness.go",
 			h.EffectiveMaxRuntimeFetches(), fetchsvc.DefaultMaxFetches)
 	}
-}
-
-type mockForgeClient struct {
-	forge.Client
 }
 
 func TestSetupStatusNotifier_MintURL(t *testing.T) {

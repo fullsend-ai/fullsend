@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
-	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,6 +21,12 @@ import (
 func computeHash(content []byte) string {
 	h := sha256.Sum256(content)
 	return hex.EncodeToString(h[:])
+}
+
+func fakeTreeFetcher(files map[string][]byte) gitfetch.TreeFetchFunc {
+	return func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return files, nil
+	}
 }
 
 func writeTestHarness(t *testing.T, dir, name, content string) string {
@@ -2138,17 +2144,16 @@ role: test
 base: `+baseURL+`
 `)
 
-	// ForgeClient is required for URL-base skill resolution; without it
-	// fetchBaseSkill returns an error. The test server URL is not a
-	// raw.githubusercontent.com URL so the ForgeClient path will fail,
-	// and skill resolution will error.
+	// The test server URL is not a raw.githubusercontent.com URL, so the
+	// forge URL parser cannot extract a clone URL and skill resolution
+	// errors out.
 	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
 		WorkspaceRoot: cacheDir,
 		FetchPolicy:   policy,
 		OrgAllowlist:  []string{server.URL + "/"},
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "GitHub token")
+	assert.Contains(t, err.Error(), "not a raw.githubusercontent.com URL")
 }
 
 func TestLoadWithBase_URLBase_SkillOfflineCacheHit(t *testing.T) {
@@ -2570,37 +2575,41 @@ func TestFetchBaseSkill_CacheHit_AuditError(t *testing.T) {
 	assert.Contains(t, err.Error(), "audit")
 }
 
-func TestFetchBaseSkill_NoForgeClient_Error(t *testing.T) {
+func TestFetchBaseSkill_DefaultTreeFetcherUsed(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
+	// With no TreeFetcher set, the default gitfetch.FetchTree is used.
+	// It will fail because there's no real repo, but the error proves
+	// the default fetcher was invoked.
 	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
 		"https://raw.githubusercontent.com/org/repo/ref/",
 		"skills/common", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
 		})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "GitHub token")
+	assert.Contains(t, err.Error(), "fetching skill directory")
 }
 
-func TestFetchBaseSkill_ForgeClient_ListError(t *testing.T) {
+func TestFetchBaseSkill_TreeFetchError(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	fc := forge.NewFakeClient()
-	fc.Errors["ListDirectoryContents"] = fmt.Errorf("API rate limited")
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("git fetch failed")
+	}
 
 	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
 		"https://raw.githubusercontent.com/org/repo/ref/",
 		"skills/common", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
+			TreeFetcher:   failFetcher,
 		})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "listing skill directory")
+	assert.Contains(t, err.Error(), "fetching skill directory")
 }
 
-func TestFetchBaseSkill_PartialIndexHit_RequiresForgeClient(t *testing.T) {
+func TestFetchBaseSkill_PartialIndexHit_RefetchesViaTreeFetcher(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
@@ -2611,13 +2620,16 @@ func TestFetchBaseSkill_PartialIndexHit_RequiresForgeClient(t *testing.T) {
 	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, fileHash))
 	// Deliberately omit the "skill:" tree hash entry to trigger partial index hit
 
-	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
+	fetcher := fakeTreeFetcher(map[string][]byte{"SKILL.md": []byte("# skill")})
+
+	dep, _, err := fetchBaseSkill(context.Background(), "skills[0]",
 		"https://raw.githubusercontent.com/org/repo/ref/",
 		"skills/common", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
 		})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "GitHub token")
+	require.NoError(t, err)
+	assert.False(t, dep.CacheHit)
 }
 
 func TestResolveBaseResources_InvalidBaseURL(t *testing.T) {
@@ -2627,21 +2639,17 @@ func TestResolveBaseResources_InvalidBaseURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "cannot determine directory")
 }
 
-func TestFetchBaseSkill_ForgeClient_AuditError(t *testing.T) {
+func TestFetchBaseSkill_AuditError(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	fc := forge.NewFakeClient()
-	fc.DirContents["org/repo/skills/common@ref"] = []forge.DirectoryEntry{
-		{Path: "SKILL.md", Type: "file", Size: 10},
-	}
-	fc.FileContentsRef["org/repo/skills/common/SKILL.md@ref"] = []byte("# skill")
+	fetcher := fakeTreeFetcher(map[string][]byte{"SKILL.md": []byte("# skill")})
 
 	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
 		"https://raw.githubusercontent.com/org/repo/ref/",
 		"skills/common", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
+			TreeFetcher:   fetcher,
 			AuditLogPath:  brokenAuditPath(t),
 		})
 	require.Error(t, err)
@@ -2724,20 +2732,16 @@ func TestMergeBaseIntoChild_EnvInheritedWhenChildNil(t *testing.T) {
 	assert.Equal(t, "val", child.Env.Runner["R"])
 	assert.Equal(t, "val", child.Env.Sandbox["S"])
 }
-func TestFetchBaseSkill_ForgeClient_FullDirectory(t *testing.T) {
+
+func TestFetchBaseSkill_FullDirectory(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	fc := forge.NewFakeClient()
-	fc.DirContents["fullsend-ai/fullsend/skills/pr-review@abc123"] = []forge.DirectoryEntry{
-		{Path: "SKILL.md", Type: "file", Size: 10},
-		{Path: "meta-prompt.md", Type: "file", Size: 20},
-		{Path: "sub-agents", Type: "dir", Size: 0},
-		{Path: "sub-agents/code-review.md", Type: "file", Size: 30},
-	}
-	fc.FileContentsRef["fullsend-ai/fullsend/skills/pr-review/SKILL.md@abc123"] = []byte("# PR Review Skill")
-	fc.FileContentsRef["fullsend-ai/fullsend/skills/pr-review/meta-prompt.md@abc123"] = []byte("meta prompt content")
-	fc.FileContentsRef["fullsend-ai/fullsend/skills/pr-review/sub-agents/code-review.md@abc123"] = []byte("sub-agent content")
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"SKILL.md":                  []byte("# PR Review Skill"),
+		"meta-prompt.md":            []byte("meta prompt content"),
+		"sub-agents/code-review.md": []byte("sub-agent content"),
+	})
 
 	baseURLDir := "https://raw.githubusercontent.com/fullsend-ai/fullsend/abc123/"
 	allowlist := []string{"https://raw.githubusercontent.com/fullsend-ai/fullsend/"}
@@ -2745,7 +2749,7 @@ func TestFetchBaseSkill_ForgeClient_FullDirectory(t *testing.T) {
 	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]", baseURLDir,
 		"skills/pr-review", allowlist, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
+			TreeFetcher:   fetcher,
 		})
 	require.NoError(t, err)
 
@@ -2768,54 +2772,44 @@ func TestFetchBaseSkill_ForgeClient_FullDirectory(t *testing.T) {
 	assert.Equal(t, "sub-agent content", string(subAgent))
 }
 
-func TestFetchBaseSkill_ForgeClient_ParseError(t *testing.T) {
+func TestFetchBaseSkill_ParseError(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	fc := forge.NewFakeClient()
-
-	// Non-raw URL fails ParseRawContentURL — no fallback, just error.
 	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
 		"https://example.com/",
 		"skills/common", []string{"https://example.com/"}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
 		})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parsing raw URL")
 }
 
-func TestFetchBaseSkill_ForgeClient_NoSKILLMD(t *testing.T) {
+func TestFetchBaseSkill_NoSKILLMD(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	fc := forge.NewFakeClient()
-	fc.DirContents["org/repo/skills/broken@ref1"] = []forge.DirectoryEntry{
-		{Path: "meta-prompt.md", Type: "file", Size: 20},
-	}
-	fc.FileContentsRef["org/repo/skills/broken/meta-prompt.md@ref1"] = []byte("no skill file")
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"meta-prompt.md": []byte("no skill file"),
+	})
 
 	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
 		"https://raw.githubusercontent.com/org/repo/ref1/",
 		"skills/broken", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
+			TreeFetcher:   fetcher,
 		})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no SKILL.md")
 }
 
-func TestFetchBaseSkill_ForgeClient_GetFileError(t *testing.T) {
+func TestFetchBaseSkill_TreeFetchPartialError(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	fc := forge.NewFakeClient()
-	fc.DirContents["org/repo/skills/common@ref1"] = []forge.DirectoryEntry{
-		{Path: "SKILL.md", Type: "file", Size: 10},
-		{Path: "meta-prompt.md", Type: "file", Size: 20},
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("failed to read meta-prompt.md: permission denied")
 	}
-	fc.FileContentsRef["org/repo/skills/common/SKILL.md@ref1"] = []byte("# Skill")
-	// Omit meta-prompt.md from FileContentsRef to trigger GetFileContentAtRef error.
 
 	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
 
@@ -2823,10 +2817,10 @@ func TestFetchBaseSkill_ForgeClient_GetFileError(t *testing.T) {
 		"https://raw.githubusercontent.com/org/repo/ref1/",
 		"skills/common", allowlist, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
+			TreeFetcher:   failFetcher,
 		})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "fetching file")
+	assert.Contains(t, err.Error(), "fetching skill directory")
 	assert.Contains(t, err.Error(), "meta-prompt.md")
 }
 
@@ -2845,19 +2839,15 @@ func TestFetchBaseSkill_StaleCacheInvalidation(t *testing.T) {
 	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, oldHash))
 	require.NoError(t, urlIndexPut(cacheDir, "skill:"+skillFileURL, oldHash))
 
-	// Set up ForgeClient with multi-file directory.
-	fc := forge.NewFakeClient()
-	fc.DirContents["org/repo/skills/common@ref1"] = []forge.DirectoryEntry{
-		{Path: "SKILL.md", Type: "file", Size: 10},
-		{Path: "meta-prompt.md", Type: "file", Size: 20},
-	}
-	fc.FileContentsRef["org/repo/skills/common/SKILL.md@ref1"] = []byte("# new skill")
-	fc.FileContentsRef["org/repo/skills/common/meta-prompt.md@ref1"] = []byte("meta")
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"SKILL.md":       []byte("# new skill"),
+		"meta-prompt.md": []byte("meta"),
+	})
 
 	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]",
 		baseURLDir, "skills/common", allowlist, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
+			TreeFetcher:   fetcher,
 		})
 	require.NoError(t, err)
 	assert.False(t, dep.CacheHit, "stale cache should be bypassed")
@@ -2870,7 +2860,7 @@ func TestFetchBaseSkill_StaleCacheInvalidation(t *testing.T) {
 	dep2, _, err := fetchBaseSkill(context.Background(), "skills[0]",
 		baseURLDir, "skills/common", allowlist, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
+			TreeFetcher:   fetcher,
 		})
 	require.NoError(t, err)
 	assert.True(t, dep2.CacheHit, "re-fetched entry should be cached")
@@ -2891,13 +2881,10 @@ func TestFetchBaseSkill_StaleCacheOfflineServesStale(t *testing.T) {
 	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, oldHash))
 	require.NoError(t, urlIndexPut(cacheDir, "skill:"+skillFileURL, oldHash))
 
-	fc := forge.NewFakeClient()
-
-	// Offline mode with a ForgeClient — should serve stale cache, not error.
+	// Offline mode — should serve stale cache, not error.
 	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]",
 		baseURLDir, "skills/common", allowlist, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
 			FetchPolicy:   fetch.FetchPolicy{Offline: true},
 		})
 	require.NoError(t, err)
@@ -2905,17 +2892,14 @@ func TestFetchBaseSkill_StaleCacheOfflineServesStale(t *testing.T) {
 	assert.FileExists(t, filepath.Join(localDir, "SKILL.md"))
 }
 
-func TestFetchBaseSkill_ForgeClient_NarrowAllowlist(t *testing.T) {
+func TestFetchBaseSkill_NarrowAllowlist(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	fc := forge.NewFakeClient()
-	fc.DirContents["org/repo/skills/pr-review@ref1"] = []forge.DirectoryEntry{
-		{Path: "SKILL.md", Type: "file", Size: 10},
-		{Path: "meta-prompt.md", Type: "file", Size: 20},
-	}
-	fc.FileContentsRef["org/repo/skills/pr-review/SKILL.md@ref1"] = []byte("# Skill")
-	fc.FileContentsRef["org/repo/skills/pr-review/meta-prompt.md@ref1"] = []byte("meta")
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"SKILL.md":       []byte("# Skill"),
+		"meta-prompt.md": []byte("meta"),
+	})
 
 	// Allowlist covers SKILL.md specifically but not the directory prefix.
 	narrowAllowlist := []string{"https://raw.githubusercontent.com/org/repo/ref1/skills/pr-review/SKILL.md"}
@@ -2924,7 +2908,7 @@ func TestFetchBaseSkill_ForgeClient_NarrowAllowlist(t *testing.T) {
 		"https://raw.githubusercontent.com/org/repo/ref1/",
 		"skills/pr-review", narrowAllowlist, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
+			TreeFetcher:   fetcher,
 		})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
@@ -3293,4 +3277,131 @@ agent: agents/test.md
 	require.NoError(t, err)
 	assert.Empty(t, deps)
 	assert.Equal(t, "agents/test.md", h.Agent, "agent should remain relative without SourceURL")
+}
+
+func TestFetchBaseSkill_StaleCacheTransientFallback(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
+	skillFileURL := baseURLDir + "skills/common/SKILL.md"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	oldFiles := map[string][]byte{"SKILL.md": []byte("# old")}
+	oldHash, err := fetch.CachePutDir(cacheDir, skillFileURL, oldFiles)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, oldHash))
+	require.NoError(t, urlIndexPut(cacheDir, "skill:"+skillFileURL, oldHash))
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, &gitfetch.TransientError{Err: fmt.Errorf("connection refused")}
+	}
+
+	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]",
+		baseURLDir, "skills/common", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+		})
+	require.NoError(t, err)
+	assert.True(t, dep.CacheHit)
+	assert.Contains(t, dep.Warning, "using stale cached content")
+	assert.Contains(t, dep.Warning, "connection refused")
+	assert.FileExists(t, filepath.Join(localDir, "SKILL.md"))
+}
+
+func TestFetchBaseSkill_StaleCacheContextDeadlineFallback(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
+	skillFileURL := baseURLDir + "skills/common/SKILL.md"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	oldFiles := map[string][]byte{"SKILL.md": []byte("# old")}
+	oldHash, err := fetch.CachePutDir(cacheDir, skillFileURL, oldFiles)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, oldHash))
+	require.NoError(t, urlIndexPut(cacheDir, "skill:"+skillFileURL, oldHash))
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("git fetch: %w", context.DeadlineExceeded)
+	}
+
+	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]",
+		baseURLDir, "skills/common", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+		})
+	require.NoError(t, err)
+	assert.True(t, dep.CacheHit)
+	assert.Contains(t, dep.Warning, "using stale cached content")
+	assert.FileExists(t, filepath.Join(localDir, "SKILL.md"))
+}
+
+func TestFetchBaseSkill_StaleCacheNonTransientError(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
+	skillFileURL := baseURLDir + "skills/common/SKILL.md"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	oldFiles := map[string][]byte{"SKILL.md": []byte("# old")}
+	oldHash, err := fetch.CachePutDir(cacheDir, skillFileURL, oldFiles)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, oldHash))
+	require.NoError(t, urlIndexPut(cacheDir, "skill:"+skillFileURL, oldHash))
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("authentication failed: 401 Unauthorized")
+	}
+
+	_, _, err = fetchBaseSkill(context.Background(), "skills[0]",
+		baseURLDir, "skills/common", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authentication failed")
+}
+
+func TestFetchBaseSkill_TreeFetchErrorWithToken(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("git fetch failed")
+	}
+
+	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
+		"https://raw.githubusercontent.com/org/repo/ref/",
+		"skills/common", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+			GitToken:      "ghp_test123",
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetching skill directory")
+	assert.NotContains(t, err.Error(), "hint:")
+}
+
+func TestIsTransientFetchError(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		transient bool
+	}{
+		{"context deadline", fmt.Errorf("git fetch: %w", context.DeadlineExceeded), true},
+		{"context canceled", fmt.Errorf("git fetch: %w", context.Canceled), true},
+		{"transient error type", &gitfetch.TransientError{Err: fmt.Errorf("connection refused")}, true},
+		{"wrapped transient", fmt.Errorf("gitfetch: %w", &gitfetch.TransientError{Err: fmt.Errorf("no such host")}), true},
+		{"auth error", fmt.Errorf("authentication failed"), false},
+		{"generic error", fmt.Errorf("something went wrong"), false},
+		{"404 error", fmt.Errorf("not found"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.transient, isTransientFetchError(tt.err))
+		})
+	}
 }

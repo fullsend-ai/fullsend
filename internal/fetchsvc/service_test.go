@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
-	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 )
 
@@ -50,18 +51,11 @@ func fakeSkillHash() string {
 	return fetch.ComputeTreeHash(fakeSkillFiles())
 }
 
-// setupFakeForge configures a FakeClient with a skill directory at the given owner/repo/path@ref.
-func setupFakeForge(owner, repo, dirPath, ref string, files map[string][]byte) *forge.FakeClient {
-	fc := forge.NewFakeClient()
-	var entries []forge.DirectoryEntry
-	for p := range files {
-		entries = append(entries, forge.DirectoryEntry{Path: p, Type: "file", Size: len(files[p])})
+// fakeTreeFetcher returns a TreeFetchFunc that returns the given files for any request.
+func fakeTreeFetcher(files map[string][]byte) gitfetch.TreeFetchFunc {
+	return func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return files, nil
 	}
-	fc.DirContents[owner+"/"+repo+"/"+dirPath+"@"+ref] = entries
-	for p, content := range files {
-		fc.FileContentsRef[owner+"/"+repo+"/"+dirPath+"/"+p+"@"+ref] = content
-	}
-	return fc
 }
 
 func TestHandleFetch_CacheHit(t *testing.T) {
@@ -115,11 +109,10 @@ func TestHandleFetch_ForgeFetch(t *testing.T) {
 	files := fakeSkillFiles()
 	hash := fakeSkillHash()
 
-	fc := setupFakeForge("org", "repo", "skills/test-skill", "abc123", files)
 	uploader := &stubUploader{}
 	svc := New(ServiceConfig{
 		Harness:       testHarness("https://github.com/org/repo/"),
-		ForgeClient:   fc,
+		TreeFetcher:   fakeTreeFetcher(files),
 		WorkspaceRoot: tmpDir,
 		MaxFetches:    10,
 		Uploader:      uploader,
@@ -198,10 +191,9 @@ func TestHandleFetch_IntegrityMismatch(t *testing.T) {
 	files := fakeSkillFiles()
 	wrongHash := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-	fc := setupFakeForge("org", "repo", "skills/test-skill", "abc123", files)
 	svc := New(ServiceConfig{
 		Harness:       testHarness("https://github.com/org/repo/"),
-		ForgeClient:   fc,
+		TreeFetcher:   fakeTreeFetcher(files),
 		WorkspaceRoot: tmpDir,
 		MaxFetches:    10,
 	})
@@ -258,15 +250,18 @@ func TestHandleFetch_RateLimitRollbackOnFailure(t *testing.T) {
 		Harness:       testHarness("https://github.com/org/repo/"),
 		WorkspaceRoot: t.TempDir(),
 		MaxFetches:    1,
+		TreeFetcher: func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+			return nil, fmt.Errorf("fetch failed")
+		},
 	})
 
-	// First request consumes a slot but fails (no forge client, cache miss).
+	// First request consumes a slot but fails (fetch error, cache miss).
 	// The slot should be rolled back.
 	_, err := svc.HandleFetch(context.Background(), FetchRequest{
 		URL: "https://github.com/org/repo/tree/abc123/skills/foo#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 	})
 	if err == nil {
-		t.Fatal("expected error for missing forge client")
+		t.Fatal("expected error for fetch failure")
 	}
 
 	// Second request should NOT be rate-limited because the first slot was released.
@@ -274,7 +269,7 @@ func TestHandleFetch_RateLimitRollbackOnFailure(t *testing.T) {
 		URL: "https://github.com/org/repo/tree/abc123/skills/bar#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 	})
 	if err == nil {
-		t.Fatal("expected error (no forge client)")
+		t.Fatal("expected error (fetch failure)")
 	}
 	if strings.Contains(err.Error(), "rate limit exceeded") {
 		t.Fatal("should not be rate-limited; failed slots should be rolled back")
@@ -306,7 +301,6 @@ func TestHandleFetch_OfflineMode(t *testing.T) {
 		FetchPolicy: fetch.FetchPolicy{
 			Offline: true,
 		},
-		ForgeClient:   forge.NewFakeClient(),
 		WorkspaceRoot: t.TempDir(),
 		MaxFetches:    10,
 	})
@@ -496,9 +490,12 @@ func TestServeHTTP_RateLimit(t *testing.T) {
 	}
 }
 
-func TestHandleFetch_NoForgeClient(t *testing.T) {
+func TestHandleFetch_TreeFetcherError(t *testing.T) {
 	svc := New(ServiceConfig{
-		Harness:       testHarness("https://github.com/org/repo/"),
+		Harness: testHarness("https://github.com/org/repo/"),
+		TreeFetcher: func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+			return nil, fmt.Errorf("git fetch failed")
+		},
 		WorkspaceRoot: t.TempDir(),
 		MaxFetches:    10,
 	})
@@ -508,10 +505,10 @@ func TestHandleFetch_NoForgeClient(t *testing.T) {
 	})
 
 	if err == nil {
-		t.Fatal("expected error when forge client is nil")
+		t.Fatal("expected error when tree fetcher fails")
 	}
-	if !strings.Contains(err.Error(), "forge client is required") {
-		t.Fatalf("error should mention forge client: %v", err)
+	if !strings.Contains(err.Error(), "failed to fetch skill directory") {
+		t.Fatalf("error should mention fetch failure: %v", err)
 	}
 }
 
@@ -564,10 +561,9 @@ func TestHandleFetch_AuditLogWriteFailure(t *testing.T) {
 	files := fakeSkillFiles()
 	hash := fetch.ComputeTreeHash(files)
 
-	fc := setupFakeForge("org", "repo", "skills/test-skill", "abc123", files)
 	svc := New(ServiceConfig{
 		Harness:       testHarness("https://github.com/org/repo/"),
-		ForgeClient:   fc,
+		TreeFetcher:   fakeTreeFetcher(files),
 		FetchPolicy:   fetch.DefaultPolicy,
 		WorkspaceRoot: tmpDir,
 		MaxFetches:    10,

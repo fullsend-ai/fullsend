@@ -157,6 +157,22 @@ func ParseRawContentURL(rawURL string) (*ForgeURLInfo, error) {
 	}, nil
 }
 
+// CloneURL returns the HTTPS clone URL for the repository.
+func (f *ForgeURLInfo) CloneURL() string {
+	return fmt.Sprintf("https://%s/%s/%s.git", forgeHost(f.Forge), f.Owner, f.Repo)
+}
+
+func forgeHost(forge string) string {
+	switch forge {
+	case "github":
+		return "github.com"
+	case "gitlab":
+		return "gitlab.com"
+	default:
+		return forge
+	}
+}
+
 // IsSupportedForge returns true if the hostname belongs to a recognized forge.
 func IsSupportedForge(hostname string) bool {
 	return hostname == "github.com"

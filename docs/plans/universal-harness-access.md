@@ -44,7 +44,7 @@ Resolution logic (`internal/harness/harness.go`):
 - All paths must resolve within the `.fullsend` directory tree
 - No network fetches; all resources must exist locally
 
-Skills are directories containing `SKILL.md` plus optional companion files (`scripts/`, `sub-agents/`, `assets/`). The entire directory tree is uploaded to the sandbox. When referenced via URL, skills require forge API access (e.g., GitHub Contents API) to discover and fetch all files in the directory. Policies are OpenShell YAML files. Agent definitions are Markdown files with YAML frontmatter.
+Skills are directories containing `SKILL.md` plus optional companion files (`scripts/`, `sub-agents/`, `assets/`). The entire directory tree is uploaded to the sandbox. When referenced via URL, skills are fetched via git sparse checkout (`gitfetch.FetchTree`) to retrieve all files in the directory. Policies are OpenShell YAML files. Agent definitions are Markdown files with YAML frontmatter.
 
 ## Proposed Design
 
@@ -74,7 +74,7 @@ pre_script: scripts/pre-code.sh  # scripts must be local (security)
 |---------------|----------------|-----------|
 | Agent definition (`.md`) | ✅ Yes | Declarative; validated by schema |
 | Policy (`.yaml`) | ✅ Yes | Declarative; validated by schema |
-| Skill (directory)     | ✅ Yes (forge only) | Directory uploaded as tree; requires forge API |
+| Skill (directory)     | ✅ Yes (forge only) | Directory uploaded as tree; fetched via git sparse checkout |
 | Schema (`.json`) | ✅ Yes | Declarative; validated before use |
 | Pre/post scripts (`.sh`) | ❌ No | Executable on host; must be local |
 | Host files (certs, env) | ❌ No | Configuration; must be local |
@@ -306,7 +306,7 @@ Resolution algorithm:
 2. For each reference:
    - If local path, validate it exists
    - If URL for a single-file resource (agent, policy): fetch via HTTPS, cache as `content` file
-   - If URL for a directory resource (skill): use forge API (`ListDirectoryContents`, `GetFileContentAtRef`) to discover and fetch all files, cache as `tree/` directory, verify tree hash
+   - If URL for a directory resource (skill): use `gitfetch.FetchTree` (git sparse checkout) to fetch all files, cache as `tree/` directory, verify tree hash
    - Non-forge HTTPS URLs for skills are rejected (HTTP has no standard directory listing)
 3. Parse fetched resources to extract their references
 4. Repeat step 2 for new references (depth-first traversal)
@@ -380,7 +380,7 @@ allow_runtime_fetch: true
 max_runtime_fetches: 10
 ```
 
-During execution, the agent can fetch `https://github.com/fullsend-ai/library/tree/8cd3799.../skills/python-linting#sha256=<tree-hash>...` because it matches an allowed prefix. The runner uses the forge API to list and fetch the skill directory, validates the tree hash, and caches it.
+During execution, the agent can fetch `https://github.com/fullsend-ai/library/tree/8cd3799.../skills/python-linting#sha256=<tree-hash>...` because it matches an allowed prefix. The runner uses git sparse checkout to fetch the skill directory, validates the tree hash, and caches it.
 
 **Audit:** All fetches (static and runtime) are logged:
 
@@ -998,33 +998,24 @@ func ComputeTreeHash(files map[string][]byte) string {
 }
 ```
 
-### 4a. Forge Interface Extension for Skill Directories
+### 4a. Git-Based Skill Directory Fetching
 
-**File:** `internal/forge/forge.go` (additions to the forge.Client interface)
+**File:** `internal/gitfetch/gitfetch.go`
 
-Skills are directories, not single files. To fetch a skill from a forge URL, the resolver must list the directory contents and fetch each file. This requires forge API support.
-
-```go
-// ListDirectoryContents returns the list of files in a directory at a given ref.
-// For GitHub, this uses the Trees API or Contents API.
-ListDirectoryContents(ctx context.Context, owner, repo, path, ref string) ([]FileEntry, error)
-
-// GetFileContentAtRef fetches a single file's content at a specific ref.
-// For GitHub, this uses the Contents API with a ref parameter.
-GetFileContentAtRef(ctx context.Context, owner, repo, path, ref string) ([]byte, error)
-```
+Skills are directories, not single files. To fetch a skill from a forge URL, the resolver uses git sparse checkout via `gitfetch.FetchTree`, which is forge-agnostic and works with any git hosting platform.
 
 ```go
-type FileEntry struct {
-    Path string // relative path within the directory
-    SHA  string // git blob SHA
-    Size int64
-}
+// TreeFetchFunc fetches all files under path in a repository at ref.
+// Returns map[relativePath]content. Token is optional.
+type TreeFetchFunc func(ctx context.Context, cloneURL, path, ref, token string) (map[string][]byte, error)
+
+// FetchTree is the default TreeFetchFunc implementation using git sparse checkout.
+func FetchTree(ctx context.Context, cloneURL, path, ref, token string) (map[string][]byte, error)
 ```
 
-**File:** `internal/forge/github/directory.go` (new)
+**File:** `internal/gitfetch/gitfetch.go`
 
-GitHub implementation using the Contents API (`GET /repos/{owner}/{repo}/contents/{path}?ref={ref}`) for directory listing and file retrieval.
+Skill directory fetching uses git sparse checkout (`gitfetch.FetchTree`) rather than forge-specific REST APIs, providing a forge-agnostic implementation.
 
 **File:** `internal/fetch/forgeurl.go` (new)
 
@@ -1034,7 +1025,7 @@ GitHub implementation using the Contents API (`GET /repos/{owner}/{repo}/content
 func ParseForgeURL(rawURL string) (host, owner, repo, path, ref string, err error)
 ```
 
-**Why non-forge HTTPS URLs are rejected for skills:** HTTP has no standard mechanism for listing directory contents. A URL like `https://example.com/skills/rust/` might serve an HTML index page, but there is no reliable way to discover all files in the directory. Forge APIs (GitHub Contents API, GitLab Repository Files API) provide structured directory listings. Skills from non-forge URLs are rejected at validation time with a clear error message.
+**Why non-forge HTTPS URLs are rejected for skills:** HTTP has no standard mechanism for listing directory contents. A URL like `https://example.com/skills/rust/` might serve an HTML index page, but there is no reliable way to discover all files in the directory. Forge-hosted repositories support git sparse checkout for efficient directory fetching. Skills from non-forge URLs are rejected at validation time with a clear error message.
 
 ### 5. Dependency Resolver
 
