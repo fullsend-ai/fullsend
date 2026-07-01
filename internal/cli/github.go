@@ -16,6 +16,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/inference"
 	"github.com/fullsend-ai/fullsend/internal/inference/vertex"
 	"github.com/fullsend-ai/fullsend/internal/layers"
+	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -729,6 +730,18 @@ func runGitHubStatus(ctx context.Context, client forge.Client, printer *ui.Print
 		printer.StepDone("FULLSEND_MINT_URL org variable exists")
 	} else {
 		printer.StepFail("FULLSEND_MINT_URL org variable not found")
+	}
+
+	vars, err := client.ListOrgVariables(ctx, org)
+	if err != nil {
+		printer.StepWarn("Could not list org variables: " + err.Error())
+	} else {
+		for _, v := range vars {
+			if role, ok := parseForeignVariableName(v.Name); ok {
+				entries := mintcore.ParseForeignAllowlist(v.Value)
+				printer.StepDone(fmt.Sprintf("%s (%s): %s", v.Name, role, strings.Join(entries, ", ")))
+			}
+		}
 	}
 
 	// Check inference secrets on .fullsend repo.

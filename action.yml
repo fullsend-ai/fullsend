@@ -269,9 +269,17 @@ runs:
     - name: Configure OpenShell gateway
       shell: bash
       run: |
+        source "$GITHUB_ACTION_PATH/.github/scripts/openshell-version.sh"
         mkdir -p $HOME/.config/openshell/
         cat > $HOME/.config/openshell/gateway.env << EOF
         OPENSHELL_BIND_ADDRESS=0.0.0.0
+        EOF
+        cat > $HOME/.config/openshell/gateway.toml << EOF
+        [openshell]
+        version = 1
+
+        [openshell.gateway]
+        supervisor_image = "ghcr.io/nvidia/openshell/supervisor:${OPENSHELL_VERSION}"
         EOF
 
     - name: Install OpenShell CLI
@@ -354,10 +362,10 @@ runs:
       if: inputs.agent != '__install_only__'
       shell: bash
       env:
-        GH_TOKEN: ${{ inputs.github_token }}
         AGENT: ${{ inputs.agent }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
         TARGET_REPO: ${{ inputs.target-repo }}
+        GH_TOKEN: ${{ inputs.github_token }}
         STATUS_RUN_URL: ${{ inputs.run-url }}
         STATUS_REPO: ${{ inputs.status-repo }}
         STATUS_NUMBER: ${{ inputs.status-number }}

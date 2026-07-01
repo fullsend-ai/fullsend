@@ -306,6 +306,31 @@ For each selected sub-agent, assemble a context package containing:
 - `issue_context`: linked issue title, body, comments (for
   `intent-coherence`)
 - `cross_repo_context`: findings from 3a for `cross-repo-contracts`
+- `scope_constraint`: exploration limit for this sub-agent (see 3e)
+
+#### 3e. Set scope constraints
+
+Based on the triage classification, assign a `scope_constraint` to
+each sub-agent's context package. This constraint is a hard limit that
+sub-agents must honor — it overrides their default exploration budget.
+
+| Change classification                                      | `scope_constraint`                                                                                                                                      |
+|------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Mechanical / value-only (digest bump, version bump, hash swap, URL update, feature flag toggle) | `"trivial: ≤5 tool calls. Read ONLY the diff and linked issue. Do NOT read project docs, surrounding files, git history, or directory listings. Return findings immediately after scope verification."` |
+| Small non-mechanical (under 20 changed lines, structural)  | `"small: ≤15 tool calls. Read the diff, linked issue, and up to 3 context files directly relevant to the change."` |
+| Standard / large                                           | `"none"` (sub-agent uses its own exploration budget)                                                                                                     |
+
+Include `scope_constraint` in each sub-agent's context package. When
+it is not `"none"`, prepend it to the sub-agent prompt as:
+
+```markdown
+## Scope constraint (HARD LIMIT — set by orchestrator)
+
+{scope_constraint}
+```
+
+This section appears before the sub-agent definition so the model sees
+the constraint first.
 
 ### 4. Dispatch sub-agents
 
@@ -313,7 +338,19 @@ For each selected sub-agent:
 
 1. Read the sub-agent definition from `sub-agents/{name}.md`
 2. Extract the `model` from frontmatter
-3. Compose the spawn prompt from three parts:
+3. Compose the spawn prompt from these parts:
+
+   **Part 0 — Scope constraint (conditional):** If `scope_constraint`
+   from step 3e is not `"none"`, prepend:
+
+   ```markdown
+   ## Scope constraint (HARD LIMIT — set by orchestrator)
+
+   {scope_constraint}
+   ```
+
+   This MUST appear before the sub-agent definition so the model sees
+   the hard limit first.
 
    **Part 1 — Sub-agent definition:** the full markdown body of the
    sub-agent file (everything after the frontmatter)
@@ -351,6 +388,9 @@ For each selected sub-agent:
 
    ### Issue context
    <linked issue content or "no linked issue">
+
+   ### Scope constraint
+   <scope_constraint value or "none">
    ```
 
    **Part 5 — Dispatch guard flag:**
@@ -418,6 +458,27 @@ Collate, deduplicate, and merge all sub-agent findings. This is the
 orchestrator's core value-add — no sub-agent sees findings from other
 dimensions, so only the orchestrator can detect overlaps and
 cross-references.
+
+**Trust subagent investigation results.** Sub-agents perform thorough
+investigation during their dispatch — reading source files, querying
+external APIs (npm, GitHub, etc.), and tracing code paths. Their tool
+call outputs and conclusions are authoritative evidence. During
+synthesis, the orchestrator MUST:
+
+1. **Consume subagent evidence as-is.** Do not re-execute commands
+   that a subagent already ran (e.g., `npm view`, `gh api` for tags,
+   releases, or commits, `curl` to registries). The subagent's output
+   is the evidence — re-running the same command wastes tool calls and
+   adds latency without producing new information.
+2. **Re-investigate only on conflict.** The only justification for
+   re-executing a subagent's command is when two subagents return
+   contradictory findings about the same artifact and the orchestrator
+   needs to resolve the conflict. In that case, note why the
+   re-investigation is necessary.
+3. **Do not re-read files that subagents already read.** If a
+   subagent's findings reference specific file contents or code
+   patterns, trust those references. Use `Read` or `Grep` only for
+   files or lines that no subagent examined.
 
 #### 6a. Group findings by file and line range
 
@@ -653,10 +714,66 @@ attention.
 If no protected files are modified, do not add a `protected-path`
 finding.
 
+#### 6e-1. Finding reconciliation
+
+After all orchestrator checks (6e) have produced their findings,
+reconcile them against the challenger-adjudicated sub-agent findings
+before merging. The goal is to detect and resolve logical
+contradictions — cases where one finding's evidence directly negates
+another finding's premise.
+
+**When to reconcile:** Scan the combined set (sub-agent findings +
+orchestrator findings) for pairs where:
+
+- One finding asserts that something is **missing** (e.g., "no
+  authorization exists for modifying protected paths")
+- Another finding asserts that the same thing **is present** (e.g.,
+  "authorization inferred from renovate.json configuration for
+  `.github/**` files")
+
+The most common pattern is a `protected-path` finding (from 6e)
+claiming insufficient authorization while an `implicit-authorization`
+or `missing-authorization` info-level finding (from a sub-agent)
+cites specific configuration (e.g., `renovate.json`, `dependabot.yml`)
+that explicitly authorizes the change pattern.
+
+**How to reconcile:** For each orchestrator finding, check whether any
+existing sub-agent finding provides evidence that directly negates its
+premise:
+
+1. If a sub-agent finding at **any severity** cites specific evidence
+   (a config file, a policy, a linked issue) that the changes to the
+   flagged paths are explicitly authorized, and the orchestrator
+   finding's premise is that authorization is missing or insufficient:
+   - **Downgrade** the orchestrator finding to **info** severity.
+   - Append to the description: "Note: [sub-agent-dimension] finding
+     cites [evidence source] as authorization for this change. Human
+     approval is still required for protected-path changes."
+   - Set `actionable: false` — the finding is now informational.
+
+2. If no sub-agent finding provides contradicting evidence, keep the
+   orchestrator finding unchanged.
+
+**What reconciliation does NOT do:**
+
+- It does not suppress `protected-path` findings entirely. Human
+  approval is always required for protected paths — the finding
+  remains as an info-level notice even when authorization evidence
+  exists.
+- It does not override the `post-review.sh` downgrade behavior.
+  The post-script independently prevents approval on protected-path
+  PRs regardless of finding severity.
+- It does not apply to findings with the same provenance. Two
+  sub-agent findings from the same dimension cannot contradict each
+  other in the reconciliation sense — intra-dimension consistency
+  is the sub-agent's responsibility.
+- It does not re-run the challenger pass. Reconciliation operates
+  on the final finding set, not on intermediate results.
+
 #### 6f. Determine overall outcome
 
-Merge PR-specific findings into the challenger-adjudicated finding set
-and evaluate:
+Merge the reconciled PR-specific findings (from 6e-1) into the
+challenger-adjudicated finding set and evaluate:
 
 - Any **critical** or **high** finding → `request-changes`
 - Multiple **medium** findings which could affect the intended outcome
@@ -828,3 +945,9 @@ wins.
 - **In pipeline mode, `gh pr review` is reserved for the post-script.**
   The sandbox token is read-only. Write JSON to
   `$FULLSEND_OUTPUT_DIR/agent-result.json` and exit.
+- **Do not re-execute subagent investigation commands during
+  synthesis.** Subagent tool call outputs are authoritative evidence.
+  The orchestrator must not re-run the same external commands (npm
+  view, gh api, curl, etc.) that a subagent already executed unless
+  resolving a specific conflict between subagent findings. See step 6
+  for details.

@@ -265,6 +265,14 @@ This applies equally to review agents looking at code PRs *and* to agents evalua
 
 This is really about who defines "bug" vs. "feature." Today, human maintainers hold that authority through institutional knowledge of what the system is *supposed* to do. In an agentic system, this knowledge needs to be explicitly represented somewhere — which circles back to the declarative intent approach (Approach 4) as a complement to the tiered model. Standing descriptions of intended system behavior give review agents a baseline to evaluate whether a "bug fix" is really adding new behavior.
 
+## The wrong-spec problem
+
+Specs can be wrong without anyone trying to game the system: the issue description asks for the wrong thing, the feature file describes behavior that conflicts with what the system should actually do, or the acceptance criteria are internally contradictory. The spec is formally valid but substantively incorrect. This applies to any approach that uses specs as intent signals — tiered or not.
+
+Humans catch this informally — they read the spec, think "that doesn't sound right," and push back using institutional knowledge. Agents don't have this instinct. An agent given a precise but wrong spec produces a precise but wrong implementation that passes review because it matches the spec. The bug only surfaces when the feature reaches users or conflicts with another part of the system.
+
+The system needs a mechanism for catching specs that are *internally valid but externally wrong*. Standing descriptions of intended system behavior (Approach 4) provide one baseline. Production feedback signals (see [production-feedback.md](production-feedback.md)) provide another — if a correctly-implemented spec causes production failures, the spec was wrong. See [debugging.md](debugging.md) for the broader fault taxonomy and how wrong specs compound when agents silently narrow what they pass to downstream agents.
+
 ## Most promising direction
 
 The combination of **Approach 1 (git as intent ledger) + Approach 2 (tiered intent)** appears strongest:

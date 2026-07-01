@@ -71,6 +71,11 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | GCP Admin (Mint) | `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
 | GCP Admin (Mint) | `fullsend mint status` | Inspect mint state and PEM health |
 
+| Developer | `fullsend agent add <url-or-path>` | Register an agent in config (URL auto-pinned to commit SHA) |
+| Developer | `fullsend agent list` | List registered agents and their sources |
+| Developer | `fullsend agent update <name> [sha]` | Re-pin a URL agent to a new commit SHA |
+| Developer | `fullsend agent remove <name>` | Unregister an agent from config |
+
 The typical handoff: a GCP admin runs `mint deploy` + `mint enroll` + `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`.
 
 ### Per-command IAM role breakdown

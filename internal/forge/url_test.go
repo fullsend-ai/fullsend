@@ -201,6 +201,35 @@ func TestParseRawContentURL(t *testing.T) {
 	}
 }
 
+func TestForgeURLInfo_CloneURL(t *testing.T) {
+	tests := []struct {
+		name string
+		info ForgeURLInfo
+		want string
+	}{
+		{
+			name: "github",
+			info: ForgeURLInfo{Forge: "github", Owner: "fullsend-ai", Repo: "library"},
+			want: "https://github.com/fullsend-ai/library.git",
+		},
+		{
+			name: "gitlab",
+			info: ForgeURLInfo{Forge: "gitlab", Owner: "my-org", Repo: "my-repo"},
+			want: "https://gitlab.com/my-org/my-repo.git",
+		},
+		{
+			name: "unknown forge uses forge as host",
+			info: ForgeURLInfo{Forge: "gitea.example.com", Owner: "org", Repo: "repo"},
+			want: "https://gitea.example.com/org/repo.git",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.info.CloneURL())
+		})
+	}
+}
+
 func TestIsSupportedForge(t *testing.T) {
 	tests := []struct {
 		name     string

@@ -15,7 +15,10 @@ type AppPermissions struct {
 	Members                    string `json:"members,omitempty"`
 	OrganizationProjects       string `json:"organization_projects,omitempty"`
 	OrganizationAdministration string `json:"organization_administration,omitempty"`
-	Secrets                    string `json:"secrets,omitempty"`
+	// OrganizationActionsVariables is org-level Actions variables (distinct from
+	// repository actions_variables). Required to read FULLSEND_FOREIGN_* via the org API.
+	OrganizationActionsVariables string `json:"organization_actions_variables,omitempty"`
+	Secrets                      string `json:"secrets,omitempty"`
 }
 
 // HookAttributes configures the webhook for a GitHub App.
@@ -144,16 +147,17 @@ func AgentAppConfig(org, role, appSet string) AppConfig {
 	case "e2e":
 		base.Description = fmt.Sprintf("Fullsend e2e pool testing for %s", org)
 		base.Permissions = AppPermissions{
-			Actions:                    "write",
-			Variables:                  "read",
-			Administration:             "write",
-			Contents:                   "write",
-			Issues:                     "write",
-			Members:                    "write",
-			OrganizationAdministration: "write",
-			PullRequests:               "write",
-			Secrets:                    "write",
-			Workflows:                  "write",
+			Actions:                      "write",
+			Variables:                    "write",
+			OrganizationActionsVariables: "write",
+			Administration:               "write",
+			Contents:                     "write",
+			Issues:                       "write",
+			Members:                      "write",
+			OrganizationAdministration:   "write",
+			PullRequests:                 "write",
+			Secrets:                      "write",
+			Workflows:                    "write",
 		}
 		// Pool tests are API/mint driven; no webhook events required.
 		base.Events = []string{}

@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"gopkg.in/yaml.v3"
 )
 
@@ -52,16 +54,27 @@ type ComposeOpts struct {
 	// If empty, ResolveForge is a no-op.
 	ForgePlatform string
 
-	// OrgAllowlist is the org-level allowed_remote_resources from config.yaml.
-	// Base URLs must match a prefix in this list.
+	// OrgAllowlist is the allowed_remote_resources from config.yaml (org-level
+	// or per-repo-level). Base URLs and agent source URLs must match a prefix
+	// in this list. Callers should merge org and per-repo allowlists when both
+	// are available.
 	OrgAllowlist []string
 
-	// ForgeClient enables full-directory skill fetches from URL bases.
-	// When set, fetchBaseSkill uses the GitHub Contents API to retrieve all
-	// files in a skill directory (sub-agents, scripts, meta-prompts).
-	// When nil, fetchBaseSkill fails fast with an error directing users to
-	// set GITHUB_TOKEN or use 'fullsend lock' for offline pre-caching.
-	ForgeClient forge.Client
+	// TreeFetcher fetches all files under a path in a remote repository.
+	// When nil, defaults to gitfetch.FetchTree (git sparse checkout).
+	TreeFetcher gitfetch.TreeFetchFunc
+
+	// GitToken is an optional token for authenticating git fetches.
+	// Empty means unauthenticated (sufficient for public repos).
+	GitToken string
+
+	// SourceURL is the URL from which the harness was fetched (e.g., via
+	// FetchAgentHarness for config-registered agents). When set and the harness
+	// has no base: field, LoadWithBase resolves relative resource paths (agent,
+	// policy, skills, scripts) against this URL using the same infrastructure
+	// as base composition (ADR-0045). If empty, no URL resolution is performed
+	// for no-base harnesses.
+	SourceURL string
 
 	// allowSelfAllowlist permits using the child harness's own AllowedRemoteResources
 	// when OrgAllowlist is empty. This is for testing only; production callers should
@@ -91,7 +104,31 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	}
 
 	if child.Base == "" {
-		// No base — same as LoadWithOpts
+		// No base — resolve URL-sourced resources if the harness was
+		// fetched from a URL (ADR-0045). Config-registered agents fetched
+		// via FetchAgentHarness have relative paths that must be resolved
+		// against the source URL before validation.
+		var deps []Dependency
+		if opts.SourceURL != "" {
+			scriptDeps, err := resolveBaseScripts(ctx, child, opts.SourceURL, opts.OrgAllowlist, opts)
+			if err != nil {
+				return nil, nil, fmt.Errorf("resolving URL-sourced scripts: %w", err)
+			}
+			deps = append(deps, scriptDeps...)
+
+			resourceDeps, err := resolveBaseResources(ctx, child, opts.SourceURL, opts.OrgAllowlist, opts)
+			if err != nil {
+				return nil, nil, fmt.Errorf("resolving URL-sourced resources: %w", err)
+			}
+			deps = append(deps, resourceDeps...)
+
+			hostFileDeps, err := resolveBaseHostFiles(ctx, child, opts.SourceURL, opts.OrgAllowlist, opts)
+			if err != nil {
+				return nil, nil, fmt.Errorf("resolving URL-sourced host_files: %w", err)
+			}
+			deps = append(deps, hostFileDeps...)
+		}
+
 		if err := child.validateForge(); err != nil {
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
 		}
@@ -101,7 +138,7 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		if err := child.Validate(); err != nil {
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
 		}
-		return child, nil, nil
+		return child, deps, nil
 	}
 
 	// Org allowlist is the authority for URL bases.
@@ -213,6 +250,15 @@ func loadBaseChain(
 			return nil, nil, fmt.Errorf("resolving base resources from %s: %w", cleanURL, err)
 		}
 		deps = append(deps, resourceDeps...)
+
+		// host_files with relative src paths need the same fetch-cache-rewrite
+		// treatment as scripts and resources. Entries using ${VAR} expansion
+		// are left unchanged — they resolve at bootstrap time on the host.
+		hostFileDeps, err := resolveBaseHostFiles(ctx, base, baseRef, allowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving base host_files from %s: %w", cleanURL, err)
+		}
+		deps = append(deps, hostFileDeps...)
 
 		baseDir = childDir
 	} else {
@@ -662,6 +708,41 @@ func resolveBaseResources(ctx context.Context, base *Harness, baseURL string, al
 	return deps, nil
 }
 
+// resolveBaseHostFiles fetches host_files with relative src paths from a
+// URL-referenced base harness. For each host_files entry whose src is a
+// non-empty relative path (not a ${VAR} reference, URL, or absolute path),
+// the file is fetched from the base URL's directory, cached content-addressed,
+// and the src field is rewritten to the local cache path. This ensures
+// host_files inherited through base: composition resolve correctly at sandbox
+// setup time, the same way scripts and resources do.
+func resolveBaseHostFiles(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
+	baseURLDir := urlParentDirPrefix(baseURL)
+	if baseURLDir == "" {
+		return nil, fmt.Errorf("cannot determine directory from base URL")
+	}
+
+	var deps []Dependency
+
+	for i := range base.HostFiles {
+		src := base.HostFiles[i].Src
+		if src == "" || strings.Contains(src, "${") || IsURL(src) || filepath.IsAbs(src) {
+			continue
+		}
+		fieldName := fmt.Sprintf("host_files[%d].src", i)
+		if err := validateBaseRelPath(fieldName, src); err != nil {
+			return nil, err
+		}
+		dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, src, allowlist, opts, "resource", false)
+		if err != nil {
+			return nil, err
+		}
+		base.HostFiles[i].Src = cachePath
+		deps = append(deps, dep)
+	}
+
+	return deps, nil
+}
+
 // validateBaseRelPath validates that a relative path inherited from a URL base
 // is safe to resolve. Rejects null bytes, query/fragment markers, URLs,
 // absolute paths, and path traversal segments.
@@ -778,10 +859,8 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 }
 
 // fetchBaseSkill fetches a skill directory from a URL-referenced base harness.
-// It requires a ForgeClient to fetch the full directory tree (SKILL.md plus
-// companion files like sub-agents/, scripts/, meta-prompts/) via the GitHub
-// Contents API. If no ForgeClient is available, composition fails fast rather
-// than silently degrading to a SKILL.md-only fetch.
+// It uses git sparse checkout (via TreeFetcher) to fetch the full directory
+// tree (SKILL.md plus companion files like sub-agents/, scripts/, meta-prompts/).
 func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, allowlist []string, opts ComposeOpts) (Dependency, string, error) {
 	skillDirURL := baseURLDir + skillPath
 	skillFileURL := skillDirURL + "/SKILL.md"
@@ -793,28 +872,30 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 
 	// Check cache first (keyed by SKILL.md URL for backward compat).
 	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, skillFileURL)
+	var staleFallback *Dependency
+	var staleFallbackPath string
 	if indexHit {
 		treeHash, ok := urlIndexLookup(opts.WorkspaceRoot, "skill:"+skillFileURL)
 		if ok {
 			treePath, entry, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
 			if err == nil && treePath != "" {
-				// Stale cache from v0.22.0: entries without FullListing
-				// may lack companion files. Re-fetch when online with
-				// a ForgeClient; serve stale in offline mode.
-				stale := !entry.FullListing && opts.ForgeClient != nil && !opts.FetchPolicy.Offline
-				if !stale {
+				cachedDep := Dependency{
+					Field:     field,
+					URL:       skillFileURL,
+					LocalPath: treePath,
+					SHA256:    treeHash,
+					FetchedAt: entry.FetchTime,
+					CacheHit:  true,
+					Type:      "directory",
+				}
+				if !entry.FullListing && !opts.FetchPolicy.Offline {
+					staleFallback = &cachedDep
+					staleFallbackPath = treePath
+				} else {
 					if aErr := auditBaseFetch(opts, skillFileURL, treeHash, allowedBy, true, entry.FetchTime, "skill"); aErr != nil {
 						return Dependency{}, "", aErr
 					}
-					return Dependency{
-						Field:     field,
-						URL:       skillFileURL,
-						LocalPath: treePath,
-						SHA256:    treeHash,
-						FetchedAt: entry.FetchTime,
-						CacheHit:  true,
-						Type:      "directory",
-					}, treePath, nil
+					return cachedDep, treePath, nil
 				}
 			}
 		}
@@ -822,19 +903,34 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 	}
 
 	if opts.FetchPolicy.Offline {
+		if staleFallback != nil {
+			return *staleFallback, staleFallbackPath, nil
+		}
 		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, skillFileURL)
 	}
 
-	if opts.ForgeClient == nil {
-		return Dependency{}, "", fmt.Errorf("base %s: skill directory fetch requires a GitHub token; set GH_TOKEN, GITHUB_TOKEN, or run 'gh auth login' — alternatively use 'fullsend lock' to pre-cache skills", field)
+	dep, dirPath, err := fetchBaseSkillDir(ctx, field, skillDirURL, skillFileURL, skillPath, allowedBy, allowlist, opts)
+	if err != nil && staleFallback != nil {
+		if !isTransientFetchError(err) {
+			return Dependency{}, "", err
+		}
+		staleFallback.Warning = fmt.Sprintf("using stale cached content (re-fetch failed: %s)", err)
+		return *staleFallback, staleFallbackPath, nil
 	}
-
-	return fetchBaseSkillDir(ctx, field, skillDirURL, skillFileURL, skillPath, allowedBy, allowlist, opts)
+	return dep, dirPath, err
 }
 
-// fetchBaseSkillDir fetches the full skill directory via ForgeClient.
-// It parses the raw.githubusercontent.com URL to extract owner/repo/ref/path,
-// then uses ListDirectoryContents + GetFileContentAtRef to retrieve all files.
+// isTransientFetchError returns true for errors that indicate a temporary
+// network issue where serving stale cached content is appropriate.
+func isTransientFetchError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	var transient *gitfetch.TransientError
+	return errors.As(err, &transient)
+}
+
+// fetchBaseSkillDir fetches the full skill directory via git sparse checkout.
 func fetchBaseSkillDir(ctx context.Context, field, skillDirURL, skillFileURL, skillPath, allowedBy string, allowlist []string, opts ComposeOpts) (Dependency, string, error) {
 	dirPrefix := skillDirURL + "/"
 	if ab := matchingAllowedPrefix(dirPrefix, allowlist); ab == "" {
@@ -846,27 +942,17 @@ func fetchBaseSkillDir(ctx context.Context, field, skillDirURL, skillFileURL, sk
 		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for skill directory fetch: %w", field, err)
 	}
 
-	entries, err := opts.ForgeClient.ListDirectoryContents(ctx, forgeInfo.Owner, forgeInfo.Repo, forgeInfo.Path, forgeInfo.Ref, true)
-	if err != nil {
-		return Dependency{}, "", fmt.Errorf("base %s: listing skill directory %s: %w", field, skillPath, err)
+	fetcher := opts.TreeFetcher
+	if fetcher == nil {
+		fetcher = gitfetch.FetchTree
 	}
 
-	files := make(map[string][]byte)
-	for _, e := range entries {
-		if e.Type != "file" {
-			continue
+	files, err := fetcher(ctx, forgeInfo.CloneURL(), forgeInfo.Path, forgeInfo.Ref, opts.GitToken)
+	if err != nil {
+		if opts.GitToken == "" {
+			return Dependency{}, "", fmt.Errorf("base %s: fetching skill directory %s: %w (hint: set GH_TOKEN or GITHUB_TOKEN for private repos)", field, skillPath, err)
 		}
-		var fullPath string
-		if forgeInfo.Path == "" {
-			fullPath = e.Path
-		} else {
-			fullPath = forgeInfo.Path + "/" + e.Path
-		}
-		content, fErr := opts.ForgeClient.GetFileContentAtRef(ctx, forgeInfo.Owner, forgeInfo.Repo, fullPath, forgeInfo.Ref)
-		if fErr != nil {
-			return Dependency{}, "", fmt.Errorf("base %s: fetching file %s for skill %s: %w", field, e.Path, skillPath, fErr)
-		}
-		files[e.Path] = content
+		return Dependency{}, "", fmt.Errorf("base %s: fetching skill directory %s: %w", field, skillPath, err)
 	}
 
 	if _, ok := files["SKILL.md"]; !ok {
@@ -1113,4 +1199,16 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 	if child.ValidationLoop == nil {
 		child.ValidationLoop = base.ValidationLoop
 	}
+}
+
+// FetchAgentHarness fetches a URL-sourced agent harness using the same
+// infrastructure as base composition (ADR 0038). It downloads the content,
+// verifies the integrity hash, caches it, and returns the local cache path
+// so the caller can pass it to LoadWithBase.
+func FetchAgentHarness(ctx context.Context, rawURL string, opts ComposeOpts) (localPath string, dep Dependency, err error) {
+	dep, _, err = fetchBaseURL(ctx, rawURL, opts.OrgAllowlist, opts)
+	if err != nil {
+		return "", Dependency{}, fmt.Errorf("fetching agent harness %s: %w", rawURL, err)
+	}
+	return dep.LocalPath, dep, nil
 }

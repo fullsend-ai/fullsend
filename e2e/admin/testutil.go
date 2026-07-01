@@ -3,6 +3,7 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -55,12 +56,17 @@ var orgPool = []string{
 	"halfsend-04",
 	"halfsend-05",
 	"halfsend-06",
+	"halfsend-07",
+	"halfsend-08",
+	"halfsend-09",
+	"halfsend-10",
+	"halfsend-11",
+	"halfsend-12",
 }
 
 // acquireOrg scans the pool for an unlocked org and acquires its lock.
-// If all orgs are locked, it round-robin polls until one frees up or the
-// timeout expires. Returns the org name.
-func acquireOrg(ctx context.Context, client forge.Client, token, runID string, pool []string, timeout time.Duration, logf func(string, ...any)) (string, error) {
+// Returns the org name and token used to hold the lock.
+func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string, timeout time.Duration, logf func(string, ...any)) (string, string, error) {
 	// Shuffle the pool so concurrent runners don't all compete for the
 	// same first org (thundering herd).
 	shuffled := make([]string, len(pool))
@@ -72,6 +78,13 @@ func acquireOrg(ctx context.Context, client forge.Client, token, runID string, p
 	// waste pool capacity on crashed runs.
 	for _, org := range shuffled {
 		logf("[org-pool] Trying to acquire %s...", org)
+		token, tokErr := tokenForOrg(ctx, cfg, org)
+		if tokErr != nil {
+			logf("[org-pool] Could not get token for %s: %v", org, tokErr)
+			continue
+		}
+		client := newLiveClient(token)
+
 		acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 		if err != nil {
 			logf("[org-pool] Error trying %s: %v", org, err)
@@ -82,19 +95,19 @@ func acquireOrg(ctx context.Context, client forge.Client, token, runID string, p
 			if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
 				logf("[org-pool] 422 on %s — will check for stale lock", org)
 				if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
-					return org, nil
+					return org, token, nil
 				}
 			}
 			continue
 		}
 		if acquired {
 			logf("[org-pool] Acquired %s", org)
-			return org, nil
+			return org, token, nil
 		}
 		// Lock exists — check if it's stale and force-acquire if so.
 		if token != "" {
 			if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
-				return org, nil
+				return org, token, nil
 			}
 		}
 		logf("[org-pool] %s is locked, trying next", org)
@@ -113,9 +126,16 @@ func acquireOrg(ctx context.Context, client forge.Client, token, runID string, p
 		select {
 		case <-time.After(wait):
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", "", ctx.Err()
 		}
 		for _, org := range shuffled {
+			token, tokErr := tokenForOrg(ctx, cfg, org)
+			if tokErr != nil {
+				logf("[org-pool] Could not get token for %s: %v", org, tokErr)
+				continue
+			}
+			client := newLiveClient(token)
+
 			acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 			if err != nil {
 				logf("[org-pool] Error trying %s: %v", org, err)
@@ -123,26 +143,96 @@ func acquireOrg(ctx context.Context, client forge.Client, token, runID string, p
 				if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
 					logf("[org-pool] 422 on %s — will check for stale lock", org)
 					if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
-						return org, nil
+						return org, token, nil
 					}
 				}
 				continue
 			}
 			if acquired {
 				logf("[org-pool] Acquired %s", org)
-				return org, nil
+				return org, token, nil
 			}
 			// Also try stale reclaim during polling — a lock may
 			// have aged past staleLockTimeout since the first pass.
 			if token != "" {
 				if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
-					return org, nil
+					return org, token, nil
 				}
 			}
 		}
 	}
 
-	return "", fmt.Errorf("could not acquire any org from pool after %s (tried %d orgs)", timeout, len(pool))
+	return "", "", fmt.Errorf("could not acquire any org from pool after %s (tried %d orgs)", timeout, len(pool))
+}
+
+// acquireOrgWithClient runs pool acquisition using a fixed client (unit tests).
+func acquireOrgWithClient(ctx context.Context, client forge.Client, token, runID string, pool []string, timeout time.Duration, logf func(string, ...any)) (string, error) {
+	org, _, err := acquireOrgFromClient(ctx, client, token, runID, pool, timeout, logf)
+	return org, err
+}
+
+func acquireOrgFromClient(ctx context.Context, client forge.Client, token, runID string, pool []string, timeout time.Duration, logf func(string, ...any)) (string, string, error) {
+	shuffled := make([]string, len(pool))
+	copy(shuffled, pool)
+	rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+
+	for _, org := range shuffled {
+		logf("[org-pool] Trying to acquire %s...", org)
+		acquired, err := tryCreateLock(ctx, client, org, runID, logf)
+		if err != nil {
+			logf("[org-pool] Error trying %s: %v", org, err)
+			var apiErr *gh.APIError
+			if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+				if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+					return org, token, nil
+				}
+			}
+			continue
+		}
+		if acquired {
+			return org, token, nil
+		}
+		if token != "" {
+			if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+				return org, token, nil
+			}
+		}
+	}
+
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		wait := min(lockPollInterval, remaining)
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return "", "", ctx.Err()
+		}
+		for _, org := range shuffled {
+			acquired, err := tryCreateLock(ctx, client, org, runID, logf)
+			if err != nil {
+				var apiErr *gh.APIError
+				if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+					if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+						return org, token, nil
+					}
+				}
+				continue
+			}
+			if acquired {
+				return org, token, nil
+			}
+			if token != "" {
+				if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+					return org, token, nil
+				}
+			}
+		}
+	}
+	return "", "", fmt.Errorf("could not acquire any org from pool after %s (tried %d orgs)", timeout, len(pool))
 }
 
 // defaultRoles is the standard set of agent roles.
@@ -153,10 +243,8 @@ const e2eAppSet = "fullsend-ai"
 
 // envConfig holds required environment configuration.
 type envConfig struct {
-	sessionFile  string
-	password     string
-	totpSecret   string
 	mintURL      string
+	useMint      bool
 	gcpProjectID string
 	lockTimeout  time.Duration
 }
@@ -167,20 +255,12 @@ type envConfig struct {
 func loadEnvConfig(t *testing.T) envConfig {
 	t.Helper()
 
-	sessionFile := os.Getenv("E2E_GITHUB_SESSION_FILE")
-	if sessionFile == "" {
-		t.Skip("E2E_GITHUB_SESSION_FILE not set, skipping e2e test")
-	}
-	if _, err := os.Stat(sessionFile); err != nil {
-		t.Fatalf("E2E_GITHUB_SESSION_FILE %q does not exist: %v", sessionFile, err)
-	}
-
-	password := os.Getenv("E2E_GITHUB_PASSWORD")
-	totpSecret := os.Getenv("E2E_GITHUB_TOTP_SECRET")
-
-	mintURL := os.Getenv("E2E_MINT_URL")
-	if mintURL == "" {
-		t.Skip("E2E_MINT_URL not set, skipping e2e test")
+	mintURL := resolveMintURL()
+	useMint := runningInGitHubActions()
+	if !useMint {
+		if _, err := resolveLocalToken(); err != nil {
+			t.Skip("no local GitHub token (gh auth login), skipping e2e test")
+		}
 	}
 
 	gcpProjectID := os.Getenv("E2E_GCP_PROJECT_ID")
@@ -195,10 +275,8 @@ func loadEnvConfig(t *testing.T) envConfig {
 	}
 
 	return envConfig{
-		sessionFile:  sessionFile,
-		password:     password,
-		totpSecret:   totpSecret,
 		mintURL:      mintURL,
+		useMint:      useMint,
 		gcpProjectID: gcpProjectID,
 		lockTimeout:  lockTimeout,
 	}
@@ -240,6 +318,61 @@ func getRepoCreatedAt(ctx context.Context, token, org, repo string) (time.Time, 
 	}
 
 	return result.CreatedAt, nil
+}
+
+func ensureRepoLabel(ctx context.Context, token, owner, repo, label string) error {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/labels", owner, repo)
+	payload, err := json.Marshal(map[string]string{
+		"name":  label,
+		"color": "5319e7",
+	})
+	if err != nil {
+		return fmt.Errorf("encoding label payload: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("creating label request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("creating repo label: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusUnprocessableEntity {
+		return nil
+	}
+	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("unexpected status %d creating label %q: %s", resp.StatusCode, label, body)
+}
+
+func addIssueLabel(ctx context.Context, token, owner, repo string, issueNum int, label string) error {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/labels", owner, repo, issueNum)
+	payload, err := json.Marshal(map[string][]string{"labels": {label}})
+	if err != nil {
+		return fmt.Errorf("encoding issue label payload: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("creating issue label request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("adding issue label: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("unexpected status %d adding label %q: %s", resp.StatusCode, label, body)
 }
 
 // buildCLIBinary compiles the fullsend CLI binary once per test run.

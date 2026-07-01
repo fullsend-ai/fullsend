@@ -9,7 +9,9 @@ permissions: {}
 on:
   push:
     branches: [main]
-    # SYNC-WITH: grep regex in "Check for e2e-relevant changes" step in the e2e job
+    # SYNC-WITH: grep in "Check for e2e-relevant changes" (e2e job) and
+    # "Check for behaviour-relevant changes" (behaviour job). push.paths is the
+    # union of both filters (plus **/*.go); each job grep may be narrower.
     paths:
       - '**/*.go'
       - 'go.mod'
@@ -19,8 +21,21 @@ on:
       - 'internal/security/hooks/**'
       - 'internal/dispatch/gcf/mintsrc/**'
       - 'internal/sentencetoken/english.json'
+      - 'internal/runtime/**'
+      - 'internal/sandbox/**'
+      - 'internal/config/**'
+      - 'internal/cli/github.go'
+      - 'internal/cli/run.go'
+      - 'internal/layers/**'
+      - 'internal/forge/**'
+      - 'internal/harness/**'
+      - 'internal/dispatch/**'
+      - 'internal/mintclient/**'
+      - 'cmd/fullsend/**'
       - 'Makefile'
+      - '.github/scripts/**'
       - '.github/workflows/e2e.yml'
+      - 'action.yml'
       - '.github/actions/check-e2e-authorization/**'
       - 'scripts/check-e2e-authorization.sh'
   pull_request_target:
@@ -113,7 +128,7 @@ jobs:
               exit 0
             }
           fi
-          if echo "$FILES" | grep -qE '\.go$|^go\.(mod|sum)$|^e2e/|^internal/scaffold/fullsend-repo/|^internal/security/hooks/|^internal/dispatch/gcf/mintsrc/|^internal/sentencetoken/english\.json$|^Makefile$|^\.github/workflows/e2e\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
+          if echo "$FILES" | grep -qE '\.go$|^go\.(mod|sum)$|^e2e/|^internal/scaffold/fullsend-repo/|^internal/security/hooks/|^internal/dispatch/gcf/mintsrc/|^internal/sentencetoken/english\.json$|^Makefile$|^\.github/scripts/|^\.github/workflows/e2e\.yml$|^action\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No e2e-relevant files changed — skipping tests"
@@ -134,54 +149,115 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Install Playwright system dependencies
-        if: steps.changes.outputs.relevant != 'false'
-        run: npx playwright install-deps chromium
-
-      - name: Check for secrets
-        if: steps.changes.outputs.relevant != 'false'
-        id: secrets-check
-        run: |
-          if [ -z "$E2E_GITHUB_SESSION_B64" ]; then
-            echo "::warning::E2E secrets are not configured. Skipping e2e tests."
-            echo "available=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          fi
-        env:
-          E2E_GITHUB_SESSION_B64: ${{ secrets.E2E_GITHUB_SESSION }}
-
-      - name: Decode session
-        if: steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
-        run: |
-          SESSION_FILE="${RUNNER_TEMP}/github-session.json"
-          printf '%s' "$E2E_GITHUB_SESSION_B64" | base64 -d > "$SESSION_FILE"
-          echo "E2E_GITHUB_SESSION_FILE=${SESSION_FILE}" >> "$GITHUB_ENV"
-        env:
-          E2E_GITHUB_SESSION_B64: ${{ secrets.E2E_GITHUB_SESSION }}
-
       - name: Authenticate to GCP
-        if: steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
+        if: steps.changes.outputs.relevant != 'false'
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
 
       - name: Run e2e tests
-        if: steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
+        if: steps.changes.outputs.relevant != 'false'
         run: make e2e-test
         env:
           E2E_SCREENSHOT_DIR: ${{ runner.temp }}/e2e-screenshots
-          E2E_GITHUB_PASSWORD: ${{ secrets.E2E_GITHUB_PASSWORD }}
-          E2E_GITHUB_TOTP_SECRET: ${{ secrets.E2E_GITHUB_TOTP_SECRET }}
-          E2E_MINT_URL: ${{ secrets.E2E_MINT_URL }}
           E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
 
       - name: Upload debug screenshots
-        if: always() && steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
+        if: always() && steps.changes.outputs.relevant != 'false'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: e2e-screenshots-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}
           path: ${{ runner.temp }}/e2e-screenshots/
+          if-no-files-found: ignore
+          retention-days: 5
+
+  behaviour:
+    # Same gate authorization as e2e — checks out untrusted PR head with secrets.
+    needs: gate
+    if: >-
+      !cancelled() &&
+      (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check for behaviour-relevant changes
+        id: changes
+        if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
+        # SYNC-WITH: push.paths behaviour entries above
+        run: |
+          if [ "$EVENT_NAME" = "merge_group" ]; then
+            FILES=$(gh api "repos/${REPO}/compare/${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}" --jq '.files[].filename') || {
+              echo "::warning::Failed to fetch merge group files — running behaviour tests as a precaution"
+              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+            FILE_COUNT=$(echo "$FILES" | wc -l)
+            if [ "$FILE_COUNT" -ge 300 ]; then
+              echo "::warning::Compare API returned $FILE_COUNT files (possible truncation at 300) — running behaviour tests as a precaution"
+              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            FILES=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename') || {
+              echo "::warning::Failed to fetch PR files — running behaviour tests as a precaution"
+              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            }
+          fi
+          # e2e/admin: behaviour suite reuses exported admin test helpers
+          if echo "$FILES" | grep -qE '^e2e/behaviour/|^e2e/admin/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/|^internal/layers/|^internal/scaffold/fullsend-repo/|^internal/forge/|^internal/harness/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^Makefile$|^\.github/workflows/e2e\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No behaviour-relevant files changed — skipping behaviour tests"
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: steps.changes.outputs.relevant != 'false'
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        if: steps.changes.outputs.relevant != 'false'
+        with:
+          go-version-file: go.mod
+
+      - name: Authenticate to GCP
+        if: steps.changes.outputs.relevant != 'false'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
+
+      - name: Run behaviour tests
+        if: steps.changes.outputs.relevant != 'false'
+        run: make behaviour-test
+        env:
+          BEHAVIOUR_SCM: github
+          BEHAVIOUR_CI: githubactions
+          BEHAVIOUR_INSTALL_MODE: per-repo
+          BEHAVIOUR_ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
+          E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
+          E2E_GCP_WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+
+      - name: Upload behaviour debug artifacts
+        if: failure() && steps.changes.outputs.relevant != 'false'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: behaviour-artifacts-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}
+          path: ${{ runner.temp }}/behaviour-artifacts/
           if-no-files-found: ignore
           retention-days: 5

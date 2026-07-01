@@ -23,6 +23,9 @@ type ClaudeRuntime struct{}
 
 func (ClaudeRuntime) Name() string { return "claude" }
 
+// System returns the OTEL GenAI `gen_ai.system` vendor for Claude Code's models.
+func (ClaudeRuntime) System() string { return "anthropic" }
+
 func (ClaudeRuntime) ConfigDir() string { return sandbox.SandboxClaudeConfig }
 
 func (ClaudeRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }

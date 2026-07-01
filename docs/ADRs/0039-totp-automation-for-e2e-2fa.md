@@ -1,6 +1,6 @@
 ---
 title: "39. TOTP automation for e2e 2FA"
-status: Accepted
+status: Superseded
 relates_to:
   - testing-agents
 topics:
@@ -16,9 +16,9 @@ Date: 2026-05-19
 
 ## Status
 
-Accepted
+Superseded by [ADR 0060](0060-cross-org-mint-authorization-via-org-variables.md) and the e2e mint/OIDC refactor ([#2155](https://github.com/fullsend-ai/fullsend/issues/2155)). TOTP automation for Playwright login is no longer used.
 
-Extends [ADR 0010](0010-stored-session-for-e2e-browser-auth.md).
+Extends [ADR 0010](0010-stored-session-for-e2e-browser-auth.md) (also superseded).
 
 ## Context
 
