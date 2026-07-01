@@ -3262,6 +3262,108 @@ agent: agents/triage.md
 	assert.Contains(t, err.Error(), "resolving URL-sourced resources")
 }
 
+func TestLoadWithBase_SourceURL_HostFiles(t *testing.T) {
+	// A URL-sourced harness with no base: field should have its relative
+	// host_files src paths resolved against the source URL.
+	envContent := []byte("KEY=value")
+
+	agentContent := []byte("# triage agent definition")
+
+	harnessContent := []byte(`
+role: triage
+slug: triage
+agent: agents/triage.md
+host_files:
+  - src: env/triage.env
+    dest: /sandbox/.env
+  - src: ${HOME}/.config/app.env
+    dest: /sandbox/app.env
+  - src: /absolute/path/file.env
+    dest: /sandbox/abs.env
+`)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/harness/triage.yaml":
+			w.Write(harnessContent)
+		case "/agents/triage.md":
+			w.Write(agentContent)
+		case "/env/triage.env":
+			w.Write(envContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	path := writeTestHarness(t, dir, "triage.yaml", string(harnessContent))
+
+	sourceURL := server.URL + "/harness/triage.yaml"
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		SourceURL:     sourceURL,
+	})
+	require.NoError(t, err)
+
+	// The relative host_files src should be resolved to a local cache path
+	assert.True(t, filepath.IsAbs(h.HostFiles[0].Src),
+		"relative host_files src should be resolved to absolute cache path, got %s", h.HostFiles[0].Src)
+
+	// Verify cached content matches
+	gotEnv, err := os.ReadFile(h.HostFiles[0].Src)
+	require.NoError(t, err)
+	assert.Equal(t, envContent, gotEnv)
+
+	// ${VAR} entries should be left unchanged
+	assert.Equal(t, "${HOME}/.config/app.env", h.HostFiles[1].Src,
+		"host_files with ${VAR} should be left unchanged")
+
+	// Absolute paths should be left unchanged
+	assert.Equal(t, "/absolute/path/file.env", h.HostFiles[2].Src,
+		"host_files with absolute paths should be left unchanged")
+
+	// Dependencies should include the host file
+	fieldNames := map[string]bool{}
+	for _, d := range deps {
+		fieldNames[d.Field] = true
+	}
+	assert.True(t, fieldNames["host_files[0].src"], "should have host_files dep")
+}
+
+func TestLoadWithBase_SourceURL_HostFilesResolutionError(t *testing.T) {
+	// When resolveBaseHostFiles fails (e.g., host_files URL not in allowlist),
+	// LoadWithBase should return the error.
+	harnessContent := []byte(`
+role: triage
+slug: triage
+host_files:
+  - src: env/triage.env
+    dest: /sandbox/.env
+`)
+
+	dir := t.TempDir()
+	path := writeTestHarness(t, dir, "triage.yaml", string(harnessContent))
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		SourceURL:    "https://example.com/harness/triage.yaml",
+		OrgAllowlist: []string{"https://other.example.com/"}, // not matching
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving URL-sourced host_files")
+}
+
 func TestLoadWithBase_NoSourceURL_NoResolution(t *testing.T) {
 	// Without SourceURL, a no-base harness should not attempt URL resolution
 	// (original behavior preserved).
