@@ -3238,6 +3238,46 @@ agent: /absolute/path/agent.md
 	assert.Equal(t, "test", h.Role)
 }
 
+func TestLoadWithBase_SourceURL_ScriptResolutionError(t *testing.T) {
+	// When resolveBaseScripts fails (e.g., script URL not in allowlist),
+	// LoadWithBase should return the error.
+	harnessContent := []byte(`
+role: triage
+slug: triage
+pre_script: scripts/pre-triage.sh
+`)
+
+	dir := t.TempDir()
+	path := writeTestHarness(t, dir, "triage.yaml", string(harnessContent))
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		SourceURL:    "https://example.com/harness/triage.yaml",
+		OrgAllowlist: []string{"https://other.example.com/"}, // not matching
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving URL-sourced scripts")
+}
+
+func TestLoadWithBase_SourceURL_ResourceResolutionError(t *testing.T) {
+	// When resolveBaseResources fails (e.g., agent URL not in allowlist),
+	// LoadWithBase should return the error.
+	harnessContent := []byte(`
+role: triage
+slug: triage
+agent: agents/triage.md
+`)
+
+	dir := t.TempDir()
+	path := writeTestHarness(t, dir, "triage.yaml", string(harnessContent))
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		SourceURL:    "https://example.com/harness/triage.yaml",
+		OrgAllowlist: []string{"https://other.example.com/"}, // not matching
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving URL-sourced resources")
+}
+
 func TestLoadWithBase_NoSourceURL_NoResolution(t *testing.T) {
 	// Without SourceURL, a no-base harness should not attempt URL resolution
 	// (original behavior preserved).
