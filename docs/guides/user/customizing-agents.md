@@ -38,6 +38,7 @@ post_script: scripts/post-code.sh
 
 validation_loop:
   script: scripts/validate-output-schema.sh
+  schema: schemas/result.schema.json
   max_iterations: 2
 
 env:
@@ -53,7 +54,9 @@ env:
 providers:                       # Inference providers (loaded from providers/ dir)
   - vertex                       # References providers/vertex.yaml
 
-validation_loop:
+validation_loop:                     # script is required; these sub-fields are optional
+  script: scripts/validate-output-schema.sh
+  schema: schemas/result.schema.json  # JSON Schema file for output validation (optional)
   feedback_mode: stderr          # "stderr", "stdout", or "exit_code" (optional)
 
 allowed_remote_resources:        # URL prefixes allowed for remote skills/agents/policies
@@ -357,6 +360,7 @@ post_script: scripts/post-code.sh
 
 validation_loop:
   script: scripts/custom-validate.sh  # Changed script
+  schema: schemas/custom-result.schema.json
   max_iterations: 5                   # Changed from: 2
 
 env:

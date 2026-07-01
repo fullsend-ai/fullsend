@@ -675,6 +675,12 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			// Same as forge pre_script above.
 		case strings.HasPrefix(m.field, "forge.") && strings.HasSuffix(m.field, ".validation_loop.script"):
 			// Same as forge pre_script above.
+		case m.field == "validation_loop.schema":
+			if h.ValidationLoop != nil {
+				h.ValidationLoop.Schema = m.localPath
+			}
+		case strings.HasPrefix(m.field, "forge.") && strings.HasSuffix(m.field, ".validation_loop.schema"):
+			// Same as forge pre_script above.
 		default:
 			var idx int
 			if _, err := fmt.Sscanf(m.field, "skills[%d]", &idx); err == nil && idx >= 0 && idx < len(h.Skills) {

@@ -415,6 +415,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// Expand ${VAR} references in validation_loop.schema so the path
+	// resolves before ValidateFilesExist stat-checks it.
+	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
+		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, expander)
+	}
+
 	if err := h.ValidateFilesExist(); err != nil {
 		printer.StepFail("File validation failed")
 		return fmt.Errorf("validating files: %w", err)
@@ -1406,8 +1412,16 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 
 	// Expose output schema and expected filename inside the sandbox so
 	// agents can self-check output with fullsend-check-output. See #1107.
+	// Prefer validation_loop.schema (already resolved by compose); fall
+	// back to the legacy RunnerEnv path for backward compatibility.
 	remoteSchemaPath := sandbox.SandboxWorkspace + "/.fullsend/output-schema.json"
-	if schemaHost, ok := h.RunnerEnv["FULLSEND_OUTPUT_SCHEMA"]; ok && schemaHost != "" {
+	var schemaHost string
+	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
+		schemaHost = h.ValidationLoop.Schema
+	} else if v, ok := h.RunnerEnv["FULLSEND_OUTPUT_SCHEMA"]; ok && v != "" {
+		schemaHost = v
+	}
+	if schemaHost != "" {
 		if _, statErr := os.Stat(schemaHost); statErr != nil {
 			fmt.Fprintf(os.Stderr, "WARNING: schema file not found on host: %s\n", schemaHost)
 		} else {
