@@ -177,6 +177,24 @@ and invokes infrastructure; agents do not drive the poll loop.
   interrupted (same pattern as `kubectl watch`). **Deferred** for initial
   implementation; the flag and semantics are reserved now so a separate
   `fullsend watch` command is not introduced.
+- **`fullsend poll cancel`** — operator override for a locked work item:
+
+```bash
+fullsend poll cancel --issue PROJ-123 [--input-driver jira-poll]
+```
+
+  - **Deletes** the repo-namespaced lock entity property on the issue (e.g.
+    `fullsend.poll.{owner}.{repo}.lock`).
+  - When the lock property stores a **workflow run id** (written by the output
+    driver on successful dispatch), **cancels** that GitHub Actions run via the
+    API before deleting the lock.
+  - **Does not** advance `lastCheck` — the triggering change remains eligible
+    for the next poll cycle after cancel.
+  - Requires credentials for the poll input driver (Jira) and, when cancelling a
+    run, workflow administration on the target repo.
+
+  Use when an agent run is stuck, mis-dispatched, or an operator needs to unblock
+  an issue without waiting for stale-lock expiry.
 
 Flags mirror `fullsend dispatch` where applicable:
 
@@ -231,7 +249,9 @@ Harness enumeration for CEL evaluation uses agent registration per
 Poll input drivers translate **changes on remote work items** into one or more
 `NormalizedEvent` documents suitable for harness CEL evaluation
 ([`docs/normative/normalized-event/`](../normative/normalized-event/),
-[ADR 0061](0061-harness-cel-dispatch.md)).
+[ADR 0061](0061-harness-cel-dispatch.md)). Jira poll emits **work-item**
+events only; change-proposal stages (e.g. `fix`) are routed from forge events,
+not Jira issue comments.
 
 Responsibilities:
 
@@ -311,9 +331,26 @@ Per poll cycle, for each locked candidate:
 
 Jira has **no compare-and-swap** on single-issue entity property `PUT` — writes
 are unconditional overwrites. The coordination algorithm is **write-then-verify
-with jitter**, not true optimistic locking. **Harnesses dispatched via polling
-MUST be idempotent** (safe to run twice for the same work item) as a
-first-class requirement when duplicate dispatch occurs despite coordination.
+with jitter**, not true optimistic locking.
+
+**Duplicate dispatch mitigation** uses two layers:
+
+1. **Jira lock** — at most one poller owns an issue through dispatch scheduling.
+2. **GitHub Actions concurrency** — reusable agent workflows already define
+   per-stage `concurrency` groups keyed by `source_repo` and work-item identity
+   (`issue.number` / `pull_request.number` from projected `event_payload`), with
+   `cancel-in-progress: true`. Poll dispatch MUST populate those fields from
+   `NormalizedEvent.entity` (for Jira: `event_payload.issue.number` from
+   `entity.id`, or an equivalent stable key) so a duplicate dispatch for the
+   **same harness stage** on the **same work item** cancels the in-flight run.
+
+GHA concurrency covers the common duplicate case (same stage, same item). It does
+**not** prevent duplicate side effects when two different harness stages match one
+event, when both runs start before either enters the concurrency group, or when
+a cancelled run has already committed partial work. Agent implementations SHOULD
+still be safe to re-run (idempotent or gracefully no-op on repeat) as defense in
+depth — but polling does not impose a new idempotency requirement beyond what
+event-driven dispatch already assumes under `cancel-in-progress`.
 
 Property keys are namespaced by target repo to avoid collisions when multiple
 repos poll the same Jira project:
@@ -336,7 +373,7 @@ Each `fullsend poll` invocation:
 6. **Re-reads** lock properties for the N issues.
 7. For each issue:
    - If the lock timestamp is **stale**, remove the lock (accepted race —
-     mitigated by idempotency).
+     mitigated by GHA concurrency for same-stage duplicates).
    - If the lock still contains **this UUID**, emit `NormalizedEvent`(s) for
      changes since `lastCheck` and pass them to the dispatch core.
 
@@ -358,7 +395,8 @@ agent runner.
 1. **Pre-invoke verification** — immediately before output dispatch, re-read the
    lock; abort if UUID mismatch or stale.
 2. **Lock handoff** — pass lock metadata to the runner via environment
-   variables (see below).
+   variables (see below). The lock property SHOULD record the dispatched
+   **workflow run id** when available so `fullsend poll cancel` can cancel it.
 3. **Lock removal on dispatch failure** — if the output driver fails after
    retries, remove the lock so another cycle can retry.
 4. **Runner maintenance** — agent runner refreshes the lock during execution and
@@ -396,7 +434,21 @@ Within one `fullsend poll` invocation:
 
 Multiple concurrent `fullsend poll` processes are expected (overlapping cron,
 `--watch`, manual runs). Write-then-verify coordination limits duplicate
-dispatch; idempotency is the safety net.
+dispatch; GHA per-stage concurrency is the primary safety net for same-item
+re-dispatch.
+
+### Observability
+
+**MVP (in scope):** `fullsend poll` emits **structured logs** per cycle —
+driver name, candidates scanned, locks acquired/released, events emitted,
+dispatches scheduled/failed, and rate-limit backoff events. Sufficient for
+initial tuning of M, N, and stale thresholds.
+
+**Deferred (out of scope for poll MVP):** exportable metrics (Prometheus
+counters/histograms), dashboards, and alerting. Run-level source/destination
+annotations ([#896](https://github.com/fullsend-ai/fullsend/issues/896)) apply
+to agent workflows regardless of poll vs webhook trigger; poll-specific cycle
+metrics are a separate follow-up when platform observability matures.
 
 ### API budget and rate limits
 
@@ -425,10 +477,9 @@ required by the authorization gate. Implementations SHOULD track
 - **Polling latency** — discovery at scheduler granularity, not real-time.
 - **Jira API cost** — client-side lock filtering and changelog pagination are
   expensive; M, N, and interval must be tuned.
-- **Write-then-verify races** — duplicate dispatch possible; idempotency is
-  mandatory, not optional.
-- **Cancel gap** — no `fullsend poll cancel` yet; stuck locks expire via stale
-  threshold (open question below).
+- **Write-then-verify races** — duplicate dispatch possible before GHA
+  concurrency applies; mitigated by per-stage `cancel-in-progress` groups when
+  `event_payload` projection is correct.
 - **Work item abstraction** — harnesses and pre-scripts may need
   `FULLSEND_WORK_ITEM_*` plumbing for non-GitHub sources.
 
@@ -445,9 +496,8 @@ questions* for recommended resolution path.
 | Runner lock refresh | Default interval = half stale threshold; refresh from `fullsend run` host using `FULLSEND_POLL_LOCK_*` | Implementation |
 | GitHub/GitLab poll input drivers | Deferred past Jira MVP | Future issue per driver |
 | Async completion → lock release | Runner teardown + stale expiry; optional GHA status poll in open follow-up | Implementation |
-| `fullsend poll cancel` | Stale lock expiry suffices for MVP | Post-MVP issue |
-| Metrics | Log counters in poll driver; formal metrics in ([#896](https://github.com/fullsend-ai/fullsend/issues/896)) | Observability issue |
 | `--watch` interval | Default 60s, exponential backoff on errors, SIGINT/SIGTERM clean shutdown | Implementation when flag ships |
+| Exportable poll metrics / dashboards | Structured logs suffice for MVP | Post-MVP observability |
 
 ### Handling deferred questions
 
@@ -455,9 +505,9 @@ questions* for recommended resolution path.
    patterns (output drivers, authorization, CEL).
 2. **Resolve in the implementation epic** ([#2263](https://github.com/fullsend-ai/fullsend/issues/2263))
    with sub-issues per driver: `jira-poll` input, `gha-dispatch` output, lock
-   refresh in runner, scheduled workflow template.
-3. **Post-MVP** — `fullsend poll cancel`, GitHub/GitLab poll drivers, Jira dev-panel
-   linked change proposals: file issues when Jira MVP ships; do not expand this ADR.
+   refresh in runner, `fullsend poll cancel`, scheduled workflow template.
+3. **Post-MVP** — GitHub/GitLab poll input drivers, exportable poll metrics:
+   file issues when Jira MVP ships; do not expand this ADR.
 
 ## References
 

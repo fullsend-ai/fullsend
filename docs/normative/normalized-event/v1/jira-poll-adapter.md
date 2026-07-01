@@ -8,8 +8,11 @@ changes are merged into `normalized-event.schema.json`.
 ## Scope
 
 - **In scope:** Jira **issues** polled by `fullsend poll --input-driver jira-poll`.
-- **Out of scope (v1 extension):** Jira webhooks, Service Desk, sprint/board
-  events, and linked forge change proposals (may be added later).
+  Events use `entity.kind: work_item` only.
+- **Out of scope:** Jira webhooks, Service Desk, sprint/board events, and forge
+  change-proposal routing (e.g. `/fs-fix`) — those stages require a
+  `change_proposal` entity and are triggered from forge webhooks or poll drivers
+  on the code repo, not from Jira issue comments alone.
 
 ## Schema extensions
 
@@ -35,7 +38,7 @@ When `source.system` is `jira`, `entity.key` MUST be present (e.g. `PROJ-123`).
 | `entity.id` | Jira numeric issue id (`fields` or search result `id`) |
 | `entity.key` | Issue key (`PROJ-123`) |
 | `entity.url` | Browse URL (`{base}/browse/{key}`) |
-| `entity.linked_change_proposal` | Omitted unless dev-panel link to forge PR is resolved (future) |
+| `entity.linked_change_proposal` | Omitted — Jira poll emits work-item events only |
 | `actor` | Comment/changelog author (see below) |
 | `transition` | Mapped semantic transition (see below) |
 | `state.labels` | Current Jira label names at event time |
@@ -73,8 +76,9 @@ Authorization is enforced by `fullsend dispatch` per
 ## State
 
 - `state.labels` — label names from `fields.labels` at event time.
-- `state.change_proposal` — omit unless a linked forge change proposal is
-  resolved (future: Jira development panel → GitHub PR).
+- `state.change_proposal` — omitted. Change-proposal stages (`fix`, PR-linked
+  `review`, merge `retro`) are forge-scoped; harness CEL triggers for those
+  stages MUST require `entity.kind == 'change_proposal'` or equivalent guards.
 
 ## Execution ref projection
 
