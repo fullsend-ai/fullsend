@@ -968,7 +968,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			return fmt.Errorf("provisioning mint: %w", err)
 		}
 		trafficEnv, envErr := mintProvisioner.GetServiceTrafficEnvVars(ctx)
-		printer.StepDone(mintValidationStepDone(trafficEnv, envErr))
+		printer.StepDone(mintValidationMessage(trafficEnv, envErr))
 	}
 
 	if needsWIFProvision {

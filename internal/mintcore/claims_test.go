@@ -65,6 +65,12 @@ func TestIsPublicMint(t *testing.T) {
 	assert.False(t, IsPublicMint(nil))
 }
 
+func TestParseAllowedOrgs(t *testing.T) {
+	assert.Equal(t, []string{"*"}, ParseAllowedOrgs("*"))
+	assert.Equal(t, []string{"org-a", "org-b"}, ParseAllowedOrgs(" org-a , org-b "))
+	assert.Nil(t, ParseAllowedOrgs(""))
+}
+
 func TestValidateOrgAllowed_PublicMode(t *testing.T) {
 	public := []string{"*"}
 	assert.NoError(t, ValidateOrgAllowed("anyorg", public))
@@ -194,6 +200,12 @@ func TestValidateWorkflowRef_PublicMode(t *testing.T) {
 		{
 			"non-workflow path",
 			"fullsend-ai/fullsend/scripts/run.sh@refs/heads/main",
+			"myorg/my-repo",
+			"does not reference a workflow file",
+		},
+		{
+			"empty workflow filename",
+			"fullsend-ai/fullsend/.github/workflows/@refs/heads/main",
 			"myorg/my-repo",
 			"does not reference a workflow file",
 		},

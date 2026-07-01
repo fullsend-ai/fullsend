@@ -407,18 +407,7 @@ func (p *Provisioner) isTrafficMintPublic(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("reading traffic-serving env vars: %w", err)
 	}
-	return mintcore.IsPublicMint(parseAllowedOrgsEnv(trafficEnvVars["ALLOWED_ORGS"])), nil
-}
-
-// parseAllowedOrgsEnv splits a comma-separated ALLOWED_ORGS env value.
-func parseAllowedOrgsEnv(allowedOrgs string) []string {
-	var orgs []string
-	for _, o := range strings.Split(allowedOrgs, ",") {
-		if trimmed := strings.TrimSpace(o); trimmed != "" {
-			orgs = append(orgs, trimmed)
-		}
-	}
-	return orgs
+	return mintcore.IsPublicMint(mintcore.ParseAllowedOrgs(trafficEnvVars["ALLOWED_ORGS"])), nil
 }
 
 // EnsureOrgInMint validates that a mint function exists at expectedURL and
@@ -449,7 +438,7 @@ func (p *Provisioner) EnsureOrgInMint(ctx context.Context, expectedURL string, o
 		return fmt.Errorf("reading traffic-serving env vars: %w", err)
 	}
 
-	if mintcore.IsPublicMint(parseAllowedOrgsEnv(trafficEnvVars["ALLOWED_ORGS"])) {
+	if mintcore.IsPublicMint(mintcore.ParseAllowedOrgs(trafficEnvVars["ALLOWED_ORGS"])) {
 		return nil
 	}
 
@@ -523,7 +512,7 @@ func (p *Provisioner) RegisterPerRepoWIF(ctx context.Context, repo string) error
 		return fmt.Errorf("reading traffic-serving env vars: %w", err)
 	}
 
-	if mintcore.IsPublicMint(parseAllowedOrgsEnv(trafficEnvVars["ALLOWED_ORGS"])) {
+	if mintcore.IsPublicMint(mintcore.ParseAllowedOrgs(trafficEnvVars["ALLOWED_ORGS"])) {
 		return fmt.Errorf("per-repo WIF registration is not supported when mint is in public mode (ALLOWED_ORGS=*)")
 	}
 
@@ -1551,7 +1540,7 @@ func (p *Provisioner) RemoveOrgFromMint(ctx context.Context, org string) error {
 		return fmt.Errorf("reading traffic-serving env vars: %w", err)
 	}
 
-	if mintcore.IsPublicMint(parseAllowedOrgsEnv(trafficEnvVars["ALLOWED_ORGS"])) {
+	if mintcore.IsPublicMint(mintcore.ParseAllowedOrgs(trafficEnvVars["ALLOWED_ORGS"])) {
 		return fmt.Errorf("cannot remove individual orgs when mint is in public mode (ALLOWED_ORGS=*); set an explicit org list instead")
 	}
 

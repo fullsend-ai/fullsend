@@ -58,6 +58,20 @@ func (a Audience) Contains(aud string) bool {
 
 const upstreamRepoPrefix = "fullsend-ai/fullsend/"
 
+// ParseAllowedOrgs splits a comma-separated ALLOWED_ORGS value into trimmed entries.
+func ParseAllowedOrgs(allowedOrgs string) []string {
+	if allowedOrgs == "" {
+		return nil
+	}
+	var orgs []string
+	for _, o := range strings.Split(allowedOrgs, ",") {
+		if trimmed := strings.TrimSpace(o); trimmed != "" {
+			orgs = append(orgs, trimmed)
+		}
+	}
+	return orgs
+}
+
 // IsPublicMint reports whether ALLOWED_ORGS contains *, enabling public mint mode.
 func IsPublicMint(allowedOrgs []string) bool {
 	for _, entry := range allowedOrgs {
@@ -109,6 +123,10 @@ func ValidateWorkflowRef(ref, repository string, allowedOrgs []string, perRepoWI
 			relPath = relPath[:atIdx]
 		}
 		if !strings.HasPrefix(relPath, ".github/workflows/") {
+			return fmt.Errorf("job_workflow_ref does not reference a workflow file")
+		}
+		workflowFile := strings.TrimPrefix(relPath, ".github/workflows/")
+		if workflowFile == "" || strings.Contains(workflowFile, "/") {
 			return fmt.Errorf("job_workflow_ref does not reference a workflow file")
 		}
 		return nil

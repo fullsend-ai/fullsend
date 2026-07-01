@@ -648,20 +648,20 @@ func TestParseAllowedOrgs_SkipsPlaceholder(t *testing.T) {
 	assert.Equal(t, []string{"acme", "widget"}, orgs)
 }
 
-func TestIsPublicMintEnv(t *testing.T) {
-	assert.True(t, isPublicMintEnv("*"))
-	assert.True(t, isPublicMintEnv("org1,*"))
-	assert.False(t, isPublicMintEnv("acme,widget"))
-	assert.False(t, isPublicMintEnv(""))
+func TestIsPublicMintAllowedOrgs(t *testing.T) {
+	assert.True(t, isPublicMintAllowedOrgs("*"))
+	assert.True(t, isPublicMintAllowedOrgs("org1,*"))
+	assert.False(t, isPublicMintAllowedOrgs("acme,widget"))
+	assert.False(t, isPublicMintAllowedOrgs(""))
 }
 
-func TestMintValidationStepDone(t *testing.T) {
+func TestMintValidationMessage(t *testing.T) {
 	assert.Equal(t, "Mint validated (public mode — org registration not required)",
-		mintValidationStepDone(map[string]string{"ALLOWED_ORGS": "*"}, nil))
+		mintValidationMessage(map[string]string{"ALLOWED_ORGS": "*"}, nil))
 	assert.Equal(t, "Mint validated and org registered",
-		mintValidationStepDone(map[string]string{"ALLOWED_ORGS": "acme"}, nil))
+		mintValidationMessage(map[string]string{"ALLOWED_ORGS": "acme"}, nil))
 	assert.Equal(t, "Mint validated and org registered",
-		mintValidationStepDone(nil, fmt.Errorf("unavailable")))
+		mintValidationMessage(nil, fmt.Errorf("unavailable")))
 }
 
 func TestPemSecretRoles_DeduplicatesAliases(t *testing.T) {
@@ -775,7 +775,7 @@ func mintDiscoveryClient() gcf.GCFClient {
 	)
 }
 
-func mintPublicDiscoveryClient() gcf.GCFClient {
+func publicMintDiscoveryClient() gcf.GCFClient {
 	return gcf.NewFakeGCFClient(
 		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
 			URI: "https://mint.example.com",
@@ -835,7 +835,7 @@ func TestRunMintEnrollOrg_Success(t *testing.T) {
 }
 
 func TestRunMintEnrollOrg_PublicMode(t *testing.T) {
-	withMintGCFClient(t, mintPublicDiscoveryClient())
+	withMintGCFClient(t, publicMintDiscoveryClient())
 	out := &strings.Builder{}
 	printer := ui.New(out)
 	err := runMintEnrollOrg(context.Background(), printer, "acme", "my-project", "us-central1", false)
@@ -887,7 +887,7 @@ func TestRunMintStatus_OrgNotEnrolled(t *testing.T) {
 }
 
 func TestRunMintStatus_PublicMode(t *testing.T) {
-	withMintGCFClient(t, mintPublicDiscoveryClient())
+	withMintGCFClient(t, publicMintDiscoveryClient())
 	out := &strings.Builder{}
 	printer := ui.New(out)
 	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "any-org")
@@ -932,7 +932,7 @@ func TestRunMintEnrollRepo_Success(t *testing.T) {
 }
 
 func TestRunMintEnrollRepo_PublicMode(t *testing.T) {
-	withMintGCFClient(t, mintPublicDiscoveryClient())
+	withMintGCFClient(t, publicMintDiscoveryClient())
 	out := &strings.Builder{}
 	printer := ui.New(out)
 	err := runMintEnrollRepo(context.Background(), printer, "acme/widget", "my-project", "us-central1", false)
@@ -949,7 +949,7 @@ func TestRunMintUnenrollOrg_DryRun(t *testing.T) {
 }
 
 func TestRunMintUnenrollOrg_PublicMode(t *testing.T) {
-	withMintGCFClient(t, mintPublicDiscoveryClient())
+	withMintGCFClient(t, publicMintDiscoveryClient())
 	out := &strings.Builder{}
 	printer := ui.New(out)
 	err := runMintUnenrollOrg(context.Background(), printer, "acme", "my-project", "us-central1", false, true, os.Stdin)

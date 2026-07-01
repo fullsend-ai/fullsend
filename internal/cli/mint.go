@@ -74,9 +74,8 @@ func rolesFromAppIDs(roleAppIDs map[string]string) []string {
 // parseAllowedOrgs splits ALLOWED_ORGS, excluding the deploy placeholder.
 func parseAllowedOrgs(allowedOrgs string) []string {
 	var orgs []string
-	for _, o := range strings.Split(allowedOrgs, ",") {
-		o = strings.TrimSpace(o)
-		if o != "" && o != gcf.PlaceholderOrg {
+	for _, o := range mintcore.ParseAllowedOrgs(allowedOrgs) {
+		if o != gcf.PlaceholderOrg {
 			orgs = append(orgs, o)
 		}
 	}
@@ -84,13 +83,13 @@ func parseAllowedOrgs(allowedOrgs string) []string {
 	return orgs
 }
 
-func isPublicMintEnv(allowedOrgs string) bool {
+func isPublicMintAllowedOrgs(allowedOrgs string) bool {
 	return mintcore.IsPublicMint(parseAllowedOrgs(allowedOrgs))
 }
 
-// mintValidationStepDone returns the success message after validating an existing mint.
-func mintValidationStepDone(trafficEnv map[string]string, envErr error) string {
-	if envErr == nil && isPublicMintEnv(trafficEnv["ALLOWED_ORGS"]) {
+// mintValidationMessage returns the success message after validating an existing mint.
+func mintValidationMessage(trafficEnv map[string]string, envErr error) string {
+	if envErr == nil && isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"]) {
 		return "Mint validated (public mode — org registration not required)"
 	}
 	return "Mint validated and org registered"
@@ -621,7 +620,7 @@ func verifyEnrollment(ctx context.Context, printer *ui.Printer, provisioner enro
 
 	orgPresent := false
 	allowedOrgs := verifyEnvVars["ALLOWED_ORGS"]
-	if isPublicMintEnv(allowedOrgs) {
+	if isPublicMintAllowedOrgs(allowedOrgs) {
 		orgPresent = true
 	} else {
 		for _, o := range strings.Split(allowedOrgs, ",") {
@@ -633,7 +632,7 @@ func verifyEnrollment(ctx context.Context, printer *ui.Printer, provisioner enro
 	}
 
 	if orgPresent {
-		if isPublicMintEnv(allowedOrgs) {
+		if isPublicMintAllowedOrgs(allowedOrgs) {
 			printer.StepDone("Public mint mode (ALLOWED_ORGS=*) — all orgs allowed")
 		} else {
 			orgCount := 0
@@ -683,8 +682,11 @@ func runMintEnrollOrg(ctx context.Context, printer *ui.Printer, org, project, re
 		return fmt.Errorf("mint has no role app IDs configured — bootstrap with 'mint deploy --pem-dir' or 'admin install' first")
 	}
 
-	trafficEnv, _ := provisioner.GetServiceTrafficEnvVars(ctx)
-	if isPublicMintEnv(trafficEnv["ALLOWED_ORGS"]) {
+	trafficEnv, err := provisioner.GetServiceTrafficEnvVars(ctx)
+	if err != nil {
+		return fmt.Errorf("reading mint env vars: %w", err)
+	}
+	if isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"]) {
 		printer.Blank()
 		printer.StepInfo("Mint is in public mode (ALLOWED_ORGS=*) — org registration is not required")
 		printer.Blank()
@@ -775,8 +777,11 @@ func runMintEnrollRepo(ctx context.Context, printer *ui.Printer, repoFullName, p
 		return fmt.Errorf("mint has no role app IDs configured — bootstrap with 'mint deploy --pem-dir' or 'admin install' first")
 	}
 
-	trafficEnv, _ := provisioner.GetServiceTrafficEnvVars(ctx)
-	if isPublicMintEnv(trafficEnv["ALLOWED_ORGS"]) {
+	trafficEnv, err := provisioner.GetServiceTrafficEnvVars(ctx)
+	if err != nil {
+		return fmt.Errorf("reading mint env vars: %w", err)
+	}
+	if isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"]) {
 		printer.Blank()
 		printer.StepInfo("Mint is in public mode (ALLOWED_ORGS=*) — per-repo WIF registration is not supported")
 		printer.StepInfo("Per-repo installs use the default WIF provider and upstream reusable workflows")
@@ -958,8 +963,11 @@ func runMintUnenrollOrg(ctx context.Context, printer *ui.Printer, org, project, 
 	}
 	printer.StepDone("Mint verified")
 
-	trafficEnv, _ := provisioner.GetServiceTrafficEnvVars(ctx)
-	if isPublicMintEnv(trafficEnv["ALLOWED_ORGS"]) {
+	trafficEnv, err := provisioner.GetServiceTrafficEnvVars(ctx)
+	if err != nil {
+		return fmt.Errorf("reading mint env vars: %w", err)
+	}
+	if isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"]) {
 		printer.Blank()
 		printer.StepInfo("Mint is in public mode (ALLOWED_ORGS=*) — individual org unenroll is not supported")
 		printer.StepInfo("To restrict access, replace ALLOWED_ORGS=* with an explicit org list")
@@ -1288,7 +1296,7 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 	}
 	roleOnlyIDs := mintcore.RoleOnlyAppIDs(roleAppIDs)
 
-	publicMint := trafficEnv != nil && isPublicMintEnv(trafficEnv["ALLOWED_ORGS"])
+	publicMint := trafficEnv != nil && isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"])
 	if publicMint {
 		printer.Blank()
 		printer.Header("Mint Mode")

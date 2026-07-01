@@ -2614,9 +2614,9 @@ func TestEnsureOrgInMint_ProceedsOnFirstEnrollment(t *testing.T) {
 }
 
 func TestParseAllowedOrgsEnv(t *testing.T) {
-	assert.Equal(t, []string{"*"}, parseAllowedOrgsEnv("*"))
-	assert.Equal(t, []string{"org-a", "org-b"}, parseAllowedOrgsEnv(" org-a , org-b "))
-	assert.Nil(t, parseAllowedOrgsEnv(""))
+	assert.Equal(t, []string{"*"}, mintcore.ParseAllowedOrgs("*"))
+	assert.Equal(t, []string{"org-a", "org-b"}, mintcore.ParseAllowedOrgs(" org-a , org-b "))
+	assert.Nil(t, mintcore.ParseAllowedOrgs(""))
 }
 
 func TestEnsureOrgInMint_PublicModeNoOp(t *testing.T) {
