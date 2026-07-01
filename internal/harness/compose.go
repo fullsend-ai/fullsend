@@ -121,6 +121,12 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 				return nil, nil, fmt.Errorf("resolving URL-sourced resources: %w", err)
 			}
 			deps = append(deps, resourceDeps...)
+
+			hostFileDeps, err := resolveBaseHostFiles(ctx, child, opts.SourceURL, opts.OrgAllowlist, opts)
+			if err != nil {
+				return nil, nil, fmt.Errorf("resolving URL-sourced host_files: %w", err)
+			}
+			deps = append(deps, hostFileDeps...)
 		}
 
 		if err := child.validateForge(); err != nil {
