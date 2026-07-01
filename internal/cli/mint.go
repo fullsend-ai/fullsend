@@ -1057,6 +1057,17 @@ func runMintUnenrollRepo(ctx context.Context, printer *ui.Printer, repoFullName,
 	}
 	printer.StepDone("Mint verified")
 
+	trafficEnv, err := provisioner.GetServiceTrafficEnvVars(ctx)
+	if err != nil {
+		return fmt.Errorf("reading mint env vars: %w", err)
+	}
+	if isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"]) {
+		printer.Blank()
+		printer.StepInfo("Mint is in public mode (ALLOWED_ORGS=*) — per-repo unenroll is not supported")
+		printer.StepInfo("Per-repo installs use the default WIF provider and upstream reusable workflows")
+		return nil
+	}
+
 	if dryRun {
 		providerID := mintcore.BuildRepoProviderID(owner, repo)
 		printer.Blank()

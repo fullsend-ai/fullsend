@@ -986,6 +986,17 @@ func TestRunMintUnenrollRepo_DryRun(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRunMintUnenrollRepo_PublicMode(t *testing.T) {
+	withMintGCFClient(t, publicMintDiscoveryClient())
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintUnenrollRepo(context.Background(), printer, "acme/widget", "my-project", "us-central1", false, true, true, os.Stdin)
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "public mode")
+	assert.Contains(t, out.String(), "per-repo unenroll is not supported")
+	assert.NotContains(t, out.String(), "PER_REPO_WIF_REPOS")
+}
+
 func TestRunMintUnenrollRepo_Success(t *testing.T) {
 	withMintGCFClient(t, gcf.NewFakeGCFClient(
 		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{URI: "https://mint.example.com"}),
