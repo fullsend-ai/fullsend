@@ -286,13 +286,6 @@ runs:
       shell: bash
       run: "$GITHUB_ACTION_PATH/.github/scripts/install-openshell.sh"
 
-    - name: Pre-pull sandbox image
-      shell: bash
-      run: |
-        IMAGE="${FULLSEND_SANDBOX_IMAGE:-ghcr.io/fullsend-ai/fullsend-code:latest}"
-        echo "Pre-pulling sandbox image: ${IMAGE}"
-        timeout 300 podman pull -- "${IMAGE}" || echo "::warning::Image pre-pull failed; sandbox create will pull on demand"
-
     - name: Install validation dependencies
       shell: bash
       run: pip install --quiet "jsonschema>=4.18.0"
