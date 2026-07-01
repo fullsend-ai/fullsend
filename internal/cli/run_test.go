@@ -514,6 +514,7 @@ func TestRunAgent_ConfigAgentURL(t *testing.T) {
 
 	srv, policy := newLockTestServer(t, map[string][]byte{
 		"/harness/triage.yaml": harnessContent,
+		"/agents/remote.md":    []byte("You are a remote agent."),
 	})
 
 	dir := t.TempDir()
