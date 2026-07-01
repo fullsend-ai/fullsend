@@ -3,6 +3,7 @@ package harness
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"gopkg.in/yaml.v3"
 )
 
@@ -58,12 +60,13 @@ type ComposeOpts struct {
 	// are available.
 	OrgAllowlist []string
 
-	// ForgeClient enables full-directory skill fetches from URL bases.
-	// When set, fetchBaseSkill uses the GitHub Contents API to retrieve all
-	// files in a skill directory (sub-agents, scripts, meta-prompts).
-	// When nil, fetchBaseSkill fails fast with an error directing users to
-	// set GITHUB_TOKEN or use 'fullsend lock' for offline pre-caching.
-	ForgeClient forge.Client
+	// TreeFetcher fetches all files under a path in a remote repository.
+	// When nil, defaults to gitfetch.FetchTree (git sparse checkout).
+	TreeFetcher gitfetch.TreeFetchFunc
+
+	// GitToken is an optional token for authenticating git fetches.
+	// Empty means unauthenticated (sufficient for public repos).
+	GitToken string
 
 	// SourceURL is the URL from which the harness was fetched (e.g., via
 	// FetchAgentHarness for config-registered agents). When set and the harness
@@ -850,10 +853,8 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 }
 
 // fetchBaseSkill fetches a skill directory from a URL-referenced base harness.
-// It requires a ForgeClient to fetch the full directory tree (SKILL.md plus
-// companion files like sub-agents/, scripts/, meta-prompts/) via the GitHub
-// Contents API. If no ForgeClient is available, composition fails fast rather
-// than silently degrading to a SKILL.md-only fetch.
+// It uses git sparse checkout (via TreeFetcher) to fetch the full directory
+// tree (SKILL.md plus companion files like sub-agents/, scripts/, meta-prompts/).
 func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, allowlist []string, opts ComposeOpts) (Dependency, string, error) {
 	skillDirURL := baseURLDir + skillPath
 	skillFileURL := skillDirURL + "/SKILL.md"
@@ -865,28 +866,30 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 
 	// Check cache first (keyed by SKILL.md URL for backward compat).
 	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, skillFileURL)
+	var staleFallback *Dependency
+	var staleFallbackPath string
 	if indexHit {
 		treeHash, ok := urlIndexLookup(opts.WorkspaceRoot, "skill:"+skillFileURL)
 		if ok {
 			treePath, entry, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
 			if err == nil && treePath != "" {
-				// Stale cache from v0.22.0: entries without FullListing
-				// may lack companion files. Re-fetch when online with
-				// a ForgeClient; serve stale in offline mode.
-				stale := !entry.FullListing && opts.ForgeClient != nil && !opts.FetchPolicy.Offline
-				if !stale {
+				cachedDep := Dependency{
+					Field:     field,
+					URL:       skillFileURL,
+					LocalPath: treePath,
+					SHA256:    treeHash,
+					FetchedAt: entry.FetchTime,
+					CacheHit:  true,
+					Type:      "directory",
+				}
+				if !entry.FullListing && !opts.FetchPolicy.Offline {
+					staleFallback = &cachedDep
+					staleFallbackPath = treePath
+				} else {
 					if aErr := auditBaseFetch(opts, skillFileURL, treeHash, allowedBy, true, entry.FetchTime, "skill"); aErr != nil {
 						return Dependency{}, "", aErr
 					}
-					return Dependency{
-						Field:     field,
-						URL:       skillFileURL,
-						LocalPath: treePath,
-						SHA256:    treeHash,
-						FetchedAt: entry.FetchTime,
-						CacheHit:  true,
-						Type:      "directory",
-					}, treePath, nil
+					return cachedDep, treePath, nil
 				}
 			}
 		}
@@ -894,19 +897,34 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 	}
 
 	if opts.FetchPolicy.Offline {
+		if staleFallback != nil {
+			return *staleFallback, staleFallbackPath, nil
+		}
 		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, skillFileURL)
 	}
 
-	if opts.ForgeClient == nil {
-		return Dependency{}, "", fmt.Errorf("base %s: skill directory fetch requires a GitHub token; set GH_TOKEN, GITHUB_TOKEN, or run 'gh auth login' — alternatively use 'fullsend lock' to pre-cache skills", field)
+	dep, dirPath, err := fetchBaseSkillDir(ctx, field, skillDirURL, skillFileURL, skillPath, allowedBy, allowlist, opts)
+	if err != nil && staleFallback != nil {
+		if !isTransientFetchError(err) {
+			return Dependency{}, "", err
+		}
+		staleFallback.Warning = fmt.Sprintf("using stale cached content (re-fetch failed: %s)", err)
+		return *staleFallback, staleFallbackPath, nil
 	}
-
-	return fetchBaseSkillDir(ctx, field, skillDirURL, skillFileURL, skillPath, allowedBy, allowlist, opts)
+	return dep, dirPath, err
 }
 
-// fetchBaseSkillDir fetches the full skill directory via ForgeClient.
-// It parses the raw.githubusercontent.com URL to extract owner/repo/ref/path,
-// then uses ListDirectoryContents + GetFileContentAtRef to retrieve all files.
+// isTransientFetchError returns true for errors that indicate a temporary
+// network issue where serving stale cached content is appropriate.
+func isTransientFetchError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	var transient *gitfetch.TransientError
+	return errors.As(err, &transient)
+}
+
+// fetchBaseSkillDir fetches the full skill directory via git sparse checkout.
 func fetchBaseSkillDir(ctx context.Context, field, skillDirURL, skillFileURL, skillPath, allowedBy string, allowlist []string, opts ComposeOpts) (Dependency, string, error) {
 	dirPrefix := skillDirURL + "/"
 	if ab := matchingAllowedPrefix(dirPrefix, allowlist); ab == "" {
@@ -918,27 +936,17 @@ func fetchBaseSkillDir(ctx context.Context, field, skillDirURL, skillFileURL, sk
 		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for skill directory fetch: %w", field, err)
 	}
 
-	entries, err := opts.ForgeClient.ListDirectoryContents(ctx, forgeInfo.Owner, forgeInfo.Repo, forgeInfo.Path, forgeInfo.Ref, true)
-	if err != nil {
-		return Dependency{}, "", fmt.Errorf("base %s: listing skill directory %s: %w", field, skillPath, err)
+	fetcher := opts.TreeFetcher
+	if fetcher == nil {
+		fetcher = gitfetch.FetchTree
 	}
 
-	files := make(map[string][]byte)
-	for _, e := range entries {
-		if e.Type != "file" {
-			continue
+	files, err := fetcher(ctx, forgeInfo.CloneURL(), forgeInfo.Path, forgeInfo.Ref, opts.GitToken)
+	if err != nil {
+		if opts.GitToken == "" {
+			return Dependency{}, "", fmt.Errorf("base %s: fetching skill directory %s: %w (hint: set GH_TOKEN or GITHUB_TOKEN for private repos)", field, skillPath, err)
 		}
-		var fullPath string
-		if forgeInfo.Path == "" {
-			fullPath = e.Path
-		} else {
-			fullPath = forgeInfo.Path + "/" + e.Path
-		}
-		content, fErr := opts.ForgeClient.GetFileContentAtRef(ctx, forgeInfo.Owner, forgeInfo.Repo, fullPath, forgeInfo.Ref)
-		if fErr != nil {
-			return Dependency{}, "", fmt.Errorf("base %s: fetching file %s for skill %s: %w", field, e.Path, skillPath, fErr)
-		}
-		files[e.Path] = content
+		return Dependency{}, "", fmt.Errorf("base %s: fetching skill directory %s: %w", field, skillPath, err)
 	}
 
 	if _, ok := files["SKILL.md"]; !ok {

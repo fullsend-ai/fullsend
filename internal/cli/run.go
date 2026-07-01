@@ -26,6 +26,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/fetchsvc"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
@@ -68,7 +69,8 @@ type resolveFlags struct {
 	offline      bool
 	maxDepth     int
 	maxResources int
-	forgeClient  forge.Client // injected by tests; nil means construct from env
+	treeFetcher  gitfetch.TreeFetchFunc // injected by tests; nil means use default
+	gitToken     string                 // injected by tests; empty means resolve from env
 }
 
 // statusOpts holds the optional status notification parameters for a run.
@@ -202,11 +204,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		orgAllowlist = orgCfg.AllowedRemoteResources
 	}
 
-	var composeForgeClient forge.Client
-	if rFlags.forgeClient != nil {
-		composeForgeClient = rFlags.forgeClient
-	} else if token, tokenErr := resolveToken(); tokenErr == nil {
-		composeForgeClient = gh.New(token)
+	composeGitToken := rFlags.gitToken
+	if composeGitToken == "" {
+		var tokenErr error
+		composeGitToken, tokenErr = resolveToken()
+		if tokenErr != nil {
+			printer.StepWarn("Git token not available; private repo skill fetches may fail")
+		}
 	}
 
 	composeOpts := harness.ComposeOpts{
@@ -215,7 +219,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
 		ForgePlatform: forgePlatform,
 		OrgAllowlist:  orgAllowlist,
-		ForgeClient:   composeForgeClient,
+		TreeFetcher:   rFlags.treeFetcher,
+		GitToken:      composeGitToken,
 	}
 
 	// Resolve agent source: config agents take precedence over disk harnesses.
@@ -320,17 +325,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 
 		if !usedLock {
-			var forgeClient forge.Client
-			if h.HasURLSkills() {
-				if rFlags.forgeClient != nil {
-					forgeClient = rFlags.forgeClient
-				} else {
-					token, tokenErr := resolveToken()
-					if tokenErr != nil {
-						printer.StepFail("Skill URLs require a GitHub token (set GH_TOKEN, GITHUB_TOKEN, or run 'gh auth login')")
-						return fmt.Errorf("skill URLs require a GitHub token: %w", tokenErr)
-					}
-					forgeClient = gh.New(token)
+			resolveGitToken := rFlags.gitToken
+			if resolveGitToken == "" {
+				var tokenErr error
+				resolveGitToken, tokenErr = resolveToken()
+				if tokenErr != nil {
+					printer.StepWarn("Git token not available; private repo skill fetches may fail")
 				}
 			}
 
@@ -341,7 +341,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
 				MaxDepth:      rFlags.maxDepth,
 				MaxResources:  rFlags.maxResources,
-				ForgeClient:   forgeClient,
+				TreeFetcher:   rFlags.treeFetcher,
+				GitToken:      resolveGitToken,
 			})
 			if resolveErr != nil {
 				printer.StepFail("Remote resource resolution failed")
@@ -711,7 +712,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepWarn(deprecationWarning)
 	}
 	if startFetch {
-		env, fetchShutdown, fetchErr := setupFetchService(ctx, rFlags.forgeClient, h, resolveToken, fetchsvc.ServiceConfig{
+		env, fetchShutdown, fetchErr := setupFetchService(ctx, rFlags.treeFetcher, rFlags.gitToken, h, resolveToken, fetchsvc.ServiceConfig{
 			Harness:       h,
 			FetchPolicy:   fetch.DefaultPolicy,
 			WorkspaceRoot: absFullsendDir,
@@ -1304,17 +1305,18 @@ func shouldStartFetchService(h *harness.Harness) (start bool, deprecationWarning
 	return false, ""
 }
 
-// setupFetchService resolves a forge client for runtime fetching and starts
+// setupFetchService resolves a git token for runtime fetching and starts
 // the HTTP fetch service. It returns the service address/token as a
 // fetchServiceEnv, a shutdown function, and any error.
-func setupFetchService(ctx context.Context, forgeClient forge.Client, h *harness.Harness, resolveToken func() (string, error), cfg fetchsvc.ServiceConfig, warn func(string)) (fetchServiceEnv, func(), error) {
-	if forgeClient != nil {
-		cfg.ForgeClient = forgeClient
+func setupFetchService(ctx context.Context, treeFetcher gitfetch.TreeFetchFunc, gitToken string, h *harness.Harness, resolveToken func() (string, error), cfg fetchsvc.ServiceConfig, warn func(string)) (fetchServiceEnv, func(), error) {
+	cfg.TreeFetcher = treeFetcher
+	if gitToken != "" {
+		cfg.GitToken = gitToken
 	} else if h.HasURLSkills() || h.AllowRuntimeFetch || len(h.AllowedRemoteResources) > 0 {
 		if token, err := resolveToken(); err == nil {
-			cfg.ForgeClient = gh.New(token)
+			cfg.GitToken = token
 		} else {
-			warn(fmt.Sprintf("Forge token unavailable, runtime fetches for uncached skills will fail: %v", err))
+			warn(fmt.Sprintf("Git token unavailable, runtime fetches for uncached skills will fail: %v", err))
 		}
 	}
 

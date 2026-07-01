@@ -13,8 +13,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
-	"github.com/fullsend-ai/fullsend/internal/forge"
-	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
@@ -197,11 +195,13 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 	seen := make(map[string]bool)
 	linted := make(map[string]bool) // track reported lint diagnostics to avoid duplicates across forge variants
 
-	var composeForgeClient forge.Client
-	if rFlags.forgeClient != nil {
-		composeForgeClient = rFlags.forgeClient
-	} else if token, tokenErr := resolveToken(); tokenErr == nil {
-		composeForgeClient = gh.New(token)
+	composeGitToken := rFlags.gitToken
+	if composeGitToken == "" {
+		var tokenErr error
+		composeGitToken, tokenErr = resolveToken()
+		if tokenErr != nil {
+			printer.StepWarn("Git token not available; private repo skill fetches may fail")
+		}
 	}
 
 	for _, platform := range forgePlatforms {
@@ -211,7 +211,8 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
 			ForgePlatform: platform,
 			OrgAllowlist:  orgAllowlist,
-			ForgeClient:   composeForgeClient,
+			TreeFetcher:   rFlags.treeFetcher,
+			GitToken:      composeGitToken,
 		})
 		if loadErr != nil {
 			printer.StepFail(fmt.Sprintf("Failed to load harness (forge: %s)", platform))
@@ -294,17 +295,12 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			printer.StepStart("Resolving dependencies")
 		}
 
-		var forgeClient forge.Client
-		if h.HasURLSkills() {
-			if rFlags.forgeClient != nil {
-				forgeClient = rFlags.forgeClient
-			} else {
-				token, tokenErr := resolveToken()
-				if tokenErr != nil {
-					printer.StepFail("Skill URLs require a GitHub token (set GH_TOKEN, GITHUB_TOKEN, or run 'gh auth login')")
-					return nil, fmt.Errorf("skill URLs require a GitHub token: %w", tokenErr)
-				}
-				forgeClient = gh.New(token)
+		resolveGitToken := rFlags.gitToken
+		if resolveGitToken == "" {
+			var tokenErr error
+			resolveGitToken, tokenErr = resolveToken()
+			if tokenErr != nil {
+				printer.StepWarn("Git token not available; private repo skill fetches may fail")
 			}
 		}
 
@@ -314,7 +310,8 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
 			MaxDepth:      rFlags.maxDepth,
 			MaxResources:  rFlags.maxResources,
-			ForgeClient:   forgeClient,
+			TreeFetcher:   rFlags.treeFetcher,
+			GitToken:      resolveGitToken,
 		})
 		if resolveErr != nil {
 			printer.StepFail("Resolution failed")
