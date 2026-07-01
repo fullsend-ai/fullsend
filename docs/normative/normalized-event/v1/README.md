@@ -48,6 +48,7 @@ Input drivers map native forge events into this struct:
 | Driver | Source | v1 status |
 |--------|--------|-----------|
 | `gha-event` | `GITHUB_EVENT_PATH` + `gh` snapshot for labels and change-proposal metadata | Production |
+| `jira-poll` | Jira issue search + changelog/comments since `lastCheck` ([jira-poll-adapter.md](jira-poll-adapter.md), [ADR 0062](../../../ADRs/0062-polling-based-work-discovery.md)) | Extension — schema adds `source.system: jira` in follow-up |
 | `json` | stdin or `--input-file` | Tests, replay |
 
 Adapters must populate:

@@ -244,13 +244,22 @@ Responsibilities:
 4. **Coordinate** via driver-specific locking before handing events to the
    dispatch core.
 
-`NormalizedEvent` v1 normative scope is GitHub Actions only. The Jira poll input
-driver requires a **Jira adapter** (future `normalized-event` extension or v2)
-that sets `source.system: jira`, maps issue keys to `entity`, and carries
-comment bodies in `transition.comment` so slash-command arguments are not lost.
-Until that adapter is normative, the poll driver MUST still populate the same
-logical fields so CEL triggers and execution-ref projection can be tested via
-the `json` input driver.
+The Jira poll input driver emits `NormalizedEvent` documents per the
+**[Jira poll adapter](../normative/normalized-event/v1/jira-poll-adapter.md)**
+extension to NormalizedEvent v1. Summary:
+
+| Concern | Mapping |
+|---------|---------|
+| Target repo | `repo` = GitHub slug where agents run (not the Jira project) |
+| Work item | `entity.kind: work_item`, numeric `entity.id`, `entity.key` (`PROJ-123`), `entity.url` |
+| Provenance | `source.system: jira`, `raw_type` / `raw_action` from Jira API object |
+| Routing input | `transition.*` (e.g. `comment_added` + `comment.command` / `instruction`) |
+| Labels | `state.labels` snapshot |
+| Actor | Jira `accountId`, bot detection, project-role → ADR 0054 `role` |
+
+A v1.x schema update SHOULD add `jira` to `source.system` and optional
+`entity.key`; until merged, validators MAY use the extension document and
+`json` input driver fixtures for tests.
 
 Poll input drivers MUST NOT perform authorization policy — that is the dispatch
 core's responsibility per [ADR 0054](0054-require-authorization-on-all-agent-dispatch-paths.md)
@@ -419,8 +428,8 @@ required by the authorization gate. Implementations SHOULD track
   expensive; M, N, and interval must be tuned.
 - **Write-then-verify races** — duplicate dispatch possible; idempotency is
   mandatory, not optional.
-- **NormalizedEvent gap** — Jira adapter is not yet normative in v1; interim
-  mapping must stay aligned with future schema.
+- **Schema lag** — Jira mapping is specified in the normative extension doc;
+  `normalized-event.schema.json` must add `jira` + `entity.key` in a follow-up.
 - **Cancel gap** — no `fullsend poll cancel` yet; stuck locks expire via stale
   threshold (open question below).
 - **Work item abstraction** — harnesses and pre-scripts may need
@@ -428,23 +437,34 @@ required by the authorization gate. Implementations SHOULD track
 
 ## Open questions
 
-- **Jira `NormalizedEvent` adapter** — normative field mapping for
-  `source.system: jira` (extension vs `normalized-event/v2`).
-- Exact **`.fullsend/config.yaml` schema** for `poll.input_drivers` and lock
-  overrides.
-- **`gha-dispatch` output driver** — workflow target, inputs, and matrix shape
-  shared with `fullsend dispatch`.
-- **Credential placement** — Jira and workflow-dispatch credentials for the
-  scheduled job host.
-- **Runner lock refresh** — interval, Jira API calls from `fullsend run`,
-  interaction with `post_script`.
-- **GitHub/GitLab poll input drivers** — lock primitives (labels, comments, …).
-- **Completion detection** for lock release when dispatch is asynchronous.
-- **`fullsend poll cancel --issue <key>`** — force lock delete and optional GHA
-  run cancellation; store run ID in lock property.
-- **Metrics** ([#896](https://github.com/fullsend-ai/fullsend/issues/896)) —
-  cycle duration, lock contention, dispatch success/failure.
-- **`--watch` interval** — default period, backoff on errors, signal handling.
+Questions below are **intentionally deferred** — see *Handling deferred
+questions* for recommended resolution path.
+
+| Topic | Default / constraint | Resolve in |
+|-------|---------------------|------------|
+| `normalized-event.schema.json` Jira fields | Extension doc is authoritative until schema PR lands | Schema follow-up PR |
+| `poll.input_drivers` config schema | YAML example in this ADR; validate in `fullsend poll` impl | Implementation ([#2263](https://github.com/fullsend-ai/fullsend/issues/2263)) |
+| `gha-dispatch` output driver | Reuse `fullsend dispatch` output driver registry; poll passes same `NormalizedEvent` | Implementation (shared with ADR 0061) |
+| Credential placement | Jira token + `GITHUB_TOKEN` / App creds in target repo secrets; scheduled workflow host | Implementation + install guide |
+| Runner lock refresh | Default interval = half stale threshold; refresh from `fullsend run` host using `FULLSEND_POLL_LOCK_*` | Implementation |
+| GitHub/GitLab poll input drivers | Deferred past Jira MVP | Future issue per driver |
+| Async completion → lock release | Runner teardown + stale expiry; optional GHA status poll in open follow-up | Implementation |
+| `fullsend poll cancel` | Stale lock expiry suffices for MVP | Post-MVP issue |
+| Metrics | Log counters in poll driver; formal metrics in ([#896](https://github.com/fullsend-ai/fullsend/issues/896)) | Observability issue |
+| `--watch` interval | Default 60s, exponential backoff on errors, SIGINT/SIGTERM clean shutdown | Implementation when flag ships |
+
+### Handling deferred questions
+
+1. **Do not block ADR acceptance** on implementation detail that ADR 0061 already
+   patterns (output drivers, authorization, CEL).
+2. **Resolve in the implementation epic** ([#2263](https://github.com/fullsend-ai/fullsend/issues/2263))
+   with sub-issues per driver: `jira-poll` input, `gha-dispatch` output, lock
+   refresh in runner, scheduled workflow template.
+3. **Schema follow-up** — small PR adding `jira` + `entity.key` to
+   `normalized-event.schema.json` and an example fixture under
+   `docs/normative/normalized-event/v1/examples/`.
+4. **Post-MVP** — `fullsend poll cancel`, GitHub/GitLab poll drivers, Jira dev-panel
+   linked change proposals: file issues when Jira MVP ships; do not expand this ADR.
 
 ## References
 
@@ -457,3 +477,4 @@ required by the authorization gate. Implementations SHOULD track
 - [ADR 0058 — Agent registration](0058-agent-registration.md)
 - [ADR 0061 — Harness CEL triggers and fullsend dispatch drivers](0061-harness-cel-dispatch.md)
 - [NormalizedEvent v1](../normative/normalized-event/v1/)
+- [Jira poll adapter (NormalizedEvent extension)](../normative/normalized-event/v1/jira-poll-adapter.md)
