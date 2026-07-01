@@ -2,8 +2,12 @@ package gitfetch
 
 import (
 	"context"
+	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/cgi"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -528,6 +532,164 @@ func TestWrapTransient(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestIsAuthError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"could not read username", fmt.Errorf("exit status 128: fatal: could not read Username for 'https://github.com': terminal prompts disabled"), true},
+		{"authentication failed", fmt.Errorf("fatal: Authentication failed for 'https://github.com/org/repo.git'"), true},
+		{"invalid credentials", fmt.Errorf("remote: Invalid credentials"), true},
+		{"401 error", fmt.Errorf("The requested URL returned error: 401"), true},
+		{"403 error", fmt.Errorf("The requested URL returned error: 403"), true},
+		{"authorization failed", fmt.Errorf("authorization failed"), true},
+		{"network error", fmt.Errorf("connection refused"), false},
+		{"not found", fmt.Errorf("repository not found"), false},
+		{"generic exit", fmt.Errorf("exit status 1"), false},
+		{"timeout", fmt.Errorf("i/o timeout"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isAuthError(tt.err)
+			if got != tt.want {
+				t.Errorf("isAuthError(%q) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFetchTree_AuthFallbackToAnonymous(t *testing.T) {
+	// Create a local repo accessible via file:// (no auth required).
+	// FetchTree with a token against file:// succeeds directly (file://
+	// ignores HTTP auth headers), but this test verifies the code path
+	// by confirming that when a token is provided against a repo that
+	// doesn't need it, the fetch still succeeds.
+	//
+	// The real auth-fallback path is exercised against HTTPS remotes
+	// where a wrong-scope token triggers "could not read Username" or
+	// "401" errors. The isAuthError unit tests above cover the error
+	// detection logic; this test verifies the end-to-end flow does not
+	// regress when tokens are present.
+	repoURL, sha := createTestRepo(t, map[string]string{
+		"skills/review/SKILL.md": "# Review Skill",
+	})
+
+	files, err := FetchTree(context.Background(), repoURL, "skills/review", sha, "wrong-scope-token")
+	if err != nil {
+		t.Fatalf("FetchTree with wrong-scope token should succeed for accessible repo: %v", err)
+	}
+	if string(files["SKILL.md"]) != "# Review Skill" {
+		t.Errorf("unexpected content: %q", files["SKILL.md"])
+	}
+}
+
+// TestFetchTree_AuthFallbackHTTP exercises the auth-retry fallback path
+// (lines 83-91 in FetchTree) using a local HTTP git server that rejects
+// authenticated requests with 403, forcing the code to retry without the
+// token.
+func TestFetchTree_AuthFallbackHTTP(t *testing.T) {
+	// git-http-backend lives in the git exec-path, not on $PATH.
+	gitBackend, err := exec.LookPath("git-http-backend")
+	if err != nil {
+		execPath, epErr := exec.Command("git", "--exec-path").Output()
+		if epErr != nil {
+			t.Skip("git-http-backend not available")
+		}
+		candidate := filepath.Join(strings.TrimSpace(string(execPath)), "git-http-backend")
+		if _, sErr := os.Stat(candidate); sErr != nil {
+			t.Skip("git-http-backend not available")
+		}
+		gitBackend = candidate
+	}
+
+	// Create a bare repo and populate it.
+	bareDir := t.TempDir()
+	gitCmd := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=test",
+			"GIT_AUTHOR_EMAIL=test@test.com",
+			"GIT_COMMITTER_NAME=test",
+			"GIT_COMMITTER_EMAIL=test@test.com",
+		)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+	}
+
+	gitCmd(bareDir, "init", "--bare")
+	// Allow filter capability for partial clone.
+	gitCmd(bareDir, "config", "uploadpack.allowFilter", "true")
+
+	// Clone, add files, push.
+	workDir := t.TempDir()
+	gitCmd(workDir, "clone", bareDir, "work")
+	work := filepath.Join(workDir, "work")
+	skillDir := filepath.Join(work, "skills", "review")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Auth Fallback"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitCmd(work, "add", ".")
+	gitCmd(work, "commit", "-m", "init")
+	gitCmd(work, "push", "origin", "HEAD")
+
+	// Run update-server-info for dumb protocol fallback.
+	gitCmd(bareDir, "update-server-info")
+
+	// Get the commit SHA.
+	shaCmd := exec.Command("git", "rev-parse", "HEAD")
+	shaCmd.Dir = work
+	shaOut, err := shaCmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha := strings.TrimSpace(string(shaOut))
+
+	// Start HTTPS server that rejects requests carrying an Authorization
+	// header with 403, but serves unauthenticated requests via
+	// git-http-backend.
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			http.Error(w, "The requested URL returned error: 403", http.StatusForbidden)
+			return
+		}
+		handler := &cgi.Handler{
+			Path: gitBackend,
+			Env: []string{
+				"GIT_PROJECT_ROOT=" + bareDir,
+				"GIT_HTTP_EXPORT_ALL=1",
+			},
+		}
+		handler.ServeHTTP(w, r)
+	}))
+	defer ts.Close()
+
+	// Write the test server's CA cert so git trusts the self-signed TLS.
+	certFile := filepath.Join(t.TempDir(), "cert.pem")
+	certPEM := pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: ts.Certificate().Raw,
+	})
+	if err := os.WriteFile(certFile, certPEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GIT_SSL_CAINFO", certFile)
+
+	files, err := FetchTree(context.Background(), ts.URL, "skills/review", sha, "bad-scope-token")
+	if err != nil {
+		t.Fatalf("expected auth fallback to succeed: %v", err)
+	}
+	if string(files["SKILL.md"]) != "# Auth Fallback" {
+		t.Errorf("unexpected content: %q", files["SKILL.md"])
 	}
 }
 

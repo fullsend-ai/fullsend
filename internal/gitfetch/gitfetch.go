@@ -79,8 +79,19 @@ func FetchTree(ctx context.Context, cloneURL, subpath, ref, token string) (map[s
 		}
 	}
 
-	if err := runGitWithEnv(ctx, tmpDir, authEnv, "fetch", "--depth", "1", "--filter=blob:none", "origin", "--", ref); err != nil {
-		return nil, wrapTransient(redactToken(fmt.Errorf("gitfetch: git fetch: %w", err), token))
+	fetchErr := runGitWithEnv(ctx, tmpDir, authEnv, "fetch", "--depth", "1", "--filter=blob:none", "origin", "--", ref)
+	if fetchErr != nil && token != "" && isAuthError(fetchErr) {
+		// The token may be scoped to a different repo. Retry without
+		// authentication so public repos remain accessible.
+		fetchErr = runGitWithEnv(ctx, tmpDir, nil, "fetch", "--depth", "1", "--filter=blob:none", "origin", "--", ref)
+		if fetchErr == nil {
+			// Unauthenticated fetch succeeded; clear authEnv so
+			// subsequent checkout also runs without the token.
+			authEnv = nil
+		}
+	}
+	if fetchErr != nil {
+		return nil, wrapTransient(redactToken(fmt.Errorf("gitfetch: git fetch: %w", fetchErr), token))
 	}
 	if err := runGitWithEnv(ctx, tmpDir, authEnv, "checkout", "FETCH_HEAD"); err != nil {
 		return nil, wrapTransient(redactToken(fmt.Errorf("gitfetch: git checkout: %w", err), token))
@@ -202,6 +213,31 @@ type TransientError struct {
 
 func (e *TransientError) Error() string { return e.Err.Error() }
 func (e *TransientError) Unwrap() error { return e.Err }
+
+// authErrorPatterns are stderr substrings that indicate the git fetch
+// failed due to authentication/authorization (e.g. a token scoped to a
+// different repo). When detected, FetchTree retries without the token
+// so that public repos remain accessible.
+var authErrorPatterns = []string{
+	"could not read username",
+	"authentication failed",
+	"invalid credentials",
+	"authorization failed",
+	"the requested url returned error: 401",
+	"the requested url returned error: 403",
+}
+
+// isAuthError returns true when the error message indicates a git
+// authentication or authorization failure.
+func isAuthError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	for _, p := range authErrorPatterns {
+		if strings.Contains(msg, p) {
+			return true
+		}
+	}
+	return false
+}
 
 var transientPatterns = []string{
 	"connection refused",
