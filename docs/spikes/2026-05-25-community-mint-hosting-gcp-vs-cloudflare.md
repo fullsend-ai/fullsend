@@ -1,7 +1,7 @@
 # SPIKE: Community token mint hosting (GCP vs Cloudflare)
 
 **Issue:** [#915](https://github.com/fullsend-ai/fullsend/issues/915) · **Parent:** [#914](https://github.com/fullsend-ai/fullsend/issues/914) · **Epic:** [#912](https://github.com/fullsend-ai/fullsend/issues/912)
-**ADR:** [0029](../ADRs/0029-central-token-mint-secretless-fullsend.md) · [0059](../ADRs/0059-public-mint-mode-with-wildcard-allowlists.md) (trust) · [0061](../ADRs/0061-public-community-mint-architecture.md) (ops/deployment) · **GitOps:** [#1263](https://github.com/fullsend-ai/fullsend/issues/1263) · **Date:** 2026-05-25
+**ADR:** [0029](../ADRs/0029-central-token-mint-secretless-fullsend.md) · [0059](../ADRs/0059-public-mint-mode-with-wildcard-allowlists.md) (trust) · [0062](../ADRs/0062-public-community-mint-architecture.md) (ops/deployment) · **GitOps:** [#1263](https://github.com/fullsend-ai/fullsend/issues/1263) · **Date:** 2026-05-25
 
 ## Decision
 
@@ -115,6 +115,6 @@ Community mint traffic is **low** (roughly one `POST /v1/token` per agent job ba
 - [Infrastructure reference — Token mint](../guides/infrastructure/infrastructure-reference.md)
 - [ADR 0029](../ADRs/0029-central-token-mint-secretless-fullsend.md)
 - [ADR 0059](../ADRs/0059-public-mint-mode-with-wildcard-allowlists.md)
-- [ADR 0061 — Public community mint architecture](../ADRs/0061-public-community-mint-architecture.md)
+- [ADR 0061 — Public community mint architecture](../ADRs/0062-public-community-mint-architecture.md)
 - [#1263](https://github.com/fullsend-ai/fullsend/issues/1263) · [#1262](https://github.com/fullsend-ai/fullsend/issues/1262)
 - [#915](https://github.com/fullsend-ai/fullsend/issues/915) discussion (2026-05-25)

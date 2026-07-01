@@ -1,5 +1,5 @@
 ---
-title: "61. Public community mint architecture"
+title: "62. Public community mint architecture"
 status: Accepted
 relates_to:
   - agent-infrastructure
@@ -14,7 +14,7 @@ topics:
   - key-rotation
 ---
 
-# 61. Public community mint architecture
+# 62. Public community mint architecture
 
 Date: 2026-05-25
 
