@@ -693,10 +693,66 @@ attention.
 If no protected files are modified, do not add a `protected-path`
 finding.
 
+#### 6e-1. Finding reconciliation
+
+After all orchestrator checks (6e) have produced their findings,
+reconcile them against the challenger-adjudicated sub-agent findings
+before merging. The goal is to detect and resolve logical
+contradictions — cases where one finding's evidence directly negates
+another finding's premise.
+
+**When to reconcile:** Scan the combined set (sub-agent findings +
+orchestrator findings) for pairs where:
+
+- One finding asserts that something is **missing** (e.g., "no
+  authorization exists for modifying protected paths")
+- Another finding asserts that the same thing **is present** (e.g.,
+  "authorization inferred from renovate.json configuration for
+  `.github/**` files")
+
+The most common pattern is a `protected-path` finding (from 6e)
+claiming insufficient authorization while an `implicit-authorization`
+or `missing-authorization` info-level finding (from a sub-agent)
+cites specific configuration (e.g., `renovate.json`, `dependabot.yml`)
+that explicitly authorizes the change pattern.
+
+**How to reconcile:** For each orchestrator finding, check whether any
+existing sub-agent finding provides evidence that directly negates its
+premise:
+
+1. If a sub-agent finding at **any severity** cites specific evidence
+   (a config file, a policy, a linked issue) that the changes to the
+   flagged paths are explicitly authorized, and the orchestrator
+   finding's premise is that authorization is missing or insufficient:
+   - **Downgrade** the orchestrator finding to **info** severity.
+   - Append to the description: "Note: [sub-agent-dimension] finding
+     cites [evidence source] as authorization for this change. Human
+     approval is still required for protected-path changes."
+   - Set `actionable: false` — the finding is now informational.
+
+2. If no sub-agent finding provides contradicting evidence, keep the
+   orchestrator finding unchanged.
+
+**What reconciliation does NOT do:**
+
+- It does not suppress `protected-path` findings entirely. Human
+  approval is always required for protected paths — the finding
+  remains as an info-level notice even when authorization evidence
+  exists.
+- It does not override the `post-review.sh` downgrade behavior.
+  The post-script independently prevents approval on protected-path
+  PRs regardless of finding severity.
+- It does not apply to findings with the same provenance. Two
+  sub-agent findings from the same dimension cannot contradict each
+  other in the reconciliation sense — intra-dimension consistency
+  is the sub-agent's responsibility.
+- It does not re-run the challenger pass. Reconciliation operates
+  on the final finding set, not on intermediate results.
+
 #### 6f. Determine overall outcome
 
-Merge PR-specific findings into the challenger-adjudicated finding set
-and evaluate:
+Merge the reconciled PR-specific findings (from 6e-1) into the
+challenger-adjudicated finding set and evaluate:
 
 - Any **critical** or **high** finding → `request-changes`
 - Multiple **medium** findings which could affect the intended outcome
