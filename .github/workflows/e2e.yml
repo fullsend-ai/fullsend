@@ -10,13 +10,13 @@ on:
   push:
     branches: [main]
     # SYNC-WITH: grep in "Check for e2e-relevant changes" (e2e job) and
-    # "Check for behaviour-relevant changes" (behaviour job)
+    # "Check for behaviour-relevant changes" (behaviour job). push.paths is the
+    # union of both filters (plus **/*.go); each job grep may be narrower.
     paths:
       - '**/*.go'
       - 'go.mod'
       - 'go.sum'
       - 'e2e/**'
-      - 'e2e/behaviour/**'
       - 'internal/scaffold/fullsend-repo/**'
       - 'internal/security/hooks/**'
       - 'internal/dispatch/gcf/mintsrc/**'
@@ -33,7 +33,9 @@ on:
       - 'internal/mintclient/**'
       - 'cmd/fullsend/**'
       - 'Makefile'
+      - '.github/scripts/**'
       - '.github/workflows/e2e.yml'
+      - 'action.yml'
       - '.github/actions/check-e2e-authorization/**'
       - 'scripts/check-e2e-authorization.sh'
   pull_request_target:
@@ -126,7 +128,7 @@ jobs:
               exit 0
             }
           fi
-          if echo "$FILES" | grep -qE '\.go$|^go\.(mod|sum)$|^e2e/|^e2e/behaviour/|^internal/scaffold/fullsend-repo/|^internal/security/hooks/|^internal/dispatch/gcf/mintsrc/|^internal/sentencetoken/english\.json$|^Makefile$|^\.github/workflows/e2e\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
+          if echo "$FILES" | grep -qE '\.go$|^go\.(mod|sum)$|^e2e/|^internal/scaffold/fullsend-repo/|^internal/security/hooks/|^internal/dispatch/gcf/mintsrc/|^internal/sentencetoken/english\.json$|^Makefile$|^\.github/scripts/|^\.github/workflows/e2e\.yml$|^action\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No e2e-relevant files changed — skipping tests"
@@ -213,7 +215,8 @@ jobs:
               exit 0
             }
           fi
-          if echo "$FILES" | grep -qE '^e2e/behaviour/|^e2e/admin/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/github\.go$|^internal/cli/run\.go$|^internal/layers/|^internal/scaffold/|^internal/forge/|^internal/harness/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^Makefile$|^\.github/workflows/e2e\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
+          # e2e/admin: behaviour suite reuses exported admin test helpers
+          if echo "$FILES" | grep -qE '^e2e/behaviour/|^e2e/admin/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/|^internal/layers/|^internal/scaffold/fullsend-repo/|^internal/forge/|^internal/harness/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^Makefile$|^\.github/workflows/e2e\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No behaviour-relevant files changed — skipping behaviour tests"

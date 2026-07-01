@@ -35,12 +35,12 @@ func testAgents() []AgentCredentials {
 }
 
 func TestHarnessWrappersLayer_Name(t *testing.T) {
-	layer := NewHarnessWrappersLayer("org", nil, testPrinter(), nil, "dev")
+	layer := NewHarnessWrappersLayer("org", nil, testPrinter(), nil, "dev", nil)
 	assert.Equal(t, "harness-wrappers", layer.Name())
 }
 
 func TestHarnessWrappersLayer_RequiredScopes(t *testing.T) {
-	layer := NewHarnessWrappersLayer("org", nil, testPrinter(), nil, "dev")
+	layer := NewHarnessWrappersLayer("org", nil, testPrinter(), nil, "dev", nil)
 	assert.Equal(t, []string{"repo"}, layer.RequiredScopes(OpInstall))
 	assert.Equal(t, []string{"repo"}, layer.RequiredScopes(OpAnalyze))
 	assert.Nil(t, layer.RequiredScopes(OpUninstall))
@@ -48,7 +48,7 @@ func TestHarnessWrappersLayer_RequiredScopes(t *testing.T) {
 
 func TestHarnessWrappersLayer_Install_DevBuild(t *testing.T) {
 	client := forge.NewFakeClient()
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), testAgents(), "dev")
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), testAgents(), "dev", nil)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -57,7 +57,7 @@ func TestHarnessWrappersLayer_Install_DevBuild(t *testing.T) {
 
 func TestHarnessWrappersLayer_Install_EmptyCommitSHA(t *testing.T) {
 	client := forge.NewFakeClient()
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), testAgents(), "")
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), testAgents(), "", nil)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -67,7 +67,7 @@ func TestHarnessWrappersLayer_Install_EmptyCommitSHA(t *testing.T) {
 func TestHarnessWrappersLayer_Install_GeneratesWrappers(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Repos = []forge.Repository{{FullName: "org/.fullsend", DefaultBranch: "main"}}
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), testAgents(), testCommitSHA)
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), testAgents(), testCommitSHA, nil)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -120,7 +120,7 @@ func TestHarnessWrappersLayer_Install_WrapperContainsManagedHeader(t *testing.T)
 	agents := []AgentCredentials{
 		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA, nil)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -137,7 +137,7 @@ func TestHarnessWrappersLayer_Install_WrapperContainsIntegrityHash(t *testing.T)
 	agents := []AgentCredentials{
 		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA, nil)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -154,7 +154,7 @@ func TestHarnessWrappersLayer_Install_SkipsCustomizedFile(t *testing.T) {
 	agents := []AgentCredentials{
 		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA, nil)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -171,7 +171,7 @@ func TestHarnessWrappersLayer_Install_OverwritesManagedFile(t *testing.T) {
 	agents := []AgentCredentials{
 		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA, nil)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -189,7 +189,7 @@ func TestHarnessWrappersLayer_Install_CommitFilesError(t *testing.T) {
 	agents := []AgentCredentials{
 		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA, nil)
 
 	err := layer.Install(context.Background())
 	require.Error(t, err)
@@ -198,7 +198,7 @@ func TestHarnessWrappersLayer_Install_CommitFilesError(t *testing.T) {
 
 func TestHarnessWrappersLayer_Install_NoAgentsNoCommit(t *testing.T) {
 	client := forge.NewFakeClient()
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), nil, testCommitSHA)
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), nil, testCommitSHA, nil)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -210,7 +210,7 @@ func TestHarnessWrappersLayer_Install_OnlyFullsendRoleNoCommit(t *testing.T) {
 	agents := []AgentCredentials{
 		{Role: "fullsend", Name: "fs", Slug: "test-fullsend"},
 	}
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA, nil)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -222,7 +222,7 @@ func TestHarnessWrappersLayer_Install_WrapperParsesAsValidHarness(t *testing.T) 
 	agents := []AgentCredentials{
 		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA, nil)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -247,7 +247,7 @@ func TestHarnessWrappersLayer_Install_BaseURLMatchesScaffold(t *testing.T) {
 	agents := []AgentCredentials{
 		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA, nil)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -260,13 +260,13 @@ func TestHarnessWrappersLayer_Install_BaseURLMatchesScaffold(t *testing.T) {
 }
 
 func TestHarnessWrappersLayer_Uninstall_NoOp(t *testing.T) {
-	layer := NewHarnessWrappersLayer("org", nil, testPrinter(), nil, "dev")
+	layer := NewHarnessWrappersLayer("org", nil, testPrinter(), nil, "dev", nil)
 	err := layer.Uninstall(context.Background())
 	require.NoError(t, err)
 }
 
 func TestHarnessWrappersLayer_Analyze_DevBuild(t *testing.T) {
-	layer := NewHarnessWrappersLayer("org", nil, testPrinter(), nil, "dev")
+	layer := NewHarnessWrappersLayer("org", nil, testPrinter(), nil, "dev", nil)
 	report, err := layer.Analyze(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, StatusNotInstalled, report.Status)
@@ -280,7 +280,7 @@ func TestHarnessWrappersLayer_Analyze_AllPresent(t *testing.T) {
 	}
 	client.FileContents["org/.fullsend/harness/triage.yaml"] = []byte("role: triage\n")
 
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA, nil)
 	report, err := layer.Analyze(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, StatusInstalled, report.Status)
@@ -292,7 +292,7 @@ func TestHarnessWrappersLayer_Analyze_AllMissing(t *testing.T) {
 		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
 
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA, nil)
 	report, err := layer.Analyze(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, StatusNotInstalled, report.Status)
@@ -309,7 +309,7 @@ func TestHarnessWrappersLayer_Analyze_Degraded(t *testing.T) {
 	// Only triage exists
 	client.FileContents["org/.fullsend/harness/triage.yaml"] = []byte("role: triage\n")
 
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA, nil)
 	report, err := layer.Analyze(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, StatusDegraded, report.Status)
@@ -319,7 +319,7 @@ func TestHarnessWrappersLayer_Analyze_Degraded(t *testing.T) {
 
 func TestHarnessWrappersLayer_Analyze_NoAgents(t *testing.T) {
 	client := forge.NewFakeClient()
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), nil, testCommitSHA)
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), nil, testCommitSHA, nil)
 	report, err := layer.Analyze(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, StatusNotInstalled, report.Status)
@@ -351,7 +351,7 @@ func TestHarnessWrappersLayer_Install_FileMode(t *testing.T) {
 	agents := []AgentCredentials{
 		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA, nil)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -368,7 +368,7 @@ func TestHarnessWrappersLayer_Install_CoderFixDedup(t *testing.T) {
 		{Role: "coder", Name: "coder-a", Slug: "slug-a"},
 		{Role: "coder", Name: "coder-b", Slug: "slug-b"},
 	}
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA, nil)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
@@ -390,7 +390,7 @@ func TestHarnessWrappersLayer_Install_LoadExistingHarnessesError(t *testing.T) {
 	agents := []AgentCredentials{
 		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA, nil)
 
 	err := layer.Install(context.Background())
 	require.Error(t, err)
@@ -404,9 +404,52 @@ func TestHarnessWrappersLayer_Install_IdempotentNoChange(t *testing.T) {
 	agents := []AgentCredentials{
 		{Role: "triage", Name: "t", Slug: "test-triage"},
 	}
-	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA)
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA, nil)
 
 	err := layer.Install(context.Background())
 	require.NoError(t, err)
 	// Should succeed without error even when tree is unchanged
+}
+
+func TestHarnessWrappersLayer_Install_SkipsConfigAgents(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{{FullName: "org/.fullsend", DefaultBranch: "main"}}
+	agents := []AgentCredentials{
+		{Role: "triage", Name: "test-triage", Slug: "test-triage"},
+		{Role: "review", Name: "test-review", Slug: "test-review"},
+	}
+	// "triage" is config-driven; wrapper should not be generated for it.
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA, []string{"triage"})
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	require.Len(t, client.CommittedFiles, 1)
+	batch := client.CommittedFiles[0]
+	paths := make(map[string]bool)
+	for _, f := range batch.Files {
+		paths[f.Path] = true
+	}
+	assert.NotContains(t, paths, "harness/triage.yaml", "config-driven agent should be skipped")
+	assert.Contains(t, paths, "harness/review.yaml", "non-config agent should still get a wrapper")
+}
+
+func TestHarnessWrappersLayer_Analyze_SkipsConfigAgents(t *testing.T) {
+	client := forge.NewFakeClient()
+	agents := []AgentCredentials{
+		{Role: "triage", Name: "test-triage", Slug: "test-triage"},
+		{Role: "review", Name: "test-review", Slug: "test-review"},
+	}
+	// "triage" is config-driven; should not appear in analysis.
+	layer := NewHarnessWrappersLayer("org", client, testPrinter(), agents, testCommitSHA, []string{"triage"})
+
+	report, err := layer.Analyze(context.Background())
+	require.NoError(t, err)
+
+	for _, detail := range report.Details {
+		assert.NotContains(t, detail, "triage", "config-driven agent should be excluded from analysis")
+	}
+	for _, item := range report.WouldInstall {
+		assert.NotContains(t, item, "triage", "config-driven agent should be excluded from would-install")
+	}
 }

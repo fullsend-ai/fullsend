@@ -163,8 +163,16 @@ jobs:
       - name: Configure OpenShell gateway
         if: steps.changes.outputs.relevant != 'false'
         run: |
+          source .github/scripts/openshell-version.sh
           mkdir -p "$HOME/.config/openshell"
           echo "OPENSHELL_BIND_ADDRESS=0.0.0.0" > "$HOME/.config/openshell/gateway.env"
+          cat > "$HOME/.config/openshell/gateway.toml" << EOF
+          [openshell]
+          version = 1
+
+          [openshell.gateway]
+          supervisor_image = "ghcr.io/nvidia/openshell/supervisor:${OPENSHELL_VERSION}"
+          EOF
 
       - name: Install OpenShell CLI
         if: steps.changes.outputs.relevant != 'false'

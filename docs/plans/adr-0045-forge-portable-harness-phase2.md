@@ -225,7 +225,7 @@ The `WorkflowsLayer` currently uses `scaffold.WalkFullsendRepo()` which skips `l
 
 **`HarnessWrappersLayer` struct:**
 - Fields: `org string`, `client forge.Client`, `printer *ui.Printer`, `agents []AgentCredentials`, `commitSHA string`, `existingHarnesses map[string]bool`
-- `NewHarnessWrappersLayer(org string, client forge.Client, printer *ui.Printer, agents []AgentCredentials, commitSHA string) *HarnessWrappersLayer`
+- `NewHarnessWrappersLayer(org string, client forge.Client, printer *ui.Printer, agents []AgentCredentials, commitSHA string, configAgentNames []string) *HarnessWrappersLayer`
 
 **`Install() error`:**
 1. For each agent in `agents`:

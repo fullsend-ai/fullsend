@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
@@ -25,6 +26,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/fetchsvc"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
@@ -35,6 +37,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/statuscomment"
+	"github.com/fullsend-ai/fullsend/internal/telemetry"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -66,7 +69,8 @@ type resolveFlags struct {
 	offline      bool
 	maxDepth     int
 	maxResources int
-	forgeClient  forge.Client // injected by tests; nil means construct from env
+	treeFetcher  gitfetch.TreeFetchFunc // injected by tests; nil means use default
+	gitToken     string                 // injected by tests; empty means resolve from env
 }
 
 // statusOpts holds the optional status notification parameters for a run.
@@ -82,11 +86,14 @@ type aggregateMetrics struct {
 	NumTurns     int     `json:"num_turns"`
 	TotalCostUSD float64 `json:"total_cost_usd"`
 	TokenUsage   struct {
-		Input  int `json:"input"`
-		Output int `json:"output"`
+		Input         int `json:"input"`
+		Output        int `json:"output"`
+		CacheCreation int `json:"cache_creation"`
+		CacheRead     int `json:"cache_read"`
 	} `json:"token_usage"`
-	Iterations int `json:"iterations"`
-	ToolCalls  int `json:"tool_calls"`
+	Iterations int    `json:"iterations"`
+	ToolCalls  int    `json:"tool_calls"`
+	Model      string `json:"model,omitempty"`
 }
 
 func writeMetricsJSON(dir string, m aggregateMetrics) error {
@@ -151,6 +158,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	printer.Header("Running agent: " + agentName)
 	printer.Blank()
 
+	// runStart anchors the root telemetry span (ADR 0050); captured before any
+	// work so run-summary's total duration covers the whole invocation.
+	runStart := time.Now()
+
 	if rFlags.maxDepth < 0 {
 		return fmt.Errorf("--max-depth must be >= 0, got %d", rFlags.maxDepth)
 	}
@@ -171,12 +182,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// 1. Resolve and load harness.
-	harnessPath, err := resolveHarnessPath(absFullsendDir, agentName, printer)
-	if err != nil {
-		return err
-	}
 	harnessStart := time.Now()
-	printer.StepStart("Loading harness: " + harnessPath)
 
 	forgePlatform, err := detectForgePlatform(forgeFlag)
 	if err != nil {
@@ -188,13 +194,48 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	policy.Offline = rFlags.offline
 
 	// Best-effort org config loading — provides the allowlist for base
-	// harness fetching. If the file is missing or unparseable we proceed
-	// without it; HasURLReferences will enforce its presence later if needed.
+	// harness fetching and the agent registry for config-driven resolution.
+	// If the file is missing or unparseable we proceed without it;
+	// HasURLReferences will enforce its presence later if needed.
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
 	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
 	var orgAllowlist []string
 	if orgCfg != nil {
 		orgAllowlist = orgCfg.AllowedRemoteResources
+	}
+
+	composeGitToken := rFlags.gitToken
+	if composeGitToken == "" {
+		var tokenErr error
+		composeGitToken, tokenErr = resolveToken()
+		if tokenErr != nil {
+			printer.StepWarn("Git token not available; private repo skill fetches may fail")
+		}
+	}
+
+	composeOpts := harness.ComposeOpts{
+		WorkspaceRoot: absFullsendDir,
+		FetchPolicy:   policy,
+		AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
+		ForgePlatform: forgePlatform,
+		OrgAllowlist:  orgAllowlist,
+		TreeFetcher:   rFlags.treeFetcher,
+		GitToken:      composeGitToken,
+	}
+
+	// Resolve agent source: config agents take precedence over disk harnesses.
+	harnessPath, fetchDeps, err := resolveAgentSource(ctx, absFullsendDir, agentName, orgCfg, composeOpts, printer)
+	if err != nil {
+		return err
+	}
+
+	printer.StepStart("Loading harness: " + harnessPath)
+
+	// If the agent was fetched from a URL, forward the source URL so
+	// LoadWithBase can resolve relative resources even without a base:
+	// field (ADR-0045 resource resolution for config-registered agents).
+	if len(fetchDeps) > 0 && fetchDeps[0].URL != "" {
+		composeOpts.SourceURL = fetchDeps[0].URL
 	}
 
 	// If the harness has a URL base and org config failed to load,
@@ -207,31 +248,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if err != nil {
 				return err
 			}
-			orgAllowlist = orgCfg.AllowedRemoteResources
+			composeOpts.OrgAllowlist = orgCfg.AllowedRemoteResources
 		}
 	}
 
-	var composeForgeClient forge.Client
-	if rFlags.forgeClient != nil {
-		composeForgeClient = rFlags.forgeClient
-	} else if token, tokenErr := resolveToken(); tokenErr == nil {
-		composeForgeClient = gh.New(token)
-	}
-
-	h, baseDeps, err := harness.LoadWithBase(ctx, harnessPath, harness.ComposeOpts{
-		WorkspaceRoot: absFullsendDir,
-		FetchPolicy:   policy,
-		AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
-		ForgePlatform: forgePlatform,
-		OrgAllowlist:  orgAllowlist,
-		ForgeClient:   composeForgeClient,
-	})
+	h, baseDeps, err := harness.LoadWithBase(ctx, harnessPath, composeOpts)
 	if err != nil {
 		printer.StepFail("Failed to load harness")
 		return fmt.Errorf("loading harness: %w", err)
 	}
 
-	for _, dep := range baseDeps {
+	allDeps := append(fetchDeps, baseDeps...)
+	for _, dep := range allDeps {
 		if dep.CacheHit {
 			printer.StepInfo(fmt.Sprintf("Base: %s (cache hit)", dep.URL))
 		} else {
@@ -297,17 +325,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 
 		if !usedLock {
-			var forgeClient forge.Client
-			if h.HasURLSkills() {
-				if rFlags.forgeClient != nil {
-					forgeClient = rFlags.forgeClient
-				} else {
-					token, tokenErr := resolveToken()
-					if tokenErr != nil {
-						printer.StepFail("Skill URLs require a GitHub token (set GH_TOKEN, GITHUB_TOKEN, or run 'gh auth login')")
-						return fmt.Errorf("skill URLs require a GitHub token: %w", tokenErr)
-					}
-					forgeClient = gh.New(token)
+			resolveGitToken := rFlags.gitToken
+			if resolveGitToken == "" {
+				var tokenErr error
+				resolveGitToken, tokenErr = resolveToken()
+				if tokenErr != nil {
+					printer.StepWarn("Git token not available; private repo skill fetches may fail")
 				}
 			}
 
@@ -318,7 +341,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
 				MaxDepth:      rFlags.maxDepth,
 				MaxResources:  rFlags.maxResources,
-				ForgeClient:   forgeClient,
+				TreeFetcher:   rFlags.treeFetcher,
+				GitToken:      resolveGitToken,
 			})
 			if resolveErr != nil {
 				printer.StepFail("Remote resource resolution failed")
@@ -556,12 +580,21 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// Trace identity (ADR 0050 Level 1 + security correlation). Generated here,
+	// before the pre-script, so TRACEPARENT can propagate to child processes.
+	// The same id is reused as the security finding/audit trace id (dashed UUID)
+	// and, dash-stripped, as the W3C telemetry trace id — one id across both.
+	securityTraceID := security.GenerateTraceID()
+	wTraceID := telemetry.TraceIDFromUUID(securityTraceID)
+	rootSpanID := telemetry.NewSpanID()
+	workItemID := resolveWorkItemID()
+
 	// 2c. Run pre-script on the host (if configured).
 	if h.PreScript != "" {
 		preStart := time.Now()
 		printer.StepStart("Running pre-script: " + h.PreScript)
 		preCmd := exec.Command(h.PreScript)
-		preCmd.Env = append(os.Environ(), envToList(h.RunnerEnv)...)
+		preCmd.Env = childScriptEnv(h.RunnerEnv, telemetry.TraceParent(wTraceID, rootSpanID))
 		preCmd.Stdout = os.Stdout
 		preCmd.Stderr = os.Stderr
 		if err := preCmd.Run(); err != nil {
@@ -573,18 +606,33 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	// 3. Create sandbox.
 	sandboxName := fmt.Sprintf("agent-%s-%d-%d", agentName, os.Getpid(), time.Now().Unix())
-	createStart := time.Now()
-	printer.StepStart("Creating sandbox: " + sandboxName)
-
-	readyTimeout := time.Duration(h.SandboxTimeoutSeconds) * time.Second
-	if err := sandbox.CreateWithRetry(sandboxName, h.Providers, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout); err != nil {
-		printer.StepFail("Failed to create sandbox")
-		return fmt.Errorf("creating sandbox: %w", err)
-	}
 	if outputBase == "" {
 		outputBase = filepath.Join(os.TempDir(), "fullsend")
 	}
 	runDir := filepath.Join(outputBase, sandboxName)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return fmt.Errorf("creating run directory: %w", err)
+	}
+
+	// Level 1 telemetry recorder (ADR 0050). A disabled recorder is a safe
+	// no-op, so any telemetry failure never affects the run. Finalize is
+	// registered before the post-script and cleanup defers so that — by LIFO
+	// order — it runs last and the summary captures the whole run.
+	var lastExitCode int
+	rec := telemetry.New(runDir, wTraceID, rootSpanID, agentName, workItemID, runStart)
+	defer func() { rec.Finalize(telemetryExitCode(lastExitCode, runErr)) }()
+
+	createStart := time.Now()
+	printer.StepStart("Creating sandbox: " + sandboxName)
+	sandboxSpan := rec.StartSpan("sandbox_create", "", nil)
+
+	readyTimeout := time.Duration(h.SandboxTimeoutSeconds) * time.Second
+	if err := sandbox.CreateWithRetry(sandboxName, h.Providers, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout); err != nil {
+		rec.EndSpan(sandboxSpan, "error", nil)
+		printer.StepFail("Failed to create sandbox")
+		return fmt.Errorf("creating sandbox: %w", err)
+	}
+	rec.EndSpan(sandboxSpan, "ok", nil)
 
 	// validationPassed is declared here (before the post-script defer) so the
 	// defer closure can guard on it. The post-script must only run when
@@ -616,7 +664,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepStart("Running post-script: " + h.PostScript)
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
-			postCmd.Env = append(os.Environ(), envToList(h.RunnerEnv)...)
+			postCmd.Env = childScriptEnv(h.RunnerEnv, telemetry.TraceParent(wTraceID, rootSpanID))
 			postCmd.Stdout = os.Stdout
 			postCmd.Stderr = os.Stderr
 			if err := postCmd.Run(); err != nil {
@@ -657,9 +705,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	repoName := filepath.Base(hostRepositoryDir)
 	remoteRepositoryDir := fmt.Sprintf("%s/%s", sandbox.SandboxWorkspace, repoName)
 
-	// 5. Generate trace ID for security finding and audit log correlation.
-	traceID := security.GenerateTraceID()
-
 	// 6. Start runtime fetch service (Phase 4, ADR-0038).
 	var fetchEnvVal fetchServiceEnv
 	startFetch, deprecationWarning := shouldStartFetchService(h)
@@ -667,12 +712,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepWarn(deprecationWarning)
 	}
 	if startFetch {
-		env, fetchShutdown, fetchErr := setupFetchService(ctx, rFlags.forgeClient, h, resolveToken, fetchsvc.ServiceConfig{
+		env, fetchShutdown, fetchErr := setupFetchService(ctx, rFlags.treeFetcher, rFlags.gitToken, h, resolveToken, fetchsvc.ServiceConfig{
 			Harness:       h,
 			FetchPolicy:   fetch.DefaultPolicy,
 			WorkspaceRoot: absFullsendDir,
 			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
-			TraceID:       traceID,
+			TraceID:       securityTraceID,
 			SandboxName:   sandboxName,
 			MaxFetches:    h.EffectiveMaxRuntimeFetches(),
 			Uploader:      &fetchsvc.SandboxUploader{},
@@ -800,8 +845,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// 9a. Display trace ID (generated earlier for fetch service audit logging).
-	printer.KeyValue("Trace ID", traceID)
-	if err := injectTraceID(sandboxName, traceID); err != nil {
+	printer.KeyValue("Trace ID", securityTraceID)
+	if err := injectTraceID(sandboxName, securityTraceID); err != nil {
 		printer.StepWarn("Could not inject trace ID into sandbox: " + err.Error())
 	}
 
@@ -810,7 +855,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// SKILL.md) that were just copied into the sandbox.
 	if h.SecurityEnabled() {
 		printer.StepStart("Running pre-agent security scan")
-		scanCmd := buildScanContextCommand(remoteRepositoryDir, traceID)
+		scanCmd := buildScanContextCommand(remoteRepositoryDir, securityTraceID)
 		stdout, stderr, exitCode, execErr := sandbox.Exec(sandboxName, scanCmd, 60*time.Second)
 		if execErr != nil {
 			printer.StepFail("Security scan failed: " + execErr.Error())
@@ -869,10 +914,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		maxIterations = h.ValidationLoop.MaxIterations
 	}
 
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		return fmt.Errorf("creating run directory: %w", err)
-	}
-
 	oidcCtx, oidcCancel := context.WithCancel(context.Background())
 	var oidcWg sync.WaitGroup
 	if oidcURL := os.Getenv("FULLSEND_GCP_OIDC_URL"); oidcURL != "" {
@@ -893,7 +934,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		oidcWg.Wait()
 	}()
 
-	var lastExitCode int
 	var runCount int
 	var aggMetrics aggregateMetrics
 
@@ -928,6 +968,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		heartbeatDone := make(chan struct{})
 		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
 
+		agentSpan := rec.StartSpan("agent", "", map[string]any{"iteration": iteration})
 		var metrics agentruntime.RunMetrics
 		exitCode, runErr := rt.Run(ctx, agentruntime.RunParams{
 			SandboxName:   sandboxName,
@@ -941,21 +982,28 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
 
+		agentStatus := "ok"
+		if runErr != nil {
+			agentStatus = "error"
+		}
+		rec.EndSpan(agentSpan, agentStatus, agentSpanEndAttrs(iteration, exitCode, rt.System(), &metrics))
+
 		// Accumulate behavioral metrics across iterations.
-		aggMetrics.NumTurns += metrics.NumTurns
-		aggMetrics.TotalCostUSD += metrics.TotalCostUSD
-		aggMetrics.TokenUsage.Input += metrics.InputTokens
-		aggMetrics.TokenUsage.Output += metrics.OutputTokens
-		aggMetrics.ToolCalls += int(metrics.ToolCalls.Load())
-		aggMetrics.Iterations = iteration
+		aggregateRunMetrics(&aggMetrics, &metrics, iteration)
 
 		if runErr != nil {
 			printer.StepFail("Agent execution failed")
+			// Record the real exit code (rt.Run returns -1 when the agent never
+			// started) so the telemetry summary reports the failure faithfully
+			// instead of collapsing every infra failure to a generic 1.
+			lastExitCode = exitCode
 			// Write partial metrics before returning so downstream judges
 			// (e.g., max_turns, max_cost) can inspect what happened.
 			if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
 				printer.StepWarn("Failed to write metrics.json: " + err.Error())
 			}
+			rec.SetMetrics(toTelemetryMetrics(aggMetrics))
+			rec.SetModel(aggMetrics.Model)
 			return fmt.Errorf("running agent (iteration %d): %w", iteration, runErr)
 		}
 		lastExitCode = exitCode
@@ -1051,6 +1099,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
 		printer.StepWarn("Failed to write metrics.json: " + err.Error())
 	}
+	rec.SetMetrics(toTelemetryMetrics(aggMetrics))
+	rec.SetModel(aggMetrics.Model)
 
 	// 9e-bis. Surface transcript errors in workflow logs (GitHub Actions).
 	// When the agent exits non-zero, parse transcript JSONL files and emit
@@ -1068,7 +1118,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// 9f. Post-agent output scan — redact secrets from extracted output.
 	if h.SecurityEnabled() {
 		printer.StepStart("Running post-agent output scan")
-		if err := scanOutputFiles(runDir, traceID, printer); err != nil {
+		if err := scanOutputFiles(runDir, securityTraceID, printer); err != nil {
 			printer.StepWarn("Output scan error: " + err.Error())
 		}
 
@@ -1103,7 +1153,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	printer.KeyValue("Run directory", runDir)
 	printer.KeyValue("Agent exit code", fmt.Sprintf("%d", lastExitCode))
 	printer.KeyValue("Agent runs", fmt.Sprintf("%d", runCount))
-	printer.KeyValue("Trace ID", traceID)
+	printer.KeyValue("Trace ID", securityTraceID)
 	if h.ValidationLoop != nil {
 		if validationPassed {
 			printer.KeyValue("Validation", "passed")
@@ -1255,17 +1305,18 @@ func shouldStartFetchService(h *harness.Harness) (start bool, deprecationWarning
 	return false, ""
 }
 
-// setupFetchService resolves a forge client for runtime fetching and starts
+// setupFetchService resolves a git token for runtime fetching and starts
 // the HTTP fetch service. It returns the service address/token as a
 // fetchServiceEnv, a shutdown function, and any error.
-func setupFetchService(ctx context.Context, forgeClient forge.Client, h *harness.Harness, resolveToken func() (string, error), cfg fetchsvc.ServiceConfig, warn func(string)) (fetchServiceEnv, func(), error) {
-	if forgeClient != nil {
-		cfg.ForgeClient = forgeClient
+func setupFetchService(ctx context.Context, treeFetcher gitfetch.TreeFetchFunc, gitToken string, h *harness.Harness, resolveToken func() (string, error), cfg fetchsvc.ServiceConfig, warn func(string)) (fetchServiceEnv, func(), error) {
+	cfg.TreeFetcher = treeFetcher
+	if gitToken != "" {
+		cfg.GitToken = gitToken
 	} else if h.HasURLSkills() || h.AllowRuntimeFetch || len(h.AllowedRemoteResources) > 0 {
 		if token, err := resolveToken(); err == nil {
-			cfg.ForgeClient = gh.New(token)
+			cfg.GitToken = token
 		} else {
-			warn(fmt.Sprintf("Forge token unavailable, runtime fetches for uncached skills will fail: %v", err))
+			warn(fmt.Sprintf("Git token unavailable, runtime fetches for uncached skills will fail: %v", err))
 		}
 	}
 
@@ -1508,6 +1559,107 @@ func validationFailMessage(output []byte, execErr error) string {
 }
 
 // envToList converts a map of env vars to a sorted list of KEY=VALUE strings.
+// toTelemetryMetrics maps fullsend's aggregate run metrics onto the telemetry
+// summary metrics — the same numbers already written to metrics.json, no new
+// accounting.
+// roundUSD rounds a dollar amount to cents for the telemetry output;
+// metrics.json keeps full precision.
+func roundUSD(c float64) float64 { return math.Round(c*100) / 100 }
+
+// agentSpanEndAttrs builds the span_end attributes for one agent iteration,
+// using OTEL GenAI semconv names (gen_ai.*) so the later L2 OTLP transform is
+// ~1:1. system is the runtime's gen_ai.system vendor (kept runtime-agnostic, not
+// hardcoded). Cost is rounded to cents; metrics.json keeps full precision.
+func agentSpanEndAttrs(iteration, exitCode int, system string, m *agentruntime.RunMetrics) map[string]any {
+	return map[string]any{
+		"iteration":                                iteration,
+		"exit_code":                                exitCode,
+		"gen_ai.system":                            system,
+		"gen_ai.request.model":                     m.Model,
+		"gen_ai.usage.input_tokens":                m.InputTokens,
+		"gen_ai.usage.output_tokens":               m.OutputTokens,
+		"gen_ai.usage.cache_creation_input_tokens": m.CacheCreationInputTokens,
+		"gen_ai.usage.cache_read_input_tokens":     m.CacheReadInputTokens,
+		"fullsend.cost_usd":                        roundUSD(m.TotalCostUSD),
+		"fullsend.tool_calls":                      int(m.ToolCalls.Load()),
+	}
+}
+
+// aggregateRunMetrics folds one iteration's metrics into the cross-iteration
+// aggregate: tokens/cost/turns/tool calls are summed; the last non-empty model
+// wins. iteration records the highest iteration reached.
+func aggregateRunMetrics(agg *aggregateMetrics, m *agentruntime.RunMetrics, iteration int) {
+	agg.NumTurns += m.NumTurns
+	agg.TotalCostUSD += m.TotalCostUSD
+	agg.TokenUsage.Input += m.InputTokens
+	agg.TokenUsage.Output += m.OutputTokens
+	agg.TokenUsage.CacheCreation += m.CacheCreationInputTokens
+	agg.TokenUsage.CacheRead += m.CacheReadInputTokens
+	agg.ToolCalls += int(m.ToolCalls.Load())
+	agg.Iterations = iteration
+	if m.Model != "" {
+		agg.Model = m.Model
+	}
+}
+
+func toTelemetryMetrics(m aggregateMetrics) telemetry.RunMetrics {
+	return telemetry.RunMetrics{
+		InputTokens:              m.TokenUsage.Input,
+		OutputTokens:             m.TokenUsage.Output,
+		CacheCreationInputTokens: m.TokenUsage.CacheCreation,
+		CacheReadInputTokens:     m.TokenUsage.CacheRead,
+		TotalCostUSD:             roundUSD(m.TotalCostUSD),
+		NumTurns:                 m.NumTurns,
+		ToolCalls:                m.ToolCalls,
+	}
+}
+
+// resolveWorkItemID returns a stable cross-run correlation key for the work
+// item being processed, sourced from existing run env (ADR 0049 leaves these
+// context vars unchanged). The preference order yields a globally-unique,
+// human-meaningful key; it falls back to "unknown" so Level 1's zero-config
+// promise always holds.
+func resolveWorkItemID() string {
+	if v := strings.TrimSpace(os.Getenv("ISSUE_KEY")); v != "" {
+		return v // source-neutral canonical key, e.g. "owner/repo#123" or "PROJ-123"
+	}
+	repo := strings.TrimSpace(os.Getenv("REPO_FULL_NAME"))
+	num := strings.TrimSpace(os.Getenv("ISSUE_NUMBER"))
+	if repo != "" && num != "" {
+		return repo + "#" + num
+	}
+	if v := strings.TrimSpace(os.Getenv("GITHUB_ISSUE_URL")); v != "" {
+		return v
+	}
+	if num != "" {
+		return num
+	}
+	return "unknown"
+}
+
+// telemetryExitCode maps the run's final state to the exit code recorded in
+// run-summary.json: the agent's last exit code, or 1 when the run failed for a
+// non-agent reason (lastExitCode 0 with a non-nil error) so a failure is never
+// reported as success.
+func telemetryExitCode(lastExitCode int, runErr error) int {
+	if runErr != nil && lastExitCode == 0 {
+		return 1
+	}
+	return lastExitCode
+}
+
+// childScriptEnv builds the environment for a host-side child script (pre- or
+// post-script): the harness RunnerEnv layered over the process environment,
+// plus the W3C TRACEPARENT for trace propagation (ADR 0050 Level 1). An empty
+// traceparent (telemetry disabled) is omitted rather than emitted blank.
+func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
+	env := append(os.Environ(), envToList(runnerEnv)...)
+	if traceparent != "" {
+		env = append(env, "TRACEPARENT="+traceparent)
+	}
+	return env
+}
+
 func envToList(env map[string]string) []string {
 	keys := make([]string, 0, len(env))
 	for k := range env {
@@ -1942,6 +2094,16 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 			}
 			return nil
 		}
+		// Skip ONLY the recorder's own top-level telemetry artifacts (matched by
+		// exact path, not basename): they are metadata-only by construction, and
+		// run-telemetry.jsonl is still held open for append by the recorder during
+		// this scan — an in-place rewrite would truncate it under the open handle.
+		// Agent-written files that merely share these names (e.g. under an
+		// iteration output dir) are NOT exempt and must still be sanitized.
+		if path == filepath.Join(outputDir, telemetry.TelemetryFile) ||
+			path == filepath.Join(outputDir, telemetry.SummaryFile) {
+			return nil
+		}
 		content, readErr := os.ReadFile(path)
 		if readErr != nil {
 			relPath, _ := filepath.Rel(outputDir, path)
@@ -2343,4 +2505,86 @@ func validateRepoNames(repos []string) error {
 		}
 	}
 	return nil
+}
+
+// resolveAgentSource resolves the harness path for an agent, checking
+// config-registered agents before falling back to disk-based lookup.
+// Returns the local filesystem path to the harness (cached for URL sources)
+// and any fetch dependencies from URL-based agent resolution.
+func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, orgCfg *config.OrgConfig, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, error) {
+	if orgCfg == nil || len(orgCfg.Agents) == 0 {
+		path, err := resolveHarnessPath(fullsendDir, agentName, printer)
+		return path, nil, err
+	}
+
+	if err := config.ValidateAgentEntries(orgCfg.Agents, orgCfg.AllowedRemoteResources); err != nil {
+		return "", nil, fmt.Errorf("invalid agent config: %w", err)
+	}
+
+	sha := commitSHA
+	if sha == "dev" {
+		sha = ""
+	}
+	scaffoldNames, snErr := scaffold.HarnessNames()
+	if snErr != nil {
+		return "", nil, fmt.Errorf("listing scaffold harnesses: %w", snErr)
+	}
+
+	merged, err := config.MergedAgents(scaffoldNames, sha, orgCfg.Agents, scaffold.HarnessBaseURLWithHash)
+	if err != nil {
+		return "", nil, fmt.Errorf("building merged agent set: %w", err)
+	}
+
+	agent := config.LookupMergedAgent(merged, agentName)
+	if agent == nil || !agent.IsConfig {
+		path, err := resolveHarnessPath(fullsendDir, agentName, printer)
+		return path, nil, err
+	}
+
+	if harness.IsURL(agent.Source) {
+		printer.StepStart(fmt.Sprintf("Fetching agent harness: %s", agent.Name))
+		localPath, dep, err := harness.FetchAgentHarness(ctx, agent.Source, composeOpts)
+		if err != nil {
+			printer.StepFail("Failed to fetch agent harness")
+			return "", nil, fmt.Errorf("resolving config agent %s: %w", agent.Name, err)
+		}
+		printer.StepDone(fmt.Sprintf("Agent %s resolved from config (URL)", agent.Name))
+		return localPath, []harness.Dependency{dep}, nil
+	}
+
+	contained, err := containedLocalPath(fullsendDir, agent.Source)
+	if err != nil {
+		return "", nil, fmt.Errorf("config agent %s: %w", agent.Name, err)
+	}
+	if _, err := os.Stat(contained); err != nil {
+		return "", nil, fmt.Errorf("config agent %s: local path %s: %w", agent.Name, agent.Source, err)
+	}
+	printer.StepDone(fmt.Sprintf("Agent %s resolved from config (local path)", agent.Name))
+	return contained, nil, nil
+}
+
+// containedLocalPath resolves a relative source path against baseDir and
+// verifies the result stays within baseDir. Returns an error for absolute
+// paths or paths that escape via traversal.
+func containedLocalPath(baseDir, source string) (string, error) {
+	if filepath.IsAbs(source) {
+		return "", fmt.Errorf("local path must be relative, not absolute")
+	}
+	resolved := filepath.Clean(filepath.Join(baseDir, source))
+	if rel, err := filepath.Rel(baseDir, resolved); err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("local path %q escapes fullsend directory", source)
+	}
+	// Resolve symlinks and re-check containment to prevent symlink escape.
+	real, err := filepath.EvalSymlinks(resolved)
+	if err != nil {
+		return "", err
+	}
+	realBase, err := filepath.EvalSymlinks(baseDir)
+	if err != nil {
+		return "", err
+	}
+	if rel, err := filepath.Rel(realBase, real); err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("local path %q escapes fullsend directory via symlink", source)
+	}
+	return real, nil
 }

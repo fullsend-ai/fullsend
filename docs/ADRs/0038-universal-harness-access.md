@@ -353,6 +353,14 @@ harnesses:
 
 **Current recommendation:** Use commit-pinned URLs for GitHub-hosted resources. For single-file resources (agents, policies), use `raw.githubusercontent.com` URLs (e.g., `https://raw.githubusercontent.com/fullsend-ai/library/8cd3799.../agents/code.md#sha256=...`). For directory resources (skills), use `github.com/.../tree/...` URLs (e.g., `https://github.com/fullsend-ai/library/tree/8cd3799.../skills/rust#sha256=<tree-hash>...`). The commit SHA in the URL path provides immutability at the URL level, and the `#sha256=...` fragment provides content integrity.
 
+#### 8. Git subprocess vs Go git library for directory fetching
+
+**Decision:** Use the `git` CLI as a subprocess (`os/exec`) rather than a Go git library (e.g., go-git) for skill directory fetching.
+
+**Rationale:** The key optimization is `--filter=blob:none` partial clone combined with `--depth 1` shallow fetch and sparse checkout — this avoids downloading blobs outside the target path. go-git's sparse checkout and partial clone support is limited. Additionally, `git` is already required in the runtime environment (sandbox bootstrap uses it), so this adds zero new dependencies. Auth via `GIT_CONFIG_COUNT` env vars works identically across all forges without per-forge setup code.
+
+**Trade-off:** Subprocess execution requires temp-dir I/O and is slightly slower than an in-memory implementation. For the current use case (single-digit files per skill directory, <1s typical), this is acceptable. An in-memory library could be revisited if performance becomes a bottleneck.
+
 ## Related Work
 
 This pattern is well-established in other ecosystems:
@@ -366,3 +374,13 @@ The proposed model follows the GitHub Actions approach: URL-based references wit
 ## Implementation Plan
 
 See `docs/plans/universal-harness-access.md` for full implementation details, security analysis, and migration path. See `docs/plans/universal-harness-access-phase1.md` for the phased PR breakdown (Phase 1 MVP), `docs/plans/universal-harness-access-phase2.md` for Phase 2 (transitive dependency resolution), `docs/plans/universal-harness-access-phase3.md` for Phase 3 (lock files), and `docs/plans/universal-harness-access-phase4.md` for Phase 4 (runtime dependency loading).
+
+## Amendments
+
+### 2026-06-30: Git sparse checkout replaces forge APIs for skill directory fetching (#2735)
+
+Skill directory fetching now uses git sparse checkout (`internal/gitfetch/gitfetch.go`) instead of forge-specific REST APIs (`ListDirectoryContents` / `GetFileContentAtRef`). This change affects Decision sections that reference "forge APIs" for skill resolution — the implementation now uses `gitfetch.FetchTree` with `--filter=blob:none --depth 1` partial clone and sparse checkout, which is forge-agnostic (works identically across GitHub, GitLab, and Forgejo without per-forge implementation). See resolved design question 8 above for the git subprocess vs go-git rationale.
+
+**Stale cache fallback:** When a cached skill directory exists but re-fetch fails due to a transient network error (connection refused, DNS failure, timeout, context deadline exceeded), the runner falls back to the stale cached content and attaches a warning to the dependency record. Non-transient errors (authentication failures, integrity mismatches) still propagate as hard errors.
+
+**Token model change:** Token resolution failure is no longer a hard error. When no git token is available, the runner warns and proceeds — public repos fetch without authentication, private repos fail at the git layer with an actionable hint message. This eliminates the chicken-and-egg token problem described in issue #2722.
