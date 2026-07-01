@@ -194,6 +194,10 @@ func (ClaudeRuntime) ParseTranscriptErrors(transcriptDir string) []TranscriptErr
 	return parseTranscriptErrors(transcriptDir)
 }
 
+func (ClaudeRuntime) ParseTranscriptFile(path string) (TranscriptError, bool) {
+	return parseTranscriptFile(path)
+}
+
 func (ClaudeRuntime) EmitTranscriptErrors(w io.Writer, summaries []TranscriptError) {
 	emitTranscriptErrors(w, summaries)
 }

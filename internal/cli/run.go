@@ -625,6 +625,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// registered before the post-script and cleanup defers so that — by LIFO
 	// order — it runs last and the summary captures the whole run.
 	var lastExitCode int
+	var transcriptErrorOverride bool
 	rec := telemetry.New(runDir, wTraceID, rootSpanID, agentName, workItemID, runStart)
 	defer func() { rec.Finalize(telemetryExitCode(lastExitCode, runErr)) }()
 
@@ -664,6 +665,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 			if runErr != nil {
 				printer.StepWarn("Skipping post-script: agent run failed")
+				return
+			}
+			if transcriptErrorOverride {
+				printer.StepWarn("Skipping post-script: agent reported error via transcript")
 				return
 			}
 			postStart := time.Now()
@@ -950,6 +955,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	for iteration := 1; iteration <= maxIterations; iteration++ {
 		runCount = iteration
+		transcriptErrorOverride = false
 
 		// Each iteration gets its own subdirectory for output and transcripts.
 		iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", iteration))
@@ -1019,12 +1025,26 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		lastExitCode = exitCode
 
+		// Check the tee'd output.jsonl for is_error:true result events.
+		// Claude Code may exit 0 on API/infrastructure failures (e.g.,
+		// invalid_grant, quota exhaustion) while setting is_error:true in
+		// the transcript. Treat these as failures so downstream gating
+		// (transcript surfacing, post-script skip) can act. See #2786.
+		if exitCode == 0 {
+			outputJSONL := filepath.Join(iterDir, "output.jsonl")
+			if te, ok := tx.ParseTranscriptFile(outputJSONL); ok && te.IsError {
+				printer.StepWarn(fmt.Sprintf("Agent exited with code 0 but transcript contains error: %s", te.ErrorMessage))
+				lastExitCode = 1
+				transcriptErrorOverride = true
+			}
+		}
+
 		printer.Blank()
 		// Non-zero exit is a warning, not a failure — the validation loop is the success gate.
-		if exitCode == 0 {
+		if lastExitCode == 0 {
 			printer.StepDone(fmt.Sprintf("Agent exited with code %d (%.1fs)", exitCode, time.Since(agentStart).Seconds()))
 		} else {
-			printer.StepWarn(fmt.Sprintf("Agent exited with code %d", exitCode))
+			printer.StepWarn(fmt.Sprintf("Agent exited with code %d", lastExitCode))
 		}
 
 		// 9b. Extract output files.
@@ -1114,16 +1134,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	rec.SetModel(aggMetrics.Model)
 
 	// 9e-bis. Surface transcript errors in workflow logs (GitHub Actions).
-	// When the agent exits non-zero, parse transcript JSONL files and emit
-	// ::error:: annotations so operators can diagnose failures without
-	// downloading artifacts. See #704.
-	if lastExitCode != 0 {
-		lastIterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", runCount))
-		lastTranscriptDir := filepath.Join(lastIterDir, "transcripts")
-		if errorSummaries := tx.ParseTranscriptErrors(lastTranscriptDir); len(errorSummaries) > 0 {
-			printer.StepWarn(fmt.Sprintf("Found %d transcript error(s) — emitting to workflow log", len(errorSummaries)))
-			tx.EmitTranscriptErrors(os.Stderr, errorSummaries)
-		}
+	// Parse transcript JSONL files and emit ::error:: annotations so operators
+	// can diagnose failures without downloading artifacts. This runs
+	// regardless of exit code because Claude Code may exit 0 with
+	// is_error:true on API/infrastructure failures. See #704, #2786.
+	lastIterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", runCount))
+	lastTranscriptDir := filepath.Join(lastIterDir, "transcripts")
+	if errorSummaries := tx.ParseTranscriptErrors(lastTranscriptDir); len(errorSummaries) > 0 {
+		printer.StepWarn(fmt.Sprintf("Found %d transcript error(s) — emitting to workflow log", len(errorSummaries)))
+		tx.EmitTranscriptErrors(os.Stderr, errorSummaries)
 	}
 
 	// 9f. Post-agent output scan — redact secrets from extracted output.

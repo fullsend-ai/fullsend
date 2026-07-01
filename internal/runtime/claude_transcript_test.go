@@ -246,6 +246,80 @@ func TestEmitTranscriptErrors_NoSummaries(t *testing.T) {
 	}
 }
 
+// TestParseTranscriptFile_APIErrorExitZero covers the scenario from #2786:
+// Claude Code exits 0 with is_error:true and subtype "success" on API errors
+// (e.g., invalid_grant from a stale OIDC token).
+func TestParseTranscriptFile_APIErrorExitZero(t *testing.T) {
+	dir := t.TempDir()
+	// Real-world transcript shape: subtype is "success" but is_error is true.
+	content := `{"type":"system","subtype":"init","session_id":"abc123"}
+{"type":"result","subtype":"success","is_error":true,"result":"API Error: Error code invalid_grant: ID Token issued at 1782810237 is stale to sign-in.","session_id":"abc123"}
+`
+	path := filepath.Join(dir, "output.jsonl")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, ok := parseTranscriptFile(path)
+	if !ok {
+		t.Fatal("expected result event to be found")
+	}
+	if !summary.IsError {
+		t.Error("expected IsError to be true for API error with exit 0")
+	}
+	if summary.Subtype != "success" {
+		t.Errorf("expected subtype 'success', got %q", summary.Subtype)
+	}
+	if !strings.Contains(summary.ErrorMessage, "invalid_grant") {
+		t.Errorf("expected error message to contain 'invalid_grant', got %q", summary.ErrorMessage)
+	}
+}
+
+// TestParseTranscriptErrors_SurfacesErrorRegardlessOfExitCode verifies that
+// parseTranscriptErrors returns errors from transcripts where is_error:true,
+// which is the key fix from #2786 — errors must be surfaced even when the
+// process exit code was 0.
+func TestParseTranscriptErrors_SurfacesErrorRegardlessOfExitCode(t *testing.T) {
+	dir := t.TempDir()
+
+	// Transcript with is_error:true but subtype "success" (API error scenario).
+	content := `{"type":"result","subtype":"success","is_error":true,"result":"API Error: quota exhausted"}`
+	if err := os.WriteFile(filepath.Join(dir, "agent.jsonl"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	summaries := parseTranscriptErrors(dir)
+	if len(summaries) != 1 {
+		t.Fatalf("expected 1 error summary, got %d", len(summaries))
+	}
+	if !summaries[0].IsError {
+		t.Error("expected IsError to be true")
+	}
+	if !strings.Contains(summaries[0].ErrorMessage, "quota exhausted") {
+		t.Errorf("unexpected error message: %q", summaries[0].ErrorMessage)
+	}
+}
+
+// TestClaudeRuntime_ParseTranscriptFile verifies the exported method on
+// ClaudeRuntime satisfies the TranscriptHandler interface.
+func TestClaudeRuntime_ParseTranscriptFile(t *testing.T) {
+	dir := t.TempDir()
+	content := `{"type":"result","subtype":"success","is_error":true,"result":"infrastructure error"}`
+	path := filepath.Join(dir, "output.jsonl")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var handler TranscriptHandler = ClaudeRuntime{}
+	summary, ok := handler.ParseTranscriptFile(path)
+	if !ok {
+		t.Fatal("expected result event to be found")
+	}
+	if !summary.IsError {
+		t.Error("expected IsError to be true")
+	}
+}
+
 func TestIsResultLine(t *testing.T) {
 	tests := []struct {
 		line string
