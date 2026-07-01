@@ -114,11 +114,70 @@ func TestChildScriptEnv_AppendsTraceparentOnce(t *testing.T) {
 	assert.True(t, hasMarker, "process environment must be preserved")
 }
 
+func TestChildScriptEnv_FiltersPreExistingTraceparent(t *testing.T) {
+	// Simulate a parent process that already exports TRACEPARENT.
+	t.Setenv("TRACEPARENT", "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-bbbbbbbbbbbbbbbb-01")
+	const fullsendTP = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-01"
+
+	env := childScriptEnv(map[string]string{}, fullsendTP)
+
+	traceparents := 0
+	for _, e := range env {
+		if strings.HasPrefix(e, "TRACEPARENT=") {
+			traceparents++
+			assert.Equal(t, "TRACEPARENT="+fullsendTP, e, "must use fullsend's value, not the parent's")
+		}
+	}
+	assert.Equal(t, 1, traceparents, "exactly one TRACEPARENT entry after dedup")
+}
+
 func TestChildScriptEnv_EmptyTraceparentOmitted(t *testing.T) {
 	env := childScriptEnv(map[string]string{"FOO": "bar"}, "")
 	for _, e := range env {
 		assert.False(t, strings.HasPrefix(e, "TRACEPARENT="), "no empty TRACEPARENT entry when disabled")
 	}
+}
+
+func TestChildScriptEnv_EmptyTraceparentFiltersExisting(t *testing.T) {
+	// When telemetry is disabled (empty traceparent), pre-existing TRACEPARENT
+	// from the process environment should still be filtered out.
+	t.Setenv("TRACEPARENT", "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-bbbbbbbbbbbbbbbb-01")
+
+	env := childScriptEnv(map[string]string{}, "")
+	for _, e := range env {
+		assert.False(t, strings.HasPrefix(e, "TRACEPARENT="), "pre-existing TRACEPARENT must be filtered even when disabled")
+	}
+}
+
+// TestInboundTraceparentAdoption verifies the trace-id adoption logic: when a
+// valid inbound TRACEPARENT is present, the security trace-id is derived from
+// it (not freshly generated), the W3C trace-id matches the inbound parent, and
+// the trace-flags (including the sampled bit) are preserved.
+func TestInboundTraceparentAdoption(t *testing.T) {
+	const inbound = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-00"
+
+	parentTraceID, _, flags, ok := telemetry.ParseTraceParent(inbound)
+	require.True(t, ok, "inbound traceparent must parse")
+
+	// Adopted W3C trace-id must match the inbound parent.
+	assert.Equal(t, "4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d", parentTraceID)
+
+	// Security trace-id derived from inbound must round-trip.
+	securityID := telemetry.UUIDFromTraceID(parentTraceID)
+	assert.Equal(t, "4f3a9c1b-2d8e-4a7c-9f0b-1e2d3c4a5b6d", securityID)
+	assert.Equal(t, parentTraceID, telemetry.TraceIDFromUUID(securityID), "round-trip must preserve trace-id")
+
+	// Adopted security trace-id must be shell-safe (may not be UUID v4).
+	assert.True(t, security.IsShellSafeTraceID(securityID), "adopted trace-id must be shell-safe")
+
+	// Trace-flags must be preserved (unsampled=00 in this case).
+	assert.Equal(t, "00", flags, "unsampled flag must be preserved")
+
+	// Child traceparent uses parent's trace-id + new span + parent's flags.
+	childSpan := telemetry.NewSpanID()
+	childTP := telemetry.TraceParentWithFlags(parentTraceID, childSpan, flags)
+	assert.Contains(t, childTP, parentTraceID, "child traceparent must contain parent's trace-id")
+	assert.True(t, strings.HasSuffix(childTP, "-00"), "child traceparent must preserve unsampled flag")
 }
 
 func TestAgentSpanEndAttrs(t *testing.T) {
