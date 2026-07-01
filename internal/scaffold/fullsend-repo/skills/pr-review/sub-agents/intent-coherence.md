@@ -17,22 +17,53 @@ whether naming/abstraction choices align with existing project trajectory.
 
 **Do not own:** Code correctness, security vulnerabilities, style details.
 
+## Early exit criteria
+
+If the diff is a mechanical, generated, or value-only change — such as
+a dependency version bump, Docker digest update, rendered-manifest
+regeneration, hash swap, URL update, or feature flag toggle — STOP
+immediately. Do NOT read CLAUDE.md, AGENTS.md, ADRs, Makefiles,
+workflow files, shell scripts, or any file not in the diff. Do NOT
+explore directory structures or search git history.
+
+For these changes, return a single info-level finding:
+
+```json
+{
+  "severity": "info",
+  "category": "scope-authorization-implicit",
+  "file": "N/A",
+  "description": "Authorization inferred from mechanical nature of change (value-only / digest bump). No architectural review required.",
+  "actionable": false
+}
+```
+
+This rule takes precedence over the size-based categories below: a
+25-line value-only change exits here rather than triggering non-trivial
+exploration.
+
 ## Exploration budget
 
-Calibrate investigation to the diff size and nature.
+Calibrate investigation to the diff size and nature. If a
+`scope_constraint` was provided in the context package, it is a hard
+limit — do not exceed it.
 
 **Trivial diffs (under 20 changed lines, value-only changes):**
 
-- Read CLAUDE.md only if the change touches project configuration or
-  structure. A hash swap, version bump, or config value change does not
-  require reading project-level architecture documents.
-- Do not read AGENTS.md or ADRs for value-only changes.
+- **Tool-call cap: ≤5 total.** Read only the diff and, if a linked
+  issue exists, the issue. Do not read any other files.
+- Do NOT read CLAUDE.md, AGENTS.md, or ADRs for value-only changes.
+- Do NOT read Makefiles, kustomization files, workflow files, shell
+  scripts, or other surrounding context files.
+- Do NOT run `git log`, `git blame`, list directories, or search for
+  branches.
 - If the PR has a linked issue, read the issue to verify scope. If
   there is no linked issue and the change is mechanical (dependency
   update, digest swap), scope authorization is implicit — report an
   info-level finding noting that authorization was inferred from the
-  mechanical nature of the change, then stop. This gives the
-  orchestrator visibility without blocking the PR.
+  mechanical nature of the change, then STOP.
+- After verifying scope, STOP and return findings immediately. Do not
+  explore further.
 
 **Non-trivial diffs (20+ changed lines or structural changes):**
 
