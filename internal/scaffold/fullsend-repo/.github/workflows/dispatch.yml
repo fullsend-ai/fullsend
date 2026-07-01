@@ -347,14 +347,18 @@ jobs:
           STAGE_ROLE="$STAGE"
           case "$STAGE" in
             code|fix) STAGE_ROLE="coder" ;;
-            retro|prioritize) STAGE_ROLE="fullsend" ;;
           esac
 
           ROLES=$(yq '.defaults.roles[]' config.yaml 2>/dev/null || echo "")
           if [[ -n "$ROLES" ]] && ! echo "$ROLES" | grep -Fqx "$STAGE_ROLE"; then
-            echo "::notice::Stage '$STAGE' skipped — role '$STAGE_ROLE' not in defaults.roles"
-            echo "skipped=true" >> "${GITHUB_OUTPUT}"
-            exit 0
+            # Backward compat: "fullsend" in roles implies retro + prioritize
+            if [[ "$STAGE" =~ ^(retro|prioritize)$ ]] && echo "$ROLES" | grep -Fqx "fullsend"; then
+              echo "::notice::Stage '$STAGE' allowed via 'fullsend' role — if customizing roles, add '$STAGE' explicitly"
+            else
+              echo "::notice::Stage '$STAGE' skipped — role '$STAGE_ROLE' not in defaults.roles"
+              echo "skipped=true" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
           fi
 
       - name: Block fork PRs for fix stage

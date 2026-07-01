@@ -15,17 +15,21 @@ The goal of this document is that you configure Fullsend for your GitHub reposit
 
 ## Installing GitHub Applications
 
-In order to use Fullsend install the following applications to your organization
+Install the following agent applications to your organization
 and provide them permissions to the repository you want to install Fullsend to.
 
 | Role | Installation URL |
 |------|-----------------|
-| fullsend | <https://github.com/apps/fullsend-ai-fullsend/installations/new> |
 | triage | <https://github.com/apps/fullsend-ai-triage/installations/new> |
 | coder | <https://github.com/apps/fullsend-ai-coder/installations/new> |
 | review | <https://github.com/apps/fullsend-ai-review/installations/new> |
 | retro | <https://github.com/apps/fullsend-ai-retro/installations/new> |
 | prioritize | <https://github.com/apps/fullsend-ai-prioritize/installations/new> |
+
+> **Note:** The `fullsend` dispatch app (`fullsend-ai-fullsend`) is only
+> required for [organization-mode](org-mode.md) installations. Per-repo
+> mode uses the repository's own shim workflow for dispatch and does not
+> need the `fullsend` app.
 
 > **Note:** Installing a subset of GitHub Apps does **not** automatically
 > limit which agents are active. You must also pass the `--agents` flag

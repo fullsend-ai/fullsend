@@ -57,6 +57,11 @@ installed are configured just for a single repository. Change the permissions so
 all repositories or `.fullsend` (not created yet) and any other repository you want to enable
 Fullsend for.
 
+Organization mode also requires the `fullsend` dispatch app, which handles
+cross-repo event routing. Install it at
+<https://github.com/apps/fullsend-ai-fullsend/installations/new> and grant it
+access to `.fullsend` and any enrolled repositories.
+
 ## Configure GitHub
 
 Now similar to the command executed on [Configuring GitHub](configuring-github.md), execute:
