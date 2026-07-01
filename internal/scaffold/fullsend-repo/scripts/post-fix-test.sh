@@ -79,9 +79,10 @@ run_push_retry_test "push-unexpected-error" \
 # unstaged changes exist, returns the action the script would take.
 # ---------------------------------------------------------------------------
 decide_precommit_retry() {
-  local precommit_rc="$1"        # 0 = passed, 1 = failed
-  local has_unstaged="$2"        # "yes" or "no"
-  local retry_precommit_rc="$3"  # 0 = passed on retry, 1 = still fails (ignored if no retry)
+  local precommit_rc="$1"          # 0 = passed, 1 = failed
+  local has_unstaged="$2"          # "yes" or "no"
+  local retry_precommit_rc="$3"    # 0 = passed on retry, 1 = still fails (ignored if no retry)
+  local retry_has_unstaged="${4:-no}"  # "yes" if retry left unstaged changes
 
   if [ "${precommit_rc}" -eq 0 ]; then
     echo "pass:clean"
@@ -91,7 +92,11 @@ decide_precommit_retry() {
   # Pre-commit failed — check for auto-fixed files
   if [ "${has_unstaged}" = "yes" ]; then
     if [ "${retry_precommit_rc}" -eq 0 ]; then
-      echo "pass:auto-fixed"
+      if [ "${retry_has_unstaged}" = "yes" ]; then
+        echo "blocked:retry-left-unstaged"
+      else
+        echo "pass:auto-fixed"
+      fi
     else
       echo "blocked:retry-failed"
     fi
@@ -106,17 +111,19 @@ run_precommit_retry_test() {
   local has_unstaged="$3"
   local retry_precommit_rc="$4"
   local expected="$5"
+  local retry_has_unstaged="${6:-no}"
 
   local actual
-  actual="$(decide_precommit_retry "${precommit_rc}" "${has_unstaged}" "${retry_precommit_rc}")"
+  actual="$(decide_precommit_retry "${precommit_rc}" "${has_unstaged}" "${retry_precommit_rc}" "${retry_has_unstaged}")"
 
   if [ "${actual}" != "${expected}" ]; then
     echo "FAIL: ${test_name}"
-    echo "  precommit_rc:       '${precommit_rc}'"
-    echo "  has_unstaged:       '${has_unstaged}'"
-    echo "  retry_precommit_rc: '${retry_precommit_rc}'"
-    echo "  expected:           '${expected}'"
-    echo "  actual:             '${actual}'"
+    echo "  precommit_rc:         '${precommit_rc}'"
+    echo "  has_unstaged:         '${has_unstaged}'"
+    echo "  retry_precommit_rc:   '${retry_precommit_rc}'"
+    echo "  retry_has_unstaged:   '${retry_has_unstaged}'"
+    echo "  expected:             '${expected}'"
+    echo "  actual:               '${actual}'"
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -141,6 +148,14 @@ run_precommit_retry_test "precommit-auto-fix-retry-fails" \
 # Pre-commit fails, no unstaged changes (genuine failure)
 run_precommit_retry_test "precommit-genuine-failure" \
   "1" "no" "0" "blocked:no-auto-fix"
+
+# Pre-commit passes but unstaged changes exist (e.g. hook wrote a log file)
+run_precommit_retry_test "precommit-passes-with-unstaged" \
+  "0" "yes" "0" "pass:clean"
+
+# Pre-commit fails, auto-fix retry passes, but retry left unstaged changes
+run_precommit_retry_test "precommit-retry-passes-but-left-unstaged" \
+  "1" "yes" "0" "blocked:retry-left-unstaged" "yes"
 
 # --- Summary ---
 
