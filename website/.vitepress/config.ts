@@ -236,8 +236,6 @@ export default defineConfig({
             },
             { text: 'Roadmap', link: '/roadmap' },
             { text: 'Landscape', link: '/landscape' },
-            { text: 'Doc Site', link: '/doc-site' },
-            { text: 'Web Admin Deployment (On Hold)', link: '/web-admin-deployment' },
             {
               text: 'Architecture Decisions',
               collapsed: true,
@@ -253,6 +251,8 @@ export default defineConfig({
               collapsed: true,
               items: getMarkdownFiles('experiments', 'experiments'),
             },
+            { text: 'Doc Site', link: '/doc-site' },
+            { text: 'Web Admin (On Hold)', link: '/web-admin-deployment' },
           ],
         },
         {
