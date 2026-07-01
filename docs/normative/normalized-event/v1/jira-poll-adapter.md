@@ -11,19 +11,17 @@ changes are merged into `normalized-event.schema.json`.
 - **Out of scope (v1 extension):** Jira webhooks, Service Desk, sprint/board
   events, and linked forge change proposals (may be added later).
 
-## Schema extensions (non-breaking intent)
+## Schema extensions
 
-The following extensions are **required** for Jira poll events and SHOULD be
-adopted in a v1.x schema update (new enum value + optional field):
+The following fields are defined in
+[`normalized-event.schema.json`](normalized-event.schema.json):
 
-| Field | Change |
-|-------|--------|
-| `source.system` | Add enum value `jira` |
-| `entity.key` | Optional string — human issue key (`PROJ-123`) |
+| Field | Definition |
+|-------|------------|
+| `source.system` | Enum includes `jira` |
+| `entity.key` | Optional for GitHub; **required** when `source.system` is `jira` |
 
-All other top-level fields remain as in v1. `repo` is always the **target
-Fullsend repository** (GitHub `owner/repo` slug where agents run), not the Jira
-project.
+When `source.system` is `jira`, `entity.key` MUST be present (e.g. `PROJ-123`).
 
 ## Top-level fields
 
