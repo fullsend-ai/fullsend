@@ -303,6 +303,25 @@ func TestValidate_ForgeScriptURL(t *testing.T) {
 		assert.Contains(t, err.Error(), "forge.github.validation_loop.script must be a local path")
 	})
 
+	t.Run("validation_loop.schema URL", func(t *testing.T) {
+		h := &Harness{
+			Agent: "agents/test.md",
+			Role:  "test",
+			Forge: map[string]*ForgeConfig{
+				"github": {
+					ValidationLoop: &ValidationLoop{
+						Script:        "scripts/validate.sh",
+						Schema:        "https://evil.com/schema.json",
+						MaxIterations: 1,
+					},
+				},
+			},
+		}
+		err := h.Validate()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "forge.github.validation_loop.schema must be a local path")
+	})
+
 	t.Run("validation_loop missing script", func(t *testing.T) {
 		h := &Harness{
 			Agent: "agents/test.md",

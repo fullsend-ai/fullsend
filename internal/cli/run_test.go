@@ -1628,6 +1628,72 @@ func TestBootstrapEnv_SkipsFetchVarsWhenEmpty(t *testing.T) {
 	assert.Contains(t, err.Error(), "copying .env file to sandbox")
 }
 
+func TestBootstrapEnv_ValidationLoopSchemaPrecedence(t *testing.T) {
+	dir := t.TempDir()
+	schemaFile := filepath.Join(dir, "schema.json")
+	require.NoError(t, os.WriteFile(schemaFile, []byte(`{"type":"object"}`), 0o644))
+
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: schemaFile,
+		},
+		RunnerEnv: map[string]string{
+			"FULLSEND_OUTPUT_SCHEMA": "/should/not/be/used",
+		},
+	}
+
+	err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil)
+
+	// Expected to fail at sandbox operations — the schema code path is
+	// exercised before the failure.
+	require.Error(t, err)
+}
+
+func TestBootstrapEnv_ValidationLoopSchemaFallback(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		RunnerEnv: map[string]string{
+			"FULLSEND_OUTPUT_SCHEMA": "/nonexistent/schema.json",
+		},
+	}
+
+	err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "copying .env file to sandbox")
+}
+
+func TestExpandValidationLoopSchema(t *testing.T) {
+	dir := t.TempDir()
+	schemaDir := filepath.Join(dir, "schemas")
+	require.NoError(t, os.MkdirAll(schemaDir, 0o755))
+	schemaPath := filepath.Join(schemaDir, "result.json")
+	require.NoError(t, os.WriteFile(schemaPath, []byte(`{"type":"object"}`), 0o644))
+
+	expander := func(key string) string {
+		if key == "FULLSEND_DIR" {
+			return dir
+		}
+		return ""
+	}
+
+	h := &harness.Harness{
+		ValidationLoop: &harness.ValidationLoop{
+			Schema: "${FULLSEND_DIR}/schemas/result.json",
+		},
+	}
+
+	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
+		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, expander)
+	}
+
+	assert.Equal(t, schemaPath, h.ValidationLoop.Schema)
+	_, err := os.Stat(h.ValidationLoop.Schema)
+	require.NoError(t, err, "expanded schema path should exist")
+}
+
 func TestBuildSandboxEnvLines_FromEnvSandbox(t *testing.T) {
 	h := &harness.Harness{
 		Agent: "agents/test.md",

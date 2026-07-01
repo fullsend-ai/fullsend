@@ -922,6 +922,41 @@ func TestResolveFromLock_BaseFieldNoOp(t *testing.T) {
 	assert.True(t, baseDep.CacheHit)
 }
 
+func TestResolveFromLock_ValidationLoopSchema(t *testing.T) {
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+	schemaContent := []byte(`{"type":"object"}`)
+	schemaHash := fetch.ComputeSHA256(schemaContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/agents/code.md", agentContent))
+	require.NoError(t, fetch.CachePut(root, "https://example.com/schemas/result.json", schemaContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{Field: "agent", URL: "https://example.com/agents/code.md", SHA256: agentHash},
+			{Field: "validation_loop.schema", URL: "https://example.com/schemas/result.json", SHA256: schemaHash},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent: "https://example.com/agents/code.md#sha256=" + agentHash,
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "https://example.com/schemas/result.json#sha256=" + schemaHash,
+		},
+	}
+
+	printer := ui.New(os.Stdout)
+	deps, err := resolveFromLock(h, entry, root, printer)
+	require.NoError(t, err)
+	require.Len(t, deps, 2)
+
+	assert.Equal(t, "validation_loop.schema", deps[1].Field)
+	assert.True(t, deps[1].CacheHit)
+	assert.True(t, strings.HasSuffix(h.ValidationLoop.Schema, "/content"))
+}
+
 func TestRunLock_URLBaseOnlyDeps(t *testing.T) {
 	// A child harness with a URL base and no other URL references.
 	// The baseDeps conversion loop runs and the base-only-deps path is taken

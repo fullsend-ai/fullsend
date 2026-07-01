@@ -70,6 +70,9 @@ func (h *Harness) validateForge() error {
 			if IsURL(fc.ValidationLoop.Script) {
 				return fmt.Errorf("forge.%s.validation_loop.script must be a local path, not a URL", key)
 			}
+			if fc.ValidationLoop.Schema != "" && IsURL(fc.ValidationLoop.Schema) {
+				return fmt.Errorf("forge.%s.validation_loop.schema must be a local path, not a URL", key)
+			}
 		}
 	}
 	return nil

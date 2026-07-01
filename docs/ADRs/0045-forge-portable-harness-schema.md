@@ -205,9 +205,10 @@ skills:
   - skills/issue-labels
   - skills/output-schema-validation
 runner_env:
-  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/triage-result.schema.json
+  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/triage-result.schema.json  # legacy — prefer validation_loop.schema
 validation_loop:
   script: scripts/validate-output-schema.sh
+  schema: schemas/triage-result.schema.json
   max_iterations: 2
 
 forge:
@@ -295,9 +296,10 @@ skills:
   - skills/issue-labels
 validation_loop:
   script: scripts/validate-output-schema.sh
+  schema: schemas/triage-result.schema.json
   max_iterations: 2
 runner_env:
-  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/triage-result.schema.json
+  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/triage-result.schema.json  # legacy — prefer validation_loop.schema
 
 forge:
   github:

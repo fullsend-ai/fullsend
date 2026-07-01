@@ -139,6 +139,7 @@ pre_script: customized/scripts/pre-my-agent.sh
 
 validation_loop:
   script: scripts/validate-output-schema.sh
+  schema: customized/schemas/my-agent-result.schema.json
   max_iterations: 2
 
 post_script: customized/scripts/post-my-agent.sh
@@ -148,7 +149,6 @@ env:
     MY_VAR: "${MY_VAR}"
     ISSUE_KEY: "${ISSUE_KEY}"
     GH_TOKEN: "${GH_TOKEN}"  # auto-minted in CI when --mint-url is provided
-    FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/customized/schemas/my-agent-result.schema.json
 
 timeout_minutes: 20
 
