@@ -410,7 +410,7 @@ func TestProgressParserCapturesResultMetrics(t *testing.T) {
 	lines := []string{
 		`{"type":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/main.go"}}]}`,
 		`{"type":"assistant","content":[{"type":"tool_use","name":"Bash","input":{"command":"make test"}}]}`,
-		`{"type":"result","num_turns":8,"total_cost_usd":0.42,"usage":{"input_tokens":12000,"output_tokens":3400}}`,
+		`{"type":"result","num_turns":8,"total_cost_usd":0.42,"usage":{"input_tokens":12000,"output_tokens":3400,"cache_creation_input_tokens":8000,"cache_read_input_tokens":5000}}`,
 	}
 
 	input := strings.NewReader(strings.Join(lines, "\n"))
@@ -436,6 +436,86 @@ func TestProgressParserCapturesResultMetrics(t *testing.T) {
 	}
 	if metrics.OutputTokens != 3400 {
 		t.Errorf("expected 3400 output tokens, got %d", metrics.OutputTokens)
+	}
+	if metrics.CacheCreationInputTokens != 8000 {
+		t.Errorf("expected 8000 cache_creation input tokens, got %d", metrics.CacheCreationInputTokens)
+	}
+	if metrics.CacheReadInputTokens != 5000 {
+		t.Errorf("expected 5000 cache_read input tokens, got %d", metrics.CacheReadInputTokens)
+	}
+}
+
+// TestProgressParserCountsToolCallsFromNestedMessage pins the real Claude Code
+// stream-json shape: assistant events carry their content under "message",
+// not at the top level. The earlier flat-shaped fixtures never exercised this,
+// which let tool_use blocks go uncounted in production (every real run reported
+// tool_calls: 0). See internal/runtime/claude_progress.go.
+func TestProgressParserCountsToolCallsFromNestedMessage(t *testing.T) {
+	lines := []string{
+		`{"type":"system","subtype":"init","model":"claude-opus-4-6"}`,
+		`{"type":"assistant","message":{"model":"claude-opus-4-6","content":[{"type":"text","text":"ok"},{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}`,
+		`{"type":"assistant","message":{"model":"claude-opus-4-6","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/a.go"}}]}}`,
+		`{"type":"assistant","message":{"model":"claude-opus-4-6","content":[{"type":"tool_use","name":"Skill","input":{}}]}}`,
+		`{"type":"result","num_turns":6}`,
+	}
+
+	input := strings.NewReader(strings.Join(lines, "\n"))
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	metrics := &RunMetrics{}
+
+	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+		t.Fatalf("progressParser returned error: %v", err)
+	}
+
+	if got := metrics.ToolCalls.Load(); got != 3 {
+		t.Errorf("expected 3 tool calls from nested message.content, got %d", got)
+	}
+}
+
+// TestProgressParserCapturesModelFromAssistantWhenSystemLacksIt verifies the
+// model falls back to the assistant message.model when the system init event
+// carries no model, so gen_ai.request.model stays populated for all streams.
+func TestProgressParserCapturesModelFromAssistantWhenSystemLacksIt(t *testing.T) {
+	lines := []string{
+		`{"type":"system","subtype":"init"}`, // no model field
+		`{"type":"assistant","message":{"model":"claude-opus-4-6","content":[{"type":"text","text":"hi"}]}}`,
+		`{"type":"result","num_turns":1}`,
+	}
+
+	input := strings.NewReader(strings.Join(lines, "\n"))
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	metrics := &RunMetrics{}
+
+	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+		t.Fatalf("progressParser returned error: %v", err)
+	}
+
+	if metrics.Model != "claude-opus-4-6" {
+		t.Errorf("expected model from assistant message.model fallback, got %q", metrics.Model)
+	}
+}
+
+// TestProgressParserCapturesModelFromSystemEvent verifies the resolved model is
+// read from the system init event (the result event does not carry it).
+func TestProgressParserCapturesModelFromSystemEvent(t *testing.T) {
+	lines := []string{
+		`{"type":"system","subtype":"init","model":"claude-opus-4-6"}`,
+		`{"type":"result","num_turns":1}`,
+	}
+
+	input := strings.NewReader(strings.Join(lines, "\n"))
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	metrics := &RunMetrics{}
+
+	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+		t.Fatalf("progressParser returned error: %v", err)
+	}
+
+	if metrics.Model != "claude-opus-4-6" {
+		t.Errorf("expected model claude-opus-4-6 from system event, got %q", metrics.Model)
 	}
 }
 
