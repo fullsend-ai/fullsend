@@ -619,6 +619,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// registered before the post-script and cleanup defers so that — by LIFO
 	// order — it runs last and the summary captures the whole run.
 	var lastExitCode int
+	var transcriptErrorOverride bool
 	rec := telemetry.New(runDir, wTraceID, rootSpanID, agentName, workItemID, runStart)
 	defer func() { rec.Finalize(telemetryExitCode(lastExitCode, runErr)) }()
 
@@ -658,6 +659,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 			if runErr != nil {
 				printer.StepWarn("Skipping post-script: agent run failed")
+				return
+			}
+			if transcriptErrorOverride {
+				printer.StepWarn("Skipping post-script: agent reported error via transcript")
 				return
 			}
 			postStart := time.Now()
@@ -939,6 +944,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	for iteration := 1; iteration <= maxIterations; iteration++ {
 		runCount = iteration
+		transcriptErrorOverride = false
 
 		// Each iteration gets its own subdirectory for output and transcripts.
 		iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", iteration))
@@ -1012,12 +1018,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// Claude Code may exit 0 on API/infrastructure failures (e.g.,
 		// invalid_grant, quota exhaustion) while setting is_error:true in
 		// the transcript. Treat these as failures so downstream gating
-		// (transcript surfacing, post-script behavior) can act. See #2786.
+		// (transcript surfacing, post-script skip) can act. See #2786.
 		if exitCode == 0 {
 			outputJSONL := filepath.Join(iterDir, "output.jsonl")
 			if te, ok := tx.ParseTranscriptFile(outputJSONL); ok && te.IsError {
 				printer.StepWarn(fmt.Sprintf("Agent exited with code 0 but transcript contains error: %s", te.ErrorMessage))
 				lastExitCode = 1
+				transcriptErrorOverride = true
 			}
 		}
 
@@ -1025,11 +1032,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// Non-zero exit is a warning, not a failure — the validation loop is the success gate.
 		if lastExitCode == 0 {
 			printer.StepDone(fmt.Sprintf("Agent exited with code %d (%.1fs)", exitCode, time.Since(agentStart).Seconds()))
-		} else if exitCode != 0 {
-			printer.StepWarn(fmt.Sprintf("Agent exited with code %d", exitCode))
 		} else {
-			// exitCode was 0 but lastExitCode was overridden due to transcript error.
-			printer.StepWarn(fmt.Sprintf("Agent exited with code %d (transcript error detected)", exitCode))
+			printer.StepWarn(fmt.Sprintf("Agent exited with code %d", lastExitCode))
 		}
 
 		// 9b. Extract output files.
