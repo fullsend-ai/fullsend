@@ -39,6 +39,7 @@ func newRootCmd() *cobra.Command {
 		SilenceErrors: true,
 		Version:       version,
 	}
+	cmd.AddCommand(newAgentCmd())
 	cmd.AddCommand(newAdminCmd())
 	cmd.AddCommand(newGitHubCmd())
 	cmd.AddCommand(newInferenceCmd())

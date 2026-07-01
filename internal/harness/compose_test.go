@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
-	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,6 +21,12 @@ import (
 func computeHash(content []byte) string {
 	h := sha256.Sum256(content)
 	return hex.EncodeToString(h[:])
+}
+
+func fakeTreeFetcher(files map[string][]byte) gitfetch.TreeFetchFunc {
+	return func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return files, nil
+	}
 }
 
 func writeTestHarness(t *testing.T, dir, name, content string) string {
@@ -2138,17 +2144,16 @@ role: test
 base: `+baseURL+`
 `)
 
-	// ForgeClient is required for URL-base skill resolution; without it
-	// fetchBaseSkill returns an error. The test server URL is not a
-	// raw.githubusercontent.com URL so the ForgeClient path will fail,
-	// and skill resolution will error.
+	// The test server URL is not a raw.githubusercontent.com URL, so the
+	// forge URL parser cannot extract a clone URL and skill resolution
+	// errors out.
 	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
 		WorkspaceRoot: cacheDir,
 		FetchPolicy:   policy,
 		OrgAllowlist:  []string{server.URL + "/"},
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "GitHub token")
+	assert.Contains(t, err.Error(), "not a raw.githubusercontent.com URL")
 }
 
 func TestLoadWithBase_URLBase_SkillOfflineCacheHit(t *testing.T) {
@@ -2570,37 +2575,41 @@ func TestFetchBaseSkill_CacheHit_AuditError(t *testing.T) {
 	assert.Contains(t, err.Error(), "audit")
 }
 
-func TestFetchBaseSkill_NoForgeClient_Error(t *testing.T) {
+func TestFetchBaseSkill_DefaultTreeFetcherUsed(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
+	// With no TreeFetcher set, the default gitfetch.FetchTree is used.
+	// It will fail because there's no real repo, but the error proves
+	// the default fetcher was invoked.
 	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
 		"https://raw.githubusercontent.com/org/repo/ref/",
 		"skills/common", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
 		})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "GitHub token")
+	assert.Contains(t, err.Error(), "fetching skill directory")
 }
 
-func TestFetchBaseSkill_ForgeClient_ListError(t *testing.T) {
+func TestFetchBaseSkill_TreeFetchError(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	fc := forge.NewFakeClient()
-	fc.Errors["ListDirectoryContents"] = fmt.Errorf("API rate limited")
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("git fetch failed")
+	}
 
 	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
 		"https://raw.githubusercontent.com/org/repo/ref/",
 		"skills/common", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
+			TreeFetcher:   failFetcher,
 		})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "listing skill directory")
+	assert.Contains(t, err.Error(), "fetching skill directory")
 }
 
-func TestFetchBaseSkill_PartialIndexHit_RequiresForgeClient(t *testing.T) {
+func TestFetchBaseSkill_PartialIndexHit_RefetchesViaTreeFetcher(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
@@ -2611,13 +2620,16 @@ func TestFetchBaseSkill_PartialIndexHit_RequiresForgeClient(t *testing.T) {
 	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, fileHash))
 	// Deliberately omit the "skill:" tree hash entry to trigger partial index hit
 
-	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
+	fetcher := fakeTreeFetcher(map[string][]byte{"SKILL.md": []byte("# skill")})
+
+	dep, _, err := fetchBaseSkill(context.Background(), "skills[0]",
 		"https://raw.githubusercontent.com/org/repo/ref/",
 		"skills/common", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
+			TreeFetcher:   fetcher,
 		})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "GitHub token")
+	require.NoError(t, err)
+	assert.False(t, dep.CacheHit)
 }
 
 func TestResolveBaseResources_InvalidBaseURL(t *testing.T) {
@@ -2627,21 +2639,17 @@ func TestResolveBaseResources_InvalidBaseURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "cannot determine directory")
 }
 
-func TestFetchBaseSkill_ForgeClient_AuditError(t *testing.T) {
+func TestFetchBaseSkill_AuditError(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	fc := forge.NewFakeClient()
-	fc.DirContents["org/repo/skills/common@ref"] = []forge.DirectoryEntry{
-		{Path: "SKILL.md", Type: "file", Size: 10},
-	}
-	fc.FileContentsRef["org/repo/skills/common/SKILL.md@ref"] = []byte("# skill")
+	fetcher := fakeTreeFetcher(map[string][]byte{"SKILL.md": []byte("# skill")})
 
 	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
 		"https://raw.githubusercontent.com/org/repo/ref/",
 		"skills/common", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
+			TreeFetcher:   fetcher,
 			AuditLogPath:  brokenAuditPath(t),
 		})
 	require.Error(t, err)
@@ -2724,20 +2732,16 @@ func TestMergeBaseIntoChild_EnvInheritedWhenChildNil(t *testing.T) {
 	assert.Equal(t, "val", child.Env.Runner["R"])
 	assert.Equal(t, "val", child.Env.Sandbox["S"])
 }
-func TestFetchBaseSkill_ForgeClient_FullDirectory(t *testing.T) {
+
+func TestFetchBaseSkill_FullDirectory(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	fc := forge.NewFakeClient()
-	fc.DirContents["fullsend-ai/fullsend/skills/pr-review@abc123"] = []forge.DirectoryEntry{
-		{Path: "SKILL.md", Type: "file", Size: 10},
-		{Path: "meta-prompt.md", Type: "file", Size: 20},
-		{Path: "sub-agents", Type: "dir", Size: 0},
-		{Path: "sub-agents/code-review.md", Type: "file", Size: 30},
-	}
-	fc.FileContentsRef["fullsend-ai/fullsend/skills/pr-review/SKILL.md@abc123"] = []byte("# PR Review Skill")
-	fc.FileContentsRef["fullsend-ai/fullsend/skills/pr-review/meta-prompt.md@abc123"] = []byte("meta prompt content")
-	fc.FileContentsRef["fullsend-ai/fullsend/skills/pr-review/sub-agents/code-review.md@abc123"] = []byte("sub-agent content")
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"SKILL.md":                  []byte("# PR Review Skill"),
+		"meta-prompt.md":            []byte("meta prompt content"),
+		"sub-agents/code-review.md": []byte("sub-agent content"),
+	})
 
 	baseURLDir := "https://raw.githubusercontent.com/fullsend-ai/fullsend/abc123/"
 	allowlist := []string{"https://raw.githubusercontent.com/fullsend-ai/fullsend/"}
@@ -2745,7 +2749,7 @@ func TestFetchBaseSkill_ForgeClient_FullDirectory(t *testing.T) {
 	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]", baseURLDir,
 		"skills/pr-review", allowlist, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
+			TreeFetcher:   fetcher,
 		})
 	require.NoError(t, err)
 
@@ -2768,54 +2772,44 @@ func TestFetchBaseSkill_ForgeClient_FullDirectory(t *testing.T) {
 	assert.Equal(t, "sub-agent content", string(subAgent))
 }
 
-func TestFetchBaseSkill_ForgeClient_ParseError(t *testing.T) {
+func TestFetchBaseSkill_ParseError(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	fc := forge.NewFakeClient()
-
-	// Non-raw URL fails ParseRawContentURL — no fallback, just error.
 	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
 		"https://example.com/",
 		"skills/common", []string{"https://example.com/"}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
 		})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parsing raw URL")
 }
 
-func TestFetchBaseSkill_ForgeClient_NoSKILLMD(t *testing.T) {
+func TestFetchBaseSkill_NoSKILLMD(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	fc := forge.NewFakeClient()
-	fc.DirContents["org/repo/skills/broken@ref1"] = []forge.DirectoryEntry{
-		{Path: "meta-prompt.md", Type: "file", Size: 20},
-	}
-	fc.FileContentsRef["org/repo/skills/broken/meta-prompt.md@ref1"] = []byte("no skill file")
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"meta-prompt.md": []byte("no skill file"),
+	})
 
 	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
 		"https://raw.githubusercontent.com/org/repo/ref1/",
 		"skills/broken", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
+			TreeFetcher:   fetcher,
 		})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no SKILL.md")
 }
 
-func TestFetchBaseSkill_ForgeClient_GetFileError(t *testing.T) {
+func TestFetchBaseSkill_TreeFetchPartialError(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	fc := forge.NewFakeClient()
-	fc.DirContents["org/repo/skills/common@ref1"] = []forge.DirectoryEntry{
-		{Path: "SKILL.md", Type: "file", Size: 10},
-		{Path: "meta-prompt.md", Type: "file", Size: 20},
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("failed to read meta-prompt.md: permission denied")
 	}
-	fc.FileContentsRef["org/repo/skills/common/SKILL.md@ref1"] = []byte("# Skill")
-	// Omit meta-prompt.md from FileContentsRef to trigger GetFileContentAtRef error.
 
 	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
 
@@ -2823,10 +2817,10 @@ func TestFetchBaseSkill_ForgeClient_GetFileError(t *testing.T) {
 		"https://raw.githubusercontent.com/org/repo/ref1/",
 		"skills/common", allowlist, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
+			TreeFetcher:   failFetcher,
 		})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "fetching file")
+	assert.Contains(t, err.Error(), "fetching skill directory")
 	assert.Contains(t, err.Error(), "meta-prompt.md")
 }
 
@@ -2845,19 +2839,15 @@ func TestFetchBaseSkill_StaleCacheInvalidation(t *testing.T) {
 	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, oldHash))
 	require.NoError(t, urlIndexPut(cacheDir, "skill:"+skillFileURL, oldHash))
 
-	// Set up ForgeClient with multi-file directory.
-	fc := forge.NewFakeClient()
-	fc.DirContents["org/repo/skills/common@ref1"] = []forge.DirectoryEntry{
-		{Path: "SKILL.md", Type: "file", Size: 10},
-		{Path: "meta-prompt.md", Type: "file", Size: 20},
-	}
-	fc.FileContentsRef["org/repo/skills/common/SKILL.md@ref1"] = []byte("# new skill")
-	fc.FileContentsRef["org/repo/skills/common/meta-prompt.md@ref1"] = []byte("meta")
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"SKILL.md":       []byte("# new skill"),
+		"meta-prompt.md": []byte("meta"),
+	})
 
 	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]",
 		baseURLDir, "skills/common", allowlist, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
+			TreeFetcher:   fetcher,
 		})
 	require.NoError(t, err)
 	assert.False(t, dep.CacheHit, "stale cache should be bypassed")
@@ -2870,7 +2860,7 @@ func TestFetchBaseSkill_StaleCacheInvalidation(t *testing.T) {
 	dep2, _, err := fetchBaseSkill(context.Background(), "skills[0]",
 		baseURLDir, "skills/common", allowlist, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
+			TreeFetcher:   fetcher,
 		})
 	require.NoError(t, err)
 	assert.True(t, dep2.CacheHit, "re-fetched entry should be cached")
@@ -2891,13 +2881,10 @@ func TestFetchBaseSkill_StaleCacheOfflineServesStale(t *testing.T) {
 	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, oldHash))
 	require.NoError(t, urlIndexPut(cacheDir, "skill:"+skillFileURL, oldHash))
 
-	fc := forge.NewFakeClient()
-
-	// Offline mode with a ForgeClient — should serve stale cache, not error.
+	// Offline mode — should serve stale cache, not error.
 	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]",
 		baseURLDir, "skills/common", allowlist, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
 			FetchPolicy:   fetch.FetchPolicy{Offline: true},
 		})
 	require.NoError(t, err)
@@ -2905,17 +2892,14 @@ func TestFetchBaseSkill_StaleCacheOfflineServesStale(t *testing.T) {
 	assert.FileExists(t, filepath.Join(localDir, "SKILL.md"))
 }
 
-func TestFetchBaseSkill_ForgeClient_NarrowAllowlist(t *testing.T) {
+func TestFetchBaseSkill_NarrowAllowlist(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
 
-	fc := forge.NewFakeClient()
-	fc.DirContents["org/repo/skills/pr-review@ref1"] = []forge.DirectoryEntry{
-		{Path: "SKILL.md", Type: "file", Size: 10},
-		{Path: "meta-prompt.md", Type: "file", Size: 20},
-	}
-	fc.FileContentsRef["org/repo/skills/pr-review/SKILL.md@ref1"] = []byte("# Skill")
-	fc.FileContentsRef["org/repo/skills/pr-review/meta-prompt.md@ref1"] = []byte("meta")
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"SKILL.md":       []byte("# Skill"),
+		"meta-prompt.md": []byte("meta"),
+	})
 
 	// Allowlist covers SKILL.md specifically but not the directory prefix.
 	narrowAllowlist := []string{"https://raw.githubusercontent.com/org/repo/ref1/skills/pr-review/SKILL.md"}
@@ -2924,8 +2908,602 @@ func TestFetchBaseSkill_ForgeClient_NarrowAllowlist(t *testing.T) {
 		"https://raw.githubusercontent.com/org/repo/ref1/",
 		"skills/pr-review", narrowAllowlist, ComposeOpts{
 			WorkspaceRoot: cacheDir,
-			ForgeClient:   fc,
+			TreeFetcher:   fetcher,
 		})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+}
+
+// --- resolveBaseHostFiles tests ---
+
+func TestLoadWithBase_URLBase_HostFilesFetched(t *testing.T) {
+	envContent := []byte("GCP_PROJECT=test-project\n")
+	triageEnv := []byte("TRIAGE_MODE=auto\n")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+host_files:
+  - src: env/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
+    expand: true
+  - src: env/triage.env
+    dest: /sandbox/workspace/.env.d/triage.env
+    expand: true
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/env/gcp-vertex.env": envContent,
+		"/env/triage.env":     triageEnv,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	// Host files resolved to local cache paths
+	require.Len(t, h.HostFiles, 2)
+	for i, hf := range h.HostFiles {
+		assert.True(t, filepath.IsAbs(hf.Src), "host_files[%d].src should be absolute cache path", i)
+		assert.False(t, IsURL(hf.Src), "host_files[%d].src should not be a URL", i)
+	}
+
+	// Verify cached content
+	content0, err := os.ReadFile(h.HostFiles[0].Src)
+	require.NoError(t, err)
+	assert.Equal(t, envContent, content0)
+
+	content1, err := os.ReadFile(h.HostFiles[1].Src)
+	require.NoError(t, err)
+	assert.Equal(t, triageEnv, content1)
+
+	// Dest and expand preserved
+	assert.Equal(t, "/sandbox/workspace/.env.d/gcp-vertex.env", h.HostFiles[0].Dest)
+	assert.True(t, h.HostFiles[0].Expand)
+
+	// Dependencies include host_files
+	hostFileDeps := []Dependency{}
+	for _, d := range deps {
+		if strings.HasPrefix(d.Field, "host_files[") {
+			hostFileDeps = append(hostFileDeps, d)
+		}
+	}
+	assert.Len(t, hostFileDeps, 2)
+	for _, d := range hostFileDeps {
+		assert.Equal(t, "resource", d.Type)
+	}
+}
+
+func TestLoadWithBase_URLBase_HostFilesMixedEnvVarAndRelative(t *testing.T) {
+	envContent := []byte("KEY=value\n")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+host_files:
+  - src: env/app.env
+    dest: /sandbox/.env.d/app.env
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/env/app.env": envContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+role: test
+base: `+baseURL+`
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.HostFiles, 2)
+
+	// Relative src resolved to cache path
+	assert.True(t, filepath.IsAbs(h.HostFiles[0].Src), "relative src should be resolved")
+
+	// ${VAR} src left unchanged
+	assert.Equal(t, "${GOOGLE_APPLICATION_CREDENTIALS}", h.HostFiles[1].Src)
+}
+
+func TestResolveBaseHostFiles_SkipsEnvVarPaths(t *testing.T) {
+	base := &Harness{
+		HostFiles: []HostFile{
+			{Src: "${HOME}/file.txt", Dest: "/sandbox/file.txt"},
+		},
+	}
+	deps, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "${HOME}/file.txt", base.HostFiles[0].Src)
+}
+
+func TestResolveBaseHostFiles_SkipsAbsolutePaths(t *testing.T) {
+	base := &Harness{
+		HostFiles: []HostFile{
+			{Src: "/absolute/path/file.txt", Dest: "/sandbox/file.txt"},
+		},
+	}
+	deps, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "/absolute/path/file.txt", base.HostFiles[0].Src)
+}
+
+func TestResolveBaseHostFiles_SkipsEmptySrc(t *testing.T) {
+	base := &Harness{
+		HostFiles: []HostFile{
+			{Src: "", Dest: "/sandbox/file.txt"},
+		},
+	}
+	deps, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+func TestResolveBaseHostFiles_RejectsPathTraversal(t *testing.T) {
+	base := &Harness{
+		HostFiles: []HostFile{
+			{Src: "../../etc/passwd", Dest: "/sandbox/passwd"},
+		},
+	}
+	_, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain path traversal")
+	assert.Contains(t, err.Error(), "host_files[0].src")
+}
+
+func TestResolveBaseHostFiles_RejectsNullBytes(t *testing.T) {
+	base := &Harness{
+		HostFiles: []HostFile{
+			{Src: "env/test\x00.env", Dest: "/sandbox/.env"},
+		},
+	}
+	_, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain null bytes")
+	assert.Contains(t, err.Error(), "host_files[0].src")
+}
+
+func TestResolveBaseHostFiles_InvalidBaseURL(t *testing.T) {
+	base := &Harness{
+		HostFiles: []HostFile{
+			{Src: "env/test.env", Dest: "/sandbox/.env"},
+		},
+	}
+	_, err := resolveBaseHostFiles(context.Background(), base, "", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot determine directory")
+}
+
+func TestResolveBaseHostFiles_EmptyHostFiles(t *testing.T) {
+	base := &Harness{}
+	deps, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+}
+
+// --- Tests for URL-sourced harnesses without base: field (SourceURL) ---
+
+func TestLoadWithBase_SourceURL_ResolvesResources(t *testing.T) {
+	// A URL-sourced harness with no base: field should have its relative
+	// resource paths resolved against the source URL (ADR-0045).
+	agentContent := []byte("# triage agent definition")
+	policyContent := []byte("# triage policy")
+	preScript := []byte("#!/bin/bash\necho pre")
+	postScript := []byte("#!/bin/bash\necho post")
+
+	harnessContent := []byte(`
+role: triage
+slug: triage
+agent: agents/triage.md
+policy: policies/triage.yaml
+pre_script: scripts/pre-triage.sh
+post_script: scripts/post-triage.sh
+`)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/harness/triage.yaml":
+			w.Write(harnessContent)
+		case "/agents/triage.md":
+			w.Write(agentContent)
+		case "/policies/triage.yaml":
+			w.Write(policyContent)
+		case "/scripts/pre-triage.sh":
+			w.Write(preScript)
+		case "/scripts/post-triage.sh":
+			w.Write(postScript)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	// Write the harness locally (simulating FetchAgentHarness caching it)
+	path := writeTestHarness(t, dir, "triage.yaml", string(harnessContent))
+
+	sourceURL := server.URL + "/harness/triage.yaml"
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		SourceURL:     sourceURL,
+	})
+	require.NoError(t, err)
+
+	// All resource paths should be resolved to local cache paths
+	assert.True(t, filepath.IsAbs(h.Agent), "agent should be absolute cache path, got %s", h.Agent)
+	assert.True(t, filepath.IsAbs(h.Policy), "policy should be absolute cache path, got %s", h.Policy)
+	assert.True(t, filepath.IsAbs(h.PreScript), "pre_script should be absolute cache path")
+	assert.True(t, filepath.IsAbs(h.PostScript), "post_script should be absolute cache path")
+
+	// Verify cached content matches
+	gotAgent, err := os.ReadFile(h.Agent)
+	require.NoError(t, err)
+	assert.Equal(t, agentContent, gotAgent)
+
+	gotPolicy, err := os.ReadFile(h.Policy)
+	require.NoError(t, err)
+	assert.Equal(t, policyContent, gotPolicy)
+
+	gotPre, err := os.ReadFile(h.PreScript)
+	require.NoError(t, err)
+	assert.Equal(t, preScript, gotPre)
+
+	gotPost, err := os.ReadFile(h.PostScript)
+	require.NoError(t, err)
+	assert.Equal(t, postScript, gotPost)
+
+	// Dependencies should include scripts and resources
+	assert.NotEmpty(t, deps)
+	fieldNames := map[string]bool{}
+	for _, d := range deps {
+		fieldNames[d.Field] = true
+	}
+	assert.True(t, fieldNames["pre_script"], "should have pre_script dep")
+	assert.True(t, fieldNames["post_script"], "should have post_script dep")
+	assert.True(t, fieldNames["agent"], "should have agent dep")
+	assert.True(t, fieldNames["policy"], "should have policy dep")
+}
+
+func TestLoadWithBase_SourceURL_NoRelativePaths(t *testing.T) {
+	// A URL-sourced harness with no relative paths should be a no-op.
+	harnessContent := []byte(`
+role: test
+slug: test-agent
+agent: /absolute/path/agent.md
+`)
+
+	dir := t.TempDir()
+	path := writeTestHarness(t, dir, "test.yaml", string(harnessContent))
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		SourceURL: "https://example.com/harness/test.yaml",
+	})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "test", h.Role)
+}
+
+func TestLoadWithBase_SourceURL_ScriptResolutionError(t *testing.T) {
+	// When resolveBaseScripts fails (e.g., script URL not in allowlist),
+	// LoadWithBase should return the error.
+	harnessContent := []byte(`
+role: triage
+slug: triage
+pre_script: scripts/pre-triage.sh
+`)
+
+	dir := t.TempDir()
+	path := writeTestHarness(t, dir, "triage.yaml", string(harnessContent))
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		SourceURL:    "https://example.com/harness/triage.yaml",
+		OrgAllowlist: []string{"https://other.example.com/"}, // not matching
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving URL-sourced scripts")
+}
+
+func TestLoadWithBase_SourceURL_ResourceResolutionError(t *testing.T) {
+	// When resolveBaseResources fails (e.g., agent URL not in allowlist),
+	// LoadWithBase should return the error.
+	harnessContent := []byte(`
+role: triage
+slug: triage
+agent: agents/triage.md
+`)
+
+	dir := t.TempDir()
+	path := writeTestHarness(t, dir, "triage.yaml", string(harnessContent))
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		SourceURL:    "https://example.com/harness/triage.yaml",
+		OrgAllowlist: []string{"https://other.example.com/"}, // not matching
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving URL-sourced resources")
+}
+
+func TestLoadWithBase_SourceURL_HostFiles(t *testing.T) {
+	// A URL-sourced harness with no base: field should have its relative
+	// host_files src paths resolved against the source URL.
+	envContent := []byte("KEY=value")
+
+	agentContent := []byte("# triage agent definition")
+
+	harnessContent := []byte(`
+role: triage
+slug: triage
+agent: agents/triage.md
+host_files:
+  - src: env/triage.env
+    dest: /sandbox/.env
+  - src: ${HOME}/.config/app.env
+    dest: /sandbox/app.env
+  - src: /absolute/path/file.env
+    dest: /sandbox/abs.env
+`)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/harness/triage.yaml":
+			w.Write(harnessContent)
+		case "/agents/triage.md":
+			w.Write(agentContent)
+		case "/env/triage.env":
+			w.Write(envContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	path := writeTestHarness(t, dir, "triage.yaml", string(harnessContent))
+
+	sourceURL := server.URL + "/harness/triage.yaml"
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		SourceURL:     sourceURL,
+	})
+	require.NoError(t, err)
+
+	// The relative host_files src should be resolved to a local cache path
+	assert.True(t, filepath.IsAbs(h.HostFiles[0].Src),
+		"relative host_files src should be resolved to absolute cache path, got %s", h.HostFiles[0].Src)
+
+	// Verify cached content matches
+	gotEnv, err := os.ReadFile(h.HostFiles[0].Src)
+	require.NoError(t, err)
+	assert.Equal(t, envContent, gotEnv)
+
+	// ${VAR} entries should be left unchanged
+	assert.Equal(t, "${HOME}/.config/app.env", h.HostFiles[1].Src,
+		"host_files with ${VAR} should be left unchanged")
+
+	// Absolute paths should be left unchanged
+	assert.Equal(t, "/absolute/path/file.env", h.HostFiles[2].Src,
+		"host_files with absolute paths should be left unchanged")
+
+	// Dependencies should include the host file
+	fieldNames := map[string]bool{}
+	for _, d := range deps {
+		fieldNames[d.Field] = true
+	}
+	assert.True(t, fieldNames["host_files[0].src"], "should have host_files dep")
+}
+
+func TestLoadWithBase_SourceURL_HostFilesResolutionError(t *testing.T) {
+	// When resolveBaseHostFiles fails (e.g., host_files URL not in allowlist),
+	// LoadWithBase should return the error.
+	harnessContent := []byte(`
+role: triage
+slug: triage
+host_files:
+  - src: env/triage.env
+    dest: /sandbox/.env
+`)
+
+	dir := t.TempDir()
+	path := writeTestHarness(t, dir, "triage.yaml", string(harnessContent))
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		SourceURL:    "https://example.com/harness/triage.yaml",
+		OrgAllowlist: []string{"https://other.example.com/"}, // not matching
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving URL-sourced host_files")
+}
+
+func TestLoadWithBase_NoSourceURL_NoResolution(t *testing.T) {
+	// Without SourceURL, a no-base harness should not attempt URL resolution
+	// (original behavior preserved).
+	harnessContent := []byte(`
+role: test
+agent: agents/test.md
+`)
+
+	dir := t.TempDir()
+	path := writeTestHarness(t, dir, "test.yaml", string(harnessContent))
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Empty(t, deps)
+	assert.Equal(t, "agents/test.md", h.Agent, "agent should remain relative without SourceURL")
+}
+
+func TestFetchBaseSkill_StaleCacheTransientFallback(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
+	skillFileURL := baseURLDir + "skills/common/SKILL.md"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	oldFiles := map[string][]byte{"SKILL.md": []byte("# old")}
+	oldHash, err := fetch.CachePutDir(cacheDir, skillFileURL, oldFiles)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, oldHash))
+	require.NoError(t, urlIndexPut(cacheDir, "skill:"+skillFileURL, oldHash))
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, &gitfetch.TransientError{Err: fmt.Errorf("connection refused")}
+	}
+
+	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]",
+		baseURLDir, "skills/common", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+		})
+	require.NoError(t, err)
+	assert.True(t, dep.CacheHit)
+	assert.Contains(t, dep.Warning, "using stale cached content")
+	assert.Contains(t, dep.Warning, "connection refused")
+	assert.FileExists(t, filepath.Join(localDir, "SKILL.md"))
+}
+
+func TestFetchBaseSkill_StaleCacheContextDeadlineFallback(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
+	skillFileURL := baseURLDir + "skills/common/SKILL.md"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	oldFiles := map[string][]byte{"SKILL.md": []byte("# old")}
+	oldHash, err := fetch.CachePutDir(cacheDir, skillFileURL, oldFiles)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, oldHash))
+	require.NoError(t, urlIndexPut(cacheDir, "skill:"+skillFileURL, oldHash))
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("git fetch: %w", context.DeadlineExceeded)
+	}
+
+	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]",
+		baseURLDir, "skills/common", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+		})
+	require.NoError(t, err)
+	assert.True(t, dep.CacheHit)
+	assert.Contains(t, dep.Warning, "using stale cached content")
+	assert.FileExists(t, filepath.Join(localDir, "SKILL.md"))
+}
+
+func TestFetchBaseSkill_StaleCacheNonTransientError(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/ref1/"
+	skillFileURL := baseURLDir + "skills/common/SKILL.md"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	oldFiles := map[string][]byte{"SKILL.md": []byte("# old")}
+	oldHash, err := fetch.CachePutDir(cacheDir, skillFileURL, oldFiles)
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, oldHash))
+	require.NoError(t, urlIndexPut(cacheDir, "skill:"+skillFileURL, oldHash))
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("authentication failed: 401 Unauthorized")
+	}
+
+	_, _, err = fetchBaseSkill(context.Background(), "skills[0]",
+		baseURLDir, "skills/common", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "authentication failed")
+}
+
+func TestFetchBaseSkill_TreeFetchErrorWithToken(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("git fetch failed")
+	}
+
+	_, _, err := fetchBaseSkill(context.Background(), "skills[0]",
+		"https://raw.githubusercontent.com/org/repo/ref/",
+		"skills/common", []string{"https://raw.githubusercontent.com/org/repo/"}, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   failFetcher,
+			GitToken:      "ghp_test123",
+		})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetching skill directory")
+	assert.NotContains(t, err.Error(), "hint:")
+}
+
+func TestIsTransientFetchError(t *testing.T) {
+	tests := []struct {
+		name      string
+		err       error
+		transient bool
+	}{
+		{"context deadline", fmt.Errorf("git fetch: %w", context.DeadlineExceeded), true},
+		{"context canceled", fmt.Errorf("git fetch: %w", context.Canceled), true},
+		{"transient error type", &gitfetch.TransientError{Err: fmt.Errorf("connection refused")}, true},
+		{"wrapped transient", fmt.Errorf("gitfetch: %w", &gitfetch.TransientError{Err: fmt.Errorf("no such host")}), true},
+		{"auth error", fmt.Errorf("authentication failed"), false},
+		{"generic error", fmt.Errorf("something went wrong"), false},
+		{"404 error", fmt.Errorf("not found"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.transient, isTransientFetchError(tt.err))
+		})
+	}
 }

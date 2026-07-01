@@ -23,6 +23,7 @@ Download the latest binary from [GitHub Releases](https://github.com/fullsend-ai
 | Command | Description |
 |---------|-------------|
 | `fullsend run` | Execute an agent locally in a sandbox. See [running agents locally](../guides/user/running-agents-locally.md). |
+| `fullsend agent` | Manage agent registrations in config (add, list, update, remove) |
 | `fullsend lock [agent-name]` | Pin remote dependencies to `lock.yaml` |
 | `fullsend scan` | Run security scanners on agent input/output |
 

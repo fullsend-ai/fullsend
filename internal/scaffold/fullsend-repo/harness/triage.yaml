@@ -17,9 +17,6 @@ host_files:
   - src: ${GCP_OIDC_TOKEN_FILE}
     dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
-  - src: env/triage.env
-    dest: /sandbox/workspace/.env.d/triage.env
-    expand: true
 
 skills:
   - skills/issue-labels
@@ -31,8 +28,9 @@ validation_loop:
   script: scripts/validate-output-schema.sh
   max_iterations: 2
 
-runner_env:
-  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/triage-result.schema.json
+env:
+  runner:
+    FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/triage-result.schema.json
 
 timeout_minutes: 10
 
@@ -40,6 +38,10 @@ forge:
   github:
     pre_script: scripts/pre-triage.sh
     post_script: scripts/post-triage.sh
-    runner_env:
-      GITHUB_ISSUE_URL: ${GITHUB_ISSUE_URL}
-      GH_TOKEN: ${GH_TOKEN}
+    env:
+      runner:
+        GITHUB_ISSUE_URL: ${GITHUB_ISSUE_URL}
+        GH_TOKEN: ${GH_TOKEN}
+      sandbox:
+        GITHUB_ISSUE_URL: "${GITHUB_ISSUE_URL}"
+        GH_TOKEN: "${GH_TOKEN}"

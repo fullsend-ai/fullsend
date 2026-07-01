@@ -26,7 +26,7 @@ The `fullsend fetch-skill` subcommand reuses the existing fullsend binary alread
 1. Agent calls: `fullsend fetch-skill https://github.com/fullsend-ai/library/tree/abc123/skills/python-linting#sha256=<tree-hash>...`
 2. Subcommand sends HTTP request to runner via `FULLSEND_FETCH_URL` with bearer token from `FULLSEND_FETCH_TOKEN`
 3. Runner validates URL against `allowed_remote_resources`
-4. Runner uses forge API to list and fetch the skill directory (skills are directories, requiring `ListDirectoryContents` and `GetFileContentAtRef`)
+4. Runner uses `gitfetch.FetchTree` (git sparse checkout) to fetch the skill directory
 5. Runner verifies tree hash (hash covers entire directory tree)
 6. Runner stores in cache via `CachePutDir` and uploads directory tree to sandbox
 7. Subcommand returns the sandbox-local skill directory path
@@ -37,7 +37,7 @@ The `fullsend fetch-skill` subcommand reuses the existing fullsend binary alread
 - All URLs must match `allowed_remote_resources` prefixes
 - Integrity hash required on all URLs (tree hash for skill directories)
 - Rate limited: `max_runtime_fetches` (default 10) per agent run
-- Skills are directories -- requires forge API access (same as static resolution)
+- Skills are directories -- fetched via git sparse checkout (same as static resolution)
 - Non-forge HTTPS URLs are rejected for skills (no HTTP directory listing standard)
 - All fetched skills pass security scanning pipeline
 - Audit log records all runtime fetches with `fetch_type: "runtime"`
@@ -48,7 +48,7 @@ The `fullsend fetch-skill` subcommand reuses the existing fullsend binary alread
 - HTTP service implementing `fetchsvc.Service` with `ServeHTTP` handler
 - Request/response protocol: URL -> local path or error
 - Rate limiting enforcement via atomic counter
-- Forge API integration for skill directory fetching (reuses Phase 1 forge client)
+- Git sparse checkout integration for skill directory fetching (reuses `gitfetch.FetchTree`)
 - Audit logging with `fetch_type: "runtime"`
 
 #### PR 2: In-sandbox fetch subcommand (#2223)

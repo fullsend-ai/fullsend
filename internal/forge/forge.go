@@ -292,6 +292,9 @@ type Client interface {
 	CommitFilesToBranch(ctx context.Context, owner, repo, branch, message string, files []TreeFile) (committed bool, err error)
 
 	// Branch operations
+	// GetBranchRef returns the HEAD commit SHA for the named branch.
+	// Returns forge.ErrNotFound if the branch does not exist.
+	GetBranchRef(ctx context.Context, owner, repo, branch string) (sha string, err error)
 	CreateBranch(ctx context.Context, owner, repo, branchName string) error
 	CreateFileOnBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
 	// CreateOrUpdateFileOnBranch creates or updates a file on a specific branch.

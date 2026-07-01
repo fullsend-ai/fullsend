@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -99,7 +100,7 @@ func (e *APIError) Unwrap() error {
 	return nil
 }
 
-const maxRetries = 3
+const maxRetries = 5
 
 // do performs an HTTP request against the GitHub API with retry on rate limits.
 func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
@@ -213,19 +214,26 @@ func isRetryable(resp *http.Response) (bool, []byte) {
 var secondaryRateLimitBackoff = 60 * time.Second
 
 // retryDelay calculates how long to wait before retrying.
-// It uses the Retry-After header if present, otherwise exponential backoff.
+// It uses the Retry-After header if present, otherwise exponential backoff
+// with jitter to prevent thundering-herd effects.
 func retryDelay(resp *http.Response, attempt int) time.Duration {
 	if ra := resp.Header.Get("Retry-After"); ra != "" {
 		if secs, err := strconv.Atoi(ra); err == nil && secs > 0 && secs <= 300 {
 			return time.Duration(secs) * time.Second
 		}
 	}
-	// For secondary rate limits (403), use a longer backoff.
+	var base time.Duration
 	if resp.StatusCode == http.StatusForbidden {
-		return secondaryRateLimitBackoff + time.Duration(math.Pow(2, float64(attempt)))*time.Second
+		// For secondary rate limits (403), use a longer backoff.
+		base = secondaryRateLimitBackoff + time.Duration(math.Pow(2, float64(attempt)))*time.Second
+	} else {
+		// Exponential backoff: 1s, 2s, 4s, 8s, 16s
+		base = time.Duration(math.Pow(2, float64(attempt))) * time.Second
 	}
-	// Exponential backoff: 1s, 2s, 4s
-	return time.Duration(math.Pow(2, float64(attempt))) * time.Second
+	// Add jitter: randomize between 50-100% of base to desynchronize
+	// concurrent callers (e.g. parallel e2e test runners).
+	half := base / 2
+	return half + time.Duration(rand.Int64N(int64(half)+1))
 }
 
 // checkStatus verifies the response has an acceptable status code and returns
@@ -1255,6 +1263,23 @@ func (c *LiveClient) DeleteFile(ctx context.Context, owner, repo, path, message 
 		}
 		return nil
 	})
+}
+
+// GetBranchRef returns the HEAD commit SHA for the named branch.
+func (c *LiveClient) GetBranchRef(ctx context.Context, owner, repo, branch string) (string, error) {
+	refResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", owner, repo, branch))
+	if err != nil {
+		return "", fmt.Errorf("get branch ref %s/%s@%s: %w", owner, repo, branch, err)
+	}
+	var ref struct {
+		Object struct {
+			SHA string `json:"sha"`
+		} `json:"object"`
+	}
+	if err := decodeJSON(refResp, &ref); err != nil {
+		return "", fmt.Errorf("decode branch ref: %w", err)
+	}
+	return ref.Object.SHA, nil
 }
 
 // CreateBranch creates a new branch from the repository's default branch.

@@ -15,6 +15,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 )
 
@@ -48,7 +49,8 @@ type Uploader interface {
 // ServiceConfig holds configuration for creating a new Service.
 type ServiceConfig struct {
 	Harness       *harness.Harness
-	ForgeClient   forge.Client
+	TreeFetcher   gitfetch.TreeFetchFunc
+	GitToken      string
 	FetchPolicy   fetch.FetchPolicy
 	WorkspaceRoot string // host-side root for .fullsend-cache/
 	AuditLogPath  string
@@ -62,7 +64,8 @@ type ServiceConfig struct {
 // Service handles runtime skill fetch requests from agents running in sandboxes.
 type Service struct {
 	harness       *harness.Harness
-	forgeClient   forge.Client
+	treeFetcher   gitfetch.TreeFetchFunc
+	gitToken      string
 	fetchPolicy   fetch.FetchPolicy
 	workspaceRoot string
 	auditLogPath  string
@@ -79,9 +82,14 @@ func New(cfg ServiceConfig) *Service {
 	if skillDest == "" {
 		skillDest = "/sandbox/claude-config/skills"
 	}
+	fetcher := cfg.TreeFetcher
+	if fetcher == nil {
+		fetcher = gitfetch.FetchTree
+	}
 	return &Service{
 		harness:       cfg.Harness,
-		forgeClient:   cfg.ForgeClient,
+		treeFetcher:   fetcher,
+		gitToken:      cfg.GitToken,
 		fetchPolicy:   cfg.FetchPolicy,
 		workspaceRoot: cfg.WorkspaceRoot,
 		auditLogPath:  cfg.AuditLogPath,
@@ -149,29 +157,13 @@ func (s *Service) HandleFetch(ctx context.Context, req FetchRequest) (FetchRespo
 	fetchedAt := time.Now().UTC()
 
 	if !cacheHit {
-		if s.forgeClient == nil {
-			return FetchResponse{}, &fetchError{"forge client is required to fetch uncached skill", http.StatusInternalServerError}
-		}
 		if s.fetchPolicy.Offline {
 			return FetchResponse{}, &fetchError{"skill not in cache and offline mode is enabled", http.StatusServiceUnavailable}
 		}
 
-		entries, err := s.forgeClient.ListDirectoryContents(ctx, forgeInfo.Owner, forgeInfo.Repo, forgeInfo.Path, forgeInfo.Ref, true)
+		files, err := s.treeFetcher(ctx, forgeInfo.CloneURL(), forgeInfo.Path, forgeInfo.Ref, s.gitToken)
 		if err != nil {
-			return FetchResponse{}, &fetchError{"failed to list skill directory from forge", http.StatusBadGateway}
-		}
-
-		files := make(map[string][]byte)
-		for _, e := range entries {
-			if e.Type != "file" {
-				continue
-			}
-			fullPath := forgeInfo.Path + "/" + e.Path
-			content, err := s.forgeClient.GetFileContentAtRef(ctx, forgeInfo.Owner, forgeInfo.Repo, fullPath, forgeInfo.Ref)
-			if err != nil {
-				return FetchResponse{}, &fetchError{"failed to fetch skill file from forge", http.StatusBadGateway}
-			}
-			files[e.Path] = content
+			return FetchResponse{}, &fetchError{"failed to fetch skill directory", http.StatusBadGateway}
 		}
 
 		if len(files) == 0 {
