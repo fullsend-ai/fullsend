@@ -3109,6 +3109,66 @@ func TestResolveBaseHostFiles_EmptyHostFiles(t *testing.T) {
 	assert.Empty(t, deps)
 }
 
+func TestResolveBaseHostFiles_SkipsLocallyPresentFiles(t *testing.T) {
+	// Create a workspace with env/gcp-vertex.env already on disk
+	// (simulating the scaffold's "Prepare workspace" step).
+	wsRoot := t.TempDir()
+	envDir := filepath.Join(wsRoot, "env")
+	require.NoError(t, os.MkdirAll(envDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(envDir, "gcp-vertex.env"), []byte("KEY=val"), 0o644))
+
+	// Set up a TLS test server for the file that does NOT exist locally.
+	triageContent := []byte("TRIAGE=true\n")
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "env/triage.env") {
+			w.Write(triageContent)
+			return
+		}
+		// gcp-vertex.env should NOT be fetched — if it is, fail the test.
+		if strings.HasSuffix(r.URL.Path, "env/gcp-vertex.env") {
+			t.Errorf("unexpected fetch for locally-present file: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(server.Close)
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	base := &Harness{
+		HostFiles: []HostFile{
+			{Src: "env/gcp-vertex.env", Dest: "/tmp/gcp-vertex.env"},
+			{Src: "env/triage.env", Dest: "/tmp/triage.env"},
+		},
+	}
+
+	baseURL := server.URL + "/org/repo/main/harness/triage.yaml#sha256=abc"
+	allowlist := []string{server.URL + "/"}
+	opts := ComposeOpts{
+		WorkspaceRoot: wsRoot,
+		FetchPolicy:   policy,
+	}
+
+	deps, err := resolveBaseHostFiles(context.Background(), base, baseURL, allowlist, opts)
+	require.NoError(t, err)
+
+	// Only triage.env should have been fetched.
+	require.Len(t, deps, 1)
+	assert.Contains(t, deps[0].URL, "env/triage.env")
+
+	// gcp-vertex.env src should remain unchanged (relative path).
+	assert.Equal(t, "env/gcp-vertex.env", base.HostFiles[0].Src)
+
+	// triage.env src should be rewritten to a cache path.
+	assert.NotEqual(t, "env/triage.env", base.HostFiles[1].Src)
+	assert.Contains(t, base.HostFiles[1].Src, ".fullsend-cache")
+}
+
 // --- Tests for URL-sourced harnesses without base: field (SourceURL) ---
 
 func TestLoadWithBase_SourceURL_ResolvesResources(t *testing.T) {

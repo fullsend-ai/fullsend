@@ -732,6 +732,17 @@ func resolveBaseHostFiles(ctx context.Context, base *Harness, baseURL string, al
 		if err := validateBaseRelPath(fieldName, src); err != nil {
 			return nil, err
 		}
+		// If the file already exists on disk (e.g., placed by the scaffold's
+		// "Prepare workspace" step), skip the remote fetch and leave the
+		// relative path as-is. This respects the layered workspace model
+		// where scaffold defaults are copied first and only files from
+		// the external agent repo need to be fetched.
+		if opts.WorkspaceRoot != "" {
+			localPath := filepath.Join(opts.WorkspaceRoot, src)
+			if _, err := os.Stat(localPath); err == nil {
+				continue
+			}
+		}
 		dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, src, allowlist, opts, "resource", false)
 		if err != nil {
 			return nil, err
