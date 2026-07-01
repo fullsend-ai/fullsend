@@ -125,6 +125,7 @@ Set `ALLOWED_ORGS=*` to enable public mint mode ([ADR 0059](../../ADRs/0059-publ
 - Any org may request tokens (installation lookup still scopes tokens to the requesting org)
 - `job_workflow_ref` must reference `fullsend-ai/fullsend/.github/workflows/` only
 - Leave `PER_REPO_WIF_REPOS` unset; the basename gate (`ALLOWED_WORKFLOW_FILES`) is not applied
+- No WIF or GCP STS setup is required — standalone mint validates OIDC via GitHub JWKS directly
 
 ### Example: local roles with fallback proxy
 

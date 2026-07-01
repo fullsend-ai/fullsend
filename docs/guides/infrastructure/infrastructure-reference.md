@@ -105,10 +105,13 @@ Mode is inferred from `ALLOWED_ORGS` — there is no separate trust-mode flag. S
 
 - **ALLOWED_ORGS**: Any org may mint (cross-org isolation still enforced at installation lookup)
 - **job_workflow_ref validation**: Only `fullsend-ai/fullsend/.github/workflows/` (any ref — tag, branch, or SHA)
-- **PER_REPO_WIF_REPOS**: Leave unset or empty; all repos use `WIF_PROVIDER_NAME`
-- **WIF_PROVIDER_NAME**: Must point at a **permissive** WIF provider whose CEL does not enumerate orgs/repos. Mint authorization in public mode is enforced in `mintcore` (org/workflow/installation checks), not in STS org enumeration. Setting `ALLOWED_ORGS=*` without a matching permissive provider will cause STS exchange to fail for orgs outside the provider's condition. Provisioning that provider is deferred to a future mint infrastructure ADR — `mint deploy` / `mint enroll` today only provision tight-mode (explicit-org) WIF.
+- **PER_REPO_WIF_REPOS**: Leave unset or empty (GCF mint: all repos use `WIF_PROVIDER_NAME`)
 - **ALLOWED_WORKFLOW_FILES**: Basename gate is not applied in public mode
 - **mint enroll**: Succeeds without changing mint configuration (org registration is unnecessary); **mint unenroll** for individual orgs is rejected
+
+**GCF mint (STS verification) only:** The hosted Cloud Function uses `STSVerifier`, which exchanges each OIDC JWT with GCP STS against `WIF_PROVIDER_NAME`. A permissive WIF provider (CEL that does not enumerate orgs/repos) must back that env var, or STS will reject tokens from orgs outside the provider's `attributeCondition` even when `mintcore` prevalidation passes. Provisioning that provider is deferred to a future mint infrastructure ADR and depends on choosing public mint's target platform (today's `mint deploy` / `mint enroll` paths only provision tight-mode WIF).
+
+**Standalone mint (JWKS verification):** `cmd/mint` uses `JWKSVerifier` — direct GitHub JWKS signature checks with no STS or WIF. Public mode is fully determined by `ALLOWED_ORGS` and workflow provenance in `mintcore`; WIF provisioning is not applicable.
 
 - **Minimum permissions**: Tokens are scoped to the role's minimum permission set, not the App's full permissions (both modes)
 
