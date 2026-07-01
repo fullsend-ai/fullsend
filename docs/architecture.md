@@ -90,13 +90,13 @@ The harness draws its configuration from the adopting organization's **`.fullsen
 - Forge-portable harness schema: `role` and `slug` move into the harness
   YAML (eliminating the config.yaml `agents:` block dependency), and a
   `forge:` section separates platform-specific config (scripts, skills,
-  runner_env) from platform-neutral fields. Forge blocks inherit from
+  env) from platform-neutral fields. Forge blocks inherit from
   top-level defaults and override only deltas
   ([ADR 0045](ADRs/0045-forge-portable-harness-schema.md)).
 - Unified env var delivery: a single `env:` key with `runner` and `sandbox`
-  sub-maps replaces `runner_env` and manual `.env` files. The runner generates
-  the sandbox `.env` file from `env.sandbox` at bootstrap. `runner_env` is
-  deprecated ([ADR 0055](ADRs/0055-unified-env-var-delivery.md), amending
+  sub-maps delivers environment variables. `env.runner` configures host-side
+  scripts; `env.sandbox` generates the sandbox `.env` file at bootstrap
+  ([ADR 0055](ADRs/0055-unified-env-var-delivery.md), amending
   [ADR 0024](ADRs/0024-harness-definitions.md)).
 - Agent configuration env vars: behavioral knobs use `{AGENT}_{SETTING_NAME}`
   naming (e.g., `REVIEW_SEVERITY_THRESHOLD`), delivered via `env.runner` and
