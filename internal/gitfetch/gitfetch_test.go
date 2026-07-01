@@ -531,6 +531,58 @@ func TestWrapTransient(t *testing.T) {
 	}
 }
 
+func TestIsAuthError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"could not read username", fmt.Errorf("exit status 128: fatal: could not read Username for 'https://github.com': terminal prompts disabled"), true},
+		{"authentication failed", fmt.Errorf("fatal: Authentication failed for 'https://github.com/org/repo.git'"), true},
+		{"invalid credentials", fmt.Errorf("remote: Invalid credentials"), true},
+		{"401 error", fmt.Errorf("The requested URL returned error: 401"), true},
+		{"403 error", fmt.Errorf("The requested URL returned error: 403"), true},
+		{"authorization failed", fmt.Errorf("authorization failed"), true},
+		{"network error", fmt.Errorf("connection refused"), false},
+		{"not found", fmt.Errorf("repository not found"), false},
+		{"generic exit", fmt.Errorf("exit status 1"), false},
+		{"timeout", fmt.Errorf("i/o timeout"), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isAuthError(tt.err)
+			if got != tt.want {
+				t.Errorf("isAuthError(%q) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFetchTree_AuthFallbackToAnonymous(t *testing.T) {
+	// Create a local repo accessible via file:// (no auth required).
+	// FetchTree with a token against file:// succeeds directly (file://
+	// ignores HTTP auth headers), but this test verifies the code path
+	// by confirming that when a token is provided against a repo that
+	// doesn't need it, the fetch still succeeds.
+	//
+	// The real auth-fallback path is exercised against HTTPS remotes
+	// where a wrong-scope token triggers "could not read Username" or
+	// "401" errors. The isAuthError unit tests above cover the error
+	// detection logic; this test verifies the end-to-end flow does not
+	// regress when tokens are present.
+	repoURL, sha := createTestRepo(t, map[string]string{
+		"skills/review/SKILL.md": "# Review Skill",
+	})
+
+	files, err := FetchTree(context.Background(), repoURL, "skills/review", sha, "wrong-scope-token")
+	if err != nil {
+		t.Fatalf("FetchTree with wrong-scope token should succeed for accessible repo: %v", err)
+	}
+	if string(files["SKILL.md"]) != "# Review Skill" {
+		t.Errorf("unexpected content: %q", files["SKILL.md"])
+	}
+}
+
 func keys(m map[string][]byte) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
