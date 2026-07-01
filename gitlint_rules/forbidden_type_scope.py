@@ -45,7 +45,7 @@ class ForbiddenTypeScope(CommitRule):
             RuleViolation(
                 self.id,
                 f'"{ctype}({scope})" pollutes release notes with non-user-facing changes. '
-                f"Use \"{suggestion}: ...\" instead.",
+                f'Use "{suggestion}: ..." instead.',
                 line_nr=1,
             )
         ]

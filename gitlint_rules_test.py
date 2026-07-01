@@ -1,9 +1,9 @@
 """Tests for the ForbiddenTypeScope gitlint rule."""
 
 import pytest
+from gitlint.rules import RuleViolation
 
 from gitlint_rules.forbidden_type_scope import ForbiddenTypeScope
-from gitlint.rules import RuleViolation
 
 
 class FakeCommit:
