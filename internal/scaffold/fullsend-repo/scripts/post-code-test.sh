@@ -694,6 +694,75 @@ run_signoff_test "signoff-variant-casing-passes" \
 signed-off-by: bot <bot@noreply.github.com>" \
   "pass"
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the pre-commit auto-fix retry decision logic
+# from post-code.sh section 5. Given a pre-commit exit code and whether
+# unstaged changes exist, returns the action the script would take.
+# ---------------------------------------------------------------------------
+decide_precommit_retry() {
+  local precommit_rc="$1"        # 0 = passed, 1 = failed
+  local has_unstaged="$2"        # "yes" or "no"
+  local retry_precommit_rc="$3"  # 0 = passed on retry, 1 = still fails (ignored if no retry)
+
+  if [ "${precommit_rc}" -eq 0 ]; then
+    echo "pass:clean"
+    return 0
+  fi
+
+  # Pre-commit failed — check for auto-fixed files
+  if [ "${has_unstaged}" = "yes" ]; then
+    if [ "${retry_precommit_rc}" -eq 0 ]; then
+      echo "pass:auto-fixed"
+    else
+      echo "blocked:retry-failed"
+    fi
+  else
+    echo "blocked:no-auto-fix"
+  fi
+}
+
+run_precommit_retry_test() {
+  local test_name="$1"
+  local precommit_rc="$2"
+  local has_unstaged="$3"
+  local retry_precommit_rc="$4"
+  local expected="$5"
+
+  local actual
+  actual="$(decide_precommit_retry "${precommit_rc}" "${has_unstaged}" "${retry_precommit_rc}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  precommit_rc:       '${precommit_rc}'"
+    echo "  has_unstaged:       '${has_unstaged}'"
+    echo "  retry_precommit_rc: '${retry_precommit_rc}'"
+    echo "  expected:           '${expected}'"
+    echo "  actual:             '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Pre-commit auto-fix retry test cases ---
+
+# Pre-commit passes on first run → no retry needed
+run_precommit_retry_test "precommit-passes-first-run" \
+  "0" "no" "0" "pass:clean"
+
+# Pre-commit fails, hooks auto-fixed files, retry succeeds
+run_precommit_retry_test "precommit-auto-fix-retry-succeeds" \
+  "1" "yes" "0" "pass:auto-fixed"
+
+# Pre-commit fails, hooks auto-fixed files, retry still fails
+run_precommit_retry_test "precommit-auto-fix-retry-fails" \
+  "1" "yes" "1" "blocked:retry-failed"
+
+# Pre-commit fails, no unstaged changes (genuine failure)
+run_precommit_retry_test "precommit-genuine-failure" \
+  "1" "no" "0" "blocked:no-auto-fix"
+
 # --- Summary ---
 
 echo ""

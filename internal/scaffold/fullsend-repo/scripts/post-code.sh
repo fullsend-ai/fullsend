@@ -309,10 +309,24 @@ if [ -f .pre-commit-config.yaml ]; then
     if pre-commit run --files "${changed_array[@]}"; then
       echo "Pre-commit passed — all hooks clean"
     else
-      echo "::error::BLOCKED — pre-commit hooks failed on agent's changes" >&2
-      echo "::error::The agent's code does not pass the repo's pre-commit hooks." >&2
-      echo "::error::Fix the issues and re-run, or update the pre-commit config." >&2
-      exit 1
+      if git diff --name-only | grep -q .; then
+        echo "::warning::Pre-commit hooks auto-fixed files — re-staging and retrying"
+        git add -u
+        git commit --amend --no-edit
+        if pre-commit run --files "${changed_array[@]}"; then
+          echo "Pre-commit passed after auto-fix re-stage"
+        else
+          echo "::error::BLOCKED — pre-commit hooks still fail after auto-fix" >&2
+          echo "::error::The agent's code does not pass the repo's pre-commit hooks." >&2
+          echo "::error::Fix the issues and re-run, or update the pre-commit config." >&2
+          exit 1
+        fi
+      else
+        echo "::error::BLOCKED — pre-commit hooks failed on agent's changes" >&2
+        echo "::error::The agent's code does not pass the repo's pre-commit hooks." >&2
+        echo "::error::Fix the issues and re-run, or update the pre-commit config." >&2
+        exit 1
+      fi
     fi
   else
     echo "::warning::pre-commit not available on runner — skipping authoritative check"
