@@ -1928,6 +1928,174 @@ func TestBuildAttributeCondition(t *testing.T) {
 	})
 }
 
+func TestBuildPublicAttributeCondition(t *testing.T) {
+	assert.Equal(t, publicAttributeCondition, buildPublicAttributeCondition())
+}
+
+func TestIsPublicAttributeCondition(t *testing.T) {
+	assert.True(t, isPublicAttributeCondition(publicAttributeCondition))
+	assert.True(t, isPublicAttributeCondition("  "+publicAttributeCondition+"  "))
+	assert.False(t, isPublicAttributeCondition("assertion.repository_owner == 'acme'"))
+}
+
+func TestProvisioner_Provision_PublicMintFirstDeploy(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetSecret"] = ErrSecretNotFound
+	fake.functionInfoAfterCreate = &FunctionInfo{
+		Name:  "projects/my-project/locations/us-central1/functions/fullsend-mint",
+		State: "ACTIVE",
+		URI:   "https://fullsend-mint-public.run.app",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "*",
+		},
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:         "my-project",
+		PublicMint:        true,
+		AgentPEMs:         singleRolePEMs(),
+		AgentAppIDs:       singleRoleAppIDs(),
+		FunctionSourceDir: fakeFunctionSourceDir(t),
+	}, fake)
+
+	vars, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://fullsend-mint-public.run.app", vars["FULLSEND_MINT_URL"])
+	assert.Equal(t, publicAttributeCondition, fake.lastWIFProviderConfig.AttributeCondition)
+	require.NotNil(t, fake.lastCreateFunctionEnvVars)
+	assert.Equal(t, "*", fake.lastCreateFunctionEnvVars["ALLOWED_ORGS"])
+	assert.NotContains(t, fake.calls, "SetProjectIAMBinding")
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
+func TestProvisioner_Provision_PublicMintRedeploy(t *testing.T) {
+	srcDir := fakeFunctionSourceDir(t)
+	sourceZip, err := bundleFunctionSource(srcDir)
+	require.NoError(t, err)
+	srcHash := sha256Hex(sourceZip)
+
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		Name:  "projects/my-project/locations/us-central1/functions/fullsend-mint",
+		State: "ACTIVE",
+		URI:   "https://fullsend-mint-public.run.app",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS":         "*",
+			"FULLSEND_SOURCE_HASH":   srcHash,
+			"ROLE_APP_IDS":           `{"coder":"12345"}`,
+			"ALLOWED_ROLES":          "coder",
+			"ALLOWED_WORKFLOW_FILES": "*",
+		},
+	}
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": "*",
+	}
+	fake.wifProvider = &WIFProviderInfo{
+		AttributeCondition: publicAttributeCondition,
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:         "my-project",
+		PublicMint:        true,
+		AgentPEMs:         singleRolePEMs(),
+		AgentAppIDs:       singleRoleAppIDs(),
+		FunctionSourceDir: srcDir,
+	}, fake)
+
+	vars, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://fullsend-mint-public.run.app", vars["FULLSEND_MINT_URL"])
+	assert.Equal(t, publicAttributeCondition, fake.lastWIFProviderConfig.AttributeCondition)
+	assert.NotContains(t, fake.calls, "UpdateFunction")
+}
+
+func TestProvisioner_Provision_PublicIntoTightMintRejected(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		State: "ACTIVE",
+		URI:   "https://fullsend-mint-tight.run.app",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": PlaceholderOrg,
+		},
+	}
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": PlaceholderOrg,
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:         "my-project",
+		PublicMint:        true,
+		AgentPEMs:         singleRolePEMs(),
+		AgentAppIDs:       singleRoleAppIDs(),
+		FunctionSourceDir: fakeFunctionSourceDir(t),
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tight mode")
+	assert.NotContains(t, fake.calls, "CreateWIFProvider")
+}
+
+func TestProvisioner_Provision_TightIntoPublicMintRejected(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		State: "ACTIVE",
+		URI:   "https://fullsend-mint-public.run.app",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "*",
+		},
+	}
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": "*",
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:         "my-project",
+		GitHubOrgs:        []string{PlaceholderOrg},
+		AgentPEMs:         singleRolePEMs(),
+		AgentAppIDs:       singleRoleAppIDs(),
+		FunctionSourceDir: fakeFunctionSourceDir(t),
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--public")
+	assert.NotContains(t, fake.calls, "CreateWIFProvider")
+}
+
+func TestProvisioner_Provision_TightPlaceholderRedeployAllowed(t *testing.T) {
+	srcDir := fakeFunctionSourceDir(t)
+	sourceZip, err := bundleFunctionSource(srcDir)
+	require.NoError(t, err)
+	srcHash := sha256Hex(sourceZip)
+
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		State: "ACTIVE",
+		URI:   "https://fullsend-mint-tight.run.app",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS":         PlaceholderOrg,
+			"FULLSEND_SOURCE_HASH": srcHash,
+			"ROLE_APP_IDS":         `{"coder":"12345"}`,
+		},
+	}
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": PlaceholderOrg,
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:         "my-project",
+		GitHubOrgs:        []string{PlaceholderOrg},
+		AgentPEMs:         singleRolePEMs(),
+		AgentAppIDs:       singleRoleAppIDs(),
+		FunctionSourceDir: srcDir,
+	}, fake)
+
+	_, err = p.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "CreateWIFProvider")
+}
+
 func TestBuildRepoProviderID(t *testing.T) {
 	tests := []struct {
 		owner, repo string

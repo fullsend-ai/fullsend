@@ -349,17 +349,25 @@ func newMintDeployCmd() *cobra.Command {
 	var skipDeploy bool
 	var dryRun bool
 	var pemDir string
+	var public bool
 
 	cmd := &cobra.Command{
 		Use:   "deploy",
 		Short: "Deploy or update the token mint Cloud Function",
 		Long: `Deploys the fullsend-mint Cloud Function and supporting GCP infrastructure
 (service account, WIF pool/provider). Does NOT enroll any org — use
-'fullsend mint enroll' after deployment.
+'fullsend mint enroll' after deployment (tight mode only).
+
+Use --public to deploy a public mint (ALLOWED_ORGS=* with permissive WIF).
+Public mints accept any org via upstream reusable workflows; org enrollment
+is not required.
 
 Most runs need only --project and --region. The optional --pem-dir flag is
 for first-time bootstrap only: it seeds the default app set's PEM secrets so
 that 'mint enroll' can work without running 'admin install' first.
+
+Redeploying an existing mint must use the same mode as the deployment:
+--public for public mints, omit --public for tight mints.
 
 Required GCP APIs (gcloud services enable):
   - iam.googleapis.com
@@ -410,6 +418,9 @@ When using --pem-dir, additionally requires:
 				if skipDeploy {
 					printer.StepInfo("Would skip code deployment (--skip-deploy)")
 				}
+				if public {
+					printer.StepInfo("Would deploy public mint (ALLOWED_ORGS=*, permissive WIF)")
+				}
 				if pemDir != "" {
 					if _, err := validatePEMDir(pemDir); err != nil {
 						return err
@@ -435,6 +446,7 @@ When using --pem-dir, additionally requires:
 				Region:            region,
 				FunctionSourceDir: sourceDir,
 				DeployMode:        deployMode,
+				PublicMint:        public,
 			}
 
 			if pemDir != "" {
@@ -446,11 +458,12 @@ When using --pem-dir, additionally requires:
 				}
 				printer.StepDone(fmt.Sprintf("Loaded %d role PEMs for app set %q", len(agentPEMs), appsetup.DefaultAppSet))
 
-				// Role app IDs are shared across orgs; enrolling orgs only updates ALLOWED_ORGS.
-				cfg.GitHubOrgs = []string{gcf.PlaceholderOrg}
 				cfg.AgentPEMs = agentPEMs
 				cfg.AgentAppIDs = agentAppIDs
-			} else {
+			}
+
+			if !public {
+				// Role app IDs are shared across orgs; enrolling orgs only updates ALLOWED_ORGS.
 				cfg.GitHubOrgs = []string{gcf.PlaceholderOrg}
 			}
 
@@ -475,7 +488,12 @@ When using --pem-dir, additionally requires:
 			if pemDir != "" {
 				summaryLines = append(summaryLines, fmt.Sprintf("App set: %s (PEMs bootstrapped)", appsetup.DefaultAppSet))
 			}
-			summaryLines = append(summaryLines, "Next: fullsend mint enroll <org> --project="+project)
+			if public {
+				summaryLines = append(summaryLines, "Mode: public (ALLOWED_ORGS=*)")
+				summaryLines = append(summaryLines, "Orgs may call this mint via upstream reusable workflows after installing shared Apps")
+			} else {
+				summaryLines = append(summaryLines, "Next: fullsend mint enroll <org> --project="+project)
+			}
 			printer.Summary("Deployment complete", summaryLines)
 
 			return nil
@@ -488,6 +506,7 @@ When using --pem-dir, additionally requires:
 	cmd.Flags().BoolVar(&skipDeploy, "skip-deploy", false, "skip code upload, reuse existing function")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 	cmd.Flags().StringVar(&pemDir, "pem-dir", "", "optional: directory containing {role}.pem files to bootstrap the default app set")
+	cmd.Flags().BoolVar(&public, "public", false, "deploy public mint (ALLOWED_ORGS=*, permissive WIF); required to redeploy an existing public mint")
 
 	return cmd
 }

@@ -98,6 +98,10 @@ func TestMintDeployCmd_Flags(t *testing.T) {
 
 	dryRunFlag := cmd.Flags().Lookup("dry-run")
 	require.NotNil(t, dryRunFlag, "expected --dry-run flag")
+
+	publicFlag := cmd.Flags().Lookup("public")
+	require.NotNil(t, publicFlag, "expected --public flag")
+	assert.Equal(t, "false", publicFlag.DefValue)
 }
 
 func TestMintDeployCmd_RequiresProject(t *testing.T) {
@@ -127,6 +131,13 @@ func TestMintDeployCmd_InvalidRegion(t *testing.T) {
 func TestMintDeployCmd_DryRun(t *testing.T) {
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"mint", "deploy", "--project=my-project-id", "--dry-run"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintDeployCmd_DryRunPublic(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--project=my-project-id", "--dry-run", "--public"})
 	err := cmd.Execute()
 	require.NoError(t, err)
 }
