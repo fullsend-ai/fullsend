@@ -37,6 +37,11 @@ done
 
 echo "gh $*" >> "${GH_LOG}"
 
+# Label creation calls — succeed silently (mimics --force behavior).
+if [[ "$1" == "label" && "$2" == "create" ]]; then
+  exit 0
+fi
+
 # Issue creation calls — return a fake issue URL.
 if [[ "$1" == "issue" && "$2" == "create" ]]; then
   echo "https://github.com/test-org/target-repo/issues/99"
@@ -218,6 +223,11 @@ run_test "happy-path-issue-created" \
 run_test "happy-path-triage-label" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "ready-for-triage"
+
+# Verify that gh label create is called before gh issue create.
+run_test "label-created-before-issue" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh label create ready-for-triage"
 
 # Happy path: no proposals, comment posted successfully.
 run_test "happy-path-no-proposals" \
