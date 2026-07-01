@@ -142,6 +142,20 @@ run_case "trusted collaborator author" "true" "trusted_author" "false"
 write_pr "CONTRIBUTOR" '[]'
 run_case "contributor author denied" "false" "unauthorized" "false"
 
+# --- Trusted bot tests ---
+
+export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
+export PR_AUTHOR_LOGIN="renovate-fullsend[bot]"
+echo "" >"${COLLAB_ROLE}"
+write_pr "NONE" '[]'
+run_case "renovate bot authorized as trusted bot" "true" "trusted_bot" "false"
+
+export PR_AUTHOR_LOGIN="some-other-bot[bot]"
+write_pr "NONE" '[]'
+run_case "unknown bot not authorized" "false" "unauthorized" "false"
+
+unset PR_AUTHOR_ASSOCIATION PR_AUTHOR_LOGIN
+
 write_pr "MEMBER" '[{"name":"ok-to-test"}]'
 run_case "trusted member ignores stale ok-to-test label" "true" "trusted_author" "false"
 
