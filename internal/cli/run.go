@@ -927,7 +927,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if err != nil {
 			printer.StepWarn("OIDC token refresh disabled: " + err.Error())
 		} else {
-			printer.StepDone("OIDC token refresh enabled (WIF mode)")
+			// GHA OIDC tokens expire after 5 min; sandbox setup can exceed that.
+			if err := refreshOIDCToken(oidcCtx, sandboxName, oidcURL, oidcAuth); err != nil {
+				printer.StepWarn("Initial OIDC refresh failed (will retry): " + err.Error())
+			} else {
+				printer.StepDone("OIDC token refreshed, background refresh enabled (WIF mode)")
+			}
 			oidcWg.Add(1)
 			go func() {
 				defer oidcWg.Done()
