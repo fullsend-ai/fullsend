@@ -4,12 +4,12 @@ How do we represent and enforce the things that must always be true about the sy
 
 ## A third kind of intent
 
-The [intent representation](intent-representation.md) doc focuses on feature-level intent: "is this change authorized?" But there's a different category of intent that doesn't map cleanly to the tier system:
+The [intent representation](intent-representation.md) doc focuses on feature-level intent: "is this change authorized?" But there's a different category of intent that doesn't map cleanly to the intent authorization tier system:
 
-- **Feature intent** (Tiers 0-3): "Build feature X" / "Fix bug Y" — time-bounded, specific to a change
+- **Feature intent** (intent authorization tiers 0-3): "Build feature X" / "Fix bug Y" — time-bounded, specific to a change
 - **Architectural intent**: "These things must always be true" — persistent, constraining all changes
 
-Architectural invariants are not features. They're constraints on *how* features get implemented and *what* features are acceptable. A feature might be authorized at Tier 2, but if its implementation violates an architectural invariant, it should still be rejected — or the invariant needs to be explicitly revised through a governed process.
+Architectural invariants are not features. They're constraints on *how* features get implemented and *what* features are acceptable. A feature might be authorized at intent authorization tier 2, but if its implementation violates an architectural invariant, it should still be rejected — or the invariant needs to be explicitly revised through a governed process.
 
 ## Architecture documentation as invariant source
 
@@ -46,11 +46,11 @@ Beyond per-PR checks, a drift detection agent can periodically scan the codebase
 - Has naming convention drift occurred?
 - Are deprecated patterns still present? (ADRs that supersede earlier ones)
 
-When deviations are found, the drift agent can open cleanup PRs — similar to OpenAI's "garbage collection" concept, but grounded in declared architectural constraints rather than style preferences. These cleanup PRs would be Tier 0 (standing rules, pre-authorized) since they're enforcing already-agreed invariants.
+When deviations are found, the drift agent can open cleanup PRs — similar to OpenAI's "garbage collection" concept, but grounded in declared architectural constraints rather than style preferences. These cleanup PRs would be intent authorization tier 0 (standing rules, pre-authorized) since they're enforcing already-agreed invariants.
 
-### 3. Tier escalation detection
+### 3. Intent authorization tier escalation detection
 
-Architectural invariants help solve the [tier escalation problem](intent-representation.md#the-tier-escalation-problem). A change classified as Tier 1 (tactical bug fix) that violates or modifies an architectural invariant is not a bug fix — it's at minimum a Tier 2 change requiring explicit authorization. The architecture repo provides the baseline for this detection.
+Architectural invariants help solve the [intent authorization tier escalation problem](intent-representation.md#the-intent-authorization-tier-escalation-problem). A change classified as intent authorization tier 1 (tactical bug fix) that violates or modifies an architectural invariant is not a bug fix — it's at minimum an intent authorization tier 2 change requiring explicit authorization. The architecture repo provides the baseline for this detection.
 
 Examples:
 - A "bug fix" that changes a naming convention defined by an ADR → architectural change, needs authorization
@@ -116,7 +116,7 @@ This lifecycle is a [governance](governance.md) concern — who can create, modi
 
 ## Relationship to other problem areas
 
-- **Intent representation** — architectural invariants are a form of persistent, cross-cutting intent (distinct from feature-level intent in Tiers 0-3)
+- **Intent representation** — architectural invariants are a form of persistent, cross-cutting intent (distinct from feature-level intent in intent authorization tiers 0-3)
 - **Code review** — review sub-agents (correctness, intent alignment) consume invariants as review context
 - **Security threat model** — drift from security-relevant invariants (RBAC, trusted task model, build provenance) is a security concern, not just a quality concern
 - **Repo readiness** — repos with clear architectural boundaries and documented invariants are safer for agent autonomy

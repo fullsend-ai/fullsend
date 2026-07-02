@@ -47,11 +47,11 @@ Correlating user-reported problems with platform signals serves two purposes:
 
 ## Potential agent interactions with signals
 
-**Triage agent** monitors signal distributions and creates issues when failure patterns exceed thresholds — without waiting for a human to notice and report. A sustained increase in failures across users for a given operation type is equivalent to dozens of individual bug reports. The agent files a single well-scoped issue with affected versions, sample logs, and time-of-onset. This is signal-driven rather than report-driven triage: the signal is the bug report. Broad, multi-user patterns suggesting architectural root causes should be escalated to Tier 2 at creation time.
+**Triage agent** monitors signal distributions and creates issues when failure patterns exceed thresholds — without waiting for a human to notice and report. A sustained increase in failures across users for a given operation type is equivalent to dozens of individual bug reports. The agent files a single well-scoped issue with affected versions, sample logs, and time-of-onset. This is signal-driven rather than report-driven triage: the signal is the bug report. Broad, multi-user patterns suggesting architectural root causes should be escalated to intent authorization tier 2 at creation time.
 
 **Priority agent** weights open issues by breadth of impact (users affected), depth (fraction of operations failing), duration, and rate of change. Priority updates dynamically as the signal evolves — not only when a human re-triages.
 
-**Review agent** uses platform reliability history to calibrate scrutiny on PRs. A code path responsible for a high fraction of recent scheduling timeouts or failure spikes warrants deeper edge-case analysis than a low-traffic utility. This also feeds tier classification — a "bug fix" touching a historically high-blast-radius path may warrant Tier 2 treatment regardless of how the issue was filed.
+**Review agent** uses platform reliability history to calibrate scrutiny on PRs. A code path responsible for a high fraction of recent scheduling timeouts or failure spikes warrants deeper edge-case analysis than a low-traffic utility. This also feeds intent authorization tier classification — a "bug fix" touching a historically high-blast-radius path may warrant intent authorization tier 2 treatment regardless of how the issue was filed.
 
 **Code agent** uses failure logs, error distributions, and timing correlation as starting context — richer than a human-written issue. The agent can correlate log patterns to code paths and generate a root cause hypothesis before writing any code.
 

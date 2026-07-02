@@ -26,8 +26,8 @@ Accepted
 ## Context
 
 [ADR 0024](0024-harness-definitions.md) introduced the `api_servers` harness field as planned but not
-implemented. [ADR 0017](0017-credential-isolation-for-sandboxed-agents.md)/[ADR 0025](0025-provider-credential-delivery-for-sandboxed-agents.md) established the host-side REST server as Tier 3
-of the credential delivery model — for cases where providers (Tier 2) cannot
+implemented. [ADR 0017](0017-credential-isolation-for-sandboxed-agents.md)/[ADR 0025](0025-provider-credential-delivery-for-sandboxed-agents.md) established the host-side REST server as credential delivery tier 3
+of the credential delivery model — for cases where providers (credential delivery tier 2) cannot
 handle, originally scoped to credentials in request bodies and response
 transformation. Practice revealed additional cases beyond provider reach:
 long-running operations exceeding MCP timeouts, operations the sandbox
@@ -166,7 +166,7 @@ messages, bounded in-memory state.
 - Servers must bind to `0.0.0.0` on shared hosts, widening the attack surface
   until [NVIDIA/OpenShell#1633](https://github.com/NVIDIA/OpenShell/issues/1633)
   ships.
-- API servers (Tier 3) are now clearly scoped to cases providers cannot
+- API servers (credential delivery tier 3) are now clearly scoped to cases providers cannot
   handle: long-running operations, sandbox capability gaps, credentials in
   request bodies, response transformation, and multi-step atomic operations.
 - Fullsend-maintained servers follow a Go interface pattern (testable,
