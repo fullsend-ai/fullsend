@@ -189,8 +189,9 @@ func TestHandler_HealthEndpoint(t *testing.T) {
 }
 
 func TestHandler_HealthEndpoint_IncludesVersion(t *testing.T) {
-	t.Setenv("FULLSEND_VERSION", "1.2.3")
-	t.Setenv("FULLSEND_COMMIT", "abc123def456")
+	Version = "1.2.3"
+	Commit = "abc123def456"
+	t.Cleanup(func() { Version = ""; Commit = "" })
 	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -215,8 +216,8 @@ func TestHandler_HealthEndpoint_IncludesVersion(t *testing.T) {
 }
 
 func TestHandler_HealthEndpoint_OmitsEmptyVersion(t *testing.T) {
-	t.Setenv("FULLSEND_VERSION", "")
-	t.Setenv("FULLSEND_COMMIT", "")
+	Version = ""
+	Commit = ""
 	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -288,8 +289,9 @@ func TestHandler_StatusEndpoint(t *testing.T) {
 func TestHandler_StatusEndpoint_IncludesVersion(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"triage":"100","coder":"200"}`)
 	t.Setenv("ALLOWED_ORGS", "test-org")
-	t.Setenv("FULLSEND_VERSION", "0.27.0")
-	t.Setenv("FULLSEND_COMMIT", "1e7877ae")
+	Version = "0.27.0"
+	Commit = "1e7877ae"
+	t.Cleanup(func() { Version = ""; Commit = "" })
 
 	env := newTestOIDCEnv(t, &fakePEMAccessor{})
 	rec := httptest.NewRecorder()

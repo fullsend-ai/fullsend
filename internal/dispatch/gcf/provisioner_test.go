@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -351,7 +352,7 @@ func TestProvisioner_Provision_ExistingFunction(t *testing.T) {
 
 func TestProvisioner_Provision_SkipsRedeployWhenUnchanged(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	sourceZip, err := bundleFunctionSource(srcDir)
+	sourceZip, err := bundleFunctionSource(srcDir, "", "")
 	require.NoError(t, err)
 	srcHash := sha256Hex(sourceZip)
 
@@ -394,7 +395,7 @@ func TestProvisioner_Provision_SkipsRedeployWhenUnchanged(t *testing.T) {
 
 func TestProvisioner_Provision_SameHashAutoRoutesToExistingMint(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	sourceZip, err := bundleFunctionSource(srcDir)
+	sourceZip, err := bundleFunctionSource(srcDir, "", "")
 	require.NoError(t, err)
 	srcHash := sha256Hex(sourceZip)
 
@@ -532,7 +533,7 @@ func TestProvisioner_Provision_CodeChanged_UpdatesFunction(t *testing.T) {
 
 func TestProvisioner_Provision_SameCodeNewOrg_EnvVarOnlyUpdate(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	sourceZip, err := bundleFunctionSource(srcDir)
+	sourceZip, err := bundleFunctionSource(srcDir, "", "")
 	require.NoError(t, err)
 	srcHash := sha256Hex(sourceZip)
 
@@ -1211,7 +1212,7 @@ func TestBundleFunctionSource_EmptyDir(t *testing.T) {
 	os.MkdirAll(mintcoreDir, 0755)
 	os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644)
 
-	_, err := bundleFunctionSource(dir)
+	_, err := bundleFunctionSource(dir, "", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no deployable source files")
 }
@@ -1224,7 +1225,7 @@ func TestBundleFunctionSource_MissingGoMod(t *testing.T) {
 	os.MkdirAll(mintcoreDir, 0755)
 	os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644)
 
-	_, err := bundleFunctionSource(dir)
+	_, err := bundleFunctionSource(dir, "", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing go.mod")
 }
@@ -1240,7 +1241,7 @@ func TestBundleFunctionSource_SkipsTestFiles(t *testing.T) {
 	os.MkdirAll(mintcoreDir, 0755)
 	os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644)
 
-	data, err := bundleFunctionSource(dir)
+	data, err := bundleFunctionSource(dir, "", "")
 	require.NoError(t, err)
 
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
@@ -1257,7 +1258,7 @@ func TestBundleFunctionSource_SkipsTestFiles(t *testing.T) {
 }
 
 func TestBundleFunctionSource_EmptyPath_UsesEmbedded(t *testing.T) {
-	data, err := bundleFunctionSource("")
+	data, err := bundleFunctionSource("", "", "")
 	require.NoError(t, err)
 	require.NotEmpty(t, data)
 
@@ -1275,7 +1276,7 @@ func TestBundleFunctionSource_EmptyPath_UsesEmbedded(t *testing.T) {
 }
 
 func TestBundleFunctionSource_NonexistentDir_UsesEmbedded(t *testing.T) {
-	data, err := bundleFunctionSource("/nonexistent/path/to/mint")
+	data, err := bundleFunctionSource("/nonexistent/path/to/mint", "", "")
 	require.NoError(t, err)
 	require.NotEmpty(t, data)
 
@@ -1292,7 +1293,7 @@ func TestBundleFunctionSource_NonexistentDir_UsesEmbedded(t *testing.T) {
 }
 
 func TestBundleEmbeddedMintSource(t *testing.T) {
-	data, err := bundleEmbeddedMintSource()
+	data, err := bundleEmbeddedMintSource("", "")
 	require.NoError(t, err)
 	require.NotEmpty(t, data)
 
@@ -1318,7 +1319,59 @@ func TestBundleEmbeddedMintSource(t *testing.T) {
 	assert.Contains(t, names, "mintcore/foreign.go")
 	assert.Contains(t, names, "mintcore/interfaces.go")
 	assert.Contains(t, names, "mintcore/go.sum")
-	assert.Len(t, names, 15)
+	assert.Contains(t, names, "mintcore/version.go")
+	assert.Len(t, names, 16)
+}
+
+func TestBundleEmbeddedMintSource_StampsVersion(t *testing.T) {
+	data, err := bundleEmbeddedMintSource("1.2.3", "deadbeef")
+	require.NoError(t, err)
+
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	require.NoError(t, err)
+
+	for _, f := range zr.File {
+		if f.Name != "mintcore/version.go" {
+			continue
+		}
+		rc, err := f.Open()
+		require.NoError(t, err)
+		content, err := io.ReadAll(rc)
+		rc.Close()
+		require.NoError(t, err)
+
+		src := string(content)
+		assert.Contains(t, src, `Version = "1.2.3"`)
+		assert.Contains(t, src, `Commit  = "deadbeef"`)
+		return
+	}
+	t.Fatal("mintcore/version.go not found in zip")
+}
+
+func TestBundleFunctionSource_StampsVersion(t *testing.T) {
+	srcDir := fakeFunctionSourceDir(t)
+	data, err := bundleFunctionSource(srcDir, "0.99.0", "cafebabe")
+	require.NoError(t, err)
+
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	require.NoError(t, err)
+
+	for _, f := range zr.File {
+		if f.Name != "mintcore/version.go" {
+			continue
+		}
+		rc, err := f.Open()
+		require.NoError(t, err)
+		content, err := io.ReadAll(rc)
+		rc.Close()
+		require.NoError(t, err)
+
+		src := string(content)
+		assert.Contains(t, src, `Version = "0.99.0"`)
+		assert.Contains(t, src, `Commit  = "cafebabe"`)
+		return
+	}
+	t.Fatal("mintcore/version.go not found in zip")
 }
 
 func TestEmbeddedMintSource_MatchesOriginal(t *testing.T) {
