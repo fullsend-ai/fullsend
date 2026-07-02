@@ -47,6 +47,10 @@
 #   1  — validation failure or error (nothing pushed)
 set -euo pipefail
 
+SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/post-failure-report.sh
+source "${SCRIPT_DIR_POST}/lib/post-failure-report.sh"
+
 # ---------------------------------------------------------------------------
 # Helper: Bot user detection
 # ---------------------------------------------------------------------------
@@ -66,6 +70,12 @@ GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470e
 REPO_DIR="${REPO_DIR:-repo}"
 RUN_DIR="$(pwd)"
 
+: "${PUSH_TOKEN:?PUSH_TOKEN is required}"
+: "${REPO_FULL_NAME:?REPO_FULL_NAME is required}"
+: "${PR_NUMBER:?PR_NUMBER is required}"
+: "${TRIGGER_SOURCE:?TRIGGER_SOURCE is required}"
+trap 'report_post_failure_to_pr' ERR
+
 if [ "${REPO_DIR}" != "." ]; then
   if [ ! -d "${REPO_DIR}" ]; then
     echo "::error::Extracted repo not found at ${REPO_DIR}" >&2
@@ -73,16 +83,6 @@ if [ "${REPO_DIR}" != "." ]; then
   fi
   cd "${REPO_DIR}"
 fi
-
-: "${PUSH_TOKEN:?PUSH_TOKEN is required}"
-: "${REPO_FULL_NAME:?REPO_FULL_NAME is required}"
-: "${PR_NUMBER:?PR_NUMBER is required}"
-: "${TRIGGER_SOURCE:?TRIGGER_SOURCE is required}"
-
-SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/post-failure-report.sh
-source "${SCRIPT_DIR_POST}/lib/post-failure-report.sh"
-trap 'report_post_failure_to_pr' ERR
 
 TARGET_BRANCH="${TARGET_BRANCH:-main}"
 
@@ -161,7 +161,8 @@ if [ "${NO_PUSH}" = "false" ]; then
   SCAN_RANGE="${DIFF_BASE}..HEAD"
 
   if ! GITLEAKS_OUTPUT="$(gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact 2>&1)"; then
-    post_fail_to_pr secret-scan "${GITLEAKS_OUTPUT}"
+    echo "${GITLEAKS_OUTPUT}" >&2
+    post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
   fi
   echo "Secret scan passed — no leaks in agent's commit(s)"
 
@@ -245,7 +246,8 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
         echo "Re-running secret scan on amended commit..."
         GITLEAKS_OUTPUT=""
         if ! GITLEAKS_OUTPUT="$(gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact 2>&1)"; then
-          post_fail_to_pr secret-scan "${GITLEAKS_OUTPUT}"
+          echo "${GITLEAKS_OUTPUT}" >&2
+          post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
         fi
         if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
           post_fail_to_pr signed-off-by \
@@ -355,8 +357,7 @@ else
     cp "${RESULT_FILE}" "${SCAN_DIR}/fix-result.json"
     if ! gitleaks detect --source "${SCAN_DIR}" --no-git --redact 2>/dev/null; then
       rm -rf "${SCAN_DIR}"
-      post_fail_to_pr secret-scan \
-        "Secret detected in fix-result.json — refusing to post PR comment."
+      post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
     fi
     rm -rf "${SCAN_DIR}"
   fi

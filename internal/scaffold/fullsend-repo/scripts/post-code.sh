@@ -37,6 +37,10 @@
 #   1  — validation failure or error (nothing pushed)
 set -euo pipefail
 
+SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/post-failure-report.sh
+source "${SCRIPT_DIR_POST}/lib/post-failure-report.sh"
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
@@ -49,6 +53,11 @@ GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470e
 REPO_DIR="${REPO_DIR:-repo}"
 RUN_DIR="$(pwd)"
 
+: "${PUSH_TOKEN:?PUSH_TOKEN is required}"
+: "${REPO_FULL_NAME:?REPO_FULL_NAME is required}"
+: "${ISSUE_NUMBER:?ISSUE_NUMBER is required}"
+trap 'report_post_failure_to_issue' ERR
+
 if [ "${REPO_DIR}" != "." ]; then
   if [ ! -d "${REPO_DIR}" ]; then
     echo "::error::Extracted repo not found at ${REPO_DIR}" >&2
@@ -57,14 +66,6 @@ if [ "${REPO_DIR}" != "." ]; then
   cd "${REPO_DIR}"
 fi
 
-: "${PUSH_TOKEN:?PUSH_TOKEN is required}"
-: "${REPO_FULL_NAME:?REPO_FULL_NAME is required}"
-: "${ISSUE_NUMBER:?ISSUE_NUMBER is required}"
-
-SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/post-failure-report.sh
-source "${SCRIPT_DIR_POST}/lib/post-failure-report.sh"
-trap 'report_post_failure_to_issue' ERR
 # ---------------------------------------------------------------------------
 # Resolve target branch (ADR 0053)
 #
@@ -217,7 +218,8 @@ else
 fi
 
 if ! GITLEAKS_OUTPUT="$(gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact 2>&1)"; then
-  post_fail_to_issue secret-scan "${GITLEAKS_OUTPUT}"
+  echo "${GITLEAKS_OUTPUT}" >&2
+  post_fail_to_issue secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
 fi
 echo "Secret scan passed — no leaks in agent's commit(s)"
 
@@ -301,7 +303,8 @@ if [ -f .pre-commit-config.yaml ]; then
         echo "Re-running secret scan on amended commit..."
         GITLEAKS_OUTPUT=""
         if ! GITLEAKS_OUTPUT="$(gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact 2>&1)"; then
-          post_fail_to_issue secret-scan "${GITLEAKS_OUTPUT}"
+          echo "${GITLEAKS_OUTPUT}" >&2
+          post_fail_to_issue secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
         fi
         if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
           post_fail_to_issue signed-off-by \

@@ -511,8 +511,13 @@ run_failure_comment_test "failure-comment-pre-commit-category" \
   "Pre-commit blocked" "yes"
 
 run_failure_comment_test "failure-comment-secret-scan-category" \
-  "secret-scan" "leaks found: 1 commit" "my-org/my-repo" "12345" \
+  "secret-scan" "leaks found: 1 commit in src/config.go rule-id: aws-access-token" \
+  "my-org/my-repo" "12345" \
   "Secret scan blocked" "yes"
+
+run_failure_comment_test "failure-comment-secret-scan-no-findings" \
+  "secret-scan" "leaks found: 1 commit in src/config.go" "my-org/my-repo" "12345" \
+  "src/config.go" "no"
 
 run_failure_comment_test "failure-comment-has-workflow-link" \
   "push-rejected" "push failed" "my-org/my-repo" "12345" \
@@ -549,6 +554,10 @@ run_sanitize_test() {
 run_sanitize_test "sanitize-redacts-ghp-token" \
   "auth failed with ghp_abcdefghijklmnopqrstuvwxyz1234567890" \
   "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
+
+run_sanitize_test "sanitize-redacts-ghs-token" \
+  "installation token ghs_abcdefghijklmnopqrstuvwxyz1234567890" \
+  "ghs_abcdefghijklmnopqrstuvwxyz1234567890"
 
 run_sanitize_test "sanitize-redacts-access-token-url" \
   "remote: https://x-access-token:ghp_secret@github.com/org/repo.git" \

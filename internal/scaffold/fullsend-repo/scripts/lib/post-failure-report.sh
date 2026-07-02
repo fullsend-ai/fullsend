@@ -14,13 +14,25 @@ POST_FAILURE_REPORT_SH_LOADED=1
 POST_FAILURE_CATEGORY="${POST_FAILURE_CATEGORY:-}"
 POST_FAILURE_DETAIL="${POST_FAILURE_DETAIL:-}"
 POST_FAILURE_REPORTED=false
+POST_FAILURE_SECRET_SCAN_MESSAGE="Secret scan blocked the push. See workflow logs for details."
 
 # Maximum lines of sanitized detail to include in issue/PR comments.
 POST_FAILURE_DETAIL_MAX_LINES="${POST_FAILURE_DETAIL_MAX_LINES:-30}"
 
-set_post_failure() {
-  POST_FAILURE_CATEGORY="$1"
-  POST_FAILURE_DETAIL="$2"
+_redact_multiline_pem() {
+  awk '
+    /-----BEGIN [A-Z ]*PRIVATE KEY-----/ {
+      print "[REDACTED PRIVATE KEY]"
+      in_pem = 1
+      next
+    }
+    /-----END [A-Z ]*PRIVATE KEY-----/ {
+      in_pem = 0
+      next
+    }
+    in_pem { next }
+    { print }
+  '
 }
 
 # Strip tokens and truncate noisy command output before posting publicly.
@@ -30,17 +42,22 @@ sanitize_failure_detail() {
 
   detail="$(printf '%s\n' "${detail}" \
     | sed -E \
-      -e 's/ghp_[A-Za-z0-9_]+/[REDACTED]/g' \
+      -e 's/gh[pousr]_[A-Za-z0-9_]{20,}/[REDACTED]/g' \
       -e 's/github_pat_[A-Za-z0-9_]+/[REDACTED]/g' \
       -e 's/x-access-token:[^@[:space:]]+/x-access-token:[REDACTED]/g' \
       -e 's/(Bearer|token)[[:space:]]+[A-Za-z0-9._-]+/\1 [REDACTED]/gi' \
-      -e 's/-----BEGIN [A-Z ]*PRIVATE KEY-----[^-]*-----END [A-Z ]*PRIVATE KEY-----/[REDACTED PRIVATE KEY]/g')"
+    | _redact_multiline_pem)"
 
   if [ "${max_lines}" -gt 0 ]; then
     detail="$(printf '%s\n' "${detail}" | tail -n "${max_lines}")"
   fi
 
   printf '%s' "${detail}"
+}
+
+set_post_failure() {
+  POST_FAILURE_CATEGORY="$1"
+  POST_FAILURE_DETAIL="$2"
 }
 
 categorize_push_failure() {
@@ -111,7 +128,12 @@ build_post_failure_comment() {
   label="$(post_failure_category_label "${category}")"
   env_note="$(post_failure_environmental_note "${category}")"
   run_url="$(post_failure_workflow_run_url "${repo_full_name}")"
-  sanitized_detail="$(sanitize_failure_detail "${detail}")"
+
+  if [ "${category}" = "secret-scan" ]; then
+    sanitized_detail="${POST_FAILURE_SECRET_SCAN_MESSAGE}"
+  else
+    sanitized_detail="$(sanitize_failure_detail "${detail}")"
+  fi
 
   if [ -n "${sanitized_detail}" ]; then
     detail_block="$(cat <<EOF

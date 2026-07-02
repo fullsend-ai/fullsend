@@ -204,8 +204,11 @@ run_fix_failure_comment_test "fix-failure-comment-workflow-permission" \
 run_fix_failure_comment_test "fix-failure-comment-pre-commit" \
   "pre-commit-blocked" "hook failed" "Pre-commit blocked" "yes"
 
-run_fix_failure_comment_test "fix-failure-comment-secret-scan-no-leak-detail" \
-  "secret-scan" "finding: ghp_REDACTED in config.go" "ghp_" "no"
+run_fix_failure_comment_test "fix-failure-comment-secret-scan-no-findings" \
+  "secret-scan" "finding: ghp_REDACTED in config.go" "config.go" "no"
+
+run_fix_failure_comment_test "fix-failure-comment-secret-scan-generic-message" \
+  "secret-scan" "leaks found in src/secret.env" "See workflow logs for details" "yes"
 
 run_fix_failure_comment_test "fix-failure-comment-has-fs-fix-retry" \
   "push-rejected" "push failed" "/fs-fix" "yes"
