@@ -6,7 +6,7 @@ version: 1
 # Defines non-composable sandbox restrictions: filesystem access,
 # landlock, and process identity. Network access is provided
 # entirely by provider profiles via provider-backed policy
-# composition (ADR 0055).
+# composition (ADR 0065).
 
 filesystem_policy:
   include_workdir: true

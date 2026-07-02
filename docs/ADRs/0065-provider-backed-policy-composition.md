@@ -1,5 +1,5 @@
 ---
-title: "55. Provider-backed policy composition"
+title: "65. Provider-backed policy composition"
 status: Accepted
 relates_to:
   - agent-infrastructure
@@ -106,27 +106,25 @@ contributes network rules via composition.
   endpoint blocks.
 
 **Cons:**
-- Requires OpenShell >= v0.0.37 and `providers_v2_enabled`.
 - Agent designers must understand the provider model.
 - Credential-less providers require a workaround
   ([NVIDIA/OpenShell#1978](https://github.com/NVIDIA/OpenShell/issues/1978)).
 
 ## Decision
 
-**Adopt Option 3 as a best practice for fullsend scaffold agents.**
+**Adopt Option 3 as a best practice for fullsend default agents.**
 
-The scaffold ships with provider profiles for shared services and a
-single `base.yaml` policy. Scaffold harnesses declare providers instead
-of inline network rules.
+Harnesses declare providers for network rules and policies control
+filesystem, landlock, and process restrictions only.
 
-This is a best practice, not an enforcement. Custom agents with inline
-network policies continue to work — composition is additive, so
-duplicated rules between providers and inline policies are redundant
-but harmless. Agent designers who bring their own agents can choose
-whichever approach fits their needs. The scaffold serves as the
-reference implementation.
+This is a best practice, not an enforcement. Custom agents with
+network rules in their policies continue to work — composition is
+additive, so duplicated rules between providers and policies are
+redundant but harmless. Agent designers who bring their own agents can
+choose whichever approach fits their needs. The default agents serve
+as the reference implementation.
 
-Six custom profiles ship with the scaffold:
+Six custom profiles ship with the default agents:
 
 | Profile ID | Service | Access |
 |---|---|---|
