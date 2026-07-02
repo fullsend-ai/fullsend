@@ -117,7 +117,7 @@ Downstream contributors consume the project without contributing proportionally.
 
 The priority intake problem exists independent of agents. But agents make it more urgent.
 
-When agents can implement a proposed feature in hours rather than weeks, the volume of "proposed and implemented" contributions increases. The project needs a priority mechanism that operates at agent speed without becoming a rubber stamp. This connects to [intent-representation.md](intent-representation.md)'s tiered model — Tier 2+ features need explicit authorization before agents can merge them. But *who proposes and who authorizes* is the downstream contributor priority question this document addresses.
+When agents can implement a proposed feature in hours rather than weeks, the volume of "proposed and implemented" contributions increases. The project needs a priority mechanism that operates at agent speed without becoming a rubber stamp. This connects to [intent-representation.md](intent-representation.md)'s tiered intent authorization model — intent authorization tier 2+ features need explicit authorization before agents can merge them. But *who proposes and who authorizes* is the downstream contributor priority question this document addresses.
 
 The intent system's `proposed/` to `approved/` workflow assumes someone is filtering proposals. The priority intake model determines who that someone is and what criteria they use.
 

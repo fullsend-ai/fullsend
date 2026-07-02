@@ -41,7 +41,7 @@ and `description`.
 |------------------------|--------|------------|--------------------------------------------------------------------------------|
 | `correctness`          | opus   | parallel   | Logic errors, edge cases, nil handling, API contracts, test adequacy/integrity |
 | `security`             | opus   | parallel   | Auth, data exposure, privilege escalation, injection defense, content security |
-| `intent-coherence`     | sonnet | parallel   | Authorization, scope, tier matching, architectural fit, design coherence       |
+| `intent-coherence`     | sonnet | parallel   | Authorization, scope, intent authorization tier matching, architectural fit, design coherence |
 | `style-conventions`    | sonnet | parallel   | Naming, error handling idioms, API shape, code organization                    |
 | `docs-currency`        | sonnet | parallel   | Documentation staleness (follows docs-review skill inline)                     |
 | `cross-repo-contracts` | sonnet | parallel   | API contract breakage affecting other repos (conditional)                      |

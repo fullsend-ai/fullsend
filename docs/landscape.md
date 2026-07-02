@@ -134,7 +134,7 @@ The bug path is shorter:
 |---|---|---|
 | Coordination | Central checkpointed workflow | Repository as coordinator |
 | Authority | Jira labels/comments, GitHub reviews | CODEOWNERS, branch protection, required checks |
-| Intent | Jira elaborated into PRD/spec/tasks | Tiered intent with stronger strategic authorization |
+| Intent | Jira elaborated into PRD/spec/tasks | Tiered intent authorization with stronger strategic authorization |
 | Review | Local review, AI review, human gate | Independent zero-trust review sub-agents |
 | Sandbox | Productive Podman runner | Stricter credential isolation and egress policy |
 | Portability | GitHub/Jira-centric | Forge-neutral `forge.Client` abstraction |
@@ -159,14 +159,14 @@ Fullsend has design commitments that Forge does not appear to cover:
 
 **Ideas to borrow:**
 
-- *Staged intent artifacts.* Forge's PRD -> spec -> epics -> tasks sequence is a useful model for Tier 2+ work. Fullsend should borrow the artifact progression, not the Jira-label authority.
+- *Staged intent artifacts.* Forge's PRD -> spec -> epics -> tasks sequence is a useful model for intent authorization tier 2+ work. Fullsend should borrow the artifact progression, not the Jira-label authority.
 - *Q&A without approval.* Humans can ask questions at a gate without approving or rejecting. This fits fullsend's ambiguous-intent and dual-interpretation escalation problems.
 - *Checkpointed pause/resume.* Forge waits for humans through durable workflow state, not idle implementation containers. Fullsend should keep this operational pattern while keeping authoritative state repo-visible.
 - *Skill override resolution.* `skills/default` plus `skills/{project}` is a simple precedent for fullsend's harness layering.
 - *Review feedback as a task type.* Forge's `implement_review` flow classifies review comments as actionable or contested before acting. That is relevant to fullsend's review loop and salvage/rewrite questions.
 - *Audited CI gate skips.* `/forge skip-gate` is dangerous unless governed, but the UX is useful: constrained command, named check, PR confirmation, audit comment, and re-evaluation.
 
-**Cautions:** Jira label approval is too weak for high-tier intent. A workflow engine can dispatch work, but should not become merge authority. Forge's Podman runner is a productivity sandbox, not a full zero-trust boundary. A single AI review stage is not enough for autonomous merge confidence. CI skip mechanisms need permission checks, policy, and auditability from day one.
+**Cautions:** Jira label approval is too weak for high-intent-authorization-tier intent. A workflow engine can dispatch work, but should not become merge authority. Forge's Podman runner is a productivity sandbox, not a full zero-trust boundary. A single AI review stage is not enough for autonomous merge confidence. CI skip mechanisms need permission checks, policy, and auditability from day one.
 
 ### Stripe Minions
 
@@ -348,7 +348,7 @@ None of these tools address:
 - **Formal intent verification** — checking whether a change is authorized against a structured intent system. CodeRabbit's "intent" context is about understanding the PR's purpose, not verifying it against an authorization system.
 - **Zero-trust inter-agent review** — agents treating each other's output as untrusted. Existing multi-agent systems implicitly trust the orchestrator and each other.
 - **Autonomous merge with security-focused confidence** — the judgment problem of "should this change exist?" as distinct from "is this change correct?"
-- **Tier-based autonomy** — different levels of agent authority for different types of changes.
+- **Intent-authorization-tier-based autonomy** — different levels of agent authority for different types of changes.
 - **Agent governance** — who controls the agents' policies and permissions.
 - **Contribution volume management** — how maintainers handle the flood of AI-generated external contributions. See [contribution-volume.md](problems/contribution-volume.md).
 

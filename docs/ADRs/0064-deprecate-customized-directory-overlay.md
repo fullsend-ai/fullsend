@@ -24,7 +24,7 @@ resolution).
 ## Context
 
 [ADR 0035](0035-layered-content-resolution.md) introduced a three-tier
-layering model for agent customization: upstream defaults are copied into the
+configuration layering model for agent customization: upstream defaults are copied into the
 workspace at runtime, then files from `customized/` (per-org) or
 `.fullsend/customized/` (per-repo) are overlaid on top, replacing upstream
 files with matching names. The overlay is file-level replacement with no
