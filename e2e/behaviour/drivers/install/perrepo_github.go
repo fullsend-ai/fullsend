@@ -4,7 +4,9 @@ package install
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -111,11 +113,43 @@ func (d *perRepoDriver) enrollRepoInMint(repoFullName string) error {
 	}
 
 	args := perRepoMintEnrollArgs(repoFullName, project)
+	d.logf("[install] mint enroll project=%s gcp_principal=%s", project, gcpCredentialPrincipal())
 	d.logf("[install] running fullsend %s", strings.Join(args, " "))
 	if _, err := admin.TryRunCLI(d.binary, d.token, args...); err != nil {
 		return fmt.Errorf("mint enroll %s: %w", repoFullName, err)
 	}
 	return nil
+}
+
+// gcpCredentialPrincipal returns a short label for the active GCP credential
+// (service account email or external account) to aid CI debugging.
+func gcpCredentialPrincipal() string {
+	path := strings.TrimSpace(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+	if path == "" {
+		return "unknown"
+	}
+	data, err := os.ReadFile(filepath.Clean(path))
+	if err != nil {
+		return "unreadable"
+	}
+	var creds struct {
+		ClientEmail string `json:"client_email"`
+		Type        string `json:"type"`
+		ServiceURL  string `json:"service_account_impersonation_url"`
+	}
+	if err := json.Unmarshal(data, &creds); err != nil {
+		return "unparsed"
+	}
+	if creds.ClientEmail != "" {
+		return creds.ClientEmail
+	}
+	if creds.Type != "" {
+		return creds.Type
+	}
+	if creds.ServiceURL != "" {
+		return creds.ServiceURL
+	}
+	return "unknown"
 }
 
 func (d *perRepoDriver) Teardown(ctx context.Context, org string, state State) error {
