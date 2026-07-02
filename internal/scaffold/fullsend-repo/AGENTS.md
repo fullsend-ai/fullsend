@@ -57,3 +57,18 @@ Determine:
 
 Use these criteria as checkpoints. If a checkpoint fails, fix the root
 cause — do not weaken the check.
+
+## 6. Runner-side shell operations
+
+Post-scripts and GitHub Actions runner steps do not inherit every
+precondition from the sandbox. When adding or reviewing shell operations
+that run outside the sandbox, verify that required identity, auth,
+environment variables, permissions, and writable paths are configured in
+that same execution context.
+
+For git write operations in post-scripts or runner-side workflow steps
+(`git commit`, `git push`, `git tag`, `git merge`, etc.), configure and
+verify git identity (`user.name` and `user.email`) before the first write.
+Sandbox-only `GIT_AUTHOR_*` / `GIT_COMMITTER_*` settings are not enough
+for runner-side git commands. Read-only git operations such as `git diff`,
+`git status`, and `git log` do not need identity configuration.

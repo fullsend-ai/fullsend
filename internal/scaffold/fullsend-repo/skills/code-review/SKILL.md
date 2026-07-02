@@ -88,6 +88,16 @@ dimension carry over to another — each requires its own scrutiny.
   (e.g., what happens if a critical sub-component fails — does the
   caller degrade gracefully or silently proceed?). Trace the full path
   from where the mechanism is set to where it is read.
+- Execution-context prerequisites: when a change adds or moves an
+  operation across contexts (sandbox vs. runner, workflow step vs.
+  post-script, local checkout vs. remote API), verify that the
+  prerequisites available in the source context also exist in the target
+  context. For post-scripts or runner-side workflow steps that add git
+  write operations (`git commit`, `git push`, `git tag`, `git merge`,
+  etc.), confirm runner-side git identity (`user.name` and `user.email`)
+  and credentials are configured before the write; sandbox-only
+  `GIT_AUTHOR_*` / `GIT_COMMITTER_*` settings do not satisfy runner
+  operations.
 - Test adequacy: are the right behaviors tested?
 - Do the tests actually constrain the code's behavior, or do they
   merely assert it runs?

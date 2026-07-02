@@ -29,6 +29,15 @@ or inter-component contract in the diff:
 - Verify format expectations match between components (e.g., does a
   consumer expect structured JSON while the producer has no output format
   instructions?).
+- Verify execution-context prerequisites. If the diff moves or adds an
+  operation in a different context (sandbox vs. runner, workflow step vs.
+  post-script, local checkout vs. remote API), confirm the required
+  identity, auth, environment variables, filesystem access, and
+  permissions are configured in that same context before the operation
+  runs. In post-scripts or runner-side workflows, new git write
+  operations such as `git commit`, `git push`, `git tag`, or
+  `git merge` must have runner-side git identity and credentials
+  configured; sandbox-only identity is not sufficient.
 - Check failure paths: if the mechanism's component fails or is
   unavailable, does the caller handle it or silently proceed as if it
   succeeded?
