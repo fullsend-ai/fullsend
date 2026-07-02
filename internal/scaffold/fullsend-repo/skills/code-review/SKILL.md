@@ -88,6 +88,16 @@ dimension carry over to another — each requires its own scrutiny.
   (e.g., what happens if a critical sub-component fails — does the
   caller degrade gracefully or silently proceed?). Trace the full path
   from where the mechanism is set to where it is read.
+- Execution-context prerequisites: when a diff adds write-side shell
+  operations to runner-side scripts or workflows (for example
+  `post-code.sh`, `post-fix.sh`, reusable workflows, or workflow steps),
+  verify that prerequisites are configured in that same execution
+  context. For git write operations such as `git commit`, `git push`,
+  or `git tag`, check that git identity (`user.name`, `user.email`) and
+  any required auth/token state are established before the write. Do
+  not treat sandbox-only environment variables or setup as satisfying
+  runner-side prerequisites. Read-only git commands such as `git diff`,
+  `git log`, or `git status` do not trigger this rule.
 - Test adequacy: are the right behaviors tested?
 - Do the tests actually constrain the code's behavior, or do they
   merely assert it runs?

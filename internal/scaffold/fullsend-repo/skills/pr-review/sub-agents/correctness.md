@@ -32,6 +32,15 @@ or inter-component contract in the diff:
 - Check failure paths: if the mechanism's component fails or is
   unavailable, does the caller handle it or silently proceed as if it
   succeeded?
+- Verify execution-context prerequisites for newly added write
+  operations in runner-side scripts or workflows. If a diff adds
+  commands such as `git commit`, `git push`, or `git tag` to
+  `post-code.sh`, `post-fix.sh`, reusable workflows, or GitHub Actions
+  steps, confirm that git identity (`user.name`, `user.email`) and any
+  required auth/token state are configured before the write in that same
+  runner context. Do not assume sandbox-provided environment variables
+  or setup apply to runner-side code. Read-only git commands such as
+  `git diff`, `git log`, or `git status` do not trigger this rule.
 
 **Consumer completeness:** If the diff adds new values to an enum,
 dispatch table, JSON schema enum, or case/switch structure, identify all
