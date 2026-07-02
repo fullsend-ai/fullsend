@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://fullsend.ai/normative/normalized-event/v1/normalized-event.schema.json",
   "title": "NormalizedEvent",
-  "description": "Forge-neutral routing input for fullsend dispatch and harness CEL trigger evaluation (ADR 0061). v1 targets GitHub Actions webhooks and Jira poll input (ADR 0062); other forges remain future work.",
+  "description": "Forge-neutral routing input for fullsend dispatch and harness CEL trigger evaluation (ADR 0061). v1 targets GitHub Actions webhooks and Jira poll input (ADR 0063); other forges remain future work.",
   "type": "object",
   "additionalProperties": false,
   "required": ["repo", "entity", "transition", "actor", "state", "source"],

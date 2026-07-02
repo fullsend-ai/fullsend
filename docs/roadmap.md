@@ -132,7 +132,7 @@ With feature refinement establishing the pattern, extend agent capabilities deep
 
 Examples of work that could move this forward:
 
-- JIRA trigger model ([#2263](https://github.com/fullsend-ai/fullsend/issues/2263)) — polling in [ADR 0062](ADRs/0062-polling-based-work-discovery.md); harness CEL triggers in [ADR 0061](ADRs/0061-harness-cel-dispatch.md)
+- JIRA trigger model ([#2263](https://github.com/fullsend-ai/fullsend/issues/2263)) — polling in [ADR 0063](ADRs/0063-polling-based-work-discovery.md); harness CEL triggers in [ADR 0061](ADRs/0061-harness-cel-dispatch.md)
 - Per-agent JIRA support: triage ([#2264](https://github.com/fullsend-ai/fullsend/issues/2264)), code ([#2265](https://github.com/fullsend-ai/fullsend/issues/2265)), prioritize ([#2266](https://github.com/fullsend-ai/fullsend/issues/2266)), retro ([#2267](https://github.com/fullsend-ai/fullsend/issues/2267)), review ([#2268](https://github.com/fullsend-ai/fullsend/issues/2268)), refine ([#1341](https://github.com/fullsend-ai/fullsend/issues/1341))
 - JIRA identity and credential management ([#2269](https://github.com/fullsend-ai/fullsend/issues/2269))
 

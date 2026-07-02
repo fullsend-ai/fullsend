@@ -1,5 +1,5 @@
 ---
-title: "62. Polling-based work discovery via dispatch drivers"
+title: "63. Polling-based work discovery via dispatch drivers"
 status: Accepted
 relates_to:
   - agent-architecture
@@ -14,7 +14,7 @@ topics:
   - per-repo
 ---
 
-# 62. Polling-based work discovery via dispatch drivers
+# 63. Polling-based work discovery via dispatch drivers
 
 Date: 2026-06-18
 

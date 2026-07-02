@@ -1,7 +1,7 @@
 # Jira poll adapter (NormalizedEvent extension)
 
 Poll input driver mapping for Jira work items, defined in
-[ADR 0062](../../../ADRs/0062-polling-based-work-discovery.md). This document
+[ADR 0063](../../../ADRs/0063-polling-based-work-discovery.md). This document
 extends [NormalizedEvent v1](README.md) for `jira-poll` input drivers until the
 changes are merged into `normalized-event.schema.json`.
 
