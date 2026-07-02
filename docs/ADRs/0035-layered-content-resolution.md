@@ -1,6 +1,6 @@
 ---
 title: "35. Layered content resolution"
-status: Accepted
+status: Superseded
 relates_to:
   - agent-infrastructure
   - agent-architecture
@@ -17,7 +17,7 @@ Date: 2026-05-09
 
 ## Status
 
-Accepted
+Superseded by [ADR 0064](0064-deprecate-customized-directory-overlay.md).
 
 ## Context
 
