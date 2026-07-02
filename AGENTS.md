@@ -155,4 +155,18 @@ The term "tier" is used in multiple distinct contexts across this codebase. Alwa
 | **intent authorization tier** | The four-tier model for change authorization: (0) standing rules, (1) tactical/issue, (2) strategic, (3) organizational | [intent-representation.md](docs/problems/intent-representation.md) |
 | **configuration tier** | The three-tier inheritance model for agent configuration: upstream defaults → org config → per-repo overrides | [ADR 0035](docs/ADRs/0035-layered-content-resolution.md) |
 
-**Do not** use bare "Tier N" or "tier" without a prefix — the same number means different things in different contexts (e.g., "Tier 2" could be provider-based credential delivery or strategic intent authorization). External tier references (e.g., "GitLab Free tier", "GitHub plan tiers") are exempt from this convention.
+When applying this convention, classify each "tier" reference before
+rewriting it. Only the three systems above require these prefixes. Leave
+unrelated or external terms unchanged (for example, "compatibility tier",
+"GitLab Free tier", and "GitHub plan tiers").
+
+Use the descriptive prefix at first mention in a section or paragraph,
+and whenever the surrounding context could confuse two tier systems (for
+example, "credential delivery tier 2" vs. "intent authorization tier 2").
+After the context is established, bare "Tier N" is acceptable for
+subsequent references within the same scoped paragraph or section. Avoid
+mechanically repeating the full prefix on every occurrence.
+
+Do not create long compound adjectives while applying the convention.
+Keep compound adjectives to at most three hyphenated words; if a phrase
+would exceed that, rephrase it as prose instead.
