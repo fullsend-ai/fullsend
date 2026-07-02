@@ -16,7 +16,8 @@ import (
 )
 
 const (
-	perRepoTestRepo = "test-repo"
+	perRepoTestRepo   = "test-repo"
+	defaultMintRegion = "us-central1"
 	// Vendored per-repo: issue_comment triggers the fullsend.yaml shim, which
 	// workflow_calls reusable-dispatch → reusable-triage synchronously.
 	perRepoTriageWorkflow = "fullsend.yaml"
@@ -81,11 +82,40 @@ func (d *perRepoDriver) Install(ctx context.Context, org string) (State, error) 
 		return nil, fmt.Errorf("github setup %s: %w", target, err)
 	}
 
+	if err := d.enrollRepoInMint(target); err != nil {
+		return nil, err
+	}
+
 	st := &perRepoState{org: org, repo: repo}
 	if err := validatePerRepoPostInstall(ctx, d.client, org, repo); err != nil {
 		return nil, err
 	}
 	return st, nil
+}
+
+// perRepoMintEnrollArgs returns CLI args for enrolling a vendored per-repo install
+// in mint (PER_REPO_WIF_REPOS + repo-scoped WIF provider).
+func perRepoMintEnrollArgs(repoFullName, gcpProject string) []string {
+	return []string{
+		"mint", "enroll", repoFullName,
+		"--project", gcpProject,
+		"--region", defaultMintRegion,
+	}
+}
+
+func (d *perRepoDriver) enrollRepoInMint(repoFullName string) error {
+	project := strings.TrimSpace(d.e2eCfg.GCPProjectID)
+	if project == "" {
+		d.logf("[install] skipping mint enroll for %s (E2E_GCP_PROJECT_ID not set; repo must already be in PER_REPO_WIF_REPOS)", repoFullName)
+		return nil
+	}
+
+	args := perRepoMintEnrollArgs(repoFullName, project)
+	d.logf("[install] running fullsend %s", strings.Join(args, " "))
+	if _, err := admin.TryRunCLI(d.binary, d.token, args...); err != nil {
+		return fmt.Errorf("mint enroll %s: %w", repoFullName, err)
+	}
+	return nil
 }
 
 func (d *perRepoDriver) Teardown(ctx context.Context, org string, state State) error {
