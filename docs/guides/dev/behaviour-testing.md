@@ -68,7 +68,7 @@ Use tags only for **exceptions** when a backend cannot run a scenario yet: `@ski
 make behaviour-test
 ```
 
-In CI, the test runner mints cross-org `e2e` installation tokens via OIDC (same as admin e2e) for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. Pool `test-repo` repos are enrolled once by a GCP admin — not during CI install. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+In CI, the test runner mints cross-org `e2e` installation tokens via OIDC (same as admin e2e) for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. Pool `test-repo` repos are enrolled once by a GCP admin — not during CI install. The install driver provisions repo-scoped inference WIF via `fullsend inference provision` before `github setup`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
 Runner env (defaults shown):
 
@@ -76,8 +76,8 @@ Runner env (defaults shown):
 BEHAVIOUR_SCM=github
 BEHAVIOUR_CI=githubactions
 BEHAVIOUR_INSTALL_MODE=per-repo
-E2E_GCP_PROJECT_ID=...        # inference project for per-repo WIF secrets
-E2E_GCP_WIF_PROVIDER=...      # required in CI for per-repo WIF secret
+E2E_GCP_PROJECT_ID=...        # inference project; install runs inference provision per pool repo
+E2E_GCP_WIF_PROVIDER=...      # CI job GCP auth (not written to pool test-repo secrets)
 ```
 
 Triage scenarios apply the `ready-for-triage` label (not `/fs-triage` comments) because the per-repo shim ignores `issue_comment` events from bot users and CI uses minted e2e installation tokens.

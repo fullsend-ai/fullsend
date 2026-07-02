@@ -65,7 +65,14 @@ Mint URL uses the hosted public endpoint by default (same as `fullsend admin --m
 
 Behaviour tests install fullsend in **per-repo** mode (`fullsend github setup`). Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; that requires per-repo mint enrollment (`PER_REPO_WIF_REPOS`). The install driver does **not** run `mint enroll` — pool org `test-repo` repos must be enrolled once by a GCP admin on the hosted mint project.
 
-Inference (`E2E_GCP_PROJECT_ID`) and mint (`it-gcp-konflux-dev-fullsend` for the hosted mint) may be different GCP projects. CI only needs inference WIF secrets for `github setup`; mint-admin IAM on the CI service account is not required for behaviour tests.
+Inference (`E2E_GCP_PROJECT_ID`) and mint (`it-gcp-konflux-dev-fullsend` for the hosted mint) may be different GCP projects. The behaviour install driver runs `fullsend inference provision <org>/test-repo` using CI credentials on the inference project (same access model as admin e2e), then passes the repo-scoped WIF provider to `github setup`. `E2E_GCP_WIF_PROVIDER` authenticates the CI job itself; it is not written to pool org repos.
+
+The CI service account needs inference-provision IAM on `E2E_GCP_PROJECT_ID`:
+
+| IAM role | Purpose |
+|----------|---------|
+| `roles/iam.workloadIdentityPoolAdmin` | Create/update repo-scoped inference WIF providers |
+| `roles/resourcemanager.projectIamAdmin` | Grant `roles/aiplatform.user` to repo WIF principals |
 
 One-time enrollment for all pool orgs (idempotent):
 

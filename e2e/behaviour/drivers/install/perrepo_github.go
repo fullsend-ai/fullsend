@@ -4,6 +4,7 @@ package install
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -70,10 +71,11 @@ func (d *perRepoDriver) Install(ctx context.Context, org string) (State, error) 
 		"--runtime", "dummy",
 	}
 	if project := strings.TrimSpace(d.e2eCfg.GCPProjectID); project != "" {
-		args = append(args, "--inference-project", project)
-	}
-	if wif := strings.TrimSpace(d.e2eCfg.WIFProvider); wif != "" {
-		args = append(args, "--inference-wif-provider", wif)
+		wifProvider, err := d.provisionPerRepoInference(target, project)
+		if err != nil {
+			return nil, err
+		}
+		args = append(args, "--inference-project", project, "--inference-wif-provider", wifProvider)
 	}
 
 	d.logf("[install] running fullsend %s", strings.Join(args, " "))
@@ -86,6 +88,51 @@ func (d *perRepoDriver) Install(ctx context.Context, org string) (State, error) 
 		return nil, err
 	}
 	return st, nil
+}
+
+// provisionPerRepoInference creates repo-scoped inference WIF for target and
+// returns the provider resource name for github setup. Idempotent.
+func (d *perRepoDriver) provisionPerRepoInference(target, project string) (string, error) {
+	provisionArgs := []string{"inference", "provision", target, "--project", project}
+	d.logf("[install] running fullsend %s", strings.Join(provisionArgs, " "))
+	if _, err := admin.TryRunCLI(d.binary, d.token, provisionArgs...); err != nil {
+		return "", fmt.Errorf("inference provision %s: %w", target, err)
+	}
+
+	statusArgs := []string{"inference", "status", target, "--project", project, "--format", "json"}
+	d.logf("[install] running fullsend %s", strings.Join(statusArgs, " "))
+	out, err := admin.TryRunCLI(d.binary, d.token, statusArgs...)
+	if err != nil {
+		return "", fmt.Errorf("inference status %s: %w", target, err)
+	}
+
+	wifProvider, err := parseInferenceStatusWIFProvider(out)
+	if err != nil {
+		return "", fmt.Errorf("inference status %s: %w", target, err)
+	}
+	d.logf("[install] repo-scoped inference WIF provider: %s", wifProvider)
+	return wifProvider, nil
+}
+
+func parseInferenceStatusWIFProvider(output string) (string, error) {
+	start := strings.Index(output, "{")
+	if start < 0 {
+		return "", fmt.Errorf("no JSON in output")
+	}
+	var status struct {
+		Status      string `json:"status"`
+		WIFProvider string `json:"FULLSEND_GCP_WIF_PROVIDER"`
+	}
+	if err := json.Unmarshal([]byte(output[start:]), &status); err != nil {
+		return "", fmt.Errorf("parse JSON: %w", err)
+	}
+	if status.WIFProvider == "" {
+		return "", fmt.Errorf("missing FULLSEND_GCP_WIF_PROVIDER (status=%q)", status.Status)
+	}
+	if status.Status != "healthy" {
+		return "", fmt.Errorf("expected healthy status, got %q", status.Status)
+	}
+	return status.WIFProvider, nil
 }
 
 func (d *perRepoDriver) Teardown(ctx context.Context, org string, state State) error {

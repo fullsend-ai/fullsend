@@ -40,6 +40,29 @@ func TestValidatePerRepoPostInstall_MissingShim(t *testing.T) {
 	assert.Contains(t, err.Error(), "fullsend.yaml")
 }
 
+func TestParseInferenceStatusWIFProvider_OK(t *testing.T) {
+	out := `{
+  "status": "healthy",
+  "FULLSEND_GCP_PROJECT_ID": "my-project",
+  "FULLSEND_GCP_WIF_PROVIDER": "projects/123/locations/global/workloadIdentityPools/fullsend-inference/providers/gh-halfsend-01-test-repo"
+}`
+	got, err := parseInferenceStatusWIFProvider(out)
+	require.NoError(t, err)
+	assert.Equal(t, "projects/123/locations/global/workloadIdentityPools/fullsend-inference/providers/gh-halfsend-01-test-repo", got)
+}
+
+func TestParseInferenceStatusWIFProvider_NoJSON(t *testing.T) {
+	_, err := parseInferenceStatusWIFProvider("no json here")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no JSON")
+}
+
+func TestParseInferenceStatusWIFProvider_Unhealthy(t *testing.T) {
+	_, err := parseInferenceStatusWIFProvider(`{"status":"unhealthy","FULLSEND_GCP_WIF_PROVIDER":"projects/1/locations/global/workloadIdentityPools/p/providers/x"}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "healthy")
+}
+
 func TestValidatePerRepoPostInstall_WrongRuntime(t *testing.T) {
 	client := forge.NewFakeClient()
 	org, repo := "acme", "test-repo"
