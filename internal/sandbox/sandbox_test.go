@@ -130,9 +130,112 @@ func TestImportProfiles_DirNotExist(t *testing.T) {
 func TestImportProfiles_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", "")
 	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "test.yaml"), []byte("id: test"), 0o644))
 	err := ImportProfiles(dir)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "provider profile import")
+}
+
+func TestImportProfiles_SkipsWhenCacheMatches(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "p1.yaml"), []byte("id: p1"), 0o644))
+
+	hash, err := hashProfileDir(dir)
+	require.NoError(t, err)
+
+	cachePath := profileCachePath(dir)
+	require.NoError(t, os.WriteFile(cachePath, []byte(hash), 0o600))
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	// openshell is not in PATH — if ImportProfiles tries to run it, it will fail.
+	// A successful return means the cache short-circuited the import.
+	t.Setenv("PATH", "")
+	err = ImportProfiles(dir)
+	assert.NoError(t, err, "should skip import when cache hash matches")
+}
+
+func TestImportProfiles_ReimportsWhenCacheDiffers(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "p1.yaml"), []byte("id: p1"), 0o644))
+
+	cachePath := profileCachePath(dir)
+	require.NoError(t, os.WriteFile(cachePath, []byte("stale-hash"), 0o600))
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	// With openshell missing, reimport will fail — proving the cache miss path runs.
+	t.Setenv("PATH", "")
+	err := ImportProfiles(dir)
+	assert.Error(t, err, "should attempt reimport when cache hash differs")
+}
+
+func TestImportProfiles_EmptyDirSkips(t *testing.T) {
+	dir := t.TempDir()
+	// Empty dir has a deterministic hash. Once cached, import is skipped.
+	// First call will attempt import (no cache); with openshell missing it
+	// would fail, but there are no YAML files so openshell profile import
+	// is never invoked for an empty dir. The function still calls openshell
+	// profile import, so this tests the cache path after a successful first run.
+	t.Setenv("PATH", "")
+
+	// Pre-seed the cache with the correct hash for an empty dir.
+	hash, err := hashProfileDir(dir)
+	require.NoError(t, err)
+	cachePath := profileCachePath(dir)
+	require.NoError(t, os.WriteFile(cachePath, []byte(hash), 0o600))
+	t.Cleanup(func() { os.Remove(cachePath) })
+
+	err = ImportProfiles(dir)
+	assert.NoError(t, err)
+}
+
+func TestHashProfileDir_Deterministic(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.yaml"), []byte("id: a\nname: alpha"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.yml"), []byte("id: b\nname: beta"), 0o644))
+
+	h1, err := hashProfileDir(dir)
+	require.NoError(t, err)
+	h2, err := hashProfileDir(dir)
+	require.NoError(t, err)
+	assert.Equal(t, h1, h2, "hash must be deterministic for same content")
+}
+
+func TestHashProfileDir_ChangesOnContentChange(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.yaml"), []byte("id: a"), 0o644))
+
+	h1, err := hashProfileDir(dir)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.yaml"), []byte("id: a-modified"), 0o644))
+
+	h2, err := hashProfileDir(dir)
+	require.NoError(t, err)
+	assert.NotEqual(t, h1, h2, "hash must change when file content changes")
+}
+
+func TestHashProfileDir_IgnoresNonYAML(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.yaml"), []byte("id: a"), 0o644))
+
+	h1, err := hashProfileDir(dir)
+	require.NoError(t, err)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "readme.txt"), []byte("ignore me"), 0o644))
+
+	h2, err := hashProfileDir(dir)
+	require.NoError(t, err)
+	assert.Equal(t, h1, h2, "non-YAML files should not affect the hash")
+}
+
+func TestProfileCachePath_DeterministicAndUnique(t *testing.T) {
+	p1 := profileCachePath("/some/profiles")
+	p2 := profileCachePath("/some/profiles")
+	p3 := profileCachePath("/other/profiles")
+
+	assert.Equal(t, p1, p2, "same dir must produce same cache path")
+	assert.NotEqual(t, p1, p3, "different dirs must produce different cache paths")
+	assert.True(t, strings.HasPrefix(p1, os.TempDir()), "cache path must be in temp dir")
 }
 
 func TestEnableProvidersV2_OpenshellNotInPath(t *testing.T) {

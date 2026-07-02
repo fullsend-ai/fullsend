@@ -2,6 +2,8 @@ package sandbox
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -246,13 +248,15 @@ func CheckGateway() error {
 // exist, this is a no-op. This allows callers to import profiles from optional
 // directories without checking existence first.
 //
-// The import is made idempotent by deleting any pre-existing profiles before
-// re-importing. This handles repeated local runs where the gateway persists
-// across invocations. In CI the gateway starts fresh, so the deletes are no-ops.
+// Idempotency is hash-based: the function computes a SHA-256 digest of the
+// profile directory contents and compares it against a cached value in a temp
+// file. When the hash matches (profiles unchanged), the import is skipped
+// entirely. This makes parallel fullsend run invocations safe — only the
+// first process imports, and subsequent processes see the cache hit.
 //
-// The best-effort delete derives the profile ID from the filename (e.g.
-// "fullsend-vertex-ai.yaml" → "fullsend-vertex-ai"). Profile YAML files
-// must use a filename that matches their internal id field.
+// When profiles have changed (hash mismatch or no cache), existing profiles
+// are deleted and reimported. If the reimport fails because a parallel process
+// already imported them, the error is treated as success.
 func ImportProfiles(dir string) error {
 	if _, err := os.Stat(dir); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -260,6 +264,19 @@ func ImportProfiles(dir string) error {
 		}
 		return fmt.Errorf("checking profiles directory %s: %w", dir, err)
 	}
+
+	currentHash, err := hashProfileDir(dir)
+	if err != nil {
+		return fmt.Errorf("hashing profiles directory %s: %w", dir, err)
+	}
+
+	cachePath := profileCachePath(dir)
+	if cached, readErr := os.ReadFile(cachePath); readErr == nil {
+		if strings.TrimSpace(string(cached)) == currentHash {
+			return nil
+		}
+	}
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return fmt.Errorf("reading profiles directory %s: %w", dir, err)
@@ -278,9 +295,51 @@ func ImportProfiles(dir string) error {
 	defer cancel()
 	out, err := exec.CommandContext(ctx, "openshell", "provider", "profile", "import", "--from", dir).CombinedOutput()
 	if err != nil {
+		outStr := strings.ToLower(string(out))
+		if strings.Contains(outStr, "already exists") {
+			// A parallel process imported the profiles — safe to continue.
+			os.WriteFile(cachePath, []byte(currentHash), 0o600) //nolint:errcheck
+			return nil
+		}
 		return fmt.Errorf("provider profile import from %s failed: %w (output: %s)", dir, err, strings.TrimSpace(string(out)))
 	}
+	os.WriteFile(cachePath, []byte(currentHash), 0o600) //nolint:errcheck
 	return nil
+}
+
+// hashProfileDir computes a deterministic SHA-256 digest of all YAML files in
+// a directory. The digest covers both filenames and file contents so that any
+// change to any profile is detected.
+func hashProfileDir(dir string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	for _, e := range entries {
+		if e.IsDir() || (!strings.HasSuffix(e.Name(), ".yaml") && !strings.HasSuffix(e.Name(), ".yml")) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return "", err
+		}
+		fileHash := sha256.Sum256(data)
+		fmt.Fprintf(h, "%s:%x\n", e.Name(), fileHash)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// profileCachePath returns a temp file path for caching the profile directory
+// hash. The path is keyed to the absolute directory path so that different
+// fullsend-dir values get separate caches.
+func profileCachePath(dir string) string {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		absDir = dir
+	}
+	dirHash := sha256.Sum256([]byte(absDir))
+	return filepath.Join(os.TempDir(), "fullsend-profiles-"+hex.EncodeToString(dirHash[:8])+".sha256")
 }
 
 // EnableProvidersV2 enables the providers_v2_enabled setting globally in the
