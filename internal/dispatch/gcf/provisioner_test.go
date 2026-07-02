@@ -56,6 +56,9 @@ func fakeFunctionSourceDir(t *testing.T) string {
 	os.MkdirAll(mintcoreDir, 0755)
 	os.WriteFile(filepath.Join(mintcoreDir, "go.mod"), []byte("module mintcore\n\ngo 1.23\n"), 0644)
 	os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644)
+	// Add a version.go that should be skipped by bundleFunctionSource
+	// (it generates its own version.go with stamped values).
+	os.WriteFile(filepath.Join(mintcoreDir, "version.go"), []byte("package mintcore\n\nvar Version = \"disk\"\n"), 0644)
 	return dir
 }
 
@@ -1372,6 +1375,59 @@ func TestBundleFunctionSource_StampsVersion(t *testing.T) {
 		return
 	}
 	t.Fatal("mintcore/version.go not found in zip")
+}
+
+func TestBundleFunctionSource_SkipsOnDiskVersionGo(t *testing.T) {
+	// fakeFunctionSourceDir creates a mintcore/version.go on disk with
+	// Version = "disk". bundleFunctionSource should skip it and generate
+	// its own version.go with the provided version and commit values.
+	srcDir := fakeFunctionSourceDir(t)
+	data, err := bundleFunctionSource(srcDir, "2.0.0", "aabbcc")
+	require.NoError(t, err)
+
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	require.NoError(t, err)
+
+	for _, f := range zr.File {
+		if f.Name != "mintcore/version.go" {
+			continue
+		}
+		rc, err := f.Open()
+		require.NoError(t, err)
+		content, err := io.ReadAll(rc)
+		rc.Close()
+		require.NoError(t, err)
+
+		src := string(content)
+		assert.Contains(t, src, `Version = "2.0.0"`)
+		assert.Contains(t, src, `Commit  = "aabbcc"`)
+		assert.NotContains(t, src, `"disk"`, "on-disk version.go should have been skipped")
+		return
+	}
+	t.Fatal("mintcore/version.go not found in zip")
+}
+
+func TestWriteVersionGoToZip(t *testing.T) {
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	err := writeVersionGoToZip(w, "mintcore/version.go", "3.0.0", "ff0011")
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+
+	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	require.NoError(t, err)
+	require.Len(t, zr.File, 1)
+
+	rc, err := zr.File[0].Open()
+	require.NoError(t, err)
+	content, err := io.ReadAll(rc)
+	rc.Close()
+	require.NoError(t, err)
+
+	src := string(content)
+	assert.Contains(t, src, "package mintcore")
+	assert.Contains(t, src, `Version = "3.0.0"`)
+	assert.Contains(t, src, `Commit  = "ff0011"`)
 }
 
 func TestEmbeddedMintSource_MatchesOriginal(t *testing.T) {

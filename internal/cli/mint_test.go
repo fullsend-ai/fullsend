@@ -822,6 +822,20 @@ func TestQueryMintHealth_ServerError(t *testing.T) {
 	assert.Contains(t, err.Error(), "500")
 }
 
+func TestQueryMintHealth_ServiceUnavailable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintln(w, `{"status":"unhealthy","version":"0.28.0","commit":"def456"}`)
+	}))
+	defer srv.Close()
+
+	ver, commit, err := queryMintHealth(context.Background(), srv.URL)
+	require.NoError(t, err)
+	assert.Equal(t, "0.28.0", ver)
+	assert.Equal(t, "def456", commit)
+}
+
 func TestRunMintStatus_Healthy(t *testing.T) {
 	withMintGCFClient(t, mintDiscoveryClient())
 	out := &strings.Builder{}
@@ -830,6 +844,62 @@ func TestRunMintStatus_Healthy(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out.String(), "coder = 100")
 	assert.Contains(t, out.String(), "existing-org")
+}
+
+func TestRunMintStatus_WithHealthVersion(t *testing.T) {
+	// Spin up a health server that returns version metadata.
+	healthSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintln(w, `{"status":"ok","version":"1.0.0","commit":"abc123"}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer healthSrv.Close()
+
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI: healthSrv.URL,
+			EnvVars: map[string]string{
+				"ROLE_APP_IDS": `{"coder":"100"}`,
+				"ALLOWED_ORGS": "test-org",
+			},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100"}`,
+			"ALLOWED_ORGS": "test-org",
+		}),
+		gcf.WithFakeRevisionInfo(&gcf.ServiceRevisionInfo{
+			TrafficRevisionShort:   "fullsend-mint-00001",
+			TrafficPercent:         100,
+			TemplateMatchesTraffic: true,
+			TrafficEnvVars: map[string]string{
+				"ROLE_APP_IDS": `{"coder":"100"}`,
+				"ALLOWED_ORGS": "test-org",
+			},
+			RecentRevisions: []gcf.RevisionSummary{{
+				Name:       "fullsend-mint-00001",
+				CreateTime: "2026-06-16T12:00:00Z",
+				Active:     true,
+			}},
+		}),
+		gcf.WithFakeWIFProvider(&gcf.WIFProviderInfo{
+			AttributeCondition: "assertion.repository_owner in ['test-org']",
+		}),
+		gcf.WithFakeSecrets(map[string]bool{
+			"fullsend-coder-pem": true,
+		}),
+	)
+	withMintGCFClient(t, client)
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "test-org")
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "Version")
+	assert.Contains(t, out.String(), "1.0.0")
+	assert.Contains(t, out.String(), "Commit")
+	assert.Contains(t, out.String(), "abc123")
 }
 
 func TestRunMintStatus_NotInstalled(t *testing.T) {
