@@ -9,6 +9,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/post-failure-report.sh
+source "${SCRIPT_DIR}/lib/post-failure-report.sh"
+
 FAILURES=0
 
 # ---------------------------------------------------------------------------
@@ -446,39 +450,23 @@ run_push_retry_test "push-unexpected-error" \
   "1" "fatal: repository not found" "fail:unexpected-error"
 
 # ---------------------------------------------------------------------------
-# Test helper — reimplements the error reporting comment builder from
-# post-code.sh. Verifies the comment body contains expected content.
+# Failure reporting — uses post-failure-report.sh shared library.
 # ---------------------------------------------------------------------------
-build_error_comment() {
-  local exit_code="$1"
-  local repo_full_name="$2"
-  local run_id="$3"
-  local github_repository="${4:-}"  # GITHUB_REPOSITORY override (org-mode)
-
-  local run_repo="${github_repository:-${repo_full_name}}"
-  local run_url="https://github.com/${run_repo}/actions/runs/${run_id}"
-  echo "⚠️ **Post-code script failed** (exit code ${exit_code})
-
-The code agent completed, but the post-code script failed while \
-pushing the branch or creating the PR.
-
-**Workflow run:** ${run_url}
-
-Please check the workflow logs for details and retry with \`/fs-code\` \
-if appropriate."
-}
-
-run_error_comment_test() {
+run_failure_comment_test() {
   local test_name="$1"
-  local exit_code="$2"
-  local repo="$3"
-  local run_id="$4"
-  local check_pattern="$5"
-  local expect_present="$6"
-  local github_repository="${7:-}"  # optional GITHUB_REPOSITORY override
+  local category="$2"
+  local detail="$3"
+  local repo="$4"
+  local run_id="$5"
+  local check_pattern="$6"
+  local expect_present="$7"  # yes | no
+  local github_repository="${8:-}"
 
   local actual
-  actual="$(build_error_comment "${exit_code}" "${repo}" "${run_id}" "${github_repository}")"
+  export GITHUB_RUN_ID="${run_id}"
+  export GITHUB_REPOSITORY="${github_repository}"
+  actual="$(build_post_failure_comment "code" 1 "${category}" "${detail}" "${repo}" "/fs-code")"
+  unset GITHUB_RUN_ID GITHUB_REPOSITORY
 
   if [ "${expect_present}" = "yes" ]; then
     if ! echo "${actual}" | grep -qF "${check_pattern}"; then
@@ -503,41 +491,95 @@ run_error_comment_test() {
   echo "PASS: ${test_name}"
 }
 
-# --- Error comment test cases ---
+run_failure_comment_test "failure-comment-push-rejected-category" \
+  "push-rejected" "error: failed to push" "my-org/my-repo" "12345" \
+  "Push rejected" "yes"
 
-run_error_comment_test "error-comment-has-exit-code" \
-  "1" "my-org/my-repo" "12345" \
-  "exit code 1" "yes"
+run_failure_comment_test "failure-comment-workflow-permission-category" \
+  "push-workflow-permission" \
+  "refusing to allow a GitHub App to create or update workflow without workflows permission" \
+  "my-org/my-repo" "12345" \
+  "workflows permission" "yes"
 
-run_error_comment_test "error-comment-has-workflow-link" \
-  "1" "my-org/my-repo" "12345" \
+run_failure_comment_test "failure-comment-workflow-permission-environmental-note" \
+  "push-workflow-permission" "permission denied on workflow path" "my-org/my-repo" "12345" \
+  "Environmental limitation" "yes"
+
+run_failure_comment_test "failure-comment-pre-commit-category" \
+  "pre-commit-blocked" "trim trailing whitespace.............................Failed" \
+  "my-org/my-repo" "12345" \
+  "Pre-commit blocked" "yes"
+
+run_failure_comment_test "failure-comment-secret-scan-category" \
+  "secret-scan" "leaks found: 1 commit" "my-org/my-repo" "12345" \
+  "Secret scan blocked" "yes"
+
+run_failure_comment_test "failure-comment-has-workflow-link" \
+  "push-rejected" "push failed" "my-org/my-repo" "12345" \
   "https://github.com/my-org/my-repo/actions/runs/12345" "yes"
 
-run_error_comment_test "error-comment-has-retry-hint" \
-  "1" "my-org/my-repo" "12345" \
-  "/fs-code" "yes"
-
-run_error_comment_test "error-comment-has-warning-emoji" \
-  "1" "my-org/my-repo" "12345" \
-  "⚠️" "yes"
-
-# Org-mode: GITHUB_REPOSITORY differs from REPO_FULL_NAME → URL uses dispatch repo
-run_error_comment_test "error-comment-org-mode-uses-dispatch-repo" \
-  "1" "test-org/my-app" "12345" \
+run_failure_comment_test "failure-comment-org-mode-uses-dispatch-repo" \
+  "push-rejected" "push failed" "test-org/my-app" "12345" \
   "https://github.com/test-org/.fullsend/actions/runs/12345" "yes" \
   "test-org/.fullsend"
 
-# Org-mode: URL must NOT contain the source repo name
-run_error_comment_test "error-comment-org-mode-not-source-repo" \
-  "1" "test-org/my-app" "12345" \
-  "https://github.com/test-org/my-app/actions/runs/12345" "no" \
-  "test-org/.fullsend"
+run_failure_comment_test "failure-comment-has-retry-hint" \
+  "pr-creation-failed" "GraphQL error" "my-org/my-repo" "12345" \
+  "/fs-code" "yes"
 
-# Non-org-mode: no GITHUB_REPOSITORY → falls back to REPO_FULL_NAME
-run_error_comment_test "error-comment-non-org-mode-fallback" \
-  "1" "my-org/my-repo" "67890" \
-  "https://github.com/my-org/my-repo/actions/runs/67890" "yes" \
-  ""
+run_sanitize_test() {
+  local test_name="$1"
+  local input="$2"
+  local must_not_contain="$3"
+
+  local actual
+  actual="$(sanitize_failure_detail "${input}")"
+
+  if echo "${actual}" | grep -qF "${must_not_contain}"; then
+    echo "FAIL: ${test_name}"
+    echo "  sanitized output still contains: '${must_not_contain}'"
+    echo "  output: ${actual}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_sanitize_test "sanitize-redacts-ghp-token" \
+  "auth failed with ghp_abcdefghijklmnopqrstuvwxyz1234567890" \
+  "ghp_abcdefghijklmnopqrstuvwxyz1234567890"
+
+run_sanitize_test "sanitize-redacts-access-token-url" \
+  "remote: https://x-access-token:ghp_secret@github.com/org/repo.git" \
+  "ghp_secret"
+
+run_categorize_push_test() {
+  local test_name="$1"
+  local push_output="$2"
+  local expected="$3"
+
+  local actual
+  actual="$(categorize_push_failure "${push_output}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected: '${expected}'"
+    echo "  actual:   '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_categorize_push_test "categorize-workflow-permission" \
+  "refusing to allow a GitHub App to create or update workflow without workflows permission" \
+  "push-workflow-permission"
+
+run_categorize_push_test "categorize-generic-push-rejected" \
+  "error: failed to push some refs: non-fast-forward" \
+  "push-rejected"
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the agent artifact stripping logic from

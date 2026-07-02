@@ -69,7 +69,7 @@ RUN_DIR="$(pwd)"
 if [ "${REPO_DIR}" != "." ]; then
   if [ ! -d "${REPO_DIR}" ]; then
     echo "::error::Extracted repo not found at ${REPO_DIR}" >&2
-    exit 1
+    post_fail_to_pr setup-error "Extracted repo not found at ${REPO_DIR}"
   fi
   cd "${REPO_DIR}"
 fi
@@ -78,6 +78,12 @@ fi
 : "${REPO_FULL_NAME:?REPO_FULL_NAME is required}"
 : "${PR_NUMBER:?PR_NUMBER is required}"
 : "${TRIGGER_SOURCE:?TRIGGER_SOURCE is required}"
+
+SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/post-failure-report.sh
+source "${SCRIPT_DIR_POST}/lib/post-failure-report.sh"
+trap 'report_post_failure_to_pr' ERR
+
 TARGET_BRANCH="${TARGET_BRANCH:-main}"
 
 echo "::add-mask::${PUSH_TOKEN}"
@@ -154,7 +160,9 @@ if [ "${NO_PUSH}" = "false" ]; then
 
   SCAN_RANGE="${DIFF_BASE}..HEAD"
 
-  gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact
+  if ! GITLEAKS_OUTPUT="$(gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact 2>&1)"; then
+    post_fail_to_pr secret-scan "${GITLEAKS_OUTPUT}"
+  fi
   echo "Secret scan passed — no leaks in agent's commit(s)"
 
   # -------------------------------------------------------------------------
@@ -167,10 +175,8 @@ if [ "${NO_PUSH}" = "false" ]; then
   # -------------------------------------------------------------------------
   echo "Checking for Signed-off-by trailers in agent's commit(s)..."
   if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
-    echo "::error::BLOCKED — agent commit contains a Signed-off-by trailer" >&2
-    echo "::error::Agents must not use 'git commit -s' or append Signed-off-by trailers." >&2
-    echo "::error::DCO is a human attestation; the DCO app waives the check for bots." >&2
-    exit 1
+    post_fail_to_pr signed-off-by \
+      "Agent commit contains a Signed-off-by trailer. Agents must not use 'git commit -s' or append Signed-off-by trailers."
   fi
   echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 fi
@@ -220,9 +226,12 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
     #       in sync (variable names differ: BRANCH_CHANGED_FILES here vs
     #       CHANGED_FILES there; SCAN_RANGE scopes differ by design).
     mapfile -t changed_array <<< "${BRANCH_CHANGED_FILES}"
-    if pre-commit run --files "${changed_array[@]}"; then
+    PRECOMMIT_OUTPUT=""
+    if PRECOMMIT_OUTPUT="$(pre-commit run --files "${changed_array[@]}" 2>&1)"; then
+      echo "${PRECOMMIT_OUTPUT}"
       echo "Pre-commit passed — all hooks clean"
     else
+      echo "${PRECOMMIT_OUTPUT}"
       # Single retry only — do not convert to a loop without adding a cap.
       # Scope detection/staging to changed_array so hooks can't inject files
       # outside the pre-commit scope into the commit.
@@ -234,13 +243,13 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
         git commit --amend --no-edit
 
         echo "Re-running secret scan on amended commit..."
-        if ! gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact; then
-          echo "::error::BLOCKED — secret detected in amended commit after auto-fix" >&2
-          exit 1
+        GITLEAKS_OUTPUT=""
+        if ! GITLEAKS_OUTPUT="$(gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact 2>&1)"; then
+          post_fail_to_pr secret-scan "${GITLEAKS_OUTPUT}"
         fi
         if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
-          echo "::error::BLOCKED — amended commit contains a Signed-off-by trailer" >&2
-          exit 1
+          post_fail_to_pr signed-off-by \
+            "Amended commit contains a Signed-off-by trailer after pre-commit auto-fix."
         fi
 
         if [ -n "${MERGE_BASE}" ]; then
@@ -250,28 +259,24 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
             || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
         fi
         if [ -z "${BRANCH_CHANGED_FILES}" ]; then
-          echo "::error::BLOCKED — pre-commit hooks removed all changes; commit is now empty" >&2
-          exit 1
+          post_fail_to_pr pre-commit-blocked \
+            "Pre-commit hooks removed all changes; commit is now empty."
         fi
         mapfile -t changed_array <<< "${BRANCH_CHANGED_FILES}"
-        if pre-commit run --files "${changed_array[@]}"; then
+        PRECOMMIT_RETRY_OUTPUT=""
+        if PRECOMMIT_RETRY_OUTPUT="$(pre-commit run --files "${changed_array[@]}" 2>&1)"; then
+          echo "${PRECOMMIT_RETRY_OUTPUT}"
           if git diff --name-only -- "${changed_array[@]}" | grep -q .; then
-            echo "::error::BLOCKED — retry pre-commit left additional unstaged changes" >&2
-            echo "::error::Committed content would diverge from what pre-commit validated." >&2
-            exit 1
+            post_fail_to_pr pre-commit-blocked \
+              "Retry pre-commit left additional unstaged changes; committed content would diverge from what pre-commit validated."
           fi
           echo "Pre-commit passed after auto-fix re-stage"
         else
-          echo "::error::BLOCKED — pre-commit hooks still fail after auto-fix" >&2
-          echo "::error::The agent's code does not pass the repo's pre-commit hooks." >&2
-          echo "::error::Fix the issues and re-run, or update the pre-commit config." >&2
-          exit 1
+          echo "${PRECOMMIT_RETRY_OUTPUT}"
+          post_fail_to_pr pre-commit-blocked "${PRECOMMIT_RETRY_OUTPUT}"
         fi
       else
-        echo "::error::BLOCKED — pre-commit hooks failed on agent's changes" >&2
-        echo "::error::The agent's code does not pass the repo's pre-commit hooks." >&2
-        echo "::error::Fix the issues and re-run, or update the pre-commit config." >&2
-        exit 1
+        post_fail_to_pr pre-commit-blocked "${PRECOMMIT_OUTPUT}"
       fi
     fi
   else
@@ -297,13 +302,18 @@ if [ "${NO_PUSH}" = "false" ]; then
   if [ "${PUSH_RC}" -ne 0 ]; then
     if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
       echo "::warning::Plain push failed (non-fast-forward) — retrying with --force-with-lease"
-      if ! git push --force-with-lease -u origin -- "${BRANCH}" 2>&1; then
-        echo "::error::Force-with-lease push also failed"
-        exit 1
+      FORCE_PUSH_OUTPUT=""
+      if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
+        echo "${FORCE_PUSH_OUTPUT}"
+        PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
+${FORCE_PUSH_OUTPUT}")"
+        post_fail_to_pr "${PUSH_CATEGORY}" "${PUSH_OUTPUT}
+${FORCE_PUSH_OUTPUT}"
       fi
+      echo "${FORCE_PUSH_OUTPUT}"
     else
-      echo "::error::Push failed with unexpected error"
-      exit 1
+      PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}")"
+      post_fail_to_pr "${PUSH_CATEGORY}" "${PUSH_OUTPUT}"
     fi
   fi
   echo "Branch ${BRANCH} pushed successfully"
@@ -344,9 +354,9 @@ else
     SCAN_DIR="$(mktemp -d)"
     cp "${RESULT_FILE}" "${SCAN_DIR}/fix-result.json"
     if ! gitleaks detect --source "${SCAN_DIR}" --no-git --redact 2>/dev/null; then
-      echo "::error::Secret detected in fix-result.json — refusing to post PR comment" >&2
       rm -rf "${SCAN_DIR}"
-      exit 1
+      post_fail_to_pr secret-scan \
+        "Secret detected in fix-result.json — refusing to post PR comment."
     fi
     rm -rf "${SCAN_DIR}"
   fi
@@ -355,8 +365,8 @@ else
   PROCESS_EXIT=0
   python3 "${PROCESS_SCRIPT}" "${RESULT_FILE}" "${REPO_FULL_NAME}" "${PR_NUMBER}" || PROCESS_EXIT=$?
   if [ "${PROCESS_EXIT}" -eq 1 ]; then
-    echo "::error::process-fix-result.py failed with exit code 1 (bad input) for PR #${PR_NUMBER} in ${REPO_FULL_NAME}" >&2
-    exit 1
+    post_fail_to_pr process-output-failed \
+      "process-fix-result.py failed with exit code 1 (bad input) for PR #${PR_NUMBER} in ${REPO_FULL_NAME}"
   elif [ "${PROCESS_EXIT}" -ne 0 ]; then
     echo "::warning::process-fix-result.py exited ${PROCESS_EXIT} — continuing with labels/summary"
   fi

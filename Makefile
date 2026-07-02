@@ -123,6 +123,7 @@ script-test:
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/post-triage-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/post-prioritize-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/post-code-test.sh)
+	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/post-fix-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/post-review-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/reconcile-repos-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/validate-output-schema-test.sh)

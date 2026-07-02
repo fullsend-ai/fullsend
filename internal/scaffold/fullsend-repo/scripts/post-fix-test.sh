@@ -9,6 +9,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/post-failure-report.sh
+source "${SCRIPT_DIR}/lib/post-failure-report.sh"
+
 FAILURES=0
 
 # ---------------------------------------------------------------------------
@@ -156,6 +160,58 @@ run_precommit_retry_test "precommit-passes-with-unstaged" \
 # Pre-commit fails, auto-fix retry passes, but retry left unstaged changes
 run_precommit_retry_test "precommit-retry-passes-but-left-unstaged" \
   "1" "yes" "0" "blocked:retry-left-unstaged" "yes"
+
+# ---------------------------------------------------------------------------
+# Failure reporting for post-fix.sh (PR comments via shared library).
+# ---------------------------------------------------------------------------
+run_fix_failure_comment_test() {
+  local test_name="$1"
+  local category="$2"
+  local detail="$3"
+  local check_pattern="$4"
+  local expect_present="$5"
+
+  local actual
+  actual="$(build_post_failure_comment "fix" 1 "${category}" "${detail}" "my-org/my-repo" "/fs-fix")"
+
+  if [ "${expect_present}" = "yes" ]; then
+    if ! echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected to find: '${check_pattern}'"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected NOT to find: '${check_pattern}'"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_fix_failure_comment_test "fix-failure-comment-push-rejected" \
+  "push-rejected" "permission denied" "Push rejected" "yes"
+
+run_fix_failure_comment_test "fix-failure-comment-workflow-permission" \
+  "push-workflow-permission" \
+  "refusing to allow a GitHub App to create or update workflow without workflows permission" \
+  "Environmental limitation" "yes"
+
+run_fix_failure_comment_test "fix-failure-comment-pre-commit" \
+  "pre-commit-blocked" "hook failed" "Pre-commit blocked" "yes"
+
+run_fix_failure_comment_test "fix-failure-comment-secret-scan-no-leak-detail" \
+  "secret-scan" "finding: ghp_REDACTED in config.go" "ghp_" "no"
+
+run_fix_failure_comment_test "fix-failure-comment-has-fs-fix-retry" \
+  "push-rejected" "push failed" "/fs-fix" "yes"
+
+run_fix_failure_comment_test "fix-failure-comment-has-workflow-link" \
+  "push-rejected" "push failed" "/actions/runs/" "yes"
 
 # --- Summary ---
 
