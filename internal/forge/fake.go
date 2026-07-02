@@ -172,6 +172,11 @@ type FakeClient struct {
 	// so only CommitFilesToBranch reads this value in practice.
 	CommitFilesChanged *bool
 
+	// CommitFilesErrSeq is an error queue for CommitFiles. Each call shifts
+	// the first element; when empty, falls through to Errors["CommitFiles"].
+	// A nil entry means no error for that call.
+	CommitFilesErrSeq []error
+
 	// Pull request head SHA for GetPullRequestHeadSHA.
 	PullRequestHeadSHA string
 
@@ -516,7 +521,13 @@ func (f *FakeClient) CommitFiles(_ context.Context, owner, repo, message string,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if e := f.err("CommitFiles"); e != nil {
+	if len(f.CommitFilesErrSeq) > 0 {
+		e := f.CommitFilesErrSeq[0]
+		f.CommitFilesErrSeq = f.CommitFilesErrSeq[1:]
+		if e != nil {
+			return false, e
+		}
+	} else if e := f.err("CommitFiles"); e != nil {
 		return false, e
 	}
 

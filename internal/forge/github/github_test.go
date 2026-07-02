@@ -1056,6 +1056,53 @@ func TestIsBranchProtectionError(t *testing.T) {
 	}
 }
 
+func TestIsNonFastForwardError(t *testing.T) {
+	tests := []struct {
+		name   string
+		apiErr *APIError
+		want   bool
+	}{
+		{
+			name:   "not a fast forward (no hyphen)",
+			apiErr: &APIError{StatusCode: 422, Message: "Update is not a fast forward"},
+			want:   true,
+		},
+		{
+			name: "not a fast-forward in detail (hyphenated)",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Update is not a fast forward",
+				Errors:     []APIErrorDetail{{Message: "Cannot update ref: not a fast-forward"}},
+			},
+			want: true,
+		},
+		{
+			name:   "unrelated 422",
+			apiErr: &APIError{StatusCode: 422, Message: "Reference already exists"},
+			want:   false,
+		},
+		{
+			name: "overlaps with branch protection (caller checks protection first)",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Update is not a fast forward",
+				Errors:     []APIErrorDetail{{Message: "Protected branch update failed for refs/heads/main."}},
+			},
+			want: true,
+		},
+		{
+			name:   "validation failed",
+			apiErr: &APIError{StatusCode: 422, Message: "Validation Failed"},
+			want:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isNonFastForwardError(tt.apiErr))
+		})
+	}
+}
+
 func TestIsAlreadyExistsError(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -2388,4 +2435,71 @@ func TestListOrgVariables(t *testing.T) {
 	vars, err := client.ListOrgVariables(context.Background(), "myorg")
 	require.NoError(t, err)
 	require.Len(t, vars, 2)
+}
+
+func TestCommitFiles_NonFastForward(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "commit"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/commit":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/trees/tree"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Update is not a fast forward",
+				"errors":  []map[string]string{{"message": "Cannot update ref: not a fast-forward"}},
+			})
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+	})
+	require.Error(t, err)
+	assert.True(t, forge.IsNonFastForward(err))
+}
+
+func TestCommitFiles_BranchProtected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "commit"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/commit":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/trees/tree"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Validation Failed",
+				"errors":  []map[string]string{{"message": "Protected branch update failed for refs/heads/main."}},
+			})
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+	})
+	require.Error(t, err)
+	assert.True(t, forge.IsBranchProtected(err))
+	assert.False(t, forge.IsNonFastForward(err), "should not match non-fast-forward")
 }

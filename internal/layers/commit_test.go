@@ -233,6 +233,37 @@ func TestCommitScaffoldDirect_FallbackPreservesIn(t *testing.T) {
 	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0])
 }
 
+func TestCommitScaffoldDirect_NonFastForwardRetrySucceeds(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.CommitFilesErrSeq = []error{
+		fmt.Errorf("%w: not a fast forward", forge.ErrNonFastForward),
+	}
+	printer, buf := newTestPrinter()
+
+	committed, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, true, nil)
+	require.NoError(t, err)
+	assert.True(t, committed)
+	assert.Contains(t, buf.String(), "auto_init race")
+	assert.Len(t, client.CommittedFiles, 1, "retry call should succeed and record")
+}
+
+func TestCommitScaffoldDirect_NonFastForwardRetryFails(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.CommitFilesErrSeq = []error{
+		fmt.Errorf("%w: not a fast forward", forge.ErrNonFastForward),
+		fmt.Errorf("network error"),
+	}
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, true, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "network error")
+}
+
 func TestPromptForkChoice_DefaultIsFork(t *testing.T) {
 	printer, _ := newTestPrinter()
 	in := strings.NewReader("\n")
