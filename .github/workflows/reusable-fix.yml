@@ -160,6 +160,8 @@ jobs:
           GIT_BOT_EMAIL="${BOT_USER_ID}+${BOT_LOGIN}@users.noreply.github.com"
           echo "Resolved bot identity: ${BOT_LOGIN} (${BOT_USER_ID})"
           echo "GIT_BOT_EMAIL=${GIT_BOT_EMAIL}" >> "${GITHUB_ENV}"
+          git config --global user.email "${GIT_BOT_EMAIL}"
+          git config --global user.name "${BOT_LOGIN}"
 
       - name: Block fork PRs
         env:
