@@ -66,7 +66,9 @@ Mint URL uses the hosted public endpoint by default (same as `fullsend admin --m
 
 Behaviour tests install fullsend in **per-repo** mode (`fullsend github setup`) and run `fullsend mint enroll <org>/test-repo` so vendored reusable workflows can mint same-org `triage` tokens (`PER_REPO_WIF_REPOS`). This is the first CI workflow that exercises per-repo mint enrollment; admin e2e only needs org-level cross-org `e2e` mint auth.
 
-The CI service account (`E2E_GCP_SERVICE_ACCOUNT`, impersonated via `E2E_GCP_WIF_PROVIDER`) must have these roles on the **mint GCP project** — not necessarily the same project as `E2E_GCP_PROJECT_ID` (inference). Behaviour install resolves the mint project via `E2E_GCP_MINT_PROJECT_ID`, or defaults to `it-gcp-konflux-dev-fullsend` when using the hosted mint URL:
+The CI service account (`E2E_GCP_SERVICE_ACCOUNT`, impersonated via `E2E_GCP_WIF_PROVIDER`) must have these roles on the **mint GCP project** — not necessarily the same project as `E2E_GCP_PROJECT_ID` (inference). Behaviour install resolves the mint project via `E2E_GCP_MINT_PROJECT_ID`, or defaults to `it-gcp-konflux-dev-fullsend` when using the hosted mint URL.
+
+In practice the e2e workflow often authenticates as a **WIF external account** (not a service-account key). Grant the roles below to the value of `E2E_GCP_SERVICE_ACCOUNT` *and/or* the WIF `principalSet` for `fullsend-ai/fullsend` on the pool named in `E2E_GCP_WIF_PROVIDER` (commonly `fullsend-pool/providers/github-oidc`). Gen2 mint discovery uses the Cloud Run API (`run.services.get`), not Cloud Functions — `roles/run.admin` is required; `roles/cloudfunctions.viewer` alone is insufficient for WIF principals.
 
 | IAM role | Purpose |
 |----------|---------|

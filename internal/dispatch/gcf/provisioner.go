@@ -324,40 +324,81 @@ type MintDiscovery struct {
 	PerRepoWIFRepos []string
 }
 
-// DiscoverMint fetches the mint function once and returns its URL and
-// ROLE_APP_IDS in a single API call. Returns ErrFunctionNotFound (wrapped)
-// if the function does not exist.
+// DiscoverMint fetches the mint service once and returns its URL and
+// ROLE_APP_IDS. Gen2 mint is backed by Cloud Run; when the Cloud Functions
+// API is unavailable (common for WIF principals with run.admin only), discovery
+// falls back to the Cloud Run API.
 func (p *Provisioner) DiscoverMint(ctx context.Context) (*MintDiscovery, error) {
-	fn, err := p.gcpAPI.GetFunction(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
-	if err != nil {
-		return nil, fmt.Errorf("checking mint function: %w", err)
+	fn, cfErr := p.gcpAPI.GetFunction(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if cfErr == nil && fn != nil && fn.URI != "" {
+		return mintDiscoveryFromEnvVars(fn.URI, fn.EnvVars), nil
 	}
-	if fn == nil || fn.URI == "" {
+	if cfErr != nil && !isCloudFunctionsPermissionDenied(cfErr) {
+		return nil, fmt.Errorf("checking mint function: %w", cfErr)
+	}
+
+	d, runErr := p.discoverMintFromCloudRun(ctx)
+	if runErr != nil {
+		if cfErr != nil {
+			return nil, fmt.Errorf("checking mint function: %w", cfErr)
+		}
+		return nil, runErr
+	}
+	return d, nil
+}
+
+func isCloudFunctionsPermissionDenied(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "cloudfunctions.functions.get")
+}
+
+func (p *Provisioner) discoverMintFromCloudRun(ctx context.Context) (*MintDiscovery, error) {
+	uri, err := p.gcpAPI.GetCloudRunServiceURI(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return nil, fmt.Errorf("checking mint Cloud Run service: %w", err)
+	}
+	if uri == "" {
 		return nil, fmt.Errorf("%w: %s in project %s region %s",
 			ErrFunctionNotFound, functionName, p.cfg.ProjectID, p.cfg.Region)
 	}
 
-	result := &MintDiscovery{URL: fn.URI}
-	if fn.EnvVars != nil {
-		if raw := fn.EnvVars["ROLE_APP_IDS"]; raw != "" {
-			var m map[string]string
-			if err := json.Unmarshal([]byte(raw), &m); err != nil {
-				log.Printf("warning: malformed ROLE_APP_IDS in mint function: %v", err)
-			} else {
-				result.RoleAppIDs = m
-			}
-		}
-		if raw := fn.EnvVars["PER_REPO_WIF_REPOS"]; raw != "" {
-			for _, entry := range strings.Split(raw, ",") {
-				entry = strings.TrimSpace(entry)
-				if entry != "" {
-					result.PerRepoWIFRepos = append(result.PerRepoWIFRepos, entry)
-				}
-			}
-			sort.Strings(result.PerRepoWIFRepos)
+	envVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return nil, fmt.Errorf("reading mint Cloud Run env vars: %w", err)
+	}
+	return mintDiscoveryFromEnvVars(uri, envVars), nil
+}
+
+func mintDiscoveryFromEnvVars(uri string, envVars map[string]string) *MintDiscovery {
+	result := &MintDiscovery{URL: uri}
+	if envVars == nil {
+		return result
+	}
+	if raw := envVars["ROLE_APP_IDS"]; raw != "" {
+		var m map[string]string
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			log.Printf("warning: malformed ROLE_APP_IDS in mint function: %v", err)
+		} else {
+			result.RoleAppIDs = m
 		}
 	}
-	return result, nil
+	if raw := envVars["PER_REPO_WIF_REPOS"]; raw != "" {
+		for _, entry := range strings.Split(raw, ",") {
+			entry = strings.TrimSpace(entry)
+			if entry != "" {
+				result.PerRepoWIFRepos = append(result.PerRepoWIFRepos, entry)
+			}
+		}
+		sort.Strings(result.PerRepoWIFRepos)
+	}
+	return result
+}
+
+func (p *Provisioner) resolveMintURI(ctx context.Context) (string, error) {
+	d, err := p.DiscoverMint(ctx)
+	if err != nil {
+		return "", err
+	}
+	return d.URL, nil
 }
 
 // GetFunctionURL returns the URL of the deployed mint function.
@@ -393,16 +434,16 @@ func (p *Provisioner) GetExistingRoleAppIDs(ctx context.Context) (map[string]str
 func (p *Provisioner) EnsureOrgInMint(ctx context.Context, expectedURL string, org string) error {
 	org = strings.ToLower(org)
 
-	fn, err := p.gcpAPI.GetFunction(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	mintURI, err := p.resolveMintURI(ctx)
 	if err != nil {
 		return fmt.Errorf("getting mint function: %w", err)
 	}
-	if fn == nil {
+	if mintURI == "" {
 		return fmt.Errorf("mint function %q not found in project %s region %s", functionName, p.cfg.ProjectID, p.cfg.Region)
 	}
 
-	if fn.URI != expectedURL {
-		return fmt.Errorf("mint URL mismatch: expected %q but function has %q", expectedURL, fn.URI)
+	if mintURI != expectedURL {
+		return fmt.Errorf("mint URL mismatch: expected %q but function has %q", expectedURL, mintURI)
 	}
 
 	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
@@ -465,16 +506,6 @@ func (p *Provisioner) RegisterPerRepoWIF(ctx context.Context, repo string) error
 		return fmt.Errorf("repo name cannot contain commas, got %q", repo)
 	}
 
-	fn, err := p.gcpAPI.GetFunction(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
-	if err != nil {
-		return fmt.Errorf("getting mint function: %w", err)
-	}
-	if fn == nil {
-		return fmt.Errorf("mint function not found")
-	}
-
-	// Read env vars from the traffic-serving revision to avoid stale data
-	// on partial failure or historical divergence (same fix as EnsureOrgInMint).
 	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
 	if err != nil {
 		return fmt.Errorf("reading traffic-serving env vars: %w", err)
