@@ -196,6 +196,13 @@ readability or correctness.
   `OLD_NAME:` for YAML). Documentation files (`.md`, `.adoc`, `.rst`)
   often reference field names in prose without syntax suffixes and will
   be missed by syntax-specific patterns alone.
+- **Markdown heading inbound links:** When a PR renames a markdown heading,
+  treat the rendered anchor slug as a renamed identifier. Verify there is
+  evidence of a full-repository search for inbound links to the old anchor
+  (for example `#old-heading-slug`) and that references outside the touched
+  files were updated or intentionally left as historical references. If a
+  heading rename lacks that evidence, record at least a medium-severity
+  finding; a broken inbound link you can point to is direct evidence.
 
 #### Cross-repo contracts
 

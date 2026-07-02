@@ -36,3 +36,20 @@ Documentation files (`.md`, `.adoc`, `.rst`) frequently reference field
 names in prose without syntax-specific suffixes (e.g., "set the
 `repository` field"). Always include the bare-word pattern when scanning
 these file types — a syntax-specific pattern alone will miss them.
+
+## Markdown heading rename strategy
+
+Markdown heading renames change rendered anchor slugs and can break inbound
+links from files that are not otherwise touched by the PR. When the diff
+renames a markdown heading:
+
+1. Derive the old rendered anchor slug (for example,
+   `Old Heading` -> `#old-heading`).
+2. Search the full repository for inbound references to that old anchor slug,
+   including markdown links and prose references.
+3. Verify references outside the changed files were updated, or that any
+   remaining reference is intentionally historical.
+4. If the PR lacks evidence of a full-repository old-anchor search, flag a
+   medium-severity docs-currency finding even if you have not found a specific
+   broken link. If you do find a remaining broken link, cite that file and line
+   as direct evidence.

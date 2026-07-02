@@ -336,6 +336,14 @@ Before writing code, form a concrete plan:
    or changes a parameter sent to an external API, check the API documentation or
    test each code path that uses the function. Different operations
    (e.g., approve vs request-changes) often have different required fields.
+10. **Preserve markdown heading inbound links** — when renaming a markdown
+    heading, derive the old rendered anchor slug and search the full repository
+    for inbound links to it before committing. Search for the old slug (for
+    example `#old-heading-slug`) and, when useful, the old heading text. Update
+    all affected references, including files outside the initial edit scope, or
+    note why a remaining reference is intentionally historical. Mention the
+    cross-reference search in the commit message body or PR description so
+    reviewers know it was performed.
 
 When requirements are ambiguous, distinguish between "vague but actionable"
 (you can make a reasonable conservative interpretation) and "genuinely
@@ -590,6 +598,9 @@ Read every line. Check for:
 - Accidental artifacts: debug prints, commented-out code, TODO comments
 - Secret material: `.env`, `*.pem`, `*.key`, `credentials.json`
 - Protected-path files (see agent definition for the authoritative list)
+- Markdown heading renames include full-repo inbound anchor searches and any
+  stale `#old-heading-slug` references have been updated or intentionally left
+  with a note
 
 If you added more than necessary, revert the extras before staging.
 
