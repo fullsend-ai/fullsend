@@ -386,7 +386,10 @@ See [ADR 0003](ADRs/0003-org-config-repo-convention.md) for the config repo conv
   [ADR 0047](ADRs/0047-vendored-installs-with-vendor-flag.md)). The
   scaffold installs only org-specific files and a `customized/` directory for org
   overrides. Org files in `customized/` overwrite upstream defaults at runtime
-  ([ADR 0035](ADRs/0035-layered-content-resolution.md)).
+  ([ADR 0035](ADRs/0035-layered-content-resolution.md)). The `customized/`
+  overlay is deprecated; `base:` harness composition, URL resource
+  references, and config-based agent registration now cover all customization
+  scenarios ([ADR 0064](ADRs/0064-deprecate-customized-directory-overlay.md)).
 
 ## Multi-org deployment model
 
