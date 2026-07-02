@@ -33,7 +33,8 @@ The compute and orchestration layer that runs agent workloads. Responsible for p
 
 This is the "where do agents physically run" question — whether that's a managed platform, internal Kubernetes, CI runners repurposed for agent work, or something purpose-built.
 
-Infrastructure platform choice and configuration are specified in the adopting organization's **`.fullsend`** repository. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
+Infrastructure platform choice and configuration are specified in each target
+repository's **`.fullsend/`** directory ([ADR 0033](ADRs/0033-per-repo-installation-mode.md)).
 
 **Decided:**
 
@@ -47,6 +48,7 @@ Infrastructure platform choice and configuration are specified in the adopting o
 - Event-driven stage dispatch: eliminate `workflow_dispatch` + `gh workflow run` fan-out from `dispatch.yml` in favor of synchronous `workflow_call` so the dispatched run stays linked to the caller ([ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
 - Multi-repo management: a `fullsend repos` subcommand group with a declarative `repos.yaml` manifest for managing per-repo installations at scale — bulk install, status, sync, upgrade, and removal across repos and orgs ([ADR 0057](ADRs/0057-repos-management.md)).
 - Dispatch version-skew resolution: per-repo `reusable-dispatch.yml` inlines stage workflow jobs directly, eliminating `@v0` references to `reusable-{stage}.yml` ([ADR 0062](ADRs/0062-dispatch-version-skew.md)).
+- Ready-made configuration presets: `fullsend github setup --config <path-or-url>` installs a vendor preset as `.fullsend/config.base.yaml` and a stub `.fullsend/config.yaml` overlay in the target repository; mint URL, inference backend, and related settings live in configuration files resolved through accessor methods, not CLI flags. Shared-infrastructure presets drop per-adopter mint and inference enrollment in favor of `job_workflow_ref` trust to upstream workflows ([ADR 0063](ADRs/0063-ready-made-configuration-presets.md)).
 
 **Open questions:**
 
@@ -375,7 +377,7 @@ Skills flow downward through this stack. A repo-level skill might encode domain 
 
 AGENTS.md files follow the same layering. A repo's `.fullsend/AGENTS.md` gives agents repo-specific instructions (build commands, test patterns, architectural constraints). The org's `.fullsend/agents/` directory provides role-specific agent definitions that apply across all enrolled repos.
 
-See [ADR 0003](ADRs/0003-org-config-repo-convention.md) for the config repo convention and [ADR 0024](ADRs/0024-harness-definitions.md) for harness definitions.
+See [ADR 0003](ADRs/0003-org-config-repo-convention.md) for the config repo convention and [ADR 0024](ADRs/0024-harness-definitions.md) for harness definitions. In per-repo installation, `.fullsend/config.base.yaml` replaces the org-tier `config.yaml` and `.fullsend/config.yaml` is the repo overlay; unset values still fall back to code defaults ([ADR 0063](ADRs/0063-ready-made-configuration-presets.md)).
 
 **Decided:**
 
