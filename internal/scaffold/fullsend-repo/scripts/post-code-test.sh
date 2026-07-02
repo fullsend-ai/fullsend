@@ -129,9 +129,14 @@ build_pr_body() {
   local issue_number="$2"
   local branch="$3"
   local scan_range="$4"
+  local pr_body_from_result="${5:-}"  # optional: agent-provided pr_body
 
   local description
-  if [ -z "${commit_body}" ]; then
+  if [ -n "${pr_body_from_result}" ]; then
+    # Agent provided pr_body (new path).
+    # Strip Signed-off-by and Closes lines so script appends them once.
+    description="$(printf '%s\n' "${pr_body_from_result}" | sed '/^Signed-off-by:/d' | sed '/^Closes #/d; /^Closes [a-zA-Z0-9_.-]*\/[a-zA-Z0-9_.-]*#/d' | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
+  elif [ -z "${commit_body}" ]; then
     description="Automated implementation for issue #${issue_number}."
   else
     description="${commit_body}"
@@ -249,6 +254,86 @@ count_closes_test "single-closes-with-body" \
 
 count_closes_test "single-closes-empty-body" \
   "" "99"
+
+# Verify pr_body path strips Closes lines (agent may include them)
+count_closes_pr_body_test() {
+  local test_name="$1"
+  local pr_body="$2"
+  local issue_number="$3"
+
+  local actual
+  actual="$(build_pr_body "" "${issue_number}" "agent/${issue_number}-fix" "abc123..def456" "${pr_body}")"
+
+  local count
+  count=$(echo "${actual}" | grep -c "Closes #${issue_number}" || true)
+
+  if [ "${count}" -ne 1 ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected exactly 1 'Closes #${issue_number}', found ${count}"
+    echo "  in body:"
+    echo "${actual}" | sed 's/^/    /'
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+count_closes_pr_body_test "single-closes-pr-body-with-closes" \
+  "## Summary
+
+Implemented widget rendering.
+
+Closes #42" "42"
+
+# --- pr_body path test cases ---
+
+# Helper for pr_body tests (fifth arg is pr_body from result file)
+run_pr_body_test() {
+  local test_name="$1"
+  local pr_body="$2"
+  local issue_number="$3"
+  local branch="$4"
+  local check_pattern="$5"
+  local expect_present="$6"  # "yes" or "no"
+
+  local actual
+  actual="$(build_pr_body "" "${issue_number}" "${branch}" "abc123..def456" "${pr_body}")"
+
+  if [ "${expect_present}" = "yes" ]; then
+    if ! echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected NOT to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# pr_body provided by agent should appear in final PR body
+run_pr_body_test "pr-body-from-result" \
+  $'## Summary\n\nAdded widget rendering.\n\n## Testing\n\nManual test.' \
+  "42" "agent/42-widget" \
+  "Added widget rendering." "yes"
+
+# pr_body should NOT be word-wrapped (it's verbatim)
+run_pr_body_test "pr-body-verbatim" \
+  $'## Summary\n\nThis is a very long line that would normally be word-wrapped by the legacy commit-body awk logic but should remain intact when coming from pr_body.' \
+  "42" "agent/42-widget" \
+  "This is a very long line that would normally be word-wrapped by the legacy commit-body awk logic but should remain intact when coming from pr_body." "yes"
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the no-op detection logic from post-code.sh

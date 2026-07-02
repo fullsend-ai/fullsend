@@ -102,6 +102,11 @@ Add `schemas/code-result.schema.json`:
       "type": "string",
       "description": "Branch the PR should target.",
       "pattern": "^[a-zA-Z0-9._/-]+$"
+    },
+    "pr_body": {
+      "type": "string",
+      "maxLength": 65536,
+      "description": "PR description used as PR body instead of commit body."
     }
   }
 }
@@ -109,6 +114,13 @@ Add `schemas/code-result.schema.json`:
 
 The agent determines the target branch from the issue context and writes
 `code-result.json` to `$FULLSEND_OUTPUT_DIR`.
+
+**Amendment (PR #2979):** Added optional `pr_body` field so the agent can
+provide a PR description independently of the commit body. When the repo has
+a PR template, the agent structures `pr_body` to match. The post-script uses
+`pr_body` verbatim as the PR description when present, falling back to the
+commit body otherwise. `pr_body` is optional — omitting it preserves the
+original commit-body-as-description behavior.
 
 ### Post-script policy gate
 

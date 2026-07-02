@@ -164,6 +164,16 @@ and `Glob` to inspect project configuration:
    `check-pr-title` action with a regex). If the repo requires a specific
    format like `type(TICKET): description`, note the convention — you will
    use it when writing the commit subject in step 10.
+5. **Check for PR template.** Look for `.github/pull_request_template.md`,
+   `.github/PULL_REQUEST_TEMPLATE.md`, or `docs/pull_request_template.md`.
+   If a directory `.github/PULL_REQUEST_TEMPLATE/` exists with multiple
+   templates, use the one matching the issue context (e.g., `bug_report.md`
+   for bug fixes, `feature_request.md` for enhancements), or fall back to
+   the first/default template. If found, read it and note sections/prompts
+   — skip HTML comments (`<!-- ... -->`), extract only the visible headings
+   and prompts. You will structure the `pr_body` field in the result file
+   to match template sections (see the structured output block below) — the post-script uses
+   `pr_body` as the PR description.
 
 From these files, determine:
 
@@ -186,21 +196,42 @@ use that branch. Otherwise, determine the repo's default branch:
 git rev-parse --abbrev-ref origin/HEAD | cut -d/ -f2
 ```
 
-Write your chosen branch to the structured output file so the post-script
-knows which branch to target the PR against:
+Write the structured output file with target branch and PR body. The
+post-script uses pr_body as the PR description (no gitlint line-length
+constraints) and automatically appends `Closes #<issue-number>` — do not
+include it in pr_body. If PR template found in step 3 item 5, structure
+pr_body per template. Otherwise, write best-effort description.
+
+Use `jq -n` to build JSON safely — avoids shell expansion of `$` and
+backticks in pr_body content (common in markdown code blocks). Run exactly
+one of the two branches below depending on whether a PR template was found:
 
 ```bash
 mkdir -p "${FULLSEND_OUTPUT_DIR}"
-cat > "${FULLSEND_OUTPUT_DIR}/${FULLSEND_OUTPUT_FILE}" <<RESULT
-{
-  "target_branch": "<branch-name>"
-}
-RESULT
+
+if [ -n "${pr_template}" ]; then
+  # PR template found — structure pr_body to match template sections
+  jq -n \
+    --arg tb "<branch-name>" \
+    --arg pb "$(printf '## Summary\n\n<what changed and why>\n\n## Testing\n\n<test approach>')" \
+    '{target_branch: $tb, pr_body: $pb}' \
+    > "${FULLSEND_OUTPUT_DIR}/${FULLSEND_OUTPUT_FILE}"
+else
+  # No PR template — best-effort description
+  jq -n \
+    --arg tb "<branch-name>" \
+    --arg pb "<What changed and why. Testing approach. Any caveats.>" \
+    '{target_branch: $tb, pr_body: $pb}' \
+    > "${FULLSEND_OUTPUT_DIR}/${FULLSEND_OUTPUT_FILE}"
+fi
 ```
 
-Write this output early (during planning, after determining the target
-branch) so it is available even if the agent hits a timeout or error later.
-The post-script validates this against the repo's allowed branches.
+Write `target_branch` early (during planning) so it's available if the
+agent times out later. You may write a draft `pr_body` at planning time
+(template headings with placeholder text) and update it after
+implementation with actual details. The post-script validates
+target_branch against allowed branches and uses pr_body as PR
+description.
 
 ### 4. Check for existing branch
 
@@ -670,10 +701,12 @@ that fits.
 **Body line length — comply with the repo's gitlint config:**
 
 If `.gitlint` has a `[body-max-line-length]` rule (e.g. `line-length=72`),
-you **MUST** hard-wrap body text at that limit. This is enforced by CI.
-The post-script will unwrap the body when building the PR description,
-so your hard-wrapped commit body will still render as nice prose on
-GitHub.
+you **MUST** hard-wrap commit body text at that limit. This is enforced
+by CI. The post-script will unwrap the commit body when building the PR
+description (legacy path), so your hard-wrapped commit body will still
+render as nice prose on GitHub. When you provide `pr_body` in the result
+file, the post-script uses it verbatim (no unwrapping), so `pr_body` is
+not subject to gitlint line-length constraints.
 
 Hard-wrap guidelines when a limit is configured:
 - Break lines at word boundaries before hitting the limit
@@ -694,6 +727,9 @@ The commit body should:
 - Describe the root cause or motivation
 - Summarize which files/functions were modified and the approach
 - Note any trade-offs, assumptions, or edge cases
+
+Keep commit body concise (respects gitlint line-length limits). PR body
+in code-result.json holds the template-structured description if needed.
 
 ```bash
 git commit -m "<type>(#<number>): <short-description>

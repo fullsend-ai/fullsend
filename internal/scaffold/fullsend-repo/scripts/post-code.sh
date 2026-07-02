@@ -441,15 +441,28 @@ fi
 echo "Creating PR..."
 
 COMMIT_SUBJECT="$(git log -1 --format='%s' HEAD)"
-COMMIT_BODY_RAW="$(git log -1 --format='%b' HEAD | sed '/^Signed-off-by:/d' | sed '/^Closes #/d' | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
 
-COMMIT_BODY="$(echo "${COMMIT_BODY_RAW}" | awk '
-  /^$/           { if (buf) print buf; print; buf=""; next }
-  /^[-*#>]|^  /  { if (buf) print buf; buf=""; print; next }
-  /^Closes /     { if (buf) print buf; buf=""; print; next }
-                 { buf = (buf ? buf " " $0 : $0) }
-  END            { if (buf) print buf }
-')"
+# Read pr_body from agent output. Fall back to commit body if absent.
+PR_BODY_FROM_RESULT=""
+if [ -n "${RESULT_FILE}" ]; then
+  PR_BODY_FROM_RESULT="$(jq -r '.pr_body // empty' "${RESULT_FILE}" 2>/dev/null || true)"
+fi
+
+if [ -n "${PR_BODY_FROM_RESULT}" ]; then
+  # Agent provided pr_body (template-aware or best-effort).
+  # Strip Signed-off-by and Closes lines so the script appends them once.
+  COMMIT_BODY="$(printf '%s\n' "${PR_BODY_FROM_RESULT}" | sed '/^Signed-off-by:/d' | sed '/^Closes #/d; /^Closes [a-zA-Z0-9_.-]*\/[a-zA-Z0-9_.-]*#/d' | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
+else
+  # Fall back to unwrapped commit body (legacy path)
+  COMMIT_BODY_RAW="$(git log -1 --format='%b' HEAD | sed '/^Signed-off-by:/d' | sed '/^Closes #/d' | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
+  COMMIT_BODY="$(echo "${COMMIT_BODY_RAW}" | awk '
+    /^$/           { if (buf) print buf; print; buf=""; next }
+    /^[-*#>]|^  /  { if (buf) print buf; buf=""; print; next }
+    /^Closes /     { if (buf) print buf; buf=""; print; next }
+                   { buf = (buf ? buf " " $0 : $0) }
+    END            { if (buf) print buf }
+  ')"
+fi
 
 # ---------------------------------------------------------------------------
 # Ensure PR title includes an issue reference.
