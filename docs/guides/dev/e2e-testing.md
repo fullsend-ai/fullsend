@@ -38,6 +38,8 @@ Optional environment variables:
 | `E2E_LOCK_TIMEOUT` | Max wait for a free pool org (default 10m) |
 | `E2E_GCP_PROJECT_ID` | GCP project for inference-related setup (if needed) |
 
+Behaviour tests use the same pool orgs but install via `fullsend github setup` (per-repo) instead of `fullsend admin install`. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
+
 Tests acquire an exclusive lock on one org from the pool (`halfsend-01` …
 `halfsend-06`) — see [ADR 0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md).
 

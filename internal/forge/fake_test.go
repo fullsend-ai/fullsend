@@ -772,3 +772,107 @@ func TestIsForbidden(t *testing.T) {
 	assert.False(t, IsForbidden(errors.New("some error")))
 	assert.False(t, IsForbidden(nil))
 }
+
+func TestIsNonFastForward(t *testing.T) {
+	assert.True(t, IsNonFastForward(ErrNonFastForward))
+	assert.True(t, IsNonFastForward(errors.Join(errors.New("wrapper"), ErrNonFastForward)))
+	assert.False(t, IsNonFastForward(errors.New("some error")))
+}
+
+func TestFakeClient_GetIssue(t *testing.T) {
+	fc := NewFakeClient()
+	issue, err := fc.CreateIssue(context.Background(), "org", "repo", "t", "b")
+	require.NoError(t, err)
+
+	got, err := fc.GetIssue(context.Background(), "org", "repo", issue.Number)
+	require.NoError(t, err)
+	assert.Equal(t, issue.Number, got.Number)
+
+	_, err = fc.GetIssue(context.Background(), "org", "repo", 999)
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestFakeClient_AddIssueLabels(t *testing.T) {
+	fc := NewFakeClient()
+	issue, err := fc.CreateIssue(context.Background(), "org", "repo", "t", "b")
+	require.NoError(t, err)
+
+	require.NoError(t, fc.AddIssueLabels(context.Background(), "org", "repo", issue.Number, "ready-for-triage"))
+	got, err := fc.GetIssue(context.Background(), "org", "repo", issue.Number)
+	require.NoError(t, err)
+	assert.Contains(t, got.Labels, "ready-for-triage")
+
+	require.Error(t, fc.AddIssueLabels(context.Background(), "org", "repo", 999, "x"))
+}
+
+func TestFakeClient_ListRecentWorkflowRuns(t *testing.T) {
+	fc := NewFakeClient()
+	fc.RecentWorkflowRuns = map[string][]WorkflowRun{
+		"org/repo": {
+			{ID: 1, Name: "Triage Agent", Status: "completed", Conclusion: "success", CreatedAt: "2024-01-01T00:00:00Z"},
+		},
+	}
+	runs, err := fc.ListRecentWorkflowRuns(context.Background(), "org", "repo", 10)
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+}
+
+func TestFakeClient_ListWorkflowRunArtifacts(t *testing.T) {
+	fc := NewFakeClient()
+	fc.WorkflowRunArtifacts = map[int][]WorkflowArtifact{
+		42: {{ID: 5, Name: "fullsend-triage"}},
+	}
+
+	arts, err := fc.ListWorkflowRunArtifacts(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	require.Len(t, arts, 1)
+	assert.Equal(t, "fullsend-triage", arts[0].Name)
+
+	arts, err = fc.ListWorkflowRunArtifacts(context.Background(), "org", "repo", 99)
+	require.NoError(t, err)
+	assert.Nil(t, arts)
+}
+
+func TestFakeClient_DownloadWorkflowRunArtifact(t *testing.T) {
+	fc := NewFakeClient()
+	fc.WorkflowArtifactContents = map[int][]byte{
+		9: []byte("artifact-bytes"),
+	}
+
+	data, err := fc.DownloadWorkflowRunArtifact(context.Background(), "org", "repo", 9)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("artifact-bytes"), data)
+
+	_, err = fc.DownloadWorkflowRunArtifact(context.Background(), "org", "repo", 99)
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestFakeClient_ListRepositoryArtifacts(t *testing.T) {
+	fc := NewFakeClient()
+	fc.RepositoryArtifacts = map[string][]RepositoryArtifact{
+		"org/repo": {
+			{ID: 1, Name: "a"},
+			{ID: 2, Name: "b"},
+		},
+	}
+
+	arts, err := fc.ListRepositoryArtifacts(context.Background(), "org", "repo", 1)
+	require.NoError(t, err)
+	require.Len(t, arts, 1)
+	assert.Equal(t, 1, arts[0].ID)
+
+	arts, err = fc.ListRepositoryArtifacts(context.Background(), "org", "repo", 0)
+	require.NoError(t, err)
+	assert.Len(t, arts, 2)
+}
+
+func TestFakeClient_AddIssueLabels_Idempotent(t *testing.T) {
+	fc := NewFakeClient()
+	issue, err := fc.CreateIssue(context.Background(), "org", "repo", "t", "b")
+	require.NoError(t, err)
+
+	require.NoError(t, fc.AddIssueLabels(context.Background(), "org", "repo", issue.Number, "ready-for-triage", "ready-for-triage"))
+	got, err := fc.GetIssue(context.Background(), "org", "repo", issue.Number)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"ready-for-triage"}, got.Labels)
+}

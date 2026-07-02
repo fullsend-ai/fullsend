@@ -1387,6 +1387,15 @@ func TestInstallCmd_PerRepoRejectsInvalidRole(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid role name")
 }
 
+func TestInstallCmd_RejectsInvalidRuntime(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme", "--runtime", "bogus", "--dry-run"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --runtime")
+}
+
 func TestInstallCmd_PerRepoRejectsOwnerWithDots(t *testing.T) {
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"admin", "install", "my.org/widget",
@@ -1853,6 +1862,7 @@ func TestRunDryRun_WithDiscoveredRepos(t *testing.T) {
 		context.Background(), client, printer, "testorg",
 		[]string{"myrepo"},
 		config.DefaultAgentRoles(),
+		"claude",
 		nil,
 		"",
 		true,
@@ -1864,6 +1874,23 @@ func TestRunDryRun_WithDiscoveredRepos(t *testing.T) {
 	)
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "Layer: vendor")
+}
+
+func TestLoadExistingRuntime(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client := forge.NewFakeClient()
+	assert.Equal(t, "", loadExistingRuntime(ctx, client, "acme"))
+
+	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, config.DefaultAgentRoles(), "", "acme")
+	cfg.Defaults.Runtime = "dummy"
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	client.FileContents = map[string][]byte{
+		"acme/" + forge.ConfigRepoName + "/config.yaml": data,
+	}
+	assert.Equal(t, "dummy", loadExistingRuntime(ctx, client, "acme"))
 }
 
 func TestRunAnalyze_WithFakeClient(t *testing.T) {
@@ -1889,7 +1916,7 @@ func TestRunInstall_RequiresAgentCredsWhenMintEnabled(t *testing.T) {
 
 	err := runInstall(
 		context.Background(), client, ui.New(&bytes.Buffer{}), "testorg",
-		[]string{}, config.DefaultAgentRoles(), nil,
+		[]string{}, config.DefaultAgentRoles(), "claude", nil,
 		nil, "",
 		false, "", "",
 		"gcf", "test-project", "us-central1", "", true,
@@ -1915,7 +1942,7 @@ func TestRunInstall_WithSkipMintCheck(t *testing.T) {
 
 	err := runInstall(
 		context.Background(), client, ui.New(&bytes.Buffer{}), "testorg",
-		nil, config.DefaultAgentRoles(), agentCreds,
+		nil, config.DefaultAgentRoles(), "claude", agentCreds,
 		nil, "",
 		false, "", "",
 		"gcf", "test-project", "us-central1", "", true,
@@ -1941,7 +1968,7 @@ func TestRunInstall_DiscoversRepos(t *testing.T) {
 	var buf bytes.Buffer
 	err := runInstall(
 		context.Background(), client, ui.New(&buf), "testorg",
-		nil, config.DefaultAgentRoles(), agentCreds,
+		nil, config.DefaultAgentRoles(), "claude", agentCreds,
 		nil, "",
 		false, "", "",
 		"gcf", "test-project", "us-central1", "", true,
@@ -1962,7 +1989,7 @@ func TestRunInstall_InvalidEnabledRepo(t *testing.T) {
 
 	err := runInstall(
 		context.Background(), client, ui.New(&bytes.Buffer{}), "testorg",
-		[]string{"missing-repo"}, config.DefaultAgentRoles(), nil,
+		[]string{"missing-repo"}, config.DefaultAgentRoles(), "claude", nil,
 		nil, "",
 		false, "", "",
 		"gcf", "test-project", "us-central1", "", true,
@@ -1989,7 +2016,7 @@ func TestRunInstall_WithVendorAndSkipMint(t *testing.T) {
 	var buf bytes.Buffer
 	err := runInstall(
 		context.Background(), client, ui.New(&buf), "testorg",
-		nil, config.DefaultAgentRoles(), agentCreds,
+		nil, config.DefaultAgentRoles(), "claude", agentCreds,
 		nil, "",
 		true, "", "",
 		"gcf", "test-project", "us-central1", "", true,

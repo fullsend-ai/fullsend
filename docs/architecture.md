@@ -127,7 +127,11 @@ This is the thing that actually reasons and acts. Everything else in this docume
 
 **Decided (implementation):**
 
-- The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; the MVP registers Claude Code only. Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `ClaudeHooksBootstrap` for sandbox tool hooks. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
+- The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; production orgs default to Claude Code. Runtime selection is configured in `defaults.runtime` on the org `config.yaml` and resolved via `runtime.ResolveFromConfig()`. A **dummy** runtime executes scripted operations in the real OpenShell sandbox for behaviour tests (inference removed). Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `ClaudeHooksBootstrap` for sandbox tool hooks. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
+
+### Behaviour testing
+
+End-to-end **behaviour tests** under `e2e/behaviour/` validate deterministic platform code — dispatch routing, harness loading, sandbox policy, SCM mutations — with the LLM layer removed via the dummy runtime. Tests exercise real GitHub and GitHub Actions through pluggable SCM and CI drivers; Gherkin scenarios stay install-mode agnostic while runner env vars select backends. This coverage is **orthogonal** to LLM and instruction testing in [testing-agents.md](problems/testing-agents.md). See [ADR 0063](ADRs/0063-behaviour-tests-with-gherkin-and-drivers.md).
 
 **Open questions:**
 

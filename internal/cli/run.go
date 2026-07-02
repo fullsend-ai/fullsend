@@ -17,6 +17,8 @@ import (
 	"sync"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/spf13/cobra"
 
 	"github.com/fullsend-ai/fullsend/internal/binary"
@@ -102,6 +104,67 @@ func writeMetricsJSON(dir string, m aggregateMetrics) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, metricsFile), append(data, '\n'), 0o644)
+}
+
+func resolveBackendFromConfigData(orgConfigData []byte) (agentruntime.Backend, error) {
+	if isOrgConfigData(orgConfigData) {
+		orgCfg, orgErr := config.ParseOrgConfig(orgConfigData)
+		if orgErr != nil {
+			return agentruntime.Backend{}, fmt.Errorf("parsing config for runtime selection: %w", orgErr)
+		}
+		backend, resolveErr := agentruntime.ResolveFromConfig(orgCfg)
+		if resolveErr != nil {
+			return agentruntime.Backend{}, fmt.Errorf("resolving runtime: %w", resolveErr)
+		}
+		return backend, nil
+	}
+	perRepoCfg, perRepoErr := config.ParsePerRepoConfig(orgConfigData)
+	if perRepoErr != nil {
+		return agentruntime.Backend{}, fmt.Errorf("parsing config for runtime selection: %w", perRepoErr)
+	}
+	backend, resolveErr := agentruntime.ResolveFromPerRepoConfig(perRepoCfg)
+	if resolveErr != nil {
+		return agentruntime.Backend{}, fmt.Errorf("resolving runtime: %w", resolveErr)
+	}
+	return backend, nil
+}
+
+func isOrgConfigData(data []byte) bool {
+	text := string(data)
+	if strings.Contains(text, "fullsend per-repo configuration") {
+		return false
+	}
+	if strings.Contains(text, "fullsend organization configuration") {
+		return true
+	}
+	var probe struct {
+		Dispatch *struct {
+			Platform string `yaml:"platform"`
+		} `yaml:"dispatch"`
+		Defaults *struct {
+			Roles []string `yaml:"roles"`
+		} `yaml:"defaults"`
+		Repos map[string]any `yaml:"repos"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return false
+	}
+	return probe.Dispatch != nil || probe.Defaults != nil || len(probe.Repos) > 0
+}
+
+func backendFromConfigFile(path string) (agentruntime.Backend, error) {
+	data, readErr := os.ReadFile(path)
+	if readErr == nil {
+		backend, resolveErr := resolveBackendFromConfigData(data)
+		if resolveErr != nil {
+			return agentruntime.Backend{}, resolveErr
+		}
+		return backend, nil
+	}
+	if os.IsNotExist(readErr) {
+		return agentruntime.Default(), nil
+	}
+	return agentruntime.Backend{}, fmt.Errorf("reading org config for runtime selection: %w", readErr)
 }
 
 func newRunCmd() *cobra.Command {
@@ -743,7 +806,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// 7. Bootstrap sandbox.
-	backend := agentruntime.Default()
+	var backend agentruntime.Backend
+	orgConfigPath = filepath.Join(absFullsendDir, "config.yaml")
+	backend, backendErr := backendFromConfigFile(orgConfigPath)
+	if backendErr != nil {
+		switch {
+		case strings.Contains(backendErr.Error(), "parsing config for runtime selection"):
+			printer.StepFail("Failed to parse org config")
+		case strings.Contains(backendErr.Error(), "resolving runtime"):
+			printer.StepFail("Failed to resolve runtime")
+		default:
+			printer.StepFail("Failed to load org config")
+		}
+		return backendErr
+	}
 	rt := backend.Runtime
 	tx := backend.Transcripts
 	bootstrapStart := time.Now()
@@ -992,6 +1068,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			AgentBaseName: agentBaseName,
 			Model:         h.Model,
 			RepoDir:       remoteRepositoryDir,
+			FullsendDir:   absFullsendDir,
 			PluginDirs:    pluginDirs,
 			Debug:         debug,
 			Timeout:       timeout,

@@ -883,6 +883,7 @@ func TestGetWorkflowRun(t *testing.T) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"id":         42,
 			"name":       "Deploy",
+			"event":      "workflow_dispatch",
 			"status":     "in_progress",
 			"conclusion": "",
 			"html_url":   "https://github.com/owner/repo/actions/runs/42",
@@ -896,6 +897,7 @@ func TestGetWorkflowRun(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 42, run.ID)
 	assert.Equal(t, "Deploy", run.Name)
+	assert.Equal(t, "workflow_dispatch", run.Event)
 	assert.Equal(t, "in_progress", run.Status)
 }
 
@@ -2388,4 +2390,223 @@ func TestListOrgVariables(t *testing.T) {
 	vars, err := client.ListOrgVariables(context.Background(), "myorg")
 	require.NoError(t, err)
 	require.Len(t, vars, 2)
+}
+
+func TestGetIssue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/org/repo/issues/7", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"number":   7,
+			"title":    "Bug",
+			"body":     "details",
+			"html_url": "https://github.com/org/repo/issues/7",
+			"labels":   []map[string]string{{"name": "ready-to-code"}},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	issue, err := client.GetIssue(context.Background(), "org", "repo", 7)
+	require.NoError(t, err)
+	assert.Equal(t, 7, issue.Number)
+	assert.Equal(t, []string{"ready-to-code"}, issue.Labels)
+}
+
+func TestListRecentWorkflowRuns(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/org/repo/actions/runs", r.URL.Path)
+		assert.Equal(t, "20", r.URL.Query().Get("per_page"))
+		json.NewEncoder(w).Encode(map[string]any{
+			"workflow_runs": []map[string]any{
+				{
+					"id": 99, "name": "Triage Agent", "event": "issue_comment",
+					"status": "completed", "conclusion": "success", "html_url": "https://example/run/99",
+					"created_at": "2024-01-01T00:00:00Z",
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	runs, err := client.ListRecentWorkflowRuns(context.Background(), "org", "repo", 20)
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	assert.Equal(t, "Triage Agent", runs[0].Name)
+	assert.Equal(t, "issue_comment", runs[0].Event)
+}
+
+func TestListWorkflowRuns_IncludesEvent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/org/repo/actions/workflows/fullsend.yaml/runs", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"workflow_runs": []map[string]any{
+				{
+					"id": 7, "name": "fullsend", "event": "issues",
+					"status": "completed", "conclusion": "success",
+					"html_url": "https://example/run/7", "created_at": "2024-01-01T00:00:00Z",
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	runs, err := client.ListWorkflowRuns(context.Background(), "org", "repo", "fullsend.yaml")
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	assert.Equal(t, "issues", runs[0].Event)
+}
+
+func TestListWorkflowRunArtifacts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/org/repo/actions/runs/42/artifacts", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"artifacts": []map[string]any{
+				{"id": 5, "name": "fullsend-triage"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	arts, err := client.ListWorkflowRunArtifacts(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	require.Len(t, arts, 1)
+	assert.Equal(t, 5, arts[0].ID)
+}
+
+func TestListRepositoryArtifacts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/org/repo/actions/artifacts", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"artifacts": []map[string]any{
+				{
+					"id": 9, "name": "fullsend-triage", "created_at": "2024-01-01T00:00:00Z",
+					"expired": false, "workflow_run": map[string]any{"id": 42},
+				},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	arts, err := client.ListRepositoryArtifacts(context.Background(), "org", "repo", 100)
+	require.NoError(t, err)
+	require.Len(t, arts, 1)
+	assert.Equal(t, 42, arts[0].WorkflowRunID)
+}
+
+func TestAddIssueLabels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/repos/org/repo/issues/7/labels", r.URL.Path)
+		var labels []string
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&labels))
+		assert.Equal(t, []string{"ready-for-triage"}, labels)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	require.NoError(t, client.AddIssueLabels(context.Background(), "org", "repo", 7, "ready-for-triage"))
+}
+
+func TestAddIssueLabels_Empty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("unexpected HTTP request for empty labels")
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	require.NoError(t, client.AddIssueLabels(context.Background(), "org", "repo", 7))
+}
+
+func TestDownloadWorkflowRunArtifact(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/org/repo/actions/artifacts/9/zip", r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("PK\x03\x04fake-zip"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	data, err := client.DownloadWorkflowRunArtifact(context.Background(), "org", "repo", 9)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("PK\x03\x04fake-zip"), data)
+}
+
+func TestListRepositoryArtifacts_SkipsExpired(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"artifacts": []map[string]any{
+				{"id": 1, "name": "expired", "expired": true, "workflow_run": map[string]any{"id": 1}},
+				{"id": 2, "name": "fresh", "expired": false, "created_at": "2024-01-01T00:00:00Z", "workflow_run": map[string]any{"id": 42}},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	arts, err := client.ListRepositoryArtifacts(context.Background(), "org", "repo", 100)
+	require.NoError(t, err)
+	require.Len(t, arts, 1)
+	assert.Equal(t, "fresh", arts[0].Name)
+}
+
+func TestDownloadWorkflowRunArtifact_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.DownloadWorkflowRunArtifact(context.Background(), "org", "repo", 9)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "download workflow artifact")
+}
+
+func TestCommitFiles_NonFastForwardRetry(t *testing.T) {
+	patchCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			sha := "abc123"
+			if patchCount > 0 {
+				sha = "def456"
+			}
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": sha}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/commits/"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree000"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/trees/"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			patchCount++
+			if patchCount == 1 {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				json.NewEncoder(w).Encode(map[string]string{"message": "Update is not a fast forward"})
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]any{})
+		default:
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	committed, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "f.txt", Content: []byte("x"), Mode: "100644"},
+	})
+	require.NoError(t, err)
+	assert.True(t, committed)
+	assert.Equal(t, 2, patchCount)
 }

@@ -2970,3 +2970,124 @@ func TestRunAgent_StatusNotifierSetup(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
+
+func TestResolveBackendFromConfigData_OrgConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, config.DefaultAgentRoles(), "", "acme")
+	cfg.Defaults.Runtime = "dummy"
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+
+	backend, err := resolveBackendFromConfigData(data)
+	require.NoError(t, err)
+	assert.Equal(t, "dummy", backend.Runtime.Name())
+}
+
+func TestResolveBackendFromConfigData_PerRepoConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), "acme/test-repo")
+	cfg.Runtime = "dummy"
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+
+	backend, err := resolveBackendFromConfigData(data)
+	require.NoError(t, err)
+	assert.Equal(t, "dummy", backend.Runtime.Name())
+}
+
+func TestResolveBackendFromConfigData_Invalid(t *testing.T) {
+	t.Parallel()
+
+	_, err := resolveBackendFromConfigData([]byte("not: [valid: yaml"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing config for runtime selection")
+}
+
+func TestResolveBackendFromConfigData_UnknownRuntime(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, config.DefaultAgentRoles(), "", "acme")
+	cfg.Defaults.Runtime = "nonexistent"
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+
+	_, err = resolveBackendFromConfigData(data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving runtime")
+}
+
+func TestIsOrgConfigData(t *testing.T) {
+	t.Parallel()
+
+	perRepo := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), "acme/test-repo")
+	perRepoData, err := perRepo.Marshal()
+	require.NoError(t, err)
+	assert.False(t, isOrgConfigData(perRepoData))
+
+	org := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, config.DefaultAgentRoles(), "", "acme")
+	orgData, err := org.Marshal()
+	require.NoError(t, err)
+	assert.True(t, isOrgConfigData(orgData))
+}
+
+func TestBackendFromConfigFile_MissingUsesDefault(t *testing.T) {
+	t.Parallel()
+
+	backend, err := backendFromConfigFile(filepath.Join(t.TempDir(), "missing.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, "claude", backend.Runtime.Name())
+}
+
+func TestBackendFromConfigFile_PerRepoConfig(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), "acme/test-repo")
+	cfg.Runtime = "dummy"
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, data, 0o644))
+
+	backend, err := backendFromConfigFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "dummy", backend.Runtime.Name())
+}
+
+func TestBackendFromConfigFile_ReadError(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("directory-as-file read error differs on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.Mkdir(path, 0o755))
+
+	_, err := backendFromConfigFile(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading org config for runtime selection")
+}
+
+func TestBackendFromConfigFile_ResolveError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, config.DefaultAgentRoles(), "", "acme")
+	cfg.Defaults.Runtime = "nonexistent"
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, data, 0o644))
+
+	_, err = backendFromConfigFile(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving runtime")
+}
+
+func TestIsOrgConfigData_InvalidYAML(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, isOrgConfigData([]byte("not: [valid")))
+}

@@ -945,3 +945,40 @@ func TestRunGitHubSetupPerRepo_SecretCheckError(t *testing.T) {
 	assert.Contains(t, err.Error(), "API rate limit exceeded")
 	assert.Contains(t, err.Error(), "checking existing secret")
 }
+
+func TestRunGitHubSetupPerRepo_RuntimeInConfig(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	client.Secrets = map[string]bool{
+		"acme/widget/FULLSEND_GCP_PROJECT_ID":   true,
+		"acme/widget/FULLSEND_GCP_WIF_PROVIDER": true,
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:          "acme/widget",
+		mintURL:         "https://mint-test-abc123.run.app",
+		inferenceRegion: "global",
+		agents:          strings.Join(config.PerRepoDefaultRoles(), ","),
+		runtime:         "dummy",
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, client.CommittedFilesToBranch)
+
+	var cfgContent []byte
+	for _, batch := range client.CommittedFilesToBranch {
+		for _, f := range batch.Files {
+			if f.Path == ".fullsend/config.yaml" {
+				cfgContent = f.Content
+				break
+			}
+		}
+	}
+	require.NotEmpty(t, cfgContent, "expected .fullsend/config.yaml in committed files")
+	cfg, err := config.ParsePerRepoConfig(cfgContent)
+	require.NoError(t, err)
+	assert.Equal(t, "dummy", cfg.Runtime)
+}

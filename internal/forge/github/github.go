@@ -739,7 +739,15 @@ func (c *LiveClient) CommitFiles(ctx context.Context, owner, repo, message strin
 		return false, fmt.Errorf("decode repo info: %w", err)
 	}
 
-	return c.commitFilesTo(ctx, owner, repo, repoInfo.DefaultBranch, message, files)
+	return c.commitFilesWithRetry(ctx, owner, repo, repoInfo.DefaultBranch, message, files)
+}
+
+func (c *LiveClient) commitFilesWithRetry(ctx context.Context, owner, repo, branch, message string, files []forge.TreeFile) (bool, error) {
+	changed, err := c.commitFilesTo(ctx, owner, repo, branch, message, files)
+	if err != nil && forge.IsNonFastForward(err) {
+		changed, err = c.commitFilesTo(ctx, owner, repo, branch, message, files)
+	}
+	return changed, err
 }
 
 // CommitFilesToBranch atomically commits multiple files to a specific
@@ -748,7 +756,7 @@ func (c *LiveClient) CommitFilesToBranch(ctx context.Context, owner, repo, branc
 	if len(files) == 0 {
 		return false, nil
 	}
-	return c.commitFilesTo(ctx, owner, repo, branch, message, files)
+	return c.commitFilesWithRetry(ctx, owner, repo, branch, message, files)
 }
 
 // commitFilesTo is the shared implementation for CommitFiles and
@@ -899,8 +907,13 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	refUpdateResp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/git/refs/heads/%s", owner, repo, branch), refPayload)
 	if err != nil {
 		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isBranchProtectionError(apiErr) {
-			return false, fmt.Errorf("%w: %w", forge.ErrBranchProtected, err)
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+			if isBranchProtectionError(apiErr) {
+				return false, fmt.Errorf("%w: %w", forge.ErrBranchProtected, err)
+			}
+			if isNonFastForwardError(apiErr) {
+				return false, fmt.Errorf("%w: %w", forge.ErrNonFastForward, err)
+			}
 		}
 		return false, fmt.Errorf("update ref: %w", err)
 	}
@@ -1061,6 +1074,14 @@ func isBranchProtectionError(apiErr *APIError) bool {
 		strings.Contains(msg, "required status") ||
 		strings.Contains(msg, "required review") ||
 		strings.Contains(msg, "rule violation")
+}
+
+func isNonFastForwardError(apiErr *APIError) bool {
+	msg := strings.ToLower(apiErr.Message)
+	for _, d := range apiErr.Errors {
+		msg += " " + strings.ToLower(d.Message)
+	}
+	return strings.Contains(msg, "fast forward")
 }
 
 func isAlreadyExistsError(apiErr *APIError) bool {
@@ -1841,6 +1862,7 @@ func (c *LiveClient) GetLatestWorkflowRun(ctx context.Context, owner, repo, work
 		WorkflowRuns []struct {
 			ID         int    `json:"id"`
 			Name       string `json:"name"`
+			Event      string `json:"event"`
 			Status     string `json:"status"`
 			Conclusion string `json:"conclusion"`
 			HTMLURL    string `json:"html_url"`
@@ -1859,6 +1881,7 @@ func (c *LiveClient) GetLatestWorkflowRun(ctx context.Context, owner, repo, work
 	return &forge.WorkflowRun{
 		ID:         run.ID,
 		Name:       run.Name,
+		Event:      run.Event,
 		Status:     run.Status,
 		Conclusion: run.Conclusion,
 		HTMLURL:    run.HTMLURL,
@@ -1876,6 +1899,7 @@ func (c *LiveClient) GetWorkflowRun(ctx context.Context, owner, repo string, run
 	var run struct {
 		ID         int    `json:"id"`
 		Name       string `json:"name"`
+		Event      string `json:"event"`
 		Status     string `json:"status"`
 		Conclusion string `json:"conclusion"`
 		HTMLURL    string `json:"html_url"`
@@ -1888,6 +1912,7 @@ func (c *LiveClient) GetWorkflowRun(ctx context.Context, owner, repo string, run
 	return &forge.WorkflowRun{
 		ID:         run.ID,
 		Name:       run.Name,
+		Event:      run.Event,
 		Status:     run.Status,
 		Conclusion: run.Conclusion,
 		HTMLURL:    run.HTMLURL,
@@ -1957,6 +1982,19 @@ func (c *LiveClient) CreateIssue(ctx context.Context, owner, repo, title, body s
 	}, nil
 }
 
+// AddIssueLabels adds labels to an existing issue.
+func (c *LiveClient) AddIssueLabels(ctx context.Context, owner, repo string, number int, labels ...string) error {
+	if len(labels) == 0 {
+		return nil
+	}
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/labels", owner, repo, number), labels)
+	if err != nil {
+		return fmt.Errorf("add issue labels: %w", err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // CloseIssue closes an issue by number.
 func (c *LiveClient) CloseIssue(ctx context.Context, owner, repo string, number int) error {
 	resp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d", owner, repo, number), map[string]string{"state": "closed"})
@@ -1965,6 +2003,37 @@ func (c *LiveClient) CloseIssue(ctx context.Context, owner, repo string, number 
 	}
 	resp.Body.Close()
 	return nil
+}
+
+// GetIssue returns an issue by number.
+func (c *LiveClient) GetIssue(ctx context.Context, owner, repo string, number int) (*forge.Issue, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d", owner, repo, number))
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return nil, forge.ErrNotFound
+		}
+		return nil, fmt.Errorf("get issue #%d: %w", number, err)
+	}
+	var result struct {
+		Number  int    `json:"number"`
+		Title   string `json:"title"`
+		Body    string `json:"body"`
+		HTMLURL string `json:"html_url"`
+		Labels  []struct {
+			Name string `json:"name"`
+		} `json:"labels"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode issue #%d: %w", number, err)
+	}
+	return &forge.Issue{
+		Number: result.Number,
+		Title:  result.Title,
+		Body:   result.Body,
+		URL:    result.HTMLURL,
+		Labels: labelNames(result.Labels),
+	}, nil
 }
 
 func labelNames(labels []struct {
@@ -2389,6 +2458,7 @@ func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 		WorkflowRuns []struct {
 			ID         int    `json:"id"`
 			Name       string `json:"name"`
+			Event      string `json:"event"`
 			Status     string `json:"status"`
 			Conclusion string `json:"conclusion"`
 			HTMLURL    string `json:"html_url"`
@@ -2403,6 +2473,7 @@ func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 		runs[i] = forge.WorkflowRun{
 			ID:         r.ID,
 			Name:       r.Name,
+			Event:      r.Event,
 			Status:     r.Status,
 			Conclusion: r.Conclusion,
 			HTMLURL:    r.HTMLURL,
@@ -2410,6 +2481,127 @@ func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 		}
 	}
 	return runs, nil
+}
+
+// ListRecentWorkflowRuns returns recent workflow runs across all workflows.
+func (c *LiveClient) ListRecentWorkflowRuns(ctx context.Context, owner, repo string, perPage int) ([]forge.WorkflowRun, error) {
+	if perPage <= 0 {
+		perPage = 30
+	}
+	if perPage > 100 {
+		perPage = 100
+	}
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs?per_page=%d", owner, repo, perPage))
+	if err != nil {
+		return nil, fmt.Errorf("list recent workflow runs: %w", err)
+	}
+	var result struct {
+		WorkflowRuns []struct {
+			ID         int    `json:"id"`
+			Name       string `json:"name"`
+			Event      string `json:"event"`
+			Status     string `json:"status"`
+			Conclusion string `json:"conclusion"`
+			HTMLURL    string `json:"html_url"`
+			CreatedAt  string `json:"created_at"`
+		} `json:"workflow_runs"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode recent workflow runs: %w", err)
+	}
+	runs := make([]forge.WorkflowRun, len(result.WorkflowRuns))
+	for i, r := range result.WorkflowRuns {
+		runs[i] = forge.WorkflowRun{
+			ID:         r.ID,
+			Name:       r.Name,
+			Event:      r.Event,
+			Status:     r.Status,
+			Conclusion: r.Conclusion,
+			HTMLURL:    r.HTMLURL,
+			CreatedAt:  r.CreatedAt,
+		}
+	}
+	return runs, nil
+}
+
+// ListWorkflowRunArtifacts returns artifacts uploaded by a workflow run.
+func (c *LiveClient) ListWorkflowRunArtifacts(ctx context.Context, owner, repo string, runID int) ([]forge.WorkflowArtifact, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/runs/%d/artifacts", owner, repo, runID))
+	if err != nil {
+		return nil, fmt.Errorf("list workflow run artifacts: %w", err)
+	}
+	var result struct {
+		Artifacts []struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+		} `json:"artifacts"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode workflow run artifacts: %w", err)
+	}
+	artifacts := make([]forge.WorkflowArtifact, len(result.Artifacts))
+	for i, art := range result.Artifacts {
+		artifacts[i] = forge.WorkflowArtifact{ID: art.ID, Name: art.Name}
+	}
+	return artifacts, nil
+}
+
+// DownloadWorkflowRunArtifact returns the zip archive for a workflow artifact.
+func (c *LiveClient) DownloadWorkflowRunArtifact(ctx context.Context, owner, repo string, artifactID int) ([]byte, error) {
+	resp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s/actions/artifacts/%d/zip", owner, repo, artifactID), nil)
+	if err != nil {
+		return nil, fmt.Errorf("download workflow artifact %d: %w", artifactID, err)
+	}
+	defer resp.Body.Close()
+	if err := checkStatus(resp, http.StatusOK); err != nil {
+		return nil, fmt.Errorf("download workflow artifact %d: %w", artifactID, err)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read workflow artifact %d: %w", artifactID, err)
+	}
+	return data, nil
+}
+
+// ListRepositoryArtifacts returns recent artifacts stored for a repository.
+func (c *LiveClient) ListRepositoryArtifacts(ctx context.Context, owner, repo string, perPage int) ([]forge.RepositoryArtifact, error) {
+	if perPage <= 0 {
+		perPage = 100
+	}
+	if perPage > 100 {
+		perPage = 100
+	}
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/artifacts?per_page=%d", owner, repo, perPage))
+	if err != nil {
+		return nil, fmt.Errorf("list repository artifacts: %w", err)
+	}
+	var result struct {
+		Artifacts []struct {
+			ID          int    `json:"id"`
+			Name        string `json:"name"`
+			CreatedAt   string `json:"created_at"`
+			Expired     bool   `json:"expired"`
+			WorkflowRun struct {
+				ID int `json:"id"`
+			} `json:"workflow_run"`
+		} `json:"artifacts"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode repository artifacts: %w", err)
+	}
+	artifacts := make([]forge.RepositoryArtifact, 0, len(result.Artifacts))
+	for _, art := range result.Artifacts {
+		if art.Expired {
+			continue
+		}
+		artifacts = append(artifacts, forge.RepositoryArtifact{
+			ID:            art.ID,
+			Name:          art.Name,
+			CreatedAt:     art.CreatedAt,
+			WorkflowRunID: art.WorkflowRun.ID,
+		})
+	}
+	return artifacts, nil
 }
 
 // GetWorkflowRunLogs downloads the logs for a workflow run.

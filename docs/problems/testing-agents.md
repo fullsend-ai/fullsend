@@ -8,6 +8,8 @@ Testing application code is a solved problem with mature tooling: unit tests, in
 
 Today, if someone modifies a review agent's instructions, the only verification is human review of the prose change. There is no automated way to confirm the agent still behaves correctly after the modification. This is the equivalent of shipping code changes with no test suite — something we would never accept for application code.
 
+**Behaviour tests are orthogonal.** [ADR 0063](../ADRs/0063-behaviour-tests-with-gherkin-and-drivers.md) describes Gherkin end-to-end tests under `e2e/behaviour/` that validate deterministic platform code (workflows, harness, sandbox policy, post-scripts) with inference explicitly removed via the dummy runtime. They do not evaluate instructions, prompts, or models, and they do not replace golden-set or statistical LLM evals described below.
+
 ## What makes agent testing hard
 
 ### Non-determinism
