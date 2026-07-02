@@ -411,6 +411,24 @@ func TestRecorder_SetMetricsNilAndDisabledSafe(t *testing.T) {
 	assert.NotPanics(t, func() { disabled.SetMetrics(RunMetrics{InputTokens: 1}) })
 }
 
+func TestRecorder_RootSpanCarriesGenAIIdentity(t *testing.T) {
+	// ADR 0050 names gen_ai.operation.name and gen_ai.agent.name on run
+	// spans; they live at the source (Level 1) so the local file and any
+	// Level 2 export stay two views of one truth.
+	dir := t.TempDir()
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID},
+		"triage", "wi", time.Now())
+	r.Finalize(0)
+
+	lines := readLines(t, filepath.Join(dir, TelemetryFile))
+	require.NotEmpty(t, lines)
+	attrs, ok := lines[0]["attrs"].(map[string]any)
+	require.True(t, ok, "root span_start has attrs")
+	assert.Equal(t, "invoke_agent", attrs["gen_ai.operation.name"])
+	assert.Equal(t, "triage", attrs["gen_ai.agent.name"])
+	assert.Equal(t, "triage", attrs["agent"], "existing key kept for consumers of the L1 schema")
+}
+
 func TestRecorder_RootSpanRecordsRemoteParent(t *testing.T) {
 	// When the run adopts an inbound TRACEPARENT (issue #2779), the root span
 	// must record the inbound span-id as its parent so the exported trace

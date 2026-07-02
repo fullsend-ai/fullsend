@@ -152,7 +152,13 @@ func New(dir string, tc TraceContext, agent, workItemID string, start time.Time)
 	r.emit(eventRecord{
 		V: SchemaVersion, Event: "span_start", TraceID: r.traceID, SpanID: r.rootSpanID,
 		Parent: r.parentSpanID, Name: "run", TS: start.UTC().Format(time.RFC3339Nano),
-		WorkItemID: workItemID, Attrs: map[string]any{"agent": agent},
+		WorkItemID: workItemID, Attrs: map[string]any{
+			// OTEL GenAI semconv identity per ADR 0050; the bare "agent" key
+			// predates it and stays for consumers of the Level 1 schema.
+			"agent":                 agent,
+			"gen_ai.operation.name": "invoke_agent",
+			"gen_ai.agent.name":     agent,
+		},
 	})
 	r.mu.Unlock()
 	return r
