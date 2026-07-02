@@ -902,6 +902,76 @@ func TestRunMintStatus_WithHealthVersion(t *testing.T) {
 	assert.Contains(t, out.String(), "abc123")
 }
 
+func TestQueryMintHealth_InvalidJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `not-valid-json`)
+	}))
+	defer srv.Close()
+
+	_, _, err := queryMintHealth(context.Background(), srv.URL)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "decoding health response")
+}
+
+func TestQueryMintHealth_ConnectionRefused(t *testing.T) {
+	// Use a URL pointing to a port that nothing is listening on.
+	_, _, err := queryMintHealth(context.Background(), "http://127.0.0.1:1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "querying health")
+}
+
+func TestQueryMintHealth_BadURL(t *testing.T) {
+	// A URL with an invalid scheme triggers the request-creation error path.
+	_, _, err := queryMintHealth(context.Background(), "://bad-url")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating health request")
+}
+
+func TestRunMintStatus_HealthError(t *testing.T) {
+	// When the health endpoint is unreachable, runMintStatus should still
+	// succeed and print a warning instead of failing.
+	client := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI: "http://127.0.0.1:1", // unreachable
+			EnvVars: map[string]string{
+				"ROLE_APP_IDS": `{"coder":"100"}`,
+				"ALLOWED_ORGS": "test-org",
+			},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100"}`,
+			"ALLOWED_ORGS": "test-org",
+		}),
+		gcf.WithFakeRevisionInfo(&gcf.ServiceRevisionInfo{
+			TrafficRevisionShort:   "fullsend-mint-00001",
+			TrafficPercent:         100,
+			TemplateMatchesTraffic: true,
+			TrafficEnvVars: map[string]string{
+				"ROLE_APP_IDS": `{"coder":"100"}`,
+				"ALLOWED_ORGS": "test-org",
+			},
+			RecentRevisions: []gcf.RevisionSummary{{
+				Name:       "fullsend-mint-00001",
+				CreateTime: "2026-06-16T12:00:00Z",
+				Active:     true,
+			}},
+		}),
+		gcf.WithFakeWIFProvider(&gcf.WIFProviderInfo{
+			AttributeCondition: "assertion.repository_owner in ['test-org']",
+		}),
+		gcf.WithFakeSecrets(map[string]bool{
+			"fullsend-coder-pem": true,
+		}),
+	)
+	withMintGCFClient(t, client)
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "test-org")
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "Could not query mint version")
+}
+
 func TestRunMintStatus_NotInstalled(t *testing.T) {
 	withMintGCFClient(t, gcf.NewFakeGCFClient())
 	out := &strings.Builder{}
