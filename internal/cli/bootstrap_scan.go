@@ -58,8 +58,10 @@ func scanAgentFile(pipeline *security.Pipeline, agentPath string, failClosed boo
 			return fmt.Errorf("agent definition %q blocked: critical injection findings", agentPath)
 		}
 		fmt.Fprintf(os.Stderr, "WARNING: agent definition %q has critical injection findings (fail_mode: open)\n", agentPath)
+		printScanFindings(result.Findings)
 	} else if len(result.Findings) > 0 {
 		fmt.Fprintf(os.Stderr, "WARNING: agent definition %q has %d injection finding(s)\n", agentPath, len(result.Findings))
+		printScanFindings(result.Findings)
 	}
 	return nil
 }
@@ -84,8 +86,10 @@ func scanSkillDir(pipeline *security.Pipeline, skillPath string, failClosed bool
 			return fmt.Errorf("skill %q blocked: critical injection findings in SKILL.md", skillPath)
 		}
 		fmt.Fprintf(os.Stderr, "WARNING: skill %q has critical injection findings (fail_mode: open) — uploading anyway\n", skillPath)
+		printScanFindings(result.Findings)
 	} else if len(result.Findings) > 0 {
 		fmt.Fprintf(os.Stderr, "WARNING: skill %q has %d non-critical injection finding(s) — not blocked (only critical findings block); uploading\n", skillPath, len(result.Findings))
+		printScanFindings(result.Findings)
 	}
 	return nil
 }
@@ -102,9 +106,17 @@ func scanPluginDir(pipeline *security.Pipeline, pluginPath string, failClosed bo
 				return fmt.Errorf("plugin %q blocked: critical injection findings in %s", pluginPath, name)
 			}
 			fmt.Fprintf(os.Stderr, "WARNING: plugin %q has critical injection findings in %s (fail_mode: open)\n", pluginPath, name)
+			printScanFindings(result.Findings)
 		} else if len(result.Findings) > 0 {
 			fmt.Fprintf(os.Stderr, "WARNING: plugin %q has %d injection finding(s) in %s\n", pluginPath, len(result.Findings), name)
+			printScanFindings(result.Findings)
 		}
 	}
 	return nil
+}
+
+func printScanFindings(findings []security.Finding) {
+	for _, f := range findings {
+		fmt.Fprintf(os.Stderr, "  [%s] %s: %s\n", f.Severity, f.Name, f.Detail)
+	}
 }
