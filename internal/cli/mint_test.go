@@ -784,6 +784,44 @@ func TestRunMintEnrollRepo_InvalidFormat(t *testing.T) {
 	assert.Contains(t, err.Error(), "owner/repo")
 }
 
+func TestQueryMintHealth_WithVersion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/health", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"status":"ok","version":"0.27.0","commit":"abc123"}`)
+	}))
+	defer srv.Close()
+
+	ver, commit, err := queryMintHealth(context.Background(), srv.URL)
+	require.NoError(t, err)
+	assert.Equal(t, "0.27.0", ver)
+	assert.Equal(t, "abc123", commit)
+}
+
+func TestQueryMintHealth_NoVersion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"status":"ok"}`)
+	}))
+	defer srv.Close()
+
+	ver, commit, err := queryMintHealth(context.Background(), srv.URL)
+	require.NoError(t, err)
+	assert.Empty(t, ver)
+	assert.Empty(t, commit)
+}
+
+func TestQueryMintHealth_ServerError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	_, _, err := queryMintHealth(context.Background(), srv.URL)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "500")
+}
+
 func TestRunMintStatus_Healthy(t *testing.T) {
 	withMintGCFClient(t, mintDiscoveryClient())
 	out := &strings.Builder{}

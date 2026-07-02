@@ -42,8 +42,10 @@ type mintResponse struct {
 
 // statusResponse is returned by the /v1/status diagnostic endpoint.
 type statusResponse struct {
-	Org   string   `json:"org"`
-	Roles []string `json:"roles"`
+	Org     string   `json:"org"`
+	Roles   []string `json:"roles"`
+	Version string   `json:"version,omitempty"`
+	Commit  string   `json:"commit,omitempty"`
 }
 
 // Handler holds dependencies for the token mint HTTP server.
@@ -57,6 +59,9 @@ type Handler struct {
 	roleAppIDs       map[string]string
 	allowedRoles     []string
 	legacyAppIDsOnly bool // ROLE_APP_IDS has org/role keys but no role-only keys
+
+	version string
+	commit  string
 
 	foreignCache    map[string]foreignCacheEntry
 	foreignInflight map[string]*foreignInflight
@@ -84,6 +89,8 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		pemAccessor:     pemAccessor,
 		oidcVerifier:    oidcVerifier,
 		githubBaseURL:   "https://api.github.com",
+		version:         os.Getenv("FULLSEND_VERSION"),
+		commit:          os.Getenv("FULLSEND_COMMIT"),
 		foreignCache:    make(map[string]foreignCacheEntry),
 		foreignInflight: make(map[string]*foreignInflight),
 		foreignCacheTTL: defaultForeignCacheTTL,
@@ -307,8 +314,15 @@ func (h *Handler) handleHealth(w http.ResponseWriter) {
 		})
 		return
 	}
+	resp := map[string]string{"status": "ok"}
+	if h.version != "" {
+		resp["version"] = h.version
+	}
+	if h.commit != "" {
+		resp["commit"] = h.commit
+	}
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintln(w, `{"status":"ok"}`)
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (h *Handler) handleStatus(w http.ResponseWriter, claims *Claims) {
@@ -319,8 +333,10 @@ func (h *Handler) handleStatus(w http.ResponseWriter, claims *Claims) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(statusResponse{
-		Org:   org,
-		Roles: roles,
+		Org:     org,
+		Roles:   roles,
+		Version: h.version,
+		Commit:  h.commit,
 	}); err != nil {
 		log.Printf("encoding status response: %v", err)
 	}

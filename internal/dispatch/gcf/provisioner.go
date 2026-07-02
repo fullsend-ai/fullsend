@@ -122,6 +122,13 @@ type Config struct {
 
 	// DeployMode controls function deployment: auto (default) or skip.
 	DeployMode DeployMode
+
+	// Version is the fullsend semver (e.g. "0.27.0") to stamp on the
+	// deployed mint. Passed as FULLSEND_VERSION env var.
+	Version string
+	// Commit is the git commit SHA to stamp on the deployed mint.
+	// Passed as FULLSEND_COMMIT env var.
+	Commit string
 }
 
 // Provisioner creates GCP infrastructure for OIDC-based token minting.
@@ -768,6 +775,12 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 		"OIDC_AUDIENCE":      oidcAudience,
 		"ROLE_APP_IDS":       roleAppIDsJSON,
 	}
+	if p.cfg.Version != "" {
+		envVars["FULLSEND_VERSION"] = p.cfg.Version
+	}
+	if p.cfg.Commit != "" {
+		envVars["FULLSEND_COMMIT"] = p.cfg.Commit
+	}
 
 	// Step 6b: Code deployment — only when source hash changes.
 	sourceZip := earlySourceZip
@@ -836,6 +849,12 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 			deployEnvVars["ALLOWED_WORKFLOW_FILES"] = "*"
 		}
 		deployEnvVars["FULLSEND_SOURCE_HASH"] = sourceHash
+		if p.cfg.Version != "" {
+			deployEnvVars["FULLSEND_VERSION"] = p.cfg.Version
+		}
+		if p.cfg.Commit != "" {
+			deployEnvVars["FULLSEND_COMMIT"] = p.cfg.Commit
+		}
 
 		storageSource, err := p.gcpAPI.UploadFunctionSource(ctx, p.cfg.ProjectID, p.cfg.Region, sourceZip)
 		if err != nil {
