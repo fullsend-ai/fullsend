@@ -339,9 +339,6 @@ func (p *Provisioner) DiscoverMint(ctx context.Context) (*MintDiscovery, error) 
 
 	d, runErr := p.discoverMintFromCloudRun(ctx)
 	if runErr != nil {
-		if cfErr != nil {
-			return nil, fmt.Errorf("checking mint function: %w", cfErr)
-		}
 		return nil, runErr
 	}
 	return d, nil
