@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "git -C .. submodule update --init",
+    "prebuild": "git -C .. submodule update --init",
     "dev": "vitepress dev",
     "build": "vitepress build",
     "preview": "vitepress preview"

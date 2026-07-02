@@ -236,7 +236,6 @@ export default defineConfig({
             },
             { text: 'Roadmap', link: '/roadmap' },
             { text: 'Landscape', link: '/landscape' },
-            { text: 'Site Deployment', link: '/site-deployment' },
             {
               text: 'Architecture Decisions',
               collapsed: true,
@@ -247,6 +246,13 @@ export default defineConfig({
               collapsed: true,
               items: getMarkdownFiles('problems', 'problems'),
             },
+            {
+              text: 'Experiments (Exploratory)',
+              collapsed: true,
+              items: getMarkdownFiles('experiments', 'experiments'),
+            },
+            { text: 'Doc Site', link: '/doc-site' },
+            { text: 'Web Admin (On Hold)', link: '/web-admin-deployment' },
           ],
         },
         {
@@ -266,11 +272,6 @@ export default defineConfig({
                 ...getMarkdownFiles('superpowers/plans', 'superpowers/plans'),
                 ...getMarkdownFiles('plans', 'plans'),
               ],
-            },
-            {
-              text: 'Experiments',
-              collapsed: true,
-              items: getMarkdownFiles('superpowers/experiments', 'superpowers/experiments'),
             },
           ],
         },
