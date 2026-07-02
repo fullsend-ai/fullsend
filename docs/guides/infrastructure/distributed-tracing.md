@@ -45,7 +45,54 @@ Langfuse, SigNoz, Honeycomb, Datadog, etc.
 If the endpoint is unreachable, the CLI continues normally — local files are
 still produced and the run is not affected.
 
+Operational details:
+
+- **Export timing:** spans are exported once, when the run closes, inside a
+  hard wall-clock budget (5 seconds). There is no mid-run network traffic; a
+  dead endpoint costs at most the budget and one warning line.
+- **Sampling:** when the run continues an inbound `TRACEPARENT` whose W3C
+  sampled flag is unset (`-00`), the upstream sampling decision is respected:
+  nothing is exported. Local files are always written regardless.
+- **Protocol:** OTLP over `http/protobuf` only. Setting
+  `OTEL_EXPORTER_OTLP_PROTOCOL` (or the traces-specific variant) to anything
+  else — e.g. `grpc` — skips export with a warning rather than posting
+  protobuf at a gRPC endpoint.
+- **Validation:** a malformed endpoint value skips export with a warning; it
+  is never silently replaced with the SDK's `localhost:4318` default.
+- **Kill switches:** `OTEL_SDK_DISABLED=true` and `OTEL_TRACES_EXPORTER=none`
+  are honored.
+- **Private CAs:** point `OTEL_EXPORTER_OTLP_CERTIFICATE` at a PEM bundle for
+  backends with certificates outside the system trust store. There is no
+  skip-verify option.
+
+### MLflow example
+
+MLflow ≥ 3.6 ingests OTLP/HTTP natively at `{server}/v1/traces` and routes
+traces to an experiment via a required header:
+
+```bash
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://mlflow.example.com/v1/traces"
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="x-mlflow-experiment-id=42"
+```
+
+Header values are URL-decoded, so spaces are percent-encoded — for a
+Basic-auth-fronted instance:
+
+```bash
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="authorization=Basic%20${CREDS_B64},x-mlflow-experiment-id=42"
+```
+
+> **Cost columns:** MLflow's per-trace cost is its own estimate — extracted
+> input/output token counts priced against MLflow's internal model table. It
+> excludes cache-creation/cache-read tokens, which dominate agent-run cost.
+> The authoritative figure is the runtime-reported `fullsend.cost_usd` on
+> `agent` spans (also in `run-summary.json`).
+
 ## Enabling content capture (Level 3)
+
+> **Planned:** Level 3 content capture is not yet implemented. This section
+> documents the contract decided in
+> [ADR 0050](../../ADRs/0050-distributed-tracing-instrumentation.md).
 
 By default, spans contain metadata only (timing, token counts, tool names,
 errors). To include full prompt/completion content in spans:
@@ -92,52 +139,48 @@ consumers (scripts, other agents) can continue the trace chain.
 
 ## Span structure
 
-A typical agent run produces this span hierarchy:
+A run produces this span hierarchy (span names match the `name` field in
+`run-telemetry.jsonl` — the exported spans and the local file are two views
+of the same trace, with identical span ids):
 
 ```
-fullsend-run (root, SpanKind=Consumer if dispatched)
-├── load-harness
-├── setup-sandbox
-│   └── create-sandbox (gen_ai.operation.name=create_agent)
-├── agent-execution.iteration-0
-│   └── (gen_ai.operation.name=invoke_agent)
-├── agent-execution.iteration-1
-├── collect-artifacts
-├── security-scan
-└── validation
+run (root; Consumer when dispatched with TRACEPARENT, else Internal)
+├── sandbox_create (gen_ai.operation.name=create_agent)
+└── agent           (one per iteration; gen_ai.operation.name=invoke_agent)
 ```
 
 ### GenAI semantic conventions
 
-Root and iteration spans carry [OTEL GenAI semantic convention](https://opentelemetry.io/docs/specs/semconv/gen-ai/) attributes:
+Spans carry [OTEL GenAI semantic convention](https://opentelemetry.io/docs/specs/semconv/gen-ai/) attributes:
 
-| Attribute | Example | Description |
-|-----------|---------|-------------|
-| `gen_ai.operation.name` | `invoke_agent` | The GenAI operation type |
-| `gen_ai.agent.name` | `triage` | The agent being executed |
-| `gen_ai.request.model` | `claude-sonnet-4-20250514` | The model configured in the harness |
-| `gen_ai.system` | `anthropic` | The LLM provider |
+| Attribute | Example | On |
+|-----------|---------|-----|
+| `gen_ai.operation.name` | `invoke_agent` | `run` and `agent` spans (`create_agent` on `sandbox_create`) |
+| `gen_ai.agent.name` | `triage` | `run` and `agent` spans |
+| `gen_ai.request.model` | `claude-opus-4-6` | `agent` spans (resolved model) |
+| `gen_ai.system` | `anthropic` | `agent` spans (the model vendor, from the runtime) |
+| `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` | `109938` | `agent` spans |
 
 These attributes enable LLM-aware backends to recognize fullsend spans as
 agent operations and surface them in GenAI-specific dashboards.
 
 ### SpanKind
 
-- **Consumer**: The root span when `TRACEPARENT` is set (the run was
-  dispatched by an external system).
-- **Internal**: The root span for local/manual invocations.
+- **Consumer**: The root span when a valid inbound `TRACEPARENT` was adopted
+  (the run was dispatched by an instrumented system).
+- **Internal**: The root span for local/manual invocations, and all child
+  spans.
 
 ## Custom attributes
 
-Every span also carries fullsend-specific attributes:
+Fullsend-specific attributes:
 
-| Attribute | Description |
-|-----------|-------------|
-| `fullsend.agent` | Agent name from the harness |
-| `fullsend.harness` | Path to the harness YAML |
-| `fullsend.model` | Model identifier |
-| `fullsend.image` | Container image used |
-| `fullsend.work_item_id` | Issue/PR number being addressed |
+| Attribute | On | Description |
+|-----------|-----|-------------|
+| `fullsend.work_item_id` | every span | Work item identity (e.g. `owner/repo#123`) — the primary cross-run correlation key |
+| `fullsend.cost_usd` | `agent` spans | Iteration cost in USD, rounded to cents |
+| `fullsend.tool_calls` | `agent` spans | Tool invocations in the iteration |
+| `agent` | `run` span | Agent name (predates `gen_ai.agent.name`; kept for Level 1 consumers) |
 
 ## GHA workflow configuration example
 
@@ -151,6 +194,26 @@ env:
 
 The secret names and values depend on your chosen backend. Consult your
 backend's documentation for the endpoint URL and authentication mechanism.
+
+### Organizing traces for an org
+
+Two conventions keep a shared backend navigable as repos onboard:
+
+1. **One backend bucket per org.** On MLflow, create one experiment per org
+   (e.g. `fullsend-<org>`) and point the org's header secret at its id. The
+   backend's per-bucket access controls then align with org boundaries.
+2. **Slice inside the bucket with resource attributes.** Standard OTel
+   resource env is honored, so workflows can tag every trace with repo,
+   agent, and environment:
+
+   ```yaml
+   env:
+     OTEL_RESOURCE_ATTRIBUTES: "fullsend.repo=${{ github.repository }},fullsend.agent=triage,deployment.environment=prod"
+   ```
+
+   These become filterable trace tags (enable them as columns in MLflow's
+   Traces table). `fullsend.work_item_id` is already on every span, so runs
+   for the same issue correlate without configuration.
 
 ## Local development
 
@@ -176,7 +239,7 @@ Other lightweight local backends:
 |---------|---------|-----|
 | Jaeger | `podman run -p 16686:16686 -p 4318:4318 jaegertracing/jaeger` | `localhost:16686` |
 | Arize Phoenix | `podman run -p 6006:6006 -p 4318:4318 arizephoenix/phoenix` | `localhost:6006` |
-| MLflow | `uvx mlflow server` (with OTLP plugin) | `localhost:5000` |
+| MLflow ≥ 3.6 | `uvx "mlflow>=3.6" server --backend-store-uri sqlite:///mlflow.db` (native OTLP at `/v1/traces`; requires the `x-mlflow-experiment-id` header — see the MLflow example above) | `localhost:5000` |
 
 ## Other backends
 
