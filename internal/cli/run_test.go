@@ -642,8 +642,19 @@ func TestResolveAgentSource_NoConfig(t *testing.T) {
 	assert.Empty(t, deps)
 }
 
+// canonTempDir returns t.TempDir() with symlinks resolved, so equality
+// assertions against containedLocalPath's symlink-resolved output hold on
+// hosts where the temp dir sits behind a symlink (e.g. macOS, where /var
+// is a symlink to /private/var).
+func canonTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	return dir
+}
+
 func TestResolveAgentSource_ConfigLocalPath(t *testing.T) {
-	dir := t.TempDir()
+	dir := canonTempDir(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "custom.yaml"),
@@ -715,7 +726,7 @@ func TestResolveAgentSource_ConfigLocalPathTraversalRejected(t *testing.T) {
 }
 
 func TestContainedLocalPath_Valid(t *testing.T) {
-	dir := t.TempDir()
+	dir := canonTempDir(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "agent.yaml"), []byte("test"), 0o644))
 	got, err := containedLocalPath(dir, "harness/agent.yaml")
@@ -738,7 +749,7 @@ func TestContainedLocalPath_TraversalRejected(t *testing.T) {
 }
 
 func TestContainedLocalPath_DotSegmentsCleaned(t *testing.T) {
-	dir := t.TempDir()
+	dir := canonTempDir(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "agent.yaml"), []byte("test"), 0o644))
 	got, err := containedLocalPath(dir, "harness/./agent.yaml")
