@@ -22,6 +22,11 @@ import (
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 )
 
+// errAllOrgsRateLimited is returned by acquireOrg when every pool org
+// was skipped due to GitHub API rate limiting. Callers can detect this
+// with errors.Is and t.Skip instead of failing the test.
+var errAllOrgsRateLimited = errors.New("all pool orgs rate-limited")
+
 const (
 	// testRepo is a pre-existing repo in the test org for enrollment testing.
 	testRepo = "test-repo"
@@ -45,6 +50,14 @@ const (
 	// than the longest expected e2e run (~7 min) but shorter than the
 	// job timeout (30 min).
 	staleLockTimeout = 15 * time.Minute
+
+	// rateLimitBackoffInitial is the first backoff interval after a
+	// rate-limit error during pool acquisition.
+	rateLimitBackoffInitial = 30 * time.Second
+
+	// rateLimitBackoffMax caps the exponential backoff between
+	// rate-limited polling rounds.
+	rateLimitBackoffMax = 2 * time.Minute
 )
 
 // orgPool is the set of GitHub orgs available for parallel e2e test runs.
@@ -76,6 +89,7 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 	// First pass: try each org without waiting. If a lock exists but is
 	// stale (older than staleLockTimeout), force-acquire it so we don't
 	// waste pool capacity on crashed runs.
+	sawRateLimit := false
 	for _, org := range shuffled {
 		logf("[org-pool] Trying to acquire %s...", org)
 		token, tokErr := tokenForOrg(ctx, cfg, org)
@@ -92,6 +106,7 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 			// just burns quota and delays recovery. Break immediately.
 			if gh.IsRateLimitError(err) {
 				logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
+				sawRateLimit = true
 				break
 			}
 			// Only attempt stale lock recovery for 422 errors (repo
@@ -120,20 +135,29 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 	}
 
 	// All orgs are locked. Round-robin poll until one frees up or
-	// the shared deadline expires.
+	// the shared deadline expires. Use exponential backoff when
+	// rate-limited to let the quota recover (#2875).
 	logf("[org-pool] All %d orgs are locked, polling with timeout %s", len(pool), timeout)
 	deadline := time.Now().Add(timeout)
+	rateLimitSeen := sawRateLimit
+	backoff := rateLimitBackoffInitial
 	for time.Now().Before(deadline) {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			break
 		}
-		wait := min(lockPollInterval, remaining)
+		pollWait := lockPollInterval
+		if rateLimitSeen {
+			pollWait = backoff
+			logf("[org-pool] Rate-limited, backing off %s before next round", pollWait)
+		}
+		wait := min(pollWait, remaining)
 		select {
 		case <-time.After(wait):
 		case <-ctx.Done():
 			return "", "", ctx.Err()
 		}
+		roundRateLimited := false
 		for _, org := range shuffled {
 			token, tokErr := tokenForOrg(ctx, cfg, org)
 			if tokErr != nil {
@@ -147,6 +171,7 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 				logf("[org-pool] Error trying %s: %v", org, err)
 				if gh.IsRateLimitError(err) {
 					logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
+					roundRateLimited = true
 					break
 				}
 				var apiErr *gh.APIError
@@ -170,8 +195,19 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 				}
 			}
 		}
+		if roundRateLimited {
+			rateLimitSeen = true
+			backoff = min(backoff*2, rateLimitBackoffMax)
+		} else {
+			// Rate limit cleared — reset to normal polling.
+			rateLimitSeen = false
+			backoff = rateLimitBackoffInitial
+		}
 	}
 
+	if rateLimitSeen {
+		return "", "", fmt.Errorf("could not acquire any org from pool after %s: %w", timeout, errAllOrgsRateLimited)
+	}
 	return "", "", fmt.Errorf("could not acquire any org from pool after %s (tried %d orgs)", timeout, len(pool))
 }
 
@@ -186,6 +222,7 @@ func acquireOrgFromClient(ctx context.Context, client forge.Client, token, runID
 	copy(shuffled, pool)
 	rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
 
+	sawRateLimit := false
 	for _, org := range shuffled {
 		logf("[org-pool] Trying to acquire %s...", org)
 		acquired, err := tryCreateLock(ctx, client, org, runID, logf)
@@ -193,6 +230,7 @@ func acquireOrgFromClient(ctx context.Context, client forge.Client, token, runID
 			logf("[org-pool] Error trying %s: %v", org, err)
 			if gh.IsRateLimitError(err) {
 				logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
+				sawRateLimit = true
 				break
 			}
 			var apiErr *gh.APIError
@@ -214,22 +252,31 @@ func acquireOrgFromClient(ctx context.Context, client forge.Client, token, runID
 	}
 
 	deadline := time.Now().Add(timeout)
+	rateLimitSeen := sawRateLimit
+	backoff := rateLimitBackoffInitial
 	for time.Now().Before(deadline) {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			break
 		}
-		wait := min(lockPollInterval, remaining)
+		pollWait := lockPollInterval
+		if rateLimitSeen {
+			pollWait = backoff
+			logf("[org-pool] Rate-limited, backing off %s before next round", pollWait)
+		}
+		wait := min(pollWait, remaining)
 		select {
 		case <-time.After(wait):
 		case <-ctx.Done():
 			return "", "", ctx.Err()
 		}
+		roundRateLimited := false
 		for _, org := range shuffled {
 			acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 			if err != nil {
 				if gh.IsRateLimitError(err) {
 					logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
+					roundRateLimited = true
 					break
 				}
 				var apiErr *gh.APIError
@@ -249,6 +296,16 @@ func acquireOrgFromClient(ctx context.Context, client forge.Client, token, runID
 				}
 			}
 		}
+		if roundRateLimited {
+			rateLimitSeen = true
+			backoff = min(backoff*2, rateLimitBackoffMax)
+		} else {
+			rateLimitSeen = false
+			backoff = rateLimitBackoffInitial
+		}
+	}
+	if rateLimitSeen {
+		return "", "", fmt.Errorf("could not acquire any org from pool after %s: %w", timeout, errAllOrgsRateLimited)
 	}
 	return "", "", fmt.Errorf("could not acquire any org from pool after %s (tried %d orgs)", timeout, len(pool))
 }
