@@ -76,7 +76,8 @@ Runner env (defaults shown):
 BEHAVIOUR_SCM=github
 BEHAVIOUR_CI=githubactions
 BEHAVIOUR_INSTALL_MODE=per-repo
-E2E_GCP_PROJECT_ID=...        # required in CI for mint enroll + per-repo inference secrets
+E2E_GCP_PROJECT_ID=...        # inference project for per-repo WIF secrets
+E2E_GCP_MINT_PROJECT_ID=...   # optional; defaults to hosted mint project when using public mint URL
 E2E_GCP_WIF_PROVIDER=...      # required in CI for per-repo WIF secret
 ```
 

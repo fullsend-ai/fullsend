@@ -104,9 +104,9 @@ func perRepoMintEnrollArgs(repoFullName, gcpProject string) []string {
 }
 
 func (d *perRepoDriver) enrollRepoInMint(repoFullName string) error {
-	project := strings.TrimSpace(d.e2eCfg.GCPProjectID)
+	project := admin.MintEnrollProjectID(d.e2eCfg)
 	if project == "" {
-		d.logf("[install] skipping mint enroll for %s (E2E_GCP_PROJECT_ID not set; repo must already be in PER_REPO_WIF_REPOS)", repoFullName)
+		d.logf("[install] skipping mint enroll for %s (no mint GCP project; set E2E_GCP_MINT_PROJECT_ID or E2E_GCP_PROJECT_ID, or use hosted mint URL)", repoFullName)
 		return nil
 	}
 

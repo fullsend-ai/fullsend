@@ -57,7 +57,8 @@ Required repository secrets:
 |--------|---------|
 | `E2E_GCP_WIF_PROVIDER` | GCP WIF provider (inference / auxiliary GCP access) |
 | `E2E_GCP_SERVICE_ACCOUNT` | GCP service account for WIF |
-| `E2E_GCP_PROJECT_ID` | GCP project ID (mint project for hosted mint: `it-gcp-konflux-dev-fullsend`) |
+| `E2E_GCP_PROJECT_ID` | GCP project ID for inference secrets (`github setup --inference-project`) |
+| `E2E_GCP_MINT_PROJECT_ID` | Optional override for `mint enroll --project` (default: hosted mint project when using public mint URL) |
 
 Mint URL uses the hosted public endpoint by default (same as `fullsend admin --mint-url`). Override with org/repo variable `FULLSEND_MINT_URL` if needed; no separate e2e secret.
 
@@ -65,7 +66,7 @@ Mint URL uses the hosted public endpoint by default (same as `fullsend admin --m
 
 Behaviour tests install fullsend in **per-repo** mode (`fullsend github setup`) and run `fullsend mint enroll <org>/test-repo` so vendored reusable workflows can mint same-org `triage` tokens (`PER_REPO_WIF_REPOS`). This is the first CI workflow that exercises per-repo mint enrollment; admin e2e only needs org-level cross-org `e2e` mint auth.
 
-The CI service account (`E2E_GCP_SERVICE_ACCOUNT`, impersonated via `E2E_GCP_WIF_PROVIDER`) must have these roles on the **mint GCP project** (`E2E_GCP_PROJECT_ID`):
+The CI service account (`E2E_GCP_SERVICE_ACCOUNT`, impersonated via `E2E_GCP_WIF_PROVIDER`) must have these roles on the **mint GCP project** — not necessarily the same project as `E2E_GCP_PROJECT_ID` (inference). Behaviour install resolves the mint project via `E2E_GCP_MINT_PROJECT_ID`, or defaults to `it-gcp-konflux-dev-fullsend` when using the hosted mint URL:
 
 | IAM role | Purpose |
 |----------|---------|
@@ -74,11 +75,11 @@ The CI service account (`E2E_GCP_SERVICE_ACCOUNT`, impersonated via `E2E_GCP_WIF
 | `roles/iam.workloadIdentityPoolAdmin` | Create/update repo-scoped WIF providers |
 | `roles/resourcemanager.projectIamAdmin` | Grant `roles/aiplatform.user` to per-repo WIF principals |
 
-Hosted mint example (project `it-gcp-konflux-dev-fullsend`, CI SA `github-fullsend-ai-fullsend-ci@it-gcp-konflux-dev-fullsend.iam.gserviceaccount.com`):
+Hosted mint example (project `it-gcp-konflux-dev-fullsend`). Grant roles on the **same** service account stored in the `E2E_GCP_SERVICE_ACCOUNT` repository secret (commonly `github-fullsend-ai-fullsen-966@…` or `github-fullsend-ai-fullsend-ci@…`):
 
 ```bash
 export GCP_PROJECT=it-gcp-konflux-dev-fullsend
-export E2E_SA=github-fullsend-ai-fullsend-ci@${GCP_PROJECT}.iam.gserviceaccount.com
+export E2E_SA="<value of E2E_GCP_SERVICE_ACCOUNT secret>"
 
 for ROLE in \
   roles/cloudfunctions.viewer \
