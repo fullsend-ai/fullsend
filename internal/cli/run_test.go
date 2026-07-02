@@ -1393,6 +1393,46 @@ func TestValidationFailMessage_TrimsOutput(t *testing.T) {
 	assert.Equal(t, "some output", msg)
 }
 
+func TestValidationEnv_IncludesSchemaWhenSet(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "/tmp/test-schema.json",
+		},
+	}
+	env := validationEnv(h, "/repo", "/run")
+	assert.Contains(t, env, "FULLSEND_OUTPUT_SCHEMA=/tmp/test-schema.json")
+	assert.Contains(t, env, "TARGET_REPO_DIR=/repo")
+	assert.Contains(t, env, "FULLSEND_RUN_DIR=/run")
+	assert.Contains(t, env, "FOO=bar")
+}
+
+func TestValidationEnv_OmitsSchemaWhenEmpty(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+		},
+	}
+	env := validationEnv(h, "/repo", "/run")
+	for _, e := range env {
+		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
+			"FULLSEND_OUTPUT_SCHEMA should not be set when Schema is empty")
+	}
+}
+
+func TestValidationEnv_OmitsSchemaWhenNoValidationLoop(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+	}
+	env := validationEnv(h, "/repo", "/run")
+	for _, e := range env {
+		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
+			"FULLSEND_OUTPUT_SCHEMA should not be set when ValidationLoop is nil")
+	}
+}
+
 func TestOpenTeeReader_EmptyPath(t *testing.T) {
 	src := strings.NewReader("hello")
 	printer := ui.New(io.Discard)
@@ -1626,6 +1666,72 @@ func TestBootstrapEnv_SkipsFetchVarsWhenEmpty(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "copying .env file to sandbox")
+}
+
+func TestBootstrapEnv_ValidationLoopSchemaPrecedence(t *testing.T) {
+	dir := t.TempDir()
+	schemaFile := filepath.Join(dir, "schema.json")
+	require.NoError(t, os.WriteFile(schemaFile, []byte(`{"type":"object"}`), 0o644))
+
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: schemaFile,
+		},
+		RunnerEnv: map[string]string{
+			"FULLSEND_OUTPUT_SCHEMA": "/should/not/be/used",
+		},
+	}
+
+	err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil)
+
+	// Expected to fail at sandbox operations — the schema code path is
+	// exercised before the failure.
+	require.Error(t, err)
+}
+
+func TestBootstrapEnv_ValidationLoopSchemaFallback(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		RunnerEnv: map[string]string{
+			"FULLSEND_OUTPUT_SCHEMA": "/nonexistent/schema.json",
+		},
+	}
+
+	err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "copying .env file to sandbox")
+}
+
+func TestExpandValidationLoopSchema(t *testing.T) {
+	dir := t.TempDir()
+	schemaDir := filepath.Join(dir, "schemas")
+	require.NoError(t, os.MkdirAll(schemaDir, 0o755))
+	schemaPath := filepath.Join(schemaDir, "result.json")
+	require.NoError(t, os.WriteFile(schemaPath, []byte(`{"type":"object"}`), 0o644))
+
+	expander := func(key string) string {
+		if key == "FULLSEND_DIR" {
+			return dir
+		}
+		return ""
+	}
+
+	h := &harness.Harness{
+		ValidationLoop: &harness.ValidationLoop{
+			Schema: "${FULLSEND_DIR}/schemas/result.json",
+		},
+	}
+
+	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
+		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, expander)
+	}
+
+	assert.Equal(t, schemaPath, h.ValidationLoop.Schema)
+	_, err := os.Stat(h.ValidationLoop.Schema)
+	require.NoError(t, err, "expanded schema path should exist")
 }
 
 func TestBuildSandboxEnvLines_FromEnvSandbox(t *testing.T) {

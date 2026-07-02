@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1869,6 +1870,83 @@ func TestIsTransientStatus(t *testing.T) {
 	for _, code := range nonTransient {
 		assert.False(t, isTransientStatus(code), "expected %d to not be transient", code)
 	}
+}
+
+func TestIsRetryable_PrimaryRateLimitAs403(t *testing.T) {
+	// GitHub sometimes returns primary rate limits as 403 with body
+	// containing "API rate limit exceeded" instead of 429. This must
+	// be detected as retryable.
+	body := `{"message":"API rate limit exceeded for user ID 12345."}`
+	resp := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	retryable, _ := isRetryable(resp)
+	assert.True(t, retryable, "403 with 'API rate limit exceeded' should be retryable")
+}
+
+func TestIsRateLimitError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "primary rate limit as 403",
+			err:      &APIError{StatusCode: 403, Message: "API rate limit exceeded for user ID 12345"},
+			expected: true,
+		},
+		{
+			name:     "secondary rate limit as 403",
+			err:      &APIError{StatusCode: 403, Message: "You have exceeded a secondary rate limit"},
+			expected: true,
+		},
+		{
+			name:     "429 too many requests",
+			err:      &APIError{StatusCode: 429, Message: "rate limit exceeded"},
+			expected: true,
+		},
+		{
+			name:     "403 not rate limit",
+			err:      &APIError{StatusCode: 403, Message: "Resource not accessible by integration"},
+			expected: false,
+		},
+		{
+			name:     "wrapped rate limit",
+			err:      fmt.Errorf("create repo: %w", &APIError{StatusCode: 403, Message: "API rate limit exceeded"}),
+			expected: true,
+		},
+		{
+			name:     "non-API error",
+			err:      fmt.Errorf("network error"),
+			expected: false,
+		},
+		{
+			name:     "nil error",
+			err:      nil,
+			expected: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, IsRateLimitError(tt.err))
+		})
+	}
+}
+
+func TestIsRetryable_403NotRateLimit(t *testing.T) {
+	// A 403 that is NOT a rate limit (e.g. insufficient permissions)
+	// should not be retryable.
+	body := `{"message":"Resource not accessible by integration"}`
+	resp := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	retryable, returnedBody := isRetryable(resp)
+	assert.False(t, retryable, "403 without rate limit text should not be retryable")
+	assert.NotNil(t, returnedBody, "body should be returned for non-rate-limit 403")
 }
 
 func TestIsRetryable_ServerErrors(t *testing.T) {

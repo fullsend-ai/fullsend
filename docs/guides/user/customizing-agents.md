@@ -38,12 +38,14 @@ post_script: scripts/post-code.sh
 
 validation_loop:
   script: scripts/validate-output-schema.sh
+  schema: schemas/result.schema.json
   max_iterations: 2
 
-runner_env:
-  PUSH_TOKEN: "${PUSH_TOKEN}"  # auto-minted in CI when --mint-url is provided
-  REPO_FULL_NAME: "${REPO_FULL_NAME}"
-  REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
+env:
+  runner:
+    PUSH_TOKEN: "${PUSH_TOKEN}"  # auto-minted in CI when --mint-url is provided
+    REPO_FULL_NAME: "${REPO_FULL_NAME}"
+    REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
 ```
 
 **Optional fields** (all have secure defaults and can be omitted):
@@ -52,7 +54,9 @@ runner_env:
 providers:                       # Inference providers (loaded from providers/ dir)
   - vertex                       # References providers/vertex.yaml
 
-validation_loop:
+validation_loop:                     # script is required; these sub-fields are optional
+  script: scripts/validate-output-schema.sh
+  schema: schemas/result.schema.json  # JSON Schema file for output validation (optional)
   feedback_mode: stderr          # "stderr", "stdout", or "exit_code" (optional)
 
 allowed_remote_resources:        # URL prefixes allowed for remote skills/agents/policies
@@ -356,12 +360,14 @@ post_script: scripts/post-code.sh
 
 validation_loop:
   script: scripts/custom-validate.sh  # Changed script
+  schema: schemas/custom-result.schema.json
   max_iterations: 5                   # Changed from: 2
 
-runner_env:
-  PUSH_TOKEN: "${PUSH_TOKEN}"
-  REPO_FULL_NAME: "${REPO_FULL_NAME}"
-  REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
+env:
+  runner:
+    PUSH_TOKEN: "${PUSH_TOKEN}"
+    REPO_FULL_NAME: "${REPO_FULL_NAME}"
+    REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
 ```
 
 Then create your custom skill at `.fullsend/customized/skills/my-custom-linting/SKILL.md`.

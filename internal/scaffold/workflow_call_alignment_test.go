@@ -438,3 +438,53 @@ func TestReusableDispatchWorkflowContent(t *testing.T) {
 	assert.Regexp(t, `(?s)/fs-review\)\s*\n\s+if \[\[ "\$\{ISSUE_IS_PR\}"`, s)
 	assert.Regexp(t, `(?s)ready-for-review"\s*\]\];\s*then\s*\n\s+if \[\[ "\$\{ISSUE_IS_PR\}"`, s)
 }
+
+// TestRoleCheckCaseBranches validates the role-check step's case mapping and
+// backward-compat logic in both dispatch workflows (#2298).
+func TestRoleCheckCaseBranches(t *testing.T) {
+	type workflowCase struct {
+		name    string
+		content func(t *testing.T) []byte
+	}
+
+	cases := []workflowCase{
+		{
+			"reusable-dispatch.yml",
+			loadRepoFile(".github/workflows/reusable-dispatch.yml"),
+		},
+		{
+			"scaffold/dispatch.yml",
+			loadScaffoldFile(".github/workflows/dispatch.yml"),
+		},
+	}
+
+	for _, wc := range cases {
+		t.Run(wc.name, func(t *testing.T) {
+			s := string(wc.content(t))
+
+			// code|fix must map to coder
+			assert.Contains(t, s, `code|fix) STAGE_ROLE="coder"`,
+				"code|fix should map to coder role")
+
+			// retro and prioritize must NOT be remapped to fullsend
+			assert.NotContains(t, s, `retro|prioritize) STAGE_ROLE="fullsend"`,
+				"retro/prioritize must not be remapped to fullsend (#2298)")
+
+			// backward compat: fullsend in roles implies retro + prioritize
+			assert.Regexp(t, `\^\(retro\|prioritize\)\$`, s,
+				"backward-compat regex should match retro and prioritize")
+			assert.Contains(t, s, `grep -Fqx "fullsend"`,
+				"backward-compat should check for fullsend in roles")
+
+			// compat path must emit a notice, not silently pass
+			assert.Regexp(t, `(?s)grep -Fqx "fullsend".*::notice::Stage`, s,
+				"backward-compat path must emit a ::notice:: annotation")
+
+			// stages that pass through unmapped must not be remapped
+			assert.NotRegexp(t, `triage\).*STAGE_ROLE=`, s,
+				"triage must not be remapped")
+			assert.NotRegexp(t, `review\).*STAGE_ROLE=`, s,
+				"review must not be remapped")
+		})
+	}
+}

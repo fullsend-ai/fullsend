@@ -216,12 +216,63 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
   fi
 
   if command -v pre-commit >/dev/null 2>&1; then
+    # SYNC: parallel retry block in post-code.sh section 5 — keep structure
+    #       in sync (variable names differ: BRANCH_CHANGED_FILES here vs
+    #       CHANGED_FILES there; SCAN_RANGE scopes differ by design).
     mapfile -t changed_array <<< "${BRANCH_CHANGED_FILES}"
     if pre-commit run --files "${changed_array[@]}"; then
       echo "Pre-commit passed — all hooks clean"
     else
-      echo "::error::BLOCKED — pre-commit hooks failed on agent's changes" >&2
-      exit 1
+      # Single retry only — do not convert to a loop without adding a cap.
+      # Scope detection/staging to changed_array so hooks can't inject files
+      # outside the pre-commit scope into the commit.
+      if git diff --name-only -- "${changed_array[@]}" | grep -q .; then
+        echo "::warning::Pre-commit hooks auto-fixed files — re-staging and retrying"
+        echo "Auto-fixed files:"
+        git diff --name-only -- "${changed_array[@]}" | sed 's/^/  /'
+        git diff --name-only -z -- "${changed_array[@]}" | xargs -0 -r git add --
+        git commit --amend --no-edit
+
+        echo "Re-running secret scan on amended commit..."
+        if ! gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact; then
+          echo "::error::BLOCKED — secret detected in amended commit after auto-fix" >&2
+          exit 1
+        fi
+        if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
+          echo "::error::BLOCKED — amended commit contains a Signed-off-by trailer" >&2
+          exit 1
+        fi
+
+        if [ -n "${MERGE_BASE}" ]; then
+          BRANCH_CHANGED_FILES="$(git diff --name-only "${MERGE_BASE}..HEAD")"
+        else
+          BRANCH_CHANGED_FILES="$(git diff --name-only "origin/${TARGET_BRANCH}..HEAD" 2>/dev/null \
+            || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+        fi
+        if [ -z "${BRANCH_CHANGED_FILES}" ]; then
+          echo "::error::BLOCKED — pre-commit hooks removed all changes; commit is now empty" >&2
+          exit 1
+        fi
+        mapfile -t changed_array <<< "${BRANCH_CHANGED_FILES}"
+        if pre-commit run --files "${changed_array[@]}"; then
+          if git diff --name-only -- "${changed_array[@]}" | grep -q .; then
+            echo "::error::BLOCKED — retry pre-commit left additional unstaged changes" >&2
+            echo "::error::Committed content would diverge from what pre-commit validated." >&2
+            exit 1
+          fi
+          echo "Pre-commit passed after auto-fix re-stage"
+        else
+          echo "::error::BLOCKED — pre-commit hooks still fail after auto-fix" >&2
+          echo "::error::The agent's code does not pass the repo's pre-commit hooks." >&2
+          echo "::error::Fix the issues and re-run, or update the pre-commit config." >&2
+          exit 1
+        fi
+      else
+        echo "::error::BLOCKED — pre-commit hooks failed on agent's changes" >&2
+        echo "::error::The agent's code does not pass the repo's pre-commit hooks." >&2
+        echo "::error::Fix the issues and re-run, or update the pre-commit config." >&2
+        exit 1
+      fi
     fi
   else
     echo "::warning::pre-commit not available — skipping authoritative check"
