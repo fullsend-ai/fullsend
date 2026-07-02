@@ -100,23 +100,6 @@ func TestWalkUpstreamIncludesReusableWorkflows(t *testing.T) {
 	}
 }
 
-func TestRenderDispatchPerRepoStagePaths(t *testing.T) {
-	var raw []byte
-	err := WalkUpstream(func(path string, content []byte) error {
-		if path == ".github/workflows/reusable-dispatch.yml" {
-			raw = content
-		}
-		return nil
-	})
-	require.NoError(t, err)
-	require.NotEmpty(t, raw)
-
-	rendered := RenderDispatchPerRepoStagePaths(raw)
-	assert.Contains(t, string(rendered), "uses: ./.github/workflows/reusable-triage.yml")
-	assert.Contains(t, string(rendered), "uses: ./.github/workflows/reusable-prioritize.yml")
-	assert.NotContains(t, string(rendered), "uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@v0")
-}
-
 func assertFreeOfRenderPlaceholders(t *testing.T, out string) {
 	t.Helper()
 	for _, placeholder := range []string{
@@ -129,12 +112,6 @@ func assertFreeOfRenderPlaceholders(t *testing.T, out string) {
 	} {
 		assert.NotContains(t, out, placeholder)
 	}
-}
-
-func TestRenderDispatchPerRepoStagePathsIgnoresOtherRepos(t *testing.T) {
-	input := []byte("uses: evil-org/evil-repo/.github/workflows/reusable-triage.yml@v0\n")
-	rendered := RenderDispatchPerRepoStagePaths(input)
-	assert.Equal(t, string(input), string(rendered))
 }
 
 func TestThinStageWorkflowRegistryMatchesTemplates(t *testing.T) {

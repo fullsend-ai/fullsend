@@ -20,13 +20,9 @@ func CollectVendoredAssets(root, workflowPrefix string) (InstallFiles, error) {
 
 	if err := walkVendoredUpstreamFromRoot(root, func(path string, content []byte) error {
 		if isVendoredReusableWorkflow(path) {
-			rendered := content
-			if path == ".github/workflows/reusable-dispatch.yml" && workflowPrefix == ".fullsend/" {
-				rendered = RenderDispatchPerRepoStagePaths(content)
-			}
 			files = append(files, InstallFile{
 				Path:    path,
-				Content: rendered,
+				Content: content,
 				Mode:    "100644",
 			})
 		}

@@ -10,13 +10,11 @@
 # attacks.
 #
 # Routing: this shim forwards the raw event context to reusable-dispatch.yml,
-# which determines the stage and conditionally calls the appropriate
-# reusable-{stage}.yml workflow. Adding a new stage requires only a case
-# branch in reusable-dispatch.yml — zero changes to this repo.
+# which determines the stage and runs the agent inline (ADR 62).
+# Adding a new stage requires only a job in reusable-dispatch.yml — zero changes to this repo.
 #
 # Concurrency: per-role cancel-in-progress groups live in reusable-dispatch.yml
-# stage jobs and agent-scoped groups on reusable-{stage}.yml — not on this shim.
-# A monolithic shim group would serialize unrelated roles and drop pending runs (#2452).
+# stage jobs with -agent- suffix. Roles operate independently (#2452).
 name: fullsend
 
 permissions:

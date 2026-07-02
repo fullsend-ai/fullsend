@@ -197,15 +197,8 @@ func TestWorkflowCallInputAlignment(t *testing.T) {
 		{"scaffold/prioritize.yml", loadRenderedScaffoldCaller(".github/workflows/prioritize.yml"), "prioritize"},
 	}
 
-	// Also validate reusable-dispatch.yml's stage jobs.
-	dispatchContent := loadRepoFile(".github/workflows/reusable-dispatch.yml")
-	for _, stage := range []string{"triage", "code", "review", "fix", "retro", "prioritize"} {
-		pairs = append(pairs, callerPair{
-			callerName:   fmt.Sprintf("reusable-dispatch/%s", stage),
-			callerSource: dispatchContent,
-			jobName:      stage,
-		})
-	}
+	// Note: reusable-dispatch.yml stage jobs are no longer validated here
+	// (ADR 62: stages inlined, no external uses:)
 
 	for _, pair := range pairs {
 		t.Run(pair.callerName, func(t *testing.T) {
@@ -320,10 +313,10 @@ func TestReusableDispatchProjectNumberInput(t *testing.T) {
 	require.True(t, ok, "reusable-dispatch.yml should declare project_number input")
 	assert.False(t, input.Required, "project_number should be optional (not all orgs use prioritize)")
 
-	// Verify the prioritize job passes it through.
+	// Verify the prioritize job uses it (ADR 62: env var, not with:).
 	s := string(content)
-	assert.True(t, strings.Contains(s, "project_number: ${{ inputs.project_number }}"),
-		"prioritize job should thread project_number from dispatch inputs")
+	assert.True(t, strings.Contains(s, "PRIORITIZE_PROJECT_NUMBER: ${{ inputs.project_number }}"),
+		"prioritize job should thread project_number to PRIORITIZE_PROJECT_NUMBER env var")
 }
 
 // TestOTELHeadersSecretThreading validates that the optional OTLP headers
@@ -427,32 +420,6 @@ func TestThinCallerStageConcurrency(t *testing.T) {
 			}
 			assert.True(t, wf.Concurrency.CancelInProgress,
 				"%s should cancel in-progress runs when a newer dispatch arrives", path)
-		})
-	}
-}
-
-// TestReusableDispatchUsesFullyQualifiedPaths validates that reusable-dispatch.yml
-// references stage workflows with fully-qualified paths, not relative (./) paths.
-// Relative paths resolve against the caller's repo, which breaks per-repo mode
-// where the caller is an external repo without these workflow files.
-func TestReusableDispatchUsesFullyQualifiedPaths(t *testing.T) {
-	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
-	require.NoError(t, err)
-
-	var caller callerWorkflow
-	require.NoError(t, yaml.Unmarshal(content, &caller))
-
-	stages := []string{"triage", "code", "review", "fix", "retro", "prioritize"}
-	for _, stage := range stages {
-		t.Run(stage, func(t *testing.T) {
-			job, ok := caller.Jobs[stage]
-			require.True(t, ok, "job %q not found", stage)
-			assert.True(t, strings.HasPrefix(job.Uses, "fullsend-ai/fullsend/"),
-				"job %q uses: must be fully-qualified (got %q); relative paths break per-repo mode",
-				stage, job.Uses)
-			assert.True(t, strings.Contains(job.Uses, "@"),
-				"job %q uses: must include a @ref suffix (got %q)",
-				stage, job.Uses)
 		})
 	}
 }
