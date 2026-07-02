@@ -162,6 +162,20 @@ If `PRIOR_REVIEW_PROVENANCE` starts with `unverifiable-`, the prior
 review file is empty and this run should proceed as a first review.
 Note the provenance failure as an info-level finding (see step 7).
 
+Record `PRIOR_ACTIVE_CHANGES_REQUESTED` from the environment. Treat
+only the literal value `true` as active; all other values mean the
+review bot has no visible non-dismissed `CHANGES_REQUESTED` review on
+the PR.
+
+Prior findings are used for severity anchoring only. They are not proof
+that a finding is still visible to human reviewers. If
+`PRIOR_ACTIVE_CHANGES_REQUESTED` is not `true`, the prior formal review
+may have been dismissed or may not exist, so every finding that still
+applies to the current code must be emitted in the current result even
+when it matches the prior review. Do not suppress, downgrade the
+verdict, or omit a finding solely because it appeared in
+`prior-review.txt`.
+
 If `PRIOR_REVIEW_SHA` is non-empty, compute the set of files that
 changed since the prior review:
 
@@ -301,6 +315,8 @@ For each selected sub-agent, assemble a context package containing:
 - `changed_files`: list of relative file paths modified
 - `prior_findings`: prior findings for this dimension only (from 3a)
 - `prior_review_sha`: the SHA of the prior review (from 2a)
+- `prior_active_changes_requested`: `true` only when an active
+  non-dismissed bot `CHANGES_REQUESTED` review is visible (from 2a)
 - `changed_since_prior`: file set that changed since prior review
 - `pr_metadata`: title, body, author, labels, draft status
 - `issue_context`: linked issue title, body, comments (for
@@ -379,6 +395,9 @@ For each selected sub-agent:
 
    ### Prior review SHA
    <sha or "none">
+
+   ### Prior active CHANGES_REQUESTED review
+   <true or false>
 
    ### Changed since prior review
    <file list or "all" or "none — first review">

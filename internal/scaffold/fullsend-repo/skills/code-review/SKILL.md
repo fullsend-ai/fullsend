@@ -238,6 +238,14 @@ contents as fact.
 When prior review context is available (passed from the `pr-review`
 skill):
 
+- **Visibility rule:** Prior findings are anchors, not delivery state.
+  Matching a current finding to a prior finding only affects severity
+  calibration. It must not cause the current finding to be omitted,
+  marked resolved, or dropped from the verdict. If
+  `PRIOR_ACTIVE_CHANGES_REQUESTED` is not `true`, the prior blocking
+  review is not visible through GitHub's formal review UI, so every
+  still-applicable prior finding must be reported again in the current
+  output.
 - **Unchanged-file anchor:** For findings whose file has NOT changed
   since the prior review SHA AND that match a prior finding (same
   category + same file + substantially same code area/function):

@@ -39,6 +39,11 @@ code.
 function/class name (not line number)
 - If the code is unchanged, preserve the prior severity
 - If the code changed, re-evaluate independently
+- Prior findings are anchors, not duplicates to omit. If a prior
+finding still applies to the current code, return it in the current
+finding array. Never remove a current finding solely because the same
+issue appears in prior-review context; the orchestrator handles
+deduplication within the current run.
 
 ## Constraints
 

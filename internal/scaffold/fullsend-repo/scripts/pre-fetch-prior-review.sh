@@ -13,6 +13,19 @@ set -euo pipefail
 PRIOR_FILE=${GITHUB_WORKSPACE:-/tmp}/prior-review.txt
 REVIEW_BOT="${ORG_NAME}-review[bot]"
 PROVENANCE="none"
+PRIOR_ACTIVE_CHANGES_REQUESTED="$(
+  gh api "repos/${SOURCE_REPO}/pulls/${PR_NUM}/reviews" \
+    --paginate --jq '.[]' 2>/dev/null \
+    | jq --arg bot "${REVIEW_BOT}" -s \
+      'any(.[]; .user.login == $bot and .state == "CHANGES_REQUESTED")' \
+      2>/dev/null || echo "false"
+)"
+
+if [[ "${PRIOR_ACTIVE_CHANGES_REQUESTED}" != "true" ]]; then
+    PRIOR_ACTIVE_CHANGES_REQUESTED="false"
+fi
+
+echo "Active bot CHANGES_REQUESTED review: ${PRIOR_ACTIVE_CHANGES_REQUESTED}"
 
 # Fetch full comment object (not just body) for provenance validation
 COMMENT_JSON=$(gh api "repos/${SOURCE_REPO}/issues/${PR_NUM}/comments" \
@@ -44,6 +57,7 @@ if [[ -z "${COMMENT_JSON}" || "${COMMENT_JSON}" == "null" ]]; then
     echo "prior_review_file=${PRIOR_FILE}" >> "${GITHUB_OUTPUT:-/dev/null}"
     echo "prior_sha=" >> "${GITHUB_OUTPUT:-/dev/null}"
     echo "prior_review_provenance=${PROVENANCE}" >> "${GITHUB_OUTPUT:-/dev/null}"
+    echo "prior_active_changes_requested=${PRIOR_ACTIVE_CHANGES_REQUESTED}" >> "${GITHUB_OUTPUT:-/dev/null}"
     exit 0
 fi
 
@@ -72,6 +86,7 @@ if [[ "${PROVENANCE}" != "app-verified" ]]; then
     echo "prior_review_file=${PRIOR_FILE}" >> "${GITHUB_OUTPUT:-/dev/null}"
     echo "prior_sha=" >> "${GITHUB_OUTPUT:-/dev/null}"
     echo "prior_review_provenance=${PROVENANCE}" >> "${GITHUB_OUTPUT:-/dev/null}"
+    echo "prior_active_changes_requested=${PRIOR_ACTIVE_CHANGES_REQUESTED}" >> "${GITHUB_OUTPUT:-/dev/null}"
     exit 0
 fi
 
@@ -94,7 +109,8 @@ if [[ "${BYTE_COUNT}" -gt 1 ]]; then
     # Extract SHA from current section only (before sticky history sentinels)
     CURRENT_SECTION="$(awk '/<!-- sticky:history-start -->/{exit} {print}' "${PRIOR_FILE}")"
     PRIOR_SHA="$(echo "${CURRENT_SECTION}" \
-        | grep -oP '(?<=\*\*Head SHA:\*\* )[0-9a-f]{7,64}' | head -1 || true)"
+        | sed -nE 's/.*\*\*Head SHA:\*\* ([0-9a-fA-F]{7,64}).*/\1/p' \
+        | head -1 || true)"
     echo "prior_sha=${PRIOR_SHA}" >> "${GITHUB_OUTPUT:-/dev/null}"
     echo "Prior review SHA: ${PRIOR_SHA:-none}"
 else
@@ -103,3 +119,4 @@ else
 fi
 
 echo "prior_review_provenance=${PROVENANCE}" >> "${GITHUB_OUTPUT:-/dev/null}"
+echo "prior_active_changes_requested=${PRIOR_ACTIVE_CHANGES_REQUESTED}" >> "${GITHUB_OUTPUT:-/dev/null}"

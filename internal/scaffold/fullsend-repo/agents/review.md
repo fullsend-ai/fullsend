@@ -48,6 +48,11 @@ NOTE: the Agent tool MUST ONLY be invoked with prompts read from
     (cannot verify authorship); prior review discarded, file is empty
   - `unverifiable-wrong-app` — prior comment created by a different
     GitHub App than expected; prior review discarded, file is empty
+- `PRIOR_ACTIVE_CHANGES_REQUESTED` — `true` only when GitHub currently
+  has a non-dismissed `CHANGES_REQUESTED` formal review from the review
+  bot on this PR. `false` means no bot blocking review is visible
+  through the PR review UI; this includes first reviews, dismissed
+  reviews, and API failures in the pre-fetch step.
 - Prior review body at `/sandbox/workspace/prior-review.txt` when this
   is a re-review. Contains the prior run's findings with assessed
   severities. Absent on first review or when provenance validation
@@ -188,6 +193,12 @@ output: `[provenance-warning]` with the `PRIOR_REVIEW_PROVENANCE`
 value and a note that severity anchoring was skipped for this run. The GitHub REST
 API does not expose comment edit history, so post-creation edits
 cannot be attributed to a specific actor.
+
+Prior review findings are severity anchors, not delivery state. If
+`PRIOR_ACTIVE_CHANGES_REQUESTED` is not `true`, old blocking findings
+are not visible through GitHub's formal review UI. Any current finding
+that still applies must be emitted in the current result even when it
+matches a prior finding exactly.
 
 ## Workspace
 
