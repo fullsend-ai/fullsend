@@ -68,7 +68,7 @@ Use tags only for **exceptions** when a backend cannot run a scenario yet: `@ski
 make behaviour-test
 ```
 
-In CI, the test runner mints cross-org `e2e` installation tokens via OIDC (same as admin e2e) for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`). The install driver runs `fullsend github setup` then `fullsend mint enroll <org>/test-repo` when `E2E_GCP_PROJECT_ID` is set (CI).
+In CI, the test runner mints cross-org `e2e` installation tokens via OIDC (same as admin e2e) for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`). The install driver runs `fullsend github setup` then `fullsend mint enroll <org>/test-repo` when `E2E_GCP_PROJECT_ID` is set (CI). The CI service account needs mint-admin IAM on that project — see [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
 Runner env (defaults shown):
 

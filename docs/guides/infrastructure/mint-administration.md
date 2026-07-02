@@ -72,6 +72,8 @@ Pass this URL as `--mint-url` when running `fullsend github setup`, or set the `
 
   `roles/owner` covers all of the above for users with broad access.
 
+  **Behaviour / e2e CI:** When CI runs `fullsend mint enroll owner/repo` (per-repo behaviour tests), the GitHub Actions service account impersonated via WIF needs the per-repo `mint enroll` roles on the mint project — not just inference roles. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+
   An administrator can grant all required roles with a single script:
 
   ```bash
