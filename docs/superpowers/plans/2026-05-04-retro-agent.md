@@ -17,9 +17,8 @@
 | File | Responsibility |
 |------|----------------|
 | `agents/retro.md` | Agent system prompt — role, optimization goals, exploration instructions, output format |
-| `harness/retro.yaml` | Harness config — links agent, policy, scripts, skills, env |
+| `harness/retro.yaml` | Harness config — links agent, policy, scripts, skills, `env.runner`/`env.sandbox` ([ADR 0055](../../ADRs/0055-unified-env-var-delivery.md)) |
 | `policies/retro.yaml` | Sandbox policy — read-only filesystem, network access for GitHub API |
-| `env/retro.env` | Environment variables injected into sandbox |
 | `scripts/pre-retro.sh` | Minimal pre-script — validates inputs, writes trigger context to agent_input |
 | `scripts/post-retro.sh` | Post-script — reads proposal files, files GitHub issues, posts summary comment |
 | `schemas/retro-result.schema.json` | JSON Schema for retro agent output |
@@ -178,30 +177,18 @@ git commit -m "feat(retro): add sandbox policy for retro agent"
 
 ---
 
-### Task 3: Environment file
+### Task 3: Environment configuration
 
 **Files:**
-- Create: `internal/scaffold/fullsend-repo/env/retro.env`
+- Modify: `internal/scaffold/fullsend-repo/harness/retro.yaml` (see Task 8)
 
-The retro agent needs the originating URL, comment text (if `/fs-retro`), the repo name, and a GH_TOKEN for API access inside the sandbox.
+Per [ADR 0055](../../ADRs/0055-unified-env-var-delivery.md), retro agent environment variables are declared in the harness `env.runner` and `env.sandbox` sub-maps (and `forge.github.env` for GitHub dispatch), not in a separate shell env file under `env/`.
 
-- [ ] **Step 1: Create the env file**
+The retro agent needs the originating URL, comment text (if `/fs-retro`), the repo name, and a GH_TOKEN for API access inside the sandbox. Configure these in Task 8's harness YAML.
 
-```bash
-export ORIGINATING_URL="${ORIGINATING_URL}"
-export RETRO_COMMENT="${RETRO_COMMENT}"
-export REPO_FULL_NAME="${REPO_FULL_NAME}"
-export GH_TOKEN=${GH_TOKEN}
-```
+- [ ] **Step 1:** Do not create a standalone environment file under `internal/scaffold/fullsend-repo/env/` — superseded by ADR 0055.
 
-Write this to `internal/scaffold/fullsend-repo/env/retro.env`.
-
-- [ ] **Step 2: Commit**
-
-```bash
-git add internal/scaffold/fullsend-repo/env/retro.env
-git commit -m "feat(retro): add environment file for retro agent"
-```
+- [ ] **Step 2:** Proceed to Task 8 for harness configuration including `env:` blocks.
 
 ---
 
@@ -664,15 +651,12 @@ policy: policies/retro.yaml
 
 host_files:
   - src: env/gcp-vertex.env
-    dest: /tmp/workspace/.env.d/gcp-vertex.env
-    expand: true
-  - src: env/retro.env
-    dest: /tmp/workspace/.env.d/retro.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
     expand: true
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
-    dest: /tmp/workspace/.gcp-credentials.json
+    dest: /tmp/.gcp-credentials.json
   - src: ${GCP_OIDC_TOKEN_FILE}
-    dest: /tmp/workspace/.gcp-oidc-token
+    dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
 
 skills:
@@ -686,14 +670,27 @@ validation_loop:
 
 post_script: scripts/post-retro.sh
 
-runner_env:
-  ORIGINATING_URL: ${ORIGINATING_URL}
-  RETRO_COMMENT: ${RETRO_COMMENT}
-  REPO_FULL_NAME: ${REPO_FULL_NAME}
-  GH_TOKEN: ${GH_TOKEN}
-  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/retro-result.schema.json
+env:
+  runner:
+    FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/retro-result.schema.json
+  sandbox:
+    RETRO_COMMENT: "${RETRO_COMMENT}"
 
 timeout_minutes: 30
+
+forge:
+  github:
+    pre_script: scripts/pre-retro.sh
+    post_script: scripts/post-retro.sh
+    env:
+      runner:
+        ORIGINATING_URL: "${ORIGINATING_URL}"
+        REPO_FULL_NAME: "${REPO_FULL_NAME}"
+        GH_TOKEN: "${GH_TOKEN}"
+      sandbox:
+        ORIGINATING_URL: "${ORIGINATING_URL}"
+        REPO_FULL_NAME: "${REPO_FULL_NAME}"
+        GH_TOKEN: "${GH_TOKEN}"
 ```
 
 Write this to `internal/scaffold/fullsend-repo/harness/retro.yaml`.
