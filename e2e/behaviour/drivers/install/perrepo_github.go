@@ -113,7 +113,7 @@ func (d *perRepoDriver) enrollRepoInMint(repoFullName string) error {
 	}
 
 	args := perRepoMintEnrollArgs(repoFullName, project)
-	d.logf("[install] mint enroll project=%s gcp_principal=%s", project, gcpCredentialPrincipal())
+	d.logf("[install] mint enroll project=%s wif_provider=%s gcp_principal=%s", project, d.e2eCfg.WIFProvider, gcpCredentialPrincipal())
 	d.logf("[install] running fullsend %s", strings.Join(args, " "))
 	if _, err := admin.TryRunCLI(d.binary, d.token, args...); err != nil {
 		return fmt.Errorf("mint enroll %s: %w", repoFullName, err)
