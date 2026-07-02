@@ -36,7 +36,7 @@ Optional environment variables:
 | `GH_TOKEN` / `GITHUB_TOKEN` | Override token source for local runs |
 | `FULLSEND_MINT_URL` | Override mint endpoint (default: hosted public mint, same as `fullsend admin --mint-url`) |
 | `E2E_LOCK_TIMEOUT` | Max wait for a free pool org (default 10m) |
-| `E2E_GCP_PROJECT_ID` | GCP project for inference setup and behaviour per-repo mint enroll (must be the mint project when using the hosted mint) |
+| `E2E_GCP_PROJECT_ID` | GCP project for inference setup (`github setup --inference-project`) |
 
 Behaviour tests use the same pool orgs but install via `fullsend github setup` (per-repo) instead of `fullsend admin install`. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
 
@@ -58,43 +58,25 @@ Required repository secrets:
 | `E2E_GCP_WIF_PROVIDER` | GCP WIF provider (inference / auxiliary GCP access) |
 | `E2E_GCP_SERVICE_ACCOUNT` | GCP service account for WIF |
 | `E2E_GCP_PROJECT_ID` | GCP project ID for inference secrets (`github setup --inference-project`) |
-| `E2E_GCP_MINT_PROJECT_ID` | Optional override for `mint enroll --project` (default: hosted mint project when using public mint URL) |
 
 Mint URL uses the hosted public endpoint by default (same as `fullsend admin --mint-url`). Override with org/repo variable `FULLSEND_MINT_URL` if needed; no separate e2e secret.
 
 ### Behaviour tests and per-repo mint enrollment
 
-Behaviour tests install fullsend in **per-repo** mode (`fullsend github setup`) and run `fullsend mint enroll <org>/test-repo` so vendored reusable workflows can mint same-org `triage` tokens (`PER_REPO_WIF_REPOS`). This is the first CI workflow that exercises per-repo mint enrollment; admin e2e only needs org-level cross-org `e2e` mint auth.
+Behaviour tests install fullsend in **per-repo** mode (`fullsend github setup`). Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; that requires per-repo mint enrollment (`PER_REPO_WIF_REPOS`). The install driver does **not** run `mint enroll` — pool org `test-repo` repos must be enrolled once by a GCP admin on the hosted mint project.
 
-The CI service account (`E2E_GCP_SERVICE_ACCOUNT`, impersonated via `E2E_GCP_WIF_PROVIDER`) must have these roles on the **mint GCP project** — not necessarily the same project as `E2E_GCP_PROJECT_ID` (inference). Behaviour install resolves the mint project via `E2E_GCP_MINT_PROJECT_ID`, or defaults to `it-gcp-konflux-dev-fullsend` when using the hosted mint URL.
+Inference (`E2E_GCP_PROJECT_ID`) and mint (`it-gcp-konflux-dev-fullsend` for the hosted mint) may be different GCP projects. CI only needs inference WIF secrets for `github setup`; mint-admin IAM on the CI service account is not required for behaviour tests.
 
-In practice the e2e workflow often authenticates as a **WIF external account** (not a service-account key). Grant the roles below to the value of `E2E_GCP_SERVICE_ACCOUNT` *and/or* the WIF `principalSet` for `fullsend-ai/fullsend` on the pool named in `E2E_GCP_WIF_PROVIDER` (commonly `fullsend-pool/providers/github-oidc`). Gen2 mint discovery uses the Cloud Run API (`run.services.get`), not Cloud Functions — `roles/run.admin` is required; `roles/cloudfunctions.viewer` alone is insufficient for WIF principals.
-
-| IAM role | Purpose |
-|----------|---------|
-| `roles/cloudfunctions.viewer` | Discover mint (`fullsend-mint`) during `mint enroll` |
-| `roles/run.admin` | Update Cloud Run env vars (`ALLOWED_ORGS`, `PER_REPO_WIF_REPOS`) |
-| `roles/iam.workloadIdentityPoolAdmin` | Create/update repo-scoped WIF providers |
-| `roles/resourcemanager.projectIamAdmin` | Grant `roles/aiplatform.user` to per-repo WIF principals |
-
-Hosted mint example (project `it-gcp-konflux-dev-fullsend`). Grant roles on the **same** service account stored in the `E2E_GCP_SERVICE_ACCOUNT` repository secret (commonly `github-fullsend-ai-fullsen-966@…` or `github-fullsend-ai-fullsend-ci@…`):
+One-time enrollment for all pool orgs (idempotent):
 
 ```bash
 export GCP_PROJECT=it-gcp-konflux-dev-fullsend
-export E2E_SA="<value of E2E_GCP_SERVICE_ACCOUNT secret>"
-
-for ROLE in \
-  roles/cloudfunctions.viewer \
-  roles/run.admin \
-  roles/iam.workloadIdentityPoolAdmin \
-  roles/resourcemanager.projectIamAdmin; do
-  gcloud projects add-iam-policy-binding "$GCP_PROJECT" \
-    --member="serviceAccount:${E2E_SA}" \
-    --role="$ROLE"
+for i in $(seq -w 1 12); do
+  fullsend mint enroll "halfsend-${i}/test-repo" --project="$GCP_PROJECT" --region=us-central1
 done
 ```
 
-`mint enroll` is idempotent — behaviour install can re-run safely when a pool org's `test-repo` is already enrolled.
+Re-run enrollment when adding a new pool org or after mint infrastructure changes that drop `PER_REPO_WIF_REPOS` entries. See [mint-administration.md](../infrastructure/mint-administration.md) for required operator IAM.
 
 ## Pool org provisioning
 

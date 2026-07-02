@@ -31,7 +31,7 @@ The suite in `e2e/behaviour/suite_test.go` acquires a pool org, runs pre-install
 
 ### Install driver (v1 per-repo)
 
-Uses `fullsend github setup <org>/test-repo --vendor --direct --skip-app-setup --runtime dummy` with inference flags from `E2E_GCP_PROJECT_ID` and `E2E_GCP_WIF_PROVIDER`. When `E2E_GCP_PROJECT_ID` is set (CI), the driver then runs `fullsend mint enroll <org>/test-repo` so vendored workflows can mint same-org triage tokens. Pool orgs must already have shared GitHub Apps and org-level mint enrollment; the driver does not run `fullsend admin install`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment) for CI service-account IAM on the mint project.
+Uses `fullsend github setup <org>/test-repo --vendor --direct --skip-app-setup --runtime dummy` with inference flags from `E2E_GCP_PROJECT_ID` and `E2E_GCP_WIF_PROVIDER`. Pool orgs must already have shared GitHub Apps, org-level mint enrollment, and per-repo mint enrollment for `test-repo` (one-time GCP admin step). The driver does not run `fullsend admin install` or `fullsend mint enroll`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
 Teardown removes shim workflows, stale branches, and open fullsend PRs on `test-repo` via shared helpers in `e2e/admin/cleanup.go`.
 

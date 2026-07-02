@@ -4,9 +4,7 @@ package install
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -18,8 +16,7 @@ import (
 )
 
 const (
-	perRepoTestRepo   = "test-repo"
-	defaultMintRegion = "us-central1"
+	perRepoTestRepo = "test-repo"
 	// Vendored per-repo: issue_comment triggers the fullsend.yaml shim, which
 	// workflow_calls reusable-dispatch → reusable-triage synchronously.
 	perRepoTriageWorkflow = "fullsend.yaml"
@@ -84,72 +81,11 @@ func (d *perRepoDriver) Install(ctx context.Context, org string) (State, error) 
 		return nil, fmt.Errorf("github setup %s: %w", target, err)
 	}
 
-	if err := d.enrollRepoInMint(target); err != nil {
-		return nil, err
-	}
-
 	st := &perRepoState{org: org, repo: repo}
 	if err := validatePerRepoPostInstall(ctx, d.client, org, repo); err != nil {
 		return nil, err
 	}
 	return st, nil
-}
-
-// perRepoMintEnrollArgs returns CLI args for enrolling a vendored per-repo install
-// in mint (PER_REPO_WIF_REPOS + repo-scoped WIF provider).
-func perRepoMintEnrollArgs(repoFullName, gcpProject string) []string {
-	return []string{
-		"mint", "enroll", repoFullName,
-		"--project", gcpProject,
-		"--region", defaultMintRegion,
-	}
-}
-
-func (d *perRepoDriver) enrollRepoInMint(repoFullName string) error {
-	project := admin.MintEnrollProjectID(d.e2eCfg)
-	if project == "" {
-		d.logf("[install] skipping mint enroll for %s (no mint GCP project; set E2E_GCP_MINT_PROJECT_ID or E2E_GCP_PROJECT_ID, or use hosted mint URL)", repoFullName)
-		return nil
-	}
-
-	args := perRepoMintEnrollArgs(repoFullName, project)
-	d.logf("[install] mint enroll project=%s wif_provider=%s gcp_principal=%s", project, d.e2eCfg.WIFProvider, gcpCredentialPrincipal())
-	d.logf("[install] running fullsend %s", strings.Join(args, " "))
-	if _, err := admin.TryRunCLI(d.binary, d.token, args...); err != nil {
-		return fmt.Errorf("mint enroll %s: %w", repoFullName, err)
-	}
-	return nil
-}
-
-// gcpCredentialPrincipal returns a short label for the active GCP credential
-// (service account email or external account) to aid CI debugging.
-func gcpCredentialPrincipal() string {
-	path := strings.TrimSpace(os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"))
-	if path == "" {
-		return "unknown"
-	}
-	data, err := os.ReadFile(filepath.Clean(path))
-	if err != nil {
-		return "unreadable"
-	}
-	var creds struct {
-		ClientEmail string `json:"client_email"`
-		Type        string `json:"type"`
-		ServiceURL  string `json:"service_account_impersonation_url"`
-	}
-	if err := json.Unmarshal(data, &creds); err != nil {
-		return "unparsed"
-	}
-	if creds.ClientEmail != "" {
-		return creds.ClientEmail
-	}
-	if creds.Type != "" {
-		return creds.Type
-	}
-	if creds.ServiceURL != "" {
-		return creds.ServiceURL
-	}
-	return "unknown"
 }
 
 func (d *perRepoDriver) Teardown(ctx context.Context, org string, state State) error {

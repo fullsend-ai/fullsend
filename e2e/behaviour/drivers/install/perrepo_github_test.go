@@ -40,15 +40,6 @@ func TestValidatePerRepoPostInstall_MissingShim(t *testing.T) {
 	assert.Contains(t, err.Error(), "fullsend.yaml")
 }
 
-func TestPerRepoMintEnrollArgs(t *testing.T) {
-	args := perRepoMintEnrollArgs("halfsend-05/test-repo", "my-mint-project")
-	assert.Equal(t, []string{
-		"mint", "enroll", "halfsend-05/test-repo",
-		"--project", "my-mint-project",
-		"--region", "us-central1",
-	}, args)
-}
-
 func TestValidatePerRepoPostInstall_WrongRuntime(t *testing.T) {
 	client := forge.NewFakeClient()
 	org, repo := "acme", "test-repo"
