@@ -298,6 +298,54 @@ Each agent role has its own identity, permissions, and purpose:
 
 ## Customization Examples
 
+### Adding Custom Executables
+
+The sandbox already has `/sandbox/workspace/bin` on its `PATH`. To make a
+script available as a command, drop it there:
+
+1. Create your script (e.g. `scripts/my-tool.sh`):
+
+   ```bash
+   #!/bin/bash
+   echo "Hello from $0"
+   ```
+
+2. Make it executable with `chmod +x scripts/my-tool.sh`.
+3. Map it into the sandbox via `host_files`:
+
+   ```yaml
+   host_files:
+     - src: scripts/my-tool.sh
+       dest: /sandbox/workspace/bin/my-tool.sh
+   ```
+
+4. The agent should be able to run `my-tool.sh` directly.
+
+#### Advanced: modifying the PATH for external toolchains
+
+When you need a directory outside `/sandbox/workspace/bin` on the `PATH`
+(e.g. an external toolchain), use a `.env.d` file:
+
+1. Create an env file (e.g. `env/extra-path.env`):
+
+   ```bash
+   PATH=/opt/my-toolchain/bin:$PATH
+   ```
+
+2. Map it into the sandbox:
+
+   ```yaml
+   host_files:
+     - src: env/extra-path.env
+       dest: /sandbox/workspace/.env.d/extra-path.env
+   ```
+
+3. At startup the sandbox sources every `*.env` file under
+   `/sandbox/workspace/.env.d/`, picking up your PATH addition.
+
+**Note**: `env.sandbox` cannot modify `PATH`, the harness ignores special
+variables to protect sandbox operation.
+
 ### Adding a Custom Skill
 
 Create `.fullsend/customized/skills/my-skill/SKILL.md` in your config repo:
