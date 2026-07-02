@@ -27,6 +27,7 @@
 #
 # Optional environment variables:
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging; default: unknown)
+#   TRIGGER_SOURCE    — GitHub username that triggered /fs-code (empty for label triggers)
 #   CODE_ALLOWED_TARGET_BRANCHES
 #                     — comma-separated list of branches the agent may target,
 #                       or "*" for any. When unset, only the repo's default
@@ -42,6 +43,96 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 GITLEAKS_VERSION="8.30.1"
 GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+
+# ---------------------------------------------------------------------------
+# Helper: human GitHub user detection (for PR assignee resolution)
+# ---------------------------------------------------------------------------
+is_human_github_user() {
+  local login="${1:-}"
+  if [[ -z "${login}" ]]; then
+    return 1
+  fi
+  case "${login}" in
+    app/*|dependabot) return 1 ;;
+  esac
+  if [[ "${login}" =~ \[bot\]$ ]]; then
+    return 1
+  fi
+  return 0
+}
+
+# Resolve a human assignee for the PR using precedence:
+#   1. TRIGGER_SOURCE (/fs-code invoker) when human
+#   2. First human issue assignee
+#   3. Human issue author
+# Prints the login on stdout, or nothing when no human matches.
+resolve_pr_assignee() {
+  if is_human_github_user "${TRIGGER_SOURCE:-}"; then
+    echo "${TRIGGER_SOURCE}"
+    return 0
+  fi
+
+  local issue_json
+  issue_json="$(gh issue view "${ISSUE_NUMBER}" --repo "${REPO_FULL_NAME}" \
+    --json assignees,author 2>/dev/null || true)"
+  if [[ -z "${issue_json}" ]]; then
+    return 1
+  fi
+
+  local human_assignee
+  human_assignee="$(echo "${issue_json}" | jq -r '
+    [.assignees[].login | select(
+      (startswith("app/") | not) and
+      (test("\\[bot\\]$") | not) and
+      (. != "dependabot")
+    )] | .[0] // empty
+  ')"
+  if [[ -n "${human_assignee}" ]]; then
+    echo "${human_assignee}"
+    return 0
+  fi
+
+  local author_login
+  author_login="$(echo "${issue_json}" | jq -r '.author.login // empty')"
+  if is_human_github_user "${author_login}"; then
+    echo "${author_login}"
+    return 0
+  fi
+
+  return 1
+}
+
+# Best-effort PR assignee: skip when the PR already has assignees.
+maybe_assign_pr() {
+  local pr_number="$1"
+  local existing_count
+  if ! existing_count="$(gh pr view "${pr_number}" --repo "${REPO_FULL_NAME}" \
+    --json assignees --jq '.assignees | length' 2>/dev/null)"; then
+    echo "::warning::Could not read assignees for PR #${pr_number} — skipping assignment"
+    return 0
+  fi
+  if [[ "${existing_count}" != "0" ]]; then
+    echo "PR #${pr_number} already has assignees — skipping assignment"
+    return 0
+  fi
+
+  local assignee
+  assignee="$(resolve_pr_assignee || true)"
+  if [[ -z "${assignee}" ]]; then
+    echo "No human assignee candidate — leaving PR #${pr_number} unassigned"
+    return 0
+  fi
+
+  echo "Assigning PR #${pr_number} to ${assignee}..."
+  local assign_err
+  assign_err="$(gh pr edit "${pr_number}" --repo "${REPO_FULL_NAME}" \
+    --add-assignee "${assignee}" 2>&1)" || {
+    echo "::warning::Failed to assign PR #${pr_number} to ${assignee} — continuing"
+    if [[ -n "${assign_err}" ]]; then
+      echo "::warning::${assign_err}"
+    fi
+  }
+}
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -435,6 +526,7 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
   echo "PR #${EXISTING_PR_NUM} already exists — branch updated with new commits"
   echo "PR: ${EXISTING_PR_URL}"
   echo "pr_url=${EXISTING_PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
+  maybe_assign_pr "${EXISTING_PR_NUM}"
   exit 0
 fi
 
@@ -516,3 +608,5 @@ gh issue edit "${PR_NUMBER_FROM_URL}" \
   --repo "${REPO_FULL_NAME}" \
   --add-label "ready-for-review" 2>/dev/null || \
   echo "::warning::Failed to apply ready-for-review label to PR #${PR_NUMBER_FROM_URL}"
+
+maybe_assign_pr "${PR_NUMBER_FROM_URL}"

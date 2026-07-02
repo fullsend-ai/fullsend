@@ -668,7 +668,7 @@ func TestHarnessForgeRunnerEnvMerge(t *testing.T) {
 		},
 		{
 			file:            "code.yaml",
-			topLevelKeys:    []string{"CODE_ALLOWED_TARGET_BRANCHES", "FULLSEND_OUTPUT_SCHEMA", "FULLSEND_OUTPUT_FILE"},
+			topLevelKeys:    []string{"CODE_ALLOWED_TARGET_BRANCHES", "TRIGGER_SOURCE", "FULLSEND_OUTPUT_SCHEMA", "FULLSEND_OUTPUT_FILE"},
 			forgeGithubKeys: []string{"PUSH_TOKEN", "PUSH_TOKEN_SOURCE", "REPO_FULL_NAME", "ISSUE_NUMBER", "REPO_DIR"},
 		},
 		{

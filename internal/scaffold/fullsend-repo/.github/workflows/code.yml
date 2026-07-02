@@ -22,6 +22,10 @@ on:
       event_payload:
         required: true
         type: string
+      trigger_source:
+        required: false
+        type: string
+        description: "GitHub username that triggered /fs-code; empty for label-triggered runs"
 
 concurrency:
   group: fullsend-code-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number }}
@@ -34,6 +38,7 @@ jobs:
       event_type: ${{ inputs.event_type }}
       source_repo: ${{ inputs.source_repo }}
       event_payload: ${{ inputs.event_payload }}
+      trigger_source: ${{ inputs.trigger_source || '' }}
       mint_url: ${{ vars.FULLSEND_MINT_URL }}
       gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
       install_mode: per-org

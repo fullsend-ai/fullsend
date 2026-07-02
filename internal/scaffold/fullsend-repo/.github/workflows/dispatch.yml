@@ -125,6 +125,7 @@ jobs:
                   if [[ "${ISSUE_HAS_PR}" == "false" ]]; then
                     if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
                       STAGE="code"
+                      TRIGGER_SOURCE="${COMMENT_USER_LOGIN}"
                     fi
                   fi
                   ;;
@@ -446,7 +447,7 @@ jobs:
               -f event_payload="$EVENT_PAYLOAD"
             )
 
-            if [[ -n "${TRIGGER_SOURCE:-}" ]] && [[ "$STAGE" == "fix" ]]; then
+            if [[ -n "${TRIGGER_SOURCE:-}" ]] && [[ "$STAGE" == "fix" || "$STAGE" == "code" ]]; then
               DISPATCH_ARGS+=(-f trigger_source="$TRIGGER_SOURCE")
             fi
 

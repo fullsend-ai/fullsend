@@ -181,6 +181,7 @@ jobs:
                   if [[ "${ISSUE_IS_PR}" == "false" ]]; then
                     if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
                       STAGE="code"
+                      TRIGGER_SOURCE="${COMMENT_USER_LOGIN}"
                     fi
                   fi
                   ;;
@@ -460,6 +461,7 @@ jobs:
       event_type: ${{ github.event_name }}
       source_repo: ${{ github.repository }}
       event_payload: ${{ needs.route.outputs.event_payload }}
+      trigger_source: ${{ needs.route.outputs.trigger_source }}
       install_mode: ${{ inputs.install_mode }}
       mint_url: ${{ inputs.mint_url }}
       gcp_region: ${{ inputs.gcp_region }}

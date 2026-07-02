@@ -17,6 +17,11 @@ on:
       event_payload:
         required: true
         type: string
+      trigger_source:
+        required: false
+        type: string
+        default: ""
+        description: "GitHub username that triggered /fs-code; empty for label-triggered runs"
       mint_url:
         required: true
         type: string
@@ -199,6 +204,7 @@ jobs:
           REPO_FULL_NAME: ${{ inputs.source_repo }}
           CODE_ALLOWED_TARGET_BRANCHES: ''
           TARGET_BRANCH: main
+          TRIGGER_SOURCE: ${{ inputs.trigger_source }}
         with:
           agent: code
           version: ${{ inputs.fullsend_version }}

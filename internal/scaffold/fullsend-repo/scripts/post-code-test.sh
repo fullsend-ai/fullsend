@@ -778,6 +778,140 @@ run_precommit_retry_test "precommit-passes-with-unstaged" \
 run_precommit_retry_test "precommit-retry-passes-but-left-unstaged" \
   "1" "yes" "0" "blocked:retry-left-unstaged" "yes"
 
+# ---------------------------------------------------------------------------
+# Test helpers — reimplement PR assignee resolution from post-code.sh
+# ---------------------------------------------------------------------------
+is_human_github_user() {
+  local login="${1:-}"
+  if [[ -z "${login}" ]]; then
+    return 1
+  fi
+  case "${login}" in
+    app/*|dependabot) return 1 ;;
+  esac
+  if [[ "${login}" =~ \[bot\]$ ]]; then
+    return 1
+  fi
+  return 0
+}
+
+resolve_pr_assignee_from_context() {
+  local trigger_source="$1"
+  local issue_json="$2"
+
+  if is_human_github_user "${trigger_source}"; then
+    echo "${trigger_source}"
+    return 0
+  fi
+
+  if [[ -z "${issue_json}" ]]; then
+    return 1
+  fi
+
+  local human_assignee
+  human_assignee="$(echo "${issue_json}" | jq -r '
+    [.assignees[].login | select(
+      (startswith("app/") | not) and
+      (test("\\[bot\\]$") | not) and
+      (. != "dependabot")
+    )] | .[0] // empty
+  ')"
+  if [[ -n "${human_assignee}" ]]; then
+    echo "${human_assignee}"
+    return 0
+  fi
+
+  local author_login
+  author_login="$(echo "${issue_json}" | jq -r '.author.login // empty')"
+  if is_human_github_user "${author_login}"; then
+    echo "${author_login}"
+    return 0
+  fi
+
+  return 1
+}
+
+decide_assign_action() {
+  local trigger_source="$1"
+  local issue_json="$2"
+  local existing_assignee_count="$3"
+
+  if [[ "${existing_assignee_count}" != "0" ]]; then
+    echo "skip:has-assignees"
+    return 0
+  fi
+
+  local assignee
+  assignee="$(resolve_pr_assignee_from_context "${trigger_source}" "${issue_json}" || true)"
+  if [[ -z "${assignee}" ]]; then
+    echo "skip:no-candidate"
+    return 0
+  fi
+
+  echo "assign:${assignee}"
+}
+
+run_assignee_test() {
+  local test_name="$1"
+  local trigger_source="$2"
+  local issue_json="$3"
+  local existing_count="$4"
+  local expected="$5"
+
+  local actual
+  actual="$(decide_assign_action "${trigger_source}" "${issue_json}" "${existing_count}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  trigger_source: '${trigger_source}'"
+    echo "  existing_count: '${existing_count}'"
+    echo "  expected:       '${expected}'"
+    echo "  actual:         '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+HUMAN_ISSUE_JSON='{
+  "assignees": [{"login": "alice"}],
+  "author": {"login": "bob"}
+}'
+
+BOT_ISSUE_JSON='{
+  "assignees": [{"login": "fullsend-ai-triage[bot]"}],
+  "author": {"login": "app/fullsend-ai-retro"}
+}'
+
+# Human /fs-code invoker wins over issue assignee and author
+run_assignee_test "trigger-source-human-wins" \
+  "ifireball" "${HUMAN_ISSUE_JSON}" "0" "assign:ifireball"
+
+# Bot trigger falls through to first human assignee
+run_assignee_test "bot-trigger-uses-human-assignee" \
+  "fullsend-ai-coder[bot]" "${HUMAN_ISSUE_JSON}" "0" "assign:alice"
+
+# Bot trigger with no human assignee uses human author
+run_assignee_test "bot-trigger-uses-human-author" \
+  "" '{"assignees": [], "author": {"login": "bob"}}' "0" "assign:bob"
+
+# All candidates are bots — no assignment
+run_assignee_test "all-bot-candidates-no-assign" \
+  "fullsend-ai-coder[bot]" "${BOT_ISSUE_JSON}" "0" "skip:no-candidate"
+
+# PR already has assignees — no reassignment
+run_assignee_test "existing-assignees-skip" \
+  "ifireball" "${HUMAN_ISSUE_JSON}" "1" "skip:has-assignees"
+
+# dependabot filtered from assignee chain
+run_assignee_test "dependabot-filtered" \
+  "" '{"assignees": [{"login": "dependabot[bot]"}], "author": {"login": "dependabot"}}' "0" "skip:no-candidate"
+
+# dependabotb is human (not matched by dependabot[bot] glob bug)
+run_assignee_test "dependabotb-is-human" \
+  "" '{"assignees": [], "author": {"login": "dependabotb"}}' "0" "assign:dependabotb"
+
 # --- Summary ---
 
 echo ""
