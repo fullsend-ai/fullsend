@@ -1393,6 +1393,46 @@ func TestValidationFailMessage_TrimsOutput(t *testing.T) {
 	assert.Equal(t, "some output", msg)
 }
 
+func TestValidationEnv_IncludesSchemaWhenSet(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "/tmp/test-schema.json",
+		},
+	}
+	env := validationEnv(h, "/repo", "/run")
+	assert.Contains(t, env, "FULLSEND_OUTPUT_SCHEMA=/tmp/test-schema.json")
+	assert.Contains(t, env, "TARGET_REPO_DIR=/repo")
+	assert.Contains(t, env, "FULLSEND_RUN_DIR=/run")
+	assert.Contains(t, env, "FOO=bar")
+}
+
+func TestValidationEnv_OmitsSchemaWhenEmpty(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+		},
+	}
+	env := validationEnv(h, "/repo", "/run")
+	for _, e := range env {
+		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
+			"FULLSEND_OUTPUT_SCHEMA should not be set when Schema is empty")
+	}
+}
+
+func TestValidationEnv_OmitsSchemaWhenNoValidationLoop(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+	}
+	env := validationEnv(h, "/repo", "/run")
+	for _, e := range env {
+		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
+			"FULLSEND_OUTPUT_SCHEMA should not be set when ValidationLoop is nil")
+	}
+}
+
 func TestOpenTeeReader_EmptyPath(t *testing.T) {
 	src := strings.NewReader("hello")
 	printer := ui.New(io.Discard)

@@ -1106,12 +1106,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepStart("Running validation: " + h.ValidationLoop.Script)
 		valCmd := exec.Command(h.ValidationLoop.Script)
 		valCmd.Dir = iterDir
-		valCmd.Env = append(os.Environ(),
-			append(envToList(h.RunnerEnv),
-				fmt.Sprintf("TARGET_REPO_DIR=%s", hostRepositoryDir),
-				fmt.Sprintf("FULLSEND_RUN_DIR=%s", runDir),
-			)...,
-		)
+		valCmd.Env = append(os.Environ(), validationEnv(h, hostRepositoryDir, runDir)...)
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
@@ -1694,6 +1689,21 @@ func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
 	env := append(os.Environ(), envToList(runnerEnv)...)
 	if traceparent != "" {
 		env = append(env, "TRACEPARENT="+traceparent)
+	}
+	return env
+}
+
+// validationEnv builds the extra environment entries for the validation
+// script. It includes RunnerEnv, TARGET_REPO_DIR, FULLSEND_RUN_DIR, and —
+// when the harness specifies a validation_loop.schema — FULLSEND_OUTPUT_SCHEMA
+// pointing to the host-side cached schema path.
+func validationEnv(h *harness.Harness, hostRepoDir, runDir string) []string {
+	env := append(envToList(h.RunnerEnv),
+		fmt.Sprintf("TARGET_REPO_DIR=%s", hostRepoDir),
+		fmt.Sprintf("FULLSEND_RUN_DIR=%s", runDir),
+	)
+	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
+		env = append(env, fmt.Sprintf("FULLSEND_OUTPUT_SCHEMA=%s", h.ValidationLoop.Schema))
 	}
 	return env
 }
