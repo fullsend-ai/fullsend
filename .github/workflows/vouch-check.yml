@@ -1,0 +1,111 @@
+name: Vouch Check
+
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  vouch-gate:
+    if: github.repository_owner == 'fullsend-ai'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check if contributor is vouched
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const author = context.payload.pull_request.user.login;
+            const authorType = context.payload.pull_request.user.type;
+
+            // Skip bots (dependabot, renovate, fullsend agents, etc.).
+            if (authorType === 'Bot') {
+              console.log(`${author} is a bot. Skipping vouch check.`);
+              return;
+            }
+
+            // Check if author is a collaborator with write+ access.
+            // This covers org members, direct collaborators, and team members.
+            let trusted = false;
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: author,
+              });
+              trusted = ['admin', 'maintain', 'write'].includes(data.role_name);
+            } catch (e) {
+              if (e.status !== 404) {
+                console.log(`Permission check error (status=${e.status}): ${e.message}`);
+              }
+            }
+
+            if (trusted) {
+              console.log(`${author} has write access. Skipping vouch check.`);
+              return;
+            }
+
+            // Read the VOUCHED.td file from the dedicated "vouched" branch.
+            // NOT the PR branch — the PR author could add themselves in their fork.
+            let vouched = false;
+            try {
+              const { data } = await github.rest.repos.getContent({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path: '.github/VOUCHED.td',
+                ref: 'vouched',
+              });
+              const content = Buffer.from(data.content, 'base64').toString('utf-8');
+              const usernames = content
+                .split('\n')
+                .map(line => line.trim())
+                .filter(line => line && !line.startsWith('#') && !line.startsWith('-'));
+              vouched = usernames.some(
+                name => name.toLowerCase() === author.toLowerCase()
+              );
+            } catch (e) {
+              console.log(`Could not read VOUCHED.td: ${e.message}`);
+            }
+
+            if (vouched) {
+              console.log(`${author} is in VOUCHED.td. Approved.`);
+              return;
+            }
+
+            // Not vouched — close the PR first, then comment.
+            // Close before commenting so enforcement succeeds even if the comment API fails.
+            console.log(`${author} is not vouched. Closing PR.`);
+
+            await github.rest.pulls.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              state: 'closed',
+            });
+
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.payload.pull_request.number,
+                body: [
+                  `Thank you for your interest in contributing to fullsend, @${author}.`,
+                  '',
+                  'This project uses a **vouch system** for first-time contributors. Before submitting a pull request, you need to be vouched by a maintainer.',
+                  '',
+                  '**To get vouched:**',
+                  '1. Open a [Vouch Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=vouch-request) discussion.',
+                  '2. Describe what you want to change and why.',
+                  '3. Write in your own words — do not have an AI generate the request.',
+                  '4. A maintainer will comment `/vouch` if approved.',
+                  '5. Once vouched, open a new PR (preferred) or reopen this one.',
+                  '',
+                  'See [CONTRIBUTING.md](https://github.com/fullsend-ai/fullsend/blob/main/CONTRIBUTING.md#first-time-contributors) for details.',
+                ].join('\n'),
+              });
+            } catch (e) {
+              console.log(`Warning: Could not post explanation comment: ${e.message}`);
+            }
