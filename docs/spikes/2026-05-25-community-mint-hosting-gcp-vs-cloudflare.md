@@ -115,6 +115,6 @@ Community mint traffic is **low** (roughly one `POST /v1/token` per agent job ba
 - [Infrastructure reference — Token mint](../guides/infrastructure/infrastructure-reference.md)
 - [ADR 0029](../ADRs/0029-central-token-mint-secretless-fullsend.md)
 - [ADR 0059](../ADRs/0059-public-mint-mode-with-wildcard-allowlists.md)
-- [ADR 0061 — Public community mint architecture](../ADRs/0062-public-community-mint-architecture.md)
+- [ADR 0062 — Public community mint architecture](../ADRs/0062-public-community-mint-architecture.md)
 - [#1263](https://github.com/fullsend-ai/fullsend/issues/1263) · [#1262](https://github.com/fullsend-ai/fullsend/issues/1262)
 - [#915](https://github.com/fullsend-ai/fullsend/issues/915) discussion (2026-05-25)
