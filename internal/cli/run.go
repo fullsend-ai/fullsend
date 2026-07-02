@@ -154,6 +154,10 @@ func isOrgConfigData(data []byte) bool {
 
 func backendFromConfigFile(path string) (agentruntime.Backend, error) {
 	data, readErr := os.ReadFile(path)
+	if readErr != nil && os.IsNotExist(readErr) {
+		alt := filepath.Join(filepath.Dir(path), ".fullsend", "config.yaml")
+		data, readErr = os.ReadFile(alt)
+	}
 	if readErr == nil {
 		backend, resolveErr := resolveBackendFromConfigData(data)
 		if resolveErr != nil {

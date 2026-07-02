@@ -47,19 +47,44 @@ func ensureArtifacts(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if w.WorkflowRun != nil {
-		if err := w.CI.DownloadArtifacts(ctx, w.Org, w.Install.TriageWorkflowRepo(), w.WorkflowRun.ID, dest); err == nil {
-			if _, findErr := artifacts.FindBehaviourResults(dest); findErr == nil {
-				w.ArtifactDir = dest
-				return nil
-			}
+
+	tryDownloadRun := func(runID int) error {
+		if err := w.CI.DownloadArtifacts(ctx, w.Org, w.Install.TriageWorkflowRepo(), runID, dest); err != nil {
+			return err
 		}
+		if _, findErr := artifacts.FindBehaviourResults(dest); findErr != nil {
+			return findErr
+		}
+		return nil
+	}
+
+	resetDest := func() error {
 		_ = os.RemoveAll(dest)
 		dest, err = prepareArtifactDir()
-		if err != nil {
+		return err
+	}
+
+	if w.WorkflowRun != nil {
+		if err := tryDownloadRun(w.WorkflowRun.ID); err == nil {
+			w.ArtifactDir = dest
+			return nil
+		}
+		if err := resetDest(); err != nil {
 			return err
 		}
 	}
+
+	// Reusable triage uploads artifacts on the nested agent workflow run, not the shim.
+	if agentRun, err := w.CI.FindCompletedWorkflowRun(ctx, w.Org, w.Install.TriageWorkflowRepo(), w.Install.AgentWorkflowFile(), w.ScenarioStart); err == nil && agentRun != nil {
+		if err := tryDownloadRun(agentRun.ID); err == nil {
+			w.ArtifactDir = dest
+			return nil
+		}
+		if err := resetDest(); err != nil {
+			return err
+		}
+	}
+
 	if err := w.CI.DownloadNamedArtifactAfter(ctx, w.Org, w.Install.TriageWorkflowRepo(), w.Install.AgentArtifactName(), w.ScenarioStart, dest); err != nil {
 		_ = os.RemoveAll(dest)
 		return err
@@ -78,7 +103,11 @@ func prepareArtifactDir() (string, error) {
 		if err := os.MkdirAll(ciArtifactDir, 0o755); err != nil {
 			return "", fmt.Errorf("creating behaviour artifact dir: %w", err)
 		}
-		return ciArtifactDir, nil
+		sub, err := os.MkdirTemp(ciArtifactDir, "run-*")
+		if err != nil {
+			return "", fmt.Errorf("creating behaviour artifact subdir: %w", err)
+		}
+		return sub, nil
 	}
 	return os.MkdirTemp("", "behaviour-artifacts-*")
 }

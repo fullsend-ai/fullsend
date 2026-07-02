@@ -3056,6 +3056,22 @@ func TestBackendFromConfigFile_PerRepoConfig(t *testing.T) {
 	assert.Equal(t, "dummy", backend.Runtime.Name())
 }
 
+func TestBackendFromConfigFile_PerRepoNestedConfig(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), "acme/test-repo")
+	cfg.Runtime = "dummy"
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".fullsend"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".fullsend", "config.yaml"), data, 0o644))
+
+	backend, err := backendFromConfigFile(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, "dummy", backend.Runtime.Name())
+}
+
 func TestBackendFromConfigFile_ReadError(t *testing.T) {
 	t.Parallel()
 
