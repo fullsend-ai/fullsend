@@ -175,8 +175,7 @@ and invokes infrastructure; agents do not drive the poll loop.
     and workflow dispatch.
 - **`fullsend poll --watch`** — runs poll cycles on an internal timer until
   interrupted (same pattern as `kubectl watch`). **Deferred** for initial
-  implementation; the flag and semantics are reserved now so a separate
-  `fullsend watch` command is not introduced.
+  implementation.
 - **`fullsend poll cancel`** — operator override for a locked work item:
 
 ```bash
