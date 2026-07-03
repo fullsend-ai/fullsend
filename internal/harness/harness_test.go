@@ -1694,3 +1694,70 @@ env:
 	assert.Equal(t, map[string]string{"FOO": "bar"}, h.Env.Runner)
 	assert.Equal(t, map[string]string{"BAZ": "qux"}, h.Env.Sandbox)
 }
+
+func TestValidateResourceTypes_ProfilesRequireURL(t *testing.T) {
+	h := &Harness{
+		Agent:    "agents/test.md",
+		Role:     "test",
+		Profiles: []string{"local-path/profile.yaml"},
+	}
+	err := h.ValidateResourceTypes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "profiles[0] must be a URL")
+}
+
+func TestValidateResourceTypes_ProfilesRequireIntegrityHash(t *testing.T) {
+	h := &Harness{
+		Agent:    "agents/test.md",
+		Role:     "test",
+		Profiles: []string{"https://github.com/org/repo/tree/main/profiles/claude-code.yaml"},
+	}
+	err := h.ValidateResourceTypes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "profiles[0] URL must include #sha256=")
+}
+
+func TestValidateResourceTypes_ProfilesValidURL(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Profiles: []string{
+			"https://github.com/org/repo/tree/main/profiles/claude-code.yaml#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.NoError(t, err)
+}
+
+func TestValidateResourceTypes_ProviderURLRequiresHash(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Role:      "test",
+		Providers: []string{"https://github.com/org/repo/tree/main/providers/my.yaml"},
+	}
+	err := h.ValidateResourceTypes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "providers[0] URL must include #sha256=")
+}
+
+func TestValidateResourceTypes_ProviderLocalNamePassesThrough(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Role:      "test",
+		Providers: []string{"my-local-provider"},
+	}
+	err := h.ValidateResourceTypes()
+	require.NoError(t, err)
+}
+
+func TestValidateResourceTypes_ProviderURLWithHashValid(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Providers: []string{
+			"https://github.com/org/repo/tree/main/providers/my.yaml#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.NoError(t, err)
+}

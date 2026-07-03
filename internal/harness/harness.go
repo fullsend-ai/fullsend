@@ -266,6 +266,7 @@ type Harness struct {
 	Skills                 []string                `yaml:"skills,omitempty"`
 	Plugins                []string                `yaml:"plugins,omitempty"`
 	Providers              []string                `yaml:"providers,omitempty"`
+	Profiles               []string                `yaml:"profiles,omitempty"`
 	HostFiles              []HostFile              `yaml:"host_files,omitempty"`
 	APIServers             []APIServer             `yaml:"api_servers,omitempty"`
 	Model                  string                  `yaml:"model,omitempty"`
@@ -817,6 +818,21 @@ func (h *Harness) ValidateResourceTypes() error {
 			}
 			if info.Forge != "github" {
 				return fmt.Errorf("skills[%d] forge %q is recognized but fetch support has not landed yet", i, info.Forge)
+			}
+		}
+	}
+	for i, p := range h.Profiles {
+		if !IsURL(p) {
+			return fmt.Errorf("profiles[%d] must be a URL (local profiles are not supported)", i)
+		}
+		if _, _, hasHash := ParseIntegrityHash(p); !hasHash {
+			return fmt.Errorf("profiles[%d] URL must include #sha256=... integrity hash", i)
+		}
+	}
+	for i, p := range h.Providers {
+		if IsURL(p) {
+			if _, _, hasHash := ParseIntegrityHash(p); !hasHash {
+				return fmt.Errorf("providers[%d] URL must include #sha256=... integrity hash", i)
 			}
 		}
 	}
