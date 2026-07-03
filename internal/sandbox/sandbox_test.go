@@ -632,7 +632,7 @@ func TestBuildProviderUpdateArgs(t *testing.T) {
 func TestImportProfile_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
-	err := ImportProfile("/some/profile.yaml")
+	err := ImportProfile(context.Background(), "/some/profile.yaml")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -658,7 +658,7 @@ fi
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
 	t.Setenv("PATH", dir)
 
-	err := EnsureProvider("github", "github", map[string]string{"TOKEN": "tok"}, nil)
+	err := EnsureProvider(context.Background(), "github", "github", map[string]string{"TOKEN": "tok"}, nil)
 	assert.NoError(t, err)
 }
 
@@ -674,7 +674,7 @@ exit 1
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
 	t.Setenv("PATH", dir)
 
-	err := EnsureProvider("github", "github", nil, nil)
+	err := EnsureProvider(context.Background(), "github", "github", nil, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "provider create")
 }
@@ -697,9 +697,45 @@ fi
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
 	t.Setenv("PATH", dir)
 
-	err := EnsureProvider("github", "github", map[string]string{"TOKEN": "supersecret"}, nil)
+	err := EnsureProvider(context.Background(), "github", "github", map[string]string{"TOKEN": "supersecret"}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "provider update")
 	assert.NotContains(t, err.Error(), "supersecret", "secret must be redacted in update error")
 	assert.Contains(t, err.Error(), "***")
+}
+
+func TestEnsureProvider_RejectsReservedCredentialKeys(t *testing.T) {
+	tests := []struct {
+		key     string
+		wantErr bool
+	}{
+		{"API_KEY", false},
+		{"LD_PRELOAD", true},
+		{"ld_preload", true},
+		{"PATH", true},
+		{"BASH_ENV", true},
+		{"HOME", true},
+		{"HTTP_PROXY", true},
+		{"https_proxy", true},
+		{"NODE_OPTIONS", true},
+		{"PROMPT_COMMAND", true},
+		{"MY_TOKEN", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			// PATH is empty so openshell won't be found, but reserved key
+			// check runs before exec.
+			t.Setenv("PATH", "")
+			err := EnsureProvider(context.Background(), "p", "custom", map[string]string{tt.key: "${SOME_VAR}"}, nil)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "reserved environment variable")
+			} else {
+				// Will fail with "openshell not found" but NOT with reserved key error.
+				if err != nil {
+					assert.NotContains(t, err.Error(), "reserved environment variable")
+				}
+			}
+		})
+	}
 }

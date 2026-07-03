@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -109,17 +110,53 @@ func inGitDir(path, root string) bool {
 // file. The profile defines a provider type schema (credentials, endpoints).
 // If the profile already exists, the import is a no-op (openshell is
 // idempotent for profile imports).
-func ImportProfile(profilePath string) error {
-	cmd := exec.Command("openshell", "provider", "profile", "import", profilePath)
+func ImportProfile(ctx context.Context, profilePath string) error {
+	cmd := exec.CommandContext(ctx, "openshell", "provider", "profile", "import", profilePath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		// openshell exits non-zero when the profile already exists;
+		// treat this as success (idempotent import).
 		outStr := strings.ToLower(string(out))
-		if strings.Contains(outStr, "already exists") {
+		if strings.Contains(outStr, "profile already exists") {
 			return nil
 		}
-		return fmt.Errorf("profile import %q failed: openshell: %w", filepath.Base(profilePath), err)
+		return fmt.Errorf("profile import %q failed: openshell: %w\noutput: %s", filepath.Base(profilePath), err, bytes.TrimSpace(out))
 	}
 	return nil
+}
+
+// reservedCredentialKeys are env var names that must not be used as provider
+// credential keys. Credential keys become env vars in the openshell child
+// process; allowing security-sensitive names would let a URL-fetched provider
+// definition influence process loading or shell behavior.
+// NOTE: see also reservedSandboxKeys in internal/cli/run.go for the sandbox env blocklist.
+var reservedCredentialKeys = map[string]bool{
+	// Process loading / shell behavior
+	"PATH":            true,
+	"HOME":            true,
+	"SHELL":           true,
+	"LD_PRELOAD":      true,
+	"LD_LIBRARY_PATH": true,
+	"BASH_ENV":        true,
+	"ENV":             true,
+	// Proxy — could redirect openshell HTTP traffic
+	"HTTP_PROXY":  true,
+	"HTTPS_PROXY": true,
+	"NO_PROXY":    true,
+	"ALL_PROXY":   true,
+	// Subprocess-influencing runtime vars
+	"NODE_OPTIONS":          true,
+	"PYTHONPATH":            true,
+	"PROMPT_COMMAND":        true,
+	// Shell / process behavior — IFS affects word splitting, CDPATH affects cd resolution
+	"IFS":                   true,
+	"CDPATH":                true,
+	// Language runtime injection — can execute arbitrary code at process start
+	"JAVA_TOOL_OPTIONS":     true,
+	"RUBYOPT":               true,
+	"PERL5OPT":              true,
+	// macOS dynamic linker — low risk in Linux containers but blocked defensively
+	"DYLD_INSERT_LIBRARIES": true,
 }
 
 // EnsureProvider creates or updates a provider on the gateway. Credential
@@ -130,7 +167,13 @@ func ImportProfile(profilePath string) error {
 // never appear on the process command line. The expanded values are injected
 // into the child process environment, where openshell reads them directly.
 // See https://docs.nvidia.com/openshell/latest/sandboxes/manage-providers#bare-key-form
-func EnsureProvider(name, providerType string, credentials, config map[string]string) error {
+func EnsureProvider(ctx context.Context, name, providerType string, credentials, config map[string]string) error {
+	for k := range credentials {
+		if reservedCredentialKeys[strings.ToUpper(k)] {
+			return fmt.Errorf("provider %q: credential key %q is a reserved environment variable name", name, k)
+		}
+	}
+
 	args, extraEnv, secrets := buildProviderArgs(name, providerType, credentials, config)
 
 	ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
@@ -143,7 +186,7 @@ func EnsureProvider(name, providerType string, credentials, config map[string]st
 		// openshell emits: code: 'Some entity that we attempted to create already exists', message: "provider already exists"
 		if strings.Contains(strings.ToLower(outStr), "provider already exists") {
 			// Provider exists from a prior run — update it with current credentials.
-			return updateProvider(name, credentials, config, extraEnv, secrets)
+			return updateProvider(ctx, name, credentials, config, extraEnv, secrets)
 		}
 		// Redact known credential values from error output.
 		for _, s := range secrets {
@@ -155,7 +198,7 @@ func EnsureProvider(name, providerType string, credentials, config map[string]st
 }
 
 // updateProvider runs openshell provider update for an already-existing provider.
-func updateProvider(name string, credentials, config map[string]string, extraEnv, secrets []string) error {
+func updateProvider(ctx context.Context, name string, credentials, config map[string]string, extraEnv, secrets []string) error {
 	args := buildProviderUpdateArgs(name, credentials, config)
 	ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
 	defer cancel()

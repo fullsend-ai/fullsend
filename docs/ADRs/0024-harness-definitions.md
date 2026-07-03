@@ -24,6 +24,10 @@ Accepted
 unified `env:` key with `runner`/`sandbox` sub-maps and deprecates `runner_env`
 and the manual `.env` file convention.*
 
+*Extended by [ADR 0066](0066-portable-provider-profile-resolution.md), which
+adds `openshell-profiles` and URL-based `providers` fields to the harness schema
+for portable provider and profile resolution.*
+
 ## Context
 
 Each agent invocation requires configuration that ties together several moving

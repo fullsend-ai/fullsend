@@ -28,6 +28,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
+	"github.com/fullsend-ai/fullsend/internal/resolve"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -3814,4 +3815,191 @@ post_script: scripts/post-triage.sh
 	require.NoError(t, err, "should succeed with allowlist set")
 	assert.True(t, filepath.IsAbs(h.PreScript), "pre_script should be resolved to cache path")
 	assert.True(t, filepath.IsAbs(h.PostScript), "post_script should be resolved to cache path")
+}
+
+func TestDedupResolvedProfiles(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   []resolve.ResolvedProfile
+		wantIDs []string
+	}{
+		{
+			name:    "empty",
+			input:   nil,
+			wantIDs: nil,
+		},
+		{
+			name:    "single",
+			input:   []resolve.ResolvedProfile{{ID: "a"}},
+			wantIDs: []string{"a"},
+		},
+		{
+			name:    "no duplicates",
+			input:   []resolve.ResolvedProfile{{ID: "a"}, {ID: "b"}},
+			wantIDs: []string{"a", "b"},
+		},
+		{
+			name: "last wins",
+			input: []resolve.ResolvedProfile{
+				{ID: "a", LocalPath: "/base/a"},
+				{ID: "b", LocalPath: "/base/b"},
+				{ID: "a", LocalPath: "/child/a"},
+			},
+			wantIDs: []string{"b", "a"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dedupResolvedProfiles(tt.input)
+			if tt.wantIDs == nil {
+				assert.Len(t, got, len(tt.input))
+				return
+			}
+			var ids []string
+			for _, rp := range got {
+				ids = append(ids, rp.ID)
+			}
+			assert.Equal(t, tt.wantIDs, ids)
+			// Verify last-wins keeps child path
+			if tt.name == "last wins" {
+				for _, rp := range got {
+					if rp.ID == "a" {
+						assert.Equal(t, "/child/a", rp.LocalPath)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestMergeProviderDefs(t *testing.T) {
+	tests := []struct {
+		name     string
+		local    []harness.ProviderDef
+		url      []resolve.ResolvedProvider
+		wantNames []string
+	}{
+		{
+			name:      "local only",
+			local:     []harness.ProviderDef{{Name: "local-a", Type: "t1"}, {Name: "local-b", Type: "t2"}},
+			url:       nil,
+			wantNames: []string{"local-a", "local-b"},
+		},
+		{
+			name:  "URL only",
+			local: nil,
+			url: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "beta", Type: "t1"}},
+				{Def: harness.ProviderDef{Name: "alpha", Type: "t2"}},
+			},
+			wantNames: []string{"alpha", "beta"},
+		},
+		{
+			name:  "local shadows URL",
+			local: []harness.ProviderDef{{Name: "shared", Type: "local-type"}},
+			url: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "shared", Type: "url-type"}},
+				{Def: harness.ProviderDef{Name: "url-only", Type: "t1"}},
+			},
+			wantNames: []string{"shared", "url-only"},
+		},
+		{
+			name:  "duplicate URL names last wins",
+			local: nil,
+			url: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "p", Type: "base-type"}},
+				{Def: harness.ProviderDef{Name: "p", Type: "child-type"}},
+			},
+			wantNames: []string{"p"},
+		},
+		{
+			name:      "both empty",
+			local:     nil,
+			url:       nil,
+			wantNames: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mergeProviderDefs(tt.local, tt.url)
+			var names []string
+			for _, d := range got {
+				names = append(names, d.Name)
+			}
+			if tt.wantNames == nil {
+				assert.Empty(t, got)
+			} else {
+				assert.Equal(t, tt.wantNames, names)
+			}
+			// Verify local shadows URL by checking type
+			if tt.name == "local shadows URL" {
+				assert.Equal(t, "local-type", got[0].Type)
+			}
+			// Verify last-wins dedup
+			if tt.name == "duplicate URL names last wins" {
+				assert.Equal(t, "child-type", got[0].Type)
+			}
+		})
+	}
+}
+
+func TestCheckProviderProfileIntegrity(t *testing.T) {
+	tests := []struct {
+		name      string
+		providers []resolve.ResolvedProvider
+		profiles  []resolve.ResolvedProfile
+		wantWarn  bool
+		wantErr   bool
+	}{
+		{
+			name:      "no providers",
+			providers: nil,
+			profiles:  nil,
+		},
+		{
+			name: "providers without profiles warns",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "p", Type: "anthropic"}},
+			},
+			profiles: nil,
+			wantWarn: true,
+		},
+		{
+			name: "all providers match profiles",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "p1", Type: "anthropic"}},
+				{Def: harness.ProviderDef{Name: "p2", Type: "openai"}},
+			},
+			profiles: []resolve.ResolvedProfile{
+				{ID: "anthropic"},
+				{ID: "openai"},
+			},
+		},
+		{
+			name: "provider references unknown profile",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "p", Type: "unknown-type"}},
+			},
+			profiles: []resolve.ResolvedProfile{
+				{ID: "anthropic"},
+			},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			warn, err := checkProviderProfileIntegrity(tt.providers, tt.profiles)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "unknown-type")
+			} else {
+				require.NoError(t, err)
+			}
+			if tt.wantWarn {
+				assert.NotEmpty(t, warn)
+			} else if !tt.wantErr {
+				assert.Empty(t, warn)
+			}
+		})
+	}
 }

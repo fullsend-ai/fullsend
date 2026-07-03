@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -55,26 +56,46 @@ type ResolveResult struct {
 	Providers []ResolvedProvider
 }
 
-// profileYAML is the subset of an openshell profile definition needed
+// ProfileYAML is the subset of an openshell profile definition needed
 // for validation. The full profile schema is openshell's concern.
-type profileYAML struct {
+type ProfileYAML struct {
 	ID string `yaml:"id"`
 }
 
-// envVarPattern matches ${VAR_NAME} references.
+// ParseProfileID extracts and validates the profile id from YAML content.
+func ParseProfileID(data []byte) (string, error) {
+	var prof ProfileYAML
+	if err := yaml.Unmarshal(data, &prof); err != nil {
+		return "", fmt.Errorf("parsing profile YAML: %w", err)
+	}
+	if prof.ID == "" {
+		return "", fmt.Errorf("profile has no id field")
+	}
+	return prof.ID, nil
+}
+
+// envVarPattern requires the entire value to be a single ${VAR} reference.
+// Compound expressions like "${HOST}:${PORT}" are intentionally flagged —
+// credential values in URL-fetched providers should be a single env var
+// per field, not interpolated strings.
 var envVarPattern = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
 
-// warnLiteralCredentials returns a warning string if any credential value
+// WarnLiteralCredentials returns a warning string if any credential value
 // does not look like a ${VAR} reference. Returns empty string if all OK.
-func warnLiteralCredentials(providerName string, creds map[string]string) string {
+func WarnLiteralCredentials(providerName string, creds map[string]string) string {
+	var bad []string
 	for k, v := range creds {
 		if v != "" && !envVarPattern.MatchString(v) {
-			return fmt.Sprintf(
-				"provider %q: credential %q value does not look like a ${VAR} reference — ensure secrets are not embedded in URL-fetched provider definitions",
-				providerName, k)
+			bad = append(bad, k)
 		}
 	}
-	return ""
+	if len(bad) == 0 {
+		return ""
+	}
+	sort.Strings(bad)
+	return fmt.Sprintf(
+		"provider %q: credential(s) %s do not look like ${VAR} references — ensure secrets are not embedded in URL-fetched provider definitions",
+		providerName, strings.Join(bad, ", "))
 }
 
 // ResolveOpts controls how URL-referenced resources are resolved.
@@ -205,30 +226,28 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 	}
 	h.Skills = filtered
 
-	// Resolve profiles
+	// Resolve profiles (all entries must be URLs — enforced by
+	// ValidateResourceTypes at load time).
 	var profiles []ResolvedProfile
 	for i, p := range h.Profiles {
 		if !harness.IsURL(p) {
-			continue
+			return ResolveResult{}, fmt.Errorf("openshell-profiles[%d]: expected URL, got local path %q", i, p)
 		}
-		dep, localPath, err := resolveFileURL(ctx, fmt.Sprintf("profiles[%d]", i), p, h, opts, state)
+		dep, localPath, err := resolveFileURL(ctx, fmt.Sprintf("openshell-profiles[%d]", i), p, h, opts, state)
 		if err != nil {
-			return ResolveResult{}, fmt.Errorf("resolving profiles[%d]: %w", i, err)
+			return ResolveResult{}, fmt.Errorf("resolving openshell-profiles[%d]: %w", i, err)
 		}
-		state.appendDependency(dep)
 
 		content, err := os.ReadFile(localPath)
 		if err != nil {
 			return ResolveResult{}, fmt.Errorf("reading resolved profile %s: %w", localPath, err)
 		}
-		var prof profileYAML
-		if err := yaml.Unmarshal(content, &prof); err != nil {
-			return ResolveResult{}, fmt.Errorf("parsing profile from %s: %w", dep.URL, err)
+		id, err := ParseProfileID(content)
+		if err != nil {
+			return ResolveResult{}, fmt.Errorf("openshell-profiles[%d]: %w (from %s)", i, err, dep.URL)
 		}
-		if prof.ID == "" {
-			return ResolveResult{}, fmt.Errorf("profiles[%d]: profile id is required in %s", i, dep.URL)
-		}
-		profiles = append(profiles, ResolvedProfile{ID: prof.ID, LocalPath: localPath})
+		state.appendDependency(dep)
+		profiles = append(profiles, ResolvedProfile{ID: id, LocalPath: localPath})
 	}
 
 	// Resolve providers
@@ -259,7 +278,7 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 			return ResolveResult{}, fmt.Errorf("providers[%d]: provider type is required in %s", i, dep.URL)
 		}
 
-		if w := warnLiteralCredentials(def.Name, def.Credentials); w != "" {
+		if w := WarnLiteralCredentials(def.Name, def.Credentials); w != "" {
 			dep.Warning = w
 		}
 		state.appendDependency(dep)

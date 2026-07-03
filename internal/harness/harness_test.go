@@ -1191,6 +1191,21 @@ func TestHasURLReferences(t *testing.T) {
 			h:    Harness{Agent: "agents/test.md", Skills: []string{"skills/a", "https://example.com/s.md#sha256=abc"}},
 			want: true,
 		},
+		{
+			name: "URL profile",
+			h:    Harness{Agent: "agents/test.md", Profiles: []string{"https://example.com/p.yaml#sha256=abc"}},
+			want: true,
+		},
+		{
+			name: "URL provider",
+			h:    Harness{Agent: "agents/test.md", Providers: []string{"https://example.com/prov.yaml#sha256=abc"}},
+			want: true,
+		},
+		{
+			name: "local provider only",
+			h:    Harness{Agent: "agents/test.md", Providers: []string{"my-provider"}},
+			want: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1703,7 +1718,7 @@ func TestValidateResourceTypes_ProfilesRequireURL(t *testing.T) {
 	}
 	err := h.ValidateResourceTypes()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "profiles[0] must be a URL")
+	assert.Contains(t, err.Error(), "openshell-profiles[0] must be a URL")
 }
 
 func TestValidateResourceTypes_ProfilesRequireIntegrityHash(t *testing.T) {
@@ -1714,7 +1729,7 @@ func TestValidateResourceTypes_ProfilesRequireIntegrityHash(t *testing.T) {
 	}
 	err := h.ValidateResourceTypes()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "profiles[0] URL must include #sha256=")
+	assert.Contains(t, err.Error(), "openshell-profiles[0] URL must include #sha256=")
 }
 
 func TestValidateResourceTypes_ProfilesValidURL(t *testing.T) {

@@ -266,7 +266,7 @@ type Harness struct {
 	Skills                 []string                `yaml:"skills,omitempty"`
 	Plugins                []string                `yaml:"plugins,omitempty"`
 	Providers              []string                `yaml:"providers,omitempty"`
-	Profiles               []string                `yaml:"profiles,omitempty"`
+	Profiles               []string                `yaml:"openshell-profiles,omitempty"`
 	HostFiles              []HostFile              `yaml:"host_files,omitempty"`
 	APIServers             []APIServer             `yaml:"api_servers,omitempty"`
 	Model                  string                  `yaml:"model,omitempty"`
@@ -823,10 +823,10 @@ func (h *Harness) ValidateResourceTypes() error {
 	}
 	for i, p := range h.Profiles {
 		if !IsURL(p) {
-			return fmt.Errorf("profiles[%d] must be a URL (local profiles are not supported)", i)
+			return fmt.Errorf("openshell-profiles[%d] must be a URL (local profiles are not supported)", i)
 		}
 		if _, _, hasHash := ParseIntegrityHash(p); !hasHash {
-			return fmt.Errorf("profiles[%d] URL must include #sha256=... integrity hash", i)
+			return fmt.Errorf("openshell-profiles[%d] URL must include #sha256=... integrity hash", i)
 		}
 	}
 	for i, p := range h.Providers {
@@ -862,15 +862,23 @@ func (h *Harness) HasURLSkills() bool {
 	return false
 }
 
-// HasURLReferences reports whether any declarative field (agent, policy, skills)
-// contains a URL. Used to skip remote resource validation and resolution when
-// the harness references only local paths.
+// HasURLReferences reports whether any declarative field (agent, policy, skills,
+// profiles, providers) contains a URL reference. Used to skip remote resource
+// validation and resolution when the harness references only local paths.
 func (h *Harness) HasURLReferences() bool {
 	if IsURL(h.Agent) || IsURL(h.Policy) {
 		return true
 	}
 	for _, s := range h.Skills {
 		if IsURL(s) {
+			return true
+		}
+	}
+	if len(h.Profiles) > 0 { // profiles are always URLs (enforced by ValidateResourceTypes)
+		return true
+	}
+	for _, p := range h.Providers {
+		if IsURL(p) {
 			return true
 		}
 	}

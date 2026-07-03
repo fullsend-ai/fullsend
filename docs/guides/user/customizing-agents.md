@@ -55,8 +55,12 @@ env:
 **Optional fields** (all have secure defaults and can be omitted):
 
 ```yaml
-providers:                       # Inference providers (loaded from providers/ dir)
-  - vertex                       # References providers/vertex.yaml
+providers:                       # Inference providers (local names or URLs)
+  - vertex                       # Local name: references providers/vertex.yaml
+  - "https://github.com/org/repo/tree/main/providers/claude.yaml#sha256=abc..."  # Remote URL
+
+openshell-profiles:              # Openshell provider profiles (URL-only, with integrity hash)
+  - "https://github.com/org/profiles/tree/main/claude-code.yaml#sha256=def..."
 
 validation_loop:                     # script is required; these sub-fields are optional
   script: scripts/validate-output-schema.sh
@@ -98,6 +102,32 @@ security:                        # Security is enabled by default with fail_mode
   trace:
     enabled: true
 ```
+
+### Remote Providers and Profiles
+
+Providers and openshell profiles can be referenced from remote URLs, enabling fully portable harnesses that bundle everything an agent needs.
+
+**`providers`** accepts both local provider names and HTTPS URLs with integrity hashes:
+
+```yaml
+providers:
+  - vertex                       # Local: loaded from providers/vertex.yaml
+  - "https://github.com/org/repo/tree/main/providers/claude.yaml#sha256=abc..."  # Remote
+```
+
+**`openshell-profiles`** accepts only HTTPS URLs (profiles are always remote):
+
+```yaml
+openshell-profiles:
+  - "https://github.com/org/profiles/tree/main/claude-code.yaml#sha256=abc..."
+```
+
+When using `base:` composition, the base harness can declare its own providers and profiles. Child harnesses inherit and can extend them:
+
+- **Profiles:** base + child lists are concatenated; deduplicated by profile `id` (child wins)
+- **Providers:** base + child lists are concatenated; local names shadow URL-resolved names of the same `name`
+
+Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_remote_resources` prefix. See [ADR 0066](../../ADRs/0066-portable-provider-profile-resolution.md) for full details.
 
 ## Layered Configuration Resolution
 

@@ -1339,7 +1339,7 @@ category: llm
 		FetchPolicy:   policy,
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "profile id is required")
+	assert.Contains(t, err.Error(), "profile has no id field")
 }
 
 func TestResolveHarness_ProviderURL(t *testing.T) {
@@ -1405,6 +1405,34 @@ credentials:
 	assert.Contains(t, err.Error(), "provider name is required")
 }
 
+func TestResolveHarness_ProviderURLMissingType(t *testing.T) {
+	providerContent := []byte(`name: my-claude
+credentials:
+  ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+`)
+	providerHash := fetch.ComputeSHA256(providerContent)
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(providerContent)
+	}))
+
+	root := t.TempDir()
+	providerURL := fmt.Sprintf("%s/providers/bad.yaml#sha256=%s", srv.URL, providerHash)
+	h := &harness.Harness{
+		Agent:                  "agents/test.md",
+		Role:                   "test",
+		Providers:              []string{providerURL},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		FetchPolicy:   policy,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "provider type is required")
+}
+
 func TestResolveHarness_ProviderCredentialWarning(t *testing.T) {
 	providerContent := []byte(`name: my-claude
 type: claude-code
@@ -1433,7 +1461,7 @@ credentials:
 	require.NoError(t, err)
 	require.Len(t, result.Providers, 1)
 	require.Len(t, result.Deps, 1)
-	assert.Contains(t, result.Deps[0].Warning, "does not look like a ${VAR} reference")
+	assert.Contains(t, result.Deps[0].Warning, "do not look like ${VAR} references")
 }
 
 func TestResolveHarness_LocalProvidersUnchanged(t *testing.T) {
@@ -1450,4 +1478,55 @@ func TestResolveHarness_LocalProvidersUnchanged(t *testing.T) {
 	assert.Empty(t, result.Providers)
 	assert.Empty(t, result.Deps)
 	assert.Equal(t, []string{"provider-a", "provider-b"}, h.Providers)
+}
+
+func TestWarnLiteralCredentials(t *testing.T) {
+	tests := []struct {
+		name    string
+		creds   map[string]string
+		wantMsg string
+	}{
+		{
+			name:    "empty map",
+			creds:   map[string]string{},
+			wantMsg: "",
+		},
+		{
+			name:    "all valid refs",
+			creds:   map[string]string{"KEY": "${MY_VAR}", "OTHER": "${OTHER_VAR}"},
+			wantMsg: "",
+		},
+		{
+			name:    "empty value ignored",
+			creds:   map[string]string{"KEY": ""},
+			wantMsg: "",
+		},
+		{
+			name:    "single literal",
+			creds:   map[string]string{"API_KEY": "sk-secret-value"},
+			wantMsg: "API_KEY",
+		},
+		{
+			name:    "multiple literals sorted",
+			creds:   map[string]string{"ZEBRA": "literal", "ALPHA": "literal"},
+			wantMsg: "ALPHA, ZEBRA",
+		},
+		{
+			name:    "mixed valid and literal",
+			creds:   map[string]string{"GOOD": "${GOOD_VAR}", "BAD": "plaintext"},
+			wantMsg: "BAD",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := WarnLiteralCredentials("test-provider", tt.creds)
+			if tt.wantMsg == "" {
+				assert.Empty(t, got)
+			} else {
+				assert.Contains(t, got, tt.wantMsg)
+				assert.Contains(t, got, "test-provider")
+			}
+		})
+	}
 }

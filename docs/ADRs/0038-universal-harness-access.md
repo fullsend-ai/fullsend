@@ -22,6 +22,10 @@ Date: 2026-05-07
 
 Accepted
 
+*Extended by [ADR 0066](0066-portable-provider-profile-resolution.md), which
+adds URL support to `providers` and introduces `openshell-profiles` — extending
+portable resolution to provider and profile definitions.*
+
 ## Context
 
 Currently, harnesses reference local files through relative paths resolved against the `.fullsend` directory structure (ADR-0024). A harness configuration might reference:

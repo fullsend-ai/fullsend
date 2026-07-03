@@ -1111,13 +1111,13 @@ func TestLoadWithBase_ProfilesConcat(t *testing.T) {
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/base.md
 role: test
-profiles:
+openshell-profiles:
   - "https://github.com/org/repo/tree/main/profiles/claude-code.yaml#sha256=`+strings.Repeat("a", 64)+`"
 `)
 
 	path := writeTestHarness(t, dir, "child.yaml", `
 base: base.yaml
-profiles:
+openshell-profiles:
   - "https://github.com/org/repo/tree/main/profiles/vertex-ai.yaml#sha256=`+strings.Repeat("b", 64)+`"
 `)
 
@@ -1135,7 +1135,7 @@ func TestLoadWithBase_ProfilesChildOnlyInheritsBase(t *testing.T) {
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/base.md
 role: test
-profiles:
+openshell-profiles:
   - "https://github.com/org/repo/tree/main/profiles/claude-code.yaml#sha256=`+strings.Repeat("a", 64)+`"
 `)
 
@@ -1148,6 +1148,27 @@ base: base.yaml
 
 	require.Len(t, h.Profiles, 1)
 	assert.Contains(t, h.Profiles[0], "claude-code")
+}
+
+func TestLoadWithBase_ProfilesChildOnlyNoBase(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/base.md
+role: test
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+openshell-profiles:
+  - "https://github.com/org/repo/tree/main/profiles/vertex-ai.yaml#sha256=`+strings.Repeat("b", 64)+`"
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	require.Len(t, h.Profiles, 1)
+	assert.Contains(t, h.Profiles[0], "vertex-ai")
 }
 
 func TestLoadWithBase_TimeoutInheritance(t *testing.T) {

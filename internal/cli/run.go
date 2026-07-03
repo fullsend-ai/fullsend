@@ -427,12 +427,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 					printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run 'fullsend lock %s --fullsend-dir %s' to update.", agentName, fullsendDir))
 				} else {
 					printer.StepStart("Using pinned dependencies from lock file")
-					lockDeps, lockResolveErr := resolveFromLock(h, entry, absFullsendDir, printer)
+					lockResult, lockResolveErr := resolveFromLock(h, entry, absFullsendDir, printer)
 					if lockResolveErr != nil {
 						printer.StepFail("Lock file resolution failed: " + lockResolveErr.Error())
 						printer.StepWarn("Falling back to normal resolution")
 					} else {
-						result.Deps = lockDeps
+						result = lockResult
 						usedLock = true
 						printer.StepDone(fmt.Sprintf("Resolved %d dependencies from lock file", len(result.Deps)))
 					}
@@ -471,6 +471,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				printer.StepInfo(fmt.Sprintf("Resolved %s (cache hit)", dep.URL))
 			} else {
 				printer.StepInfo(fmt.Sprintf("Fetched %s -> %s", dep.URL, dep.LocalPath))
+			}
+			if dep.Warning != "" {
+				printer.StepWarn(dep.Warning)
 			}
 		}
 	}
@@ -683,17 +686,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	printer.StepDone(fmt.Sprintf("Gateway available (%.1fs)", time.Since(gatewayStart).Seconds()))
 
-	// 2b. Import resolved profiles to the gateway (if any).
-	if len(result.Profiles) > 0 {
-		for _, rp := range result.Profiles {
-			profileStart := time.Now()
-			printer.StepStart("Importing profile: " + rp.ID)
-			if err := sandbox.ImportProfile(rp.LocalPath); err != nil {
-				printer.StepFail("Failed to import profile " + rp.ID)
-				return fmt.Errorf("importing profile %q: %w", rp.ID, err)
-			}
-			printer.StepDone(fmt.Sprintf("Profile imported: %s (%.1fs)", rp.ID, time.Since(profileStart).Seconds()))
+	// 2b. Import resolved profiles to the gateway.
+	result.Profiles = dedupResolvedProfiles(result.Profiles)
+	for _, rp := range result.Profiles {
+		profileStart := time.Now()
+		printer.StepStart("Importing profile: " + rp.ID)
+		if err := sandbox.ImportProfile(ctx, rp.LocalPath); err != nil {
+			printer.StepFail("Failed to import profile " + rp.ID)
+			return fmt.Errorf("importing profile %q: %w", rp.ID, err)
 		}
+		printer.StepDone(fmt.Sprintf("Profile imported: %s (%.1fs)", rp.ID, time.Since(profileStart).Seconds()))
 	}
 
 	// 2c. Ensure providers exist on the gateway (if any declared).
@@ -724,35 +726,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			return fmt.Errorf("loading provider definitions: %w", err)
 		}
 
-		// Merge URL-resolved providers with local defs. URL-resolved
-		// providers with the same name as a local def are skipped (local wins).
-		allDefs := make([]harness.ProviderDef, 0, len(localDefs)+len(result.Providers))
-		localNames := make(map[string]bool, len(localDefs))
-		for _, ld := range localDefs {
-			localNames[ld.Name] = true
-			allDefs = append(allDefs, ld)
-		}
-		for _, rp := range result.Providers {
-			if !localNames[rp.Def.Name] {
-				allDefs = append(allDefs, rp.Def)
-			}
-		}
+		allDefs := mergeProviderDefs(localDefs, result.Providers)
 
-		// Validate referential integrity: every URL-resolved provider's
-		// type must match a declared profile id.
-		if len(result.Providers) > 0 && len(result.Profiles) > 0 {
-			profileIDs := make(map[string]bool, len(result.Profiles))
-			for _, rp := range result.Profiles {
-				profileIDs[rp.ID] = true
-			}
-			for _, rp := range result.Providers {
-				if !profileIDs[rp.Def.Type] {
-					printer.StepFail("Provider references unknown profile type")
-					return fmt.Errorf("provider %q references profile type %q, but no profile with that id was declared", rp.Def.Name, rp.Def.Type)
-				}
-			}
-		} else if len(result.Providers) > 0 {
-			printer.StepWarn("URL-resolved providers declared without URL-resolved profiles; referential integrity cannot be verified ahead of time")
+		if w, intErr := checkProviderProfileIntegrity(result.Providers, result.Profiles); intErr != nil {
+			printer.StepFail("Provider references unknown profile type")
+			return intErr
+		} else if w != "" {
+			printer.StepWarn(w)
 		}
 
 		var (
@@ -766,7 +746,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				defer wg.Done()
 				providerStart := time.Now()
 				printer.StepStart("Ensuring provider: " + pd.Name)
-				if err := sandbox.EnsureProvider(pd.Name, pd.Type, pd.Credentials, pd.Config); err != nil {
+				if err := sandbox.EnsureProvider(ctx, pd.Name, pd.Type, pd.Credentials, pd.Config); err != nil {
 					printer.StepFail("Failed to create provider " + pd.Name)
 					mu.Lock()
 					errs = append(errs, fmt.Errorf("ensuring provider %q: %w", pd.Name, err))
@@ -3054,4 +3034,78 @@ func clearDirContents(dir string) error {
 		}
 	}
 	return nil
+}
+
+// dedupResolvedProfiles removes duplicate profiles by ID, keeping the last
+// occurrence (child overrides base, since base entries come first from
+// composition).
+func dedupResolvedProfiles(profiles []resolve.ResolvedProfile) []resolve.ResolvedProfile {
+	if len(profiles) <= 1 {
+		return profiles
+	}
+	seen := make(map[string]int, len(profiles))
+	for i, rp := range profiles {
+		seen[rp.ID] = i
+	}
+	deduped := make([]resolve.ResolvedProfile, 0, len(seen))
+	for i, rp := range profiles {
+		if seen[rp.ID] == i {
+			deduped = append(deduped, rp)
+		}
+	}
+	return deduped
+}
+
+// mergeProviderDefs merges local and URL-resolved provider definitions.
+// Local defs have highest precedence; among URL-resolved defs, last
+// occurrence wins (child over base). The returned slice is deterministically
+// ordered: local defs first, then URL-resolved names in sorted order.
+func mergeProviderDefs(localDefs []harness.ProviderDef, urlProviders []resolve.ResolvedProvider) []harness.ProviderDef {
+	seen := make(map[string]bool, len(localDefs)+len(urlProviders))
+	allDefs := make([]harness.ProviderDef, 0, len(localDefs)+len(urlProviders))
+	for _, ld := range localDefs {
+		seen[ld.Name] = true
+		allDefs = append(allDefs, ld)
+	}
+	// Dedup URL-resolved by name: last occurrence wins (child over base,
+	// since base entries come first from composition).
+	lastByName := make(map[string]resolve.ResolvedProvider, len(urlProviders))
+	for _, rp := range urlProviders {
+		lastByName[rp.Def.Name] = rp
+	}
+	urlNames := make([]string, 0, len(lastByName))
+	for name := range lastByName {
+		if !seen[name] {
+			urlNames = append(urlNames, name)
+		}
+	}
+	sort.Strings(urlNames)
+	for _, name := range urlNames {
+		allDefs = append(allDefs, lastByName[name].Def)
+	}
+	return allDefs
+}
+
+// checkProviderProfileIntegrity validates that every URL-resolved provider
+// references a profile id that was also URL-resolved. Returns an error
+// describing the first mismatch, or nil if all references are valid.
+// Returns a non-empty warning string (no error) when providers exist but
+// no profiles were resolved.
+func checkProviderProfileIntegrity(providers []resolve.ResolvedProvider, profiles []resolve.ResolvedProfile) (warning string, err error) {
+	if len(providers) == 0 {
+		return "", nil
+	}
+	if len(profiles) == 0 {
+		return "URL-resolved providers present but no URL-resolved profiles — referential integrity not verified", nil
+	}
+	profileIDs := make(map[string]bool, len(profiles))
+	for _, rp := range profiles {
+		profileIDs[rp.ID] = true
+	}
+	for _, rp := range providers {
+		if !profileIDs[rp.Def.Type] {
+			return "", fmt.Errorf("provider %q references profile type %q, but no profile with that id was declared", rp.Def.Name, rp.Def.Type)
+		}
+	}
+	return "", nil
 }
