@@ -2346,15 +2346,8 @@ func setupStatusNotifier(fullsendDir string, role string, sOpts statusOpts, prin
 
 	var notifyCfg config.StatusNotificationConfig
 	orgConfigPath := filepath.Join(fullsendDir, "config.yaml")
-	if data, err := os.ReadFile(orgConfigPath); err == nil {
-		orgCfg, parseErr := config.ParseOrgConfig(data)
-		if parseErr != nil {
-			printer.StepWarn("Failed to parse config.yaml for status notifications: " + parseErr.Error())
-		} else if orgCfg.Defaults.StatusNotifications != nil {
-			notifyCfg = *orgCfg.Defaults.StatusNotifications
-		}
-	} else if !os.IsNotExist(err) {
-		printer.StepWarn("Failed to read config.yaml for status notifications: " + err.Error())
+	if orgCfg := tryLoadFullsendConfig(orgConfigPath, printer); orgCfg != nil && orgCfg.Defaults.StatusNotifications != nil {
+		notifyCfg = *orgCfg.Defaults.StatusNotifications
 	}
 
 	sha := os.Getenv("GITHUB_SHA")

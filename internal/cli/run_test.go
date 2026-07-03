@@ -234,6 +234,187 @@ func TestRunAgent_HarnessLoadWithOrgConfig(t *testing.T) {
 	assert.Contains(t, err.Error(), "openshell")
 }
 
+func TestRunAgent_PerRepoConfig(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("version: \"1\"\nroles:\n  - triage\n  - coder\nallowed_remote_resources:\n  - \"https://example.com/\"\n"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestTryLoadFullsendConfig_PerRepoFallback(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"version: \"1\"\nroles:\n  - triage\nallowed_remote_resources:\n  - \"https://example.com/\"\nagents:\n  - name: lint\n    source: harness/lint.yaml\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	require.NotNil(t, cfg)
+	assert.Equal(t, []string{"https://example.com/"}, cfg.AllowedRemoteResources)
+	require.Len(t, cfg.Agents, 1)
+	assert.Equal(t, "lint", cfg.Agents[0].Name)
+	assert.Equal(t, []string{"triage"}, cfg.Defaults.Roles)
+}
+
+func TestTryLoadFullsendConfig_MissingFile(t *testing.T) {
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig("/nonexistent/config.yaml", printer)
+	assert.Nil(t, cfg)
+}
+
+func TestTryLoadFullsendConfig_UnreadableFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("version: 1"), 0o644))
+	require.NoError(t, os.Chmod(path, 0o000))
+	t.Cleanup(func() { os.Chmod(path, 0o644) })
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	assert.Nil(t, cfg)
+}
+
+func TestTryLoadFullsendConfig_MalformedYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("[[[not yaml"), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	assert.Nil(t, cfg)
+}
+
+func TestRequireFullsendConfig_MissingFile(t *testing.T) {
+	printer := ui.New(io.Discard)
+	cfg, err := requireFullsendConfig("/nonexistent/config.yaml", printer)
+	assert.Nil(t, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "URL-referenced resources require a config.yaml")
+}
+
+func TestRequireFullsendConfig_UnreadableFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("version: 1"), 0o644))
+	require.NoError(t, os.Chmod(path, 0o000))
+	t.Cleanup(func() { os.Chmod(path, 0o644) })
+
+	printer := ui.New(io.Discard)
+	cfg, err := requireFullsendConfig(path, printer)
+	assert.Nil(t, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading fullsend config for remote resource validation")
+}
+
+func TestRequireFullsendConfig_MalformedYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("[[[not yaml"), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg, err := requireFullsendConfig(path, printer)
+	assert.Nil(t, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing config")
+}
+
+func TestRequireFullsendConfig_PerRepoFallback(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"version: \"1\"\nroles:\n  - triage\nallowed_remote_resources:\n  - \"https://example.com/\"\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg, err := requireFullsendConfig(path, printer)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Equal(t, []string{"https://example.com/"}, cfg.AllowedRemoteResources)
+	assert.Equal(t, []string{"triage"}, cfg.Defaults.Roles)
+}
+
+func TestIsPerRepoYAML(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{"per-repo with roles", "version: '1'\nroles:\n  - triage\n", true},
+		{"org with dispatch", "version: '1'\ndispatch:\n  platform: github\n", false},
+		{"org with repos", "version: '1'\nrepos:\n  acme/widget:\n    enabled: true\n", false},
+		{"org with dispatch and roles", "version: '1'\ndispatch:\n  platform: github\nroles:\n  - triage\n", false},
+		{"org with inference", "version: '1'\ninference:\n  provider: vertex\n", false},
+		{"org with defaults", "version: '1'\ndefaults:\n  roles:\n    - triage\n", false},
+		{"per-repo without roles", "version: '1'\nkill_switch: false\n", true},
+		{"minimal (no discriminator)", "version: '1'\n", true},
+		{"invalid yaml", "[[[bad", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isPerRepoYAML([]byte(tt.yaml)))
+		})
+	}
+}
+
+func TestTryLoadFullsendConfig_PerRepoMalformed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("roles:\n  triage: true\n"), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	assert.Nil(t, cfg)
+}
+
+func TestTryLoadFullsendConfig_OrgConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"version: \"1\"\ndispatch:\n  platform: github\nallowed_remote_resources:\n  - \"https://example.com/\"\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	require.NotNil(t, cfg)
+	assert.Equal(t, "github", cfg.Dispatch.Platform)
+	assert.Equal(t, []string{"https://example.com/"}, cfg.AllowedRemoteResources)
+}
+
+func TestRequireFullsendConfig_PerRepoMalformed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("roles:\n  triage: true\n"), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg, err := requireFullsendConfig(path, printer)
+	assert.Nil(t, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing per-repo config")
+}
+
 func TestRunAgent_MalformedOrgConfig(t *testing.T) {
 	// A malformed config.yaml should produce a warning but not prevent
 	// local-only harnesses from proceeding through the pipeline.
@@ -288,7 +469,7 @@ func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing org config")
+	assert.Contains(t, err.Error(), "parsing config")
 }
 
 func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
@@ -309,7 +490,7 @@ func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "URL-referenced resources require an org-level config.yaml")
+	assert.Contains(t, err.Error(), "URL-referenced resources require a config.yaml")
 }
 
 func TestRunAgent_WithURLBase(t *testing.T) {
@@ -375,7 +556,7 @@ func TestRunAgent_URLBaseNoOrgConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "URL-referenced resources require an org-level config.yaml")
+	assert.Contains(t, err.Error(), "URL-referenced resources require a config.yaml")
 }
 
 func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
@@ -403,7 +584,7 @@ func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing org config")
+	assert.Contains(t, err.Error(), "parsing config")
 }
 
 func TestBuildScanContextCommand_SourcesEnv(t *testing.T) {
