@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -30,6 +33,48 @@ type Dependency struct {
 	CacheHit  bool
 	Type      string // "file" or "directory"
 	Warning   string // non-fatal warning about this dependency
+}
+
+// ResolvedProfile is a profile definition fetched from a URL and
+// validated to have a non-empty id field.
+type ResolvedProfile struct {
+	ID        string
+	LocalPath string
+}
+
+// ResolvedProvider is a provider definition fetched from a URL.
+type ResolvedProvider struct {
+	Def       harness.ProviderDef
+	LocalPath string
+}
+
+// ResolveResult contains all outputs from harness resolution.
+type ResolveResult struct {
+	Deps      []Dependency
+	Profiles  []ResolvedProfile
+	Providers []ResolvedProvider
+}
+
+// profileYAML is the subset of an openshell profile definition needed
+// for validation. The full profile schema is openshell's concern.
+type profileYAML struct {
+	ID string `yaml:"id"`
+}
+
+// envVarPattern matches ${VAR_NAME} references.
+var envVarPattern = regexp.MustCompile(`^\$\{[A-Za-z_][A-Za-z0-9_]*\}$`)
+
+// warnLiteralCredentials returns a warning string if any credential value
+// does not look like a ${VAR} reference. Returns empty string if all OK.
+func warnLiteralCredentials(providerName string, creds map[string]string) string {
+	for k, v := range creds {
+		if v != "" && !envVarPattern.MatchString(v) {
+			return fmt.Sprintf(
+				"provider %q: credential %q value does not look like a ${VAR} reference — ensure secrets are not embedded in URL-fetched provider definitions",
+				providerName, k)
+		}
+	}
+	return ""
 }
 
 // ResolveOpts controls how URL-referenced resources are resolved.
@@ -70,15 +115,20 @@ type resolveState struct {
 }
 
 // ResolveHarness resolves URL-referenced declarative fields (Agent, Policy,
-// Skills) in the harness to local cache paths. Local paths are left unchanged.
-// The harness is modified in place: URL fields are replaced with cache paths,
-// and h.Skills may grow to include transitively resolved skill dependencies.
-// Returns the deduplicated list of resolved dependencies.
+// Skills, Profiles, Providers) in the harness to local cache paths. Local paths
+// are left unchanged. The harness is modified in place: URL fields are replaced
+// with cache paths, and h.Skills may grow to include transitively resolved skill
+// dependencies. Returns a ResolveResult containing all resolved dependencies,
+// profiles, and providers.
 //
 // Skills are directories: when a skill field is a URL, the resolver uses
 // git sparse checkout (via TreeFetcher / gitfetch.FetchTree) to fetch the
 // directory tree and cache it locally. Only URLs pointing to supported forges
 // (github.com) are accepted for skills. Agents and policies remain single files.
+//
+// Profiles and Providers: URL-referenced entries are fetched, validated, and
+// returned in the result. URL-based providers are removed from h.Providers,
+// leaving only local provider names.
 //
 // Skills with dependencies: frontmatter are recursively resolved up to
 // MaxDepth levels. Diamond dependencies are deduplicated; cycles are rejected.
@@ -93,7 +143,7 @@ type resolveState struct {
 // The default limits (depth=10, resources=50) bound worst-case resolution.
 // CI environments with untrusted harnesses should set tighter limits.
 // See ADR-0038 for the security model and trust semantics.
-func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) ([]Dependency, error) {
+func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (ResolveResult, error) {
 	maxDepth := opts.MaxDepth
 	if maxDepth < 0 {
 		maxDepth = DefaultMaxDepth
@@ -116,7 +166,7 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 	if h.Agent != "" && harness.IsURL(h.Agent) {
 		dep, localPath, err := resolveFileURL(ctx, "agent", h.Agent, h, opts, state)
 		if err != nil {
-			return nil, fmt.Errorf("resolving agent: %w", err)
+			return ResolveResult{}, fmt.Errorf("resolving agent: %w", err)
 		}
 		h.Agent = localPath
 		state.appendDependency(dep)
@@ -125,7 +175,7 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 	if h.Policy != "" && harness.IsURL(h.Policy) {
 		dep, localPath, err := resolveFileURL(ctx, "policy", h.Policy, h, opts, state)
 		if err != nil {
-			return nil, fmt.Errorf("resolving policy: %w", err)
+			return ResolveResult{}, fmt.Errorf("resolving policy: %w", err)
 		}
 		h.Policy = localPath
 		state.appendDependency(dep)
@@ -135,7 +185,7 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 		if harness.IsURL(s) {
 			dep, localPath, err := resolveSkillDirURL(ctx, fmt.Sprintf("skills[%d]", i), s, h, opts, state, recurse, 0)
 			if err != nil {
-				return nil, fmt.Errorf("resolving skills[%d]: %w", i, err)
+				return ResolveResult{}, fmt.Errorf("resolving skills[%d]: %w", i, err)
 			}
 			if !state.inDeps[dep.URL] {
 				h.Skills[i] = localPath
@@ -155,7 +205,73 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 	}
 	h.Skills = filtered
 
-	return state.deps, nil
+	// Resolve profiles
+	var profiles []ResolvedProfile
+	for i, p := range h.Profiles {
+		if !harness.IsURL(p) {
+			continue
+		}
+		dep, localPath, err := resolveFileURL(ctx, fmt.Sprintf("profiles[%d]", i), p, h, opts, state)
+		if err != nil {
+			return ResolveResult{}, fmt.Errorf("resolving profiles[%d]: %w", i, err)
+		}
+		state.appendDependency(dep)
+
+		content, err := os.ReadFile(localPath)
+		if err != nil {
+			return ResolveResult{}, fmt.Errorf("reading resolved profile %s: %w", localPath, err)
+		}
+		var prof profileYAML
+		if err := yaml.Unmarshal(content, &prof); err != nil {
+			return ResolveResult{}, fmt.Errorf("parsing profile from %s: %w", dep.URL, err)
+		}
+		if prof.ID == "" {
+			return ResolveResult{}, fmt.Errorf("profiles[%d]: profile id is required in %s", i, dep.URL)
+		}
+		profiles = append(profiles, ResolvedProfile{ID: prof.ID, LocalPath: localPath})
+	}
+
+	// Resolve providers
+	var resolvedProviders []ResolvedProvider
+	remaining := h.Providers[:0]
+	for i, p := range h.Providers {
+		if !harness.IsURL(p) {
+			remaining = append(remaining, p)
+			continue
+		}
+		dep, localPath, err := resolveFileURL(ctx, fmt.Sprintf("providers[%d]", i), p, h, opts, state)
+		if err != nil {
+			return ResolveResult{}, fmt.Errorf("resolving providers[%d]: %w", i, err)
+		}
+
+		content, err := os.ReadFile(localPath)
+		if err != nil {
+			return ResolveResult{}, fmt.Errorf("reading resolved provider %s: %w", localPath, err)
+		}
+		var def harness.ProviderDef
+		if err := yaml.Unmarshal(content, &def); err != nil {
+			return ResolveResult{}, fmt.Errorf("parsing provider from %s: %w", dep.URL, err)
+		}
+		if def.Name == "" {
+			return ResolveResult{}, fmt.Errorf("providers[%d]: provider name is required in %s", i, dep.URL)
+		}
+		if def.Type == "" {
+			return ResolveResult{}, fmt.Errorf("providers[%d]: provider type is required in %s", i, dep.URL)
+		}
+
+		if w := warnLiteralCredentials(def.Name, def.Credentials); w != "" {
+			dep.Warning = w
+		}
+		state.appendDependency(dep)
+		resolvedProviders = append(resolvedProviders, ResolvedProvider{Def: def, LocalPath: localPath})
+	}
+	h.Providers = remaining
+
+	return ResolveResult{
+		Deps:      state.deps,
+		Profiles:  profiles,
+		Providers: resolvedProviders,
+	}, nil
 }
 
 func (s *resolveState) appendDependency(dep Dependency) {

@@ -307,7 +307,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			}
 		}
 
-		deps, resolveErr := resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
+		result, resolveErr := resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
 			WorkspaceRoot: absFullsendDir,
 			FetchPolicy:   policy,
 			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
@@ -321,14 +321,14 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			return nil, fmt.Errorf("resolving remote resources: %w", resolveErr)
 		}
 
-		for _, dep := range deps {
+		for _, dep := range result.Deps {
 			if !seen[dep.URL] {
 				seen[dep.URL] = true
 				allDeps = append(allDeps, dep)
 			}
 		}
 
-		printer.StepDone(fmt.Sprintf("Resolved %d dependencies", len(deps)))
+		printer.StepDone(fmt.Sprintf("Resolved %d dependencies", len(result.Deps)))
 	}
 
 	if len(allDeps) == 0 {

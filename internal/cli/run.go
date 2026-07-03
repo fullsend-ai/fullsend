@@ -403,7 +403,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 
 		// Check for a lock file with a current entry for this harness.
-		var deps []resolve.Dependency
+		var result resolve.ResolveResult
 		usedLock := false
 
 		lockPath := filepath.Join(absFullsendDir, "lock.yaml")
@@ -429,9 +429,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 						printer.StepFail("Lock file resolution failed: " + lockResolveErr.Error())
 						printer.StepWarn("Falling back to normal resolution")
 					} else {
-						deps = lockDeps
+						result.Deps = lockDeps
 						usedLock = true
-						printer.StepDone(fmt.Sprintf("Resolved %d dependencies from lock file", len(deps)))
+						printer.StepDone(fmt.Sprintf("Resolved %d dependencies from lock file", len(result.Deps)))
 					}
 				}
 			}
@@ -448,7 +448,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 
 			var resolveErr error
-			deps, resolveErr = resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
+			result, resolveErr = resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
 				WorkspaceRoot: absFullsendDir,
 				FetchPolicy:   policy,
 				AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
@@ -463,7 +463,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 
-		for _, dep := range deps {
+		for _, dep := range result.Deps {
 			if dep.CacheHit {
 				printer.StepInfo(fmt.Sprintf("Resolved %s (cache hit)", dep.URL))
 			} else {
