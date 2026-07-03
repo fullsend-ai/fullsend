@@ -1747,6 +1747,47 @@ func TestDeleteOrgVariable(t *testing.T) {
 	})
 }
 
+func TestDeleteRepoVariable(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			assert.Equal(t, "/repos/myorg/myrepo/actions/variables/FULLSEND_PER_REPO_INSTALL", r.URL.Path)
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteRepoVariable(context.Background(), "myorg", "myrepo", "FULLSEND_PER_REPO_INSTALL")
+		require.NoError(t, err)
+	})
+
+	t.Run("idempotent 404", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteRepoVariable(context.Background(), "myorg", "myrepo", "ALREADY_GONE")
+		require.NoError(t, err)
+	})
+
+	t.Run("unexpected status", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteRepoVariable(context.Background(), "myorg", "myrepo", "VAR")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected status")
+	})
+}
+
 func TestListOrgRepos_Pagination(t *testing.T) {
 	page := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

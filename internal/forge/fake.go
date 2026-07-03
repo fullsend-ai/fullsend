@@ -831,6 +831,24 @@ func (f *FakeClient) GetRepoVariable(_ context.Context, owner, repo, name string
 	return "", false, nil
 }
 
+func (f *FakeClient) DeleteRepoVariable(_ context.Context, owner, repo, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DeleteRepoVariable"); e != nil {
+		return e
+	}
+
+	key := owner + "/" + repo + "/" + name
+	if f.VariableValues != nil {
+		delete(f.VariableValues, key)
+	}
+	if f.VariablesExist != nil {
+		delete(f.VariablesExist, key)
+	}
+	return nil
+}
+
 func (f *FakeClient) GetWorkflow(_ context.Context, owner, repo, workflowFile string) (*Workflow, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
