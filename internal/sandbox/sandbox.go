@@ -105,6 +105,23 @@ func inGitDir(path, root string) bool {
 	return false
 }
 
+// ImportProfile imports a single openshell provider profile from a YAML
+// file. The profile defines a provider type schema (credentials, endpoints).
+// If the profile already exists, the import is a no-op (openshell is
+// idempotent for profile imports).
+func ImportProfile(profilePath string) error {
+	cmd := exec.Command("openshell", "provider", "profile", "import", profilePath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		outStr := strings.ToLower(string(out))
+		if strings.Contains(outStr, "already exists") {
+			return nil
+		}
+		return fmt.Errorf("profile import %q failed: openshell: %w", filepath.Base(profilePath), err)
+	}
+	return nil
+}
+
 // EnsureProvider creates or updates a provider on the gateway. Credential
 // values may contain ${VAR} references which are expanded from the host
 // environment before being passed to openshell.

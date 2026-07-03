@@ -629,6 +629,14 @@ func TestBuildProviderUpdateArgs(t *testing.T) {
 	}
 }
 
+func TestImportProfile_OpenshellNotInPath(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	err := ImportProfile("/some/profile.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+}
+
 // TestEnsureProvider_AlreadyExists_FallsBackToUpdate uses a fake openshell
 // script: first invocation exits 1 with AlreadyExists, second exits 0.
 func TestEnsureProvider_AlreadyExists_FallsBackToUpdate(t *testing.T) {
