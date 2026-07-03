@@ -120,7 +120,8 @@ takes precedence.
   cannot write files regardless of what AGENTS.md says)
 - Remove or replace built-in skills — use
   [`customized/skills/`](customizing-with-skills.md#overriding-built-in-skills)
-  for that
+  for that (note: `customized/` is deprecated per ADR-0064; use
+  config-driven agents instead — see `fullsend agent migrate-customizations`)
 - Change the agent's model or execution parameters
 
 ### Injection handling

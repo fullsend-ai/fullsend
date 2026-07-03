@@ -242,7 +242,7 @@ Fullsend provides a base set of agent definitions. The adopting organization's *
 - Config-level agent registration: an `agents` list in both `OrgConfig` and `PerRepoConfig` declares agent harness sources as pinned URLs or local paths, replacing compiled-in agent discovery ([ADR 0058](ADRs/0058-agent-registration.md)).
 - Runtime resolution: `fullsend run <name>` looks up the agent in config and loads the harness directly from the URL or path — no intermediate wrapper files on disk. Role and slug come from the harness content itself.
 - Additive merge: config entries overlay scaffold-discovered agents (config wins on name collision), enabling gradual extraction of first-party agents without disrupting existing installations. Builds on [ADR 0045](ADRs/0045-forge-portable-harness-schema.md) harness identity model.
-- CLI management: `fullsend agent add/list/update/remove` manages config entries and auto-pins URLs to a commit SHA with an integrity hash.
+- CLI management: `fullsend agent add/list/update/remove/migrate-customizations` manages config entries and auto-pins URLs to a commit SHA with an integrity hash.
 
 **Open questions:**
 

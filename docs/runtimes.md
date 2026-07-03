@@ -96,6 +96,9 @@ slots:
 │              fullsend wins, repo version shadowed)      │
 │  Repo skills extend the agent; customized/skills/      │
 │  overrides at the config layer before upload            │
+│  ⚠ customized/ is deprecated per ADR-0064; use         │
+│  config-driven agents instead (see `fullsend agent     │
+│  migrate-customizations`)                              │
 └────────────────────────────────────────────────────────┘
 ```
 

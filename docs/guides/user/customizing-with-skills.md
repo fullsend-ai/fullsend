@@ -116,6 +116,10 @@ when available.
 
 ## Overriding built-in skills
 
+> **Deprecated:** The `customized/` overlay described below is deprecated per
+> [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
+> Use `base:` composition and config-driven agent registration instead.
+
 To intentionally **replace** a built-in skill with your own version, use the
 `customized/` overlay ([ADR 0035](../../ADRs/0035-layered-content-resolution.md)).
 This replaces the skill at the config layer before the agent starts — the

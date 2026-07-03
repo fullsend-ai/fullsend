@@ -274,6 +274,11 @@ cp -r /tmp/fullsend-ai_fullsend/internal/scaffold/fullsend-repo/. /tmp/agents/
 
 Then apply your organization customizations, if any:
 
+> **Note:** The `customized/` overlay mechanism is deprecated per
+> [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
+> Orgs that have migrated to config-driven agents should skip these
+> `cp -r customized/` steps and use the registered harness paths directly.
+
 ```bash
 git clone --depth 1 https://github.com/{org}/.fullsend.git /tmp/org-fullsend/
 cp -r /tmp/org-fullsend/customized/. /tmp/agents/

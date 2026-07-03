@@ -588,6 +588,17 @@ forge-specific artifact. The harness and agent definition are portable.
   removing an agent is deleting a file, adding one is creating a thin
   wrapper with `base:`.
 
+- **Bidirectional composition.** The `base:` merge semantics (scalars
+  override, slices concatenate, maps merge, security fields never inherited)
+  have an inverse: `DiffHarness` in `internal/harness/diff.go` computes
+  the minimal child harness that reproduces a full harness when composed
+  with a given base. This powers
+  [ADR 0064](0064-deprecate-customized-directory-overlay.md)'s
+  `migrate-customizations` command, which converts `customized/` directory
+  overlays into `base:` composition harnesses. The diff engine mirrors
+  `mergeBaseIntoChild` semantics exactly — changes to merge rules must be
+  reflected in both directions.
+
 - **Default URL allowlist for `base` composition.** `fullsend install`
   sets `allowed_remote_resources` in `config.yaml` to include the
   fullsend scaffold URL prefix

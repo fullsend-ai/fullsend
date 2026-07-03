@@ -95,6 +95,17 @@ security:                        # Security is enabled by default with fail_mode
 
 ## Layered Configuration Resolution
 
+> **Deprecated:** The `customized/` directory overlay mechanism described
+> below is deprecated per [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
+> Use `base:` composition instead: register agents in `config.yaml` with a
+> `base:` URL pointing to the upstream harness, and override only the fields
+> that differ. See [ADR-0045](../../ADRs/0045-forge-portable-harness-schema.md)
+> for the composition model and [ADR-0058](../../ADRs/0058-agent-registration.md)
+> for config-driven registration.
+> Run `fullsend agent migrate-customizations --dry-run` to preview the
+> migration, then `fullsend agent migrate-customizations --repo owner/repo`
+> to apply it.
+
 Fullsend uses a three-tier configuration inheritance model for all configuration: agent definitions, skills, policies, harness definitions, and guardrails. Each configuration tier can extend or override the one below it.
 
 ```
@@ -149,6 +160,9 @@ For per-repo mode, the same structure lives at `.fullsend/customized/` within th
 
 ### How Override Resolution Works
 
+> **Deprecated:** This section describes the deprecated `customized/` overlay.
+> See the [deprecation notice above](#layered-configuration-resolution).
+
 **File-level replacement, not field-level merging.** When you place a file in `customized/harness/code.yaml`, it completely replaces the upstream `harness/code.yaml`. There is no YAML field merging.
 
 **Example: Adding a skill to the code agent**
@@ -189,6 +203,10 @@ To add a custom skill to the code agent's harness:
 **Important:** You must maintain the full harness structure. You cannot add just a `skills:` field—the entire YAML file must be present and valid.
 
 ### Customizing Pre-commit Tool Dependencies
+
+> **Note:** The `customized/scripts/.pre-commit-tools.yaml` L1 overlay path
+> referenced below uses the deprecated `customized/` mechanism.
+> The per-repo L2 path (`.pre-commit-tools.yaml` at repo root) is unaffected.
 
 Fullsend auto-detects and installs tools required by a target repo's pre-commit hooks. The resolver reads `.pre-commit-config.yaml`, matches hooks against a tools registry, and installs missing dependencies before the authoritative pre-commit check runs.
 

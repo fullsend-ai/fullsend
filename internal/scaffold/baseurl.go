@@ -62,6 +62,20 @@ func HarnessBaseURLWithHash(harnessName, commitSHA string) (string, error) {
 	return base + "#sha256=" + hash, nil
 }
 
+// HarnessContent returns the raw YAML bytes of an embedded scaffold harness
+// template. This is the same content served by raw.githubusercontent.com for
+// the release commit the CLI was built from.
+func HarnessContent(harnessName string) ([]byte, error) {
+	if !validHarnessName.MatchString(harnessName) {
+		return nil, fmt.Errorf("invalid harness name %q: must match %s", harnessName, validHarnessName.String())
+	}
+	data, err := content.ReadFile("fullsend-repo/harness/" + harnessName + ".yaml")
+	if err != nil {
+		return nil, fmt.Errorf("unknown harness %q: %w", harnessName, err)
+	}
+	return data, nil
+}
+
 // HarnessNames returns the sorted list of harness template names
 // available in the embedded scaffold (e.g., ["code", "fix", "triage"]).
 func HarnessNames() ([]string, error) {

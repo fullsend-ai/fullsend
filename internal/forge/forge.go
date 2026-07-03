@@ -190,10 +190,12 @@ type UserIdentity struct {
 // TreeFile represents a file to be committed via the Git Trees API.
 // Mode controls file permissions: "100644" for regular files,
 // "100755" for executable files (e.g., shell scripts).
+// When Delete is true, the file is removed from the tree.
 type TreeFile struct {
 	Path    string
 	Content []byte
 	Mode    string // "100644" or "100755"
+	Delete  bool   // remove file from tree instead of adding/updating
 }
 
 // DirectoryEntry represents a file or subdirectory in a repository directory listing.

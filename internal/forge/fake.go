@@ -538,12 +538,7 @@ func (f *FakeClient) CommitFiles(_ context.Context, owner, repo, message string,
 		Files:   files,
 	})
 
-	if f.FileContents == nil {
-		f.FileContents = make(map[string][]byte)
-	}
-	for _, file := range files {
-		f.FileContents[owner+"/"+repo+"/"+file.Path] = file.Content
-	}
+	f.applyFileContents(owner, repo, files)
 
 	changed := f.CommitFilesChanged == nil || *f.CommitFilesChanged
 	return changed, nil
@@ -565,15 +560,24 @@ func (f *FakeClient) CommitFilesToBranch(_ context.Context, owner, repo, branch,
 		Files:   files,
 	})
 
+	f.applyFileContents(owner, repo, files)
+
+	changed := f.CommitFilesChanged == nil || *f.CommitFilesChanged
+	return changed, nil
+}
+
+func (f *FakeClient) applyFileContents(owner, repo string, files []TreeFile) {
 	if f.FileContents == nil {
 		f.FileContents = make(map[string][]byte)
 	}
 	for _, file := range files {
-		f.FileContents[owner+"/"+repo+"/"+file.Path] = file.Content
+		key := owner + "/" + repo + "/" + file.Path
+		if file.Delete {
+			delete(f.FileContents, key)
+		} else {
+			f.FileContents[key] = file.Content
+		}
 	}
-
-	changed := f.CommitFilesChanged == nil || *f.CommitFilesChanged
-	return changed, nil
 }
 
 func (f *FakeClient) GetBranchRef(_ context.Context, owner, repo, branch string) (string, error) {
