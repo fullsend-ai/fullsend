@@ -121,6 +121,137 @@ func TestChildScriptEnv_EmptyTraceparentOmitted(t *testing.T) {
 	}
 }
 
+func TestChildScriptEnv_FiltersPreExistingTraceparent(t *testing.T) {
+	// A parent process may already export TRACEPARENT (issue #2779). Most
+	// runtimes resolve the FIRST match in the environment, so the stale value
+	// must be filtered out — exactly one TRACEPARENT entry, fullsend's own.
+	t.Setenv("TRACEPARENT", "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-bbbbbbbbbbbbbbbb-01")
+	const fullsendTP = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-01"
+
+	env := childScriptEnv(map[string]string{}, fullsendTP)
+
+	traceparents := 0
+	for _, e := range env {
+		if strings.HasPrefix(e, "TRACEPARENT=") {
+			traceparents++
+			assert.Equal(t, "TRACEPARENT="+fullsendTP, e, "must be fullsend's value, not the parent's")
+		}
+	}
+	assert.Equal(t, 1, traceparents, "exactly one TRACEPARENT entry after filtering")
+}
+
+func TestChildScriptEnv_EmptyTraceparentFiltersExisting(t *testing.T) {
+	// Even with telemetry disabled (empty traceparent), a stale inherited
+	// TRACEPARENT must not leak through to child scripts.
+	t.Setenv("TRACEPARENT", "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-bbbbbbbbbbbbbbbb-01")
+
+	env := childScriptEnv(map[string]string{}, "")
+	for _, e := range env {
+		assert.False(t, strings.HasPrefix(e, "TRACEPARENT="), "stale TRACEPARENT must be filtered even when disabled")
+	}
+}
+
+func TestChildScriptEnv_FiltersRunnerEnvTraceparent(t *testing.T) {
+	// A harness-provided runner_env.TRACEPARENT would land before fullsend's
+	// appended value and win first-match resolution — same shadowing bug as
+	// the inherited process env, so it gets the same filter. fullsend's
+	// trace identity never derives from runner_env; honoring it would only
+	// desync child scripts from the recorded trace.
+	const fullsendTP = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-01"
+	runnerEnv := map[string]string{
+		"TRACEPARENT": "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-bbbbbbbbbbbbbbbb-01",
+		"FOO":         "bar",
+	}
+
+	env := childScriptEnv(runnerEnv, fullsendTP)
+
+	traceparents := 0
+	hasFoo := false
+	for _, e := range env {
+		if strings.HasPrefix(e, "TRACEPARENT=") {
+			traceparents++
+			assert.Equal(t, "TRACEPARENT="+fullsendTP, e, "must be fullsend's value, not runner_env's")
+		}
+		if e == "FOO=bar" {
+			hasFoo = true
+		}
+	}
+	assert.Equal(t, 1, traceparents, "exactly one TRACEPARENT entry")
+	assert.True(t, hasFoo, "other runner_env entries preserved")
+}
+
+func TestChildScriptEnv_EmptyTraceparentFiltersRunnerEnv(t *testing.T) {
+	// Telemetry disabled: a runner_env TRACEPARENT must not leak either.
+	env := childScriptEnv(map[string]string{"TRACEPARENT": "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-bbbbbbbbbbbbbbbb-01"}, "")
+	for _, e := range env {
+		assert.False(t, strings.HasPrefix(e, "TRACEPARENT="), "runner_env TRACEPARENT must be filtered when disabled")
+	}
+}
+
+func TestChildScriptEnv_PreservesTracestate(t *testing.T) {
+	// W3C tracestate carries vendor context alongside traceparent and must
+	// pass through to child scripts untouched.
+	t.Setenv("TRACESTATE", "vendor=abc123,other=def456")
+	const tp = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-01"
+
+	env := childScriptEnv(map[string]string{}, tp)
+
+	found := false
+	for _, e := range env {
+		if e == "TRACESTATE=vendor=abc123,other=def456" {
+			found = true
+		}
+	}
+	assert.True(t, found, "TRACESTATE must pass through to child scripts")
+}
+
+func TestResolveTraceIdentity(t *testing.T) {
+	const (
+		tid = "4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d"
+		sid = "a1b2c3d4e5f60718"
+	)
+	reSpanID := regexp.MustCompile(`^[0-9a-f]{16}$`)
+
+	t.Run("adopts valid inbound sampled traceparent", func(t *testing.T) {
+		securityID, tc := resolveTraceIdentity("00-" + tid + "-" + sid + "-01")
+
+		assert.Equal(t, tid, tc.TraceID, "inbound trace-id adopted")
+		assert.Equal(t, sid, tc.ParentSpanID, "inbound span-id becomes the root span's remote parent")
+		assert.Equal(t, "01", tc.Flags)
+		assert.Equal(t, "4f3a9c1b-2d8e-4a7c-9f0b-1e2d3c4a5b6d", securityID, "security id derived from inbound trace-id")
+		assert.Equal(t, tid, telemetry.TraceIDFromUUID(securityID), "security id must round-trip to the W3C id")
+		assert.True(t, security.IsShellSafeTraceID(securityID))
+
+		assert.Regexp(t, reSpanID, tc.RootSpanID, "fresh root span id")
+		assert.NotEqual(t, sid, tc.RootSpanID, "root span is a child, not the inbound span itself")
+	})
+
+	t.Run("preserves unsampled flag", func(t *testing.T) {
+		_, tc := resolveTraceIdentity("00-" + tid + "-" + sid + "-00")
+		assert.Equal(t, "00", tc.Flags, "upstream unsampled decision preserved")
+	})
+
+	t.Run("adopted non-v4 trace-id is shell-safe", func(t *testing.T) {
+		// version nibble 0, variant nibble 1 — valid W3C, not UUID v4.
+		securityID, _ := resolveTraceIdentity("00-4f3a9c1b2d8e0a7c1f0b1e2d3c4a5b6d-" + sid + "-01")
+		assert.Equal(t, "4f3a9c1b-2d8e-0a7c-1f0b-1e2d3c4a5b6d", securityID)
+		assert.True(t, security.IsShellSafeTraceID(securityID))
+		assert.False(t, security.IsValidTraceID(securityID), "adopted id is not v4 — needs the shell-safe validator")
+	})
+
+	for _, inbound := range []string{"", "not-a-traceparent", "00-" + tid + "-" + sid, "ff-" + tid + "-" + sid + "-01"} {
+		t.Run("falls back to fresh identity for "+fmt.Sprintf("%q", inbound), func(t *testing.T) {
+			securityID, tc := resolveTraceIdentity(inbound)
+
+			assert.True(t, security.IsValidTraceID(securityID), "fresh id is a v4 UUID")
+			assert.Equal(t, telemetry.TraceIDFromUUID(securityID), tc.TraceID, "unified trace id (Level 1 invariant)")
+			assert.Empty(t, tc.ParentSpanID, "local trace root has no remote parent")
+			assert.Equal(t, "01", tc.Flags, "fresh traces are sampled")
+			assert.Regexp(t, reSpanID, tc.RootSpanID)
+		})
+	}
+}
+
 func TestAgentSpanEndAttrs(t *testing.T) {
 	var m agentruntime.RunMetrics
 	m.Model = "claude-opus-4-6"

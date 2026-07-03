@@ -414,6 +414,16 @@ func TestBuildScanContextCommand_SourcesEnv(t *testing.T) {
 	assert.Contains(t, cmd, "-exec fullsend scan context")
 }
 
+func TestBuildScanContextCommand_AcceptsAdoptedTraceID(t *testing.T) {
+	// A trace id adopted from an inbound W3C traceparent (issue #2779) is
+	// dashed hex but not UUID v4; it must survive validation, not be replaced
+	// with the "invalid-trace-id" sentinel.
+	traceID := "4f3a9c1b-2d8e-0a7c-1f0b-1e2d3c4a5b6d"
+	cmd := buildScanContextCommand("/sandbox/workspace/repo", traceID)
+	assert.Contains(t, cmd, "FULLSEND_TRACE_ID='"+traceID+"'")
+	assert.NotContains(t, cmd, "invalid-trace-id")
+}
+
 func TestCopyFile(t *testing.T) {
 	t.Run("copies content and preserves permissions", func(t *testing.T) {
 		src := filepath.Join(t.TempDir(), "source")

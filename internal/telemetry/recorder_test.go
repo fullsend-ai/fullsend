@@ -43,7 +43,7 @@ func readLines(t *testing.T, path string) []map[string]any {
 
 func TestRecorder_EmitsValidNDJSON(t *testing.T) {
 	dir := t.TempDir()
-	r := New(dir, testTraceID, testRootID, "code", "octo/repo#2577", time.Now())
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "octo/repo#2577", time.Now())
 	sp := r.StartSpan("sandbox_create", "", nil)
 	r.EndSpan(sp, "ok", nil)
 	r.Finalize(0)
@@ -62,7 +62,7 @@ func TestRecorder_EmitsValidNDJSON(t *testing.T) {
 
 func TestRecorder_RootSpanHasEmptyParentAndChildPointsToRoot(t *testing.T) {
 	dir := t.TempDir()
-	r := New(dir, testTraceID, testRootID, "code", "wi", time.Now())
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	sp := r.StartSpan("sandbox_create", "", nil) // empty parent => defaults to root
 	r.EndSpan(sp, "ok", nil)
 	r.Finalize(0)
@@ -81,7 +81,7 @@ func TestRecorder_RootSpanHasEmptyParentAndChildPointsToRoot(t *testing.T) {
 func TestRecorder_SummaryFields(t *testing.T) {
 	dir := t.TempDir()
 	start := time.Now().Add(-2 * time.Second)
-	r := New(dir, testTraceID, testRootID, "code", "octo/repo#2577", start)
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "octo/repo#2577", start)
 	sp := r.StartSpan("agent", "", map[string]any{"iteration": 1})
 	r.EndSpan(sp, "ok", map[string]any{"iteration": 1, "exit_code": 0})
 	r.Finalize(0)
@@ -123,7 +123,7 @@ func TestRecorder_SummaryFields(t *testing.T) {
 
 func TestRecorder_NonZeroExitMarksError(t *testing.T) {
 	dir := t.TempDir()
-	r := New(dir, testTraceID, testRootID, "code", "wi", time.Now())
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	r.Finalize(2)
 
 	data, err := os.ReadFile(filepath.Join(dir, "run-summary.json"))
@@ -145,7 +145,7 @@ func TestRecorder_NonZeroExitMarksError(t *testing.T) {
 
 func TestRecorder_CrashSafety_LinesDurableWithoutFinalize(t *testing.T) {
 	dir := t.TempDir()
-	r := New(dir, testTraceID, testRootID, "code", "wi", time.Now())
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	sp := r.StartSpan("sandbox_create", "", nil)
 	r.EndSpan(sp, "ok", nil)
 	// Simulate a crash: Finalize never called. Synced lines must still parse.
@@ -179,7 +179,7 @@ func TestRecorder_TruncatedTrailingLineTolerated(t *testing.T) {
 
 func TestRecorder_GracefulDegradation_UnwritableDir(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "does-not-exist") // parent missing => OpenFile fails
-	r := New(dir, testTraceID, testRootID, "code", "wi", time.Now())
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	require.NotNil(t, r, "New must never return nil, even on failure")
 
 	sp := r.StartSpan("x", "", nil)
@@ -204,7 +204,7 @@ func TestRecorder_NilSafe(t *testing.T) {
 
 func TestRecorder_FinalizeIdempotentNoTmpLeft(t *testing.T) {
 	dir := t.TempDir()
-	r := New(dir, testTraceID, testRootID, "code", "wi", time.Now())
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	r.Finalize(0)
 	assert.NotPanics(t, func() { r.Finalize(0) }, "second Finalize is a no-op")
 
@@ -216,14 +216,14 @@ func TestRecorder_FinalizeIdempotentNoTmpLeft(t *testing.T) {
 
 func TestRecorder_TraceParent(t *testing.T) {
 	dir := t.TempDir()
-	r := New(dir, testTraceID, testRootID, "code", "wi", time.Now())
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	defer r.Finalize(0)
 	assert.Equal(t, "00-"+testTraceID+"-"+testRootID+"-01", r.TraceParent())
 }
 
 func TestRecorder_ConcurrentWritesNoCorruption(t *testing.T) {
 	dir := t.TempDir()
-	r := New(dir, testTraceID, testRootID, "code", "wi", time.Now())
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
 		wg.Add(1)
@@ -243,7 +243,7 @@ func TestRecorder_ConcurrentWritesNoCorruption(t *testing.T) {
 
 func TestRecorder_EndSpanUnknownSpanID(t *testing.T) {
 	dir := t.TempDir()
-	r := New(dir, testTraceID, testRootID, "code", "wi", time.Now())
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	r.EndSpan("deadbeefdeadbeef", "ok", nil) // never started — must not panic
 	r.Finalize(0)
 
@@ -261,7 +261,7 @@ func TestRecorder_EndSpanUnknownSpanID(t *testing.T) {
 
 func TestRecorder_WriteFailureMidRunDisablesGracefully(t *testing.T) {
 	dir := t.TempDir()
-	r := New(dir, testTraceID, testRootID, "code", "wi", time.Now())
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	// Simulate the telemetry file failing mid-run by closing it underneath.
 	require.NoError(t, r.f.Close())
 
@@ -275,7 +275,7 @@ func TestRecorder_WriteFailureMidRunDisablesGracefully(t *testing.T) {
 
 func TestRecorder_SummaryWriteFailureSwallowed(t *testing.T) {
 	dir := t.TempDir()
-	r := New(dir, testTraceID, testRootID, "code", "wi", time.Now())
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	// Point the summary target at a non-existent subdir so WriteFile fails;
 	// the failure must be swallowed and leave no stray temp file.
 	r.dir = filepath.Join(dir, "missing")
@@ -288,7 +288,7 @@ func TestRecorder_SummaryWriteFailureSwallowed(t *testing.T) {
 
 func TestRecorder_SummaryMetrics(t *testing.T) {
 	dir := t.TempDir()
-	r := New(dir, testTraceID, testRootID, "code", "wi", time.Now())
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	r.SetMetrics(RunMetrics{InputTokens: 18432, OutputTokens: 2901, CacheCreationInputTokens: 8000, CacheReadInputTokens: 50000, TotalCostUSD: 0.0731, NumTurns: 7, ToolCalls: 14})
 	r.Finalize(0)
 
@@ -310,7 +310,7 @@ func TestRecorder_SummaryMetrics(t *testing.T) {
 
 func TestRecorder_SummaryModel(t *testing.T) {
 	dir := t.TempDir()
-	r := New(dir, testTraceID, testRootID, "code", "wi", time.Now())
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	r.SetModel("claude-opus-4-6")
 	r.Finalize(0)
 
@@ -323,7 +323,7 @@ func TestRecorder_SummaryModel(t *testing.T) {
 
 func TestRecorder_SummaryModelOmittedWhenUnset(t *testing.T) {
 	dir := t.TempDir()
-	r := New(dir, testTraceID, testRootID, "code", "wi", time.Now())
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	r.Finalize(0) // no SetModel
 	data, err := os.ReadFile(filepath.Join(dir, SummaryFile))
 	require.NoError(t, err)
@@ -336,13 +336,13 @@ func TestRecorder_SummaryModelOmittedWhenUnset(t *testing.T) {
 func TestRecorder_SetModelNilAndDisabledSafe(t *testing.T) {
 	var r *Recorder
 	assert.NotPanics(t, func() { r.SetModel("m") })
-	disabled := New(filepath.Join(t.TempDir(), "does-not-exist"), testTraceID, testRootID, "code", "wi", time.Now())
+	disabled := New(filepath.Join(t.TempDir(), "does-not-exist"), TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	assert.NotPanics(t, func() { disabled.SetModel("m") })
 }
 
 func TestRecorder_FinalizeClosesFileEvenWhenDisabled(t *testing.T) {
 	dir := t.TempDir()
-	r := New(dir, testTraceID, testRootID, "code", "wi", time.Now())
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	r.disabled = true // simulate a mid-run emit failure that disabled the recorder
 	r.Finalize(0)
 	_, err := r.f.Write([]byte("x"))
@@ -351,7 +351,7 @@ func TestRecorder_FinalizeClosesFileEvenWhenDisabled(t *testing.T) {
 
 func TestRecorder_EndSpanDefaultsEmptyStatusToOK(t *testing.T) {
 	dir := t.TempDir()
-	r := New(dir, testTraceID, testRootID, "code", "wi", time.Now())
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	sp := r.StartSpan("sandbox_create", "", nil)
 	r.EndSpan(sp, "", nil) // empty status must default to "ok"
 	r.Finalize(0)
@@ -367,7 +367,7 @@ func TestRecorder_EndSpanDefaultsEmptyStatusToOK(t *testing.T) {
 
 func TestRecorder_EmitMarshalErrorDisablesRecorder(t *testing.T) {
 	dir := t.TempDir()
-	r := New(dir, testTraceID, testRootID, "code", "wi", time.Now())
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	// A channel cannot be JSON-marshaled, so emit hits its marshal-error branch
 	// and must disable the recorder gracefully rather than panic.
 	assert.NotPanics(t, func() {
@@ -378,7 +378,7 @@ func TestRecorder_EmitMarshalErrorDisablesRecorder(t *testing.T) {
 
 func TestRecorder_SummaryRenameFailureSwallowed(t *testing.T) {
 	dir := t.TempDir()
-	r := New(dir, testTraceID, testRootID, "code", "wi", time.Now())
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	// Make the final summary path a non-empty directory so the atomic rename
 	// fails; the failure must be swallowed and leave no stray temp file.
 	blocker := filepath.Join(dir, SummaryFile)
@@ -392,7 +392,7 @@ func TestRecorder_SummaryRenameFailureSwallowed(t *testing.T) {
 
 func TestRecorder_SummaryMetricsOmittedWhenUnset(t *testing.T) {
 	dir := t.TempDir()
-	r := New(dir, testTraceID, testRootID, "code", "wi", time.Now())
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	r.Finalize(0) // no SetMetrics
 
 	data, err := os.ReadFile(filepath.Join(dir, SummaryFile))
@@ -407,6 +407,73 @@ func TestRecorder_SetMetricsNilAndDisabledSafe(t *testing.T) {
 	var r *Recorder
 	assert.NotPanics(t, func() { r.SetMetrics(RunMetrics{InputTokens: 1}) })
 
-	disabled := New(filepath.Join(t.TempDir(), "does-not-exist"), testTraceID, testRootID, "code", "wi", time.Now())
+	disabled := New(filepath.Join(t.TempDir(), "does-not-exist"), TraceContext{TraceID: testTraceID, RootSpanID: testRootID}, "code", "wi", time.Now())
 	assert.NotPanics(t, func() { disabled.SetMetrics(RunMetrics{InputTokens: 1}) })
+}
+
+func TestRecorder_RootSpanRecordsRemoteParent(t *testing.T) {
+	// When the run adopts an inbound TRACEPARENT (issue #2779), the root span
+	// must record the inbound span-id as its parent so the exported trace
+	// joins the parent chain instead of orphaning itself.
+	dir := t.TempDir()
+	r := New(dir, TraceContext{
+		TraceID: testTraceID, RootSpanID: testRootID,
+		ParentSpanID: "beefbeefbeefbeef", Flags: "01",
+	}, "code", "wi", time.Now())
+	r.Finalize(0)
+
+	lines := readLines(t, filepath.Join(dir, TelemetryFile))
+	require.Len(t, lines, 2) // root span_start + span_end
+	for _, m := range lines {
+		assert.Equal(t, "run", m["name"])
+		assert.Equal(t, "beefbeefbeefbeef", m["parent"], "root span must carry the inbound remote parent")
+	}
+}
+
+func TestRecorder_RootSpanEmptyParentWhenLocalRoot(t *testing.T) {
+	// No inbound traceparent: the root span has no parent, as in Level 1.
+	dir := t.TempDir()
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID},
+		"code", "wi", time.Now())
+	r.Finalize(0)
+
+	lines := readLines(t, filepath.Join(dir, TelemetryFile))
+	require.Len(t, lines, 2)
+	assert.Equal(t, "", lines[0]["parent"], "local trace root has empty parent")
+}
+
+func TestRecorder_SummaryTraceparentPreservesFlags(t *testing.T) {
+	// An upstream-unsampled trace (flags 00) must not be re-advertised as
+	// sampled by the summary or by TraceParent() — a downstream consumer
+	// chaining from either would resurrect a dead sampling decision.
+	dir := t.TempDir()
+	r := New(dir, TraceContext{
+		TraceID: testTraceID, RootSpanID: testRootID, Flags: "00",
+	}, "code", "wi", time.Now())
+
+	wantTP := "00-" + testTraceID + "-" + testRootID + "-00"
+	assert.Equal(t, wantTP, r.TraceParent(), "TraceParent() must carry the inbound flags")
+
+	r.Finalize(0)
+	data, err := os.ReadFile(filepath.Join(dir, SummaryFile))
+	require.NoError(t, err)
+	var s map[string]any
+	require.NoError(t, json.Unmarshal(data, &s))
+	assert.Equal(t, wantTP, s["traceparent"], "summary traceparent must carry the inbound flags")
+}
+
+func TestRecorder_EmptyFlagsDefaultTo01(t *testing.T) {
+	dir := t.TempDir()
+	r := New(dir, TraceContext{TraceID: testTraceID, RootSpanID: testRootID},
+		"code", "wi", time.Now())
+
+	want := TraceParent(testTraceID, testRootID)
+	assert.Equal(t, want, r.TraceParent(), "empty flags must behave exactly like Level 1 (sampled)")
+
+	r.Finalize(0)
+	data, err := os.ReadFile(filepath.Join(dir, SummaryFile))
+	require.NoError(t, err)
+	var s map[string]any
+	require.NoError(t, json.Unmarshal(data, &s))
+	assert.Equal(t, want, s["traceparent"])
 }

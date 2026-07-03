@@ -86,41 +86,60 @@ type spanState struct {
 	start  time.Time
 }
 
+// TraceContext is the run's W3C trace identity. When the run continues an
+// inbound TRACEPARENT (issue #2779), ParentSpanID carries the inbound span-id
+// (so the root span joins the parent trace) and Flags carries the inbound
+// trace-flags (so the upstream sampling decision is preserved). For a locally
+// rooted trace both are empty; empty Flags means "01" (sampled).
+type TraceContext struct {
+	TraceID      string // 32-hex W3C trace-id
+	RootSpanID   string // 16-hex span-id of this run's root span
+	ParentSpanID string // inbound remote parent span-id; "" = local trace root
+	Flags        string // 2-hex W3C trace-flags; "" defaults to "01"
+}
+
 // Recorder writes crash-safe NDJSON telemetry and a final summary. The zero
 // value is not usable; obtain one from New. A nil *Recorder is a valid no-op.
 type Recorder struct {
-	mu         sync.Mutex
-	f          *os.File
-	dir        string
-	traceID    string
-	rootSpanID string
-	agent      string
-	model      string
-	workItem   string
-	start      time.Time
-	spans      map[string]*spanState
-	steps      []stepTiming
-	metrics    *RunMetrics
-	disabled   bool
-	finalized  bool
+	mu           sync.Mutex
+	f            *os.File
+	dir          string
+	traceID      string
+	rootSpanID   string
+	parentSpanID string
+	flags        string
+	agent        string
+	model        string
+	workItem     string
+	start        time.Time
+	spans        map[string]*spanState
+	steps        []stepTiming
+	metrics      *RunMetrics
+	disabled     bool
+	finalized    bool
 }
 
 // New opens <dir>/run-telemetry.jsonl for append and emits the root "run" span
-// (backdated to start). traceID is a 32-hex W3C trace-id and rootSpanID a
-// 16-hex span-id; both are supplied by the caller so the trace correlates with
-// the run's security trace id and with child processes.
+// (backdated to start). The trace identity is supplied by the caller so the
+// trace correlates with the run's security trace id, with child processes,
+// and — when continuing an inbound TRACEPARENT — with the parent trace.
 //
 // New never returns an error: if the file cannot be opened it returns a
 // disabled (no-op) recorder so the run is never affected.
-func New(dir, traceID, rootSpanID, agent, workItemID string, start time.Time) *Recorder {
+func New(dir string, tc TraceContext, agent, workItemID string, start time.Time) *Recorder {
+	if tc.Flags == "" {
+		tc.Flags = "01"
+	}
 	r := &Recorder{
-		dir:        dir,
-		traceID:    traceID,
-		rootSpanID: rootSpanID,
-		agent:      agent,
-		workItem:   workItemID,
-		start:      start,
-		spans:      make(map[string]*spanState),
+		dir:          dir,
+		traceID:      tc.TraceID,
+		rootSpanID:   tc.RootSpanID,
+		parentSpanID: tc.ParentSpanID,
+		flags:        tc.Flags,
+		agent:        agent,
+		workItem:     workItemID,
+		start:        start,
+		spans:        make(map[string]*spanState),
 	}
 	f, err := os.OpenFile(filepath.Join(dir, TelemetryFile), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -131,8 +150,8 @@ func New(dir, traceID, rootSpanID, agent, workItemID string, start time.Time) *R
 
 	r.mu.Lock()
 	r.emit(eventRecord{
-		V: SchemaVersion, Event: "span_start", TraceID: traceID, SpanID: rootSpanID,
-		Parent: "", Name: "run", TS: start.UTC().Format(time.RFC3339Nano),
+		V: SchemaVersion, Event: "span_start", TraceID: r.traceID, SpanID: r.rootSpanID,
+		Parent: r.parentSpanID, Name: "run", TS: start.UTC().Format(time.RFC3339Nano),
 		WorkItemID: workItemID, Attrs: map[string]any{"agent": agent},
 	})
 	r.mu.Unlock()
@@ -205,7 +224,7 @@ func (r *Recorder) TraceParent() string {
 	if r.disabled {
 		return ""
 	}
-	return TraceParent(r.traceID, r.rootSpanID)
+	return TraceParentWithFlags(r.traceID, r.rootSpanID, r.flags)
 }
 
 // SetMetrics records aggregate run metrics to include in run-summary.json.
@@ -264,12 +283,12 @@ func (r *Recorder) Finalize(exitCode int) {
 	}
 	r.emit(eventRecord{
 		V: SchemaVersion, Event: "span_end", TraceID: r.traceID, SpanID: r.rootSpanID,
-		Parent: "", Name: "run", TS: end.UTC().Format(time.RFC3339Nano),
+		Parent: r.parentSpanID, Name: "run", TS: end.UTC().Format(time.RFC3339Nano),
 		WorkItemID: r.workItem, DurationMS: end.Sub(r.start).Milliseconds(), Status: status,
 	})
 
 	r.writeSummary(runSummary{
-		V: SchemaVersion, TraceID: r.traceID, Traceparent: TraceParent(r.traceID, r.rootSpanID),
+		V: SchemaVersion, TraceID: r.traceID, Traceparent: TraceParentWithFlags(r.traceID, r.rootSpanID, r.flags),
 		Agent: r.agent, Model: r.model, WorkItemID: r.workItem, ExitCode: exitCode,
 		StartedAt: r.start.UTC().Format(time.RFC3339Nano), EndedAt: end.UTC().Format(time.RFC3339Nano),
 		DurationMS: end.Sub(r.start).Milliseconds(), Steps: r.steps, Metrics: r.metrics,
