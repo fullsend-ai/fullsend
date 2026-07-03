@@ -23,7 +23,7 @@
 #   FROM <registry>/fullsend-sandbox:v1
 #   RUN apt-get install -y golang
 
-FROM ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:11c73b5a90297f59172abc1b0cd36dc87a2be3a942c4ed604a4da653a4c67c68
+FROM ghcr.io/nvidia/openshell-community/sandboxes/base@sha256:aeef1c63f00e2913ea002ccb3aaf925f338b5c5d70e63576f0d95c16a138044e
 
 # The base image runs as the sandbox user (998). Switch to root for
 # package installation and switch back at the end.
