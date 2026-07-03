@@ -15,6 +15,14 @@
       "matchManagers": ["github-actions"],
       "matchPackageNames": ["/^fullsend-ai\\//"],
       "enabled": false
+    },
+    {
+      "description": "Group OpenShell base image and version pin into one PR",
+      "matchPackageNames": [
+        "ghcr.io/nvidia/openshell-community/sandboxes/base",
+        "NVIDIA/OpenShell"
+      ],
+      "groupName": "openshell"
     }
   ],
   "postUpdateOptions": ["gomodTidy"],
