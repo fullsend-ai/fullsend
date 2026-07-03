@@ -503,6 +503,27 @@ func TestFakeClient_DeleteOrgVariable(t *testing.T) {
 	assert.Equal(t, "myorg/DISPATCH_URL", fc.DeletedOrgVariables[0])
 }
 
+func TestFakeClient_DeleteRepoVariable(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{
+		VariableValues: map[string]string{
+			"myorg/myrepo/FULLSEND_PER_REPO_INSTALL": "true",
+		},
+		VariablesExist: map[string]bool{
+			"myorg/myrepo/FULLSEND_PER_REPO_INSTALL": true,
+		},
+	}
+
+	err := fc.DeleteRepoVariable(ctx, "myorg", "myrepo", "FULLSEND_PER_REPO_INSTALL")
+	require.NoError(t, err)
+
+	// Verify deletion from both maps
+	_, existsInValues := fc.VariableValues["myorg/myrepo/FULLSEND_PER_REPO_INSTALL"]
+	assert.False(t, existsInValues)
+	_, existsInExists := fc.VariablesExist["myorg/myrepo/FULLSEND_PER_REPO_INSTALL"]
+	assert.False(t, existsInExists)
+}
+
 func TestFakeClient_ErrorInjection(t *testing.T) {
 	ctx := context.Background()
 	injected := errors.New("injected error")
@@ -571,6 +592,9 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		{"IsInstallationToken", func(fc *FakeClient) error { _, err := fc.IsInstallationToken(ctx); return err }},
 		{"DeleteOrgVariable", func(fc *FakeClient) error {
 			return fc.DeleteOrgVariable(ctx, "o", "n")
+		}},
+		{"DeleteRepoVariable", func(fc *FakeClient) error {
+			return fc.DeleteRepoVariable(ctx, "o", "r", "n")
 		}},
 		{"SetOrgVariableRepos", func(fc *FakeClient) error {
 			return fc.SetOrgVariableRepos(ctx, "o", "n", nil)

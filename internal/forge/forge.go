@@ -345,6 +345,7 @@ type Client interface {
 	CreateOrUpdateRepoVariable(ctx context.Context, owner, repo, name, value string) error
 	RepoVariableExists(ctx context.Context, owner, repo, name string) (bool, error)
 	GetRepoVariable(ctx context.Context, owner, repo, name string) (string, bool, error)
+	DeleteRepoVariable(ctx context.Context, owner, repo, name string) error
 
 	// Org-level secrets (for cross-repo dispatch tokens)
 	CreateOrgSecret(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error
