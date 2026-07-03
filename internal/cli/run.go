@@ -388,6 +388,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return fmt.Errorf("resolving paths: %w", err)
 	}
 
+	// Declare result outside the URL references block so it's accessible
+	// later for profile import and provider resolution.
+	var result resolve.ResolveResult
+
 	if h.HasURLReferences() {
 		if orgCfg == nil {
 			var err error
@@ -403,7 +407,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 
 		// Check for a lock file with a current entry for this harness.
-		var result resolve.ResolveResult
 		usedLock := false
 
 		lockPath := filepath.Join(absFullsendDir, "lock.yaml")
@@ -680,8 +683,21 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	printer.StepDone(fmt.Sprintf("Gateway available (%.1fs)", time.Since(gatewayStart).Seconds()))
 
-	// 2b. Ensure providers exist on the gateway (if any declared).
-	if len(h.Providers) > 0 {
+	// 2b. Import resolved profiles to the gateway (if any).
+	if len(result.Profiles) > 0 {
+		for _, rp := range result.Profiles {
+			profileStart := time.Now()
+			printer.StepStart("Importing profile: " + rp.ID)
+			if err := sandbox.ImportProfile(rp.LocalPath); err != nil {
+				printer.StepFail("Failed to import profile " + rp.ID)
+				return fmt.Errorf("importing profile %q: %w", rp.ID, err)
+			}
+			printer.StepDone(fmt.Sprintf("Profile imported: %s (%.1fs)", rp.ID, time.Since(profileStart).Seconds()))
+		}
+	}
+
+	// 2c. Ensure providers exist on the gateway (if any declared).
+	if len(h.Providers) > 0 || len(result.Providers) > 0 {
 		// Enable provider-backed policy composition on the gateway.
 		provV2Start := time.Now()
 		printer.StepStart("Enabling providers v2")
@@ -693,35 +709,58 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		// Import provider profiles (if profiles/ directory exists).
 		profilesDir := filepath.Join(absFullsendDir, "profiles")
-		profileStart := time.Now()
+		dirProfileStart := time.Now()
 		printer.StepStart("Importing provider profiles")
 		if err := sandbox.ImportProfiles(profilesDir); err != nil {
 			printer.StepFail("Failed to import provider profiles")
 			return fmt.Errorf("importing provider profiles: %w", err)
 		}
-		printer.StepDone(fmt.Sprintf("Provider profiles imported (%.1fs)", time.Since(profileStart).Seconds()))
+		printer.StepDone(fmt.Sprintf("Provider profiles imported (%.1fs)", time.Since(dirProfileStart).Seconds()))
 
 		providersDir := filepath.Join(absFullsendDir, "providers")
-		declared := make(map[string]struct{}, len(h.Providers))
-		for _, p := range h.Providers {
-			declared[p] = struct{}{}
-		}
-		providerDefs, err := harness.LoadProviderDefs(providersDir, declared)
+		localDefs, err := harness.LoadProviderDefs(providersDir)
 		if err != nil {
 			printer.StepFail("Failed to load provider definitions")
 			return fmt.Errorf("loading provider definitions: %w", err)
 		}
-		created := make(map[string]struct{}, len(providerDefs))
+
+		// Merge URL-resolved providers with local defs. URL-resolved
+		// providers with the same name as a local def are skipped (local wins).
+		allDefs := make([]harness.ProviderDef, 0, len(localDefs)+len(result.Providers))
+		localNames := make(map[string]bool, len(localDefs))
+		for _, ld := range localDefs {
+			localNames[ld.Name] = true
+			allDefs = append(allDefs, ld)
+		}
+		for _, rp := range result.Providers {
+			if !localNames[rp.Def.Name] {
+				allDefs = append(allDefs, rp.Def)
+			}
+		}
+
+		// Validate referential integrity: every URL-resolved provider's
+		// type must match a declared profile id.
+		if len(result.Providers) > 0 && len(result.Profiles) > 0 {
+			profileIDs := make(map[string]bool, len(result.Profiles))
+			for _, rp := range result.Profiles {
+				profileIDs[rp.ID] = true
+			}
+			for _, rp := range result.Providers {
+				if !profileIDs[rp.Def.Type] {
+					printer.StepFail("Provider references unknown profile type")
+					return fmt.Errorf("provider %q references profile type %q, but no profile with that id was declared", rp.Def.Name, rp.Def.Type)
+				}
+			}
+		} else if len(result.Providers) > 0 {
+			printer.StepWarn("URL-resolved providers declared without URL-resolved profiles; referential integrity cannot be verified ahead of time")
+		}
+
 		var (
 			mu   sync.Mutex
 			wg   sync.WaitGroup
 			errs []error
 		)
-		for _, pd := range providerDefs {
-			if _, ok := declared[pd.Name]; !ok {
-				continue
-			}
-			created[pd.Name] = struct{}{}
+		for _, pd := range allDefs {
 			wg.Add(1)
 			go func(pd harness.ProviderDef) {
 				defer wg.Done()
@@ -741,11 +780,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if err := errors.Join(errs...); err != nil {
 			return err
 		}
-		for _, p := range h.Providers {
-			if _, ok := created[p]; !ok {
-				printer.StepWarn(fmt.Sprintf("Provider %q declared in harness but no definition found in %s", p, providersDir))
-			}
-		}
+
 	}
 
 	// Trace identity (ADR 0050 Level 1 + security correlation). Resolved here,
@@ -757,7 +792,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	securityTraceID, traceCtx := resolveTraceIdentity(os.Getenv("TRACEPARENT"))
 	workItemID := resolveWorkItemID()
 
-	// 2c. Run pre-script on the host (if configured).
+	// 2d. Run pre-script on the host (if configured).
 	if h.PreScript != "" {
 		preStart := time.Now()
 		printer.StepStart("Running pre-script: " + h.PreScript)
