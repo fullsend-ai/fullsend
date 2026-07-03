@@ -492,6 +492,12 @@ func mergeBaseIntoChild(base, child *Harness) {
 		merged = append(merged, child.Providers...)
 		child.Providers = merged
 	}
+	if base.Profiles != nil {
+		merged := make([]string, 0, len(base.Profiles)+len(child.Profiles))
+		merged = append(merged, base.Profiles...)
+		merged = append(merged, child.Profiles...)
+		child.Profiles = merged
+	}
 	// AllowedRemoteResources, AllowRuntimeFetch, and MaxRuntimeFetches are
 	// NOT merged from base harnesses to prevent privilege escalation: a base
 	// cannot inject arbitrary URL prefixes or enable runtime fetching in the
