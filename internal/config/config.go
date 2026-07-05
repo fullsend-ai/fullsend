@@ -440,6 +440,21 @@ func NewPerRepoConfig(roles []string, targetRepo string) *PerRepoConfig {
 	return cfg
 }
 
+// OrgConfigFromPerRepo adapts a PerRepoConfig into an OrgConfig so callers
+// that expect OrgConfig can work uniformly with both config formats. Shared
+// fields and Roles (mapped to Defaults.Roles) are copied; OrgConfig-specific
+// fields (Dispatch, Inference, Repos) remain zero-valued.
+func OrgConfigFromPerRepo(pr *PerRepoConfig) *OrgConfig {
+	return &OrgConfig{
+		Version:                pr.Version,
+		KillSwitch:             pr.KillSwitch,
+		Defaults:               RepoDefaults{Roles: pr.Roles},
+		Agents:                 pr.Agents,
+		AllowedRemoteResources: pr.AllowedRemoteResources,
+		CreateIssues:           pr.CreateIssues,
+	}
+}
+
 // ParsePerRepoConfig parses YAML bytes into a PerRepoConfig.
 func ParsePerRepoConfig(data []byte) (*PerRepoConfig, error) {
 	var cfg PerRepoConfig

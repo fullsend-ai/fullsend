@@ -1079,7 +1079,7 @@ func TestRunLock_URLRefsNoOrgConfigError(t *testing.T) {
 	printer := ui.New(os.Stdout)
 	err := runLock(context.Background(), "noconfig", dir, "", false, resolveFlags{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "URL-referenced resources require an org-level config.yaml")
+	assert.Contains(t, err.Error(), "URL-referenced resources require a config.yaml")
 	assert.Contains(t, err.Error(), "allowed_remote_resources")
 }
 
@@ -1136,7 +1136,7 @@ func TestRunLock_MalformedOrgConfigWithURLRefs(t *testing.T) {
 	printer := ui.New(os.Stdout)
 	err := runLock(context.Background(), "badcfg", dir, "", false, resolveFlags{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing org config")
+	assert.Contains(t, err.Error(), "parsing config")
 }
 
 func TestRunLock_NoOrgConfigNoURLRefs(t *testing.T) {
@@ -1202,7 +1202,7 @@ func TestRunLock_OrgAllowlistSyncedAfterReAttempt(t *testing.T) {
 	printer := ui.New(os.Stdout)
 	err := runLock(context.Background(), "urlrefs", dir, "", false, resolveFlags{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing org config")
+	assert.Contains(t, err.Error(), "parsing config")
 }
 
 func TestRunLock_URLBaseAndURLRefsNoOrgConfig(t *testing.T) {

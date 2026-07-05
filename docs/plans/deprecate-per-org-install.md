@@ -440,10 +440,11 @@ All per-org commands gone.
   into the renamed `Config` struct and `ParseConfig()`. This field is
   accessed by `run.go` (~lines 189, 192, 201, 205, 237, 243) and
   `lock.go` (~lines 170, 173, 181, 185, 264, 268, 270) via
-  `tryLoadOrgConfig()`/`requireOrgConfig()` in `orgconfig.go`. Update
-  `orgconfig.go` to use `config.ParseConfig()` instead of
-  `config.ParseOrgConfig()` and rename functions/file accordingly
-  (e.g. `tryLoadConfig()`/`requireConfig()`, rename file to
+  `tryLoadFullsendConfig()`/`requireFullsendConfig()` (renamed from
+  `tryLoadOrgConfig()`/`requireOrgConfig()`, which remain as var
+  aliases) in `orgconfig.go`. Update `orgconfig.go` to use
+  `config.ParseConfig()` instead of `config.ParseOrgConfig()` and
+  rename functions/file accordingly (e.g. rename file to
   `configloader.go` or inline into callers).
 
 **Update all callers:**
@@ -468,11 +469,12 @@ All per-org commands gone.
   `DefaultRoles()` for consistency. Effectively dead code after
   per-org removal.
 - `internal/cli/orgconfig.go`: Update `config.ParseOrgConfig()` calls
-  (~lines 22, 42) to `config.ParseConfig()`. Rename
-  `tryLoadOrgConfig()` → `tryLoadConfig()`, `requireOrgConfig()` →
-  `requireConfig()`. Rename file to `configloader.go` or inline.
-- `internal/cli/run.go`: Update `tryLoadOrgConfig()`/
-  `requireOrgConfig()` calls (~lines 189, 198, 201, 235, 237) and
+  to `config.ParseConfig()`. The functions were already renamed to
+  `tryLoadFullsendConfig()`/`requireFullsendConfig()` (PR #3000); var
+  aliases `tryLoadOrgConfig`/`requireOrgConfig` can be removed.
+  Rename file to `configloader.go` or inline.
+- `internal/cli/run.go`: Update `tryLoadOrgConfig`/
+  `requireOrgConfig` var alias calls (~lines 189, 198, 201, 235, 237) and
   `orgCfg.AllowedRemoteResources` accesses (~lines 192, 205, 243)
   to use the renamed config type and loader functions. Also update
   `config.ParseOrgConfig()` (~line 1974): this call reads
@@ -483,8 +485,8 @@ All per-org commands gone.
   and update `ParseConfig()` to populate it. This keeps status
   notification configuration available in per-repo mode without
   importing the full `RepoDefaults` sub-struct.
-- `internal/cli/lock.go`: Update `tryLoadOrgConfig()`/
-  `requireOrgConfig()` calls (~lines 170, 181, 264) and
+- `internal/cli/lock.go`: Update `tryLoadOrgConfig`/
+  `requireOrgConfig` var alias calls (~lines 170, 181, 264) and
   `orgCfg.AllowedRemoteResources` accesses (~lines 173, 185, 268,
   270) to use the renamed config type and loader functions.
 - Any other files importing `config.PerRepoConfig` or
