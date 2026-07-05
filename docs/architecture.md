@@ -172,10 +172,18 @@ The existing design principle is that [the repo is the coordinator](problems/age
   evaluated by `fullsend dispatch` with pluggable input/output drivers
   operating on a `NormalizedEvent` struct
   ([ADR 0061](ADRs/0061-harness-cel-dispatch.md)).
+- Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll
+  input drivers to discover work from remote systems (Jira first), coordinates
+  via source-native write-then-verify locks, and feeds the same dispatch pipeline
+  as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
+  scope is per-repo mode only.
 
 **Open questions:**
 
-- Is GitHub's event system sufficient, or do we need additional coordination logic (e.g. to prevent two code agents from picking up the same issue)?
+- Is GitHub's event system sufficient for forge-native duplicate protection, or
+  do we need additional coordination beyond label/state conventions and agent
+  idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
+  lock refresh.)
 - How does work assignment interact with the backlog/priority agent described in [agent-architecture.md](problems/agent-architecture.md)?
 - What happens when work needs to be cancelled, retried, or reassigned?
 - Does the coordinator need state (a queue, a lock, a claim system), or can it be stateless and event-driven?
