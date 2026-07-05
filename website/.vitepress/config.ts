@@ -247,6 +247,11 @@ export default defineConfig({
               items: getMarkdownFiles('problems', 'problems'),
             },
             {
+              text: 'Spikes',
+              collapsed: true,
+              items: getMarkdownFiles('spikes', 'spikes'),
+            },
+            {
               text: 'Experiments (Exploratory)',
               collapsed: true,
               items: getMarkdownFiles('experiments', 'experiments'),
