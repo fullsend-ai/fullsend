@@ -200,7 +200,9 @@ type FakeClient struct {
 	DeletedRepos           []string // "owner/repo"
 	DeletedFiles           []FileRecord
 	CreatedSecrets         []SecretRecord
+	DeletedSecrets         []SecretRecord
 	Variables              []VariableRecord
+	DeletedVariables       []VariableRecord
 	DeletedOrgSecrets      []string // "org/name"
 	CreatedOrgSecrets      []OrgSecretRecord
 	CreatedOrgVariables    []OrgVariableRecord
@@ -770,6 +772,26 @@ func (f *FakeClient) CreateRepoSecret(_ context.Context, owner, repo, name, valu
 	return nil
 }
 
+func (f *FakeClient) DeleteRepoSecret(_ context.Context, owner, repo, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DeleteRepoSecret"); e != nil {
+		return e
+	}
+
+	key := owner + "/" + repo + "/" + name
+	if f.Secrets != nil {
+		delete(f.Secrets, key)
+	}
+	f.DeletedSecrets = append(f.DeletedSecrets, SecretRecord{
+		Owner: owner,
+		Repo:  repo,
+		Name:  name,
+	})
+	return nil
+}
+
 func (f *FakeClient) RepoSecretExists(_ context.Context, owner, repo, name string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -792,6 +814,15 @@ func (f *FakeClient) CreateOrUpdateRepoVariable(_ context.Context, owner, repo, 
 		return e
 	}
 
+	key := owner + "/" + repo + "/" + name
+	if f.VariableValues == nil {
+		f.VariableValues = make(map[string]string)
+	}
+	f.VariableValues[key] = value
+	if f.VariablesExist == nil {
+		f.VariablesExist = make(map[string]bool)
+	}
+	f.VariablesExist[key] = true
 	f.Variables = append(f.Variables, VariableRecord{
 		Owner: owner,
 		Repo:  repo,
@@ -831,6 +862,25 @@ func (f *FakeClient) GetRepoVariable(_ context.Context, owner, repo, name string
 	return "", false, nil
 }
 
+func (f *FakeClient) ListRepoVariables(_ context.Context, owner, repo string) (map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListRepoVariables"); e != nil {
+		return nil, e
+	}
+
+	prefix := owner + "/" + repo + "/"
+	result := make(map[string]string)
+	for key, val := range f.VariableValues {
+		if strings.HasPrefix(key, prefix) {
+			name := strings.TrimPrefix(key, prefix)
+			result[name] = val
+		}
+	}
+	return result, nil
+}
+
 func (f *FakeClient) DeleteRepoVariable(_ context.Context, owner, repo, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -846,6 +896,11 @@ func (f *FakeClient) DeleteRepoVariable(_ context.Context, owner, repo, name str
 	if f.VariablesExist != nil {
 		delete(f.VariablesExist, key)
 	}
+	f.DeletedVariables = append(f.DeletedVariables, VariableRecord{
+		Owner: owner,
+		Repo:  repo,
+		Name:  name,
+	})
 	return nil
 }
 
