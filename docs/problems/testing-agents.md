@@ -1,10 +1,10 @@
 # Testing the Agents
 
-We have CI for code, but no CI for prompts. If someone tweaks the Intent & Coherence sub-agent's instructions, how do we prove it didn't forget how to detect Tier Escalation?
+We have CI for code, but no CI for prompts. If someone tweaks the Intent & Coherence sub-agent's instructions, how do we prove it didn't forget how to detect intent authorization tier escalation?
 
 ## Why this is a distinct problem
 
-Testing application code is a solved problem with mature tooling: unit tests, integration tests, CI pipelines, coverage reports. But agent instructions — system prompts, CLAUDE.md files, review criteria, escalation rules — are a fundamentally different artifact. They're natural language, not code. Their behavior is probabilistic, not deterministic. And the consequences of a regression can be severe: an agent that silently stops catching tier escalation, or starts rubber-stamping security-sensitive changes, or loses its ability to detect prompt injection.
+Testing application code is a solved problem with mature tooling: unit tests, integration tests, CI pipelines, coverage reports. But agent instructions — system prompts, CLAUDE.md files, review criteria, escalation rules — are a fundamentally different artifact. They're natural language, not code. Their behavior is probabilistic, not deterministic. And the consequences of a regression can be severe: an agent that silently stops catching intent authorization tier escalation, or starts rubber-stamping security-sensitive changes, or loses its ability to detect prompt injection.
 
 Today, if someone modifies a review agent's instructions, the only verification is human review of the prose change. There is no automated way to confirm the agent still behaves correctly after the modification. This is the equivalent of shipping code changes with no test suite — something we would never accept for application code.
 
@@ -20,7 +20,7 @@ An agent's behavior is the product of its instructions, the model it runs on, th
 
 ### Absence detection
 
-The hardest bugs to catch are capabilities that silently disappear. If someone simplifies the Intent & Coherence sub-agent's instructions and removes the paragraph about tier escalation detection, the agent won't error — it will simply stop checking for tier escalation. There's no compile error, no stack trace, no failing import. The capability quietly vanishes, and you only discover it when a tier-gaming attack succeeds.
+The hardest bugs to catch are capabilities that silently disappear. If someone simplifies the Intent & Coherence sub-agent's instructions and removes the paragraph about intent authorization tier escalation detection, the agent won't error — it will simply stop checking for intent authorization tier escalation. There's no compile error, no stack trace, no failing import. The capability quietly vanishes, and you only discover it when an intent-authorization-tier-gaming attack succeeds.
 
 ### Interaction effects
 
@@ -43,7 +43,7 @@ When someone modifies an agent's system prompt, CLAUDE.md, or configuration:
 
 ### Capability coverage
 
-For each agent role described in [agent-architecture.md](agent-architecture.md) and [code-review.md](code-review.md), there's an implicit set of capabilities. The Intent & Coherence sub-agent should detect tier escalation. The Security sub-agent should catch known injection patterns and flag RBAC changes. These capabilities need explicit test coverage.
+For each agent role described in [agent-architecture.md](agent-architecture.md) and [code-review.md](code-review.md), there's an implicit set of capabilities. The Intent & Coherence sub-agent should detect intent authorization tier escalation. The Security sub-agent should catch known injection patterns and flag RBAC changes. These capabilities need explicit test coverage.
 
 ### Cross-agent composition
 
@@ -63,7 +63,7 @@ Maintain a curated set of test cases — inputs with known-correct outputs — f
 agent-tests/
   intent-coherence/
     golden-set/
-      tier-escalation-detection.yaml
+      intent-tier-escalation-detection.yaml
       scope-mismatch.yaml
       cross-repo-intent.yaml
     ...
@@ -81,7 +81,7 @@ Each test case specifies an input (a synthetic PR, issue, or diff) and the expec
 
 **Pros:**
 - Concrete, auditable, version-controlled
-- Directly tests for known capabilities — if tier escalation detection breaks, the golden-set test for it fails
+- Directly tests for known capabilities — if intent authorization tier escalation detection breaks, the golden-set test for it fails
 - Fast feedback loop compared to production monitoring
 - Can be run in CI on every instruction change
 
@@ -103,7 +103,7 @@ Define contracts for each agent — formal statements about what the agent must 
 
 - MUST flag any PR where the linked issue describes a bug fix but the diff adds new API surface
 - MUST flag any PR that modifies files in more than 3 directories when the linked issue is labeled "bug"
-- MUST NOT approve a PR with no linked issue unless the change is classified as Tier 0
+- MUST NOT approve a PR with no linked issue unless the change is classified as intent authorization tier 0
 - MUST escalate when the diff scope exceeds what the linked intent file authorizes
 
 ### Trade-offs
@@ -198,7 +198,7 @@ Under the hood, promptfoo makes direct HTTP calls to model provider APIs. Each t
 - The pytest integration means eval suites look like normal test suites, which lowers the adoption barrier for teams already testing in Python
 - Has explicit "Agentic Metrics" (Task Completion, Tool Correctness, Goal Accuracy, Step Efficiency, Plan Adherence) — but these score agent *traces*, they don't run agents
 
-The main gap: deepeval's built-in metrics are oriented toward conversational AI (relevancy, faithfulness to a source document). Evaluating whether a review agent correctly detected tier escalation requires custom metrics — the framework supports this, but the useful metrics would need to be written.
+The main gap: deepeval's built-in metrics are oriented toward conversational AI (relevancy, faithfulness to a source document). Evaluating whether a review agent correctly detected intent authorization tier escalation requires custom metrics — the framework supports this, but the useful metrics would need to be written.
 
 #### lightspeed-evaluation
 

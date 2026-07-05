@@ -32,7 +32,7 @@ The review process is identical whether the PR author is an agent or a human. Th
 
 ### The context window argument
 
-A single review agent asked to evaluate a PR must simultaneously consider: correctness, security (platform and content), intent alignment, test adequacy, style conformance, prompt injection defense, tier classification, and cross-repo impact. For a non-trivial diff in a complex codebase, this overwhelms the context window — not just in terms of token count, but in terms of attention quality.
+A single review agent asked to evaluate a PR must simultaneously consider: correctness, security (platform and content), intent alignment, test adequacy, style conformance, prompt injection defense, intent authorization tier classification, and cross-repo impact. For a non-trivial diff in a complex codebase, this overwhelms the context window — not just in terms of token count, but in terms of attention quality.
 
 Even as context windows grow, the problem persists. Research and practice consistently show that LLM attention degrades with volume. A 200k-token context window doesn't mean 200k tokens of equally-weighted analysis. Asking one agent to hold the full diff, the relevant codebase context, the intent specification, the security threat model, and the repo's conventions all at once means it does all of them poorly.
 
@@ -87,17 +87,17 @@ Reviews changes for threats to the platform and its users. Collapses the platfor
 
 ### Intent & Coherence (sonnet)
 
-Evaluates whether the change matches an authorized intent and whether its scope matches its claimed tier.
+Evaluates whether the change matches an authorized intent and whether its scope matches its claimed intent authorization tier.
 
 - Does this PR trace to a linked issue or authorized feature?
 - Does the implementation match what the issue/feature describes?
-- Is the change scope consistent with its tier classification? (The [tier escalation problem](intent-representation.md#the-tier-escalation-problem) — a "bug fix" that's really a feature request.)
+- Is the change scope consistent with its intent authorization tier classification? (The [intent authorization tier escalation problem](intent-representation.md#the-intent-authorization-tier-escalation-problem) — a "bug fix" that's really a feature request.)
 - Does the change go beyond what was authorized?
 - Does the change fit the overall design of the module/system?
 - Is the complexity proportional to the value delivered?
 - Are there simpler alternatives that achieve the same goal?
 
-**Context needed:** The diff summary, the linked issue/feature file, surrounding module architecture, design docs, the intent repo state, the tier classification criteria.
+**Context needed:** The diff summary, the linked issue/feature file, surrounding module architecture, design docs, the intent repo state, the intent authorization tier classification criteria.
 
 ### Style/conventions agent (sonnet)
 
@@ -174,16 +174,16 @@ A human reviewer can say "I'm not sure about this, let me think" or "I need some
 
 When an agent escalates to a human, the quality of that escalation matters. A vague "I'm not confident" wastes the human's time. A more useful pattern: when the agent's uncertainty stems from a change being legitimately interpretable in multiple ways, it presents its best interpretations as structured alternatives — while explicitly inviting the human to reject all of them.
 
-For example, a review agent uncertain about tier classification could escalate with:
+For example, a review agent uncertain about intent authorization tier classification could escalate with:
 
-- **Reading A:** "This is a bug fix (Tier 1) — the existing behavior doesn't match the documented intent, and the change is scoped to correcting that gap. Requires: linked issue."
-- **Reading B:** "This is a new feature (Tier 2) — the system never intended to do this, and the change adds new capability. Requires: authorized feature file in `approved/`."
+- **Reading A:** "This is a bug fix (intent authorization tier 1) — the existing behavior doesn't match the documented intent, and the change is scoped to correcting that gap. Requires: linked issue."
+- **Reading B:** "This is a new feature (intent authorization tier 2) — the system never intended to do this, and the change adds new capability. Requires: authorized feature file in `approved/`."
 
 Critically, the escalation must always include an explicit "none of the above" option — the human may see a framing the agent missed entirely, or may decide the change should be rejected outright. The agent's interpretations are a starting point for the human's decision, not an exhaustive menu. This avoids presenting a false dichotomy that pressures the human into picking whichever option seems least wrong.
 
 The human sees coherent framings and can pick the one that matches their understanding, offer their own, or reject the change — rather than starting from scratch. This is faster and more structured than an open-ended "please review."
 
-This pattern is most valuable at escalation boundaries — where the system has already decided it can't resolve something autonomously. It doesn't replace confidence scores or explicit uncertainty signals; it complements them by making the *nature* of the uncertainty actionable. It applies wherever agents interact with humans: tier classification (see [intent-representation.md](intent-representation.md#the-tier-escalation-problem)), the exploration phase for proposed features (see [intent-representation.md](intent-representation.md#the-try-it-phase)), and deadlock resolution between review sub-agents (see [agent-architecture.md](agent-architecture.md#how-deadlocks-are-resolved)).
+This pattern is most valuable at escalation boundaries — where the system has already decided it can't resolve something autonomously. It doesn't replace confidence scores or explicit uncertainty signals; it complements them by making the *nature* of the uncertainty actionable. It applies wherever agents interact with humans: intent authorization tier classification (see [intent-representation.md](intent-representation.md#the-intent-authorization-tier-escalation-problem)), the exploration phase for proposed features (see [intent-representation.md](intent-representation.md#the-try-it-phase)), and deadlock resolution between review sub-agents (see [agent-architecture.md](agent-architecture.md#how-deadlocks-are-resolved)).
 
 [Forge-sdlc/forge](../landscape.md#forge-sdlcforge) has a concrete version of this idea in its `implement_review` flow: review comments are treated as their own task type, classified as actionable or contested before the agent acts, and contested comments trigger a structured response rather than silent compliance. That is a useful precedent for fullsend's review loops, especially when an agent should push back on incorrect feedback while still respecting the reviewer's blocking authority.
 

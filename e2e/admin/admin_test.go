@@ -244,20 +244,34 @@ func TestAdminInstallUninstall(t *testing.T) {
 // In PR-based install mode, enrollment is deferred: repo-maintenance triggers
 // on push when the scaffold PR is merged, so the enrollment PR may take up to
 // ~90s to appear (workflow trigger + execution + PR creation).
+//
+// When install runs with --enroll-all --direct, enrollment may already complete
+// during Phase 1 (shim on default branch or PR merged) before this helper runs.
 func mergeEnrollmentPR(t *testing.T, env *e2eEnv) {
 	t.Helper()
 	ctx := context.Background()
 
+	const enrollPRTitle = "chore: connect to fullsend agent pipeline"
+
+	if _, err := env.client.GetFileContent(ctx, env.org, testRepo, ".github/workflows/fullsend.yaml"); err == nil {
+		t.Log("Shim workflow already on default branch — enrollment complete")
+		return
+	}
+
 	var enrollmentPR *forge.ChangeProposal
-	for attempt := range 20 {
+	for attempt := range 30 {
 		if attempt > 0 {
 			time.Sleep(5 * time.Second)
+		}
+		if _, err := env.client.GetFileContent(ctx, env.org, testRepo, ".github/workflows/fullsend.yaml"); err == nil {
+			t.Log("Shim workflow appeared on default branch — enrollment complete")
+			return
 		}
 		prs, err := env.client.ListRepoPullRequests(ctx, env.org, testRepo)
 		require.NoError(t, err, "listing PRs for %s", testRepo)
 
 		for _, pr := range prs {
-			if strings.Contains(pr.Title, "fullsend") {
+			if pr.Title == enrollPRTitle || strings.Contains(pr.Title, "fullsend") {
 				cp := pr
 				enrollmentPR = &cp
 				break
@@ -266,9 +280,9 @@ func mergeEnrollmentPR(t *testing.T, env *e2eEnv) {
 		if enrollmentPR != nil {
 			break
 		}
-		t.Logf("Attempt %d: enrollment PR not yet visible", attempt+1)
+		t.Logf("Attempt %d: enrollment PR not yet visible for repository '%s/%s'", attempt+1, env.org, testRepo)
 	}
-	require.NotNil(t, enrollmentPR, "enrollment PR should exist for %s", testRepo)
+	require.NotNil(t, enrollmentPR, "enrollment PR should exist for %s/%s", env.org, testRepo)
 
 	t.Logf("Merging enrollment PR #%d: %s", enrollmentPR.Number, enrollmentPR.URL)
 

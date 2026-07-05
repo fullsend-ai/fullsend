@@ -98,6 +98,10 @@ func TestMintDeployCmd_Flags(t *testing.T) {
 
 	dryRunFlag := cmd.Flags().Lookup("dry-run")
 	require.NotNil(t, dryRunFlag, "expected --dry-run flag")
+
+	publicFlag := cmd.Flags().Lookup("public")
+	require.NotNil(t, publicFlag, "expected --public flag")
+	assert.Equal(t, "false", publicFlag.DefValue)
 }
 
 func TestMintDeployCmd_RequiresProject(t *testing.T) {
@@ -127,6 +131,13 @@ func TestMintDeployCmd_InvalidRegion(t *testing.T) {
 func TestMintDeployCmd_DryRun(t *testing.T) {
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"mint", "deploy", "--project=my-project-id", "--dry-run"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestMintDeployCmd_DryRunPublic(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"mint", "deploy", "--project=my-project-id", "--dry-run", "--public"})
 	err := cmd.Execute()
 	require.NoError(t, err)
 }
@@ -637,6 +648,22 @@ func TestParseAllowedOrgs_SkipsPlaceholder(t *testing.T) {
 	assert.Equal(t, []string{"acme", "widget"}, orgs)
 }
 
+func TestIsPublicMintAllowedOrgs(t *testing.T) {
+	assert.True(t, isPublicMintAllowedOrgs("*"))
+	assert.True(t, isPublicMintAllowedOrgs("org1,*"))
+	assert.False(t, isPublicMintAllowedOrgs("acme,widget"))
+	assert.False(t, isPublicMintAllowedOrgs(""))
+}
+
+func TestMintValidationMessage(t *testing.T) {
+	assert.Equal(t, "Mint validated (public mode — org registration not required)",
+		mintValidationMessage(map[string]string{"ALLOWED_ORGS": "*"}, nil))
+	assert.Equal(t, "Mint validated and org registered",
+		mintValidationMessage(map[string]string{"ALLOWED_ORGS": "acme"}, nil))
+	assert.Equal(t, "Mint validated and org registered",
+		mintValidationMessage(nil, fmt.Errorf("unavailable")))
+}
+
 func TestPemSecretRoles_DeduplicatesAliases(t *testing.T) {
 	roles := pemSecretRoles([]string{"fix", "coder", "triage", "fix"})
 	assert.Equal(t, []string{"coder", "triage"}, roles)
@@ -680,6 +707,18 @@ func TestVerifyEnrollment_OrgMissing(t *testing.T) {
 		},
 	}, "widget", "my-project")
 	assert.Contains(t, out.String(), "FAILED")
+}
+
+func TestVerifyEnrollment_PublicMode(t *testing.T) {
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	verifyEnrollment(context.Background(), printer, &fakeEnrollmentVerifier{
+		envVars: map[string]string{
+			"ALLOWED_ORGS": "*",
+		},
+	}, "any-org", "my-project")
+	assert.Contains(t, out.String(), "Public mint mode")
+	assert.NotContains(t, out.String(), "FAILED")
 }
 
 func TestVerifyEnrollment_FallsBackToTrafficEnvVars(t *testing.T) {
@@ -736,6 +775,31 @@ func mintDiscoveryClient() gcf.GCFClient {
 	)
 }
 
+func publicMintDiscoveryClient() gcf.GCFClient {
+	return gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI: "https://mint.example.com",
+			EnvVars: map[string]string{
+				"ROLE_APP_IDS": `{"coder":"100","triage":"200"}`,
+				"ALLOWED_ORGS": "*",
+			},
+		}),
+		gcf.WithFakeTrafficEnvVars(map[string]string{
+			"ROLE_APP_IDS": `{"coder":"100","triage":"200"}`,
+			"ALLOWED_ORGS": "*",
+		}),
+		gcf.WithFakeRevisionInfo(&gcf.ServiceRevisionInfo{
+			TrafficRevisionShort:   "fullsend-mint-00001",
+			TrafficPercent:         100,
+			TemplateMatchesTraffic: true,
+			TrafficEnvVars: map[string]string{
+				"ROLE_APP_IDS": `{"coder":"100","triage":"200"}`,
+				"ALLOWED_ORGS": "*",
+			},
+		}),
+	)
+}
+
 func TestRunMintEnrollOrg_DryRun(t *testing.T) {
 	withMintGCFClient(t, mintDiscoveryClient())
 	printer := ui.New(&strings.Builder{})
@@ -768,6 +832,16 @@ func TestRunMintEnrollOrg_Success(t *testing.T) {
 	printer := ui.New(&strings.Builder{})
 	err := runMintEnrollOrg(context.Background(), printer, "acme", "my-project", "us-central1", false)
 	require.NoError(t, err)
+}
+
+func TestRunMintEnrollOrg_PublicMode(t *testing.T) {
+	withMintGCFClient(t, publicMintDiscoveryClient())
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintEnrollOrg(context.Background(), printer, "acme", "my-project", "us-central1", false)
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "public mode")
+	assert.Contains(t, out.String(), "not required")
 }
 
 func TestRunMintEnrollRepo_DryRun(t *testing.T) {
@@ -990,6 +1064,17 @@ func TestRunMintStatus_OrgNotEnrolled(t *testing.T) {
 	assert.Contains(t, out.String(), "not in ALLOWED_ORGS")
 }
 
+func TestRunMintStatus_PublicMode(t *testing.T) {
+	withMintGCFClient(t, publicMintDiscoveryClient())
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "any-org")
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "Public (ALLOWED_ORGS=*)")
+	assert.Contains(t, out.String(), "public mode — all orgs")
+	assert.NotContains(t, out.String(), "not in ALLOWED_ORGS")
+}
+
 func TestRunMintStatus_TemplateDivergence(t *testing.T) {
 	client := gcf.NewFakeGCFClient(
 		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
@@ -1024,11 +1109,31 @@ func TestRunMintEnrollRepo_Success(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRunMintEnrollRepo_PublicMode(t *testing.T) {
+	withMintGCFClient(t, publicMintDiscoveryClient())
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintEnrollRepo(context.Background(), printer, "acme/widget", "my-project", "us-central1", false)
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "public mode")
+	assert.Contains(t, out.String(), "default WIF provider")
+}
+
 func TestRunMintUnenrollOrg_DryRun(t *testing.T) {
 	withMintGCFClient(t, mintDiscoveryClient())
 	printer := ui.New(&strings.Builder{})
 	err := runMintUnenrollOrg(context.Background(), printer, "acme", "my-project", "us-central1", true, true, os.Stdin)
 	require.NoError(t, err)
+}
+
+func TestRunMintUnenrollOrg_PublicMode(t *testing.T) {
+	withMintGCFClient(t, publicMintDiscoveryClient())
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintUnenrollOrg(context.Background(), printer, "acme", "my-project", "us-central1", false, true, os.Stdin)
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "public mode")
+	assert.Contains(t, out.String(), "not supported")
 }
 
 func TestRunMintUnenrollOrg_Success(t *testing.T) {
@@ -1057,6 +1162,17 @@ func TestRunMintUnenrollRepo_DryRun(t *testing.T) {
 	printer := ui.New(&strings.Builder{})
 	err := runMintUnenrollRepo(context.Background(), printer, "acme/widget", "my-project", "us-central1", false, true, true, os.Stdin)
 	require.NoError(t, err)
+}
+
+func TestRunMintUnenrollRepo_PublicMode(t *testing.T) {
+	withMintGCFClient(t, publicMintDiscoveryClient())
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintUnenrollRepo(context.Background(), printer, "acme/widget", "my-project", "us-central1", false, true, true, os.Stdin)
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "public mode")
+	assert.Contains(t, out.String(), "per-repo unenroll is not supported")
+	assert.NotContains(t, out.String(), "PER_REPO_WIF_REPOS")
 }
 
 func TestRunMintUnenrollRepo_Success(t *testing.T) {

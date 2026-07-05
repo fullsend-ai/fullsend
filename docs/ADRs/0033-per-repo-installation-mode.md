@@ -161,7 +161,7 @@ fullsend-ai/fullsend defaults  <  .fullsend/customized/  <  AGENTS.md
 (base, sparse-checked)           (overrides)               (instructions)
 ```
 
-The org-level `.fullsend` config repo tier is skipped — the in-repo `.fullsend/` directory serves as the config workspace. The reusable workflows' "Prepare workspace" step is parameterized by root directory: `.` for per-org (the `.fullsend` repo checkout), `.fullsend/` for per-repo. In both modes, it sparse-checkouts upstream defaults into `{root}/agents/`, `{root}/skills/`, etc., then copies `{root}/customized/*` on top — identical code path, different root.
+The org-level `.fullsend` config repo configuration tier is skipped — the in-repo `.fullsend/` directory serves as the config workspace. The reusable workflows' "Prepare workspace" step is parameterized by root directory: `.` for per-org (the `.fullsend` repo checkout), `.fullsend/` for per-repo. In both modes, it sparse-checkouts upstream defaults into `{root}/agents/`, `{root}/skills/`, etc., then copies `{root}/customized/*` on top — identical code path, different root.
 
 **Git ref for config reads**: In per-repo mode, `.fullsend/`, `AGENTS.md`, and `.github/workflows/fullsend.yml` are always read from the **base branch** (the default branch of the repository), not the PR head branch. This is enforced by `pull_request_target`, which checks out the base branch by default. The reusable workflows do not check out the PR head ref for config or agent instructions — only the target repo's source code is checked out from the PR head for the agent to operate on. This prevents PR authors from injecting modified agent instructions, policies, or workflow files via their PR — the project's #1 threat category (external prompt injection).
 

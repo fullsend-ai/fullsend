@@ -23,11 +23,11 @@ Accepted (extends [ADR 0025](0025-provider-credential-delivery-for-sandboxed-age
 
 ## Context
 
-[ADR 0025](0025-provider-credential-delivery-for-sandboxed-agents.md) introduced a four-tier credential delivery model and described custom wrapper binaries as a Tier 2 mechanism for operation-level control — citing `safe-push` as the canonical example of a binary that wraps `git push` and rejects force pushes. The [openshell-policy-bypass experiment](https://github.com/fullsend-ai/experiments/pull/5) validated that the three-layer defense (L7 binary matching + wrapper logic + Landlock read-only path) holds against an agent with 20 turns of unrestricted bypass attempts. This ADR specifies the design of `safe-push` and its integration with the harness and sandbox infrastructure.
+[ADR 0025](0025-provider-credential-delivery-for-sandboxed-agents.md) introduced a four-tier credential delivery model and described custom wrapper binaries as a credential delivery tier 2 mechanism for operation-level control — citing `safe-push` as the canonical example of a binary that wraps `git push` and rejects force pushes. The [openshell-policy-bypass experiment](https://github.com/fullsend-ai/experiments/pull/5) validated that the three-layer defense (L7 binary matching + wrapper logic + Landlock read-only path) holds against an agent with 20 turns of unrestricted bypass attempts. This ADR specifies the design of `safe-push` and its integration with the harness and sandbox infrastructure.
 
 ### The push robustness problem
 
-The current code agent relies on a non-agentic post-script (`post-code.sh`) to push code after the sandbox is destroyed. This is the Tier 1 (prefetch + post-process) model: the agent never touches push credentials, and the post-script handles branch validation, secret scanning, pre-commit hooks, and the actual `git push`. This model is robust for security but has two limitations:
+The current code agent relies on a non-agentic post-script (`post-code.sh`) to push code after the sandbox is destroyed. This is the credential delivery tier 1 (prefetch + post-process) model: the agent never touches push credentials, and the post-script handles branch validation, secret scanning, pre-commit hooks, and the actual `git push`. This model is robust for security but has two limitations:
 
 1. **The agent has no control over the push flow.** The post-script is a fixed script — the agent cannot choose between force-push and regular push, retry on conflict, or adapt to diverged branches. Making the script more complex to handle edge cases increases fragility.
 
@@ -78,9 +78,9 @@ Therefore, the only tamper-proof delivery path for the policy file is the contai
 
 ## Decision
 
-Introduce `safe-push`, a Go binary that acts as a mandatory policy gate for all `git push` operations from inside the sandbox. `safe-push` is a Tier 2 mechanism ([ADR 0025](0025-provider-credential-delivery-for-sandboxed-agents.md)) that coexists with Tier 1 post-script push — the harness configuration determines which model an agent uses.
+Introduce `safe-push`, a Go binary that acts as a mandatory policy gate for all `git push` operations from inside the sandbox. `safe-push` is a credential delivery tier 2 mechanism ([ADR 0025](0025-provider-credential-delivery-for-sandboxed-agents.md)) that coexists with credential delivery tier 1 post-script push — the harness configuration determines which model an agent uses.
 
-Tier 2 is a scoped relaxation of the constraint established in the [security threat model](../problems/security-threat-model.md), which states that "agents cannot take forge actions directly — credentialed operations (push, label, comment) are applied by deterministic post-scripts outside the sandbox." Under Tier 2, agents *can* push directly, but only through `safe-push` with policy enforcement and only in environments where the risk profile justifies it (private repos, internal tooling). The threat model constraint remains the default — Tier 1 post-script push is the recommended path for public and high-risk repos.
+Credential delivery tier 2 is a scoped relaxation of the constraint established in the [security threat model](../problems/security-threat-model.md), which states that "agents cannot take forge actions directly — credentialed operations (push, label, comment) are applied by deterministic post-scripts outside the sandbox." Under credential delivery tier 2, agents *can* push directly, but only through `safe-push` with policy enforcement and only in environments where the risk profile justifies it (private repos, internal tooling). The threat model constraint remains the default — credential delivery tier 1 post-script push is the recommended path for public and high-risk repos.
 
 ### Binary design
 
@@ -107,7 +107,7 @@ OpenShell L7 policy ensures that `safe-push` is the only path to push:
 - **`safe-push` (`/usr/local/bin/safe-push`):** L7 process-tree tracking allows `git` processes descended from `safe-push` to reach `git-receive-pack` on `github.com`.
 - **All other binaries:** L7 denies all processes that are NOT descended from `safe-push` from reaching `git-receive-pack`. This includes direct `git push`, custom scripts using `curl` to speak the git smart HTTP protocol, compiled binaries, and custom git remote helpers (`git-remote-<transport>` scripts the agent could write to `/tmp/`). The L7 deny rule must match the endpoint, not the binary — any process reaching `git-receive-pack` without `safe-push` ancestry is blocked.
 - **SSH transport:** L7 policy must block outbound SSH (port 22 and `ssh.github.com:443`) to prevent the agent from bypassing HTTPS-based enforcement by configuring a remote with `git@github.com:...` syntax. The entire enforcement model assumes HTTPS transport — SSH is an opaque encrypted tunnel where L7 cannot inspect or gate operations.
-- **Other git network operations** (`fetch`, `pull`, `clone`, `ls-remote`): Gated by L7 directly — allow or deny by binary + host + path as appropriate for the agent's tier. `safe-push` is not involved.
+- **Other git network operations** (`fetch`, `pull`, `clone`, `ls-remote`): Gated by L7 directly — allow or deny by binary + host + path as appropriate for the agent's credential delivery tier. `safe-push` is not involved.
 
 ### Credential separation
 
@@ -150,16 +150,16 @@ Denied operations are logged to `/tmp/workspace/.safe-push-audit.jsonl`:
 
 The audit log is on a writable path — the agent could tamper with it. It is extracted by the runner after sandbox teardown for observability. It is a best-effort record for operational visibility, not a security boundary.
 
-### Coexistence with Tier 1 post-script push
+### Coexistence with credential delivery tier 1 post-script push
 
-`safe-push` (Tier 2) coexists with post-script push (Tier 1). The harness configuration determines which model an agent uses:
+`safe-push` (credential delivery tier 2) coexists with post-script push (credential delivery tier 1). The harness configuration determines which model an agent uses:
 
-- **Tier 1 (post-script push):** Preferred for public repos and high-risk environments. The post-script runs secret scanning (gitleaks), pre-commit hooks, and other content validation before code reaches the remote. Push happens outside the sandbox with the `PUSH_TOKEN`. The agent has no push capability inside the sandbox.
-- **Tier 2 (safe-push):** Suitable for private repos and low-risk environments where content validation overhead is unnecessary. The agent pushes directly from inside the sandbox via `safe-push`, with policy enforcement and credential injection via providers.
+- **Credential delivery tier 1 (post-script push):** Preferred for public repos and high-risk environments. The post-script runs secret scanning (gitleaks), pre-commit hooks, and other content validation before code reaches the remote. Push happens outside the sandbox with the `PUSH_TOKEN`. The agent has no push capability inside the sandbox.
+- **Credential delivery tier 2 (safe-push):** Suitable for private repos and low-risk environments where content validation overhead is unnecessary. The agent pushes directly from inside the sandbox via `safe-push`, with policy enforcement and credential injection via providers.
 
-The tier is implicit in the harness's image + policy combination. A Tier 1 harness uses an image without safe-push network access (or without safe-push entirely) and includes a `post_script` that handles push. A Tier 2 harness uses an image with safe-push and an L7 policy that routes push traffic through it.
+The credential delivery tier is implicit in the harness's image + policy combination. A credential delivery tier 1 harness uses an image without safe-push network access (or without safe-push entirely) and includes a `post_script` that handles push. A credential delivery tier 2 harness uses an image with safe-push and an L7 policy that routes push traffic through it.
 
-`safe-push` covers push policy even for agents where Tier 1 post-script push is preferred, because the same image may be used in both high-risk (Tier 1) and low-risk (Tier 2) environments. The L7 policy — not the image — determines whether the agent can actually reach the remote.
+`safe-push` covers push policy even for agents where credential delivery tier 1 post-script push is preferred, because the same image may be used in both high-risk (credential delivery tier 1) and low-risk (credential delivery tier 2) environments. The L7 policy — not the image — determines whether the agent can actually reach the remote.
 
 ### Per-agent policy customization (future)
 
@@ -180,12 +180,12 @@ Re-evaluate when the second distinct policy profile is needed.
 No changes to the harness YAML schema ([ADR 0024](0024-harness-definitions.md)) are required. The existing `image` and `policy` fields are sufficient:
 
 ```yaml
-# harness/code.yaml (Tier 2 with safe-push)
+# harness/code.yaml (credential delivery tier 2 with safe-push)
 description: Code agent with direct push capability for low-risk repos.
 agent: agents/code.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-code:latest  # includes safe-push + policy
-policy: policies/code-write-tier2.yaml             # includes L7 binary filtering for safe-push
+policy: policies/code-write-credential-tier2.yaml   # includes L7 binary filtering for safe-push
 
 pre_script: scripts/pre-code.sh
 # No post_script push — agent pushes via safe-push inside sandbox
@@ -203,4 +203,4 @@ timeout_minutes: 120
 - The `safe-push` binary, its policy file, and the real `git` binary must all reside on Landlock-protected read-only paths. If any of these can be modified by the agent, the enforcement is bypassed.
 - Audit logging for denied operations is best-effort (writable path, agent could tamper). The primary security boundary is the deny itself (the push never reaches the network), not the audit record.
 - Credential separation is maintained: `safe-push` never sees or handles credentials. OpenShell providers inject credentials at the HTTP layer after `safe-push` has already approved the operation and spawned the real `git` process.
-- Tier 2 is a scoped relaxation of the security threat model's constraint that "agents cannot take forge actions directly." The threat model constraint remains the default for public and high-risk repos (Tier 1). Tier 2 must be an explicit opt-in via harness configuration, not an automatic upgrade.
+- Credential delivery tier 2 is a scoped relaxation of the security threat model's constraint that "agents cannot take forge actions directly." The threat model constraint remains the default for public and high-risk repos (credential delivery tier 1). Credential delivery tier 2 must be an explicit opt-in via harness configuration, not an automatic upgrade.

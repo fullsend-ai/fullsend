@@ -64,20 +64,20 @@ AI agents can't do any of this easily. Most of today's agent "knowledge" is docu
 
 At a minimum, any contributor (human or agent) needs to understand:
 
-### Tier classification
+### Intent authorization tier classification
 
-Is my change a bug fix, a small improvement, a new feature, or an architectural change? The [intent representation](intent-representation.md) tier system exists, but:
+Is my change a bug fix, a small improvement, a new feature, or an architectural change? The [intent representation](intent-representation.md) intent authorization tier system exists, but:
 
 - Can a new contributor reliably classify their own change?
 - If they misclassify (intentionally or not), how does the system course-correct?
-- Are the tier definitions publicly documented in a way that's discoverable?
+- Are the intent authorization tier definitions publicly documented in a way that's discoverable?
 
 ### Authorization requirements
 
-What approvals does my change need? Tier 0 (standing rules) needs none. Tier 1 (tactical) needs a linked issue. Tier 2+ (strategic) needs explicit authorization. But:
+What approvals does my change need? Intent authorization tier 0 (standing rules) needs none. Intent authorization tier 1 (tactical) needs a linked issue. Intent authorization tier 2+ (strategic) needs explicit authorization. But:
 
 - How does a first-time contributor know this?
-- If they're fixing what they perceive as a bug, do they need to understand that some "bugs" are actually feature requests requiring higher-tier authorization?
+- If they're fixing what they perceive as a bug, do they need to understand that some "bugs" are actually feature requests requiring higher-intent-authorization-tier authorization?
 - What happens if they submit a PR without the required authorization? Is there a helpful error message, or does it just languish?
 
 ### Repository-specific conventions
@@ -155,7 +155,7 @@ The goal: make implicit knowledge explicit (which helps AI agents) **without** m
 
 ## Relationship to other problem areas
 
-- **[Intent representation](intent-representation.md)** — the tier system must be explained to contributors
+- **[Intent representation](intent-representation.md)** — the intent authorization tier system must be explained to contributors
 - **[Code review](code-review.md)** — review expectations and criteria must be transparent
 - **[Codebase context](codebase-context.md)** — what knowledge must agents know to succeed?
 - **[Governance](governance.md)** — who decides what rules contributors must follow?
@@ -165,15 +165,15 @@ The goal: make implicit knowledge explicit (which helps AI agents) **without** m
 
 ## Open questions
 
-- Should tier classification be self-reported by contributors or determined by reviewers (human or AI)? What if they disagree?
+- Should intent authorization tier classification be self-reported by contributors or determined by reviewers (human or AI)? What if they disagree?
 - How do we handle the learning curve for new human contributors who don't yet understand the intent system, while also providing enough written context for AI assistants?
 - What's the right balance between "helpful guidance" (from AI reviewer agents) and "intrusive gatekeeping"? How do we ensure AI feedback is constructive?
 - How do we measure whether contribution guidance is working? (time to first PR merge? contributor retention? reduction in misclassified changes? satisfaction of AI-assisted vs. unassisted contributors?) See also [human-factors.md](human-factors.md) for metrics around contributor engagement and meaningful participation.
-- Should there be a "sandbox" repo where contributors can experiment without worrying about tier classification and authorization?
+- Should there be a "sandbox" repo where contributors can experiment without worrying about intent authorization tier classification and authorization?
 - How do we handle contributions from organizations that have their own AI agents opening PRs? Do external AI assistants need special guidance beyond what's in CONTRIBUTING.md and CLAUDE.md?
 - What happens when a human contributor disagrees with an AI reviewer's classification or feedback? Is there an escalation path to human reviewers?
 - How do we keep contribution documentation up-to-date as the agent system evolves? Who is responsible for capturing new institutional knowledge as it emerges?
-- Should contribution guidelines be versioned? If the tier definitions change, how do in-flight contributions handle the transition?
+- Should contribution guidelines be versioned? If the intent authorization tier definitions change, how do in-flight contributions handle the transition?
 - How do we avoid creating a "two-class" system where AI-assisted contributions get faster processing than unassisted human contributions?
 - How verbose is too verbose? At what point does comprehensive documentation (helpful for AI) become overwhelming for human contributors?
 - Should we explicitly signal which documentation is "need to know" for humans vs. "supplementary context" primarily for AI assistants?
@@ -237,7 +237,7 @@ This is a **conceptual model for organizing information**, not a prescription fo
 | Tier | Contributor persona | What they need |
 |---|---|---|
 | **First-time** | Opening first PR, fixing a typo or small bug | Minimal friction: where to open PR, how to run tests, basic code style |
-| **Occasional** | Has contributed before, submitting bug fixes or small improvements | Tier classification, issue linkage, CODEOWNERS awareness |
+| **Occasional** | Has contributed before, submitting bug fixes or small improvements | Intent authorization tier classification, issue linkage, CODEOWNERS awareness |
 | **Regular** | Frequent contributor, proposing features or architectural changes | Full intent system, authorization process, cross-repo impact analysis |
 | **Core maintainer** | Has commit access, reviewing others' work | Governance model, agent configuration, security threat model |
 
@@ -252,7 +252,7 @@ AI agents acting on behalf of regular contributors should have access to all lay
 When a contributor opens a PR, an AI agent (acting as a reviewer/helper) provides contextual guidance:
 
 - "This change touches API surface, which requires human CODEOWNERS approval — see [link] for details"
-- "This looks like a Tier 2 feature. You'll need to open an intent proposal at [repo] first."
+- "This looks like an intent authorization tier 2 feature. You'll need to open an intent proposal at [repo] first."
 - "CI is failing because [specific test]. Here's how to run it locally: [command]"
 
 This applies to **all PRs equally** — whether opened by a human contributor working alone, a human with AI assistance, or an AI agent acting autonomously. Treating all contributions the same way aligns with the zero trust principle: no agent should assume another agent has done its job correctly. This also provides better auditability (showing agent-to-agent handoffs) and simpler implementation (no need to detect or differentiate PR sources).
@@ -265,9 +265,9 @@ This applies to **all PRs equally** — whether opened by a human contributor wo
 
 Make the review criteria public and explicit. Before submitting a PR, contributors (or their AI assistants) can see exactly what will be checked:
 
-- [ ] Tier classification: _____
-- [ ] Linked issue (if Tier 1+): _____
-- [ ] Authorization record (if Tier 2+): _____
+- [ ] Intent authorization tier classification: _____
+- [ ] Linked issue (if intent authorization tier 1+): _____
+- [ ] Authorization record (if intent authorization tier 2+): _____
 - [ ] Tests added/updated: yes/no
 - [ ] CODEOWNERS approval needed: yes/no (auto-detected)
 - [ ] Architectural invariants verified: yes/no

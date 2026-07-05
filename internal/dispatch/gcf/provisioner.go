@@ -130,6 +130,8 @@ type Config struct {
 	// Commit is the git commit SHA to stamp on the deployed mint.
 	// Embedded directly into the source code at bundle time.
 	Commit string
+	// PublicMint bootstraps ALLOWED_ORGS=* and a permissive WIF provider CEL.
+	PublicMint bool
 }
 
 // Provisioner creates GCP infrastructure for OIDC-based token minting.
@@ -390,6 +392,31 @@ func (p *Provisioner) GetExistingRoleAppIDs(ctx context.Context) (map[string]str
 	return d.RoleAppIDs, nil
 }
 
+// validateMintDeployMode rejects deploy runs that would convert a mint between
+// public and tight mode. Same-mode redeploys are allowed.
+func (p *Provisioner) validateMintDeployMode(ctx context.Context) error {
+	existingPublic, err := p.isTrafficMintPublic(ctx)
+	if err != nil {
+		return err
+	}
+	switch {
+	case p.cfg.PublicMint && !existingPublic:
+		return fmt.Errorf("cannot deploy public mint: existing mint is in tight mode (ALLOWED_ORGS does not contain *)")
+	case !p.cfg.PublicMint && existingPublic:
+		return fmt.Errorf("existing mint is in public mode (ALLOWED_ORGS=*); redeploy with --public")
+	}
+	return nil
+}
+
+// isTrafficMintPublic reports whether the traffic-serving revision has public mint mode.
+func (p *Provisioner) isTrafficMintPublic(ctx context.Context) (bool, error) {
+	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return false, fmt.Errorf("reading traffic-serving env vars: %w", err)
+	}
+	return mintcore.IsPublicMint(mintcore.ParseAllowedOrgs(trafficEnvVars["ALLOWED_ORGS"])), nil
+}
+
 // EnsureOrgInMint validates that a mint function exists at expectedURL and
 // that the given org is registered in ALLOWED_ORGS. If the org is missing,
 // it updates the function's env vars to include it.
@@ -416,6 +443,10 @@ func (p *Provisioner) EnsureOrgInMint(ctx context.Context, expectedURL string, o
 	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
 	if err != nil {
 		return fmt.Errorf("reading traffic-serving env vars: %w", err)
+	}
+
+	if mintcore.IsPublicMint(mintcore.ParseAllowedOrgs(trafficEnvVars["ALLOWED_ORGS"])) {
+		return nil
 	}
 
 	allowedOrgs := trafficEnvVars["ALLOWED_ORGS"]
@@ -488,6 +519,10 @@ func (p *Provisioner) RegisterPerRepoWIF(ctx context.Context, repo string) error
 		return fmt.Errorf("reading traffic-serving env vars: %w", err)
 	}
 
+	if mintcore.IsPublicMint(mintcore.ParseAllowedOrgs(trafficEnvVars["ALLOWED_ORGS"])) {
+		return fmt.Errorf("per-repo WIF registration is not supported when mint is in public mode (ALLOWED_ORGS=*)")
+	}
+
 	repo = strings.ToLower(repo)
 	existing := trafficEnvVars["PER_REPO_WIF_REPOS"]
 	for _, entry := range strings.Split(existing, ",") {
@@ -534,7 +569,7 @@ func (p *Provisioner) RegisterPerRepoWIF(ctx context.Context, repo string) error
 func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) {
 	defer p.zeroPEMs()
 
-	if len(p.cfg.GitHubOrgs) == 0 {
+	if len(p.cfg.GitHubOrgs) == 0 && !p.cfg.PublicMint {
 		return nil, fmt.Errorf("at least one GitHub org is required")
 	}
 	seen := make(map[string]bool)
@@ -613,10 +648,16 @@ func (p *Provisioner) provisionWithExistingMint(ctx context.Context) (map[string
 		}
 	}
 
-	// Per-repo WIF registration — when cfg.Repo is set.
+	// Per-repo WIF registration — when cfg.Repo is set (not used in public mint mode).
 	if p.cfg.Repo != "" {
-		if err := p.RegisterPerRepoWIF(ctx, p.cfg.Repo); err != nil {
-			return nil, fmt.Errorf("registering per-repo WIF: %w", err)
+		publicMint, err := p.isTrafficMintPublic(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !publicMint {
+			if err := p.RegisterPerRepoWIF(ctx, p.cfg.Repo); err != nil {
+				return nil, fmt.Errorf("registering per-repo WIF: %w", err)
+			}
 		}
 	}
 
@@ -636,7 +677,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	if !gcpRegionPattern.MatchString(p.cfg.Region) {
 		return nil, fmt.Errorf("invalid GCP region: %q", p.cfg.Region)
 	}
-	if len(p.cfg.AgentAppIDs) == 0 && !onlyPlaceholderOrgs(p.cfg.GitHubOrgs) {
+	if len(p.cfg.AgentAppIDs) == 0 && !onlyPlaceholderOrgs(p.cfg.GitHubOrgs) && !p.cfg.PublicMint {
 		return nil, fmt.Errorf("at least one agent App ID is required")
 	}
 	for role := range p.cfg.AgentPEMs {
@@ -654,6 +695,12 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	// Early guard: --skip-mint-deploy requires an existing function.
 	if existing == nil && p.cfg.DeployMode == DeploySkip {
 		return nil, fmt.Errorf("function %s not found — cannot use --skip-mint-deploy without an existing deployment", functionName)
+	}
+
+	if existing != nil {
+		if err := p.validateMintDeployMode(ctx); err != nil {
+			return nil, err
+		}
 	}
 
 	// Step 1: Create/verify service account.
@@ -685,14 +732,16 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	// at the project level (direct WIF — no intermediate service account).
 	// IAM policy changes can take up to 7 minutes to propagate.
 	iamGrantCount := 0
-	for _, org := range installingOrgs {
-		if org == PlaceholderOrg {
-			continue
+	if !p.cfg.PublicMint {
+		for _, org := range installingOrgs {
+			if org == PlaceholderOrg {
+				continue
+			}
+			if err := p.grantOrgVertexAIAccessWithNumber(ctx, projectNumber, org); err != nil {
+				return nil, err
+			}
+			iamGrantCount++
 		}
-		if err := p.grantOrgVertexAIAccessWithNumber(ctx, projectNumber, org); err != nil {
-			return nil, err
-		}
-		iamGrantCount++
 	}
 	log.Printf("granted roles/aiplatform.user to %d org(s) (propagation may take several minutes)", iamGrantCount)
 
@@ -882,15 +931,23 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	mintURL := existing.URI
 
 	// Register installing orgs in ALLOWED_ORGS.
-	for _, org := range installingOrgs {
-		if err := p.EnsureOrgInMint(ctx, mintURL, org); err != nil {
-			return nil, fmt.Errorf("registering org %s in mint: %w", org, err)
+	if !p.cfg.PublicMint {
+		for _, org := range installingOrgs {
+			if err := p.EnsureOrgInMint(ctx, mintURL, org); err != nil {
+				return nil, fmt.Errorf("registering org %s in mint: %w", org, err)
+			}
 		}
 	}
 
 	if p.cfg.Repo != "" {
-		if err := p.RegisterPerRepoWIF(ctx, p.cfg.Repo); err != nil {
-			return nil, fmt.Errorf("registering per-repo WIF: %w", err)
+		publicMint, err := p.isTrafficMintPublic(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !publicMint {
+			if err := p.RegisterPerRepoWIF(ctx, p.cfg.Repo); err != nil {
+				return nil, fmt.Errorf("registering per-repo WIF: %w", err)
+			}
 		}
 	}
 
@@ -1054,6 +1111,17 @@ func buildAttributeCondition(orgs []string) string {
 	return fmt.Sprintf("assertion.repository_owner in [%s]", strings.Join(quoted, ", "))
 }
 
+// publicAttributeCondition is the permissive WIF CEL for public mint mode.
+const publicAttributeCondition = "assertion.repository_owner != ''"
+
+func buildPublicAttributeCondition() string {
+	return publicAttributeCondition
+}
+
+func isPublicAttributeCondition(condition string) bool {
+	return strings.TrimSpace(condition) == publicAttributeCondition
+}
+
 const fullsendRepoSuffix = "/.fullsend"
 
 // parseConditionOrgs extracts GitHub org names from a WIF attribute condition.
@@ -1106,9 +1174,16 @@ func (p *Provisioner) ensureWIFPoolAndProvider(ctx context.Context, installingOr
 		return nil, fmt.Errorf("creating WIF pool: %w", err)
 	}
 
-	allOrgs := make([]string, len(installingOrgs))
-	for i, org := range installingOrgs {
-		allOrgs[i] = strings.ToLower(org)
+	var allOrgs []string
+	var attrCondition string
+	if p.cfg.PublicMint {
+		allOrgs = []string{"*"}
+		attrCondition = buildPublicAttributeCondition()
+	} else {
+		allOrgs = make([]string, len(installingOrgs))
+		for i, org := range installingOrgs {
+			allOrgs[i] = strings.ToLower(org)
+		}
 	}
 	existingProvider, getErr := p.gcpAPI.GetWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)
 	if getErr != nil {
@@ -1118,30 +1193,31 @@ func (p *Provisioner) ensureWIFPoolAndProvider(ctx context.Context, installingOr
 		// exist yet), so a non-nil error is always a real failure.
 		return nil, fmt.Errorf("reading existing WIF provider for merge: %w", getErr)
 	}
-	if existingProvider != nil {
-		existingOrgs := parseConditionOrgs(existingProvider.AttributeCondition)
-		merged := make(map[string]bool)
-		for _, org := range allOrgs {
-			if org != PlaceholderOrg {
-				merged[org] = true
+	if !p.cfg.PublicMint {
+		if existingProvider != nil {
+			existingOrgs := parseConditionOrgs(existingProvider.AttributeCondition)
+			merged := make(map[string]bool)
+			for _, org := range allOrgs {
+				if org != PlaceholderOrg {
+					merged[org] = true
+				}
+			}
+			for _, org := range existingOrgs {
+				if org != PlaceholderOrg && !merged[org] {
+					merged[org] = true
+				}
+			}
+			allOrgs = make([]string, 0, len(merged))
+			for org := range merged {
+				allOrgs = append(allOrgs, org)
+			}
+			if len(allOrgs) == 0 {
+				allOrgs = []string{PlaceholderOrg}
 			}
 		}
-		for _, org := range existingOrgs {
-			if org != PlaceholderOrg && !merged[org] {
-				merged[org] = true
-			}
-		}
-		allOrgs = make([]string, 0, len(merged))
-		for org := range merged {
-			allOrgs = append(allOrgs, org)
-		}
-		if len(allOrgs) == 0 {
-			allOrgs = []string{PlaceholderOrg}
-		}
+		sort.Strings(allOrgs)
+		attrCondition = buildAttributeCondition(allOrgs)
 	}
-	sort.Strings(allOrgs)
-
-	attrCondition := buildAttributeCondition(allOrgs)
 	audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)}
 	if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider, OIDCProviderConfig{
 		IssuerURI:          oidcIssuer,
@@ -1469,6 +1545,10 @@ func (p *Provisioner) RemoveOrgFromMint(ctx context.Context, org string) error {
 	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
 	if err != nil {
 		return fmt.Errorf("reading traffic-serving env vars: %w", err)
+	}
+
+	if mintcore.IsPublicMint(mintcore.ParseAllowedOrgs(trafficEnvVars["ALLOWED_ORGS"])) {
+		return fmt.Errorf("cannot remove individual orgs when mint is in public mode (ALLOWED_ORGS=*); set an explicit org list instead")
 	}
 
 	updated := make(map[string]string, len(trafficEnvVars))

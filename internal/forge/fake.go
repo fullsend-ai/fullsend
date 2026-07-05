@@ -172,6 +172,11 @@ type FakeClient struct {
 	// so only CommitFilesToBranch reads this value in practice.
 	CommitFilesChanged *bool
 
+	// CommitFilesErrSeq is an error queue for CommitFiles. Each call shifts
+	// the first element; when empty, falls through to Errors["CommitFiles"].
+	// A nil entry means no error for that call.
+	CommitFilesErrSeq []error
+
 	// Pull request head SHA for GetPullRequestHeadSHA.
 	PullRequestHeadSHA string
 
@@ -516,7 +521,13 @@ func (f *FakeClient) CommitFiles(_ context.Context, owner, repo, message string,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if e := f.err("CommitFiles"); e != nil {
+	if len(f.CommitFilesErrSeq) > 0 {
+		e := f.CommitFilesErrSeq[0]
+		f.CommitFilesErrSeq = f.CommitFilesErrSeq[1:]
+		if e != nil {
+			return false, e
+		}
+	} else if e := f.err("CommitFiles"); e != nil {
 		return false, e
 	}
 
@@ -818,6 +829,24 @@ func (f *FakeClient) GetRepoVariable(_ context.Context, owner, repo, name string
 		}
 	}
 	return "", false, nil
+}
+
+func (f *FakeClient) DeleteRepoVariable(_ context.Context, owner, repo, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DeleteRepoVariable"); e != nil {
+		return e
+	}
+
+	key := owner + "/" + repo + "/" + name
+	if f.VariableValues != nil {
+		delete(f.VariableValues, key)
+	}
+	if f.VariablesExist != nil {
+		delete(f.VariablesExist, key)
+	}
+	return nil
 }
 
 func (f *FakeClient) GetWorkflow(_ context.Context, owner, repo, workflowFile string) (*Workflow, error) {

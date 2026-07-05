@@ -1,25 +1,18 @@
-# Documentation site deployment (Cloudflare Workers)
+# Web admin deployment (on hold)
+
+> **Status: On hold.** The web admin SPA (`web/admin/`) and Cloudflare Worker deployment are paused. This document is preserved for reference when work resumes. For the **documentation site** (VitePress), see [`doc-site.md`](doc-site.md).
 
 ## Overview
 
-This repository publishes a static documentation site. The root landing page is [`web/public/index.html`](../web/public/index.html); the interactive document graph is [`web/public/graph.html`](../web/public/graph.html) (served at `/graph.html`). **Vite** builds the **admin** SPA under **`web/dist/admin/`** (see [`web/admin/README.md`](../web/admin/README.md)). The **docs site** is built by **VitePress** from the **`website/`** directory, reading markdown from **`docs/`** and producing static HTML in **`website/dist/`**. CI copies **`assets/`**, **`admin/`**, and **`docs/`** into **`_bundle/public/`** so the Worker serves **`/admin/`** and **`/docs/`** from the same static asset tree. OAuth/CORS hardening for that Worker is summarized in [`docs/admin-oauth-worker.md`](admin-oauth-worker.md) (path-specific CORS for `/api/github/user`, no separate “OAuth enabled” env flag).
+The **admin installation UI** is a **Svelte 5 + Vite** single-page app under `web/admin/`, served at the `/admin/` base path. The root landing page is [`web/public/index.html`](../web/public/index.html); the interactive document graph is [`web/public/graph.html`](../web/public/graph.html) (served at `/graph.html`). **Vite** builds the admin SPA under **`web/dist/admin/`** (see [`web/admin/README.md`](../web/admin/README.md)). GitHub OAuth token exchange runs in the **Cloudflare Worker** under [`cloudflare_site/worker/`](../cloudflare_site/worker/). OAuth/CORS hardening is summarized in [`docs/admin-oauth-worker.md`](admin-oauth-worker.md).
 
-**Build Site** runs **`npm ci`** and **`npm run build`** at the repository root, then packs **`public/`** (static files, including `assets/` and `admin/` from `web/dist/`, plus `docs/` from `website/dist/`) and **`worker/`** (TypeScript Worker from the same checkout—PR head on PR builds) under **`_bundle/`** in one artifact. **Deploy Site** checks out **only the default branch** (trusted [`cloudflare_site/wrangler.toml`](../cloudflare_site/wrangler.toml); never PR-controlled config on the secret-bearing runner), downloads the artifact to **`_bundle/`**, then **copies only** **`_bundle/public/`** and **`_bundle/worker/`** into **`cloudflare_site/`** (so a malicious artifact cannot overwrite `wrangler.toml` or other repo files), then runs Wrangler. Deployment uses **Cloudflare Workers with [static assets](https://developers.cloudflare.com/workers/static-assets/)** (not the legacy **Pages direct-upload** / `wrangler pages deploy` flow).
+Deployment uses **Cloudflare Workers with [static assets](https://developers.cloudflare.com/workers/static-assets/)** (not the legacy **Pages direct-upload** / `wrangler pages deploy` flow). **Deploy Site** checks out **only the default branch** (trusted [`cloudflare_site/wrangler.toml`](../cloudflare_site/wrangler.toml); never PR-controlled config on the secret-bearing runner), downloads the build artifact, then **copies only** **`_bundle/public/`** and **`_bundle/worker/`** into **`cloudflare_site/`** (so a malicious artifact cannot overwrite `wrangler.toml` or other repo files), then runs Wrangler.
 
-Two GitHub Actions workflows:
-
-- **Build Site** — on `pull_request` and `push` to `main`, checks out the PR head when relevant, installs Node dependencies, builds the admin SPA (Vite) and docs site (VitePress), assembles **`_bundle/public/`** and **`_bundle/worker/`**, uploads artifact **`site`** (`_bundle/` contents).
-- **Deploy Site** — on successful **Build Site** via `workflow_run`, checks out the repo default ref (trusted Wrangler project files), downloads artifact **`site`** into **`_bundle/`**, copies **`public/`** and **`worker/`** into **`cloudflare_site/`**, then:
-  - **push to `main`:** `wrangler deploy` → production Worker traffic.
-  - **pull_request:** `wrangler versions upload --preview-alias pr-<pr-number>` → preview URL on `*.workers.dev` without changing production (alias falls back to `pr-<workflow_run.id>` only when the same fork branch matches more than one open PR).
-
-GitHub **Deployments** use environments **`site-preview`** and **`site-production`**; PRs also get a single upserted comment with the preview link.
-
-For architecture and naming, see [2026-04-09-site-cloudflare-pages-design.md](superpowers/specs/2026-04-09-site-cloudflare-pages-design.md) (document filename still says “pages” for history; content describes Workers). Repository layout for `web/` vs `cloudflare_site/` is decided in [ADR 0019](ADRs/0019-web-source-and-cloudflare-site-layout.md).
+For architecture and naming, see [2026-04-09-site-cloudflare-pages-design.md](superpowers/specs/2026-04-09-site-cloudflare-pages-design.md) (document filename still says "pages" for history; content describes Workers). Repository layout for `web/` vs `cloudflare_site/` is decided in [ADR 0019](ADRs/0019-web-source-and-cloudflare-site-layout.md).
 
 ## Cloudflare setup
 
-### Worker (not a Pages “project”)
+### Worker (not a Pages "project")
 
 1. In the Cloudflare dashboard, use **Workers & Pages** → **Create** → **Create Worker** (or let the first `wrangler deploy` create it). The Worker name must match the GitHub variable below.
 2. Configure **[preview URLs](https://developers.cloudflare.com/workers/configuration/previews/)** (default on when `workers_dev` is enabled). PR builds rely on **`wrangler versions upload`** with `--preview-alias`.
@@ -29,10 +22,10 @@ For architecture and naming, see [2026-04-09-site-cloudflare-pages-design.md](su
 
 Create an API token that can deploy Workers for your account, for example:
 
-- **Account** → **Cloudflare Workers** → **Edit** (or the “Edit Cloudflare Workers” template), and
+- **Account** → **Cloudflare Workers** → **Edit** (or the "Edit Cloudflare Workers" template), and
 - **Account** → **Account Settings** → **Read** if Wrangler requires it.
 
-Store it as GitHub secret **`CLOUDFLARE_API_TOKEN`**. A token scoped **only** to “Cloudflare Pages — Edit” is **not** enough for `wrangler deploy` / `versions upload` on a Worker.
+Store it as GitHub secret **`CLOUDFLARE_API_TOKEN`**. A token scoped **only** to "Cloudflare Pages — Edit" is **not** enough for `wrangler deploy` / `versions upload` on a Worker.
 
 ### Account ID and Worker name
 
@@ -65,20 +58,17 @@ Disable **GitHub Pages** under **Settings → Pages** if it was only used for th
 
 **Full stack (recommended for admin OAuth):** from the repository root, run **`npm run dev`** so Vite serves the SPA and Wrangler runs the site Worker with shared process env — see [`web/admin/README.md`](../web/admin/README.md).
 
-**Static tree + Worker (closer to production asset layout):** install dependencies, build admin SPA and VitePress docs site, copy the same layout CI uses under `cloudflare_site/public/`, then run Wrangler:
+**Static tree + Worker (closer to production asset layout):** install dependencies, build the admin SPA, assemble the layout CI uses under `cloudflare_site/public/`, then run Wrangler:
 
 ```bash
 npm ci
 npm run build
-cd website && npm ci && npm run build && cd ..
 mkdir -p cloudflare_site/public/assets
 mkdir -p cloudflare_site/public/admin
-mkdir -p cloudflare_site/public/docs
 cp web/public/index.html cloudflare_site/public/index.html
 cp web/public/graph.html cloudflare_site/public/graph.html
 cp -a web/dist/assets/. cloudflare_site/public/assets/
 cp -a web/dist/admin/. cloudflare_site/public/admin/
-cp -a website/dist/. cloudflare_site/public/docs/
 cd cloudflare_site && npx wrangler@4 dev
 ```
 

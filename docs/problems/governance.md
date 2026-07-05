@@ -10,7 +10,7 @@ Governance is distinct from [intent representation](intent-representation.md). I
 
 The decisions that shape how the agentic system behaves across the org:
 
-- **Tier definitions** — what change types exist, what authorization each tier requires, and who can approve at each level. (The tiers themselves are defined in [intent-representation.md](intent-representation.md); governance decides who has the authority to create or modify those tier definitions.)
+- **Intent authorization tier definitions** — what change types exist, what authorization each intent authorization tier requires, and who can approve at each level. (The intent authorization tiers themselves are defined in [intent-representation.md](intent-representation.md); governance decides who has the authority to create or modify those definitions.)
 - **Autonomy levels** — which repos are agent-autonomous, which are in shadow mode, which require full human review. What are the graduation criteria, and who evaluates them?
 - **Agent permissions** — what authority each agent role has (merge, approve, comment, label). What are the boundaries, and who draws them?
 - **Org-wide guardrails** — minimum standards that apply to all repos regardless of individual repo policy. Examples: all repos must have CODEOWNERS, all security-sensitive paths require human approval, all agent config changes require human approval.
@@ -53,7 +53,7 @@ How are governance decisions made, and how does the community participate?
 ## Accountability
 
 - When an agent makes a bad decision, who is responsible? The person who configured the agent? The person who authored the policy? The person who approved the repo for autonomy?
-- How do we trace an agent action back to the policy that authorized it? Every merge should be traceable: this PR was merged because the review sub-agents approved, operating under policy version X, with the change classified as Tier N, authorized by intent record Y.
+- How do we trace an agent action back to the policy that authorized it? Every merge should be traceable: this PR was merged because the review sub-agents approved, operating under policy version X, with the change classified as intent authorization tier N, authorized by intent record Y.
 - What's the escalation path when something goes wrong? Who gets paged? Who has authority to revoke agent autonomy in an emergency?
 - Can autonomy be automatically revoked? If a bad merge is detected (e.g., production incident traced to an agent-merged PR), should the system automatically downgrade the repo to human-required review?
 
@@ -74,7 +74,7 @@ The governance question isn't just "how much should we spend?" but "who decides 
 
 ## Relationship to other problem areas
 
-- **Intent representation** defines the tiers and authorization mechanisms. Governance defines who has authority to change those definitions.
+- **Intent representation** defines the intent authorization tiers and authorization mechanisms. Governance defines who has authority to change those definitions.
 - **Security threat model** identifies the threats. Governance defines the policies that mitigate them and who can modify those policies.
 - **Autonomy spectrum** describes the graduation model. Governance defines who evaluates readiness and makes the graduation decision.
 - **Agent architecture** defines the agent roles and permissions. Governance defines who assigns those permissions and under what constraints.
