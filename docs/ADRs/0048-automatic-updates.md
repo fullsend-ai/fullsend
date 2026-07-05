@@ -56,7 +56,8 @@ Fullsend must make users aware of the implications of choosing a moving tag:
 ## Consequences
 
 * `v0` should be migrated to the new moving tag and deleted.
-* Current users track the new floating tag automatically to keep behavior consistent.
+* Current users track the new floating tag automatically to keep behavior consistent. *(See [ADR 62](0062-dispatch-version-skew.md) for migration approach revisions discovered during implementation.)*
 * New users track the version tag they install at.
 
-See [Automatic Updates](../plans/automatic-updates.md) for the design details.
+See [Automatic Updates](../plans/automatic-updates.md) for the design details,
+including amendments for the dispatch version-skew resolution (added 2026-06-19).

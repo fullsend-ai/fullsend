@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1055,6 +1056,53 @@ func TestIsBranchProtectionError(t *testing.T) {
 	}
 }
 
+func TestIsNonFastForwardError(t *testing.T) {
+	tests := []struct {
+		name   string
+		apiErr *APIError
+		want   bool
+	}{
+		{
+			name:   "not a fast forward (no hyphen)",
+			apiErr: &APIError{StatusCode: 422, Message: "Update is not a fast forward"},
+			want:   true,
+		},
+		{
+			name: "not a fast-forward in detail (hyphenated)",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Update is not a fast forward",
+				Errors:     []APIErrorDetail{{Message: "Cannot update ref: not a fast-forward"}},
+			},
+			want: true,
+		},
+		{
+			name:   "unrelated 422",
+			apiErr: &APIError{StatusCode: 422, Message: "Reference already exists"},
+			want:   false,
+		},
+		{
+			name: "overlaps with branch protection (caller checks protection first)",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Update is not a fast forward",
+				Errors:     []APIErrorDetail{{Message: "Protected branch update failed for refs/heads/main."}},
+			},
+			want: true,
+		},
+		{
+			name:   "validation failed",
+			apiErr: &APIError{StatusCode: 422, Message: "Validation Failed"},
+			want:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isNonFastForwardError(tt.apiErr))
+		})
+	}
+}
+
 func TestIsAlreadyExistsError(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1699,6 +1747,47 @@ func TestDeleteOrgVariable(t *testing.T) {
 	})
 }
 
+func TestDeleteRepoVariable(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			assert.Equal(t, "/repos/myorg/myrepo/actions/variables/FULLSEND_PER_REPO_INSTALL", r.URL.Path)
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteRepoVariable(context.Background(), "myorg", "myrepo", "FULLSEND_PER_REPO_INSTALL")
+		require.NoError(t, err)
+	})
+
+	t.Run("idempotent 404", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteRepoVariable(context.Background(), "myorg", "myrepo", "ALREADY_GONE")
+		require.NoError(t, err)
+	})
+
+	t.Run("unexpected status", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteRepoVariable(context.Background(), "myorg", "myrepo", "VAR")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected status")
+	})
+}
+
 func TestListOrgRepos_Pagination(t *testing.T) {
 	page := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1869,6 +1958,83 @@ func TestIsTransientStatus(t *testing.T) {
 	for _, code := range nonTransient {
 		assert.False(t, isTransientStatus(code), "expected %d to not be transient", code)
 	}
+}
+
+func TestIsRetryable_PrimaryRateLimitAs403(t *testing.T) {
+	// GitHub sometimes returns primary rate limits as 403 with body
+	// containing "API rate limit exceeded" instead of 429. This must
+	// be detected as retryable.
+	body := `{"message":"API rate limit exceeded for user ID 12345."}`
+	resp := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	retryable, _ := isRetryable(resp)
+	assert.True(t, retryable, "403 with 'API rate limit exceeded' should be retryable")
+}
+
+func TestIsRateLimitError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "primary rate limit as 403",
+			err:      &APIError{StatusCode: 403, Message: "API rate limit exceeded for user ID 12345"},
+			expected: true,
+		},
+		{
+			name:     "secondary rate limit as 403",
+			err:      &APIError{StatusCode: 403, Message: "You have exceeded a secondary rate limit"},
+			expected: true,
+		},
+		{
+			name:     "429 too many requests",
+			err:      &APIError{StatusCode: 429, Message: "rate limit exceeded"},
+			expected: true,
+		},
+		{
+			name:     "403 not rate limit",
+			err:      &APIError{StatusCode: 403, Message: "Resource not accessible by integration"},
+			expected: false,
+		},
+		{
+			name:     "wrapped rate limit",
+			err:      fmt.Errorf("create repo: %w", &APIError{StatusCode: 403, Message: "API rate limit exceeded"}),
+			expected: true,
+		},
+		{
+			name:     "non-API error",
+			err:      fmt.Errorf("network error"),
+			expected: false,
+		},
+		{
+			name:     "nil error",
+			err:      nil,
+			expected: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, IsRateLimitError(tt.err))
+		})
+	}
+}
+
+func TestIsRetryable_403NotRateLimit(t *testing.T) {
+	// A 403 that is NOT a rate limit (e.g. insufficient permissions)
+	// should not be retryable.
+	body := `{"message":"Resource not accessible by integration"}`
+	resp := &http.Response{
+		StatusCode: http.StatusForbidden,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	retryable, returnedBody := isRetryable(resp)
+	assert.False(t, retryable, "403 without rate limit text should not be retryable")
+	assert.NotNil(t, returnedBody, "body should be returned for non-rate-limit 403")
 }
 
 func TestIsRetryable_ServerErrors(t *testing.T) {
@@ -2310,4 +2476,71 @@ func TestListOrgVariables(t *testing.T) {
 	vars, err := client.ListOrgVariables(context.Background(), "myorg")
 	require.NoError(t, err)
 	require.Len(t, vars, 2)
+}
+
+func TestCommitFiles_NonFastForward(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "commit"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/commit":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/trees/tree"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Update is not a fast forward",
+				"errors":  []map[string]string{{"message": "Cannot update ref: not a fast-forward"}},
+			})
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+	})
+	require.Error(t, err)
+	assert.True(t, forge.IsNonFastForward(err))
+}
+
+func TestCommitFiles_BranchProtected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "commit"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/commit":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/trees/tree"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Validation Failed",
+				"errors":  []map[string]string{{"message": "Protected branch update failed for refs/heads/main."}},
+			})
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+	})
+	require.Error(t, err)
+	assert.True(t, forge.IsBranchProtected(err))
+	assert.False(t, forge.IsNonFastForward(err), "should not match non-fast-forward")
 }

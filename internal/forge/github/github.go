@@ -100,6 +100,24 @@ func (e *APIError) Unwrap() error {
 	return nil
 }
 
+// IsRateLimitError reports whether err is a GitHub rate-limit error
+// (primary 429, primary-as-403, or secondary 403). It unwraps the
+// error chain, so wrapped errors are detected too.
+func IsRateLimitError(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	if apiErr.StatusCode == http.StatusTooManyRequests {
+		return true
+	}
+	if apiErr.StatusCode == http.StatusForbidden {
+		lower := strings.ToLower(apiErr.Message)
+		return strings.Contains(lower, "rate limit")
+	}
+	return false
+}
+
 const maxRetries = 5
 
 // do performs an HTTP request against the GitHub API with retry on rate limits.
@@ -175,9 +193,9 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 }
 
 // isRetryable returns true for responses that should trigger a retry.
-// GitHub uses 429 for primary rate limits and 403 for secondary rate limits.
-// Secondary rate limits may include a Retry-After header, or may only be
-// identifiable by the response body containing "secondary rate limit".
+// GitHub uses 429 for primary rate limits and 403 for both primary and
+// secondary rate limits. Rate-limit 403s may include a Retry-After header,
+// or may only be identifiable by the response body containing "rate limit".
 // Server errors (500, 502, 503, 504) are also retried as transient failures.
 func isRetryable(resp *http.Response) (bool, []byte) {
 	if resp.StatusCode == http.StatusTooManyRequests {
@@ -194,12 +212,14 @@ func isRetryable(resp *http.Response) (bool, []byte) {
 			io.Copy(io.Discard, resp.Body)
 			return true, nil
 		}
-		// Check body for secondary rate limit without Retry-After header.
+		// Check body for rate limit indicators without Retry-After header.
+		// GitHub returns primary rate limits as 403 with "API rate limit
+		// exceeded" and secondary rate limits with "secondary rate limit".
 		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<16)) // 64KB max
 		if readErr != nil {
 			return false, nil
 		}
-		if strings.Contains(strings.ToLower(string(data)), "secondary rate limit") {
+		if strings.Contains(strings.ToLower(string(data)), "rate limit") {
 			return true, nil
 		}
 		// Not a rate limit — return the body so the caller can still use it.
@@ -872,15 +892,21 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 
 	// 7. Update branch ref to point to new commit.
-	// A 422 here typically means branch protection rules prevent the push.
+	// A 422 may indicate branch protection or a non-fast-forward (e.g. auto_init race).
 	refPayload := map[string]string{
 		"sha": newCommit.SHA,
 	}
 	refUpdateResp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/git/refs/heads/%s", owner, repo, branch), refPayload)
 	if err != nil {
 		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isBranchProtectionError(apiErr) {
-			return false, fmt.Errorf("%w: %w", forge.ErrBranchProtected, err)
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+			// Check order matters: protection messages can contain "fast forward"
+			if isBranchProtectionError(apiErr) {
+				return false, fmt.Errorf("%w: %w", forge.ErrBranchProtected, err)
+			}
+			if isNonFastForwardError(apiErr) {
+				return false, fmt.Errorf("%w: %w", forge.ErrNonFastForward, err)
+			}
 		}
 		return false, fmt.Errorf("update ref: %w", err)
 	}
@@ -1041,6 +1067,14 @@ func isBranchProtectionError(apiErr *APIError) bool {
 		strings.Contains(msg, "required status") ||
 		strings.Contains(msg, "required review") ||
 		strings.Contains(msg, "rule violation")
+}
+
+func isNonFastForwardError(apiErr *APIError) bool {
+	msg := strings.ToLower(apiErr.Message)
+	for _, d := range apiErr.Errors {
+		msg += " " + strings.ToLower(d.Message)
+	}
+	return strings.Contains(msg, "not a fast forward") || strings.Contains(msg, "not a fast-forward")
 }
 
 func isAlreadyExistsError(apiErr *APIError) bool {
@@ -1783,6 +1817,21 @@ func (c *LiveClient) GetRepoVariable(ctx context.Context, owner, repo, name stri
 		return "", false, fmt.Errorf("decode variable %s: %w", name, err)
 	}
 	return result.Value, true, nil
+}
+
+// DeleteRepoVariable deletes a repository Actions variable. It is idempotent:
+// a 404 (variable already gone) is not treated as an error.
+func (c *LiveClient) DeleteRepoVariable(ctx context.Context, owner, repo, name string) error {
+	resp, err := c.do(ctx, http.MethodDelete, fmt.Sprintf("/repos/%s/%s/actions/variables/%s", owner, repo, name), nil)
+	if err != nil {
+		return fmt.Errorf("delete repo variable %s: %w", name, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	return &APIError{StatusCode: resp.StatusCode, Message: "unexpected status deleting repo variable"}
 }
 
 // GetWorkflow returns a workflow definition by filename (e.g. repo-maintenance.yml).

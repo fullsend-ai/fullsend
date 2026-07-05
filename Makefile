@@ -2,7 +2,7 @@
 .PHONY: help bootstrap lint lint-all check fmt \
        mindmap go-build go-test go-lint go-fmt go-vet go-tidy \
        lint-md-links script-test test \
-       e2e-test lint-eval-cases functional-tests
+       e2e-test behaviour-test lint-eval-cases functional-tests
 
 # Let Go automatically download the toolchain version required by go.mod.
 # This ensures local builds use the right version without manual intervention.
@@ -28,6 +28,7 @@ help:
 	@echo "  script-test          - Run shell script tests (post-triage, post-code, post-review, pre-fetch-prior-review, reconcile-repos, validate-output-schema)"
 	@echo "  test                 - Run all checks: lint-all, go-test, script-test, lint-eval-cases"
 	@echo "  e2e-test             - Run admin e2e tests (CI: OIDC mint; local: gh auth login or GH_TOKEN)"
+	@echo "  behaviour-test       - Run Gherkin behaviour tests (CI: OIDC mint; local: gh auth login or GH_TOKEN)"
 	@echo "  lint-eval-cases      - Lint eval case definitions (annotations.yaml completeness)"
 	@echo "  functional-tests     - Run functional agent tests (requires EVAL_ORG, FULLSEND_DIR, GH_TOKEN, GCP creds)"
 
@@ -129,11 +130,15 @@ script-test:
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh)
 	$(call run-timed,python3 internal/scaffold/fullsend-repo/scripts/process-fix-result-test.py)
 	$(call run-timed,python3 skills/topissues/scripts/topissues_test.py)
+	$(call run-timed,python3 -m pytest gitlint_rules_test.py -v)
 
 test: lint-all go-test script-test lint-eval-cases
 
 e2e-test:
 	go test -tags e2e -v -count=1 -timeout 30m ./e2e/admin/
+
+behaviour-test:
+	go test -tags behaviour -v -count=1 -timeout 30m ./e2e/behaviour/
 
 # Functional agent evals — run agents against ephemeral GitHub repos and judge results.
 # Required env: EVAL_ORG (GitHub org for ephemeral repos), plus GCP creds for Vertex AI.

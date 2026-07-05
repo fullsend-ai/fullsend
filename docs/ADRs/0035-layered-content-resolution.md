@@ -1,6 +1,6 @@
 ---
 title: "35. Layered content resolution"
-status: Accepted
+status: Superseded
 relates_to:
   - agent-infrastructure
   - agent-architecture
@@ -17,11 +17,11 @@ Date: 2026-05-09
 
 ## Status
 
-Accepted
+Superseded by [ADR 0064](0064-deprecate-customized-directory-overlay.md).
 
 ## Context
 
-[ADR 0003](0003-org-config-repo-convention.md) designed a three-tier layering
+[ADR 0003](0003-org-config-repo-convention.md) designed a three-tier configuration layering
 model — `fullsend defaults < org .fullsend config < per-repo overrides` — but
 the runtime never implemented it. The scaffold (`internal/scaffold/scaffold.go`)
 copies all ~82 files from `internal/scaffold/fullsend-repo/` into every

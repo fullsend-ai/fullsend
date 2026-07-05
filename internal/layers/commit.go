@@ -321,6 +321,10 @@ func commitScaffoldDirect(ctx context.Context, client forge.Client, printer *ui.
 	files []forge.TreeFile, in io.Reader) (bool, error) {
 
 	committed, err := client.CommitFiles(ctx, owner, repo, commitMsg, files)
+	if err != nil && forge.IsNonFastForward(err) {
+		printer.StepWarn("Ref update hit auto_init race — retrying")
+		committed, err = client.CommitFiles(ctx, owner, repo, commitMsg, files)
+	}
 	if err != nil && forge.IsBranchProtected(err) {
 		printer.StepWarn("Default branch is protected — creating scaffold PR instead")
 		fallbackBody := fmt.Sprintf("The default branch (%s) has branch protection rules that prevent direct pushes.\n\n"+

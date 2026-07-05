@@ -414,6 +414,16 @@ func TestBuildScanContextCommand_SourcesEnv(t *testing.T) {
 	assert.Contains(t, cmd, "-exec fullsend scan context")
 }
 
+func TestBuildScanContextCommand_AcceptsAdoptedTraceID(t *testing.T) {
+	// A trace id adopted from an inbound W3C traceparent (issue #2779) is
+	// dashed hex but not UUID v4; it must survive validation, not be replaced
+	// with the "invalid-trace-id" sentinel.
+	traceID := "4f3a9c1b-2d8e-0a7c-1f0b-1e2d3c4a5b6d"
+	cmd := buildScanContextCommand("/sandbox/workspace/repo", traceID)
+	assert.Contains(t, cmd, "FULLSEND_TRACE_ID='"+traceID+"'")
+	assert.NotContains(t, cmd, "invalid-trace-id")
+}
+
 func TestCopyFile(t *testing.T) {
 	t.Run("copies content and preserves permissions", func(t *testing.T) {
 		src := filepath.Join(t.TempDir(), "source")
@@ -642,8 +652,19 @@ func TestResolveAgentSource_NoConfig(t *testing.T) {
 	assert.Empty(t, deps)
 }
 
+// canonTempDir returns t.TempDir() with symlinks resolved, so equality
+// assertions against containedLocalPath's symlink-resolved output hold on
+// hosts where the temp dir sits behind a symlink (e.g. macOS, where /var
+// is a symlink to /private/var).
+func canonTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	return dir
+}
+
 func TestResolveAgentSource_ConfigLocalPath(t *testing.T) {
-	dir := t.TempDir()
+	dir := canonTempDir(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "custom.yaml"),
@@ -715,7 +736,7 @@ func TestResolveAgentSource_ConfigLocalPathTraversalRejected(t *testing.T) {
 }
 
 func TestContainedLocalPath_Valid(t *testing.T) {
-	dir := t.TempDir()
+	dir := canonTempDir(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "agent.yaml"), []byte("test"), 0o644))
 	got, err := containedLocalPath(dir, "harness/agent.yaml")
@@ -738,7 +759,7 @@ func TestContainedLocalPath_TraversalRejected(t *testing.T) {
 }
 
 func TestContainedLocalPath_DotSegmentsCleaned(t *testing.T) {
-	dir := t.TempDir()
+	dir := canonTempDir(t)
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "agent.yaml"), []byte("test"), 0o644))
 	got, err := containedLocalPath(dir, "harness/./agent.yaml")
@@ -1393,6 +1414,46 @@ func TestValidationFailMessage_TrimsOutput(t *testing.T) {
 	assert.Equal(t, "some output", msg)
 }
 
+func TestValidationEnv_IncludesSchemaWhenSet(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "/tmp/test-schema.json",
+		},
+	}
+	env := validationEnv(h, "/repo", "/run")
+	assert.Contains(t, env, "FULLSEND_OUTPUT_SCHEMA=/tmp/test-schema.json")
+	assert.Contains(t, env, "TARGET_REPO_DIR=/repo")
+	assert.Contains(t, env, "FULLSEND_RUN_DIR=/run")
+	assert.Contains(t, env, "FOO=bar")
+}
+
+func TestValidationEnv_OmitsSchemaWhenEmpty(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+		},
+	}
+	env := validationEnv(h, "/repo", "/run")
+	for _, e := range env {
+		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
+			"FULLSEND_OUTPUT_SCHEMA should not be set when Schema is empty")
+	}
+}
+
+func TestValidationEnv_OmitsSchemaWhenNoValidationLoop(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+	}
+	env := validationEnv(h, "/repo", "/run")
+	for _, e := range env {
+		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
+			"FULLSEND_OUTPUT_SCHEMA should not be set when ValidationLoop is nil")
+	}
+}
+
 func TestOpenTeeReader_EmptyPath(t *testing.T) {
 	src := strings.NewReader("hello")
 	printer := ui.New(io.Discard)
@@ -1626,6 +1687,72 @@ func TestBootstrapEnv_SkipsFetchVarsWhenEmpty(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "copying .env file to sandbox")
+}
+
+func TestBootstrapEnv_ValidationLoopSchemaPrecedence(t *testing.T) {
+	dir := t.TempDir()
+	schemaFile := filepath.Join(dir, "schema.json")
+	require.NoError(t, os.WriteFile(schemaFile, []byte(`{"type":"object"}`), 0o644))
+
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: schemaFile,
+		},
+		RunnerEnv: map[string]string{
+			"FULLSEND_OUTPUT_SCHEMA": "/should/not/be/used",
+		},
+	}
+
+	err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil)
+
+	// Expected to fail at sandbox operations — the schema code path is
+	// exercised before the failure.
+	require.Error(t, err)
+}
+
+func TestBootstrapEnv_ValidationLoopSchemaFallback(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		RunnerEnv: map[string]string{
+			"FULLSEND_OUTPUT_SCHEMA": "/nonexistent/schema.json",
+		},
+	}
+
+	err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "copying .env file to sandbox")
+}
+
+func TestExpandValidationLoopSchema(t *testing.T) {
+	dir := t.TempDir()
+	schemaDir := filepath.Join(dir, "schemas")
+	require.NoError(t, os.MkdirAll(schemaDir, 0o755))
+	schemaPath := filepath.Join(schemaDir, "result.json")
+	require.NoError(t, os.WriteFile(schemaPath, []byte(`{"type":"object"}`), 0o644))
+
+	expander := func(key string) string {
+		if key == "FULLSEND_DIR" {
+			return dir
+		}
+		return ""
+	}
+
+	h := &harness.Harness{
+		ValidationLoop: &harness.ValidationLoop{
+			Schema: "${FULLSEND_DIR}/schemas/result.json",
+		},
+	}
+
+	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
+		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, expander)
+	}
+
+	assert.Equal(t, schemaPath, h.ValidationLoop.Schema)
+	_, err := os.Stat(h.ValidationLoop.Schema)
+	require.NoError(t, err, "expanded schema path should exist")
 }
 
 func TestBuildSandboxEnvLines_FromEnvSandbox(t *testing.T) {

@@ -187,6 +187,7 @@ type APIServer struct {
 // ValidationLoop configures a deterministic validation step after the agent exits.
 type ValidationLoop struct {
 	Script        string `yaml:"script"`
+	Schema        string `yaml:"schema,omitempty"`
 	MaxIterations int    `yaml:"max_iterations"`
 	FeedbackMode  string `yaml:"feedback_mode,omitempty"`
 }
@@ -525,6 +526,11 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 		if h.ValidationLoop.Script, err = resolve("validation_loop.script", h.ValidationLoop.Script); err != nil {
 			return err
 		}
+		if h.ValidationLoop.Schema != "" && !strings.Contains(h.ValidationLoop.Schema, "${") {
+			if h.ValidationLoop.Schema, err = resolve("validation_loop.schema", h.ValidationLoop.Schema); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -554,6 +560,11 @@ func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) erro
 			continue
 		}
 		if err := checkVarRefs(fmt.Sprintf("host_files[%d].src", i), hf.Src); err != nil {
+			return err
+		}
+	}
+	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
+		if err := checkVarRefs("validation_loop.schema", h.ValidationLoop.Schema); err != nil {
 			return err
 		}
 	}
@@ -636,6 +647,11 @@ func (h *Harness) ValidateFilesExist() error {
 	if h.ValidationLoop != nil {
 		if err := check("validation_loop.script", h.ValidationLoop.Script); err != nil {
 			return err
+		}
+		if h.ValidationLoop.Schema != "" && !strings.Contains(h.ValidationLoop.Schema, "${") {
+			if err := check("validation_loop.schema", h.ValidationLoop.Schema); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -725,6 +741,9 @@ func (h *Harness) ValidateResourceTypes() error {
 	}
 	if h.ValidationLoop != nil && h.ValidationLoop.Script != "" && IsURL(h.ValidationLoop.Script) {
 		return fmt.Errorf("validation_loop.script must be a local path, not a URL")
+	}
+	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" && IsURL(h.ValidationLoop.Schema) {
+		return fmt.Errorf("validation_loop.schema must be a local path, not a URL")
 	}
 	for i, hf := range h.HostFiles {
 		if IsURL(hf.Src) {

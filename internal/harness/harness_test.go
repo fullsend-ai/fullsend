@@ -190,6 +190,47 @@ func TestResolveRelativeTo_HostFiles(t *testing.T) {
 	assert.Equal(t, "/absolute/path/file.txt", h.HostFiles[2].Src)
 }
 
+func TestResolveRelativeTo_ValidationLoopSchema(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		ValidationLoop: &ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "schemas/result.schema.json",
+		},
+	}
+
+	require.NoError(t, h.ResolveRelativeTo("/base/dir"))
+
+	assert.Equal(t, "/base/dir/schemas/result.schema.json", h.ValidationLoop.Schema)
+}
+
+func TestResolveRelativeTo_ValidationLoopSchemaVarSkipped(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		ValidationLoop: &ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "${FULLSEND_DIR}/schemas/result.schema.json",
+		},
+	}
+
+	require.NoError(t, h.ResolveRelativeTo("/base/dir"))
+
+	assert.Equal(t, "${FULLSEND_DIR}/schemas/result.schema.json", h.ValidationLoop.Schema)
+}
+
+func TestResolveRelativeTo_ValidationLoopSchemaTraversalRejected(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		ValidationLoop: &ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "../../etc/shadow.json",
+		},
+	}
+	err := h.ResolveRelativeTo("/base/dir")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolves outside fullsend directory")
+}
+
 func TestResolveRelativeTo_AbsolutePathsUnchanged(t *testing.T) {
 	h := &Harness{
 		Agent: "/absolute/path/agent.md",
@@ -492,6 +533,40 @@ func TestValidateRunnerEnvWith_EnvAllSet(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestValidateRunnerEnvWith_ChecksValidationLoopSchema(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		ValidationLoop: &ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "${MISSING_DIR}/schemas/result.json",
+		},
+	}
+	lookup := func(key string) (string, bool) { return "", false }
+	err := h.ValidateRunnerEnvWith(lookup)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MISSING_DIR")
+	assert.Contains(t, err.Error(), "validation_loop.schema")
+}
+
+func TestValidateRunnerEnvWith_ValidationLoopSchemaVarSet(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		ValidationLoop: &ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "${FULLSEND_DIR}/schemas/result.json",
+		},
+	}
+	lookup := func(key string) (string, bool) {
+		if key == "FULLSEND_DIR" {
+			return "/opt/fullsend", true
+		}
+		return "", false
+	}
+	require.NoError(t, h.ValidateRunnerEnvWith(lookup))
+}
+
 func TestValidateRunnerEnvWith_NilEnvNoError(t *testing.T) {
 	h := &Harness{Agent: "agents/test.md", Role: "test"}
 	err := h.ValidateRunnerEnvWith(func(string) (string, bool) { return "", false })
@@ -660,6 +735,42 @@ func TestValidateFilesExist_SkipsVarPaths(t *testing.T) {
 	}
 	// Should not error — ${VAR} paths are expanded at bootstrap time.
 	require.NoError(t, h.ValidateFilesExist())
+}
+
+func TestValidateFilesExist_SkipsSchemaVarPaths(t *testing.T) {
+	dir := t.TempDir()
+	agentFile := filepath.Join(dir, "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("agent"), 0o644))
+	scriptFile := filepath.Join(dir, "validate.sh")
+	require.NoError(t, os.WriteFile(scriptFile, []byte("#!/bin/bash"), 0o755))
+
+	h := &Harness{
+		Agent: agentFile,
+		ValidationLoop: &ValidationLoop{
+			Script: scriptFile,
+			Schema: "${FULLSEND_DIR}/schemas/result.schema.json",
+		},
+	}
+	require.NoError(t, h.ValidateFilesExist())
+}
+
+func TestValidateFilesExist_MissingSchema(t *testing.T) {
+	dir := t.TempDir()
+	agentFile := filepath.Join(dir, "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("agent"), 0o644))
+	scriptFile := filepath.Join(dir, "validate.sh")
+	require.NoError(t, os.WriteFile(scriptFile, []byte("#!/bin/bash"), 0o755))
+
+	h := &Harness{
+		Agent: agentFile,
+		ValidationLoop: &ValidationLoop{
+			Script: scriptFile,
+			Schema: "/nonexistent/schema.json",
+		},
+	}
+	err := h.ValidateFilesExist()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validation_loop.schema")
 }
 
 func TestValidate_PluginNameValid(t *testing.T) {
@@ -1020,6 +1131,32 @@ func TestValidateResourceTypes(t *testing.T) {
 		err := h.ValidateResourceTypes()
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "agent_input must be a local path")
+	})
+
+	t.Run("URL in validation_loop.schema", func(t *testing.T) {
+		h := &Harness{
+			Agent: "agents/test.md",
+			ValidationLoop: &ValidationLoop{
+				Script:        "scripts/validate.sh",
+				Schema:        "https://example.com/schemas/result.json",
+				MaxIterations: 1,
+			},
+		}
+		err := h.ValidateResourceTypes()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "validation_loop.schema must be a local path")
+	})
+
+	t.Run("local validation_loop.schema accepted", func(t *testing.T) {
+		h := &Harness{
+			Agent: "agents/test.md",
+			ValidationLoop: &ValidationLoop{
+				Script:        "scripts/validate.sh",
+				Schema:        "schemas/result.schema.json",
+				MaxIterations: 1,
+			},
+		}
+		require.NoError(t, h.ValidateResourceTypes())
 	})
 }
 

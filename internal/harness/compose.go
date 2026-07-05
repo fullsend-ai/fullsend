@@ -600,6 +600,17 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 		base.ValidationLoop.Script = cachePath
 		deps = append(deps, dep)
 	}
+	if base.ValidationLoop != nil && base.ValidationLoop.Schema != "" {
+		if err := validateBaseRelPath("validation_loop.schema", base.ValidationLoop.Schema); err != nil {
+			return nil, err
+		}
+		dep, cachePath, err := fetchBaseFile(ctx, "validation_loop.schema", baseURLDir, base.ValidationLoop.Schema, allowlist, opts, "resource", false)
+		if err != nil {
+			return nil, err
+		}
+		base.ValidationLoop.Schema = cachePath
+		deps = append(deps, dep)
+	}
 
 	for platform, fc := range base.Forge {
 		if fc == nil {
@@ -636,6 +647,18 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 				return nil, err
 			}
 			fc.ValidationLoop.Script = cachePath
+			deps = append(deps, dep)
+		}
+		if fc.ValidationLoop != nil && fc.ValidationLoop.Schema != "" {
+			fieldName := fmt.Sprintf("forge.%s.validation_loop.schema", platform)
+			if err := validateBaseRelPath(fieldName, fc.ValidationLoop.Schema); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, fc.ValidationLoop.Schema, allowlist, opts, "resource", false)
+			if err != nil {
+				return nil, err
+			}
+			fc.ValidationLoop.Schema = cachePath
 			deps = append(deps, dep)
 		}
 	}

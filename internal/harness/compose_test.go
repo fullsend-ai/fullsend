@@ -1360,6 +1360,97 @@ base: `+baseURL+`
 	assert.Equal(t, "resource", deps[2].Type)
 }
 
+func TestLoadWithBase_URLBase_ValidationLoopSchemaFetched(t *testing.T) {
+	validateScript := []byte("#!/bin/bash\necho validate")
+	schemaContent := []byte(`{"type":"object","properties":{"action":{"type":"string"}}}`)
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+validation_loop:
+  script: scripts/validate.sh
+  schema: schemas/result.schema.json
+  max_iterations: 2
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/scripts/validate.sh":        validateScript,
+		"/schemas/result.schema.json": schemaContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.ValidationLoop)
+	assert.True(t, filepath.IsAbs(h.ValidationLoop.Schema))
+	assert.Equal(t, 2, h.ValidationLoop.MaxIterations)
+
+	content, err := os.ReadFile(h.ValidationLoop.Schema)
+	require.NoError(t, err)
+	assert.Equal(t, schemaContent, content)
+
+	// 1 base + 1 validation script + 1 schema + 1 agent resource
+	require.Len(t, deps, 4)
+	assert.Equal(t, "validation_loop.script", deps[1].Field)
+	assert.Equal(t, "script", deps[1].Type)
+	assert.Equal(t, "validation_loop.schema", deps[2].Field)
+	assert.Equal(t, "resource", deps[2].Type)
+	assert.Equal(t, "agent", deps[3].Field)
+	assert.Equal(t, "resource", deps[3].Type)
+}
+
+func TestLoadWithBase_URLBase_ValidationLoopSchemaFetchError(t *testing.T) {
+	validateScript := []byte("#!/bin/bash\necho validate")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+validation_loop:
+  script: scripts/validate.sh
+  schema: schemas/missing.schema.json
+  max_iterations: 2
+`)
+
+	// The server does NOT serve /schemas/missing.schema.json
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/scripts/validate.sh": validateScript,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validation_loop.schema")
+}
+
 func TestLoadWithBase_URLBase_ForgeScriptsFetched(t *testing.T) {
 	forgePre := []byte("#!/bin/bash\necho forge-pre")
 	forgePost := []byte("#!/bin/bash\necho forge-post")
@@ -1770,6 +1861,98 @@ base: `+baseURL+`
 	assert.Equal(t, "forge.github.validation_loop.script", deps[1].Field)
 }
 
+func TestLoadWithBase_URLBase_ForgeValidationLoopSchemaFetched(t *testing.T) {
+	forgeValidate := []byte("#!/bin/bash\necho forge-validate")
+	schemaContent := []byte(`{"type":"object"}`)
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+forge:
+  github:
+    validation_loop:
+      script: scripts/gh-validate.sh
+      schema: schemas/result.schema.json
+      max_iterations: 2
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/scripts/gh-validate.sh":     forgeValidate,
+		"/schemas/result.schema.json": schemaContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		ForgePlatform: "github",
+	})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.ValidationLoop)
+	assert.True(t, filepath.IsAbs(h.ValidationLoop.Schema))
+
+	content, err := os.ReadFile(h.ValidationLoop.Schema)
+	require.NoError(t, err)
+	assert.Equal(t, schemaContent, content)
+
+	// 1 base + 1 forge validation_loop script + 1 forge schema + 1 agent resource
+	require.Len(t, deps, 4)
+	assert.Equal(t, "forge.github.validation_loop.script", deps[1].Field)
+	assert.Equal(t, "forge.github.validation_loop.schema", deps[2].Field)
+	assert.Equal(t, "resource", deps[2].Type)
+}
+
+func TestLoadWithBase_URLBase_ForgeValidationLoopSchemaFetchError(t *testing.T) {
+	forgeValidate := []byte("#!/bin/bash\necho forge-validate")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+forge:
+  github:
+    validation_loop:
+      script: scripts/gh-validate.sh
+      schema: schemas/missing.schema.json
+      max_iterations: 2
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/scripts/gh-validate.sh": forgeValidate,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		ForgePlatform: "github",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validation_loop.schema")
+}
+
 func TestLoadWithBase_URLBase_AgentInputNotFetched(t *testing.T) {
 	baseContent := []byte(`
 agent: agents/triage.md
@@ -1968,6 +2151,46 @@ func TestResolveBaseScripts_RejectsAbsoluteForgeValidationLoop(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must be a relative path, not an absolute path")
 	assert.Contains(t, err.Error(), "forge.gitlab.validation_loop.script")
+}
+
+func TestResolveBaseScripts_RejectsTraversalInValidationLoopSchema(t *testing.T) {
+	base := &Harness{
+		ValidationLoop: &ValidationLoop{
+			Schema: "../../../etc/shadow",
+		},
+	}
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain path traversal")
+	assert.Contains(t, err.Error(), "validation_loop.schema")
+}
+
+func TestResolveBaseScripts_RejectsTraversalInForgeValidationLoopSchema(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				ValidationLoop: &ValidationLoop{
+					Schema: "../escape.json",
+				},
+			},
+		},
+	}
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not contain path traversal")
+	assert.Contains(t, err.Error(), "forge.github.validation_loop.schema")
+}
+
+func TestResolveBaseScripts_RejectsAbsoluteValidationLoopSchema(t *testing.T) {
+	base := &Harness{
+		ValidationLoop: &ValidationLoop{
+			Schema: "/etc/schema.json",
+		},
+	}
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a relative path, not an absolute path")
+	assert.Contains(t, err.Error(), "validation_loop.schema")
 }
 
 func TestResolveBaseScripts_RejectsNullBytes(t *testing.T) {

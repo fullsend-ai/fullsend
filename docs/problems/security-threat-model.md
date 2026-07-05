@@ -222,7 +222,7 @@ This cross-cutting nature is why the model-as-toolchain risk deserves explicit t
 
 ### Open questions
 
-- Should dependency updates be in a separate autonomy tier from code changes?
+- Should dependency updates be in a separate intent authorization tier from code changes?
 - How do we handle the case where a dependency update is legitimate but introduces a vulnerability that hasn't been disclosed yet?
 - How do we verify model integrity? Unlike a compiler binary that can be hash-checked, model behavior is stochastic and opaque.
 - Is model diversity a practical defense, or do the costs (maintaining multiple model integrations, inconsistent output quality) outweigh the security benefit?
@@ -279,13 +279,13 @@ The five threats above model attacks on agents, on credentials, on the model, an
 
 The attacker splits a malicious change across two PRs separated by time:
 
-1. **PR 1 (setup — Tier 0).** A PR that only modifies test files. It appears to add coverage for an edge case, but subtly weakens an assertion, introduces a misleading mock, or removes a check that would catch a specific vulnerability. Because "test additions that don't change production behavior" are classified as Tier 0 standing rules (see [intent-representation.md](intent-representation.md)), this PR requires no per-change intent. It touches no CODEOWNERS-guarded paths. It merges autonomously.
+1. **PR 1 (setup — intent authorization tier 0).** A PR that only modifies test files. It appears to add coverage for an edge case, but subtly weakens an assertion, introduces a misleading mock, or removes a check that would catch a specific vulnerability. Because "test additions that don't change production behavior" are classified as intent authorization tier 0 standing rules (see [intent-representation.md](intent-representation.md)), this PR requires no per-change intent. It touches no CODEOWNERS-guarded paths. It merges autonomously.
 
 2. **PR 2 (payload — weeks or months later).** A separate PR introduces a vulnerability in production code. The Correctness sub-agent evaluates test adequacy and finds that the relevant code path is covered by tests that pass. The Security sub-agent evaluates the diff in isolation and sees nothing overtly malicious — the vulnerability relies entirely on the blind spot created by the poisoned test. It finds no prompt injection patterns because the attack uses syntactically valid code, not adversarial text.
 
 ### Why existing defenses don't catch it
 
-- **Tier 0 classification** treats test-only changes as inherently low-risk, but tests are part of the trust boundary — they are what review agents rely on to validate production code. Poisoning tests is poisoning the oracle.
+- **Intent authorization tier 0 classification** treats test-only changes as inherently low-risk, but tests are part of the trust boundary — they are what review agents rely on to validate production code. Poisoning tests is poisoning the oracle.
 - **Stateless per-PR review** means no review agent correlates the test weakening in PR 1 with the production change in PR 2. Each PR is evaluated independently.
 - **CODEOWNERS** typically guards production APIs, deployment manifests, and security policies — not test directories.
 - **The Security sub-agent** looks for prompt injection patterns. This attack uses standard, valid code. There is nothing to flag.
@@ -295,14 +295,14 @@ The attacker splits a malicious change across two PRs separated by time:
 
 This is not a variant of an existing threat category. It combines elements of several:
 
-- It exploits **Tier 0 intent rules** (an intent representation problem)
+- It exploits **intent authorization tier 0 rules** (an intent representation problem)
 - It defeats **stateless review** (an agent architecture problem)
 - It subverts **testing as a guardrail** (a repo readiness problem)
 - It uses **temporal separation** to evade correlation
 
 Temporal separation of attack stages is not new — it is a well-established evasion technique. The [xz backdoor (CVE-2024-3094)](https://en.wikipedia.org/wiki/XZ_Utils_backdoor) is a direct real-world precedent: the attacker spent years building trust as a contributor, then introduced malicious binary test fixtures (`tests/files/*.xz`) that contained the actual backdoor payload, extracted at build time. The "test data" *was* the delivery mechanism. That attack demonstrated that test infrastructure is not a low-risk area — it is an attack surface, and one that reviewers (human and automated) systematically under-scrutinize.
 
-What makes this pattern particularly dangerous in the agentic context is that the system *formally codifies* the assumption that test-only changes are low-risk (Tier 0), and review agents operate statelessly per-PR. The xz attack succeeded against human reviewers who could in principle have correlated the commits; here, the system architecture structurally prevents that correlation.
+What makes this pattern particularly dangerous in the agentic context is that the system *formally codifies* the assumption that test-only changes are low-risk (intent authorization tier 0), and review agents operate statelessly per-PR. The xz attack succeeded against human reviewers who could in principle have correlated the commits; here, the system architecture structurally prevents that correlation.
 
 ### The xz variant: test data as covert payload storage
 
@@ -320,8 +320,8 @@ This means the attack surface includes:
 
 ### Defense considerations
 
-- **Distinguish additive from reductive test changes.** A Tier 0 classification for test-only changes should require that the change is *additive* — new test cases, new assertions, increased coverage. Changes that weaken assertions, broaden mocks, reduce coverage, or remove checks should not qualify as Tier 0. See [intent-representation.md](intent-representation.md) for the refined Tier 0 definition.
-- **Opaque files are never Tier 0.** Binary blobs, encoded data, and other files that cannot be meaningfully reviewed by agents should not qualify for autonomous merge regardless of where they appear. If an agent cannot reason about a file's content, the file requires human review.
+- **Distinguish additive from reductive test changes.** An intent authorization tier 0 classification for test-only changes should require that the change is *additive* — new test cases, new assertions, increased coverage. Changes that weaken assertions, broaden mocks, reduce coverage, or remove checks should not qualify as intent authorization tier 0. See [intent-representation.md](intent-representation.md) for the refined intent authorization tier 0 definition.
+- **Opaque files are never intent authorization tier 0.** Binary blobs, encoded data, and other files that cannot be meaningfully reviewed by agents should not qualify for autonomous merge regardless of where they appear. If an agent cannot reason about a file's content, the file requires human review.
 - **CODEOWNERS coverage for tests on guarded paths.** If production code at a given path is human-owned, its corresponding test files should be too. A test file is part of the security boundary for the code it tests.
 - **Scrutiny for build definitions.** Tekton pipeline and task definitions (`.tekton/`), Dockerfiles, and build scripts define what runs during the build. Agents may legitimately need to modify these files as part of feature implementation — adding a build step, changing a base image, updating a pipeline to support a new artifact type. Blanket CODEOWNERS on all build files would force human approval on every such change, which may be appropriate for some repos but too restrictive for others. The alternative is relying on review agents to apply heightened scrutiny to build definition changes without CODEOWNERS gating — treating them as security-sensitive context for the Security sub-agent rather than as a hard gate.
 - **Coverage regression as a merge gate.** Not just "do tests pass" but "does meaningful coverage decrease on security-sensitive paths." A PR that weakens assertions without reducing line coverage is harder to catch, but assertion-density metrics or mutation testing scores can help.

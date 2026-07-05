@@ -166,9 +166,9 @@ already stripped the payload.
 
 - Does the change trace to a linked issue or authorized feature request?
 - Does the implementation match what the linked issue describes?
-- Is the scope appropriate to the claimed tier (bug fix vs. new
-  feature)? A change that adds new capability is a feature, not a bug
-  fix, regardless of how it is labeled.
+- Is the scope appropriate to the claimed intent authorization tier
+  (bug fix vs. new feature)? A change that adds new capability is a
+  feature, not a bug fix, regardless of how it is labeled.
 - Does the change go beyond what the linked issue authorized?
 - Does the change fit the overall design of the module/system?
 - Is the complexity proportional to the value delivered?

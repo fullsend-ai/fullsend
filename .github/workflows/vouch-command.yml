@@ -1,0 +1,218 @@
+name: Vouch Command
+
+on:
+  discussion_comment:
+    types: [created]
+
+concurrency:
+  group: vouch-manage
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  process-vouch:
+    permissions:
+      contents: write
+      discussions: write
+    if: >-
+      github.repository_owner == 'fullsend-ai' &&
+      github.event.comment.body == '/vouch' &&
+      github.event.discussion.category.slug == 'vouch-request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Process /vouch command
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const commenter = context.payload.comment.user.login;
+            const discussionAuthor = context.payload.discussion.user.login;
+            const discussionNumber = context.payload.discussion.number;
+
+            // --- Helpers ---
+
+            async function getDiscussionId() {
+              const query = `query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  discussion(number: $number) { id }
+                }
+              }`;
+              const { repository } = await github.graphql(query, {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                number: discussionNumber,
+              });
+              return repository.discussion.id;
+            }
+
+            async function postDiscussionComment(body) {
+              try {
+                const discussionId = await getDiscussionId();
+                const mutation = `mutation($discussionId: ID!, $body: String!) {
+                  addDiscussionComment(input: {discussionId: $discussionId, body: $body}) {
+                    comment { id }
+                  }
+                }`;
+                await github.graphql(mutation, { discussionId, body });
+              } catch (e) {
+                console.log(`Warning: Could not post discussion comment: ${e.message}`);
+              }
+            }
+
+            // --- Authorization ---
+
+            let isMaintainer = false;
+            try {
+              const { data } = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: commenter,
+              });
+              isMaintainer = ['admin', 'maintain', 'write'].includes(data.role_name);
+            } catch (e) {
+              console.log(`Permission check failed: ${e.message}`);
+            }
+
+            if (!isMaintainer) {
+              console.log(`${commenter} does not have maintainer permissions. Ignoring.`);
+              return;
+            }
+
+            // --- Read VOUCHED.td ---
+
+            const filePath = '.github/VOUCHED.td';
+            const branch = 'vouched';
+
+            // Ensure the "vouched" branch exists. If not, create it as an
+            // orphan branch containing only VOUCHED.td — no history from main.
+            const headerContent = [
+              '# Vouched Contributors',
+              '#',
+              '# One GitHub username per line, no @ prefix.',
+              '# Prefix with - to denounce.',
+              '',
+            ].join('\n');
+
+            try {
+              await github.rest.repos.getBranch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                branch,
+              });
+            } catch (e) {
+              if (e.status === 404) {
+                console.log('Creating orphan "vouched" branch.');
+                const { data: blob } = await github.rest.git.createBlob({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  content: Buffer.from(headerContent).toString('base64'),
+                  encoding: 'base64',
+                });
+                const { data: tree } = await github.rest.git.createTree({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  tree: [{ path: filePath, mode: '100644', type: 'blob', sha: blob.sha }],
+                });
+                const { data: commit } = await github.rest.git.createCommit({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  message: 'chore: initialize vouched branch',
+                  tree: tree.sha,
+                  parents: [],
+                });
+                await github.rest.git.createRef({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  ref: 'refs/heads/vouched',
+                  sha: commit.sha,
+                });
+              } else {
+                throw e;
+              }
+            }
+
+            let currentContent = '';
+            let sha = '';
+            try {
+              const { data } = await github.rest.repos.getContent({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path: filePath,
+                ref: branch,
+              });
+              currentContent = Buffer.from(data.content, 'base64').toString('utf-8');
+              sha = data.sha;
+            } catch (e) {
+              console.log(`Could not read VOUCHED.td: ${e.message}`);
+              return;
+            }
+
+            // --- Parse .td format ---
+
+            function isVouched(content, username) {
+              return content
+                .split('\n')
+                .map(line => line.trim())
+                .filter(line => line && !line.startsWith('#') && !line.startsWith('-'))
+                .some(name => name.toLowerCase() === username.toLowerCase());
+            }
+
+            if (isVouched(currentContent, discussionAuthor)) {
+              console.log(`${discussionAuthor} is already vouched.`);
+              await postDiscussionComment(
+                `@${discussionAuthor} is already vouched. They can submit pull requests.`
+              );
+              return;
+            }
+
+            // --- Append username and commit ---
+
+            async function commitVouch(content, fileSha) {
+              const updatedContent = content.trimEnd() + '\n' + discussionAuthor + '\n';
+              const params = {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path: filePath,
+                message: `chore: vouch ${discussionAuthor} (by ${commenter})`,
+                content: Buffer.from(updatedContent).toString('base64'),
+                branch,
+              };
+              if (fileSha) params.sha = fileSha;
+              await github.rest.repos.createOrUpdateFileContents(params);
+            }
+
+            try {
+              await commitVouch(currentContent, sha);
+            } catch (e) {
+              if (e.status === 409) {
+                // Concurrent write — re-read and retry once.
+                console.log('409 conflict. Re-reading VOUCHED.td and retrying.');
+                const { data: fresh } = await github.rest.repos.getContent({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  path: filePath,
+                  ref: branch,
+                });
+                const freshContent = Buffer.from(fresh.content, 'base64').toString('utf-8');
+                if (isVouched(freshContent, discussionAuthor)) {
+                  console.log(`${discussionAuthor} was vouched by a concurrent operation.`);
+                } else {
+                  await commitVouch(freshContent, fresh.sha);
+                }
+              } else {
+                throw e;
+              }
+            }
+
+            // --- Confirm ---
+
+            await postDiscussionComment([
+              `@${discussionAuthor} has been vouched by @${commenter}.`,
+              '',
+              'You can now submit pull requests to fullsend. Welcome aboard.',
+              '',
+              'Please read [CONTRIBUTING.md](https://github.com/fullsend-ai/fullsend/blob/main/CONTRIBUTING.md) before submitting.',
+            ].join('\n'));
+
+            console.log(`Vouched ${discussionAuthor} (approved by ${commenter}).`);

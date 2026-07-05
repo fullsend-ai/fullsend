@@ -415,6 +415,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// Expand ${VAR} references in validation_loop.schema so the path
+	// resolves before ValidateFilesExist stat-checks it.
+	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
+		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, expander)
+	}
+
 	if err := h.ValidateFilesExist(); err != nil {
 		printer.StepFail("File validation failed")
 		return fmt.Errorf("validating files: %w", err)
@@ -580,13 +586,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
-	// Trace identity (ADR 0050 Level 1 + security correlation). Generated here,
+	// Trace identity (ADR 0050 Level 1 + security correlation). Resolved here,
 	// before the pre-script, so TRACEPARENT can propagate to child processes.
-	// The same id is reused as the security finding/audit trace id (dashed UUID)
-	// and, dash-stripped, as the W3C telemetry trace id — one id across both.
-	securityTraceID := security.GenerateTraceID()
-	wTraceID := telemetry.TraceIDFromUUID(securityTraceID)
-	rootSpanID := telemetry.NewSpanID()
+	// An inbound TRACEPARENT (nested/instrumented invocation, issue #2779) is
+	// adopted so the run continues the parent trace; otherwise a fresh id is
+	// generated. Either way one id serves as both the security finding/audit
+	// trace id (dashed UUID) and, dash-stripped, the W3C telemetry trace id.
+	securityTraceID, traceCtx := resolveTraceIdentity(os.Getenv("TRACEPARENT"))
 	workItemID := resolveWorkItemID()
 
 	// 2c. Run pre-script on the host (if configured).
@@ -594,7 +600,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		preStart := time.Now()
 		printer.StepStart("Running pre-script: " + h.PreScript)
 		preCmd := exec.Command(h.PreScript)
-		preCmd.Env = childScriptEnv(h.RunnerEnv, telemetry.TraceParent(wTraceID, rootSpanID))
+		preCmd.Env = childScriptEnv(h.RunnerEnv, telemetry.TraceParentWithFlags(traceCtx.TraceID, traceCtx.RootSpanID, traceCtx.Flags))
 		preCmd.Stdout = os.Stdout
 		preCmd.Stderr = os.Stderr
 		if err := preCmd.Run(); err != nil {
@@ -619,7 +625,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// registered before the post-script and cleanup defers so that — by LIFO
 	// order — it runs last and the summary captures the whole run.
 	var lastExitCode int
-	rec := telemetry.New(runDir, wTraceID, rootSpanID, agentName, workItemID, runStart)
+	var transcriptErrorOverride bool
+	rec := telemetry.New(runDir, traceCtx, agentName, workItemID, runStart)
 	defer func() { rec.Finalize(telemetryExitCode(lastExitCode, runErr)) }()
 
 	createStart := time.Now()
@@ -660,11 +667,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				printer.StepWarn("Skipping post-script: agent run failed")
 				return
 			}
+			if transcriptErrorOverride {
+				printer.StepWarn("Skipping post-script: agent reported error via transcript")
+				return
+			}
 			postStart := time.Now()
 			printer.StepStart("Running post-script: " + h.PostScript)
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
-			postCmd.Env = childScriptEnv(h.RunnerEnv, telemetry.TraceParent(wTraceID, rootSpanID))
+			postCmd.Env = childScriptEnv(h.RunnerEnv, telemetry.TraceParentWithFlags(traceCtx.TraceID, traceCtx.RootSpanID, traceCtx.Flags))
 			postCmd.Stdout = os.Stdout
 			postCmd.Stderr = os.Stderr
 			if err := postCmd.Run(); err != nil {
@@ -921,7 +932,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if err != nil {
 			printer.StepWarn("OIDC token refresh disabled: " + err.Error())
 		} else {
-			printer.StepDone("OIDC token refresh enabled (WIF mode)")
+			// GHA OIDC tokens expire after 5 min; sandbox setup can exceed that.
+			if err := refreshOIDCToken(oidcCtx, sandboxName, oidcURL, oidcAuth); err != nil {
+				printer.StepWarn("Initial OIDC refresh failed (will retry): " + err.Error())
+			} else {
+				printer.StepDone("OIDC token refreshed, background refresh enabled (WIF mode)")
+			}
 			oidcWg.Add(1)
 			go func() {
 				defer oidcWg.Done()
@@ -939,6 +955,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	for iteration := 1; iteration <= maxIterations; iteration++ {
 		runCount = iteration
+		transcriptErrorOverride = false
 
 		// Each iteration gets its own subdirectory for output and transcripts.
 		iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", iteration))
@@ -1008,12 +1025,26 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		lastExitCode = exitCode
 
+		// Check the tee'd output.jsonl for is_error:true result events.
+		// Claude Code may exit 0 on API/infrastructure failures (e.g.,
+		// invalid_grant, quota exhaustion) while setting is_error:true in
+		// the transcript. Treat these as failures so downstream gating
+		// (transcript surfacing, post-script skip) can act. See #2786.
+		if exitCode == 0 {
+			outputJSONL := filepath.Join(iterDir, "output.jsonl")
+			if te, ok := tx.ParseTranscriptFile(outputJSONL); ok && te.IsError {
+				printer.StepWarn(fmt.Sprintf("Agent exited with code 0 but transcript contains error: %s", te.ErrorMessage))
+				lastExitCode = 1
+				transcriptErrorOverride = true
+			}
+		}
+
 		printer.Blank()
 		// Non-zero exit is a warning, not a failure — the validation loop is the success gate.
-		if exitCode == 0 {
+		if lastExitCode == 0 {
 			printer.StepDone(fmt.Sprintf("Agent exited with code %d (%.1fs)", exitCode, time.Since(agentStart).Seconds()))
 		} else {
-			printer.StepWarn(fmt.Sprintf("Agent exited with code %d", exitCode))
+			printer.StepWarn(fmt.Sprintf("Agent exited with code %d", lastExitCode))
 		}
 
 		// 9b. Extract output files.
@@ -1075,12 +1106,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepStart("Running validation: " + h.ValidationLoop.Script)
 		valCmd := exec.Command(h.ValidationLoop.Script)
 		valCmd.Dir = iterDir
-		valCmd.Env = append(os.Environ(),
-			append(envToList(h.RunnerEnv),
-				fmt.Sprintf("TARGET_REPO_DIR=%s", hostRepositoryDir),
-				fmt.Sprintf("FULLSEND_RUN_DIR=%s", runDir),
-			)...,
-		)
+		valCmd.Env = append(os.Environ(), validationEnv(h, hostRepositoryDir, runDir)...)
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
@@ -1103,16 +1129,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	rec.SetModel(aggMetrics.Model)
 
 	// 9e-bis. Surface transcript errors in workflow logs (GitHub Actions).
-	// When the agent exits non-zero, parse transcript JSONL files and emit
-	// ::error:: annotations so operators can diagnose failures without
-	// downloading artifacts. See #704.
-	if lastExitCode != 0 {
-		lastIterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", runCount))
-		lastTranscriptDir := filepath.Join(lastIterDir, "transcripts")
-		if errorSummaries := tx.ParseTranscriptErrors(lastTranscriptDir); len(errorSummaries) > 0 {
-			printer.StepWarn(fmt.Sprintf("Found %d transcript error(s) — emitting to workflow log", len(errorSummaries)))
-			tx.EmitTranscriptErrors(os.Stderr, errorSummaries)
-		}
+	// Parse transcript JSONL files and emit ::error:: annotations so operators
+	// can diagnose failures without downloading artifacts. This runs
+	// regardless of exit code because Claude Code may exit 0 with
+	// is_error:true on API/infrastructure failures. See #704, #2786.
+	lastIterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", runCount))
+	lastTranscriptDir := filepath.Join(lastIterDir, "transcripts")
+	if errorSummaries := tx.ParseTranscriptErrors(lastTranscriptDir); len(errorSummaries) > 0 {
+		printer.StepWarn(fmt.Sprintf("Found %d transcript error(s) — emitting to workflow log", len(errorSummaries)))
+		tx.EmitTranscriptErrors(os.Stderr, errorSummaries)
 	}
 
 	// 9f. Post-agent output scan — redact secrets from extracted output.
@@ -1406,8 +1431,16 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 
 	// Expose output schema and expected filename inside the sandbox so
 	// agents can self-check output with fullsend-check-output. See #1107.
+	// Prefer validation_loop.schema (already resolved by compose); fall
+	// back to the legacy RunnerEnv path for backward compatibility.
 	remoteSchemaPath := sandbox.SandboxWorkspace + "/.fullsend/output-schema.json"
-	if schemaHost, ok := h.RunnerEnv["FULLSEND_OUTPUT_SCHEMA"]; ok && schemaHost != "" {
+	var schemaHost string
+	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
+		schemaHost = h.ValidationLoop.Schema
+	} else if v, ok := h.RunnerEnv["FULLSEND_OUTPUT_SCHEMA"]; ok && v != "" {
+		schemaHost = v
+	}
+	if schemaHost != "" {
 		if _, statErr := os.Stat(schemaHost); statErr != nil {
 			fmt.Fprintf(os.Stderr, "WARNING: schema file not found on host: %s\n", schemaHost)
 		} else {
@@ -1648,14 +1681,63 @@ func telemetryExitCode(lastExitCode int, runErr error) int {
 	return lastExitCode
 }
 
+// resolveTraceIdentity resolves the run's trace identity (issue #2779). A
+// valid inbound W3C TRACEPARENT is adopted: its trace-id becomes both the
+// security trace id (re-dashed UUID) and the W3C telemetry trace-id, its
+// span-id becomes the root span's remote parent, and its trace-flags carry
+// the upstream sampling decision forward. Without a valid inbound value a
+// fresh identity is generated, exactly as Level 1 always did. TRACESTATE is
+// intentionally untouched — it passes through os.Environ to child scripts.
+func resolveTraceIdentity(inbound string) (securityTraceID string, tc telemetry.TraceContext) {
+	if traceID, parentSpanID, flags, ok := telemetry.ParseTraceParent(inbound); ok {
+		return telemetry.UUIDFromTraceID(traceID), telemetry.TraceContext{
+			TraceID:      traceID,
+			RootSpanID:   telemetry.NewSpanID(),
+			ParentSpanID: parentSpanID,
+			Flags:        flags,
+		}
+	}
+	securityTraceID = security.GenerateTraceID()
+	return securityTraceID, telemetry.TraceContext{
+		TraceID:    telemetry.TraceIDFromUUID(securityTraceID),
+		RootSpanID: telemetry.NewSpanID(),
+		Flags:      "01",
+	}
+}
+
 // childScriptEnv builds the environment for a host-side child script (pre- or
 // post-script): the harness RunnerEnv layered over the process environment,
-// plus the W3C TRACEPARENT for trace propagation (ADR 0050 Level 1). An empty
-// traceparent (telemetry disabled) is omitted rather than emitted blank.
+// plus the W3C TRACEPARENT for trace propagation (ADR 0050 Level 1). Any
+// TRACEPARENT already present — inherited from the process environment or
+// set in runner_env — is filtered out first: env lookups resolve the first
+// match, so a stale value would shadow fullsend's own, and fullsend's trace
+// identity never derives from runner_env (issue #2779). An empty traceparent
+// (telemetry disabled) is omitted rather than emitted blank.
 func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
-	env := append(os.Environ(), envToList(runnerEnv)...)
+	merged := append(os.Environ(), envToList(runnerEnv)...)
+	env := make([]string, 0, len(merged)+1)
+	for _, e := range merged {
+		if !strings.HasPrefix(e, "TRACEPARENT=") {
+			env = append(env, e)
+		}
+	}
 	if traceparent != "" {
 		env = append(env, "TRACEPARENT="+traceparent)
+	}
+	return env
+}
+
+// validationEnv builds the extra environment entries for the validation
+// script. It includes RunnerEnv, TARGET_REPO_DIR, FULLSEND_RUN_DIR, and —
+// when the harness specifies a validation_loop.schema — FULLSEND_OUTPUT_SCHEMA
+// pointing to the host-side cached schema path.
+func validationEnv(h *harness.Harness, hostRepoDir, runDir string) []string {
+	env := append(envToList(h.RunnerEnv),
+		fmt.Sprintf("TARGET_REPO_DIR=%s", hostRepoDir),
+		fmt.Sprintf("FULLSEND_RUN_DIR=%s", runDir),
+	)
+	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
+		env = append(env, fmt.Sprintf("FULLSEND_OUTPUT_SCHEMA=%s", h.ValidationLoop.Schema))
 	}
 	return env
 }
@@ -1809,9 +1891,11 @@ func refreshOIDCToken(ctx context.Context, sandboxName, oidcURL, oidcAuth string
 // inside the sandbox. It finds known context files (including SKILL.md in
 // skill directories) in the repo directory and passes them as arguments.
 func buildScanContextCommand(repoDir, traceID string) string {
-	// Defense-in-depth: validate traceID before shell interpolation even though
-	// GenerateTraceID() only produces safe hex characters.
-	if !security.IsValidTraceID(traceID) {
+	// Defense-in-depth: validate traceID before shell interpolation. Uses
+	// IsShellSafeTraceID (not IsValidTraceID) because the id may have been
+	// adopted from an inbound W3C traceparent (issue #2779), so it is not
+	// necessarily UUID v4.
+	if !security.IsShellSafeTraceID(traceID) {
 		// Should never happen with internal generation, but fail safely.
 		traceID = "invalid-trace-id"
 	}
@@ -2148,10 +2232,10 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 
 // injectTraceID appends the FULLSEND_TRACE_ID to the sandbox .env file.
 func injectTraceID(sandboxName, traceID string) error {
-	if !security.IsValidTraceID(traceID) {
+	if !security.IsShellSafeTraceID(traceID) {
 		return fmt.Errorf("invalid trace ID format: %q", traceID)
 	}
-	// Safe: IsValidTraceID() above ensures traceID matches UUID v4 format only.
+	// Safe: IsShellSafeTraceID() above ensures traceID is only hex and dashes.
 	cmd := fmt.Sprintf("echo 'export FULLSEND_TRACE_ID=%s' >> %s/.env", traceID, sandbox.SandboxWorkspace)
 	_, _, _, err := sandbox.Exec(sandboxName, cmd, 10*time.Second)
 	return err

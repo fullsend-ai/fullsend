@@ -92,6 +92,12 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, token, org 
 		}
 	}
 
+	// 7. Delete stale FULLSEND_PER_REPO_INSTALL guard variable from test-repo.
+	// reconcile-repos.sh skips repos with this variable set to true.
+	if delErr := client.DeleteRepoVariable(ctx, org, testRepo, forge.PerRepoGuardVar); delErr != nil {
+		t.Logf("[cleanup] Warning: could not delete per-repo guard variable: %v", delErr)
+	}
+
 	t.Log("[cleanup] Stale resource scan complete")
 }
 

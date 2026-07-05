@@ -503,6 +503,27 @@ func TestFakeClient_DeleteOrgVariable(t *testing.T) {
 	assert.Equal(t, "myorg/DISPATCH_URL", fc.DeletedOrgVariables[0])
 }
 
+func TestFakeClient_DeleteRepoVariable(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{
+		VariableValues: map[string]string{
+			"myorg/myrepo/FULLSEND_PER_REPO_INSTALL": "true",
+		},
+		VariablesExist: map[string]bool{
+			"myorg/myrepo/FULLSEND_PER_REPO_INSTALL": true,
+		},
+	}
+
+	err := fc.DeleteRepoVariable(ctx, "myorg", "myrepo", "FULLSEND_PER_REPO_INSTALL")
+	require.NoError(t, err)
+
+	// Verify deletion from both maps
+	_, existsInValues := fc.VariableValues["myorg/myrepo/FULLSEND_PER_REPO_INSTALL"]
+	assert.False(t, existsInValues)
+	_, existsInExists := fc.VariablesExist["myorg/myrepo/FULLSEND_PER_REPO_INSTALL"]
+	assert.False(t, existsInExists)
+}
+
 func TestFakeClient_ErrorInjection(t *testing.T) {
 	ctx := context.Background()
 	injected := errors.New("injected error")
@@ -571,6 +592,9 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		{"IsInstallationToken", func(fc *FakeClient) error { _, err := fc.IsInstallationToken(ctx); return err }},
 		{"DeleteOrgVariable", func(fc *FakeClient) error {
 			return fc.DeleteOrgVariable(ctx, "o", "n")
+		}},
+		{"DeleteRepoVariable", func(fc *FakeClient) error {
+			return fc.DeleteRepoVariable(ctx, "o", "r", "n")
 		}},
 		{"SetOrgVariableRepos", func(fc *FakeClient) error {
 			return fc.SetOrgVariableRepos(ctx, "o", "n", nil)
@@ -771,4 +795,40 @@ func TestIsForbidden(t *testing.T) {
 	assert.True(t, IsForbidden(errors.Join(errors.New("wrapper"), ErrForbidden)))
 	assert.False(t, IsForbidden(errors.New("some error")))
 	assert.False(t, IsForbidden(nil))
+}
+
+func TestIsNonFastForward(t *testing.T) {
+	assert.True(t, IsNonFastForward(ErrNonFastForward))
+	assert.True(t, IsNonFastForward(errors.Join(errors.New("wrapper"), ErrNonFastForward)))
+	assert.False(t, IsNonFastForward(errors.New("some error")))
+	assert.False(t, IsNonFastForward(nil))
+}
+
+func TestFakeClient_CommitFilesErrSeq(t *testing.T) {
+	ctx := context.Background()
+	files := []TreeFile{{Path: "f.txt", Content: []byte("x"), Mode: "100644"}}
+
+	t.Run("first call errors, second succeeds", func(t *testing.T) {
+		fc := &FakeClient{
+			CommitFilesErrSeq: []error{ErrNonFastForward},
+		}
+		_, err := fc.CommitFiles(ctx, "o", "r", "m", files)
+		require.ErrorIs(t, err, ErrNonFastForward)
+
+		changed, err := fc.CommitFiles(ctx, "o", "r", "m", files)
+		require.NoError(t, err)
+		assert.True(t, changed)
+	})
+
+	t.Run("nil entry means no error for that call", func(t *testing.T) {
+		fc := &FakeClient{
+			CommitFilesErrSeq: []error{nil, ErrNonFastForward},
+		}
+		changed, err := fc.CommitFiles(ctx, "o", "r", "m", files)
+		require.NoError(t, err)
+		assert.True(t, changed)
+
+		_, err = fc.CommitFiles(ctx, "o", "r", "m", files)
+		require.ErrorIs(t, err, ErrNonFastForward)
+	})
 }

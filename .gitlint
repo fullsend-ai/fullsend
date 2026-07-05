@@ -1,6 +1,7 @@
 [general]
 # Enable conventional commits title check
 contrib=CT1
+extra-path=gitlint_rules/
 
 [title-max-length]
 line-length=100

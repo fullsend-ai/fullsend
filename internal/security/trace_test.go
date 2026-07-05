@@ -14,6 +14,37 @@ func TestGenerateTraceID(t *testing.T) {
 	}
 }
 
+func TestIsShellSafeTraceID(t *testing.T) {
+	// A generated UUID v4 passes both the strict and the shell-safe validator.
+	id := GenerateTraceID()
+	if !IsShellSafeTraceID(id) {
+		t.Errorf("generated trace ID %q should be shell-safe", id)
+	}
+
+	// A trace id adopted from an inbound W3C traceparent is dashed hex but
+	// generally not UUID v4: shell-safe must accept it, strict must reject it.
+	adopted := "4f3a9c1b-2d8e-0a7c-1f0b-1e2d3c4a5b6d" // version 0, variant 0
+	if !IsShellSafeTraceID(adopted) {
+		t.Error("adopted non-v4 trace ID should be shell-safe")
+	}
+	if IsValidTraceID(adopted) {
+		t.Error("adopted non-v4 trace ID should NOT pass strict v4 validation")
+	}
+
+	for _, bad := range []string{
+		"zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz", // non-hex
+		"4F3A9C1B-2D8E-4A7C-9F0B-1E2D3C4A5B6D", // uppercase
+		"4f3a9c1b-2d8e",                        // wrong length
+		"4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d",     // undashed
+		"",                                     // empty
+		"4f3a9c1b-2d8e-4a7c-9f0b-1e2d3c4a5b6d; rm -rf /", // injection attempt
+	} {
+		if IsShellSafeTraceID(bad) {
+			t.Errorf("IsShellSafeTraceID(%q) must be false", bad)
+		}
+	}
+}
+
 func TestAppendFindingHashChain(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "findings.jsonl")

@@ -266,9 +266,9 @@ func mergeEnrollmentPR(t *testing.T, env *e2eEnv) {
 		if enrollmentPR != nil {
 			break
 		}
-		t.Logf("Attempt %d: enrollment PR not yet visible", attempt+1)
+		t.Logf("Attempt %d: enrollment PR not yet visible for repository '%s/%s'", attempt+1, env.org, testRepo)
 	}
-	require.NotNil(t, enrollmentPR, "enrollment PR should exist for %s", testRepo)
+	require.NotNil(t, enrollmentPR, "enrollment PR should exist for %s/%s", env.org, testRepo)
 
 	t.Logf("Merging enrollment PR #%d: %s", enrollmentPR.Number, enrollmentPR.URL)
 

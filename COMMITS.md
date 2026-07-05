@@ -50,6 +50,17 @@ Apply the same discipline to `fix` — bumping a dependency version is `chore`, 
 
 The parenthesized scope is optional but encouraged. Use it to identify the subsystem: `feat(appsetup)`, `fix(mint)`, `docs(adr)`, `chore(ci)`. When fixing a specific issue, prefer the issue number as scope: `fix(#123): ...`.
 
+### Forbidden type + scope combinations
+
+Some type/scope pairs are **enforced as errors** by gitlint (rule `UC1`). These combinations mislead users by putting infrastructure changes in user-facing release-note sections.
+
+| Forbidden | Why | Use instead |
+|---|---|---|
+| `fix(ci)` | CI changes are not user-visible bug fixes | `ci(<subsystem>)` |
+| `feat(ci)` | CI changes are not user-visible features | `ci(<subsystem>)` |
+| `fix(e2e)` | E2E test changes are not user-visible bug fixes | `ci(e2e)` |
+| `feat(e2e)` | E2E test changes are not user-visible features | `ci(e2e)` |
+
 ## Breaking changes
 
 Breaking changes **must** be marked in both commit messages and PR titles. GoReleaser builds release notes from merged PR titles (`use: github` in `.goreleaser.yml`), so an unmarked PR title means the breaking change is invisible to users reading the release notes. This has caused real incidents — users upgraded with no warning that their agents would stop working.
