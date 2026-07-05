@@ -74,14 +74,25 @@ func rolesFromAppIDs(roleAppIDs map[string]string) []string {
 // parseAllowedOrgs splits ALLOWED_ORGS, excluding the deploy placeholder.
 func parseAllowedOrgs(allowedOrgs string) []string {
 	var orgs []string
-	for _, o := range strings.Split(allowedOrgs, ",") {
-		o = strings.TrimSpace(o)
-		if o != "" && o != gcf.PlaceholderOrg {
+	for _, o := range mintcore.ParseAllowedOrgs(allowedOrgs) {
+		if o != gcf.PlaceholderOrg {
 			orgs = append(orgs, o)
 		}
 	}
 	sort.Strings(orgs)
 	return orgs
+}
+
+func isPublicMintAllowedOrgs(allowedOrgs string) bool {
+	return mintcore.IsPublicMint(parseAllowedOrgs(allowedOrgs))
+}
+
+// mintValidationMessage returns the success message after validating an existing mint.
+func mintValidationMessage(trafficEnv map[string]string, envErr error) string {
+	if envErr == nil && isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"]) {
+		return "Mint validated (public mode — org registration not required)"
+	}
+	return "Mint validated and org registered"
 }
 
 // pemSecretRoles maps enrolled roles to Secret Manager PEM keys, deduplicating
@@ -337,17 +348,25 @@ func newMintDeployCmd() *cobra.Command {
 	var skipDeploy bool
 	var dryRun bool
 	var pemDir string
+	var public bool
 
 	cmd := &cobra.Command{
 		Use:   "deploy",
 		Short: "Deploy or update the token mint Cloud Function",
 		Long: `Deploys the fullsend-mint Cloud Function and supporting GCP infrastructure
 (service account, WIF pool/provider). Does NOT enroll any org — use
-'fullsend mint enroll' after deployment.
+'fullsend mint enroll' after deployment (tight mode only).
+
+Use --public to deploy a public mint (ALLOWED_ORGS=* with permissive WIF).
+Public mints accept any org via upstream reusable workflows; org enrollment
+is not required.
 
 Most runs need only --project and --region. The optional --pem-dir flag is
 for first-time bootstrap only: it seeds the default app set's PEM secrets so
 that 'mint enroll' can work without running 'admin install' first.
+
+Redeploying an existing mint must use the same mode as the deployment:
+--public for public mints, omit --public for tight mints.
 
 Required GCP APIs (gcloud services enable):
   - iam.googleapis.com
@@ -398,6 +417,9 @@ When using --pem-dir, additionally requires:
 				if skipDeploy {
 					printer.StepInfo("Would skip code deployment (--skip-deploy)")
 				}
+				if public {
+					printer.StepInfo("Would deploy public mint (ALLOWED_ORGS=*, permissive WIF)")
+				}
 				if pemDir != "" {
 					if _, err := validatePEMDir(pemDir); err != nil {
 						return err
@@ -423,6 +445,7 @@ When using --pem-dir, additionally requires:
 				Region:            region,
 				FunctionSourceDir: sourceDir,
 				DeployMode:        deployMode,
+				PublicMint:        public,
 			}
 
 			if pemDir != "" {
@@ -434,11 +457,12 @@ When using --pem-dir, additionally requires:
 				}
 				printer.StepDone(fmt.Sprintf("Loaded %d role PEMs for app set %q", len(agentPEMs), appsetup.DefaultAppSet))
 
-				// Role app IDs are shared across orgs; enrolling orgs only updates ALLOWED_ORGS.
-				cfg.GitHubOrgs = []string{gcf.PlaceholderOrg}
 				cfg.AgentPEMs = agentPEMs
 				cfg.AgentAppIDs = agentAppIDs
-			} else {
+			}
+
+			if !public {
+				// Role app IDs are shared across orgs; enrolling orgs only updates ALLOWED_ORGS.
 				cfg.GitHubOrgs = []string{gcf.PlaceholderOrg}
 			}
 
@@ -463,7 +487,12 @@ When using --pem-dir, additionally requires:
 			if pemDir != "" {
 				summaryLines = append(summaryLines, fmt.Sprintf("App set: %s (PEMs bootstrapped)", appsetup.DefaultAppSet))
 			}
-			summaryLines = append(summaryLines, "Next: fullsend mint enroll <org> --project="+project)
+			if public {
+				summaryLines = append(summaryLines, "Mode: public (ALLOWED_ORGS=*)")
+				summaryLines = append(summaryLines, "Orgs may call this mint via upstream reusable workflows after installing shared Apps")
+			} else {
+				summaryLines = append(summaryLines, "Next: fullsend mint enroll <org> --project="+project)
+			}
 			printer.Summary("Deployment complete", summaryLines)
 
 			return nil
@@ -476,6 +505,7 @@ When using --pem-dir, additionally requires:
 	cmd.Flags().BoolVar(&skipDeploy, "skip-deploy", false, "skip code upload, reuse existing function")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 	cmd.Flags().StringVar(&pemDir, "pem-dir", "", "optional: directory containing {role}.pem files to bootstrap the default app set")
+	cmd.Flags().BoolVar(&public, "public", false, "deploy public mint (ALLOWED_ORGS=*, permissive WIF); required to redeploy an existing public mint")
 
 	return cmd
 }
@@ -590,21 +620,29 @@ func verifyEnrollment(ctx context.Context, printer *ui.Printer, provisioner enro
 
 	orgPresent := false
 	allowedOrgs := verifyEnvVars["ALLOWED_ORGS"]
-	for _, o := range strings.Split(allowedOrgs, ",") {
-		if strings.EqualFold(strings.TrimSpace(o), org) {
-			orgPresent = true
-			break
+	if isPublicMintAllowedOrgs(allowedOrgs) {
+		orgPresent = true
+	} else {
+		for _, o := range strings.Split(allowedOrgs, ",") {
+			if strings.EqualFold(strings.TrimSpace(o), org) {
+				orgPresent = true
+				break
+			}
 		}
 	}
 
 	if orgPresent {
-		orgCount := 0
-		for _, o := range strings.Split(allowedOrgs, ",") {
-			if strings.TrimSpace(o) != "" && strings.TrimSpace(o) != gcf.PlaceholderOrg {
-				orgCount++
+		if isPublicMintAllowedOrgs(allowedOrgs) {
+			printer.StepDone("Public mint mode (ALLOWED_ORGS=*) — all orgs allowed")
+		} else {
+			orgCount := 0
+			for _, o := range strings.Split(allowedOrgs, ",") {
+				if strings.TrimSpace(o) != "" && strings.TrimSpace(o) != gcf.PlaceholderOrg {
+					orgCount++
+				}
 			}
+			printer.StepDone(fmt.Sprintf("ALLOWED_ORGS: %d orgs (%s present)", orgCount, org))
 		}
-		printer.StepDone(fmt.Sprintf("ALLOWED_ORGS: %d orgs (%s present)", orgCount, org))
 	} else {
 		printer.StepFail("Post-write verification FAILED")
 		printer.StepInfo(fmt.Sprintf("ALLOWED_ORGS: %s MISSING from traffic-serving revision", org))
@@ -642,6 +680,22 @@ func runMintEnrollOrg(ctx context.Context, printer *ui.Printer, org, project, re
 
 	if len(mintcore.RoleOnlyAppIDs(discovery.RoleAppIDs)) == 0 {
 		return fmt.Errorf("mint has no role app IDs configured — bootstrap with 'mint deploy --pem-dir' or 'admin install' first")
+	}
+
+	trafficEnv, err := provisioner.GetServiceTrafficEnvVars(ctx)
+	if err != nil {
+		return fmt.Errorf("reading mint env vars: %w", err)
+	}
+	if isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"]) {
+		printer.Blank()
+		printer.StepInfo("Mint is in public mode (ALLOWED_ORGS=*) — org registration is not required")
+		printer.Blank()
+		printer.Summary("Enrollment complete", []string{
+			fmt.Sprintf("Organization: %s", org),
+			fmt.Sprintf("Mint URL: %s", discovery.URL),
+			"Mode: public (all orgs allowed)",
+		})
+		return nil
 	}
 
 	if dryRun {
@@ -721,6 +775,23 @@ func runMintEnrollRepo(ctx context.Context, printer *ui.Printer, repoFullName, p
 
 	if len(mintcore.RoleOnlyAppIDs(discovery.RoleAppIDs)) == 0 {
 		return fmt.Errorf("mint has no role app IDs configured — bootstrap with 'mint deploy --pem-dir' or 'admin install' first")
+	}
+
+	trafficEnv, err := provisioner.GetServiceTrafficEnvVars(ctx)
+	if err != nil {
+		return fmt.Errorf("reading mint env vars: %w", err)
+	}
+	if isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"]) {
+		printer.Blank()
+		printer.StepInfo("Mint is in public mode (ALLOWED_ORGS=*) — per-repo WIF registration is not supported")
+		printer.StepInfo("Per-repo installs use the default WIF provider and upstream reusable workflows")
+		printer.Blank()
+		printer.Summary("Enrollment complete", []string{
+			fmt.Sprintf("Repository: %s", repoFullName),
+			fmt.Sprintf("Mint URL: %s", discovery.URL),
+			"Mode: public (all orgs allowed)",
+		})
+		return nil
 	}
 
 	if dryRun {
@@ -892,6 +963,17 @@ func runMintUnenrollOrg(ctx context.Context, printer *ui.Printer, org, project, 
 	}
 	printer.StepDone("Mint verified")
 
+	trafficEnv, err := provisioner.GetServiceTrafficEnvVars(ctx)
+	if err != nil {
+		return fmt.Errorf("reading mint env vars: %w", err)
+	}
+	if isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"]) {
+		printer.Blank()
+		printer.StepInfo("Mint is in public mode (ALLOWED_ORGS=*) — individual org unenroll is not supported")
+		printer.StepInfo("To restrict access, replace ALLOWED_ORGS=* with an explicit org list")
+		return nil
+	}
+
 	if dryRun {
 		printer.Blank()
 		printer.StepInfo("Dry run — no changes will be made")
@@ -974,6 +1056,17 @@ func runMintUnenrollRepo(ctx context.Context, printer *ui.Printer, repoFullName,
 		return fmt.Errorf("discovering mint: %w", err)
 	}
 	printer.StepDone("Mint verified")
+
+	trafficEnv, err := provisioner.GetServiceTrafficEnvVars(ctx)
+	if err != nil {
+		return fmt.Errorf("reading mint env vars: %w", err)
+	}
+	if isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"]) {
+		printer.Blank()
+		printer.StepInfo("Mint is in public mode (ALLOWED_ORGS=*) — per-repo unenroll is not supported")
+		printer.StepInfo("Per-repo installs use the default WIF provider and upstream reusable workflows")
+		return nil
+	}
 
 	if dryRun {
 		providerID := mintcore.BuildRepoProviderID(owner, repo)
@@ -1214,7 +1307,14 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 	}
 	roleOnlyIDs := mintcore.RoleOnlyAppIDs(roleAppIDs)
 
-	if org != "" {
+	publicMint := trafficEnv != nil && isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"])
+	if publicMint {
+		printer.Blank()
+		printer.Header("Mint Mode")
+		printer.StepInfo("  Public (ALLOWED_ORGS=*)")
+	}
+
+	if org != "" && !publicMint {
 		found := false
 		for _, o := range enrolledOrgs {
 			if o == org {
@@ -1230,7 +1330,9 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 
 	printer.Blank()
 	printer.Header("Enrolled Organizations")
-	if len(enrolledOrgs) == 0 {
+	if publicMint {
+		printer.StepInfo("  * (public mode — all orgs)")
+	} else if len(enrolledOrgs) == 0 {
 		printer.StepInfo("  (none)")
 	} else {
 		for _, o := range enrolledOrgs {

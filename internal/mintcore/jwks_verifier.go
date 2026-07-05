@@ -177,7 +177,7 @@ func (v *JWKSVerifier) Verify(ctx context.Context, rawToken string) (*Claims, er
 	if err := ValidateOrgAllowed(claims.RepositoryOwner, v.allowedOrgs); err != nil {
 		return nil, err
 	}
-	if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, v.perRepoWIFRepos, v.allowedWorkflowFiles); err != nil {
+	if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, v.allowedOrgs, v.perRepoWIFRepos, v.allowedWorkflowFiles); err != nil {
 		return nil, err
 	}
 

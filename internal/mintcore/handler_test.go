@@ -1803,6 +1803,122 @@ func TestHandler_UpstreamWorkflowRef(t *testing.T) {
 	}
 }
 
+func TestHandler_PublicMintMode(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("ALLOWED_ORGS", "*")
+
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := newTestOIDCEnv(t, &fakePEMAccessor{
+		pems: map[string][]byte{"coder": pemData},
+	})
+
+	env.handler.oidcVerifier = NewJWKSVerifier(JWKSVerifierConfig{
+		IssuerURL:            env.issuerURL,
+		Audience:             os.Getenv("OIDC_AUDIENCE"),
+		AllowedOrgs:          testAllowedOrgs(),
+		AllowedWorkflowFiles: []string{"dispatch.yml"},
+	})
+
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/other-org/some-repo/installation":
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 66666, Account: struct {
+					Login string `json:"login"`
+				}{Login: "other-org"},
+			})
+		case strings.HasPrefix(r.URL.Path, "/app/installations/66666/access_tokens"):
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{
+				Token:     "ghs_public_mint_token",
+				ExpiresAt: "2026-06-02T12:00:00Z",
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+	env.handler.githubBaseURL = github.URL
+
+	token := env.signToken(t, map[string]interface{}{
+		"repository":       "other-org/some-repo",
+		"repository_owner": "other-org",
+		"job_workflow_ref": "fullsend-ai/fullsend/.github/workflows/reusable-coder.yml@refs/tags/v1.0.0",
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token",
+		strings.NewReader(`{"role":"coder","repos":["some-repo"]}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	env.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for public mint upstream workflow, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_PublicMintRejectsLegacyFullsendRef(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("ALLOWED_ORGS", "*")
+
+	env := newTestOIDCEnv(t, &fakePEMAccessor{})
+
+	env.handler.oidcVerifier = NewJWKSVerifier(JWKSVerifierConfig{
+		IssuerURL:            env.issuerURL,
+		Audience:             os.Getenv("OIDC_AUDIENCE"),
+		AllowedOrgs:          testAllowedOrgs(),
+		AllowedWorkflowFiles: []string{"*"},
+	})
+
+	token := env.signToken(t, map[string]interface{}{
+		"repository":       "other-org/.fullsend",
+		"repository_owner": "other-org",
+		"job_workflow_ref": "other-org/.fullsend/.github/workflows/dispatch.yml@refs/heads/main",
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token",
+		strings.NewReader(`{"role":"coder","repos":["some-repo"]}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	env.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for legacy .fullsend ref in public mode, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_PublicMintRejectsPerRepoSelfWorkflow(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("ALLOWED_ORGS", "*")
+
+	env := newTestOIDCEnv(t, &fakePEMAccessor{})
+
+	env.handler.oidcVerifier = NewJWKSVerifier(JWKSVerifierConfig{
+		IssuerURL:            env.issuerURL,
+		Audience:             os.Getenv("OIDC_AUDIENCE"),
+		AllowedOrgs:          testAllowedOrgs(),
+		AllowedWorkflowFiles: []string{"*"},
+		PerRepoWIFRepos:      map[string]bool{"other-org/some-repo": true},
+	})
+
+	token := env.signToken(t, map[string]interface{}{
+		"repository":       "other-org/some-repo",
+		"repository_owner": "other-org",
+		"job_workflow_ref": "other-org/some-repo/.github/workflows/dispatch.yml@refs/heads/main",
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token",
+		strings.NewReader(`{"role":"coder","repos":["some-repo"]}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	env.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for per-repo self-workflow in public mode, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandler_PerRepoCrossRepoRef(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 	t.Setenv("ALLOWED_ORGS", "test-org")

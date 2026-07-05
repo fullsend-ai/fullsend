@@ -30,6 +30,19 @@ fullsend mint deploy \
 
 The CLI automatically detects when the deployed function source is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure and org registration.
 
+Use `--public` to deploy a **public mint** (`ALLOWED_ORGS=*` with permissive WIF). Public mints accept any org that calls upstream reusable workflows in `fullsend-ai/fullsend`; org enrollment is not required. Unlike standalone JWKS mints, GCF-hosted public mints still need permissive WIF for the STS exchange path.
+
+Redeploying an existing mint must match its mode: pass `--public` for public mints, omit it for tight mints. Mode conversion (tight ↔ public) is rejected at deploy time.
+
+```bash
+# Public mint (first-time bootstrap still needs --pem-dir):
+fullsend mint deploy \
+  --project "<GCP_PROJECT>" \
+  --region "us-central1" \
+  --pem-dir "/path/to/pems" \
+  --public
+```
+
 ### Flags
 
 | Flag | Default | Description |
@@ -37,6 +50,7 @@ The CLI automatically detects when the deployed function source is up-to-date (s
 | `--project` | | GCP project ID |
 | `--region` | `us-central1` | Cloud region for the function |
 | `--pem-dir` | | Directory containing role PEM files (first-time bootstrap) |
+| `--public` | `false` | Deploy public mint (`ALLOWED_ORGS=*`, permissive WIF) |
 
 ### Required IAM roles
 

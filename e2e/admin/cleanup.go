@@ -71,6 +71,9 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, token, org 
 		t.Logf("[cleanup] Warning: could not check README in %s: %v", testRepo, getErr)
 	}
 
+	// Clear per-repo install guard so enroll-all includes test-repo.
+	deleteRepoVariable(ctx, token, org, testRepo, forge.PerRepoGuardVar, t)
+
 	// 4. Delete stale enrollment and unenrollment branches from test-repo.
 	deleteBranch(ctx, token, org, testRepo, "fullsend/onboard", t)
 	deleteBranch(ctx, token, org, testRepo, "fullsend/offboard", t)
@@ -147,6 +150,36 @@ func listOrgRepoNames(ctx context.Context, token, org string, t *testing.T) []st
 		page++
 	}
 	return names
+}
+
+// deleteRepoVariable deletes a repository Actions variable via the GitHub REST API.
+// Idempotent: 404 is ignored.
+func deleteRepoVariable(ctx context.Context, token, org, repo, name string, t *testing.T) {
+	t.Helper()
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/variables/%s", org, repo, name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		t.Logf("[cleanup] Warning: could not create variable delete request: %v", err)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Logf("[cleanup] Warning: could not delete repo variable %s: %v", name, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusNoContent:
+		t.Logf("[cleanup] Deleted stale repo variable %s on %s", name, repo)
+	case http.StatusNotFound:
+		// Variable doesn't exist.
+	default:
+		t.Logf("[cleanup] Warning: unexpected status deleting repo variable %s: %d", name, resp.StatusCode)
+	}
 }
 
 // deleteBranch deletes a branch from a repo using the GitHub API directly
