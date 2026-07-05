@@ -188,6 +188,53 @@ func TestHandler_HealthEndpoint(t *testing.T) {
 	}
 }
 
+func TestHandler_HealthEndpoint_IncludesVersion(t *testing.T) {
+	Version = "1.2.3"
+	Commit = "abc123def456"
+	t.Cleanup(func() { Version = ""; Commit = "" })
+	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /health: expected 200, got %d", rec.Code)
+	}
+	var resp map[string]string
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode health response: %v", err)
+	}
+	if resp["status"] != "ok" {
+		t.Fatalf("expected status ok, got %q", resp["status"])
+	}
+	if resp["version"] != "1.2.3" {
+		t.Fatalf("expected version 1.2.3, got %q", resp["version"])
+	}
+	if resp["commit"] != "abc123def456" {
+		t.Fatalf("expected commit abc123def456, got %q", resp["commit"])
+	}
+}
+
+func TestHandler_HealthEndpoint_OmitsEmptyVersion(t *testing.T) {
+	Version = ""
+	Commit = ""
+	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /health: expected 200, got %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "version") {
+		t.Fatalf("health response should omit version when empty: %s", body)
+	}
+	if strings.Contains(body, "commit") {
+		t.Fatalf("health response should omit commit when empty: %s", body)
+	}
+}
+
 func TestHandler_StatusEndpoint(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"triage":"100","coder":"200"}`)
 	t.Setenv("ALLOWED_ORGS", "test-org")
@@ -236,6 +283,35 @@ func TestHandler_StatusEndpoint(t *testing.T) {
 	// Verify response does not list all orgs.
 	if strings.Contains(body, "orgs") {
 		t.Fatalf("status response should not contain orgs array: %s", body)
+	}
+}
+
+func TestHandler_StatusEndpoint_IncludesVersion(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"triage":"100","coder":"200"}`)
+	t.Setenv("ALLOWED_ORGS", "test-org")
+	Version = "0.27.0"
+	Commit = "1e7877ae"
+	t.Cleanup(func() { Version = ""; Commit = "" })
+
+	env := newTestOIDCEnv(t, &fakePEMAccessor{})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer "+env.signToken(t, nil))
+	env.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var resp statusResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode status response: %v", err)
+	}
+	if resp.Version != "0.27.0" {
+		t.Fatalf("expected version 0.27.0, got %q", resp.Version)
+	}
+	if resp.Commit != "1e7877ae" {
+		t.Fatalf("expected commit 1e7877ae, got %q", resp.Commit)
 	}
 }
 

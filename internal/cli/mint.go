@@ -445,6 +445,8 @@ When using --pem-dir, additionally requires:
 				Region:            region,
 				FunctionSourceDir: sourceDir,
 				DeployMode:        deployMode,
+				Version:           version,
+				Commit:            commitSHA,
 				PublicMint:        public,
 			}
 
@@ -1214,6 +1216,18 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 	printer.KeyValue("Project", project)
 	printer.KeyValue("Region", region)
 
+	// Query /health for version metadata.
+	if mintVersion, mintCommit, healthErr := queryMintHealth(ctx, discovery.URL); healthErr != nil {
+		printer.StepWarn(fmt.Sprintf("Could not query mint version: %v", healthErr))
+	} else {
+		if mintVersion != "" {
+			printer.KeyValue("Version", mintVersion)
+		}
+		if mintCommit != "" {
+			printer.KeyValue("Commit", mintCommit)
+		}
+	}
+
 	// Step 2a: Cloud Run revision info.
 	printer.StepStart("Querying Cloud Run revision state")
 	revInfo, revErr := provisioner.GetServiceRevisionInfo(ctx)
@@ -1408,4 +1422,34 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 	printer.Summary("Status", summaryItems)
 
 	return nil
+}
+
+// queryMintHealth fetches the mint /health endpoint and extracts version
+// metadata. Returns empty strings when the fields are absent. The health
+// endpoint is unauthenticated so this works without OIDC credentials.
+func queryMintHealth(ctx context.Context, mintURL string) (version, commit string, err error) {
+	healthURL := strings.TrimRight(mintURL, "/") + "/health"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil)
+	if err != nil {
+		return "", "", fmt.Errorf("creating health request: %w", err)
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("querying health: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusServiceUnavailable {
+		return "", "", fmt.Errorf("health returned HTTP %d", resp.StatusCode)
+	}
+
+	var body struct {
+		Version string `json:"version"`
+		Commit  string `json:"commit"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", "", fmt.Errorf("decoding health response: %w", err)
+	}
+	return body.Version, body.Commit, nil
 }

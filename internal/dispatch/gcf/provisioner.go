@@ -42,7 +42,7 @@ const (
 // ErrFunctionNotFound is returned when the mint function does not exist.
 var ErrFunctionNotFound = errors.New("mint function not found")
 
-//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed mintsrc/mintcore/go.mod.embed mintsrc/mintcore/go.sum.embed mintsrc/mintcore/gcp_pem.go.embed mintsrc/mintcore/github.go.embed mintsrc/mintcore/handler.go.embed mintsrc/mintcore/foreign.go.embed mintsrc/mintcore/interfaces.go.embed mintsrc/mintcore/jwks_verifier.go.embed mintsrc/mintcore/claims.go.embed mintsrc/mintcore/patterns.go.embed mintsrc/mintcore/sts_verifier.go.embed mintsrc/mintcore/wif.go.embed
+//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed mintsrc/mintcore/go.mod.embed mintsrc/mintcore/go.sum.embed mintsrc/mintcore/gcp_pem.go.embed mintsrc/mintcore/github.go.embed mintsrc/mintcore/handler.go.embed mintsrc/mintcore/foreign.go.embed mintsrc/mintcore/interfaces.go.embed mintsrc/mintcore/jwks_verifier.go.embed mintsrc/mintcore/claims.go.embed mintsrc/mintcore/patterns.go.embed mintsrc/mintcore/sts_verifier.go.embed mintsrc/mintcore/version.go.embed mintsrc/mintcore/wif.go.embed
 var embeddedMintSource embed.FS
 
 // embeddedMintFiles maps embedded filenames (.embed suffix avoids
@@ -63,6 +63,7 @@ var embeddedMintFiles = map[string]string{
 	"mintcore/claims.go.embed":        "mintcore/claims.go",
 	"mintcore/patterns.go.embed":      "mintcore/patterns.go",
 	"mintcore/sts_verifier.go.embed":  "mintcore/sts_verifier.go",
+	"mintcore/version.go.embed":       "mintcore/version.go",
 	"mintcore/wif.go.embed":           "mintcore/wif.go",
 }
 
@@ -123,6 +124,12 @@ type Config struct {
 	// DeployMode controls function deployment: auto (default) or skip.
 	DeployMode DeployMode
 
+	// Version is the fullsend semver (e.g. "0.27.0") to stamp on the
+	// deployed mint. Embedded directly into the source code at bundle time.
+	Version string
+	// Commit is the git commit SHA to stamp on the deployed mint.
+	// Embedded directly into the source code at bundle time.
+	Commit string
 	// PublicMint bootstraps ALLOWED_ORGS=* and a permissive WIF provider CEL.
 	PublicMint bool
 }
@@ -757,7 +764,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 			case p.cfg.FunctionSourceDir == "":
 				needsDeploy = false
 			default: // DeployAuto
-				earlySourceZip, err = bundleFunctionSource(p.cfg.FunctionSourceDir)
+				earlySourceZip, err = bundleFunctionSource(p.cfg.FunctionSourceDir, p.cfg.Version, p.cfg.Commit)
 				if err != nil {
 					return nil, fmt.Errorf("validating function source: %w", err)
 				}
@@ -776,7 +783,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 
 	// Code deployment path — bundle source.
 	if earlySourceZip == nil {
-		earlySourceZip, err = bundleFunctionSource(p.cfg.FunctionSourceDir)
+		earlySourceZip, err = bundleFunctionSource(p.cfg.FunctionSourceDir, p.cfg.Version, p.cfg.Commit)
 		if err != nil {
 			return nil, fmt.Errorf("validating function source: %w", err)
 		}
@@ -1675,15 +1682,18 @@ func sortedByteMapKeys(m map[string][]byte) []string {
 // bundleFunctionSource creates a zip archive from the function source directory.
 // When the directory is empty or does not exist on disk, it falls back to the
 // source embedded in the binary at build time.
-func bundleFunctionSource(dir string) ([]byte, error) {
+// Version and commit are stamped directly into the source by generating a
+// mintcore/version.go file in the zip, so the deployed code carries its own
+// version identity without relying on environment variables.
+func bundleFunctionSource(dir, version, commit string) ([]byte, error) {
 	if dir == "" {
-		return bundleEmbeddedMintSource()
+		return bundleEmbeddedMintSource(version, commit)
 	}
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return bundleEmbeddedMintSource()
+			return bundleEmbeddedMintSource(version, commit)
 		}
 		return nil, fmt.Errorf("reading function source dir: %w", err)
 	}
@@ -1734,9 +1744,16 @@ func bundleFunctionSource(dir string) ([]byte, error) {
 
 	// Include the mintcore module as a subdirectory (sibling on disk,
 	// nested in the zip so the replace ./mintcore directive resolves).
+	// Skip version.go — it's generated below with stamped values.
 	mintcoreDir := filepath.Join(dir, "..", "mintcore")
-	if err := addDirToZip(w, mintcoreDir, "mintcore"); err != nil {
+	skip := map[string]bool{"version.go": true}
+	if err := addDirToZip(w, mintcoreDir, "mintcore", skip); err != nil {
 		return nil, fmt.Errorf("bundling mintcore: %w", err)
+	}
+
+	// Stamp version info directly into the source.
+	if err := writeVersionGoToZip(w, "mintcore/version.go", version, commit); err != nil {
+		return nil, fmt.Errorf("writing version.go: %w", err)
 	}
 
 	if fileCount == 0 {
@@ -1758,15 +1775,15 @@ var mintcoreAllowedExts = map[string]bool{
 	".go": true, ".mod": true, ".sum": true,
 }
 
-func addDirToZip(w *zip.Writer, srcDir, zipPrefix string) error {
+func addDirToZip(w *zip.Writer, srcDir, zipPrefix string, skip map[string]bool) error {
 	absRoot, err := filepath.Abs(srcDir)
 	if err != nil {
 		return fmt.Errorf("resolving source directory: %w", err)
 	}
-	return addDirToZipRooted(w, absRoot, srcDir, zipPrefix)
+	return addDirToZipRooted(w, absRoot, srcDir, zipPrefix, skip)
 }
 
-func addDirToZipRooted(w *zip.Writer, absRoot, srcDir, zipPrefix string) error {
+func addDirToZipRooted(w *zip.Writer, absRoot, srcDir, zipPrefix string, skip map[string]bool) error {
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {
 		return fmt.Errorf("reading directory %s: %w", srcDir, err)
@@ -1778,13 +1795,16 @@ func addDirToZipRooted(w *zip.Writer, absRoot, srcDir, zipPrefix string) error {
 		if entry.Type()&os.ModeSymlink != 0 {
 			continue
 		}
+		if skip[entry.Name()] {
+			continue
+		}
 		fullPath := filepath.Join(srcDir, entry.Name())
 		absPath, err := filepath.Abs(fullPath)
 		if err != nil || !strings.HasPrefix(absPath, absRoot+string(filepath.Separator)) {
 			continue
 		}
 		if entry.IsDir() {
-			if err := addDirToZipRooted(w, absRoot, fullPath, zipPrefix+"/"+entry.Name()); err != nil {
+			if err := addDirToZipRooted(w, absRoot, fullPath, zipPrefix+"/"+entry.Name(), skip); err != nil {
 				return err
 			}
 			continue
@@ -1810,8 +1830,9 @@ func addDirToZipRooted(w *zip.Writer, absRoot, srcDir, zipPrefix string) error {
 // bundleEmbeddedMintSource creates a zip archive from the mint source files
 // embedded in the binary. Files use a .embed suffix to prevent the Go
 // toolchain from treating the directory as a module root, and are renamed
-// to their real names in the zip.
-func bundleEmbeddedMintSource() ([]byte, error) {
+// to their real names in the zip. The version.go entry is replaced with
+// generated content that stamps the provided version and commit.
+func bundleEmbeddedMintSource(version, commit string) ([]byte, error) {
 	var buf bytes.Buffer
 	w := zip.NewWriter(&buf)
 
@@ -1823,6 +1844,10 @@ func bundleEmbeddedMintSource() ([]byte, error) {
 
 	for _, embeddedName := range keys {
 		realName := embeddedMintFiles[embeddedName]
+		// Skip version.go — it's generated below with stamped values.
+		if realName == "mintcore/version.go" {
+			continue
+		}
 		data, err := embeddedMintSource.ReadFile("mintsrc/" + embeddedName)
 		if err != nil {
 			return nil, fmt.Errorf("reading embedded file %s: %w", embeddedName, err)
@@ -1836,10 +1861,29 @@ func bundleEmbeddedMintSource() ([]byte, error) {
 		}
 	}
 
+	// Stamp version info directly into the source.
+	if err := writeVersionGoToZip(w, "mintcore/version.go", version, commit); err != nil {
+		return nil, fmt.Errorf("writing version.go: %w", err)
+	}
+
 	if err := w.Close(); err != nil {
 		return nil, fmt.Errorf("closing zip: %w", err)
 	}
 	return buf.Bytes(), nil
+}
+
+// writeVersionGoToZip writes a generated version.go into the zip archive
+// with the provided version and commit values. This stamps the version
+// identity directly into the deployed source code so it cannot drift from
+// the running binary.
+func writeVersionGoToZip(w *zip.Writer, path, version, commit string) error {
+	src := fmt.Sprintf("package mintcore\n\nvar (\n\tVersion = %q\n\tCommit  = %q\n)\n", version, commit)
+	f, err := w.Create(path)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write([]byte(src))
+	return err
 }
 
 func sha256Hex(data []byte) string {
