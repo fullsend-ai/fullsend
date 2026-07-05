@@ -185,9 +185,20 @@ fullsend github setup "$ORG_NAME" \
 
 > **Note:** IAM policy bindings may take several minutes to propagate. If agent workflows fail with a permission error immediately after setup, wait a few minutes and retry.
 
-## Deprecated: all-in-one admin install
+## Deprecated: monolithic `admin install` (not the guided entry point)
 
-> **Deprecated.** The `fullsend admin install` all-in-one command that provisions GCP mint, inference, and GitHub in a single invocation is deprecated. Use the [standalone commands](../getting-started/operations.md#standalone-commands) instead: `fullsend inference provision` + `fullsend github setup` for per-repo, or `fullsend mint deploy` + `fullsend mint enroll` + `fullsend github setup` for per-org. See [Getting Started](../getting-started/configuring-github.md) for the recommended per-repo flow.
+> **Deprecated (monolithic mode).** Running `fullsend admin install` as a single
+> opaque invocation that provisions GCP mint, inference, and GitHub together is
+> deprecated. Use the [standalone commands](../getting-started/operations.md#standalone-commands)
+> today: `fullsend inference provision` + `fullsend github setup` for per-repo, or
+> `fullsend mint deploy` + `fullsend mint enroll` + `fullsend github setup` for
+> per-org. See [Getting Started](../getting-started/configuring-github.md) for the
+> recommended per-repo flow.
+>
+> **Accepted direction ([ADR 0066](../../ADRs/0066-interactive-admin-install-guide.md)):**
+> `admin install` will become an interactive guided orchestrator over those same
+> standalone phases (decision tree + `--plan`), not a monolithic provisioner.
+> That wizard is follow-on implementation work — it is not available in the CLI yet.
 
 ## See Also
 
