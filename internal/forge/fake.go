@@ -111,6 +111,7 @@ type FakeClient struct {
 
 	// Pre-populated data
 	Repos                     []Repository
+	OrgRepos                  map[string][]Repository // per-org repos; when set, ListOrgRepos uses this instead of Repos
 	FileContents              map[string][]byte       // key: "owner/repo/path"
 	WorkflowRuns              map[string]*WorkflowRun // key: "owner/repo/workflow"
 	Workflows                 map[string]*Workflow    // key: "owner/repo/workflow"
@@ -229,7 +230,7 @@ func (f *FakeClient) err(method string) error {
 	return f.Errors[method]
 }
 
-func (f *FakeClient) ListOrgRepos(_ context.Context, _ string) ([]Repository, error) {
+func (f *FakeClient) ListOrgRepos(_ context.Context, org string) ([]Repository, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -237,8 +238,13 @@ func (f *FakeClient) ListOrgRepos(_ context.Context, _ string) ([]Repository, er
 		return nil, e
 	}
 
+	source := f.Repos
+	if f.OrgRepos != nil {
+		source = f.OrgRepos[org]
+	}
+
 	var result []Repository
-	for _, r := range f.Repos {
+	for _, r := range source {
 		if r.Archived || r.Fork || r.Private {
 			continue
 		}
