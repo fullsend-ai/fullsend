@@ -2080,7 +2080,7 @@ func TestProvisioner_Provision_PublicMintFirstDeploy(t *testing.T) {
 
 func TestProvisioner_Provision_PublicMintRedeploy(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	sourceZip, err := bundleFunctionSource(srcDir)
+	sourceZip, err := bundleFunctionSource(srcDir, "", "")
 	require.NoError(t, err)
 	srcHash := sha256Hex(sourceZip)
 
@@ -2175,7 +2175,7 @@ func TestProvisioner_Provision_TightIntoPublicMintRejected(t *testing.T) {
 
 func TestProvisioner_Provision_TightPlaceholderRedeployAllowed(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	sourceZip, err := bundleFunctionSource(srcDir)
+	sourceZip, err := bundleFunctionSource(srcDir, "", "")
 	require.NoError(t, err)
 	srcHash := sha256Hex(sourceZip)
 
