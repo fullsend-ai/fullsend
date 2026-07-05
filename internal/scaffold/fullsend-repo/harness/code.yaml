@@ -39,13 +39,13 @@ skills:
 plugins:
   - plugins/gopls-lsp
 
-# Environment variables available to pre/post scripts on the runner.
-# These are expanded from the runner environment and NEVER enter the sandbox.
-runner_env:
-  CODE_ALLOWED_TARGET_BRANCHES: "${CODE_ALLOWED_TARGET_BRANCHES}"
-  TRIGGER_SOURCE: "${TRIGGER_SOURCE}"
-  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/code-result.schema.json
-  FULLSEND_OUTPUT_FILE: code-result.json
+# Runner env for pre/post scripts (ADR 0055 env.runner).
+env:
+  runner:
+    CODE_ALLOWED_TARGET_BRANCHES: "${CODE_ALLOWED_TARGET_BRANCHES}"
+    TRIGGER_SOURCE: "${TRIGGER_SOURCE}"
+    FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/code-result.schema.json
+    FULLSEND_OUTPUT_FILE: code-result.json
 
 timeout_minutes: 35
 
@@ -53,9 +53,10 @@ forge:
   github:
     pre_script: scripts/pre-code.sh
     post_script: scripts/post-code.sh
-    runner_env:
-      PUSH_TOKEN: "${PUSH_TOKEN}"
-      PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
-      REPO_FULL_NAME: "${REPO_FULL_NAME}"
-      ISSUE_NUMBER: "${ISSUE_NUMBER}"
-      REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
+    env:
+      runner:
+        PUSH_TOKEN: "${PUSH_TOKEN}"
+        PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
+        REPO_FULL_NAME: "${REPO_FULL_NAME}"
+        ISSUE_NUMBER: "${ISSUE_NUMBER}"
+        REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
