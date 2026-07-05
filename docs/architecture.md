@@ -47,6 +47,7 @@ Infrastructure platform choice and configuration are specified in the adopting o
 - Event-driven stage dispatch: eliminate `workflow_dispatch` + `gh workflow run` fan-out from `dispatch.yml` in favor of synchronous `workflow_call` so the dispatched run stays linked to the caller ([ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
 - Multi-repo management: a `fullsend repos` subcommand group with a declarative `repos.yaml` manifest for managing per-repo installations at scale — bulk install, status, sync, upgrade, and removal across repos and orgs ([ADR 0057](ADRs/0057-repos-management.md)).
 - Dispatch version-skew resolution: per-repo `reusable-dispatch.yml` inlines stage workflow jobs directly, eliminating `@v0` references to `reusable-{stage}.yml` ([ADR 0062](ADRs/0062-dispatch-version-skew.md)).
+- Interactive install entry point: `admin install` is the guided orchestrator over existing `mint` / `github` / `inference` / `repos` phases, driven by a shared decision tree for humans and agent skills — not a monolithic provisioner ([ADR 0066](ADRs/0066-interactive-admin-install-guide.md)).
 
 **Open questions:**
 
