@@ -503,6 +503,103 @@ func TestFakeClient_DeleteOrgVariable(t *testing.T) {
 	assert.Equal(t, "myorg/DISPATCH_URL", fc.DeletedOrgVariables[0])
 }
 
+func TestFakeClient_DeleteRepoVariable(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{
+		VariableValues: map[string]string{
+			"myorg/myrepo/FULLSEND_PER_REPO_INSTALL": "true",
+		},
+		VariablesExist: map[string]bool{
+			"myorg/myrepo/FULLSEND_PER_REPO_INSTALL": true,
+		},
+	}
+
+	err := fc.DeleteRepoVariable(ctx, "myorg", "myrepo", "FULLSEND_PER_REPO_INSTALL")
+	require.NoError(t, err)
+
+	// Verify deletion from both maps
+	_, existsInValues := fc.VariableValues["myorg/myrepo/FULLSEND_PER_REPO_INSTALL"]
+	assert.False(t, existsInValues)
+	_, existsInExists := fc.VariablesExist["myorg/myrepo/FULLSEND_PER_REPO_INSTALL"]
+	assert.False(t, existsInExists)
+}
+
+func TestFakeClient_ListRepoVariables(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns matching variables", func(t *testing.T) {
+		fc := &FakeClient{
+			VariableValues: map[string]string{
+				"org/repo/FOO":       "bar",
+				"org/repo/BAZ":       "qux",
+				"org/other-repo/FOO": "other",
+			},
+		}
+
+		vars, err := fc.ListRepoVariables(ctx, "org", "repo")
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"FOO": "bar", "BAZ": "qux"}, vars)
+	})
+
+	t.Run("empty when no variables", func(t *testing.T) {
+		fc := &FakeClient{}
+		vars, err := fc.ListRepoVariables(ctx, "org", "repo")
+		require.NoError(t, err)
+		assert.Empty(t, vars)
+	})
+
+	t.Run("error injection", func(t *testing.T) {
+		fc := &FakeClient{Errors: map[string]error{"ListRepoVariables": errors.New("fail")}}
+		_, err := fc.ListRepoVariables(ctx, "org", "repo")
+		assert.Error(t, err)
+	})
+}
+
+func TestFakeClient_DeleteRepoSecret(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("deletes existing secret", func(t *testing.T) {
+		fc := &FakeClient{
+			Secrets: map[string]bool{
+				"org/repo/MY_SECRET": true,
+			},
+		}
+
+		err := fc.DeleteRepoSecret(ctx, "org", "repo", "MY_SECRET")
+		require.NoError(t, err)
+		assert.False(t, fc.Secrets["org/repo/MY_SECRET"])
+		require.Len(t, fc.DeletedSecrets, 1)
+		assert.Equal(t, "MY_SECRET", fc.DeletedSecrets[0].Name)
+	})
+
+	t.Run("idempotent when nil secrets map", func(t *testing.T) {
+		fc := &FakeClient{}
+		err := fc.DeleteRepoSecret(ctx, "org", "repo", "NONEXISTENT")
+		require.NoError(t, err)
+		require.Len(t, fc.DeletedSecrets, 1)
+	})
+
+	t.Run("error injection", func(t *testing.T) {
+		fc := &FakeClient{Errors: map[string]error{"DeleteRepoSecret": errors.New("fail")}}
+		err := fc.DeleteRepoSecret(ctx, "org", "repo", "SECRET")
+		assert.Error(t, err)
+	})
+}
+
+func TestFakeClient_CreateThenListVariables(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{}
+
+	err := fc.CreateOrUpdateRepoVariable(ctx, "org", "repo", "FOO", "bar")
+	require.NoError(t, err)
+	err = fc.CreateOrUpdateRepoVariable(ctx, "org", "repo", "BAZ", "qux")
+	require.NoError(t, err)
+
+	vars, err := fc.ListRepoVariables(ctx, "org", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"FOO": "bar", "BAZ": "qux"}, vars)
+}
+
 func TestFakeClient_ErrorInjection(t *testing.T) {
 	ctx := context.Background()
 	injected := errors.New("injected error")
@@ -572,6 +669,9 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		{"DeleteOrgVariable", func(fc *FakeClient) error {
 			return fc.DeleteOrgVariable(ctx, "o", "n")
 		}},
+		{"DeleteRepoVariable", func(fc *FakeClient) error {
+			return fc.DeleteRepoVariable(ctx, "o", "r", "n")
+		}},
 		{"SetOrgVariableRepos", func(fc *FakeClient) error {
 			return fc.SetOrgVariableRepos(ctx, "o", "n", nil)
 		}},
@@ -588,6 +688,13 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		}},
 		{"GetFileContentAtRef", func(fc *FakeClient) error {
 			_, err := fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")
+			return err
+		}},
+		{"DeleteRepoSecret", func(fc *FakeClient) error {
+			return fc.DeleteRepoSecret(ctx, "o", "r", "n")
+		}},
+		{"ListRepoVariables", func(fc *FakeClient) error {
+			_, err := fc.ListRepoVariables(ctx, "o", "r")
 			return err
 		}},
 	}
@@ -661,6 +768,8 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_ = fc.DeleteIssueComment(ctx, "o", "r", 1)
 			_, _ = fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
 			_, _ = fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")
+			_ = fc.DeleteRepoSecret(ctx, "o", "r", "n")
+			_, _ = fc.ListRepoVariables(ctx, "o", "r")
 		}(i)
 	}
 
@@ -777,6 +886,7 @@ func TestIsNonFastForward(t *testing.T) {
 	assert.True(t, IsNonFastForward(ErrNonFastForward))
 	assert.True(t, IsNonFastForward(errors.Join(errors.New("wrapper"), ErrNonFastForward)))
 	assert.False(t, IsNonFastForward(errors.New("some error")))
+	assert.False(t, IsNonFastForward(nil))
 }
 
 func TestFakeClient_GetIssue(t *testing.T) {
@@ -875,4 +985,33 @@ func TestFakeClient_AddIssueLabels_Idempotent(t *testing.T) {
 	got, err := fc.GetIssue(context.Background(), "org", "repo", issue.Number)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"ready-for-triage"}, got.Labels)
+}
+
+func TestFakeClient_CommitFilesErrSeq(t *testing.T) {
+	ctx := context.Background()
+	files := []TreeFile{{Path: "f.txt", Content: []byte("x"), Mode: "100644"}}
+
+	t.Run("first call errors, second succeeds", func(t *testing.T) {
+		fc := &FakeClient{
+			CommitFilesErrSeq: []error{ErrNonFastForward},
+		}
+		_, err := fc.CommitFiles(ctx, "o", "r", "m", files)
+		require.ErrorIs(t, err, ErrNonFastForward)
+
+		changed, err := fc.CommitFiles(ctx, "o", "r", "m", files)
+		require.NoError(t, err)
+		assert.True(t, changed)
+	})
+
+	t.Run("nil entry means no error for that call", func(t *testing.T) {
+		fc := &FakeClient{
+			CommitFilesErrSeq: []error{nil, ErrNonFastForward},
+		}
+		changed, err := fc.CommitFiles(ctx, "o", "r", "m", files)
+		require.NoError(t, err)
+		assert.True(t, changed)
+
+		_, err = fc.CommitFiles(ctx, "o", "r", "m", files)
+		require.ErrorIs(t, err, ErrNonFastForward)
+	})
 }

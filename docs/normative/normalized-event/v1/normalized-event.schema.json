@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://fullsend.ai/normative/normalized-event/v1/normalized-event.schema.json",
   "title": "NormalizedEvent",
-  "description": "GitHub-oriented routing input for fullsend dispatch and harness CEL trigger evaluation (ADR 0061). v1 targets GitHub Actions; other forges are out of scope until a future schema version.",
+  "description": "Forge-neutral routing input for fullsend dispatch and harness CEL trigger evaluation (ADR 0061). v1 targets GitHub Actions webhooks and Jira poll input (ADR 0063); other forges remain future work.",
   "type": "object",
   "additionalProperties": false,
   "required": ["repo", "entity", "transition", "actor", "state", "source"],
@@ -65,6 +65,24 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "source": {
+            "properties": { "system": { "const": "jira" } },
+            "required": ["system"]
+          }
+        },
+        "required": ["source"]
+      },
+      "then": {
+        "properties": {
+          "entity": {
+            "required": ["key"]
+          }
+        }
+      }
     }
   ],
   "$defs": {
@@ -88,14 +106,21 @@
         "id": {
           "type": "integer",
           "minimum": 1,
-          "description": "Entity number within repo."
+          "description": "Stable numeric entity id in the source system (GitHub issue/PR number, Jira issue id)."
+        },
+        "key": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_]+-\\d+$",
+          "minLength": 1,
+          "maxLength": 255,
+          "description": "Human-readable work item key when the source system uses one (e.g. Jira PROJ-123). Required when source.system is jira."
         },
         "url": {
           "type": "string",
           "format": "uri",
           "minLength": 1,
           "maxLength": 2048,
-          "description": "Canonical GitHub URL for the entity."
+          "description": "Canonical URL for the entity in its source system."
         },
         "linked_change_proposal": {
           "type": "object",
@@ -334,14 +359,14 @@
       "properties": {
         "system": {
           "type": "string",
-          "enum": ["github", "manual", "schedule"],
-          "description": "Event provenance. v1 adapters emit github, manual, or schedule only."
+          "enum": ["github", "jira", "manual", "schedule"],
+          "description": "Event provenance. v1 adapters emit github (webhooks), jira (poll input), manual, or schedule."
         },
         "raw_type": {
           "type": "string",
           "minLength": 1,
           "maxLength": 128,
-          "description": "Native GitHub event type (e.g. issues, issue_comment, pull_request_target)."
+          "description": "Native event or object type (e.g. issues, issue_comment for GitHub; issue, comment for Jira)."
         },
         "raw_action": {
           "type": "string",

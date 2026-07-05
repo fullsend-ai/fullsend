@@ -22,7 +22,7 @@
     "stylelint:fix": "stylelint 'web/admin/src/**/*.{svelte,css}' 'website/.vitepress/**/*.{vue,css}' --fix"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.14.7",
+    "@cloudflare/vitest-pool-workers": "^0.18.0",
     "@cloudflare/workers-types": "^4.20250420.0",
     "@eslint/js": "^10.0.1",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",

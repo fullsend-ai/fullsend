@@ -1,0 +1,31 @@
+{
+  "repo": "acme/platform",
+  "entity": {
+    "kind": "work_item",
+    "id": 10042,
+    "key": "PROJ-123",
+    "url": "https://acme.atlassian.net/browse/PROJ-123"
+  },
+  "transition": {
+    "kind": "comment_added",
+    "comment": {
+      "command": "/fs-triage",
+      "body": "/fs-triage check acceptance criteria",
+      "instruction": "check acceptance criteria"
+    }
+  },
+  "actor": {
+    "id": "557058:abc123def456",
+    "kind": "human",
+    "role": "write",
+    "is_entity_author": false
+  },
+  "state": {
+    "labels": ["needs-info", "bug"]
+  },
+  "source": {
+    "system": "jira",
+    "raw_type": "comment",
+    "raw_action": "created"
+  }
+}

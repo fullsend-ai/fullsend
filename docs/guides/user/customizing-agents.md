@@ -95,7 +95,7 @@ security:                        # Security is enabled by default with fail_mode
 
 ## Layered Configuration Resolution
 
-Fullsend uses a three-tier inheritance model for all configuration: agent definitions, skills, policies, harness definitions, and guardrails. Each tier can extend or override the one below it.
+Fullsend uses a three-tier configuration inheritance model for all configuration: agent definitions, skills, policies, harness definitions, and guardrails. Each configuration tier can extend or override the one below it.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐

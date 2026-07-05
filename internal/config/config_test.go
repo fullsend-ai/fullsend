@@ -1711,3 +1711,31 @@ func TestOrgConfig_RoundTrip_WithAgents(t *testing.T) {
 	assert.Equal(t, original.Agents[1].Name, parsed.Agents[1].Name)
 	assert.Equal(t, original.AllowedRemoteResources, parsed.AllowedRemoteResources)
 }
+
+func TestOrgConfigFromPerRepo(t *testing.T) {
+	pr := &PerRepoConfig{
+		Version:    "1",
+		KillSwitch: true,
+		Roles:      []string{"triage", "coder"},
+		Agents: []AgentEntry{
+			{Name: "lint", Source: "harness/lint.yaml"},
+		},
+		AllowedRemoteResources: []string{"https://example.com/"},
+		CreateIssues: &CreateIssuesConfig{
+			AllowTargets: AllowTargets{Repos: []string{"org/repo"}},
+		},
+	}
+
+	org := OrgConfigFromPerRepo(pr)
+
+	assert.Equal(t, "1", org.Version)
+	assert.True(t, org.KillSwitch)
+	require.Len(t, org.Agents, 1)
+	assert.Equal(t, "lint", org.Agents[0].Name)
+	assert.Equal(t, []string{"https://example.com/"}, org.AllowedRemoteResources)
+	require.NotNil(t, org.CreateIssues)
+	assert.Equal(t, []string{"org/repo"}, org.CreateIssues.AllowTargets.Repos)
+	assert.Equal(t, []string{"triage", "coder"}, org.Defaults.Roles)
+	assert.Nil(t, org.Repos)
+	assert.Empty(t, org.Dispatch.Platform)
+}

@@ -42,8 +42,10 @@ type mintResponse struct {
 
 // statusResponse is returned by the /v1/status diagnostic endpoint.
 type statusResponse struct {
-	Org   string   `json:"org"`
-	Roles []string `json:"roles"`
+	Org     string   `json:"org"`
+	Roles   []string `json:"roles"`
+	Version string   `json:"version,omitempty"`
+	Commit  string   `json:"commit,omitempty"`
 }
 
 // Handler holds dependencies for the token mint HTTP server.
@@ -307,8 +309,15 @@ func (h *Handler) handleHealth(w http.ResponseWriter) {
 		})
 		return
 	}
+	resp := map[string]string{"status": "ok"}
+	if Version != "" {
+		resp["version"] = Version
+	}
+	if Commit != "" {
+		resp["commit"] = Commit
+	}
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintln(w, `{"status":"ok"}`)
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (h *Handler) handleStatus(w http.ResponseWriter, claims *Claims) {
@@ -319,8 +328,10 @@ func (h *Handler) handleStatus(w http.ResponseWriter, claims *Claims) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(statusResponse{
-		Org:   org,
-		Roles: roles,
+		Org:     org,
+		Roles:   roles,
+		Version: Version,
+		Commit:  Commit,
 	}); err != nil {
 		log.Printf("encoding status response: %v", err)
 	}

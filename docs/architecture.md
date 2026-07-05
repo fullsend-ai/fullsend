@@ -149,7 +149,7 @@ Identity is not the same as trust. An agent's identity lets it authenticate to e
 **Decided:**
 
 - Credential delivery model: four tiers — (1) prefetch + post-process for agents with enumerable inputs (zero credential access), (2) OpenShell providers + L7 egress policies for static token auth (credentials never enter sandbox), (3) host-side REST server for operations providers cannot handle — long-running operations, sandbox capability gaps, credentials in request bodies, response transformation, and multi-step atomic operations (see [ADR 0046](ADRs/0046-host-side-api-server-design.md)), (4) host files + L7 policies for complex auth requiring in-sandbox credential files. L7 policies enforce both method + path and binary-level restrictions. Providers are preferred over REST servers when viable ([ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md), extended by [ADR 0025](ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md)).
-- Host-side API server design: Tier 3 servers follow a uniform process contract (`--port`, `--token`, `--bind-address`, `/healthz`, `/tools.json`, `SIGTERM`). Network access is controlled via composable provider profiles — atomic capability profiles composed per-harness. Per-run UUID bearer tokens are delivered through OpenShell provider placeholders. File transfer uses `openshell sandbox upload/download` ([ADR 0046](ADRs/0046-host-side-api-server-design.md)).
+- Host-side API server design: Credential delivery tier 3 servers follow a uniform process contract (`--port`, `--token`, `--bind-address`, `/healthz`, `/tools.json`, `SIGTERM`). Network access is controlled via composable provider profiles — atomic capability profiles composed per-harness. Per-run UUID bearer tokens are delivered through OpenShell provider placeholders. File transfer uses `openshell sandbox upload/download` ([ADR 0046](ADRs/0046-host-side-api-server-design.md)).
 - Per-role GitHub Apps with manifest-based creation. Each agent role gets its own app with scoped permissions. PEMs stored in Secret Manager as `fullsend-{role}-app-pem` — one secret per role, shared across orgs on a mint. `ROLE_APP_IDS` uses the same shared-per-role model (`coder` → app ID). Org isolation is enforced via `ALLOWED_ORGS`, WIF conditions, and installation verification ([ADR 0007](ADRs/0007-per-role-github-apps.md), [ADR 0033](ADRs/0033-per-repo-installation-mode.md)). Public multi-tenant mint (`ALLOWED_ORGS=*`) with upstream-only workflow provenance is defined in [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); upstream-only provenance limits which workflows can call the mint, complementing [ADR 0029](ADRs/0029-central-token-mint-secretless-fullsend.md) multi-tenant blast-radius concerns.
 - Cross-org mint authorization: workflows may request tokens for a different org via optional `target_org` when the target org installs the role App and sets `FULLSEND_FOREIGN_<role>_REPOS`. Empty `repos` yields installation-wide tokens on either path; cross-org adds FOREIGN gating, same-org relies on WIF/OIDC enrollment ([ADR 0060](ADRs/0060-cross-org-mint-authorization-via-org-variables.md)).
 - Standalone mint deployment: `cmd/mint/` provides a self-contained HTTP server that uses direct JWKS verification and filesystem PEM storage instead of GCP infrastructure. It shares the `internal/mintcore/` library with the GCF mint and adds support for custom role permissions and a fallback proxy to an upstream mint. Custom role permissions live in mintcore (not `cmd/mint/`) so that `RolePermissionsFor`, `HasRole`, and `CreateInstallationToken` return a unified view without callers needing to distinguish built-in from custom roles. The GCF mint never calls `RegisterCustomRolePermissions`, so the code is inert there. See the [standalone mint guide](guides/infrastructure/standalone-mint.md).
@@ -176,10 +176,18 @@ The existing design principle is that [the repo is the coordinator](problems/age
   evaluated by `fullsend dispatch` with pluggable input/output drivers
   operating on a `NormalizedEvent` struct
   ([ADR 0061](ADRs/0061-harness-cel-dispatch.md)).
+- Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll
+  input drivers to discover work from remote systems (Jira first), coordinates
+  via source-native write-then-verify locks, and feeds the same dispatch pipeline
+  as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
+  scope is per-repo mode only.
 
 **Open questions:**
 
-- Is GitHub's event system sufficient, or do we need additional coordination logic (e.g. to prevent two code agents from picking up the same issue)?
+- Is GitHub's event system sufficient for forge-native duplicate protection, or
+  do we need additional coordination beyond label/state conventions and agent
+  idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
+  lock refresh.)
 - How does work assignment interact with the backlog/priority agent described in [agent-architecture.md](problems/agent-architecture.md)?
 - What happens when work needs to be cancelled, retried, or reassigned?
 - Does the coordinator need state (a queue, a lock, a claim system), or can it be stateless and event-driven?
@@ -200,7 +208,7 @@ The adopting organization's **`.fullsend`** repository is the natural home for p
 
 ## Intent Source
 
-The system that provides authorized intent for agent work. Responsible for representing what changes are wanted, who authorized them, and at what tier of approval.
+The system that provides authorized intent for agent work. Responsible for representing what changes are wanted, who authorized them, and at what intent authorization tier of approval.
 
 Intent answers the question "should this change exist?" before anyone asks "is this change correct?" Without authorized intent, an agent has no basis for deciding what to work on or whether its output matches what was asked for.
 
@@ -210,7 +218,7 @@ The adopting organization's **`.fullsend`** repository holds the pointer to the 
 
 - What is the right representation — forge issues, a dedicated intent repo, RFCs, or tiered combinations? (See [intent-representation.md](problems/intent-representation.md).)
 - How do agents verify that intent is authentic and hasn't been tampered with?
-- How do different tiers of intent (standing rules, tactical issues, strategic features) map to different authorization requirements?
+- How do different intent authorization tiers (standing rules, tactical issues, strategic features) map to different authorization requirements?
 - How does intent interact with the "try it" phase — agents building exploratory drafts before authorization? (See [intent-representation.md](problems/intent-representation.md).)
 
 ## Observability
@@ -334,7 +342,7 @@ Retrospective analyst — examines completed or in-progress agent workflows, ide
 
 ## Configuration layering
 
-Fullsend uses a three-tier inheritance model for all configuration: agent definitions, skills, policies, harness definitions, and guardrails. Each tier can extend or override the one below it. Guardrails can only be tightened, never weakened.
+Fullsend uses a three-tier configuration inheritance model for all configuration: agent definitions, skills, policies, harness definitions, and guardrails. Each configuration tier can extend or override the one below it. Guardrails can only be tightened, never weakened.
 
 ```
 

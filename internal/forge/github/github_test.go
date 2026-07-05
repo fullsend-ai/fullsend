@@ -1058,6 +1058,53 @@ func TestIsBranchProtectionError(t *testing.T) {
 	}
 }
 
+func TestIsNonFastForwardError(t *testing.T) {
+	tests := []struct {
+		name   string
+		apiErr *APIError
+		want   bool
+	}{
+		{
+			name:   "not a fast forward (no hyphen)",
+			apiErr: &APIError{StatusCode: 422, Message: "Update is not a fast forward"},
+			want:   true,
+		},
+		{
+			name: "not a fast-forward in detail (hyphenated)",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Update is not a fast forward",
+				Errors:     []APIErrorDetail{{Message: "Cannot update ref: not a fast-forward"}},
+			},
+			want: true,
+		},
+		{
+			name:   "unrelated 422",
+			apiErr: &APIError{StatusCode: 422, Message: "Reference already exists"},
+			want:   false,
+		},
+		{
+			name: "overlaps with branch protection (caller checks protection first)",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Update is not a fast forward",
+				Errors:     []APIErrorDetail{{Message: "Protected branch update failed for refs/heads/main."}},
+			},
+			want: true,
+		},
+		{
+			name:   "validation failed",
+			apiErr: &APIError{StatusCode: 422, Message: "Validation Failed"},
+			want:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isNonFastForwardError(tt.apiErr))
+		})
+	}
+}
+
 func TestIsAlreadyExistsError(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1699,6 +1746,47 @@ func TestDeleteOrgVariable(t *testing.T) {
 		client := newTestClient(t, srv)
 		err := client.DeleteOrgVariable(context.Background(), "myorg", "ALREADY_GONE")
 		require.NoError(t, err)
+	})
+}
+
+func TestDeleteRepoVariable(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			assert.Equal(t, "/repos/myorg/myrepo/actions/variables/FULLSEND_PER_REPO_INSTALL", r.URL.Path)
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteRepoVariable(context.Background(), "myorg", "myrepo", "FULLSEND_PER_REPO_INSTALL")
+		require.NoError(t, err)
+	})
+
+	t.Run("idempotent 404", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteRepoVariable(context.Background(), "myorg", "myrepo", "ALREADY_GONE")
+		require.NoError(t, err)
+	})
+
+	t.Run("unexpected status", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteRepoVariable(context.Background(), "myorg", "myrepo", "VAR")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected status")
 	})
 }
 
@@ -2391,7 +2479,6 @@ func TestListOrgVariables(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, vars, 2)
 }
-
 func TestGetIssue(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/repos/org/repo/issues/7", r.URL.Path)
@@ -2609,4 +2696,225 @@ func TestCommitFiles_NonFastForwardRetry(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, committed)
 	assert.Equal(t, 2, patchCount)
+}
+func TestCommitFiles_NonFastForward(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "commit"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/commit":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/trees/tree"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Update is not a fast forward",
+				"errors":  []map[string]string{{"message": "Cannot update ref: not a fast-forward"}},
+			})
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+	})
+	require.Error(t, err)
+	assert.True(t, forge.IsNonFastForward(err))
+}
+
+func TestCommitFiles_BranchProtected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo":
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/ref/heads/main":
+			json.NewEncoder(w).Encode(map[string]any{"object": map[string]string{"sha": "commit"}})
+		case r.Method == "GET" && r.URL.Path == "/repos/org/repo/git/commits/commit":
+			json.NewEncoder(w).Encode(map[string]any{"tree": map[string]string{"sha": "tree"}})
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/org/repo/git/trees/tree"):
+			json.NewEncoder(w).Encode(map[string]any{"tree": []any{}, "truncated": false})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/trees":
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newtree"})
+		case r.Method == "POST" && r.URL.Path == "/repos/org/repo/git/commits":
+			json.NewEncoder(w).Encode(map[string]string{"sha": "newcommit"})
+		case r.Method == "PATCH" && r.URL.Path == "/repos/org/repo/git/refs/heads/main":
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			json.NewEncoder(w).Encode(map[string]any{
+				"message": "Validation Failed",
+				"errors":  []map[string]string{{"message": "Protected branch update failed for refs/heads/main."}},
+			})
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.CommitFiles(context.Background(), "org", "repo", "msg", []forge.TreeFile{
+		{Path: "file.txt", Content: []byte("content"), Mode: "100644"},
+	})
+	require.Error(t, err)
+	assert.True(t, forge.IsBranchProtected(err))
+	assert.False(t, forge.IsNonFastForward(err), "should not match non-fast-forward")
+}
+
+func TestListRepoVariables_SinglePage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/owner/repo/actions/variables", r.URL.Path)
+		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+
+		json.NewEncoder(w).Encode(map[string]any{
+			"total_count": 2,
+			"variables": []map[string]string{
+				{"name": "FOO", "value": "bar"},
+				{"name": "BAZ", "value": "qux"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	vars, err := client.ListRepoVariables(context.Background(), "owner", "repo")
+	require.NoError(t, err)
+	require.Len(t, vars, 2)
+	assert.Equal(t, "bar", vars["FOO"])
+	assert.Equal(t, "qux", vars["BAZ"])
+}
+
+func TestListRepoVariables_Paginated(t *testing.T) {
+	page := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page++
+		switch page {
+		case 1:
+			// Return a full page with total_count indicating more pages
+			vars := make([]map[string]string, 100)
+			for i := range vars {
+				vars[i] = map[string]string{
+					"name":  fmt.Sprintf("VAR_%d", i),
+					"value": fmt.Sprintf("val_%d", i),
+				}
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"total_count": 101,
+				"variables":   vars,
+			})
+		case 2:
+			// Second page: 1 variable
+			json.NewEncoder(w).Encode(map[string]any{
+				"total_count": 101,
+				"variables": []map[string]string{
+					{"name": "VAR_100", "value": "val_100"},
+				},
+			})
+		default:
+			t.Errorf("unexpected page %d", page)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	vars, err := client.ListRepoVariables(context.Background(), "owner", "repo")
+	require.NoError(t, err)
+	assert.Len(t, vars, 101)
+	assert.Equal(t, "val_0", vars["VAR_0"])
+	assert.Equal(t, "val_100", vars["VAR_100"])
+	assert.Equal(t, 2, page, "should have made exactly 2 requests")
+}
+
+func TestListRepoVariables_Empty(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"total_count": 0,
+			"variables":   []map[string]string{},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	vars, err := client.ListRepoVariables(context.Background(), "owner", "repo")
+	require.NoError(t, err)
+	assert.Empty(t, vars)
+}
+
+func TestListRepoVariables_APIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]any{"message": "Internal Server Error"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListRepoVariables(context.Background(), "owner", "repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "list repo variables")
+}
+
+func TestListRepoVariables_PaginationTruncation(t *testing.T) {
+	page := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page++
+		// Always return 1 variable but claim there are 20000, so pagination never completes.
+		json.NewEncoder(w).Encode(map[string]any{
+			"total_count": 20000,
+			"variables": []map[string]string{
+				{"name": fmt.Sprintf("VAR_%d", page), "value": "v"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.ListRepoVariables(context.Background(), "owner", "repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pagination exceeded")
+	assert.Equal(t, 100, page)
+}
+
+func TestDeleteRepoSecret(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			assert.Equal(t, "/repos/owner/repo/actions/secrets/MY_SECRET", r.URL.Path)
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteRepoSecret(context.Background(), "owner", "repo", "MY_SECRET")
+		require.NoError(t, err)
+	})
+
+	t.Run("idempotent 404", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteRepoSecret(context.Background(), "owner", "repo", "ALREADY_GONE")
+		require.NoError(t, err)
+	})
+
+	t.Run("unexpected status", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteRepoSecret(context.Background(), "owner", "repo", "SECRET")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected status")
+	})
 }

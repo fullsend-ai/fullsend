@@ -900,7 +900,7 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 
 	// 7. Update branch ref to point to new commit.
-	// A 422 here typically means branch protection rules prevent the push.
+	// A 422 may indicate branch protection or a non-fast-forward (e.g. auto_init race).
 	refPayload := map[string]string{
 		"sha": newCommit.SHA,
 	}
@@ -908,6 +908,7 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	if err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+			// Check order matters: protection messages can contain "fast forward"
 			if isBranchProtectionError(apiErr) {
 				return false, fmt.Errorf("%w: %w", forge.ErrBranchProtected, err)
 			}
@@ -1081,7 +1082,7 @@ func isNonFastForwardError(apiErr *APIError) bool {
 	for _, d := range apiErr.Errors {
 		msg += " " + strings.ToLower(d.Message)
 	}
-	return strings.Contains(msg, "fast forward")
+	return strings.Contains(msg, "not a fast forward") || strings.Contains(msg, "not a fast-forward")
 }
 
 func isAlreadyExistsError(apiErr *APIError) bool {
@@ -1824,6 +1825,76 @@ func (c *LiveClient) GetRepoVariable(ctx context.Context, owner, repo, name stri
 		return "", false, fmt.Errorf("decode variable %s: %w", name, err)
 	}
 	return result.Value, true, nil
+}
+
+// DeleteRepoVariable deletes a repository Actions variable. It is idempotent:
+// a 404 (variable already gone) is not treated as an error.
+func (c *LiveClient) DeleteRepoVariable(ctx context.Context, owner, repo, name string) error {
+	resp, err := c.do(ctx, http.MethodDelete, fmt.Sprintf("/repos/%s/%s/actions/variables/%s", owner, repo, name), nil)
+	if err != nil {
+		return fmt.Errorf("delete repo variable %s: %w", name, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	return &APIError{StatusCode: resp.StatusCode, Message: "unexpected status deleting repo variable"}
+}
+
+// ListRepoVariables returns all Actions variables for a repository as a
+// name-to-value map. Results are paginated; the method follows pagination
+// until all variables are fetched or the safety page cap is reached.
+func (c *LiveClient) ListRepoVariables(ctx context.Context, owner, repo string) (map[string]string, error) {
+	const maxPages = 100
+	result := make(map[string]string)
+	var totalCount, fetched int
+
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("/repos/%s/%s/actions/variables?per_page=100&page=%d", owner, repo, page)
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list repo variables page %d: %w", page, err)
+		}
+
+		var body struct {
+			TotalCount int `json:"total_count"`
+			Variables  []struct {
+				Name  string `json:"name"`
+				Value string `json:"value"`
+			} `json:"variables"`
+		}
+		if err := decodeJSON(resp, &body); err != nil {
+			return nil, fmt.Errorf("decode repo variables page %d: %w", page, err)
+		}
+
+		totalCount = body.TotalCount
+		for _, v := range body.Variables {
+			result[v.Name] = v.Value
+		}
+		fetched += len(body.Variables)
+
+		if fetched >= totalCount || len(body.Variables) == 0 {
+			return result, nil
+		}
+	}
+
+	return nil, fmt.Errorf("list repo variables: pagination exceeded %d pages (fetched %d of %d variables)", maxPages, len(result), totalCount)
+}
+
+// DeleteRepoSecret deletes a repository Actions secret. It is idempotent:
+// a 404 (secret already gone) is not treated as an error.
+func (c *LiveClient) DeleteRepoSecret(ctx context.Context, owner, repo, name string) error {
+	resp, err := c.do(ctx, http.MethodDelete, fmt.Sprintf("/repos/%s/%s/actions/secrets/%s", owner, repo, name), nil)
+	if err != nil {
+		return fmt.Errorf("delete repo secret %s: %w", name, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	return &APIError{StatusCode: resp.StatusCode, Message: "unexpected status deleting repo secret"}
 }
 
 // GetWorkflow returns a workflow definition by filename (e.g. repo-maintenance.yml).
