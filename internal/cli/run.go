@@ -586,13 +586,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
-	// Trace identity (ADR 0050 Level 1 + security correlation). Generated here,
+	// Trace identity (ADR 0050 Level 1 + security correlation). Resolved here,
 	// before the pre-script, so TRACEPARENT can propagate to child processes.
-	// The same id is reused as the security finding/audit trace id (dashed UUID)
-	// and, dash-stripped, as the W3C telemetry trace id — one id across both.
-	securityTraceID := security.GenerateTraceID()
-	wTraceID := telemetry.TraceIDFromUUID(securityTraceID)
-	rootSpanID := telemetry.NewSpanID()
+	// An inbound TRACEPARENT (nested/instrumented invocation, issue #2779) is
+	// adopted so the run continues the parent trace; otherwise a fresh id is
+	// generated. Either way one id serves as both the security finding/audit
+	// trace id (dashed UUID) and, dash-stripped, the W3C telemetry trace id.
+	securityTraceID, traceCtx := resolveTraceIdentity(os.Getenv("TRACEPARENT"))
 	workItemID := resolveWorkItemID()
 
 	// 2c. Run pre-script on the host (if configured).
@@ -600,7 +600,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		preStart := time.Now()
 		printer.StepStart("Running pre-script: " + h.PreScript)
 		preCmd := exec.Command(h.PreScript)
-		preCmd.Env = childScriptEnv(h.RunnerEnv, telemetry.TraceParent(wTraceID, rootSpanID))
+		preCmd.Env = childScriptEnv(h.RunnerEnv, telemetry.TraceParentWithFlags(traceCtx.TraceID, traceCtx.RootSpanID, traceCtx.Flags))
 		preCmd.Stdout = os.Stdout
 		preCmd.Stderr = os.Stderr
 		if err := preCmd.Run(); err != nil {
@@ -626,7 +626,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// order — it runs last and the summary captures the whole run.
 	var lastExitCode int
 	var transcriptErrorOverride bool
-	rec := telemetry.New(runDir, wTraceID, rootSpanID, agentName, workItemID, runStart)
+	rec := telemetry.New(runDir, traceCtx, agentName, workItemID, runStart)
 	defer func() { rec.Finalize(telemetryExitCode(lastExitCode, runErr)) }()
 
 	createStart := time.Now()
@@ -675,7 +675,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepStart("Running post-script: " + h.PostScript)
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
-			postCmd.Env = childScriptEnv(h.RunnerEnv, telemetry.TraceParent(wTraceID, rootSpanID))
+			postCmd.Env = childScriptEnv(h.RunnerEnv, telemetry.TraceParentWithFlags(traceCtx.TraceID, traceCtx.RootSpanID, traceCtx.Flags))
 			postCmd.Stdout = os.Stdout
 			postCmd.Stderr = os.Stderr
 			if err := postCmd.Run(); err != nil {
@@ -1681,12 +1681,46 @@ func telemetryExitCode(lastExitCode int, runErr error) int {
 	return lastExitCode
 }
 
+// resolveTraceIdentity resolves the run's trace identity (issue #2779). A
+// valid inbound W3C TRACEPARENT is adopted: its trace-id becomes both the
+// security trace id (re-dashed UUID) and the W3C telemetry trace-id, its
+// span-id becomes the root span's remote parent, and its trace-flags carry
+// the upstream sampling decision forward. Without a valid inbound value a
+// fresh identity is generated, exactly as Level 1 always did. TRACESTATE is
+// intentionally untouched — it passes through os.Environ to child scripts.
+func resolveTraceIdentity(inbound string) (securityTraceID string, tc telemetry.TraceContext) {
+	if traceID, parentSpanID, flags, ok := telemetry.ParseTraceParent(inbound); ok {
+		return telemetry.UUIDFromTraceID(traceID), telemetry.TraceContext{
+			TraceID:      traceID,
+			RootSpanID:   telemetry.NewSpanID(),
+			ParentSpanID: parentSpanID,
+			Flags:        flags,
+		}
+	}
+	securityTraceID = security.GenerateTraceID()
+	return securityTraceID, telemetry.TraceContext{
+		TraceID:    telemetry.TraceIDFromUUID(securityTraceID),
+		RootSpanID: telemetry.NewSpanID(),
+		Flags:      "01",
+	}
+}
+
 // childScriptEnv builds the environment for a host-side child script (pre- or
 // post-script): the harness RunnerEnv layered over the process environment,
-// plus the W3C TRACEPARENT for trace propagation (ADR 0050 Level 1). An empty
-// traceparent (telemetry disabled) is omitted rather than emitted blank.
+// plus the W3C TRACEPARENT for trace propagation (ADR 0050 Level 1). Any
+// TRACEPARENT already present — inherited from the process environment or
+// set in runner_env — is filtered out first: env lookups resolve the first
+// match, so a stale value would shadow fullsend's own, and fullsend's trace
+// identity never derives from runner_env (issue #2779). An empty traceparent
+// (telemetry disabled) is omitted rather than emitted blank.
 func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
-	env := append(os.Environ(), envToList(runnerEnv)...)
+	merged := append(os.Environ(), envToList(runnerEnv)...)
+	env := make([]string, 0, len(merged)+1)
+	for _, e := range merged {
+		if !strings.HasPrefix(e, "TRACEPARENT=") {
+			env = append(env, e)
+		}
+	}
 	if traceparent != "" {
 		env = append(env, "TRACEPARENT="+traceparent)
 	}
@@ -1857,9 +1891,11 @@ func refreshOIDCToken(ctx context.Context, sandboxName, oidcURL, oidcAuth string
 // inside the sandbox. It finds known context files (including SKILL.md in
 // skill directories) in the repo directory and passes them as arguments.
 func buildScanContextCommand(repoDir, traceID string) string {
-	// Defense-in-depth: validate traceID before shell interpolation even though
-	// GenerateTraceID() only produces safe hex characters.
-	if !security.IsValidTraceID(traceID) {
+	// Defense-in-depth: validate traceID before shell interpolation. Uses
+	// IsShellSafeTraceID (not IsValidTraceID) because the id may have been
+	// adopted from an inbound W3C traceparent (issue #2779), so it is not
+	// necessarily UUID v4.
+	if !security.IsShellSafeTraceID(traceID) {
 		// Should never happen with internal generation, but fail safely.
 		traceID = "invalid-trace-id"
 	}
@@ -2196,10 +2232,10 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 
 // injectTraceID appends the FULLSEND_TRACE_ID to the sandbox .env file.
 func injectTraceID(sandboxName, traceID string) error {
-	if !security.IsValidTraceID(traceID) {
+	if !security.IsShellSafeTraceID(traceID) {
 		return fmt.Errorf("invalid trace ID format: %q", traceID)
 	}
-	// Safe: IsValidTraceID() above ensures traceID matches UUID v4 format only.
+	// Safe: IsShellSafeTraceID() above ensures traceID is only hex and dashes.
 	cmd := fmt.Sprintf("echo 'export FULLSEND_TRACE_ID=%s' >> %s/.env", traceID, sandbox.SandboxWorkspace)
 	_, _, _, err := sandbox.Exec(sandboxName, cmd, 10*time.Second)
 	return err

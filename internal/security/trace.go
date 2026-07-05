@@ -31,6 +31,20 @@ func IsValidTraceID(id string) bool {
 	return reTraceID.MatchString(id)
 }
 
+// reShellSafeTraceID matches any dashed lowercase-hex string in UUID shape
+// (8-4-4-4-12), without the UUID v4 version/variant requirement of reTraceID.
+var reShellSafeTraceID = regexp.MustCompile(`^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$`)
+
+// IsShellSafeTraceID returns true if the trace ID consists only of lowercase
+// hex and dashes in UUID shape — the property that makes it safe for shell
+// interpolation. Unlike IsValidTraceID it accepts any version/variant, because
+// a trace id adopted from an inbound W3C traceparent (issue #2779) is not
+// necessarily UUID v4. The charset restriction is the entire safety argument;
+// version bits carry no interpolation risk.
+func IsShellSafeTraceID(id string) bool {
+	return reShellSafeTraceID.MatchString(id)
+}
+
 // seedHash is the well-known genesis hash for the first entry in a chain.
 const seedHash = "0000000000000000000000000000000000000000000000000000000000000000"
 

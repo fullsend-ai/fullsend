@@ -12,9 +12,6 @@ host_files:
   - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
     expand: true
-  - src: env/retro.env
-    dest: /sandbox/workspace/.env.d/retro.env
-    expand: true
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
   - src: ${GCP_OIDC_TOKEN_FILE}
@@ -34,8 +31,11 @@ validation_loop:
   script: scripts/validate-output-schema.sh
   max_iterations: 2
 
-runner_env:
-  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/retro-result.schema.json
+env:
+  runner:
+    FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/retro-result.schema.json
+  sandbox:
+    RETRO_COMMENT: "${RETRO_COMMENT}"
 
 timeout_minutes: 30
 
@@ -43,7 +43,12 @@ forge:
   github:
     pre_script: scripts/pre-retro.sh
     post_script: scripts/post-retro.sh
-    runner_env:
-      ORIGINATING_URL: "${ORIGINATING_URL}"
-      REPO_FULL_NAME: "${REPO_FULL_NAME}"
-      GH_TOKEN: "${GH_TOKEN}"
+    env:
+      runner:
+        ORIGINATING_URL: "${ORIGINATING_URL}"
+        REPO_FULL_NAME: "${REPO_FULL_NAME}"
+        GH_TOKEN: "${GH_TOKEN}"
+      sandbox:
+        ORIGINATING_URL: "${ORIGINATING_URL}"
+        REPO_FULL_NAME: "${REPO_FULL_NAME}"
+        GH_TOKEN: "${GH_TOKEN}"
