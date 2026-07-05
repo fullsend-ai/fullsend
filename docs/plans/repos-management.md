@@ -336,9 +336,11 @@ in parallel with PRs 4–8.
 
 ## Phase 1: Foundation
 
-### PR 1: Extract per-repo install logic into reusable package
+### PR 1: Extract per-repo install logic into reusable package ✓
 
-**Scope:** Refactor only. Zero behavioral change.
+**Status:** Implemented in [#3003](https://github.com/fullsend-ai/fullsend/pull/3003).
+
+**Scope:** Refactor only. Preserves install semantics.
 
 The existing `runPerRepoInstall()` in `internal/cli/admin.go` is ~450
 lines mixing install logic with CLI concerns (interactive prompts,
