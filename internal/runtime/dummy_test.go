@@ -309,8 +309,9 @@ func TestWriteBehaviourResults(t *testing.T) {
 }
 
 func TestDummyRuntime_RunFailedOps(t *testing.T) {
-	t.Parallel()
-
+	orig := writeBehaviourResultsFn
+	writeBehaviourResultsFn = writeBehaviourResults
+	t.Cleanup(func() { writeBehaviourResultsFn = orig })
 	fullsendDir := t.TempDir()
 	scriptDir := filepath.Join(fullsendDir, "behaviour")
 	require.NoError(t, os.MkdirAll(scriptDir, 0o755))
@@ -329,4 +330,29 @@ func TestDummyRuntime_RunFailedOps(t *testing.T) {
 	}, ui.New(io.Discard), time.Now(), nil)
 	assert.Equal(t, 1, exit)
 	require.Error(t, err)
+}
+
+func TestDummyRuntime_RunOpFailureReturnsNilGoError(t *testing.T) {
+	orig := writeBehaviourResultsFn
+	writeBehaviourResultsFn = func(string, BehaviourResults) error { return nil }
+	t.Cleanup(func() { writeBehaviourResultsFn = orig })
+
+	fullsendDir := t.TempDir()
+	scriptDir := filepath.Join(fullsendDir, "behaviour")
+	require.NoError(t, os.MkdirAll(scriptDir, 0o755))
+	script := `ops:
+- description: blocked fetch
+  op: url_get
+  args: https://example.com/blocked
+`
+	require.NoError(t, os.WriteFile(filepath.Join(scriptDir, "current-scenario.yaml"), []byte(script), 0o644))
+
+	rt := DummyRuntime{}
+	exit, err := rt.Run(context.Background(), RunParams{
+		SandboxName: "nonexistent-sandbox",
+		RepoDir:     t.TempDir(),
+		FullsendDir: fullsendDir,
+	}, ui.New(io.Discard), time.Now(), nil)
+	assert.Equal(t, 1, exit)
+	require.NoError(t, err)
 }

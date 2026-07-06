@@ -19,6 +19,9 @@ import (
 const behaviourScriptRelPath = "behaviour/current-scenario.yaml"
 const behaviourResultsFile = "behaviour-results.json"
 
+// writeBehaviourResultsFn is the production writer; tests may replace it.
+var writeBehaviourResultsFn = writeBehaviourResults
+
 // BehaviourOperation is a single scripted step for the dummy runtime.
 type BehaviourOperation struct {
 	Description string `yaml:"description" json:"description"`
@@ -72,7 +75,7 @@ func (r DummyRuntime) Run(_ context.Context, params RunParams, printer *ui.Print
 	}
 
 	results, scriptErr := executeBehaviourScript(params.SandboxName, params.RepoDir, script)
-	if writeErr := writeBehaviourResults(params.SandboxName, results); writeErr != nil {
+	if writeErr := writeBehaviourResultsFn(params.SandboxName, results); writeErr != nil {
 		return 1, writeErr
 	}
 
