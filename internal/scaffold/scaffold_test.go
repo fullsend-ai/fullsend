@@ -89,7 +89,6 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		"scripts/setup-prioritize.sh",
 		"scripts/pre-prioritize.sh",
 		"scripts/post-prioritize.sh",
-		"scripts/lib/github-api-csma.sh",
 		"scripts/post-prioritize-test.sh",
 		".github/workflows/prioritize.yml",
 		".github/workflows/prioritize-scheduler.yml",
