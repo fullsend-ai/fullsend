@@ -90,7 +90,7 @@ The key distinction: **transient failures** (network timeout, flaky test, rate l
 
 ### Retry budgets
 
-Without an explicit retry budget, agents can loop indefinitely within their per-run limits. A retry budget is distinct from per-run limits:
+Without an explicit retry budget, agents can retry the same task across multiple runs without any cumulative limit, even though each individual run is bounded by its own per-run constraints. A retry budget is distinct from per-run limits:
 
 - **Per-run limit:** max turns and max cost for a single attempt (already enforced via `max_turns` and `max_cost_usd` in the functional test framework, PR #1682)
 - **Retry budget:** max total attempts across runs for the same task, and max total cost across all attempts
