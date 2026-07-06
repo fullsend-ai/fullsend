@@ -78,6 +78,49 @@ These splits suggest that "memory" may not be one feature. It may be several fee
 - **[Operational Observability](operational-observability.md)** — Memory summaries overlap with observability data already being collected, such as transcripts, workflow logs, and review outcomes. The question is which subset is safe to feed back into agent context.
 - **[Agent Architecture](agent-architecture.md)** — The retro agent and memory are complementary. Retro proposes systemic improvements that humans can review. Memory raises the question of whether any lower-latency path can be safe enough.
 
+## Error recovery and retry mechanics
+
+Cross-run memory is one piece of a broader question: what happens when an agent fails? The memory problem asks how agents learn from prior failures. The recovery problem asks what the system does immediately after a failure, before any learning occurs.
+
+### Retry vs. escalate
+
+When a run fails (CI failure, merge conflict, model refusal, timeout), the system must decide: retry the same approach, try a different approach, or escalate to a human. Today this decision is implicit. Agents retry until they hit a turn or cost limit, then stop. There is no structured decision about whether retrying is likely to produce a different outcome.
+
+The key distinction: **transient failures** (network timeout, flaky test, rate limit) benefit from retry. **Structural failures** (wrong approach, missing context, incompatible change) do not. Retrying a structural failure wastes resources and can make things worse if each attempt introduces new problems.
+
+### Retry budgets
+
+Without an explicit retry budget, agents can loop indefinitely within their per-run limits. A retry budget is distinct from per-run limits:
+
+- **Per-run limit:** max turns and max cost for a single attempt (already enforced via `max_turns` and `max_cost_usd` in the functional test framework, PR #1682)
+- **Retry budget:** max total attempts across runs for the same task, and max total cost across all attempts
+
+A task might allow 3 retries with a total budget of $10. Each individual run stays within its per-run limits, but the system tracks cumulative spend and attempt count.
+
+### Escalation thresholds
+
+When should the system stop retrying and ask a human?
+
+- **After N identical failures.** If the same error occurs on consecutive attempts, retrying is unlikely to help. Escalate with context: "failed 3 times with the same lint error on line 42."
+- **After budget exhaustion.** When the retry budget is consumed, escalate regardless of failure type.
+- **On novel failure types.** If each retry fails for a different reason, the task may be beyond the agent's current capability. Escalate after 2-3 distinct failure types.
+- **On regression.** If a retry makes things worse (introduces new test failures that the previous attempt did not have), stop immediately.
+
+### Interaction with cross-run memory
+
+Error recovery and memory are complementary:
+
+- Memory records *what happened* for future runs to learn from.
+- Recovery determines *what to do right now* in response to a failure.
+- A retry that succeeds generates a positive memory signal ("the second attempt with approach B worked after approach A failed").
+- A retry that fails generates a negative signal ("this task has failed 3 times; do not auto-assign to agents until the underlying issue is resolved").
+
+The risk: if recovery decisions feed into memory without review, a poorly-chosen retry strategy can poison future run context. For example, recording "approach B works" when it only worked due to a transient condition creates a false lesson.
+
+### Relationship to flapping
+
+Retry loops can become flapping when the system does not converge. See [flapping-convergence.md](flapping-convergence.md) for detection and circuit-breaking mechanisms. Error recovery addresses the single-task question (when to retry vs. escalate); flapping addresses the systemic question (when to stop the system from oscillating).
+
 ## Open questions
 
 - Which run outcomes are safe to feed forward automatically, and which require human review first?
