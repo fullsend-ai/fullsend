@@ -47,6 +47,50 @@ Exclude the files already in the diff. Any hit outside the diff is a
 Medium-severity finding: "stale reference to removed/renamed
 `<identifier>` in `<file>:<line>`."
 
+### Silent-failure severity escalation
+
+When a correctness finding involves a failure mode where the code
+**appears to succeed but silently produces wrong results** — no error,
+no warning, no signal that anything went wrong — escalate severity by
+one level (e.g., what would normally be [low] becomes [medium]).
+
+Silent failures are harder to detect in production, persist longer
+before discovery, and are more likely to cause downstream damage than
+loud failures. A bug that crashes is found immediately; a bug that
+silently skips data, truncates output, or returns a stale/wrong value
+can propagate undetected for weeks.
+
+**Escalate when the failure mode is silent**, regardless of how likely
+the triggering condition appears. Probability-based reasoning ("this
+input is unlikely in practice") must not override failure-mode-based
+severity. Defensive coding requires handling all valid inputs, not
+just expected ones. If the code accepts the input without error but
+produces wrong results, that is a silent failure — even if the input
+is unlikely today, the lack of error signal means no one will notice
+when it starts occurring.
+
+Examples of **silent failures** (escalate):
+
+- String truncation due to delimiter mismatch (e.g., `awk` field
+  splitting silently drops path components containing spaces)
+- API call returns a different object type than expected (e.g., a tag
+  object SHA instead of a commit SHA), causing a downstream request to
+  silently 404 with no error handling
+- Off-by-one that silently skips the last element
+- Type coercion that silently rounds instead of erroring
+- Regex that silently does not match, causing the default/fallback
+  path to execute with no indication that the primary path was skipped
+- A fallback mechanism that becomes entirely inert under a valid input
+  variant, with no error signal
+
+Examples of **loud failures** (no escalation needed):
+
+- Nil pointer dereference
+- Index out of bounds
+- Connection refused
+- Permission denied
+- Explicit error return with descriptive message
+
 ### Technical documentation with correctness surface area
 
 Not all documentation is prose. Any
