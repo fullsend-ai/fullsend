@@ -27,7 +27,7 @@ Flapping is distinct from normal retry behavior. A single retry after a transien
 
 ### Why this matters at scale
 
-A single flapping agent on one repo is annoying. Twenty flapping agents across an organization's repositories are a resource drain. At fullsend's target scale (20+ repos, multiple agent roles per repo), flapping becomes an operational problem:
+A single flapping agent on one repo is annoying. Twenty flapping agents across an organization's repositories are a resource drain. At production scale (dozens of repos, multiple agent roles per repo), flapping becomes an operational problem:
 
 - **Cost.** Each iteration consumes LLM tokens. Eight review cycles at $2-5 per cycle on a single PR adds up across hundreds of PRs.
 - **Noise.** PRs with 40+ bot comments are impossible for humans to review. The signal is buried in the noise of failed attempts.
