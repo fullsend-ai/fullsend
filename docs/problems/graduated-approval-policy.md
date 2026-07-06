@@ -1,6 +1,6 @@
 # Graduated Approval Policy
 
-Review agents currently make a single binary decision: approve or request changes. There is no middle ground. This forces a trade-off between two failure modes that human reviewers do not face, because humans naturally express graduated confidence.
+Review agents produce a verdict that effectively routes to one of two outcomes: the PR proceeds or it does not. While the scaffold contract defines several outcome types (approve, comment-only, reject, failure), the routing decision is still binary in practice. This forces a trade-off between two failure modes that human reviewers do not face, because humans naturally express graduated confidence.
 
 **Related:**
 - [security-threat-model.md](security-threat-model.md) — defense in depth, fail closed principle
@@ -61,7 +61,7 @@ The hard problems are not in the concept but in the implementation:
 
 ## Relationship to existing mechanisms
 
-**Autonomy spectrum.** The autonomy spectrum defines per-repo autonomy based on change type. Graduated approval operates within a given autonomy level: even among changes classified at the same tier, some are higher risk than others. The autonomy spectrum determines *whether* an agent can act; graduated approval determines *how confidently* it should act.
+**Autonomy spectrum.** The autonomy spectrum defines binary per-repo autonomy, with CODEOWNERS as the path-level escape hatch. Graduated approval operates within a repo that has been granted autonomy: even among changes that the autonomy model permits, some are higher risk than others. The autonomy spectrum determines *whether* an agent can act on a repo; graduated approval determines *how confidently* it should act on a given change.
 
 **Intent authorization tiers.** The tiered intent system in [intent-representation.md](intent-representation.md) classifies changes by their authorization requirements (Tier 0-3). Graduated approval could use the intent tier as one input signal: a Tier 0 change (pre-authorized, like a dependency bump) gets a lower base risk score than a Tier 2 change (new feature requiring review).
 
