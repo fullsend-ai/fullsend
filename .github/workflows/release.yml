@@ -67,9 +67,14 @@ jobs:
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
 
-          if gh api "repos/fullsend-ai/agents/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+          HTTP_CODE=$(gh api "repos/fullsend-ai/agents/git/ref/tags/${TAG}" \
+            --include 2>/dev/null | head -1 | awk '{print $2}') || true
+          if [[ "${HTTP_CODE}" == "200" ]]; then
             echo "Tag ${TAG} already exists on fullsend-ai/agents, skipping"
             exit 0
+          elif [[ "${HTTP_CODE}" != "404" ]]; then
+            echo "::error::Unexpected response (HTTP ${HTTP_CODE}) checking tag on fullsend-ai/agents"
+            exit 1
           fi
 
           AGENTS_SHA=$(gh api repos/fullsend-ai/agents/git/ref/heads/main --jq '.object.sha')
