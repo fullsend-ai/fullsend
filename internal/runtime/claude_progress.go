@@ -86,7 +86,6 @@ type contentItem struct {
 	Input    json.RawMessage `json:"input"`
 }
 
-
 // resultEvent represents the final NDJSON event from Claude Code's stream-json
 // output, containing execution metrics.
 type resultEvent struct {
@@ -423,4 +422,3 @@ func collapseCommand(cmd string) string {
 	}
 	return collapsed
 }
-

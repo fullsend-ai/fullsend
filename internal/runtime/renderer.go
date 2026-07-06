@@ -13,8 +13,8 @@ import (
 // It tracks block state (text/thinking) so transitions between event
 // types produce clean output boundaries.
 type EventRenderer struct {
-	printer *ui.Printer
-	metrics *RunMetrics
+	printer    *ui.Printer
+	metrics    *RunMetrics
 	isCI       bool
 	inText     bool
 	inThinking bool
