@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
+	"github.com/fullsend-ai/fullsend/internal/maputil"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 )
 
@@ -627,7 +628,7 @@ func (p *Provisioner) provisionWithExistingMint(ctx context.Context) (map[string
 	}
 
 	// Verify secrets exist for roles without fresh PEMs (re-install).
-	for _, role := range sortedStringMapKeys(p.cfg.AgentAppIDs) {
+	for _, role := range maputil.SortedKeys(p.cfg.AgentAppIDs) {
 		if _, hasPEM := p.cfg.AgentPEMs[role]; hasPEM {
 			continue
 		}
@@ -797,7 +798,7 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 	}
 
 	// Step 5b: Verify secrets exist for roles without PEMs (re-install).
-	for _, role := range sortedStringMapKeys(p.cfg.AgentAppIDs) {
+	for _, role := range maputil.SortedKeys(p.cfg.AgentAppIDs) {
 		if _, hasPEM := p.cfg.AgentPEMs[role]; hasPEM {
 			continue
 		}
@@ -1659,15 +1660,6 @@ func (p *Provisioner) zeroPEMs() {
 		}
 		p.cfg.AgentPEMs[role] = pem
 	}
-}
-
-func sortedStringMapKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func sortedByteMapKeys(m map[string][]byte) []string {

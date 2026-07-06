@@ -28,8 +28,9 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/inference"
 	"github.com/fullsend-ai/fullsend/internal/inference/vertex"
 	"github.com/fullsend-ai/fullsend/internal/layers"
+	"github.com/fullsend-ai/fullsend/internal/maputil"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
-	"github.com/fullsend-ai/fullsend/internal/scaffold"
+	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -156,17 +157,16 @@ type perRepoInstallConfig struct {
 	FullsendBinary       string
 	FullsendSource       string
 	Direct               bool
+
+	// Testing overrides — when non-nil, used instead of resolving from
+	// the environment. Not set by CLI flag parsing.
+	testClient         forge.Client
+	testPrinter        *ui.Printer
+	testWIFProvisioner repos.WIFProvisioner
 }
 
-// wifProviderPattern validates the full WIF provider resource name format
-// required by google-github-actions/auth@v3.
-// GCP pool/provider IDs: 4-32 chars, [a-z0-9-], start with letter, no trailing hyphen.
-var wifProviderPattern = regexp.MustCompile(
-	`^projects/\d+/locations/global/workloadIdentityPools/[a-z][a-z0-9-]{2,30}[a-z0-9]/providers/[a-z][a-z0-9-]{2,30}[a-z0-9]$`,
-)
-
 func validateWIFProvider(raw string) error {
-	if !wifProviderPattern.MatchString(raw) {
+	if !repos.WIFProviderPattern.MatchString(raw) {
 		return fmt.Errorf(
 			"--inference-wif-provider must be a full WIF provider resource name "+
 				"(projects/{number}/locations/global/workloadIdentityPools/{pool}/providers/{id}), got %q",
@@ -638,13 +638,22 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		return err
 	}
 
-	token, err := resolveToken()
-	if err != nil {
-		return err
+	var client forge.Client
+	var printer *ui.Printer
+	if c.testClient != nil {
+		client = c.testClient
+		if c.testPrinter == nil {
+			return fmt.Errorf("testPrinter must be set when testClient is set")
+		}
+		printer = c.testPrinter
+	} else {
+		token, tokenErr := resolveToken()
+		if tokenErr != nil {
+			return tokenErr
+		}
+		client = gh.New(token)
+		printer = ui.New(os.Stdout)
 	}
-
-	client := gh.New(token)
-	printer := ui.New(os.Stdout)
 
 	printer.Banner(Version())
 	printer.Blank()
@@ -655,35 +664,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		printer.StepWarn("Using provided WIF provider value — skipping inference provider auto-provisioning")
 	}
 
-	cfg := config.NewPerRepoConfig(roles, repoFullName)
-	if err := cfg.Validate(); err != nil {
-		return fmt.Errorf("invalid config: %w", err)
-	}
-
-	cfgYAML, err := cfg.Marshal()
-	if err != nil {
-		return fmt.Errorf("marshaling per-repo config: %w", err)
-	}
-
 	upstreamRef, upstreamTag := resolveUpstreamRef()
-	installFiles, err := scaffold.CollectPerRepoInstallFiles(vendor, upstreamRef, upstreamTag)
-	if err != nil {
-		return fmt.Errorf("collecting per-repo scaffold files: %w", err)
-	}
-
-	var files []forge.TreeFile
-	for _, f := range installFiles {
-		files = append(files, forge.TreeFile{
-			Path:    f.Path,
-			Content: f.Content,
-			Mode:    f.Mode,
-		})
-	}
-	files = append(files, forge.TreeFile{
-		Path:    ".fullsend/config.yaml",
-		Content: cfgYAML,
-		Mode:    "100644",
-	})
 
 	needsWIFProvision := inferenceWIFProvider == ""
 
@@ -823,7 +804,27 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			printer.StepInfo(fmt.Sprintf("  Repo restriction: %s/%s", owner, repo))
 			printer.Blank()
 		}
-		for _, f := range files {
+		// BuildScaffoldFiles only reads Owner, Repo, Roles, VendorBinary,
+		// UpstreamRef, UpstreamTag. Extra fields are included to stay aligned
+		// with the non-dry-run installCfg; Skip* flags are omitted because
+		// they control Install() flow, not scaffold file generation.
+		dryRunFiles, dryRunErr := repos.BuildScaffoldFiles(repos.InstallConfig{
+			Owner:            owner,
+			Repo:             repo,
+			Roles:            roles,
+			MintURL:          mintDisplay,
+			InferenceProject: inferenceProject,
+			InferenceRegion:  inferenceRegion,
+			UpstreamRef:      upstreamRef,
+			UpstreamTag:      upstreamTag,
+			WIFProvider:      inferenceWIFProvider,
+			VendorBinary:     vendor,
+			Direct:           c.Direct,
+		})
+		if dryRunErr != nil {
+			return fmt.Errorf("generating scaffold files for dry run: %w", dryRunErr)
+		}
+		for _, f := range dryRunFiles {
 			printer.StepDone(fmt.Sprintf("Would write: %s (%d bytes)", f.Path, len(f.Content)))
 		}
 		printer.Blank()
@@ -833,7 +834,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			"FULLSEND_GCP_REGION": inferenceRegion,
 			forge.PerRepoGuardVar: "true",
 		}
-		for _, name := range sortedStringMapKeys(dryRunVars) {
+		for _, name := range maputil.SortedKeys(dryRunVars) {
 			printer.StepInfo(fmt.Sprintf("  %s = %s", name, dryRunVars[name]))
 		}
 		secretNames := []string{"FULLSEND_GCP_PROJECT_ID", "FULLSEND_GCP_WIF_PROVIDER"}
@@ -971,46 +972,127 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		printer.StepDone(mintValidationMessage(trafficEnv, envErr))
 	}
 
-	if needsWIFProvision {
-		printer.StepStart("Provisioning WIF infrastructure")
-		provisioner := gcf.NewProvisioner(gcf.Config{
-			ProjectID:   inferenceProject,
-			GitHubOrgs:  []string{owner},
-			Repo:        owner + "/" + repo,
-			WIFPoolName: gcf.DefaultInferencePool,
-		}, gcf.NewLiveGCFClient(inferenceProject))
-		var provErr error
-		inferenceWIFProvider, provErr = provisioner.ProvisionWIF(ctx)
-		if provErr != nil {
-			printer.StepFail("WIF provisioning failed")
-			return fmt.Errorf("provisioning WIF: %w", provErr)
+	// Delegate WIF provisioning, scaffold commit, and variable/secret
+	// writes to the reusable repos.Install function. This enables the
+	// future `fullsend repos install` command to share the same logic.
+	var wifProvisioner repos.WIFProvisioner
+	if c.testWIFProvisioner != nil {
+		wifProvisioner = c.testWIFProvisioner
+	} else if needsWIFProvision {
+		wifProvisioner = &gcfProvisionerAdapter{
+			provisioner: gcf.NewProvisioner(gcf.Config{
+				ProjectID:   inferenceProject,
+				GitHubOrgs:  []string{owner},
+				Repo:        owner + "/" + repo,
+				WIFPoolName: gcf.DefaultInferencePool,
+			}, gcf.NewLiveGCFClient(inferenceProject)),
 		}
-		printer.StepDone("WIF infrastructure ready")
-		printer.StepInfo("IAM policy changes may take up to 7 minutes to propagate")
-		printer.StepInfo("Agent workflows that authenticate via WIF may fail until propagation completes")
 	}
 
-	repoVars := map[string]string{
-		"FULLSEND_MINT_URL":   mintURL,
-		"FULLSEND_GCP_REGION": inferenceRegion,
-		forge.PerRepoGuardVar: "true",
+	// Scaffold commit function wrapping layers.CommitScaffoldFiles, which
+	// provides retry on non-fast-forward errors, branch-protection fallback
+	// to PR delivery, and fork-based PR support for non-owner users.
+	scaffoldCommitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool) error {
+		targetRepo, repoErr := client.GetRepo(ctx, owner, repo)
+		if repoErr != nil {
+			return fmt.Errorf("getting repo info: %w", repoErr)
+		}
+		commitMsg := fmt.Sprintf("chore: initialize fullsend-%s per-repo installation", version)
+		prTitle := "chore: initialize fullsend per-repo installation"
+		prBody := "This PR adds the fullsend scaffold files for per-repo installation.\n\n" +
+			"Merge this PR to activate fullsend workflows."
+		if direct {
+			printer.StepStart(fmt.Sprintf("Committing scaffold files to %s/%s (%s branch)",
+				owner, repo, targetRepo.DefaultBranch))
+		} else {
+			printer.StepStart(fmt.Sprintf("Creating scaffold PR for %s/%s (target: %s)",
+				owner, repo, targetRepo.DefaultBranch))
+		}
+		_, err := layers.CommitScaffoldFiles(ctx, client, printer, owner, repo,
+			targetRepo.DefaultBranch, commitMsg, prTitle, prBody, files, direct, os.Stdin)
+		return err
 	}
 
-	repoSecrets := map[string]string{
-		"FULLSEND_GCP_PROJECT_ID":   inferenceProject,
-		"FULLSEND_GCP_WIF_PROVIDER": inferenceWIFProvider,
+	installCfg := repos.InstallConfig{
+		Owner:                 owner,
+		Repo:                  repo,
+		Roles:                 roles,
+		MintURL:               mintURL,
+		InferenceProject:      inferenceProject,
+		InferenceRegion:       inferenceRegion,
+		UpstreamRef:           upstreamRef,
+		UpstreamTag:           upstreamTag,
+		SkipMintCheck:         true, // already handled above
+		SkipAppSetup:          true, // already handled above
+		SkipGuardCheck:        true, // admin.go handles guard check itself
+		SkipWIF:               !needsWIFProvision,
+		WIFProvider:           inferenceWIFProvider,
+		VendorBinary:          vendor,
+		Direct:                c.Direct,
+		SkipScaffoldAndConfig: vendor, // vendor path commits scaffold+vendor atomically below
+	}
+
+	progressFn := func(_ string, phase, msg string) {
+		switch phase {
+		case "wif":
+			if strings.Contains(msg, "Provisioning") {
+				printer.StepStart(msg)
+			} else if strings.Contains(msg, "ready") {
+				printer.StepDone(msg)
+				printer.StepInfo("IAM policy changes may take up to 7 minutes to propagate")
+				printer.StepInfo("Agent workflows that authenticate via WIF may fail until propagation completes")
+			}
+		case "scaffold":
+			if strings.Contains(msg, "Committing") || strings.Contains(msg, "Generating") {
+				printer.StepStart(msg)
+			} else {
+				printer.StepDone(msg)
+			}
+		case "vars":
+			if strings.Contains(msg, "Configuring") {
+				printer.StepStart(msg)
+			} else {
+				printer.StepDone(msg)
+			}
+		case "secrets":
+			if strings.Contains(msg, "Configuring") {
+				printer.StepStart(msg)
+			} else {
+				printer.StepDone(msg)
+			}
+		}
+	}
+
+	installResult, installErr := repos.Install(ctx, installCfg, client, wifProvisioner, scaffoldCommitFn, progressFn)
+	if installErr != nil {
+		return installErr
+	}
+
+	if installResult.WIFProvider != "" {
+		inferenceWIFProvider = installResult.WIFProvider
 	}
 
 	if vendor {
-		var vendorErr error
-		files, _, vendorErr = appendVendorTreeFiles(printer, owner, repo, files, vendor, fullsendBinary, fullsendSource)
+		scaffoldFiles, buildErr := repos.BuildScaffoldFiles(installCfg)
+		if buildErr != nil {
+			return fmt.Errorf("building scaffold files for vendor: %w", buildErr)
+		}
+		vendorFiles, _, vendorErr := appendVendorTreeFiles(printer, owner, repo, scaffoldFiles, vendor, fullsendBinary, fullsendSource)
 		if vendorErr != nil {
 			return fmt.Errorf("collecting vendored assets: %w", vendorErr)
 		}
-	}
-
-	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets, c.Direct); err != nil {
-		return err
+		repoVars := map[string]string{
+			"FULLSEND_MINT_URL":   mintURL,
+			"FULLSEND_GCP_REGION": inferenceRegion,
+			forge.PerRepoGuardVar: "true",
+		}
+		repoSecrets := map[string]string{
+			"FULLSEND_GCP_PROJECT_ID":   inferenceProject,
+			"FULLSEND_GCP_WIF_PROVIDER": inferenceWIFProvider,
+		}
+		if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, vendorFiles, repoVars, repoSecrets, c.Direct); err != nil {
+			return err
+		}
 	}
 
 	if !vendor {
@@ -1022,6 +1104,58 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 	printer.Blank()
 	printer.StepDone(fmt.Sprintf("Per-repo installation complete for %s/%s", owner, repo))
 	return nil
+}
+
+// gcfProvisionerAdapter wraps a gcf.Provisioner to implement repos.WIFProvisioner,
+// bridging the GCF-specific provisioner to the package-agnostic interface.
+type gcfProvisionerAdapter struct {
+	provisioner *gcf.Provisioner
+}
+
+func (a *gcfProvisionerAdapter) DiscoverMint(ctx context.Context) (*repos.MintDiscovery, error) {
+	if a.provisioner == nil {
+		return nil, repos.ErrMintNotFound
+	}
+	d, err := a.provisioner.DiscoverMint(ctx)
+	if err != nil {
+		if errors.Is(err, gcf.ErrFunctionNotFound) {
+			return nil, fmt.Errorf("%w: %w", repos.ErrMintNotFound, err)
+		}
+		return nil, err
+	}
+	return &repos.MintDiscovery{
+		URL:             d.URL,
+		RoleAppIDs:      d.RoleAppIDs,
+		PerRepoWIFRepos: d.PerRepoWIFRepos,
+	}, nil
+}
+
+func (a *gcfProvisionerAdapter) ProvisionWIF(ctx context.Context) (string, error) {
+	if a.provisioner == nil {
+		return "", fmt.Errorf("WIF provisioner not configured")
+	}
+	return a.provisioner.ProvisionWIF(ctx)
+}
+
+func (a *gcfProvisionerAdapter) RegisterPerRepoWIF(ctx context.Context, repo string) error {
+	if a.provisioner == nil {
+		return fmt.Errorf("WIF provisioner not configured")
+	}
+	return a.provisioner.RegisterPerRepoWIF(ctx, repo)
+}
+
+func (a *gcfProvisionerAdapter) EnsureOrgInMint(ctx context.Context, expectedURL string, org string) error {
+	if a.provisioner == nil {
+		return fmt.Errorf("WIF provisioner not configured")
+	}
+	return a.provisioner.EnsureOrgInMint(ctx, expectedURL, org)
+}
+
+func (a *gcfProvisionerAdapter) DeletePerRepoWIF(ctx context.Context, repo string) error {
+	if a.provisioner == nil {
+		return fmt.Errorf("WIF provisioner not configured")
+	}
+	return a.provisioner.RemoveRepoFromMint(ctx, repo)
 }
 
 // applyPerRepoScaffold commits scaffold files to the repo's default branch
@@ -1051,7 +1185,7 @@ func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.
 	}
 
 	printer.StepStart("Configuring repository variables")
-	for _, name := range sortedStringMapKeys(repoVars) {
+	for _, name := range maputil.SortedKeys(repoVars) {
 		if err := client.CreateOrUpdateRepoVariable(ctx, owner, repo, name, repoVars[name]); err != nil {
 			printer.StepFail(fmt.Sprintf("Failed to set variable %s", name))
 			return fmt.Errorf("setting repo variable %s: %w", name, err)
@@ -1060,7 +1194,7 @@ func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.
 	printer.StepDone(fmt.Sprintf("Set %d repository variables", len(repoVars)))
 
 	printer.StepStart("Configuring repository secrets")
-	for _, name := range sortedStringMapKeys(repoSecrets) {
+	for _, name := range maputil.SortedKeys(repoSecrets) {
 		if err := client.CreateRepoSecret(ctx, owner, repo, name, repoSecrets[name]); err != nil {
 			printer.StepFail(fmt.Sprintf("Failed to set secret %s", name))
 			return fmt.Errorf("setting repo secret %s: %w", name, err)
@@ -2777,15 +2911,6 @@ func checkTokenScopes(ctx context.Context, client forge.Client, printer *ui.Prin
 }
 
 // Helper functions.
-
-func sortedStringMapKeys(m map[string]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
 
 func repoNameList(repos []forge.Repository) []string {
 	names := make([]string, len(repos))
