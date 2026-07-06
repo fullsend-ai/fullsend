@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help bootstrap lint lint-all check fmt \
+.PHONY: help bootstrap ensure-hooks lint lint-all check fmt \
        mindmap go-build go-test go-lint go-fmt go-vet go-tidy \
        lint-md-links script-test test \
        e2e-test behaviour-test lint-eval-cases functional-tests
@@ -71,10 +71,16 @@ bootstrap:
 	@echo "==> Bootstrap complete!"
 	@echo "    Make sure $(BOOTSTRAP_BIN_DIR) is on your PATH."
 
-lint:
+ensure-hooks:
+	@if [ ! -f .git/hooks/pre-commit ]; then \
+		echo "==> Installing pre-commit hooks..."; \
+		pre-commit install; \
+	fi
+
+lint: ensure-hooks
 	pre-commit run
 
-lint-all:
+lint-all: ensure-hooks
 	pre-commit run --all-files
 
 check:
