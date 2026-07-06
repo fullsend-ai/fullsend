@@ -16,10 +16,9 @@ type EventRenderer struct {
 	printer        *ui.Printer
 	start          time.Time
 	metrics        *RunMetrics
-	isCI           bool
-	inText         bool
-	inThinking     bool
-	lastTokenTotal int
+	isCI       bool
+	inText     bool
+	inThinking bool
 }
 
 // NewEventRenderer creates a renderer that writes to the given printer
@@ -77,15 +76,12 @@ func (r *EventRenderer) Handle(evt AgentEvent) {
 		}
 		r.printer.Heartbeat(msg)
 	case TokensEvent:
+		r.endBlock()
 		total := e.InputTokens + e.OutputTokens + e.CacheRead + e.CacheWrite
-		if total-r.lastTokenTotal >= 5000 {
-			r.endBlock()
-			r.lastTokenTotal = total
-			r.printer.StepInfo(fmt.Sprintf(
-				"TOKENS in=%d out=%d cache_r=%d cache_w=%d total=%d",
-				e.InputTokens, e.OutputTokens, e.CacheRead, e.CacheWrite, total,
-			))
-		}
+		r.printer.StepInfo(fmt.Sprintf(
+			"TOKENS in=%d out=%d cache_r=%d cache_w=%d total=%d",
+			e.InputTokens, e.OutputTokens, e.CacheRead, e.CacheWrite, total,
+		))
 	case ResultEvent:
 		r.endBlock()
 		r.metrics.NumTurns = e.NumTurns

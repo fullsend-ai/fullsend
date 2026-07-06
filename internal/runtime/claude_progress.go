@@ -285,6 +285,7 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				NumTurns:                 re.NumTurns,
 				TotalCostUSD:             re.TotalCostUSD,
 				IsError:                  re.IsError,
+				ErrorMessage:             re.Result,
 				Subtype:                  re.Subtype,
 				InputTokens:              re.Usage.InputTokens,
 				OutputTokens:             re.Usage.OutputTokens,

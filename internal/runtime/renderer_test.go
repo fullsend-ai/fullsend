@@ -144,6 +144,27 @@ func TestRendererResultEvent(t *testing.T) {
 	}
 }
 
+func TestRendererResultEventWithError(t *testing.T) {
+	var buf bytes.Buffer
+	r, _ := newTestRenderer(&buf)
+
+	r.Handle(ResultEvent{
+		NumTurns:     3,
+		TotalCostUSD: 0.10,
+		IsError:      true,
+		ErrorMessage: "Max turns reached",
+		Subtype:      "error_max_turns",
+	})
+
+	output := buf.String()
+	if !strings.Contains(output, "ERROR") {
+		t.Errorf("expected ERROR in result header, got: %s", output)
+	}
+	if !strings.Contains(output, "Max turns reached") {
+		t.Errorf("expected error message in output, got: %s", output)
+	}
+}
+
 func TestRendererErrorEvent(t *testing.T) {
 	var buf bytes.Buffer
 	r, _ := newTestRenderer(&buf)
@@ -174,23 +195,17 @@ func TestRendererRetryEvent(t *testing.T) {
 	}
 }
 
-func TestRendererTokensEventThrottled(t *testing.T) {
+func TestRendererTokensEvent(t *testing.T) {
 	var buf bytes.Buffer
 	r, _ := newTestRenderer(&buf)
 
-	// First tokens event should render (total crosses 0 -> 5k threshold)
-	r.Handle(TokensEvent{InputTokens: 4000, OutputTokens: 2000})
-	first := buf.String()
+	r.Handle(TokensEvent{InputTokens: 4000, OutputTokens: 2000, CacheRead: 500, CacheWrite: 200})
 
-	// Second event just below next 5k boundary should not add output
-	buf.Reset()
-	r.Handle(TokensEvent{InputTokens: 4000, OutputTokens: 2500})
-	second := buf.String()
-
-	if first == "" {
-		t.Error("expected first tokens event to render")
+	output := buf.String()
+	if !strings.Contains(output, "TOKENS") {
+		t.Errorf("expected TOKENS in output, got: %s", output)
 	}
-	if second != "" {
-		t.Errorf("expected second tokens event to be throttled, got: %s", second)
+	if !strings.Contains(output, "in=4000") {
+		t.Errorf("expected input token count, got: %s", output)
 	}
 }

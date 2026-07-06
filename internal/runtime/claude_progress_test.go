@@ -754,6 +754,28 @@ func TestParseClaudeStreamErrorEvent(t *testing.T) {
 	}
 }
 
+func TestParseClaudeStreamResultEventWithError(t *testing.T) {
+	input := `{"type":"result","num_turns":3,"total_cost_usd":0.10,"is_error":true,"subtype":"error_max_turns","result":"Max turns reached","usage":{"input_tokens":5000,"output_tokens":1000}}`
+	events := collectEvents(t, input)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	result, ok := events[0].(ResultEvent)
+	if !ok {
+		t.Fatalf("expected ResultEvent, got %T", events[0])
+	}
+	if !result.IsError {
+		t.Error("expected IsError to be true")
+	}
+	if result.ErrorMessage != "Max turns reached" {
+		t.Errorf("expected error message 'Max turns reached', got %q", result.ErrorMessage)
+	}
+	if result.Subtype != "error_max_turns" {
+		t.Errorf("expected subtype error_max_turns, got %q", result.Subtype)
+	}
+}
+
 func TestParseClaudeStreamAssistantFallback(t *testing.T) {
 	lines := []string{
 		`{"type":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/main.go"}}]}`,
