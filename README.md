@@ -40,6 +40,7 @@ This is not a product spec. It's an evolving exploration of a hard problem space
   - [Adaptive Agent Selection](docs/problems/adaptive-agent-selection.md) — Learning which agent/team/workflow configurations work best for which problem classes, using evolutionary algorithms and Thompson Sampling
   - [Platform Nativeness](docs/problems/platform-nativeness.md) — When the platform you automate is also the one you build on: which problems are inherent vs. self-inflicted
   - [Cross-Run Memory](docs/problems/cross-run-memory.md) — How agents learn from prior run outcomes without violating the ephemeral sandbox invariant
+  - [Trustworthiness Evidence](docs/problems/trustworthiness-evidence.md) — What evidence should be required before granting agents increasing autonomy?
 - **[docs/problems/applied/](docs/problems/applied/)** — Organization-specific considerations for downstream consumers:
   - [konflux-ci](docs/problems/applied/konflux-ci/) — Kubernetes-native CI/CD platform (the original proving ground)
 - **[docs/plans/](docs/plans/)** — Implementation plans for accepted or in-progress designs:

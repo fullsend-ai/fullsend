@@ -51,7 +51,7 @@ Possible criteria (all TBD — this needs experimentation):
 - History of successful agent-reviewed PRs (agents review but don't merge, humans validate the agent's judgment)
 - No recent security incidents attributable to missed review
 
-These criteria are all properties of the repo and the agents. But graduation also changes the role of the humans responsible for guarded paths — from active participants to approvers of agent output. Whether those humans can remain effective in that reduced role is an open question explored in [human-factors.md](human-factors.md).
+These criteria are all properties of the repo and the agents. [Trustworthiness evidence](trustworthiness-evidence.md) explores a structured portfolio model for composing these signals into trust decisions. But graduation also changes the role of the humans responsible for guarded paths — from active participants to approvers of agent output. Whether those humans can remain effective in that reduced role is an open question explored in [human-factors.md](human-factors.md).
 
 ## The probationary period
 

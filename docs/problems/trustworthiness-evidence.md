@@ -90,7 +90,7 @@ The question is how these signals compose:
 
 **Weighted portfolio.** Each evidence type contributes a weighted score to an overall trust assessment. Allows trade-offs between categories, but introduces calibration complexity: what weights are correct?
 
-**Tiered requirements.** Different autonomy levels require different evidence portfolios. Auto-triaging issues (low risk) requires only static analysis and basic behavioral tests. Auto-merging code (high risk) requires all five evidence types with strict thresholds. This aligns with the autonomy spectrum's per-repo, per-path granularity.
+**Tiered requirements.** Different autonomy levels require different evidence portfolios. Auto-triaging issues (low risk) requires only static analysis and basic behavioral tests. Auto-merging code (high risk) requires all five evidence types with strict thresholds. This aligns with the autonomy spectrum's per-repo, per-path granularity. However, defining and maintaining per-tier evidence portfolios adds complexity: who decides the tier boundaries, and how do you prevent agents from gaming the system by targeting the minimum tier? Tier definitions must also evolve as new evidence types emerge.
 
 ## Relationship to other problem areas
 
