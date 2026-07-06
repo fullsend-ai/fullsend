@@ -17,6 +17,7 @@ Download the latest binary from [GitHub Releases](https://github.com/fullsend-ai
 | [`fullsend github`](github.md) | Configure GitHub orgs and repos — setup, enrollment, day-2 operations |
 | [`fullsend inference`](inference.md) | Manage GCP Workload Identity Federation for Agent Platform access |
 | [`fullsend mint`](mint.md) | Deploy and manage the OIDC token mint service |
+| [`fullsend repos`](repos.md) | Manage per-repo installations at scale via declarative manifest |
 
 ## Additional commands
 

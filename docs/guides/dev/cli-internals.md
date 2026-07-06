@@ -38,6 +38,8 @@ fullsend
 │   ├── status       <org>                   # Analyze GitHub-side state
 │   ├── uninstall    <org>                   # Remove fullsend GitHub configuration
 │   └── sync-scaffold <org>                  # Update workflow templates
+├── repos                                    # Manage per-repo installations via manifest
+│   └── status                               # Compare manifest against actual repo state
 ├── agent                                    # Manage agent registrations in config
 │   ├── add          <url-or-path>            # Register an agent (URL auto-pinned)
 │   ├── list                                  # List registered agents
