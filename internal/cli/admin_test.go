@@ -18,6 +18,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/layers"
+	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -2090,6 +2091,175 @@ func TestRunPerRepoInstall_ValidationErrors(t *testing.T) {
 	}
 }
 
+type testWIFProvisioner struct {
+	wifProvider    string
+	wifErr         error
+	discoverResult *repos.MintDiscovery
+	discoverErr    error
+}
+
+func (p *testWIFProvisioner) DiscoverMint(_ context.Context) (*repos.MintDiscovery, error) {
+	return p.discoverResult, p.discoverErr
+}
+
+func (p *testWIFProvisioner) ProvisionWIF(_ context.Context) (string, error) {
+	return p.wifProvider, p.wifErr
+}
+
+func (p *testWIFProvisioner) RegisterPerRepoWIF(_ context.Context, _ string) error { return nil }
+func (p *testWIFProvisioner) EnsureOrgInMint(_ context.Context, _, _ string) error { return nil }
+func (p *testWIFProvisioner) DeletePerRepoWIF(_ context.Context, _ string) error   { return nil }
+
+func perRepoTestBase() perRepoInstallConfig {
+	return perRepoInstallConfig{
+		RepoFullName:         "acme/widget",
+		Agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		InferenceProject:     "test-project",
+		InferenceRegion:      "us-central1",
+		MintURL:              "https://mint.example.com/v1/token",
+		SkipMintCheck:        true,
+		SkipAppSetup:         true,
+		InferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/fullsend-provider",
+		testPrinter:          ui.New(&bytes.Buffer{}),
+	}
+}
+
+func TestRunPerRepoInstall_SuccessfulNonVendor(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: "widget", FullName: "acme/widget", DefaultBranch: "main"},
+	}
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.Direct = true
+
+	err := runPerRepoInstall(context.Background(), cfg)
+	require.NoError(t, err)
+
+	var foundGuard bool
+	for _, v := range client.Variables {
+		if v.Name == forge.PerRepoGuardVar && v.Value == "true" {
+			foundGuard = true
+		}
+	}
+	assert.True(t, foundGuard, "expected guard variable to be set")
+}
+
+func TestRunPerRepoInstall_WithWIFProvisioning(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: "widget", FullName: "acme/widget", DefaultBranch: "main"},
+	}
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.InferenceWIFProvider = ""
+	cfg.Direct = true
+	cfg.testWIFProvisioner = &testWIFProvisioner{
+		wifProvider: "projects/123/locations/global/workloadIdentityPools/pool/providers/prov",
+	}
+
+	err := runPerRepoInstall(context.Background(), cfg)
+	require.NoError(t, err)
+}
+
+func TestRunPerRepoInstall_WIFProvisioningError(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: "widget", FullName: "acme/widget", DefaultBranch: "main"},
+	}
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.InferenceWIFProvider = ""
+	cfg.Direct = true
+	cfg.testWIFProvisioner = &testWIFProvisioner{
+		wifErr: fmt.Errorf("IAM permission denied"),
+	}
+
+	err := runPerRepoInstall(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "provisioning WIF")
+}
+
+func TestRunPerRepoInstall_GuardAlreadyInstalled(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.VariableValues = map[string]string{
+		"acme/widget/" + forge.PerRepoGuardVar: "true",
+	}
+	client.Repos = []forge.Repository{
+		{Name: "widget", FullName: "acme/widget", DefaultBranch: "main"},
+	}
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.Direct = true
+
+	err := runPerRepoInstall(context.Background(), cfg)
+	require.NoError(t, err)
+}
+
+func TestRunPerRepoInstall_DryRun(t *testing.T) {
+	client := forge.NewFakeClient()
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.DryRun = true
+
+	err := runPerRepoInstall(context.Background(), cfg)
+	require.NoError(t, err)
+}
+
+func TestRunPerRepoInstall_ScaffoldCommitError(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Errors = map[string]error{
+		"GetRepo": fmt.Errorf("repo not accessible"),
+	}
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.Direct = true
+
+	err := runPerRepoInstall(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "getting repo info")
+}
+
+func TestRunPerRepoInstall_GuardValueFalse(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.VariableValues = map[string]string{
+		"acme/widget/" + forge.PerRepoGuardVar: "false",
+	}
+	client.Repos = []forge.Repository{
+		{Name: "widget", FullName: "acme/widget", DefaultBranch: "main"},
+	}
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.Direct = true
+
+	err := runPerRepoInstall(context.Background(), cfg)
+	require.NoError(t, err)
+}
+
+func TestRunPerRepoInstall_GuardValueUnexpected(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.VariableValues = map[string]string{
+		"acme/widget/" + forge.PerRepoGuardVar: "maybe",
+	}
+	client.Repos = []forge.Repository{
+		{Name: "widget", FullName: "acme/widget", DefaultBranch: "main"},
+	}
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.Direct = true
+
+	err := runPerRepoInstall(context.Background(), cfg)
+	require.NoError(t, err)
+}
+
 func TestFilterSlugsByAppSet(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -2921,6 +3091,172 @@ func TestApplyPerRepoScaffold_ProtectedBranch_BranchUpToDate(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Contains(t, buf.String(), "up to date")
+}
+
+func TestGCFWIFAdapter_DiscoverMint_Success(t *testing.T) {
+	fakeClient := gcf.NewFakeGCFClient(gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+		URI: "https://mint.example.run.app",
+		EnvVars: map[string]string{
+			"ROLE_APP_IDS":       `{"coder":"100","triage":"200"}`,
+			"PER_REPO_WIF_REPOS": "acme/widget,acme/api",
+		},
+	}))
+	prov := gcf.NewProvisioner(gcf.Config{
+		ProjectID:  "test-project",
+		GitHubOrgs: []string{"acme"},
+		Repo:       "acme/widget",
+	}, fakeClient)
+	adapter := &gcfProvisionerAdapter{provisioner: prov}
+
+	d, err := adapter.DiscoverMint(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://mint.example.run.app", d.URL)
+	assert.Equal(t, "100", d.RoleAppIDs["coder"])
+	assert.Equal(t, "200", d.RoleAppIDs["triage"])
+	assert.Contains(t, d.PerRepoWIFRepos, "acme/widget")
+	assert.Contains(t, d.PerRepoWIFRepos, "acme/api")
+}
+
+func TestGCFWIFAdapter_DiscoverMint_NilProvisioner(t *testing.T) {
+	adapter := &gcfProvisionerAdapter{provisioner: nil}
+	_, err := adapter.DiscoverMint(context.Background())
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, repos.ErrMintNotFound))
+}
+
+func TestGCFWIFAdapter_DiscoverMint_FunctionNotFound(t *testing.T) {
+	fakeClient := gcf.NewFakeGCFClient(gcf.WithFakeErrors(map[string]error{
+		"GetFunction": fmt.Errorf("checking mint function: %w", gcf.ErrFunctionNotFound),
+	}))
+	prov := gcf.NewProvisioner(gcf.Config{
+		ProjectID:  "test-project",
+		GitHubOrgs: []string{"acme"},
+		Repo:       "acme/widget",
+	}, fakeClient)
+	adapter := &gcfProvisionerAdapter{provisioner: prov}
+
+	_, err := adapter.DiscoverMint(context.Background())
+	require.Error(t, err)
+	assert.True(t, errors.Is(err, repos.ErrMintNotFound),
+		"expected ErrMintNotFound, got: %v", err)
+	assert.True(t, errors.Is(err, gcf.ErrFunctionNotFound),
+		"original gcf error should be preserved in chain, got: %v", err)
+}
+
+func TestGCFWIFAdapter_DiscoverMint_OtherError(t *testing.T) {
+	fakeClient := gcf.NewFakeGCFClient(gcf.WithFakeErrors(map[string]error{
+		"GetFunction": fmt.Errorf("permission denied"),
+	}))
+	prov := gcf.NewProvisioner(gcf.Config{
+		ProjectID:  "test-project",
+		GitHubOrgs: []string{"acme"},
+		Repo:       "acme/widget",
+	}, fakeClient)
+	adapter := &gcfProvisionerAdapter{provisioner: prov}
+
+	_, err := adapter.DiscoverMint(context.Background())
+	require.Error(t, err)
+	assert.False(t, errors.Is(err, repos.ErrMintNotFound),
+		"non-function-not-found errors should not be translated")
+}
+
+func TestGCFWIFAdapter_ProvisionWIF_NilProvisioner(t *testing.T) {
+	adapter := &gcfProvisionerAdapter{provisioner: nil}
+	_, err := adapter.ProvisionWIF(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not configured")
+}
+
+func TestGCFWIFAdapter_RegisterPerRepoWIF_NilProvisioner(t *testing.T) {
+	adapter := &gcfProvisionerAdapter{provisioner: nil}
+	err := adapter.RegisterPerRepoWIF(context.Background(), "acme/widget")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not configured")
+}
+
+func TestGCFWIFAdapter_EnsureOrgInMint_NilProvisioner(t *testing.T) {
+	adapter := &gcfProvisionerAdapter{provisioner: nil}
+	err := adapter.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not configured")
+}
+
+func TestGCFWIFAdapter_DeletePerRepoWIF_NilProvisioner(t *testing.T) {
+	adapter := &gcfProvisionerAdapter{provisioner: nil}
+	err := adapter.DeletePerRepoWIF(context.Background(), "acme/widget")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not configured")
+}
+
+func TestGCFWIFAdapter_ProvisionWIF_Success(t *testing.T) {
+	fakeClient := gcf.NewFakeGCFClient()
+	prov := gcf.NewProvisioner(gcf.Config{
+		ProjectID:   "test-project",
+		GitHubOrgs:  []string{"acme"},
+		Repo:        "acme/widget",
+		WIFPoolName: "fullsend-pool",
+	}, fakeClient)
+	adapter := &gcfProvisionerAdapter{provisioner: prov}
+
+	provider, err := adapter.ProvisionWIF(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, provider, "fullsend-pool")
+}
+
+func TestGCFWIFAdapter_EnsureOrgInMint_Success(t *testing.T) {
+	fakeClient := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI: "https://mint.example.run.app",
+			EnvVars: map[string]string{
+				"ALLOWED_ORGS": "acme",
+				"ROLE_APP_IDS": `{"triage":"100"}`,
+			},
+		}),
+	)
+	prov := gcf.NewProvisioner(gcf.Config{
+		ProjectID:  "test-project",
+		GitHubOrgs: []string{"acme"},
+	}, fakeClient)
+	adapter := &gcfProvisionerAdapter{provisioner: prov}
+
+	err := adapter.EnsureOrgInMint(context.Background(), "https://mint.example.run.app", "acme")
+	require.NoError(t, err)
+}
+
+func TestGCFWIFAdapter_RegisterPerRepoWIF_Success(t *testing.T) {
+	fakeClient := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:     "https://mint.example.run.app",
+			EnvVars: map[string]string{},
+		}),
+	)
+	prov := gcf.NewProvisioner(gcf.Config{
+		ProjectID:  "test-project",
+		GitHubOrgs: []string{"acme"},
+	}, fakeClient)
+	adapter := &gcfProvisionerAdapter{provisioner: prov}
+
+	err := adapter.RegisterPerRepoWIF(context.Background(), "acme/widget")
+	require.NoError(t, err)
+}
+
+func TestGCFWIFAdapter_DeletePerRepoWIF_Success(t *testing.T) {
+	fakeClient := gcf.NewFakeGCFClient(
+		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI: "https://mint.example.run.app",
+			EnvVars: map[string]string{
+				"PER_REPO_WIF_REPOS": "acme/widget,acme/api",
+			},
+		}),
+	)
+	prov := gcf.NewProvisioner(gcf.Config{
+		ProjectID:  "test-project",
+		GitHubOrgs: []string{"acme"},
+	}, fakeClient)
+	adapter := &gcfProvisionerAdapter{provisioner: prov}
+
+	err := adapter.DeletePerRepoWIF(context.Background(), "acme/widget")
+	require.NoError(t, err)
 }
 
 func TestToAgentCredentials(t *testing.T) {

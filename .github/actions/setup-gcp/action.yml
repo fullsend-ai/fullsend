@@ -8,6 +8,10 @@ inputs:
   gcp_project_id:
     description: 'GCP project ID — passed to google-github-actions/auth so the runner env has GOOGLE_CLOUD_PROJECT'
     required: false
+  fullsend-dir:
+    description: 'Path to fullsend config directory (empty for per-org workspace root layout)'
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -34,4 +38,6 @@ runs:
 
     - name: Prepare sandbox credentials
       shell: bash
-      run: bash scripts/prepare-sandbox-credentials.sh
+      env:
+        FULLSEND_DIR: ${{ inputs.fullsend-dir }}
+      run: bash "${FULLSEND_DIR:+$FULLSEND_DIR/}scripts/prepare-sandbox-credentials.sh"
