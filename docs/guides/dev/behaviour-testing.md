@@ -82,4 +82,4 @@ E2E_GCP_WIF_PROVIDER=...      # CI job GCP auth (not written to pool test-repo s
 
 Triage scenarios apply the `ready-for-triage` label (not `/fs-triage` comments) because the per-repo shim ignores `issue_comment` events from bot users and CI uses minted e2e installation tokens.
 
-See [behaviour-drivers.md](behaviour-drivers.md) for driver configuration and [ADR 0063](../../ADRs/0063-behaviour-tests-with-gherkin-and-drivers.md) for the decision record.
+See [behaviour-drivers.md](behaviour-drivers.md) for driver configuration and [ADR 0065](../../ADRs/0065-behaviour-tests-with-gherkin-and-drivers.md) for the decision record.

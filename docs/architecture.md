@@ -131,7 +131,7 @@ This is the thing that actually reasons and acts. Everything else in this docume
 
 ### Behaviour testing
 
-End-to-end **behaviour tests** under `e2e/behaviour/` validate deterministic platform code — dispatch routing, harness loading, sandbox policy, SCM mutations — with the LLM layer removed via the dummy runtime. Tests exercise real GitHub and GitHub Actions through pluggable SCM and CI drivers; Gherkin scenarios stay install-mode agnostic while runner env vars select backends. This coverage is **orthogonal** to LLM and instruction testing in [testing-agents.md](problems/testing-agents.md). See [ADR 0063](ADRs/0063-behaviour-tests-with-gherkin-and-drivers.md).
+End-to-end **behaviour tests** under `e2e/behaviour/` validate deterministic platform code — dispatch routing, harness loading, sandbox policy, SCM mutations — with the LLM layer removed via the dummy runtime. Tests exercise real GitHub and GitHub Actions through pluggable SCM and CI drivers; Gherkin scenarios stay install-mode agnostic while runner env vars select backends. This coverage is **orthogonal** to LLM and instruction testing in [testing-agents.md](problems/testing-agents.md). See [ADR 0065](ADRs/0065-behaviour-tests-with-gherkin-and-drivers.md).
 
 **Open questions:**
 

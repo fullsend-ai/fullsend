@@ -212,7 +212,7 @@ version: 1                          # Schema version for future evolution
 intent_repo: <org>/features         # or <org>/intent
 architecture_repo: <org>/architecture
 
-# Agent runtime defaults (see ADR 0063 for behaviour-test dummy runtime)
+# Agent runtime defaults (see ADR 0065 for behaviour-test dummy runtime)
 defaults:
   runtime: claude                    # claude or dummy (dummy: behaviour test orgs only)
 

@@ -1,5 +1,5 @@
 ---
-title: "63. Behaviour tests with Gherkin and pluggable drivers"
+title: "65. Behaviour tests with Gherkin and pluggable drivers"
 status: Accepted
 relates_to:
   - agent-infrastructure
@@ -10,7 +10,7 @@ topics:
   - behaviour-tests
 ---
 
-# 63. Behaviour tests with Gherkin and pluggable drivers
+# 65. Behaviour tests with Gherkin and pluggable drivers
 
 Date: 2026-06-07
 

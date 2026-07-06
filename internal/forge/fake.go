@@ -111,7 +111,7 @@ type FakeClient struct {
 
 	// Pre-populated data
 	Repos                     []Repository
-	OrgRepos                  map[string][]Repository // per-org repos; when set, ListOrgRepos uses this instead of Repos
+	OrgRepos                  map[string][]Repository  // per-org repos; when set, ListOrgRepos uses this instead of Repos
 	FileContents              map[string][]byte        // key: "owner/repo/path"
 	WorkflowRuns              map[string]*WorkflowRun  // key: "owner/repo/workflow"
 	RecentWorkflowRuns        map[string][]WorkflowRun // key: "owner/repo"
