@@ -17,8 +17,9 @@ Feature: Manual triage via ready-for-triage label
   Scenario: Sandbox blocks disallowed outbound URL
     Given the enrolled test repository
     And a dummy agent that would:
-      | description    | op      | args                                |
-      | Search for foo | url_get | https://www.google.com/search?q=foo |
+      | description        | op            | args                                                      |
+      | Search for foo     | url_get       | https://www.google.com/search?q=foo                       |
+      | Satisfy validation | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |
     And an issue
     When the issue is labeled "ready-for-triage"
     Then the triage workflow completes successfully

@@ -71,13 +71,13 @@ func (r DummyRuntime) Run(_ context.Context, params RunParams, printer *ui.Print
 		return 1, err
 	}
 
-	results, execErr := executeBehaviourScript(params.SandboxName, params.RepoDir, script)
-	if writeErr := writeBehaviourResults(params.SandboxName, results); writeErr != nil && execErr == nil {
-		execErr = writeErr
+	results, scriptErr := executeBehaviourScript(params.SandboxName, params.RepoDir, script)
+	if writeErr := writeBehaviourResults(params.SandboxName, results); writeErr != nil {
+		return 1, writeErr
 	}
 
-	if execErr != nil {
-		printer.StepWarn("Dummy runtime: " + execErr.Error())
+	if scriptErr != nil {
+		printer.StepWarn("Dummy runtime: " + scriptErr.Error())
 	}
 
 	// Non-zero exitCode mirrors ClaudeRuntime: run.go warns on non-zero exit but
@@ -89,7 +89,7 @@ func (r DummyRuntime) Run(_ context.Context, params RunParams, printer *ui.Print
 			break
 		}
 	}
-	return exitCode, execErr
+	return exitCode, nil
 }
 
 func (r DummyRuntime) ClearIterationArtifacts(sandboxName string) error {
