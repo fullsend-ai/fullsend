@@ -1015,3 +1015,56 @@ func TestFakeClient_CommitFilesErrSeq(t *testing.T) {
 		require.ErrorIs(t, err, ErrNonFastForward)
 	})
 }
+
+func TestFakeClient_GetRepo(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{
+		Repos: []Repository{{Name: "repo", FullName: "org/repo"}},
+	}
+
+	repo, err := fc.GetRepo(ctx, "org", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, "org/repo", repo.FullName)
+
+	_, err = fc.GetRepo(ctx, "org", "missing")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestFakeClient_GetOrgPlan(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{}
+
+	plan, err := fc.GetOrgPlan(ctx, "org")
+	require.NoError(t, err)
+	assert.Equal(t, "free", plan)
+
+	fc.OrgPlan = "enterprise"
+	plan, err = fc.GetOrgPlan(ctx, "org")
+	require.NoError(t, err)
+	assert.Equal(t, "enterprise", plan)
+}
+
+func TestFakeClient_ListWorkflowRuns(t *testing.T) {
+	ctx := context.Background()
+	run := WorkflowRun{ID: 42, Status: "completed", Conclusion: "success"}
+	fc := &FakeClient{
+		WorkflowRuns: map[string]*WorkflowRun{
+			"org/repo/ci.yml": &run,
+		},
+	}
+
+	runs, err := fc.ListWorkflowRuns(ctx, "org", "repo", "ci.yml")
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	assert.Equal(t, 42, runs[0].ID)
+
+	runs, err = fc.ListWorkflowRuns(ctx, "org", "repo", "missing.yml")
+	require.NoError(t, err)
+	assert.Nil(t, runs)
+}
+
+func TestFakeClient_DispatchWorkflow(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{}
+	require.NoError(t, fc.DispatchWorkflow(ctx, "org", "repo", "ci.yml", "main", map[string]string{"k": "v"}))
+}

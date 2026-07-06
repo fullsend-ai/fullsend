@@ -47,4 +47,7 @@ func TestResolveFromPerRepoConfig(t *testing.T) {
 	dummyBackend, err := ResolveFromPerRepoConfig(cfg)
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", dummyBackend.Runtime.Name())
+
+	_, err = ResolveFromPerRepoConfig(&config.PerRepoConfig{Version: "1", Runtime: "invalid"})
+	require.Error(t, err)
 }
