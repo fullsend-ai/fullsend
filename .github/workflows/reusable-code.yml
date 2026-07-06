@@ -153,7 +153,8 @@ jobs:
           REPO_FULL_NAME: ${{ inputs.source_repo }}
           GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
           COMMENT_BODY: ${{ fromJSON(inputs.event_payload).comment.body }}
-        run: bash scripts/pre-code.sh
+          FULLSEND_DIR: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
+        run: bash "${FULLSEND_DIR:+$FULLSEND_DIR/}scripts/pre-code.sh"
 
       - name: Setup GCP and prepare credentials
         if: steps.validate.outputs.skipped != 'true'
@@ -161,6 +162,7 @@ jobs:
         with:
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
 
       - name: Resolve bot identity
         if: steps.validate.outputs.skipped != 'true'

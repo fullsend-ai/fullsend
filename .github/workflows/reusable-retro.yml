@@ -148,6 +148,7 @@ jobs:
         with:
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
 
       - name: Setup agent environment
         env:
