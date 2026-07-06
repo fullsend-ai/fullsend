@@ -22,6 +22,12 @@ const behaviourResultsFile = "behaviour-results.json"
 // writeBehaviourResultsFn is the production writer; tests may replace it.
 var writeBehaviourResultsFn = writeBehaviourResults
 
+// sandboxExecFn and sandboxUploadFn are production defaults; tests may replace them.
+var (
+	sandboxExecFn   = sandbox.Exec
+	sandboxUploadFn = sandbox.Upload
+)
+
 // BehaviourOperation is a single scripted step for the dummy runtime.
 type BehaviourOperation struct {
 	Description string `yaml:"description" json:"description"`
@@ -162,7 +168,7 @@ func executeBehaviourOp(sandboxName, repoDir string, op BehaviourOperation) erro
 			return err
 		}
 		cmd := fmt.Sprintf("test -r %s", shellQuote(remotePath))
-		_, stderr, exitCode, err := sandbox.Exec(sandboxName, cmd, 30*time.Second)
+		_, stderr, exitCode, err := sandboxExecFn(sandboxName, cmd, 30*time.Second)
 		if err != nil {
 			return fmt.Errorf("read_file exec: %w", err)
 		}
@@ -176,7 +182,7 @@ func executeBehaviourOp(sandboxName, repoDir string, op BehaviourOperation) erro
 			return fmt.Errorf("url_get requires a URL")
 		}
 		cmd := fmt.Sprintf("curl -sf %s -o /dev/null", shellQuote(url))
-		_, stderr, exitCode, err := sandbox.Exec(sandboxName, cmd, 60*time.Second)
+		_, stderr, exitCode, err := sandboxExecFn(sandboxName, cmd, 60*time.Second)
 		if err != nil {
 			return fmt.Errorf("url_get exec: %w", err)
 		}
@@ -195,7 +201,7 @@ func executeBehaviourOp(sandboxName, repoDir string, op BehaviourOperation) erro
 		}
 		parentDir := filepath.Dir(remoteDest)
 		mkdirCmd := fmt.Sprintf("mkdir -p %s", shellQuote(parentDir))
-		if _, _, _, err := sandbox.Exec(sandboxName, mkdirCmd, 10*time.Second); err != nil {
+		if _, _, _, err := sandboxExecFn(sandboxName, mkdirCmd, 10*time.Second); err != nil {
 			return fmt.Errorf("write_fixture mkdir: %w", err)
 		}
 		tmp, err := os.CreateTemp("", "behaviour-fixture-*")
@@ -208,7 +214,7 @@ func executeBehaviourOp(sandboxName, repoDir string, op BehaviourOperation) erro
 			return fmt.Errorf("write_fixture write temp: %w", err)
 		}
 		tmp.Close()
-		if err := sandbox.Upload(sandboxName, tmp.Name(), remoteDest); err != nil {
+		if err := sandboxUploadFn(sandboxName, tmp.Name(), remoteDest); err != nil {
 			return fmt.Errorf("write_fixture upload: %w", err)
 		}
 		return nil
@@ -265,7 +271,7 @@ func writeBehaviourResults(sandboxName string, results BehaviourResults) error {
 	}
 	tmp.Close()
 	remotePath := filepath.Join(sandbox.SandboxWorkspace, "output", behaviourResultsFile)
-	return sandbox.Upload(sandboxName, tmp.Name(), remotePath)
+	return sandboxUploadFn(sandboxName, tmp.Name(), remotePath)
 }
 
 func shellQuote(s string) string {

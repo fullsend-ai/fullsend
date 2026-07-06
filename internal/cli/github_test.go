@@ -982,3 +982,26 @@ func TestRunGitHubSetupPerRepo_RuntimeInConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", cfg.Runtime)
 }
+
+func TestRunGitHubSetupPerRepo_InvalidRuntime(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	client.Secrets = map[string]bool{
+		"acme/widget/FULLSEND_GCP_PROJECT_ID":   true,
+		"acme/widget/FULLSEND_GCP_WIF_PROVIDER": true,
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:          "acme/widget",
+		mintURL:         "https://mint-test-abc123.run.app",
+		inferenceRegion: "global",
+		agents:          strings.Join(config.PerRepoDefaultRoles(), ","),
+		runtime:         "invalid-runtime",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid runtime")
+}

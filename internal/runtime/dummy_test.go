@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -355,4 +356,74 @@ func TestDummyRuntime_RunOpFailureReturnsNilGoError(t *testing.T) {
 	}, ui.New(io.Discard), time.Now(), nil)
 	assert.Equal(t, 1, exit)
 	require.NoError(t, err)
+}
+
+func TestExecuteBehaviourOp_URLGetNonZeroExit(t *testing.T) {
+	orig := sandboxExecFn
+	sandboxExecFn = func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		if strings.Contains(cmd, "curl") {
+			return "", "blocked by sandbox policy", 22, nil
+		}
+		return "", "", 0, nil
+	}
+	t.Cleanup(func() { sandboxExecFn = orig })
+
+	err := executeBehaviourOp("sandbox", t.TempDir(), BehaviourOperation{
+		Op:   "url_get",
+		Args: "https://www.google.com/search?q=foo",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "url_get failed")
+	assert.Contains(t, err.Error(), "blocked by sandbox policy")
+}
+
+func TestExecuteBehaviourOp_ReadFileNonZeroExit(t *testing.T) {
+	orig := sandboxExecFn
+	sandboxExecFn = func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+		return "", "missing file", 1, nil
+	}
+	t.Cleanup(func() { sandboxExecFn = orig })
+
+	err := executeBehaviourOp("sandbox", t.TempDir(), BehaviourOperation{
+		Op:   "read_file",
+		Args: "output/missing.json",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read_file failed")
+}
+
+func TestExecuteBehaviourOp_WriteFixtureSuccess(t *testing.T) {
+	origExec := sandboxExecFn
+	origUpload := sandboxUploadFn
+	sandboxExecFn = func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+		return "", "", 0, nil
+	}
+	sandboxUploadFn = func(_, _, _ string) error { return nil }
+	t.Cleanup(func() {
+		sandboxExecFn = origExec
+		sandboxUploadFn = origUpload
+	})
+
+	err := executeBehaviourOp("sandbox", t.TempDir(), BehaviourOperation{
+		Op:      "write_fixture",
+		Args:    "output/agent-result.json, fixtures/triage/sufficient.json",
+		Content: `{"action":"sufficient"}`,
+	})
+	require.NoError(t, err)
+}
+
+func TestWriteBehaviourResultsSuccess(t *testing.T) {
+	orig := sandboxUploadFn
+	var uploaded bool
+	sandboxUploadFn = func(_, _, _ string) error {
+		uploaded = true
+		return nil
+	}
+	t.Cleanup(func() { sandboxUploadFn = orig })
+
+	err := writeBehaviourResults("sandbox", BehaviourResults{
+		Operations: []BehaviourOpResult{{Description: "ok", Success: true}},
+	})
+	require.NoError(t, err)
+	assert.True(t, uploaded)
 }
