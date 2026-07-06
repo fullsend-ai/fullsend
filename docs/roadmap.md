@@ -59,7 +59,6 @@ Examples of work that could move this forward:
 
 - Harness triggers and dynamic agent dispatching ([#2565](https://github.com/fullsend-ai/fullsend/issues/2565))
 - Major config knobs for agents — making agents more adaptable to user preferences ([#2832](https://github.com/fullsend-ai/fullsend/issues/2832))
-- Agent registration schema and CLI subcommand ([#2768](https://github.com/fullsend-ai/fullsend/pull/2768), [#2769](https://github.com/fullsend-ai/fullsend/pull/2769), [#2770](https://github.com/fullsend-ai/fullsend/pull/2770))
 - Scribe agent enhancements and migration to agents repo ([#895](https://github.com/fullsend-ai/fullsend/issues/895), [#222](https://github.com/fullsend-ai/fullsend/issues/222), [#1674](https://github.com/fullsend-ai/fullsend/issues/1674))
 - Re-platform default agents as harness-driven configs ([#1986](https://github.com/fullsend-ai/fullsend/issues/1986), [#1985](https://github.com/fullsend-ai/fullsend/issues/1985))
 - Harness definition architecture and config schema ([#173](https://github.com/fullsend-ai/fullsend/issues/173), [#179](https://github.com/fullsend-ai/fullsend/issues/179), [#235](https://github.com/fullsend-ai/fullsend/issues/235))
