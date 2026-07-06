@@ -1299,21 +1299,42 @@ func (c *LiveClient) DeleteFile(ctx context.Context, owner, repo, path, message 
 	})
 }
 
-// GetBranchRef returns the HEAD commit SHA for the named branch.
-func (c *LiveClient) GetBranchRef(ctx context.Context, owner, repo, branch string) (string, error) {
-	refResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", owner, repo, branch))
+// GetRef returns the commit SHA for the given ref path (e.g., "heads/main", "tags/v0").
+func (c *LiveClient) GetRef(ctx context.Context, owner, repo, refPath string) (string, error) {
+	refResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/ref/%s", owner, repo, refPath))
 	if err != nil {
-		return "", fmt.Errorf("get branch ref %s/%s@%s: %w", owner, repo, branch, err)
+		return "", fmt.Errorf("get ref %s/%s@%s: %w", owner, repo, refPath, err)
 	}
 	var ref struct {
 		Object struct {
-			SHA string `json:"sha"`
+			SHA  string `json:"sha"`
+			Type string `json:"type"`
 		} `json:"object"`
 	}
 	if err := decodeJSON(refResp, &ref); err != nil {
-		return "", fmt.Errorf("decode branch ref: %w", err)
+		return "", fmt.Errorf("decode ref: %w", err)
+	}
+	if ref.Object.Type == "tag" {
+		tagResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/tags/%s", owner, repo, ref.Object.SHA))
+		if err != nil {
+			return "", fmt.Errorf("dereference tag %s: %w", ref.Object.SHA, err)
+		}
+		var tag struct {
+			Object struct {
+				SHA string `json:"sha"`
+			} `json:"object"`
+		}
+		if err := decodeJSON(tagResp, &tag); err != nil {
+			return "", fmt.Errorf("decode tag object: %w", err)
+		}
+		return tag.Object.SHA, nil
 	}
 	return ref.Object.SHA, nil
+}
+
+// GetBranchRef returns the HEAD commit SHA for the named branch.
+func (c *LiveClient) GetBranchRef(ctx context.Context, owner, repo, branch string) (string, error) {
+	return c.GetRef(ctx, owner, repo, "heads/"+branch)
 }
 
 // CreateBranch creates a new branch from the repository's default branch.

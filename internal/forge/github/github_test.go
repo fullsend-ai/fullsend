@@ -364,6 +364,91 @@ func TestGetFileContent(t *testing.T) {
 	assert.Equal(t, "key: value", string(data))
 }
 
+func TestGetRef(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/owner/repo/git/ref/tags/v0", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"object": map[string]any{
+				"sha":  "abc123def456",
+				"type": "commit",
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	sha, err := client.GetRef(context.Background(), "owner", "repo", "tags/v0")
+	require.NoError(t, err)
+	assert.Equal(t, "abc123def456", sha)
+}
+
+func TestGetRef_AnnotatedTag(t *testing.T) {
+	callNum := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callNum++
+		switch callNum {
+		case 1:
+			assert.Equal(t, "GET", r.Method)
+			assert.Equal(t, "/repos/owner/repo/git/ref/tags/v0", r.URL.Path)
+			json.NewEncoder(w).Encode(map[string]any{
+				"object": map[string]any{
+					"sha":  "tag-object-sha",
+					"type": "tag",
+				},
+			})
+		case 2:
+			assert.Equal(t, "GET", r.Method)
+			assert.Equal(t, "/repos/owner/repo/git/tags/tag-object-sha", r.URL.Path)
+			json.NewEncoder(w).Encode(map[string]any{
+				"object": map[string]any{
+					"sha": "actual-commit-sha",
+				},
+			})
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	sha, err := client.GetRef(context.Background(), "owner", "repo", "tags/v0")
+	require.NoError(t, err)
+	assert.Equal(t, "actual-commit-sha", sha)
+}
+
+func TestGetRef_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]any{
+			"message": "Not Found",
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.GetRef(context.Background(), "owner", "repo", "tags/v99")
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err))
+}
+
+func TestGetBranchRef_DelegatesToGetRef(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/owner/repo/git/ref/heads/main", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"object": map[string]any{
+				"sha":  "branch-sha-456",
+				"type": "commit",
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	sha, err := client.GetBranchRef(context.Background(), "owner", "repo", "main")
+	require.NoError(t, err)
+	assert.Equal(t, "branch-sha-456", sha)
+}
+
 func TestCreateBranch(t *testing.T) {
 	callNum := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

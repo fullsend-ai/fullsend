@@ -57,6 +57,8 @@ This is not a product spec. It's an evolving exploration of a hard problem space
   - [ADR-0046 Drift Scanner](docs/plans/2026-03-06-adr46-drift-scanner.md) — Implementation plan for ADR-0046 drift detection tool
   - [Repos Management](docs/plans/repos-management.md) — Implementation plan for declarative multi-repo management
   - [Repos Init](docs/plans/repos-init.md) — Implementation plan for `fullsend repos init` manifest bootstrapping
+  - [Agent Registration](docs/plans/agent-registration.md) — Implementation plan for config-driven agent registration and runtime resolution
+  - [Agent Extraction to Agents Repo](docs/plans/agent-extraction-to-agents-repo.md) — Plan for extracting first-party agents from the scaffold into the standalone agents repository
 - **[docs/guides/](docs/guides/)** — Practical how-to documentation for administrators and developers (see [ADR 0023](docs/ADRs/0023-user-documentation-structure.md))
 - **[docs/ADRs/](docs/ADRs/)** — Architecture Decision Records for crystallizing specific decisions (see [ADR 0001](docs/ADRs/0001-use-adrs-for-decision-making.md))
 - **[web/](web/)** — Browser-delivered assets for the public site (document graph today; future Vite app here). Cloudflare Worker config lives in [`cloudflare_site/`](cloudflare_site/) ([ADR 0019](docs/ADRs/0019-web-source-and-cloudflare-site-layout.md)).
