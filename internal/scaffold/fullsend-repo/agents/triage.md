@@ -244,6 +244,23 @@ Information is sufficient for a developer to investigate and fix.
 
 **Choosing a category:** the `feature` category covers issues that describe desired new behavior rather than a defect in existing functionality — the reporter expects something that has never been implemented. Use `feature` only when the described behavior clearly never existed in the product. If there is _any_ possibility the behavior is a regression (it used to work, or the reporter references a specific version where it worked), use `insufficient` instead and ask for version or timeline information. When in doubt, ask — do not prematurely reclassify.
 
+**Estimating effort:** Estimate implementation effort on a 0.25–3 scale matching the RICE effort dimension used by the prioritize agent. Consider:
+
+- **Files and lines of code:** Trivial one-liner vs multi-file change
+- **Architectural impact:** Isolated bug fix vs requires changes across layers or modules
+- **Testing complexity:** Simple unit test vs needs integration tests, mocking, or environment setup
+- **Domain knowledge:** Requires deep understanding of subsystems or external dependencies
+
+| Score | Rough guidance |
+|-------|---------------|
+| 0.25 | Trivial: typo fix, one-line condition change, documentation update |
+| 0.5 | Small: single-function fix, low-risk logic change, isolated update |
+| 1.0 | Moderate: multi-function change, local refactor, requires some test coverage |
+| 2.0 | Substantial: touches multiple files/layers, architectural consideration, thorough test coverage |
+| 3.0 | Large: multi-file refactor, performance work spanning subsystems, complex integration |
+
+Higher effort issues (effort >= 2.0) get routed to human review instead of auto-promoting to the coder — similar to how feature issues already require human prioritization. When in doubt between two scores, round down (bias toward auto-promotion). Only estimate effort for bug/docs/performance categories; feature issues already gate on human review.
+
 ```json
 {
   "action": "sufficient",
@@ -265,7 +282,8 @@ Information is sufficient for a developer to investigate and fix.
     "environment": "Relevant environment details",
     "impact": "Who is affected and how",
     "recommended_fix": "What a developer should investigate.",
-    "proposed_test_case": "Conceptual description of a test that would verify the fix — what to test, expected vs actual behavior, and edge cases to cover. Do not assume a specific test framework or file layout."
+    "proposed_test_case": "Conceptual description of a test that would verify the fix — what to test, expected vs actual behavior, and edge cases to cover. Do not assume a specific test framework or file layout.",
+    "effort": 1.0
   },
   "comment": "A triage summary comment formatted in markdown, presenting the assessment to the maintainers. Include the proposed test case as a fenced code block.",
   "label_actions": {

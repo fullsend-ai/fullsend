@@ -263,12 +263,29 @@ ${FAILED_CREATES}"
     # ready-to-code, which triggers the code agent. Feature work and anything
     # else receives the triaged label and waits for human prioritization
     # (per #561, only feature issues should require human review before coding).
+    #
+    # Effort-based gating (#2207): high-effort bug/docs/performance issues
+    # (effort >= 2.0) get triaged instead of ready-to-code to route them through
+    # human review before dispatching to the code agent.
     CATEGORY=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
-    echo "Category: ${CATEGORY}"
+    EFFORT=$(jq -r '.triage_summary.effort // "null"' "${RESULT_FILE}")
+    echo "Category: ${CATEGORY}, Effort: ${EFFORT}"
     case "${CATEGORY}" in
       bug|documentation|performance)
-        echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
-        DEFERRED_LABEL="ready-to-code"
+        # Effort threshold: >= 2.0 is substantial work, route to human review.
+        # Missing effort → conservatively route to human review (triaged).
+        if [[ "${EFFORT}" == "null" ]]; then
+          echo "Missing effort estimate — applying triaged label for human review..."
+          remove_label "ready-to-code"
+          add_label "triaged"
+        elif awk -v effort="${EFFORT}" 'BEGIN { exit (effort >= 2.0 ? 0 : 1) }'; then
+          echo "High effort (${EFFORT}) — applying triaged label for human review..."
+          remove_label "ready-to-code"
+          add_label "triaged"
+        else
+          echo "Low effort (${EFFORT}) — deferring ready-to-code label until after label_actions..."
+          DEFERRED_LABEL="ready-to-code"
+        fi
         ;;
       feature)
         echo "Applying feature + triaged labels..."

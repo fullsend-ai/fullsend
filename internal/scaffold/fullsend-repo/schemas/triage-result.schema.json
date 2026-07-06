@@ -132,7 +132,13 @@
         "environment": { "type": "string" },
         "impact": { "type": "string", "minLength": 1 },
         "recommended_fix": { "type": "string", "minLength": 1 },
-        "proposed_test_case": { "type": "string", "minLength": 1 }
+        "proposed_test_case": { "type": "string", "minLength": 1 },
+        "effort": {
+          "type": "number",
+          "minimum": 0.25,
+          "maximum": 3,
+          "description": "Estimated implementation effort (0.25 = trivial, 1 = moderate, 3 = substantial)"
+        }
       },
       "additionalProperties": false
     },
