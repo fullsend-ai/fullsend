@@ -173,6 +173,29 @@ When you identify a question, attempt to answer it using the repository context 
 }
 ```
 
+### Action: `not-planned`
+
+The issue is out-of-scope, invalid, spam, or should otherwise not be worked on. This action closes the issue with reason `not planned`.
+
+Use this action for:
+- Issues explicitly out of project scope (e.g., feature requests incompatible with project goals)
+- Invalid reports (e.g., user error, misconfiguration, or misunderstanding)
+- Spam or low-quality submissions
+- Issues that would introduce technical direction counter to documented architectural decisions
+
+**Do NOT use this action for:**
+- Issues that lack information (use `insufficient` instead)
+- Issues that are duplicates of existing ones (use `duplicate` instead)
+- Issues blocked on other work (use `prerequisites` instead)
+
+```json
+{
+  "action": "not-planned",
+  "reasoning": "Brief explanation of why this issue is being closed as not planned",
+  "comment": "A professional comment explaining why the issue is out of scope or invalid. Be respectful — the reporter may not have understood project boundaries. Link to relevant documentation or related discussions when applicable."
+}
+```
+
 ### Action: `insufficient`
 
 Information is missing that would change the triage outcome. Ask ONE focused, specific clarifying question.

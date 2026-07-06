@@ -9,7 +9,7 @@
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["insufficient", "duplicate", "sufficient", "prerequisites", "question"]
+      "enum": ["insufficient", "duplicate", "sufficient", "prerequisites", "question", "not-planned"]
     },
     "reasoning": {
       "type": "string",

@@ -70,6 +70,10 @@ run_test "valid-question" \
   '{"action":"question","reasoning":"this is a support question","comment":"Based on the docs, Python 4 is not supported. Would you like to open a feature request?"}' \
   "true"
 
+run_test "valid-not-planned" \
+  '{"action":"not-planned","reasoning":"out of scope","comment":"This is out of scope."}' \
+  "true"
+
 run_test "valid-prerequisites-existing" \
   '{"action":"prerequisites","reasoning":"upstream dependency","prerequisites":{"existing":[{"url":"https://github.com/org/repo/issues/99"}],"create":[]},"comment":"Blocked on upstream."}' \
   "true"
