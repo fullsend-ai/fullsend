@@ -39,14 +39,14 @@ See [security-threat-model.md](problems/security-threat-model.md) and [architect
 
 ### Debouncing
 
-Collapsing rapid-fire events on the same issue or PR into a single agent invocation. Without debouncing, a burst of edits to an issue body could trigger multiple redundant triage runs. The [webhook + dispatch service](ADRs/0002-initial-fullsend-design.md#1-webhook--dispatch-service) is responsible for deduplicating flapping events before dispatching work to agents.
+Collapsing rapid-fire events on the same issue or PR into a single agent invocation. Without debouncing, a burst of edits to an issue body could trigger multiple redundant triage runs. The [webhook + dispatch service](ADRs/0002-initial-fullsend-design.md#1-webhook--dispatch-service) is responsible for deduplicating flapping events before dispatching work to agents. On GitHub this uses real-time webhooks; on GitLab the cron poller provides watermark-based deduplication at 5–60 minute intervals, which is functionally analogous but operates on a coarser time scale (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
 See [architecture.md](architecture.md) (building block 1).
 
 ## E
 
 ### Entry Point
 
-The single deterministic component that receives GitHub events (webhooks) and decides which agent combination to run. Previously called **wrapper** — the rename was adopted to avoid confusion with the sandbox/wrapping layer (see [#101](https://github.com/fullsend-ai/fullsend/issues/101) for the terminology evolution). The entry point is non-AI: it is a conventional program (currently Go) that parses events, enforces ACLs on slash commands, validates label transitions, and dispatches to agent runtimes. It does not make LLM calls.
+The single deterministic component that receives forge events and decides which agent combination to run. On GitHub, events arrive via webhooks; on GitLab, via cron-polled scheduled pipelines (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)). Previously called **wrapper** — the rename was adopted to avoid confusion with the sandbox/wrapping layer (see [#101](https://github.com/fullsend-ai/fullsend/issues/101) for the terminology evolution). The entry point is non-AI: it is a conventional program (currently Go) that parses events, enforces ACLs on slash commands, validates label transitions, and dispatches to agent runtimes. It does not make LLM calls.
 See [ADR 0002](ADRs/0002-initial-fullsend-design.md) building block 1 and [#101](https://github.com/fullsend-ai/fullsend/issues/101).
 
 ### Escalation
@@ -159,7 +159,7 @@ See [ADR 0002](ADRs/0002-initial-fullsend-design.md) building block 2.
 
 ### Trigger
 
-What initiates an agent run. Could be a GitHub event (issue filed, label applied, comment posted, PR opened, check completed), a [slash command](#slash-command), or a scheduled action. The term is used loosely in discussions — sometimes meaning the raw GitHub webhook event, sometimes meaning the processed signal that actually starts an agent after debouncing and validation. In fullsend's architecture, triggers flow through the [entry point](#entry-point), which normalizes and dispatches them.
+What initiates an agent run. Could be a forge event (issue filed, label applied, comment posted, PR/MR opened, check completed), a [slash command](#slash-command), or a scheduled action. The term is used loosely in discussions — sometimes meaning the raw forge event (GitHub webhook or GitLab cron-polled change), sometimes meaning the processed signal that actually starts an agent after debouncing and validation. In fullsend's architecture, triggers flow through the [entry point](#entry-point), which normalizes and dispatches them.
 See [architecture.md](architecture.md) (building block 1).
 
 ### Triage
@@ -182,7 +182,7 @@ See [security-threat-model.md](problems/security-threat-model.md) and [agent-arc
 
 ### Work Coordinator
 
-The mechanism that assigns work to agents and prevents conflicts. The existing design principle is that the **repo is the coordinator** — branch protection, CODEOWNERS, status checks, and GitHub events provide coordination without a central orchestrator. The work coordinator may be just the glue connecting GitHub webhooks to agent infrastructure, or it may need to be more (e.g., a claim/lock system to prevent two code agents from picking up the same issue).
+The mechanism that assigns work to agents and prevents conflicts. The existing design principle is that the **repo is the coordinator** — branch protection, CODEOWNERS, status checks, and forge events provide coordination without a central orchestrator. The work coordinator may be just the glue connecting forge events to agent infrastructure, or it may need to be more (e.g., a claim/lock system to prevent two code agents from picking up the same issue).
 See [architecture.md](architecture.md) and [#77](https://github.com/fullsend-ai/fullsend/issues/77).
 
 ## Z
