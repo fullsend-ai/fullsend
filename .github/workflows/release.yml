@@ -52,6 +52,11 @@ jobs:
             git push origin v0
           fi
 
+      # Sync the version tag to fullsend-ai/agents. Runs for all tags
+      # including pre-releases — agents' own release.yml handles
+      # pre-release semantics. Intentionally coupled to the v0 step:
+      # if the v0 move fails, the release state is suspect and agents
+      # should not be tagged until the issue is investigated.
       - name: Generate agents repo token
         id: agents-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
