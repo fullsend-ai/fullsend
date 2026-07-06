@@ -79,13 +79,13 @@ Examples of work that could move this forward:
 
 ### Forge portability
 
-GitHub is the starting point, not the boundary. GitLab support requires solving webhook-to-pipeline translation, MR-event security models, and forge interface abstraction. This work continues incrementally alongside higher-priority items.
+GitHub is the starting point, not the boundary. GitLab support uses a two-path model: native CI triggers (`merge_request_event`) for MR events and cron-based polling via scheduled pipelines for issues, comments, and labels — no external infrastructure required. Forge interface abstraction and MR-event security models continue incrementally alongside higher-priority items. See [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md).
 
 Related: [gitlab-implementation](problems/gitlab-implementation.md)
 
 Examples of work that could move this forward:
 
-- GitLab webhook bridge ([#1964](https://github.com/fullsend-ai/fullsend/issues/1964), [#1816](https://github.com/fullsend-ai/fullsend/pull/1816))
+- ~~GitLab webhook bridge~~ — superseded by cron-polling ([ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md), [#1964](https://github.com/fullsend-ai/fullsend/issues/1964))
 - Forge-portable harness schema ([#1605](https://github.com/fullsend-ai/fullsend/issues/1605), [#1848](https://github.com/fullsend-ai/fullsend/pull/1848))
 
 ### Feature refinement

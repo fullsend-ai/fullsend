@@ -261,12 +261,12 @@ Example: **GitLab** ([gitlab-implementation.md](../../../problems/gitlab-impleme
 
 | Concern | Illustrative mapping (future) |
 |---------|-------------------------------|
-| Input driver | `gitlab-event` from GitLab webhook payload |
-| `source.system` | `gitlab` (new enum value) |
-| `repo` slug | Nested group path (`group/subgroup/project`) — requires wider `repo_path` pattern |
+| Input driver | `gitlab-poll` from GitLab CI event payload (cron-polled or `merge_request_event`; see [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) |
+| `source.system` | `gitlab` (new enum value — not yet in the v1 schema; requires the Phase 0 schema change from the [implementation plan](../../../plans/gitlab-cron-polling-implementation.md)) |
+| `repo` slug | Nested group path (`group/subgroup/project`) — requires wider `repo_path` pattern (not yet in the v1 schema; requires the Phase 0 schema change) |
 | MR events | `merge_request_event` → `entity.kind: change_proposal` |
 | Notes | `note` → `transition.kind: comment_added` |
-| Role mapping | Guest→`read`, Reporter→`read`, Developer→`write`, Maintainer→`maintain`, Owner→`admin` |
+| Role mapping | Guest→`read`, Reporter→`triage`, Developer→`write`, Maintainer→`maintain`, Owner→`admin` |
 
 Implementers must not assume these GitLab mappings until a future normative
 version publishes them.
