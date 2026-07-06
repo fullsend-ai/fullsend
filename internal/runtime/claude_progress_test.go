@@ -169,10 +169,11 @@ func TestProgressParser(t *testing.T) {
 	}
 }
 
-func TestProgressParserIgnoresStreamEvents(t *testing.T) {
+func TestProgressParserStreamEventsProcessed(t *testing.T) {
 	lines := []string{
-		`{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"Edit"}}}`,
-		`{"type":"stream_event","event":{"type":"content_block_stop"}}`,
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"Edit"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\":\"/src/main.go\"}"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
 		`{"type":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/src/main.go"}}]}`,
 	}
 
@@ -185,8 +186,9 @@ func TestProgressParserIgnoresStreamEvents(t *testing.T) {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
+	// Tool counted once from stream_event, not again from assistant fallback
 	if metrics.ToolCalls.Load() != 1 {
-		t.Errorf("expected 1 tool call (stream_event ignored), got %d", metrics.ToolCalls.Load())
+		t.Errorf("expected 1 tool call (from stream_event, assistant suppressed), got %d", metrics.ToolCalls.Load())
 	}
 }
 
@@ -583,5 +585,248 @@ func TestHeartbeatConcurrency(t *testing.T) {
 	output := buf.String()
 	if !strings.Contains(output, "main goroutine") {
 		t.Errorf("expected main goroutine output, got: %s", output)
+	}
+}
+
+// --- parseClaudeStream tests ---
+
+func collectEvents(t *testing.T, input string) []AgentEvent {
+	t.Helper()
+	var events []AgentEvent
+	err := parseClaudeStream(strings.NewReader(input), func(evt AgentEvent) {
+		events = append(events, evt)
+	})
+	if err != nil {
+		t.Fatalf("parseClaudeStream returned error: %v", err)
+	}
+	return events
+}
+
+func TestParseClaudeStreamInitEvent(t *testing.T) {
+	input := `{"type":"system","subtype":"init","model":"claude-opus-4-6","claude_code_version":"1.0.50"}`
+	events := collectEvents(t, input)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	init, ok := events[0].(InitEvent)
+	if !ok {
+		t.Fatalf("expected InitEvent, got %T", events[0])
+	}
+	if init.Model != "claude-opus-4-6" {
+		t.Errorf("expected model claude-opus-4-6, got %q", init.Model)
+	}
+	if init.Version != "1.0.50" {
+		t.Errorf("expected version 1.0.50, got %q", init.Version)
+	}
+}
+
+func TestParseClaudeStreamRetryEvent(t *testing.T) {
+	input := `{"type":"system","subtype":"api_retry","attempt":2,"max_retries":5,"retry_delay_ms":1000,"error":"overloaded"}`
+	events := collectEvents(t, input)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	retry, ok := events[0].(RetryEvent)
+	if !ok {
+		t.Fatalf("expected RetryEvent, got %T", events[0])
+	}
+	if retry.Attempt != 2 || retry.MaxRetries != 5 || retry.DelayMs != 1000 || retry.Error != "overloaded" {
+		t.Errorf("unexpected retry event: %+v", retry)
+	}
+}
+
+func TestParseClaudeStreamTextDeltas(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello "}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"world"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+	var texts []string
+	for _, e := range events {
+		if te, ok := e.(TextEvent); ok {
+			texts = append(texts, te.Text)
+		}
+	}
+	if len(texts) != 2 || texts[0] != "hello " || texts[1] != "world" {
+		t.Errorf("expected two text deltas [hello ] [world], got %v", texts)
+	}
+}
+
+func TestParseClaudeStreamThinkingDeltas(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+	var thinking []string
+	for _, e := range events {
+		if te, ok := e.(ThinkingEvent); ok {
+			thinking = append(thinking, te.Text)
+		}
+	}
+	if len(thinking) != 1 || thinking[0] != "hmm" {
+		t.Errorf("expected one thinking delta [hmm], got %v", thinking)
+	}
+}
+
+func TestParseClaudeStreamToolUse(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"Read"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\""}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":":\"/src/main.go\"}"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+	var tools []ToolUseEvent
+	for _, e := range events {
+		if te, ok := e.(ToolUseEvent); ok {
+			tools = append(tools, te)
+		}
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool event, got %d", len(tools))
+	}
+	if tools[0].Name != "Read" {
+		t.Errorf("expected tool name Read, got %q", tools[0].Name)
+	}
+	if tools[0].Summary != "/src/main.go" {
+		t.Errorf("expected summary /src/main.go, got %q", tools[0].Summary)
+	}
+}
+
+func TestParseClaudeStreamUnknownTool(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"EvilTool"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"secret\":\"password123\"}"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+	var tools []ToolUseEvent
+	for _, e := range events {
+		if te, ok := e.(ToolUseEvent); ok {
+			tools = append(tools, te)
+		}
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool event, got %d", len(tools))
+	}
+	if tools[0].Name != "tool" {
+		t.Errorf("expected masked tool name 'tool', got %q", tools[0].Name)
+	}
+	if tools[0].Summary != "" {
+		t.Errorf("expected empty summary for unknown tool, got %q", tools[0].Summary)
+	}
+}
+
+func TestParseClaudeStreamResultEvent(t *testing.T) {
+	input := `{"type":"result","num_turns":8,"total_cost_usd":0.42,"is_error":false,"subtype":"success","usage":{"input_tokens":12000,"output_tokens":3400,"cache_creation_input_tokens":8000,"cache_read_input_tokens":5000}}`
+	events := collectEvents(t, input)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	result, ok := events[0].(ResultEvent)
+	if !ok {
+		t.Fatalf("expected ResultEvent, got %T", events[0])
+	}
+	if result.NumTurns != 8 || result.TotalCostUSD != 0.42 {
+		t.Errorf("unexpected result: %+v", result)
+	}
+	if result.InputTokens != 12000 || result.OutputTokens != 3400 {
+		t.Errorf("unexpected token counts: %+v", result)
+	}
+}
+
+func TestParseClaudeStreamErrorEvent(t *testing.T) {
+	input := `{"type":"stream_event","event":{"type":"error","error":{"type":"overloaded_error","message":"rate limited"}}}`
+	events := collectEvents(t, input)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	errEvt, ok := events[0].(ErrorEvent)
+	if !ok {
+		t.Fatalf("expected ErrorEvent, got %T", events[0])
+	}
+	if errEvt.ErrorType != "overloaded_error" || errEvt.Message != "rate limited" {
+		t.Errorf("unexpected error event: %+v", errEvt)
+	}
+}
+
+func TestParseClaudeStreamAssistantFallback(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/main.go"}}]}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+	var tools []ToolUseEvent
+	for _, e := range events {
+		if te, ok := e.(ToolUseEvent); ok {
+			tools = append(tools, te)
+		}
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool event from assistant fallback, got %d", len(tools))
+	}
+	if tools[0].Name != "Read" || tools[0].Summary != "/src/main.go" {
+		t.Errorf("unexpected tool event: %+v", tools[0])
+	}
+}
+
+func TestParseClaudeStreamTokensEvent(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":1000}}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	var tokens []TokensEvent
+	for _, e := range events {
+		if te, ok := e.(TokensEvent); ok {
+			tokens = append(tokens, te)
+		}
+	}
+	// Total = 4000 + 1000 + 500 + 200 = 5700, crosses 5k threshold
+	if len(tokens) != 1 {
+		t.Fatalf("expected 1 tokens event, got %d", len(tokens))
+	}
+	if tokens[0].InputTokens != 4000 || tokens[0].OutputTokens != 1000 {
+		t.Errorf("unexpected token counts: %+v", tokens[0])
+	}
+	if tokens[0].CacheRead != 500 || tokens[0].CacheWrite != 200 {
+		t.Errorf("unexpected cache counts: %+v", tokens[0])
+	}
+}
+
+func TestParseClaudeStreamTokensEventThrottled(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":200}}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	var tokens []TokensEvent
+	for _, e := range events {
+		if te, ok := e.(TokensEvent); ok {
+			tokens = append(tokens, te)
+		}
+	}
+	// Total = 4200, below 5k threshold
+	if len(tokens) != 0 {
+		t.Fatalf("expected 0 tokens events (below threshold), got %d", len(tokens))
+	}
+}
+
+func TestParseClaudeStreamAssistantSuppressedWhenStreaming(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+		`{"type":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/main.go"}}]}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+	for _, e := range events {
+		if _, ok := e.(ToolUseEvent); ok {
+			t.Error("assistant message should not emit ToolUseEvent when stream_events are active")
+		}
 	}
 }

@@ -3,9 +3,7 @@ package runtime
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -16,11 +14,42 @@ import (
 const (
 	maxPatternDisplay = 50
 	maxPathDisplay    = 200
+	tokenThreshold    = 5000
 )
 
 // streamEvent represents a single NDJSON event from Claude Code's stream-json output.
 type streamEvent struct {
 	Type string `json:"type"`
+}
+
+// streamEventWrapper wraps the nested event structure from stream-json.
+type streamEventWrapper struct {
+	Type  string          `json:"type"`
+	Event json.RawMessage `json:"event"`
+}
+
+type innerEvent struct {
+	Type         string          `json:"type"`
+	ContentBlock json.RawMessage `json:"content_block"`
+	Delta        json.RawMessage `json:"delta"`
+	Error        json.RawMessage `json:"error"`
+}
+
+type contentBlock struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
+}
+
+type delta struct {
+	Type        string `json:"type"`
+	Text        string `json:"text"`
+	Thinking    string `json:"thinking"`
+	PartialJSON string `json:"partial_json"`
+}
+
+type streamError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
 }
 
 // assistantMessage contains tool_use blocks from complete assistant messages.
@@ -38,9 +67,14 @@ type assistantMessage struct {
 // systemEvent is Claude Code's initial "system"/"init" event, which carries the
 // resolved model name. The result event does not include the model.
 type systemEvent struct {
-	Type    string `json:"type"`
-	Subtype string `json:"subtype"`
-	Model   string `json:"model"`
+	Type              string `json:"type"`
+	Subtype           string `json:"subtype"`
+	Model             string `json:"model"`
+	ClaudeCodeVersion string `json:"claude_code_version"`
+	Attempt           int    `json:"attempt"`
+	MaxRetries        int    `json:"max_retries"`
+	RetryDelayMs      int    `json:"retry_delay_ms"`
+	Error             string `json:"error"`
 }
 
 type contentItem struct {
@@ -66,6 +100,9 @@ var allowedTools = map[string]bool{
 // output, containing execution metrics.
 type resultEvent struct {
 	Type         string  `json:"type"`
+	Subtype      string  `json:"subtype"`
+	IsError      bool    `json:"is_error"`
+	Result       string  `json:"result"`
 	NumTurns     int     `json:"num_turns"`
 	TotalCostUSD float64 `json:"total_cost_usd"`
 	Usage        struct {
@@ -76,13 +113,24 @@ type resultEvent struct {
 	} `json:"usage"`
 }
 
-// progressParser reads NDJSON from Claude Code's stream-json output and emits
-// progress updates via the printer. It extracts tool names and safe context
-// (binary name for Bash, file path for Read/Write/Edit) without logging
-// potentially sensitive arguments.
-func progressParser(r io.Reader, printer *ui.Printer, start time.Time, metrics *RunMetrics) error {
+// parseClaudeStream reads NDJSON from Claude Code's stream-json output and
+// emits normalized AgentEvent values via the onEvent callback. It processes
+// system events, stream_event deltas (thinking, text, tool input JSON),
+// result events, errors, and assistant message fallback.
+func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 	br := bufio.NewReaderSize(r, 1024*1024)
-	isCI := os.Getenv("GITHUB_ACTIONS") == "true"
+
+	var (
+		seenStreamEvent bool
+		currentToolName string
+		toolInputJSON   strings.Builder
+		// token tracking for throttled TokensEvent
+		totalInput       int
+		totalOutput      int
+		totalCacheRead   int
+		totalCacheWrite  int
+		lastEmittedTotal int
+	)
 
 	for {
 		line, isPrefix, err := br.ReadLine()
@@ -107,69 +155,202 @@ func progressParser(r io.Reader, printer *ui.Printer, start time.Time, metrics *
 			continue
 		}
 
-		if evt.Type == "system" {
+		switch evt.Type {
+		case "system":
 			var se systemEvent
-			if err := json.Unmarshal(line, &se); err == nil && se.Model != "" {
-				metrics.Model = se.Model
+			if err := json.Unmarshal(line, &se); err != nil {
+				continue
 			}
-		}
+			switch se.Subtype {
+			case "init":
+				onEvent(InitEvent{
+					Model:   se.Model,
+					Version: se.ClaudeCodeVersion,
+				})
+			case "api_retry":
+				onEvent(RetryEvent{
+					Attempt:    se.Attempt,
+					MaxRetries: se.MaxRetries,
+					DelayMs:    se.RetryDelayMs,
+					Error:      se.Error,
+				})
+			}
 
-		if evt.Type == "assistant" {
-			parseAssistantToolUse(line, printer, start, metrics, isCI)
-		}
+		case "stream_event":
+			seenStreamEvent = true
+			var wrapper streamEventWrapper
+			if err := json.Unmarshal(line, &wrapper); err != nil {
+				continue
+			}
+			var inner innerEvent
+			if err := json.Unmarshal(wrapper.Event, &inner); err != nil {
+				continue
+			}
 
-		if evt.Type == "result" {
+			switch inner.Type {
+			case "content_block_start":
+				var cb contentBlock
+				if err := json.Unmarshal(inner.ContentBlock, &cb); err != nil {
+					continue
+				}
+				if cb.Type == "tool_use" || cb.Type == "server_tool_use" {
+					currentToolName = cb.Name
+					toolInputJSON.Reset()
+				}
+
+			case "content_block_delta":
+				var d delta
+				if err := json.Unmarshal(inner.Delta, &d); err != nil {
+					continue
+				}
+				switch d.Type {
+				case "text_delta":
+					onEvent(TextEvent{Text: d.Text})
+				case "thinking_delta":
+					onEvent(ThinkingEvent{Text: d.Thinking})
+				case "input_json_delta":
+					toolInputJSON.WriteString(d.PartialJSON)
+				}
+
+			case "content_block_stop":
+				if currentToolName != "" {
+					toolName := currentToolName
+					var summary string
+					if !allowedTools[toolName] {
+						toolName = "tool"
+					} else {
+						summary = extractSafeContext(currentToolName, json.RawMessage(toolInputJSON.String()))
+					}
+					onEvent(ToolUseEvent{
+						Name:    toolName,
+						Summary: summary,
+					})
+					currentToolName = ""
+					toolInputJSON.Reset()
+				}
+
+			case "error":
+				var se streamError
+				if err := json.Unmarshal(inner.Error, &se); err != nil {
+					continue
+				}
+				onEvent(ErrorEvent{
+					ErrorType: se.Type,
+					Message:   se.Message,
+				})
+
+			case "message_start":
+				var msg struct {
+					Message struct {
+						Usage struct {
+							InputTokens              int `json:"input_tokens"`
+							CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+							CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+						} `json:"usage"`
+					} `json:"message"`
+				}
+				if err := json.Unmarshal(wrapper.Event, &msg); err == nil {
+					totalInput = msg.Message.Usage.InputTokens
+					totalCacheRead = msg.Message.Usage.CacheReadInputTokens
+					totalCacheWrite = msg.Message.Usage.CacheCreationInputTokens
+				}
+
+			case "message_delta":
+				var md struct {
+					Usage struct {
+						OutputTokens int `json:"output_tokens"`
+					} `json:"usage"`
+				}
+				if err := json.Unmarshal(wrapper.Event, &md); err == nil && md.Usage.OutputTokens > 0 {
+					totalOutput = md.Usage.OutputTokens
+					total := totalInput + totalOutput + totalCacheRead + totalCacheWrite
+					if total-lastEmittedTotal >= tokenThreshold {
+						lastEmittedTotal = total
+						onEvent(TokensEvent{
+							InputTokens:  totalInput,
+							OutputTokens: totalOutput,
+							CacheRead:    totalCacheRead,
+							CacheWrite:   totalCacheWrite,
+						})
+					}
+				}
+			}
+
+		case "result":
 			var re resultEvent
-			if err := json.Unmarshal(line, &re); err == nil {
-				metrics.NumTurns = re.NumTurns
-				metrics.TotalCostUSD = re.TotalCostUSD
-				metrics.InputTokens = re.Usage.InputTokens
-				metrics.OutputTokens = re.Usage.OutputTokens
-				metrics.CacheCreationInputTokens = re.Usage.CacheCreationInputTokens
-				metrics.CacheReadInputTokens = re.Usage.CacheReadInputTokens
+			if err := json.Unmarshal(line, &re); err != nil {
+				continue
+			}
+			onEvent(ResultEvent{
+				NumTurns:                 re.NumTurns,
+				TotalCostUSD:             re.TotalCostUSD,
+				IsError:                  re.IsError,
+				Subtype:                  re.Subtype,
+				InputTokens:              re.Usage.InputTokens,
+				OutputTokens:             re.Usage.OutputTokens,
+				CacheCreationInputTokens: re.Usage.CacheCreationInputTokens,
+				CacheReadInputTokens:     re.Usage.CacheReadInputTokens,
+			})
+
+		case "assistant":
+			if seenStreamEvent {
+				// When stream_events are active, the assistant message
+				// is a duplicate — skip it to avoid double-counting.
+				continue
+			}
+			var msg assistantMessage
+			if err := json.Unmarshal(line, &msg); err != nil {
+				continue
+			}
+
+			// Emit InitEvent from assistant message model as fallback.
+			if msg.Message.Model != "" {
+				onEvent(InitEvent{Model: msg.Message.Model})
+			}
+
+			// Real Claude Code output nests content under "message";
+			// fall back to the top-level "content" for older/flat shapes.
+			content := msg.Message.Content
+			if len(content) == 0 {
+				content = msg.Content
+			}
+
+			var items []contentItem
+			if err := json.Unmarshal(content, &items); err != nil {
+				continue
+			}
+
+			for _, item := range items {
+				if item.Type != "tool_use" {
+					continue
+				}
+				toolName := item.Name
+				var ctx string
+				if !allowedTools[toolName] {
+					toolName = "tool"
+				} else {
+					ctx = extractSafeContext(item.Name, item.Input)
+				}
+				onEvent(ToolUseEvent{
+					Name:    toolName,
+					Summary: ctx,
+				})
 			}
 		}
 	}
 }
 
-func parseAssistantToolUse(line []byte, printer *ui.Printer, start time.Time, metrics *RunMetrics, isCI bool) {
-	var msg assistantMessage
-	if err := json.Unmarshal(line, &msg); err != nil {
-		return
-	}
-
-	// Fall back to the assistant message's model when the system init event did
-	// not carry one, so gen_ai.request.model stays populated for all streams.
-	if metrics.Model == "" && msg.Message.Model != "" {
-		metrics.Model = msg.Message.Model
-	}
-
-	// Real Claude Code output nests content under "message"; fall back to the
-	// top-level "content" for older/flat shapes.
-	content := msg.Message.Content
-	if len(content) == 0 {
-		content = msg.Content
-	}
-
-	var items []contentItem
-	if err := json.Unmarshal(content, &items); err != nil {
-		return
-	}
-
-	for _, item := range items {
-		if item.Type != "tool_use" {
-			continue
+// progressParser reads NDJSON from Claude Code's stream-json output and emits
+// progress updates via the printer. It is a thin wrapper around parseClaudeStream
+// that creates an EventRenderer and populates RunMetrics.
+func progressParser(r io.Reader, printer *ui.Printer, start time.Time, metrics *RunMetrics) error {
+	renderer := NewEventRenderer(printer, start, metrics)
+	return parseClaudeStream(r, func(evt AgentEvent) {
+		if init, ok := evt.(InitEvent); ok && metrics.Model == "" {
+			metrics.Model = init.Model
 		}
-		toolName := item.Name
-		var ctx string
-		if !allowedTools[toolName] {
-			toolName = "tool"
-		} else {
-			ctx = extractSafeContext(item.Name, item.Input)
-		}
-		count := metrics.ToolCalls.Add(1)
-		emitToolProgress(printer, toolName, ctx, start, count, isCI)
-	}
+		renderer.Handle(evt)
+	})
 }
 
 // extractSafeContext returns a safe, non-secret string for progress display.
@@ -253,19 +434,3 @@ func extractBinaryName(cmd string) string {
 	return ""
 }
 
-func emitToolProgress(printer *ui.Printer, toolName, context string, start time.Time, toolCount int32, isCI bool) {
-	elapsed := time.Since(start).Truncate(time.Second)
-
-	var msg string
-	if context != "" {
-		msg = fmt.Sprintf("%s: %s (%s, %d tools)", toolName, context, elapsed, toolCount)
-	} else {
-		msg = fmt.Sprintf("%s (%s, %d tools)", toolName, elapsed, toolCount)
-	}
-
-	msg = sanitizeOutput(msg)
-	if isCI {
-		fmt.Fprintf(os.Stderr, "::notice::%s\n", msg)
-	}
-	printer.Heartbeat(msg)
-}
