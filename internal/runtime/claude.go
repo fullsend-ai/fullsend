@@ -105,7 +105,18 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 		}
 	}
 
-	if parseErr := progressParser(r, printer, start, metrics); parseErr != nil {
+	handler := params.OnEvent
+	if handler == nil {
+		renderer := NewEventRenderer(printer, start, metrics)
+		handler = func(evt AgentEvent) {
+			if init, ok := evt.(InitEvent); ok && metrics.Model == "" {
+				metrics.Model = init.Model
+			}
+			renderer.Handle(evt)
+		}
+	}
+
+	if parseErr := parseClaudeStream(r, handler); parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
 		io.Copy(io.Discard, r)
