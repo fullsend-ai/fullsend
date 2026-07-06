@@ -195,16 +195,15 @@ func TestPrepareVendorFiles_ExplicitBinary(t *testing.T) {
 	exe, err := os.Executable()
 	require.NoError(t, err)
 
-	bundle, cleanup, err := prepareVendorFiles(ui.New(&strings.Builder{}), "org", "my-repo", exe, "")
+	bundle, err := prepareVendorFiles(ui.New(&strings.Builder{}), "org", "my-repo", exe, "")
 	require.NoError(t, err)
-	t.Cleanup(cleanup)
+	t.Cleanup(bundle.Close)
 	assert.Greater(t, bundle.assetCount, 0)
 	assert.NotEmpty(t, bundle.files)
 }
 
 func TestPrepareVendorFiles_InvalidExplicitBinary(t *testing.T) {
-	_, cleanup, err := prepareVendorFiles(ui.New(&strings.Builder{}), "org", "my-repo", "/nonexistent/fullsend", "")
+	_, err := prepareVendorFiles(ui.New(&strings.Builder{}), "org", "my-repo", "/nonexistent/fullsend", "")
 	require.Error(t, err)
-	cleanup()
 	assert.Contains(t, err.Error(), "validating --fullsend-binary")
 }
