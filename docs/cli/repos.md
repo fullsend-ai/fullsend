@@ -10,7 +10,54 @@ Manage per-repo installations across multiple orgs via a declarative `repos.yaml
 
 | Command | Description |
 |---------|-------------|
+| `fullsend repos init <org\|owner/repo>` | Generate a repos.yaml manifest by discovering existing installations |
 | `fullsend repos status` | Compare manifest against actual repo state |
+
+## `repos init`
+
+Discovers existing fullsend installations (per-repo and per-org) and generates a `repos.yaml` manifest reflecting their current state. Supports greenfield onboarding and migration from existing installations.
+
+```bash
+fullsend repos init <org> --all --mint-project <PROJECT> --inference-project <PROJECT>
+```
+
+Single-repo mode:
+
+```bash
+fullsend repos init <owner/repo> --mint-project <PROJECT>
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--output`, `-o` | `repos.yaml` | Output path (use `-` for stdout) |
+| `--repos` | | Comma-separated list of repos to include |
+| `--all` | `false` | Include all eligible repos without prompting |
+| `--mint-project` | | GCP project for the mint |
+| `--mint-region` | `us-central1` | GCP region for the mint |
+| `--inference-project` | | Default GCP project for inference |
+| `--concurrency` | `8` | Max parallel API calls (capped at 64) |
+| `--force` | `false` | Overwrite output file if it already exists |
+
+### Discovery
+
+The command discovers repos by checking:
+
+1. **Per-repo guard variable** (`FULLSEND_PER_REPO_INSTALL`) — identifies per-repo installations
+2. **Per-org config enrollment** (`config.yaml` in `.fullsend` repo) — identifies per-org installations
+3. **Workflow ref** — extracts the `@ref` from scaffold shim workflow files
+
+### Defaults computation
+
+Default values for `fullsend_ref` and `inference_region` are computed using the mode (most common value) across discovered repos. Per-repo overrides are generated only for fields that differ from defaults.
+
+### Selection modes
+
+For org targets, one of `--all` or `--repos` is required:
+
+- `--all`: include all discovered repos
+- `--repos`: include only the specified repos (comma-separated `owner/repo` names)
 
 ## `repos status`
 

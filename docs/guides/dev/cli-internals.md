@@ -39,6 +39,15 @@ fullsend
 │   ├── uninstall    <org>                   # Remove fullsend GitHub configuration
 │   └── sync-scaffold <org>                  # Update workflow templates
 ├── repos                                    # Manage per-repo installations via manifest
+│   ├── init         <org|owner/repo>        # Generate repos.yaml from discovered installs
+│   │   ├── --output, -o <path>              #   Output path (default: repos.yaml, - for stdout)
+│   │   ├── --repos <list>                   #   Comma-separated repos to include
+│   │   ├── --all                            #   Include all eligible repos
+│   │   ├── --mint-project <id>              #   GCP project for the mint
+│   │   ├── --mint-region <region>           #   GCP region for the mint (default: us-central1)
+│   │   ├── --inference-project <id>         #   Default GCP project for inference
+│   │   ├── --force                          #   Overwrite output file if it exists
+│   │   └── --concurrency <int>              #   Max parallel API calls (default: 8)
 │   └── status                               # Compare manifest against actual repo state
 ├── agent                                    # Manage agent registrations in config
 │   ├── add          <url-or-path>            # Register an agent (URL auto-pinned)
