@@ -300,6 +300,11 @@ type Client interface {
 	// have the expected content, no commit is created.
 	CommitFilesToBranch(ctx context.Context, owner, repo, branch, message string, files []TreeFile) (committed bool, err error)
 
+	// Ref operations
+	// GetRef returns the commit SHA for the given ref path (e.g., "heads/main", "tags/v0").
+	// Returns forge.ErrNotFound if the ref does not exist.
+	GetRef(ctx context.Context, owner, repo, refPath string) (sha string, err error)
+
 	// Branch operations
 	// GetBranchRef returns the HEAD commit SHA for the named branch.
 	// Returns forge.ErrNotFound if the branch does not exist.
