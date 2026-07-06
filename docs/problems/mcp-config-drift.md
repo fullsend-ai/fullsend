@@ -85,6 +85,18 @@ The SSRF validator blocks connections to private networks and metadata endpoints
 - **[Governance](governance.md):** Who controls MCP config policy? If per-repo teams can add arbitrary MCP servers, the org loses visibility into what tools agents can access. Governance determines whether MCP configs are repo-level decisions or org-level policy.
 - **[Agent Architecture](agent-architecture.md):** MCP configs relate to agent roles and trust boundaries. Different agent roles should have different tool surfaces, and MCP configs are the mechanism that defines those surfaces. Drift in one agent's config can expand its effective authority beyond its intended role.
 
+## Static analysis as a complementary defense
+
+The three approaches above operate at the harness level, comparing configs against baselines or policies at session start. A complementary approach is deterministic static analysis of MCP configuration files as part of a CI or preflight check, independent of the harness.
+
+Static lint checks can catch structural problems in MCP configs without requiring a baseline or a runtime policy engine:
+
+- **Duplicate server entries.** The same MCP server name or URL declared multiple times, potentially with conflicting permissions. This can happen through organic drift as teams add integrations independently.
+- **Suspicious endpoints.** Server URLs pointing to localhost, loopback addresses, or private IP ranges. These are likely test configurations that should not be present in production configs.
+- **Unrestricted tool surfaces.** Server entries that do not constrain which tools are exposed, granting the agent access to every tool the server offers. This violates least privilege without explicit intent.
+
+These checks are fast, deterministic, and can run in CI on every PR that modifies MCP config files. They do not replace the harness-level defenses (which operate at runtime and can detect drift between runs), but they catch a class of problems earlier in the pipeline.
+
 ## Open questions
 
 - Should MCP config drift detection be a harness-level check (runs before the agent starts) or a hook (runs within the agent's execution)?
