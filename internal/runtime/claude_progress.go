@@ -12,6 +12,7 @@ import (
 )
 
 const (
+	maxCommandDisplay = 120
 	maxPatternDisplay = 50
 	maxPathDisplay    = 200
 	tokenThreshold    = 5000
@@ -78,23 +79,13 @@ type systemEvent struct {
 }
 
 type contentItem struct {
-	Type  string          `json:"type"`
-	Name  string          `json:"name"`
-	Input json.RawMessage `json:"input"`
+	Type     string          `json:"type"`
+	Name     string          `json:"name"`
+	Text     string          `json:"text"`
+	Thinking string          `json:"thinking"`
+	Input    json.RawMessage `json:"input"`
 }
 
-// allowedTools is the set of tool names we display in progress output.
-// Unknown tools emit no context to prevent information disclosure from
-// untrusted sandbox output.
-var allowedTools = map[string]bool{
-	"Bash":  true,
-	"Read":  true,
-	"Write": true,
-	"Edit":  true,
-	"Grep":  true,
-	"Glob":  true,
-	"Agent": true,
-}
 
 // resultEvent represents the final NDJSON event from Claude Code's stream-json
 // output, containing execution metrics.
@@ -214,16 +205,9 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 
 			case "content_block_stop":
 				if currentToolName != "" {
-					toolName := currentToolName
-					var summary string
-					if !allowedTools[toolName] {
-						toolName = "tool"
-					} else {
-						summary = extractSafeContext(currentToolName, json.RawMessage(toolInputJSON.String()))
-					}
 					onEvent(ToolUseEvent{
-						Name:    toolName,
-						Summary: summary,
+						Name:    currentToolName,
+						Summary: extractSafeContext(currentToolName, json.RawMessage(toolInputJSON.String())),
 					})
 					currentToolName = ""
 					toolInputJSON.Reset()
@@ -322,20 +306,21 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 			}
 
 			for _, item := range items {
-				if item.Type != "tool_use" {
-					continue
+				switch item.Type {
+				case "thinking":
+					if item.Thinking != "" {
+						onEvent(ThinkingEvent{Text: item.Thinking})
+					}
+				case "text":
+					if item.Text != "" {
+						onEvent(TextEvent{Text: item.Text})
+					}
+				case "tool_use":
+					onEvent(ToolUseEvent{
+						Name:    item.Name,
+						Summary: extractSafeContext(item.Name, item.Input),
+					})
 				}
-				toolName := item.Name
-				var ctx string
-				if !allowedTools[toolName] {
-					toolName = "tool"
-				} else {
-					ctx = extractSafeContext(item.Name, item.Input)
-				}
-				onEvent(ToolUseEvent{
-					Name:    toolName,
-					Summary: ctx,
-				})
 			}
 		}
 	}
@@ -375,7 +360,7 @@ func extractSafeContext(toolName string, input json.RawMessage) string {
 		if err := json.Unmarshal(raw, &cmd); err != nil {
 			return ""
 		}
-		return extractBinaryName(cmd)
+		return collapseCommand(cmd)
 
 	case "Read", "Write", "Edit":
 		raw, ok := fields["file_path"]
@@ -391,6 +376,17 @@ func extractSafeContext(toolName string, input json.RawMessage) string {
 			return string(runes[:maxPathDisplay]) + "…"
 		}
 		return path
+
+	case "Agent":
+		raw, ok := fields["prompt"]
+		if !ok {
+			return ""
+		}
+		var prompt string
+		if err := json.Unmarshal(raw, &prompt); err != nil {
+			return ""
+		}
+		return collapseCommand(prompt)
 
 	case "Grep", "Glob":
 		raw, ok := fields["pattern"]
@@ -411,27 +407,20 @@ func extractSafeContext(toolName string, input json.RawMessage) string {
 	return ""
 }
 
-// extractBinaryName returns only the binary name from a shell command,
-// skipping leading KEY=VALUE environment variable assignments.
-func extractBinaryName(cmd string) string {
+// collapseCommand collapses a multi-line shell command to a single line
+// and truncates it for display.
+func collapseCommand(cmd string) string {
 	cmd = strings.TrimSpace(cmd)
 	if cmd == "" {
 		return ""
 	}
+	// Collapse newlines and runs of whitespace into single spaces.
 	fields := strings.Fields(cmd)
-	if len(fields) == 0 {
-		return ""
+	collapsed := strings.Join(fields, " ")
+	if utf8.RuneCountInString(collapsed) > maxCommandDisplay {
+		runes := []rune(collapsed)
+		return string(runes[:maxCommandDisplay]) + "…"
 	}
-	// Skip leading KEY=VALUE env var assignments.
-	for _, f := range fields {
-		if !strings.Contains(f, "=") {
-			// Strip path prefix (e.g. /usr/bin/make → make).
-			if idx := strings.LastIndex(f, "/"); idx >= 0 {
-				f = f[idx+1:]
-			}
-			return f
-		}
-	}
-	return ""
+	return collapsed
 }
 

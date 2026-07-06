@@ -13,30 +13,28 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-func TestExtractBinaryName(t *testing.T) {
+func TestCollapseCommand(t *testing.T) {
 	tests := []struct {
 		cmd  string
 		want string
 	}{
-		{"make test", "make"},
-		{"git commit -s -m 'msg'", "git"},
-		{"/usr/bin/make lint", "make"},
-		{"  go test ./...", "go"},
+		{"make test", "make test"},
+		{"git commit -s -m 'msg'", "git commit -s -m 'msg'"},
+		{"/usr/bin/make lint", "/usr/bin/make lint"},
+		{"  go test ./...", "go test ./..."},
 		{"", ""},
-		{"gh pr create --title 'x'", "gh"},
-		{"curl -H 'Authorization: Bearer SECRET' https://api.example.com", "curl"},
-		// KEY=VALUE env var prefixes are skipped.
-		{"SECRET=val make test", "make"},
-		{"FOO=bar BAZ=qux /usr/bin/go test", "go"},
-		// All tokens are KEY=VALUE — return empty.
-		{"FOO=bar BAZ=qux", ""},
+		{"gh pr create --title 'x'", "gh pr create --title 'x'"},
+		// Multi-line commands are collapsed.
+		{"echo hello\necho world", "echo hello echo world"},
 		// Whitespace-only input.
 		{"   \t  ", ""},
+		// Long commands are truncated.
+		{"echo " + strings.Repeat("x", 200), "echo " + strings.Repeat("x", 115) + "…"},
 	}
 	for _, tt := range tests {
-		got := extractBinaryName(tt.cmd)
+		got := collapseCommand(tt.cmd)
 		if got != tt.want {
-			t.Errorf("extractBinaryName(%q) = %q, want %q", tt.cmd, got, tt.want)
+			t.Errorf("collapseCommand(%q) = %q, want %q", tt.cmd, got, tt.want)
 		}
 	}
 }
@@ -52,19 +50,19 @@ func TestExtractSafeContext(t *testing.T) {
 			name:     "bash command",
 			toolName: "Bash",
 			input:    map[string]interface{}{"command": "make test"},
-			want:     "make",
+			want:     "make test",
 		},
 		{
-			name:     "bash with secret in args",
+			name:     "bash with args",
 			toolName: "Bash",
 			input:    map[string]interface{}{"command": "curl -H 'Bearer token123' https://api.example.com"},
-			want:     "curl",
+			want:     "curl -H 'Bearer token123' https://api.example.com",
 		},
 		{
 			name:     "bash with env var prefix",
 			toolName: "Bash",
 			input:    map[string]interface{}{"command": "API_KEY=secret123 curl https://api.example.com"},
-			want:     "curl",
+			want:     "API_KEY=secret123 curl https://api.example.com",
 		},
 		{
 			name:     "read file",
@@ -115,9 +113,9 @@ func TestExtractSafeContext(t *testing.T) {
 			want:     "**/*.go",
 		},
 		{
-			name:     "unknown tool returns empty",
-			toolName: "Agent",
-			input:    map[string]interface{}{"prompt": "do something"},
+			name:     "unrecognized tool returns empty",
+			toolName: "Skill",
+			input:    map[string]interface{}{"skill_name": "issue-labels"},
 			want:     "",
 		},
 		{
@@ -213,9 +211,9 @@ func TestProgressParserMalformedJSON(t *testing.T) {
 	}
 }
 
-func TestProgressParserUnknownToolAllowlisted(t *testing.T) {
+func TestProgressParserUnknownToolShowsNameNoContext(t *testing.T) {
 	lines := []string{
-		`{"type":"assistant","content":[{"type":"tool_use","name":"EvilTool","input":{"secret":"should-not-appear"}}]}`,
+		`{"type":"assistant","content":[{"type":"tool_use","name":"CustomTool","input":{"secret":"should-not-appear"}}]}`,
 		`{"type":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/main.go"}}]}`,
 	}
 
@@ -233,32 +231,11 @@ func TestProgressParserUnknownToolAllowlisted(t *testing.T) {
 	}
 
 	output := buf.String()
-	if strings.Contains(output, "EvilTool") {
-		t.Errorf("unknown tool name should not appear in output, got: %s", output)
+	if !strings.Contains(output, "CustomTool") {
+		t.Errorf("expected tool name in output, got: %s", output)
 	}
-	if !strings.Contains(output, "tool") {
-		t.Errorf("expected generic 'tool' label for unknown tool, got: %s", output)
-	}
-}
-
-func TestProgressParserUnknownToolAssistantNoContext(t *testing.T) {
-	lines := []string{
-		`{"type":"assistant","content":[{"type":"tool_use","name":"CustomTool","input":{"secret":"should-not-appear"}}]}`,
-	}
-
-	input := strings.NewReader(strings.Join(lines, "\n"))
-	var buf bytes.Buffer
-	printer := ui.New(&buf)
-	metrics := &RunMetrics{}
-
-	_ = progressParser(input, printer, time.Now(), metrics)
-
-	output := buf.String()
 	if strings.Contains(output, "should-not-appear") {
-		t.Errorf("non-allowlisted tool should not extract context, got: %s", output)
-	}
-	if strings.Contains(output, "CustomTool") {
-		t.Errorf("non-allowlisted tool name should not appear, got: %s", output)
+		t.Errorf("unknown tool should not extract context, got: %s", output)
 	}
 }
 
@@ -697,10 +674,10 @@ func TestParseClaudeStreamToolUse(t *testing.T) {
 	}
 }
 
-func TestParseClaudeStreamUnknownTool(t *testing.T) {
+func TestParseClaudeStreamUnknownToolShowsNameNoContext(t *testing.T) {
 	lines := []string{
-		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"EvilTool"}}}`,
-		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"secret\":\"password123\"}"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"Skill"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"skill_name\":\"issue-labels\"}"}}}`,
 		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
 	}
 	events := collectEvents(t, strings.Join(lines, "\n"))
@@ -713,11 +690,11 @@ func TestParseClaudeStreamUnknownTool(t *testing.T) {
 	if len(tools) != 1 {
 		t.Fatalf("expected 1 tool event, got %d", len(tools))
 	}
-	if tools[0].Name != "tool" {
-		t.Errorf("expected masked tool name 'tool', got %q", tools[0].Name)
+	if tools[0].Name != "Skill" {
+		t.Errorf("expected real tool name 'Skill', got %q", tools[0].Name)
 	}
 	if tools[0].Summary != "" {
-		t.Errorf("expected empty summary for unknown tool, got %q", tools[0].Summary)
+		t.Errorf("expected empty summary for unrecognized tool, got %q", tools[0].Summary)
 	}
 }
 
@@ -792,6 +769,38 @@ func TestParseClaudeStreamAssistantFallback(t *testing.T) {
 	}
 	if tools[0].Name != "Read" || tools[0].Summary != "/src/main.go" {
 		t.Errorf("unexpected tool event: %+v", tools[0])
+	}
+}
+
+func TestParseClaudeStreamAssistantFallbackTextAndThinking(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","message":{"model":"claude-opus-4-6","content":[{"type":"thinking","thinking":"Let me analyze this."}]}}`,
+		`{"type":"assistant","message":{"model":"claude-opus-4-6","content":[{"type":"text","text":"I'll read the file now."}]}}`,
+		`{"type":"assistant","message":{"model":"claude-opus-4-6","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/a.go"}}]}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	var thinking []ThinkingEvent
+	var texts []TextEvent
+	var tools []ToolUseEvent
+	for _, e := range events {
+		switch ev := e.(type) {
+		case ThinkingEvent:
+			thinking = append(thinking, ev)
+		case TextEvent:
+			texts = append(texts, ev)
+		case ToolUseEvent:
+			tools = append(tools, ev)
+		}
+	}
+	if len(thinking) != 1 || thinking[0].Text != "Let me analyze this." {
+		t.Errorf("expected 1 thinking event with correct text, got %v", thinking)
+	}
+	if len(texts) != 1 || texts[0].Text != "I'll read the file now." {
+		t.Errorf("expected 1 text event with correct text, got %v", texts)
+	}
+	if len(tools) != 1 {
+		t.Errorf("expected 1 tool event, got %d", len(tools))
 	}
 }
 

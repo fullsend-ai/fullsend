@@ -29,6 +29,20 @@ func TestRendererInitEvent(t *testing.T) {
 	}
 }
 
+func TestRendererDuplicateInitEventSuppressed(t *testing.T) {
+	var buf bytes.Buffer
+	r, _ := newTestRenderer(&buf)
+
+	r.Handle(InitEvent{Model: "claude-opus-4-6", Version: "1.2.3"})
+	r.Handle(InitEvent{Model: "claude-opus-4-6"})
+	r.Handle(InitEvent{Model: "claude-opus-4-6"})
+
+	output := buf.String()
+	if count := strings.Count(output, "claude-opus-4-6"); count != 1 {
+		t.Errorf("expected init header exactly once, got %d times in: %s", count, output)
+	}
+}
+
 func TestRendererToolUseEvent(t *testing.T) {
 	var buf bytes.Buffer
 	r, metrics := newTestRenderer(&buf)

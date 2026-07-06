@@ -13,12 +13,12 @@ import (
 // It tracks block state (text/thinking) so transitions between event
 // types produce clean output boundaries.
 type EventRenderer struct {
-	printer        *ui.Printer
-	start          time.Time
-	metrics        *RunMetrics
+	printer *ui.Printer
+	metrics *RunMetrics
 	isCI       bool
 	inText     bool
 	inThinking bool
+	seenInit   bool
 }
 
 // NewEventRenderer creates a renderer that writes to the given printer
@@ -26,7 +26,6 @@ type EventRenderer struct {
 func NewEventRenderer(printer *ui.Printer, start time.Time, metrics *RunMetrics) *EventRenderer {
 	return &EventRenderer{
 		printer: printer,
-		start:   start,
 		metrics: metrics,
 		isCI:    os.Getenv("GITHUB_ACTIONS") == "true",
 	}
@@ -40,6 +39,10 @@ var (
 func (r *EventRenderer) Handle(evt AgentEvent) {
 	switch e := evt.(type) {
 	case InitEvent:
+		if r.seenInit {
+			return
+		}
+		r.seenInit = true
 		r.endBlock()
 		label := e.Model
 		if e.Version != "" {
@@ -62,19 +65,18 @@ func (r *EventRenderer) Handle(evt AgentEvent) {
 		r.printer.Raw(e.Text)
 	case ToolUseEvent:
 		r.endBlock()
-		count := r.metrics.ToolCalls.Add(1)
-		elapsed := time.Since(r.start).Truncate(time.Second)
+		r.metrics.ToolCalls.Add(1)
 		var msg string
 		if e.Summary != "" {
-			msg = fmt.Sprintf("%s: %s (%s, %d tools)", e.Name, e.Summary, elapsed, count)
+			msg = fmt.Sprintf("%s: %s", e.Name, e.Summary)
 		} else {
-			msg = fmt.Sprintf("%s (%s, %d tools)", e.Name, elapsed, count)
+			msg = e.Name
 		}
 		msg = sanitizeOutput(msg)
 		if r.isCI {
 			fmt.Fprintf(os.Stderr, "::notice::%s\n", msg)
 		}
-		r.printer.Heartbeat(msg)
+		r.printer.ToolProgress(msg)
 	case TokensEvent:
 		r.endBlock()
 		total := e.InputTokens + e.OutputTokens + e.CacheRead + e.CacheWrite
