@@ -8,6 +8,10 @@ inputs:
   gcp_project_id:
     description: 'GCP project ID — passed to google-github-actions/auth so the runner env has GOOGLE_CLOUD_PROJECT'
     required: false
+  scripts_dir:
+    description: 'Directory containing prepare-sandbox-credentials.sh (scripts for per-org, .fullsend/scripts for per-repo)'
+    required: false
+    default: 'scripts'
 
 runs:
   using: composite
@@ -34,4 +38,6 @@ runs:
 
     - name: Prepare sandbox credentials
       shell: bash
-      run: bash scripts/prepare-sandbox-credentials.sh
+      env:
+        SCRIPTS_DIR: ${{ inputs.scripts_dir }}
+      run: bash "${SCRIPTS_DIR}/prepare-sandbox-credentials.sh"
