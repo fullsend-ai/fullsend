@@ -68,6 +68,23 @@ func TestExtractArtifactZip_RejectsSymlink(t *testing.T) {
 	assert.Contains(t, err.Error(), "symlink")
 }
 
+func TestExtractArtifactZip_RejectsPathTraversal(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("../escape.txt")
+	require.NoError(t, err)
+	_, err = w.Write([]byte("nope"))
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+
+	dest := t.TempDir()
+	err = extractArtifactZip("artifact", buf.Bytes(), dest)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "path traversal")
+}
+
 func TestExtractArtifactZip_SanitizesName(t *testing.T) {
 	t.Parallel()
 
@@ -83,4 +100,14 @@ func TestExtractArtifactZip_SanitizesName(t *testing.T) {
 	require.NoError(t, extractArtifactZip("../../weird/name", buf.Bytes(), dest))
 	_, err = os.Stat(filepath.Join(dest, "name", "ok.txt"))
 	require.NoError(t, err)
+}
+
+func TestNewestRepositoryArtifactCreatedAt(t *testing.T) {
+	t.Parallel()
+
+	arts := []forge.RepositoryArtifact{
+		{CreatedAt: "2026-01-01T00:00:00Z"},
+		{CreatedAt: "2026-01-02T00:00:00Z"},
+	}
+	assert.Equal(t, "2026-01-02T00:00:00Z", newestRepositoryArtifactCreatedAt(arts))
 }

@@ -186,23 +186,27 @@ func isOrgConfigData(data []byte) bool {
 	return probe.Dispatch != nil || probe.Defaults != nil || len(probe.Repos) > 0
 }
 
-func backendFromConfigFile(path string) (agentruntime.Backend, error) {
+func backendFromConfigFile(path string) (agentruntime.Backend, string, error) {
 	data, readErr := os.ReadFile(path)
+	source := path
 	if readErr != nil && os.IsNotExist(readErr) {
 		alt := filepath.Join(filepath.Dir(path), ".fullsend", "config.yaml")
 		data, readErr = os.ReadFile(alt)
+		if readErr == nil {
+			source = alt
+		}
 	}
 	if readErr == nil {
 		backend, resolveErr := resolveBackendFromConfigData(data)
 		if resolveErr != nil {
-			return agentruntime.Backend{}, resolveErr
+			return agentruntime.Backend{}, source, resolveErr
 		}
-		return backend, nil
+		return backend, source, nil
 	}
 	if os.IsNotExist(readErr) {
-		return agentruntime.Default(), nil
+		return agentruntime.Default(), "default (config not found)", nil
 	}
-	return agentruntime.Backend{}, fmt.Errorf("reading config.yaml for runtime selection: %w", readErr)
+	return agentruntime.Backend{}, source, fmt.Errorf("reading config.yaml for runtime selection: %w", readErr)
 }
 
 func newRunCmd() *cobra.Command {
@@ -851,7 +855,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// 7. Bootstrap sandbox.
 	var backend agentruntime.Backend
 	orgConfigPath = filepath.Join(absFullsendDir, "config.yaml")
-	backend, backendErr := backendFromConfigFile(orgConfigPath)
+	backend, configSource, backendErr := backendFromConfigFile(orgConfigPath)
 	if backendErr != nil {
 		switch {
 		case errors.Is(backendErr, errParsingConfigRuntime):
@@ -863,6 +867,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		return backendErr
 	}
+	fmt.Fprintf(os.Stderr, "runtime: selected %q from %s\n", backend.Runtime.Name(), configSource)
 	rt := backend.Runtime
 	tx := backend.Transcripts
 	bootstrapStart := time.Now()

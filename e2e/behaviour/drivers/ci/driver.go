@@ -14,5 +14,6 @@ type Driver interface {
 	AssertNoWorkflow(ctx context.Context, owner, repo, workflowFile string, after time.Time) error
 	GetRunLogs(ctx context.Context, owner, repo string, runID int) (string, error)
 	DownloadArtifacts(ctx context.Context, owner, repo string, runID int, destDir string) error
+	DownloadNamedArtifactFromRun(ctx context.Context, owner, repo string, runID int, artifactName string, destDir string) error
 	DownloadNamedArtifactAfter(ctx context.Context, owner, repo, artifactName string, after time.Time, destDir string) error
 }

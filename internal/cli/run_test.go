@@ -3558,8 +3558,9 @@ func TestIsOrgConfigData(t *testing.T) {
 func TestBackendFromConfigFile_MissingUsesDefault(t *testing.T) {
 	t.Parallel()
 
-	backend, err := backendFromConfigFile(filepath.Join(t.TempDir(), "missing.yaml"))
+	backend, source, err := backendFromConfigFile(filepath.Join(t.TempDir(), "missing.yaml"))
 	require.NoError(t, err)
+	assert.Equal(t, "default (config not found)", source)
 	assert.Equal(t, "claude", backend.Runtime.Name())
 }
 
@@ -3574,7 +3575,7 @@ func TestBackendFromConfigFile_PerRepoConfig(t *testing.T) {
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, data, 0o644))
 
-	backend, err := backendFromConfigFile(path)
+	backend, _, err := backendFromConfigFile(path)
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", backend.Runtime.Name())
 }
@@ -3590,8 +3591,9 @@ func TestBackendFromConfigFile_PerRepoNestedConfig(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".fullsend"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".fullsend", "config.yaml"), data, 0o644))
 
-	backend, err := backendFromConfigFile(filepath.Join(dir, "config.yaml"))
+	backend, source, err := backendFromConfigFile(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
+	assert.Contains(t, source, ".fullsend")
 	assert.Equal(t, "dummy", backend.Runtime.Name())
 }
 
@@ -3604,7 +3606,7 @@ func TestBackendFromConfigFile_ReadError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.Mkdir(path, 0o755))
 
-	_, err := backendFromConfigFile(path)
+	_, _, err := backendFromConfigFile(path)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading config.yaml for runtime selection")
 }
@@ -3620,7 +3622,7 @@ func TestBackendFromConfigFile_ResolveError(t *testing.T) {
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, data, 0o644))
 
-	_, err = backendFromConfigFile(path)
+	_, _, err = backendFromConfigFile(path)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolving runtime")
 }

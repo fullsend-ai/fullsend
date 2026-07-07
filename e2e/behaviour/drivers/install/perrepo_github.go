@@ -123,7 +123,7 @@ func parseInferenceStatusWIFProvider(output string) (string, error) {
 		Status      string `json:"status"`
 		WIFProvider string `json:"FULLSEND_GCP_WIF_PROVIDER"`
 	}
-	if err := json.Unmarshal([]byte(output[start:]), &status); err != nil {
+	if err := json.NewDecoder(strings.NewReader(output[start:])).Decode(&status); err != nil {
 		return "", fmt.Errorf("parse JSON: %w", err)
 	}
 	if status.WIFProvider == "" {

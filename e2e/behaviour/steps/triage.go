@@ -7,7 +7,7 @@ import (
 
 	"github.com/cucumber/godog"
 
-	scmgh "github.com/fullsend-ai/fullsend/e2e/behaviour/drivers/scm/github"
+	"github.com/fullsend-ai/fullsend/e2e/behaviour/drivers/scm"
 	"github.com/fullsend-ai/fullsend/e2e/behaviour/world"
 )
 
@@ -39,7 +39,7 @@ func givenEnrolledTestRepository(w *world.World) error {
 }
 
 func givenEnrolledRepository(w *world.World, fullName string) error {
-	owner, repo, err := scmgh.ParseRepo(fullName)
+	owner, repo, err := scm.ParseRepo(fullName)
 	if err != nil {
 		return err
 	}

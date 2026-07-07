@@ -49,7 +49,7 @@ func ensureArtifacts(w *world.World) error {
 	}
 
 	tryDownloadRun := func(runID int) error {
-		if err := w.CI.DownloadArtifacts(ctx, w.Org, w.Install.TriageWorkflowRepo(), runID, dest); err != nil {
+		if err := w.CI.DownloadNamedArtifactFromRun(ctx, w.Org, w.Install.TriageWorkflowRepo(), runID, w.Install.AgentArtifactName(), dest); err != nil {
 			return err
 		}
 		if _, findErr := artifacts.FindBehaviourResults(dest); findErr != nil {

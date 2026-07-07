@@ -2,7 +2,6 @@ package githubactions
 
 import (
 	"archive/zip"
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -252,6 +251,24 @@ func (d *Driver) GetRunLogs(ctx context.Context, owner, repo string, runID int) 
 	return d.Client.GetWorkflowRunLogs(ctx, owner, repo, runID)
 }
 
+func (d *Driver) DownloadNamedArtifactFromRun(ctx context.Context, owner, repo string, runID int, artifactName string, destDir string) error {
+	artifacts, err := d.Client.ListWorkflowRunArtifacts(ctx, owner, repo, runID)
+	if err != nil {
+		return err
+	}
+	for _, art := range artifacts {
+		if art.Name != artifactName {
+			continue
+		}
+		zipData, err := d.Client.DownloadWorkflowRunArtifact(ctx, owner, repo, art.ID)
+		if err != nil {
+			return err
+		}
+		return extractArtifactZip(art.Name, zipData, destDir)
+	}
+	return fmt.Errorf("artifact %q not found on workflow run %d", artifactName, runID)
+}
+
 func (d *Driver) DownloadArtifacts(ctx context.Context, owner, repo string, runID int, destDir string) error {
 	artifacts, err := d.Client.ListWorkflowRunArtifacts(ctx, owner, repo, runID)
 	if err != nil {
@@ -271,11 +288,23 @@ func (d *Driver) DownloadArtifacts(ctx context.Context, owner, repo string, runI
 
 func (d *Driver) DownloadNamedArtifactAfter(ctx context.Context, owner, repo, artifactName string, after time.Time, destDir string) error {
 	deadline := time.Now().Add(artifactRunWait)
+	var lastNewestCreatedAt string
 	for time.Now().Before(deadline) {
 		arts, err := d.Client.ListRepositoryArtifacts(ctx, owner, repo, 100)
 		if err != nil {
 			return err
 		}
+		newestCreatedAt := newestRepositoryArtifactCreatedAt(arts)
+		if newestCreatedAt != "" && newestCreatedAt == lastNewestCreatedAt {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(artifactRunPoll):
+			}
+			continue
+		}
+		lastNewestCreatedAt = newestCreatedAt
+
 		if art := selectRepositoryArtifactAfter(arts, artifactName, after); art != nil {
 			zipData, err := d.Client.DownloadWorkflowRunArtifact(ctx, owner, repo, art.ID)
 			if err != nil {
@@ -290,6 +319,16 @@ func (d *Driver) DownloadNamedArtifactAfter(ctx context.Context, owner, repo, ar
 		}
 	}
 	return fmt.Errorf("artifact %q not found after %s", artifactName, after.Format(time.RFC3339))
+}
+
+func newestRepositoryArtifactCreatedAt(arts []forge.RepositoryArtifact) string {
+	var newest string
+	for _, art := range arts {
+		if art.CreatedAt > newest {
+			newest = art.CreatedAt
+		}
+	}
+	return newest
 }
 
 func selectRepositoryArtifactAfter(arts []forge.RepositoryArtifact, name string, after time.Time) *forge.RepositoryArtifact {
@@ -311,6 +350,21 @@ func selectRepositoryArtifactAfter(arts []forge.RepositoryArtifact, name string,
 }
 
 func extractArtifactZip(name string, zipData []byte, destDir string) error {
+	tmp, err := os.CreateTemp("", "behaviour-artifact-*.zip")
+	if err != nil {
+		return fmt.Errorf("create temp artifact zip: %w", err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	if _, err := tmp.Write(zipData); err != nil {
+		tmp.Close()
+		return fmt.Errorf("write temp artifact zip: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temp artifact zip: %w", err)
+	}
+
 	safeName := filepath.Base(name)
 	if safeName == "" || safeName == "." {
 		safeName = "artifact"
@@ -320,10 +374,11 @@ func extractArtifactZip(name string, zipData []byte, destDir string) error {
 		return err
 	}
 
-	zr, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
+	zr, err := zip.OpenReader(tmpPath)
 	if err != nil {
 		return fmt.Errorf("parse artifact zip %q: %w", safeName, err)
 	}
+	defer zr.Close()
 
 	const perFileLimit = 10 << 20
 	for _, f := range zr.File {
@@ -332,13 +387,17 @@ func extractArtifactZip(name string, zipData []byte, destDir string) error {
 		}
 		outPath := filepath.Join(artDir, f.Name)
 		if !strings.HasPrefix(filepath.Clean(outPath), filepath.Clean(artDir)+string(os.PathSeparator)) {
-			continue
+			return fmt.Errorf("artifact zip %q contains path traversal entry %q", safeName, f.Name)
 		}
 		if f.FileInfo().IsDir() {
-			_ = os.MkdirAll(outPath, 0o755)
+			if err := os.MkdirAll(outPath, 0o755); err != nil {
+				return fmt.Errorf("create artifact dir %q: %w", f.Name, err)
+			}
 			continue
 		}
-		_ = os.MkdirAll(filepath.Dir(outPath), 0o755)
+		if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+			return fmt.Errorf("create artifact parent dir for %q: %w", f.Name, err)
+		}
 		rc, err := f.Open()
 		if err != nil {
 			return err
