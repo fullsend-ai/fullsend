@@ -1256,10 +1256,16 @@ func TestCheckInstallScopes_FineGrainedToken(t *testing.T) {
 	client := &forge.FakeClient{
 		TokenScopes: nil,
 	}
-	printer := ui.New(&discardWriter{})
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
 
 	err := checkInstallScopes(context.Background(), client, printer)
 	require.NoError(t, err)
+	output := buf.String()
+	assert.Contains(t, output, "fine-grained token detected")
+	assert.Contains(t, output, "repo")
+	assert.Contains(t, output, "workflow")
+	assert.Contains(t, output, "admin:org")
 }
 
 func TestCheckInstallScopes_InstallationToken(t *testing.T) {
@@ -1328,10 +1334,16 @@ func TestCheckPerRepoScopes_FineGrainedToken(t *testing.T) {
 	client := &forge.FakeClient{
 		TokenScopes: nil,
 	}
-	printer := ui.New(&discardWriter{})
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
 
 	err := checkPerRepoScopes(context.Background(), client, printer)
 	require.NoError(t, err)
+	output := buf.String()
+	assert.Contains(t, output, "fine-grained token detected")
+	assert.Contains(t, output, "repo")
+	assert.Contains(t, output, "workflow")
+	assert.NotContains(t, output, "admin:org")
 }
 
 func TestCheckPerRepoScopes_InstallationToken(t *testing.T) {

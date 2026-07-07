@@ -36,6 +36,35 @@ var scopeDescriptions = map[string]string{
 	"delete_repo": "delete the .fullsend config repository (uninstall only)",
 }
 
+// fineGrainedEquivalents maps OAuth scopes to equivalent fine-grained
+// PAT permissions. Used in skip guidance when scopes cannot be verified.
+var fineGrainedEquivalents = map[string]string{
+	"repo":        "Contents (read/write), Secrets (read/write), Variables (read/write)",
+	"workflow":    "Workflows (read/write)",
+	"admin:org":   "Organization administration (read/write)",
+	"delete_repo": "Administration (read/write)",
+}
+
+// SkipGuidance returns a human-readable message listing the scopes
+// that could not be verified and their fine-grained equivalents.
+func (r *PreflightResult) SkipGuidance() string {
+	if len(r.Required) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Could not verify scopes: %s\n", strings.Join(r.Required, ", "))
+	b.WriteString("Ensure your token has these fine-grained permissions:\n")
+	for _, scope := range r.Required {
+		if equiv, ok := fineGrainedEquivalents[scope]; ok {
+			fmt.Fprintf(&b, "  • %s → %s\n", scope, equiv)
+		} else {
+			fmt.Fprintf(&b, "  • %s\n", scope)
+		}
+	}
+	b.WriteString("  • Metadata (read-only) — required by GitHub for all tokens")
+	return b.String()
+}
+
 // Error returns a human-readable error describing missing scopes and
 // how to fix the problem.
 func (r *PreflightResult) Error() string {

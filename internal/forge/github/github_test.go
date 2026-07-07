@@ -1057,6 +1057,52 @@ func TestAPIError_ErrorStringWithDetails(t *testing.T) {
 	assert.Contains(t, err.Error(), "name already exists on this account")
 }
 
+func TestIsPATForbiddenError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "classic PAT forbidden by org",
+			err: &APIError{
+				StatusCode: 403,
+				Message:    `"test-org" forbids access via a personal access token (classic). Please use a GitHub App, OAuth App, or a personal access token with fine-grained permissions.`,
+			},
+			want: true,
+		},
+		{
+			name: "wrapped error",
+			err: fmt.Errorf("get repo: %w", &APIError{
+				StatusCode: 403,
+				Message:    `"test-org" forbids access via a personal access token (classic)`,
+			}),
+			want: true,
+		},
+		{
+			name: "generic 403",
+			err:  &APIError{StatusCode: 403, Message: "Resource not accessible by integration"},
+			want: false,
+		},
+		{
+			name: "non-API error",
+			err:  fmt.Errorf("network error"),
+			want: false,
+		},
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsPATForbiddenError(tt.err))
+		})
+	}
+}
+
 func TestIsBranchProtectionError(t *testing.T) {
 	tests := []struct {
 		name   string

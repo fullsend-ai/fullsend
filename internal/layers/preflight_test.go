@@ -123,6 +123,36 @@ func TestCollectRequiredScopes(t *testing.T) {
 	assert.ElementsMatch(t, []string{"repo", "workflow", "delete_repo"}, scopes)
 }
 
+func TestPreflightResult_SkipGuidance(t *testing.T) {
+	t.Run("lists required scopes and fine-grained equivalents", func(t *testing.T) {
+		r := &PreflightResult{
+			Required: []string{"repo", "workflow"},
+			Skipped:  true,
+		}
+		guidance := r.SkipGuidance()
+		assert.Contains(t, guidance, "repo")
+		assert.Contains(t, guidance, "workflow")
+		assert.Contains(t, guidance, "Contents (read/write)")
+		assert.Contains(t, guidance, "Workflows (read/write)")
+		assert.Contains(t, guidance, "Metadata (read-only)")
+	})
+
+	t.Run("includes admin:org for install scopes", func(t *testing.T) {
+		r := &PreflightResult{
+			Required: []string{"repo", "workflow", "admin:org"},
+			Skipped:  true,
+		}
+		guidance := r.SkipGuidance()
+		assert.Contains(t, guidance, "admin:org")
+		assert.Contains(t, guidance, "Organization administration")
+	})
+
+	t.Run("returns empty for no required scopes", func(t *testing.T) {
+		r := &PreflightResult{Skipped: true}
+		assert.Empty(t, r.SkipGuidance())
+	})
+}
+
 func TestPreflightResult_Error(t *testing.T) {
 	r := &PreflightResult{
 		Required: []string{"repo", "delete_repo", "workflow"},
