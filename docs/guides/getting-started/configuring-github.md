@@ -21,6 +21,15 @@ The goal of this document is that you configure Fullsend for your GitHub reposit
 > `--direct`), and **Metadata** (read-only), then `export GH_TOKEN=github_pat_...`
 > before running setup. The CLI checks `GH_TOKEN` → `GITHUB_TOKEN` → `gh auth token`,
 > in that order.
+>
+> **Fork limitation:** Fine-grained PATs are scoped to a single GitHub
+> organization and cannot create forks across org boundaries. When the CLI
+> detects a fine-grained token, the fork delivery option (`[f]`) is
+> unavailable. The CLI will offer the upstream option (`[u]`), which pushes
+> a branch to the target repository and creates a PR containing the fullsend
+> scaffolding files. No changes are made to the default branch until the PR
+> is merged. This limitation only applies to the initial setup — after setup,
+> fullsend agents use their own GitHub App tokens and do not require a fork.
 
 ## Installing GitHub Applications
 
