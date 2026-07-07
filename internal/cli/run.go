@@ -1117,7 +1117,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		// 9d. Extract target repo back to host. SafeDownload removes dangerous
 		// symlinks (absolute or repo-escaping) and .git/hooks/ to prevent sandbox escape.
-		if clearErr := os.RemoveAll(hostRepositoryDir); clearErr != nil {
+		//
+		// Clear the contents of the directory rather than removing the directory
+		// itself. Removing the directory would invalidate the inode, which breaks
+		// any shell whose CWD points at it (the next command in that shell would
+		// fail with "getwd: no such file or directory").
+		printer.StepInfo(fmt.Sprintf("Clearing %s before extraction", hostRepositoryDir))
+		if clearErr := clearDirContents(hostRepositoryDir); clearErr != nil {
 			return fmt.Errorf("clearing local repo %s before extraction: %w", hostRepositoryDir, clearErr)
 		}
 		repoExtractStart := time.Now()
@@ -2805,4 +2811,20 @@ func containedLocalPath(baseDir, source string) (string, error) {
 		return "", fmt.Errorf("local path %q escapes fullsend directory via symlink", source)
 	}
 	return real, nil
+}
+
+// clearDirContents removes all entries inside dir without removing dir itself.
+// This preserves the directory inode so that shells whose CWD points at dir
+// continue to work after the call.
+func clearDirContents(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
