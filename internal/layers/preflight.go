@@ -63,7 +63,7 @@ var fineGrainedEquivalents = map[string]string{
 // SkipGuidance returns a human-readable message listing the scopes
 // that could not be verified and their fine-grained equivalents.
 func (r *PreflightResult) SkipGuidance() string {
-	if len(r.Required) == 0 {
+	if r.SkippedReason != SkipFineGrained || len(r.Required) == 0 {
 		return ""
 	}
 	var b strings.Builder

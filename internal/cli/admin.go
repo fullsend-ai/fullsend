@@ -996,10 +996,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		targetRepo, repoErr := client.GetRepo(ctx, owner, repo)
 		if repoErr != nil {
 			if gh.IsPATForbiddenError(repoErr) {
-				printer.StepFail("Classic PAT rejected by organization")
-				printer.Blank()
-				printer.ErrorBox("Token not accepted", patForbiddenGuidance(owner, repo))
-				return fmt.Errorf("organization forbids classic PATs: %w", repoErr)
+				return handlePATForbidden(printer, owner, repo, repoErr)
 			}
 			return fmt.Errorf("getting repo info: %w", repoErr)
 		}
@@ -1173,10 +1170,7 @@ func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.
 	targetRepo, err := client.GetRepo(ctx, owner, repo)
 	if err != nil {
 		if gh.IsPATForbiddenError(err) {
-			printer.StepFail("Classic PAT rejected by organization")
-			printer.Blank()
-			printer.ErrorBox("Token not accepted", patForbiddenGuidance(owner, repo))
-			return fmt.Errorf("organization forbids classic PATs: %w", err)
+			return handlePATForbidden(printer, owner, repo, err)
 		}
 		return fmt.Errorf("getting repo info: %w", err)
 	}
@@ -2083,9 +2077,11 @@ func runPreflight(ctx context.Context, stack *layers.Stack, op layers.Operation,
 		switch result.SkippedReason {
 		case layers.SkipInstallationToken:
 			printer.StepWarn("Preflight skipped: installation token (OAuth scopes do not apply)")
-		default:
+		case layers.SkipFineGrained:
 			printer.StepWarn("Preflight skipped: fine-grained token detected (scopes cannot be verified)")
 			printSkipGuidance(printer, result)
+		default:
+			printer.StepWarn(fmt.Sprintf("Preflight skipped: %s", result.SkippedReason))
 		}
 	} else {
 		printer.StepDone("Token permissions verified")
@@ -2897,7 +2893,7 @@ func checkTokenScopes(ctx context.Context, client forge.Client, printer *ui.Prin
 
 	if granted == nil {
 		printer.StepWarn("Preflight skipped: fine-grained token detected (scopes cannot be verified)")
-		printSkipGuidance(printer, &layers.PreflightResult{Required: required, Skipped: true})
+		printSkipGuidance(printer, &layers.PreflightResult{Required: required, Skipped: true, SkippedReason: layers.SkipFineGrained})
 		return nil
 	}
 
@@ -2941,9 +2937,13 @@ func printSkipGuidance(printer *ui.Printer, result *layers.PreflightResult) {
 	}
 }
 
-// patForbiddenGuidance returns a formatted error message when an org
-// blocks classic PATs. It explains the token resolution order and how
-// to create a fine-grained PAT with the required permissions.
+func handlePATForbidden(printer *ui.Printer, owner, repo string, err error) error {
+	printer.StepFail("Classic PAT rejected by organization")
+	printer.Blank()
+	printer.ErrorBox("Token not accepted", patForbiddenGuidance(owner, repo))
+	return fmt.Errorf("organization forbids classic PATs: %w", err)
+}
+
 func patForbiddenGuidance(owner, repo string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Organization %q forbids classic personal access tokens.\n\n", owner)
