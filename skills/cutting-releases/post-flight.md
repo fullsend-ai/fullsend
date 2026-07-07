@@ -30,6 +30,33 @@ gh release view <tag>
 Check that the title, changelog, and binary assets look correct.
 Verify the release is not marked as a draft.
 
+## B2. Verify agents repo release
+
+The release workflow pushes the same tag to `fullsend-ai/agents`,
+which triggers agents' own `release.yml` to create a GitHub Release
+and move the `v0` floating tag.
+
+Verify the agents release workflow succeeded:
+
+```
+gh run list --repo fullsend-ai/agents --workflow=release.yml --limit=1
+```
+
+Verify the tag and release exist:
+
+```
+gh release view <tag> --repo fullsend-ai/agents
+```
+
+For non-prerelease tags, verify the `v0` floating tag was moved:
+
+```
+gh api repos/fullsend-ai/agents/git/ref/tags/v0 --jq '.object.sha'
+```
+
+If the agents release workflow failed, investigate before continuing —
+downstream consumers may reference agents by tag.
+
 ## C. Skip fullsend-ai repos
 
 The `fullsend-ai/.fullsend` repo references reusable workflows via

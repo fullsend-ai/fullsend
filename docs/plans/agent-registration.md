@@ -250,7 +250,17 @@ When `fullsend run <name>` is invoked:
    Role and slug come from the harness content itself.
 4. **Local path source:** resolve the path relative to `.fullsend/`
    and load the harness file directly.
-5. **Scaffold source** (no config override): load the scaffold harness
+5. **Agents repo fallback** (transitional): for known first-party
+   agents not found in config, resolve the latest harness from
+   `fullsend-ai/agents` at runtime. The fallback resolves the floating
+   version tag (`v0`) SHA via the forge client, constructs a commit-pinned
+   URL, checks the org allowlist, fetches via `fetch.FetchURL`, and
+   caches content directly. Supply-chain integrity relies on the
+   commit-pinned URL, TLS transport, and the org allowlist. This tier
+   exists to support the [agent extraction](agent-extraction-to-agents-repo.md)
+   without requiring config changes from existing users and will be
+   removed once all users have migrated (Step 7).
+6. **Scaffold source** (no config override): load the scaffold harness
    as today.
 
 The `--harness` flag, when given a name instead of a file path, uses

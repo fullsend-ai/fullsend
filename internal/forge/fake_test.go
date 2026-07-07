@@ -875,6 +875,87 @@ func TestFakeClient_CreateBranch_PerRepoErrors(t *testing.T) {
 	})
 }
 
+func TestFakeClient_GetRef(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns SHA for existing ref", func(t *testing.T) {
+		fc := &FakeClient{
+			Refs: map[string]string{
+				"owner/repo/tags/v0": "abc123",
+			},
+		}
+		sha, err := fc.GetRef(ctx, "owner", "repo", "tags/v0")
+		require.NoError(t, err)
+		assert.Equal(t, "abc123", sha)
+	})
+
+	t.Run("returns ErrNotFound for missing ref", func(t *testing.T) {
+		fc := &FakeClient{
+			Refs: map[string]string{},
+		}
+		_, err := fc.GetRef(ctx, "owner", "repo", "tags/v0")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrNotFound)
+	})
+
+	t.Run("returns injected error", func(t *testing.T) {
+		fc := &FakeClient{
+			Errors: map[string]error{
+				"GetRef": errors.New("boom"),
+			},
+			Refs: map[string]string{
+				"owner/repo/tags/v0": "abc123",
+			},
+		}
+		_, err := fc.GetRef(ctx, "owner", "repo", "tags/v0")
+		require.Error(t, err)
+		assert.Equal(t, "boom", err.Error())
+	})
+}
+
+func TestFakeClient_GetBranchRef_DelegatesToGetRef(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("BranchRefs takes priority", func(t *testing.T) {
+		fc := &FakeClient{
+			BranchRefs: map[string]string{
+				"owner/repo/main": "branch-sha",
+			},
+			Refs: map[string]string{
+				"owner/repo/heads/main": "ref-sha",
+			},
+		}
+		sha, err := fc.GetBranchRef(ctx, "owner", "repo", "main")
+		require.NoError(t, err)
+		assert.Equal(t, "branch-sha", sha)
+	})
+
+	t.Run("falls through to GetRef when not in BranchRefs", func(t *testing.T) {
+		fc := &FakeClient{
+			Refs: map[string]string{
+				"owner/repo/heads/main": "ref-sha",
+			},
+		}
+		sha, err := fc.GetBranchRef(ctx, "owner", "repo", "main")
+		require.NoError(t, err)
+		assert.Equal(t, "ref-sha", sha)
+	})
+
+	t.Run("GetBranchRef error injection works independently", func(t *testing.T) {
+		fc := &FakeClient{
+			Errors: map[string]error{
+				"GetBranchRef": errors.New("branch error"),
+			},
+			BranchRefs: map[string]string{
+				"owner/repo/main": "sha",
+			},
+		}
+		_, err := fc.GetBranchRef(ctx, "owner", "repo", "main")
+		require.Error(t, err)
+		assert.Equal(t, "branch error", err.Error())
+	})
+}
+
 func TestIsForbidden(t *testing.T) {
 	assert.True(t, IsForbidden(ErrForbidden))
 	assert.True(t, IsForbidden(errors.Join(errors.New("wrapper"), ErrForbidden)))
