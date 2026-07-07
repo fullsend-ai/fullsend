@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"math/rand/v2"
 	"net/http"
@@ -743,9 +744,23 @@ func (c *LiveClient) CommitFiles(ctx context.Context, owner, repo, message strin
 }
 
 func (c *LiveClient) commitFilesWithRetry(ctx context.Context, owner, repo, branch, message string, files []forge.TreeFile) (bool, error) {
-	changed, err := c.commitFilesTo(ctx, owner, repo, branch, message, files)
-	if err != nil && forge.IsNonFastForward(err) {
+	const maxAttempts = 3
+	var changed bool
+	var err error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		if attempt > 0 {
+			jitter := time.Duration(100+rand.IntN(400)) * time.Millisecond
+			select {
+			case <-ctx.Done():
+				return false, ctx.Err()
+			case <-time.After(jitter):
+			}
+			log.Printf("retrying commit to %s/%s@%s (attempt %d/%d): %v", owner, repo, branch, attempt+1, maxAttempts, err)
+		}
 		changed, err = c.commitFilesTo(ctx, owner, repo, branch, message, files)
+		if err == nil || !forge.IsNonFastForward(err) {
+			break
+		}
 	}
 	return changed, err
 }
@@ -2627,9 +2642,20 @@ func (c *LiveClient) DownloadWorkflowRunArtifact(ctx context.Context, owner, rep
 	if err := checkStatus(resp, http.StatusOK); err != nil {
 		return nil, fmt.Errorf("download workflow artifact %d: %w", artifactID, err)
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 50<<20))
+	data, err := readLimitedBytes(resp.Body, 50<<20)
 	if err != nil {
 		return nil, fmt.Errorf("read workflow artifact %d: %w", artifactID, err)
+	}
+	return data, nil
+}
+
+func readLimitedBytes(r io.Reader, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("response exceeds %d byte limit", limit)
 	}
 	return data, nil
 }

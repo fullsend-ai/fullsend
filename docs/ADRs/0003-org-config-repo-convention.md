@@ -212,11 +212,7 @@ version: 1                          # Schema version for future evolution
 intent_repo: <org>/features         # or <org>/intent
 architecture_repo: <org>/architecture
 
-# Agent runtime defaults (see ADR 0065 for behaviour-test dummy runtime)
-defaults:
-  runtime: claude                    # claude or dummy (dummy: behaviour test orgs only)
-
-# Legacy harness/model settings (separate from defaults.runtime backend selection)
+# Agent runtime defaults
 runtime:
   harness: claude-code              # or opencode
   model: claude-sonnet-4-6
@@ -231,6 +227,8 @@ sandbox:
   network_policy: restricted
   filesystem: ephemeral
 ```
+
+Backend selection for behaviour tests (`defaults.runtime` / per-repo `runtime: dummy`) is documented in [ADR 0065](0065-behaviour-tests-with-gherkin-and-drivers.md), not in the org config example above.
 
 Per-repo overrides in `repos/<repo-name>.yaml` can override org defaults
 (within the bounds of org-wide guardrails that cannot be weakened).

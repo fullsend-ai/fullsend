@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -106,25 +107,30 @@ func writeMetricsJSON(dir string, m aggregateMetrics) error {
 	return os.WriteFile(filepath.Join(dir, metricsFile), append(data, '\n'), 0o644)
 }
 
+var (
+	errParsingConfigRuntime = errors.New("parsing config for runtime selection")
+	errResolvingRuntime     = errors.New("resolving runtime")
+)
+
 func resolveBackendFromConfigData(orgConfigData []byte) (agentruntime.Backend, error) {
 	if isOrgConfigData(orgConfigData) {
 		orgCfg, orgErr := config.ParseOrgConfig(orgConfigData)
 		if orgErr != nil {
-			return agentruntime.Backend{}, fmt.Errorf("parsing config for runtime selection: %w", orgErr)
+			return agentruntime.Backend{}, fmt.Errorf("%w: %w", errParsingConfigRuntime, orgErr)
 		}
 		backend, resolveErr := agentruntime.ResolveFromConfig(orgCfg)
 		if resolveErr != nil {
-			return agentruntime.Backend{}, fmt.Errorf("resolving runtime: %w", resolveErr)
+			return agentruntime.Backend{}, fmt.Errorf("%w: %w", errResolvingRuntime, resolveErr)
 		}
 		return backend, nil
 	}
 	perRepoCfg, perRepoErr := config.ParsePerRepoConfig(orgConfigData)
 	if perRepoErr != nil {
-		return agentruntime.Backend{}, fmt.Errorf("parsing config for runtime selection: %w", perRepoErr)
+		return agentruntime.Backend{}, fmt.Errorf("%w: %w", errParsingConfigRuntime, perRepoErr)
 	}
 	backend, resolveErr := agentruntime.ResolveFromPerRepoConfig(perRepoCfg)
 	if resolveErr != nil {
-		return agentruntime.Backend{}, fmt.Errorf("resolving runtime: %w", resolveErr)
+		return agentruntime.Backend{}, fmt.Errorf("%w: %w", errResolvingRuntime, resolveErr)
 	}
 	return backend, nil
 }
@@ -168,7 +174,7 @@ func backendFromConfigFile(path string) (agentruntime.Backend, error) {
 	if os.IsNotExist(readErr) {
 		return agentruntime.Default(), nil
 	}
-	return agentruntime.Backend{}, fmt.Errorf("reading org config for runtime selection: %w", readErr)
+	return agentruntime.Backend{}, fmt.Errorf("reading config.yaml for runtime selection: %w", readErr)
 }
 
 func newRunCmd() *cobra.Command {
@@ -815,12 +821,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	backend, backendErr := backendFromConfigFile(orgConfigPath)
 	if backendErr != nil {
 		switch {
-		case strings.Contains(backendErr.Error(), "parsing config for runtime selection"):
-			printer.StepFail("Failed to parse org config")
-		case strings.Contains(backendErr.Error(), "resolving runtime"):
+		case errors.Is(backendErr, errParsingConfigRuntime):
+			printer.StepFail("Failed to parse config.yaml")
+		case errors.Is(backendErr, errResolvingRuntime):
 			printer.StepFail("Failed to resolve runtime")
 		default:
-			printer.StepFail("Failed to load org config")
+			printer.StepFail("Failed to load config.yaml")
 		}
 		return backendErr
 	}

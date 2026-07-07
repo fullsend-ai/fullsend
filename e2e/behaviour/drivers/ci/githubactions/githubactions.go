@@ -54,6 +54,9 @@ func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile 
 			continue
 		}
 		if candidate := selectWorkflowRun(runs, after, event); candidate != nil {
+			if candidate.Status == "completed" && candidate.Conclusion != "success" {
+				return nil, fmt.Errorf("workflow %s run %d concluded with %q during dispatch", workflowFile, candidate.ID, candidate.Conclusion)
+			}
 			triageRun = candidate
 			break
 		}
@@ -80,7 +83,7 @@ func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile 
 			if run.Conclusion == "success" {
 				return run, nil
 			}
-			if replacement := selectWorkflowRun(latestRuns(ctx, d, owner, repo, workflowFile), after, event); replacement != nil && replacement.ID > triageRun.ID {
+			if replacement := selectSuccessfulWorkflowRun(latestRuns(ctx, d, owner, repo, workflowFile), after, event); replacement != nil && replacement.ID > triageRun.ID {
 				triageRun = replacement
 				continue
 			}
@@ -98,17 +101,29 @@ func latestRuns(ctx context.Context, d *Driver, owner, repo, workflowFile string
 	return runs
 }
 
-// selectWorkflowRun returns the newest workflow run after triggerTime that is
-// still active or completed successfully. Skipped/cancelled/failed runs are
-// ignored so a concurrent stale dispatch does not mask the real triage run.
-// When event is non-empty, only runs with a matching GitHub event are considered.
+// selectWorkflowRun returns the newest workflow run after triggerTime that matches
+// the optional event filter. Callers decide how to handle non-success conclusions.
 func selectWorkflowRun(runs []forge.WorkflowRun, triggerTime time.Time, event string) *forge.WorkflowRun {
 	var best *forge.WorkflowRun
 	for _, run := range runs {
 		if !workflowRunMatches(run, triggerTime, event) {
 			continue
 		}
-		if run.Status == "completed" && run.Conclusion != "success" {
+		if best == nil || run.ID > best.ID {
+			r := run
+			best = &r
+		}
+	}
+	return best
+}
+
+func selectSuccessfulWorkflowRun(runs []forge.WorkflowRun, triggerTime time.Time, event string) *forge.WorkflowRun {
+	var best *forge.WorkflowRun
+	for _, run := range runs {
+		if !workflowRunMatches(run, triggerTime, event) {
+			continue
+		}
+		if run.Status != "completed" || run.Conclusion != "success" {
 			continue
 		}
 		if best == nil || run.ID > best.ID {
@@ -296,18 +311,25 @@ func selectRepositoryArtifactAfter(arts []forge.RepositoryArtifact, name string,
 }
 
 func extractArtifactZip(name string, zipData []byte, destDir string) error {
-	artDir := filepath.Join(destDir, name)
+	safeName := filepath.Base(name)
+	if safeName == "" || safeName == "." {
+		safeName = "artifact"
+	}
+	artDir := filepath.Join(destDir, safeName)
 	if err := os.MkdirAll(artDir, 0o755); err != nil {
 		return err
 	}
 
 	zr, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
 	if err != nil {
-		rawPath := filepath.Join(destDir, name+".bin")
-		return os.WriteFile(rawPath, zipData, 0o644)
+		return fmt.Errorf("parse artifact zip %q: %w", safeName, err)
 	}
 
+	const perFileLimit = 10 << 20
 	for _, f := range zr.File {
+		if f.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("artifact zip %q contains symlink entry %q", safeName, f.Name)
+		}
 		outPath := filepath.Join(artDir, f.Name)
 		if !strings.HasPrefix(filepath.Clean(outPath), filepath.Clean(artDir)+string(os.PathSeparator)) {
 			continue
@@ -321,14 +343,25 @@ func extractArtifactZip(name string, zipData []byte, destDir string) error {
 		if err != nil {
 			return err
 		}
-		data, err := io.ReadAll(io.LimitReader(rc, 10<<20))
+		data, err := readLimited(rc, perFileLimit)
 		rc.Close()
 		if err != nil {
-			return err
+			return fmt.Errorf("read artifact entry %q: %w", f.Name, err)
 		}
 		if err := os.WriteFile(outPath, data, 0o644); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func readLimited(r io.Reader, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("entry exceeds %d byte limit", limit)
+	}
+	return data, nil
 }

@@ -15,7 +15,7 @@ v1 reference implementations:
 
 - `e2e/behaviour/drivers/scm/github/`
 - `e2e/behaviour/drivers/ci/githubactions/`
-- `e2e/behaviour/drivers/install/github/perrepo/` (`BEHAVIOUR_INSTALL_MODE=per-repo`)
+- `e2e/behaviour/drivers/install/perrepo_github.go` (`BEHAVIOUR_INSTALL_MODE=per-repo`)
 
 ## Runner configuration
 

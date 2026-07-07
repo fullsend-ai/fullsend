@@ -40,6 +40,9 @@ func TestBehaviourSuite(t *testing.T) {
 		t.Fatalf("acquiring org: %v", err)
 	}
 	client := admin.NewLiveClient(token)
+	t.Cleanup(func() {
+		admin.ReleaseLock(context.Background(), client, org, runID, t)
+	})
 
 	binary := admin.BuildCLIBinary(t)
 	installDriver, err := install.NewDriver(cfg, e2eCfg, client, token, binary, t.Logf)
@@ -59,7 +62,6 @@ func TestBehaviourSuite(t *testing.T) {
 		if teardownErr := installDriver.Teardown(teardownCtx, org, installState); teardownErr != nil {
 			t.Logf("install teardown: %v", teardownErr)
 		}
-		admin.ReleaseLock(teardownCtx, client, org, runID, t)
 	})
 
 	testRepo := installState.TestRepo()

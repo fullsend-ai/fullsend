@@ -3285,7 +3285,7 @@ func TestBackendFromConfigFile_ReadError(t *testing.T) {
 
 	_, err := backendFromConfigFile(path)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "reading org config for runtime selection")
+	assert.Contains(t, err.Error(), "reading config.yaml for runtime selection")
 }
 
 func TestBackendFromConfigFile_ResolveError(t *testing.T) {
@@ -3308,4 +3308,19 @@ func TestIsOrgConfigData_InvalidYAML(t *testing.T) {
 	t.Parallel()
 
 	assert.False(t, isOrgConfigData([]byte("not: [valid")))
+}
+
+func TestIsOrgConfigData_HeaderlessPerRepoByStructure(t *testing.T) {
+	t.Parallel()
+
+	// Hand-edited per-repo config without the header comment.
+	data := []byte("version: \"1\"\nroles:\n  - triage\n")
+	assert.False(t, isOrgConfigData(data))
+}
+
+func TestIsOrgConfigData_HeaderlessOrgByStructure(t *testing.T) {
+	t.Parallel()
+
+	data := []byte("version: \"1\"\ndefaults:\n  roles:\n    - triage\nrepos:\n  widget:\n    enabled: true\n")
+	assert.True(t, isOrgConfigData(data))
 }

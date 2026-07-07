@@ -1717,6 +1717,7 @@ func TestOrgConfigFromPerRepo(t *testing.T) {
 		Version:    "1",
 		KillSwitch: true,
 		Roles:      []string{"triage", "coder"},
+		Runtime:    "dummy",
 		Agents: []AgentEntry{
 			{Name: "lint", Source: "harness/lint.yaml"},
 		},
@@ -1736,6 +1737,7 @@ func TestOrgConfigFromPerRepo(t *testing.T) {
 	require.NotNil(t, org.CreateIssues)
 	assert.Equal(t, []string{"org/repo"}, org.CreateIssues.AllowTargets.Repos)
 	assert.Equal(t, []string{"triage", "coder"}, org.Defaults.Roles)
+	assert.Equal(t, "dummy", org.Defaults.Runtime)
 	assert.Nil(t, org.Repos)
 	assert.Empty(t, org.Dispatch.Platform)
 }

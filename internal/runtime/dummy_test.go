@@ -192,7 +192,7 @@ func TestExecuteBehaviourScript_ValidationFailures(t *testing.T) {
 		{Op: "read_file", Description: "missing path"},
 		{Op: "url_get", Description: "missing url"},
 	}}
-	results, err := executeBehaviourScript("unused", t.TempDir(), script)
+	results, err := executeBehaviourScript(context.Background(), "unused", t.TempDir(), script)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "requires a path")
 	require.Len(t, results.Operations, 2)
@@ -426,4 +426,26 @@ func TestWriteBehaviourResultsSuccess(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, uploaded)
+}
+
+func TestValidateHTTPURL(t *testing.T) {
+	t.Parallel()
+
+	require.NoError(t, validateHTTPURL("https://example.com/path"))
+	require.Error(t, validateHTTPURL("file:///etc/passwd"))
+	require.Error(t, validateHTTPURL(""))
+	require.Error(t, validateHTTPURL("://missing"))
+}
+
+func TestExecuteBehaviourScript_CancelledContext(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	script := &BehaviourScript{Ops: []BehaviourOperation{
+		{Op: "read_file", Args: "x.txt", Description: "read"},
+	}}
+	_, err := executeBehaviourScript(ctx, "sandbox", t.TempDir(), script)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cancelled")
 }

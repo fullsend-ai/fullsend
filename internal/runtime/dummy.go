@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,18 +70,18 @@ func (DummyRuntime) EnvExports() []string { return nil }
 func (DummyRuntime) Bootstrap(input BootstrapInput) error {
 	sandboxName := input.SandboxName()
 	mkdirCmd := fmt.Sprintf("mkdir -p %s/output %s/.dummy", sandbox.SandboxWorkspace, sandbox.SandboxWorkspace)
-	_, _, _, err := sandbox.Exec(sandboxName, mkdirCmd, 10*time.Second)
+	_, _, _, err := sandboxExecFn(sandboxName, mkdirCmd, 10*time.Second)
 	return err
 }
 
-func (r DummyRuntime) Run(_ context.Context, params RunParams, printer *ui.Printer, _ time.Time, _ *RunMetrics) (int, error) {
+func (r DummyRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, _ time.Time, _ *RunMetrics) (int, error) {
 	scriptPath := filepath.Join(params.FullsendDir, behaviourScriptRelPath)
 	script, err := LoadBehaviourScript(scriptPath)
 	if err != nil {
 		return 1, err
 	}
 
-	results, scriptErr := executeBehaviourScript(params.SandboxName, params.RepoDir, script)
+	results, scriptErr := executeBehaviourScript(ctx, params.SandboxName, params.RepoDir, script)
 	if writeErr := writeBehaviourResultsFn(params.SandboxName, results); writeErr != nil {
 		return 1, writeErr
 	}
@@ -103,7 +104,7 @@ func (r DummyRuntime) Run(_ context.Context, params RunParams, printer *ui.Print
 
 func (r DummyRuntime) ClearIterationArtifacts(sandboxName string) error {
 	clearCmd := fmt.Sprintf("rm -rf %s/output/*", r.WorkspaceDir())
-	_, _, _, err := sandbox.Exec(sandboxName, clearCmd, 10*time.Second)
+	_, _, _, err := sandboxExecFn(sandboxName, clearCmd, 10*time.Second)
 	return err
 }
 
@@ -137,10 +138,13 @@ func LoadBehaviourScript(path string) (*BehaviourScript, error) {
 	return &script, nil
 }
 
-func executeBehaviourScript(sandboxName, repoDir string, script *BehaviourScript) (BehaviourResults, error) {
+func executeBehaviourScript(ctx context.Context, sandboxName, repoDir string, script *BehaviourScript) (BehaviourResults, error) {
 	var results BehaviourResults
 	var firstErr error
 	for _, op := range script.Ops {
+		if err := ctx.Err(); err != nil {
+			return results, fmt.Errorf("behaviour script cancelled: %w", err)
+		}
 		res := BehaviourOpResult{Description: op.Description}
 		if err := executeBehaviourOp(sandboxName, repoDir, op); err != nil {
 			res.Success = false
@@ -177,11 +181,14 @@ func executeBehaviourOp(sandboxName, repoDir string, op BehaviourOperation) erro
 		}
 		return nil
 	case "url_get":
-		url := strings.TrimSpace(op.Args)
-		if url == "" {
+		rawURL := strings.TrimSpace(op.Args)
+		if rawURL == "" {
 			return fmt.Errorf("url_get requires a URL")
 		}
-		cmd := fmt.Sprintf("curl -sf %s -o /dev/null", shellQuote(url))
+		if err := validateHTTPURL(rawURL); err != nil {
+			return err
+		}
+		cmd := fmt.Sprintf("curl -sf -- %s -o /dev/null", shellQuote(rawURL))
 		_, stderr, exitCode, err := sandboxExecFn(sandboxName, cmd, 60*time.Second)
 		if err != nil {
 			return fmt.Errorf("url_get exec: %w", err)
@@ -221,6 +228,22 @@ func executeBehaviourOp(sandboxName, repoDir string, op BehaviourOperation) erro
 	default:
 		return fmt.Errorf("unknown op %q", op.Op)
 	}
+}
+
+func validateHTTPURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("url_get invalid URL: %w", err)
+	}
+	switch u.Scheme {
+	case "http", "https":
+	default:
+		return fmt.Errorf("url_get requires http or https scheme, got %q", u.Scheme)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("url_get requires a host")
+	}
+	return nil
 }
 
 func resolveWriteFixture(op BehaviourOperation) (dest string, content string, err error) {

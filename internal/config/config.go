@@ -462,7 +462,7 @@ func OrgConfigFromPerRepo(pr *PerRepoConfig) *OrgConfig {
 	return &OrgConfig{
 		Version:                pr.Version,
 		KillSwitch:             pr.KillSwitch,
-		Defaults:               RepoDefaults{Roles: pr.Roles},
+		Defaults:               RepoDefaults{Roles: pr.Roles, Runtime: pr.Runtime},
 		Agents:                 pr.Agents,
 		AllowedRemoteResources: pr.AllowedRemoteResources,
 		CreateIssues:           pr.CreateIssues,
