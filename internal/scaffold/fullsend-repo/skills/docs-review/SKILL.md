@@ -126,8 +126,8 @@ in the same PR — those are being actively updated.
 
 Additionally, for each changed code file, check whether a
 documentation file covering the same feature exists based on file
-name and directory structure. If one exists and is not already in the
-candidate list, add it.
+name and directory structure. If one exists, is not already in the
+candidate list, and is not modified in this PR, add it.
 
 ### 5. Evaluate every candidate (two passes)
 
