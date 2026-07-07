@@ -20,7 +20,6 @@ func newTestConfig(t *testing.T) *config.OrgConfig {
 		[]string{"repo-a", "repo-b"},
 		[]string{"repo-a"},
 		[]string{"coder"},
-		[]config.AgentEntry{{Role: "coder", Name: "Bot", Slug: "bot-slug"}},
 		"",
 		"",
 	)

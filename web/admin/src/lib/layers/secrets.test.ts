@@ -2,10 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { LayerGithub } from "./githubClient";
 import { analyzeSecretsLayer, secretNameForRole, variableNameForRole } from "./secrets";
 
-function mockGh(opts: {
-  secrets?: Set<string>;
-  variables?: Set<string>;
-}): LayerGithub {
+function mockGh(opts: { secrets?: Set<string>; variables?: Set<string> }): LayerGithub {
   const secrets = opts.secrets ?? new Set();
   const variables = opts.variables ?? new Set();
   return {
@@ -20,7 +17,7 @@ function mockGh(opts: {
 describe("analyzeSecretsLayer", () => {
   it("naming matches Go helpers", () => {
     expect(secretNameForRole("coder")).toBe("FULLSEND_CODER_APP_PRIVATE_KEY");
-    expect(variableNameForRole("coder")).toBe("FULLSEND_CODER_APP_ID");
+    expect(variableNameForRole("coder")).toBe("FULLSEND_CODER_CLIENT_ID");
   });
 
   it("installed when all secrets and variables exist", async () => {
@@ -28,13 +25,13 @@ describe("analyzeSecretsLayer", () => {
       "acme",
       mockGh({
         secrets: new Set(["FULLSEND_TRIAGE_APP_PRIVATE_KEY"]),
-        variables: new Set(["FULLSEND_TRIAGE_APP_ID"]),
+        variables: new Set(["FULLSEND_TRIAGE_CLIENT_ID"]),
       }),
       [{ role: "triage" }],
     );
     expect(r.status).toBe("installed");
     expect(r.details).toContain("FULLSEND_TRIAGE_APP_PRIVATE_KEY exists");
-    expect(r.details).toContain("FULLSEND_TRIAGE_APP_ID exists");
+    expect(r.details).toContain("FULLSEND_TRIAGE_CLIENT_ID exists");
   });
 
   it("not_installed when nothing present", async () => {
@@ -42,7 +39,7 @@ describe("analyzeSecretsLayer", () => {
     expect(r.status).toBe("not_installed");
     expect(r.wouldInstall).toEqual([
       "create FULLSEND_FULLSEND_APP_PRIVATE_KEY",
-      "create FULLSEND_FULLSEND_APP_ID",
+      "create FULLSEND_FULLSEND_CLIENT_ID",
     ]);
   });
 
@@ -56,7 +53,7 @@ describe("analyzeSecretsLayer", () => {
       [{ role: "fullsend" }],
     );
     expect(r.status).toBe("degraded");
-    expect(r.wouldFix).toContain("create missing FULLSEND_FULLSEND_APP_ID");
+    expect(r.wouldFix).toContain("create missing FULLSEND_FULLSEND_CLIENT_ID");
   });
 
   it("installed with no agents configured", async () => {

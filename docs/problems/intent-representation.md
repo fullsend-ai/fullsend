@@ -89,11 +89,11 @@ Moving from `explored/` to `approved/` requires signoff from architects and PM v
 - Migrating from JIRA (organizational inertia, existing integrations)
 - Feature files in `proposed/` could themselves contain prompt injection targeting agents that read them — CODEOWNERS on `approved/` prevents self-approval, but the content is still agent-consumed
 
-## Approach 2: Tiered intent with different mechanisms per tier
+## Approach 2: Tiered intent with different mechanisms per intent authorization tier
 
-Not everything needs the same process. Explicitly tier changes by scope, with different intent mechanisms at each tier.
+Not everything needs the same process. Explicitly tier changes by scope, with different intent mechanisms at each intent authorization tier.
 
-### Tier 0: Standing rules (no per-change intent needed)
+### Intent authorization tier 0: Standing rules (no per-change intent needed)
 
 Pre-authorized categories of changes that the organization always wants:
 
@@ -104,26 +104,26 @@ Pre-authorized categories of changes that the organization always wants:
 
 The intent is "we always want these." An agent verifies the change actually falls in this category (static analysis: "this change only touches test files") and no further authorization is needed.
 
-**Test changes require additive-only verification.** Not all test-only changes are Tier 0. Tests are part of the trust boundary — review agents rely on them to validate production code. A change that weakens assertions, broadens mocks, reduces coverage, or removes checks is modifying a guardrail, not adding coverage. The Tier 0 gate for test changes must verify that the change is additive:
+**Test changes require additive-only verification.** Not all test-only changes are intent authorization tier 0. Tests are part of the trust boundary — review agents rely on them to validate production code. A change that weakens assertions, broadens mocks, reduces coverage, or removes checks is modifying a guardrail, not adding coverage. The intent authorization tier 0 gate for test changes must verify that the change is additive:
 
-- New test files or new test functions: Tier 0
-- New assertions added to existing tests: Tier 0
-- Weakened assertions (e.g., `Equal` → `NotNil`, exact match → substring): **not Tier 0** — requires Tier 1 justification
-- Removed or commented-out test cases: **not Tier 0**
-- Mocks that replace real dependencies in security-sensitive paths: **not Tier 0**
-- Test refactoring that restructures without weakening: Tier 0, but the review agent must verify no net reduction in assertion strength
-- Binary or opaque files (`.xz`, `.bin`, encoded blobs, etc.) in test directories: **not Tier 0** — these cannot be meaningfully reviewed by agents and require human review regardless of location
+- New test files or new test functions: intent authorization tier 0
+- New assertions added to existing tests: intent authorization tier 0
+- Weakened assertions (e.g., `Equal` → `NotNil`, exact match → substring): **not intent authorization tier 0** — requires intent authorization tier 1 justification
+- Removed or commented-out test cases: **not intent authorization tier 0**
+- Mocks that replace real dependencies in security-sensitive paths: **not intent authorization tier 0**
+- Test refactoring that restructures without weakening: intent authorization tier 0, but the review agent must verify no net reduction in assertion strength
+- Binary or opaque files (`.xz`, `.bin`, encoded blobs, etc.) in test directories: **not intent authorization tier 0** — these cannot be meaningfully reviewed by agents and require human review regardless of location
 
-This distinction matters because of the [temporal split-payload attack](security-threat-model.md#cross-cutting-attack-pattern-temporal-split-payload-test-poisoning): an attacker can poison the test suite through Tier 0 test changes and later exploit the blind spot with a separate production change that passes the weakened tests. Static analysis for Tier 0 classification must go beyond "does this only touch test files?" to "does this make the test suite strictly stronger?"
+This distinction matters because of the [temporal split-payload attack](security-threat-model.md#cross-cutting-attack-pattern-temporal-split-payload-test-poisoning): an attacker can poison the test suite through intent authorization tier 0 test changes and later exploit the blind spot with a separate production change that passes the weakened tests. Static analysis for intent authorization tier 0 classification must go beyond "does this only touch test files?" to "does this make the test suite strictly stronger?"
 
-### Tier 1: Tactical (issue is sufficient)
+### Intent authorization tier 1: Tactical (issue is sufficient)
 
 - Bug fixes with a linked issue and reproduction
 - Small improvements scoped to a single repo
 
 An agent can act on these if there's a corresponding GitHub issue. The issue itself is the intent signal. Normal code review applies, no additional approval needed.
 
-### Tier 2: Strategic (requires explicit multi-party authorization)
+### Intent authorization tier 2: Strategic (requires explicit multi-party authorization)
 
 - New features
 - API changes
@@ -133,7 +133,7 @@ An agent can act on these if there's a corresponding GitHub issue. The issue its
 
 This is where the git-based authorization mechanism (Approach 1) kicks in. The feature must be explicitly authorized via the intent repo before agents can merge the implementation.
 
-### Tier 3: Organizational (requires broader consensus)
+### Intent authorization tier 3: Organizational (requires broader consensus)
 
 - Cross-org changes affecting multiple repos
 - Deprecations and removals
@@ -141,16 +141,16 @@ This is where the git-based authorization mechanism (Approach 1) kicks in. The f
 
 Possibly requires an RFC-like process with a community review period, in addition to the git-based authorization.
 
-Note: changes to the agentic system itself (agent policies, security policies, tier definitions) are a [governance](governance.md) concern, not an intent concern. Those changes are about modifying the rules of the system, not about authorizing work within the system.
+Note: changes to the agentic system itself (agent policies, security policies, intent authorization tier definitions) are a [governance](governance.md) concern, not an intent concern. Those changes are about modifying the rules of the system, not about authorizing work within the system.
 
-### The key question for each tier
+### The key question for each intent authorization tier
 
-How does a review agent verify which tier a change falls into? This is non-trivial:
+How does a review agent verify which intent authorization tier a change falls into? This is non-trivial:
 
-- **Tier 0** might be automatable via static analysis ("this change only touches test files")
-- **Tier 1** needs issue linkage verification
-- **Tier 2-3** need the formal authorization check against the intent repo
-- **Tier gaming** is a threat — an attacker frames a strategic change as a tactical bug fix to avoid the higher approval bar. The review agent must independently assess change scope, not trust the author's classification.
+- **Intent authorization tier 0** might be automatable via static analysis ("this change only touches test files")
+- **Intent authorization tier 1** needs issue linkage verification
+- **Intent authorization tiers 2-3** need the formal authorization check against the intent repo
+- **Intent authorization tier gaming** is a threat — an attacker frames a strategic change as a tactical bug fix to avoid the higher approval bar. The review agent must independently assess change scope, not trust the author's classification.
 
 ## Approach 3: Intent as cryptographic attestation
 
@@ -179,7 +179,7 @@ Repos contain descriptions of desired behavior — like ADRs, or an `INTENT.md` 
 
 **Pros:** Intent travels with the code. Version-controlled. Agents can read it at review time.
 
-**Cons:** Hard to keep current. Doesn't capture strategic/cross-repo intent well. Easy to game (an attacker could modify the intent document as part of a malicious PR). Better suited for cross-cutting standing rules (Tier 0) than for feature-level intent.
+**Cons:** Hard to keep current. Doesn't capture strategic/cross-repo intent well. Easy to game (an attacker could modify the intent document as part of a malicious PR). Better suited for cross-cutting standing rules (intent authorization tier 0) than for feature-level intent.
 
 ## Approach 5: Issues/specs as intent source
 
@@ -225,10 +225,10 @@ Any intent system needs to survive attack:
 - **JIRA manipulation** — attacker fast-tracks a feature through refinement states. In a system using JIRA as the intent source, this attack works because there are no real ACLs on state transitions.
 - **Git-based manipulation** — attacker submits a PR to the intent repo with a feature file containing prompt injection in the description. CODEOWNERS on `approved/` prevents self-approval, but `proposed/` is open and the content is agent-consumed.
 - **Attestation forgery** — attacker compromises a signing key. Mitigated by requiring multiple signatures (m-of-n), but key management is complex.
-- **Tier gaming** — attacker frames a strategic change as a tactical bug fix to avoid the higher approval bar. The review agent must independently assess change scope.
+- **Intent authorization tier gaming** — attacker frames a strategic change as a tactical bug fix to avoid the higher approval bar. The review agent must independently assess change scope.
 - **Intent composition** — three small "tactical" changes that individually look innocuous but together constitute an unauthorized feature. Detection requires cross-change awareness.
 
-## The tier escalation problem
+## The intent authorization tier escalation problem
 
 Tiering is necessary, but it introduces a specific weakness: low-tier changes have lightweight intent requirements, which creates an incentive to disguise high-impact changes as low-impact ones.
 
@@ -240,50 +240,58 @@ Experienced maintainers catch this: "That's not a bug, that's a feature request 
 
 ### How it gets worse with agents
 
-An agent processing a "bug report" at Tier 1 (lightweight intent, just needs an issue) might:
+An agent processing a "bug report" at intent authorization tier 1 (lightweight intent, just needs an issue) might:
 
 - Implement a significant behavioral change because the issue describes it as a fix
 - Add new API surface under the guise of "fixing" missing functionality
 - Change security-relevant behavior because the reporter framed a policy decision as a defect
 
-The agent is technically responsive to the issue, but it's implementing something that should have gone through Tier 2 authorization.
+The agent is technically responsive to the issue, but it's implementing something that should have gone through intent authorization tier 2 authorization.
 
-### Defense: independent tier classification by review agents
+### Defense: independent intent authorization tier classification by review agents
 
-Review agents must independently assess what tier a change *actually* represents, regardless of how the author or issue classifies it. This means:
+Review agents must independently assess what intent authorization tier a change *actually* represents, regardless of how the author or issue classifies it. This means:
 
 - **Scope analysis** — does this change add new behavior, or fix existing behavior? Adding new API endpoints is not a bug fix, even if the issue says "bug."
-- **Impact analysis** — does this change affect security, UX, or API surface? If so, it's at least Tier 2 regardless of the issue label.
-- **Intent verification** — does the linked issue actually describe what this PR does? And does the code do exactly what the intent file says, and nothing more? The vibe-to-spec workflow gives the agent a strict checklist. If someone tries to sneak a major new feature into a low-tier bug fix, the agent will automatically block it because the extra code won't match the generated spec.
+- **Impact analysis** — does this change affect security, UX, or API surface? If so, it's at least intent authorization tier 2 regardless of the issue label.
+- **Intent verification** — does the linked issue actually describe what this PR does? And does the code do exactly what the intent file says, and nothing more? The vibe-to-spec workflow gives the agent a strict checklist. If someone tries to sneak a major new feature into a low-intent-authorization-tier bug fix, the agent will automatically block it because the extra code won't match the generated spec.
 - **Pattern detection** — multiple "small" changes from the same source that collectively add up to a feature should trigger escalation.
 
-When tier classification is genuinely ambiguous, rather than making a weak call or defaulting to escalation without context, the review agent can use [dual-interpretation escalation](code-review.md#dual-interpretation-escalation) — presenting the human with its tier readings and the evidence for each, while always leaving room for the human to see a different framing or reject the change entirely.
+When intent authorization tier classification is genuinely ambiguous, rather than making a weak call or defaulting to escalation without context, the review agent can use [dual-interpretation escalation](code-review.md#dual-interpretation-escalation) — presenting the human with its intent authorization tier readings and the evidence for each, while always leaving room for the human to see a different framing or reject the change entirely.
 
-This applies equally to review agents looking at code PRs *and* to agents evaluating intent changes in the intent repo itself. A low-tier intent statement that describes something high-impact should be flagged and escalated.
+This applies equally to review agents looking at code PRs *and* to agents evaluating intent changes in the intent repo itself. A low-intent-authorization-tier intent statement that describes something high-impact should be flagged and escalated.
 
 ### The philosophical question
 
 This is really about who defines "bug" vs. "feature." Today, human maintainers hold that authority through institutional knowledge of what the system is *supposed* to do. In an agentic system, this knowledge needs to be explicitly represented somewhere — which circles back to the declarative intent approach (Approach 4) as a complement to the tiered model. Standing descriptions of intended system behavior give review agents a baseline to evaluate whether a "bug fix" is really adding new behavior.
 
+## The wrong-spec problem
+
+Specs can be wrong without anyone trying to game the system: the issue description asks for the wrong thing, the feature file describes behavior that conflicts with what the system should actually do, or the acceptance criteria are internally contradictory. The spec is formally valid but substantively incorrect. This applies to any approach that uses specs as intent signals — tiered or not.
+
+Humans catch this informally — they read the spec, think "that doesn't sound right," and push back using institutional knowledge. Agents don't have this instinct. An agent given a precise but wrong spec produces a precise but wrong implementation that passes review because it matches the spec. The bug only surfaces when the feature reaches users or conflicts with another part of the system.
+
+The system needs a mechanism for catching specs that are *internally valid but externally wrong*. Standing descriptions of intended system behavior (Approach 4) provide one baseline. Production feedback signals (see [production-feedback.md](production-feedback.md)) provide another — if a correctly-implemented spec causes production failures, the spec was wrong. See [debugging.md](debugging.md) for the broader fault taxonomy and how wrong specs compound when agents silently narrow what they pass to downstream agents.
+
 ## Most promising direction
 
 The combination of **Approach 1 (git as intent ledger) + Approach 2 (tiered intent)** appears strongest:
 
-- Low-tier changes have lightweight intent requirements (or none for Tier 0)
-- High-tier changes require git-tracked, CODEOWNERS-enforced authorization
+- Low-intent-authorization-tier changes have lightweight intent requirements (or none for intent authorization tier 0)
+- High-intent-authorization-tier changes require git-tracked, CODEOWNERS-enforced authorization
 - The "try it before you buy it" pattern (agents build exploratory PRs before authorization) provides high-information, low-risk exploration
 
 This combination addresses the JIRA ACL weakness, provides audit trails, and scales across the change-type spectrum. But it needs experimentation to validate.
 
 ## Open questions
 
-- How do agents classify a change's tier reliably? Can this be automated, or does a human need to label it?
-- How do we handle emergent changes — a "small bug fix" that reveals a deeper architectural issue requiring Tier 2+ authorization?
-- Can intent be composed? If three Tier 1 changes together constitute an unauthorized Tier 2 feature, who notices?
+- How do agents classify a change's intent authorization tier reliably? Can this be automated, or does a human need to label it?
+- How do we handle emergent changes — a "small bug fix" that reveals a deeper architectural issue requiring intent authorization tier 2+ authorization?
+- Can intent be composed? If three intent authorization tier 1 changes together constitute an unauthorized intent authorization tier 2 feature, who notices?
 - How do we prevent the intent repo from becoming a bottleneck at agent speed?
 - What does the feature file format look like? How much structure is needed for agents to evaluate programmatically, and could an AI-driven "vibe-to-spec" workflow using tools like spec-kit reliably generate this required structure (functional requirements, acceptance scenarios, state machines etc) directly from rapid human prototyping?
 - How do organizations handle migration from existing issue tracking systems (e.g., JIRA)? Can the two systems coexist during transition?
-- What's the relationship between intent tiers and CODEOWNERS in the target repos? Are guarded paths a proxy for "changes here are always Tier 2+"?
+- What's the relationship between intent authorization tiers and CODEOWNERS in the target repos? Are guarded paths a proxy for "changes here are always intent authorization tier 2+"?
 - Cross-repo intent: when a feature spans multiple repos, is it one feature file referencing multiple repos, or multiple feature files?
 - How does the "try it" pattern work for changes that can't be meaningfully evaluated without merging? (e.g., infrastructure changes, deployment config)
-- Who has authority to modify the tier definitions and authorization requirements? (See [governance.md](governance.md))
+- Who has authority to modify the intent authorization tier definitions and authorization requirements? (See [governance.md](governance.md))

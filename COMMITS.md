@@ -50,9 +50,50 @@ Apply the same discipline to `fix` — bumping a dependency version is `chore`, 
 
 The parenthesized scope is optional but encouraged. Use it to identify the subsystem: `feat(appsetup)`, `fix(mint)`, `docs(adr)`, `chore(ci)`. When fixing a specific issue, prefer the issue number as scope: `fix(#123): ...`.
 
+### Forbidden type + scope combinations
+
+Some type/scope pairs are **enforced as errors** by gitlint (rule `UC1`). These combinations mislead users by putting infrastructure changes in user-facing release-note sections.
+
+| Forbidden | Why | Use instead |
+|---|---|---|
+| `fix(ci)` | CI changes are not user-visible bug fixes | `ci(<subsystem>)` |
+| `feat(ci)` | CI changes are not user-visible features | `ci(<subsystem>)` |
+| `fix(e2e)` | E2E test changes are not user-visible bug fixes | `ci(e2e)` |
+| `feat(e2e)` | E2E test changes are not user-visible features | `ci(e2e)` |
+
 ## Breaking changes
 
-Append `!` after the type/scope to flag a breaking change: `feat(cli)!: rename --gcp flags to --inference`. Include a `BREAKING CHANGE:` trailer in the body explaining migration steps.
+Breaking changes **must** be marked in both commit messages and PR titles. GoReleaser builds release notes from merged PR titles (`use: github` in `.goreleaser.yml`), so an unmarked PR title means the breaking change is invisible to users reading the release notes. This has caused real incidents — users upgraded with no warning that their agents would stop working.
+
+**How to mark a breaking change:**
+
+1. Append `!` after the type/scope: `feat(harness)!: require role field`
+2. Include a `BREAKING CHANGE:` trailer in the commit body explaining what breaks and how to migrate
+
+Both the `!` suffix and the trailer are required. The `!` suffix signals the breaking change to human reviewers and enables future automated tooling; the trailer tells users what to do about it.
+
+**How to tell if your change is breaking:**
+
+- A previously optional field, flag, or input is now required
+- A field, flag, command, or API endpoint is removed or renamed
+- Default values change in ways that alter existing behavior
+- Validation is added that rejects previously accepted input
+- Output format changes that downstream consumers parse
+
+If you are unsure whether a change is breaking, mark it. A false positive in the release notes is far less costly than a silent break.
+
+**Example** (full commit message):
+
+```
+feat(harness)!: require role field in Validate()
+
+Harness files without a role: field now fail validation. This was
+previously a lint warning (added in v0.17.0). All scaffold templates
+and generated wrappers already include the field.
+
+BREAKING CHANGE: Add `role: <rolename>` to any harness file that
+lacks it. The lint warning has been active since v0.17.0.
+```
 
 ## Examples
 
@@ -68,6 +109,9 @@ chore(sandbox): bump gopls from 0.18.1 to 0.22.0
 docs: add mint URL stability note to installation guide
 ```
 
-## Reviewing commit messages
+## Reviewing commit messages and PR titles
 
-When reviewing PRs, check that commit messages and PR titles use the correct type prefix. Flag violations as a required change — they are not cosmetic. Pay particular attention to `feat` — challenge it if the change is not user-facing.
+When reviewing PRs, check that commit messages and PR titles use the correct type prefix. Flag violations as a required change — they are not cosmetic. Pay particular attention to:
+
+- **`feat` misuse** — challenge it if the change is not user-facing.
+- **Missing `!` on breaking changes** — if the diff removes a field, renames a flag, adds a required input, tightens validation, or otherwise breaks existing usage, the PR title and commit messages **must** carry the `!` suffix. Flag a missing `!` as an important-severity finding. The PR title is especially critical because GoReleaser uses it to build user-facing release notes.

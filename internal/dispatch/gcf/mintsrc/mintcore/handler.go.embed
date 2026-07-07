@@ -11,15 +11,24 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
 const maxRepos = 500
 
+const defaultForeignCacheTTL = 60 * time.Second
+
+type foreignCacheEntry struct {
+	allowlist []string
+	fetchedAt time.Time
+}
+
 // mintRequest is the JSON body sent by .fullsend agent workflows.
 type mintRequest struct {
-	Role  string   `json:"role"`
-	Repos []string `json:"repos,omitempty"`
+	Role      string   `json:"role"`
+	TargetOrg string   `json:"target_org,omitempty"`
+	Repos     []string `json:"repos,omitempty"`
 }
 
 // mintResponse is returned on success.
@@ -33,8 +42,10 @@ type mintResponse struct {
 
 // statusResponse is returned by the /v1/status diagnostic endpoint.
 type statusResponse struct {
-	Org   string   `json:"org"`
-	Roles []string `json:"roles"`
+	Org     string   `json:"org"`
+	Roles   []string `json:"roles"`
+	Version string   `json:"version,omitempty"`
+	Commit  string   `json:"commit,omitempty"`
 }
 
 // Handler holds dependencies for the token mint HTTP server.
@@ -45,8 +56,20 @@ type Handler struct {
 
 	githubBaseURL string
 
-	roleAppIDs   map[string]string
-	allowedRoles []string
+	roleAppIDs       map[string]string
+	allowedRoles     []string
+	legacyAppIDsOnly bool // ROLE_APP_IDS has org/role keys but no role-only keys
+
+	foreignCache    map[string]foreignCacheEntry
+	foreignInflight map[string]*foreignInflight
+	foreignCacheTTL time.Duration
+	foreignCacheMu  sync.Mutex
+}
+
+type foreignInflight struct {
+	wg        sync.WaitGroup
+	allowlist []string
+	err       error
 }
 
 // NewHandler creates a Handler with the given dependencies.
@@ -59,10 +82,13 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
 	h := &Handler{
-		httpClient:    httpClient,
-		pemAccessor:   pemAccessor,
-		oidcVerifier:  oidcVerifier,
-		githubBaseURL: "https://api.github.com",
+		httpClient:      httpClient,
+		pemAccessor:     pemAccessor,
+		oidcVerifier:    oidcVerifier,
+		githubBaseURL:   "https://api.github.com",
+		foreignCache:    make(map[string]foreignCacheEntry),
+		foreignInflight: make(map[string]*foreignInflight),
+		foreignCacheTTL: defaultForeignCacheTTL,
 	}
 
 	if raw := os.Getenv("ROLE_APP_IDS"); raw != "" {
@@ -70,14 +96,13 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		if err := json.Unmarshal([]byte(raw), &ids); err != nil {
 			return nil, fmt.Errorf("failed to parse ROLE_APP_IDS: %w", err)
 		}
-		h.roleAppIDs = ids
+		h.roleAppIDs = RoleOnlyAppIDs(ids)
+		h.legacyAppIDsOnly = legacyAppIDsOnly(ids)
 	}
 
-	roleSet := make(map[string]bool)
-	for key := range h.roleAppIDs {
-		if idx := strings.Index(key, "/"); idx >= 0 {
-			roleSet[key[idx+1:]] = true
-		}
+	roleSet := make(map[string]bool, len(h.roleAppIDs))
+	for role := range h.roleAppIDs {
+		roleSet[role] = true
 	}
 
 	if raw := os.Getenv("ALLOWED_ROLES"); raw != "" {
@@ -101,7 +126,7 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 			return nil, fmt.Errorf("ALLOWED_ROLES contains %q but RolePermissions has no entry for it", role)
 		}
 		if !roleSet[role] {
-			return nil, fmt.Errorf("ALLOWED_ROLES contains %q but ROLE_APP_IDS has no org-scoped entry for it", role)
+			return nil, fmt.Errorf("ALLOWED_ROLES contains %q but ROLE_APP_IDS has no entry for it", role)
 		}
 	}
 
@@ -111,9 +136,7 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 // ServeHTTP handles incoming token mint requests.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && r.URL.Path == "/health" {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, `{"status":"ok"}`)
+		h.handleHealth(w)
 		return
 	}
 
@@ -177,11 +200,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(req.Repos) == 0 {
-		writeError(w, http.StatusBadRequest, "repos is required (at least one repo must be specified)")
-		return
-	}
-
 	if len(req.Repos) > maxRepos {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("too many repos (max %d)", maxRepos))
 		return
@@ -189,6 +207,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for _, repo := range req.Repos {
 		if !RepoNamePattern.MatchString(repo) || strings.Contains(repo, "..") {
 			writeError(w, http.StatusBadRequest, "invalid repo name")
+			return
+		}
+	}
+
+	if req.TargetOrg != "" {
+		if err := validateTargetOrg(req.TargetOrg); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid target_org")
 			return
 		}
 	}
@@ -202,11 +227,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	org := strings.ToLower(claims.RepositoryOwner)
+	callerOrg := strings.ToLower(claims.RepositoryOwner)
+	targetOrg := strings.ToLower(strings.TrimSpace(req.TargetOrg))
+	if targetOrg == "" {
+		targetOrg = callerOrg
+	}
 
-	token, expiresAt, granted, err := h.mintToken(ctx, org, req.Role, req.Repos)
+	if len(req.Repos) == 0 {
+		log.Printf("WARNING: mint request omitted repos; issuing installation-wide token for target_org=%s role=%s caller_org=%s source_repo=%s",
+			targetOrg, req.Role, callerOrg, claims.Repository)
+	}
+
+	var token, expiresAt string
+	var granted *GrantedScope
+
+	if strings.EqualFold(targetOrg, callerOrg) {
+		token, expiresAt, granted, err = h.mintToken(ctx, callerOrg, req.Role, req.Repos)
+	} else {
+		token, expiresAt, granted, err = h.mintTokenCrossOrg(ctx, claims, targetOrg, req.Role, req.Repos)
+	}
 	if err != nil {
-		log.Printf("failed to mint token: org=%s role=%s err=%v", org, req.Role, err)
+		log.Printf("failed to mint token: org=%s target_org=%s role=%s err=%v", callerOrg, targetOrg, req.Role, err)
 		var me *mintError
 		if errors.As(err, &me) {
 			writeError(w, me.status, "mint failed")
@@ -217,11 +258,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if granted != nil {
-		log.Printf("minted: org=%s role=%s app_id=%s installation_id=%d requested_repos=%v source_repo=%s workflow_ref=%s",
-			org, req.Role, granted.AppID, granted.InstallationID, req.Repos, claims.Repository, claims.JobWorkflowRef)
+		log.Printf("minted: org=%s target_org=%s role=%s app_id=%s installation_id=%d requested_repos=%v source_repo=%s workflow_ref=%s",
+			callerOrg, targetOrg, req.Role, granted.AppID, granted.InstallationID, req.Repos, claims.Repository, claims.JobWorkflowRef)
 		log.Printf("granted scope: repos=%v permissions=%v repo_selection=%s",
 			granted.Repos, granted.Permissions, granted.RepoSelection)
-		if granted.RepoSelection == "all" {
+		if len(req.Repos) == 0 {
+			log.Printf("WARNING: installation-wide token granted for target_org=%s role=%s repo_selection=%s",
+				targetOrg, req.Role, granted.RepoSelection)
+		} else if granted.RepoSelection == "all" {
 			log.Printf("WARNING: token granted with repository_selection=all (requested specific repos: %v)", req.Repos)
 		}
 		requested := RolePermissionsFor(req.Role)
@@ -255,32 +299,46 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+func (h *Handler) handleHealth(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	if h.legacyAppIDsOnly {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]string{
+			"status": "unhealthy",
+			"reason": "ROLE_APP_IDS contains legacy org/role keys but no role-only keys; migration required",
+		})
+		return
+	}
+	resp := map[string]string{"status": "ok"}
+	if Version != "" {
+		resp["version"] = Version
+	}
+	if Commit != "" {
+		resp["commit"] = Commit
+	}
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(resp)
+}
+
 func (h *Handler) handleStatus(w http.ResponseWriter, claims *Claims) {
 	org := strings.ToLower(claims.RepositoryOwner)
-	prefix := org + "/"
-
-	roles := make([]string, 0)
-	for key := range h.roleAppIDs {
-		lower := strings.ToLower(key)
-		if strings.HasPrefix(lower, prefix) {
-			roles = append(roles, strings.TrimPrefix(lower, prefix))
-		}
-	}
-	sort.Strings(roles)
+	roles := append([]string(nil), h.allowedRoles...)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	if err := json.NewEncoder(w).Encode(statusResponse{
-		Org:   org,
-		Roles: roles,
+		Org:     org,
+		Roles:   roles,
+		Version: Version,
+		Commit:  Commit,
 	}); err != nil {
 		log.Printf("encoding status response: %v", err)
 	}
 }
 
 func (h *Handler) mintToken(ctx context.Context, org, role string, repos []string) (string, string, *GrantedScope, error) {
-	appID, err := h.lookupRoleAppID(org, role)
+	appID, err := h.lookupRoleAppID(role)
 	if err != nil {
 		return "", "", nil, &mintError{status: http.StatusForbidden, msg: fmt.Sprintf("looking up app ID for role %s: %v", role, err)}
 	}
@@ -300,7 +358,12 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 		return "", "", nil, &mintError{status: http.StatusInternalServerError, msg: fmt.Sprintf("generating app JWT: %v", err)}
 	}
 
-	installationID, err := FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org, repos[0])
+	var installationID int64
+	if len(repos) == 0 {
+		installationID, err = FindOrgInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org)
+	} else {
+		installationID, err = FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org, repos[0])
+	}
 	if err != nil {
 		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
 	}
@@ -318,6 +381,98 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 	return token, expiresAt, granted, nil
 }
 
+func (h *Handler) mintTokenCrossOrg(ctx context.Context, claims *Claims, targetOrg, role string, repos []string) (string, string, *GrantedScope, error) {
+	allowlist, err := h.loadForeignAllowlist(ctx, targetOrg, role)
+	if err != nil {
+		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
+	}
+	if len(allowlist) == 0 {
+		return "", "", nil, &mintError{status: http.StatusForbidden, msg: "foreign caller not authorized for target org"}
+	}
+	if !CallerAllowed(allowlist, claims.Repository, claims.RepositoryOwner) {
+		return "", "", nil, &mintError{status: http.StatusForbidden, msg: "foreign caller not authorized for target org"}
+	}
+
+	return h.mintToken(ctx, targetOrg, role, repos)
+}
+
+func (h *Handler) loadForeignAllowlist(ctx context.Context, targetOrg, role string) ([]string, error) {
+	key := foreignCacheKey(targetOrg, role)
+
+	h.foreignCacheMu.Lock()
+	if entry, ok := h.foreignCache[key]; ok && time.Since(entry.fetchedAt) < h.foreignCacheTTL {
+		allowlist := append([]string(nil), entry.allowlist...)
+		h.foreignCacheMu.Unlock()
+		return allowlist, nil
+	}
+	if inflight, ok := h.foreignInflight[key]; ok {
+		h.foreignCacheMu.Unlock()
+		inflight.wg.Wait()
+		if inflight.err != nil {
+			return nil, inflight.err
+		}
+		return append([]string(nil), inflight.allowlist...), nil
+	}
+	inflight := &foreignInflight{}
+	inflight.wg.Add(1)
+	h.foreignInflight[key] = inflight
+	h.foreignCacheMu.Unlock()
+
+	allowlist, err := h.fetchForeignAllowlist(ctx, targetOrg, role)
+
+	h.foreignCacheMu.Lock()
+	delete(h.foreignInflight, key)
+	if err == nil {
+		h.foreignCache[key] = foreignCacheEntry{
+			allowlist: append([]string(nil), allowlist...),
+			fetchedAt: time.Now(),
+		}
+	}
+	inflight.allowlist = allowlist
+	inflight.err = err
+	inflight.wg.Done()
+	h.foreignCacheMu.Unlock()
+
+	if err != nil {
+		return nil, err
+	}
+	return allowlist, nil
+}
+
+func (h *Handler) fetchForeignAllowlist(ctx context.Context, targetOrg, role string) ([]string, error) {
+	appID, err := h.lookupRoleAppID(role)
+	if err != nil {
+		return nil, fmt.Errorf("looking up app ID for role %s: %v", role, err)
+	}
+
+	pemData, err := h.pemAccessor.AccessPEM(ctx, role)
+	if err != nil {
+		return nil, fmt.Errorf("reading PEM secret for role %s: %v", role, err)
+	}
+	defer func() {
+		for i := range pemData {
+			pemData[i] = 0
+		}
+	}()
+
+	jwt, err := GenerateAppJWT(appID, pemData)
+	if err != nil {
+		return nil, fmt.Errorf("generating app JWT: %v", err)
+	}
+
+	installationID, err := FindOrgInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, targetOrg)
+	if err != nil {
+		return nil, fmt.Errorf("finding org installation on %s: %v", targetOrg, err)
+	}
+
+	allowlist, err := ReadForeignAllowlist(ctx, h.httpClient, h.githubBaseURL, jwt, installationID, targetOrg, role)
+	if err != nil {
+		return nil, err
+	}
+
+	return allowlist, nil
+}
+
 func (h *Handler) checkAllowedRole(role string) bool {
 	for _, entry := range h.allowedRoles {
 		if entry == role {
@@ -327,21 +482,59 @@ func (h *Handler) checkAllowedRole(role string) bool {
 	return false
 }
 
-func (h *Handler) lookupRoleAppID(org, role string) (string, error) {
+// legacyAppIDsOnly reports whether ids contains org/role keys but no role-only
+// keys. An empty map or unset ROLE_APP_IDS is not a migration failure.
+func legacyAppIDsOnly(ids map[string]string) bool {
+	if len(ids) == 0 || len(RoleOnlyAppIDs(ids)) > 0 {
+		return false
+	}
+	for key := range ids {
+		if strings.Contains(key, "/") {
+			return true
+		}
+	}
+	return false
+}
+
+// RoleOnlyAppIDs extracts role-keyed entries from ROLE_APP_IDS, ignoring
+// legacy org/role keys left over during migration.
+func RoleOnlyAppIDs(ids map[string]string) map[string]string {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(ids))
+	for key, appID := range ids {
+		if strings.Contains(key, "/") {
+			continue
+		}
+		out[key] = appID
+	}
+	return out
+}
+
+func (h *Handler) lookupRoleAppID(role string) (string, error) {
 	if h.roleAppIDs == nil {
 		return "", fmt.Errorf("ROLE_APP_IDS not set or invalid")
 	}
 
-	lookup := strings.ToLower(org + "/" + role)
-	for key, appID := range h.roleAppIDs {
-		if strings.ToLower(key) == lookup {
-			if appID == "" {
-				return "", fmt.Errorf("no app ID configured for role %q (org %q)", role, org)
+	lookupRole := PemSecretRole(role)
+	appID, ok := h.roleAppIDs[lookupRole]
+	if !ok {
+		for key, id := range h.roleAppIDs {
+			if strings.EqualFold(key, lookupRole) {
+				appID = id
+				ok = true
+				break
 			}
-			return appID, nil
 		}
 	}
-	return "", fmt.Errorf("no app ID configured for role %q (org %q)", role, org)
+	if !ok {
+		return "", fmt.Errorf("no app ID configured for role %q", role)
+	}
+	if appID == "" {
+		return "", fmt.Errorf("no app ID configured for role %q", role)
+	}
+	return appID, nil
 }
 
 // mintError is an HTTP-aware error carrying a status code for the response.

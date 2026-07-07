@@ -161,7 +161,7 @@ fullsend-ai/fullsend defaults  <  .fullsend/customized/  <  AGENTS.md
 (base, sparse-checked)           (overrides)               (instructions)
 ```
 
-The org-level `.fullsend` config repo tier is skipped — the in-repo `.fullsend/` directory serves as the config workspace. The reusable workflows' "Prepare workspace" step is parameterized by root directory: `.` for per-org (the `.fullsend` repo checkout), `.fullsend/` for per-repo. In both modes, it sparse-checkouts upstream defaults into `{root}/agents/`, `{root}/skills/`, etc., then copies `{root}/customized/*` on top — identical code path, different root.
+The org-level `.fullsend` config repo configuration tier is skipped — the in-repo `.fullsend/` directory serves as the config workspace. The reusable workflows' "Prepare workspace" step is parameterized by root directory: `.` for per-org (the `.fullsend` repo checkout), `.fullsend/` for per-repo. In both modes, it sparse-checkouts upstream defaults into `{root}/agents/`, `{root}/skills/`, etc., then copies `{root}/customized/*` on top — identical code path, different root.
 
 **Git ref for config reads**: In per-repo mode, `.fullsend/`, `AGENTS.md`, and `.github/workflows/fullsend.yml` are always read from the **base branch** (the default branch of the repository), not the PR head branch. This is enforced by `pull_request_target`, which checks out the base branch by default. The reusable workflows do not check out the PR head ref for config or agent instructions — only the target repo's source code is checked out from the PR head for the agent to operate on. This prevents PR authors from injecting modified agent instructions, policies, or workflow files via their PR — the project's #1 threat category (external prompt injection).
 
@@ -170,12 +170,17 @@ The org-level `.fullsend` config repo tier is skipped — the in-repo `.fullsend
 This is the key new artifact, published in `fullsend-ai/fullsend/.github/workflows/`. It is a reusable version of the per-org `dispatch.yml` (ADR 0034), accepting event context via `workflow_call` inputs and performing the same routing and dispatch logic.
 
 The routing logic (identical to per-org `dispatch.yml`) maps:
-- `issues` + `labeled` → stage based on label name (`ready-to-code` → code, `ready-for-review` → review)
+- `issues` + `labeled` → `ready-to-code` → code
 - `issue_comment` + slash commands → `/fs-triage`, `/fs-code`, `/fs-review`, `/fs-fix`, `/fs-retro`, `/fs-prioritize`
 - `issue_comment` + `needs-info` label (non-command) → auto-triage
 - `pull_request_target` + `opened`/`synchronize`/`ready_for_review` → review
 - `pull_request_target` + `closed` → retro
 - `pull_request_review` + `changes_requested` from review bot → fix (same-repo PRs only)
+
+> **Note (2026-06):** Per-repo `reusable-dispatch.yml` gates review label and
+> slash-command triggers on `issue.pull_request`. Per-org `dispatch.yml` unchanged
+> pending follow-up. Fix dispatch was already PR-only. See
+> [ADR 0034](0034-centralized-shim-routing-via-dispatch.md) routing note.
 
 In per-org mode, `dispatch.yml` routes events and dispatches to thin callers via `workflow_call`. In per-repo mode, `reusable-dispatch.yml` routes events and dispatches to per-stage reusable workflows directly via conditional `workflow_call` jobs, keeping the entire pipeline within a single `workflow_call` chain.
 
@@ -366,3 +371,4 @@ Ordered by the project's threat priority (external injection > insider > drift >
 - [ADR 0031: Reusable workflows](0031-reusable-workflows-for-action-installed-distribution.md) — publishes stage reusable workflows and composite actions
 - [ADR 0034: Centralized event routing](0034-centralized-shim-routing-via-dispatch.md) — routing logic in `dispatch.yml`, replicated as `reusable-dispatch.yml` for per-repo
 - ADR 0035: Layered content resolution — upstream defaults sparse-checked at runtime, overrides via `customized/` (per-org) or `.fullsend/` (per-repo)
+- [ADR 0057: Repos management](0057-repos-management.md) — addresses bulk operations, enrollment inventory, and drift detection gaps for per-repo at scale

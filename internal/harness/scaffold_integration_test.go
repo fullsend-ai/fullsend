@@ -61,13 +61,17 @@ slug: test-triage
 	assert.NotEmpty(t, h.PreScript, "PreScript should be set after forge resolution")
 	assert.NotEmpty(t, h.PostScript, "PostScript should be set after forge resolution")
 
-	// RunnerEnv contains both top-level keys and forge.github keys after merge.
-	assert.Contains(t, h.RunnerEnv, "FULLSEND_OUTPUT_SCHEMA", "should have top-level runner_env key")
-	assert.Contains(t, h.RunnerEnv, "GH_TOKEN", "should have forge.github runner_env key")
-	assert.Contains(t, h.RunnerEnv, "GITHUB_ISSUE_URL", "should have forge.github runner_env key")
+	// Env.Runner contains both top-level keys and forge.github keys after merge.
+	assert.Contains(t, h.Env.Runner, "FULLSEND_OUTPUT_SCHEMA", "should have top-level env.runner key")
+	assert.Contains(t, h.Env.Runner, "GH_TOKEN", "should have forge.github env.runner key")
+	assert.Contains(t, h.Env.Runner, "GITHUB_ISSUE_URL", "should have forge.github env.runner key")
+
+	// Env.Sandbox contains forge.github sandbox vars.
+	assert.Contains(t, h.Env.Sandbox, "GH_TOKEN", "should have forge.github env.sandbox key")
+	assert.Contains(t, h.Env.Sandbox, "GITHUB_ISSUE_URL", "should have forge.github env.sandbox key")
 
 	// Skills includes base top-level skills (forge skills are concatenated by ResolveForge,
-	// but the triage template has no forge-specific skills — only runner_env and scripts).
+	// but the triage template has no forge-specific skills — only env and scripts).
 	assert.Contains(t, h.Skills, "skills/issue-labels")
 
 	// Forge map is nil (consumed by ResolveForge).
@@ -130,7 +134,8 @@ func TestLoadWithOpts_ScaffoldTemplatesForgeResolution(t *testing.T) {
 
 			assert.NotEmpty(t, h.PreScript, "PreScript should be set after forge resolution")
 			assert.NotEmpty(t, h.PostScript, "PostScript should be set after forge resolution")
-			assert.NotEmpty(t, h.RunnerEnv, "RunnerEnv should be non-empty after merge")
+			hasRunnerEnv := len(h.RunnerEnv) > 0 || (h.Env != nil && len(h.Env.Runner) > 0)
+			assert.True(t, hasRunnerEnv, "RunnerEnv or Env.Runner should be non-empty after merge")
 			assert.Nil(t, h.Forge, "Forge should be nil after resolution")
 			assert.NotEmpty(t, h.Role, "Role should be set in scaffold template")
 			assert.NotEmpty(t, h.Slug, "Slug should be set in scaffold template")
@@ -282,17 +287,18 @@ func TestLoadRaw_GeneratedWrapperFormat(t *testing.T) {
 }
 
 // TestResolveForge_ScaffoldRunnerEnvMerge verifies that forge resolution
-// produces the expected merged runner_env for each scaffold template, with
-// both top-level (platform-neutral) and forge.github (platform-specific)
-// keys present in the final merged state.
+// produces the expected merged env.runner (or legacy runner_env) for each
+// scaffold template, with both top-level (platform-neutral) and
+// forge.github (platform-specific) keys present in the final merged state.
 func TestResolveForge_ScaffoldRunnerEnvMerge(t *testing.T) {
 	dir := t.TempDir()
 	harnessDir := extractScaffoldHarnessDir(t, dir)
 
 	tests := []struct {
 		file            string
-		topLevelKeys    []string
-		forgeGithubKeys []string
+		topLevelKeys    []string // keys expected in RunnerEnv (deprecated)
+		forgeGithubKeys []string // keys expected in RunnerEnv from forge (deprecated)
+		envRunnerKeys   []string // keys expected in Env.Runner (ADR 0055)
 	}{
 		{
 			file:            "triage.yaml",
@@ -301,7 +307,7 @@ func TestResolveForge_ScaffoldRunnerEnvMerge(t *testing.T) {
 		},
 		{
 			file:            "code.yaml",
-			topLevelKeys:    []string{"TARGET_BRANCH"},
+			topLevelKeys:    []string{"CODE_ALLOWED_TARGET_BRANCHES", "FULLSEND_OUTPUT_SCHEMA", "FULLSEND_OUTPUT_FILE"},
 			forgeGithubKeys: []string{"PUSH_TOKEN", "PUSH_TOKEN_SOURCE", "REPO_FULL_NAME", "ISSUE_NUMBER", "REPO_DIR"},
 		},
 		{
@@ -316,8 +322,9 @@ func TestResolveForge_ScaffoldRunnerEnvMerge(t *testing.T) {
 		},
 		{
 			file:            "retro.yaml",
-			topLevelKeys:    []string{"FULLSEND_OUTPUT_SCHEMA"},
-			forgeGithubKeys: []string{"ORIGINATING_URL", "REPO_FULL_NAME", "GH_TOKEN"},
+			topLevelKeys:    []string{}, // migrated to env.runner (ADR 0055)
+			forgeGithubKeys: []string{}, // migrated to env.runner (ADR 0055)
+			envRunnerKeys:   []string{"FULLSEND_OUTPUT_SCHEMA", "ORIGINATING_URL", "REPO_FULL_NAME", "GH_TOKEN"},
 		},
 		{
 			file:            "prioritize.yaml",
@@ -333,11 +340,26 @@ func TestResolveForge_ScaffoldRunnerEnvMerge(t *testing.T) {
 			h, loadErr := LoadWithOpts(path, LoadOpts{ForgePlatform: "github"})
 			require.NoError(t, loadErr)
 
+			// Build a combined env map from both legacy RunnerEnv and new Env.Runner.
+			combined := make(map[string]string)
+			for k, v := range h.RunnerEnv {
+				combined[k] = v
+			}
+			if h.Env != nil {
+				for k, v := range h.Env.Runner {
+					combined[k] = v
+				}
+			}
+
 			for _, key := range tt.topLevelKeys {
-				assert.Contains(t, h.RunnerEnv, key, "merged RunnerEnv should contain top-level key %s", key)
+				assert.Contains(t, combined, key, "merged env should contain top-level key %s", key)
 			}
 			for _, key := range tt.forgeGithubKeys {
-				assert.Contains(t, h.RunnerEnv, key, "merged RunnerEnv should contain forge.github key %s", key)
+				assert.Contains(t, combined, key, "merged env should contain forge.github key %s", key)
+			}
+			for _, key := range tt.envRunnerKeys {
+				require.NotNil(t, h.Env, "Env should be non-nil for template with env.runner keys")
+				assert.Contains(t, h.Env.Runner, key, "merged Env.Runner should contain key %s", key)
 			}
 		})
 	}

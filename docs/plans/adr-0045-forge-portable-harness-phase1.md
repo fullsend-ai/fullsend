@@ -19,7 +19,7 @@ ADR-0038 makes harness *resources* (agents, skills, policies) URL-addressable. A
 **ADR-0038 implementation status** (as of this plan):
 | Phase | Status | Key artifacts |
 |-------|--------|---------------|
-| Phase 1 (MVP) | Shipped | `internal/fetch/`, `internal/harness/url.go`, `internal/resolve/`, CLI `--offline` |
+| Phase 1 (MVP) | Shipped | `internal/fetch/`, `internal/urlutil/` (formerly `internal/harness/url.go`), `internal/resolve/`, CLI `--offline` |
 | Phase 2 (Transitive deps) | Shipped | `internal/skill/`, recursive resolver, `--max-depth`/`--max-resources` |
 | Phase 3 (Lock files) | Shipped | `internal/lock/`, `fullsend lock` CLI (PR #2082) |
 | Phase 4 (Runtime fetch) | Not started | — |

@@ -24,9 +24,23 @@ type streamEvent struct {
 }
 
 // assistantMessage contains tool_use blocks from complete assistant messages.
+// Claude Code's stream-json nests the content array (and model) under "message";
+// older/flat shapes put content at the top level. We accept both.
 type assistantMessage struct {
 	Type    string          `json:"type"`
 	Content json.RawMessage `json:"content"`
+	Message struct {
+		Content json.RawMessage `json:"content"`
+		Model   string          `json:"model"`
+	} `json:"message"`
+}
+
+// systemEvent is Claude Code's initial "system"/"init" event, which carries the
+// resolved model name. The result event does not include the model.
+type systemEvent struct {
+	Type    string `json:"type"`
+	Subtype string `json:"subtype"`
+	Model   string `json:"model"`
 }
 
 type contentItem struct {
@@ -46,6 +60,20 @@ var allowedTools = map[string]bool{
 	"Grep":  true,
 	"Glob":  true,
 	"Agent": true,
+}
+
+// resultEvent represents the final NDJSON event from Claude Code's stream-json
+// output, containing execution metrics.
+type resultEvent struct {
+	Type         string  `json:"type"`
+	NumTurns     int     `json:"num_turns"`
+	TotalCostUSD float64 `json:"total_cost_usd"`
+	Usage        struct {
+		InputTokens              int `json:"input_tokens"`
+		OutputTokens             int `json:"output_tokens"`
+		CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+		CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	} `json:"usage"`
 }
 
 // progressParser reads NDJSON from Claude Code's stream-json output and emits
@@ -79,8 +107,27 @@ func progressParser(r io.Reader, printer *ui.Printer, start time.Time, metrics *
 			continue
 		}
 
+		if evt.Type == "system" {
+			var se systemEvent
+			if err := json.Unmarshal(line, &se); err == nil && se.Model != "" {
+				metrics.Model = se.Model
+			}
+		}
+
 		if evt.Type == "assistant" {
 			parseAssistantToolUse(line, printer, start, metrics, isCI)
+		}
+
+		if evt.Type == "result" {
+			var re resultEvent
+			if err := json.Unmarshal(line, &re); err == nil {
+				metrics.NumTurns = re.NumTurns
+				metrics.TotalCostUSD = re.TotalCostUSD
+				metrics.InputTokens = re.Usage.InputTokens
+				metrics.OutputTokens = re.Usage.OutputTokens
+				metrics.CacheCreationInputTokens = re.Usage.CacheCreationInputTokens
+				metrics.CacheReadInputTokens = re.Usage.CacheReadInputTokens
+			}
 		}
 	}
 }
@@ -91,8 +138,21 @@ func parseAssistantToolUse(line []byte, printer *ui.Printer, start time.Time, me
 		return
 	}
 
+	// Fall back to the assistant message's model when the system init event did
+	// not carry one, so gen_ai.request.model stays populated for all streams.
+	if metrics.Model == "" && msg.Message.Model != "" {
+		metrics.Model = msg.Message.Model
+	}
+
+	// Real Claude Code output nests content under "message"; fall back to the
+	// top-level "content" for older/flat shapes.
+	content := msg.Message.Content
+	if len(content) == 0 {
+		content = msg.Content
+	}
+
 	var items []contentItem
-	if err := json.Unmarshal(msg.Content, &items); err != nil {
+	if err := json.Unmarshal(content, &items); err != nil {
 		return
 	}
 

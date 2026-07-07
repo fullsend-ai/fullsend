@@ -11,11 +11,13 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"golang.org/x/crypto/nacl/box"
@@ -79,6 +81,12 @@ func (e *APIError) Error() string {
 // (PATCH /git/refs). Other 422s may coincidentally mention "protected" in
 // unrelated contexts. The wrapping happens in commitFilesTo where the
 // operation context is known.
+//
+// ErrForbidden is intentionally NOT mapped here either. HTTP 403 can
+// indicate secondary rate limits (handled by isRetryable), SAML SSO
+// enforcement, or other policy-based denials — not only permission
+// failures. The wrapping happens at call sites (e.g., CreateBranch)
+// where the operation context disambiguates the cause.
 func (e *APIError) Unwrap() error {
 	if e.StatusCode == http.StatusNotFound {
 		return forge.ErrNotFound
@@ -86,10 +94,31 @@ func (e *APIError) Unwrap() error {
 	if e.StatusCode == http.StatusUnprocessableEntity && isAlreadyExistsError(e) {
 		return forge.ErrAlreadyExists
 	}
+	if e.StatusCode == http.StatusUnprocessableEntity && isNoChangesError(e) {
+		return forge.ErrNoChanges
+	}
 	return nil
 }
 
-const maxRetries = 3
+// IsRateLimitError reports whether err is a GitHub rate-limit error
+// (primary 429, primary-as-403, or secondary 403). It unwraps the
+// error chain, so wrapped errors are detected too.
+func IsRateLimitError(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	if apiErr.StatusCode == http.StatusTooManyRequests {
+		return true
+	}
+	if apiErr.StatusCode == http.StatusForbidden {
+		lower := strings.ToLower(apiErr.Message)
+		return strings.Contains(lower, "rate limit")
+	}
+	return false
+}
+
+const maxRetries = 5
 
 // do performs an HTTP request against the GitHub API with retry on rate limits.
 func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
@@ -145,7 +174,7 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 		retryAfter := resp.Header.Get("Retry-After")
 
 		if attempt == maxRetries-1 {
-			msg := fmt.Sprintf("rate limited after %d retries on %s %s (last delay: %s", maxRetries, method, path, delay)
+			msg := fmt.Sprintf("retryable error after %d attempts on %s %s (last delay: %s", maxRetries, method, path, delay)
 			if retryAfter != "" {
 				msg += fmt.Sprintf(", Retry-After: %s", retryAfter)
 			}
@@ -164,11 +193,17 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 }
 
 // isRetryable returns true for responses that should trigger a retry.
-// GitHub uses 429 for primary rate limits and 403 for secondary rate limits.
-// Secondary rate limits may include a Retry-After header, or may only be
-// identifiable by the response body containing "secondary rate limit".
+// GitHub uses 429 for primary rate limits and 403 for both primary and
+// secondary rate limits. Rate-limit 403s may include a Retry-After header,
+// or may only be identifiable by the response body containing "rate limit".
+// Server errors (500, 502, 503, 504) are also retried as transient failures.
 func isRetryable(resp *http.Response) (bool, []byte) {
 	if resp.StatusCode == http.StatusTooManyRequests {
+		io.Copy(io.Discard, resp.Body)
+		return true, nil
+	}
+	// Transient server errors.
+	if resp.StatusCode >= 500 && resp.StatusCode <= 504 {
 		io.Copy(io.Discard, resp.Body)
 		return true, nil
 	}
@@ -177,12 +212,14 @@ func isRetryable(resp *http.Response) (bool, []byte) {
 			io.Copy(io.Discard, resp.Body)
 			return true, nil
 		}
-		// Check body for secondary rate limit without Retry-After header.
+		// Check body for rate limit indicators without Retry-After header.
+		// GitHub returns primary rate limits as 403 with "API rate limit
+		// exceeded" and secondary rate limits with "secondary rate limit".
 		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<16)) // 64KB max
 		if readErr != nil {
 			return false, nil
 		}
-		if strings.Contains(strings.ToLower(string(data)), "secondary rate limit") {
+		if strings.Contains(strings.ToLower(string(data)), "rate limit") {
 			return true, nil
 		}
 		// Not a rate limit — return the body so the caller can still use it.
@@ -197,19 +234,26 @@ func isRetryable(resp *http.Response) (bool, []byte) {
 var secondaryRateLimitBackoff = 60 * time.Second
 
 // retryDelay calculates how long to wait before retrying.
-// It uses the Retry-After header if present, otherwise exponential backoff.
+// It uses the Retry-After header if present, otherwise exponential backoff
+// with jitter to prevent thundering-herd effects.
 func retryDelay(resp *http.Response, attempt int) time.Duration {
 	if ra := resp.Header.Get("Retry-After"); ra != "" {
 		if secs, err := strconv.Atoi(ra); err == nil && secs > 0 && secs <= 300 {
 			return time.Duration(secs) * time.Second
 		}
 	}
-	// For secondary rate limits (403), use a longer backoff.
+	var base time.Duration
 	if resp.StatusCode == http.StatusForbidden {
-		return secondaryRateLimitBackoff + time.Duration(math.Pow(2, float64(attempt)))*time.Second
+		// For secondary rate limits (403), use a longer backoff.
+		base = secondaryRateLimitBackoff + time.Duration(math.Pow(2, float64(attempt)))*time.Second
+	} else {
+		// Exponential backoff: 1s, 2s, 4s, 8s, 16s
+		base = time.Duration(math.Pow(2, float64(attempt))) * time.Second
 	}
-	// Exponential backoff: 1s, 2s, 4s
-	return time.Duration(math.Pow(2, float64(attempt))) * time.Second
+	// Add jitter: randomize between 50-100% of base to desynchronize
+	// concurrent callers (e.g. parallel e2e test runners).
+	half := base / 2
+	return half + time.Duration(rand.Int64N(int64(half)+1))
 }
 
 // checkStatus verifies the response has an acceptable status code and returns
@@ -433,6 +477,73 @@ func (c *LiveClient) DeleteRepo(ctx context.Context, owner, repo string) error {
 	return c.delete_(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
 }
 
+// FindExistingFork checks whether the authenticated user already owns a
+// fork of owner/repo by fetching GET /repos/{user}/{repo} and verifying
+// the parent relationship. Returns the fork owner login and repo name
+// if found, or empty strings when no fork exists. The repo name may
+// differ from the upstream name when GitHub renamed it to avoid
+// collisions. Only real API errors are returned as err.
+func (c *LiveClient) FindExistingFork(ctx context.Context, owner, repo string) (string, string, error) {
+	user, err := c.GetAuthenticatedUser(ctx)
+	if err != nil {
+		return "", "", fmt.Errorf("find existing fork: %w", err)
+	}
+
+	resp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s", user, repo), nil)
+	if err != nil {
+		return "", "", fmt.Errorf("find existing fork: %w", err)
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		resp.Body.Close()
+		return "", "", nil
+	}
+	if err := checkStatus(resp, http.StatusOK); err != nil {
+		return "", "", fmt.Errorf("find existing fork of %s/%s: %w", owner, repo, err)
+	}
+
+	var r struct {
+		Fork   bool   `json:"fork"`
+		Name   string `json:"name"`
+		Parent struct {
+			FullName string `json:"full_name"`
+		} `json:"parent"`
+	}
+	if err := decodeJSON(resp, &r); err != nil {
+		return "", "", fmt.Errorf("decode fork check response: %w", err)
+	}
+	if r.Fork && r.Parent.FullName == owner+"/"+repo {
+		return user, r.Name, nil
+	}
+	return "", "", nil
+}
+
+// CreateFork creates a fork of owner/repo under the authenticated user's
+// account. If a fork already exists, the GitHub API returns 202 with the
+// existing fork metadata, so this call is idempotent. Returns both the
+// fork owner login and the actual repo name. The repo name may differ
+// from the upstream when the user already has an unrelated repo with the
+// same name (GitHub appends a suffix like "-1").
+func (c *LiveClient) CreateFork(ctx context.Context, owner, repo string) (string, string, error) {
+	resp, err := c.do(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/%s/forks", owner, repo), map[string]any{})
+	if err != nil {
+		return "", "", fmt.Errorf("create fork of %s/%s: %w", owner, repo, err)
+	}
+	if err := checkStatus(resp, http.StatusOK, http.StatusCreated, http.StatusAccepted); err != nil {
+		return "", "", fmt.Errorf("create fork of %s/%s: %w", owner, repo, err)
+	}
+
+	var fork struct {
+		Name  string `json:"name"`
+		Owner struct {
+			Login string `json:"login"`
+		} `json:"owner"`
+	}
+	if err := decodeJSON(resp, &fork); err != nil {
+		return "", "", fmt.Errorf("decode fork response: %w", err)
+	}
+	return fork.Owner.Login, fork.Name, nil
+}
+
 // CreateFile creates a new file on the repository's default branch.
 func (c *LiveClient) CreateFile(ctx context.Context, owner, repo, path, message string, content []byte) error {
 	return c.CreateFileOnBranch(ctx, owner, repo, "", path, message, content)
@@ -466,7 +577,7 @@ func (c *LiveClient) CreateFileOnBranch(ctx context.Context, owner, repo, branch
 func (c *LiveClient) CreateOrUpdateFile(ctx context.Context, owner, repo, path, message string, content []byte) error {
 	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path)
 
-	return c.retryOnTransient(ctx, path, func() error {
+	return c.retryOnRepoRace(ctx, path, func() error {
 		// Try to get existing file for its SHA.
 		existingResp, err := c.do(ctx, http.MethodGet, apiPath, nil)
 		if err != nil {
@@ -505,7 +616,7 @@ func (c *LiveClient) CreateOrUpdateFile(ctx context.Context, owner, repo, path, 
 func (c *LiveClient) CreateOrUpdateFileOnBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error {
 	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path)
 
-	return c.retryOnTransient(ctx, path, func() error {
+	return c.retryOnRepoRace(ctx, path, func() error {
 		// Try to get existing file on the branch for its SHA.
 		existingResp, err := c.do(ctx, http.MethodGet, apiPath+"?ref="+branch, nil)
 		if err != nil {
@@ -540,10 +651,9 @@ func (c *LiveClient) CreateOrUpdateFileOnBranch(ctx context.Context, owner, repo
 }
 
 // putFileWithRetry wraps a single PUT to the Contents API with retry on
-// transient errors (404 from async repo init, 409 from branch ref races,
-// 502/503/504 from server-side infrastructure issues).
+// repo race conditions (404 from async repo init, 409 from branch ref races).
 func (c *LiveClient) putFileWithRetry(ctx context.Context, apiPath string, payload map[string]any, path string) error {
-	return c.retryOnTransient(ctx, path, func() error {
+	return c.retryOnRepoRace(ctx, path, func() error {
 		resp, err := c.put(ctx, apiPath, payload)
 		if err != nil {
 			return fmt.Errorf("create file %s: %w", path, err)
@@ -553,12 +663,13 @@ func (c *LiveClient) putFileWithRetry(ctx context.Context, apiPath string, paylo
 	})
 }
 
-// retryOnTransient retries an operation that may fail with transient HTTP
-// errors. It handles 404 (async repo initialization), 409 (branch ref update
-// races), and server-side 5xx errors (502, 503, 504) that indicate transient
-// GitHub infrastructure issues. It uses linear backoff (2s between attempts)
-// and up to 5 attempts (~10s total).
-func (c *LiveClient) retryOnTransient(ctx context.Context, label string, fn func() error) error {
+// retryOnRepoRace retries an operation that may fail due to GitHub
+// repository initialization races. It handles 404 (async repo/branch
+// creation where the ref is not yet materialized) and 409 (branch ref
+// update conflicts). Server-side 5xx errors are handled at a lower level
+// by do(). It uses linear backoff (2s between attempts) and up to 5
+// attempts (~10s total).
+func (c *LiveClient) retryOnRepoRace(ctx context.Context, label string, fn func() error) error {
 	const attempts = 5
 	const delay = 2 * time.Second
 
@@ -590,16 +701,13 @@ func (c *LiveClient) retryOnTransient(ctx context.Context, label string, fn func
 }
 
 // isTransientStatus returns true for HTTP status codes that indicate a
-// transient error worth retrying: 404 (async repo init), 409 (branch ref
-// conflict), and server-side 500, 502, 503, 504 (GitHub infrastructure errors).
+// repo/branch race condition worth retrying: 404 (async repo init) and
+// 409 (branch ref conflict). Server-side 5xx errors are retried at a
+// lower level by do().
 func isTransientStatus(code int) bool {
 	switch code {
 	case http.StatusNotFound,
-		http.StatusConflict,
-		http.StatusInternalServerError,
-		http.StatusBadGateway,
-		http.StatusServiceUnavailable,
-		http.StatusGatewayTimeout:
+		http.StatusConflict:
 		return true
 	default:
 		return false
@@ -609,6 +717,8 @@ func isTransientStatus(code int) bool {
 // CommitFiles atomically commits multiple files to the default branch
 // using the Git Trees/Blobs/Commits API. Returns (false, nil) when
 // all files already match the current tree (idempotent).
+// Text files are embedded as UTF-8 tree content. Binary files (e.g.
+// vendored ELF) are uploaded via the Git Blob API and referenced by SHA.
 //
 // Returns forge.ErrBranchProtected (wrapped) when the ref update fails
 // with a 422, which indicates branch protection rules prevent direct pushes.
@@ -646,10 +756,10 @@ func (c *LiveClient) CommitFilesToBranch(ctx context.Context, owner, repo, branc
 // the Git Trees/Blobs/Commits API.
 func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, message string, files []forge.TreeFile) (bool, error) {
 	// 1. Get current commit SHA from the branch ref.
-	// Wrapped in retryOnTransient for freshly-created repos/branches where
+	// Wrapped in retryOnRepoRace for freshly-created repos/branches where
 	// the ref may not be materialized yet (async auto_init).
 	var commitSHA string
-	if err := c.retryOnTransient(ctx, "get branch ref", func() error {
+	if err := c.retryOnRepoRace(ctx, "get branch ref", func() error {
 		refResp, refErr := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", owner, repo, branch))
 		if refErr != nil {
 			return fmt.Errorf("get branch ref: %w", refErr)
@@ -713,18 +823,35 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 
 	// 4. Compute expected blob SHAs and filter to changed files.
-	var changedEntries []map[string]string
+	var changedEntries []map[string]any
 	for _, f := range files {
 		expectedSHA := blobSHA(f.Content)
-		if info, ok := existing[f.Path]; ok && info.sha == expectedSHA && info.mode == f.Mode {
+		info, exists := existing[f.Path]
+		if exists && info.sha == expectedSHA && info.mode == f.Mode {
 			continue
 		}
-		changedEntries = append(changedEntries, map[string]string{
-			"path":    f.Path,
-			"mode":    f.Mode,
-			"type":    "blob",
-			"content": string(f.Content),
-		})
+
+		entry := map[string]any{
+			"path": f.Path,
+			"mode": f.Mode,
+			"type": "blob",
+		}
+		if utf8.Valid(f.Content) {
+			entry["content"] = string(f.Content)
+		} else {
+			blobSHAValue := expectedSHA
+			if exists && info.sha == expectedSHA {
+				blobSHAValue = info.sha
+			} else {
+				createdSHA, err := c.createBlob(ctx, owner, repo, f.Content)
+				if err != nil {
+					return false, fmt.Errorf("create blob for %s: %w", f.Path, err)
+				}
+				blobSHAValue = createdSHA
+			}
+			entry["sha"] = blobSHAValue
+		}
+		changedEntries = append(changedEntries, entry)
 	}
 
 	if len(changedEntries) == 0 {
@@ -765,21 +892,167 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 
 	// 7. Update branch ref to point to new commit.
-	// A 422 here typically means branch protection rules prevent the push.
+	// A 422 may indicate branch protection or a non-fast-forward (e.g. auto_init race).
 	refPayload := map[string]string{
 		"sha": newCommit.SHA,
 	}
 	refUpdateResp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/git/refs/heads/%s", owner, repo, branch), refPayload)
 	if err != nil {
 		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isBranchProtectionError(apiErr) {
-			return false, fmt.Errorf("%w: %w", forge.ErrBranchProtected, err)
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+			// Check order matters: protection messages can contain "fast forward"
+			if isBranchProtectionError(apiErr) {
+				return false, fmt.Errorf("%w: %w", forge.ErrBranchProtected, err)
+			}
+			if isNonFastForwardError(apiErr) {
+				return false, fmt.Errorf("%w: %w", forge.ErrNonFastForward, err)
+			}
 		}
 		return false, fmt.Errorf("update ref: %w", err)
 	}
 	refUpdateResp.Body.Close()
 
 	return true, nil
+}
+
+// DeleteFiles atomically removes paths from the repository default branch.
+func (c *LiveClient) DeleteFiles(ctx context.Context, owner, repo, message string, paths []string) (int, error) {
+	if len(paths) == 0 {
+		return 0, nil
+	}
+
+	repoResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
+	if err != nil {
+		return 0, fmt.Errorf("get repo: %w", err)
+	}
+	var repoInfo struct {
+		DefaultBranch string `json:"default_branch"`
+	}
+	if err := decodeJSON(repoResp, &repoInfo); err != nil {
+		return 0, fmt.Errorf("decode repo info: %w", err)
+	}
+
+	var commitSHA string
+	if err := c.retryOnRepoRace(ctx, "get branch ref", func() error {
+		refResp, refErr := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", owner, repo, repoInfo.DefaultBranch))
+		if refErr != nil {
+			return fmt.Errorf("get branch ref: %w", refErr)
+		}
+		var ref struct {
+			Object struct {
+				SHA string `json:"sha"`
+			} `json:"object"`
+		}
+		if decErr := decodeJSON(refResp, &ref); decErr != nil {
+			return fmt.Errorf("decode ref: %w", decErr)
+		}
+		commitSHA = ref.Object.SHA
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+
+	cResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/commits/%s", owner, repo, commitSHA))
+	if err != nil {
+		return 0, fmt.Errorf("get commit: %w", err)
+	}
+	var commitObj struct {
+		Tree struct {
+			SHA string `json:"sha"`
+		} `json:"tree"`
+	}
+	if err := decodeJSON(cResp, &commitObj); err != nil {
+		return 0, fmt.Errorf("decode commit: %w", err)
+	}
+	baseTreeSHA := commitObj.Tree.SHA
+
+	treeResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, baseTreeSHA))
+	if err != nil {
+		return 0, fmt.Errorf("get tree: %w", err)
+	}
+	var existingTree struct {
+		Tree []struct {
+			Path string `json:"path"`
+			Mode string `json:"mode"`
+		} `json:"tree"`
+		Truncated bool `json:"truncated"`
+	}
+	if err := decodeJSON(treeResp, &existingTree); err != nil {
+		return 0, fmt.Errorf("decode tree: %w", err)
+	}
+	if existingTree.Truncated {
+		return 0, fmt.Errorf("tree too large (truncated); cannot delete")
+	}
+
+	existing := make(map[string]string, len(existingTree.Tree))
+	for _, entry := range existingTree.Tree {
+		existing[entry.Path] = entry.Mode
+	}
+
+	var deleteEntries []map[string]any
+	for _, path := range paths {
+		mode, ok := existing[path]
+		if !ok {
+			continue
+		}
+		if mode == "" {
+			mode = "100644"
+		}
+		deleteEntries = append(deleteEntries, map[string]any{
+			"path": path,
+			"mode": mode,
+			"type": "blob",
+			"sha":  nil,
+		})
+	}
+	if len(deleteEntries) == 0 {
+		return 0, nil
+	}
+
+	treePayload := map[string]any{
+		"base_tree": baseTreeSHA,
+		"tree":      deleteEntries,
+	}
+	newTreeResp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/trees", owner, repo), treePayload)
+	if err != nil {
+		return 0, fmt.Errorf("create tree: %w", err)
+	}
+	var newTree struct {
+		SHA string `json:"sha"`
+	}
+	if err := decodeJSON(newTreeResp, &newTree); err != nil {
+		return 0, fmt.Errorf("decode new tree: %w", err)
+	}
+
+	commitPayload := map[string]any{
+		"message": message,
+		"tree":    newTree.SHA,
+		"parents": []string{commitSHA},
+	}
+	newCommitResp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/commits", owner, repo), commitPayload)
+	if err != nil {
+		return 0, fmt.Errorf("create commit: %w", err)
+	}
+	var newCommit struct {
+		SHA string `json:"sha"`
+	}
+	if err := decodeJSON(newCommitResp, &newCommit); err != nil {
+		return 0, fmt.Errorf("decode new commit: %w", err)
+	}
+
+	refPayload := map[string]string{"sha": newCommit.SHA}
+	if err := c.retryOnRepoRace(ctx, "update ref", func() error {
+		refUpdateResp, patchErr := c.patch(ctx, fmt.Sprintf("/repos/%s/%s/git/refs/heads/%s", owner, repo, repoInfo.DefaultBranch), refPayload)
+		if patchErr != nil {
+			return fmt.Errorf("update ref: %w", patchErr)
+		}
+		refUpdateResp.Body.Close()
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+
+	return len(deleteEntries), nil
 }
 
 // isBranchProtectionError checks whether a 422 APIError indicates branch
@@ -796,6 +1069,14 @@ func isBranchProtectionError(apiErr *APIError) bool {
 		strings.Contains(msg, "rule violation")
 }
 
+func isNonFastForwardError(apiErr *APIError) bool {
+	msg := strings.ToLower(apiErr.Message)
+	for _, d := range apiErr.Errors {
+		msg += " " + strings.ToLower(d.Message)
+	}
+	return strings.Contains(msg, "not a fast forward") || strings.Contains(msg, "not a fast-forward")
+}
+
 func isAlreadyExistsError(apiErr *APIError) bool {
 	msg := strings.ToLower(apiErr.Message)
 	for _, d := range apiErr.Errors {
@@ -804,12 +1085,38 @@ func isAlreadyExistsError(apiErr *APIError) bool {
 	return strings.Contains(msg, "already exists")
 }
 
+func isNoChangesError(apiErr *APIError) bool {
+	msg := strings.ToLower(apiErr.Message)
+	for _, d := range apiErr.Errors {
+		msg += " " + strings.ToLower(d.Message)
+	}
+	return strings.Contains(msg, "no commits between")
+}
+
 // blobSHA computes the Git blob object SHA-1 for the given content.
 func blobSHA(content []byte) string {
 	h := sha1.New()
 	fmt.Fprintf(h, "blob %d\x00", len(content))
 	h.Write(content)
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func (c *LiveClient) createBlob(ctx context.Context, owner, repo string, content []byte) (string, error) {
+	payload := map[string]string{
+		"content":  base64.StdEncoding.EncodeToString(content),
+		"encoding": "base64",
+	}
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/blobs", owner, repo), payload)
+	if err != nil {
+		return "", fmt.Errorf("create blob: %w", err)
+	}
+	var blob struct {
+		SHA string `json:"sha"`
+	}
+	if err := decodeJSON(resp, &blob); err != nil {
+		return "", fmt.Errorf("decode blob: %w", err)
+	}
+	return blob.SHA, nil
 }
 
 // GetFileContent retrieves the content of a file from a repository.
@@ -958,7 +1265,7 @@ func (c *LiveClient) listDirContents(ctx context.Context, owner, repo, path, ref
 func (c *LiveClient) DeleteFile(ctx context.Context, owner, repo, path, message string) error {
 	apiPath := fmt.Sprintf("/repos/%s/%s/contents/%s", owner, repo, path)
 
-	return c.retryOnTransient(ctx, path, func() error {
+	return c.retryOnRepoRace(ctx, path, func() error {
 		// GET the file to obtain its SHA.
 		existingResp, err := c.do(ctx, http.MethodGet, apiPath, nil)
 		if err != nil {
@@ -990,6 +1297,44 @@ func (c *LiveClient) DeleteFile(ctx context.Context, owner, repo, path, message 
 		}
 		return nil
 	})
+}
+
+// GetRef returns the commit SHA for the given ref path (e.g., "heads/main", "tags/v0").
+func (c *LiveClient) GetRef(ctx context.Context, owner, repo, refPath string) (string, error) {
+	refResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/ref/%s", owner, repo, refPath))
+	if err != nil {
+		return "", fmt.Errorf("get ref %s/%s@%s: %w", owner, repo, refPath, err)
+	}
+	var ref struct {
+		Object struct {
+			SHA  string `json:"sha"`
+			Type string `json:"type"`
+		} `json:"object"`
+	}
+	if err := decodeJSON(refResp, &ref); err != nil {
+		return "", fmt.Errorf("decode ref: %w", err)
+	}
+	if ref.Object.Type == "tag" {
+		tagResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/tags/%s", owner, repo, ref.Object.SHA))
+		if err != nil {
+			return "", fmt.Errorf("dereference tag %s: %w", ref.Object.SHA, err)
+		}
+		var tag struct {
+			Object struct {
+				SHA string `json:"sha"`
+			} `json:"object"`
+		}
+		if err := decodeJSON(tagResp, &tag); err != nil {
+			return "", fmt.Errorf("decode tag object: %w", err)
+		}
+		return tag.Object.SHA, nil
+	}
+	return ref.Object.SHA, nil
+}
+
+// GetBranchRef returns the HEAD commit SHA for the named branch.
+func (c *LiveClient) GetBranchRef(ctx context.Context, owner, repo, branch string) (string, error) {
+	return c.GetRef(ctx, owner, repo, "heads/"+branch)
 }
 
 // CreateBranch creates a new branch from the repository's default branch.
@@ -1027,6 +1372,10 @@ func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName s
 	}
 	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/refs", owner, repo), payload)
 	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden {
+			return fmt.Errorf("%w: %w", forge.ErrForbidden, err)
+		}
 		return fmt.Errorf("create branch %s: %w", branchName, err)
 	}
 	resp.Body.Close()
@@ -1118,9 +1467,9 @@ func (c *LiveClient) GetOrgPlan(ctx context.Context, org string) (string, error)
 // GetAuthenticatedUser returns the login of the authenticated user.
 //
 // For classic PATs and OAuth tokens the identity comes from GET /user.
-// GitHub App installation tokens cannot call /user, so when that call
-// fails the method falls back to GET /app and constructs the
-// conventional bot login "{slug}[bot]".
+// GitHub App JWTs fall back to GET /app and derive "{slug}[bot]".
+// Installation access tokens cannot use either REST endpoint; those fall
+// back to a GraphQL viewer query, which returns the bot login directly.
 func (c *LiveClient) GetAuthenticatedUser(ctx context.Context) (string, error) {
 	resp, err := c.get(ctx, "/user")
 	if err == nil {
@@ -1133,26 +1482,191 @@ func (c *LiveClient) GetAuthenticatedUser(ctx context.Context) (string, error) {
 		return user.Login, nil
 	}
 
-	// /user is not available for GitHub App installation tokens.
-	// Fall back to /app which returns the app's metadata including
-	// its slug, from which we derive the bot login.
+	userErr := err
+
+	// App JWT auth can resolve the bot identity from GET /app.
 	appResp, appErr := c.get(ctx, "/app")
-	if appErr != nil {
-		// Neither endpoint worked — return the original /user error
-		// because that is the more common path.
-		return "", fmt.Errorf("get authenticated user: %w (app fallback: %v)", err, appErr)
+	if appErr == nil {
+		var app struct {
+			Slug string `json:"slug"`
+		}
+		if decodeErr := decodeJSON(appResp, &app); decodeErr != nil {
+			return "", fmt.Errorf("decode app: %w", decodeErr)
+		}
+		if app.Slug == "" {
+			return "", fmt.Errorf("get authenticated user: /app returned empty slug")
+		}
+		return app.Slug + "[bot]", nil
 	}
 
-	var app struct {
-		Slug string `json:"slug"`
+	// Installation tokens reject /user and /app but support GraphQL viewer.
+	login, graphErr := c.graphqlViewerLogin(ctx)
+	if graphErr == nil {
+		return login, nil
 	}
-	if appErr := decodeJSON(appResp, &app); appErr != nil {
-		return "", fmt.Errorf("decode app: %w", appErr)
+
+	return "", fmt.Errorf("get authenticated user: %w (app fallback: %v; graphql fallback: %v)", userErr, appErr, graphErr)
+}
+
+const graphqlViewerLoginQuery = `query { viewer { login } }`
+
+func (c *LiveClient) graphqlViewerLogin(ctx context.Context) (string, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/graphql", map[string]string{
+		"query": graphqlViewerLoginQuery,
+	})
+	if err != nil {
+		return "", fmt.Errorf("graphql viewer query: %w", err)
 	}
-	if app.Slug == "" {
-		return "", fmt.Errorf("get authenticated user: /app returned empty slug")
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if err != nil {
+		return "", fmt.Errorf("read graphql viewer response: %w", err)
 	}
-	return app.Slug + "[bot]", nil
+
+	if resp.StatusCode != http.StatusOK {
+		var errResp struct {
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(body, &errResp) == nil && errResp.Message != "" {
+			return "", &APIError{StatusCode: resp.StatusCode, Message: errResp.Message}
+		}
+		return "", &APIError{StatusCode: resp.StatusCode, Message: "graphql viewer query failed"}
+	}
+
+	var result struct {
+		Data struct {
+			Viewer struct {
+				Login string `json:"login"`
+			} `json:"viewer"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("decode graphql viewer response: %w", err)
+	}
+	if len(result.Errors) > 0 {
+		return "", fmt.Errorf("graphql viewer query: %s", result.Errors[0].Message)
+	}
+	if result.Data.Viewer.Login == "" {
+		return "", fmt.Errorf("graphql viewer query returned empty login")
+	}
+	return result.Data.Viewer.Login, nil
+}
+
+// ListInstallationRepositories returns repository full names when token is a GitHub
+// App installation token (HTTP 200). PATs and OAuth tokens that lack installation
+// access receive 401/403 and return (nil, 0, false, nil).
+func ListInstallationRepositories(ctx context.Context, httpClient *http.Client, baseURL, token string, perPage int) (repos []string, totalCount int, ok bool, err error) {
+	if token == "" {
+		return nil, 0, false, nil
+	}
+	if perPage <= 0 {
+		perPage = 100
+	}
+
+	url := fmt.Sprintf("%s/installation/repositories?per_page=%d", baseURL, perPage)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("creating installation repositories request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("listing installation repositories: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		var result struct {
+			TotalCount   int `json:"total_count"`
+			Repositories []struct {
+				FullName string `json:"full_name"`
+			} `json:"repositories"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nil, 0, false, fmt.Errorf("decoding installation repositories: %w", err)
+		}
+		repos = make([]string, len(result.Repositories))
+		for i, r := range result.Repositories {
+			repos[i] = r.FullName
+		}
+		return repos, result.TotalCount, true, nil
+	case http.StatusUnauthorized, http.StatusForbidden:
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return nil, 0, false, nil
+	default:
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		return nil, 0, false, &APIError{StatusCode: resp.StatusCode, Message: "installation repositories request failed"}
+	}
+}
+
+// ProbeInstallationToken reports whether token is a GitHub App installation
+// access token by calling GET /installation/repositories. PATs and OAuth
+// tokens receive 401/403 on that endpoint.
+func ProbeInstallationToken(ctx context.Context, httpClient *http.Client, baseURL, token string) (bool, error) {
+	_, _, ok, err := ListInstallationRepositories(ctx, httpClient, baseURL, token, 1)
+	if err != nil {
+		return false, err
+	}
+	return ok, nil
+}
+
+// IsInstallationToken reports whether the client's token is a GitHub App
+// installation access token.
+func (c *LiveClient) IsInstallationToken(ctx context.Context) (bool, error) {
+	return ProbeInstallationToken(ctx, c.http, c.baseURL, c.token)
+}
+
+// GetAuthenticatedUserIdentity returns the display name and email of
+// the authenticated user by calling GET /user.
+//
+// For classic PATs and OAuth tokens the endpoint returns the user's
+// profile including name, email, and numeric ID. When name is empty,
+// login is used as a fallback. When email is empty, the GitHub noreply
+// address is constructed from the user's ID and login.
+//
+// GitHub App installation tokens cannot call /user, so this method
+// returns forge.ErrNotFound for those token types.
+func (c *LiveClient) GetAuthenticatedUserIdentity(ctx context.Context) (*forge.UserIdentity, error) {
+	resp, err := c.get(ctx, "/user")
+	if err != nil {
+		// Only wrap with ErrNotFound for HTTP 403/404 responses (e.g., GitHub
+		// App installation tokens that cannot call /user). Other errors
+		// (network failures, 5xx, rate limits) are returned unwrapped so
+		// callers can distinguish permanent from transient failures.
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusForbidden || apiErr.StatusCode == http.StatusNotFound) {
+			return nil, fmt.Errorf("get authenticated user identity: %w: %w", forge.ErrNotFound, err)
+		}
+		return nil, fmt.Errorf("get authenticated user identity: %w", err)
+	}
+
+	var user struct {
+		Login string `json:"login"`
+		Name  string `json:"name"`
+		Email string `json:"email"`
+		ID    int64  `json:"id"`
+	}
+	if err := decodeJSON(resp, &user); err != nil {
+		return nil, fmt.Errorf("decode user identity: %w", err)
+	}
+
+	name := user.Name
+	if name == "" {
+		name = user.Login
+	}
+	email := user.Email
+	if email == "" {
+		email = fmt.Sprintf("%d+%s@users.noreply.github.com", user.ID, user.Login)
+	}
+
+	return &forge.UserIdentity{Name: name, Email: email}, nil
 }
 
 // GetTokenScopes returns the OAuth scopes granted to the current token
@@ -1324,6 +1838,101 @@ func (c *LiveClient) GetRepoVariable(ctx context.Context, owner, repo, name stri
 		return "", false, fmt.Errorf("decode variable %s: %w", name, err)
 	}
 	return result.Value, true, nil
+}
+
+// DeleteRepoVariable deletes a repository Actions variable. It is idempotent:
+// a 404 (variable already gone) is not treated as an error.
+func (c *LiveClient) DeleteRepoVariable(ctx context.Context, owner, repo, name string) error {
+	resp, err := c.do(ctx, http.MethodDelete, fmt.Sprintf("/repos/%s/%s/actions/variables/%s", owner, repo, name), nil)
+	if err != nil {
+		return fmt.Errorf("delete repo variable %s: %w", name, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	return &APIError{StatusCode: resp.StatusCode, Message: "unexpected status deleting repo variable"}
+}
+
+// ListRepoVariables returns all Actions variables for a repository as a
+// name-to-value map. Results are paginated; the method follows pagination
+// until all variables are fetched or the safety page cap is reached.
+func (c *LiveClient) ListRepoVariables(ctx context.Context, owner, repo string) (map[string]string, error) {
+	const maxPages = 100
+	result := make(map[string]string)
+	var totalCount, fetched int
+
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("/repos/%s/%s/actions/variables?per_page=100&page=%d", owner, repo, page)
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list repo variables page %d: %w", page, err)
+		}
+
+		var body struct {
+			TotalCount int `json:"total_count"`
+			Variables  []struct {
+				Name  string `json:"name"`
+				Value string `json:"value"`
+			} `json:"variables"`
+		}
+		if err := decodeJSON(resp, &body); err != nil {
+			return nil, fmt.Errorf("decode repo variables page %d: %w", page, err)
+		}
+
+		totalCount = body.TotalCount
+		for _, v := range body.Variables {
+			result[v.Name] = v.Value
+		}
+		fetched += len(body.Variables)
+
+		if fetched >= totalCount || len(body.Variables) == 0 {
+			return result, nil
+		}
+	}
+
+	return nil, fmt.Errorf("list repo variables: pagination exceeded %d pages (fetched %d of %d variables)", maxPages, len(result), totalCount)
+}
+
+// DeleteRepoSecret deletes a repository Actions secret. It is idempotent:
+// a 404 (secret already gone) is not treated as an error.
+func (c *LiveClient) DeleteRepoSecret(ctx context.Context, owner, repo, name string) error {
+	resp, err := c.do(ctx, http.MethodDelete, fmt.Sprintf("/repos/%s/%s/actions/secrets/%s", owner, repo, name), nil)
+	if err != nil {
+		return fmt.Errorf("delete repo secret %s: %w", name, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	return &APIError{StatusCode: resp.StatusCode, Message: "unexpected status deleting repo secret"}
+}
+
+// GetWorkflow returns a workflow definition by filename (e.g. repo-maintenance.yml).
+func (c *LiveClient) GetWorkflow(ctx context.Context, owner, repo, workflowFile string) (*forge.Workflow, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/actions/workflows/%s", owner, repo, workflowFile))
+	if err != nil {
+		return nil, fmt.Errorf("get workflow %s: %w", workflowFile, err)
+	}
+
+	var wf struct {
+		ID    int    `json:"id"`
+		Name  string `json:"name"`
+		Path  string `json:"path"`
+		State string `json:"state"`
+	}
+	if err := decodeJSON(resp, &wf); err != nil {
+		return nil, fmt.Errorf("decode workflow %s: %w", workflowFile, err)
+	}
+
+	return &forge.Workflow{
+		ID:    wf.ID,
+		Name:  wf.Name,
+		Path:  wf.Path,
+		State: wf.State,
+	}, nil
 }
 
 // GetLatestWorkflowRun returns the most recent workflow run for a workflow file.
@@ -1754,10 +2363,14 @@ func (c *LiveClient) CreatePullRequestReview(ctx context.Context, owner, repo st
 	}
 
 	type reviewComment struct {
-		Path string `json:"path"`
-		Line int    `json:"line,omitempty"`
-		Body string `json:"body"`
+		Path        string `json:"path"`
+		Line        int    `json:"line,omitempty"`
+		Body        string `json:"body"`
+		SubjectType string `json:"subject_type,omitempty"`
 	}
+
+	// GitHub's subject_type: "file" is inferred from Line==0 so forge
+	// callers don't need to know about this GitHub-specific field.
 
 	type reviewPayload struct {
 		Event    string          `json:"event"`
@@ -1772,11 +2385,15 @@ func (c *LiveClient) CreatePullRequestReview(ctx context.Context, owner, repo st
 		CommitID: commitSHA,
 	}
 	for _, rc := range comments {
-		payload.Comments = append(payload.Comments, reviewComment{
+		c := reviewComment{
 			Path: rc.Path,
 			Line: rc.Line,
 			Body: rc.Body,
-		})
+		}
+		if rc.Line == 0 {
+			c.SubjectType = "file"
+		}
+		payload.Comments = append(payload.Comments, c)
 	}
 
 	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/reviews", owner, repo, number), payload)
@@ -1847,6 +2464,21 @@ func (c *LiveClient) MergeChangeProposal(ctx context.Context, owner, repo string
 	resp, err := c.put(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, number), map[string]string{"merge_method": "squash"})
 	if err != nil {
 		return fmt.Errorf("merge pull request #%d: %w", number, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// UpdatePullRequestBranch updates a PR's head branch by merging the base
+// branch into it (GitHub's PUT /repos/{owner}/{repo}/pulls/{number}/update-branch).
+// The GitHub API returns 202 Accepted for this endpoint.
+func (c *LiveClient) UpdatePullRequestBranch(ctx context.Context, owner, repo string, number int) error {
+	resp, err := c.do(ctx, http.MethodPut, fmt.Sprintf("/repos/%s/%s/pulls/%d/update-branch", owner, repo, number), nil)
+	if err != nil {
+		return fmt.Errorf("update pull request branch #%d: %w", number, err)
+	}
+	if err := checkStatus(resp, http.StatusAccepted); err != nil {
+		return fmt.Errorf("update pull request branch #%d: %w", number, err)
 	}
 	resp.Body.Close()
 	return nil
@@ -2183,35 +2815,27 @@ func (c *LiveClient) SetOrgSecretRepos(ctx context.Context, org, name string, re
 // CreateOrUpdateOrgVariable creates or updates an org-level Actions variable
 // scoped to the given repository IDs.
 func (c *LiveClient) CreateOrUpdateOrgVariable(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error {
-	if selectedRepoIDs == nil {
-		selectedRepoIDs = []int64{}
-	}
+	return c.createOrUpdateOrgVariable(ctx, org, name, value, "selected", selectedRepoIDs)
+}
 
-	// Try PATCH first (update existing).
-	patchPayload := map[string]any{
-		"value":                   value,
-		"visibility":              "selected",
-		"selected_repository_ids": selectedRepoIDs,
-	}
+// CreateOrUpdateOrgVariableAll creates or updates an org-level Actions variable
+// visible to all repositories in the org (visibility all).
+func (c *LiveClient) CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error {
+	return c.createOrUpdateOrgVariable(ctx, org, name, value, "all", nil)
+}
 
-	resp, err := c.patch(ctx, fmt.Sprintf("/orgs/%s/actions/variables/%s", org, name), patchPayload)
+func (c *LiveClient) createOrUpdateOrgVariable(ctx context.Context, org, name, value, visibility string, selectedRepoIDs []int64) error {
+	resp, err := c.patch(ctx, fmt.Sprintf("/orgs/%s/actions/variables/%s", org, name), orgVariableBody("", value, visibility, selectedRepoIDs))
 	if err == nil {
 		resp.Body.Close()
 		return nil
 	}
 
-	// If the variable doesn't exist (404), create it.
 	if !isNotFound(err) {
 		return fmt.Errorf("update org variable %s: %w", name, err)
 	}
 
-	createPayload := map[string]any{
-		"name":                    name,
-		"value":                   value,
-		"visibility":              "selected",
-		"selected_repository_ids": selectedRepoIDs,
-	}
-	resp2, err := c.post(ctx, fmt.Sprintf("/orgs/%s/actions/variables", org), createPayload)
+	resp2, err := c.post(ctx, fmt.Sprintf("/orgs/%s/actions/variables", org), orgVariableBody(name, value, visibility, selectedRepoIDs))
 	if err != nil {
 		return fmt.Errorf("create org variable %s: %w", name, err)
 	}
@@ -2219,24 +2843,86 @@ func (c *LiveClient) CreateOrUpdateOrgVariable(ctx context.Context, org, name, v
 	return nil
 }
 
+// orgVariableBody builds a GitHub org Actions variable request body.
+// name is included only for create (POST) requests.
+func orgVariableBody(name, value, visibility string, selectedRepoIDs []int64) map[string]any {
+	body := map[string]any{
+		"value":      value,
+		"visibility": visibility,
+	}
+	if name != "" {
+		body["name"] = name
+	}
+	if visibility == "selected" {
+		if selectedRepoIDs == nil {
+			selectedRepoIDs = []int64{}
+		}
+		body["selected_repository_ids"] = selectedRepoIDs
+	}
+	return body
+}
+
 // OrgVariableExists checks if an org-level variable exists.
 func (c *LiveClient) OrgVariableExists(ctx context.Context, org, name string) (bool, error) {
+	_, exists, err := c.GetOrgVariable(ctx, org, name)
+	return exists, err
+}
+
+// GetOrgVariable reads an org-level Actions variable value.
+func (c *LiveClient) GetOrgVariable(ctx context.Context, org, name string) (string, bool, error) {
 	resp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/orgs/%s/actions/variables/%s", org, name), nil)
 	if err != nil {
-		return false, fmt.Errorf("check org variable %s: %w", name, err)
+		return "", false, fmt.Errorf("get org variable %s: %w", name, err)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		return true, nil
+		var varResp struct {
+			Name  string `json:"name"`
+			Value string `json:"value"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&varResp); err != nil {
+			return "", false, fmt.Errorf("decoding org variable %s: %w", name, err)
+		}
+		return varResp.Value, true, nil
 	case http.StatusNotFound:
-		return false, nil
+		return "", false, nil
 	case http.StatusForbidden:
-		return false, &APIError{StatusCode: http.StatusForbidden, Message: "insufficient permissions to check org variable (missing admin:org scope?)"}
+		return "", false, &APIError{StatusCode: http.StatusForbidden, Message: "insufficient permissions to read org variable (missing admin:org scope?)"}
 	default:
-		return false, &APIError{StatusCode: resp.StatusCode, Message: "unexpected status checking org variable"}
+		return "", false, &APIError{StatusCode: resp.StatusCode, Message: "unexpected status reading org variable"}
 	}
+}
+
+// ListOrgVariables lists org-level Actions variables (paginated).
+func (c *LiveClient) ListOrgVariables(ctx context.Context, org string) ([]forge.OrgVariable, error) {
+	var all []forge.OrgVariable
+	page := 1
+	for {
+		path := fmt.Sprintf("/orgs/%s/actions/variables?per_page=100&page=%d", org, page)
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list org variables: %w", err)
+		}
+
+		var result struct {
+			Variables  []forge.OrgVariable `json:"variables"`
+			TotalCount int                 `json:"total_count"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			resp.Body.Close()
+			return nil, fmt.Errorf("decoding org variables: %w", err)
+		}
+		resp.Body.Close()
+
+		all = append(all, result.Variables...)
+		if len(all) >= result.TotalCount || len(result.Variables) == 0 {
+			break
+		}
+		page++
+	}
+	return all, nil
 }
 
 // DeleteOrgVariable deletes an org-level variable. It is idempotent: a 404

@@ -96,6 +96,15 @@ func (n *Notifier) HasClientFactory() bool {
 	return n.clientFactory != nil
 }
 
+// InvokeClientFactory calls the configured factory and returns the result.
+// Useful for verifying factory wiring in tests without triggering API calls.
+func (n *Notifier) InvokeClientFactory(ctx context.Context) (forge.Client, error) {
+	if n.clientFactory == nil {
+		return nil, fmt.Errorf("no client factory configured")
+	}
+	return n.clientFactory(ctx)
+}
+
 // refreshClient replaces n.client with a freshly minted client when a
 // factory is configured. Returns an error only if the factory itself fails.
 func (n *Notifier) refreshClient(ctx context.Context) error {

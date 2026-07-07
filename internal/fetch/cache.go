@@ -156,11 +156,12 @@ func validateCachePath(workspaceRoot, dir string) error {
 
 // DirCacheEntry is metadata for a cached directory resource (e.g., a skill).
 type DirCacheEntry struct {
-	URL       string         `json:"url"`
-	FetchTime time.Time      `json:"fetch_time"`
-	SHA256    string         `json:"sha256"` // tree hash
-	Type      string         `json:"type"`   // always "directory"
-	Files     []DirFileEntry `json:"files"`
+	URL         string         `json:"url"`
+	FetchTime   time.Time      `json:"fetch_time"`
+	SHA256      string         `json:"sha256"` // tree hash
+	Type        string         `json:"type"`   // always "directory"
+	Files       []DirFileEntry `json:"files"`
+	FullListing bool           `json:"full_listing,omitempty"` // true when fetched via ForgeClient directory listing
 }
 
 // DirFileEntry records one file within a cached directory tree.
@@ -183,6 +184,11 @@ func ComputeTreeHash(files map[string][]byte) string {
 	return ComputeSHA256([]byte(joined))
 }
 
+// DirCachePutOpts controls optional behavior for CachePutDir.
+type DirCachePutOpts struct {
+	FullListing bool // mark entry as fetched via directory listing (not single-file fallback)
+}
+
 // CachePutDir stores a directory tree in the content-addressed cache.
 // files maps relative paths to their content bytes. Returns the computed
 // tree hash. The directory is stored under:
@@ -190,7 +196,7 @@ func ComputeTreeHash(files map[string][]byte) string {
 //	<workspaceRoot>/.fullsend-cache/resources/sha256/<treeHash>/tree/<path>
 //
 // Uses atomic file writes within the tree directory.
-func CachePutDir(workspaceRoot, url string, files map[string][]byte) (string, error) {
+func CachePutDir(workspaceRoot, url string, files map[string][]byte, opts ...DirCachePutOpts) (string, error) {
 	if len(files) == 0 {
 		return "", fmt.Errorf("cannot cache empty directory")
 	}
@@ -242,12 +248,17 @@ func CachePutDir(workspaceRoot, url string, files map[string][]byte) (string, er
 	})
 
 	// Write metadata.
+	var fullListing bool
+	if len(opts) > 0 {
+		fullListing = opts[0].FullListing
+	}
 	entry := DirCacheEntry{
-		URL:       url,
-		FetchTime: time.Now().UTC(),
-		SHA256:    treeHash,
-		Type:      "directory",
-		Files:     fileEntries,
+		URL:         url,
+		FetchTime:   time.Now().UTC(),
+		SHA256:      treeHash,
+		Type:        "directory",
+		Files:       fileEntries,
+		FullListing: fullListing,
 	}
 	metadataBytes, err := json.MarshalIndent(entry, "", "  ")
 	if err != nil {

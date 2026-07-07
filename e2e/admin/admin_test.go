@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,7 +18,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/playwright-community/playwright-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -31,7 +31,6 @@ import (
 type e2eEnv struct {
 	cfg           envConfig
 	org           string // the org acquired from the pool
-	page          playwright.Page
 	client        *gh.LiveClient
 	token         string
 	runID         string
@@ -39,8 +38,7 @@ type e2eEnv struct {
 	binary        string
 }
 
-// setupE2ETest performs the common Playwright, login, PAT, lock, and cleanup
-// steps. Returns the shared env.
+// setupE2ETest performs lock acquisition, cleanup, and shared test setup.
 func setupE2ETest(t *testing.T) *e2eEnv {
 	t.Helper()
 	if testing.Short() {
@@ -54,72 +52,28 @@ func setupE2ETest(t *testing.T) *e2eEnv {
 	}
 	_ = os.MkdirAll(screenshotDir, 0o755)
 
-	// Build CLI binary early so we fail fast on compilation errors.
 	binary := buildCLIBinary(t)
 
-	// --- Playwright setup ---
-	pw, err := playwright.Run()
-	require.NoError(t, err, "starting Playwright")
-	t.Cleanup(func() {
-		if stopErr := pw.Stop(); stopErr != nil {
-			t.Logf("warning: could not stop Playwright: %v", stopErr)
-		}
-	})
-
-	browser, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
-		Headless: playwright.Bool(os.Getenv("E2E_HEADED") != "true"),
-	})
-	require.NoError(t, err, "launching Playwright browser")
-	t.Cleanup(func() { _ = browser.Close() })
-
-	// Load pre-authenticated session via storageState (ADR 0010).
-	t.Logf("Loading browser session from %s", cfg.sessionFile)
-	browserCtx, err := browser.NewContext(playwright.BrowserNewContextOptions{
-		StorageStatePath: playwright.String(cfg.sessionFile),
-	})
-	require.NoError(t, err, "creating browser context with storageState")
-	t.Cleanup(func() { _ = browserCtx.Close() })
-
-	page, err := browserCtx.NewPage()
-	require.NoError(t, err, "creating Playwright page")
-
-	// Verify the session is valid by navigating to a page that requires auth.
-	err = verifyGitHubSession(page, screenshotDir, t.Logf)
-	require.NoError(t, err, "verifying GitHub session — session may be expired, re-export it locally")
-
-	// Generate a PAT for API access.
-	patNote := fmt.Sprintf("fullsend-e2e-%d", time.Now().Unix())
-	t.Logf("Creating PAT: %s", patNote)
-	token, err := createPAT(page, patNote, cfg.password, cfg.totpSecret, screenshotDir, t.Logf)
-	require.NoError(t, err, "creating PAT")
-	t.Cleanup(func() {
-		t.Log("Deleting PAT...")
-		if delErr := deletePAT(page, patNote, t.Logf); delErr != nil {
-			t.Logf("warning: could not delete PAT: %v", delErr)
-		}
-	})
-
-	// --- GitHub client ---
-	client := newLiveClient(token)
-
-	// Acquire an org from the pool.
 	runID := uuid.New().String()
 	t.Logf("E2E run ID: %s", runID)
 
-	org, err := acquireOrg(context.Background(), client, token, runID, orgPool, cfg.lockTimeout, t.Logf)
+	org, token, err := acquireOrg(context.Background(), cfg, runID, orgPool, cfg.lockTimeout, t.Logf)
+	if errors.Is(err, errAllOrgsRateLimited) {
+		t.Skipf("skipping: GitHub API rate limits exhausted on all pool orgs: %v", err)
+	}
 	require.NoError(t, err, "acquiring org from pool")
 	t.Logf("Acquired org: %s", org)
+
+	client := newLiveClient(token)
 	t.Cleanup(func() {
 		releaseLock(context.Background(), client, org, runID, t)
 	})
 
-	// Teardown-first cleanup.
 	cleanupStaleResources(context.Background(), client, token, org, t)
 
 	return &e2eEnv{
 		cfg:           cfg,
 		org:           org,
-		page:          page,
 		client:        client,
 		token:         token,
 		runID:         runID,
@@ -141,32 +95,71 @@ func TestAdminInstallUninstall(t *testing.T) {
 		"--mint-url", env.cfg.mintURL,
 		"--app-set", e2eAppSet,
 		"--enroll-all",
-		"--vendor-fullsend-binary",
+		"--vendor",
 	}
 	if env.cfg.gcpProjectID != "" {
 		installArgs = append(installArgs, "--inference-project", env.cfg.gcpProjectID)
 	}
+	// Mint installation tokens authenticate as the App bot, not the org owner.
+	// The default PR path forks within the org and fails PR creation (422) in CI.
+	// Direct push still exercises install; PR-based delivery is covered on main
+	// and in local runs with a user token (gh auth login).
+	useDirectScaffold := env.cfg.useMint
+	if useDirectScaffold {
+		installArgs = append(installArgs, "--direct")
+	}
 	runCLI(t, env.binary, env.token, installArgs...)
 
-	// Verify install artifacts.
+	// Verify install artifacts that exist regardless of delivery mode.
 	_, err := env.client.GetRepo(ctx, env.org, forge.ConfigRepoName)
 	require.NoError(t, err, ".fullsend repo should exist")
 	mintURLExists, err := env.client.OrgVariableExists(ctx, env.org, "FULLSEND_MINT_URL")
 	require.NoError(t, err)
 	require.True(t, mintURLExists, "FULLSEND_MINT_URL org variable should exist")
+
+	// Register .fullsend cleanup (in case later phases fail).
+	registerRepoCleanup(t, env.client, env.org, forge.ConfigRepoName)
+
+	if !useDirectScaffold {
+		// Phase 1.5: Merge the scaffold PR.
+		// Default install mode creates a PR instead of pushing directly.
+		// Merge it so scaffold files land on the default branch.
+		t.Log("=== Phase 1.5: Merge Scaffold PR ===")
+		mergeScaffoldPR(t, env)
+	}
+
+	// Verify scaffold files on the default branch after merge.
 	cfgData, err := env.client.GetFileContent(ctx, env.org, forge.ConfigRepoName, "config.yaml")
 	require.NoError(t, err, "config.yaml should exist")
 	parsedCfg, err := config.ParseOrgConfig(cfgData)
 	require.NoError(t, err, "config.yaml should parse")
 	require.Len(t, parsedCfg.Defaults.Roles, len(defaultRoles), "should have %d roles", len(defaultRoles))
-	analyzeOutput := runCLI(t, env.binary, env.token, "admin", "analyze", env.org)
+	_, err = env.client.GetFileContent(ctx, env.org, forge.ConfigRepoName, ".defaults/action.yml")
+	require.NoError(t, err, "vendored marker .defaults/action.yml should exist")
+	_, err = env.client.GetFileContent(ctx, env.org, forge.ConfigRepoName, layers.VendoredBinaryPath)
+	require.NoError(t, err, "vendored binary should exist at %s", layers.VendoredBinaryPath)
+	// Retry analyze with backoff to handle transient 401s from GitHub
+	// propagation delays after repo creation (see #2490).
+	var analyzeOutput string
+	for attempt := range 3 {
+		if attempt > 0 {
+			delay := time.Duration(attempt*10) * time.Second
+			t.Logf("Analyze attempt %d failed, retrying in %s...", attempt, delay)
+			time.Sleep(delay)
+		}
+		out, analyzeErr := tryRunCLI(t, env.binary, env.token, "admin", "analyze", env.org)
+		if analyzeErr == nil {
+			analyzeOutput = out
+			break
+		}
+		if attempt == 2 {
+			t.Fatalf("admin analyze failed after %d attempts: %v", attempt+1, analyzeErr)
+		}
+	}
 	t.Logf("Analyze output:\n%s", analyzeOutput)
 
-	// Agent runtime files exist (from scaffold).
-	// ADR 35: only non-layered, non-upstream-only files are installed.
-	// Layered dirs (agents/, skills/, schemas/, harness/, plugins/, policies/,
-	// scripts/, env/) and upstream-only dirs (.github/actions/, .github/scripts/) are
-	// provided at runtime via sparse checkout in reusable workflows.
+	// Standalone install vendors reusable workflows, actions, and agent content
+	// at install time so e2e exercises the commit-built CLI, not upstream @v0.
 	for _, path := range []string{
 		".github/workflows/triage.yml",
 		".github/workflows/code.yml",
@@ -176,6 +169,10 @@ func TestAdminInstallUninstall(t *testing.T) {
 		".github/workflows/repo-maintenance.yml",
 		".github/workflows/prioritize.yml",
 		".github/workflows/prioritize-scheduler.yml",
+		".github/workflows/reusable-triage.yml",
+		".defaults/internal/scaffold/fullsend-repo/agents/triage.md",
+		".defaults/.github/actions/mint-token/action.yml",
+		".defaults/action.yml",
 		"customized/agents/.gitkeep",
 		"customized/skills/.gitkeep",
 		"customized/schemas/.gitkeep",
@@ -191,15 +188,36 @@ func TestAdminInstallUninstall(t *testing.T) {
 		assert.NoError(t, err, "%s should exist in .fullsend", path)
 	}
 
-	// Register .fullsend cleanup (in case later phases fail).
-	registerRepoCleanup(t, env.client, env.org, forge.ConfigRepoName)
+	// Phase 1.75: Wait for repo-maintenance to run.
+	// Merging the scaffold PR pushes config.yaml to main, which triggers
+	// repo-maintenance.yml via its on-push handler. Verify it completes
+	// successfully — this is what creates the enrollment PR.
+	t.Log("=== Phase 1.75: Verify Repo-Maintenance Run ===")
+	awaitRepoMaintenance(t, env)
 
 	// Phase 2: Merge enrollment PR.
 	t.Log("=== Phase 2: Merge Enrollment PR ===")
 	mergeEnrollmentPR(t, env)
 
 	// Phase 3: Triage dispatch smoke test.
+	// Verify the shim workflow is present on the default branch before
+	// creating the test issue. GitHub may take a few seconds after the
+	// merge to make the file available via the contents API (#2490).
 	t.Log("=== Phase 3: Triage Dispatch Smoke Test ===")
+	t.Log("Verifying shim workflow is on default branch...")
+	shimVerified := false
+	for attempt := range 5 {
+		if attempt > 0 {
+			time.Sleep(3 * time.Second)
+		}
+		_, shimErr := env.client.GetFileContent(ctx, env.org, testRepo, ".github/workflows/fullsend.yaml")
+		if shimErr == nil {
+			shimVerified = true
+			break
+		}
+		t.Logf("Attempt %d: shim workflow not yet visible on default branch: %v", attempt+1, shimErr)
+	}
+	require.True(t, shimVerified, "shim workflow should be on default branch before triage test")
 	runTriageDispatchSmokeTest(t, env)
 
 	// Phase 4: Unenrollment reconciliation.
@@ -226,22 +244,37 @@ func TestAdminInstallUninstall(t *testing.T) {
 
 // mergeEnrollmentPR finds and merges the enrollment PR for test-repo so the
 // shim workflow is active on the default branch.
-// The install CLI waits for repo-maintenance to complete, so the PR should
-// already exist. A few retries handle GitHub eventual consistency.
+// In PR-based install mode, enrollment is deferred: repo-maintenance triggers
+// on push when the scaffold PR is merged, so the enrollment PR may take up to
+// ~90s to appear (workflow trigger + execution + PR creation).
+//
+// When install runs with --enroll-all --direct, enrollment may already complete
+// during Phase 1 (shim on default branch or PR merged) before this helper runs.
 func mergeEnrollmentPR(t *testing.T, env *e2eEnv) {
 	t.Helper()
 	ctx := context.Background()
 
+	const enrollPRTitle = "chore: connect to fullsend agent pipeline"
+
+	if _, err := env.client.GetFileContent(ctx, env.org, testRepo, ".github/workflows/fullsend.yaml"); err == nil {
+		t.Log("Shim workflow already on default branch — enrollment complete")
+		return
+	}
+
 	var enrollmentPR *forge.ChangeProposal
-	for attempt := range 5 {
+	for attempt := range 30 {
 		if attempt > 0 {
-			time.Sleep(3 * time.Second)
+			time.Sleep(5 * time.Second)
+		}
+		if _, err := env.client.GetFileContent(ctx, env.org, testRepo, ".github/workflows/fullsend.yaml"); err == nil {
+			t.Log("Shim workflow appeared on default branch — enrollment complete")
+			return
 		}
 		prs, err := env.client.ListRepoPullRequests(ctx, env.org, testRepo)
 		require.NoError(t, err, "listing PRs for %s", testRepo)
 
 		for _, pr := range prs {
-			if strings.Contains(pr.Title, "fullsend") {
+			if pr.Title == enrollPRTitle || strings.Contains(pr.Title, "fullsend") {
 				cp := pr
 				enrollmentPR = &cp
 				break
@@ -250,16 +283,190 @@ func mergeEnrollmentPR(t *testing.T, env *e2eEnv) {
 		if enrollmentPR != nil {
 			break
 		}
-		t.Logf("Attempt %d: enrollment PR not yet visible", attempt+1)
+		t.Logf("Attempt %d: enrollment PR not yet visible for repository '%s/%s'", attempt+1, env.org, testRepo)
 	}
-	require.NotNil(t, enrollmentPR, "enrollment PR should exist for %s", testRepo)
+	require.NotNil(t, enrollmentPR, "enrollment PR should exist for %s/%s", env.org, testRepo)
 
 	t.Logf("Merging enrollment PR #%d: %s", enrollmentPR.Number, enrollmentPR.URL)
-	err := env.client.MergeChangeProposal(ctx, env.org, testRepo, enrollmentPR.Number)
-	require.NoError(t, err, "merging enrollment PR")
+
+	// Retry the merge up to 3 times to handle 409 "Head branch is out of date"
+	// errors that occur when the base branch advances between PR creation and
+	// the merge attempt (e.g., from a reconcile workflow push).
+	const mergeRetries = 3
+	var mergeErr error
+	for attempt := range mergeRetries {
+		mergeErr = env.client.MergeChangeProposal(ctx, env.org, testRepo, enrollmentPR.Number)
+		if mergeErr == nil {
+			break
+		}
+
+		var apiErr *gh.APIError
+		if !errors.As(mergeErr, &apiErr) || apiErr.StatusCode != http.StatusConflict {
+			break // not a 409, fail immediately
+		}
+
+		t.Logf("Merge attempt %d: 409 conflict, updating PR branch and retrying", attempt+1)
+		if updateErr := env.client.UpdatePullRequestBranch(ctx, env.org, testRepo, enrollmentPR.Number); updateErr != nil {
+			t.Logf("Warning: could not update PR branch: %v", updateErr)
+		}
+
+		// Wait for GitHub to process the branch update before retrying.
+		time.Sleep(5 * time.Second)
+	}
+	require.NoError(t, mergeErr, "merging enrollment PR")
 
 	time.Sleep(5 * time.Second)
 	t.Log("Enrollment PR merged")
+}
+
+// mergeScaffoldPR finds and merges the scaffold PR on the .fullsend config
+// repo. In default (PR-based) install mode, scaffold files land on a feature
+// branch and a PR is opened; this helper merges it so subsequent assertions
+// can verify files on the default branch.
+func mergeScaffoldPR(t *testing.T, env *e2eEnv) {
+	t.Helper()
+	ctx := context.Background()
+
+	var scaffoldPR *forge.ChangeProposal
+	for attempt := range 5 {
+		if attempt > 0 {
+			time.Sleep(3 * time.Second)
+		}
+		prs, err := env.client.ListRepoPullRequests(ctx, env.org, forge.ConfigRepoName)
+		require.NoError(t, err, "listing PRs for %s", forge.ConfigRepoName)
+
+		for _, pr := range prs {
+			if strings.Contains(pr.Title, "scaffold files") {
+				cp := pr
+				scaffoldPR = &cp
+				break
+			}
+		}
+		if scaffoldPR != nil {
+			break
+		}
+		t.Logf("Attempt %d: scaffold PR not yet visible", attempt+1)
+	}
+	require.NotNil(t, scaffoldPR, "scaffold PR should exist for %s/%s", env.org, forge.ConfigRepoName)
+
+	t.Logf("Merging scaffold PR #%d: %s", scaffoldPR.Number, scaffoldPR.URL)
+
+	const mergeRetries = 3
+	var mergeErr error
+	for attempt := range mergeRetries {
+		mergeErr = env.client.MergeChangeProposal(ctx, env.org, forge.ConfigRepoName, scaffoldPR.Number)
+		if mergeErr == nil {
+			break
+		}
+
+		var apiErr *gh.APIError
+		if !errors.As(mergeErr, &apiErr) || apiErr.StatusCode != http.StatusConflict {
+			break
+		}
+
+		t.Logf("Merge attempt %d: 409 conflict, updating PR branch and retrying", attempt+1)
+		if updateErr := env.client.UpdatePullRequestBranch(ctx, env.org, forge.ConfigRepoName, scaffoldPR.Number); updateErr != nil {
+			t.Logf("Warning: could not update PR branch: %v", updateErr)
+		}
+
+		time.Sleep(5 * time.Second)
+	}
+	require.NoError(t, mergeErr, "merging scaffold PR")
+
+	time.Sleep(5 * time.Second)
+	t.Log("Scaffold PR merged")
+}
+
+// awaitRepoMaintenance waits for the repo-maintenance workflow to complete on
+// the .fullsend config repo. In PR-based install mode, this workflow triggers
+// on push when the scaffold PR is merged and creates the enrollment PR.
+//
+// GitHub may take time to register the workflow file after it first appears on
+// the default branch. If the push-triggered run doesn't appear within a
+// reasonable window, we dispatch the workflow manually as a fallback.
+func awaitRepoMaintenance(t *testing.T, env *e2eEnv) {
+	t.Helper()
+	ctx := context.Background()
+
+	const workflowFile = "repo-maintenance.yml"
+
+	// Capture before registration wait so push-triggered runs that start
+	// during the wait are not filtered out as stale.
+	dispatchTime := time.Now().UTC().Add(-30 * time.Second)
+
+	// Wait for GitHub to register the workflow (up to 2 minutes).
+	t.Log("Waiting for repo-maintenance workflow registration...")
+	var registered bool
+	for attempt := range 24 {
+		if attempt > 0 {
+			time.Sleep(5 * time.Second)
+		}
+		wf, err := env.client.GetWorkflow(ctx, env.org, forge.ConfigRepoName, workflowFile)
+		if err == nil && wf.State == "active" {
+			t.Logf("repo-maintenance workflow registered (attempt %d)", attempt+1)
+			registered = true
+			break
+		}
+		if attempt%5 == 4 {
+			t.Logf("Attempt %d: workflow not yet registered", attempt+1)
+		}
+	}
+	require.True(t, registered, "repo-maintenance workflow should be registered")
+	runs, err := env.client.ListWorkflowRuns(ctx, env.org, forge.ConfigRepoName, workflowFile)
+	hasRecentRun := false
+	if err == nil {
+		for _, run := range runs {
+			created, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+			if parseErr != nil {
+				continue
+			}
+			if !created.Before(dispatchTime) {
+				hasRecentRun = true
+				t.Logf("Found recent workflow run: %s (%s)", run.HTMLURL, run.Status)
+				break
+			}
+		}
+	}
+	if !hasRecentRun {
+		t.Log("No recent push-triggered run found, dispatching repo-maintenance manually")
+		require.NoError(t,
+			env.client.DispatchWorkflow(ctx, env.org, forge.ConfigRepoName, workflowFile, "main", nil),
+			"dispatching repo-maintenance")
+	}
+
+	// Wait for the workflow run to complete (up to 3 minutes).
+	for attempt := range 36 {
+		if attempt > 0 {
+			time.Sleep(5 * time.Second)
+		}
+		runs, err := env.client.ListWorkflowRuns(ctx, env.org, forge.ConfigRepoName, workflowFile)
+		if err != nil {
+			t.Logf("Attempt %d: error listing workflow runs: %v", attempt+1, err)
+			continue
+		}
+
+		for _, run := range runs {
+			created, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+			if parseErr != nil {
+				continue
+			}
+			if created.Before(dispatchTime) {
+				continue
+			}
+			if run.Status == "completed" {
+				require.Equal(t, "success", run.Conclusion,
+					"repo-maintenance run should succeed (run: %s)", run.HTMLURL)
+				t.Logf("Repo-maintenance completed: %s", run.HTMLURL)
+				return
+			}
+			t.Logf("Attempt %d: repo-maintenance run %s (%s)", attempt+1, run.HTMLURL, run.Status)
+			break
+		}
+		if attempt%5 == 4 {
+			t.Logf("Attempt %d: still waiting for repo-maintenance to complete", attempt+1)
+		}
+	}
+	t.Fatal("repo-maintenance workflow did not complete within timeout")
 }
 
 func runTriageDispatchSmokeTest(t *testing.T, env *e2eEnv) {
@@ -297,9 +504,15 @@ Segmentation fault (core dumped)
 **Additional context:**
 This started happening after the v2.3.0 -> v2.3.1 upgrade. Files under 64KB save fine.
 Files over 64KB save fine if they contain only ASCII characters.`
+	// Bot-authored issues skip issues.opened dispatch (ADR 0054). Apply
+	// ready-for-triage in a follow-up call so the shim receives issues.labeled
+	// (#2636).
 	issue, err := env.client.CreateIssue(ctx, env.org, testRepo, issueTitle, issueBody)
 	require.NoError(t, err, "creating test issue")
 	t.Logf("Created test issue #%d: %s", issue.Number, issue.URL)
+	require.NoError(t, ensureRepoLabel(ctx, env.token, env.org, testRepo, "ready-for-triage"))
+	triggerTime := time.Now()
+	require.NoError(t, addIssueLabel(ctx, env.token, env.org, testRepo, issue.Number, "ready-for-triage"))
 	t.Cleanup(func() {
 		t.Log("Closing test issue...")
 		if closeErr := env.client.CloseIssue(ctx, env.org, testRepo, issue.Number); closeErr != nil {
@@ -308,11 +521,10 @@ Files over 64KB save fine if they contain only ASCII characters.`
 	})
 
 	// Wait for the triage workflow to be dispatched in .fullsend.
-	// The shim fires on issues:opened and dispatches to triage.yml.
-	// The shim typically fires within ~5s of the issue being created,
+	// The shim fires on issues.labeled with ready-for-triage and dispatches to triage.yml.
+	// The shim typically fires within ~5s of the label being applied,
 	// so 12 attempts at 5s intervals (60s total) is generous.
 	// Filter by CreatedAt to avoid false positives from previous runs.
-	issueCreatedAt := time.Now()
 	t.Log("Waiting for triage workflow to be dispatched...")
 	var triageRun *forge.WorkflowRun
 	for attempt := 0; attempt < 12; attempt++ {
@@ -328,7 +540,7 @@ Files over 64KB save fine if they contain only ASCII characters.`
 				t.Logf("Attempt %d: run %d has unparseable CreatedAt %q: %v", attempt+1, run.ID, run.CreatedAt, parseErr)
 				continue
 			}
-			if runTime.Before(issueCreatedAt) {
+			if runTime.Before(triggerTime) {
 				t.Logf("Attempt %d: run %d created at %s is from before our issue, skipping", attempt+1, run.ID, run.CreatedAt)
 				continue
 			}
@@ -596,7 +808,7 @@ func runUnenrollmentTest(t *testing.T, env *e2eEnv) {
 	// watches the repo-maintenance workflow to completion before returning,
 	// so the removal PR should already exist when this returns.
 	output := runCLI(t, env.binary, env.token,
-		"admin", "disable", "repos", env.org, testRepo, "--yolo")
+		"admin", "disable", "repos", env.org, testRepo, "--yolo", "--direct")
 	t.Logf("Disable repos output:\n%s", output)
 
 	// Always capture the repo-maintenance run's logs. Even when the run
@@ -653,7 +865,7 @@ func runUnenrollmentTest(t *testing.T, env *e2eEnv) {
 	t.Log("Verified shim is gone")
 }
 
-// TestVendorFromSubdirectory verifies that --vendor-fullsend-binary cross-compiles
+// TestVendorFromSubdirectory verifies that --vendor cross-compiles
 // when the CLI is run from a subdirectory inside the module (GOMOD discovery).
 func TestVendorFromSubdirectory(t *testing.T) {
 	env := setupE2ETest(t)
@@ -667,7 +879,8 @@ func TestVendorFromSubdirectory(t *testing.T) {
 		"--mint-url", env.cfg.mintURL,
 		"--app-set", e2eAppSet,
 		"--enroll-none",
-		"--vendor-fullsend-binary",
+		"--vendor",
+		"--direct",
 	}
 	runCLIFromDir(t, env.binary, env.token, subdir, installArgs...)
 

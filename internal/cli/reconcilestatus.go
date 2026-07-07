@@ -13,7 +13,8 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/statuscomment"
 )
 
-var newForgeClient = func(token string) forge.Client {
+var reconcileMintToken = mintclient.MintToken
+var reconcileNewForgeClient = func(token string) forge.Client {
 	return gh.New(token)
 }
 
@@ -27,7 +28,6 @@ func newReconcileStatusCmd() *cobra.Command {
 		reason  string
 		mintURL string
 		role    string
-		token   string // deprecated: use mintURL
 	)
 
 	cmd := &cobra.Command{
@@ -57,29 +57,27 @@ finalized, this is a no-op.`,
 				mintURL = os.Getenv("FULLSEND_MINT_URL")
 			}
 
-			var client forge.Client
-			if mintURL != "" {
-				if role == "" {
-					return fmt.Errorf("--role is required when using --mint-url")
-				}
-				result, err := mintclient.MintToken(cmd.Context(), mintclient.MintRequest{
-					MintURL: mintURL,
-					Role:    resolveRole(role),
-					Repos:   []string{repoName},
-				})
-				if err != nil {
-					return fmt.Errorf("minting status token: %w", err)
-				}
-				if os.Getenv("GITHUB_ACTIONS") == "true" && mintTokenPattern.MatchString(result.Token) {
-					fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
-				}
-				client = newForgeClient(result.Token)
-			} else if token != "" {
-				fmt.Fprintf(os.Stderr, "WARNING: --token is deprecated; use --mint-url instead\n")
-				client = newForgeClient(token)
-			} else {
-				return fmt.Errorf("--mint-url or FULLSEND_MINT_URL required (--token is deprecated)")
+			if mintURL == "" {
+				return fmt.Errorf("--mint-url or FULLSEND_MINT_URL required")
 			}
+			if role == "" {
+				return fmt.Errorf("--role is required when using --mint-url")
+			}
+			result, err := reconcileMintToken(cmd.Context(), mintclient.MintRequest{
+				MintURL: mintURL,
+				Role:    resolveRole(role),
+				Repos:   []string{repoName},
+			})
+			if err != nil {
+				return fmt.Errorf("minting status token: %w", err)
+			}
+			if !mintTokenPattern.MatchString(result.Token) {
+				return fmt.Errorf("minted status token contains unexpected characters")
+			}
+			if os.Getenv("GITHUB_ACTIONS") == "true" {
+				fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
+			}
+			client := reconcileNewForgeClient(result.Token)
 
 			var termReason statuscomment.TerminationReason
 			switch reason {
@@ -100,9 +98,6 @@ finalized, this is a no-op.`,
 	cmd.Flags().StringVar(&reason, "reason", "terminated", "termination reason: terminated or cancelled")
 	cmd.Flags().StringVar(&mintURL, "mint-url", "", "mint service URL for on-demand token (default: $FULLSEND_MINT_URL)")
 	cmd.Flags().StringVar(&role, "role", "", "agent role for minting (required with --mint-url)")
-	cmd.Flags().StringVar(&token, "token", "", "DEPRECATED: use --mint-url instead")
-	_ = cmd.Flags().MarkDeprecated("token", "use --mint-url instead")
-	_ = cmd.Flags().MarkHidden("token")
 	_ = cmd.MarkFlagRequired("repo")
 	_ = cmd.MarkFlagRequired("number")
 	_ = cmd.MarkFlagRequired("run-id")

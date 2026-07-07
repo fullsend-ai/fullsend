@@ -118,9 +118,9 @@ loader that sources `.env.d/*.env`. Application configuration is delivered via
 are available only to pre/post scripts and never enter the sandbox.
 
 **Credentials: providers reconciled on the gateway.** Credential delivery follows
-the four-tier model in
+the four-tier credential delivery model in
 [ADR 0025](0025-provider-credential-delivery-for-sandboxed-agents.md). For
-tiers that use OpenShell providers, the runner reconciles them before sandbox
+credential delivery tiers that use OpenShell providers, the runner reconciles them before sandbox
 creation: it loads provider definitions from the harness's `providers/`
 directory and calls `openshell provider create --name <n> --type <t>
 --credential <KEY>` for each one. Credentials use the bare-key form — secret
@@ -131,7 +131,7 @@ Providers are then attached to the sandbox via `--provider <name>` flags on
 real credentials at the HTTP proxy layer, so credentials never enter the
 sandbox. For auth flows incompatible with the provider placeholder model
 (e.g. GCP Vertex AI file-based auth), host files deliver credential files
-directly (tier 4).
+directly (credential delivery tier 4).
 
 **Files and binaries: SCP + images (Options A + B).** Agent definitions, skills,
 host files, and security hooks are SCP'd during bootstrap. Tool binaries and

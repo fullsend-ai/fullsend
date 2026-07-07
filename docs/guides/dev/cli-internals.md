@@ -16,6 +16,8 @@ fullsend
 │       └── repos    <org> [repo...]         # Disable agent on repos
 ├── mint                                     # Token mint management
 │   ├── deploy                               # Deploy/update mint Cloud Function
+│   ├── add-role       <role>                # Register role PEM + ROLE_APP_IDS entry
+│   ├── remove-role    <role>                # Remove role from mint
 │   ├── enroll       <org|owner/repo>        # Register org/repo in mint
 │   ├── unenroll     <org|owner/repo>        # Remove org/repo from mint
 │   ├── status       [org]                   # Inspect mint state and PEM health
@@ -36,6 +38,11 @@ fullsend
 │   ├── status       <org>                   # Analyze GitHub-side state
 │   ├── uninstall    <org>                   # Remove fullsend GitHub configuration
 │   └── sync-scaffold <org>                  # Update workflow templates
+├── agent                                    # Manage agent registrations in config
+│   ├── add          <url-or-path>            # Register an agent (URL auto-pinned)
+│   ├── list                                  # List registered agents
+│   ├── update       <name> [sha]             # Re-pin URL agent to new commit SHA
+│   └── remove       <name>                   # Unregister agent from config
 ├── lock             [agent-name]              # Pin remote deps to lock.yaml
 │   ├── --all                                #   Lock all harnesses in the harness directory
 │   ├── --fullsend-dir <path>                #   Base directory with .fullsend layout
@@ -80,16 +87,18 @@ fullsend
 
 ### Command Decomposition
 
-The `admin install` command performs all setup in a single invocation. The `mint`, `inference`, and `github` subcommands break this into role-specific operations for organizations that separate GCP and GitHub responsibilities:
+The `mint`, `inference`, and `github` subcommands decompose setup into role-specific operations for organizations that separate GCP and GitHub responsibilities:
 
-| `admin install` Phase | Standalone Command | Required Access |
-|-----------------------|--------------------|-----------------|
+| Install Phase | Standalone Command | Required Access |
+|---------------|--------------------|-----------------|
 | Phases 1-3: Mint deployment | `fullsend mint deploy` | GCP project (mint): `roles/iam.serviceAccountAdmin`, `roles/iam.workloadIdentityPoolAdmin`, `roles/cloudfunctions.developer`, `roles/run.admin`; with `--pem-dir` also `roles/secretmanager.admin`, `roles/resourcemanager.projectIamAdmin` |
 | Phases 1-3: Mint enrollment | `fullsend mint enroll` | GCP project (mint): `roles/cloudfunctions.viewer`, `roles/run.admin`, `roles/iam.workloadIdentityPoolAdmin`; per-repo mode also needs `roles/resourcemanager.projectIamAdmin` |
 | Phase 4: WIF provisioning | `fullsend inference provision` | GCP project (inference): `roles/iam.workloadIdentityPoolAdmin`, `roles/resourcemanager.projectIamAdmin` |
 | Phases 5-7: GitHub setup + enrollment | `fullsend github setup` | GitHub only |
 
-The typical handoff: a GCP admin runs `mint deploy`, `mint enroll`, and `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`. See [Setting up with pre-provisioned infrastructure](../../reference/github-setup.md).
+The typical handoff: a GCP admin runs `mint deploy`, `mint enroll`, and `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`. See [Advanced setup](../infrastructure/advanced-setup.md).
+
+> **Note:** The legacy `admin install` command wraps all phases into a single invocation but is deprecated. The standalone commands above are the recommended path. See the [Unified Installation Flow](#unified-installation-flow) section below for how the phases are structured internally.
 
 ### Token Resolution Chain
 
@@ -134,7 +143,8 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │  a. Discover mint   --mint-url / --mint-project / default  │ │
 │  │     └─ DiscoverMint() → check if GCF exists, get URL      │ │
 │  │  b. Resolve existing app IDs from mint env vars            │ │
-│  │     └─ ROLE_APP_IDS → skip app creation if all present     │ │
+│  │     └─ ROLE_APP_IDS (role → app ID, shared) → skip app     │ │
+│  │        creation when all roles are present                 │ │
 │  └──────────┬─────────────────────────────────────────────────┘ │
 │             ▼                                                   │
 │  ┌────────────────────────────────────────────────────────────┐ │
@@ -177,11 +187,10 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │ Phase 5: Write scaffold + config files                     │ │
 │  │                                                            │ │
 │  │  Both modes: write workflow files + customized/ dirs       │ │
-│  │  CommitScaffoldFiles() handles protected-branch fallback:  │ │
-│  │    1. Try CommitFiles (default branch)                     │ │
-│  │    2. If ErrBranchProtected → create feature branch        │ │
-│  │    3. CommitFilesToBranch on feature branch                 │ │
-│  │    4. Open PR back to default branch                        │ │
+│  │  CommitScaffoldFiles() delivery modes:                      │ │
+│  │    Default (PR):  create feature branch → commit → open PR │ │
+│  │    --direct:      try CommitFiles (default branch)         │ │
+│  │      if ErrBranchProtected → fall back to PR mode          │ │
 │  │  ┌──────────────────────────────────────────┐              │ │
 │  │  │ Per-org:  create .fullsend config repo    │              │ │
 │  │  │           push reusable workflows         │              │ │
@@ -234,7 +243,7 @@ Both modes call the same functions (`runAppSetup`, `gcf.NewProvisioner`, `Provis
 | **2. App setup** | `runAppSetup()` → PEMs + App IDs | All 7 roles by default | Excludes "fullsend" role |
 | **3. Mint** | `gcf.Provision()` or `EnsureOrgInMint()` | — | + `RegisterPerRepoWIF()` |
 | **4. WIF** | `ProvisionWIF()` | Org-wide provider ID | `mintcore.BuildRepoProviderID()` (repo-scoped) |
-| **5. Scaffold** | `scaffold.PerRepoCustomizedDirs()` / `WalkFullsendRepo()` | Creates `.fullsend` repo, pushes workflows + optional binary | Writes `.fullsend/` dir + shim workflow + optional binary in target repo |
+| **5. Scaffold** | `repos.BuildScaffoldFiles()` (via `scaffold.CollectPerRepoInstallFiles()`) | Creates `.fullsend` repo, pushes workflows + optional binary | Writes `.fullsend/` dir + shim workflow + optional binary in target repo |
 | **6. Secrets** | Same secret names, same API calls | Config repo + org variable | Target repo + `PER_REPO_GUARD` |
 | **7. Enrollment** | — | `EnrollmentLayer` enables repos | No-op (self-contained) |
 
@@ -258,7 +267,7 @@ Install:      process 1→8 (forward)
 Uninstall:    process 8→1 (reverse)
 ```
 
-Per-repo mode does not use the layer stack — it runs the same phases inline in `runPerRepoInstall()` and `runGitHubSetupPerRepo()` since there's no need for composable uninstall ordering with a single repo. Binary vendoring (when `--vendor-fullsend-binary` is set) and stale binary cleanup are handled inline or via shared helpers; per-org mode uses `VendorBinaryLayer`.
+Per-repo mode does not use the layer stack — `runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (guard check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. There's no need for composable uninstall ordering with a single repo. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers; per-org mode uses `VendorBinaryLayer`.
 
 ### Binary acquisition (`internal/binary`)
 
@@ -270,7 +279,7 @@ Linux binary resolution for `fullsend run` and vendoring lives in `internal/bina
 | `ResolveForVendor` | Cross-compile → matching release (released CLI only) → fail (no latest) |
 | `ResolveExplicit` | Validate linux/{arch} ELF for `--fullsend-binary` |
 
-Vendoring commit messages use title + body (upload and stale delete). `admin analyze` reports stale vendored binaries at `bin/fullsend` or `.fullsend/bin/fullsend` without install-intent flags.
+Vendoring commit messages use title + body (upload and stale delete). `github status` reports stale vendored assets at `bin/fullsend` or `.fullsend/bin/fullsend` without install-intent flags.
 
 ---
 
@@ -392,6 +401,9 @@ SandboxWorkspace    = "/sandbox/workspace"
 SandboxClaudeConfig = "/sandbox/claude-config"
 ```
 
+For sandbox workspace layout, agent rule layering, and security scanning
+details, see [Agent runtimes](../../runtimes.md).
+
 ### Key Sandbox Operations
 
 | Operation | CLI Command | Purpose |
@@ -453,8 +465,10 @@ fullsend-repo/                      (embedded template)
 | Category | Installed? | Source | Purpose |
 |----------|-----------|--------|---------|
 | **Installed** | Yes | Scaffold → `.fullsend` repo | Workflows, configs, static files |
-| **Layered** | No (runtime) | Upstream reusable workflows | agents/, skills/, harness/, plugins/, policies/, scripts/, schemas/, env/ |
-| **Upstream-only** | No | Referenced directly | .github/actions/, .github/scripts/ |
+| **Layered** | No (runtime) or yes with `--vendor` | Upstream `@v0` sparse checkout, or vendored at install | agents/, skills/, harness/, plugins/, policies/, scripts/, schemas/, env/ |
+| **Upstream-only** | No (layered) or yes with `--vendor` | Referenced directly or vendored at install | .github/actions/, .github/scripts/ |
+
+Runtime skips upstream fetch when `.defaults/action.yml` is present (vendored); layered installs sparse-checkout `fullsend-ai/fullsend@v0` into `.defaults/`.
 
 ### File Mode Tracking
 
@@ -540,6 +554,7 @@ var executableFiles = map[string]struct{}{
 | `internal/cli/github.go` | ~966 | GitHub setup/set/status/uninstall/sync-scaffold/enroll/unenroll |
 | `internal/cli/run.go` | ~1923 | Agent execution lifecycle |
 | `internal/mint/main.go` | ~95 | GCF token mint entry point (wiring only) |
+| `cmd/mint/` | ~285 | Standalone mint server (no GCP dependency) |
 | `internal/mintcore/` | ~1425 | Shared mint library (handler, OIDC verifiers, GitHub API) |
 | `internal/dispatch/gcf/provisioner.go` | ~1959 | GCP infrastructure provisioner |
 | `internal/sandbox/sandbox.go` | ~459 | OpenShell sandbox operations |
@@ -556,8 +571,8 @@ var executableFiles = map[string]struct{}{
 ## See Also
 
 - [Running agents locally](../user/running-agents-locally.md) — Run agents locally (binary download, GCP credentials, per-agent env vars)
-- [Installing fullsend](../../reference/installation.md) — End-user setup and all-in-one admin install
-- [Setting up with pre-provisioned infrastructure](../../reference/github-setup.md) — GitHub-only setup guide
+- [Getting Started](../getting-started/) — Standard per-repo installation
+- [Advanced setup](../infrastructure/advanced-setup.md) — Alternative installation paths and setup flags
 - [Mint service administration](../infrastructure/mint-administration.md) — Deploying and managing the token mint
 - [Infrastructure Reference](../infrastructure/infrastructure-reference.md) — Infrastructure details
 - [Customizing Agents](../user/customizing-agents.md) — User customization guide

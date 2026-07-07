@@ -20,6 +20,10 @@ Date: 2026-04-07
 
 Accepted
 
+*Amended by [ADR 0055](0055-unified-env-var-delivery.md), which introduces a
+unified `env:` key with `runner`/`sandbox` sub-maps and deprecates `runner_env`
+and the manual `.env` file convention.*
+
 ## Context
 
 Each agent invocation requires configuration that ties together several moving
@@ -380,6 +384,7 @@ agent_input: <directory>
 # another agent, and where that agent runs, is an open question.
 validation_loop:
   script: scripts/<validate>.sh     # exit 0 = pass, non-zero = retry
+  schema: schemas/result.schema.json # output schema (resolved like script)
   max_iterations: 3                 # how many times the agent can retry
   feedback_mode: append             # append validation output to agent prompt
 
@@ -538,6 +543,7 @@ post_script: scripts/code-post.sh
 
 validation_loop:
   script: scripts/validate-lint.sh
+  schema: schemas/code-result.schema.json
   max_iterations: 3
   feedback_mode: append
 

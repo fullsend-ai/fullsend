@@ -1,150 +1,926 @@
 <!doctype html>
 <html lang="en">
-    <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Fullsend</title>
-        <style>
-            :root {
-                --docs-border: #ccc;
-                --docs-surface: #fff;
-                --docs-muted-bg: #f4f4f4;
-                --docs-text: #24292f;
-                --docs-link: #0969da;
-                --docs-topbar-height: 2.75rem;
-                color-scheme: light;
-                font-family:
-                    system-ui,
-                    -apple-system,
-                    "Segoe UI",
-                    Roboto,
-                    Ubuntu,
-                    Cantarell,
-                    "Noto Sans",
-                    sans-serif;
-                line-height: 1.5;
-            }
-            *,
-            *::before,
-            *::after {
-                box-sizing: border-box;
-                margin: 0;
-                padding: 0;
-            }
-            body {
-                background: var(--docs-surface);
-                color: var(--docs-text);
-                min-height: 100vh;
-                display: flex;
-                flex-direction: column;
-            }
-            .topbar {
-                flex: 0 0 var(--docs-topbar-height);
-                height: var(--docs-topbar-height);
-                display: flex;
-                align-items: center;
-                padding: 0 0.75rem;
-                border-bottom: 1px solid var(--docs-border);
-                background: var(--docs-surface);
-            }
-            .topbar-brand {
-                font-weight: 600;
-                font-size: 0.95rem;
-                color: var(--docs-text);
-                text-decoration: none;
-            }
-            .main {
-                flex: 1;
-                display: flex;
-                flex-direction: column;
-                align-items: center;
-                justify-content: center;
-                padding: 3rem 1.5rem;
-            }
-            .hero {
-                text-align: center;
-                margin-bottom: 2.5rem;
-            }
-            .hero h1 {
-                font-size: 2rem;
-                font-weight: 700;
-                color: var(--docs-text);
-                margin-bottom: 0.5rem;
-            }
-            .hero p {
-                font-size: 1rem;
-                color: color-mix(in srgb, var(--docs-text) 65%, transparent);
-                max-width: 440px;
-            }
-            .cards {
-                display: flex;
-                gap: 1rem;
-                flex-wrap: wrap;
-                justify-content: center;
-            }
-            .card {
-                display: block;
-                background: var(--docs-surface);
-                border: 1px solid var(--docs-border);
-                border-radius: 0.5rem;
-                padding: 1.5rem;
-                width: 220px;
-                text-decoration: none;
-                color: var(--docs-text);
-                transition:
-                    background 0.12s,
-                    border-color 0.12s;
-            }
-            .card:hover {
-                background: var(--docs-muted-bg);
-                border-color: color-mix(
-                    in srgb,
-                    var(--docs-text) 30%,
-                    transparent
-                );
-            }
-            .card:focus-visible {
-                outline: 2px solid var(--docs-link);
-                outline-offset: 2px;
-            }
-            .card h2 {
-                font-size: 0.95rem;
-                font-weight: 600;
-                margin-bottom: 0.35rem;
-                color: var(--docs-link);
-            }
-            .card p {
-                font-size: 0.85rem;
-                color: color-mix(in srgb, var(--docs-text) 65%, transparent);
-                line-height: 1.5;
-            }
-        </style>
-    </head>
-    <body>
-        <header class="topbar">
-            <span class="topbar-brand">Fullsend</span>
-        </header>
-        <main class="main">
-            <div class="hero">
-                <h1>Fullsend</h1>
-                <p>Fully autonomous agentic development</p>
-            </div>
-            <div class="cards">
-                <a class="card" href="/docs/">
-                    <h2>Documentation</h2>
-                    <p>
-                        Design documents, architecture, and guides for users,
-                        administrators and contributors
-                    </p>
-                </a>
-                <a class="card" href="/graph.html">
-                    <h2>Document Map</h2>
-                    <p>
-                        Interactive graph of how documents connect across the
-                        project
-                    </p>
-                </a>
-            </div>
-        </main>
-    </body>
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Fullsend — Autonomous SDLC Agents</title>
+<meta name="description" content="Fullsend deploys autonomous agents across your GitHub repos. They triage issues, write code, review PRs, and ship to production."/>
+<link rel="icon" type="image/png" href="/docs/img/favicon.png"/>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"/>
+<script>
+(function(){var t=localStorage.getItem('theme')||(window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')})();
+</script>
+<style>
+/* --- Design tokens --- */
+:root{
+  --font-body:'Plus Jakarta Sans',system-ui,sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,monospace;
+  --bg:#f8fafc;
+  --bg-elevated:#ffffff;
+  --bg-card:rgba(0,0,0,0.02);
+  --border:#e2e8f0;
+  --text:#1e293b;
+  --text-dim:#475569;
+  --text-muted:#64748b;
+  --accent:#4d7c0f;
+  --accent-dim:#3f6212;
+  --accent-contrast:#fff;
+  --blue:#2563eb;
+  --purple:#7c3aed;
+  color-scheme:light;
+}
+[data-theme="dark"]{
+  --bg:#0c1220;
+  --bg-elevated:#131c2e;
+  --bg-card:rgba(255,255,255,0.03);
+  --border:#1e3050;
+  --text:#e8edf4;
+  --text-dim:#8ba0be;
+  --text-muted:#5a7294;
+  --accent:#c4ff0e;
+  --accent-dim:#92bf0a;
+  --accent-contrast:#0c1220;
+  --blue:#5cb3ff;
+  --purple:#a78bfa;
+  color-scheme:dark;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{
+  font-family:var(--font-body);
+  background:var(--bg);
+  color:var(--text);
+  line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* --- Navigation --- */
+nav{
+  position:fixed;top:0;left:0;right:0;z-index:100;
+  height:3.5rem;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 2rem;
+  background:rgba(255,255,255,0.85);
+  backdrop-filter:blur(16px);
+  border-bottom:1px solid var(--border);
+}
+[data-theme="dark"] nav{
+  background:rgba(12,18,32,0.85);
+}
+.nav-brand{
+  font-weight:800;font-size:1.1rem;
+  color:var(--accent);text-decoration:none;
+  letter-spacing:-0.02em;
+}
+.nav-links{display:flex;gap:1.5rem;align-items:center}
+.nav-links a{
+  font-size:0.9rem;font-weight:500;
+  color:var(--text-dim);text-decoration:none;
+  transition:color 0.15s;
+}
+.nav-links a:hover{color:var(--text)}
+.nav-cta{
+  font-size:0.85rem;font-weight:600;
+  padding:0.45rem 1.1rem;border-radius:6px;
+  background:var(--accent);color:var(--accent-contrast);
+  text-decoration:none;transition:opacity 0.15s;
+}
+.nav-cta:hover{opacity:0.85}
+.theme-toggle{
+  background:none;border:1px solid var(--border);
+  border-radius:6px;padding:0.35rem;
+  cursor:pointer;display:flex;align-items:center;justify-content:center;
+  color:var(--text-dim);transition:color 0.15s,border-color 0.15s;
+}
+.theme-toggle:hover{color:var(--text);border-color:var(--text-muted)}
+.theme-toggle svg{width:16px;height:16px;fill:currentColor}
+.nav-hamburger{
+  display:none;
+  background:none;border:1px solid var(--border);
+  border-radius:6px;padding:0.35rem;
+  cursor:pointer;align-items:center;justify-content:center;
+  color:var(--text-dim);
+}
+.nav-hamburger svg{width:20px;height:20px;stroke:currentColor;fill:none}
+.theme-toggle .icon-moon{display:none}
+[data-theme="dark"] .theme-toggle .icon-sun{display:none}
+[data-theme="dark"] .theme-toggle .icon-moon{display:block}
+
+/* --- Hero (two-column: text left, timeline right) --- */
+.hero{
+  min-height:100vh;
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  align-items:start;
+  gap:3rem;
+  padding:7rem 4rem 4rem;
+  max-width:1280px;
+  margin:0 auto;
+  position:relative;
+  overflow:hidden;
+}
+.hero::before{
+  content:'';position:absolute;inset:0;
+  background:radial-gradient(ellipse 60% 50% at 30% 40%,rgba(101,163,13,0.04),transparent 70%);
+  pointer-events:none;
+}
+[data-theme="dark"] .hero::before{
+  background:radial-gradient(ellipse 60% 50% at 30% 40%,rgba(196,255,14,0.04),transparent 70%);
+}
+.hero-text{position:relative;z-index:1;padding-top:1.5rem}
+.hero-badge{
+  display:inline-block;
+  font-family:var(--font-mono);
+  font-size:0.8rem;font-weight:500;
+  padding:0.35rem 0.9rem;border-radius:20px;
+  background:rgba(196,255,14,0.08);
+  border:1px solid rgba(196,255,14,0.15);
+  color:var(--accent);
+  margin-bottom:1.5rem;
+  letter-spacing:0.03em;
+}
+.hero h1{
+  font-size:clamp(2.2rem,5vw,3.8rem);
+  font-weight:800;
+  letter-spacing:-0.04em;
+  line-height:1.05;
+  margin-bottom:1.25rem;
+}
+.hero h1 .accent{color:var(--accent)}
+.hero-sub{
+  font-size:clamp(1.05rem,1.5vw,1.15rem);
+  color:var(--text-dim);
+  max-width:520px;
+  margin-bottom:1.5rem;
+  line-height:1.7;
+}
+.hero-highlights{
+  display:flex;flex-wrap:wrap;gap:0.5rem;
+  margin-bottom:2rem;
+}
+.hero-highlights span{
+  font-family:var(--font-mono);
+  font-size:0.8rem;font-weight:500;
+  padding:0.35rem 0.8rem;border-radius:6px;
+  background:var(--bg-elevated);
+  border:1px solid var(--border);
+  color:var(--text-dim);
+  letter-spacing:0.02em;
+}
+.hero-actions{display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:2.5rem}
+.hero-stats{
+  display:flex;gap:2rem;
+  padding-top:1.5rem;
+  border-top:1px solid var(--border);
+}
+.hero-stat{display:flex;flex-direction:column;gap:0.15rem}
+.hero-stat-value{
+  font-family:var(--font-mono);
+  font-size:0.95rem;font-weight:700;
+  color:var(--accent);
+}
+.hero-stat-label{
+  font-size:0.8rem;color:var(--text-muted);
+  letter-spacing:0.02em;
+}
+.hero-timeline{position:relative;z-index:1}
+.btn-primary{
+  display:inline-flex;align-items:center;gap:0.4rem;
+  font-family:var(--font-body);font-size:1rem;font-weight:600;
+  padding:0.75rem 1.75rem;border-radius:8px;
+  background:var(--accent);color:var(--accent-contrast);
+  text-decoration:none;border:none;cursor:pointer;
+  transition:opacity 0.15s;
+}
+.btn-primary:hover{opacity:0.85}
+.btn-secondary{
+  display:inline-flex;align-items:center;gap:0.5rem;
+  font-family:var(--font-body);font-size:1rem;font-weight:500;
+  padding:0.75rem 1.75rem;border-radius:8px;
+  background:transparent;color:var(--text);
+  border:1px solid var(--border);text-decoration:none;
+  transition:border-color 0.15s;
+}
+.btn-secondary:hover{border-color:var(--text-muted)}
+.btn-secondary svg{width:18px;height:18px;fill:currentColor}
+
+/* --- GitHub activity timeline (embedded in hero) --- */
+.gh-demo-inner{max-width:100%}
+.gh-demo-label{
+  font-family:var(--font-mono);
+  font-size:0.75rem;font-weight:500;
+  text-transform:uppercase;letter-spacing:0.15em;
+  color:var(--accent);margin-bottom:0.5rem;
+}
+.gh-demo-title{
+  font-size:1.25rem;
+  font-weight:700;letter-spacing:-0.02em;
+  margin-bottom:0.4rem;
+}
+.gh-demo-desc{
+  color:var(--text-dim);
+  font-size:0.9rem;max-width:480px;
+  margin-bottom:1.25rem;
+}
+.gh-issue-bar{
+  display:flex;align-items:center;gap:0.6rem;
+  padding:0.6rem 1rem;
+  border-radius:10px 10px 0 0;
+  background:var(--bg-elevated);
+  border:1px solid var(--border);
+  border-bottom:none;
+}
+.gh-issue-icon{
+  width:16px;height:16px;
+  border-radius:50%;
+  background:var(--accent);
+  flex-shrink:0;
+}
+.gh-issue-title{
+  font-size:0.9rem;font-weight:600;
+  color:var(--text);
+}
+.gh-issue-number{
+  font-family:var(--font-mono);
+  font-size:0.85rem;color:var(--text-muted);
+}
+.gh-timeline{
+  border:1px solid var(--border);
+  border-radius:0 0 10px 10px;
+  background:var(--bg-elevated);
+  padding:1rem 1.25rem;
+  display:flex;flex-direction:column;gap:0;
+}
+.gh-event{
+  display:flex;gap:0.75rem;
+  padding:0.85rem 0;
+  border-bottom:1px solid var(--border);
+  opacity:0;transform:translateY(12px);
+  transition:opacity 0.5s ease,transform 0.5s ease;
+}
+.gh-event:last-child{border-bottom:none}
+.gh-event.visible{opacity:1;transform:translateY(0)}
+.gh-avatar{
+  flex-shrink:0;
+  width:32px;height:32px;
+  border-radius:50%;overflow:hidden;
+  border:1px solid var(--border);
+}
+.gh-avatar img{width:100%;height:100%;object-fit:cover;display:block}
+.gh-event-content{flex:1;min-width:0}
+.gh-event-header{
+  display:flex;flex-wrap:wrap;
+  align-items:center;gap:0.4rem;
+  margin-bottom:0.1rem;
+}
+.gh-bot-name{
+  font-family:var(--font-mono);
+  font-size:0.875rem;font-weight:600;
+  color:var(--text);
+}
+.gh-bot-badge{
+  font-family:var(--font-mono);
+  font-size:0.65rem;font-weight:600;
+  padding:0.1rem 0.35rem;border-radius:3px;
+  background:rgba(0,0,0,0.04);
+  color:var(--text-muted);
+  text-transform:uppercase;letter-spacing:0.04em;
+  border:1px solid var(--border);
+}
+[data-theme="dark"] .gh-bot-badge{
+  background:rgba(255,255,255,0.06);
+}
+.gh-event-action{font-size:0.875rem;color:var(--text-dim)}
+.gh-event-time{
+  font-size:0.8rem;color:var(--text-muted);
+  margin-left:auto;white-space:nowrap;
+}
+.gh-event-body{
+  margin-top:0.4rem;
+  padding:0.65rem 0.85rem;
+  border-radius:8px;
+  background:var(--bg-card);
+  border:1px solid var(--border);
+  font-size:0.875rem;color:var(--text-dim);
+  line-height:1.6;
+}
+.gh-event-body code{
+  font-family:var(--font-mono);font-size:0.8rem;
+  padding:0.12rem 0.35rem;border-radius:4px;
+  background:rgba(0,0,0,0.05);color:var(--text);
+}
+[data-theme="dark"] .gh-event-body code{
+  background:rgba(255,255,255,0.05);
+}
+.gh-event-body .gh-pr-link{color:var(--blue);font-weight:600}
+.gh-event-body .gh-check{color:var(--accent);font-weight:600}
+
+/* --- Section layout --- */
+section{position:relative;z-index:1;padding:7rem 2rem}
+.section-inner{max-width:1100px;margin:0 auto}
+.section-label{
+  font-family:var(--font-mono);
+  font-size:0.8rem;font-weight:500;
+  text-transform:uppercase;letter-spacing:0.15em;
+  color:var(--accent);margin-bottom:1rem;
+}
+.section-title{
+  font-size:clamp(2rem,4vw,3rem);
+  font-weight:800;letter-spacing:-0.03em;
+  line-height:1.15;margin-bottom:1rem;
+}
+.section-desc{
+  font-size:1.05rem;color:var(--text-dim);
+  max-width:560px;line-height:1.7;
+  margin-bottom:3rem;
+}
+
+/* --- SDLC Cycle --- */
+.cycle-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+  gap:1px;
+  background:var(--border);
+  border-radius:12px;overflow:hidden;
+}
+.cycle-step{
+  background:var(--bg-elevated);
+  padding:1.5rem;
+  display:flex;flex-direction:column;gap:0.4rem;
+}
+.cycle-num{
+  font-family:var(--font-mono);
+  font-size:0.8rem;font-weight:600;
+  color:var(--accent);
+  letter-spacing:0.1em;
+}
+.cycle-cron{
+  background:rgba(196,255,14,0.1);
+  padding:0.15rem 0.4rem;border-radius:4px;
+  display:inline-block;
+}
+.cycle-name{font-size:1.1rem;font-weight:700}
+.cycle-desc{font-size:0.9rem;color:var(--text-dim);line-height:1.6}
+
+/* --- Agent cards --- */
+.agents-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(200px,1fr));
+  gap:1rem;
+}
+.agent-card{
+  background:var(--bg-elevated);
+  border:1px solid var(--border);
+  border-radius:10px;padding:1.25rem;
+  transition:border-color 0.2s;
+}
+.agent-card:hover{border-color:var(--accent)}
+.agent-icon{
+  width:36px;height:36px;
+  border-radius:50%;overflow:hidden;
+  margin-bottom:0.75rem;
+  border:1px solid var(--border);
+}
+.agent-icon img{width:100%;height:100%;object-fit:cover;display:block}
+.agent-name{
+  font-family:var(--font-mono);
+  font-size:0.95rem;font-weight:600;
+  margin-bottom:0.35rem;
+}
+.agent-desc{font-size:0.9rem;color:var(--text-dim);line-height:1.6}
+
+/* --- Setup steps --- */
+.setup-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+  gap:1.25rem;
+}
+.setup-card{
+  background:var(--bg-elevated);
+  border:1px solid var(--border);
+  border-radius:10px;padding:1.5rem;
+}
+.setup-num{
+  font-family:var(--font-mono);
+  font-size:0.8rem;font-weight:600;
+  color:var(--accent);margin-bottom:0.5rem;
+  letter-spacing:0.1em;
+}
+.setup-title{font-size:1.1rem;font-weight:700;margin-bottom:0.4rem}
+.setup-desc{font-size:0.9rem;color:var(--text-dim);line-height:1.6;margin-bottom:0.75rem}
+.setup-code{
+  font-family:var(--font-mono);
+  font-size:0.85rem;
+  padding:0.5rem 0.75rem;
+  border-radius:6px;
+  background:rgba(0,0,0,0.05);
+  color:var(--accent);
+  display:block;
+  overflow-x:auto;
+}
+[data-theme="dark"] .setup-code{
+  background:rgba(0,0,0,0.3);
+}
+
+/* --- Principles --- */
+.principles-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+  gap:1.25rem;
+}
+.principle-card{
+  background:var(--bg-elevated);
+  border:1px solid var(--border);
+  border-radius:10px;padding:1.5rem;
+}
+.principle-icon{margin-bottom:0.6rem;width:28px;height:28px;color:var(--accent)}
+.principle-title{font-size:1.1rem;font-weight:700;margin-bottom:0.35rem}
+.principle-desc{font-size:0.9rem;color:var(--text-dim);line-height:1.6}
+
+/* --- CTA --- */
+.cta{
+  text-align:center;
+  padding:6rem 2rem;
+  background:linear-gradient(180deg,var(--bg-elevated) 0%,var(--bg) 100%);
+}
+.cta-title{
+  font-size:clamp(2rem,4vw,3rem);
+  font-weight:800;letter-spacing:-0.03em;
+  margin-bottom:1rem;
+}
+.cta-desc{
+  font-size:1.1rem;color:var(--text-dim);
+  max-width:460px;margin:0 auto 2rem;
+}
+.cta .hero-actions{justify-content:center}
+
+/* --- Footer --- */
+footer{
+  padding:3.5rem 2rem 2rem;
+  border-top:1px solid var(--border);
+  font-size:0.875rem;
+  color:var(--text-muted);
+}
+.footer-inner{
+  max-width:1100px;margin:0 auto;
+  display:grid;
+  grid-template-columns:1.5fr 1fr 1fr;
+  gap:3rem;
+}
+.footer-brand{display:flex;flex-direction:column;gap:0.75rem}
+.footer-logo{
+  font-weight:800;font-size:1.15rem;
+  color:var(--accent);letter-spacing:-0.02em;
+}
+.footer-tagline{
+  font-size:0.875rem;color:var(--text-dim);
+  line-height:1.6;max-width:340px;
+}
+.footer-license{
+  font-family:var(--font-mono);
+  font-size:0.75rem;color:var(--text-muted);
+}
+.footer-col h4{
+  font-family:var(--font-mono);
+  font-size:0.75rem;font-weight:600;
+  text-transform:uppercase;letter-spacing:0.15em;
+  color:var(--text-dim);margin-bottom:0.75rem;
+}
+.footer-col ul{list-style:none}
+.footer-col li{margin-bottom:0.5rem}
+.footer-col a{
+  color:var(--text-muted);text-decoration:none;
+  font-size:0.875rem;transition:color 0.15s;
+}
+.footer-col a:hover{color:var(--text)}
+.footer-bottom{
+  max-width:1100px;margin:2.5rem auto 0;
+  padding-top:1.5rem;
+  border-top:1px solid var(--border);
+  text-align:center;
+  font-size:0.8rem;color:var(--text-muted);
+}
+
+/* --- Focus styles --- */
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+.btn-primary:focus-visible,.btn-secondary:focus-visible,.nav-cta:focus-visible{outline-offset:3px}
+
+/* --- Scroll reveal --- */
+.reveal{opacity:0;transform:translateY(20px);transition:opacity 0.6s ease,transform 0.6s ease}
+.reveal.visible{opacity:1;transform:translateY(0)}
+
+/* --- Responsive --- */
+@media(max-width:900px){
+  .hero{
+    grid-template-columns:1fr;
+    padding:5rem 1.5rem 3rem;
+    text-align:center;
+  }
+  .hero-sub{margin-left:auto;margin-right:auto}
+  .hero-actions{justify-content:center}
+  .footer-inner{grid-template-columns:1fr;gap:2rem}
+}
+@media(max-width:640px){
+  nav{padding:0 1rem}
+  .nav-links{
+    display:none;flex-direction:column;
+    position:absolute;top:3.5rem;left:0;right:0;
+    background:var(--bg-elevated);
+    border-bottom:1px solid var(--border);
+    padding:1rem;gap:0.75rem;
+    box-shadow:0 4px 12px rgba(0,0,0,0.08);
+  }
+  .nav-links.open{display:flex}
+  .nav-hamburger{display:flex}
+  section{padding:4rem 1.5rem}
+}
+@media(prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  .gh-event{opacity:1;transform:none;transition:none}
+  .reveal{opacity:1;transform:none;transition:none}
+  .agent-card,.nav-links a,.btn-secondary,.theme-toggle{transition:none}
+}
+</style>
+</head>
+<body>
+
+<!-- Navigation -->
+<nav>
+  <a class="nav-brand" href="/">Fullsend</a>
+  <button class="nav-hamburger" id="nav-hamburger" aria-label="Open menu" aria-expanded="false"><svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
+  <div class="nav-links" id="nav-links">
+    <a href="/docs/">Docs</a>
+    <a href="/docs/agents/">Agents</a>
+    <a href="/docs/cli/">CLI</a>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">
+      <svg class="icon-sun" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 18a6 6 0 1 1 0-12 6 6 0 0 1 0 12zm0-2a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm0-12a1 1 0 0 1 1 1v2a1 1 0 0 1-2 0V5a1 1 0 0 1 1-1zm0 15a1 1 0 0 1 1 1v2a1 1 0 0 1-2 0v-2a1 1 0 0 1 1-1zm7.071-14.071a1 1 0 0 1 0 1.414l-1.414 1.414a1 1 0 1 1-1.414-1.414l1.414-1.414a1 1 0 0 1 1.414 0zm-11.314 11.314a1 1 0 0 1 0 1.414l-1.414 1.414a1 1 0 0 1-1.414-1.414l1.414-1.414a1 1 0 0 1 1.414 0zM23 12a1 1 0 0 1-1 1h-2a1 1 0 0 1 0-2h2a1 1 0 0 1 1 1zM6 12a1 1 0 0 1-1 1H3a1 1 0 0 1 0-2h2a1 1 0 0 1 1 1zm13.071 7.071a1 1 0 0 1-1.414 0l-1.414-1.414a1 1 0 0 1 1.414-1.414l1.414 1.414a1 1 0 0 1 0 1.414zM7.757 7.757a1 1 0 0 1-1.414 0L4.929 6.343a1 1 0 0 1 1.414-1.414l1.414 1.414a1 1 0 0 1 0 1.414z"/></svg>
+      <svg class="icon-moon" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 3a9 9 0 1 0 9 9c0-.46-.04-.92-.1-1.36a5.389 5.389 0 0 1-4.4 2.26 5.403 5.403 0 0 1-3.14-9.8c-.44-.06-.9-.1-1.36-.1z"/></svg>
+    </button>
+    <a class="nav-cta" href="/docs/">Get Started</a>
+  </div>
+</nav>
+
+<!-- Hero: text left + timeline right -->
+<div class="hero">
+  <div class="hero-text">
+    <div class="hero-badge">Open source &middot; Agentic SDLC &middot; Beyond Git</div>
+    <h1>Ship code on<br/><span class="accent">autopilot.</span></h1>
+    <p class="hero-sub">The autonomous development lifecycle (ADLC) platform. Fullsend deploys purpose-built agents across your GitHub repos that triage issues, write code, review PRs, fix findings, and ship to production&mdash;continuously.</p>
+    <div class="hero-highlights">
+      <span>Agentic SDLC</span>
+      <span>Multi-agent pipeline</span>
+      <span>GitHub-native</span>
+      <span>Self-host supported</span>
+      <span>OpenShell Sandbox</span>
+    </div>
+    <div class="hero-actions">
+      <a class="btn-primary" href="/docs/">Get Started</a>
+      <a class="btn-secondary" href="https://github.com/fullsend-ai/fullsend">
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+        Star on GitHub
+      </a>
+    </div>
+    <div class="hero-stats">
+      <div class="hero-stat">
+        <span class="hero-stat-value">6 Agents</span>
+        <span class="hero-stat-label">E2E SDLC coverage</span>
+      </div>
+      <div class="hero-stat">
+        <span class="hero-stat-value">Apache 2.0</span>
+        <span class="hero-stat-label">Open source</span>
+      </div>
+      <div class="hero-stat">
+        <span class="hero-stat-value">Linux &amp; macOS</span>
+        <span class="hero-stat-label">CLI platforms</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="hero-timeline">
+  <div class="gh-demo-inner">
+    <div class="gh-demo-label">How it works</div>
+    <div class="gh-demo-title">From issue to production.</div>
+    <p class="gh-demo-desc">Watch the full agent pipeline handle an issue end-to-end, right inside your GitHub repo.</p>
+
+    <div class="gh-issue-bar">
+      <div class="gh-issue-icon"></div>
+      <span class="gh-issue-title">Add rate limiting to API</span>
+      <span class="gh-issue-number">#847</span>
+    </div>
+
+    <div class="gh-timeline" id="timeline">
+      <div class="gh-event" data-delay="0">
+        <div class="gh-avatar"><img src="https://avatars.githubusercontent.com/in/3478490?v=4" alt="triage bot" loading="lazy"></div>
+        <div class="gh-event-content">
+          <div class="gh-event-header">
+            <span class="gh-bot-name">fullsend-ai-triage[bot]</span>
+            <span class="gh-bot-badge">bot</span>
+            <span class="gh-event-action">triaged this issue</span>
+            <span class="gh-event-time">2 min ago</span>
+          </div>
+          <div class="gh-event-body">Scope: medium, type: feature. Suggested fix: wrap handler with sliding-window middleware. Good candidate for quick resolution.<br><strong>Labels:</strong> <code>type/feature</code> <code>component/api</code> <code>ready-to-code</code></div>
+        </div>
+      </div>
+
+      <div class="gh-event" data-delay="800">
+        <div class="gh-avatar"><img src="https://avatars.githubusercontent.com/in/3478495?v=4" alt="coder bot" loading="lazy"></div>
+        <div class="gh-event-content">
+          <div class="gh-event-header">
+            <span class="gh-bot-name">fullsend-ai-coder[bot]</span>
+            <span class="gh-bot-badge">bot</span>
+            <span class="gh-event-action">opened a pull request</span>
+            <span class="gh-event-time">1 min ago</span>
+          </div>
+          <div class="gh-event-body"><span class="gh-pr-link">#848</span> feat: add sliding-window rate limiter<br>wrote <code>middleware/ratelimit.go</code> + <code>ratelimit_test.go</code></div>
+        </div>
+      </div>
+
+      <div class="gh-event" data-delay="1800">
+        <div class="gh-avatar"><img src="https://avatars.githubusercontent.com/in/3478501?v=4" alt="review bot" loading="lazy"></div>
+        <div class="gh-event-content">
+          <div class="gh-event-header">
+            <span class="gh-bot-name">fullsend-ai-review[bot]</span>
+            <span class="gh-bot-badge">bot</span>
+            <span class="gh-event-action">reviewed PR #848</span>
+            <span class="gh-event-time">45 sec ago</span>
+          </div>
+          <div class="gh-event-body">Reviewed across correctness, security, performance, and intent. 1 finding: potential race condition in <code>CreateBranch</code> under concurrent requests.</div>
+        </div>
+      </div>
+
+      <div class="gh-event" data-delay="2600">
+        <div class="gh-avatar"><img src="https://avatars.githubusercontent.com/in/3478495?v=4" alt="coder bot" loading="lazy"></div>
+        <div class="gh-event-content">
+          <div class="gh-event-header">
+            <span class="gh-bot-name">fullsend-ai-coder[bot]</span>
+            <span class="gh-bot-badge">bot</span>
+            <span class="gh-event-action">pushed a fix</span>
+            <span class="gh-event-time">30 sec ago</span>
+          </div>
+          <div class="gh-event-body">&#x1f527; Fix agent &mdash; iteration 1. Fixed race-condition finding from review: added retry with backoff after <code>CreateBranch</code>. Tests passed.</div>
+        </div>
+      </div>
+
+      <div class="gh-event" data-delay="3400">
+        <div class="gh-avatar"><img src="https://avatars.githubusercontent.com/in/3689659?v=4" alt="retro bot" loading="lazy"></div>
+        <div class="gh-event-content">
+          <div class="gh-event-header">
+            <span class="gh-bot-name">fullsend-ai-retro[bot]</span>
+            <span class="gh-bot-badge">bot</span>
+            <span class="gh-event-action">analyzed the workflow</span>
+            <span class="gh-event-time">just now</span>
+          </div>
+          <div class="gh-event-body">PR <span class="gh-pr-link">#848</span> merged in 5m34s. 1 review finding fixed by fix agent, approved on re-review. 1 proposal filed: add rate limit headers to error responses.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  </div>
+</div>
+
+<!-- SDLC Cycle -->
+<section>
+  <div class="section-inner">
+    <div class="section-label">The Loop</div>
+    <div class="section-title">Full SDLC, fully autonomous.</div>
+    <p class="section-desc">Every stage of the software development lifecycle handled by purpose-built agents that collaborate through your existing GitHub workflow.</p>
+    <div class="cycle-grid reveal">
+      <div class="cycle-step">
+        <div class="cycle-num">01</div>
+        <div class="cycle-name">Triage</div>
+        <div class="cycle-desc">Classify incoming issues, assess scope, suggest fixes, and apply labels automatically.</div>
+      </div>
+      <div class="cycle-step">
+        <div class="cycle-num cycle-cron">CRON</div>
+        <div class="cycle-name">Prioritize</div>
+        <div class="cycle-desc">Score issues using the RICE framework and rank your project board by value automatically.</div>
+      </div>
+      <div class="cycle-step">
+        <div class="cycle-num">02</div>
+        <div class="cycle-name">Code</div>
+        <div class="cycle-desc">Generate implementation PRs with tests, following your repo's conventions and patterns.</div>
+      </div>
+      <div class="cycle-step">
+        <div class="cycle-num">03</div>
+        <div class="cycle-name">Review</div>
+        <div class="cycle-desc">Multi-dimensional review across correctness, security, performance, and intent alignment.</div>
+      </div>
+      <div class="cycle-step">
+        <div class="cycle-num">04</div>
+        <div class="cycle-name">Fix</div>
+        <div class="cycle-desc">Address review findings automatically, push fixes, and re-run tests until clean.</div>
+      </div>
+      <div class="cycle-step">
+        <div class="cycle-num">05</div>
+        <div class="cycle-name">Retro</div>
+        <div class="cycle-desc">Analyze completed workflows, surface insights, and file improvement proposals.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Agent Cards -->
+<section style="background:var(--bg-elevated)">
+  <div class="section-inner">
+    <div class="section-label">Agents</div>
+    <div class="section-title">Meet the team.</div>
+    <p class="section-desc">Each agent is purpose-built for its role. They share context through GitHub&mdash;issues, PRs, and comments&mdash;just like human developers.</p>
+    <div class="agents-grid reveal">
+      <div class="agent-card">
+        <div class="agent-icon"><img src="https://avatars.githubusercontent.com/in/3478490?v=4" alt="triage" loading="lazy"></div>
+        <div class="agent-name">Triage</div>
+        <div class="agent-desc">Reads every new issue, classifies scope and type, suggests a fix path, and applies labels so nothing falls through the cracks.</div>
+      </div>
+      <div class="agent-card">
+        <div class="agent-icon"><img src="https://avatars.githubusercontent.com/in/3478495?v=4" alt="coder" loading="lazy"></div>
+        <div class="agent-name">Code</div>
+        <div class="agent-desc">Picks up ready-to-code issues, generates implementation PRs with tests, following your repo's style and conventions.</div>
+      </div>
+      <div class="agent-card">
+        <div class="agent-icon"><img src="https://avatars.githubusercontent.com/in/3478501?v=4" alt="review" loading="lazy"></div>
+        <div class="agent-name">Review</div>
+        <div class="agent-desc">Reviews every PR across correctness, security, performance, and intent. Posts inline comments with specific, actionable findings.</div>
+      </div>
+      <div class="agent-card">
+        <div class="agent-icon"><img src="https://avatars.githubusercontent.com/in/3478495?v=4" alt="fix" loading="lazy"></div>
+        <div class="agent-name">Fix</div>
+        <div class="agent-desc">Reads review findings, applies code fixes, pushes commits, and re-runs tests. Iterates until the review passes clean.</div>
+      </div>
+      <div class="agent-card">
+        <div class="agent-icon"><img src="https://avatars.githubusercontent.com/in/3689657?v=4" alt="prioritize" loading="lazy"></div>
+        <div class="agent-name">Prioritize</div>
+        <div class="agent-desc">Scores issues using the RICE framework&mdash;Reach, Impact, Confidence, Effort&mdash;and ranks your project board by value.</div>
+      </div>
+      <div class="agent-card">
+        <div class="agent-icon"><img src="https://avatars.githubusercontent.com/in/3689659?v=4" alt="retro" loading="lazy"></div>
+        <div class="agent-name">Retro</div>
+        <div class="agent-desc">After merge, analyzes the full workflow&mdash;timing, iterations, patterns&mdash;and files proposals for process improvements.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Setup Steps -->
+<section>
+  <div class="section-inner">
+    <div class="section-label">Getting Started</div>
+    <div class="section-title">Three steps to autonomous.</div>
+    <p class="section-desc">Deploy the full agent pipeline to your GitHub organization in minutes. No infrastructure to manage.</p>
+    <div class="setup-grid reveal">
+      <div class="setup-card">
+        <div class="setup-num">01</div>
+        <div class="setup-title">Install the GitHub App</div>
+        <div class="setup-desc">Add fullsend to your GitHub organization. Select which repos the agents can access and what permissions to grant.</div>
+      </div>
+      <div class="setup-card">
+        <div class="setup-num">02</div>
+        <div class="setup-title">Enroll your repos</div>
+        <div class="setup-desc">Enable specific repos for the agent pipeline. Customize agent config, agent model, and LLM provider per repo.</div>
+        <code class="setup-code">$ fullsend github setup</code>
+      </div>
+      <div class="setup-card">
+        <div class="setup-num">03</div>
+        <div class="setup-title">File an issue</div>
+        <div class="setup-desc">Create a GitHub issue. The triage agent picks it up, the code agent writes a PR, review validates, fix cleans up, retro learns. Autonomous.</div>
+        <code class="setup-code">$ gh issue create --title "Add rate limiting"</code>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Design Principles -->
+<section style="background:var(--bg-elevated)">
+  <div class="section-inner">
+    <div class="section-label">Design Principles</div>
+    <div class="section-title">Built for trust.</div>
+    <p class="section-desc">Fullsend is designed around safety, transparency, and human oversight at every step.</p>
+    <div class="principles-grid reveal">
+      <div class="principle-card">
+        <div class="principle-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-2"/><rect x="7" y="8" width="10" height="8" rx="1"/><path d="M12 8v8"/><path d="M7 12h10"/></svg></div>
+        <div class="principle-title">OpenShell Sandbox</div>
+        <div class="principle-desc">Agents run inside <a href="https://github.com/NVIDIA/OpenShell" style="color:var(--accent)">NVIDIA OpenShell</a> sandboxed environments with policy-enforced egress routing, filesystem isolation, and process constraints.</div>
+      </div>
+      <div class="principle-card">
+        <div class="principle-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m4.93 4.93 14.14 14.14"/></svg></div>
+        <div class="principle-title">Prompt injection defense</div>
+        <div class="principle-desc">Agent inputs are sanitized and validated before execution. Malicious payloads in issues, PRs, and comments are detected and blocked.</div>
+      </div>
+      <div class="principle-card">
+        <div class="principle-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+        <div class="principle-title">Guarded paths</div>
+        <div class="principle-desc">Agents operate within explicit guardrails you configure: coding API, gating policies, and safety checks. Every action is traceable.</div>
+      </div>
+      <div class="principle-card">
+        <div class="principle-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6V4m0 2a2 2 0 1 0 0 4m0-4a2 2 0 1 1 0 4m-6 8a2 2 0 1 0 0-4m0 4a2 2 0 1 1 0-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 1 0 0-4m0 4a2 2 0 1 1 0-4m0 4v2m0-6V4"/></svg></div>
+        <div class="principle-title">Fully customizable</div>
+        <div class="principle-desc">Choose your LLM provider, set agent behavior per repo, define policies, and configure which agents run and when.</div>
+      </div>
+      <div class="principle-card">
+        <div class="principle-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></div>
+        <div class="principle-title">Transparent by default</div>
+        <div class="principle-desc">Every agent action is visible in GitHub. Comments, commits, reviews&mdash;all in the open, all auditable.</div>
+      </div>
+      <div class="principle-card">
+        <div class="principle-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div>
+        <div class="principle-title">Human in the loop</div>
+        <div class="principle-desc">Agents propose, humans approve. You stay in control of merges, deployments, and critical decisions.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- CTA -->
+<div class="cta">
+  <div class="cta-title reveal">Ready to ship?</div>
+  <p class="cta-desc">Deploy autonomous agents to your GitHub repos today. Open source, self-hosted, fully yours.</p>
+  <div class="hero-actions">
+    <a class="btn-primary" href="/docs/">Get Started</a>
+    <a class="btn-secondary" href="https://github.com/fullsend-ai/fullsend">View Source</a>
+  </div>
+</div>
+
+<!-- Footer -->
+<footer>
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <div class="footer-logo">Fullsend</div>
+      <p class="footer-tagline">Autonomous SDLC agents that triage issues, write code, review PRs, and ship to production across your GitHub repos.</p>
+      <div class="footer-license">Apache 2.0 &middot; fullsend-ai</div>
+    </div>
+    <div class="footer-col">
+      <h4>Project</h4>
+      <ul>
+        <li><a href="https://github.com/fullsend-ai/fullsend">GitHub</a></li>
+        <li><a href="https://github.com/fullsend-ai/fullsend/releases">Releases</a></li>
+        <li><a href="/docs/cli/">CLI Reference</a></li>
+        <li><a href="/docs/agents/">Agents</a></li>
+      </ul>
+    </div>
+    <div class="footer-col">
+      <h4>Resources</h4>
+      <ul>
+        <li><a href="/docs/">Documentation</a></li>
+        <li><a href="/docs/guides/getting-started">Getting Started</a></li>
+        <li><a href="https://github.com/fullsend-ai/fullsend/issues">Issues</a></li>
+        <li><a href="https://github.com/fullsend-ai">Organization</a></li>
+        <li><a href="/graph.html">Agent Graph</a></li>
+      </ul>
+    </div>
+  </div>
+  <div class="footer-bottom"></div>
+</footer>
+
+<script>
+// Theme toggle with localStorage + system preference
+(function(){
+  const toggle=document.getElementById('theme-toggle');
+  const html=document.documentElement;
+  function getPreferred(){
+    const stored=localStorage.getItem('theme');
+    if(stored) return stored;
+    return window.matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light';
+  }
+  function apply(t){
+    if(t==='dark') html.setAttribute('data-theme','dark');
+    else html.removeAttribute('data-theme');
+  }
+  apply(getPreferred());
+  toggle.addEventListener('click',()=>{
+    const next=html.getAttribute('data-theme')==='dark'?'light':'dark';
+    localStorage.setItem('theme',next);
+    apply(next);
+  });
+  window.matchMedia('(prefers-color-scheme:dark)').addEventListener('change',e=>{
+    if(!localStorage.getItem('theme')){
+      apply(e.matches?'dark':'light');
+    }
+  });
+})();
+// Mobile nav toggle
+(function(){
+  const btn=document.getElementById('nav-hamburger');
+  const links=document.getElementById('nav-links');
+  btn.addEventListener('click',()=>{
+    const open=links.classList.toggle('open');
+    btn.setAttribute('aria-expanded',String(open));
+    btn.setAttribute('aria-label',open?'Close menu':'Open menu');
+  });
+})();
+// Timeline staggered reveal + scroll reveal (skip if reduced motion)
+if(!window.matchMedia('(prefers-reduced-motion:reduce)').matches){
+  document.querySelectorAll('.gh-event').forEach(ev=>{
+    const delay=parseInt(ev.dataset.delay)||0;
+    setTimeout(()=>ev.classList.add('visible'),400+delay);
+  });
+  const ro=new IntersectionObserver((entries)=>{
+    entries.forEach(e=>{if(e.isIntersecting){e.target.classList.add('visible');ro.unobserve(e.target)}});
+  },{threshold:0.15});
+  document.querySelectorAll('.reveal').forEach(el=>ro.observe(el));
+} else {
+  document.querySelectorAll('.gh-event,.reveal').forEach(el=>el.classList.add('visible'));
+}
+</script>
+</body>
 </html>

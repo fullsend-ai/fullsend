@@ -69,7 +69,7 @@ gh-aw explicitly keeps humans in the loop. Its safe-outputs model produces artif
 
 Checking whether a change is authorized against a structured intent system — not just "is this change correct?" but "is this change one we actually want?" This is absent from every tool in the [landscape](../landscape.md), including gh-aw. A native system could implement it, but gh-aw's architecture does not. See [intent-representation.md](intent-representation.md).
 
-### Tier-based autonomy
+### Intent-authorization-tier-based autonomy
 
 Different agent authority for different types of changes: auto-merge a dependency bump, require human review for an API change, block agent-authored modifications to CODEOWNERS. gh-aw's [integrity filtering](https://github.github.com/gh-aw/reference/integrity/) implements a form of input trust tiering (`merged > approved > unapproved > none`) and its [supply chain protection](https://github.github.com/gh-aw/reference/threat-detection/#supply-chain-protection-protected-files) blocks modifications to sensitive files (dependency manifests, CI config, CODEOWNERS) by default — but these are applied to *what the agent can see and touch*, not to *whether the agent's output should be merged*. The output model remains flat: agent proposes, human decides, regardless of change type. Fullsend's autonomy spectrum applies to the merge decision itself. See [autonomy-spectrum.md](autonomy-spectrum.md).
 

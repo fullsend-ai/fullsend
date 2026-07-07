@@ -1,6 +1,6 @@
 # Prioritize Agent
 
-<img src="icons/prioritize.png" alt="Prioritize agent icon" width="80">
+![Prioritize agent icon](icons/prioritize.png)
 
 Scores a GitHub issue using the RICE framework (Reach, Impact, Confidence, Effort) and produces structured scores with reasoning for project board ranking.
 
@@ -21,6 +21,8 @@ The prioritize agent fetches the issue and all its context, then evaluates it ac
 | Command | Where | Effect |
 |---------|-------|--------|
 | `/fs-prioritize` | Issue comment | Runs RICE scoring on the issue |
+
+Requires write-level repository permission (admin, maintain, or write).
 
 The `/fs-prioritize` command does not accept arguments. It scores the issue
 using the current content, comments, and any available `customer-research`
@@ -54,6 +56,10 @@ your-repo/
 This gives the prioritize agent concrete data to distinguish between "one user
 wants this" (Reach 0.25) and "three strategic accounts have filed support cases
 about it" (Reach 2.0), instead of guessing from the issue text alone.
+
+### Variables
+
+None.
 
 ## Source
 

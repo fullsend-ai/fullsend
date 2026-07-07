@@ -31,7 +31,7 @@ harness. They reside in `config.yaml`'s `agents:` block
 ([ADR 0011](0011-admin-install-org-config-yaml-v1.md)):
 
 ```yaml
-# config.yaml (current)
+# config.yaml (before ADR-0045)
 agents:
   - role: triage
     name: fullsend-ai-triage
@@ -142,8 +142,9 @@ agent definition `.md` file). `agent` describes *how* the agent behaves;
 `role` describes *what function* the agent serves in the pipeline; `slug`
 describes *who* the agent authenticates as. During Phase 1-2, `role` and
 `slug` are optional — `Validate()` does not require them. In Phase 3,
-`Validate()` emits warnings when `role` is missing. In Phase 4,
-`Validate()` requires `role`.
+`Validate()` continues to allow missing `role`, but `Lint()` emits
+warnings when `role` is missing. In Phase 4, `Validate()` requires
+`role`.
 
 `base` references another harness file whose fields serve as defaults for
 this harness. Any field set in the child overrides the corresponding base
@@ -204,9 +205,10 @@ skills:
   - skills/issue-labels
   - skills/output-schema-validation
 runner_env:
-  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/triage-result.schema.json
+  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/triage-result.schema.json  # legacy — prefer validation_loop.schema
 validation_loop:
   script: scripts/validate-output-schema.sh
+  schema: schemas/triage-result.schema.json
   max_iterations: 2
 
 forge:
@@ -294,9 +296,10 @@ skills:
   - skills/issue-labels
 validation_loop:
   script: scripts/validate-output-schema.sh
+  schema: schemas/triage-result.schema.json
   max_iterations: 2
 runner_env:
-  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/triage-result.schema.json
+  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/triage-result.schema.json  # legacy — prefer validation_loop.schema
 
 forge:
   github:
@@ -381,10 +384,14 @@ the org's `allowed_remote_resources` allowlist, fetched via the
 SSRF-hardened fetch layer, and cached in `.fullsend-cache/`.
 
 Relative paths in the merged result (e.g., `pre_script: scripts/pre.sh`)
-resolve against the local `.fullsend/` directory, not the base's origin.
-This works because scripts are always scaffolded locally (ADR 0038's
-"no remote executables" rule) — `base` handles declarative config while
-scripts stay local and customizable.
+resolve against the local `.fullsend/` directory when the base is a
+local file. When the base is a URL, script fields (`pre_script`,
+`post_script`, `validation_loop.script`) declared in the base harness
+are fetched from the base URL's directory, cached content-addressed,
+and rewritten to local cache paths before validation (see ADR 0038's
+`base:` composition exception). `agent_input` is excluded from URL-base
+resolution because it is a directory, not a single file. Scripts in the
+child harness always resolve against the local `.fullsend/` directory.
 
 #### Depth limit and circular detection
 
@@ -516,11 +523,10 @@ func (h *Harness) ResolveForge(platform string) error { ... }
    Note: `role`/`slug` becoming required is independent of the `forge:`
    section — a harness that only targets one platform still needs `role`
    and `slug` but does not need `forge:`.
-   Implementation note: the current `Validate()` method returns hard errors
-   only — there is no warning/advisory path. Phase 3 will need a separate
-   `Lint()` method or log-level warnings to emit non-fatal diagnostics
-   without breaking existing callers that treat any `Validate()` error as
-   a hard stop.
+   Implementation note: `Validate()` returns hard errors only. Phase 3
+   adds a separate `Lint()` method that returns non-fatal `[]Diagnostic`
+   warnings without breaking existing callers that treat any `Validate()`
+   error as a hard stop.
 
 4. **Phase 4 (remove):** Require `role` in all harness files. Remove the
    `agents:` block from config.yaml entirely. Agent identity and
@@ -684,14 +690,16 @@ forge-specific artifact. The harness and agent definition are portable.
   duplication. Script-level factoring (shared functions sourced by
   forge-specific scripts) is a convention, not a schema concern.
 
-- **config.yaml schema versioning.** Removing `agents:` (Phase 4) changes
-  the v1 schema contract established by ADR 0011. The current
-  `OrgConfig.Agents` field uses `yaml:"agents"` without `omitempty`,
-  meaning it is part of the v1 contract. Adding `omitempty` and treating
-  absence as "discover from harness files" is likely v1-compatible for
-  Phase 3 (deprecation), but full removal in Phase 4 may warrant a v2
-  schema. Consumers that assume `Agents` is always populated need
-  auditing.
+- **config.yaml schema versioning.** Removing `agents:` (Phase 4) changed
+  the v1 schema contract established by ADR 0011. The `OrgConfig.Agents`
+  field was removed in Phase 4; `yaml.Unmarshal` silently ignores the
+  key in existing config files, so v1 compatibility is preserved.
+  Phase 3 (PR 6) added `omitempty` as a deprecation step; Phase 4
+  completed the removal. No v2 schema bump was needed.
+  *Note: Phase 3 PR 6 added `omitempty` to the `Agents` field. The
+  Phase 4 plan (`docs/plans/adr-0045-forge-portable-harness-phase4.md`)
+  recommends staying on v1 — removal is backward-compatible since
+  `yaml.Unmarshal` silently ignores unknown keys.*
 
 - **config.yaml agents: block removal timeline.** The `agents:` block is
   removed entirely in Phase 4. Consumers that read it directly need
@@ -704,9 +712,12 @@ forge-specific artifact. The harness and agent definition are portable.
   `agent: agents/triage.md`) resolved? Options: (a) reject relative paths
   in URL-referenced bases (require all paths to be URLs or absolute),
   (b) resolve relative to the base URL's path prefix, (c) resolve
-  relative to the child harness's directory. Option (c) is the simplest
-  for Phase 1 and works because scripts are scaffolded locally — `base`
-  handles declarative config, scripts stay local.
+  relative to the child harness's directory. **Resolved: Option (b).**
+  `resolveBaseResources` fetches agent, policy, and skills relative to the
+  base URL's path prefix, caches them content-addressed, and rewrites the
+  fields to local cache paths. Scripts already used this approach via
+  `resolveBaseScripts`; extending it to declarative resources closes the
+  gap where inherited resources would fail `ValidateFilesExist`.
 
 - **host_files merge edge cases.** The merge rules specify
   last-writer-wins deduplication by `dest` path when base and child both
@@ -733,3 +744,4 @@ forge-specific artifact. The harness and agent definition are portable.
 - [Issue #101](https://github.com/fullsend-ai/fullsend/issues/101): Forge-agnostic agent interface
 - [Issue #322](https://github.com/fullsend-ai/fullsend/issues/322): Platform-specific component identification
 - [Issue #1986](https://github.com/fullsend-ai/fullsend/issues/1986): Default agents should use the same delivery mechanism as custom agents
+- [ADR 0058](0058-agent-registration.md): Agent registration — re-adds `agents` config key with URL/path semantics (supersedes the role/name/slug schema removed in Phase 4)

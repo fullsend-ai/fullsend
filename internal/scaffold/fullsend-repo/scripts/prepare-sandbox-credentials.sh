@@ -9,7 +9,7 @@ set -euo pipefail
 # endpoint, so this script pre-fetches the OIDC token and rewrites the config
 # to use a file-based credential source instead.
 #
-# Note: the OIDC token expires after ~10 min. The fullsend CLI refreshes it
+# Note: the OIDC token expires after ~5 min. The fullsend CLI refreshes it
 # automatically using FULLSEND_GCP_OIDC_URL and FULLSEND_GCP_OIDC_AUTH_FILE
 # exported below.
 #

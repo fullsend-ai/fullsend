@@ -17,6 +17,7 @@ This is not a product spec. It's an evolving exploration of a hard problem space
 - **[docs/problems/](docs/problems/)** — Deep dives into each major problem domain, each evolving independently:
   - [Intent Representation](docs/problems/intent-representation.md) — How do we capture, verify, and enforce what changes are wanted?
   - [Security Threat Model](docs/problems/security-threat-model.md) — Prompt injection, insider threats, agent drift, supply chain attacks
+  - [Tool Call Risk Assessment](docs/problems/tool-call-risk-assessment.md) — Evaluating individual tool call risk before execution, beyond pattern matching
   - [Agent Architecture](docs/problems/agent-architecture.md) — What agents exist, what authority do they have, how do they interact?
   - [Agent Infrastructure](docs/problems/agent-infrastructure.md) — Where agents run, what resources they get, 3rd party vs internal vs build our own
   - [Autonomy Spectrum](docs/problems/autonomy-spectrum.md) — When to auto-merge vs. escalate to humans
@@ -26,6 +27,7 @@ This is not a product spec. It's an evolving exploration of a hard problem space
   - [Architectural Invariants](docs/problems/architectural-invariants.md) — Enforcing things that must always be true, grounded in an organization's existing architecture documentation
   - [Agent-Compatible Code](docs/problems/agent-compatible-code.md) — Language properties that affect agent effectiveness
   - [Codebase Context](docs/problems/codebase-context.md) — How agents acquire codebase understanding and how to structure org-level context
+  - [Debugging Agentic Workflows](docs/problems/debugging.md) — Fault taxonomy, provenance chain, and classification methodology for multi-agent failures
   - [Downstream/Upstream](docs/problems/downstream-upstream.md) — How downstream contributors express business priorities and how competing sources of strategic intent get reconciled
   - [Human Factors](docs/problems/human-factors.md) — Domain ownership, role shift, review fatigue, and contributor motivation
   - [Contributor Guidance](docs/problems/contributor-guidance.md) — Making contribution rules clear to both humans and machines, without requiring AI to participate
@@ -33,11 +35,12 @@ This is not a product spec. It's an evolving exploration of a hard problem space
   - [Performance Verification](docs/problems/performance-verification.md) — Catching agent-introduced performance regressions before they reach production
   - [Production Feedback](docs/problems/production-feedback.md) — How platform execution signals feed back into what agents work on and how they assess risk
   - [Testing the Agents](docs/problems/testing-agents.md) — CI for prompts: regression testing, eval frameworks, and behavioral verification for agent instructions
-  - [GitLab Implementation](docs/problems/gitlab-implementation.md) — Implementation details for GitLab support: webhook security, dispatch pipelines, forge interface evolution
+  - [GitLab Implementation](docs/problems/gitlab-implementation.md) — Implementation details for GitLab support: cron-polling event dispatch, pipeline scheduling, forge interface evolution
   - [Operational Observability](docs/problems/operational-observability.md) — How do the humans operating an autonomous software factory understand what it is doing, debug it when it goes wrong, and improve it over time?
   - [Adaptive Agent Selection](docs/problems/adaptive-agent-selection.md) — Learning which agent/team/workflow configurations work best for which problem classes, using evolutionary algorithms and Thompson Sampling
   - [Platform Nativeness](docs/problems/platform-nativeness.md) — When the platform you automate is also the one you build on: which problems are inherent vs. self-inflicted
   - [Cross-Run Memory](docs/problems/cross-run-memory.md) — How agents learn from prior run outcomes without violating the ephemeral sandbox invariant
+  - [Trustworthiness Evidence](docs/problems/trustworthiness-evidence.md) — What evidence should be required before granting agents increasing autonomy?
 - **[docs/problems/applied/](docs/problems/applied/)** — Organization-specific considerations for downstream consumers:
   - [konflux-ci](docs/problems/applied/konflux-ci/) — Kubernetes-native CI/CD platform (the original proving ground)
 - **[docs/plans/](docs/plans/)** — Implementation plans for accepted or in-progress designs:
@@ -50,7 +53,12 @@ This is not a product spec. It's an evolving exploration of a hard problem space
   - [Vertex AI Inference Provisioning](docs/plans/vertex-inference-provisioning.md) — Provisioning and configuration for Vertex AI inference endpoints
   - [ADR-0045 Forge-Portable Harness Schema — Phase 1](docs/plans/adr-0045-forge-portable-harness-phase1.md) — Implementation plan for ADR-0045 forge-portable harness schema (Phase 1)
   - [ADR-0045 Forge-Portable Harness Schema — Phase 2](docs/plans/adr-0045-forge-portable-harness-phase2.md) — Implementation plan for ADR-0045 Phase 2: adopt new schema fields across install, scaffold, and lock flows
+  - [ADR-0045 Forge-Portable Harness Schema — Phase 3](docs/plans/adr-0045-forge-portable-harness-phase3.md) — Implementation plan for ADR-0045 Phase 3: deprecate config.yaml agents block, add Lint() diagnostics, migrate to harness-first discovery
   - [ADR-0046 Drift Scanner](docs/plans/2026-03-06-adr46-drift-scanner.md) — Implementation plan for ADR-0046 drift detection tool
+  - [Repos Management](docs/plans/repos-management.md) — Implementation plan for declarative multi-repo management
+  - [Repos Init](docs/plans/repos-init.md) — Implementation plan for `fullsend repos init` manifest bootstrapping
+  - [Agent Registration](docs/plans/agent-registration.md) — Implementation plan for config-driven agent registration and runtime resolution
+  - [Agent Extraction to Agents Repo](docs/plans/agent-extraction-to-agents-repo.md) — Plan for extracting first-party agents from the scaffold into the standalone agents repository
 - **[docs/guides/](docs/guides/)** — Practical how-to documentation for administrators and developers (see [ADR 0023](docs/ADRs/0023-user-documentation-structure.md))
 - **[docs/ADRs/](docs/ADRs/)** — Architecture Decision Records for crystallizing specific decisions (see [ADR 0001](docs/ADRs/0001-use-adrs-for-decision-making.md))
 - **[web/](web/)** — Browser-delivered assets for the public site (document graph today; future Vite app here). Cloudflare Worker config lives in [`cloudflare_site/`](cloudflare_site/) ([ADR 0019](docs/ADRs/0019-web-source-and-cloudflare-site-layout.md)).

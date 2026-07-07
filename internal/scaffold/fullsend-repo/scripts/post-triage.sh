@@ -29,7 +29,7 @@ for dir in iteration-*/output; do
 done
 
 if [[ -z "${RESULT_FILE}" ]]; then
-  echo "ERROR: agent-result.json not found in any iteration output directory"
+  echo "ERROR: agent-result.json not found in any iteration output directory" >&2
   exit 1
 fi
 
@@ -37,7 +37,7 @@ echo "Reading triage result from: ${RESULT_FILE}"
 
 # Validate JSON is parseable.
 if ! jq empty "${RESULT_FILE}" 2>/dev/null; then
-  echo "ERROR: ${RESULT_FILE} is not valid JSON"
+  echo "ERROR: ${RESULT_FILE} is not valid JSON" >&2
   exit 1
 fi
 
@@ -47,7 +47,7 @@ COMMENT=$(jq -r '.comment // empty' "${RESULT_FILE}")
 # Validate and extract repo and issue number from the HTML URL.
 # GITHUB_ISSUE_URL is e.g. https://github.com/org/repo/issues/42
 if [[ ! "${GITHUB_ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
-  echo "ERROR: GITHUB_ISSUE_URL does not match expected pattern: ${GITHUB_ISSUE_URL}"
+  echo "ERROR: GITHUB_ISSUE_URL does not match expected pattern: ${GITHUB_ISSUE_URL}" >&2
   exit 1
 fi
 REPO=$(echo "${GITHUB_ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
@@ -59,8 +59,11 @@ echo "Issue: #${ISSUE_NUMBER}"
 
 # add_label uses the labels API to avoid firing issues.edited.
 add_label() {
-  if ! gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels" -f "labels[]=$1" --silent; then
-    echo "ERROR: failed to add label '$1' to issue #${ISSUE_NUMBER}" >&2
+  local endpoint="repos/${REPO}/issues/${ISSUE_NUMBER}/labels"
+  local err_output
+  if ! err_output=$(gh api "${endpoint}" -f "labels[]=$1" --silent 2>&1); then
+    echo "ERROR: failed to add label '$1' to issue #${ISSUE_NUMBER} (POST ${endpoint})" >&2
+    [[ -n "${err_output}" ]] && echo "ERROR: ${err_output}" >&2
     exit 1
   fi
 }
@@ -98,7 +101,7 @@ DEFERRED_LABEL=""
 case "${ACTION}" in
   insufficient)
     if [[ -z "${COMMENT}" ]]; then
-      echo "ERROR: action is 'insufficient' but no comment provided"
+      echo "ERROR: action is 'insufficient' but no comment provided" >&2
       exit 1
     fi
     remove_label "blocked"
@@ -107,12 +110,12 @@ case "${ACTION}" in
 
   duplicate)
     if [[ -z "${COMMENT}" ]]; then
-      echo "ERROR: action is 'duplicate' but no comment provided"
+      echo "ERROR: action is 'duplicate' but no comment provided" >&2
       exit 1
     fi
     DUPLICATE_OF=$(jq -r '.duplicate_of' "${RESULT_FILE}")
     if [[ "${DUPLICATE_OF}" -eq "${ISSUE_NUMBER}" ]]; then
-      echo "ERROR: issue cannot be a duplicate of itself (#${ISSUE_NUMBER})"
+      echo "ERROR: issue cannot be a duplicate of itself (#${ISSUE_NUMBER})" >&2
       exit 1
     fi
     remove_label "blocked"
@@ -121,16 +124,16 @@ case "${ACTION}" in
 
   prerequisites)
     if [[ -z "${COMMENT}" ]]; then
-      echo "ERROR: action is 'prerequisites' but no comment provided"
+      echo "ERROR: action is 'prerequisites' but no comment provided" >&2
       exit 1
     fi
 
     # Read the allowlist from config.yaml. The config repo is checked out
     # at $GITHUB_WORKSPACE by the reusable workflow.
-    CONFIG_FILE="${GITHUB_WORKSPACE}/config.yaml"
+    CONFIG_FILE="${GITHUB_WORKSPACE:-/tmp}/config.yaml"
     if [[ ! -f "${CONFIG_FILE}" ]]; then
       # Per-repo mode: config is under .fullsend/
-      CONFIG_FILE="${GITHUB_WORKSPACE}/.fullsend/config.yaml"
+      CONFIG_FILE="${GITHUB_WORKSPACE:-/tmp}/.fullsend/config.yaml"
     fi
 
     ALLOWED_ORGS=""
@@ -241,7 +244,7 @@ ${FAILED_CREATES}"
 
   sufficient)
     if [[ -z "${COMMENT}" ]]; then
-      echo "ERROR: action is 'sufficient' but no comment provided"
+      echo "ERROR: action is 'sufficient' but no comment provided" >&2
       exit 1
     fi
 
@@ -249,7 +252,7 @@ ${FAILED_CREATES}"
     # If the agent identified open questions, it should have used "insufficient".
     GAP_COUNT=$(jq '.triage_summary.information_gaps // [] | length' "${RESULT_FILE}")
     if [[ "${GAP_COUNT}" -gt 0 ]]; then
-      echo "ERROR: action is 'sufficient' but triage_summary contains ${GAP_COUNT} information_gaps — open questions must block triage"
+      echo "ERROR: action is 'sufficient' but triage_summary contains ${GAP_COUNT} information_gaps — open questions must block triage" >&2
       exit 1
     fi
 
@@ -281,7 +284,7 @@ ${FAILED_CREATES}"
 
   question)
     if [[ -z "${COMMENT}" ]]; then
-      echo "ERROR: action is 'question' but no comment provided"
+      echo "ERROR: action is 'question' but no comment provided" >&2
       exit 1
     fi
     remove_label "blocked"
@@ -290,7 +293,7 @@ ${FAILED_CREATES}"
     ;;
 
   *)
-    echo "ERROR: unknown action '${ACTION}' — this may be a newer action that post-triage.sh does not handle yet"
+    echo "ERROR: unknown action '${ACTION}' — this may be a newer action that post-triage.sh does not handle yet" >&2
     exit 1
     ;;
 esac

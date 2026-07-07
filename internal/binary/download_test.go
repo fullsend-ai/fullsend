@@ -305,7 +305,7 @@ func TestResolveForVendor_DevNoCheckoutFails(t *testing.T) {
 	require.NoError(t, os.Chdir(tmpDir))
 	t.Cleanup(func() { _ = os.Chdir(origDir) })
 
-	_, err = ResolveForVendor("dev", "amd64")
+	_, err = ResolveForVendor(VendorOpts{Version: "dev", Arch: "amd64"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "dev build")
 }
@@ -335,7 +335,7 @@ func TestResolveForVendor_NoLatestFallback(t *testing.T) {
 	require.NoError(t, os.Chdir(tmpDir))
 	t.Cleanup(func() { _ = os.Chdir(origDir) })
 
-	_, err = ResolveForVendor("0.4.0", "amd64")
+	_, err = ResolveForVendor(VendorOpts{Version: "0.4.0", Arch: "amd64"})
 	require.Error(t, err)
 	assert.Equal(t, int32(0), latestCalls.Load(), "vendor path must not call latest release API")
 	assert.NotContains(t, err.Error(), "latest")
@@ -383,7 +383,7 @@ func TestResolveForVendor_ReleaseFallback(t *testing.T) {
 	require.NoError(t, os.Chdir(tmpDir))
 	t.Cleanup(func() { _ = os.Chdir(origDir) })
 
-	result, err := ResolveForVendor("0.4.0", "amd64")
+	result, err := ResolveForVendor(VendorOpts{Version: "0.4.0", Arch: "amd64"})
 	require.NoError(t, err)
 	t.Cleanup(func() { os.RemoveAll(result.TmpDir) })
 	assert.Equal(t, SourceReleaseDownload, result.Source)
@@ -574,6 +574,162 @@ func TestResolveExplicit_ValidatesELF(t *testing.T) {
 	require.NoError(t, os.WriteFile(tmp, []byte("not binary"), 0o644))
 	err := ResolveExplicit(tmp, "amd64")
 	require.Error(t, err)
+}
+
+func TestExtractSourceTreeRejectsOversizedFile(t *testing.T) {
+	origMax := maxDownloadSize
+	maxDownloadSize = 64
+	t.Cleanup(func() { maxDownloadSize = origMax })
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend-repo/large.bin",
+		Typeflag: tar.TypeReg,
+		Size:     128,
+		Mode:     0o644,
+	}))
+	_, err := tw.Write(bytes.Repeat([]byte("x"), 128))
+	require.NoError(t, err)
+	require.NoError(t, tw.Close())
+	require.NoError(t, gz.Close())
+
+	dest := t.TempDir()
+	err = extractSourceTree(bytes.NewReader(buf.Bytes()), dest)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds maximum size")
+}
+
+func TestExtractSourceTreeExtractsSmallFile(t *testing.T) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+
+	content := []byte("hello")
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend-repo/README.md",
+		Typeflag: tar.TypeReg,
+		Size:     int64(len(content)),
+		Mode:     0o644,
+	}))
+	_, err := tw.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, tw.Close())
+	require.NoError(t, gz.Close())
+
+	dest := t.TempDir()
+	require.NoError(t, extractSourceTree(bytes.NewReader(buf.Bytes()), dest))
+
+	data, err := os.ReadFile(filepath.Join(dest, "README.md"))
+	require.NoError(t, err)
+	assert.Equal(t, content, data)
+}
+
+func TestCopyDirContentsPreservesMode(t *testing.T) {
+	src := t.TempDir()
+	dst := t.TempDir()
+	script := filepath.Join(src, "run.sh")
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\n"), 0o755))
+
+	require.NoError(t, copyDirContents(src, dst))
+
+	info, err := os.Stat(filepath.Join(dst, "run.sh"))
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o755), info.Mode().Perm())
+}
+
+func TestPathWithinDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "extract")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	assert.True(t, pathWithinDir(dir, dir))
+	assert.True(t, pathWithinDir(dir, filepath.Join(dir, "nested", "file.txt")))
+	assert.False(t, pathWithinDir(dir, filepath.Join(filepath.Dir(dir), "escape.txt")))
+	assert.False(t, pathWithinDir(dir, "/etc/passwd"))
+}
+
+func TestExtractSourceTreeAggregateSizeLimit(t *testing.T) {
+	origMax := maxDownloadSize
+	maxDownloadSize = 512
+	t.Cleanup(func() { maxDownloadSize = origMax })
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+
+	chunk := bytes.Repeat([]byte("x"), 300)
+	for i := range 3 {
+		name := fmt.Sprintf("fullsend-repo/part-%d.bin", i)
+		require.NoError(t, tw.WriteHeader(&tar.Header{
+			Name:     name,
+			Typeflag: tar.TypeReg,
+			Size:     int64(len(chunk)),
+			Mode:     0o644,
+		}))
+		_, err := tw.Write(chunk)
+		require.NoError(t, err)
+	}
+	require.NoError(t, tw.Close())
+	require.NoError(t, gz.Close())
+
+	dest := t.TempDir()
+	err := extractSourceTree(bytes.NewReader(buf.Bytes()), dest)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "aggregate extracted size exceeds maximum")
+}
+
+func TestFetchSourceTree_ExtractsArchive(t *testing.T) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	content := []byte("module root")
+	require.NoError(t, tw.WriteHeader(&tar.Header{
+		Name:     "fullsend-1.0.0/go.mod",
+		Typeflag: tar.TypeReg,
+		Size:     int64(len(content)),
+		Mode:     0o644,
+	}))
+	_, err := tw.Write(content)
+	require.NoError(t, err)
+	require.NoError(t, tw.Close())
+	require.NoError(t, gz.Close())
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1.0.0.tar.gz" {
+			w.Write(buf.Bytes())
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	origBase := SourceArchiveBaseURL
+	SourceArchiveBaseURL = srv.URL
+	t.Cleanup(func() { SourceArchiveBaseURL = origBase })
+
+	dest := t.TempDir()
+	require.NoError(t, FetchSourceTree("1.0.0", dest))
+
+	data, err := os.ReadFile(filepath.Join(dest, "go.mod"))
+	require.NoError(t, err)
+	assert.Equal(t, content, data)
+}
+
+func TestFetchSourceTree_HTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	origBase := SourceArchiveBaseURL
+	SourceArchiveBaseURL = srv.URL
+	t.Cleanup(func() { SourceArchiveBaseURL = origBase })
+
+	err := FetchSourceTree("9.9.9", t.TempDir())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "returned 404")
 }
 
 // Ensure io is used in download tests.

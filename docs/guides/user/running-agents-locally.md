@@ -11,7 +11,7 @@ Linux are supported with Podman as the container runtime.
 | Requirement | macOS | Linux |
 |-------------|-------|-------|
 | Container runtime | Podman Desktop with a running machine | Podman |
-| [OpenShell](https://github.com/NVIDIA/OpenShell) | 0.0.54 | 0.0.54 |
+| [OpenShell](https://github.com/NVIDIA/OpenShell) | 0.0.72 | 0.0.72 |
 | GCP project | [Agent Platform API](https://console.cloud.google.com/apis/library/aiplatform.googleapis.com) enabled with [Claude models](https://console.cloud.google.com/vertex-ai/model-garden) enabled | Same |
 | GCP credentials | Service account key (see section below) | Same |
 | GitHub PAT | Classic PAT with `repo` scope (see section below) | Same |
@@ -51,7 +51,7 @@ to install it, here we use one similar to how we download it on Fullsend. Use th
 printed on your Fullsend workflow for better reproducibility.
 
 ```bash
-export OPENSHELL_VERSION=0.0.54
+export OPENSHELL_VERSION=0.0.72
 curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v${OPENSHELL_VERSION}/install.sh | OPENSHELL_VERSION=v${OPENSHELL_VERSION} sh
 openshell --version
 ```
@@ -146,6 +146,8 @@ Add to an env file:
 
 ```bash
 # fullsend-review.env
+# In CI, REVIEW_TOKEN is auto-minted by the binary when --mint-url is provided.
+# For local runs, supply a GitHub PAT manually:
 REVIEW_TOKEN={github-pat}
 GITHUB_PR_URL="https://github.com/{org}/{repo}/pull/{pr_number}"
 PR_NUMBER="{pr_number}"
@@ -166,13 +168,15 @@ Add to an env file:
 
 ```bash
 # fullsend-code.env
+# In CI, GH_TOKEN and PUSH_TOKEN are auto-minted by the binary when --mint-url is provided.
+# For local runs, supply GitHub PATs manually:
 GH_TOKEN={github-pat}
 PUSH_TOKEN={github-pat}
-PUSH_TOKEN_SOURCE=github-app
+PUSH_TOKEN_SOURCE=pat
 GITHUB_ISSUE_URL=https://github.com/{org}/{repo}/issues/{issue_num}
 REPO_FULL_NAME={org}/{repo}
 ISSUE_NUMBER={issue_num}
-TARGET_BRANCH=main
+CODE_ALLOWED_TARGET_BRANCHES=main
 REPO_DIR=/tmp/repo-dir
 GITHUB_WORKSPACE=/tmp/
 ```
@@ -251,7 +255,7 @@ fullsend run triage \
 ```
 
 Status comment behavior is configured via `status_notifications` in
-`config.yaml`. See the [installation guide](../../reference/installation.md#status-notifications).
+`config.yaml`. See the [operations guide](../getting-started/operations.md#status-notifications).
 
 ## Simulating Fullsend's real customization layers
 
@@ -322,8 +326,6 @@ to the server (gateway). It is likely that you need to bind the gateway to `0.0.
 **arm64 sandbox image pull fails**
 - The default `:latest` tag is amd64-only. Add `FULLSEND_SANDBOX_IMAGE=ghcr.io/fullsend-ai/fullsend-sandbox:dev` to your env file
 
-**`L7 policy validation failed: unknown protocol 'tcp'`**
-- OpenShell 0.0.54 uses `protocol: rest` (not `tcp`) and `access: read-write`/`read-only` (not `allow`). Update your policy YAML files to use the new schema. See the built-in policies in `policies/` for examples.
 
 **`unable to replace "host-gateway"` on macOS**
 - Set `host_containers_internal_ip = "192.168.127.254"` under `[containers]` in `~/.config/containers/containers.conf` and restart the Podman machine

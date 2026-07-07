@@ -3,6 +3,11 @@
 # workflow_call jobs. This is the per-repo equivalent of the per-org
 # dispatch.yml + thin caller pair.
 #
+# Concurrency: each stage job declares a per-role cancel-in-progress dispatch group.
+# Reusable stage workflows use distinct agent-scoped groups (fullsend-{stage}-agent-…)
+# so workflow_call parents are not cancelled. Roles operate independently — review
+# dispatches do not cancel triage, code, fix, etc.
+#
 # Flow: shim (per-repo) → reusable-dispatch.yml → reusable-{stage}.yml
 # Nesting: 3 levels of workflow_call (within GitHub's 4-level limit)
 #
@@ -41,7 +46,7 @@ on:
         type: string
         default: "latest"
       fullsend_ai_ref:
-        description: Ref of fullsend-ai/fullsend to load actions from. Must match the ref used in the `uses:` line that calls this workflow.
+        description: "Deprecated: stage workflows now use job.workflow_sha. Kept so existing shims that pass this input do not break."
         type: string
         required: false
         default: v0
@@ -50,6 +55,11 @@ on:
         required: false
         type: string
         default: ""
+      runner_image:
+        description: GitHub Actions runner image for agent jobs.
+        type: string
+        required: false
+        default: "ubuntu-24.04"
     secrets:
       FULLSEND_GCP_WIF_PROVIDER:
         required: false
@@ -59,17 +69,17 @@ on:
 jobs:
   route:
     name: Route
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner_image }}
     permissions:
       contents: read
       pull-requests: read
     outputs:
-      stage: ${{ steps.role-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
+      stage: ${{ steps.role-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
     steps:
       - name: Checkout caller repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
           sparse-checkout: .fullsend/config.yaml
@@ -86,8 +96,9 @@ jobs:
           COMMENT_AUTHOR_ASSOC: ${{ github.event.comment.author_association }}
           ISSUE_LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
           PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
-          ISSUE_HAS_PR: ${{ github.event.issue.pull_request && 'true' || 'false' }}
+          ISSUE_IS_PR: ${{ github.event.issue.pull_request && 'true' || 'false' }}
           ISSUE_USER_LOGIN: ${{ github.event.issue.user.login }}
+          EVENT_SENDER_LOGIN: ${{ github.event.sender.login }}
           REVIEW_STATE: ${{ github.event.review.state }}
           REVIEW_USER_LOGIN: ${{ github.event.review.user.login }}
           TRIGGERING_LABEL: ${{ github.event.label.name }}
@@ -95,17 +106,48 @@ jobs:
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
           PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
           ORG_NAME: ${{ github.repository_owner }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
           STAGE=""
           TRIGGER_SOURCE=""
 
-          is_authorized() {
-            case "${COMMENT_AUTHOR_ASSOC}" in
-              OWNER|MEMBER|COLLABORATOR) return 0 ;;
+          # Helper: check actor has write+ permission on the repo.
+          # Uses the collaborator permission API which correctly resolves org
+          # membership regardless of visibility (private vs public).
+          # See: github/gh-aw-mcpg#2862
+          has_write_permission() {
+            local username="${1:-}"
+            if [[ -z "${username}" ]]; then
+              return 1
+            fi
+            local role api_err
+            api_err=$(mktemp) || {
+              echo "::warning::Failed to create temp file for permission check of ${username}" >&2
+              return 1
+            }
+            role=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${username}/permission" \
+              --jq '.role_name' 2>"${api_err}") || {
+              echo "::warning::Permission API call failed for ${username}: $(cat "${api_err}")" >&2
+              rm -f "${api_err}"
+              return 1
+            }
+            rm -f "${api_err}"
+            case "${role}" in
+              admin|maintain|write) return 0 ;;
               *) return 1 ;;
             esac
+          }
+
+          # Slash command authorization (comment-triggered paths)
+          is_authorized() {
+            has_write_permission "${COMMENT_USER_LOGIN}"
+          }
+
+          # Event-level authorization (non-comment triggers)
+          is_event_actor_authorized() {
+            has_write_permission "${1:-}"
           }
 
           is_issue_author() {
@@ -131,18 +173,26 @@ jobs:
             issue_comment)
               case "${COMMAND}" in
                 /fs-triage)
-                  STAGE="triage"
+                  if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
+                    STAGE="triage"
+                  fi
                   ;;
                 /fs-code)
-                  if [[ "${ISSUE_HAS_PR}" == "false" ]]; then
-                    STAGE="code"
+                  if [[ "${ISSUE_IS_PR}" == "false" ]]; then
+                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
+                      STAGE="code"
+                    fi
                   fi
                   ;;
                 /fs-review)
-                  STAGE="review"
+                  if [[ "${ISSUE_IS_PR}" == "true" ]]; then
+                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
+                      STAGE="review"
+                    fi
+                  fi
                   ;;
                 /fs-fix)
-                  if [[ "${ISSUE_HAS_PR}" == "true" ]]; then
+                  if [[ "${ISSUE_IS_PR}" == "true" ]]; then
                     if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
                       STAGE="fix"
                       TRIGGER_SOURCE="${COMMENT_USER_LOGIN}"
@@ -167,6 +217,9 @@ jobs:
                   fi
                   ;;
                 *)
+                  # Intentionally weaker gate: allows external reporters to
+                  # re-trigger triage by providing clarification on needs-info
+                  # issues. Full write-permission check is not required here.
                   if has_label "needs-info" && ! has_label "feature"; then
                     if [[ "${COMMENT_USER_TYPE}" != "Bot" ]]; then
                       if [[ "${COMMENT_AUTHOR_ASSOC}" != "NONE" ]] || is_issue_author; then
@@ -179,13 +232,23 @@ jobs:
               ;;
 
             issues)
-              if [[ "${EVENT_ACTION}" == "opened" || "${EVENT_ACTION}" == "edited" ]]; then
-                STAGE="triage"
+              if [[ "${EVENT_ACTION}" == "opened" ]]; then
+                if is_event_actor_authorized "${ISSUE_USER_LOGIN}"; then
+                  STAGE="triage"
+                fi
+              elif [[ "${EVENT_ACTION}" == "edited" ]]; then
+                if is_event_actor_authorized "${EVENT_SENDER_LOGIN}"; then
+                  STAGE="triage"
+                fi
               elif [[ "${EVENT_ACTION}" == "labeled" ]]; then
-                if [[ "${TRIGGERING_LABEL}" == "ready-to-code" ]]; then
+                if [[ "${TRIGGERING_LABEL}" == "ready-for-triage" ]]; then
+                  STAGE="triage"
+                elif [[ "${TRIGGERING_LABEL}" == "ready-to-code" ]]; then
                   STAGE="code"
                 elif [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
-                  STAGE="review"
+                  if [[ "${ISSUE_IS_PR}" == "true" ]]; then
+                    STAGE="review"
+                  fi
                 fi
               fi
               ;;
@@ -193,7 +256,9 @@ jobs:
             pull_request_target)
               case "${EVENT_ACTION}" in
                 opened|synchronize|ready_for_review)
-                  STAGE="review"
+                  if is_event_actor_authorized "${PR_USER_LOGIN}"; then
+                    STAGE="review"
+                  fi
                   ;;
                 closed)
                   STAGE="retro"
@@ -233,6 +298,27 @@ jobs:
           echo "Routed to stage: ${STAGE}"
           echo "stage=${STAGE}" >> "${GITHUB_OUTPUT}"
           echo "trigger_source=${TRIGGER_SOURCE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Check for existing PRs
+        id: pr-check
+        if: steps.route.outputs.stage == 'code'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          SOURCE_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          BOT_LOGIN="fullsend-ai[bot]"
+          CODER_BOT_LOGIN="fullsend-ai-coder[bot]"
+          MENTIONING_PRS="$(gh pr list --repo "${SOURCE_REPO}" --state open \
+            --search "${ISSUE_NUMBER} in:title,body" \
+            --json number,author \
+            --jq "[.[] | select(.author.login != \"${BOT_LOGIN}\" and .author.login != \"${CODER_BOT_LOGIN}\")] | .[].number" \
+            2>/dev/null || true)"
+          if [[ -n "${MENTIONING_PRS}" ]]; then
+            echo "::notice::Open PR(s) mentioning issue #${ISSUE_NUMBER} found — skipping code dispatch"
+            echo "skipped=true" >> "${GITHUB_OUTPUT}"
+          fi
 
       - name: Validate routed stage
         if: steps.route.outputs.stage != ''
@@ -280,13 +366,17 @@ jobs:
           STAGE_ROLE="$STAGE"
           case "$STAGE" in
             code|fix) STAGE_ROLE="coder" ;;
-            retro|prioritize) STAGE_ROLE="fullsend" ;;
           esac
           ROLES=$(yq '.roles[]' .fullsend/config.yaml 2>/dev/null || echo "")
           if [[ -n "$ROLES" ]] && ! echo "$ROLES" | grep -Fqx "$STAGE_ROLE"; then
-            echo "::notice::Stage '$STAGE' skipped — role '$STAGE_ROLE' not in configured roles"
-            echo "skipped=true" >> "${GITHUB_OUTPUT}"
-            exit 0
+            # Backward compat: "fullsend" in roles implies retro + prioritize
+            if [[ "$STAGE" =~ ^(retro|prioritize)$ ]] && echo "$ROLES" | grep -Fqx "fullsend"; then
+              echo "::notice::Stage '$STAGE' allowed via 'fullsend' role — if customizing roles, add '$STAGE' explicitly"
+            else
+              echo "::notice::Stage '$STAGE' skipped — role '$STAGE_ROLE' not in configured roles"
+              echo "skipped=true" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
           fi
 
       - name: Block fork PRs for fix stage
@@ -339,8 +429,11 @@ jobs:
     name: Triage
     needs: route
     if: needs.route.outputs.stage == 'triage'
+    concurrency:
+      group: fullsend-triage-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: true
     # @v0 is hardcoded — GHA does not support expressions in uses:.
-    # fullsend_ai_ref controls the ref for composite actions inside stage workflows.
+    # Stage workflows use job.workflow_sha to self-checkout upstream defaults.
     uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@v0
     with:
       event_type: ${{ github.event_name }}
@@ -350,7 +443,7 @@ jobs:
       mint_url: ${{ inputs.mint_url }}
       gcp_region: ${{ inputs.gcp_region }}
       fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
+      runner_image: ${{ inputs.runner_image }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -359,6 +452,9 @@ jobs:
     name: Code
     needs: route
     if: needs.route.outputs.stage == 'code'
+    concurrency:
+      group: fullsend-code-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: true
     uses: fullsend-ai/fullsend/.github/workflows/reusable-code.yml@v0
     with:
       event_type: ${{ github.event_name }}
@@ -368,7 +464,7 @@ jobs:
       mint_url: ${{ inputs.mint_url }}
       gcp_region: ${{ inputs.gcp_region }}
       fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
+      runner_image: ${{ inputs.runner_image }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -377,6 +473,9 @@ jobs:
     name: Review
     needs: route
     if: needs.route.outputs.stage == 'review'
+    concurrency:
+      group: fullsend-review-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
     uses: fullsend-ai/fullsend/.github/workflows/reusable-review.yml@v0
     with:
       event_type: ${{ github.event_name }}
@@ -386,7 +485,7 @@ jobs:
       mint_url: ${{ inputs.mint_url }}
       gcp_region: ${{ inputs.gcp_region }}
       fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
+      runner_image: ${{ inputs.runner_image }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -395,6 +494,9 @@ jobs:
     name: Fix
     needs: route
     if: needs.route.outputs.stage == 'fix'
+    concurrency:
+      group: fullsend-fix-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
     uses: fullsend-ai/fullsend/.github/workflows/reusable-fix.yml@v0
     with:
       event_type: ${{ github.event_name }}
@@ -405,7 +507,7 @@ jobs:
       mint_url: ${{ inputs.mint_url }}
       gcp_region: ${{ inputs.gcp_region }}
       fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
+      runner_image: ${{ inputs.runner_image }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -414,6 +516,9 @@ jobs:
     name: Retro
     needs: route
     if: needs.route.outputs.stage == 'retro'
+    concurrency:
+      group: fullsend-retro-${{ github.repository }}-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: true
     uses: fullsend-ai/fullsend/.github/workflows/reusable-retro.yml@v0
     with:
       event_type: ${{ github.event_name }}
@@ -423,7 +528,7 @@ jobs:
       mint_url: ${{ inputs.mint_url }}
       gcp_region: ${{ inputs.gcp_region }}
       fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
+      runner_image: ${{ inputs.runner_image }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -432,6 +537,9 @@ jobs:
     name: Prioritize
     needs: route
     if: needs.route.outputs.stage == 'prioritize'
+    concurrency:
+      group: fullsend-prioritize-${{ github.repository }}-${{ github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: true
     uses: fullsend-ai/fullsend/.github/workflows/reusable-prioritize.yml@v0
     with:
       event_type: ${{ github.event_name }}
@@ -442,7 +550,7 @@ jobs:
       gcp_region: ${{ inputs.gcp_region }}
       project_number: ${{ inputs.project_number }}
       fullsend_version: ${{ inputs.fullsend_version }}
-      fullsend_ai_ref: ${{ inputs.fullsend_ai_ref }}
+      runner_image: ${{ inputs.runner_image }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}

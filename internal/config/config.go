@@ -2,19 +2,83 @@ package config
 
 import (
 	"fmt"
+	"path"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
 
+	"github.com/fullsend-ai/fullsend/internal/urlutil"
 	"gopkg.in/yaml.v3"
 )
 
-// AgentEntry represents a configured agent with its role and app identity.
+// validConfigAgentName requires an alphanumeric first character, stricter
+// than harness.validAgentName which also allows leading underscores/hyphens.
+// Config names may be used as YAML keys or filesystem identifiers downstream.
+var validConfigAgentName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
+// AgentEntry represents a registered agent source in config.
+// It supports both string shorthand (just the source URL/path) and
+// object form (with an explicit name override).
 type AgentEntry struct {
-	Role string `yaml:"role"`
-	Name string `yaml:"name"`
-	Slug string `yaml:"slug"`
+	Name   string `yaml:"name,omitempty"`
+	Source string `yaml:"source"`
 }
+
+// UnmarshalYAML implements yaml.Unmarshaler so that a plain string
+// is treated as a source-only entry, while a mapping decodes normally.
+// Old-format entries (role/name/slug identity tuples from pre-ADR-0058
+// config) are detected and rejected with a clear error message.
+func (a *AgentEntry) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		a.Source = value.Value
+		return nil
+	}
+	if value.Kind == yaml.MappingNode {
+		// Detect old-format entries (have "role" key but no "source" key).
+		hasRole := false
+		hasSource := false
+		for i := 0; i < len(value.Content)-1; i += 2 {
+			if value.Content[i].Value == "role" {
+				hasRole = true
+			}
+			if value.Content[i].Value == "source" {
+				hasSource = true
+			}
+		}
+		if hasRole && !hasSource {
+			return fmt.Errorf("agents entry uses legacy role/name/slug format (removed by ADR 0045 Phase 4); use source URL or path instead")
+		}
+
+		type plain AgentEntry
+		return value.Decode((*plain)(a))
+	}
+	return fmt.Errorf("agents entry must be a string or mapping, got %v", value.Kind)
+}
+
+// DerivedName returns the explicit Name if set, otherwise derives one
+// from the Source filename (e.g. "triage.yaml" → "triage").
+func (a AgentEntry) DerivedName() string {
+	if a.Name != "" {
+		return a.Name
+	}
+	src := a.Source
+	// Strip fragment (e.g. #sha256=...) before extracting filename.
+	if idx := strings.LastIndex(src, "#"); idx >= 0 {
+		src = src[:idx]
+	}
+	base := path.Base(src)
+	return strings.TrimSuffix(base, path.Ext(base))
+}
+
+const (
+	// DefaultUpstreamRepo is the canonical fullsend repository for layered workflow calls.
+	DefaultUpstreamRepo = "fullsend-ai/fullsend"
+	// DefaultUpstreamRef is the default tag for layered upstream workflow calls.
+	DefaultUpstreamRef = "v0"
+	// DefaultGHRunner is the default GitHub Actions runner image for scaffold workflows.
+	DefaultGHRunner = "ubuntu-24.04"
+)
 
 // DispatchConfig configures how agent work is dispatched.
 type DispatchConfig struct {
@@ -76,15 +140,15 @@ type OrgConfig struct {
 	Dispatch               DispatchConfig        `yaml:"dispatch"`
 	Inference              InferenceConfig       `yaml:"inference,omitempty"`
 	Defaults               RepoDefaults          `yaml:"defaults"`
-	Agents                 []AgentEntry          `yaml:"agents"`
 	Repos                  map[string]RepoConfig `yaml:"repos"`
+	Agents                 []AgentEntry          `yaml:"agents,omitempty"`
 	AllowedRemoteResources []string              `yaml:"allowed_remote_resources,omitempty"`
 	CreateIssues           *CreateIssuesConfig   `yaml:"create_issues,omitempty"`
 }
 
 // ValidRoles returns the set of recognized agent roles.
 func ValidRoles() []string {
-	return []string{"fullsend", "triage", "coder", "review", "fix", "retro", "prioritize"}
+	return []string{"fullsend", "triage", "coder", "review", "fix", "retro", "prioritize", "e2e"}
 }
 
 // ValidProviders returns the set of recognized inference providers.
@@ -106,8 +170,42 @@ func PerRepoDefaultRoles() []string {
 	return []string{"triage", "coder", "review", "fix", "retro", "prioritize"}
 }
 
+// DefaultAllowedRemoteResources returns the standard allowlist prefixes
+// for base composition and agent registration URLs.
+func DefaultAllowedRemoteResources() []string {
+	return []string{
+		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
+		"https://raw.githubusercontent.com/fullsend-ai/agents/",
+	}
+}
+
+// DefaultAgentEntries computes default agent URL entries for the given
+// harness names at a specific commit SHA. Each entry is a pinned
+// raw.githubusercontent.com URL with an integrity hash.
+type AgentEntryBuilder func(harnessName, commitSHA string) (string, error)
+
+// DefaultAgentEntries returns agent entries for the given harness names,
+// using builder to compute each URL. When builder is nil, it returns
+// nil (for callers that don't have access to the scaffold package).
+// Called by install/scaffold in Phase 2 (ADR 0058); defined here in
+// Phase 1 so the type and validation are co-located.
+func DefaultAgentEntries(harnessNames []string, commitSHA string, builder AgentEntryBuilder) ([]AgentEntry, error) {
+	if builder == nil || commitSHA == "" {
+		return nil, nil
+	}
+	entries := make([]AgentEntry, 0, len(harnessNames))
+	for _, name := range harnessNames {
+		urlWithHash, err := builder(name, commitSHA)
+		if err != nil {
+			return nil, fmt.Errorf("building agent URL for %s: %w", name, err)
+		}
+		entries = append(entries, AgentEntry{Source: urlWithHash})
+	}
+	return entries, nil
+}
+
 // NewOrgConfig creates a new OrgConfig with sensible defaults.
-func NewOrgConfig(allRepos, enabledRepos, roles []string, agents []AgentEntry, inferenceProvider, org string) *OrgConfig {
+func NewOrgConfig(allRepos, enabledRepos, roles []string, inferenceProvider, org string) *OrgConfig {
 	repos := make(map[string]RepoConfig, len(allRepos))
 	for _, r := range allRepos {
 		repos[r] = RepoConfig{
@@ -125,12 +223,8 @@ func NewOrgConfig(allRepos, enabledRepos, roles []string, agents []AgentEntry, i
 			MaxImplementationRetries: 2,
 			AutoMerge:                false,
 		},
-		Agents: agents,
-		Repos:  repos,
-		// Default allowlist for base: composition in harness wrappers (ADR-0045 Phase 2).
-		AllowedRemoteResources: []string{
-			"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
-		},
+		Repos:                  repos,
+		AllowedRemoteResources: DefaultAllowedRemoteResources(),
 	}
 	if inferenceProvider != "" {
 		cfg.Inference = InferenceConfig{Provider: inferenceProvider}
@@ -204,8 +298,63 @@ func (c *OrgConfig) Validate() error {
 	if err := validateStatusNotifications(c.Defaults.StatusNotifications); err != nil {
 		return err
 	}
+	if err := ValidateAgentEntries(c.Agents, c.AllowedRemoteResources); err != nil {
+		return err
+	}
 	if err := validateCreateIssues(c.CreateIssues); err != nil {
 		return err
+	}
+	return nil
+}
+
+// ValidateAgentEntries checks agent entries for structural correctness.
+// Uses urlutil.IsURL, urlutil.ParseIntegrityHash, and
+// urlutil.MatchingAllowedPrefixInList for consistency with runtime
+// resolution (case-insensitive scheme, percent-decoding, dot-segment
+// cleaning).
+func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
+	seen := make(map[string]bool, len(agents))
+	for i, entry := range agents {
+		if entry.Source == "" {
+			return fmt.Errorf("agents[%d]: source must not be empty", i)
+		}
+
+		name := entry.DerivedName()
+		if !validConfigAgentName.MatchString(name) {
+			return fmt.Errorf("agents[%d] (%s): derived name is invalid, must start with alphanumeric and contain only [a-zA-Z0-9_-] (source: %q)", i, name, entry.Source)
+		}
+		lowerName := strings.ToLower(name)
+		if seen[lowerName] {
+			return fmt.Errorf("agents[%d] (%s): duplicate agent name (case-insensitive)", i, name)
+		}
+		seen[lowerName] = true
+
+		if urlutil.IsURL(entry.Source) {
+			cleanURL, _, hasHash := urlutil.ParseIntegrityHash(entry.Source)
+			if !hasHash {
+				return fmt.Errorf("agents[%d] (%s): URL source must include a valid #sha256=<64-hex-char> integrity fragment", i, name)
+			}
+			if urlutil.MatchingAllowedPrefixInList(cleanURL, allowlist) == "" {
+				return fmt.Errorf("agents[%d] (%s): URL %q is not covered by allowed_remote_resources", i, name, cleanURL)
+			}
+		} else if strings.HasPrefix(strings.ToLower(entry.Source), "http://") {
+			return fmt.Errorf("agents[%d] (%s): URL scheme must be https, got http", i, name)
+		} else {
+			if strings.Contains(entry.Source, "://") {
+				return fmt.Errorf("agents[%d] (%s): unsupported URL scheme, only https is allowed", i, name)
+			}
+			if strings.HasPrefix(entry.Source, "/") {
+				return fmt.Errorf("agents[%d] (%s): absolute paths are not allowed", i, name)
+			}
+			if strings.ContainsRune(entry.Source, '\\') {
+				return fmt.Errorf("agents[%d] (%s): local path must not contain backslashes", i, name)
+			}
+			for _, seg := range strings.Split(entry.Source, "/") {
+				if seg == ".." {
+					return fmt.Errorf("agents[%d] (%s): local path must not contain path traversal (..)", i, name)
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -248,15 +397,6 @@ func (c *OrgConfig) DisabledRepos() []string {
 	return disabled
 }
 
-// AgentSlugs returns a map of role to slug from the configured agents.
-func (c *OrgConfig) AgentSlugs() map[string]string {
-	slugs := make(map[string]string, len(c.Agents))
-	for _, a := range c.Agents {
-		slugs[a.Role] = a.Slug
-	}
-	return slugs
-}
-
 // DefaultRoles returns the default roles configured for the organization.
 func (c *OrgConfig) DefaultRoles() []string {
 	return c.Defaults.Roles
@@ -265,10 +405,12 @@ func (c *OrgConfig) DefaultRoles() []string {
 // PerRepoConfig holds configuration for per-repo installation mode.
 // Stored in .fullsend/config.yaml within the target repository.
 type PerRepoConfig struct {
-	Version      string              `yaml:"version"`
-	KillSwitch   bool                `yaml:"kill_switch,omitempty"`
-	Roles        []string            `yaml:"roles,omitempty"`
-	CreateIssues *CreateIssuesConfig `yaml:"create_issues,omitempty"`
+	Version                string              `yaml:"version"`
+	KillSwitch             bool                `yaml:"kill_switch,omitempty"`
+	Roles                  []string            `yaml:"roles,omitempty"`
+	Agents                 []AgentEntry        `yaml:"agents,omitempty"`
+	AllowedRemoteResources []string            `yaml:"allowed_remote_resources,omitempty"`
+	CreateIssues           *CreateIssuesConfig `yaml:"create_issues,omitempty"`
 }
 
 const perRepoConfigHeader = `# fullsend per-repo configuration
@@ -284,8 +426,9 @@ func NewPerRepoConfig(roles []string, targetRepo string) *PerRepoConfig {
 		roles = DefaultAgentRoles()
 	}
 	cfg := &PerRepoConfig{
-		Version: "1",
-		Roles:   roles,
+		Version:                "1",
+		Roles:                  roles,
+		AllowedRemoteResources: DefaultAllowedRemoteResources(),
 	}
 	if targetRepo != "" {
 		cfg.CreateIssues = &CreateIssuesConfig{
@@ -295,6 +438,21 @@ func NewPerRepoConfig(roles []string, targetRepo string) *PerRepoConfig {
 		}
 	}
 	return cfg
+}
+
+// OrgConfigFromPerRepo adapts a PerRepoConfig into an OrgConfig so callers
+// that expect OrgConfig can work uniformly with both config formats. Shared
+// fields and Roles (mapped to Defaults.Roles) are copied; OrgConfig-specific
+// fields (Dispatch, Inference, Repos) remain zero-valued.
+func OrgConfigFromPerRepo(pr *PerRepoConfig) *OrgConfig {
+	return &OrgConfig{
+		Version:                pr.Version,
+		KillSwitch:             pr.KillSwitch,
+		Defaults:               RepoDefaults{Roles: pr.Roles},
+		Agents:                 pr.Agents,
+		AllowedRemoteResources: pr.AllowedRemoteResources,
+		CreateIssues:           pr.CreateIssues,
+	}
 }
 
 // ParsePerRepoConfig parses YAML bytes into a PerRepoConfig.
@@ -330,6 +488,9 @@ func (c *PerRepoConfig) Validate() error {
 			return fmt.Errorf("duplicate role %q in roles", role)
 		}
 		seen[role] = true
+	}
+	if err := ValidateAgentEntries(c.Agents, c.AllowedRemoteResources); err != nil {
+		return err
 	}
 	if err := validateCreateIssues(c.CreateIssues); err != nil {
 		return err

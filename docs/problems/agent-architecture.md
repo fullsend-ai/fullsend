@@ -88,7 +88,7 @@ The distinction matters because the failure modes are asymmetric. A narrow fix t
 
 When the triage agent identifies a bug that likely recurs but doesn't qualify for broad remediation, it should:
 
-1. Fix the reported instance (normal Tier 1 flow)
+1. Fix the reported instance (normal intent authorization tier 1 flow)
 2. Search the codebase for structurally similar patterns
 3. For each candidate location, create a **derivative issue** linked to the original, containing:
    - The location and the pattern match
@@ -97,11 +97,11 @@ When the triage agent identifies a bug that likely recurs but doesn't qualify fo
 
 This keeps each fix scoped and individually reviewable while ensuring the broader problem doesn't get forgotten. The priority agent can then decide whether to batch derivative issues or address them individually based on severity and available capacity.
 
-##### Interaction with the tier model
+##### Interaction with the intent authorization tier model
 
-Broad pattern remediation has a tier escalation risk. A single nil-check fix is Tier 1 (bug fix with a linked issue). But "apply nil-check discipline across the entire codebase and add a linter rule" may be Tier 2 — it's a codebase-wide convention change, not a surgical fix. The triage agent should flag this when recommending broad remediation, and the review agent must independently assess whether the scope warrants tier escalation (see [intent-representation.md](intent-representation.md#defense-independent-tier-classification-by-review-agents)).
+Broad pattern remediation has an intent authorization tier escalation risk. A single nil-check fix is intent authorization tier 1 (bug fix with a linked issue). But "apply nil-check discipline across the entire codebase and add a linter rule" may be intent authorization tier 2 — it's a codebase-wide convention change, not a surgical fix. The triage agent should flag this when recommending broad remediation, and the review agent must independently assess whether the scope warrants intent authorization tier escalation (see [intent-representation.md](intent-representation.md#defense-independent-intent-authorization-tier-classification-by-review-agents)).
 
-Conversely, if the triage agent creates 30 derivative issues for the same pattern, that's a signal that broad remediation would have been cheaper. The quality/drift detection agent (which monitors aggregate trends) should detect this accumulation and recommend consolidation into a single pattern-level issue — potentially escalating to Tier 2 if the scope warrants it.
+Conversely, if the triage agent creates 30 derivative issues for the same pattern, that's a signal that broad remediation would have been cheaper. The quality/drift detection agent (which monitors aggregate trends) should detect this accumulation and recommend consolidation into a single pattern-level issue — potentially escalating to intent authorization tier 2 if the scope warrants it.
 
 ##### When the boundary is unclear
 
@@ -166,7 +166,7 @@ Agents interact through GitHub's existing mechanisms:
 
 - **Status checks** — review sub-agents post pass/fail results
 - **PR comments** — structured findings, change requests, suggestions
-- **Labels** — classification signals (tier, priority, scope)
+- **Labels** — classification signals (intent authorization tier, priority, scope)
 - **Commit status** — CI results, test outcomes
 
 There is no side channel. No agent-to-agent API. No shared state outside the repo. This means:
@@ -182,7 +182,7 @@ Without a coordinator, what happens when agents disagree? (e.g., correctness age
 
 - **Security and intent sub-agents have veto power** via required status checks. If they block, the PR doesn't merge. This is configured in branch protection, not in agent logic.
 - **The code agent can iterate** — push new commits to address blocking concerns, which re-triggers the review sub-agents
-- **Persistent disagreement escalates to humans** — if a code agent can't satisfy a blocking reviewer after N iterations, the PR is flagged for human intervention. This is a safeguard against infinite loops, not a normal path. The escalation can use [dual-interpretation escalation](code-review.md#dual-interpretation-escalation) to present the human with the approving and blocking agents' readings — while making clear the human can reject both framings or the PR itself — so the human resolves the disagreement quickly rather than re-reviewing the entire PR.
+- **Persistent disagreement escalates to humans** — if a code agent can't satisfy a blocking reviewer after N iterations, the PR is flagged for human intervention. This is a safeguard against infinite loops, not a normal path. See [flapping-convergence.md](flapping-convergence.md) for detection mechanisms and response strategies when agents fail to converge. The escalation can use [dual-interpretation escalation](code-review.md#dual-interpretation-escalation) to present the human with the approving and blocking agents' readings — while making clear the human can reject both framings or the PR itself — so the human resolves the disagreement quickly rather than re-reviewing the entire PR.
 - **Humans can always override** — a human with approval rights can approve despite agent objections. The system assists; humans retain ultimate authority.
 
 ## Relationship to multi-agent frameworks

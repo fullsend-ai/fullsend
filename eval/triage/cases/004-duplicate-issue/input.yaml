@@ -1,0 +1,32 @@
+forge: github
+fixture:
+  type: issue
+  title: "500 error on login with plus sign in email"
+  body: |
+    When I enter my email `firstname+work@gmail.com` on the login page,
+    the server returns a 500 error. Regular emails without a `+` work fine.
+
+    This started happening after the last deploy.
+
+# Pre-existing issues seeded before the fixture is created.
+# The agent should find issue #1 when searching for duplicates.
+seed_issues:
+  - title: "Login fails with 500 when email contains +"
+    body: |
+      ## Bug Report
+
+      **What happened:**
+      When I try to log in with an email address that contains a `+`
+      character (e.g. `user+tag@example.com`), the server returns a
+      500 Internal Server Error.
+
+      **Steps to reproduce:**
+      1. Go to the login page
+      2. Enter `user+tag@example.com` as the email
+      3. Enter any valid password
+      4. Click "Sign In"
+      5. Observe 500 error
+
+      **Environment:**
+      - Browser: Chrome 125
+      - OS: macOS 14.5

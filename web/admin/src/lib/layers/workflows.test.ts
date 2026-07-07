@@ -1,11 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LayerGithub } from "./githubClient";
 import { analyzeWorkflowsLayer } from "./workflows";
-import {
-  AGENT_WORKFLOW_PATH,
-  CODEOWNERS_PATH,
-  ONBOARD_WORKFLOW_PATH,
-} from "./constants";
+import { AGENT_WORKFLOW_PATH, CODEOWNERS_PATH, ONBOARD_WORKFLOW_PATH } from "./constants";
 
 function mockGh(map: Record<string, string | null>): LayerGithub {
   return {
@@ -45,15 +41,9 @@ describe("analyzeWorkflowsLayer", () => {
   });
 
   it("degraded when partially present", async () => {
-    const r = await analyzeWorkflowsLayer(
-      "acme",
-      mockGh({ [AGENT_WORKFLOW_PATH]: "a" }),
-    );
+    const r = await analyzeWorkflowsLayer("acme", mockGh({ [AGENT_WORKFLOW_PATH]: "a" }));
     expect(r.status).toBe("degraded");
     expect(r.details).toEqual([`${AGENT_WORKFLOW_PATH} exists`]);
-    expect(r.wouldFix).toEqual([
-      `write ${ONBOARD_WORKFLOW_PATH}`,
-      `write ${CODEOWNERS_PATH}`,
-    ]);
+    expect(r.wouldFix).toEqual([`write ${ONBOARD_WORKFLOW_PATH}`, `write ${CODEOWNERS_PATH}`]);
   });
 });

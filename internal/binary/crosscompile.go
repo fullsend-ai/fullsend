@@ -14,6 +14,7 @@ type CrossCompileOpts struct {
 	Arch         string
 	DestPath     string
 	VersionStamp string // e.g. "-vendored", "-crosscompiled", or ""
+	SourceDir    string // optional module root; defaults to ModuleRoot()
 }
 
 // ModuleRoot returns the fullsend module root directory, or an error if not
@@ -35,6 +36,16 @@ func ModuleRoot() (string, error) {
 	return filepath.Dir(modPath), nil
 }
 
+func resolveBuildRoot(sourceDir string) (string, error) {
+	if sourceDir != "" {
+		if err := ValidateSourceRoot(sourceDir); err != nil {
+			return "", err
+		}
+		return filepath.Abs(sourceDir)
+	}
+	return ModuleRoot()
+}
+
 // CrossCompile builds a Linux fullsend binary and writes it to DestPath.
 // Requires the Go toolchain and a fullsend module checkout (go env GOMOD).
 func CrossCompile(opts CrossCompileOpts) error {
@@ -43,7 +54,7 @@ func CrossCompile(opts CrossCompileOpts) error {
 		return fmt.Errorf("Go toolchain not found — install Go or use a released version of fullsend: %w", lookErr)
 	}
 
-	modRoot, err := ModuleRoot()
+	modRoot, err := resolveBuildRoot(opts.SourceDir)
 	if err != nil {
 		return fmt.Errorf("not in a Go module — run from the fullsend source tree or use a released version: %w", err)
 	}

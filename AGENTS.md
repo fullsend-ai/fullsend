@@ -10,8 +10,8 @@ Fullsend is a platform for fully autonomous agentic development for GitHub-hoste
 - The security threat model (threat priority: external injection > insider > drift > supply chain) should inform all other documents.
 - Keep core problem documents organization-agnostic. Organization-specific details belong in `docs/problems/applied/<org-name>/`.
 - The target audience for problem documents is any contributor community considering autonomous agents — keep language accessible and avoid presuming solutions.
-- Always run `make lint` before submitting changes and fix any failures.
-- You **must** read and follow [COMMITS.md](COMMITS.md) when writing or reviewing commit messages. Getting the prefix right is not optional — GoReleaser uses it to build release notes.
+- Always stage your changes before running `make lint` and fix any failures. Pre-commit only checks staged files — without staging first, it stashes your work and finds nothing to lint.
+- You **must** read and follow [COMMITS.md](COMMITS.md) when writing or reviewing commit messages and PR titles. Getting the prefix right is not optional — GoReleaser uses PR titles to build release notes. Breaking changes **must** carry the `!` suffix in both commit messages and PR titles; a missing `!` is an important-severity review finding.
 - This repository requires a [Developer Certificate of Origin (DCO)](https://developercertificate.org/). Human-proposed commits **must** be signed off: use `git commit -s` (or add `Signed-off-by: Your Name <email>` as a trailer). Human-driven agent sessions (e.g., using Claude Code locally) should also sign off — the human directing the session is the one certifying the DCO. **Autonomous agent commits are exempt** and must never supply the DCO with `-s` or with `Signed-off-by`. These agents commit using the GitHub App's bot identity, which the [Probot DCO app](https://github.com/apps/dco) auto-skips.
 - Never commit secrets (tokens, API keys, PEM keys, gcloud credentials) or sensitive data (GCP project names, service account identifiers, Model Armor template names, internal hostnames). Use environment variables with no defaults for sensitive values.
 
@@ -23,6 +23,8 @@ Fullsend is a platform for fully autonomous agentic development for GitHub-hoste
 
 When changing `internal/mint/main.go`, always copy it to `internal/dispatch/gcf/mintsrc/main.go.embed`. If `go.mod` or `go.sum` changed, sync those to `go.mod.embed` and `go.sum.embed` too.
 
+**Standalone mint:** `cmd/mint/` is a standalone HTTP server variant of the token mint that serves the same purpose as the GCF mint (`internal/mint/`) but runs without GCP infrastructure. Both use the shared `internal/mintcore/` library for token minting logic; they differ only in deployment model (filesystem PEM vs Secret Manager, JWKS vs STS verification). It supports custom role permissions via `CUSTOM_ROLE_PERMISSIONS` and a fallback proxy to an upstream mint. It has its own `go.mod` and tests run from `cmd/mint/`.
+
 **Mint client:** `internal/mintclient/` is the Go client for calling the mint service at runtime. It exchanges a GitHub Actions OIDC JWT for a role-scoped installation token. Unlike `internal/mint/` and `internal/mintcore/`, it has no embedded copies or sync requirements.
 
 The `internal/mintcore/` module is shared between the mint and devmint. Its files are also embedded for Cloud Function deployment at `internal/dispatch/gcf/mintsrc/mintcore/*.embed`. When changing any file in `internal/mintcore/`, sync it to the corresponding `.embed` file under `mintsrc/mintcore/`. Note: the mint's `go.mod.embed` uses `replace mintcore => ./mintcore` (not `../mintcore`), because `provisioner.go` rewrites the replace directive at bundle time to match the deployed directory layout.
@@ -32,19 +34,46 @@ The `internal/mintcore/` module is shared between the mint and devmint. Its file
 When making changes to Go code under `cmd/` or `internal/`:
 
 1. **Unit tests:** Run `make go-test` (or `go test ./...`) and fix any failures before committing.
-2. **Vet:** Run `make go-vet` to catch common issues.
-3. **E2E tests:** Run `make e2e-test` if your changes touch `internal/appsetup/`, `internal/forge/`, `internal/cli/`, or `internal/layers/`. These tests exercise the full admin install/uninstall flow against a live GitHub org using Playwright browser automation.
+2. **Coverage:** CI enforces thresholds via [Codecov](https://about.codecov.io/) (see [`.codecov.yml`](.codecov.yml)). **Patch coverage** on changed lines must meet **80%** (with a 5% tolerance). **Project coverage** must not drop more than **1%** below the base branch. `make go-test` runs tests with `-cover` locally but does not enforce these thresholds — a PR can still fail the Codecov status check if new or changed code lacks tests. Add or extend `_test.go` files for logic you introduce or modify.
+3. **Vet:** Run `make go-vet` to catch common issues.
+4. **E2E tests:** Run `make e2e-test` if your changes touch `internal/appsetup/`, `internal/forge/`, `internal/cli/`, or `internal/layers/`. These tests exercise the full admin install/uninstall flow against live GitHub pool orgs using mint/OIDC authentication.
 
 ### Running e2e tests
 
-The e2e tests require GitHub credentials. There are three ways to provide them:
+The e2e tests mint short-lived GitHub App installation tokens via the central token mint. Pool-org admin operations use mint/OIDC in CI and do not require a dedicated mint URL secret.
 
-- **`E2E_GITHUB_PASSWORD` env var:** Set directly with the password.
-- **`E2E_GITHUB_PASSWORD_FILE` env var:** Set to a file path containing the password (used in devaipod environments where secrets are mounted as files).
-- **`E2E_GITHUB_SESSION_FILE` env var:** Set to a pre-exported Playwright session file (skips login).
-- **`E2E_GITHUB_TOTP_SECRET` env var:** Optional. The TOTP secret (base32) for the test account's 2FA. Required only when the test account has 2FA enabled — used during session export and sudo confirmation.
+- **CI (mint):** Uses the hosted public mint (same default as `fullsend admin --mint-url`) with the workflow's OIDC identity. The e2e workflow exchanges the OIDC JWT for an `e2e`-role installation token on the pool org. Override with `FULLSEND_MINT_URL` if needed.
+- **Local:** Run `gh auth login` (or set `GH_TOKEN` / `GITHUB_TOKEN` with pool-org admin access). Mint uses `FULLSEND_MINT_URL` or the hosted default.
 
-If only `E2E_GITHUB_USERNAME` and a password source are available, `make e2e-test` will automatically generate a session file before running tests. See `make help` for all available targets.
+See `docs/guides/dev/e2e-testing.md` and `make help` for pool org setup and troubleshooting.
+
+## Shell scripting
+
+### `gh api --paginate` and jq
+
+`gh api --paginate` applies the `--jq` expression **independently to each page** of results, not to the combined output. This is a documented `gh` CLI behavior and a common source of bugs.
+
+**Do not** use aggregating jq filters directly in `--jq` with `--paginate`:
+
+```bash
+# WRONG — `length` runs per-page; produces one number per page, not a total
+count=$(gh api --paginate /repos/{owner}/{repo}/issues/comments --jq 'length')
+```
+
+**Do** collect all pages first, then pipe to a separate `jq -s` (slurp) call. `jq -s` slurps the input into an array; use `add` to flatten before aggregating:
+
+```bash
+# CORRECT — slurp all pages, flatten with add, then aggregate
+count=$(gh api --paginate /repos/{owner}/{repo}/issues/comments | jq -s 'add | length')
+```
+
+Without `--jq`, `gh api --paginate` merges all page arrays into a single flat JSON array before writing to stdout. `jq -s` then wraps that into an array-of-one; `add` unwraps it back to the flat array, and the aggregating filter runs once over all items. This pattern is defensive — it works correctly whether the upstream emits one merged array or (as when `--jq` is present) one array per page.
+
+This applies to any aggregating filter: `length`, `sort_by`, `group_by`, `add`, `min_by`, `max_by`, etc. If the filter only selects or transforms individual items (e.g., `.[] | .id`), per-page application is fine — but pipe the result through a final `jq -s` step before any cross-page aggregation.
+
+**When reviewing shell scripts:** Flag `--paginate --jq '... | length'` (or any other aggregating filter in `--jq`) as a medium-severity finding. The fix is always to move the aggregation to a separate `| jq -s 'add | ...'` pipe.
+
+**Alternative — `--slurp` flag:** When no inline `--jq` transform is needed, `gh api --paginate --slurp` combines pages into a single array directly. However, `--slurp` is mutually exclusive with `--jq` (errors with `"the --slurp option is not supported with --jq or --template"`), so the `| jq -s 'add | ...'` pipe pattern is required whenever you also need per-item filtering.
 
 ## Forge abstraction
 
@@ -62,6 +91,8 @@ All git forge operations (GitHub API calls, PR comments, issue creation, workflo
 
 **When reviewing PRs:** Flag any direct `exec.Command("gh", ...)`, raw GitHub API calls, or other forge-specific operations outside `internal/forge/github/` as a medium-severity or higher finding. This is an architectural violation, not a style preference.
 
+**Action workflows (`action.yml`):** The forge abstraction extends to `action.yml` bash scripts. New GitHub API operations in action steps should be implemented as `fullsend` CLI subcommands (under `internal/cli/`) that use `forge.Client`, not as inline `gh api` calls. Existing `gh api` calls in `action.yml` that predate this rule are grandfathered but should be migrated when touched.
+
 ## Architecture Decision Records (ADRs)
 
 These rules apply whenever you touch `docs/ADRs/` or review a PR that does. Full authoring guidance is in [`skills/writing-adrs/SKILL.md`](skills/writing-adrs/SKILL.md); invoke that skill when writing a new ADR.
@@ -71,6 +102,39 @@ These rules apply whenever you touch `docs/ADRs/` or review a PR that does. Full
 **New ADRs in pull requests:** Approval happens at **merge**, not when the branch is created. If the decision is made, set status to **Accepted** in the ADR you are proposing — not a lesser status merely because the PR is open. Valid statuses are **Accepted**, **Deprecated**, and **Superseded**. When status is Accepted, update `docs/architecture.md` and related problem docs in the same PR per the writing-adrs skill.
 
 **When reviewing PRs:** Flag substantial rewrites to Context, Decision, or Consequences on Accepted ADRs already on `main` as a policy violation. Allow minor annotations (cross-references, short notes, typo fixes), status updates, and supersession links. For brand-new ADR files on the PR branch, evaluate whether the recorded decision matches the diff — do not treat **Accepted** on a new file as a mistake if the ADR is ready for human review at merge.
+
+## Documentation site
+
+When adding a new doc under `docs/`, check `website/.vitepress/config.ts` sidebar config. Sections using `getMarkdownFiles()` are auto-discovered. All other sections need a manual `{ text, link }` entry.
+
+## Sandbox image topology
+
+Fullsend agents run inside sandboxed containers. Two images exist in a
+parent–child hierarchy; which image an agent uses depends on whether it
+needs a compiled-language toolchain.
+
+```
+ghcr.io/nvidia/openshell-community/sandboxes/base   (upstream)
+  └── fullsend-sandbox                                (base sandbox)
+        └── fullsend-code                             (extends base with Go)
+```
+
+| Image | Agents | Run frequency | Key additions over parent |
+|-------|--------|---------------|--------------------------|
+| `fullsend-sandbox` | triage, prioritize, retro | High (most agent runs) | Claude Code, jq, gitleaks, acli, pre-commit, gitlint, tirith, ProtectAI DeBERTa model |
+| `fullsend-code` | code, fix, review | Lower (code/fix are the least-run agents; review runs per-PR) | Go toolchain, scan-secrets, gopls, lychee |
+
+Harness definitions that map agents to images live in
+`internal/scaffold/fullsend-repo/harness/*.yaml` (the `image:` field).
+Image Containerfiles live in `images/sandbox/` and `images/code/`.
+The CI build pipeline is `.github/workflows/sandbox-images.yml`.
+
+**When reviewing CI changes:** If a PR modifies image pulling, caching,
+or pre-warming logic in `action.yml`, consider which agent types are
+affected. Changes that only benefit `fullsend-code` have a smaller blast
+radius (fewer agent runs) than changes to `fullsend-sandbox`. A cache or
+pull optimization may not be worth the complexity if it only helps the
+least-frequently-run agents.
 
 ## Key design decisions made
 
@@ -82,3 +146,26 @@ These rules apply whenever you touch `docs/ADRs/` or review a PR that does. Full
 - **CODEOWNERS files are always human-owned.** Agents cannot modify their own guardrails.
 - **The repo is the coordinator.** No coordinator agent — branch protection, CODEOWNERS, and status checks are the coordination layer.
 - **Organization-specific content is cordoned.** Core problem docs are general; applied considerations live in `docs/problems/applied/`.
+
+## Vouch System
+
+- First-time external contributors must be vouched before their PRs are accepted. The `vouch-check` workflow auto-closes PRs from unvouched users.
+- Org members and collaborators with write access bypass the vouch gate automatically.
+- Maintainers vouch users by commenting `/vouch` on a Vouch Request discussion. The `vouch-command` workflow appends the username to `.github/VOUCHED.td` on the `vouched` branch.
+- Agent bot identities (`fullsend-ai-*[bot]`, `renovate-fullsend[bot]`, `github-actions[bot]`) are skipped automatically because they have `user.type: 'Bot'`.
+- The `vouched` branch is protected — only the `vouch-command` workflow (via `GITHUB_TOKEN`) can push to it. Do not push to, rebase, or target PRs at the `vouched` branch.
+- The vouch gate is separate from the e2e authorization gate. Vouch determines whether a PR stays open; e2e authorization determines whether tests run.
+- PRs from unvouched external contributors are automatically closed with a comment linking to the vouch process.
+- PRs should follow the PR template structure: Summary, Related Issue, Changes, Testing, Checklist.
+
+## Terminology: tier conventions
+
+The term "tier" is used in multiple distinct contexts across this codebase. Always use a descriptive prefix to avoid ambiguity:
+
+| Prefix | Meaning | Defined in |
+|---|---|---|
+| **credential delivery tier** | The four-tier model for how agents receive credentials: (1) prefetch + post-process, (2) providers + L7, (3) host-side REST server, (4) host files | [ADR 0025](docs/ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md) |
+| **intent authorization tier** | The four-tier model for change authorization: (0) standing rules, (1) tactical/issue, (2) strategic, (3) organizational | [intent-representation.md](docs/problems/intent-representation.md) |
+| **configuration tier** | The three-tier inheritance model for agent configuration: upstream defaults → org config → per-repo overrides | [ADR 0035](docs/ADRs/0035-layered-content-resolution.md) |
+
+**Do not** use bare "Tier N" or "tier" without a prefix — the same number means different things in different contexts (e.g., "Tier 2" could be provider-based credential delivery or strategic intent authorization). External tier references (e.g., "GitLab Free tier", "GitHub plan tiers") are exempt from this convention.

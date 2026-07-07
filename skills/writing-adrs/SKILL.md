@@ -138,7 +138,7 @@ Follow these steps in order:
    Options section only when there are genuine alternatives worth documenting;
    if the decision is obvious, just decide it.
 5. **Write the ADR.** Follow the conciseness rules above.
-6. **Run linters.** Execute `make lint` and fix any errors before committing.
+6. **Run linters.** Stage your changes, then execute `make lint` and fix any errors before committing.
 7. **If status is Accepted, update living documents** (see below).
 
 ## Updating Living Documents After Acceptance
@@ -199,7 +199,7 @@ If the ADR partially answers a question, add a parenthetical:
 - You wrote "Additionally, we decide..." -- split into two ADRs
 - You're rewriting a section of architecture.md -- make a surgical edit instead
 - `relates_to` lists more than 3 problem docs -- the decision may be too broad
-- You didn't run `make lint` -- stop and run it
+- You didn't stage and run `make lint` -- stop and do it
 - You're substantially rewriting the Context, Decision, or Consequences of an
   accepted ADR -- write a new superseding ADR instead
 - You're turning an old ADR into a running changelog -- use
@@ -214,7 +214,7 @@ If the ADR partially answers a question, add a parenthetical:
 | Forgetting frontmatter `relates_to` | Check template, list problem doc filenames |
 | Not updating architecture.md | Follow the update checklist above |
 | Rewriting existing doc sections | Make surgical additions only |
-| Skipping linters | Run `make lint` before committing |
+| Skipping linters | Stage changes, then run `make lint` before committing |
 | Wrong ADR number | Check existing files in `docs/ADRs/` first |
 | Substantially rewriting an accepted ADR | Write a new ADR that supersedes it |
 | Omitting cross-references to related ADRs | Link older ADRs to newer related decisions |

@@ -11,24 +11,79 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v7
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
           version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Move v0 floating tag
+        if: "!contains(github.ref_name, '-')"
+        run: |
+          set -euo pipefail
+          CURRENT=""
+          if git rev-parse v0 >/dev/null 2>&1; then
+            CURRENT=$(git rev-parse v0)
+            if ! git merge-base --is-ancestor "${CURRENT}" "${GITHUB_SHA}"; then
+              echo "::warning::v0 already points at a newer commit, skipping"
+              exit 0
+            fi
+          fi
+          git tag -f v0 "${GITHUB_SHA}"
+          if [[ -n "${CURRENT}" ]]; then
+            git push --force-with-lease="v0:${CURRENT}" origin v0
+          else
+            git push origin v0
+          fi
+
+      # Sync the version tag to fullsend-ai/agents. Runs for all tags
+      # including pre-releases — agents' own release.yml handles
+      # pre-release semantics. Intentionally coupled to the v0 step:
+      # if the v0 move fails, the release state is suspect and agents
+      # should not be tagged until the issue is investigated.
+      - name: Generate agents repo token
+        id: agents-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          repositories: agents
+
+      - name: Push tag to fullsend-ai/agents
+        env:
+          GH_TOKEN: ${{ steps.agents-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+
+          HTTP_CODE=$(gh api "repos/fullsend-ai/agents/git/ref/tags/${TAG}" \
+            --include 2>/dev/null | head -1 | awk '{print $2}') || true
+          if [[ "${HTTP_CODE}" == "200" ]]; then
+            echo "Tag ${TAG} already exists on fullsend-ai/agents, skipping"
+            exit 0
+          elif [[ "${HTTP_CODE}" != "404" ]]; then
+            echo "::error::Unexpected response (HTTP ${HTTP_CODE}) checking tag on fullsend-ai/agents"
+            exit 1
+          fi
+
+          AGENTS_SHA=$(gh api repos/fullsend-ai/agents/git/ref/heads/main --jq '.object.sha')
+          gh api repos/fullsend-ai/agents/git/refs \
+            -f ref="refs/tags/${TAG}" \
+            -f sha="${AGENTS_SHA}"
+          echo "Created tag ${TAG} on fullsend-ai/agents at ${AGENTS_SHA}"

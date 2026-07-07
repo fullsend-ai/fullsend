@@ -1,10 +1,10 @@
 # Testing the Agents
 
-We have CI for code, but no CI for prompts. If someone tweaks the Intent & Coherence sub-agent's instructions, how do we prove it didn't forget how to detect Tier Escalation?
+We have CI for code, but no CI for prompts. If someone tweaks the Intent & Coherence sub-agent's instructions, how do we prove it didn't forget how to detect intent authorization tier escalation?
 
 ## Why this is a distinct problem
 
-Testing application code is a solved problem with mature tooling: unit tests, integration tests, CI pipelines, coverage reports. But agent instructions — system prompts, CLAUDE.md files, review criteria, escalation rules — are a fundamentally different artifact. They're natural language, not code. Their behavior is probabilistic, not deterministic. And the consequences of a regression can be severe: an agent that silently stops catching tier escalation, or starts rubber-stamping security-sensitive changes, or loses its ability to detect prompt injection.
+Testing application code is a solved problem with mature tooling: unit tests, integration tests, CI pipelines, coverage reports. But agent instructions — system prompts, CLAUDE.md files, review criteria, escalation rules — are a fundamentally different artifact. They're natural language, not code. Their behavior is probabilistic, not deterministic. And the consequences of a regression can be severe: an agent that silently stops catching intent authorization tier escalation, or starts rubber-stamping security-sensitive changes, or loses its ability to detect prompt injection.
 
 Today, if someone modifies a review agent's instructions, the only verification is human review of the prose change. There is no automated way to confirm the agent still behaves correctly after the modification. This is the equivalent of shipping code changes with no test suite — something we would never accept for application code.
 
@@ -20,7 +20,7 @@ An agent's behavior is the product of its instructions, the model it runs on, th
 
 ### Absence detection
 
-The hardest bugs to catch are capabilities that silently disappear. If someone simplifies the Intent & Coherence sub-agent's instructions and removes the paragraph about tier escalation detection, the agent won't error — it will simply stop checking for tier escalation. There's no compile error, no stack trace, no failing import. The capability quietly vanishes, and you only discover it when a tier-gaming attack succeeds.
+The hardest bugs to catch are capabilities that silently disappear. If someone simplifies the Intent & Coherence sub-agent's instructions and removes the paragraph about intent authorization tier escalation detection, the agent won't error — it will simply stop checking for intent authorization tier escalation. There's no compile error, no stack trace, no failing import. The capability quietly vanishes, and you only discover it when an intent-authorization-tier-gaming attack succeeds.
 
 ### Interaction effects
 
@@ -43,7 +43,7 @@ When someone modifies an agent's system prompt, CLAUDE.md, or configuration:
 
 ### Capability coverage
 
-For each agent role described in [agent-architecture.md](agent-architecture.md) and [code-review.md](code-review.md), there's an implicit set of capabilities. The Intent & Coherence sub-agent should detect tier escalation. The Security sub-agent should catch known injection patterns and flag RBAC changes. These capabilities need explicit test coverage.
+For each agent role described in [agent-architecture.md](agent-architecture.md) and [code-review.md](code-review.md), there's an implicit set of capabilities. The Intent & Coherence sub-agent should detect intent authorization tier escalation. The Security sub-agent should catch known injection patterns and flag RBAC changes. These capabilities need explicit test coverage.
 
 ### Cross-agent composition
 
@@ -63,7 +63,7 @@ Maintain a curated set of test cases — inputs with known-correct outputs — f
 agent-tests/
   intent-coherence/
     golden-set/
-      tier-escalation-detection.yaml
+      intent-tier-escalation-detection.yaml
       scope-mismatch.yaml
       cross-repo-intent.yaml
     ...
@@ -81,7 +81,7 @@ Each test case specifies an input (a synthetic PR, issue, or diff) and the expec
 
 **Pros:**
 - Concrete, auditable, version-controlled
-- Directly tests for known capabilities — if tier escalation detection breaks, the golden-set test for it fails
+- Directly tests for known capabilities — if intent authorization tier escalation detection breaks, the golden-set test for it fails
 - Fast feedback loop compared to production monitoring
 - Can be run in CI on every instruction change
 
@@ -103,7 +103,7 @@ Define contracts for each agent — formal statements about what the agent must 
 
 - MUST flag any PR where the linked issue describes a bug fix but the diff adds new API surface
 - MUST flag any PR that modifies files in more than 3 directories when the linked issue is labeled "bug"
-- MUST NOT approve a PR with no linked issue unless the change is classified as Tier 0
+- MUST NOT approve a PR with no linked issue unless the change is classified as intent authorization tier 0
 - MUST escalate when the diff scope exceeds what the linked intent file authorizes
 
 ### Trade-offs
@@ -198,7 +198,7 @@ Under the hood, promptfoo makes direct HTTP calls to model provider APIs. Each t
 - The pytest integration means eval suites look like normal test suites, which lowers the adoption barrier for teams already testing in Python
 - Has explicit "Agentic Metrics" (Task Completion, Tool Correctness, Goal Accuracy, Step Efficiency, Plan Adherence) — but these score agent *traces*, they don't run agents
 
-The main gap: deepeval's built-in metrics are oriented toward conversational AI (relevancy, faithfulness to a source document). Evaluating whether a review agent correctly detected tier escalation requires custom metrics — the framework supports this, but the useful metrics would need to be written.
+The main gap: deepeval's built-in metrics are oriented toward conversational AI (relevancy, faithfulness to a source document). Evaluating whether a review agent correctly detected intent authorization tier escalation requires custom metrics — the framework supports this, but the useful metrics would need to be written.
 
 #### lightspeed-evaluation
 
@@ -304,6 +304,50 @@ A practical CI pipeline for agent instruction changes might look like:
 
 Steps 2-4 are expensive (they invoke the LLM), so they may need dedicated pipeline infrastructure separate from normal build pipelines. Cost management is a real constraint — see [agent-infrastructure.md](agent-infrastructure.md).
 
+### Elaborating on Step 1: static analysis for agent configurations
+
+Step 1 above summarizes static analysis as linting for "obvious issues." This section expands on what that layer looks like in practice and what classes of problems it can catch.
+
+The rest of this document uses "agent instructions" to refer to the natural-language text that governs agent behavior (system prompts, CLAUDE.md files, review criteria). "Agent configurations" refers to the broader structure: instructions plus the skills, commands, hooks, sub-agent definitions, and context files that together define an agent's setup. Static analysis operates on the configuration as a whole, not just the instruction text, because structural problems (broken references between components, redundant skills, unbalanced token budgets) live at the configuration level.
+
+The evaluation frameworks surveyed above test agent *behavior*: they run agents or prompts, evaluate outputs, and score results. Static analysis operates on the agent *configuration itself* without executing anything. Behavioral testing answers whether an agent *does the right thing*. Static analysis answers whether the configuration is *well-formed, secure, non-redundant, and internally consistent*. Both matter. A configuration can produce correct agent behavior while carrying structural defects (broken references, credential exposure, duplicate skills consuming context budget), and a perfectly structured configuration can still give bad guidance. These are different failure classes, and catching one does not catch the other. This layer is distinct from the prompt evaluation, agent evaluation, and input mutation categories surveyed above; it does not test behavior at all, but rather validates the structural and security properties of the configuration that behavioral testing takes as a given.
+
+Application code has linters that catch structural problems, security anti-patterns, and style violations without executing the code. Agent configurations are similarly lintable. This layer is deterministic, fast, and CI-friendly. It requires no LLM calls, runs in seconds, and can gate every instruction change at zero marginal cost: if an instruction change breaks structure or introduces a security pattern, there is no reason to spend LLM budget on behavioral evaluation. An [open-source evaluation framework](https://github.com/Benkapner/harness-eval-lab) implements these checks for Claude Code configurations and has been applied to production setups.
+
+#### Component-level analysis
+
+Each component in an agent configuration can be checked individually (skills, commands, md files, hooks etc.):
+
+**Structural integrity.** Every component has metadata requirements: skills need descriptions, frontmatter must parse as valid YAML, referenced scripts must exist. These are the equivalent of syntax checks for code. A skill without a description may not trigger correctly; a command referencing a missing script would fail at runtime. Static analysis can catch these before deployment.
+
+**Security patterns.** Agent instructions can inadvertently introduce security vulnerabilities. Static checks can scan for credential exposure (API keys, tokens, or secrets embedded in instruction text) and for prompt injection patterns baked into the instructions themselves (jailbreak phrases, role override attempts, instruction-ignoring directives). This is distinct from adversarial *input* testing (Step 4 above): it catches vulnerabilities in the *instructions*, not in the inputs the agent will receive.
+
+**Token budget per component.** Individual components that exceed recommended token budgets can be flagged, identifying instructions that could be condensed. A single overweight skill may not break anything on its own, but it consumes context window space that other skills and task context need.
+
+#### Setup-level analysis
+
+Beyond per-component checks, agent configurations can be analyzed as systems. Individual components may each pass their own checks while the configuration as a whole has problems: an unbalanced token budget, clusters of overlapping triggers, duplicate content across skills, or broken references between components.
+
+**Redundancy detection.** When an agent configuration grows organically, skills and instructions accumulate. Similarity detection across instruction texts could identify near-duplicate components (two skills that give substantially the same guidance with different names). Approaches range from lightweight (TF-IDF cosine similarity, fast and free but limited to lexical overlap) to more accurate (embedding-based comparison, LLM-based semantic matching) at increasing cost. For CI gating, cheaper techniques may be preferable; for periodic audits, more expensive approaches could catch subtler duplicates. Illustrative thresholds from one implementation: around 0.85 for likely duplicates, around 0.50 for trigger overlap, though the right values are configuration-dependent.
+
+**Dependency validation.** Agent configurations have internal references: agents reference skills, commands reference scripts, instructions reference other components by name. Static analysis can map these dependencies and flag two classes of problems: broken references (an agent that references a skill that does not exist) and orphaned components (a skill that nothing references, suggesting it may be dead weight or a misconfiguration). This provides a partial, deterministic answer to the absence detection problem identified earlier in this document. If someone deletes a skill that an agent depends on, dependency validation catches the broken reference. It does not catch capabilities that silently vanish because an instruction was reworded, but it catches the structural case where a component is removed entirely.
+
+**Token budget distribution.** Agent configurations have a token economy: some instructions are always loaded (system prompts, CLAUDE.md), while others load on demand (skills triggered by specific situations). Setup-level analysis can measure this distribution and flag inversions, for example a setup where always-loaded content consumes the majority of the context window, leaving little room for on-demand skills or actual task context.
+
+**Trigger overlap.** Skills that activate based on natural-language trigger descriptions can overlap: two skills with similar "when to use" descriptions may both load for the same user request, consuming context budget without adding distinct value. The same similarity detection techniques used for redundancy detection could surface these overlaps.
+
+**Dimension scoring.** Setup-level analysis can aggregate per-component findings into configuration-wide scores. One possible scoring taxonomy: structural soundness (percentage of components without errors), safety (absence of credential or injection patterns), coherence (no duplicates, broken dependencies, or trigger overlaps), and efficiency (balanced token budget, minimal redundancy). Whatever dimensions are chosen, the scores could provide a baseline that is tracked over time: if an instruction change drops a score, it likely introduced a problem.
+
+**Trade-offs:**
+
+- Similarity thresholds are empirical. What counts as "near-duplicate" depends on the configuration; thresholds that work for one setup may produce false positives or miss real duplicates in another. Intentionally similar skills (e.g., a Python review skill and a Go review skill) may be flagged as redundant when they serve distinct purposes.
+- Lightweight similarity techniques (e.g., TF-IDF) catch lexical overlap but miss semantic similarity. Two skills that express the same guidance in different wording will not be flagged. More expensive techniques (embeddings, LLM-based matching) close this gap at higher cost.
+- Dependency validation catches structural breaks (deleted skills, missing scripts) but not semantic drift. If a skill's content is reworded to remove a capability without changing its name or references, dependency analysis will not notice.
+- Passing static checks can create false confidence. A configuration that is structurally sound, non-redundant, and security-clean can still give the agent bad guidance. Static analysis validates form, not function.
+- Lint rules require maintenance as agent tooling evolves and new anti-patterns emerge.
+
+An optional deeper layer could use an LLM to score each component against qualitative rubrics and produce a keep/review/remove verdict, catching problems that static analysis cannot (e.g., structurally valid but vague guidance). This introduces the cost, non-determinism, and judge bias trade-offs common to all LLM-as-judge approaches discussed in the eval frameworks section above.
+
 ## Measuring agent capability drift
 
 Beyond testing individual instruction changes, there's a need for ongoing monitoring:
@@ -324,7 +368,7 @@ Beyond testing individual instruction changes, there's a need for ongoing monito
 
 - What's the right statistical threshold for non-deterministic tests? How many runs constitute a reliable signal, and what pass rate is acceptable?
 - Can we use one LLM to test another's behavior reliably, or does LLM-as-judge just move the trust problem?
-- How do we bootstrap the golden set? Do we start with synthetic examples, or do we capture real-world cases from early human-supervised agent operation?
+- ~~How do we bootstrap the golden set? Do we start with synthetic examples, or do we capture real-world cases from early human-supervised agent operation?~~ Functional tests bootstrap with hand-crafted cases under `eval/`; see [ADR 0052](../ADRs/0052-functional-tests-for-agent-pipelines.md). Prompt-level evals and synthetic expansion remain open.
 - Who maintains the test suite for each agent? Is it the agent's instruction author, a separate testing team, or the agent itself (self-testing)?
 - How do we handle model provider updates that change behavior without any instruction changes? Is periodic re-evaluation sufficient, or do we need real-time drift detection?
 - What's the cost budget for agent testing? Running hundreds of LLM evaluations per instruction change could be expensive — both in LLM API costs and in compute resources for running the evaluations in CI.
@@ -332,3 +376,6 @@ Beyond testing individual instruction changes, there's a need for ongoing monito
 - Can agents test other agents, or does that create circular trust dependencies? (Agent A tests Agent B, but who tests Agent A?)
 - How do we test cross-agent composition without combinatorial explosion of test scenarios?
 - Is there a meaningful equivalent of "code coverage" for natural-language instructions, or is that a false analogy?
+- What similarity thresholds work across different agent setups, or should thresholds be tuned per configuration?
+- Should lint rules for agent configurations be universal or adapted per agent architecture?
+- What token budget thresholds are appropriate for different component types (skills, commands, CLAUDE.md), and how should those thresholds account for variation in context window sizes across models?

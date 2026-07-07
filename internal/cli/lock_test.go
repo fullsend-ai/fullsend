@@ -15,7 +15,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
-	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
@@ -49,6 +49,7 @@ func setupLockTestDir(t *testing.T, srv *httptest.Server, agentHash, policyHash 
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	harnessContent := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+role: test
 policy: "%s/policies/sandbox.yaml#sha256=%s"
 allowed_remote_resources:
   - "%s/"
@@ -133,6 +134,7 @@ func TestRunLock_SkillDirectoryType(t *testing.T) {
 
 	skillURL := fmt.Sprintf("https://github.com/test-org/test-repo/tree/main/skills/test#sha256=%s", treeHash)
 	harnessContent := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+role: test
 skills:
   - "%s"
 allowed_remote_resources:
@@ -156,19 +158,15 @@ allowed_remote_resources:
 		0o644,
 	))
 
-	fakeClient := forge.NewFakeClient()
-	fakeClient.DirContents["test-org/test-repo/skills/test@main"] = []forge.DirectoryEntry{
-		{Path: "SKILL.md", Type: "file", Size: len(skillMD)},
-		{Path: "scripts/helper.sh", Type: "file", Size: len(helperSh)},
+	fakeFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return skillFiles, nil
 	}
-	fakeClient.FileContentsRef["test-org/test-repo/skills/test/SKILL.md@main"] = skillMD
-	fakeClient.FileContentsRef["test-org/test-repo/skills/test/scripts/helper.sh@main"] = helperSh
 
 	fetch.DefaultPolicy = policy
 	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
 
 	printer := ui.New(os.Stdout)
-	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{forgeClient: fakeClient}, printer)
+	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{treeFetcher: gitfetch.TreeFetchFunc(fakeFetcher)}, printer)
 	require.NoError(t, err)
 
 	lockPath := filepath.Join(dir, "lock.yaml")
@@ -220,6 +218,7 @@ func TestRunLock_SkillDirectoryRoundTrip(t *testing.T) {
 
 	skillURL := fmt.Sprintf("https://github.com/test-org/test-repo/tree/main/skills/test#sha256=%s", treeHash)
 	harnessContent := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+role: test
 skills:
   - "%s"
 allowed_remote_resources:
@@ -243,13 +242,9 @@ allowed_remote_resources:
 		0o644,
 	))
 
-	fakeClient := forge.NewFakeClient()
-	fakeClient.DirContents["test-org/test-repo/skills/test@main"] = []forge.DirectoryEntry{
-		{Path: "SKILL.md", Type: "file", Size: len(skillMD)},
-		{Path: "scripts/helper.sh", Type: "file", Size: len(helperSh)},
+	fakeFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return skillFiles, nil
 	}
-	fakeClient.FileContentsRef["test-org/test-repo/skills/test/SKILL.md@main"] = skillMD
-	fakeClient.FileContentsRef["test-org/test-repo/skills/test/scripts/helper.sh@main"] = helperSh
 
 	fetch.DefaultPolicy = policy
 	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
@@ -257,7 +252,7 @@ allowed_remote_resources:
 	printer := ui.New(os.Stdout)
 
 	// Step 1: Generate the lock file.
-	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{forgeClient: fakeClient}, printer)
+	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{treeFetcher: gitfetch.TreeFetchFunc(fakeFetcher)}, printer)
 	require.NoError(t, err)
 
 	lockPath := filepath.Join(dir, "lock.yaml")
@@ -303,6 +298,7 @@ func TestRunLock_NoURLReferences(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	harnessContent := `agent: agents/code.md
+role: test
 skills:
   - skills/rust
 `
@@ -401,6 +397,7 @@ func TestRunLock_MultiForgeLockAllVariants(t *testing.T) {
 	// Forge overrides use local skills (no URL validation needed) and the
 	// agent/policy URLs are shared. Each variant adds a different pre_script.
 	harnessContent := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+role: test
 policy: "%s/policies/sandbox.yaml#sha256=%s"
 allowed_remote_resources:
   - "%s/"
@@ -459,6 +456,7 @@ func TestRunLock_ForgeSelectsSingleVariant(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	harnessContent := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+role: test
 policy: "%s/policies/sandbox.yaml#sha256=%s"
 allowed_remote_resources:
   - "%s/"
@@ -514,6 +512,7 @@ func TestRunLock_ForgeDeduplicatesAcrossVariants(t *testing.T) {
 	// adds a different local pre_script. The lock should deduplicate the
 	// shared URLs across variants.
 	harnessContent := fmt.Sprintf(`agent: "%s/agents/code.md#sha256=%s"
+role: test
 policy: "%s/policies/sandbox.yaml#sha256=%s"
 allowed_remote_resources:
   - "%s/"
@@ -837,6 +836,7 @@ func TestRunLock_WithLocalBase(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	baseContent := `agent: agents/shared.md
+role: test
 skills:
   - skills/common
 `
@@ -871,7 +871,7 @@ func TestResolveFromLock_BaseFieldNoOp(t *testing.T) {
 	// because LoadWithBase already resolved the base composition.
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
-	baseContent := []byte("agent: agents/shared.md\nskills:\n  - skills/common\n")
+	baseContent := []byte("agent: agents/shared.md\nrole: test\nskills:\n  - skills/common\n")
 	baseHash := fetch.ComputeSHA256(baseContent)
 	skillContent := []byte("# Skill A")
 	skillHash := fetch.ComputeSHA256(skillContent)
@@ -922,15 +922,51 @@ func TestResolveFromLock_BaseFieldNoOp(t *testing.T) {
 	assert.True(t, baseDep.CacheHit)
 }
 
+func TestResolveFromLock_ValidationLoopSchema(t *testing.T) {
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+	schemaContent := []byte(`{"type":"object"}`)
+	schemaHash := fetch.ComputeSHA256(schemaContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/agents/code.md", agentContent))
+	require.NoError(t, fetch.CachePut(root, "https://example.com/schemas/result.json", schemaContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{Field: "agent", URL: "https://example.com/agents/code.md", SHA256: agentHash},
+			{Field: "validation_loop.schema", URL: "https://example.com/schemas/result.json", SHA256: schemaHash},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent: "https://example.com/agents/code.md#sha256=" + agentHash,
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "https://example.com/schemas/result.json#sha256=" + schemaHash,
+		},
+	}
+
+	printer := ui.New(os.Stdout)
+	deps, err := resolveFromLock(h, entry, root, printer)
+	require.NoError(t, err)
+	require.Len(t, deps, 2)
+
+	assert.Equal(t, "validation_loop.schema", deps[1].Field)
+	assert.True(t, deps[1].CacheHit)
+	assert.True(t, strings.HasSuffix(h.ValidationLoop.Schema, "/content"))
+}
+
 func TestRunLock_URLBaseOnlyDeps(t *testing.T) {
 	// A child harness with a URL base and no other URL references.
 	// The baseDeps conversion loop runs and the base-only-deps path is taken
 	// (skip ResolveHarness, still record deps in lock file).
-	baseContent := []byte("agent: agents/shared.md\nskills:\n  - skills/common\n")
+	baseContent := []byte("agent: agents/shared.md\nrole: test\n")
 	baseHash := fetch.ComputeSHA256(baseContent)
 
 	srv, policy := newLockTestServer(t, map[string][]byte{
-		"/base.yaml": baseContent,
+		"/base.yaml":        baseContent,
+		"/agents/shared.md": []byte("# shared agent"),
 	})
 
 	dir := t.TempDir()
@@ -961,21 +997,27 @@ func TestRunLock_URLBaseOnlyDeps(t *testing.T) {
 	entry := lf.Lookup("urlbase")
 	require.NotNil(t, entry)
 
-	// Should have exactly one dependency: the URL base.
-	require.Len(t, entry.Dependencies, 1)
+	// Dependencies: base + agent resource
+	require.Len(t, entry.Dependencies, 2)
 	assert.Equal(t, "base", entry.Dependencies[0].Field)
 	assert.Equal(t, fmt.Sprintf("%s/base.yaml", srv.URL), entry.Dependencies[0].URL)
 	assert.Equal(t, baseHash, entry.Dependencies[0].SHA256)
+	assert.Equal(t, "file", entry.Dependencies[0].Type)
+
+	assert.Equal(t, "agent", entry.Dependencies[1].Field)
+	assert.Equal(t, fmt.Sprintf("%s/agents/shared.md", srv.URL), entry.Dependencies[1].URL)
+	assert.Equal(t, "resource", entry.Dependencies[1].Type)
 }
 
 func TestRunLock_URLBaseOnlyDepsWithPlatform(t *testing.T) {
 	// Same as above but with a forge platform set, exercising the platform != "" branch
 	// in the base-only-deps logging path.
-	baseContent := []byte("agent: agents/shared.md\nskills:\n  - skills/common\n")
+	baseContent := []byte("agent: agents/shared.md\nrole: test\n")
 	baseHash := fetch.ComputeSHA256(baseContent)
 
 	srv, policy := newLockTestServer(t, map[string][]byte{
-		"/base.yaml": baseContent,
+		"/base.yaml":        baseContent,
+		"/agents/shared.md": []byte("# shared agent"),
 	})
 
 	dir := t.TempDir()
@@ -1005,7 +1047,7 @@ func TestRunLock_URLBaseOnlyDepsWithPlatform(t *testing.T) {
 
 	entry := lf.Lookup("urlbase-forge")
 	require.NotNil(t, entry)
-	require.Len(t, entry.Dependencies, 1)
+	require.Len(t, entry.Dependencies, 2)
 	assert.Equal(t, "base", entry.Dependencies[0].Field)
 }
 
@@ -1022,7 +1064,7 @@ func TestRunLock_URLRefsNoOrgConfigError(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
-	harnessContent := fmt.Sprintf("agent: \"%s/agents/code.md#sha256=%s\"\n", srv.URL, agentHash)
+	harnessContent := fmt.Sprintf("agent: \"%s/agents/code.md#sha256=%s\"\nrole: test\n", srv.URL, agentHash)
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "noconfig.yaml"),
 		[]byte(harnessContent),
@@ -1037,7 +1079,7 @@ func TestRunLock_URLRefsNoOrgConfigError(t *testing.T) {
 	printer := ui.New(os.Stdout)
 	err := runLock(context.Background(), "noconfig", dir, "", false, resolveFlags{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "URL-referenced resources require an org-level config.yaml")
+	assert.Contains(t, err.Error(), "URL-referenced resources require a config.yaml")
 	assert.Contains(t, err.Error(), "allowed_remote_resources")
 }
 
@@ -1049,7 +1091,7 @@ func TestRunLock_MalformedOrgConfig(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "simple.yaml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 	require.NoError(t, os.WriteFile(
@@ -1076,7 +1118,7 @@ func TestRunLock_MalformedOrgConfigWithURLRefs(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
-	harnessContent := fmt.Sprintf("agent: \"%s/agents/code.md#sha256=%s\"\n", srv.URL, agentHash)
+	harnessContent := fmt.Sprintf("agent: \"%s/agents/code.md#sha256=%s\"\nrole: test\n", srv.URL, agentHash)
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "badcfg.yaml"),
 		[]byte(harnessContent),
@@ -1094,7 +1136,7 @@ func TestRunLock_MalformedOrgConfigWithURLRefs(t *testing.T) {
 	printer := ui.New(os.Stdout)
 	err := runLock(context.Background(), "badcfg", dir, "", false, resolveFlags{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing org config")
+	assert.Contains(t, err.Error(), "parsing config")
 }
 
 func TestRunLock_NoOrgConfigNoURLRefs(t *testing.T) {
@@ -1104,6 +1146,7 @@ func TestRunLock_NoOrgConfigNoURLRefs(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	harnessContent := `agent: agents/code.md
+role: test
 `
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "simple.yaml"),
@@ -1138,7 +1181,7 @@ func TestRunLock_OrgAllowlistSyncedAfterReAttempt(t *testing.T) {
 
 	// Harness with URL agent refs — exercises the re-attempt path when
 	// config.yaml is initially malformed.
-	harnessContent := fmt.Sprintf("agent: \"%s/agents/code.md#sha256=%s\"\n", srv.URL, agentHash)
+	harnessContent := fmt.Sprintf("agent: \"%s/agents/code.md#sha256=%s\"\nrole: test\n", srv.URL, agentHash)
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "urlrefs.yaml"),
 		[]byte(harnessContent),
@@ -1159,13 +1202,13 @@ func TestRunLock_OrgAllowlistSyncedAfterReAttempt(t *testing.T) {
 	printer := ui.New(os.Stdout)
 	err := runLock(context.Background(), "urlrefs", dir, "", false, resolveFlags{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing org config")
+	assert.Contains(t, err.Error(), "parsing config")
 }
 
 func TestRunLock_URLBaseAndURLRefsNoOrgConfig(t *testing.T) {
 	// Harness with both a URL base and other URL references but no config.yaml.
 	// LoadWithBase should fail at the URL base fetch (not at HasURLReferences).
-	baseContent := []byte("agent: agents/shared.md\n")
+	baseContent := []byte("agent: agents/shared.md\nrole: test\n")
 	baseHash := fetch.ComputeSHA256(baseContent)
 	agentContent := []byte("You are a coding agent.")
 	agentHash := fetch.ComputeSHA256(agentContent)
@@ -1178,7 +1221,7 @@ func TestRunLock_URLBaseAndURLRefsNoOrgConfig(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
-	harnessContent := fmt.Sprintf("base: \"%s/base.yaml#sha256=%s\"\nagent: \"%s/agents/code.md#sha256=%s\"\n",
+	harnessContent := fmt.Sprintf("base: \"%s/base.yaml#sha256=%s\"\nrole: test\nagent: \"%s/agents/code.md#sha256=%s\"\n",
 		srv.URL, baseHash, srv.URL, agentHash)
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "combo.yaml"),
@@ -1196,4 +1239,29 @@ func TestRunLock_URLBaseAndURLRefsNoOrgConfig(t *testing.T) {
 	require.Error(t, err)
 	// Should fail with a clear error about missing org config.
 	assert.Contains(t, err.Error(), "config.yaml")
+}
+
+func TestRunLock_ErrorOnMissingRole(t *testing.T) {
+	// Verifies that runLock fails with a hard error when harness has no role.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	// Harness without role field
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\n"),
+		0o644,
+	))
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid harness: role field is required")
 }

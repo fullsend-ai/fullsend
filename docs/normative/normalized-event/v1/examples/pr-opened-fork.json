@@ -1,0 +1,35 @@
+{
+  "repo": "fullsend-ai/demo",
+  "entity": {
+    "kind": "change_proposal",
+    "id": 101,
+    "url": "https://github.com/fullsend-ai/demo/pull/101"
+  },
+  "transition": {
+    "kind": "opened"
+  },
+  "actor": {
+    "id": "fork-contributor",
+    "kind": "human",
+    "role": "external",
+    "is_entity_author": true
+  },
+  "state": {
+    "labels": [],
+    "change_proposal": {
+      "id": 101,
+      "head_repo": "fork-contributor/demo",
+      "base_repo": "fullsend-ai/demo",
+      "head_ref": "fork-feature",
+      "base_ref": "main",
+      "head_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "author_id": "fork-contributor",
+      "is_fork": true
+    }
+  },
+  "source": {
+    "system": "github",
+    "raw_type": "pull_request_target",
+    "raw_action": "opened"
+  }
+}

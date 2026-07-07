@@ -1,0 +1,29 @@
+{
+  "repo": "fullsend-ai/demo",
+  "entity": {
+    "kind": "work_item",
+    "id": 42,
+    "url": "https://github.com/fullsend-ai/demo/issues/42"
+  },
+  "transition": {
+    "kind": "label_changed",
+    "label": {
+      "name": "ready-to-code",
+      "action": "added"
+    }
+  },
+  "actor": {
+    "id": "fullsend-ai-triage[bot]",
+    "kind": "bot",
+    "role": "write",
+    "is_entity_author": false
+  },
+  "state": {
+    "labels": ["ready-to-code", "kind/bug"]
+  },
+  "source": {
+    "system": "github",
+    "raw_type": "issues",
+    "raw_action": "labeled"
+  }
+}

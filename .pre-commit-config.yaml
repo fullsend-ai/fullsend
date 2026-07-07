@@ -57,6 +57,21 @@ repos:
       - id: shellcheck
         args: ["-x", "-e", "SC1091,SC2001,SC2016"]
 
+  - repo: local
+    hooks:
+      - id: pinact
+        name: pinact (SHA-pin check)
+        entry: pinact run --fix=false --no-api
+        language: system
+        files: |
+          (?x)^(
+            \.github/workflows/
+            |\.github/actions/
+            |internal/scaffold/fullsend-repo/\.github/workflows/
+            |action\.yml$
+          )
+        pass_filenames: false
+
   - repo: https://github.com/rhysd/actionlint
     rev: v1.7.11
     hooks:
@@ -73,7 +88,13 @@ repos:
           - -ignore
           - property "workflow_repository" is not defined
           - -ignore
+          - property "workflow_sha" is not defined
+          - -ignore
           - SC2016
+          - -ignore
+          - '__REUSABLE_(WORKFLOW|DISPATCH)__'
+          - -ignore
+          - '__GH_RUNNER__'
 
   - repo: local
     hooks:
@@ -126,6 +147,13 @@ repos:
         pass_filenames: false
         always_run: true
 
+      - id: lint-docs-links
+        name: lint docs link scope
+        entry: ./hack/lint-docs-links
+        language: script
+        files: ^docs/.*\.md$
+        pass_filenames: true
+
       - id: lint-md-links
         name: lint markdown links
         entry: lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments '**/*.md'
@@ -145,4 +173,11 @@ repos:
         entry: ./hack/lint-agent-docs
         language: script
         files: ^(internal/scaffold/fullsend-repo/harness/|docs/agents/)
+        pass_filenames: false
+
+      - id: lint-staged
+        name: lint-staged (web)
+        entry: npx lint-staged --allow-empty
+        language: system
+        files: ^(web/admin/src/|website/\.vitepress/)
         pass_filenames: false

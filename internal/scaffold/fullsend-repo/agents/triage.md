@@ -52,7 +52,10 @@ Also look for **blocking relationships** — open issues or PRs that must be res
 - The issue describes a feature that depends on infrastructure or API changes tracked in another issue
 - The issue references an upstream library, service, or repository that has a known open bug
 - A PR is already in flight that would conflict with or must land before work on this issue
+- An open PR already addresses this issue, even partially — the work is already in progress
 - The issue's fix requires a design decision that is being discussed in another issue
+
+**Existing PR gate (HARD CONSTRAINT):** If an open PR already addresses this issue — even partially — treat it as a prerequisite. Use `action: "prerequisites"` with the PR URL in the `existing` array. Do not emit `action: "sufficient"` when an open PR covers the reported problem; dispatching a second implementation would create duplicates. Only skip this rule if the PR is closed without merging (the work was abandoned) or if the PR is clearly unrelated despite mentioning the issue number.
 
 If the issue mentions other repositories, libraries, or upstream projects, search those too:
 

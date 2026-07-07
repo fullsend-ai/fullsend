@@ -30,7 +30,7 @@ function decodeContentBase64(b64: string): string {
     binary = atob(normalized);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    throw new Error(`GitHub file content is not valid base64: ${msg}`);
+    throw new Error(`GitHub file content is not valid base64: ${msg}`, { cause: e });
   }
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {

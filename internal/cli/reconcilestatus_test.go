@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/internal/mintclient"
 )
 
 func TestNewReconcileStatusCmd_RequiredFlags(t *testing.T) {
@@ -94,52 +96,67 @@ func TestNewReconcileStatusCmd_MintURLFromEnv(t *testing.T) {
 	assert.Contains(t, err.Error(), "minting status token")
 }
 
-func TestNewReconcileStatusCmd_TokenFlagDeprecated(t *testing.T) {
+func TestNewReconcileStatusCmd_TokenFlagRemoved(t *testing.T) {
 	cmd := newReconcileStatusCmd()
 	f := cmd.Flags().Lookup("token")
-	require.NotNil(t, f, "--token flag should exist for backwards compatibility")
-	assert.NotEmpty(t, f.Deprecated, "--token flag should be marked deprecated")
+	assert.Nil(t, f, "--token flag should no longer exist")
 }
 
-func TestNewReconcileStatusCmd_DeprecatedTokenExecution(t *testing.T) {
+func TestNewReconcileStatusCmd_MintSuccess(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte("[]"))
 	}))
 	defer srv.Close()
 
-	origNew := newForgeClient
-	newForgeClient = func(token string) forge.Client {
+	origMint := reconcileMintToken
+	reconcileMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "coder", req.Role)
+		assert.Equal(t, []string{"repo"}, req.Repos)
+		return &mintclient.MintResult{Token: "ghs_minted_token"}, nil
+	}
+	defer func() { reconcileMintToken = origMint }()
+
+	origForge := reconcileNewForgeClient
+	reconcileNewForgeClient = func(token string) forge.Client {
 		return gh.New(token).WithBaseURL(srv.URL)
 	}
-	defer func() { newForgeClient = origNew }()
+	defer func() { reconcileNewForgeClient = origForge }()
 
 	t.Setenv("FULLSEND_MINT_URL", "")
+	t.Setenv("GITHUB_ACTIONS", "true")
 
 	cmd := newReconcileStatusCmd()
 	cmd.SetArgs([]string{
 		"--repo", "org/repo",
 		"--number", "7",
 		"--run-id", "run-1",
-		"--token", "test-token",
+		"--mint-url", srv.URL,
+		"--role", "code",
 	})
 
 	err := cmd.Execute()
 	require.NoError(t, err)
 }
 
-func TestNewReconcileStatusCmd_DeprecatedTokenCancelledReason(t *testing.T) {
+func TestNewReconcileStatusCmd_MintSuccessCancelled(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte("[]"))
 	}))
 	defer srv.Close()
 
-	origNew := newForgeClient
-	newForgeClient = func(token string) forge.Client {
+	origMint := reconcileMintToken
+	reconcileMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_minted_token"}, nil
+	}
+	defer func() { reconcileMintToken = origMint }()
+
+	origForge := reconcileNewForgeClient
+	reconcileNewForgeClient = func(token string) forge.Client {
 		return gh.New(token).WithBaseURL(srv.URL)
 	}
-	defer func() { newForgeClient = origNew }()
+	defer func() { reconcileNewForgeClient = origForge }()
 
 	t.Setenv("FULLSEND_MINT_URL", "")
 
@@ -149,9 +166,33 @@ func TestNewReconcileStatusCmd_DeprecatedTokenCancelledReason(t *testing.T) {
 		"--number", "7",
 		"--run-id", "run-1",
 		"--reason", "cancelled",
-		"--token", "test-token",
+		"--mint-url", srv.URL,
+		"--role", "review",
 	})
 
 	err := cmd.Execute()
 	require.NoError(t, err)
+}
+
+func TestNewReconcileStatusCmd_RejectsMalformedToken(t *testing.T) {
+	origMint := reconcileMintToken
+	reconcileMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "not-a-valid-token!"}, nil
+	}
+	defer func() { reconcileMintToken = origMint }()
+
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--mint-url", "https://mint.example.com",
+		"--role", "coder",
+	})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected characters")
 }

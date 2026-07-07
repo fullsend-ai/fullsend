@@ -8,6 +8,10 @@ inputs:
   gcp_project_id:
     description: 'GCP project ID — passed to google-github-actions/auth so the runner env has GOOGLE_CLOUD_PROJECT'
     required: false
+  fullsend-dir:
+    description: 'Path to fullsend config directory (empty for per-org workspace root layout)'
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -17,7 +21,7 @@ runs:
       run: echo "::add-mask::${GITHUB_WORKSPACE}/gha-creds-"
 
     - name: Authenticate to Google Cloud (WIF)
-      uses: google-github-actions/auth@v3
+      uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
       with:
         workload_identity_provider: ${{ inputs.gcp_wif_provider }}
         project_id: ${{ inputs.gcp_project_id }}
@@ -34,4 +38,6 @@ runs:
 
     - name: Prepare sandbox credentials
       shell: bash
-      run: bash scripts/prepare-sandbox-credentials.sh
+      env:
+        FULLSEND_DIR: ${{ inputs.fullsend-dir }}
+      run: bash "${FULLSEND_DIR:+$FULLSEND_DIR/}scripts/prepare-sandbox-credentials.sh"

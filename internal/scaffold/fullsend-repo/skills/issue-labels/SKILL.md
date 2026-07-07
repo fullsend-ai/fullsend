@@ -2,26 +2,18 @@
 name: issue-labels
 description: >-
   Discover repository labels and recommend contextual labels to add or remove
-  on triaged issues. Produces label_actions in the agent result JSON.
+  on issues and pull requests. Produces label_actions in the agent result JSON.
 ---
 
 # Issue Labels
 
-Recommend contextual labels for the issue being triaged. These are labels that
-describe the issue's domain, area, priority, or other team-specific dimensions
--- NOT control labels used by the triage pipeline.
+Recommend contextual labels for the issue or pull request being processed.
+These are labels that describe the domain, area, priority, or other
+team-specific dimensions -- NOT control labels used by agent pipelines.
 
-## Control labels (do NOT recommend these)
-
-The following labels are managed by the triage pipeline. Never include them in
-your `label_actions` output -- the post script will refuse them:
-
-- `needs-info`
-- `ready-to-code`
-- `duplicate`
-- `feature`
-- `blocked`
-- `triaged`
+Control labels are managed by each agent's post-script and will be refused
+server-side if recommended. You do not need to track which labels are
+control labels -- just recommend what fits and the pipeline will filter.
 
 ## Step 1: Discover available labels
 
@@ -29,14 +21,17 @@ your `label_actions` output -- the post script will refuse them:
 gh label list --repo OWNER/REPO --json name,description --limit 100
 ```
 
-If the repo has no non-control labels, skip labeling entirely -- do not emit
-`label_actions`.
+If the repo has no labels beyond those used by agent pipelines, skip labeling
+entirely -- do not emit `label_actions`.
 
 ## Step 2: Check for GitHub issue types
 
 GitHub issue types (Bug, Feature, Task, etc.) classify issues at a higher level
-than labels. If the repo uses issue types, do **not** recommend labels that
-duplicate the issue type — e.g., do not add `bug` or `type/bug` when the issue
+than labels. **Skip this step when labeling a pull request** -- GitHub issue
+types do not apply to PRs.
+
+If the repo uses issue types, do **not** recommend labels that
+duplicate the issue type -- e.g., do not add `bug` or `type/bug` when the issue
 already has the Bug type.
 
 Query the current issue to check for an issue type:
@@ -68,11 +63,11 @@ summary to inform your recommendations.
 
 ## Step 4: Recommend labels
 
-Based on the issue content, the available labels, and the observed conventions:
+Based on the content, the available labels, and the observed conventions:
 
-- Recommend labels to **add** if they clearly apply to this issue.
-- Recommend labels to **remove** if the issue already has stale labels from a
-  prior triage that no longer apply.
+- Recommend labels to **add** if they clearly apply.
+- Recommend labels to **remove** if stale labels from a prior run no longer
+  apply.
 - If no labels clearly apply, do not emit `label_actions` at all. Silence is
   better than noise.
 - Only recommend labels that exist in `gh label list`. Do not invent labels.

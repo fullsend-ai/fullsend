@@ -23,7 +23,7 @@ source "${SCRIPT_DIR}/lib/github-api-csma.sh"
 
 # Validate URL format early, before any parsing or API calls.
 if [[ ! "${GITHUB_ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
-  echo "ERROR: GITHUB_ISSUE_URL does not match expected pattern: ${GITHUB_ISSUE_URL}"
+  echo "ERROR: GITHUB_ISSUE_URL does not match expected pattern: ${GITHUB_ISSUE_URL}" >&2
   exit 1
 fi
 
@@ -36,14 +36,14 @@ for dir in iteration-*/output; do
 done
 
 if [[ -z "${RESULT_FILE}" ]]; then
-  echo "ERROR: agent-result.json not found in any iteration output directory"
+  echo "ERROR: agent-result.json not found in any iteration output directory" >&2
   exit 1
 fi
 
 echo "Reading RICE result from: ${RESULT_FILE}"
 
 if ! jq empty "${RESULT_FILE}" 2>/dev/null; then
-  echo "ERROR: ${RESULT_FILE} is not valid JSON"
+  echo "ERROR: ${RESULT_FILE} is not valid JSON" >&2
   exit 1
 fi
 
@@ -99,7 +99,7 @@ ITEM_ID=$(echo "${ITEM_RESPONSE}" | jq -r --arg pid "${PROJECT_ID}" \
   '(.data.node.projectItems.nodes // [])[] | select(.project.id == $pid) | .id')
 
 if [[ -z "${ITEM_ID}" || "${ITEM_ID}" == "null" ]]; then
-  echo "ERROR: issue ${GITHUB_ISSUE_URL} not found on project board"
+  echo "ERROR: issue ${GITHUB_ISSUE_URL} not found on project board (project: ${PROJECT_NUMBER}, org: ${ORG})" >&2
   exit 1
 fi
 
@@ -118,7 +118,7 @@ SCORE_FIELD_ID=$(get_field_id "RICE Score")
 
 for fid_var in REACH_FIELD_ID IMPACT_FIELD_ID CONFIDENCE_FIELD_ID EFFORT_FIELD_ID SCORE_FIELD_ID; do
   if [[ -z "${!fid_var}" ]]; then
-    echo "ERROR: ${fid_var} not found on project board. Run scripts/setup-prioritize.sh first."
+    echo "ERROR: ${fid_var} not found on project board (project: ${PROJECT_NUMBER}, org: ${ORG}). Run scripts/setup-prioritize.sh first." >&2
     exit 1
   fi
 done

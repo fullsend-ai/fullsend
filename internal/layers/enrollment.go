@@ -2,11 +2,14 @@ package layers
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -16,16 +19,16 @@ const (
 	// repoMaintenanceWorkflow is the workflow file that handles enrollment.
 	repoMaintenanceWorkflow = "repo-maintenance.yml"
 
-	// enrollmentWaitTimeout is the maximum time to wait for the
-	// repo-maintenance workflow run to appear and complete.
-	enrollmentWaitTimeout = 3 * time.Minute
+	workflowRegistrationMaxWait = 5 * time.Minute
+	workflowRegistrationPoll    = 5 * time.Second
 
-	// enrollmentPollInitial is the initial polling interval for
-	// workflow run status checks.
-	enrollmentPollInitial = 2 * time.Second
+	workflowDispatchRetryAttempts = 24
+	workflowDispatchRetryInitial  = 3 * time.Second
+	workflowDispatchRetryMax      = 15 * time.Second
 
-	// enrollmentPollMax is the maximum polling interval (backoff cap).
-	enrollmentPollMax = 15 * time.Second
+	enrollmentWaitTimeout = 3 * time.Minute  // max time to wait for the workflow run
+	enrollmentPollInitial = 2 * time.Second  // initial polling interval for status checks
+	enrollmentPollMax     = 15 * time.Second // maximum polling interval (backoff cap)
 )
 
 // EnrollmentLayer monitors workflow-driven enrollment of target repos.
@@ -33,11 +36,13 @@ const (
 // which creates PRs with shim workflows in response to config.yaml changes.
 // This layer dispatches that workflow and reports the results.
 type EnrollmentLayer struct {
-	org           string
-	client        forge.Client
-	enabledRepos  []string
-	disabledRepos []string
-	ui            *ui.Printer
+	org             string
+	client          forge.Client
+	enabledRepos    []string
+	disabledRepos   []string
+	ui              *ui.Printer
+	scaffoldPending bool
+	waitTimeout     time.Duration // test override; 0 uses enrollmentWaitTimeout
 }
 
 // Compile-time check that EnrollmentLayer implements Layer.
@@ -52,6 +57,14 @@ func NewEnrollmentLayer(org string, client forge.Client, enabledRepos, disabledR
 		disabledRepos: disabledRepos,
 		ui:            printer,
 	}
+}
+
+// WithScaffoldPending marks that scaffold files were delivered via PR and
+// have not yet been merged to the default branch. Enrollment is deferred
+// until the scaffold PR is merged and repo-maintenance triggers on push.
+func (l *EnrollmentLayer) WithScaffoldPending() *EnrollmentLayer {
+	l.scaffoldPending = true
+	return l
 }
 
 func (l *EnrollmentLayer) Name() string {
@@ -84,20 +97,36 @@ func (l *EnrollmentLayer) Install(ctx context.Context) error {
 		return nil
 	}
 
+	if l.scaffoldPending {
+		l.ui.StepInfo("scaffold PR pending — enrollment will run automatically when the PR is merged")
+		return nil
+	}
+
 	dispatchTime := time.Now().UTC().Add(-30 * time.Second)
 
 	l.ui.StepStart("dispatching repo-maintenance workflow for enrollment")
-	err := l.client.DispatchWorkflow(ctx, l.org, forge.ConfigRepoName, repoMaintenanceWorkflow, "main", nil)
-	if err != nil {
-		return fmt.Errorf("dispatching repo-maintenance: %w", err)
+	if err := l.awaitWorkflowRegistration(ctx); err != nil {
+		return fmt.Errorf("waiting for repo-maintenance workflow: %w", err)
 	}
-	l.ui.StepDone("dispatched repo-maintenance workflow")
+	dispatchErr := l.dispatchRepoMaintenanceWithRetry(ctx)
+	if dispatchErr != nil {
+		if !isWorkflowDispatchNotReady(dispatchErr) {
+			return fmt.Errorf("dispatching repo-maintenance: %w", dispatchErr)
+		}
+		l.ui.StepWarn(fmt.Sprintf("workflow dispatch failed (%v); waiting for push-triggered run", dispatchErr))
+	} else {
+		l.ui.StepDone("dispatched repo-maintenance workflow")
+	}
 
 	// Wait for the workflow run to complete (bounded by enrollmentWaitTimeout).
 	l.ui.StepStart("waiting for enrollment workflow to complete")
 	run, err := l.awaitWorkflowRun(ctx, dispatchTime)
 	if err != nil {
+		if dispatchErr != nil {
+			return fmt.Errorf("dispatching repo-maintenance: %w", dispatchErr)
+		}
 		l.ui.StepWarn(fmt.Sprintf("could not confirm enrollment: %v", err))
+		l.ui.StepInfo("check the repo-maintenance workflow in .fullsend for results")
 		return nil // non-fatal — enrollment may still succeed
 	}
 
@@ -115,11 +144,90 @@ func (l *EnrollmentLayer) Install(ctx context.Context) error {
 	return nil
 }
 
+func (l *EnrollmentLayer) dispatchRepoMaintenanceWithRetry(ctx context.Context) error {
+	delay := workflowDispatchRetryInitial
+	var lastErr error
+
+	for attempt := range workflowDispatchRetryAttempts {
+		if attempt > 0 {
+			l.ui.StepInfo(fmt.Sprintf("workflow dispatch not ready, retrying in %s (attempt %d/%d)", delay, attempt+1, workflowDispatchRetryAttempts))
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+			}
+			delay += workflowDispatchRetryInitial
+			if delay > workflowDispatchRetryMax {
+				delay = workflowDispatchRetryMax
+			}
+		}
+
+		lastErr = l.client.DispatchWorkflow(ctx, l.org, forge.ConfigRepoName, repoMaintenanceWorkflow, "main", nil)
+		if lastErr == nil {
+			return nil
+		}
+		if !isWorkflowDispatchNotReady(lastErr) {
+			return lastErr
+		}
+	}
+
+	return lastErr
+}
+
+func (l *EnrollmentLayer) awaitWorkflowRegistration(ctx context.Context) error {
+	deadline := time.Now().Add(workflowRegistrationMaxWait)
+	attempt := 0
+
+	for {
+		attempt++
+		wf, err := l.client.GetWorkflow(ctx, l.org, forge.ConfigRepoName, repoMaintenanceWorkflow)
+		if err == nil && wf.State == "active" {
+			if attempt > 1 {
+				l.ui.StepInfo(fmt.Sprintf("repo-maintenance workflow registered (state: active, attempt %d)", attempt))
+			}
+			return nil
+		}
+		if err != nil && !forge.IsNotFound(err) {
+			return fmt.Errorf("checking repo-maintenance workflow registration: %w", err)
+		}
+
+		if time.Now().After(deadline) {
+			state := "not found"
+			if wf != nil {
+				state = wf.State
+			}
+			return fmt.Errorf("repo-maintenance workflow not ready after %s (last state: %s)", workflowRegistrationMaxWait, state)
+		}
+
+		l.ui.StepInfo(fmt.Sprintf("waiting for repo-maintenance workflow registration (attempt %d)...", attempt))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(workflowRegistrationPoll):
+		}
+	}
+}
+
+func isWorkflowDispatchNotReady(err error) bool {
+	if err == nil {
+		return false
+	}
+	var apiErr *gh.APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != 422 {
+		return false
+	}
+	return strings.Contains(apiErr.Message, "workflow_dispatch")
+}
+
 // awaitWorkflowRun polls for a repo-maintenance workflow run created after
 // dispatchTime and waits for it to complete. It uses exponential backoff
 // and a bounded timeout to avoid long silent waits.
 func (l *EnrollmentLayer) awaitWorkflowRun(ctx context.Context, dispatchTime time.Time) (*forge.WorkflowRun, error) {
-	deadline := time.Now().Add(enrollmentWaitTimeout)
+	timeout := enrollmentWaitTimeout
+	if l.waitTimeout > 0 {
+		timeout = l.waitTimeout
+	}
+	deadline := time.Now().Add(timeout)
 	interval := enrollmentPollInitial
 	start := time.Now()
 
@@ -128,7 +236,7 @@ func (l *EnrollmentLayer) awaitWorkflowRun(ctx context.Context, dispatchTime tim
 			elapsed := time.Since(start).Round(time.Second)
 			return nil, fmt.Errorf(
 				"timed out after %s waiting for repo-maintenance workflow; "+
-					"check the workflow in .fullsend and re-run install if needed",
+					"check the workflow in .fullsend for details",
 				elapsed,
 			)
 		}

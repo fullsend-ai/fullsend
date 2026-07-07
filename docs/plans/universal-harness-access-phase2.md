@@ -244,7 +244,7 @@ New test cases (in addition to existing Phase 1 tests, which remain unchanged):
 - **Transitive dependency not in allowlist:** Skill A depends on Skill B at a URL outside `allowed_remote_resources`. Verify error contains "not in allowed_remote_resources".
 - **Transitive dependency hash mismatch:** Skill A depends on Skill B; Skill B's content doesn't match its declared hash. Verify error contains "integrity check failed".
 - **Mixed local and transitive:** Harness with local skills and one URL skill that has transitive deps. Verify local skills are untouched, URL skill and its transitive deps are all resolved.
-- **Relative URL in dependency:** Skill directory at `https://github.com/org/skills/tree/abc123/rust` declares dependency `../common/formatting#sha256=<tree-hash>...`. Verify resolved to `https://github.com/org/skills/tree/abc123/common/formatting` and fetched as a directory via forge API.
+- **Relative URL in dependency:** Skill directory at `https://github.com/org/skills/tree/abc123/rust` declares dependency `../common/formatting#sha256=<tree-hash>...`. Verify resolved to `https://github.com/org/skills/tree/abc123/common/formatting` and fetched as a directory via git sparse checkout (`gitfetch.FetchTree`).
 
 **Depends on:** PR 1 (imports `internal/skill`)
 
@@ -350,10 +350,10 @@ dependencies:
 ```
 
 The resolver will:
-1. Fetch `rust-conventions` skill directory via forge API (list files, fetch each), verify tree hash, cache under `tree/`.
+1. Fetch `rust-conventions` skill directory via git sparse checkout (`gitfetch.FetchTree`), verify tree hash, cache under `tree/`.
 2. Read `SKILL.md` from the cached `tree/` subdirectory, parse its frontmatter, discover 2 transitive skill dependencies.
 3. Resolve `../cargo-integration` relative to the parent URL (sibling directory).
-4. Fetch and cache both transitive skill directories (each via forge API with tree hash verification and allowlist checks).
+4. Fetch and cache both transitive skill directories (each via git sparse checkout with tree hash verification and allowlist checks).
 5. Append all resolved cache `tree/` paths to `h.Skills`.
 6. The sandbox upload loop uploads all skill directory trees.
 

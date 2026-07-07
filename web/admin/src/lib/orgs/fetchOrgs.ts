@@ -1,10 +1,7 @@
 import { createUserOctokit } from "../github/client";
 import { buildEmptyInstallationsHint } from "./emptyOrgListHint";
 import type { OrgRow } from "./filter";
-import {
-  orgRowsAndSlugFromInstallations,
-  type MinimalInstallation,
-} from "./installationOrgRows";
+import { orgRowsAndSlugFromInstallations, type MinimalInstallation } from "./installationOrgRows";
 
 export const INSTALLATIONS_PER_PAGE = 30;
 
@@ -42,9 +39,7 @@ let memoryCache: {
   installationListTruncated: boolean;
 } | null = null;
 
-function orgListMemoryCacheKey(
-  githubLogin: string | null | undefined,
-): string | null {
+function orgListMemoryCacheKey(githubLogin: string | null | undefined): string | null {
   const s = typeof githubLogin === "string" ? githubLogin.trim().toLowerCase() : "";
   return s.length > 0 ? s : null;
 }
@@ -76,10 +71,7 @@ function octokitErrorStatus(e: unknown): number {
   return 502;
 }
 
-function friendlyInstallationsListHttpError(
-  status: number,
-  githubMessage: string,
-): string {
+function friendlyInstallationsListHttpError(status: number, githubMessage: string): string {
   if (status === 403) {
     return (
       "GitHub refused to list app installations (403). " +
@@ -121,16 +113,11 @@ export async function fetchOrgsWithProgress(
   },
 ): Promise<FetchOrgsResult> {
   const cacheKey = orgListMemoryCacheKey(options.githubLogin);
-  if (
-    !options.force &&
-    cacheKey &&
-    memoryCache?.githubLogin === cacheKey
-  ) {
+  if (!options.force && cacheKey && memoryCache?.githubLogin === cacheKey) {
     if (options.signal?.aborted) {
       throw new DOMException("Aborted", "AbortError");
     }
-    const { orgs, emptyHint, appSlugFromApi, installationListTruncated } =
-      memoryCache;
+    const { orgs, emptyHint, appSlugFromApi, installationListTruncated } = memoryCache;
     options.onProgress(orgs, { done: true, installationPagesFetched: 0 });
     return {
       orgs,
@@ -164,7 +151,7 @@ export async function fetchOrgsWithProgress(
 
       accumulated.push(...installationsFromPageData(page.data));
 
-      const { orgs, appSlug } = orgRowsAndSlugFromInstallations(accumulated);
+      const { orgs, appSlug: _appSlug } = orgRowsAndSlugFromInstallations(accumulated);
       options.onProgress(orgs, {
         done: false,
         installationPagesFetched: pages,

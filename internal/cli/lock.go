@@ -13,8 +13,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
-	"github.com/fullsend-ai/fullsend/internal/forge"
-	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
@@ -122,13 +120,7 @@ func runLock(ctx context.Context, agentName, fullsendDir, forgeFlag string, upda
 	}
 	printer.StepDone(fmt.Sprintf("Locked %d dependencies for %s -> %s", len(result.deps), agentName, lockPath))
 
-	for _, dep := range result.deps {
-		if dep.CacheHit {
-			printer.StepInfo(fmt.Sprintf("  %s: %s (cached)", dep.Field, dep.URL))
-		} else {
-			printer.StepInfo(fmt.Sprintf("  %s: %s (fetched)", dep.Field, dep.URL))
-		}
-	}
+	printResolvedDeps(printer, result.deps)
 
 	return nil
 }
@@ -137,6 +129,19 @@ func runLock(ctx context.Context, agentName, fullsendDir, forgeFlag string, upda
 type lockResult struct {
 	harnessLock lock.HarnessLock
 	deps        []resolve.Dependency
+}
+
+func printResolvedDeps(printer *ui.Printer, deps []resolve.Dependency) {
+	for _, dep := range deps {
+		if dep.CacheHit {
+			printer.StepInfo(fmt.Sprintf("  %s: %s (cached)", dep.Field, dep.URL))
+		} else {
+			printer.StepInfo(fmt.Sprintf("  %s: %s (fetched)", dep.Field, dep.URL))
+		}
+		if dep.Warning != "" {
+			printer.StepWarn(fmt.Sprintf("  %s: %s", dep.Field, dep.Warning))
+		}
+	}
 }
 
 // lockOneAgent resolves dependencies for a single harness and returns the
@@ -188,6 +193,16 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 
 	var allDeps []resolve.Dependency
 	seen := make(map[string]bool)
+	linted := make(map[string]bool) // track reported lint diagnostics to avoid duplicates across forge variants
+
+	composeGitToken := rFlags.gitToken
+	if composeGitToken == "" {
+		var tokenErr error
+		composeGitToken, tokenErr = resolveToken()
+		if tokenErr != nil {
+			printer.StepWarn("Git token not available; private repo skill fetches may fail")
+		}
+	}
 
 	for _, platform := range forgePlatforms {
 		h, baseDeps, loadErr := harness.LoadWithBase(ctx, harnessPath, harness.ComposeOpts{
@@ -196,10 +211,21 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
 			ForgePlatform: platform,
 			OrgAllowlist:  orgAllowlist,
+			TreeFetcher:   rFlags.treeFetcher,
+			GitToken:      composeGitToken,
 		})
 		if loadErr != nil {
 			printer.StepFail(fmt.Sprintf("Failed to load harness (forge: %s)", platform))
 			return nil, fmt.Errorf("loading harness for forge %q: %w", platform, loadErr)
+		}
+
+		// Run lint diagnostics (non-fatal), deduplicating across forge variants
+		for _, diag := range h.Lint() {
+			key := diag.String()
+			if !linted[key] {
+				linted[key] = true
+				emitDiagnosticWithContext(printer, agentName, diag)
+			}
 		}
 
 		if err := h.ResolveRelativeTo(absFullsendDir); err != nil {
@@ -220,6 +246,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 					FetchedAt: bd.FetchedAt,
 					CacheHit:  bd.CacheHit,
 					Type:      bd.Type,
+					Warning:   bd.Warning,
 				})
 			}
 		}
@@ -268,17 +295,12 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			printer.StepStart("Resolving dependencies")
 		}
 
-		var forgeClient forge.Client
-		if h.HasURLSkills() {
-			if rFlags.forgeClient != nil {
-				forgeClient = rFlags.forgeClient
-			} else {
-				token, tokenErr := resolveToken()
-				if tokenErr != nil {
-					printer.StepFail("Skill URLs require a GitHub token (set GH_TOKEN, GITHUB_TOKEN, or run 'gh auth login')")
-					return nil, fmt.Errorf("skill URLs require a GitHub token: %w", tokenErr)
-				}
-				forgeClient = gh.New(token)
+		resolveGitToken := rFlags.gitToken
+		if resolveGitToken == "" {
+			var tokenErr error
+			resolveGitToken, tokenErr = resolveToken()
+			if tokenErr != nil {
+				printer.StepWarn("Git token not available; private repo skill fetches may fail")
 			}
 		}
 
@@ -288,7 +310,8 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
 			MaxDepth:      rFlags.maxDepth,
 			MaxResources:  rFlags.maxResources,
-			ForgeClient:   forgeClient,
+			TreeFetcher:   rFlags.treeFetcher,
+			GitToken:      resolveGitToken,
 		})
 		if resolveErr != nil {
 			printer.StepFail("Resolution failed")
@@ -407,6 +430,7 @@ func runLockAll(ctx context.Context, fullsendDir, forgeFlag string, update bool,
 			return fmt.Errorf("%s: %w", name, lockErr)
 		}
 		if result != nil {
+			printResolvedDeps(printer, result.deps)
 			lf.SetHarness(name, result.harnessLock)
 			locked = append(locked, name)
 		} else if entry := lf.Lookup(name); entry != nil {
@@ -626,6 +650,37 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			// Base composition is already resolved by LoadWithBase before
 			// resolveFromLock runs. This entry exists only for cache
 			// verification.
+		case m.field == "pre_script":
+			h.PreScript = m.localPath
+			if err := os.Chmod(m.localPath, 0o755); err != nil {
+				return nil, fmt.Errorf("setting executable permission on cached pre_script: %w", err)
+			}
+		case m.field == "post_script":
+			h.PostScript = m.localPath
+			if err := os.Chmod(m.localPath, 0o755); err != nil {
+				return nil, fmt.Errorf("setting executable permission on cached post_script: %w", err)
+			}
+		case m.field == "validation_loop.script":
+			if h.ValidationLoop != nil {
+				h.ValidationLoop.Script = m.localPath
+				if err := os.Chmod(m.localPath, 0o755); err != nil {
+					return nil, fmt.Errorf("setting executable permission on cached validation_loop.script: %w", err)
+				}
+			}
+		case strings.HasPrefix(m.field, "forge.") && strings.HasSuffix(m.field, ".pre_script"):
+			// Forge scripts are resolved before forge promotion; the field
+			// name is informational — the actual path was already set during
+			// LoadWithBase. This entry exists for cache verification.
+		case strings.HasPrefix(m.field, "forge.") && strings.HasSuffix(m.field, ".post_script"):
+			// Same as forge pre_script above.
+		case strings.HasPrefix(m.field, "forge.") && strings.HasSuffix(m.field, ".validation_loop.script"):
+			// Same as forge pre_script above.
+		case m.field == "validation_loop.schema":
+			if h.ValidationLoop != nil {
+				h.ValidationLoop.Schema = m.localPath
+			}
+		case strings.HasPrefix(m.field, "forge.") && strings.HasSuffix(m.field, ".validation_loop.schema"):
+			// Same as forge pre_script above.
 		default:
 			var idx int
 			if _, err := fmt.Sscanf(m.field, "skills[%d]", &idx); err == nil && idx >= 0 && idx < len(h.Skills) {

@@ -119,7 +119,7 @@ USER sandbox
 # /sandbox/go/bin is placed AFTER system paths so sandbox-user binaries
 # cannot shadow trusted system tools (go, git, scan-secrets, etc.).
 ENV GOPATH="/sandbox/go" \
-    PATH="/usr/local/go/bin:/sandbox/go/bin:${PATH}"
+    PATH="/usr/local/go/bin:${PATH}:/sandbox/go/bin"
 
 # ---------------------------------------------------------------------------
 # gopls — Go language server for Claude Code LSP code intelligence.

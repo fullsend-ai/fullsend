@@ -42,15 +42,24 @@ host_files:
 skills:
   - skills/fix-review
 
-runner_env:
-  TARGET_BRANCH: "${TARGET_BRANCH}"
-  TRIGGER_SOURCE: "${TRIGGER_SOURCE}"
-  HUMAN_INSTRUCTION: "${HUMAN_INSTRUCTION}"
-  FIX_ITERATION: "${FIX_ITERATION}"
-  REVIEW_BODY_FILE: "${REVIEW_BODY_FILE}"
-  PRE_AGENT_HEAD: "${PRE_AGENT_HEAD}"
-  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/fix-result.schema.json
-  FULLSEND_OUTPUT_FILE: fix-result.json
+env:
+  runner:
+    TARGET_BRANCH: "${TARGET_BRANCH}"
+    TRIGGER_SOURCE: "${TRIGGER_SOURCE}"
+    HUMAN_INSTRUCTION: "${HUMAN_INSTRUCTION}"
+    FIX_ITERATION: "${FIX_ITERATION}"
+    REVIEW_BODY_FILE: "${REVIEW_BODY_FILE}"
+    PRE_AGENT_HEAD: "${PRE_AGENT_HEAD}"
+    FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/fix-result.schema.json
+    FULLSEND_OUTPUT_FILE: fix-result.json
+  sandbox:
+    MAX_RETRIES: "1"
+    TIMEOUT_SECONDS: "1500"
+    STRATEGY_ESCALATION_THRESHOLD: "3"
+    ITERATION_CAP: "5"
+    ITERATION_CAP_HUMAN: "10"
+    GOPATH: "/sandbox/go"
+    GOMODCACHE: "/sandbox/go/pkg/mod"
 
 timeout_minutes: 25
 
@@ -58,9 +67,21 @@ forge:
   github:
     pre_script: scripts/pre-fix.sh
     post_script: scripts/post-fix.sh
-    runner_env:
-      PUSH_TOKEN: "${PUSH_TOKEN}"
-      PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
-      REPO_FULL_NAME: "${REPO_FULL_NAME}"
-      PR_NUMBER: "${PR_NUMBER}"
-      REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
+    env:
+      runner:
+        PUSH_TOKEN: "${PUSH_TOKEN}"
+        PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
+        REPO_FULL_NAME: "${REPO_FULL_NAME}"
+        PR_NUMBER: "${PR_NUMBER}"
+        REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
+      sandbox:
+        PR_NUMBER: "${PR_NUMBER}"
+        REPO_FULL_NAME: "${REPO_FULL_NAME}"
+        TRIGGER_SOURCE: "${TRIGGER_SOURCE}"
+        HUMAN_INSTRUCTION: "${HUMAN_INSTRUCTION}"
+        FIX_ITERATION: "${FIX_ITERATION}"
+        GH_TOKEN: "${GH_TOKEN}"
+        GIT_AUTHOR_NAME: "fullsend-fix"
+        GIT_AUTHOR_EMAIL: "${GIT_BOT_EMAIL}"
+        GIT_COMMITTER_NAME: "fullsend-fix"
+        GIT_COMMITTER_EMAIL: "${GIT_BOT_EMAIL}"
