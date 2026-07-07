@@ -1,4 +1,4 @@
-# Building custom agents
+# Building custom agents from scratch
 
 > **Deprecated:** This guide uses the `customized/` directory overlay, which is
 > deprecated per [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
@@ -6,10 +6,14 @@
 > path instead. Run `fullsend agent migrate-customizations --dry-run` to
 > preview migrating existing customizations.
 
-This guide walks through creating a new custom agent from scratch on a per-repo fullsend installation.
+This guide walks through creating a custom from-scratch agent on a per-repo
+fullsend installation.
 
-Not sure whether you need a custom agent or just a configured default agent?
-See [Default agents vs. custom agents](../../agents/topics/default-vs-custom.md).
+Before building from scratch, consider whether extending a default agent would
+meet your needs. You can use `base` inheritance to start from a default agent's
+harness and override only what differs — see
+[Default agents vs. custom agents](../../agents/topics/default-vs-custom.md)
+for the distinction and when each approach makes sense.
 
 For customizing existing agents (overriding harnesses, skills, or policies), see [Customizing agents](customizing-agents.md).
 
