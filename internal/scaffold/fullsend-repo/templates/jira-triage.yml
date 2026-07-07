@@ -1,0 +1,174 @@
+---
+name: Jira Triage
+
+permissions:
+  actions: write
+  contents: read
+  id-token: write
+  issues: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      issue_key:
+        description: "Jira issue key (e.g., PROJ-123)"
+        required: true
+        type: string
+      project_key:
+        description: "Jira project key (e.g., PROJ)"
+        required: true
+        type: string
+
+concurrency:
+  group: fullsend-jira-triage-${{ inputs.project_key }}-${{ inputs.issue_key }}
+  cancel-in-progress: true
+
+jobs:
+  triage:
+    name: Triage Jira Issue
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+
+      - name: Checkout target repo
+        uses: actions/checkout@v6
+        with:
+          path: target-repo
+          persist-credentials: false
+
+      - name: Checkout upstream defaults
+        uses: actions/checkout@v6
+        with:
+          repository: fullsend-ai/fullsend
+          ref: v0
+          path: .defaults
+          sparse-checkout: |
+            .github/actions/
+            .github/scripts/
+            internal/scaffold/fullsend-repo/
+            action.yml
+
+      - name: Prepare workspace (upstream defaults + repo overrides)
+        run: |
+          set -euo pipefail
+          SRC=".defaults/internal/scaffold/fullsend-repo"
+          LAYERED_DIRS="agents skills schemas harness plugins policies scripts env"
+          for dir in ${LAYERED_DIRS}; do
+            if [[ -d "${SRC}/${dir}" ]]; then
+              mkdir -p "${dir}"
+              cp -r "${SRC}/${dir}/." "${dir}/"
+            fi
+          done
+          CUSTOM_BASE=".fullsend/customized"
+          for dir in ${LAYERED_DIRS}; do
+            if [[ -d "${CUSTOM_BASE}/${dir}" ]]; then
+              find "${CUSTOM_BASE}/${dir}" -type f ! -name '.gitkeep' -print0 \
+                | while IFS= read -r -d '' f; do
+                    rel="${f#"${CUSTOM_BASE}"/}"
+                    mkdir -p "$(dirname "${rel}")"
+                    cp "${f}" "${rel}"
+                  done
+            fi
+          done
+          mkdir -p .github/scripts
+          if [[ -f "${SRC}/.github/scripts/setup-agent-env.sh" ]]; then
+            cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
+          fi
+
+      - name: Validate Jira enrollment
+        id: validate
+        env:
+          PROJECT_KEY: ${{ inputs.project_key }}
+        run: |
+          set -euo pipefail
+          CONFIG_FILE=".jira.yml"
+          if [[ ! -f "${CONFIG_FILE}" ]]; then
+            echo "::error::.jira.yml not found"
+            exit 1
+          fi
+          ENROLLED=$(PROJECT_KEY="${PROJECT_KEY}" python3 -c "
+          import os, yaml
+          key = os.environ['PROJECT_KEY']
+          with open('.jira.yml') as f:
+              cfg = yaml.safe_load(f)
+          projects = cfg.get('jira_projects', [])
+          keys = [p.get('project_key','') for p in projects]
+          print('true' if key in keys else 'false')
+          " 2>/dev/null || echo "false")
+          if [[ "${ENROLLED}" != "true" ]]; then
+            echo "::error::Jira project ${PROJECT_KEY} is not enrolled"
+            exit 1
+          fi
+          echo "::notice::Jira project ${PROJECT_KEY} is enrolled"
+
+      - name: Extract Jira project config
+        id: jira-config
+        env:
+          PROJECT_KEY: ${{ inputs.project_key }}
+        run: |
+          set -euo pipefail
+          JIRA_HOST=$(PROJECT_KEY="${PROJECT_KEY}" python3 -c "
+          import os, yaml
+          key = os.environ['PROJECT_KEY']
+          with open('.jira.yml') as f:
+              cfg = yaml.safe_load(f)
+          projects = cfg.get('jira_projects', [])
+          for p in projects:
+              if p.get('project_key') == key:
+                  print(p.get('host', ''))
+                  break
+          ")
+          LINKED_REPOS=$(PROJECT_KEY="${PROJECT_KEY}" python3 -c "
+          import os, yaml
+          key = os.environ['PROJECT_KEY']
+          with open('.jira.yml') as f:
+              cfg = yaml.safe_load(f)
+          projects = cfg.get('jira_projects', [])
+          for p in projects:
+              if p.get('project_key') == key:
+                  print(' '.join(p.get('linked_github_repos', [])))
+                  break
+          ")
+          echo "jira_host=${JIRA_HOST}" >> "$GITHUB_OUTPUT"
+          echo "linked_repos=${LINKED_REPOS}" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to GCP via WIF
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+
+      - name: Prepare sandbox credentials
+        run: bash scripts/prepare-sandbox-credentials.sh
+
+      - name: Setup agent environment
+        env:
+          AGENT_PREFIX: TRIAGE_
+          TRIAGE_GH_TOKEN: ${{ github.token }}
+          TRIAGE_ISSUE_KEY: ${{ inputs.issue_key }}
+          TRIAGE_JIRA_HOST: ${{ steps.jira-config.outputs.jira_host }}
+          TRIAGE_LINKED_GITHUB_REPOS: ${{ steps.jira-config.outputs.linked_repos }}
+          TRIAGE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          TRIAGE_CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}
+        run: bash .github/scripts/setup-agent-env.sh
+
+      - name: Run triage agent
+        uses: ./.defaults/
+        env:
+          TRIAGE_SOURCE: jira
+          GITHUB_ISSUE_URL: ""
+          LINKED_GITHUB_REPOS: ${{ steps.jira-config.outputs.linked_repos }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+        with:
+          agent: triage
+          version: latest
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fullsend-triage-${{ inputs.issue_key }}
+          path: ${{ github.workspace }}/output

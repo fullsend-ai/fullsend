@@ -1,0 +1,65 @@
+---
+name: Jira Dispatch
+
+on:
+  repository_dispatch:
+    types:
+      - jira-issue-created
+      - jira-command
+
+jobs:
+  route:
+    name: Route Jira Event
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+
+      - name: Validate Jira enrollment
+        id: validate
+        env:
+          PROJECT_KEY: ${{ github.event.client_payload.project_key }}
+          ISSUE_KEY: ${{ github.event.client_payload.issue_key }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${PROJECT_KEY}" =~ ^[A-Z][A-Z0-9_]{0,9}$ ]]; then
+            echo "::error::Invalid project_key format: ${PROJECT_KEY}"
+            exit 1
+          fi
+          if [[ ! "${ISSUE_KEY}" =~ ^[A-Z][A-Z0-9_]{0,9}-[0-9]+$ ]]; then
+            echo "::error::Invalid issue_key format: ${ISSUE_KEY}"
+            exit 1
+          fi
+          CONFIG_FILE=".jira.yml"
+          if [[ ! -f "${CONFIG_FILE}" ]]; then
+            echo "::error::.jira.yml not found"
+            exit 1
+          fi
+          ENROLLED=$(PROJECT_KEY="${PROJECT_KEY}" python3 -c "
+          import os, yaml
+          key = os.environ['PROJECT_KEY']
+          with open('.jira.yml') as f:
+              cfg = yaml.safe_load(f)
+          projects = cfg.get('jira_projects', [])
+          keys = [p.get('project_key','') for p in projects]
+          print('true' if key in keys else 'false')
+          " 2>/dev/null || echo "false")
+          if [[ "${ENROLLED}" != "true" ]]; then
+            echo "::error::Jira project ${PROJECT_KEY} is not enrolled"
+            exit 1
+          fi
+          echo "project_key=${PROJECT_KEY}" >> "$GITHUB_OUTPUT"
+          echo "issue_key=${ISSUE_KEY}" >> "$GITHUB_OUTPUT"
+          echo "::notice::Routing Jira event for ${PROJECT_KEY}: ${ISSUE_KEY}"
+
+      - name: Dispatch jira-triage
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run jira-triage.yml \
+            --repo "${{ github.repository }}" \
+            -f issue_key="${{ steps.validate.outputs.issue_key }}" \
+            -f project_key="${{ steps.validate.outputs.project_key }}"

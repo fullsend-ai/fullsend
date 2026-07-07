@@ -114,6 +114,16 @@ func PerRepoShimTemplate() ([]byte, error) {
 	return content.ReadFile("fullsend-repo/templates/shim-per-repo.yaml")
 }
 
+// JiraDispatchTemplate returns the Jira dispatch workflow template.
+func JiraDispatchTemplate() ([]byte, error) {
+	return content.ReadFile("fullsend-repo/templates/jira-dispatch.yml")
+}
+
+// JiraTriageTemplate returns the Jira triage workflow template.
+func JiraTriageTemplate() ([]byte, error) {
+	return content.ReadFile("fullsend-repo/templates/jira-triage.yml")
+}
+
 // CustomizedDirs returns the set of customized/ subdirectories
 // that should be scaffolded in a per-org .fullsend config repo.
 func CustomizedDirs() []string {
