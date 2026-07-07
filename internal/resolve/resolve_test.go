@@ -1138,8 +1138,8 @@ func TestResolveHarness_ZeroMaxDepthDisablesTransitive(t *testing.T) {
 		MaxDepth:      0, // disabled
 	})
 	require.NoError(t, err)
-	assert.Len(t, result.Deps, 1)     // only A
-	assert.Len(t, h.Skills, 1) // only A
+	assert.Len(t, result.Deps, 1) // only A
+	assert.Len(t, h.Skills, 1)    // only A
 }
 
 // TestResolveHarness_MaxDepthDefaultApplied verifies that MaxDepth<0 uses DefaultMaxDepth
@@ -1231,8 +1231,8 @@ func TestResolveHarness_DirectAndTransitiveOverlap(t *testing.T) {
 		MaxDepth:      -1,
 	})
 	require.NoError(t, err)
-	assert.Len(t, result.Deps, 2)     // A and B, each exactly once
-	assert.Len(t, h.Skills, 2) // A's path and B's path, B deduped
+	assert.Len(t, result.Deps, 2) // A and B, each exactly once
+	assert.Len(t, h.Skills, 2)    // A's path and B's path, B deduped
 
 	// B must not appear twice in h.Skills.
 	seen := make(map[string]bool)
@@ -1297,9 +1297,11 @@ credentials:
 	root := t.TempDir()
 	profileURL := fmt.Sprintf("%s/profiles/claude-code.yaml#sha256=%s", srv.URL, profileHash)
 	h := &harness.Harness{
-		Agent:                  "agents/test.md",
-		Role:                   "test",
-		Profiles:               []string{profileURL},
+		Agent: "agents/test.md",
+		Role:  "test",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{profileURL},
+		},
 		AllowedRemoteResources: []string{srv.URL + "/"},
 	}
 
@@ -1328,9 +1330,11 @@ category: llm
 	root := t.TempDir()
 	profileURL := fmt.Sprintf("%s/profiles/bad.yaml#sha256=%s", srv.URL, profileHash)
 	h := &harness.Harness{
-		Agent:                  "agents/test.md",
-		Role:                   "test",
-		Profiles:               []string{profileURL},
+		Agent: "agents/test.md",
+		Role:  "test",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{profileURL},
+		},
 		AllowedRemoteResources: []string{srv.URL + "/"},
 	}
 

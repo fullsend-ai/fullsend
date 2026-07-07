@@ -604,6 +604,12 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 	var providers []resolve.ResolvedProvider
 
 	for _, lockDep := range entry.Dependencies {
+		if h.MatchingAllowedPrefix(lockDep.URL) == "" {
+			return resolve.ResolveResult{}, fmt.Errorf(
+				"locked dependency %s (%s) is no longer in allowed_remote_resources — run 'fullsend lock' to update",
+				lockDep.Field, lockDep.URL)
+		}
+
 		var localPath string
 		var cachedContent []byte
 
@@ -637,7 +643,7 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			depType = "file"
 		}
 		mutations = append(mutations, mutation{field: lockDep.Field, localPath: localPath})
-		deps = append(deps, resolve.Dependency{
+		dep := resolve.Dependency{
 			Field:     lockDep.Field,
 			URL:       lockDep.URL,
 			LocalPath: localPath,
@@ -645,15 +651,16 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			FetchedAt: lockDep.FetchedAt,
 			CacheHit:  true,
 			Type:      depType,
-		})
+		}
 
 		// Reconstruct ResolvedProfile/ResolvedProvider from cached content
 		// (reuses bytes already loaded by CacheGet above).
 		// Profiles and providers are always file-type; skip for directories.
 		if cachedContent == nil {
+			deps = append(deps, dep)
 			continue
 		}
-		if strings.HasPrefix(lockDep.Field, "openshell-profiles[") {
+		if strings.HasPrefix(lockDep.Field, "openshell.profiles[") {
 			id, err := resolve.ParseProfileID(cachedContent)
 			if err != nil {
 				return resolve.ResolveResult{}, fmt.Errorf("cached profile %s: %w", lockDep.Field, err)
@@ -671,10 +678,11 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 				return resolve.ResolveResult{}, fmt.Errorf("cached provider %s has no type", lockDep.Field)
 			}
 			if w := resolve.WarnLiteralCredentials(def.Name, def.Credentials); w != "" {
-				deps[len(deps)-1].Warning = w
+				dep.Warning = w
 			}
 			providers = append(providers, resolve.ResolvedProvider{Def: def, LocalPath: localPath})
 		}
+		deps = append(deps, dep)
 	}
 
 	// All deps confirmed in cache — apply mutations to the harness.
@@ -721,7 +729,7 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			}
 		case strings.HasPrefix(m.field, "forge.") && strings.HasSuffix(m.field, ".validation_loop.schema"):
 			// Same as forge pre_script above.
-		case strings.HasPrefix(m.field, "openshell-profiles["):
+		case strings.HasPrefix(m.field, "openshell.profiles["):
 			// Profiles don't mutate harness fields — they're consumed via
 			// the ResolvedProfile list built above.
 		case strings.HasPrefix(m.field, "providers["):
@@ -760,6 +768,9 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		}
 	}
 	h.Providers = remainingProviders
+	if h.OpenShell != nil {
+		h.OpenShell.Profiles = nil
+	}
 
 	return resolve.ResolveResult{
 		Deps:      deps,

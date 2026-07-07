@@ -569,7 +569,8 @@ func TestResolveFromLock_Success(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent: "https://example.com/agents/code.md#sha256=" + agentHash,
+		Agent:                  "https://example.com/agents/code.md#sha256=" + agentHash,
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
@@ -595,7 +596,8 @@ func TestResolveFromLock_MissingCache(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent: "https://example.com/agents/code.md#sha256=0000000000000000000000000000000000000000000000000000000000000000",
+		Agent:                  "https://example.com/agents/code.md#sha256=0000000000000000000000000000000000000000000000000000000000000000",
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
@@ -622,8 +624,9 @@ func TestResolveFromLock_SkillSlots(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:  "agents/code.md",
-		Skills: []string{"https://example.com/skills/a#sha256=" + hashA, "https://example.com/skills/b#sha256=" + hashB},
+		Agent:                  "agents/code.md",
+		Skills:                 []string{"https://example.com/skills/a#sha256=" + hashA, "https://example.com/skills/b#sha256=" + hashB},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
@@ -649,8 +652,9 @@ func TestResolveFromLock_TransitiveDeps(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:  "agents/code.md",
-		Skills: []string{},
+		Agent:                  "agents/code.md",
+		Skills:                 []string{},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
@@ -684,6 +688,7 @@ func TestResolveFromLock_DiamondDependency(t *testing.T) {
 		Skills: []string{
 			"https://example.com/skills/shared.md#sha256=" + sharedHash,
 		},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
@@ -726,8 +731,9 @@ func TestResolveFromLock_DirectoryType(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:  "agents/code.md",
-		Skills: []string{"https://github.com/org/repo/tree/main/skills/test#sha256=" + treeHash},
+		Agent:                  "agents/code.md",
+		Skills:                 []string{"https://github.com/org/repo/tree/main/skills/test#sha256=" + treeHash},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
@@ -760,8 +766,9 @@ func TestResolveFromLock_EmptyTypeDefaultsToFile(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:  "agents/code.md",
-		Skills: []string{"https://example.com/skills/a#sha256=" + hash},
+		Agent:                  "agents/code.md",
+		Skills:                 []string{"https://example.com/skills/a#sha256=" + hash},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
@@ -785,8 +792,9 @@ func TestResolveFromLock_TransitivePolicySkipped(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:  "agents/code.md",
-		Skills: []string{},
+		Agent:                  "agents/code.md",
+		Skills:                 []string{},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
@@ -817,8 +825,9 @@ func TestResolveFromLock_NoPartialMutation(t *testing.T) {
 
 	originalAgent := "https://example.com/agents/code.md#sha256=" + agentHash
 	h := &harness.Harness{
-		Agent:  originalAgent,
-		Policy: "https://example.com/policies/ro.yaml#sha256=0000000000000000000000000000000000000000000000000000000000000000",
+		Agent:                  originalAgent,
+		Policy:                 "https://example.com/policies/ro.yaml#sha256=0000000000000000000000000000000000000000000000000000000000000000",
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
@@ -890,8 +899,9 @@ func TestResolveFromLock_BaseFieldNoOp(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:  "https://example.com/agents/code.md#sha256=" + agentHash,
-		Skills: []string{"https://example.com/skills/a#sha256=" + skillHash},
+		Agent:                  "https://example.com/agents/code.md#sha256=" + agentHash,
+		Skills:                 []string{"https://example.com/skills/a#sha256=" + skillHash},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
@@ -945,6 +955,7 @@ func TestResolveFromLock_ValidationLoopSchema(t *testing.T) {
 			Script: "scripts/validate.sh",
 			Schema: "https://example.com/schemas/result.json#sha256=" + schemaHash,
 		},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
@@ -1276,7 +1287,7 @@ func TestResolveFromLock_ProfileReconstruction(t *testing.T) {
 	entry := &lock.HarnessLock{
 		Dependencies: []lock.DependencyEntry{
 			{
-				Field:  "openshell-profiles[0]",
+				Field:  "openshell.profiles[0]",
 				URL:    "https://example.com/profiles/anthropic.yaml",
 				SHA256: profileHash,
 			},
@@ -1284,8 +1295,11 @@ func TestResolveFromLock_ProfileReconstruction(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:    "agents/code.md",
-		Profiles: []string{"https://example.com/profiles/anthropic.yaml#sha256=" + profileHash},
+		Agent: "agents/code.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{"https://example.com/profiles/anthropic.yaml#sha256=" + profileHash},
+		},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
@@ -1307,7 +1321,7 @@ func TestResolveFromLock_ProfileEmptyID(t *testing.T) {
 	entry := &lock.HarnessLock{
 		Dependencies: []lock.DependencyEntry{
 			{
-				Field:  "openshell-profiles[0]",
+				Field:  "openshell.profiles[0]",
 				URL:    "https://example.com/profiles/noid.yaml",
 				SHA256: profileHash,
 			},
@@ -1315,8 +1329,11 @@ func TestResolveFromLock_ProfileEmptyID(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:    "agents/code.md",
-		Profiles: []string{"https://example.com/profiles/noid.yaml#sha256=" + profileHash},
+		Agent: "agents/code.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{"https://example.com/profiles/noid.yaml#sha256=" + profileHash},
+		},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
@@ -1343,8 +1360,9 @@ func TestResolveFromLock_ProviderReconstruction(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:     "agents/code.md",
-		Providers: []string{"https://example.com/providers/my.yaml#sha256=" + providerHash},
+		Agent:                  "agents/code.md",
+		Providers:              []string{"https://example.com/providers/my.yaml#sha256=" + providerHash},
+		AllowedRemoteResources: []string{"https://example.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
@@ -1374,8 +1392,9 @@ func TestResolveFromLock_ProviderMissingName(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:     "agents/code.md",
-		Providers: []string{"https://example.com/providers/noname.yaml#sha256=" + providerHash},
+		Agent:                  "agents/code.md",
+		Providers:              []string{"https://example.com/providers/noname.yaml#sha256=" + providerHash},
+		AllowedRemoteResources: []string{"https://example.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
@@ -1402,8 +1421,9 @@ func TestResolveFromLock_ProviderMissingType(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:     "agents/code.md",
-		Providers: []string{"https://example.com/providers/notype.yaml#sha256=" + providerHash},
+		Agent:                  "agents/code.md",
+		Providers:              []string{"https://example.com/providers/notype.yaml#sha256=" + providerHash},
+		AllowedRemoteResources: []string{"https://example.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
@@ -1430,8 +1450,9 @@ func TestResolveFromLock_ProviderLiteralCredentialWarning(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:     "agents/code.md",
-		Providers: []string{"https://example.com/providers/literal.yaml#sha256=" + providerHash},
+		Agent:                  "agents/code.md",
+		Providers:              []string{"https://example.com/providers/literal.yaml#sha256=" + providerHash},
+		AllowedRemoteResources: []string{"https://example.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
@@ -1440,4 +1461,65 @@ func TestResolveFromLock_ProviderLiteralCredentialWarning(t *testing.T) {
 	require.Len(t, lockResult.Deps, 1)
 	assert.NotEmpty(t, lockResult.Deps[0].Warning)
 	assert.Contains(t, lockResult.Deps[0].Warning, "API_KEY")
+}
+
+func TestResolveFromLock_RejectsDisallowedURL(t *testing.T) {
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/agents/code.md", agentContent))
+
+	entry := &lock.HarnessLock{
+		Source: "harness/code.yaml",
+		SHA256: "abc",
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "agent",
+				URL:    "https://example.com/agents/code.md",
+				SHA256: agentHash,
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "https://example.com/agents/code.md#sha256=" + agentHash,
+		AllowedRemoteResources: []string{"https://other-domain.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	_, err := resolveFromLock(h, entry, root, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no longer in allowed_remote_resources")
+	assert.Contains(t, err.Error(), "example.com")
+}
+
+func TestResolveFromLock_EmptyAllowlistDeniesURLs(t *testing.T) {
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/agents/code.md", agentContent))
+
+	entry := &lock.HarnessLock{
+		Source: "harness/code.yaml",
+		SHA256: "abc",
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "agent",
+				URL:    "https://example.com/agents/code.md",
+				SHA256: agentHash,
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "https://example.com/agents/code.md#sha256=" + agentHash,
+		AllowedRemoteResources: nil,
+	}
+
+	printer := ui.New(os.Stdout)
+	_, err := resolveFromLock(h, entry, root, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no longer in allowed_remote_resources")
 }

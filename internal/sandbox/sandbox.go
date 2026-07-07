@@ -145,18 +145,31 @@ var reservedCredentialKeys = map[string]bool{
 	"NO_PROXY":    true,
 	"ALL_PROXY":   true,
 	// Subprocess-influencing runtime vars
-	"NODE_OPTIONS":          true,
-	"PYTHONPATH":            true,
-	"PROMPT_COMMAND":        true,
+	"NODE_OPTIONS":   true,
+	"PYTHONPATH":     true,
+	"PROMPT_COMMAND": true,
 	// Shell / process behavior — IFS affects word splitting, CDPATH affects cd resolution
-	"IFS":                   true,
-	"CDPATH":                true,
+	"IFS":    true,
+	"CDPATH": true,
 	// Language runtime injection — can execute arbitrary code at process start
-	"JAVA_TOOL_OPTIONS":     true,
-	"RUBYOPT":               true,
-	"PERL5OPT":              true,
+	"JAVA_TOOL_OPTIONS": true,
+	"RUBYOPT":           true,
+	"PERL5OPT":          true,
+	"PYTHONSTARTUP":     true,
+	// Dynamic linker audit — equivalent shared-object loading impact to LD_PRELOAD
+	"LD_AUDIT": true,
 	// macOS dynamic linker — low risk in Linux containers but blocked defensively
 	"DYLD_INSERT_LIBRARIES": true,
+	// TLS trust chain — could redirect certificate validation to attacker-controlled CA
+	"SSL_CERT_FILE":       true,
+	"SSL_CERT_DIR":        true,
+	"CURL_CA_BUNDLE":      true,
+	"NODE_EXTRA_CA_CERTS": true,
+	// Hostname resolution redirect
+	"HOSTALIASES": true,
+	// Git config — could inject hooks or redirect operations
+	"GIT_CONFIG_GLOBAL": true,
+	"GIT_EXEC_PATH":     true,
 }
 
 // EnsureProvider creates or updates a provider on the gateway. Credential
@@ -176,9 +189,9 @@ func EnsureProvider(ctx context.Context, name, providerType string, credentials,
 
 	args, extraEnv, secrets := buildProviderArgs(name, providerType, credentials, config)
 
-	ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
+	createCtx, cancel := context.WithTimeout(ctx, providerTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "openshell", args...)
+	cmd := exec.CommandContext(createCtx, "openshell", args...)
 	cmd.Env = append(os.Environ(), extraEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -186,6 +199,7 @@ func EnsureProvider(ctx context.Context, name, providerType string, credentials,
 		// openshell emits: code: 'Some entity that we attempted to create already exists', message: "provider already exists"
 		if strings.Contains(strings.ToLower(outStr), "provider already exists") {
 			// Provider exists from a prior run — update it with current credentials.
+			// Pass original ctx (not createCtx) so updateProvider gets a fresh timeout.
 			return updateProvider(ctx, name, credentials, config, extraEnv, secrets)
 		}
 		// Redact known credential values from error output.
@@ -200,7 +214,7 @@ func EnsureProvider(ctx context.Context, name, providerType string, credentials,
 // updateProvider runs openshell provider update for an already-existing provider.
 func updateProvider(ctx context.Context, name string, credentials, config map[string]string, extraEnv, secrets []string) error {
 	args := buildProviderUpdateArgs(name, credentials, config)
-	ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
+	ctx, cancel := context.WithTimeout(ctx, providerTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "openshell", args...)
 	cmd.Env = append(os.Environ(), extraEnv...)

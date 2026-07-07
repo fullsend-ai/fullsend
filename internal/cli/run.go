@@ -686,7 +686,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	printer.StepDone(fmt.Sprintf("Gateway available (%.1fs)", time.Since(gatewayStart).Seconds()))
 
-	// 2b. Import resolved profiles to the gateway.
+	// 2b. Validate referential integrity before any gateway mutations.
+	// Dedupe URL-resolved providers (last-wins) so shadowed entries from
+	// base composition don't trigger false integrity errors.
+	result.Providers = dedupResolvedProviders(result.Providers)
+	if w, intErr := checkProviderProfileIntegrity(result.Providers, result.Profiles); intErr != nil {
+		printer.StepFail("Provider references unknown profile type")
+		return intErr
+	} else if w != "" {
+		printer.StepWarn(w)
+	}
+
+	// 2c. Import resolved profiles to the gateway.
 	result.Profiles = dedupResolvedProfiles(result.Profiles)
 	for _, rp := range result.Profiles {
 		profileStart := time.Now()
@@ -698,7 +709,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepDone(fmt.Sprintf("Profile imported: %s (%.1fs)", rp.ID, time.Since(profileStart).Seconds()))
 	}
 
-	// 2c. Ensure providers exist on the gateway (if any declared).
+	// 2d. Ensure providers exist on the gateway (if any declared).
+	// Only harness-declared and URL-resolved providers are loaded and created;
+	// directory providers not referenced by this harness are skipped entirely.
+	allProviderNames := append([]string{}, h.Providers...)
 	if len(h.Providers) > 0 || len(result.Providers) > 0 {
 		// Enable provider-backed policy composition on the gateway.
 		provV2Start := time.Now()
@@ -720,19 +734,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepDone(fmt.Sprintf("Provider profiles imported (%.1fs)", time.Since(dirProfileStart).Seconds()))
 
 		providersDir := filepath.Join(absFullsendDir, "providers")
-		localDefs, err := harness.LoadProviderDefs(providersDir)
+		declared := make(map[string]struct{}, len(h.Providers))
+		for _, p := range h.Providers {
+			declared[p] = struct{}{}
+		}
+		localDefs, err := harness.LoadProviderDefs(providersDir, declared)
 		if err != nil {
 			printer.StepFail("Failed to load provider definitions")
 			return fmt.Errorf("loading provider definitions: %w", err)
 		}
 
-		allDefs := mergeProviderDefs(localDefs, result.Providers)
-
-		if w, intErr := checkProviderProfileIntegrity(result.Providers, result.Profiles); intErr != nil {
-			printer.StepFail("Provider references unknown profile type")
-			return intErr
-		} else if w != "" {
-			printer.StepWarn(w)
+		allDefs, shadowedProviders := mergeProviderDefs(localDefs, result.Providers)
+		for _, name := range shadowedProviders {
+			printer.StepWarn(fmt.Sprintf("Local provider %q shadows URL-resolved provider of the same name", name))
 		}
 
 		var (
@@ -761,6 +775,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			return err
 		}
 
+		allProviderNames = sandboxProviderNames(h.Providers, result.Providers)
 	}
 
 	// Trace identity (ADR 0050 Level 1 + security correlation). Resolved here,
@@ -772,7 +787,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	securityTraceID, traceCtx := resolveTraceIdentity(os.Getenv("TRACEPARENT"))
 	workItemID := resolveWorkItemID()
 
-	// 2d. Run pre-script on the host (if configured).
+	// 2e. Run pre-script on the host (if configured).
 	if h.PreScript != "" {
 		preStart := time.Now()
 		printer.StepStart("Running pre-script: " + h.PreScript)
@@ -820,7 +835,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	sandboxSpan := rec.StartSpan("sandbox_create", "", map[string]any{"gen_ai.operation.name": "create_agent"})
 
 	readyTimeout := time.Duration(h.SandboxTimeoutSeconds) * time.Second
-	if err := sandbox.CreateWithRetry(sandboxName, h.Providers, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout); err != nil {
+	if err := sandbox.CreateWithRetry(sandboxName, allProviderNames, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout); err != nil {
 		rec.EndSpan(sandboxSpan, "error", nil)
 		printer.StepFail("Failed to create sandbox")
 		return fmt.Errorf("creating sandbox: %w", err)
@@ -3036,9 +3051,26 @@ func clearDirContents(dir string) error {
 	return nil
 }
 
-// dedupResolvedProfiles removes duplicate profiles by ID, keeping the last
+// dedupResolvedProviders removes duplicate providers by Name, keeping the last
 // occurrence (child overrides base, since base entries come first from
 // composition).
+func dedupResolvedProviders(providers []resolve.ResolvedProvider) []resolve.ResolvedProvider {
+	if len(providers) <= 1 {
+		return providers
+	}
+	seen := make(map[string]int, len(providers))
+	for i, rp := range providers {
+		seen[rp.Def.Name] = i
+	}
+	deduped := make([]resolve.ResolvedProvider, 0, len(seen))
+	for i, rp := range providers {
+		if seen[rp.Def.Name] == i {
+			deduped = append(deduped, rp)
+		}
+	}
+	return deduped
+}
+
 func dedupResolvedProfiles(profiles []resolve.ResolvedProfile) []resolve.ResolvedProfile {
 	if len(profiles) <= 1 {
 		return profiles
@@ -3060,15 +3092,15 @@ func dedupResolvedProfiles(profiles []resolve.ResolvedProfile) []resolve.Resolve
 // Local defs have highest precedence; among URL-resolved defs, last
 // occurrence wins (child over base). The returned slice is deterministically
 // ordered: local defs first, then URL-resolved names in sorted order.
-func mergeProviderDefs(localDefs []harness.ProviderDef, urlProviders []resolve.ResolvedProvider) []harness.ProviderDef {
+// shadowed returns the names of URL-resolved providers that were overridden
+// by a local provider of the same name.
+func mergeProviderDefs(localDefs []harness.ProviderDef, urlProviders []resolve.ResolvedProvider) (allDefs []harness.ProviderDef, shadowed []string) {
 	seen := make(map[string]bool, len(localDefs)+len(urlProviders))
-	allDefs := make([]harness.ProviderDef, 0, len(localDefs)+len(urlProviders))
+	allDefs = make([]harness.ProviderDef, 0, len(localDefs)+len(urlProviders))
 	for _, ld := range localDefs {
 		seen[ld.Name] = true
 		allDefs = append(allDefs, ld)
 	}
-	// Dedup URL-resolved by name: last occurrence wins (child over base,
-	// since base entries come first from composition).
 	lastByName := make(map[string]resolve.ResolvedProvider, len(urlProviders))
 	for _, rp := range urlProviders {
 		lastByName[rp.Def.Name] = rp
@@ -3077,13 +3109,39 @@ func mergeProviderDefs(localDefs []harness.ProviderDef, urlProviders []resolve.R
 	for name := range lastByName {
 		if !seen[name] {
 			urlNames = append(urlNames, name)
+		} else {
+			shadowed = append(shadowed, name)
 		}
 	}
 	sort.Strings(urlNames)
+	sort.Strings(shadowed)
 	for _, name := range urlNames {
 		allDefs = append(allDefs, lastByName[name].Def)
 	}
-	return allDefs
+	return allDefs, shadowed
+}
+
+// sandboxProviderNames returns the provider names that should be attached to
+// the sandbox: harness-declared (local) names plus URL-resolved names.
+// Directory providers not declared in the harness are excluded — they may
+// exist on the gateway for other harnesses but must not widen this sandbox's
+// credential scope.
+func sandboxProviderNames(harnessProviders []string, resolved []resolve.ResolvedProvider) []string {
+	seen := make(map[string]bool, len(harnessProviders)+len(resolved))
+	names := make([]string, 0, len(harnessProviders)+len(resolved))
+	for _, n := range harnessProviders {
+		if !seen[n] {
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
+	for _, rp := range resolved {
+		if !seen[rp.Def.Name] {
+			seen[rp.Def.Name] = true
+			names = append(names, rp.Def.Name)
+		}
+	}
+	return names
 }
 
 // checkProviderProfileIntegrity validates that every URL-resolved provider
@@ -3102,10 +3160,16 @@ func checkProviderProfileIntegrity(providers []resolve.ResolvedProvider, profile
 	for _, rp := range profiles {
 		profileIDs[rp.ID] = true
 	}
+	var mismatches []string
 	for _, rp := range providers {
 		if !profileIDs[rp.Def.Type] {
-			return "", fmt.Errorf("provider %q references profile type %q, but no profile with that id was declared", rp.Def.Name, rp.Def.Type)
+			mismatches = append(mismatches, fmt.Sprintf("%q (type %q)", rp.Def.Name, rp.Def.Type))
 		}
+	}
+	if len(mismatches) > 0 {
+		return "", fmt.Errorf(
+			"providers reference unknown openshell.profiles types: %s — if these profiles are gateway-resident, move the providers to a local providers/ directory instead",
+			strings.Join(mismatches, ", "))
 	}
 	return "", nil
 }

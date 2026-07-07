@@ -719,6 +719,15 @@ func TestEnsureProvider_RejectsReservedCredentialKeys(t *testing.T) {
 		{"https_proxy", true},
 		{"NODE_OPTIONS", true},
 		{"PROMPT_COMMAND", true},
+		{"LD_AUDIT", true},
+		{"SSL_CERT_FILE", true},
+		{"SSL_CERT_DIR", true},
+		{"CURL_CA_BUNDLE", true},
+		{"NODE_EXTRA_CA_CERTS", true},
+		{"HOSTALIASES", true},
+		{"PYTHONSTARTUP", true},
+		{"GIT_CONFIG_GLOBAL", true},
+		{"GIT_EXEC_PATH", true},
 		{"MY_TOKEN", false},
 	}
 	for _, tt := range tests {

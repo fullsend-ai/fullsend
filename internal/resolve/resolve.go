@@ -229,13 +229,13 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 	// Resolve profiles (all entries must be URLs — enforced by
 	// ValidateResourceTypes at load time).
 	var profiles []ResolvedProfile
-	for i, p := range h.Profiles {
+	for i, p := range h.OpenShellProfiles() {
 		if !harness.IsURL(p) {
-			return ResolveResult{}, fmt.Errorf("openshell-profiles[%d]: expected URL, got local path %q", i, p)
+			return ResolveResult{}, fmt.Errorf("openshell.profiles[%d]: expected URL, got local path %q", i, p)
 		}
-		dep, localPath, err := resolveFileURL(ctx, fmt.Sprintf("openshell-profiles[%d]", i), p, h, opts, state)
+		dep, localPath, err := resolveFileURL(ctx, fmt.Sprintf("openshell.profiles[%d]", i), p, h, opts, state)
 		if err != nil {
-			return ResolveResult{}, fmt.Errorf("resolving openshell-profiles[%d]: %w", i, err)
+			return ResolveResult{}, fmt.Errorf("resolving openshell.profiles[%d]: %w", i, err)
 		}
 
 		content, err := os.ReadFile(localPath)
@@ -244,7 +244,7 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 		}
 		id, err := ParseProfileID(content)
 		if err != nil {
-			return ResolveResult{}, fmt.Errorf("openshell-profiles[%d]: %w (from %s)", i, err, dep.URL)
+			return ResolveResult{}, fmt.Errorf("openshell.profiles[%d]: %w (from %s)", i, err, dep.URL)
 		}
 		state.appendDependency(dep)
 		profiles = append(profiles, ResolvedProfile{ID: id, LocalPath: localPath})
@@ -285,6 +285,9 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 		resolvedProviders = append(resolvedProviders, ResolvedProvider{Def: def, LocalPath: localPath})
 	}
 	h.Providers = remaining
+	if h.OpenShell != nil {
+		h.OpenShell.Profiles = nil
+	}
 
 	return ResolveResult{
 		Deps:      state.deps,

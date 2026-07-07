@@ -3874,10 +3874,11 @@ func TestDedupResolvedProfiles(t *testing.T) {
 
 func TestMergeProviderDefs(t *testing.T) {
 	tests := []struct {
-		name     string
-		local    []harness.ProviderDef
-		url      []resolve.ResolvedProvider
-		wantNames []string
+		name         string
+		local        []harness.ProviderDef
+		url          []resolve.ResolvedProvider
+		wantNames    []string
+		wantShadowed []string
 	}{
 		{
 			name:      "local only",
@@ -3901,7 +3902,8 @@ func TestMergeProviderDefs(t *testing.T) {
 				{Def: harness.ProviderDef{Name: "shared", Type: "url-type"}},
 				{Def: harness.ProviderDef{Name: "url-only", Type: "t1"}},
 			},
-			wantNames: []string{"shared", "url-only"},
+			wantNames:    []string{"shared", "url-only"},
+			wantShadowed: []string{"shared"},
 		},
 		{
 			name:  "duplicate URL names last wins",
@@ -3921,7 +3923,7 @@ func TestMergeProviderDefs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := mergeProviderDefs(tt.local, tt.url)
+			got, shadowed := mergeProviderDefs(tt.local, tt.url)
 			var names []string
 			for _, d := range got {
 				names = append(names, d.Name)
@@ -3930,6 +3932,11 @@ func TestMergeProviderDefs(t *testing.T) {
 				assert.Empty(t, got)
 			} else {
 				assert.Equal(t, tt.wantNames, names)
+			}
+			if tt.wantShadowed == nil {
+				assert.Empty(t, shadowed)
+			} else {
+				assert.Equal(t, tt.wantShadowed, shadowed)
 			}
 			// Verify local shadows URL by checking type
 			if tt.name == "local shadows URL" {
@@ -3941,6 +3948,74 @@ func TestMergeProviderDefs(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSandboxProviderNames(t *testing.T) {
+	tests := []struct {
+		name             string
+		harnessProviders []string
+		resolved         []resolve.ResolvedProvider
+		want             []string
+	}{
+		{
+			name:             "harness-declared and URL-resolved names are both included",
+			harnessProviders: []string{"local-prov"},
+			resolved: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "url-prov", Type: "t2"}},
+			},
+			want: []string{"local-prov", "url-prov"},
+		},
+		{
+			name:             "URL-only providers are included",
+			harnessProviders: nil,
+			resolved: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "remote-a", Type: "t1"}},
+				{Def: harness.ProviderDef{Name: "remote-b", Type: "t2"}},
+			},
+			want: []string{"remote-a", "remote-b"},
+		},
+		{
+			name:             "harness-only providers are included",
+			harnessProviders: []string{"loc"},
+			resolved:         nil,
+			want:             []string{"loc"},
+		},
+		{
+			name:             "empty when no providers",
+			harnessProviders: nil,
+			resolved:         nil,
+			want:             []string{},
+		},
+		{
+			name:             "directory providers not in harness are excluded",
+			harnessProviders: []string{"declared-a"},
+			resolved:         nil,
+			want:             []string{"declared-a"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sandboxProviderNames(tt.harnessProviders, tt.resolved)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestSandboxProviderNames_ExcludesUndeclaredDirectoryProviders(t *testing.T) {
+	// Regression test: the sandbox must only receive harness-declared +
+	// URL-resolved provider names. Providers that exist in the providers/
+	// directory but are not declared in the harness must NOT be attached
+	// to the sandbox, even though they are created on the gateway.
+	harnessProviders := []string{"declared-only"}
+	urlResolved := []resolve.ResolvedProvider{
+		{Def: harness.ProviderDef{Name: "url-resolved", Type: "t1"}},
+	}
+
+	got := sandboxProviderNames(harnessProviders, urlResolved)
+
+	assert.Equal(t, []string{"declared-only", "url-resolved"}, got)
+	assert.NotContains(t, got, "undeclared-directory-provider",
+		"directory providers not in harness must not appear in sandbox provider names")
 }
 
 func TestCheckProviderProfileIntegrity(t *testing.T) {
@@ -3985,13 +4060,30 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 			},
 			wantErr: true,
 		},
+		{
+			name: "multiple mismatches reported together",
+			providers: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "p1", Type: "missing-a"}},
+				{Def: harness.ProviderDef{Name: "p2", Type: "anthropic"}},
+				{Def: harness.ProviderDef{Name: "p3", Type: "missing-b"}},
+			},
+			profiles: []resolve.ResolvedProfile{
+				{ID: "anthropic"},
+			},
+			wantErr: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			warn, err := checkProviderProfileIntegrity(tt.providers, tt.profiles)
 			if tt.wantErr {
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), "unknown-type")
+				assert.Contains(t, err.Error(), "gateway-resident")
+				if tt.name == "multiple mismatches reported together" {
+					assert.Contains(t, err.Error(), "missing-a")
+					assert.Contains(t, err.Error(), "missing-b")
+					assert.NotContains(t, err.Error(), "anthropic")
+				}
 			} else {
 				require.NoError(t, err)
 			}

@@ -353,7 +353,7 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
 │  │ ImportProfile()   │ Import openshell provider profiles       │
-│  │                   │ (from URL-resolved openshell-profiles)   │
+│  │                   │ (from URL-resolved openshell.profiles)   │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │

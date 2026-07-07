@@ -128,6 +128,12 @@ repo baseline and overrides)
   `trigger` boolean evaluated against a forge-neutral `NormalizedEvent`.
   `fullsend dispatch` matches events to harnesses via input/output drivers
   ([ADR 0061](ADRs/0061-harness-cel-dispatch.md)).
+- Portable provider and profile resolution: provider and profile definitions
+  can be URL-referenced in the harness (sha256-pinned), enabling portable
+  base harnesses that carry their own provider/profile dependencies.
+  URL-resolved providers are validated against `allowed_remote_resources`
+  and merged with local definitions at resolution time
+  ([ADR 0068](ADRs/0068-portable-provider-profile-resolution.md)).
 
 **Open questions:**
 

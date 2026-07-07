@@ -1,5 +1,5 @@
 ---
-title: "66. Portable provider and profile resolution"
+title: "68. Portable provider and profile resolution"
 status: Accepted
 relates_to:
   - agent-architecture
@@ -13,7 +13,7 @@ topics:
   - remote-resources
 ---
 
-# 66. Portable provider and profile resolution
+# 68. Portable provider and profile resolution
 
 Date: 2026-07-03
 
@@ -48,15 +48,15 @@ profiles. Today, providers and profiles are an exception.
   declarative resources.
 - [ADR 0045](0045-forge-portable-harness-schema.md): Introduced harness `base:` for
   composition; allows a child harness to inherit and extend a base harness.
-- [ADR 0065](0065-provider-backed-policy-composition.md) (predecessor branch, not yet
-  merged): Defines the provider model and composition semantics for openshell policy
-  binding and credential delivery.
+- [ADR 0065](0065-provider-backed-policy-composition.md): Defines the provider
+  model and composition semantics for openshell policy binding and credential
+  delivery.
 
 ## Decision
 
 Extend the harness schema with two new fields:
 
-1. **`openshell-profiles`** — A new list field accepting only HTTPS URLs with `#sha256=...`
+1. **`openshell.profiles`** — A new list field accepting only HTTPS URLs with `#sha256=...`
    integrity hashes. Profiles define openshell-level credential type schemas and
    belong in shared repositories, not locally. No local-path form.
 
@@ -67,8 +67,9 @@ Extend the harness schema with two new fields:
 ### Schema
 
 ```yaml
-# New openshell-profiles field (URL-only)
-openshell-profiles:
+# New openshell.profiles field (URL-only)
+openshell:
+  profiles:
   - "https://github.com/org/profiles/tree/main/claude-code.yaml#sha256=abc..."
   - "https://github.com/org/profiles/tree/main/google-vertex-ai.yaml#sha256=def..."
 
@@ -83,7 +84,7 @@ providers:
 **Phase 1 — Base composition (`compose.go`)**
 
 When a harness declares `base:`, the base YAML is fetched and parsed. The
-`mergeBaseIntoChild()` function merges `openshell-profiles` and `providers` lists:
+`mergeBaseIntoChild()` function merges `openshell.profiles` and `providers` lists:
 - Base entries come first, child entries append
 - Deduplication by profile `id` (from profile YAML) / provider `name` (from provider YAML)
 - Child wins in dedup conflicts
@@ -94,7 +95,7 @@ When a harness declares `base:`, the base YAML is fetched and parsed. The
 After base composition produces the final merged harness, `ResolveHarness()` adds two
 new loops:
 
-1. **Profiles:** For each entry in `openshell-profiles`:
+1. **Profiles:** For each entry in `openshell.profiles`:
    - Fetch the URL (cache-aware, HTTPS-only, SSRF-hardened)
    - Verify SHA-256 integrity hash
    - Cache the resource (content-addressed)
@@ -131,12 +132,12 @@ but no profile with that id was declared"
 
 ### Base harness inheritance
 
-When a harness uses `base:`, the base can declare its own `openshell-profiles` and `providers`.
+When a harness uses `base:`, the base can declare its own `openshell.profiles` and `providers`.
 This is the key portability scenario — a shared base harness bundles everything an
 agent needs.
 
 **Merge semantics:**
-- `openshell-profiles`: concatenate base + child lists, deduplicate by profile `id` (child wins)
+- `openshell.profiles`: concatenate base + child lists, deduplicate by profile `id` (child wins)
 - `providers`: concatenate base + child lists. Precedence at runtime (highest
   first): local directory defs > URL-resolved child defs > URL-resolved base defs.
   URL-resolved providers deduplicate by resolved `name` (child wins). Local names
@@ -148,7 +149,8 @@ agent needs.
 # Base harness at https://github.com/org/shared-harness/harness.yaml
 agent: agents/code.md
 policy: policies/default.yaml  # openshell policy
-openshell-profiles:
+openshell:
+  profiles:
   - "https://github.com/org/profiles/tree/main/claude-code.yaml#sha256=aaa..."
   - "https://github.com/org/profiles/tree/main/github.yaml#sha256=bbb..."
 providers:
@@ -171,7 +173,7 @@ Result after merge and resolution:
 
 ### Schema validation (`ValidateResourceTypes`)
 
-- `openshell-profiles[]`: every entry must pass `IsURL()` and have a valid `#sha256=...`
+- `openshell.profiles[]`: every entry must pass `IsURL()` and have a valid `#sha256=...`
   integrity hash. Profiles are always remote.
 - `providers[]`: if `IsURL()`, require `#sha256=...` integrity hash. If not URL,
   accept as local provider name (no change).
@@ -211,11 +213,11 @@ No new attack surface. Same controls as ADR 0038:
 
 Fully backwards-compatible:
 
-- `openshell-profiles` is a new optional field. Omitting it changes nothing.
+- `openshell.profiles` is a new optional field. Omitting it changes nothing.
 - `providers` keeps its type (`[]string`). Existing local-name entries work
   unchanged — `IsURL()` returns false, they pass through to existing
   `LoadProviderDefs` + `EnsureProvider` flow.
-- No schema version bump. Older harnesses without `openshell-profiles` or URL-referenced
+- No schema version bump. Older harnesses without `openshell.profiles` or URL-referenced
   providers behave identically.
 
 ## Consequences
