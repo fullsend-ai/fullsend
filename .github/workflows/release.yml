@@ -51,3 +51,39 @@ jobs:
           else
             git push origin v0
           fi
+
+      # Sync the version tag to fullsend-ai/agents. Runs for all tags
+      # including pre-releases — agents' own release.yml handles
+      # pre-release semantics. Intentionally coupled to the v0 step:
+      # if the v0 move fails, the release state is suspect and agents
+      # should not be tagged until the issue is investigated.
+      - name: Generate agents repo token
+        id: agents-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          repositories: agents
+
+      - name: Push tag to fullsend-ai/agents
+        env:
+          GH_TOKEN: ${{ steps.agents-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+
+          HTTP_CODE=$(gh api "repos/fullsend-ai/agents/git/ref/tags/${TAG}" \
+            --include 2>/dev/null | head -1 | awk '{print $2}') || true
+          if [[ "${HTTP_CODE}" == "200" ]]; then
+            echo "Tag ${TAG} already exists on fullsend-ai/agents, skipping"
+            exit 0
+          elif [[ "${HTTP_CODE}" != "404" ]]; then
+            echo "::error::Unexpected response (HTTP ${HTTP_CODE}) checking tag on fullsend-ai/agents"
+            exit 1
+          fi
+
+          AGENTS_SHA=$(gh api repos/fullsend-ai/agents/git/ref/heads/main --jq '.object.sha')
+          gh api repos/fullsend-ai/agents/git/refs \
+            -f ref="refs/tags/${TAG}" \
+            -f sha="${AGENTS_SHA}"
+          echo "Created tag ${TAG} on fullsend-ai/agents at ${AGENTS_SHA}"

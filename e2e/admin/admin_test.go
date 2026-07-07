@@ -58,6 +58,9 @@ func setupE2ETest(t *testing.T) *e2eEnv {
 	t.Logf("E2E run ID: %s", runID)
 
 	org, token, err := acquireOrg(context.Background(), cfg, runID, orgPool, cfg.lockTimeout, t.Logf)
+	if errors.Is(err, errAllOrgsRateLimited) {
+		t.Skipf("skipping: GitHub API rate limits exhausted on all pool orgs: %v", err)
+	}
 	require.NoError(t, err, "acquiring org from pool")
 	t.Logf("Acquired org: %s", org)
 

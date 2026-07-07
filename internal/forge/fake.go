@@ -22,6 +22,7 @@ func NewFakeClient() *FakeClient {
 		DirContents:     make(map[string][]DirectoryEntry),
 		FileContentsRef: make(map[string][]byte),
 		BranchRefs:      make(map[string]string),
+		Refs:            make(map[string]string),
 	}
 }
 
@@ -159,6 +160,9 @@ type FakeClient struct {
 
 	// Branch refs for GetBranchRef.
 	BranchRefs map[string]string // key: "owner/repo/branch" → commit SHA
+
+	// Refs for GetRef.
+	Refs map[string]string // key: "owner/repo/refPath" → commit SHA
 
 	// Error injection: key is method name, value is error to return.
 	Errors map[string]error
@@ -588,6 +592,27 @@ func (f *FakeClient) CommitFilesToBranch(_ context.Context, owner, repo, branch,
 	return changed, nil
 }
 
+func (f *FakeClient) getRefLocked(owner, repo, refPath string) (string, bool) {
+	key := owner + "/" + repo + "/" + refPath
+	sha, ok := f.Refs[key]
+	return sha, ok
+}
+
+func (f *FakeClient) GetRef(_ context.Context, owner, repo, refPath string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetRef"); e != nil {
+		return "", e
+	}
+
+	sha, ok := f.getRefLocked(owner, repo, refPath)
+	if !ok {
+		return "", fmt.Errorf("%w: ref %s in %s/%s", ErrNotFound, refPath, owner, repo)
+	}
+	return sha, nil
+}
+
 func (f *FakeClient) GetBranchRef(_ context.Context, owner, repo, branch string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -595,11 +620,13 @@ func (f *FakeClient) GetBranchRef(_ context.Context, owner, repo, branch string)
 	if e := f.err("GetBranchRef"); e != nil {
 		return "", e
 	}
-
 	key := owner + "/" + repo + "/" + branch
-	sha, ok := f.BranchRefs[key]
+	if sha, ok := f.BranchRefs[key]; ok {
+		return sha, nil
+	}
+	sha, ok := f.getRefLocked(owner, repo, "heads/"+branch)
 	if !ok {
-		return "", fmt.Errorf("%w: branch %s in %s/%s", ErrNotFound, branch, owner, repo)
+		return "", fmt.Errorf("%w: ref heads/%s in %s/%s", ErrNotFound, branch, owner, repo)
 	}
 	return sha, nil
 }

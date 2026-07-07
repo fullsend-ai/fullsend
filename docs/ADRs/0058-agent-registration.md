@@ -78,6 +78,7 @@ phasing, schema details, CLI behavior, and migration mechanics.
 - The additive merge model allows agents to be extracted from the scaffold one at a time without disrupting existing installations.
 - Per-repo installs no longer need org config for remote resource validation.
 - No forced migration — empty config falls back to scaffold discovery until populated.
+- **Transitional agents-repo fallback:** During the [agent extraction](../plans/agent-extraction-to-agents-repo.md), a runtime fallback resolves known first-party agents from `fullsend-ai/agents` when not in config. This avoids requiring config changes from existing users during extraction. The fallback will be removed once all users have migrated to config-driven registration (Phase 5 / extraction plan Step 7).
 - The `agents` YAML key was previously used in `OrgConfig` with a different schema (role/name/slug identity tuples, removed by ADR 0045 Phase 4). The new schema (URL/path source entries) is incompatible; a custom unmarshaler detects and rejects old-format entries with a clear error message.
 
 ## References

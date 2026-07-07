@@ -47,6 +47,7 @@ Infrastructure platform choice and configuration are specified in the adopting o
 - Event-driven stage dispatch: eliminate `workflow_dispatch` + `gh workflow run` fan-out from `dispatch.yml` in favor of synchronous `workflow_call` so the dispatched run stays linked to the caller ([ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
 - Multi-repo management: a `fullsend repos` subcommand group with a declarative `repos.yaml` manifest for managing per-repo installations at scale — bulk install, status, sync, upgrade, and removal across repos and orgs ([ADR 0057](ADRs/0057-repos-management.md)).
 - Dispatch version-skew resolution: per-repo `reusable-dispatch.yml` inlines stage workflow jobs directly, eliminating `@v0` references to `reusable-{stage}.yml` ([ADR 0062](ADRs/0062-dispatch-version-skew.md)).
+- GitLab event dispatch: two-path model — native CI triggers (`merge_request_event`) for MR events, cron-based polling for issues/comments/labels. No external infrastructure (no webhook bridge). Bot PAT via OIDC/WIF from Secret Manager or protected CI/CD variable. Per-repo only ([ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
 
 **Open questions:**
 
@@ -161,7 +162,7 @@ One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer
 - ~~What identity model fits best — separate bot accounts per agent role, a single bot account with role metadata, GitHub App installations, or something else?~~ Decided in [ADR 0007](ADRs/0007-per-role-github-apps.md).
 - How are credentials rotated and revoked, and who has authority to do that?
 - Does the identity provider integrate with existing secrets management, or is it a new system?
-- How will per-role identity work on GitLab and Forgejo, which lack GitHub's app manifest flow?
+- How will per-role identity work on GitLab and Forgejo, which lack GitHub's app manifest flow? GitLab uses a bot PAT credential model (via OIDC/WIF or protected CI/CD variable) — see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md).
 
 ## Agent Dispatch and Coordination Layer
 
@@ -181,6 +182,7 @@ The existing design principle is that [the repo is the coordinator](problems/age
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
   as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
   scope is per-repo mode only.
+- GitLab dispatch uses cron-polled scheduled pipelines for issue/comment/label events and native `merge_request_event` for MR events. No webhook bridge required (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
 
 **Open questions:**
 
@@ -252,7 +254,7 @@ Fullsend provides a base set of agent definitions. The adopting organization's *
 **Decided:**
 
 - Config-level agent registration: an `agents` list in both `OrgConfig` and `PerRepoConfig` declares agent harness sources as pinned URLs or local paths, replacing compiled-in agent discovery ([ADR 0058](ADRs/0058-agent-registration.md)).
-- Runtime resolution: `fullsend run <name>` looks up the agent in config and loads the harness directly from the URL or path — no intermediate wrapper files on disk. Role and slug come from the harness content itself.
+- Runtime resolution: `fullsend run <name>` resolves agents in three tiers: (1) config entries from `OrgConfig.Agents` (highest priority), (2) runtime fallback to the `fullsend-ai/agents` repository for known first-party agents not in config, (3) scaffold-embedded harnesses on disk. The agents-repo fallback is a transitional mechanism for the [agent extraction](plans/agent-extraction-to-agents-repo.md); it will be removed once all users have migrated to config-driven registration (ADR 0058 Phase 5).
 - Additive merge: config entries overlay scaffold-discovered agents (config wins on name collision), enabling gradual extraction of first-party agents without disrupting existing installations. Builds on [ADR 0045](ADRs/0045-forge-portable-harness-schema.md) harness identity model.
 - CLI management: `fullsend agent add/list/update/remove` manages config entries and auto-pins URLs to a commit SHA with an integrity hash.
 

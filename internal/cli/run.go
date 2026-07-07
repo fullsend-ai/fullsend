@@ -52,7 +52,35 @@ const (
 
 	// metricsFile is the filename written to the run directory with behavioral metrics.
 	metricsFile = "metrics.json"
+
+	// Default agents repository for runtime fallback when an agent is not
+	// registered in config. The binary resolves the commit SHA for the
+	// floating version tag (config.DefaultUpstreamRef) and fetches the
+	// harness dynamically.
+	defaultAgentsRepoOwner = "fullsend-ai"
+	defaultAgentsRepoName  = "agents"
 )
+
+// defaultAgentsRepoURLPrefix is the base URL for fetching agent harnesses
+// from the agents repository. It is a var (not const) to allow test overrides.
+var defaultAgentsRepoURLPrefix = "https://raw.githubusercontent.com/fullsend-ai/agents/"
+
+// defaultAgentsRepoKnownAgents lists first-party agents available in the
+// fullsend-ai/agents repository. Only these agents are eligible for the
+// runtime fallback — custom agents are never tried against the agents repo.
+//
+// This is a transitional mechanism to support agent extraction (see
+// docs/plans/agent-extraction-to-agents-repo.md). It will be removed once
+// all users have migrated to config-driven agent registration (ADR 0058
+// Phase 5 / extraction plan Step 7).
+var defaultAgentsRepoKnownAgents = map[string]bool{
+	"triage":     true,
+	"code":       true,
+	"fix":        true,
+	"review":     true,
+	"retro":      true,
+	"prioritize": true,
+}
 
 // statusMintToken is the test seam for minting tokens. Shared by both
 // setupStatusNotifier (status comment tokens) and mintAgentToken (agent
@@ -296,8 +324,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		GitToken:      composeGitToken,
 	}
 
-	// Resolve agent source: config agents take precedence over disk harnesses.
-	harnessPath, fetchDeps, err := resolveAgentSource(ctx, absFullsendDir, agentName, orgCfg, composeOpts, printer)
+	// Resolve agent source: config agents take precedence, then agents repo
+	// fallback, then disk harnesses.
+	var fallbackForgeClient forge.Client
+	if composeGitToken != "" {
+		fallbackForgeClient = gh.New(composeGitToken)
+	}
+	harnessPath, fetchDeps, err := resolveAgentSource(ctx, absFullsendDir, agentName, fallbackForgeClient, orgCfg, composeOpts, printer)
 	if err != nil {
 		return err
 	}
@@ -2672,11 +2705,15 @@ func validateRepoNames(repos []string) error {
 }
 
 // resolveAgentSource resolves the harness path for an agent, checking
-// config-registered agents before falling back to disk-based lookup.
+// config-registered agents first, then falling back to the agents repo
+// (fullsend-ai/agents), then to disk-based lookup.
 // Returns the local filesystem path to the harness (cached for URL sources)
 // and any fetch dependencies from URL-based agent resolution.
-func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, orgCfg *config.OrgConfig, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, error) {
+func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forgeClient forge.Client, orgCfg *config.OrgConfig, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, error) {
 	if orgCfg == nil || len(orgCfg.Agents) == 0 {
+		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
+			return path, deps, nil
+		}
 		path, err := resolveHarnessPath(fullsendDir, agentName, printer)
 		return path, nil, err
 	}
@@ -2701,6 +2738,9 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, orgC
 
 	agent := config.LookupMergedAgent(merged, agentName)
 	if agent == nil || !agent.IsConfig {
+		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
+			return path, deps, nil
+		}
 		path, err := resolveHarnessPath(fullsendDir, agentName, printer)
 		return path, nil, err
 	}
@@ -2725,6 +2765,107 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, orgC
 	}
 	printer.StepDone(fmt.Sprintf("Agent %s resolved from config (local path)", agent.Name))
 	return contained, nil, nil
+}
+
+// tryAgentsRepoFallback attempts to resolve an agent from the default agents
+// repository (fullsend-ai/agents) by fetching the latest harness from the
+// main branch. This is a transitional mechanism to support the extraction of
+// first-party agents into a separate repository (fullsend-ai/agents) without
+// requiring config changes from existing users.
+//
+// Returns (path, deps, true) on success, or ("", nil, false) if the fallback
+// should be skipped (offline, no forge client, agent not known, not allowlisted, etc.).
+// All errors are non-fatal — the caller falls through to disk-based lookup.
+func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, bool) {
+	normalizedName := strings.ToLower(agentName)
+	if !defaultAgentsRepoKnownAgents[normalizedName] {
+		return "", nil, false
+	}
+	if composeOpts.FetchPolicy.Offline {
+		return "", nil, false
+	}
+	if forgeClient == nil {
+		return "", nil, false
+	}
+
+	allowlist := composeOpts.OrgAllowlist
+	if allowlist == nil {
+		allowlist = config.DefaultAllowedRemoteResources()
+	}
+
+	tagRef := "tags/" + config.DefaultUpstreamRef
+	tagSHA, err := forgeClient.GetRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, tagRef)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Could not resolve %s/%s@%s: %v", defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef, err))
+		return "", nil, false
+	}
+	if !commitSHAPattern.MatchString(tagSHA) {
+		printer.StepWarn(fmt.Sprintf("Invalid SHA from %s/%s@%s: %q", defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef, tagSHA))
+		return "", nil, false
+	}
+
+	rawURL := defaultAgentsRepoURLPrefix + tagSHA + "/harness/" + normalizedName + ".yaml"
+
+	if harness.MatchingAllowedPrefixInList(rawURL, allowlist) == "" {
+		printer.StepWarn(fmt.Sprintf("Agents repo fallback skipped for %s: URL not in allowed_remote_resources", agentName))
+		return "", nil, false
+	}
+
+	shortSHA := tagSHA
+	if len(shortSHA) > 12 {
+		shortSHA = shortSHA[:12]
+	}
+	printer.StepStart(fmt.Sprintf("Fetching agent %s from %s/%s@%s", agentName, defaultAgentsRepoOwner, defaultAgentsRepoName, shortSHA))
+
+	content, err := fetch.FetchURL(ctx, rawURL, composeOpts.FetchPolicy)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to fetch agent %s from agents repo: %v", agentName, err))
+		return "", nil, false
+	}
+
+	// Content is fetched once and used directly — no self-referential hash
+	// verification. Supply-chain integrity relies on the commit-pinned URL,
+	// TLS transport, and the org allowlist. Config-registered agents get
+	// stronger pinning because their hashes are set at enrollment time.
+	contentHash := fetch.ComputeSHA256(content)
+
+	if err := fetch.CachePut(composeOpts.WorkspaceRoot, rawURL, content); err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to cache agents repo content: %v", err))
+		return "", nil, false
+	}
+
+	cachePath, err := fetch.CachePath(composeOpts.WorkspaceRoot, contentHash)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to resolve cache path for agent %s: %v", agentName, err))
+		return "", nil, false
+	}
+	localPath := filepath.Join(cachePath, "content")
+
+	if composeOpts.AuditLogPath != "" {
+		if err := fetch.AppendFetchAudit(composeOpts.AuditLogPath, fetch.FetchAuditEntry{
+			TraceID:   composeOpts.TraceID,
+			FetchTime: time.Now().UTC(),
+			URL:       rawURL,
+			SHA256:    contentHash,
+			FetchType: "static",
+			AllowedBy: harness.MatchingAllowedPrefixInList(rawURL, allowlist),
+			CacheHit:  false,
+		}); err != nil {
+			printer.StepWarn(fmt.Sprintf("Failed to write fetch audit log: %v", err))
+		}
+	}
+
+	dep := harness.Dependency{
+		Field:     "base",
+		URL:       rawURL,
+		LocalPath: localPath,
+		SHA256:    contentHash,
+		FetchedAt: time.Now().UTC(),
+		Type:      "file",
+	}
+
+	printer.StepDone(fmt.Sprintf("Agent %s resolved from %s/%s@%s", agentName, defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef))
+	return localPath, []harness.Dependency{dep}, true
 }
 
 // containedLocalPath resolves a relative source path against baseDir and
