@@ -23,6 +23,10 @@ a specific agent performs a specific task. See
 [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
 [Customizing with Skills](../guides/user/customizing-with-skills.md).
 
+At some point, enough customization turns a configured default agent into a
+custom agent. See [Default agents vs. custom agents](topics/default-vs-custom.md)
+for where that line is and why it matters.
+
 ## Custom Agents
 
 Custom agents can be added to the fullsend pipeline via the `agents:` field in

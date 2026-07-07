@@ -163,3 +163,8 @@ apply to all agents and human contributors alike.
 
 - **Don't duplicate AGENTS.md content in skills.** If an instruction applies
   to all agents, put it in `AGENTS.md`. Skills are for agent-specific behavior.
+
+## See also
+
+- [Default agents vs. custom agents](../../agents/topics/default-vs-custom.md)
+  — adding skills keeps you in "configured default agent" territory

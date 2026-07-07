@@ -8,6 +8,9 @@
 
 This guide walks through creating a new custom agent from scratch on a per-repo fullsend installation.
 
+Not sure whether you need a custom agent or just a configured default agent?
+See [Default agents vs. custom agents](../../agents/topics/default-vs-custom.md).
+
 For customizing existing agents (overriding harnesses, skills, or policies), see [Customizing agents](customizing-agents.md).
 
 ## Prerequisites
