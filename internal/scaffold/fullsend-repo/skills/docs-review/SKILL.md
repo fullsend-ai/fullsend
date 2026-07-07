@@ -124,12 +124,19 @@ From the script output, collect all matched doc files into a
 candidate list. Exclude documentation files that are already modified
 in the same PR — those are being actively updated.
 
+Additionally, for each changed code file, check whether a
+documentation file covering the same feature exists based on file
+name and directory structure. If one exists and is not already in the
+candidate list, add it.
+
 ### 5. Evaluate every candidate (two passes)
 
 **Pass 1 — Quick scan.** For each candidate doc file from step 4,
 view only the lines that matched the grep (use `grep -n` to see them
-in context). Based on the matching lines alone, decide whether the
-doc might be stale. Record a verdict for every candidate:
+in context). For candidates added by name/directory match without
+grep hits, read the doc's section headings to determine if it
+describes behavior changed in this PR. Record a verdict for every
+candidate:
 
 ```text
 - path/to/doc.md → possibly stale (describes behavior that changed)

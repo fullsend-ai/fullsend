@@ -17,7 +17,9 @@ references to renamed/removed identifiers.
 
 Extract identifiers from the diff, then search documentation files for
 references. Flag docs that reference identifiers modified or removed in
-this PR.
+this PR. Also check whether documentation files covering the same
+feature exist based on file name and directory structure — these may
+need to reflect new behavior even if no identifier matches.
 
 ## Rename/deprecation pattern strategy
 
