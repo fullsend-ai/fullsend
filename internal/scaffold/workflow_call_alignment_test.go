@@ -39,9 +39,107 @@ type callerWorkflow struct {
 }
 
 type callerJob struct {
-	Uses    string            `yaml:"uses"`
-	With    map[string]string `yaml:"with"`
-	Secrets map[string]string `yaml:"secrets"`
+	Uses        string            `yaml:"uses"`
+	With        map[string]string `yaml:"with"`
+	Secrets     map[string]string `yaml:"secrets"`
+	Concurrency *jobConcurrency   `yaml:"concurrency"`
+}
+
+type jobConcurrency struct {
+	Group            string `yaml:"group"`
+	CancelInProgress bool   `yaml:"cancel-in-progress"`
+}
+
+// reusableStageWorkflow includes workflow-level concurrency on reusable agent workflows.
+type reusableStageWorkflow struct {
+	Concurrency *jobConcurrency  `yaml:"concurrency"`
+	On          reusableWorkflow `yaml:"on"`
+}
+
+type stageConcurrencyExpectation struct {
+	groupPrefix string
+	groupMust   []string
+}
+
+var thinCallerConcurrencyExpectations = map[string]stageConcurrencyExpectation{
+	"triage": {
+		groupPrefix: "fullsend-triage-",
+		groupMust:   []string{"inputs.source_repo", "issue.number"},
+	},
+	"code": {
+		groupPrefix: "fullsend-code-",
+		groupMust:   []string{"inputs.source_repo", "issue.number"},
+	},
+	"review": {
+		groupPrefix: "fullsend-review-",
+		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number"},
+	},
+	"fix": {
+		groupPrefix: "fullsend-fix-",
+		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number", "inputs.pr_number"},
+	},
+	"retro": {
+		groupPrefix: "fullsend-retro-",
+		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number"},
+	},
+	"prioritize": {
+		groupPrefix: "fullsend-prioritize-",
+		groupMust:   []string{"inputs.source_repo", "issue.number"},
+	},
+}
+
+var reusableAgentConcurrencyExpectations = map[string]stageConcurrencyExpectation{
+	"triage": {
+		groupPrefix: "fullsend-triage-agent-",
+		groupMust:   []string{"inputs.source_repo", "issue.number", "pull_request.number"},
+	},
+	"code": {
+		groupPrefix: "fullsend-code-agent-",
+		groupMust:   []string{"inputs.source_repo", "issue.number", "pull_request.number"},
+	},
+	"review": {
+		groupPrefix: "fullsend-review-agent-",
+		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number"},
+	},
+	"fix": {
+		groupPrefix: "fullsend-fix-agent-",
+		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number", "inputs.pr_number"},
+	},
+	"retro": {
+		groupPrefix: "fullsend-retro-agent-",
+		groupMust:   []string{"inputs.source_repo", "pull_request.number", "issue.number"},
+	},
+	"prioritize": {
+		groupPrefix: "fullsend-prioritize-agent-",
+		groupMust:   []string{"inputs.source_repo", "issue.number", "pull_request.number"},
+	},
+}
+
+var dispatchStageConcurrencyExpectations = map[string]stageConcurrencyExpectation{
+	"triage": {
+		groupPrefix: "fullsend-triage-",
+		groupMust:   []string{"github.repository", "github.event.issue.number", "github.event.pull_request.number"},
+	},
+	"code": {
+		groupPrefix: "fullsend-code-",
+		groupMust:   []string{"github.repository", "github.event.issue.number", "github.event.pull_request.number"},
+	},
+	"review": {
+		groupPrefix: "fullsend-review-",
+		groupMust:   []string{"github.repository", "github.event.pull_request.number", "github.event.issue.number"},
+	},
+	"fix": {
+		groupPrefix: "fullsend-fix-",
+		groupMust:   []string{"github.repository", "github.event.pull_request.number", "github.event.issue.number"},
+	},
+	"retro": {
+		groupPrefix: "fullsend-retro-",
+		groupMust:   []string{"github.repository", "github.event.pull_request.number", "github.event.issue.number"},
+	},
+	"prioritize": {
+		groupPrefix: "fullsend-prioritize-",
+		groupMust:   []string{"github.repository", "github.event.issue.number", "github.event.pull_request.number"},
+	},
 }
 
 // reusableWorkflowRef extracts the reusable workflow filename from a uses: reference.
@@ -54,6 +152,17 @@ type callerPair struct {
 	callerName   string // human-readable name for test output
 	callerSource func(t *testing.T) []byte
 	jobName      string // job key in the caller workflow
+}
+
+func loadRenderedScaffoldCaller(path string) func(t *testing.T) []byte {
+	return func(t *testing.T) []byte {
+		t.Helper()
+		raw, err := FullsendRepoFile(path)
+		require.NoError(t, err)
+		rendered, err := RenderTemplate(path, raw, RenderOptionsForInstall(false, false, "", ""))
+		require.NoError(t, err)
+		return rendered
+	}
 }
 
 func loadScaffoldFile(path string) func(t *testing.T) []byte {
@@ -80,12 +189,12 @@ func loadRepoFile(relPath string) func(t *testing.T) []byte {
 func TestWorkflowCallInputAlignment(t *testing.T) {
 	// All thin callers in the scaffold that reference reusable workflows.
 	pairs := []callerPair{
-		{"scaffold/triage.yml", loadScaffoldFile(".github/workflows/triage.yml"), "triage"},
-		{"scaffold/code.yml", loadScaffoldFile(".github/workflows/code.yml"), "code"},
-		{"scaffold/review.yml", loadScaffoldFile(".github/workflows/review.yml"), "review"},
-		{"scaffold/fix.yml", loadScaffoldFile(".github/workflows/fix.yml"), "fix"},
-		{"scaffold/retro.yml", loadScaffoldFile(".github/workflows/retro.yml"), "retro"},
-		{"scaffold/prioritize.yml", loadScaffoldFile(".github/workflows/prioritize.yml"), "prioritize"},
+		{"scaffold/triage.yml", loadRenderedScaffoldCaller(".github/workflows/triage.yml"), "triage"},
+		{"scaffold/code.yml", loadRenderedScaffoldCaller(".github/workflows/code.yml"), "code"},
+		{"scaffold/review.yml", loadRenderedScaffoldCaller(".github/workflows/review.yml"), "review"},
+		{"scaffold/fix.yml", loadRenderedScaffoldCaller(".github/workflows/fix.yml"), "fix"},
+		{"scaffold/retro.yml", loadRenderedScaffoldCaller(".github/workflows/retro.yml"), "retro"},
+		{"scaffold/prioritize.yml", loadRenderedScaffoldCaller(".github/workflows/prioritize.yml"), "prioritize"},
 	}
 
 	// Also validate reusable-dispatch.yml's stage jobs.
@@ -166,6 +275,7 @@ func TestReusableWorkflowsShareCommonInputs(t *testing.T) {
 		"fullsend_version",
 		"install_mode",
 		"fullsend_ai_ref",
+		"runner_image",
 	}
 
 	commonSecrets := []string{
@@ -216,6 +326,83 @@ func TestReusableDispatchProjectNumberInput(t *testing.T) {
 		"prioritize job should thread project_number from dispatch inputs")
 }
 
+// TestReusableDispatchStageConcurrency validates per-role cancel-in-progress groups
+// on all stage jobs in reusable-dispatch.yml (#981, #982, ADR 0033).
+func TestReusableDispatchStageConcurrency(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+
+	var caller callerWorkflow
+	require.NoError(t, yaml.Unmarshal(content, &caller))
+
+	for stage, expect := range dispatchStageConcurrencyExpectations {
+		t.Run(stage, func(t *testing.T) {
+			job, ok := caller.Jobs[stage]
+			require.True(t, ok, "job %q should exist", stage)
+			require.NotNil(t, job.Concurrency, "job %q should declare a concurrency group", stage)
+			assert.Contains(t, job.Concurrency.Group, expect.groupPrefix)
+			for _, fragment := range expect.groupMust {
+				assert.Contains(t, job.Concurrency.Group, fragment,
+					"job %q concurrency group should reference %q", stage, fragment)
+			}
+			assert.True(t, job.Concurrency.CancelInProgress,
+				"job %q should cancel in-progress runs when a newer dispatch arrives", stage)
+		})
+	}
+}
+
+// TestReusableAgentWorkflowConcurrency validates agent-scoped cancel-in-progress
+// groups on reusable stage workflows. Groups use a distinct -agent- prefix so
+// they do not collide with dispatch/thin-caller groups on workflow_call parents.
+func TestReusableAgentWorkflowConcurrency(t *testing.T) {
+	for stage, expect := range reusableAgentConcurrencyExpectations {
+		t.Run(stage, func(t *testing.T) {
+			path := filepath.Join("..", "..", ".github", "workflows", fmt.Sprintf("reusable-%s.yml", stage))
+			content, err := os.ReadFile(path)
+			require.NoError(t, err)
+
+			var wf reusableStageWorkflow
+			require.NoError(t, yaml.Unmarshal(content, &wf))
+			require.NotNil(t, wf.Concurrency, "reusable-%s.yml should declare workflow-level concurrency", stage)
+			assert.Contains(t, wf.Concurrency.Group, expect.groupPrefix)
+			for _, fragment := range expect.groupMust {
+				assert.Contains(t, wf.Concurrency.Group, fragment,
+					"reusable-%s.yml concurrency group should reference %q", stage, fragment)
+			}
+			assert.True(t, wf.Concurrency.CancelInProgress,
+				"reusable-%s.yml should cancel in-progress runs", stage)
+
+			callerExpect := thinCallerConcurrencyExpectations[stage]
+			assert.NotEqual(t, callerExpect.groupPrefix, expect.groupPrefix,
+				"reusable-%s.yml must use a distinct agent-scoped group prefix", stage)
+			assert.Contains(t, wf.Concurrency.Group, "-agent-",
+				"reusable-%s.yml group must be agent-scoped, not reuse dispatch/thin-caller prefix", stage)
+		})
+	}
+}
+
+// TestThinCallerStageConcurrency validates per-role cancel-in-progress groups on
+// per-org thin caller workflows in the scaffold (#981, ADR 0033).
+func TestThinCallerStageConcurrency(t *testing.T) {
+	for stage, expect := range thinCallerConcurrencyExpectations {
+		t.Run(stage, func(t *testing.T) {
+			path := fmt.Sprintf(".github/workflows/%s.yml", stage)
+			content := loadRenderedScaffoldCaller(path)(t)
+
+			var wf reusableStageWorkflow
+			require.NoError(t, yaml.Unmarshal(content, &wf))
+			require.NotNil(t, wf.Concurrency, "%s should declare workflow-level concurrency", path)
+			assert.Contains(t, wf.Concurrency.Group, expect.groupPrefix)
+			for _, fragment := range expect.groupMust {
+				assert.Contains(t, wf.Concurrency.Group, fragment,
+					"%s concurrency group should reference %q", path, fragment)
+			}
+			assert.True(t, wf.Concurrency.CancelInProgress,
+				"%s should cancel in-progress runs when a newer dispatch arrives", path)
+		})
+	}
+}
+
 // TestReusableDispatchUsesFullyQualifiedPaths validates that reusable-dispatch.yml
 // references stage workflows with fully-qualified paths, not relative (./) paths.
 // Relative paths resolve against the caller's repo, which breaks per-repo mode
@@ -238,6 +425,66 @@ func TestReusableDispatchUsesFullyQualifiedPaths(t *testing.T) {
 			assert.True(t, strings.Contains(job.Uses, "@"),
 				"job %q uses: must include a @ref suffix (got %q)",
 				stage, job.Uses)
+		})
+	}
+}
+
+// TestReusableDispatchWorkflowContent validates PR-context gating in per-repo
+// reusable-dispatch.yml routing (per-org dispatch.yml unchanged).
+func TestReusableDispatchWorkflowContent(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+	s := string(content)
+	assert.Regexp(t, `(?s)/fs-review\)\s*\n\s+if \[\[ "\$\{ISSUE_IS_PR\}"`, s)
+	assert.Regexp(t, `(?s)ready-for-review"\s*\]\];\s*then\s*\n\s+if \[\[ "\$\{ISSUE_IS_PR\}"`, s)
+}
+
+// TestRoleCheckCaseBranches validates the role-check step's case mapping and
+// backward-compat logic in both dispatch workflows (#2298).
+func TestRoleCheckCaseBranches(t *testing.T) {
+	type workflowCase struct {
+		name    string
+		content func(t *testing.T) []byte
+	}
+
+	cases := []workflowCase{
+		{
+			"reusable-dispatch.yml",
+			loadRepoFile(".github/workflows/reusable-dispatch.yml"),
+		},
+		{
+			"scaffold/dispatch.yml",
+			loadScaffoldFile(".github/workflows/dispatch.yml"),
+		},
+	}
+
+	for _, wc := range cases {
+		t.Run(wc.name, func(t *testing.T) {
+			s := string(wc.content(t))
+
+			// code|fix must map to coder
+			assert.Contains(t, s, `code|fix) STAGE_ROLE="coder"`,
+				"code|fix should map to coder role")
+
+			// retro and prioritize must NOT be remapped to fullsend
+			assert.NotContains(t, s, `retro|prioritize) STAGE_ROLE="fullsend"`,
+				"retro/prioritize must not be remapped to fullsend (#2298)")
+
+			// backward compat: fullsend in roles implies retro + prioritize
+			assert.Regexp(t, `\^\(retro\|prioritize\)\$`, s,
+				"backward-compat regex should match retro and prioritize")
+			assert.Contains(t, s, `grep -Fqx "fullsend"`,
+				"backward-compat should check for fullsend in roles")
+
+			// compat path must emit a notice, not silently pass
+			assert.Regexp(t, `(?s)grep -Fqx "fullsend".*::notice::Stage`, s,
+				"backward-compat path must emit a ::notice:: annotation")
+
+			// stages that pass through unmapped must not be remapped
+			assert.NotRegexp(t, `triage\).*STAGE_ROLE=`, s,
+				"triage must not be remapped")
+			assert.NotRegexp(t, `review\).*STAGE_ROLE=`, s,
+				"review must not be remapped")
 		})
 	}
 }

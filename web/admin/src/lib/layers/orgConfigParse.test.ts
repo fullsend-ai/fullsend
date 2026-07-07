@@ -113,7 +113,7 @@ repos:
   });
 
   it("rejects YAML nested deeper than the depth limit with a clear message", () => {
-    const lines: string[] = ["version: \"1\"", "dispatch:", "  platform: github-actions"];
+    const lines: string[] = ['version: "1"', "dispatch:", "  platform: github-actions"];
     let indent = "  ";
     for (let i = 0; i < MAX_ORG_CONFIG_YAML_DEPTH + 2; i++) {
       lines.push(`${indent}L${i}:`);

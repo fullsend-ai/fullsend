@@ -3,6 +3,7 @@
 package admin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,11 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 )
+
+// errAllOrgsRateLimited is returned by acquireOrg when every pool org
+// was skipped due to GitHub API rate limiting. Callers can detect this
+// with errors.Is and t.Skip instead of failing the test.
+var errAllOrgsRateLimited = errors.New("all pool orgs rate-limited")
 
 const (
 	// testRepo is a pre-existing repo in the test org for enrollment testing.
@@ -44,6 +50,14 @@ const (
 	// than the longest expected e2e run (~7 min) but shorter than the
 	// job timeout (30 min).
 	staleLockTimeout = 15 * time.Minute
+
+	// rateLimitBackoffInitial is the first backoff interval after a
+	// rate-limit error during pool acquisition.
+	rateLimitBackoffInitial = 30 * time.Second
+
+	// rateLimitBackoffMax caps the exponential backoff between
+	// rate-limited polling rounds.
+	rateLimitBackoffMax = 2 * time.Minute
 )
 
 // orgPool is the set of GitHub orgs available for parallel e2e test runs.
@@ -55,12 +69,17 @@ var orgPool = []string{
 	"halfsend-04",
 	"halfsend-05",
 	"halfsend-06",
+	"halfsend-07",
+	"halfsend-08",
+	"halfsend-09",
+	"halfsend-10",
+	"halfsend-11",
+	"halfsend-12",
 }
 
 // acquireOrg scans the pool for an unlocked org and acquires its lock.
-// If all orgs are locked, it round-robin polls until one frees up or the
-// timeout expires. Returns the org name.
-func acquireOrg(ctx context.Context, client forge.Client, token, runID string, pool []string, timeout time.Duration, logf func(string, ...any)) (string, error) {
+// Returns the org name and token used to hold the lock.
+func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string, timeout time.Duration, logf func(string, ...any)) (string, string, error) {
 	// Shuffle the pool so concurrent runners don't all compete for the
 	// same first org (thundering herd).
 	shuffled := make([]string, len(pool))
@@ -70,79 +89,225 @@ func acquireOrg(ctx context.Context, client forge.Client, token, runID string, p
 	// First pass: try each org without waiting. If a lock exists but is
 	// stale (older than staleLockTimeout), force-acquire it so we don't
 	// waste pool capacity on crashed runs.
+	sawRateLimit := false
 	for _, org := range shuffled {
 		logf("[org-pool] Trying to acquire %s...", org)
+		token, tokErr := tokenForOrg(ctx, cfg, org)
+		if tokErr != nil {
+			logf("[org-pool] Could not get token for %s: %v", org, tokErr)
+			continue
+		}
+		client := newLiveClient(token)
+
 		acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 		if err != nil {
 			logf("[org-pool] Error trying %s: %v", org, err)
+			// Rate limits are per-user, not per-org — trying more orgs
+			// just burns quota and delays recovery. Break immediately.
+			if gh.IsRateLimitError(err) {
+				logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
+				sawRateLimit = true
+				break
+			}
 			// Only attempt stale lock recovery for 422 errors (repo
-			// likely exists). Rate limits, auth failures, and network
-			// errors would just waste more API quota.
+			// likely exists). Auth failures and network errors would
+			// just waste more API quota.
 			var apiErr *gh.APIError
 			if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
 				logf("[org-pool] 422 on %s — will check for stale lock", org)
 				if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
-					return org, nil
+					return org, token, nil
 				}
 			}
 			continue
 		}
 		if acquired {
 			logf("[org-pool] Acquired %s", org)
-			return org, nil
+			return org, token, nil
 		}
 		// Lock exists — check if it's stale and force-acquire if so.
 		if token != "" {
 			if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
-				return org, nil
+				return org, token, nil
 			}
 		}
 		logf("[org-pool] %s is locked, trying next", org)
 	}
 
 	// All orgs are locked. Round-robin poll until one frees up or
-	// the shared deadline expires.
+	// the shared deadline expires. Use exponential backoff when
+	// rate-limited to let the quota recover (#2875).
 	logf("[org-pool] All %d orgs are locked, polling with timeout %s", len(pool), timeout)
 	deadline := time.Now().Add(timeout)
+	rateLimitSeen := sawRateLimit
+	backoff := rateLimitBackoffInitial
 	for time.Now().Before(deadline) {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			break
 		}
-		wait := min(lockPollInterval, remaining)
+		pollWait := lockPollInterval
+		if rateLimitSeen {
+			pollWait = backoff
+			logf("[org-pool] Rate-limited, backing off %s before next round", pollWait)
+		}
+		wait := min(pollWait, remaining)
 		select {
 		case <-time.After(wait):
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return "", "", ctx.Err()
 		}
+		roundRateLimited := false
 		for _, org := range shuffled {
+			token, tokErr := tokenForOrg(ctx, cfg, org)
+			if tokErr != nil {
+				logf("[org-pool] Could not get token for %s: %v", org, tokErr)
+				continue
+			}
+			client := newLiveClient(token)
+
 			acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 			if err != nil {
 				logf("[org-pool] Error trying %s: %v", org, err)
+				if gh.IsRateLimitError(err) {
+					logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
+					roundRateLimited = true
+					break
+				}
 				var apiErr *gh.APIError
 				if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
 					logf("[org-pool] 422 on %s — will check for stale lock", org)
 					if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
-						return org, nil
+						return org, token, nil
 					}
 				}
 				continue
 			}
 			if acquired {
 				logf("[org-pool] Acquired %s", org)
-				return org, nil
+				return org, token, nil
 			}
 			// Also try stale reclaim during polling — a lock may
 			// have aged past staleLockTimeout since the first pass.
 			if token != "" {
 				if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
-					return org, nil
+					return org, token, nil
 				}
+			}
+		}
+		if roundRateLimited {
+			rateLimitSeen = true
+			backoff = min(backoff*2, rateLimitBackoffMax)
+		} else {
+			// Rate limit cleared — reset to normal polling.
+			rateLimitSeen = false
+			backoff = rateLimitBackoffInitial
+		}
+	}
+
+	if rateLimitSeen {
+		return "", "", fmt.Errorf("could not acquire any org from pool after %s: %w", timeout, errAllOrgsRateLimited)
+	}
+	return "", "", fmt.Errorf("could not acquire any org from pool after %s (tried %d orgs)", timeout, len(pool))
+}
+
+// acquireOrgWithClient runs pool acquisition using a fixed client (unit tests).
+func acquireOrgWithClient(ctx context.Context, client forge.Client, token, runID string, pool []string, timeout time.Duration, logf func(string, ...any)) (string, error) {
+	org, _, err := acquireOrgFromClient(ctx, client, token, runID, pool, timeout, logf)
+	return org, err
+}
+
+func acquireOrgFromClient(ctx context.Context, client forge.Client, token, runID string, pool []string, timeout time.Duration, logf func(string, ...any)) (string, string, error) {
+	shuffled := make([]string, len(pool))
+	copy(shuffled, pool)
+	rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
+
+	sawRateLimit := false
+	for _, org := range shuffled {
+		logf("[org-pool] Trying to acquire %s...", org)
+		acquired, err := tryCreateLock(ctx, client, org, runID, logf)
+		if err != nil {
+			logf("[org-pool] Error trying %s: %v", org, err)
+			if gh.IsRateLimitError(err) {
+				logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
+				sawRateLimit = true
+				break
+			}
+			var apiErr *gh.APIError
+			if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+				if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+					return org, token, nil
+				}
+			}
+			continue
+		}
+		if acquired {
+			return org, token, nil
+		}
+		if token != "" {
+			if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+				return org, token, nil
 			}
 		}
 	}
 
-	return "", fmt.Errorf("could not acquire any org from pool after %s (tried %d orgs)", timeout, len(pool))
+	deadline := time.Now().Add(timeout)
+	rateLimitSeen := sawRateLimit
+	backoff := rateLimitBackoffInitial
+	for time.Now().Before(deadline) {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+		pollWait := lockPollInterval
+		if rateLimitSeen {
+			pollWait = backoff
+			logf("[org-pool] Rate-limited, backing off %s before next round", pollWait)
+		}
+		wait := min(pollWait, remaining)
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return "", "", ctx.Err()
+		}
+		roundRateLimited := false
+		for _, org := range shuffled {
+			acquired, err := tryCreateLock(ctx, client, org, runID, logf)
+			if err != nil {
+				if gh.IsRateLimitError(err) {
+					logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
+					roundRateLimited = true
+					break
+				}
+				var apiErr *gh.APIError
+				if token != "" && errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity {
+					if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+						return org, token, nil
+					}
+				}
+				continue
+			}
+			if acquired {
+				return org, token, nil
+			}
+			if token != "" {
+				if reclaimed := tryReclaimStaleLock(ctx, client, token, org, runID, logf); reclaimed {
+					return org, token, nil
+				}
+			}
+		}
+		if roundRateLimited {
+			rateLimitSeen = true
+			backoff = min(backoff*2, rateLimitBackoffMax)
+		} else {
+			rateLimitSeen = false
+			backoff = rateLimitBackoffInitial
+		}
+	}
+	if rateLimitSeen {
+		return "", "", fmt.Errorf("could not acquire any org from pool after %s: %w", timeout, errAllOrgsRateLimited)
+	}
+	return "", "", fmt.Errorf("could not acquire any org from pool after %s (tried %d orgs)", timeout, len(pool))
 }
 
 // defaultRoles is the standard set of agent roles.
@@ -153,10 +318,8 @@ const e2eAppSet = "fullsend-ai"
 
 // envConfig holds required environment configuration.
 type envConfig struct {
-	sessionFile  string
-	password     string
-	totpSecret   string
 	mintURL      string
+	useMint      bool
 	gcpProjectID string
 	lockTimeout  time.Duration
 }
@@ -167,20 +330,12 @@ type envConfig struct {
 func loadEnvConfig(t *testing.T) envConfig {
 	t.Helper()
 
-	sessionFile := os.Getenv("E2E_GITHUB_SESSION_FILE")
-	if sessionFile == "" {
-		t.Skip("E2E_GITHUB_SESSION_FILE not set, skipping e2e test")
-	}
-	if _, err := os.Stat(sessionFile); err != nil {
-		t.Fatalf("E2E_GITHUB_SESSION_FILE %q does not exist: %v", sessionFile, err)
-	}
-
-	password := os.Getenv("E2E_GITHUB_PASSWORD")
-	totpSecret := os.Getenv("E2E_GITHUB_TOTP_SECRET")
-
-	mintURL := os.Getenv("E2E_MINT_URL")
-	if mintURL == "" {
-		t.Skip("E2E_MINT_URL not set, skipping e2e test")
+	mintURL := resolveMintURL()
+	useMint := runningInGitHubActions()
+	if !useMint {
+		if _, err := resolveLocalToken(); err != nil {
+			t.Skip("no local GitHub token (gh auth login), skipping e2e test")
+		}
 	}
 
 	gcpProjectID := os.Getenv("E2E_GCP_PROJECT_ID")
@@ -195,10 +350,8 @@ func loadEnvConfig(t *testing.T) envConfig {
 	}
 
 	return envConfig{
-		sessionFile:  sessionFile,
-		password:     password,
-		totpSecret:   totpSecret,
 		mintURL:      mintURL,
+		useMint:      useMint,
 		gcpProjectID: gcpProjectID,
 		lockTimeout:  lockTimeout,
 	}
@@ -242,6 +395,61 @@ func getRepoCreatedAt(ctx context.Context, token, org, repo string) (time.Time, 
 	return result.CreatedAt, nil
 }
 
+func ensureRepoLabel(ctx context.Context, token, owner, repo, label string) error {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/labels", owner, repo)
+	payload, err := json.Marshal(map[string]string{
+		"name":  label,
+		"color": "5319e7",
+	})
+	if err != nil {
+		return fmt.Errorf("encoding label payload: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("creating label request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("creating repo label: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusUnprocessableEntity {
+		return nil
+	}
+	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("unexpected status %d creating label %q: %s", resp.StatusCode, label, body)
+}
+
+func addIssueLabel(ctx context.Context, token, owner, repo string, issueNum int, label string) error {
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/labels", owner, repo, issueNum)
+	payload, err := json.Marshal(map[string][]string{"labels": {label}})
+	if err != nil {
+		return fmt.Errorf("encoding issue label payload: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return fmt.Errorf("creating issue label request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("adding issue label: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	body, _ := io.ReadAll(resp.Body)
+	return fmt.Errorf("unexpected status %d adding label %q: %s", resp.StatusCode, label, body)
+}
+
 // buildCLIBinary compiles the fullsend CLI binary once per test run.
 func buildCLIBinary(t *testing.T) string {
 	t.Helper()
@@ -281,6 +489,26 @@ func runCLIFromDir(t *testing.T, binary, token, dir string, args ...string) stri
 		t.Fatalf("[cli] fullsend %s failed: %v\n%s", strings.Join(args, " "), runErr, output)
 	}
 	return output
+}
+
+// tryRunCLI is like runCLI but returns an error instead of calling t.Fatalf.
+// Use this when the caller needs to retry on transient failures (e.g., GitHub
+// propagation delays after repo creation).
+func tryRunCLI(t *testing.T, binary, token string, args ...string) (string, error) {
+	t.Helper()
+	dir := moduleRoot(t)
+	t.Logf("[cli] fullsend %s (cwd=%s)", strings.Join(args, " "), dir)
+
+	cmd := exec.Command(binary, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GITHUB_TOKEN="+token, "CI=true")
+	out, runErr := cmd.CombinedOutput()
+	output := string(out)
+	t.Logf("[cli] output:\n%s", output)
+	if runErr != nil {
+		return output, fmt.Errorf("[cli] fullsend %s failed: %w\n%s", strings.Join(args, " "), runErr, output)
+	}
+	return output, nil
 }
 
 func moduleRoot(t *testing.T) string {

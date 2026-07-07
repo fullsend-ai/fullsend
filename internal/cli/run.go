@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -24,15 +26,18 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/fetchsvc"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
+	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/statuscomment"
+	"github.com/fullsend-ai/fullsend/internal/telemetry"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -41,7 +46,43 @@ const (
 	// files. Shared between host-side (scanRepoContextFiles) and sandbox-side
 	// (buildScanContextCommand) scans to ensure parity.
 	maxContextScanDepth = 5
+
+	// metricsFile is the filename written to the run directory with behavioral metrics.
+	metricsFile = "metrics.json"
+
+	// Default agents repository for runtime fallback when an agent is not
+	// registered in config. The binary resolves the commit SHA for the
+	// floating version tag (config.DefaultUpstreamRef) and fetches the
+	// harness dynamically.
+	defaultAgentsRepoOwner = "fullsend-ai"
+	defaultAgentsRepoName  = "agents"
 )
+
+// defaultAgentsRepoURLPrefix is the base URL for fetching agent harnesses
+// from the agents repository. It is a var (not const) to allow test overrides.
+var defaultAgentsRepoURLPrefix = "https://raw.githubusercontent.com/fullsend-ai/agents/"
+
+// defaultAgentsRepoKnownAgents lists first-party agents available in the
+// fullsend-ai/agents repository. Only these agents are eligible for the
+// runtime fallback — custom agents are never tried against the agents repo.
+//
+// This is a transitional mechanism to support agent extraction (see
+// docs/plans/agent-extraction-to-agents-repo.md). It will be removed once
+// all users have migrated to config-driven agent registration (ADR 0058
+// Phase 5 / extraction plan Step 7).
+var defaultAgentsRepoKnownAgents = map[string]bool{
+	"triage":     true,
+	"code":       true,
+	"fix":        true,
+	"review":     true,
+	"retro":      true,
+	"prioritize": true,
+}
+
+// statusMintToken is the test seam for minting tokens. Shared by both
+// setupStatusNotifier (status comment tokens) and mintAgentToken (agent
+// runtime tokens). Tests that override it affect both paths.
+var statusMintToken = mintclient.MintToken
 
 // agentWorkingDirExcludes lists directory patterns that agents may create
 // during execution but must never commit. These are added to
@@ -56,16 +97,39 @@ type resolveFlags struct {
 	offline      bool
 	maxDepth     int
 	maxResources int
-	forgeClient  forge.Client // injected by tests; nil means construct from env
+	treeFetcher  gitfetch.TreeFetchFunc // injected by tests; nil means use default
+	gitToken     string                 // injected by tests; empty means resolve from env
 }
 
 // statusOpts holds the optional status notification parameters for a run.
 type statusOpts struct {
-	runURL      string
-	statusRepo  string
-	statusNum   int
-	mintURL     string
-	statusToken string // deprecated: use mintURL
+	runURL     string
+	statusRepo string
+	statusNum  int
+	mintURL    string
+}
+
+// aggregateMetrics holds accumulated behavioral metrics across retry iterations.
+type aggregateMetrics struct {
+	NumTurns     int     `json:"num_turns"`
+	TotalCostUSD float64 `json:"total_cost_usd"`
+	TokenUsage   struct {
+		Input         int `json:"input"`
+		Output        int `json:"output"`
+		CacheCreation int `json:"cache_creation"`
+		CacheRead     int `json:"cache_read"`
+	} `json:"token_usage"`
+	Iterations int    `json:"iterations"`
+	ToolCalls  int    `json:"tool_calls"`
+	Model      string `json:"model,omitempty"`
+}
+
+func writeMetricsJSON(dir string, m aggregateMetrics) error {
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, metricsFile), append(data, '\n'), 0o644)
 }
 
 func newRunCmd() *cobra.Command {
@@ -110,9 +174,6 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&sOpts.statusRepo, "status-repo", "", "repository (owner/repo) for status comments")
 	cmd.Flags().IntVar(&sOpts.statusNum, "status-number", 0, "issue/PR number for status comments")
 	cmd.Flags().StringVar(&sOpts.mintURL, "mint-url", "", "mint service URL for on-demand status tokens (default: $FULLSEND_MINT_URL)")
-	cmd.Flags().StringVar(&sOpts.statusToken, "status-token", "", "DEPRECATED: use --mint-url instead")
-	_ = cmd.Flags().MarkDeprecated("status-token", "use --mint-url instead")
-	_ = cmd.Flags().MarkHidden("status-token")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	_ = cmd.MarkFlagRequired("target-repo")
 
@@ -124,6 +185,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	printer.Blank()
 	printer.Header("Running agent: " + agentName)
 	printer.Blank()
+
+	// runStart anchors the root telemetry span (ADR 0050); captured before any
+	// work so run-summary's total duration covers the whole invocation.
+	runStart := time.Now()
 
 	if rFlags.maxDepth < 0 {
 		return fmt.Errorf("--max-depth must be >= 0, got %d", rFlags.maxDepth)
@@ -145,12 +210,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// 1. Resolve and load harness.
-	harnessPath, err := resolveHarnessPath(absFullsendDir, agentName, printer)
-	if err != nil {
-		return err
-	}
 	harnessStart := time.Now()
-	printer.StepStart("Loading harness: " + harnessPath)
 
 	forgePlatform, err := detectForgePlatform(forgeFlag)
 	if err != nil {
@@ -162,13 +222,53 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	policy.Offline = rFlags.offline
 
 	// Best-effort org config loading — provides the allowlist for base
-	// harness fetching. If the file is missing or unparseable we proceed
-	// without it; HasURLReferences will enforce its presence later if needed.
+	// harness fetching and the agent registry for config-driven resolution.
+	// If the file is missing or unparseable we proceed without it;
+	// HasURLReferences will enforce its presence later if needed.
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
 	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
 	var orgAllowlist []string
 	if orgCfg != nil {
 		orgAllowlist = orgCfg.AllowedRemoteResources
+	}
+
+	composeGitToken := rFlags.gitToken
+	if composeGitToken == "" {
+		var tokenErr error
+		composeGitToken, tokenErr = resolveToken()
+		if tokenErr != nil {
+			printer.StepWarn("Git token not available; private repo skill fetches may fail")
+		}
+	}
+
+	composeOpts := harness.ComposeOpts{
+		WorkspaceRoot: absFullsendDir,
+		FetchPolicy:   policy,
+		AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
+		ForgePlatform: forgePlatform,
+		OrgAllowlist:  orgAllowlist,
+		TreeFetcher:   rFlags.treeFetcher,
+		GitToken:      composeGitToken,
+	}
+
+	// Resolve agent source: config agents take precedence, then agents repo
+	// fallback, then disk harnesses.
+	var fallbackForgeClient forge.Client
+	if composeGitToken != "" {
+		fallbackForgeClient = gh.New(composeGitToken)
+	}
+	harnessPath, fetchDeps, err := resolveAgentSource(ctx, absFullsendDir, agentName, fallbackForgeClient, orgCfg, composeOpts, printer)
+	if err != nil {
+		return err
+	}
+
+	printer.StepStart("Loading harness: " + harnessPath)
+
+	// If the agent was fetched from a URL, forward the source URL so
+	// LoadWithBase can resolve relative resources even without a base:
+	// field (ADR-0045 resource resolution for config-registered agents).
+	if len(fetchDeps) > 0 && fetchDeps[0].URL != "" {
+		composeOpts.SourceURL = fetchDeps[0].URL
 	}
 
 	// If the harness has a URL base and org config failed to load,
@@ -181,27 +281,25 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if err != nil {
 				return err
 			}
-			orgAllowlist = orgCfg.AllowedRemoteResources
+			composeOpts.OrgAllowlist = orgCfg.AllowedRemoteResources
 		}
 	}
 
-	h, baseDeps, err := harness.LoadWithBase(ctx, harnessPath, harness.ComposeOpts{
-		WorkspaceRoot: absFullsendDir,
-		FetchPolicy:   policy,
-		AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
-		ForgePlatform: forgePlatform,
-		OrgAllowlist:  orgAllowlist,
-	})
+	h, baseDeps, err := harness.LoadWithBase(ctx, harnessPath, composeOpts)
 	if err != nil {
 		printer.StepFail("Failed to load harness")
 		return fmt.Errorf("loading harness: %w", err)
 	}
 
-	for _, dep := range baseDeps {
+	allDeps := append(fetchDeps, baseDeps...)
+	for _, dep := range allDeps {
 		if dep.CacheHit {
 			printer.StepInfo(fmt.Sprintf("Base: %s (cache hit)", dep.URL))
 		} else {
 			printer.StepInfo(fmt.Sprintf("Base: %s (fetched)", dep.URL))
+		}
+		if dep.Warning != "" {
+			printer.StepWarn(fmt.Sprintf("Base: %s", dep.Warning))
 		}
 	}
 
@@ -260,17 +358,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 
 		if !usedLock {
-			var forgeClient forge.Client
-			if h.HasURLSkills() {
-				if rFlags.forgeClient != nil {
-					forgeClient = rFlags.forgeClient
-				} else {
-					token, tokenErr := resolveToken()
-					if tokenErr != nil {
-						printer.StepFail("Skill URLs require a GitHub token (set GH_TOKEN, GITHUB_TOKEN, or run 'gh auth login')")
-						return fmt.Errorf("skill URLs require a GitHub token: %w", tokenErr)
-					}
-					forgeClient = gh.New(token)
+			resolveGitToken := rFlags.gitToken
+			if resolveGitToken == "" {
+				var tokenErr error
+				resolveGitToken, tokenErr = resolveToken()
+				if tokenErr != nil {
+					printer.StepWarn("Git token not available; private repo skill fetches may fail")
 				}
 			}
 
@@ -281,7 +374,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
 				MaxDepth:      rFlags.maxDepth,
 				MaxResources:  rFlags.maxResources,
-				ForgeClient:   forgeClient,
+				TreeFetcher:   rFlags.treeFetcher,
+				GitToken:      resolveGitToken,
 			})
 			if resolveErr != nil {
 				printer.StepFail("Remote resource resolution failed")
@@ -301,6 +395,24 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if resolved, overridden := applySandboxImageOverride(h.Image); overridden {
 		printer.StepInfo(fmt.Sprintf("Image override via FULLSEND_SANDBOX_IMAGE: %s -> %s", h.Image, resolved))
 		h.Image = resolved
+	}
+
+	// Mint agent token when a mint URL and harness role are both available.
+	// Runs before env expansion so minted tokens flow into RunnerEnv and
+	// host_files via os.Getenv automatically.
+	mintURL := sOpts.mintURL
+	if mintURL == "" {
+		mintURL = os.Getenv("FULLSEND_MINT_URL")
+	}
+	minted, mintCleanup, err := mintAgentToken(ctx, h.Role, mintURL, printer)
+	if err != nil {
+		return fmt.Errorf("agent token minting failed: %w", err)
+	}
+	if mintCleanup != nil {
+		defer mintCleanup()
+	}
+	if !minted && mintURL == "" {
+		printer.StepWarn("No --mint-url provided; skipping token minting for role " + h.Role)
 	}
 
 	// Expand env vars in runner_env values. FULLSEND_DIR is injected so
@@ -325,6 +437,23 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	for k, v := range h.RunnerEnv {
 		h.RunnerEnv[k] = os.Expand(v, expander)
 	}
+
+	// Expand ${VAR} references in env.runner and env.sandbox (ADR 0055).
+	if h.Env != nil {
+		for k, v := range h.Env.Runner {
+			h.Env.Runner[k] = os.Expand(v, expander)
+		}
+		for k, v := range h.Env.Sandbox {
+			h.Env.Sandbox[k] = os.Expand(v, expander)
+		}
+	}
+
+	// Expand ${VAR} references in validation_loop.schema so the path
+	// resolves before ValidateFilesExist stat-checks it.
+	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
+		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, expander)
+	}
+
 	if err := h.ValidateFilesExist(); err != nil {
 		printer.StepFail("File validation failed")
 		return fmt.Errorf("validating files: %w", err)
@@ -340,6 +469,28 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 	printer.StepDone(fmt.Sprintf("Harness loaded (%.1fs)", time.Since(harnessStart).Seconds()))
+
+	// Run lint checks before merging env.runner into RunnerEnv so that
+	// Lint() sees the original YAML state and only warns when runner_env
+	// was actually declared (not when env.runner entries are merged in).
+	for _, diag := range h.Lint() {
+		emitDiagnostic(printer, diag)
+	}
+
+	// ADR 0055: build effective runner env — start with runner_env,
+	// overlay env.runner so the new field takes precedence.
+	effectiveRunnerEnv := make(map[string]string)
+	for k, v := range h.RunnerEnv {
+		effectiveRunnerEnv[k] = v
+	}
+	if h.Env != nil {
+		for k, v := range h.Env.Runner {
+			effectiveRunnerEnv[k] = v
+		}
+	}
+	// NOTE: after this point h.RunnerEnv contains the merged effective set
+	// (runner_env + env.runner), not just the declared runner_env entries.
+	h.RunnerEnv = effectiveRunnerEnv
 
 	// Print plan.
 	printer.KeyValue("Agent", h.Agent)
@@ -405,7 +556,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// post-script — and can report cancellation/failure even when the
 	// sandbox never starts. See #1859.
 	if sOpts.statusRepo != "" && sOpts.statusNum > 0 {
-		notifier, notifyErr := setupStatusNotifier(absFullsendDir, agentName, sOpts, printer)
+		notifier, notifyErr := setupStatusNotifier(absFullsendDir, h.Role, sOpts, printer)
 		if notifyErr != nil {
 			printer.StepWarn("Status notifications disabled: " + notifyErr.Error())
 		} else {
@@ -468,12 +619,21 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// Trace identity (ADR 0050 Level 1 + security correlation). Resolved here,
+	// before the pre-script, so TRACEPARENT can propagate to child processes.
+	// An inbound TRACEPARENT (nested/instrumented invocation, issue #2779) is
+	// adopted so the run continues the parent trace; otherwise a fresh id is
+	// generated. Either way one id serves as both the security finding/audit
+	// trace id (dashed UUID) and, dash-stripped, the W3C telemetry trace id.
+	securityTraceID, traceCtx := resolveTraceIdentity(os.Getenv("TRACEPARENT"))
+	workItemID := resolveWorkItemID()
+
 	// 2c. Run pre-script on the host (if configured).
 	if h.PreScript != "" {
 		preStart := time.Now()
 		printer.StepStart("Running pre-script: " + h.PreScript)
 		preCmd := exec.Command(h.PreScript)
-		preCmd.Env = append(os.Environ(), envToList(h.RunnerEnv)...)
+		preCmd.Env = childScriptEnv(h.RunnerEnv, telemetry.TraceParentWithFlags(traceCtx.TraceID, traceCtx.RootSpanID, traceCtx.Flags))
 		preCmd.Stdout = os.Stdout
 		preCmd.Stderr = os.Stderr
 		if err := preCmd.Run(); err != nil {
@@ -485,18 +645,34 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	// 3. Create sandbox.
 	sandboxName := fmt.Sprintf("agent-%s-%d-%d", agentName, os.Getpid(), time.Now().Unix())
-	createStart := time.Now()
-	printer.StepStart("Creating sandbox: " + sandboxName)
-
-	readyTimeout := time.Duration(h.SandboxTimeoutSeconds) * time.Second
-	if err := sandbox.CreateWithRetry(sandboxName, h.Providers, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout); err != nil {
-		printer.StepFail("Failed to create sandbox")
-		return fmt.Errorf("creating sandbox: %w", err)
-	}
 	if outputBase == "" {
 		outputBase = filepath.Join(os.TempDir(), "fullsend")
 	}
 	runDir := filepath.Join(outputBase, sandboxName)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		return fmt.Errorf("creating run directory: %w", err)
+	}
+
+	// Level 1 telemetry recorder (ADR 0050). A disabled recorder is a safe
+	// no-op, so any telemetry failure never affects the run. Finalize is
+	// registered before the post-script and cleanup defers so that — by LIFO
+	// order — it runs last and the summary captures the whole run.
+	var lastExitCode int
+	var transcriptErrorOverride bool
+	rec := telemetry.New(runDir, traceCtx, agentName, workItemID, runStart)
+	defer func() { rec.Finalize(telemetryExitCode(lastExitCode, runErr)) }()
+
+	createStart := time.Now()
+	printer.StepStart("Creating sandbox: " + sandboxName)
+	sandboxSpan := rec.StartSpan("sandbox_create", "", nil)
+
+	readyTimeout := time.Duration(h.SandboxTimeoutSeconds) * time.Second
+	if err := sandbox.CreateWithRetry(sandboxName, h.Providers, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout); err != nil {
+		rec.EndSpan(sandboxSpan, "error", nil)
+		printer.StepFail("Failed to create sandbox")
+		return fmt.Errorf("creating sandbox: %w", err)
+	}
+	rec.EndSpan(sandboxSpan, "ok", nil)
 
 	// validationPassed is declared here (before the post-script defer) so the
 	// defer closure can guard on it. The post-script must only run when
@@ -524,11 +700,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				printer.StepWarn("Skipping post-script: agent run failed")
 				return
 			}
+			if transcriptErrorOverride {
+				printer.StepWarn("Skipping post-script: agent reported error via transcript")
+				return
+			}
 			postStart := time.Now()
 			printer.StepStart("Running post-script: " + h.PostScript)
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
-			postCmd.Env = append(os.Environ(), envToList(h.RunnerEnv)...)
+			postCmd.Env = childScriptEnv(h.RunnerEnv, telemetry.TraceParentWithFlags(traceCtx.TraceID, traceCtx.RootSpanID, traceCtx.Flags))
 			postCmd.Stdout = os.Stdout
 			postCmd.Stderr = os.Stderr
 			if err := postCmd.Run(); err != nil {
@@ -569,9 +749,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	repoName := filepath.Base(hostRepositoryDir)
 	remoteRepositoryDir := fmt.Sprintf("%s/%s", sandbox.SandboxWorkspace, repoName)
 
-	// 5. Generate trace ID for security finding and audit log correlation.
-	traceID := security.GenerateTraceID()
-
 	// 6. Start runtime fetch service (Phase 4, ADR-0038).
 	var fetchEnvVal fetchServiceEnv
 	startFetch, deprecationWarning := shouldStartFetchService(h)
@@ -579,12 +756,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepWarn(deprecationWarning)
 	}
 	if startFetch {
-		env, fetchShutdown, fetchErr := setupFetchService(ctx, rFlags.forgeClient, h, resolveToken, fetchsvc.ServiceConfig{
+		env, fetchShutdown, fetchErr := setupFetchService(ctx, rFlags.treeFetcher, rFlags.gitToken, h, resolveToken, fetchsvc.ServiceConfig{
 			Harness:       h,
 			FetchPolicy:   fetch.DefaultPolicy,
 			WorkspaceRoot: absFullsendDir,
 			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
-			TraceID:       traceID,
+			TraceID:       securityTraceID,
 			SandboxName:   sandboxName,
 			MaxFetches:    h.EffectiveMaxRuntimeFetches(),
 			Uploader:      &fetchsvc.SandboxUploader{},
@@ -604,7 +781,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	tx := backend.Transcripts
 	bootstrapStart := time.Now()
 	printer.StepStart("Bootstrapping sandbox")
-	boot := newHarnessBootstrap(h, sandboxName)
+	boot := newHarnessBootstrap(h, sandboxName, agentName)
 	if h.SecurityEnabled() {
 		// Scan all runtime content before upload so warnings surface together.
 		// Host files could change between scan and upload; the runner owns the host FS here.
@@ -641,12 +818,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// guidelines. Skills already instruct agents to read AGENTS.md from
 	// the project root — this ensures there is something to read even
 	// when the target repo has not authored its own.
-	if !hasAgentsMD(hostRepositoryDir) {
+	agentsMDAvailable := hasAgentsMD(hostRepositoryDir)
+	if !agentsMDAvailable {
 		orgAgentsMD := filepath.Join(absFullsendDir, "AGENTS.md")
 		if _, err := os.Stat(orgAgentsMD); err == nil {
 			if err := sandbox.UploadFile(sandboxName, orgAgentsMD, remoteRepositoryDir+"/AGENTS.md"); err != nil {
 				printer.StepWarn("Could not inject org AGENTS.md: " + err.Error())
 			} else {
+				agentsMDAvailable = true
 				// Hide the injected file from git status so agents don't stage it.
 				excludeCmd := fmt.Sprintf("echo 'AGENTS.md' >> %s/.git/info/exclude", remoteRepositoryDir)
 				if _, _, _, err := sandbox.Exec(sandboxName, excludeCmd, 5*time.Second); err != nil {
@@ -655,6 +834,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				printer.StepDone("Injected org-level AGENTS.md (target repo has none)")
 			}
 		}
+	}
+
+	// 8a.1. Inject a minimal CLAUDE.md pointer when running Claude Code
+	// against repos that have AGENTS.md but no CLAUDE.md. Claude Code
+	// auto-loads CLAUDE.md into its system context but does not read
+	// AGENTS.md by default. Without this bridge file, agents are
+	// effectively context-blind in repos that only have AGENTS.md.
+	if rt.Name() == "claude" && agentsMDAvailable && !hasClaudeMD(hostRepositoryDir) {
+		injectClaudeMDPointer(sandboxName, remoteRepositoryDir, printer)
 	}
 
 	// 8a-2. Exclude agent working directories from git tracking.
@@ -701,8 +889,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// 9a. Display trace ID (generated earlier for fetch service audit logging).
-	printer.KeyValue("Trace ID", traceID)
-	if err := injectTraceID(sandboxName, traceID); err != nil {
+	printer.KeyValue("Trace ID", securityTraceID)
+	if err := injectTraceID(sandboxName, securityTraceID); err != nil {
 		printer.StepWarn("Could not inject trace ID into sandbox: " + err.Error())
 	}
 
@@ -711,7 +899,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// SKILL.md) that were just copied into the sandbox.
 	if h.SecurityEnabled() {
 		printer.StepStart("Running pre-agent security scan")
-		scanCmd := buildScanContextCommand(remoteRepositoryDir, traceID)
+		scanCmd := buildScanContextCommand(remoteRepositoryDir, securityTraceID)
 		stdout, stderr, exitCode, execErr := sandbox.Exec(sandboxName, scanCmd, 60*time.Second)
 		if execErr != nil {
 			printer.StepFail("Security scan failed: " + execErr.Error())
@@ -770,10 +958,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		maxIterations = h.ValidationLoop.MaxIterations
 	}
 
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		return fmt.Errorf("creating run directory: %w", err)
-	}
-
 	oidcCtx, oidcCancel := context.WithCancel(context.Background())
 	var oidcWg sync.WaitGroup
 	if oidcURL := os.Getenv("FULLSEND_GCP_OIDC_URL"); oidcURL != "" {
@@ -781,7 +965,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if err != nil {
 			printer.StepWarn("OIDC token refresh disabled: " + err.Error())
 		} else {
-			printer.StepDone("OIDC token refresh enabled (WIF mode)")
+			// GHA OIDC tokens expire after 5 min; sandbox setup can exceed that.
+			if err := refreshOIDCToken(oidcCtx, sandboxName, oidcURL, oidcAuth); err != nil {
+				printer.StepWarn("Initial OIDC refresh failed (will retry): " + err.Error())
+			} else {
+				printer.StepDone("OIDC token refreshed, background refresh enabled (WIF mode)")
+			}
 			oidcWg.Add(1)
 			go func() {
 				defer oidcWg.Done()
@@ -794,11 +983,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		oidcWg.Wait()
 	}()
 
-	var lastExitCode int
 	var runCount int
+	var aggMetrics aggregateMetrics
 
 	for iteration := 1; iteration <= maxIterations; iteration++ {
 		runCount = iteration
+		transcriptErrorOverride = false
 
 		// Each iteration gets its own subdirectory for output and transcripts.
 		iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", iteration))
@@ -828,6 +1018,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		heartbeatDone := make(chan struct{})
 		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
 
+		agentSpan := rec.StartSpan("agent", "", map[string]any{"iteration": iteration})
 		var metrics agentruntime.RunMetrics
 		exitCode, runErr := rt.Run(ctx, agentruntime.RunParams{
 			SandboxName:   sandboxName,
@@ -841,18 +1032,52 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
 
+		agentStatus := "ok"
+		if runErr != nil {
+			agentStatus = "error"
+		}
+		rec.EndSpan(agentSpan, agentStatus, agentSpanEndAttrs(iteration, exitCode, rt.System(), &metrics))
+
+		// Accumulate behavioral metrics across iterations.
+		aggregateRunMetrics(&aggMetrics, &metrics, iteration)
+
 		if runErr != nil {
 			printer.StepFail("Agent execution failed")
+			// Record the real exit code (rt.Run returns -1 when the agent never
+			// started) so the telemetry summary reports the failure faithfully
+			// instead of collapsing every infra failure to a generic 1.
+			lastExitCode = exitCode
+			// Write partial metrics before returning so downstream judges
+			// (e.g., max_turns, max_cost) can inspect what happened.
+			if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
+				printer.StepWarn("Failed to write metrics.json: " + err.Error())
+			}
+			rec.SetMetrics(toTelemetryMetrics(aggMetrics))
+			rec.SetModel(aggMetrics.Model)
 			return fmt.Errorf("running agent (iteration %d): %w", iteration, runErr)
 		}
 		lastExitCode = exitCode
 
+		// Check the tee'd output.jsonl for is_error:true result events.
+		// Claude Code may exit 0 on API/infrastructure failures (e.g.,
+		// invalid_grant, quota exhaustion) while setting is_error:true in
+		// the transcript. Treat these as failures so downstream gating
+		// (transcript surfacing, post-script skip) can act. See #2786.
+		if exitCode == 0 {
+			outputJSONL := filepath.Join(iterDir, "output.jsonl")
+			if te, ok := tx.ParseTranscriptFile(outputJSONL); ok && te.IsError {
+				printer.StepWarn(fmt.Sprintf("Agent exited with code 0 but transcript contains error: %s", te.ErrorMessage))
+				lastExitCode = 1
+				transcriptErrorOverride = true
+			}
+		}
+
 		printer.Blank()
 		// Non-zero exit is a warning, not a failure — the validation loop is the success gate.
-		if exitCode == 0 {
+		if lastExitCode == 0 {
 			printer.StepDone(fmt.Sprintf("Agent exited with code %d (%.1fs)", exitCode, time.Since(agentStart).Seconds()))
 		} else {
-			printer.StepWarn(fmt.Sprintf("Agent exited with code %d", exitCode))
+			printer.StepWarn(fmt.Sprintf("Agent exited with code %d", lastExitCode))
 		}
 
 		// 9b. Extract output files.
@@ -914,12 +1139,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepStart("Running validation: " + h.ValidationLoop.Script)
 		valCmd := exec.Command(h.ValidationLoop.Script)
 		valCmd.Dir = iterDir
-		valCmd.Env = append(os.Environ(),
-			append(envToList(h.RunnerEnv),
-				fmt.Sprintf("TARGET_REPO_DIR=%s", hostRepositoryDir),
-				fmt.Sprintf("FULLSEND_RUN_DIR=%s", runDir),
-			)...,
-		)
+		valCmd.Env = append(os.Environ(), validationEnv(h, hostRepositoryDir, runDir)...)
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
@@ -934,23 +1154,29 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// Write aggregated behavioral metrics.
+	if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
+		printer.StepWarn("Failed to write metrics.json: " + err.Error())
+	}
+	rec.SetMetrics(toTelemetryMetrics(aggMetrics))
+	rec.SetModel(aggMetrics.Model)
+
 	// 9e-bis. Surface transcript errors in workflow logs (GitHub Actions).
-	// When the agent exits non-zero, parse transcript JSONL files and emit
-	// ::error:: annotations so operators can diagnose failures without
-	// downloading artifacts. See #704.
-	if lastExitCode != 0 {
-		lastIterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", runCount))
-		lastTranscriptDir := filepath.Join(lastIterDir, "transcripts")
-		if errorSummaries := tx.ParseTranscriptErrors(lastTranscriptDir); len(errorSummaries) > 0 {
-			printer.StepWarn(fmt.Sprintf("Found %d transcript error(s) — emitting to workflow log", len(errorSummaries)))
-			tx.EmitTranscriptErrors(os.Stderr, errorSummaries)
-		}
+	// Parse transcript JSONL files and emit ::error:: annotations so operators
+	// can diagnose failures without downloading artifacts. This runs
+	// regardless of exit code because Claude Code may exit 0 with
+	// is_error:true on API/infrastructure failures. See #704, #2786.
+	lastIterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", runCount))
+	lastTranscriptDir := filepath.Join(lastIterDir, "transcripts")
+	if errorSummaries := tx.ParseTranscriptErrors(lastTranscriptDir); len(errorSummaries) > 0 {
+		printer.StepWarn(fmt.Sprintf("Found %d transcript error(s) — emitting to workflow log", len(errorSummaries)))
+		tx.EmitTranscriptErrors(os.Stderr, errorSummaries)
 	}
 
 	// 9f. Post-agent output scan — redact secrets from extracted output.
 	if h.SecurityEnabled() {
 		printer.StepStart("Running post-agent output scan")
-		if err := scanOutputFiles(runDir, traceID, printer); err != nil {
+		if err := scanOutputFiles(runDir, securityTraceID, printer); err != nil {
 			printer.StepWarn("Output scan error: " + err.Error())
 		}
 
@@ -964,6 +1190,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				printer.StepDone("Security findings extracted")
 			}
 		}
+
+		findingsJSONL := filepath.Join(runDir, "security", "findings.jsonl")
+		if _, statErr := os.Stat(findingsJSONL); statErr == nil {
+			cv, verifyErr := security.VerifyChain(findingsJSONL)
+			if verifyErr != nil {
+				printer.StepWarn("Audit log verification error: " + verifyErr.Error())
+			} else if !cv.Valid {
+				printer.StepFail(fmt.Sprintf("Audit log integrity check FAILED: %s", cv.BrokenMsg))
+				return fmt.Errorf("audit log integrity check failed: %s", cv.BrokenMsg)
+			} else if cv.Entries > 0 {
+				printer.StepDone(fmt.Sprintf("Audit log integrity verified (%d entries)", cv.Entries))
+			}
+		}
 	}
 
 	// 10. Print results.
@@ -972,7 +1211,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	printer.KeyValue("Run directory", runDir)
 	printer.KeyValue("Agent exit code", fmt.Sprintf("%d", lastExitCode))
 	printer.KeyValue("Agent runs", fmt.Sprintf("%d", runCount))
-	printer.KeyValue("Trace ID", traceID)
+	printer.KeyValue("Trace ID", securityTraceID)
 	if h.ValidationLoop != nil {
 		if validationPassed {
 			printer.KeyValue("Validation", "passed")
@@ -1124,17 +1363,18 @@ func shouldStartFetchService(h *harness.Harness) (start bool, deprecationWarning
 	return false, ""
 }
 
-// setupFetchService resolves a forge client for runtime fetching and starts
+// setupFetchService resolves a git token for runtime fetching and starts
 // the HTTP fetch service. It returns the service address/token as a
 // fetchServiceEnv, a shutdown function, and any error.
-func setupFetchService(ctx context.Context, forgeClient forge.Client, h *harness.Harness, resolveToken func() (string, error), cfg fetchsvc.ServiceConfig, warn func(string)) (fetchServiceEnv, func(), error) {
-	if forgeClient != nil {
-		cfg.ForgeClient = forgeClient
+func setupFetchService(ctx context.Context, treeFetcher gitfetch.TreeFetchFunc, gitToken string, h *harness.Harness, resolveToken func() (string, error), cfg fetchsvc.ServiceConfig, warn func(string)) (fetchServiceEnv, func(), error) {
+	cfg.TreeFetcher = treeFetcher
+	if gitToken != "" {
+		cfg.GitToken = gitToken
 	} else if h.HasURLSkills() || h.AllowRuntimeFetch || len(h.AllowedRemoteResources) > 0 {
 		if token, err := resolveToken(); err == nil {
-			cfg.ForgeClient = gh.New(token)
+			cfg.GitToken = token
 		} else {
-			warn(fmt.Sprintf("Forge token unavailable, runtime fetches for uncached skills will fail: %v", err))
+			warn(fmt.Sprintf("Git token unavailable, runtime fetches for uncached skills will fail: %v", err))
 		}
 	}
 
@@ -1143,6 +1383,66 @@ func setupFetchService(ctx context.Context, forgeClient forge.Client, h *harness
 		return fetchServiceEnv{}, nil, err
 	}
 	return fetchServiceEnv{addr: addr, token: token}, shutdown, nil
+}
+
+// validEnvKeyRe matches POSIX-portable environment variable names.
+// Keys that don't match are skipped to prevent shell injection.
+var validEnvKeyRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// reservedSandboxKeys are infrastructure env vars that env.sandbox must not
+// shadow. These are set by the runner in bootstrapEnv and overriding them
+// from harness YAML could break sandbox operation, or are security-sensitive
+// vars that could influence sandbox execution (e.g. shared library injection,
+// auto-sourced shell startup files).
+// NOTE: keep in sync with bootstrapEnv exports below for FULLSEND_* keys.
+var reservedSandboxKeys = map[string]bool{
+	"PATH":                     true,
+	"HOME":                     true,
+	"SHELL":                    true,
+	"LD_PRELOAD":               true,
+	"LD_LIBRARY_PATH":          true,
+	"BASH_ENV":                 true,
+	"ENV":                      true,
+	"FULLSEND_FETCH_URL":       true,
+	"FULLSEND_FETCH_TOKEN":     true,
+	"FULLSEND_OUTPUT_DIR":      true,
+	"FULLSEND_OUTPUT_SCHEMA":   true,
+	"FULLSEND_OUTPUT_FILE":     true,
+	"FULLSEND_TARGET_REPO_DIR": true,
+}
+
+// buildSandboxEnvLines generates export lines for env.sandbox values (ADR 0055).
+// Values have already been expanded by the caller. Each value is single-quoted
+// with internal single quotes escaped. Keys that are not valid shell identifiers
+// are silently skipped.
+func buildSandboxEnvLines(h *harness.Harness) []string {
+	if h.Env == nil || len(h.Env.Sandbox) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(h.Env.Sandbox))
+	for k := range h.Env.Sandbox {
+		if !validEnvKeyRe.MatchString(k) {
+			fmt.Fprintf(os.Stderr, "WARNING: env.sandbox key %q is not a valid POSIX identifier; skipping\n", k)
+			continue
+		}
+		if reservedSandboxKeys[k] {
+			fmt.Fprintf(os.Stderr, "WARNING: env.sandbox key %q is reserved for runner infrastructure; skipping\n", k)
+			continue
+		}
+		keys = append(keys, k)
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	sort.Strings(keys)
+
+	lines := make([]string, 0, len(keys))
+	for _, k := range keys {
+		v := h.Env.Sandbox[k]
+		escaped := strings.ReplaceAll(v, "'", "'\\''")
+		lines = append(lines, fmt.Sprintf("export %s='%s'", k, escaped))
+	}
+	return lines
 }
 
 func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, runtimeEnvExports []string, fetchEnv ...fetchServiceEnv) error {
@@ -1164,8 +1464,16 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 
 	// Expose output schema and expected filename inside the sandbox so
 	// agents can self-check output with fullsend-check-output. See #1107.
+	// Prefer validation_loop.schema (already resolved by compose); fall
+	// back to the legacy RunnerEnv path for backward compatibility.
 	remoteSchemaPath := sandbox.SandboxWorkspace + "/.fullsend/output-schema.json"
-	if schemaHost, ok := h.RunnerEnv["FULLSEND_OUTPUT_SCHEMA"]; ok && schemaHost != "" {
+	var schemaHost string
+	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
+		schemaHost = h.ValidationLoop.Schema
+	} else if v, ok := h.RunnerEnv["FULLSEND_OUTPUT_SCHEMA"]; ok && v != "" {
+		schemaHost = v
+	}
+	if schemaHost != "" {
 		if _, statErr := os.Stat(schemaHost); statErr != nil {
 			fmt.Fprintf(os.Stderr, "WARNING: schema file not found on host: %s\n", schemaHost)
 		} else {
@@ -1194,6 +1502,11 @@ func bootstrapEnv(sandboxName, remoteRepositoryDir string, h *harness.Harness, r
 
 	// Source all env files from .env.d/ (populated by host_files with expand: true).
 	lines = append(lines, fmt.Sprintf("for f in %s/.env.d/*.env; do [ -f \"$f\" ] && . \"$f\"; done", sandbox.SandboxWorkspace))
+
+	// ADR 0055: export env.sandbox vars. Placed after .env.d sourcing so
+	// env.sandbox takes precedence on collision — the common use case is
+	// overriding a single var from a shared host_files .env file.
+	lines = append(lines, buildSandboxEnvLines(h)...)
 
 	content := strings.Join(lines, "\n") + "\n"
 
@@ -1312,6 +1625,156 @@ func validationFailMessage(output []byte, execErr error) string {
 }
 
 // envToList converts a map of env vars to a sorted list of KEY=VALUE strings.
+// toTelemetryMetrics maps fullsend's aggregate run metrics onto the telemetry
+// summary metrics — the same numbers already written to metrics.json, no new
+// accounting.
+// roundUSD rounds a dollar amount to cents for the telemetry output;
+// metrics.json keeps full precision.
+func roundUSD(c float64) float64 { return math.Round(c*100) / 100 }
+
+// agentSpanEndAttrs builds the span_end attributes for one agent iteration,
+// using OTEL GenAI semconv names (gen_ai.*) so the later L2 OTLP transform is
+// ~1:1. system is the runtime's gen_ai.system vendor (kept runtime-agnostic, not
+// hardcoded). Cost is rounded to cents; metrics.json keeps full precision.
+func agentSpanEndAttrs(iteration, exitCode int, system string, m *agentruntime.RunMetrics) map[string]any {
+	return map[string]any{
+		"iteration":                                iteration,
+		"exit_code":                                exitCode,
+		"gen_ai.system":                            system,
+		"gen_ai.request.model":                     m.Model,
+		"gen_ai.usage.input_tokens":                m.InputTokens,
+		"gen_ai.usage.output_tokens":               m.OutputTokens,
+		"gen_ai.usage.cache_creation_input_tokens": m.CacheCreationInputTokens,
+		"gen_ai.usage.cache_read_input_tokens":     m.CacheReadInputTokens,
+		"fullsend.cost_usd":                        roundUSD(m.TotalCostUSD),
+		"fullsend.tool_calls":                      int(m.ToolCalls.Load()),
+	}
+}
+
+// aggregateRunMetrics folds one iteration's metrics into the cross-iteration
+// aggregate: tokens/cost/turns/tool calls are summed; the last non-empty model
+// wins. iteration records the highest iteration reached.
+func aggregateRunMetrics(agg *aggregateMetrics, m *agentruntime.RunMetrics, iteration int) {
+	agg.NumTurns += m.NumTurns
+	agg.TotalCostUSD += m.TotalCostUSD
+	agg.TokenUsage.Input += m.InputTokens
+	agg.TokenUsage.Output += m.OutputTokens
+	agg.TokenUsage.CacheCreation += m.CacheCreationInputTokens
+	agg.TokenUsage.CacheRead += m.CacheReadInputTokens
+	agg.ToolCalls += int(m.ToolCalls.Load())
+	agg.Iterations = iteration
+	if m.Model != "" {
+		agg.Model = m.Model
+	}
+}
+
+func toTelemetryMetrics(m aggregateMetrics) telemetry.RunMetrics {
+	return telemetry.RunMetrics{
+		InputTokens:              m.TokenUsage.Input,
+		OutputTokens:             m.TokenUsage.Output,
+		CacheCreationInputTokens: m.TokenUsage.CacheCreation,
+		CacheReadInputTokens:     m.TokenUsage.CacheRead,
+		TotalCostUSD:             roundUSD(m.TotalCostUSD),
+		NumTurns:                 m.NumTurns,
+		ToolCalls:                m.ToolCalls,
+	}
+}
+
+// resolveWorkItemID returns a stable cross-run correlation key for the work
+// item being processed, sourced from existing run env (ADR 0049 leaves these
+// context vars unchanged). The preference order yields a globally-unique,
+// human-meaningful key; it falls back to "unknown" so Level 1's zero-config
+// promise always holds.
+func resolveWorkItemID() string {
+	if v := strings.TrimSpace(os.Getenv("ISSUE_KEY")); v != "" {
+		return v // source-neutral canonical key, e.g. "owner/repo#123" or "PROJ-123"
+	}
+	repo := strings.TrimSpace(os.Getenv("REPO_FULL_NAME"))
+	num := strings.TrimSpace(os.Getenv("ISSUE_NUMBER"))
+	if repo != "" && num != "" {
+		return repo + "#" + num
+	}
+	if v := strings.TrimSpace(os.Getenv("GITHUB_ISSUE_URL")); v != "" {
+		return v
+	}
+	if num != "" {
+		return num
+	}
+	return "unknown"
+}
+
+// telemetryExitCode maps the run's final state to the exit code recorded in
+// run-summary.json: the agent's last exit code, or 1 when the run failed for a
+// non-agent reason (lastExitCode 0 with a non-nil error) so a failure is never
+// reported as success.
+func telemetryExitCode(lastExitCode int, runErr error) int {
+	if runErr != nil && lastExitCode == 0 {
+		return 1
+	}
+	return lastExitCode
+}
+
+// resolveTraceIdentity resolves the run's trace identity (issue #2779). A
+// valid inbound W3C TRACEPARENT is adopted: its trace-id becomes both the
+// security trace id (re-dashed UUID) and the W3C telemetry trace-id, its
+// span-id becomes the root span's remote parent, and its trace-flags carry
+// the upstream sampling decision forward. Without a valid inbound value a
+// fresh identity is generated, exactly as Level 1 always did. TRACESTATE is
+// intentionally untouched — it passes through os.Environ to child scripts.
+func resolveTraceIdentity(inbound string) (securityTraceID string, tc telemetry.TraceContext) {
+	if traceID, parentSpanID, flags, ok := telemetry.ParseTraceParent(inbound); ok {
+		return telemetry.UUIDFromTraceID(traceID), telemetry.TraceContext{
+			TraceID:      traceID,
+			RootSpanID:   telemetry.NewSpanID(),
+			ParentSpanID: parentSpanID,
+			Flags:        flags,
+		}
+	}
+	securityTraceID = security.GenerateTraceID()
+	return securityTraceID, telemetry.TraceContext{
+		TraceID:    telemetry.TraceIDFromUUID(securityTraceID),
+		RootSpanID: telemetry.NewSpanID(),
+		Flags:      "01",
+	}
+}
+
+// childScriptEnv builds the environment for a host-side child script (pre- or
+// post-script): the harness RunnerEnv layered over the process environment,
+// plus the W3C TRACEPARENT for trace propagation (ADR 0050 Level 1). Any
+// TRACEPARENT already present — inherited from the process environment or
+// set in runner_env — is filtered out first: env lookups resolve the first
+// match, so a stale value would shadow fullsend's own, and fullsend's trace
+// identity never derives from runner_env (issue #2779). An empty traceparent
+// (telemetry disabled) is omitted rather than emitted blank.
+func childScriptEnv(runnerEnv map[string]string, traceparent string) []string {
+	merged := append(os.Environ(), envToList(runnerEnv)...)
+	env := make([]string, 0, len(merged)+1)
+	for _, e := range merged {
+		if !strings.HasPrefix(e, "TRACEPARENT=") {
+			env = append(env, e)
+		}
+	}
+	if traceparent != "" {
+		env = append(env, "TRACEPARENT="+traceparent)
+	}
+	return env
+}
+
+// validationEnv builds the extra environment entries for the validation
+// script. It includes RunnerEnv, TARGET_REPO_DIR, FULLSEND_RUN_DIR, and —
+// when the harness specifies a validation_loop.schema — FULLSEND_OUTPUT_SCHEMA
+// pointing to the host-side cached schema path.
+func validationEnv(h *harness.Harness, hostRepoDir, runDir string) []string {
+	env := append(envToList(h.RunnerEnv),
+		fmt.Sprintf("TARGET_REPO_DIR=%s", hostRepoDir),
+		fmt.Sprintf("FULLSEND_RUN_DIR=%s", runDir),
+	)
+	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
+		env = append(env, fmt.Sprintf("FULLSEND_OUTPUT_SCHEMA=%s", h.ValidationLoop.Schema))
+	}
+	return env
+}
+
 func envToList(env map[string]string) []string {
 	keys := make([]string, 0, len(env))
 	for k := range env {
@@ -1461,9 +1924,11 @@ func refreshOIDCToken(ctx context.Context, sandboxName, oidcURL, oidcAuth string
 // inside the sandbox. It finds known context files (including SKILL.md in
 // skill directories) in the repo directory and passes them as arguments.
 func buildScanContextCommand(repoDir, traceID string) string {
-	// Defense-in-depth: validate traceID before shell interpolation even though
-	// GenerateTraceID() only produces safe hex characters.
-	if !security.IsValidTraceID(traceID) {
+	// Defense-in-depth: validate traceID before shell interpolation. Uses
+	// IsShellSafeTraceID (not IsValidTraceID) because the id may have been
+	// adopted from an inbound W3C traceparent (issue #2779), so it is not
+	// necessarily UUID v4.
+	if !security.IsShellSafeTraceID(traceID) {
 		// Should never happen with internal generation, but fail safely.
 		traceID = "invalid-trace-id"
 	}
@@ -1582,6 +2047,45 @@ func hasAgentsMD(repoDir string) bool {
 		}
 	}
 	return false
+}
+
+// hasClaudeMD checks whether the repo directory contains a CLAUDE.md file
+// in any common casing.
+func hasClaudeMD(repoDir string) bool {
+	for _, name := range []string{"CLAUDE.md", "claude.md", "Claude.md", ".claude.md"} {
+		if _, err := os.Stat(filepath.Join(repoDir, name)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// claudeMDPointerContent is the content injected into CLAUDE.md when a repo
+// has AGENTS.md but no CLAUDE.md.
+const claudeMDPointerContent = "Project rules and instructions live in [AGENTS.md](AGENTS.md). Read that file now — it is the single source of truth for all agent-facing guidance in this repo.\n"
+
+// sandboxExecFunc is the signature for sandbox command execution, extracted
+// for testability.
+type sandboxExecFunc func(sandboxName, command string, timeout time.Duration) (stdout, stderr string, exitCode int, err error)
+
+// injectClaudeMDPointer writes a minimal CLAUDE.md bridge file directly
+// inside the sandbox and excludes it from git tracking.
+func injectClaudeMDPointer(sandboxName, remoteRepositoryDir string, printer *ui.Printer) {
+	doInjectClaudeMDPointer(sandboxName, remoteRepositoryDir, printer, sandbox.Exec)
+}
+
+// doInjectClaudeMDPointer is the testable core of injectClaudeMDPointer.
+func doInjectClaudeMDPointer(sandboxName, remoteRepositoryDir string, printer *ui.Printer, execFn sandboxExecFunc) {
+	writeCmd := fmt.Sprintf("printf '%%s' %q > %s/CLAUDE.md", claudeMDPointerContent, remoteRepositoryDir)
+	if _, _, _, err := execFn(sandboxName, writeCmd, 5*time.Second); err != nil {
+		printer.StepWarn("Could not inject CLAUDE.md: " + err.Error())
+		return
+	}
+	excludeCmd := fmt.Sprintf("echo 'CLAUDE.md' >> %s/.git/info/exclude", remoteRepositoryDir)
+	if _, _, _, err := execFn(sandboxName, excludeCmd, 5*time.Second); err != nil {
+		printer.StepWarn("Could not add CLAUDE.md to git exclude: " + err.Error())
+	}
+	printer.StepDone("Injected CLAUDE.md pointer to AGENTS.md (target repo has none)")
 }
 
 // scanRepoContextFiles walks the target repo directory for known context
@@ -1707,6 +2211,16 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 			}
 			return nil
 		}
+		// Skip ONLY the recorder's own top-level telemetry artifacts (matched by
+		// exact path, not basename): they are metadata-only by construction, and
+		// run-telemetry.jsonl is still held open for append by the recorder during
+		// this scan — an in-place rewrite would truncate it under the open handle.
+		// Agent-written files that merely share these names (e.g. under an
+		// iteration output dir) are NOT exempt and must still be sanitized.
+		if path == filepath.Join(outputDir, telemetry.TelemetryFile) ||
+			path == filepath.Join(outputDir, telemetry.SummaryFile) {
+			return nil
+		}
 		content, readErr := os.ReadFile(path)
 		if readErr != nil {
 			relPath, _ := filepath.Rel(outputDir, path)
@@ -1751,10 +2265,10 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 
 // injectTraceID appends the FULLSEND_TRACE_ID to the sandbox .env file.
 func injectTraceID(sandboxName, traceID string) error {
-	if !security.IsValidTraceID(traceID) {
+	if !security.IsShellSafeTraceID(traceID) {
 		return fmt.Errorf("invalid trace ID format: %q", traceID)
 	}
-	// Safe: IsValidTraceID() above ensures traceID matches UUID v4 format only.
+	// Safe: IsShellSafeTraceID() above ensures traceID is only hex and dashes.
 	cmd := fmt.Sprintf("echo 'export FULLSEND_TRACE_ID=%s' >> %s/.env", traceID, sandbox.SandboxWorkspace)
 	_, _, _, err := sandbox.Exec(sandboxName, cmd, 10*time.Second)
 	return err
@@ -1845,7 +2359,10 @@ func titleCase(s string) string {
 	return strings.Join(words, " ")
 }
 
-func setupStatusNotifier(fullsendDir string, agentName string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
+// setupStatusNotifier creates a status comment notifier. The role parameter
+// accepts either a raw harness role (e.g. "code") or a canonical role
+// (e.g. "coder"); it is resolved via resolveRole internally.
+func setupStatusNotifier(fullsendDir string, role string, sOpts statusOpts, printer *ui.Printer) (*statuscomment.Notifier, error) {
 	parts := strings.SplitN(sOpts.statusRepo, "/", 2)
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("--status-repo must be in owner/repo format, got %q", sOpts.statusRepo)
@@ -1856,24 +2373,14 @@ func setupStatusNotifier(fullsendDir string, agentName string, sOpts statusOpts,
 	if mintURL == "" {
 		mintURL = os.Getenv("FULLSEND_MINT_URL")
 	}
-
-	staticToken := sOpts.statusToken
-
-	if mintURL == "" && staticToken == "" {
+	if mintURL == "" {
 		return nil, fmt.Errorf("no mint URL available (set --mint-url or FULLSEND_MINT_URL)")
 	}
 
 	var notifyCfg config.StatusNotificationConfig
 	orgConfigPath := filepath.Join(fullsendDir, "config.yaml")
-	if data, err := os.ReadFile(orgConfigPath); err == nil {
-		orgCfg, parseErr := config.ParseOrgConfig(data)
-		if parseErr != nil {
-			printer.StepWarn("Failed to parse config.yaml for status notifications: " + parseErr.Error())
-		} else if orgCfg.Defaults.StatusNotifications != nil {
-			notifyCfg = *orgCfg.Defaults.StatusNotifications
-		}
-	} else if !os.IsNotExist(err) {
-		printer.StepWarn("Failed to read config.yaml for status notifications: " + err.Error())
+	if orgCfg := tryLoadFullsendConfig(orgConfigPath, printer); orgCfg != nil && orgCfg.Defaults.StatusNotifications != nil {
+		notifyCfg = *orgCfg.Defaults.StatusNotifications
 	}
 
 	sha := os.Getenv("GITHUB_SHA")
@@ -1888,33 +2395,29 @@ func setupStatusNotifier(fullsendDir string, agentName string, sOpts statusOpts,
 		runID = fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 
-	var initialClient forge.Client
-	if staticToken != "" {
-		initialClient = gh.New(staticToken)
-	}
-
-	n := statuscomment.New(initialClient, notifyCfg, owner, repo, sOpts.statusNum, sOpts.runURL, sha, runID)
+	n := statuscomment.New(nil, notifyCfg, owner, repo, sOpts.statusNum, sOpts.runURL, sha, runID)
 	n.SetWarnFunc(func(format string, args ...any) {
 		printer.StepWarn(fmt.Sprintf(format, args...))
 	})
 
-	if mintURL != "" {
-		role := resolveRole(agentName)
-		n.SetClientFactory(func(ctx context.Context) (forge.Client, error) {
-			result, err := mintclient.MintToken(ctx, mintclient.MintRequest{
-				MintURL: mintURL,
-				Role:    role,
-				Repos:   []string{repo},
-			})
-			if err != nil {
-				return nil, fmt.Errorf("minting status token: %w", err)
-			}
-			if os.Getenv("GITHUB_ACTIONS") == "true" && mintTokenPattern.MatchString(result.Token) {
-				fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
-			}
-			return gh.New(result.Token), nil
+	canonRole := resolveRole(role)
+	n.SetClientFactory(func(ctx context.Context) (forge.Client, error) {
+		result, err := statusMintToken(ctx, mintclient.MintRequest{
+			MintURL: mintURL,
+			Role:    canonRole,
+			Repos:   []string{repo},
 		})
-	}
+		if err != nil {
+			return nil, fmt.Errorf("minting status token: %w", err)
+		}
+		if !mintTokenPattern.MatchString(result.Token) {
+			return nil, fmt.Errorf("minted status token contains unexpected characters")
+		}
+		if os.Getenv("GITHUB_ACTIONS") == "true" {
+			fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
+		}
+		return gh.New(result.Token), nil
+	})
 
 	return n, nil
 }
@@ -1951,4 +2454,355 @@ func prHeadSHAFromEventPath(path string) string {
 		return ""
 	}
 	return payload.PullRequest.Head.SHA
+}
+
+// emitDiagnostic prints a harness lint diagnostic with severity-appropriate formatting.
+// Warnings use StepWarn, errors use StepFail. This ensures future SeverityError
+// diagnostics are visually distinct from warnings.
+func emitDiagnostic(printer *ui.Printer, diag harness.Diagnostic) {
+	switch diag.Severity {
+	case harness.SeverityError:
+		printer.StepFail(diag.String())
+	default:
+		printer.StepWarn(diag.String())
+	}
+}
+
+// emitDiagnosticWithContext prints a diagnostic with additional context (e.g., agent name).
+// Used by lock --all where multiple harnesses are processed and context helps identify which.
+func emitDiagnosticWithContext(printer *ui.Printer, context string, diag harness.Diagnostic) {
+	msg := fmt.Sprintf("%s: %s", context, diag.String())
+	switch diag.Severity {
+	case harness.SeverityError:
+		printer.StepFail(msg)
+	default:
+		printer.StepWarn(msg)
+	}
+}
+
+type tokenVar struct {
+	Name  string
+	Value string // empty = use minted token
+}
+
+// roleTokenVars maps canonical role names to the additional env vars they
+// require beyond GH_TOKEN. These match the vars declared in
+// forge.github.runner_env across the harness YAML files.
+var roleTokenVars = map[string][]tokenVar{
+	"coder":  {{Name: "PUSH_TOKEN"}, {Name: "PUSH_TOKEN_SOURCE", Value: "github-app"}},
+	"review": {{Name: "REVIEW_TOKEN"}},
+}
+
+// mintAgentToken mints a GitHub App installation token for the agent's role
+// and sets the appropriate env vars so RunnerEnv expansion and host_files
+// expansion pick them up. Returns (minted bool, cleanup func, err).
+// The caller should defer cleanup() to clear tokens from the process env.
+func mintAgentToken(ctx context.Context, role, mintURL string, printer *ui.Printer) (bool, func(), error) {
+	if mintURL == "" || role == "" {
+		return false, func() {}, nil
+	}
+
+	repos, err := resolveMintRepos()
+	if err != nil {
+		return false, nil, fmt.Errorf("resolving mint repos for role %s: %w", role, err)
+	}
+
+	role = resolveRole(role)
+	if err := mintcore.ValidateRoleName(role); err != nil {
+		return false, nil, fmt.Errorf("invalid role: %w", err)
+	}
+	printer.StepStart("Minting agent token (role: " + role + ")")
+
+	result, err := statusMintToken(ctx, mintclient.MintRequest{
+		MintURL: mintURL,
+		Role:    role,
+		Repos:   repos,
+	})
+	if err != nil {
+		return false, nil, fmt.Errorf("minting agent token for role %s: %w", role, err)
+	}
+
+	if !mintTokenPattern.MatchString(result.Token) {
+		return false, nil, fmt.Errorf("minted agent token contains unexpected characters for role %s", role)
+	}
+
+	// TODO(ADR-0045 R22): use forge platform context instead of raw env check.
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		fmt.Fprintf(os.Stderr, "::add-mask::%s\n", result.Token)
+	}
+
+	// NOTE: os.Setenv is not goroutine-safe. Minting MUST complete
+	// before any goroutines that read env vars (sandbox streaming,
+	// post-script execution) are launched.
+	originals := make(map[string]string)
+	envVars := []string{"GH_TOKEN"}
+	if v, ok := os.LookupEnv("GH_TOKEN"); ok {
+		originals["GH_TOKEN"] = v
+	}
+	os.Setenv("GH_TOKEN", result.Token)
+
+	for _, tv := range roleTokenVars[role] {
+		if v, ok := os.LookupEnv(tv.Name); ok {
+			originals[tv.Name] = v
+		}
+		if tv.Value != "" {
+			os.Setenv(tv.Name, tv.Value)
+		} else {
+			os.Setenv(tv.Name, result.Token)
+		}
+		envVars = append(envVars, tv.Name)
+	}
+
+	cleanup := func() {
+		for _, v := range envVars {
+			if orig, ok := originals[v]; ok {
+				os.Setenv(v, orig)
+			} else {
+				os.Unsetenv(v)
+			}
+		}
+	}
+
+	expiresAt := strings.Map(func(r rune) rune {
+		if (r >= '0' && r <= '9') || r == '-' || r == ':' || r == 'T' || r == 'Z' || r == '+' || r == '.' {
+			return r
+		}
+		return -1
+	}, result.ExpiresAt)
+	printer.StepDone("Agent token minted (expires " + expiresAt + ")")
+	return true, cleanup, nil
+}
+
+// resolveMintRepos determines which repos to request token access for.
+// MINT_REPOS (comma-separated) takes precedence, falling back to extracting
+// the repo name from REPO_FULL_NAME (owner/repo → repo).
+func resolveMintRepos() ([]string, error) {
+	if v := os.Getenv("MINT_REPOS"); v != "" {
+		var repos []string
+		for _, r := range strings.Split(v, ",") {
+			if trimmed := strings.TrimSpace(r); trimmed != "" {
+				repos = append(repos, trimmed)
+			}
+		}
+		if len(repos) > 0 {
+			if err := validateRepoNames(repos); err != nil {
+				return nil, err
+			}
+			return repos, nil
+		}
+	}
+
+	fullName := os.Getenv("REPO_FULL_NAME")
+	if fullName == "" {
+		return nil, fmt.Errorf("MINT_REPOS or REPO_FULL_NAME must be set for token minting")
+	}
+
+	parts := strings.SplitN(fullName, "/", 2)
+	if len(parts) != 2 || parts[1] == "" {
+		return nil, fmt.Errorf("REPO_FULL_NAME must be in owner/repo format, got %q", fullName)
+	}
+	repo := parts[1]
+	if !mintcore.RepoNamePattern.MatchString(repo) {
+		return nil, fmt.Errorf("invalid repo name %q from REPO_FULL_NAME: must match %s", repo, mintcore.RepoNamePattern.String())
+	}
+	return []string{repo}, nil
+}
+
+func validateRepoNames(repos []string) error {
+	for _, r := range repos {
+		if !mintcore.RepoNamePattern.MatchString(r) {
+			return fmt.Errorf("invalid repo name %q in MINT_REPOS: must match %s", r, mintcore.RepoNamePattern.String())
+		}
+	}
+	return nil
+}
+
+// resolveAgentSource resolves the harness path for an agent, checking
+// config-registered agents first, then falling back to the agents repo
+// (fullsend-ai/agents), then to disk-based lookup.
+// Returns the local filesystem path to the harness (cached for URL sources)
+// and any fetch dependencies from URL-based agent resolution.
+func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forgeClient forge.Client, orgCfg *config.OrgConfig, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, error) {
+	if orgCfg == nil || len(orgCfg.Agents) == 0 {
+		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
+			return path, deps, nil
+		}
+		path, err := resolveHarnessPath(fullsendDir, agentName, printer)
+		return path, nil, err
+	}
+
+	if err := config.ValidateAgentEntries(orgCfg.Agents, orgCfg.AllowedRemoteResources); err != nil {
+		return "", nil, fmt.Errorf("invalid agent config: %w", err)
+	}
+
+	sha := commitSHA
+	if sha == "dev" {
+		sha = ""
+	}
+	scaffoldNames, snErr := scaffold.HarnessNames()
+	if snErr != nil {
+		return "", nil, fmt.Errorf("listing scaffold harnesses: %w", snErr)
+	}
+
+	merged, err := config.MergedAgents(scaffoldNames, sha, orgCfg.Agents, scaffold.HarnessBaseURLWithHash)
+	if err != nil {
+		return "", nil, fmt.Errorf("building merged agent set: %w", err)
+	}
+
+	agent := config.LookupMergedAgent(merged, agentName)
+	if agent == nil || !agent.IsConfig {
+		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
+			return path, deps, nil
+		}
+		path, err := resolveHarnessPath(fullsendDir, agentName, printer)
+		return path, nil, err
+	}
+
+	if harness.IsURL(agent.Source) {
+		printer.StepStart(fmt.Sprintf("Fetching agent harness: %s", agent.Name))
+		localPath, dep, err := harness.FetchAgentHarness(ctx, agent.Source, composeOpts)
+		if err != nil {
+			printer.StepFail("Failed to fetch agent harness")
+			return "", nil, fmt.Errorf("resolving config agent %s: %w", agent.Name, err)
+		}
+		printer.StepDone(fmt.Sprintf("Agent %s resolved from config (URL)", agent.Name))
+		return localPath, []harness.Dependency{dep}, nil
+	}
+
+	contained, err := containedLocalPath(fullsendDir, agent.Source)
+	if err != nil {
+		return "", nil, fmt.Errorf("config agent %s: %w", agent.Name, err)
+	}
+	if _, err := os.Stat(contained); err != nil {
+		return "", nil, fmt.Errorf("config agent %s: local path %s: %w", agent.Name, agent.Source, err)
+	}
+	printer.StepDone(fmt.Sprintf("Agent %s resolved from config (local path)", agent.Name))
+	return contained, nil, nil
+}
+
+// tryAgentsRepoFallback attempts to resolve an agent from the default agents
+// repository (fullsend-ai/agents) by fetching the latest harness from the
+// main branch. This is a transitional mechanism to support the extraction of
+// first-party agents into a separate repository (fullsend-ai/agents) without
+// requiring config changes from existing users.
+//
+// Returns (path, deps, true) on success, or ("", nil, false) if the fallback
+// should be skipped (offline, no forge client, agent not known, not allowlisted, etc.).
+// All errors are non-fatal — the caller falls through to disk-based lookup.
+func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, bool) {
+	normalizedName := strings.ToLower(agentName)
+	if !defaultAgentsRepoKnownAgents[normalizedName] {
+		return "", nil, false
+	}
+	if composeOpts.FetchPolicy.Offline {
+		return "", nil, false
+	}
+	if forgeClient == nil {
+		return "", nil, false
+	}
+
+	allowlist := composeOpts.OrgAllowlist
+	if allowlist == nil {
+		allowlist = config.DefaultAllowedRemoteResources()
+	}
+
+	tagRef := "tags/" + config.DefaultUpstreamRef
+	tagSHA, err := forgeClient.GetRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, tagRef)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Could not resolve %s/%s@%s: %v", defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef, err))
+		return "", nil, false
+	}
+	if !commitSHAPattern.MatchString(tagSHA) {
+		printer.StepWarn(fmt.Sprintf("Invalid SHA from %s/%s@%s: %q", defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef, tagSHA))
+		return "", nil, false
+	}
+
+	rawURL := defaultAgentsRepoURLPrefix + tagSHA + "/harness/" + normalizedName + ".yaml"
+
+	if harness.MatchingAllowedPrefixInList(rawURL, allowlist) == "" {
+		printer.StepWarn(fmt.Sprintf("Agents repo fallback skipped for %s: URL not in allowed_remote_resources", agentName))
+		return "", nil, false
+	}
+
+	shortSHA := tagSHA
+	if len(shortSHA) > 12 {
+		shortSHA = shortSHA[:12]
+	}
+	printer.StepStart(fmt.Sprintf("Fetching agent %s from %s/%s@%s", agentName, defaultAgentsRepoOwner, defaultAgentsRepoName, shortSHA))
+
+	content, err := fetch.FetchURL(ctx, rawURL, composeOpts.FetchPolicy)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to fetch agent %s from agents repo: %v", agentName, err))
+		return "", nil, false
+	}
+
+	// Content is fetched once and used directly — no self-referential hash
+	// verification. Supply-chain integrity relies on the commit-pinned URL,
+	// TLS transport, and the org allowlist. Config-registered agents get
+	// stronger pinning because their hashes are set at enrollment time.
+	contentHash := fetch.ComputeSHA256(content)
+
+	if err := fetch.CachePut(composeOpts.WorkspaceRoot, rawURL, content); err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to cache agents repo content: %v", err))
+		return "", nil, false
+	}
+
+	cachePath, err := fetch.CachePath(composeOpts.WorkspaceRoot, contentHash)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to resolve cache path for agent %s: %v", agentName, err))
+		return "", nil, false
+	}
+	localPath := filepath.Join(cachePath, "content")
+
+	if composeOpts.AuditLogPath != "" {
+		if err := fetch.AppendFetchAudit(composeOpts.AuditLogPath, fetch.FetchAuditEntry{
+			TraceID:   composeOpts.TraceID,
+			FetchTime: time.Now().UTC(),
+			URL:       rawURL,
+			SHA256:    contentHash,
+			FetchType: "static",
+			AllowedBy: harness.MatchingAllowedPrefixInList(rawURL, allowlist),
+			CacheHit:  false,
+		}); err != nil {
+			printer.StepWarn(fmt.Sprintf("Failed to write fetch audit log: %v", err))
+		}
+	}
+
+	dep := harness.Dependency{
+		Field:     "base",
+		URL:       rawURL,
+		LocalPath: localPath,
+		SHA256:    contentHash,
+		FetchedAt: time.Now().UTC(),
+		Type:      "file",
+	}
+
+	printer.StepDone(fmt.Sprintf("Agent %s resolved from %s/%s@%s", agentName, defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef))
+	return localPath, []harness.Dependency{dep}, true
+}
+
+// containedLocalPath resolves a relative source path against baseDir and
+// verifies the result stays within baseDir. Returns an error for absolute
+// paths or paths that escape via traversal.
+func containedLocalPath(baseDir, source string) (string, error) {
+	if filepath.IsAbs(source) {
+		return "", fmt.Errorf("local path must be relative, not absolute")
+	}
+	resolved := filepath.Clean(filepath.Join(baseDir, source))
+	if rel, err := filepath.Rel(baseDir, resolved); err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("local path %q escapes fullsend directory", source)
+	}
+	// Resolve symlinks and re-check containment to prevent symlink escape.
+	real, err := filepath.EvalSymlinks(resolved)
+	if err != nil {
+		return "", err
+	}
+	realBase, err := filepath.EvalSymlinks(baseDir)
+	if err != nil {
+		return "", err
+	}
+	if rel, err := filepath.Rel(realBase, real); err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("local path %q escapes fullsend directory via symlink", source)
+	}
+	return real, nil
 }

@@ -1022,7 +1022,7 @@ func TestSetup_ExistingApp_StaleAppID_TriggersRecovery(t *testing.T) {
 	s := NewSetup(client, prompter, newFakeBrowser(), printer).
 		WithAppSet("fullsend").
 		WithSecretExists(func(_ string) (bool, error) { return true, nil }).
-		WithStoredAppIDs(map[string]string{"myorg/fullsend": "10"}).
+		WithStoredAppIDs(map[string]string{"fullsend": "10"}).
 		WithStoreSecret(func(_ context.Context, _, p string) error {
 			storedPEM = p
 			return nil
@@ -1051,7 +1051,7 @@ func TestSetup_ExistingApp_MatchingAppID_Reuses(t *testing.T) {
 	s := NewSetup(client, prompter, newFakeBrowser(), printer).
 		WithAppSet("fullsend").
 		WithSecretExists(func(_ string) (bool, error) { return true, nil }).
-		WithStoredAppIDs(map[string]string{"myorg/fullsend": "10"})
+		WithStoredAppIDs(map[string]string{"fullsend": "10"})
 
 	creds, err := s.Run(context.Background(), "myorg", "fullsend")
 	require.NoError(t, err)
@@ -1092,8 +1092,8 @@ func TestIsAppIDStale(t *testing.T) {
 	})
 
 	s.storedAppIDs = map[string]string{
-		"myorg/fullsend":   "10",
-		"myorg/prioritize": "20",
+		"fullsend":   "10",
+		"prioritize": "20",
 	}
 
 	t.Run("matching ID returns false", func(t *testing.T) {
@@ -1124,7 +1124,7 @@ func TestSetup_ExistingApp_StaleAppID_UserDeclines(t *testing.T) {
 	s := NewSetup(client, prompter, newFakeBrowser(), printer).
 		WithAppSet("fullsend").
 		WithSecretExists(func(_ string) (bool, error) { return true, nil }).
-		WithStoredAppIDs(map[string]string{"myorg/fullsend": "10"})
+		WithStoredAppIDs(map[string]string{"fullsend": "10"})
 
 	_, err := s.Run(context.Background(), "myorg", "fullsend")
 	require.Error(t, err)

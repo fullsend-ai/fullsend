@@ -1,5 +1,13 @@
 # GitLab Support Implementation Details
 
+> **Note:** The webhook-based dispatch approach described in this document is
+> superseded by [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md)
+> (cron-polling event dispatch), which eliminates webhooks entirely. For the
+> current implementation approach, see
+> [docs/plans/gitlab-cron-polling-implementation.md](../plans/gitlab-cron-polling-implementation.md).
+> The sections below on CI/CD pipeline mapping, PAT-based auth, and forge
+> interface evolution remain valid reference material.
+
 This document contains implementation details for GitLab support in fullsend. For the architectural decision and rationale, see [ADR-0028](../ADRs/0028-gitlab-support.md) (status: Deprecated — CI/CD pipeline mapping, PAT-based auth, and webhook bridging sections remain valid reference material; harness-level forge abstraction is now covered by [ADR-0045](../ADRs/0045-forge-portable-harness-schema.md)).
 
 ## Table of Contents
@@ -36,7 +44,7 @@ This document contains implementation details for GitLab support in fullsend. Fo
 2. **GitLab serverless functions**: Use GitLab's serverless integration to deploy a function that receives webhooks and translates to trigger API calls. Maintains compute-platform agnosticism (runs within GitLab infrastructure) but requires GitLab Premium/Ultimate tier.
 3. **Minimal bridge service**: Deploy a lightweight translation service (e.g., Cloud Run, Lambda) that receives webhooks and POSTs to the trigger API. This reintroduces the "hosted webhook receiver" concern from ADR-0009 but may be acceptable given GitLab's lack of a direct webhook-to-pipeline primitive.
 
-**Open question**: The webhook-to-trigger translation requirement creates an architectural tension. Options 2 and 3 both introduce additional infrastructure (serverless functions or hosted bridge), while option 1 reintroduces the security concern that webhooks were meant to solve. For GitLab Free tier deployments, option 3 (minimal bridge) is likely the only viable path. For Premium/Ultimate, option 2 (serverless) keeps compute within GitLab infrastructure. See ADR-0028 "Open Questions" for full analysis.
+**Open question**: The webhook-to-trigger translation requirement creates an architectural tension. Options 2 and 3 both introduce additional infrastructure (serverless functions or hosted bridge), while option 1 reintroduces the security concern that webhooks were meant to solve. For GitLab Free tier deployments, option 3 (minimal bridge) is likely the only viable path. For Premium/Ultimate, option 2 (serverless) keeps compute within GitLab infrastructure. See ADR-0028 "Open Questions" for full analysis. **Decided:** [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md) eliminates webhooks entirely — cron-based polling via scheduled GitLab CI/CD pipelines replaces the webhook bridge, removing the need for any translation intermediary.
 
 **Security requirements for webhook translation intermediary**:
 

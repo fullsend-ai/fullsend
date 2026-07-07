@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -116,6 +117,63 @@ func TestEnrollmentLayer_Install_NoRepos(t *testing.T) {
 
 	output := buf.String()
 	assert.Contains(t, output, "no repositories to reconcile")
+}
+
+func TestEnrollmentLayer_Install_DispatchRetry(t *testing.T) {
+	now := time.Now().UTC()
+	client := &dispatchRetryClient{
+		FakeClient: forge.FakeClient{
+			WorkflowRuns: map[string]*forge.WorkflowRun{
+				"test-org/.fullsend/repo-maintenance.yml": {
+					ID:         1,
+					Status:     "completed",
+					Conclusion: "success",
+					CreatedAt:  now.Add(time.Minute).Format(time.RFC3339),
+					HTMLURL:    "https://github.com/test-org/.fullsend/actions/runs/1",
+				},
+			},
+		},
+		failUntil: 2,
+	}
+	repos := []string{"repo-a"}
+	layer, buf := newEnrollmentLayer(t, client, repos, nil)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 3, client.attempts)
+	output := buf.String()
+	assert.Contains(t, output, "retrying")
+	assert.Contains(t, output, "dispatched repo-maintenance workflow")
+}
+
+type dispatchRetryClient struct {
+	forge.FakeClient
+	failUntil int
+	attempts  int
+}
+
+func (c *dispatchRetryClient) DispatchWorkflow(_ context.Context, _, _, _, _ string, _ map[string]string) error {
+	c.attempts++
+	if c.attempts <= c.failUntil {
+		return fmt.Errorf("dispatch workflow repo-maintenance.yml: %w", &gh.APIError{
+			StatusCode: 422,
+			Message:    "Workflow does not have 'workflow_dispatch' trigger",
+		})
+	}
+	return nil
+}
+
+func TestIsWorkflowDispatchNotReady(t *testing.T) {
+	dispatchNotReady := fmt.Errorf("dispatch workflow repo-maintenance.yml: %w", &gh.APIError{
+		StatusCode: 422,
+		Message:    "Workflow does not have 'workflow_dispatch' trigger",
+	})
+	assert.True(t, isWorkflowDispatchNotReady(dispatchNotReady))
+	assert.False(t, isWorkflowDispatchNotReady(fmt.Errorf("dispatch workflow repo-maintenance.yml: %w", &gh.APIError{
+		StatusCode: 403,
+		Message:    "Forbidden",
+	})))
+	assert.False(t, isWorkflowDispatchNotReady(nil))
 }
 
 func TestEnrollmentLayer_Install_DispatchError(t *testing.T) {
@@ -469,4 +527,45 @@ func TestEnrollmentLayer_Analyze_PerRepoGuardCheckError(t *testing.T) {
 	require.Len(t, report.Details, 2)
 	assert.Contains(t, report.Details[0], "all 1 repos failed guard check")
 	assert.Contains(t, report.Details[1], "guard check failed, skipped")
+}
+
+func TestEnrollmentLayer_Install_WorkflowRegistrationWait(t *testing.T) {
+	now := time.Now().UTC()
+	client := &registrationWaitClient{
+		FakeClient: forge.FakeClient{
+			WorkflowRuns: map[string]*forge.WorkflowRun{
+				"test-org/.fullsend/repo-maintenance.yml": {
+					ID:         1,
+					Status:     "completed",
+					Conclusion: "success",
+					CreatedAt:  now.Add(time.Minute).Format(time.RFC3339),
+				},
+			},
+		},
+		activeAfter: 2,
+	}
+	layer, buf := newEnrollmentLayer(t, client, []string{"repo-a"}, nil)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 2, client.getAttempts)
+	assert.Contains(t, buf.String(), "waiting for repo-maintenance workflow registration")
+}
+
+type registrationWaitClient struct {
+	forge.FakeClient
+	activeAfter int
+	getAttempts int
+}
+
+func (c *registrationWaitClient) GetWorkflow(_ context.Context, _, _, _ string) (*forge.Workflow, error) {
+	c.getAttempts++
+	if c.getAttempts < c.activeAfter {
+		return nil, forge.ErrNotFound
+	}
+	return &forge.Workflow{
+		Name:  repoMaintenanceWorkflow,
+		Path:  ".github/workflows/" + repoMaintenanceWorkflow,
+		State: "active",
+	}, nil
 }

@@ -151,7 +151,7 @@ The cryptographic attestation approach (Approach 3 in the general doc) is themat
 
 Open questions specific to Konflux:
 - How do we handle the migration from JIRA? Can the two systems coexist during transition?
-- Changes that affect the public API contract between Konflux and its users warrant Tier 3 treatment.
+- Changes that affect the public API contract between Konflux and its users warrant intent authorization tier 3 treatment.
 
 ### Performance verification
 

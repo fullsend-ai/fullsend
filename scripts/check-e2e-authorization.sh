@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 # check-e2e-authorization.sh — Decide whether a PR may run e2e tests in CI.
 #
-# Authorized when the PR author is OWNER/MEMBER/COLLABORATOR, or when a fresh
-# ok-to-test label was applied after the latest push.
+# Authorized when the PR author is OWNER/MEMBER/COLLABORATOR, when the author
+# is a trusted bot (e.g. renovate-fullsend[bot]), when the collaborator
+# permission API confirms write+ access, or when a fresh ok-to-test label was
+# applied after the latest push.
+#
+# The author_association field from the event payload can misreport org members
+# whose membership visibility is private (returns CONTRIBUTOR/NONE instead of
+# MEMBER). When author_association is untrusted, the script falls back to the
+# collaborator permission API which correctly resolves regardless of visibility.
 #
 # Freshness uses PR updated_at from the frozen workflow event (PR_UPDATED_AT).
 # On ok-to-test labeled events, authorization is immediate. Does not use
@@ -12,6 +19,7 @@
 #
 # Environment (optional, from workflow):
 #   PR_AUTHOR_ASSOCIATION — github.event.pull_request.author_association
+#   PR_AUTHOR_LOGIN — github.event.pull_request.user.login
 #   PR_UPDATED_AT — github.event.pull_request.updated_at
 #   EVENT_ACTION  — github.event.action
 #
@@ -24,6 +32,7 @@ PR_NUMBER="${1:?PR number required}"
 REPOSITORY="${2:?repository (owner/repo) required}"
 
 TRUSTED_ASSOCIATIONS="OWNER MEMBER COLLABORATOR"
+TRUSTED_BOT_LOGINS="renovate-fullsend[bot]"
 OK_TO_TEST_LABEL="ok-to-test"
 
 write_error_output() {
@@ -48,13 +57,38 @@ is_trusted_author() {
   esac
 }
 
+is_trusted_bot() {
+  local login="${1:-}"
+  case " ${TRUSTED_BOT_LOGINS} " in
+    *" ${login} "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Fallback: check actor has write+ permission via the collaborator permission
+# API, which correctly resolves org membership regardless of visibility
+# (private vs public). Same approach as the dispatch workflow.
+has_write_permission() {
+  local username="${1:-}"
+  if [[ -z "${username}" ]]; then
+    return 1
+  fi
+  local perm_json role
+  perm_json=$(gh api "repos/${REPOSITORY}/collaborators/${username}/permission" 2>/dev/null) || return 1
+  role=$(jq -r '.role_name' <<<"${perm_json}") || return 1
+  case "${role}" in
+    admin|maintain|write) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 label_removed=false
 authorized=false
 reason="unauthorized"
 
-# Prefer the frozen workflow event payload. GITHUB_TOKEN cannot see org
-# membership (read:org), so pulls.get often returns NONE/CONTRIBUTOR for
-# org members — especially when membership visibility is private.
+# Try the frozen workflow event payload first (fast path). If it reports an
+# untrusted association, has_write_permission falls back to the collaborator
+# permission API which resolves correctly regardless of membership visibility.
 if [[ -n "${PR_AUTHOR_ASSOCIATION:-}" ]]; then
   author_association="${PR_AUTHOR_ASSOCIATION}"
 else
@@ -63,6 +97,14 @@ else
 fi
 
 if is_trusted_author "${author_association}"; then
+  authorized=true
+  reason="trusted_author"
+elif is_trusted_bot "${PR_AUTHOR_LOGIN:-}"; then
+  authorized=true
+  reason="trusted_bot"
+elif has_write_permission "${PR_AUTHOR_LOGIN:-}" 2>/dev/null; then
+  # author_association was wrong (e.g. private org membership); collaborator
+  # permission API confirms write+ access.
   authorized=true
   reason="trusted_author"
 else

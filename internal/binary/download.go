@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -139,6 +140,168 @@ func resolveLatestReleaseTag() (string, error) {
 		return "", fmt.Errorf("empty tag_name in latest release")
 	}
 	return release.TagName, nil
+}
+
+// SourceArchiveBaseURL is the GitHub source archive base URL. Tests may override.
+var SourceArchiveBaseURL = "https://github.com/fullsend-ai/fullsend/archive/refs/tags"
+
+// FetchSourceTree downloads the fullsend source tree for the given release
+// version and extracts it into destDir (module root contents, not wrapped).
+func FetchSourceTree(version, destDir string) error {
+	tag := version
+	if !strings.HasPrefix(tag, "v") {
+		tag = "v" + strings.TrimPrefix(version, "v")
+	}
+	url := fmt.Sprintf("%s/%s.tar.gz", SourceArchiveBaseURL, tag)
+
+	resp, err := HTTPClient.Get(url) //nolint:gosec // URL is constructed from known constants
+	if err != nil {
+		return fmt.Errorf("fetching source archive: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET %s returned %d", url, resp.StatusCode)
+	}
+
+	maxSize := int64(maxDownloadSize)
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, io.LimitReader(resp.Body, maxSize+1)); err != nil {
+		return fmt.Errorf("reading source archive: %w", err)
+	}
+	if int64(buf.Len()) > maxSize {
+		return fmt.Errorf("source archive exceeds maximum size (%d bytes)", maxSize)
+	}
+
+	return extractSourceTree(bytes.NewReader(buf.Bytes()), destDir)
+}
+
+func pathWithinDir(dir, target string) bool {
+	dir = filepath.Clean(dir)
+	target = filepath.Clean(target)
+	if target == dir {
+		return true
+	}
+	return strings.HasPrefix(target, dir+string(os.PathSeparator))
+}
+
+func extractSourceTree(r io.Reader, destDir string) error {
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return fmt.Errorf("gzip reader: %w", err)
+	}
+	defer gz.Close()
+
+	tmpDir, err := os.MkdirTemp(filepath.Dir(destDir), "fullsend-src-*")
+	if err != nil {
+		return fmt.Errorf("creating temp extract dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tr := tar.NewReader(gz)
+	var rootPrefix string
+	var totalExtracted int64
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("reading source tar: %w", err)
+		}
+		clean := filepath.Clean(hdr.Name)
+		if strings.Contains(clean, "..") || filepath.IsAbs(clean) {
+			continue
+		}
+		if rootPrefix == "" {
+			parts := strings.SplitN(clean, "/", 2)
+			if len(parts) == 0 || parts[0] == "" {
+				return fmt.Errorf("unexpected source archive layout")
+			}
+			rootPrefix = parts[0] + "/"
+		}
+		if !strings.HasPrefix(clean+"/", rootPrefix) {
+			continue
+		}
+		rel := strings.TrimPrefix(clean, rootPrefix)
+		if rel == "" || rel == "." {
+			continue
+		}
+		target := filepath.Join(tmpDir, rel)
+		if !pathWithinDir(tmpDir, target) {
+			return fmt.Errorf("extract path escapes destination: %s", rel)
+		}
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return fmt.Errorf("creating dir %s: %w", rel, err)
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return fmt.Errorf("creating parent for %s: %w", rel, err)
+			}
+			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(hdr.Mode)&0o777)
+			if err != nil {
+				return fmt.Errorf("creating file %s: %w", rel, err)
+			}
+			n, err := io.Copy(f, io.LimitReader(tr, int64(maxDownloadSize)+1))
+			if err != nil {
+				f.Close()
+				return fmt.Errorf("extracting %s: %w", rel, err)
+			}
+			if n > int64(maxDownloadSize) {
+				f.Close()
+				return fmt.Errorf("extracted file %s exceeds maximum size (%d bytes)", rel, maxDownloadSize)
+			}
+			totalExtracted += n
+			if totalExtracted > int64(maxDownloadSize) {
+				f.Close()
+				return fmt.Errorf("aggregate extracted size exceeds maximum (%d bytes)", maxDownloadSize)
+			}
+			if err := f.Close(); err != nil {
+				return fmt.Errorf("closing %s: %w", rel, err)
+			}
+		}
+	}
+
+	if err := os.RemoveAll(destDir); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("preparing dest dir: %w", err)
+	}
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return fmt.Errorf("creating dest dir: %w", err)
+	}
+	return copyDirContents(tmpDir, destDir)
+}
+
+func copyDirContents(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, info.Mode().Perm())
+	})
 }
 
 // ExtractFullsendFromTarGz reads a tar.gz stream and extracts the "fullsend"

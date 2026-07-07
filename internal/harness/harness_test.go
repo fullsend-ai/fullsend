@@ -12,6 +12,7 @@ import (
 func TestLoad_ValidHarness(t *testing.T) {
 	content := `
 agent: agents/hello-world.md
+role: triage
 image: registry.example.com/sandbox:v1
 skills:
   - skills/hello-world-summary
@@ -68,6 +69,7 @@ skills:
 func TestLoad_ValidationLoopMissingScript(t *testing.T) {
 	content := `
 agent: agents/test.md
+role: test
 validation_loop:
   max_iterations: 3
 `
@@ -83,6 +85,7 @@ validation_loop:
 func TestLoad_HostFiles(t *testing.T) {
 	content := `
 agent: agents/test.md
+role: test
 host_files:
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /sandbox/workspace/.gcp-credentials.json
@@ -114,6 +117,7 @@ host_files:
 func TestValidate_HostFileMissingSrc(t *testing.T) {
 	content := `
 agent: agents/test.md
+role: test
 host_files:
   - dest: /sandbox/workspace/.gcp-credentials.json
 `
@@ -129,6 +133,7 @@ host_files:
 func TestValidate_HostFileMissingDest(t *testing.T) {
 	content := `
 agent: agents/test.md
+role: test
 host_files:
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
 `
@@ -183,6 +188,47 @@ func TestResolveRelativeTo_HostFiles(t *testing.T) {
 	assert.Equal(t, "${GOOGLE_APPLICATION_CREDENTIALS}", h.HostFiles[1].Src)
 	// Absolute path is unchanged.
 	assert.Equal(t, "/absolute/path/file.txt", h.HostFiles[2].Src)
+}
+
+func TestResolveRelativeTo_ValidationLoopSchema(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		ValidationLoop: &ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "schemas/result.schema.json",
+		},
+	}
+
+	require.NoError(t, h.ResolveRelativeTo("/base/dir"))
+
+	assert.Equal(t, "/base/dir/schemas/result.schema.json", h.ValidationLoop.Schema)
+}
+
+func TestResolveRelativeTo_ValidationLoopSchemaVarSkipped(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		ValidationLoop: &ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "${FULLSEND_DIR}/schemas/result.schema.json",
+		},
+	}
+
+	require.NoError(t, h.ResolveRelativeTo("/base/dir"))
+
+	assert.Equal(t, "${FULLSEND_DIR}/schemas/result.schema.json", h.ValidationLoop.Schema)
+}
+
+func TestResolveRelativeTo_ValidationLoopSchemaTraversalRejected(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		ValidationLoop: &ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "../../etc/shadow.json",
+		},
+	}
+	err := h.ResolveRelativeTo("/base/dir")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolves outside fullsend directory")
 }
 
 func TestResolveRelativeTo_AbsolutePathsUnchanged(t *testing.T) {
@@ -284,6 +330,7 @@ func TestFailModeClosed_Open(t *testing.T) {
 func TestLoad_SecurityConfig(t *testing.T) {
 	content := `
 agent: agents/test.md
+role: test
 security:
   fail_mode: open
   host_scanners:
@@ -335,7 +382,7 @@ security:
 }
 
 func TestValidate_SecurityInvalidFailMode(t *testing.T) {
-	h := &Harness{Agent: "test.md", Security: &SecurityConfig{FailMode: "invalid"}}
+	h := &Harness{Agent: "test.md", Role: "test", Security: &SecurityConfig{FailMode: "invalid"}}
 	err := h.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fail_mode")
@@ -344,6 +391,7 @@ func TestValidate_SecurityInvalidFailMode(t *testing.T) {
 func TestValidate_SecurityInvalidLLMGuardThreshold(t *testing.T) {
 	h := &Harness{
 		Agent: "test.md",
+		Role:  "test",
 		Security: &SecurityConfig{
 			HostScanners: &HostScanners{
 				LLMGuard: &LLMGuardConfig{Threshold: 1.5},
@@ -358,6 +406,7 @@ func TestValidate_SecurityInvalidLLMGuardThreshold(t *testing.T) {
 func TestValidate_SecurityInvalidLLMGuardMatchType(t *testing.T) {
 	h := &Harness{
 		Agent: "test.md",
+		Role:  "test",
 		Security: &SecurityConfig{
 			HostScanners: &HostScanners{
 				LLMGuard: &LLMGuardConfig{MatchType: "word"},
@@ -372,6 +421,7 @@ func TestValidate_SecurityInvalidLLMGuardMatchType(t *testing.T) {
 func TestValidate_SecurityInvalidTirithFailOn(t *testing.T) {
 	h := &Harness{
 		Agent: "test.md",
+		Role:  "test",
 		Security: &SecurityConfig{
 			SandboxHooks: &SandboxHooks{
 				Tirith: &TirithConfig{FailOn: "low"},
@@ -386,6 +436,7 @@ func TestValidate_SecurityInvalidTirithFailOn(t *testing.T) {
 func TestValidate_SecurityInvalidEscalation(t *testing.T) {
 	h := &Harness{
 		Agent: "test.md",
+		Role:  "test",
 		Security: &SecurityConfig{
 			Escalation: &EscalationConfig{OnCritical: "ignore"},
 		},
@@ -398,6 +449,7 @@ func TestValidate_SecurityInvalidEscalation(t *testing.T) {
 func TestValidate_SecurityValidConfig(t *testing.T) {
 	h := &Harness{
 		Agent: "test.md",
+		Role:  "test",
 		Security: &SecurityConfig{
 			FailMode: "open",
 			HostScanners: &HostScanners{
@@ -434,6 +486,93 @@ func TestValidateRunnerEnv_PartialExpansion(t *testing.T) {
 	assert.Contains(t, err.Error(), "DEFINITELY_NOT_SET_VAR_XYZ")
 }
 
+func TestValidateRunnerEnvWith_ChecksEnvRunner(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &EnvConfig{
+			Runner: map[string]string{"KEY": "${MISSING_VAR}"},
+		},
+	}
+	lookup := func(key string) (string, bool) { return "", false }
+	err := h.ValidateRunnerEnvWith(lookup)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MISSING_VAR")
+}
+
+func TestValidateRunnerEnvWith_ChecksEnvSandbox(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &EnvConfig{
+			Sandbox: map[string]string{"KEY": "${ALSO_MISSING}"},
+		},
+	}
+	lookup := func(key string) (string, bool) { return "", false }
+	err := h.ValidateRunnerEnvWith(lookup)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "ALSO_MISSING")
+}
+
+func TestValidateRunnerEnvWith_EnvAllSet(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &EnvConfig{
+			Runner:  map[string]string{"KEY": "${SET_VAR}"},
+			Sandbox: map[string]string{"KEY2": "literal"},
+		},
+	}
+	lookup := func(key string) (string, bool) {
+		if key == "SET_VAR" {
+			return "val", true
+		}
+		return "", false
+	}
+	err := h.ValidateRunnerEnvWith(lookup)
+	require.NoError(t, err)
+}
+
+func TestValidateRunnerEnvWith_ChecksValidationLoopSchema(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		ValidationLoop: &ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "${MISSING_DIR}/schemas/result.json",
+		},
+	}
+	lookup := func(key string) (string, bool) { return "", false }
+	err := h.ValidateRunnerEnvWith(lookup)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MISSING_DIR")
+	assert.Contains(t, err.Error(), "validation_loop.schema")
+}
+
+func TestValidateRunnerEnvWith_ValidationLoopSchemaVarSet(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		ValidationLoop: &ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "${FULLSEND_DIR}/schemas/result.json",
+		},
+	}
+	lookup := func(key string) (string, bool) {
+		if key == "FULLSEND_DIR" {
+			return "/opt/fullsend", true
+		}
+		return "", false
+	}
+	require.NoError(t, h.ValidateRunnerEnvWith(lookup))
+}
+
+func TestValidateRunnerEnvWith_NilEnvNoError(t *testing.T) {
+	h := &Harness{Agent: "agents/test.md", Role: "test"}
+	err := h.ValidateRunnerEnvWith(func(string) (string, bool) { return "", false })
+	require.NoError(t, err)
+}
+
 func TestValidate_AgentNameInvalid(t *testing.T) {
 	h := &Harness{Agent: "agents/test';echo hack;echo '.md"}
 	err := h.Validate()
@@ -442,7 +581,7 @@ func TestValidate_AgentNameInvalid(t *testing.T) {
 }
 
 func TestValidate_AgentNameValid(t *testing.T) {
-	h := &Harness{Agent: "agents/hello-world_v2.md"}
+	h := &Harness{Agent: "agents/hello-world_v2.md", Role: "test"}
 	require.NoError(t, h.Validate())
 }
 
@@ -461,19 +600,20 @@ func TestValidate_ModelValid(t *testing.T) {
 		"claude-sonnet-4-6@20250514",
 		"claude-opus-4-1@20250805",
 	} {
-		h := &Harness{Agent: "agents/test.md", Model: model}
+		h := &Harness{Agent: "agents/test.md", Role: "test", Model: model}
 		require.NoError(t, h.Validate(), "model %q should be valid", model)
 	}
 }
 
 func TestValidate_PostScriptWithoutValidationLoop(t *testing.T) {
-	h := &Harness{Agent: "agents/test.md", PostScript: "scripts/post.sh"}
+	h := &Harness{Agent: "agents/test.md", Role: "test", PostScript: "scripts/post.sh"}
 	require.NoError(t, h.Validate())
 }
 
 func TestValidate_PostScriptWithValidationLoop(t *testing.T) {
 	h := &Harness{
 		Agent:      "agents/test.md",
+		Role:       "test",
 		PostScript: "scripts/post.sh",
 		ValidationLoop: &ValidationLoop{
 			Script:        "scripts/validate.sh",
@@ -484,56 +624,57 @@ func TestValidate_PostScriptWithValidationLoop(t *testing.T) {
 }
 
 func TestValidate_NegativeTimeout(t *testing.T) {
-	h := &Harness{Agent: "agents/test.md", TimeoutMinutes: -1}
+	h := &Harness{Agent: "agents/test.md", Role: "test", TimeoutMinutes: -1}
 	err := h.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "timeout_minutes must be non-negative")
 }
 
 func TestValidate_NegativeSandboxTimeout(t *testing.T) {
-	h := &Harness{Agent: "agents/test.md", SandboxTimeoutSeconds: -1}
+	h := &Harness{Agent: "agents/test.md", Role: "test", SandboxTimeoutSeconds: -1}
 	err := h.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sandbox_timeout_seconds must be 0 (default) or between 30 and 600")
 }
 
 func TestValidate_SandboxTimeoutTooSmall(t *testing.T) {
-	h := &Harness{Agent: "agents/test.md", SandboxTimeoutSeconds: 10}
+	h := &Harness{Agent: "agents/test.md", Role: "test", SandboxTimeoutSeconds: 10}
 	err := h.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sandbox_timeout_seconds must be 0 (default) or between 30 and 600")
 }
 
 func TestValidate_SandboxTimeoutTooLarge(t *testing.T) {
-	h := &Harness{Agent: "agents/test.md", SandboxTimeoutSeconds: 601}
+	h := &Harness{Agent: "agents/test.md", Role: "test", SandboxTimeoutSeconds: 601}
 	err := h.Validate()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "sandbox_timeout_seconds must be 0 (default) or between 30 and 600")
 }
 
 func TestValidate_SandboxTimeoutAtMin(t *testing.T) {
-	h := &Harness{Agent: "agents/test.md", SandboxTimeoutSeconds: 30}
+	h := &Harness{Agent: "agents/test.md", Role: "test", SandboxTimeoutSeconds: 30}
 	require.NoError(t, h.Validate())
 }
 
 func TestValidate_SandboxTimeoutAtMax(t *testing.T) {
-	h := &Harness{Agent: "agents/test.md", SandboxTimeoutSeconds: 600}
+	h := &Harness{Agent: "agents/test.md", Role: "test", SandboxTimeoutSeconds: 600}
 	require.NoError(t, h.Validate())
 }
 
 func TestValidate_ZeroSandboxTimeout(t *testing.T) {
-	h := &Harness{Agent: "agents/test.md", SandboxTimeoutSeconds: 0}
+	h := &Harness{Agent: "agents/test.md", Role: "test", SandboxTimeoutSeconds: 0}
 	require.NoError(t, h.Validate())
 }
 
 func TestValidate_PositiveSandboxTimeout(t *testing.T) {
-	h := &Harness{Agent: "agents/test.md", SandboxTimeoutSeconds: 180}
+	h := &Harness{Agent: "agents/test.md", Role: "test", SandboxTimeoutSeconds: 180}
 	require.NoError(t, h.Validate())
 }
 
 func TestLoad_SandboxTimeoutField(t *testing.T) {
 	content := `
 agent: agents/test.md
+role: test
 sandbox_timeout_seconds: 180
 `
 	dir := t.TempDir()
@@ -548,6 +689,7 @@ sandbox_timeout_seconds: 180
 func TestLoad_ModelField(t *testing.T) {
 	content := `
 agent: agents/test.md
+role: test
 model: sonnet
 `
 	dir := t.TempDir()
@@ -595,9 +737,46 @@ func TestValidateFilesExist_SkipsVarPaths(t *testing.T) {
 	require.NoError(t, h.ValidateFilesExist())
 }
 
+func TestValidateFilesExist_SkipsSchemaVarPaths(t *testing.T) {
+	dir := t.TempDir()
+	agentFile := filepath.Join(dir, "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("agent"), 0o644))
+	scriptFile := filepath.Join(dir, "validate.sh")
+	require.NoError(t, os.WriteFile(scriptFile, []byte("#!/bin/bash"), 0o755))
+
+	h := &Harness{
+		Agent: agentFile,
+		ValidationLoop: &ValidationLoop{
+			Script: scriptFile,
+			Schema: "${FULLSEND_DIR}/schemas/result.schema.json",
+		},
+	}
+	require.NoError(t, h.ValidateFilesExist())
+}
+
+func TestValidateFilesExist_MissingSchema(t *testing.T) {
+	dir := t.TempDir()
+	agentFile := filepath.Join(dir, "agent.md")
+	require.NoError(t, os.WriteFile(agentFile, []byte("agent"), 0o644))
+	scriptFile := filepath.Join(dir, "validate.sh")
+	require.NoError(t, os.WriteFile(scriptFile, []byte("#!/bin/bash"), 0o755))
+
+	h := &Harness{
+		Agent: agentFile,
+		ValidationLoop: &ValidationLoop{
+			Script: scriptFile,
+			Schema: "/nonexistent/schema.json",
+		},
+	}
+	err := h.ValidateFilesExist()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validation_loop.schema")
+}
+
 func TestValidate_PluginNameValid(t *testing.T) {
 	h := &Harness{
 		Agent:   "agents/test.md",
+		Role:    "test",
 		Plugins: []string{"plugins/gopls-lsp", "plugins/my_plugin-2"},
 	}
 	require.NoError(t, h.Validate())
@@ -607,6 +786,7 @@ func TestValidate_PluginNameInvalid(t *testing.T) {
 	for _, name := range []string{"my plugin", "foo;bar", "bad@name"} {
 		h := &Harness{
 			Agent:   "agents/test.md",
+			Role:    "test",
 			Plugins: []string{"plugins/" + name},
 		}
 		err := h.Validate()
@@ -686,6 +866,7 @@ func TestHarness_AllowedRemoteResources_Parse(t *testing.T) {
 	t.Run("with allowed_remote_resources", func(t *testing.T) {
 		content := `
 agent: agents/test.md
+role: test
 allowed_remote_resources:
   - https://example.com/skills/
   - https://cdn.example.com/policies/
@@ -702,6 +883,7 @@ allowed_remote_resources:
 	t.Run("without allowed_remote_resources", func(t *testing.T) {
 		content := `
 agent: agents/test.md
+role: test
 `
 		dir := t.TempDir()
 		path := filepath.Join(dir, "test.yaml")
@@ -950,6 +1132,32 @@ func TestValidateResourceTypes(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "agent_input must be a local path")
 	})
+
+	t.Run("URL in validation_loop.schema", func(t *testing.T) {
+		h := &Harness{
+			Agent: "agents/test.md",
+			ValidationLoop: &ValidationLoop{
+				Script:        "scripts/validate.sh",
+				Schema:        "https://example.com/schemas/result.json",
+				MaxIterations: 1,
+			},
+		}
+		err := h.ValidateResourceTypes()
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "validation_loop.schema must be a local path")
+	})
+
+	t.Run("local validation_loop.schema accepted", func(t *testing.T) {
+		h := &Harness{
+			Agent: "agents/test.md",
+			ValidationLoop: &ValidationLoop{
+				Script:        "scripts/validate.sh",
+				Schema:        "schemas/result.schema.json",
+				MaxIterations: 1,
+			},
+		}
+		require.NoError(t, h.ValidateResourceTypes())
+	})
 }
 
 func TestHasURLReferences(t *testing.T) {
@@ -1092,7 +1300,7 @@ slug: fullsend-ai-triage
 	assert.Equal(t, "fullsend-ai-triage", h.Slug)
 }
 
-func TestLoad_RoleAndSlugAbsent(t *testing.T) {
+func TestLoad_RoleMissing(t *testing.T) {
 	content := `
 agent: agents/test.md
 `
@@ -1100,10 +1308,9 @@ agent: agents/test.md
 	path := filepath.Join(dir, "test.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	h, err := Load(path)
-	require.NoError(t, err)
-	assert.Empty(t, h.Role)
-	assert.Empty(t, h.Slug)
+	_, err := Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "role field is required")
 }
 
 func TestValidate_RoleValid(t *testing.T) {
@@ -1131,14 +1338,14 @@ func TestValidate_RoleDoubleHyphen(t *testing.T) {
 
 func TestValidate_SlugValid(t *testing.T) {
 	for _, slug := range []string{"fullsend-ai-triage", "Custom_App", "a1"} {
-		h := &Harness{Agent: "agents/test.md", Slug: slug}
+		h := &Harness{Agent: "agents/test.md", Role: "test", Slug: slug}
 		require.NoError(t, h.Validate(), "slug %q should be valid", slug)
 	}
 }
 
 func TestValidate_SlugInvalid(t *testing.T) {
 	for _, slug := range []string{"-slug", "slug!name", "my slug"} {
-		h := &Harness{Agent: "agents/test.md", Slug: slug}
+		h := &Harness{Agent: "agents/test.md", Role: "test", Slug: slug}
 		err := h.Validate()
 		require.Error(t, err, "slug %q should be invalid", slug)
 		assert.Contains(t, err.Error(), "slug")
@@ -1193,6 +1400,7 @@ func TestLoadRaw_FileNotFound(t *testing.T) {
 func TestLoadWithOpts_AppliesForgeResolution(t *testing.T) {
 	content := `
 agent: agents/test.md
+role: test
 pre_script: scripts/pre-common.sh
 skills:
   - skills/common
@@ -1216,6 +1424,7 @@ forge:
 func TestLoadWithOpts_NoForge_SameAsLoad(t *testing.T) {
 	content := `
 agent: agents/test.md
+role: test
 pre_script: scripts/pre.sh
 `
 	dir := t.TempDir()
@@ -1230,6 +1439,7 @@ pre_script: scripts/pre.sh
 func TestLoadWithOpts_EmptyPlatform_PreservesForge(t *testing.T) {
 	content := `
 agent: agents/test.md
+role: test
 forge:
   github:
     pre_script: scripts/pre-gh.sh
@@ -1246,6 +1456,7 @@ forge:
 func TestLoadWithOpts_InvalidPlatform(t *testing.T) {
 	content := `
 agent: agents/test.md
+role: test
 forge:
   github:
     pre_script: scripts/pre-gh.sh
@@ -1264,6 +1475,7 @@ func TestLoadWithOpts_ValidationAfterForge(t *testing.T) {
 	// The validation_loop in the forge block replaces the top-level one.
 	content := `
 agent: agents/test.md
+role: test
 forge:
   github:
     validation_loop:
@@ -1283,6 +1495,7 @@ forge:
 func TestLoadWithOpts_PlatformNotConfigured(t *testing.T) {
 	content := `
 agent: agents/test.md
+role: test
 forge:
   github:
     pre_script: scripts/pre-gh.sh
@@ -1301,6 +1514,7 @@ forge:
 func TestValidate_AllowRuntimeFetchWithoutAllowedResources(t *testing.T) {
 	h := &Harness{
 		Agent:             "agents/code.md",
+		Role:              "test",
 		AllowRuntimeFetch: true,
 	}
 	err := h.Validate()
@@ -1312,6 +1526,7 @@ func TestValidate_MaxRuntimeFetchesWithoutAllowRuntimeFetch(t *testing.T) {
 	v := 5
 	h := &Harness{
 		Agent:             "agents/code.md",
+		Role:              "test",
 		MaxRuntimeFetches: &v,
 	}
 	err := h.Validate()
@@ -1323,6 +1538,7 @@ func TestValidate_MaxRuntimeFetchesNegative(t *testing.T) {
 	v := -1
 	h := &Harness{
 		Agent:                  "agents/code.md",
+		Role:                   "test",
 		AllowRuntimeFetch:      true,
 		AllowedRemoteResources: []string{"https://github.com/fullsend-ai/library/"},
 		MaxRuntimeFetches:      &v,
@@ -1336,6 +1552,7 @@ func TestValidate_MaxRuntimeFetchesExceedsUpperBound(t *testing.T) {
 	v := 1001
 	h := &Harness{
 		Agent:                  "agents/code.md",
+		Role:                   "test",
 		AllowRuntimeFetch:      true,
 		AllowedRemoteResources: []string{"https://github.com/fullsend-ai/library/"},
 		MaxRuntimeFetches:      &v,
@@ -1349,6 +1566,7 @@ func TestValidate_AllowRuntimeFetchValid(t *testing.T) {
 	v := 5
 	h := &Harness{
 		Agent:                  "agents/code.md",
+		Role:                   "test",
 		AllowRuntimeFetch:      true,
 		MaxRuntimeFetches:      &v,
 		AllowedRemoteResources: []string{"https://github.com/fullsend-ai/library/"},
@@ -1360,6 +1578,7 @@ func TestValidate_AllowRuntimeFetchValid(t *testing.T) {
 func TestValidate_AllowRuntimeFetchDefaultMaxFetches(t *testing.T) {
 	h := &Harness{
 		Agent:                  "agents/code.md",
+		Role:                   "test",
 		AllowRuntimeFetch:      true,
 		AllowedRemoteResources: []string{"https://github.com/fullsend-ai/library/"},
 	}
@@ -1373,6 +1592,7 @@ func TestValidate_MaxRuntimeFetchesExplicitZero(t *testing.T) {
 	v := 0
 	h := &Harness{
 		Agent:                  "agents/code.md",
+		Role:                   "test",
 		AllowRuntimeFetch:      true,
 		AllowedRemoteResources: []string{"https://github.com/fullsend-ai/library/"},
 		MaxRuntimeFetches:      &v,
@@ -1385,6 +1605,7 @@ func TestValidate_MaxRuntimeFetchesExplicitZero(t *testing.T) {
 func TestLoad_RuntimeFetchFields(t *testing.T) {
 	content := `
 agent: agents/code.md
+role: test
 allowed_remote_resources:
   - https://github.com/fullsend-ai/library/
 allow_runtime_fetch: true
@@ -1406,6 +1627,7 @@ max_runtime_fetches: 15
 func TestLoad_RuntimeFetchFieldsOmitted(t *testing.T) {
 	content := `
 agent: agents/code.md
+role: test
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "minimal.yaml")
@@ -1425,4 +1647,21 @@ func TestValidForgePlatform(t *testing.T) {
 	assert.True(t, ValidForgePlatform("gitlab"))
 	assert.False(t, ValidForgePlatform("bitbucket"))
 	assert.False(t, ValidForgePlatform(""))
+}
+
+func TestEnvConfig_ParsesFromYAML(t *testing.T) {
+	yaml := `
+agent: agents/test.md
+role: test
+env:
+  runner:
+    FOO: bar
+  sandbox:
+    BAZ: qux
+`
+	h, err := parseRaw([]byte(yaml))
+	require.NoError(t, err)
+	require.NotNil(t, h.Env)
+	assert.Equal(t, map[string]string{"FOO": "bar"}, h.Env.Runner)
+	assert.Equal(t, map[string]string{"BAZ": "qux"}, h.Env.Sandbox)
 }

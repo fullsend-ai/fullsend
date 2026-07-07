@@ -21,7 +21,7 @@
 | `cloudflare_site/wrangler.toml` | Worker name placeholder, `assets.directory = public`, SPA `not_found_handling`, `preview_urls` |
 | `cloudflare_site/public/.gitkeep` | Keeps `public/` in git; CI overwrites with artifact contents |
 | `.github/workflows/mindmap.yml` | **Removed** (replaced by `site-build.yml` / `site-deploy.yml`) |
-| `docs/site-deployment.md` | Operator runbook: Worker, token scopes (Workers Edit), secrets/variables, fork policy, troubleshooting |
+| `docs/web-admin-deployment.md` | Operator runbook: Worker, token scopes (Workers Edit), secrets/variables, fork policy, troubleshooting |
 
 ---
 
@@ -136,11 +136,11 @@ git commit -m "ci: drop GitHub Pages workflow for documentation site"
 
 **Files:**
 
-- Create: `docs/site-deployment.md`
+- Create: `docs/web-admin-deployment.md`
 
 - [ ] **Step 1: Add the runbook**
 
-Create `docs/site-deployment.md` with the following sections (adjust org/repo names when copying for upstream):
+Create `docs/web-admin-deployment.md` with the following sections (adjust org/repo names when copying for upstream):
 
 1. **Overview** — Link to the design spec `docs/superpowers/specs/2026-04-09-site-cloudflare-pages-design.md` and summarize **`Build Site`** / **`Deploy Site`** (Workers + static assets).
 2. **Cloudflare setup**
@@ -168,7 +168,7 @@ Create `docs/site-deployment.md` with the following sections (adjust org/repo na
 - [ ] **Step 2: Commit**
 
 ```bash
-git add docs/site-deployment.md
+git add docs/web-admin-deployment.md
 git commit -m "docs: add documentation site Cloudflare operator runbook"
 ```
 
@@ -178,7 +178,7 @@ git commit -m "docs: add documentation site Cloudflare operator runbook"
 
 **Files:** none (manual)
 
-- [ ] **Step 1: Configure Cloudflare + GitHub** per `docs/site-deployment.md` on your fork.
+- [ ] **Step 1: Configure Cloudflare + GitHub** per `docs/web-admin-deployment.md` on your fork.
 
 - [ ] **Step 2: Push a commit on `main` that touches `web/public/index.html`** (document graph; formerly `docs/mindmap.html`)
 

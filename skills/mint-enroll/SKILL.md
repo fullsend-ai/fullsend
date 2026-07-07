@@ -78,10 +78,12 @@ The fullsend-ai org maintains public GitHub Apps shared across orgs.
 | retro | fullsend-ai-retro | |
 | prioritize | fullsend-ai-prioritize | |
 
-PEM keys are tied to the app, not the org. Secrets use role-only naming
+PEM keys and app IDs are tied to the role, not the org. Secrets use role-only naming
 (`fullsend-{role}-app-pem`) — one secret per role, shared across orgs on the
-mint. PEMs must already exist (from `mint deploy --pem-dir` or
-`fullsend admin install`); enrollment does not create or copy PEM secrets.
+mint. `ROLE_APP_IDS` uses the same model: one GitHub App ID per role (e.g.,
+`coder` → `123456`), shared by all enrolled orgs. PEMs and app IDs must already
+exist (from `mint deploy --pem-dir` or `fullsend admin install`); enrollment
+does not create, copy, or modify PEM secrets or app ID mappings.
 
 Apps must be installed on the target org before the mint can produce tokens.
 An org admin installs via `https://github.com/apps/{slug}/installations/new`
@@ -163,19 +165,10 @@ fullsend mint enroll "$TARGET" \
 
 The CLI performs the following automatically:
 
-1. Discovers the existing mint infrastructure and resolves role→app-id mappings
-2. Updates Cloud Run service env vars (ALLOWED_ORGS, ROLE_APP_IDS) using
-   REVISION-pinned traffic routing
+1. Discovers the existing mint infrastructure and verifies shared role→app-id mappings exist
+2. Updates Cloud Run service env var `ALLOWED_ORGS` using REVISION-pinned traffic routing
 3. Runs post-enrollment verification
 4. Configures WIF provider (shared for per-org, dedicated for per-repo)
-
-**Optional flags:**
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--app-set` | `fullsend-ai` | App set to resolve role→app-id mappings from |
-| `--role-app-ids` | | Explicit JSON map of role→app-id (overrides `--app-set`) |
-| `--roles` | `fullsend,triage,coder,review,retro,prioritize` | Comma-separated roles to enroll |
 
 ### 4. Verify
 
@@ -185,7 +178,7 @@ The CLI runs post-enrollment verification automatically. Check its output for:
   and whether it matches the latest template
 - **ALLOWED_ORGS**: confirms the enrolled org is present in the
   traffic-serving revision's env vars
-- **ROLE_APP_IDS**: confirms all expected role keys are present
+- **ROLE_APP_IDS**: confirms shared role keys (e.g., `coder`, `review`) are configured on the mint
 
 If the CLI reports "Post-write verification FAILED", run `mint status` to
 diagnose:
@@ -198,8 +191,8 @@ Common causes of verification failure:
 
 - **Template/traffic divergence** — traffic routing step didn't complete.
   Re-run enrollment to trigger a new revision cycle.
-- **Missing role keys** — the app set doesn't have all roles. Use
-  `--role-app-ids` to provide explicitly.
+- **Missing shared app IDs** — the mint has no role-keyed `ROLE_APP_IDS` entries.
+  Run `mint deploy --pem-dir` or `fullsend admin install` on the mint project first.
 
 ### 5. Handoff to repo admin
 

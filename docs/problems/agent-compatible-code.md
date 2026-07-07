@@ -57,4 +57,4 @@ When a consumed dependency runs as a container image, the integration boundary i
 - Can gradual typing systems (TypeScript, Python with mypy) provide sufficient safety for agentic development, or do they retain too much of the dynamic language risk?
 - What's the migration path for existing services written in dynamically typed languages? Is there a threshold where rewriting becomes worthwhile?
 - How do we measure "agent compatibility" empirically? Can we compare agent error rates or refactoring success rates across languages?
-- Should consumed dependencies have a "compatibility tier" based on how well-defined their boundaries are, affecting the autonomy level for changes that touch them?
+- Should consumed dependencies have a "compatibility classification" based on how well-defined their boundaries are, affecting the autonomy level for changes that touch them?

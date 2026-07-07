@@ -1,0 +1,39 @@
+{
+  "repo": "fullsend-ai/demo",
+  "entity": {
+    "kind": "change_proposal",
+    "id": 99,
+    "url": "https://github.com/fullsend-ai/demo/pull/99"
+  },
+  "transition": {
+    "kind": "review_submitted",
+    "review": {
+      "state": "changes_requested",
+      "reviewer_id": "fullsend-ai-review[bot]"
+    }
+  },
+  "actor": {
+    "id": "fullsend-ai-review[bot]",
+    "kind": "bot",
+    "role": "write",
+    "is_entity_author": false
+  },
+  "state": {
+    "labels": ["fullsend-fix"],
+    "change_proposal": {
+      "id": 99,
+      "head_repo": "fullsend-ai/demo",
+      "base_repo": "fullsend-ai/demo",
+      "head_ref": "feature/nil-check",
+      "base_ref": "main",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "author_id": "fullsend-ai-coder[bot]",
+      "is_fork": false
+    }
+  },
+  "source": {
+    "system": "github",
+    "raw_type": "pull_request_review",
+    "raw_action": "submitted"
+  }
+}

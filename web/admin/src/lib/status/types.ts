@@ -1,8 +1,4 @@
-export type LayerStatus =
-  | "not_installed"
-  | "installed"
-  | "degraded"
-  | "unknown";
+export type LayerStatus = "not_installed" | "installed" | "degraded" | "unknown";
 
 export type LayerReport = {
   name: string;

@@ -38,14 +38,9 @@ inputs:
     default: ""
   mint-url:
     description: >-
-      Mint service URL for on-demand status comment tokens. When set, the
-      binary mints a fresh short-lived token before each status API call
-      instead of using a static status-token.
-    default: ""
-  status-token:
-    description: >-
-      DEPRECATED — use mint-url instead. Static GitHub token for status
-      comments. Ignored when mint-url is set.
+      Mint service URL for on-demand GitHub App tokens. Used for both
+      status comment tokens and agent runtime tokens (GH_TOKEN,
+      PUSH_TOKEN, REVIEW_TOKEN) minted by mintAgentToken().
     default: ""
 
 runs:
@@ -81,7 +76,7 @@ runs:
           done
         }
 
-        # Use vendored binary if present (placed by fullsend admin install --vendor-fullsend-binary).
+        # Use vendored binary if present (placed by fullsend admin install --vendor).
         # Per-org mode stores it at bin/fullsend (in .fullsend config repo);
         # per-repo mode stores it at .fullsend/bin/fullsend (in the target repo).
         # GitHub Contents API does not preserve the executable bit, so check -f not -x.
@@ -234,7 +229,7 @@ runs:
 
     - name: Set up Go for source build
       if: steps.detect.outputs.install-method == 'source'
-      uses: actions/setup-go@v6
+      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
       with:
         go-version-file: ${{ runner.temp }}/fullsend-src/go.mod
         cache-dependency-path: ${{ runner.temp }}/fullsend-src/go.sum
@@ -258,7 +253,7 @@ runs:
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y podman skopeo
+        sudo apt-get install -y podman
         podman --version
 
     - name: Configure rootless Podman
@@ -271,84 +266,25 @@ runs:
         podman info
         systemctl --user start podman.socket
 
-    - name: Set OpenShell version
+    - name: Configure OpenShell gateway
       shell: bash
       run: |
-        echo "OPENSHELL_VERSION=0.0.54" >> "${GITHUB_ENV}"
-        # SHA corresponding to 0.0.54
-        echo "OPENSHELL_SHA=79aa355dd008e496a7d8f97b361a7b2866066fbc" >> "${GITHUB_ENV}"
-
-    - name: Install OpenShell CLI
-      shell: bash
-      run: |
+        source "$GITHUB_ACTION_PATH/.github/scripts/openshell-version.sh"
         mkdir -p $HOME/.config/openshell/
         cat > $HOME/.config/openshell/gateway.env << EOF
         OPENSHELL_BIND_ADDRESS=0.0.0.0
         EOF
+        cat > $HOME/.config/openshell/gateway.toml << EOF
+        [openshell]
+        version = 1
 
-        curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/${OPENSHELL_SHA}/install.sh | OPENSHELL_VERSION=v${OPENSHELL_VERSION} sh
-        openshell --version
+        [openshell.gateway]
+        supervisor_image = "ghcr.io/nvidia/openshell/supervisor:${OPENSHELL_VERSION}"
+        EOF
 
-    - name: Restore cached sandbox image
-      id: sandbox-cache
-      uses: actions/cache/restore@v4
-      with:
-        path: /tmp/sandbox-image.tar
-        key: sandbox-image-${{ runner.os }}-${{ runner.arch }}-${{ env.FULLSEND_SANDBOX_IMAGE || 'ghcr.io/fullsend-ai/fullsend-code:latest' }}
-        restore-keys: |
-          sandbox-image-${{ runner.os }}-${{ runner.arch }}-
-
-    - name: Load cached sandbox image
-      if: steps.sandbox-cache.outputs.cache-hit == 'true'
+    - name: Install OpenShell CLI
       shell: bash
-      run: podman load -i /tmp/sandbox-image.tar || echo "::warning::Cached image load failed; will pull fresh"
-
-    - name: Pre-pull sandbox image
-      id: sandbox-pull
-      shell: bash
-      run: |
-        IMAGE="${FULLSEND_SANDBOX_IMAGE:-ghcr.io/fullsend-ai/fullsend-code:latest}"
-        echo "Pre-pulling sandbox image: ${IMAGE}"
-
-        LOCAL_DIGEST="$(podman image inspect --format '{{.Digest}}' -- "${IMAGE}" 2>/dev/null || true)"
-
-        if [[ -n "${LOCAL_DIGEST}" ]]; then
-          # Check remote digest without pulling (~1s HEAD request).
-          REMOTE_DIGEST="$(skopeo inspect --no-tags --format '{{.Digest}}' "docker://${IMAGE}" 2>/dev/null || true)"
-          if [[ -z "${REMOTE_DIGEST}" ]]; then
-            echo "Could not fetch remote digest; falling through to pull"
-          elif [[ "${LOCAL_DIGEST}" == "${REMOTE_DIGEST}" ]]; then
-            echo "Local image is current (digest ${LOCAL_DIGEST:0:19}…); skipping pull"
-            exit 0
-          else
-            echo "Digest mismatch (local=${LOCAL_DIGEST:0:19}… remote=${REMOTE_DIGEST:0:19}…); pulling"
-          fi
-        fi
-
-        timeout 300 podman pull -- "${IMAGE}" || echo "::warning::Image pre-pull failed; sandbox create will pull on demand"
-        PULLED_DIGEST="$(podman image inspect --format '{{.Digest}}' -- "${IMAGE}" 2>/dev/null || true)"
-        if [[ "${LOCAL_DIGEST}" != "${PULLED_DIGEST}" ]]; then
-          echo "changed=true" >> "${GITHUB_OUTPUT}"
-        fi
-
-    - name: Save sandbox image for cache
-      if: steps.sandbox-cache.outputs.cache-hit != 'true' || steps.sandbox-pull.outputs.changed == 'true'
-      shell: bash
-      run: |
-        IMAGE="${FULLSEND_SANDBOX_IMAGE:-ghcr.io/fullsend-ai/fullsend-code:latest}"
-        if podman image exists -- "${IMAGE}"; then
-          rm -f /tmp/sandbox-image.tar
-          podman save -o /tmp/sandbox-image.tar -- "${IMAGE}"
-        else
-          echo "::warning::Image not available to cache"
-        fi
-
-    - name: Update sandbox image cache
-      if: steps.sandbox-cache.outputs.cache-hit != 'true' || steps.sandbox-pull.outputs.changed == 'true'
-      uses: actions/cache/save@v4
-      with:
-        path: /tmp/sandbox-image.tar
-        key: sandbox-image-${{ runner.os }}-${{ runner.arch }}-${{ env.FULLSEND_SANDBOX_IMAGE || 'ghcr.io/fullsend-ai/fullsend-code:latest' }}
+      run: "$GITHUB_ACTION_PATH/.github/scripts/install-openshell.sh"
 
     - name: Install validation dependencies
       shell: bash
@@ -356,7 +292,7 @@ runs:
 
     - name: Set up Go for target repo pre-commit hooks
       if: hashFiles(format('{0}/go.mod', inputs.target-repo)) != ''
-      uses: actions/setup-go@v6
+      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
       with:
         go-version-file: ${{ inputs.target-repo }}/go.mod
         cache: false
@@ -368,16 +304,13 @@ runs:
         AGENT: ${{ inputs.agent }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
         TARGET_REPO: ${{ inputs.target-repo }}
+        GH_TOKEN: ${{ inputs.github_token }}
         STATUS_RUN_URL: ${{ inputs.run-url }}
         STATUS_REPO: ${{ inputs.status-repo }}
         STATUS_NUMBER: ${{ inputs.status-number }}
         MINT_URL: ${{ inputs.mint-url }}
-        STATUS_TOKEN: ${{ inputs.status-token }}
       run: |
         set -euo pipefail
-        if [[ -n "${STATUS_TOKEN}" ]]; then
-          echo "::add-mask::${STATUS_TOKEN}"
-        fi
         FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
         TARGET_REPO="${TARGET_REPO:-${GITHUB_WORKSPACE}/target-repo}"
         mkdir -p "${GITHUB_WORKSPACE}/output"
@@ -391,26 +324,23 @@ runs:
           if [[ -n "${STATUS_RUN_URL}" ]]; then
             STATUS_FLAGS+=(--run-url "${STATUS_RUN_URL}")
           fi
-          if [[ -n "${MINT_URL}" ]]; then
-            STATUS_FLAGS+=(--mint-url "${MINT_URL}")
-          fi
-          if [[ -n "${STATUS_TOKEN}" ]]; then
-            echo "::warning::status-token is deprecated; use mint-url instead"
-            STATUS_FLAGS+=(--status-token "${STATUS_TOKEN}")
-          fi
+        fi
+        MINT_FLAGS=()
+        if [[ -n "${MINT_URL}" ]]; then
+          MINT_FLAGS+=(--mint-url "${MINT_URL}")
         fi
         fullsend run "${AGENT}" \
           --fullsend-dir "${FULLSEND_DIR}" \
           --output-dir "${GITHUB_WORKSPACE}/output" \
           --target-repo "${TARGET_REPO}" \
-          "${STATUS_FLAGS[@]+"${STATUS_FLAGS[@]}"}"
+          "${STATUS_FLAGS[@]+"${STATUS_FLAGS[@]}"}" \
+          "${MINT_FLAGS[@]+"${MINT_FLAGS[@]}"}"
 
     - name: Finalize orphaned status comment
-      if: always() && inputs.agent != '__install_only__' && inputs.status-repo != '' && inputs.status-number != '' && (inputs.mint-url != '' || inputs.status-token != '')
+      if: always() && inputs.agent != '__install_only__' && inputs.status-repo != '' && inputs.status-number != '' && inputs.mint-url != ''
       shell: bash
       env:
         MINT_URL: ${{ inputs.mint-url }}
-        STATUS_TOKEN: ${{ inputs.status-token }}
         AGENT: ${{ inputs.agent }}
         STATUS_REPO: ${{ inputs.status-repo }}
         STATUS_NUMBER: ${{ inputs.status-number }}
@@ -420,19 +350,12 @@ runs:
         JOB_STATUS: ${{ job.status }}
       run: |
         set -euo pipefail
-        if [[ -n "${STATUS_TOKEN}" ]]; then
-          echo "::add-mask::${STATUS_TOKEN}"
-        fi
         # When the fullsend process is hard-killed (SIGKILL, OOM, segfault),
         # the deferred PostCompletion call never runs and the status comment
         # remains in "Started" state. This step runs unconditionally (if:
         # always()) to detect and finalize orphaned comments. See #2149.
         RECONCILE_FLAGS=(--repo "${STATUS_REPO}" --number "${STATUS_NUMBER}" --run-id "${RUN_ID}")
-        if [[ -n "${MINT_URL}" ]]; then
-          RECONCILE_FLAGS+=(--mint-url "${MINT_URL}" --role "${AGENT}")
-        elif [[ -n "${STATUS_TOKEN}" ]]; then
-          RECONCILE_FLAGS+=(--token "${STATUS_TOKEN}")
-        fi
+        RECONCILE_FLAGS+=(--mint-url "${MINT_URL}" --role "${AGENT}")
         if [[ -n "${RUN_URL}" ]]; then
           RECONCILE_FLAGS+=(--run-url "${RUN_URL}")
         fi
@@ -448,7 +371,7 @@ runs:
 
     - name: Upload fullsend artifacts
       if: always() && inputs.agent != '__install_only__'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: fullsend-${{ inputs.agent }}
         path: ${{ github.workspace }}/output

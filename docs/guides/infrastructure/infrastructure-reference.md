@@ -1,10 +1,10 @@
 # Infrastructure Reference
 
-This guide provides implementation details for fullsend's infrastructure components: the OIDC token mint, Workload Identity Federation (WIF), and secrets deployment. For basic installation instructions, see the [Installation Guide](../../reference/installation.md).
+This guide provides implementation details for fullsend's infrastructure components: the OIDC token mint, Workload Identity Federation (WIF), and secrets deployment. For basic installation instructions, see the [Getting Started guides](../getting-started/).
 
 ## Token Mint (OIDC) — GCF Cloud Function
 
-> Managed by: `fullsend mint deploy`, `fullsend mint enroll`, `fullsend mint unenroll`, `fullsend mint status`, `fullsend mint token`
+> Managed by: `fullsend mint deploy`, `fullsend mint enroll`, `fullsend mint unenroll`, `fullsend mint status`, `fullsend mint add-role`, `fullsend mint remove-role`, `fullsend mint token`
 
 The mint is a GCP Cloud Function that exchanges GitHub OIDC tokens for scoped GitHub App installation tokens. This eliminates long-lived PATs from the system.
 
@@ -36,9 +36,11 @@ The mint is a GCP Cloud Function that exchanges GitHub OIDC tokens for scoped Gi
 │  │                                                   │           │
 │  │  1. Prevalidate OIDC JWT                          │           │
 │  │     ├─ Check iss == token.actions.githubusercontent.com      │
-│  │     ├─ Extract repository_owner → must be in ALLOWED_ORGS   │
-│  │     └─ Validate job_workflow_ref against                     │
-│  │        ALLOWED_WORKFLOW_FILES (fail-closed)                  │
+│  │     ├─ Extract repository_owner → ALLOWED_ORGS check       │
+│  │     │   (explicit org list, or * for public mint mode)       │
+│  │     └─ Validate job_workflow_ref provenance                  │
+│  │        (tight: .fullsend / upstream / per-repo;              │
+│  │         public: upstream fullsend-ai/fullsend only)          │
 │  │                                                   │           │
 │  │  2. STS Token Exchange                            │           │
 │  │     ├─ POST securitytoken.googleapis.com          │           │
@@ -75,7 +77,8 @@ The mint is a GCP Cloud Function that exchanges GitHub OIDC tokens for scoped Gi
 
 ### Role Permissions Matrix
 
-The mint enforces minimum permission sets per role. Tokens cannot exceed these scopes:
+The mint enforces minimum permission sets per role. Tokens cannot exceed these scopes.
+Custom roles can be registered via the standalone mint's `CUSTOM_ROLE_PERMISSIONS` env var — see the [standalone mint guide](standalone-mint.md#custom-role-permissions) for details.
 
 | Role | contents | pull_requests | issues | actions | checks | workflows | actions_variables | organization_projects | metadata |
 |------|----------|---------------|--------|---------|--------|-----------|-------------------|-----------------------|----------|
@@ -89,18 +92,37 @@ The mint enforces minimum permission sets per role. Tokens cannot exceed these s
 
 ### Mint Security Controls
 
-- **ALLOWED_ORGS**: Allowlist of GitHub orgs that can mint tokens
-- **ALLOWED_WORKFLOW_FILES**: Fail-closed allowlist of workflow filenames permitted to call mint
-- **job_workflow_ref validation**: Only `.fullsend` or `fullsend-ai/fullsend` workflow refs accepted
+Mode is inferred from `ALLOWED_ORGS` — there is no separate trust-mode flag. See [ADR 0059](../../ADRs/0059-public-mint-mode-with-wildcard-allowlists.md) for the full decision.
+
+**Tight mint** (default): explicit comma-separated org list (no `*`).
+
+- **ALLOWED_ORGS**: Only listed orgs may mint tokens
+- **ALLOWED_WORKFLOW_FILES**: Fail-closed allowlist of workflow filenames (use `*` to allow any basename)
+- **job_workflow_ref validation**: `.fullsend` config repo, `fullsend-ai/fullsend` upstream reusables, or registered per-repo workflows (`PER_REPO_WIF_REPOS`)
 - **PER_REPO_WIF_REPOS**: Repos using dedicated WIF providers (repo-scoped isolation)
-- **Minimum permissions**: Tokens are scoped to the role's minimum permission set, not the App's full permissions
+
+**Public mint**: `ALLOWED_ORGS` is `*`.
+
+- **ALLOWED_ORGS**: Any org may mint (cross-org isolation still enforced at installation lookup)
+- **job_workflow_ref validation**: Only `fullsend-ai/fullsend/.github/workflows/` (any ref — tag, branch, or SHA)
+- **PER_REPO_WIF_REPOS**: Leave unset or empty (GCF mint: all repos use `WIF_PROVIDER_NAME`)
+- **ALLOWED_WORKFLOW_FILES**: Basename gate is not applied in public mode
+- **mint enroll**: Succeeds without changing mint configuration (org registration is unnecessary); **mint unenroll** for individual orgs is rejected
+
+**GCF mint (STS verification) only:** The hosted Cloud Function uses `STSVerifier`, which exchanges each OIDC JWT with GCP STS against `WIF_PROVIDER_NAME`. A permissive WIF provider (CEL that does not enumerate orgs/repos) must back that env var, or STS will reject tokens from orgs outside the provider's `attributeCondition` even when `mintcore` prevalidation passes. Use `mint deploy --public` to provision `ALLOWED_ORGS=*` and permissive WIF together; tight-mode `mint deploy` (default) and `mint enroll` continue to use org-scoped WIF. Redeploys must match the mint mode (`--public` for public, omit for tight).
+
+**Standalone mint (JWKS verification):** `cmd/mint` uses `JWKSVerifier` — direct GitHub JWKS signature checks with no STS or WIF. Public mode is fully determined by `ALLOWED_ORGS` and workflow provenance in `mintcore`; WIF provisioning is not applicable.
+
+- **Minimum permissions**: Tokens are scoped to the role's minimum permission set, not the App's full permissions (both modes)
 
 ### Multi-Org Support
 
 A single mint instance can serve multiple orgs:
-- `EnsureOrgInMint()` additively appends orgs to `ALLOWED_ORGS` env var
-- `ROLE_APP_IDS` maps `{org}/{role}` to GitHub App IDs
-- Updates are applied atomically by redeploying the function with updated env vars
+
+- **Tight mode:** `EnsureOrgInMint()` additively appends orgs to `ALLOWED_ORGS`
+- **Public mode:** `ALLOWED_ORGS=*` — no per-org registration required; rollback to tight mode is config-only (replace `*` with an explicit org list)
+- `ROLE_APP_IDS` maps `{role}` to GitHub App IDs (shared across all enrolled orgs)
+- Org isolation at token issuance uses the OIDC `repository_owner` claim and GitHub App installation lookup — not per-org app ID entries
 
 ### Status Endpoint
 
@@ -185,7 +207,7 @@ During installation, the GCF provisioner creates:
 
 ## GitHub Secrets & Variables Deployment
 
-> Individual values can be updated with `fullsend github set <target> <key> <value>`. See [Setting up with pre-provisioned infrastructure](../../reference/github-setup.md) for the full GitHub management guide.
+> Individual values can be updated with `fullsend github set <target> <key> <value>`. See [Operations](../getting-started/operations.md#updating-configuration-values) for the full configuration management guide.
 
 Secrets and variables are deployed at different scopes depending on the installation mode.
 
@@ -303,7 +325,8 @@ The GCF provisioner avoids redundant Cloud Function deployments by computing a S
 
 ## See Also
 
-- [Installation Guide](../../reference/installation.md) — Setup instructions (end-user and all-in-one)
+- [Getting Started](../getting-started/) — Standard per-repo installation
 - [Mint service administration](mint-administration.md) — Deploying and managing the token mint
-- [Setting up with pre-provisioned infrastructure](../../reference/github-setup.md) — GitHub-only setup guide
+- [Standalone Mint](standalone-mint.md) — Running the mint without GCP, with custom agent roles
+- [Advanced setup](./advanced-setup.md) — Alternative installation paths and setup flags
 - [Running agents locally](../user/running-agents-locally.md) — Run agents locally (binary download, GCP credentials, per-agent env vars)

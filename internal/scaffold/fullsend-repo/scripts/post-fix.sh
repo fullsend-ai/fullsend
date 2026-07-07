@@ -6,23 +6,25 @@
 # security-sensitive component in the fix pipeline.
 #
 # Security layers (defense-in-depth):
-#   - Protected-path check — reject if agent touched forbidden paths
 #   - Authoritative secret scan — final gate before any push
+#   - Auto-install pre-commit tool deps (from .pre-commit-tools.yaml)
 #   - Authoritative pre-commit — run repo hooks on changed files
 #   - Branch validation — refuse to push main/master
 #   - Token isolation — PUSH_TOKEN never enters the sandbox
 #
+# Protected-path enforcement lives in post-review.sh: the review agent
+# cannot approve PRs that touch sensitive paths (e.g. .github/, CODEOWNERS,
+# agents/). The fix agent is free to propose changes to any path.
+#
 # Steps:
 #   0. Check for agent commits
-#   1. Protected-path check
-#   2. Authoritative secret scan
-#   3. Install lychee
-#   4. Install uv and uvx
-#   5. Authoritative pre-commit check
-#   6. Push branch
-#   7. Process structured output
-#   8. Iteration-cap warning label
-#   9. Summary
+#   1. Authoritative secret scan
+#   2. Auto-install pre-commit tool deps (from .pre-commit-tools.yaml)
+#   3. Authoritative pre-commit check
+#   4. Push branch
+#   5. Process structured output
+#   6. Iteration-cap warning label
+#   7. Summary
 #
 # After pushing, this script processes fix-result.json to:
 #   - Post a summary comment on the PR documenting fixes and disagreements
@@ -55,31 +57,8 @@ is_bot_user() {
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-PROTECTED_PATHS=(
-  ".claude/"
-  ".cursor/"
-  ".gitattributes"
-  ".github/"
-  ".pre-commit-config.yaml"
-  "AGENTS.md"
-  "agents/"
-  "api-servers/"
-  "CLAUDE.md"
-  "CODEOWNERS"
-  "harness/"
-  "plugins/"
-  "policies/"
-  "scripts/"
-  "skills/"
-)
-
 GITLEAKS_VERSION="8.30.1"
 GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
-LYCHEE_VERSION="0.24.2"
-LYCHEE_SHA256_AMD64="1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
-LYCHEE_SHA256_ARM64="91a7bd65685da41b90ccb9bc867a3d649a7818042dae04ff405e55a25bddee4c"
-UV_VERSION="0.11.14"
-UV_SHA256="f3b623eb0e6141a7053d571d59a0bdc341e0f238ea8f5f0b4815ddbec9a2a296"
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -89,7 +68,7 @@ RUN_DIR="$(pwd)"
 
 if [ "${REPO_DIR}" != "." ]; then
   if [ ! -d "${REPO_DIR}" ]; then
-    echo "::error::Extracted repo not found at ${REPO_DIR}"
+    echo "::error::Extracted repo not found at ${REPO_DIR}" >&2
     exit 1
   fi
   cd "${REPO_DIR}"
@@ -145,38 +124,18 @@ else
     || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
 fi
 
-# ---------------------------------------------------------------------------
-# 1. Protected-path check (only if pushing)
-# ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ]; then
   echo "Changed files (agent commits):"
   echo "${CHANGED_FILES}" | sed 's/^/  /'
 
   if [ "${BRANCH_CHANGED_FILES}" != "${CHANGED_FILES}" ]; then
-    echo "Branch-only changed files (merge-base-aware, used for protected-path check):"
+    echo "Branch-only changed files (merge-base-aware, used for pre-commit):"
     echo "${BRANCH_CHANGED_FILES}" | sed 's/^/  /'
   fi
-
-  # Use BRANCH_CHANGED_FILES for the protected-path check. This ensures
-  # that files changed only in upstream (e.g., .github/ workflows modified
-  # on main since the branch was created) are not falsely attributed to
-  # the agent after a rebase.
-  while IFS= read -r file; do
-    [ -z "${file}" ] && continue
-    for pattern in "${PROTECTED_PATHS[@]}"; do
-      if [[ "${file}" == ${pattern}* ]]; then
-        echo "::error::BLOCKED — agent modified protected path: ${pattern}"
-        echo "::error::  ${file}"
-        exit 1
-      fi
-    done
-  done <<< "${BRANCH_CHANGED_FILES}"
-
-  echo "Protected-path check passed"
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Authoritative secret scan (only if pushing)
+# 1. Authoritative secret scan (only if pushing)
 # ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ]; then
   echo "Running authoritative secret scan on agent's commit..."
@@ -199,7 +158,7 @@ if [ "${NO_PUSH}" = "false" ]; then
   echo "Secret scan passed — no leaks in agent's commit(s)"
 
   # -------------------------------------------------------------------------
-  # 2b. Reject Signed-off-by trailers
+  # 1b. Reject Signed-off-by trailers
   #
   # Agents must never produce Signed-off-by trailers. DCO is a human
   # attestation — the DCO app already waives the check for bot authors.
@@ -208,54 +167,43 @@ if [ "${NO_PUSH}" = "false" ]; then
   # -------------------------------------------------------------------------
   echo "Checking for Signed-off-by trailers in agent's commit(s)..."
   if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
-    echo "::error::BLOCKED — agent commit contains a Signed-off-by trailer"
-    echo "::error::Agents must not use 'git commit -s' or append Signed-off-by trailers."
-    echo "::error::DCO is a human attestation; the DCO app waives the check for bots."
+    echo "::error::BLOCKED — agent commit contains a Signed-off-by trailer" >&2
+    echo "::error::Agents must not use 'git commit -s' or append Signed-off-by trailers." >&2
+    echo "::error::DCO is a human attestation; the DCO app waives the check for bots." >&2
     exit 1
   fi
   echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Install lychee (for pre-commit markdown link checking)
+# 2. Auto-install pre-commit tool dependencies
 # ---------------------------------------------------------------------------
-if ! command -v lychee >/dev/null 2>&1; then
-  echo "Installing lychee v${LYCHEE_VERSION}..."
-  mkdir -p "${HOME}/.local/bin"
-  case "$(uname -m)" in
-    x86_64)  LY_TRIPLE="x86_64-unknown-linux-gnu";  LY_SHA="${LYCHEE_SHA256_AMD64}" ;;
-    aarch64) LY_TRIPLE="aarch64-unknown-linux-gnu"; LY_SHA="${LYCHEE_SHA256_ARM64}" ;;
-    *) echo "::error::Unsupported architecture for lychee: $(uname -m)"; exit 1 ;;
-  esac
-  curl -fsSL \
-    "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-${LY_TRIPLE}.tar.gz" \
-    -o /tmp/lychee.tar.gz \
-    && echo "${LY_SHA}  /tmp/lychee.tar.gz" | sha256sum -c - \
-    && tar xzf /tmp/lychee.tar.gz -C /tmp \
-    && mv "/tmp/lychee-${LY_TRIPLE}/lychee" "${HOME}/.local/bin/" \
-    && rm -rf /tmp/lychee.tar.gz "/tmp/lychee-${LY_TRIPLE}"
-  export PATH="${HOME}/.local/bin:${PATH}"
+SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RESOLVE_SCRIPT="${SCRIPT_DIR_POST}/resolve-precommit-tools.py"
+INSTALL_SCRIPT="${SCRIPT_DIR_POST}/install-precommit-tools.sh"
+
+if [ -f .pre-commit-config.yaml ] \
+   && [ -f "${RESOLVE_SCRIPT}" ] \
+   && [ -f "${INSTALL_SCRIPT}" ]; then
+  MANIFEST="$(mktemp)"
+  LOCAL_REG="$(mktemp)"
+  RESOLVE_ARGS=(".")
+  if git show "origin/${TARGET_BRANCH}:.pre-commit-tools.yaml" > "${LOCAL_REG}" 2>/dev/null; then
+    RESOLVE_ARGS+=("--local-registry" "${LOCAL_REG}")
+  fi
+  if python3 "${RESOLVE_SCRIPT}" "${RESOLVE_ARGS[@]}" > "${MANIFEST}"; then
+    if [ -s "${MANIFEST}" ] && jq -e '.tools | length > 0' "${MANIFEST}" >/dev/null 2>&1; then
+      bash "${INSTALL_SCRIPT}" "${MANIFEST}"
+    fi
+  else
+    echo "::warning::Pre-commit tool resolution failed — continuing without auto-install"
+  fi
+  rm -f "${MANIFEST}" "${LOCAL_REG}"
 fi
+export PATH="${HOME}/.local/bin:${PATH}"
 
 # ---------------------------------------------------------------------------
-# 4. Install uv and uvx (for pre-commit Python tooling)
-# ---------------------------------------------------------------------------
-if ! command -v uvx >/dev/null 2>&1; then
-  echo "Installing uv v${UV_VERSION} (includes uvx)..."
-  mkdir -p "${HOME}/.local/bin"
-  curl -fsSL \
-    "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
-    -o /tmp/uv.tar.gz \
-    && echo "${UV_SHA256}  /tmp/uv.tar.gz" | sha256sum -c - \
-    && tar xzf /tmp/uv.tar.gz -C /tmp \
-    && mv /tmp/uv-x86_64-unknown-linux-gnu/uv "${HOME}/.local/bin/" \
-    && mv /tmp/uv-x86_64-unknown-linux-gnu/uvx "${HOME}/.local/bin/" \
-    && rm -rf /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu
-  export PATH="${HOME}/.local/bin:${PATH}"
-fi
-
-# ---------------------------------------------------------------------------
-# 5. Authoritative pre-commit check (only if pushing)
+# 3. Authoritative pre-commit check (only if pushing)
 # ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
   echo "Running authoritative pre-commit on agent's changed files..."
@@ -268,12 +216,63 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
   fi
 
   if command -v pre-commit >/dev/null 2>&1; then
+    # SYNC: parallel retry block in post-code.sh section 5 — keep structure
+    #       in sync (variable names differ: BRANCH_CHANGED_FILES here vs
+    #       CHANGED_FILES there; SCAN_RANGE scopes differ by design).
     mapfile -t changed_array <<< "${BRANCH_CHANGED_FILES}"
     if pre-commit run --files "${changed_array[@]}"; then
       echo "Pre-commit passed — all hooks clean"
     else
-      echo "::error::BLOCKED — pre-commit hooks failed on agent's changes"
-      exit 1
+      # Single retry only — do not convert to a loop without adding a cap.
+      # Scope detection/staging to changed_array so hooks can't inject files
+      # outside the pre-commit scope into the commit.
+      if git diff --name-only -- "${changed_array[@]}" | grep -q .; then
+        echo "::warning::Pre-commit hooks auto-fixed files — re-staging and retrying"
+        echo "Auto-fixed files:"
+        git diff --name-only -- "${changed_array[@]}" | sed 's/^/  /'
+        git diff --name-only -z -- "${changed_array[@]}" | xargs -0 -r git add --
+        git commit --amend --no-edit
+
+        echo "Re-running secret scan on amended commit..."
+        if ! gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact; then
+          echo "::error::BLOCKED — secret detected in amended commit after auto-fix" >&2
+          exit 1
+        fi
+        if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
+          echo "::error::BLOCKED — amended commit contains a Signed-off-by trailer" >&2
+          exit 1
+        fi
+
+        if [ -n "${MERGE_BASE}" ]; then
+          BRANCH_CHANGED_FILES="$(git diff --name-only "${MERGE_BASE}..HEAD")"
+        else
+          BRANCH_CHANGED_FILES="$(git diff --name-only "origin/${TARGET_BRANCH}..HEAD" 2>/dev/null \
+            || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+        fi
+        if [ -z "${BRANCH_CHANGED_FILES}" ]; then
+          echo "::error::BLOCKED — pre-commit hooks removed all changes; commit is now empty" >&2
+          exit 1
+        fi
+        mapfile -t changed_array <<< "${BRANCH_CHANGED_FILES}"
+        if pre-commit run --files "${changed_array[@]}"; then
+          if git diff --name-only -- "${changed_array[@]}" | grep -q .; then
+            echo "::error::BLOCKED — retry pre-commit left additional unstaged changes" >&2
+            echo "::error::Committed content would diverge from what pre-commit validated." >&2
+            exit 1
+          fi
+          echo "Pre-commit passed after auto-fix re-stage"
+        else
+          echo "::error::BLOCKED — pre-commit hooks still fail after auto-fix" >&2
+          echo "::error::The agent's code does not pass the repo's pre-commit hooks." >&2
+          echo "::error::Fix the issues and re-run, or update the pre-commit config." >&2
+          exit 1
+        fi
+      else
+        echo "::error::BLOCKED — pre-commit hooks failed on agent's changes" >&2
+        echo "::error::The agent's code does not pass the repo's pre-commit hooks." >&2
+        echo "::error::Fix the issues and re-run, or update the pre-commit config." >&2
+        exit 1
+      fi
     fi
   else
     echo "::warning::pre-commit not available — skipping authoritative check"
@@ -281,22 +280,37 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Push branch (only if we have commits)
+# 4. Push branch (only if we have commits)
 # ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ]; then
   git remote set-url origin \
     "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO_FULL_NAME}.git"
 
-  # Plain push (no --force-with-lease). Agents always create new
-  # commits (amend is in disallowedTools), so force-push is unnecessary
-  # and plain push is safer (refuses diverged branches).
+  # Plain push first. Falls back to --force-with-lease when the push
+  # is rejected (non-fast-forward), which happens after a rebase — the
+  # agent rewrote history so the remote branch diverged. force-with-lease
+  # is safe: it still rejects if someone else pushed in the meantime.
   echo "Pushing branch ${BRANCH}..."
-  git push -u origin -- "${BRANCH}" 2>&1
+  PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
+  echo "${PUSH_OUTPUT}"
+
+  if [ "${PUSH_RC}" -ne 0 ]; then
+    if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+      echo "::warning::Plain push failed (non-fast-forward) — retrying with --force-with-lease"
+      if ! git push --force-with-lease -u origin -- "${BRANCH}" 2>&1; then
+        echo "::error::Force-with-lease push also failed"
+        exit 1
+      fi
+    else
+      echo "::error::Push failed with unexpected error"
+      exit 1
+    fi
+  fi
   echo "Branch ${BRANCH} pushed successfully"
 fi
 
 # ---------------------------------------------------------------------------
-# 7. Process structured output (fix-result.json)
+# 5. Process structured output (fix-result.json)
 # ---------------------------------------------------------------------------
 export GH_TOKEN="${PUSH_TOKEN}"
 
@@ -330,7 +344,7 @@ else
     SCAN_DIR="$(mktemp -d)"
     cp "${RESULT_FILE}" "${SCAN_DIR}/fix-result.json"
     if ! gitleaks detect --source "${SCAN_DIR}" --no-git --redact 2>/dev/null; then
-      echo "::error::Secret detected in fix-result.json — refusing to post PR comment"
+      echo "::error::Secret detected in fix-result.json — refusing to post PR comment" >&2
       rm -rf "${SCAN_DIR}"
       exit 1
     fi
@@ -341,14 +355,15 @@ else
   PROCESS_EXIT=0
   python3 "${PROCESS_SCRIPT}" "${RESULT_FILE}" "${REPO_FULL_NAME}" "${PR_NUMBER}" || PROCESS_EXIT=$?
   if [ "${PROCESS_EXIT}" -eq 1 ]; then
-    exit 1  # hard failure (bad input)
+    echo "::error::process-fix-result.py failed with exit code 1 (bad input) for PR #${PR_NUMBER} in ${REPO_FULL_NAME}" >&2
+    exit 1
   elif [ "${PROCESS_EXIT}" -ne 0 ]; then
     echo "::warning::process-fix-result.py exited ${PROCESS_EXIT} — continuing with labels/summary"
   fi
 fi
 
 # ---------------------------------------------------------------------------
-# 8. Iteration-cap warning label
+# 6. Iteration-cap warning label
 # ---------------------------------------------------------------------------
 ITERATION="${FIX_ITERATION:-1}"
 BOT_CAP="${ITERATION_CAP:-5}"
@@ -367,7 +382,7 @@ if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"
 fi
 
 # ---------------------------------------------------------------------------
-# 9. Summary
+# 7. Summary
 # ---------------------------------------------------------------------------
 echo ""
 echo "Fix post-script complete:"

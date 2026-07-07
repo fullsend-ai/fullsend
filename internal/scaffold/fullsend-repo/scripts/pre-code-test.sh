@@ -90,6 +90,8 @@ run_test() {
   local mock_bin
   mock_bin="$(build_mock "${pr_list_output}")"
   local gh_log="${TMPDIR}/gh-calls.log"
+  local gh_output="${TMPDIR}/github-output.txt"
+  : > "${gh_output}"
 
   # Set base env vars for the script.
   local env_cmd=(
@@ -99,6 +101,7 @@ run_test() {
     REPO_FULL_NAME="test-org/test-repo"
     GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
     GH_TOKEN="fake-token"
+    GITHUB_OUTPUT="${gh_output}"
   )
 
   # Add extra env vars if provided (read line-by-line to support values with spaces).
@@ -143,6 +146,8 @@ run_test_stdout() {
 
   local mock_bin
   mock_bin="$(build_mock "${pr_list_output}")"
+  local gh_output="${TMPDIR}/github-output.txt"
+  : > "${gh_output}"
 
   local env_cmd=(
     env
@@ -151,6 +156,7 @@ run_test_stdout() {
     REPO_FULL_NAME="test-org/test-repo"
     GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
     GH_TOKEN="fake-token"
+    GITHUB_OUTPUT="${gh_output}"
   )
 
   if [[ -n "${extra_env}" ]]; then
@@ -191,6 +197,8 @@ run_test_stdout_excludes() {
 
   local mock_bin
   mock_bin="$(build_mock "${pr_list_output}")"
+  local gh_output="${TMPDIR}/github-output.txt"
+  : > "${gh_output}"
 
   local env_cmd=(
     env
@@ -199,6 +207,7 @@ run_test_stdout_excludes() {
     REPO_FULL_NAME="test-org/test-repo"
     GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
     GH_TOKEN="fake-token"
+    GITHUB_OUTPUT="${gh_output}"
   )
 
   if [[ -n "${extra_env}" ]]; then
@@ -373,6 +382,84 @@ run_test_stdout "no-force-reaches-pr-search" \
   "Checking for existing open PRs" \
   0 \
   "COMMENT_BODY=/fs-code"
+
+# --- GITHUB_OUTPUT skip signal tests (issue #1312) ---
+
+# Helper: run pre-code.sh and check GITHUB_OUTPUT contains expected key=value.
+run_test_github_output() {
+  local test_name="$1"
+  local pr_list_output="$2"
+  local expected_output="$3"    # e.g. "skipped=true"
+  local expect_exit="$4"
+  local extra_env="${5:-}"
+
+  local mock_bin
+  mock_bin="$(build_mock "${pr_list_output}")"
+  local gh_output="${TMPDIR}/github-output.txt"
+  : > "${gh_output}"
+
+  local env_cmd=(
+    env
+    PATH="${mock_bin}:${PATH}"
+    ISSUE_NUMBER="42"
+    REPO_FULL_NAME="test-org/test-repo"
+    GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+    GH_TOKEN="fake-token"
+    GITHUB_OUTPUT="${gh_output}"
+  )
+
+  if [[ -n "${extra_env}" ]]; then
+    while IFS= read -r kv; do
+      [[ -n "${kv}" ]] && env_cmd+=("${kv}")
+    done <<< "${extra_env}"
+  fi
+
+  local exit_code=0
+  "${env_cmd[@]}" bash "${PRE_SCRIPT}" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne ${expect_exit} ]]; then
+    echo "FAIL: ${test_name} — expected exit ${expect_exit}, got ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "${expected_output}" "${gh_output}" 2>/dev/null; then
+    echo "FAIL: ${test_name} — expected GITHUB_OUTPUT to contain '${expected_output}'"
+    echo "Actual GITHUB_OUTPUT:"
+    cat "${gh_output}" 2>/dev/null || echo "(empty)"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Existing human PR → GITHUB_OUTPUT must contain skip=true.
+run_test_github_output "skip-output-set-on-existing-pr" \
+  "${HUMAN_PR_JSON}" \
+  "skipped=true" \
+  0
+
+# No existing PRs → GITHUB_OUTPUT must contain skip=false.
+run_test_github_output "skip-output-false-on-no-prs" \
+  "" \
+  "skipped=false" \
+  0
+
+# Force override → GITHUB_OUTPUT must NOT contain skip=true (force exits before PR check).
+run_test_github_output "skip-output-not-set-on-force" \
+  "${HUMAN_PR_JSON}" \
+  "skipped=false" \
+  0 \
+  "CODE_FORCE=true"
+
+# No GH_TOKEN → GITHUB_OUTPUT must contain skip=false (proceeds without PR check).
+run_test_github_output "skip-output-false-on-no-token" \
+  "" \
+  "skipped=false" \
+  0 \
+  "GH_TOKEN="
 
 # --- Summary ---
 

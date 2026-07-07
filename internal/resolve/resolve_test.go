@@ -18,7 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
-	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 )
 
@@ -41,35 +41,30 @@ func forgeSkillCleanURL(path string) string {
 		testForgeOwner, testForgeRepo, testForgeRef, path)
 }
 
-// registerSkillDir sets up a skill directory in the FakeClient and returns the tree hash.
-func registerSkillDir(fc *forge.FakeClient, path string, files map[string][]byte) string {
-	treeHash := fetch.ComputeTreeHash(files)
+// skillRegistry accumulates skill directories and produces a TreeFetchFunc
+// that routes requests by path.
+type skillRegistry struct {
+	dirs map[string]map[string][]byte // path → files
+}
 
-	dirKey := fmt.Sprintf("%s/%s/%s@%s", testForgeOwner, testForgeRepo, path, testForgeRef)
+func newSkillRegistry() *skillRegistry {
+	return &skillRegistry{dirs: make(map[string]map[string][]byte)}
+}
 
-	entries := make([]forge.DirectoryEntry, 0, len(files))
-	for relPath, content := range files {
-		entries = append(entries, forge.DirectoryEntry{
-			Path: relPath,
-			Type: "file",
-			Size: len(content),
-		})
+// register adds a skill directory and returns the tree hash.
+func (r *skillRegistry) register(path string, files map[string][]byte) string {
+	r.dirs[path] = files
+	return fetch.ComputeTreeHash(files)
+}
+
+// fetcher returns a TreeFetchFunc that serves registered directories.
+func (r *skillRegistry) fetcher() gitfetch.TreeFetchFunc {
+	return func(_ context.Context, _, path, _, _ string) (map[string][]byte, error) {
+		if files, ok := r.dirs[path]; ok {
+			return files, nil
+		}
+		return nil, fmt.Errorf("path %q not found in skill registry", path)
 	}
-
-	if fc.DirContents == nil {
-		fc.DirContents = make(map[string][]forge.DirectoryEntry)
-	}
-	if fc.FileContentsRef == nil {
-		fc.FileContentsRef = make(map[string][]byte)
-	}
-
-	fc.DirContents[dirKey] = entries
-	for relPath, content := range files {
-		fileKey := fmt.Sprintf("%s/%s/%s/%s@%s", testForgeOwner, testForgeRepo, path, relPath, testForgeRef)
-		fc.FileContentsRef[fileKey] = content
-	}
-
-	return treeHash
 }
 
 // skillFrontmatter returns SKILL.md content with the given YAML frontmatter fields
@@ -166,8 +161,8 @@ func TestResolveHarness_DependencyField(t *testing.T) {
 		}
 	}))
 
-	fc := &forge.FakeClient{}
-	skillHash := registerSkillDir(fc, "skills/rust", map[string][]byte{"SKILL.md": skillMD})
+	reg := newSkillRegistry()
+	skillHash := reg.register("skills/rust", map[string][]byte{"SKILL.md": skillMD})
 
 	root := t.TempDir()
 	h := &harness.Harness{
@@ -180,7 +175,7 @@ func TestResolveHarness_DependencyField(t *testing.T) {
 	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: root,
 		FetchPolicy:   fetchPolicy,
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 	})
 	require.NoError(t, err)
 	require.Len(t, deps, 3)
@@ -197,8 +192,8 @@ func TestResolveHarness_SkillDirFetchAndCache(t *testing.T) {
 	skillMD := []byte("---\nname: review\n---\n# Code Review skill")
 	helperSh := []byte("#!/bin/bash\necho hello")
 
-	fc := &forge.FakeClient{}
-	treeHash := registerSkillDir(fc, "skills/review", map[string][]byte{
+	reg := newSkillRegistry()
+	treeHash := reg.register("skills/review", map[string][]byte{
 		"SKILL.md":          skillMD,
 		"scripts/helper.sh": helperSh,
 	})
@@ -211,7 +206,7 @@ func TestResolveHarness_SkillDirFetchAndCache(t *testing.T) {
 
 	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: root,
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 	})
 	require.NoError(t, err)
 	require.Len(t, deps, 1)
@@ -238,9 +233,9 @@ func TestResolveHarness_SkillDirFetchAndCache(t *testing.T) {
 func TestResolveHarness_SkillDirCacheHit(t *testing.T) {
 	skillMD := []byte("# Cached skill")
 
-	fc := &forge.FakeClient{}
+	reg := newSkillRegistry()
 	files := map[string][]byte{"SKILL.md": skillMD}
-	treeHash := registerSkillDir(fc, "skills/cached", files)
+	treeHash := reg.register("skills/cached", files)
 
 	root := t.TempDir()
 	// Pre-populate the directory cache.
@@ -254,7 +249,7 @@ func TestResolveHarness_SkillDirCacheHit(t *testing.T) {
 
 	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: root,
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 	})
 	require.NoError(t, err)
 	require.Len(t, deps, 1)
@@ -262,8 +257,8 @@ func TestResolveHarness_SkillDirCacheHit(t *testing.T) {
 }
 
 func TestResolveHarness_SkillDirHashMismatch(t *testing.T) {
-	fc := &forge.FakeClient{}
-	registerSkillDir(fc, "skills/tampered", map[string][]byte{"SKILL.md": []byte("wrong content")})
+	reg := newSkillRegistry()
+	reg.register("skills/tampered", map[string][]byte{"SKILL.md": []byte("wrong content")})
 
 	wrongHash := fetch.ComputeTreeHash(map[string][]byte{"SKILL.md": []byte("expected content")})
 
@@ -274,7 +269,7 @@ func TestResolveHarness_SkillDirHashMismatch(t *testing.T) {
 
 	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: t.TempDir(),
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "integrity check failed")
@@ -300,16 +295,16 @@ func TestResolveHarness_SkillNonForgeURLRejected(t *testing.T) {
 }
 
 func TestResolveHarness_DiamondDependency(t *testing.T) {
-	fc := &forge.FakeClient{}
+	reg := newSkillRegistry()
 
 	sharedMD := []byte("---\ndependencies: []\n---\n# Shared skill")
-	sharedHash := registerSkillDir(fc, "skills/shared", map[string][]byte{"SKILL.md": sharedMD})
+	sharedHash := reg.register("skills/shared", map[string][]byte{"SKILL.md": sharedMD})
 
 	parentMD := skillFrontmatter(
 		fmt.Sprintf("dependencies:\n  - shared#sha256=%s\n", sharedHash),
 		"# Parent skill",
 	)
-	parentHash := registerSkillDir(fc, "skills/parent", map[string][]byte{"SKILL.md": parentMD})
+	parentHash := reg.register("skills/parent", map[string][]byte{"SKILL.md": parentMD})
 
 	root := t.TempDir()
 	h := &harness.Harness{
@@ -322,7 +317,7 @@ func TestResolveHarness_DiamondDependency(t *testing.T) {
 
 	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: root,
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 		MaxDepth:      5,
 	})
 	require.NoError(t, err)
@@ -471,8 +466,8 @@ func TestResolveHarness_OfflineHit(t *testing.T) {
 }
 
 func TestResolveHarness_SkillDirOfflineMiss(t *testing.T) {
-	fc := &forge.FakeClient{}
-	skillHash := registerSkillDir(fc, "skills/offline", map[string][]byte{"SKILL.md": []byte("# Skill")})
+	reg := newSkillRegistry()
+	skillHash := reg.register("skills/offline", map[string][]byte{"SKILL.md": []byte("# Skill")})
 
 	h := &harness.Harness{
 		Skills:                 []string{forgeSkillURL("skills/offline", skillHash)},
@@ -481,7 +476,7 @@ func TestResolveHarness_SkillDirOfflineMiss(t *testing.T) {
 
 	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: t.TempDir(),
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 		FetchPolicy:   fetch.FetchPolicy{Offline: true},
 	})
 	require.Error(t, err)
@@ -489,9 +484,9 @@ func TestResolveHarness_SkillDirOfflineMiss(t *testing.T) {
 }
 
 func TestResolveHarness_SkillDirOfflineHit(t *testing.T) {
-	fc := &forge.FakeClient{}
+	reg := newSkillRegistry()
 	files := map[string][]byte{"SKILL.md": []byte("# Cached skill for offline")}
-	skillHash := registerSkillDir(fc, "skills/offline", files)
+	skillHash := reg.register("skills/offline", files)
 
 	root := t.TempDir()
 	_, err := fetch.CachePutDir(root, forgeSkillCleanURL("skills/offline"), files)
@@ -504,7 +499,7 @@ func TestResolveHarness_SkillDirOfflineHit(t *testing.T) {
 
 	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: root,
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 		FetchPolicy:   fetch.FetchPolicy{Offline: true},
 	})
 	require.NoError(t, err)
@@ -583,12 +578,12 @@ func TestResolveHarness_AuditEntries(t *testing.T) {
 }
 
 func TestResolveHarness_MultipleSkills(t *testing.T) {
-	fc := &forge.FakeClient{}
+	reg := newSkillRegistry()
 	skill1MD := []byte("# Skill one")
 	skill2MD := []byte("# Skill two")
 
-	skill1Hash := registerSkillDir(fc, "skills/one", map[string][]byte{"SKILL.md": skill1MD})
-	skill2Hash := registerSkillDir(fc, "skills/two", map[string][]byte{"SKILL.md": skill2MD})
+	skill1Hash := reg.register("skills/one", map[string][]byte{"SKILL.md": skill1MD})
+	skill2Hash := reg.register("skills/two", map[string][]byte{"SKILL.md": skill2MD})
 
 	root := t.TempDir()
 	h := &harness.Harness{
@@ -603,7 +598,7 @@ func TestResolveHarness_MultipleSkills(t *testing.T) {
 
 	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: root,
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 	})
 	require.NoError(t, err)
 	require.Len(t, deps, 2)
@@ -684,22 +679,22 @@ func TestResolveHarness_EmptyFields(t *testing.T) {
 // TestResolveHarness_TransitiveChain verifies A→B→C transitive resolution:
 // all three skill directories are fetched and added to h.Skills.
 func TestResolveHarness_TransitiveChain(t *testing.T) {
-	fc := &forge.FakeClient{}
+	reg := newSkillRegistry()
 
 	cMD := []byte("# Skill C — leaf node")
-	cHash := registerSkillDir(fc, "skills/c", map[string][]byte{"SKILL.md": cMD})
+	cHash := reg.register("skills/c", map[string][]byte{"SKILL.md": cMD})
 
 	bMD := skillFrontmatter(
 		fmt.Sprintf("dependencies:\n  - c#sha256=%s\n", cHash),
 		"# Skill B",
 	)
-	bHash := registerSkillDir(fc, "skills/b", map[string][]byte{"SKILL.md": bMD})
+	bHash := reg.register("skills/b", map[string][]byte{"SKILL.md": bMD})
 
 	aMD := skillFrontmatter(
 		fmt.Sprintf("dependencies:\n  - b#sha256=%s\n", bHash),
 		"# Skill A",
 	)
-	aHash := registerSkillDir(fc, "skills/a", map[string][]byte{"SKILL.md": aMD})
+	aHash := reg.register("skills/a", map[string][]byte{"SKILL.md": aMD})
 
 	h := &harness.Harness{
 		Skills:                 []string{forgeSkillURL("skills/a", aHash)},
@@ -708,7 +703,7 @@ func TestResolveHarness_TransitiveChain(t *testing.T) {
 
 	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: t.TempDir(),
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 		MaxDepth:      -1,
 	})
 	require.NoError(t, err)
@@ -727,22 +722,22 @@ func TestResolveHarness_TransitiveChain(t *testing.T) {
 // TestResolveHarness_DiamondDedup verifies that a diamond graph (A→C, B→C) resolves C
 // exactly once and produces no duplicate entries in deps or h.Skills.
 func TestResolveHarness_DiamondDedup(t *testing.T) {
-	fc := &forge.FakeClient{}
+	reg := newSkillRegistry()
 
 	cMD := []byte("# Skill C — shared dep")
-	cHash := registerSkillDir(fc, "skills/c", map[string][]byte{"SKILL.md": cMD})
+	cHash := reg.register("skills/c", map[string][]byte{"SKILL.md": cMD})
 
 	aMD := skillFrontmatter(
 		fmt.Sprintf("dependencies:\n  - c#sha256=%s\n", cHash),
 		"# Skill A",
 	)
-	aHash := registerSkillDir(fc, "skills/a", map[string][]byte{"SKILL.md": aMD})
+	aHash := reg.register("skills/a", map[string][]byte{"SKILL.md": aMD})
 
 	bMD := skillFrontmatter(
 		fmt.Sprintf("dependencies:\n  - c#sha256=%s\n", cHash),
 		"# Skill B",
 	)
-	bHash := registerSkillDir(fc, "skills/b", map[string][]byte{"SKILL.md": bMD})
+	bHash := reg.register("skills/b", map[string][]byte{"SKILL.md": bMD})
 
 	h := &harness.Harness{
 		Skills: []string{
@@ -754,7 +749,7 @@ func TestResolveHarness_DiamondDedup(t *testing.T) {
 
 	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: t.TempDir(),
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 		MaxDepth:      -1,
 	})
 	require.NoError(t, err)
@@ -770,7 +765,7 @@ func TestResolveHarness_DiamondDedup(t *testing.T) {
 
 // TestResolveHarness_CycleDetection verifies that A→B→A is rejected with a cycle error.
 func TestResolveHarness_CycleDetection(t *testing.T) {
-	fc := &forge.FakeClient{}
+	reg := newSkillRegistry()
 
 	placeholderHash := strings.Repeat("a", 64)
 
@@ -779,13 +774,13 @@ func TestResolveHarness_CycleDetection(t *testing.T) {
 		fmt.Sprintf("dependencies:\n  - a#sha256=%s\n", placeholderHash),
 		"# Skill B",
 	)
-	bHash := registerSkillDir(fc, "skills/b", map[string][]byte{"SKILL.md": bMD})
+	bHash := reg.register("skills/b", map[string][]byte{"SKILL.md": bMD})
 
 	aMD := skillFrontmatter(
 		fmt.Sprintf("dependencies:\n  - b#sha256=%s\n", bHash),
 		"# Skill A",
 	)
-	aHash := registerSkillDir(fc, "skills/a", map[string][]byte{"SKILL.md": aMD})
+	aHash := reg.register("skills/a", map[string][]byte{"SKILL.md": aMD})
 
 	h := &harness.Harness{
 		Skills:                 []string{forgeSkillURL("skills/a", aHash)},
@@ -794,7 +789,7 @@ func TestResolveHarness_CycleDetection(t *testing.T) {
 
 	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: t.TempDir(),
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 		MaxDepth:      -1,
 	})
 	require.Error(t, err)
@@ -803,22 +798,22 @@ func TestResolveHarness_CycleDetection(t *testing.T) {
 
 // TestResolveHarness_MaxDepthExceeded verifies that a chain A→B→C fails when MaxDepth=1.
 func TestResolveHarness_MaxDepthExceeded(t *testing.T) {
-	fc := &forge.FakeClient{}
+	reg := newSkillRegistry()
 
 	cMD := []byte("# Skill C — should not be reached")
-	cHash := registerSkillDir(fc, "skills/c", map[string][]byte{"SKILL.md": cMD})
+	cHash := reg.register("skills/c", map[string][]byte{"SKILL.md": cMD})
 
 	bMD := skillFrontmatter(
 		fmt.Sprintf("dependencies:\n  - c#sha256=%s\n", cHash),
 		"# Skill B",
 	)
-	bHash := registerSkillDir(fc, "skills/b", map[string][]byte{"SKILL.md": bMD})
+	bHash := reg.register("skills/b", map[string][]byte{"SKILL.md": bMD})
 
 	aMD := skillFrontmatter(
 		fmt.Sprintf("dependencies:\n  - b#sha256=%s\n", bHash),
 		"# Skill A",
 	)
-	aHash := registerSkillDir(fc, "skills/a", map[string][]byte{"SKILL.md": aMD})
+	aHash := reg.register("skills/a", map[string][]byte{"SKILL.md": aMD})
 
 	h := &harness.Harness{
 		Skills:                 []string{forgeSkillURL("skills/a", aHash)},
@@ -827,7 +822,7 @@ func TestResolveHarness_MaxDepthExceeded(t *testing.T) {
 
 	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: t.TempDir(),
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 		MaxDepth:      1,
 	})
 	require.Error(t, err)
@@ -837,16 +832,16 @@ func TestResolveHarness_MaxDepthExceeded(t *testing.T) {
 // TestResolveHarness_MaxResourcesExceeded verifies that resolution stops when the
 // resource count reaches MaxResources.
 func TestResolveHarness_MaxResourcesExceeded(t *testing.T) {
-	fc := &forge.FakeClient{}
+	reg := newSkillRegistry()
 
 	bMD := []byte("# Skill B")
-	bHash := registerSkillDir(fc, "skills/b", map[string][]byte{"SKILL.md": bMD})
+	bHash := reg.register("skills/b", map[string][]byte{"SKILL.md": bMD})
 
 	aMD := skillFrontmatter(
 		fmt.Sprintf("dependencies:\n  - b#sha256=%s\n", bHash),
 		"# Skill A",
 	)
-	aHash := registerSkillDir(fc, "skills/a", map[string][]byte{"SKILL.md": aMD})
+	aHash := reg.register("skills/a", map[string][]byte{"SKILL.md": aMD})
 
 	h := &harness.Harness{
 		Skills:                 []string{forgeSkillURL("skills/a", aHash)},
@@ -856,7 +851,7 @@ func TestResolveHarness_MaxResourcesExceeded(t *testing.T) {
 	// MaxResources=1: A consumes the single slot; B is rejected.
 	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: t.TempDir(),
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 		MaxDepth:      -1,
 		MaxResources:  1,
 	})
@@ -867,16 +862,16 @@ func TestResolveHarness_MaxResourcesExceeded(t *testing.T) {
 // TestResolveHarness_TransitiveNotInAllowlist verifies that a transitive dep whose
 // URL does not match allowed_remote_resources is rejected.
 func TestResolveHarness_TransitiveNotInAllowlist(t *testing.T) {
-	fc := &forge.FakeClient{}
+	reg := newSkillRegistry()
 
 	bMD := []byte("# Skill B")
-	bHash := registerSkillDir(fc, "skills/b", map[string][]byte{"SKILL.md": bMD})
+	bHash := reg.register("skills/b", map[string][]byte{"SKILL.md": bMD})
 
 	aMD := skillFrontmatter(
 		fmt.Sprintf("dependencies:\n  - b#sha256=%s\n", bHash),
 		"# Skill A",
 	)
-	aHash := registerSkillDir(fc, "skills/a", map[string][]byte{"SKILL.md": aMD})
+	aHash := reg.register("skills/a", map[string][]byte{"SKILL.md": aMD})
 
 	h := &harness.Harness{
 		Skills: []string{forgeSkillURL("skills/a", aHash)},
@@ -886,7 +881,7 @@ func TestResolveHarness_TransitiveNotInAllowlist(t *testing.T) {
 
 	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: t.TempDir(),
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 		MaxDepth:      -1,
 	})
 	require.Error(t, err)
@@ -896,10 +891,10 @@ func TestResolveHarness_TransitiveNotInAllowlist(t *testing.T) {
 // TestResolveHarness_TransitiveHashMismatch verifies that a transitive dep whose
 // fetched content does not match the declared tree hash is rejected.
 func TestResolveHarness_TransitiveHashMismatch(t *testing.T) {
-	fc := &forge.FakeClient{}
+	reg := newSkillRegistry()
 
 	// Register B with content that doesn't match the hash A declares.
-	registerSkillDir(fc, "skills/b", map[string][]byte{"SKILL.md": []byte("tampered B content")})
+	reg.register("skills/b", map[string][]byte{"SKILL.md": []byte("tampered B content")})
 
 	// A declares B with the hash of "expected B content".
 	expectedBHash := fetch.ComputeTreeHash(map[string][]byte{"SKILL.md": []byte("expected B content")})
@@ -907,7 +902,7 @@ func TestResolveHarness_TransitiveHashMismatch(t *testing.T) {
 		fmt.Sprintf("dependencies:\n  - b#sha256=%s\n", expectedBHash),
 		"# Skill A",
 	)
-	aHash := registerSkillDir(fc, "skills/a", map[string][]byte{"SKILL.md": aMD})
+	aHash := reg.register("skills/a", map[string][]byte{"SKILL.md": aMD})
 
 	h := &harness.Harness{
 		Skills:                 []string{forgeSkillURL("skills/a", aHash)},
@@ -916,7 +911,7 @@ func TestResolveHarness_TransitiveHashMismatch(t *testing.T) {
 
 	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: t.TempDir(),
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 		MaxDepth:      -1,
 	})
 	require.Error(t, err)
@@ -926,17 +921,17 @@ func TestResolveHarness_TransitiveHashMismatch(t *testing.T) {
 // TestResolveHarness_TransitiveRelativeURL verifies that a relative dependency reference
 // in skill frontmatter is resolved against the parent skill's URL.
 func TestResolveHarness_TransitiveRelativeURL(t *testing.T) {
-	fc := &forge.FakeClient{}
+	reg := newSkillRegistry()
 
 	bMD := []byte("# Skill B — resolved via relative URL")
-	bHash := registerSkillDir(fc, "common/b", map[string][]byte{"SKILL.md": bMD})
+	bHash := reg.register("common/b", map[string][]byte{"SKILL.md": bMD})
 
 	// A is at skills/a; the relative dep "../common/b" resolves to common/b.
 	aMD := skillFrontmatter(
 		fmt.Sprintf("dependencies:\n  - ../common/b#sha256=%s\n", bHash),
 		"# Skill A",
 	)
-	aHash := registerSkillDir(fc, "skills/a", map[string][]byte{"SKILL.md": aMD})
+	aHash := reg.register("skills/a", map[string][]byte{"SKILL.md": aMD})
 
 	h := &harness.Harness{
 		Skills:                 []string{forgeSkillURL("skills/a", aHash)},
@@ -945,7 +940,7 @@ func TestResolveHarness_TransitiveRelativeURL(t *testing.T) {
 
 	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: t.TempDir(),
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 		MaxDepth:      -1,
 	})
 	require.NoError(t, err)
@@ -961,10 +956,10 @@ func TestResolveHarness_TransitiveRelativeURL(t *testing.T) {
 // TestResolveHarness_ConflictingHashesForSameURL verifies that two skills declaring the
 // same transitive dep URL with different tree hashes is rejected.
 func TestResolveHarness_ConflictingHashesForSameURL(t *testing.T) {
-	fc := &forge.FakeClient{}
+	reg := newSkillRegistry()
 
 	dMD := []byte("# Skill D")
-	dHash := registerSkillDir(fc, "skills/d", map[string][]byte{"SKILL.md": dMD})
+	dHash := reg.register("skills/d", map[string][]byte{"SKILL.md": dMD})
 	fakeHash := strings.Repeat("b", 64)
 
 	dURL := forgeSkillCleanURL("skills/d")
@@ -973,13 +968,13 @@ func TestResolveHarness_ConflictingHashesForSameURL(t *testing.T) {
 		fmt.Sprintf("dependencies:\n  - d#sha256=%s\n", dHash),
 		"# Skill A",
 	)
-	aHash := registerSkillDir(fc, "skills/a", map[string][]byte{"SKILL.md": aMD})
+	aHash := reg.register("skills/a", map[string][]byte{"SKILL.md": aMD})
 
 	bMD := skillFrontmatter(
 		fmt.Sprintf("dependencies:\n  - d#sha256=%s\n", fakeHash),
 		"# Skill B",
 	)
-	bHash := registerSkillDir(fc, "skills/b", map[string][]byte{"SKILL.md": bMD})
+	bHash := reg.register("skills/b", map[string][]byte{"SKILL.md": bMD})
 
 	_ = dURL // referenced only to clarify the test setup
 
@@ -993,7 +988,7 @@ func TestResolveHarness_ConflictingHashesForSameURL(t *testing.T) {
 
 	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: t.TempDir(),
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 		MaxDepth:      -1,
 	})
 	require.Error(t, err)
@@ -1013,14 +1008,14 @@ func TestResolveHarness_SkillPolicyLeafNode(t *testing.T) {
 		}
 	}))
 
-	fc := &forge.FakeClient{}
+	reg := newSkillRegistry()
 
 	policyURL := fmt.Sprintf("%s/policies/sandbox.yaml#sha256=%s", srv.URL, policyHash)
 	aMD := skillFrontmatter(
 		fmt.Sprintf("policy: %s\n", policyURL),
 		"# Skill A content",
 	)
-	aHash := registerSkillDir(fc, "skills/a", map[string][]byte{"SKILL.md": aMD})
+	aHash := reg.register("skills/a", map[string][]byte{"SKILL.md": aMD})
 
 	h := &harness.Harness{
 		Skills:                 []string{forgeSkillURL("skills/a", aHash)},
@@ -1030,7 +1025,7 @@ func TestResolveHarness_SkillPolicyLeafNode(t *testing.T) {
 	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: t.TempDir(),
 		FetchPolicy:   fetchPolicy,
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 		MaxDepth:      -1,
 	})
 	require.NoError(t, err)
@@ -1051,16 +1046,16 @@ func TestResolveHarness_SkillPolicyLeafNode(t *testing.T) {
 // TestResolveHarness_ZeroMaxDepthDisablesTransitive verifies that MaxDepth=0 prevents
 // any transitive dependency resolution even when skills declare dependencies.
 func TestResolveHarness_ZeroMaxDepthDisablesTransitive(t *testing.T) {
-	fc := &forge.FakeClient{}
+	reg := newSkillRegistry()
 
 	bMD := []byte("# Skill B — must not be fetched")
-	bHash := registerSkillDir(fc, "skills/b", map[string][]byte{"SKILL.md": bMD})
+	bHash := reg.register("skills/b", map[string][]byte{"SKILL.md": bMD})
 
 	aMD := skillFrontmatter(
 		fmt.Sprintf("dependencies:\n  - b#sha256=%s\n", bHash),
 		"# Skill A",
 	)
-	aHash := registerSkillDir(fc, "skills/a", map[string][]byte{"SKILL.md": aMD})
+	aHash := reg.register("skills/a", map[string][]byte{"SKILL.md": aMD})
 
 	h := &harness.Harness{
 		Skills:                 []string{forgeSkillURL("skills/a", aHash)},
@@ -1069,7 +1064,7 @@ func TestResolveHarness_ZeroMaxDepthDisablesTransitive(t *testing.T) {
 
 	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: t.TempDir(),
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 		MaxDepth:      0, // disabled
 	})
 	require.NoError(t, err)
@@ -1080,16 +1075,16 @@ func TestResolveHarness_ZeroMaxDepthDisablesTransitive(t *testing.T) {
 // TestResolveHarness_MaxDepthDefaultApplied verifies that MaxDepth<0 uses DefaultMaxDepth
 // and enables transitive resolution.
 func TestResolveHarness_MaxDepthDefaultApplied(t *testing.T) {
-	fc := &forge.FakeClient{}
+	reg := newSkillRegistry()
 
 	bMD := []byte("# Skill B")
-	bHash := registerSkillDir(fc, "skills/b", map[string][]byte{"SKILL.md": bMD})
+	bHash := reg.register("skills/b", map[string][]byte{"SKILL.md": bMD})
 
 	aMD := skillFrontmatter(
 		fmt.Sprintf("dependencies:\n  - b#sha256=%s\n", bHash),
 		"# Skill A",
 	)
-	aHash := registerSkillDir(fc, "skills/a", map[string][]byte{"SKILL.md": aMD})
+	aHash := reg.register("skills/a", map[string][]byte{"SKILL.md": aMD})
 
 	h := &harness.Harness{
 		Skills:                 []string{forgeSkillURL("skills/a", aHash)},
@@ -1098,7 +1093,7 @@ func TestResolveHarness_MaxDepthDefaultApplied(t *testing.T) {
 
 	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: t.TempDir(),
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 		MaxDepth:      -1, // uses DefaultMaxDepth
 	})
 	require.NoError(t, err)
@@ -1108,7 +1103,7 @@ func TestResolveHarness_MaxDepthDefaultApplied(t *testing.T) {
 // TestResolveHarness_NonHTTPSSchemeRejected verifies that resolveSkillDirURL rejects URLs
 // whose scheme is not https.
 func TestResolveHarness_NonHTTPSSchemeRejected(t *testing.T) {
-	fc := &forge.FakeClient{}
+	reg := newSkillRegistry()
 
 	bHash := fetch.ComputeTreeHash(map[string][]byte{"SKILL.md": []byte("# B")})
 
@@ -1119,7 +1114,7 @@ func TestResolveHarness_NonHTTPSSchemeRejected(t *testing.T) {
 		fmt.Sprintf("dependencies:\n  - %s\n", httpDepURL),
 		"# Skill A",
 	)
-	aHash := registerSkillDir(fc, "skills/a", map[string][]byte{"SKILL.md": aMD})
+	aHash := reg.register("skills/a", map[string][]byte{"SKILL.md": aMD})
 
 	h := &harness.Harness{
 		Skills:                 []string{forgeSkillURL("skills/a", aHash)},
@@ -1128,7 +1123,7 @@ func TestResolveHarness_NonHTTPSSchemeRejected(t *testing.T) {
 
 	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: t.TempDir(),
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 		MaxDepth:      -1,
 	})
 	require.Error(t, err)
@@ -1138,16 +1133,16 @@ func TestResolveHarness_NonHTTPSSchemeRejected(t *testing.T) {
 // TestResolveHarness_DirectAndTransitiveOverlap verifies that a skill appearing both as a
 // direct harness skill and as a transitive dep of another skill is deduplicated.
 func TestResolveHarness_DirectAndTransitiveOverlap(t *testing.T) {
-	fc := &forge.FakeClient{}
+	reg := newSkillRegistry()
 
 	bMD := []byte("# Skill B — shared skill")
-	bHash := registerSkillDir(fc, "skills/b", map[string][]byte{"SKILL.md": bMD})
+	bHash := reg.register("skills/b", map[string][]byte{"SKILL.md": bMD})
 
 	aMD := skillFrontmatter(
 		fmt.Sprintf("dependencies:\n  - b#sha256=%s\n", bHash),
 		"# Skill A",
 	)
-	aHash := registerSkillDir(fc, "skills/a", map[string][]byte{"SKILL.md": aMD})
+	aHash := reg.register("skills/a", map[string][]byte{"SKILL.md": aMD})
 
 	bURL := forgeSkillURL("skills/b", bHash)
 
@@ -1162,7 +1157,7 @@ func TestResolveHarness_DirectAndTransitiveOverlap(t *testing.T) {
 
 	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: t.TempDir(),
-		ForgeClient:   fc,
+		TreeFetcher:   reg.fetcher(),
 		MaxDepth:      -1,
 	})
 	require.NoError(t, err)
@@ -1177,9 +1172,9 @@ func TestResolveHarness_DirectAndTransitiveOverlap(t *testing.T) {
 	}
 }
 
-// TestResolveHarness_NilForgeClientWithSkillURL verifies that a skill URL without
-// a ForgeClient produces a clear error.
-func TestResolveHarness_NilForgeClientWithSkillURL(t *testing.T) {
+// TestResolveHarness_TreeFetcherError verifies that a TreeFetcher error is
+// propagated with a clear message.
+func TestResolveHarness_TreeFetcherError(t *testing.T) {
 	fakeHash := strings.Repeat("a", 64)
 	h := &harness.Harness{
 		Skills:                 []string{forgeSkillURL("skills/test", fakeHash)},
@@ -1188,7 +1183,30 @@ func TestResolveHarness_NilForgeClientWithSkillURL(t *testing.T) {
 
 	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
 		WorkspaceRoot: t.TempDir(),
+		TreeFetcher: func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+			return nil, fmt.Errorf("git fetch failed")
+		},
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "ForgeClient is required")
+	assert.Contains(t, err.Error(), "fetching directory")
+	assert.Contains(t, err.Error(), "hint:")
+}
+
+func TestResolveHarness_TreeFetcherErrorWithToken(t *testing.T) {
+	fakeHash := strings.Repeat("a", 64)
+	h := &harness.Harness{
+		Skills:                 []string{forgeSkillURL("skills/test", fakeHash)},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		GitToken:      "ghp_test123",
+		TreeFetcher: func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+			return nil, fmt.Errorf("git fetch failed")
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetching directory")
+	assert.NotContains(t, err.Error(), "hint:")
 }

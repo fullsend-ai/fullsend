@@ -105,21 +105,21 @@ merge conflicts, linter suggestions, or other incidental context:
 - `api-servers/` — API server configurations
 - `CLAUDE.md`
 - `CODEOWNERS`
+- `Containerfile` — container image definitions
+- `Dockerfile` — container image definitions
 - `harness/` — harness definitions
+- `images/` — container image build contexts
 - `plugins/` — plugin definitions
 - `policies/` — sandbox policies
 - `scripts/` — pre/post scripts
 - `skills/` — skill definitions
 
-These are governance and infrastructure files. The `post-fix.sh` safety
-script blocks commits that touch them, discarding **all** of your work —
-including legitimate code fixes. Modifying these paths wastes the entire
-run.
-
-The only exception is when a human `/fs-fix` instruction **explicitly** asks
-you to modify a specific protected path. Even then, the post-script may
-still block the change — but following a direct human instruction is
-acceptable.
+These are governance and infrastructure files. Protected-path enforcement
+lives in `post-review.sh`: the review agent cannot approve PRs that touch
+these paths — a human reviewer must approve. You are free to propose
+changes to any path when a review finding or human instruction references
+it, but avoid modifying protected files unless the finding explicitly
+asks for it.
 
 ## Constraints
 

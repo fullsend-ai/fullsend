@@ -26,7 +26,7 @@ PRs 1, 2, 4, and 6 have no dependencies and can be developed/merged in parallel.
 
 **Scope:** Pure utility functions with no callers. Zero risk to existing behavior.
 
-**Create `internal/harness/url.go`:**
+**Create `internal/harness/url.go`** (canonical implementations now in `internal/urlutil/urlutil.go`)**:**
 - `IsURL(s string) bool` — true for valid HTTPS URLs. Rejects empty host, userinfo, non-HTTPS schemes. Uses `net/url.Parse` with additional guards.
 - `IsAbsPath(s string) bool` — delegates to `filepath.IsAbs`.
 - `IsRelPath(s string) bool` — `!IsURL(s) && !IsAbsPath(s)`.
@@ -143,7 +143,7 @@ PRs 1, 2, 4, and 6 have no dependencies and can be developed/merged in parallel.
 
 **Create `internal/resolve/resolve.go`:**
 - `Dependency` struct: URL, LocalPath (cache path), SHA256, FetchedAt, CacheHit, Type (`"file"` or `"directory"`)
-- `ResolveOpts` struct: WorkspaceRoot, FetchPolicy, TraceID, AuditLogPath, ForgeClient (`forge.Client` for skill directory resolution)
+- `ResolveOpts` struct: WorkspaceRoot, FetchPolicy, TraceID, AuditLogPath, TreeFetcher (`gitfetch.TreeFetchFunc` for skill directory resolution), GitToken
 - `ResolveHarness(ctx, h *harness.Harness, opts) ([]Dependency, error)`:
   - Modifies the harness in place, replacing URL fields with local cache paths
   - For each declarative field (Agent, Policy):
@@ -151,7 +151,7 @@ PRs 1, 2, 4, and 6 have no dependencies and can be developed/merged in parallel.
     - URL: extract/require integrity hash → validate against `AllowedRemoteResources` → check cache (with re-verification) → if miss and not offline: `fetch.FetchURL` → verify hash → `CachePut` → `AppendFetchAudit` → return cache `content` path
   - For Skills (directory resources):
     - Local path: return as-is
-    - URL: extract/require integrity hash → validate against `AllowedRemoteResources` → use `ParseForgeURL` to extract forge components (owner, repo, path, ref) → check directory cache via `CacheGetDir` (with re-verification) → if miss and not offline: call `ForgeClient.ListDirectoryContents` to discover files, fetch each file with `ForgeClient.GetFileContentAtRef`, reconstruct directory tree, verify tree hash, store via `CachePutDir` → `AppendFetchAudit` → return cache `tree/` path
+    - URL: extract/require integrity hash → validate against `AllowedRemoteResources` → use `ParseForgeURL` to extract forge components (owner, repo, path, ref) → check directory cache via `CacheGetDir` (with re-verification) → if miss and not offline: call `TreeFetcher` (git sparse checkout via `gitfetch.FetchTree`) to fetch all files, verify tree hash, store via `CachePutDir` → `AppendFetchAudit` → return cache `tree/` path
     - Non-forge HTTPS URLs for skills are rejected with error: "skill URLs must use a supported forge (GitHub, GitLab)"
   - Single-level resolution; transitive deps added in Phase 2, security scanning deferred
 

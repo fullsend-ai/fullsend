@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,10 +22,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/internal/binary"
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/fetchsvc"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
+	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -153,13 +157,14 @@ func TestRunAgent_HarnessLoadPipeline(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -176,13 +181,14 @@ func TestRunAgent_YMLFallback(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -193,7 +199,8 @@ func TestRunAgent_HarnessNotFound(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "nonexistent", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "nonexistent", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "harness file not found: tried nonexistent.yaml and nonexistent.yml")
 }
@@ -212,7 +219,7 @@ func TestRunAgent_HarnessLoadWithOrgConfig(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 	require.NoError(t, os.WriteFile(
@@ -223,9 +230,191 @@ func TestRunAgent_HarnessLoadWithOrgConfig(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_PerRepoConfig(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("version: \"1\"\nroles:\n  - triage\n  - coder\nallowed_remote_resources:\n  - \"https://example.com/\"\n"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestTryLoadFullsendConfig_PerRepoFallback(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"version: \"1\"\nroles:\n  - triage\nallowed_remote_resources:\n  - \"https://example.com/\"\nagents:\n  - name: lint\n    source: harness/lint.yaml\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	require.NotNil(t, cfg)
+	assert.Equal(t, []string{"https://example.com/"}, cfg.AllowedRemoteResources)
+	require.Len(t, cfg.Agents, 1)
+	assert.Equal(t, "lint", cfg.Agents[0].Name)
+	assert.Equal(t, []string{"triage"}, cfg.Defaults.Roles)
+}
+
+func TestTryLoadFullsendConfig_MissingFile(t *testing.T) {
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig("/nonexistent/config.yaml", printer)
+	assert.Nil(t, cfg)
+}
+
+func TestTryLoadFullsendConfig_UnreadableFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("version: 1"), 0o644))
+	require.NoError(t, os.Chmod(path, 0o000))
+	t.Cleanup(func() { os.Chmod(path, 0o644) })
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	assert.Nil(t, cfg)
+}
+
+func TestTryLoadFullsendConfig_MalformedYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("[[[not yaml"), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	assert.Nil(t, cfg)
+}
+
+func TestRequireFullsendConfig_MissingFile(t *testing.T) {
+	printer := ui.New(io.Discard)
+	cfg, err := requireFullsendConfig("/nonexistent/config.yaml", printer)
+	assert.Nil(t, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "URL-referenced resources require a config.yaml")
+}
+
+func TestRequireFullsendConfig_UnreadableFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("version: 1"), 0o644))
+	require.NoError(t, os.Chmod(path, 0o000))
+	t.Cleanup(func() { os.Chmod(path, 0o644) })
+
+	printer := ui.New(io.Discard)
+	cfg, err := requireFullsendConfig(path, printer)
+	assert.Nil(t, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading fullsend config for remote resource validation")
+}
+
+func TestRequireFullsendConfig_MalformedYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("[[[not yaml"), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg, err := requireFullsendConfig(path, printer)
+	assert.Nil(t, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing config")
+}
+
+func TestRequireFullsendConfig_PerRepoFallback(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"version: \"1\"\nroles:\n  - triage\nallowed_remote_resources:\n  - \"https://example.com/\"\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg, err := requireFullsendConfig(path, printer)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Equal(t, []string{"https://example.com/"}, cfg.AllowedRemoteResources)
+	assert.Equal(t, []string{"triage"}, cfg.Defaults.Roles)
+}
+
+func TestIsPerRepoYAML(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{"per-repo with roles", "version: '1'\nroles:\n  - triage\n", true},
+		{"org with dispatch", "version: '1'\ndispatch:\n  platform: github\n", false},
+		{"org with repos", "version: '1'\nrepos:\n  acme/widget:\n    enabled: true\n", false},
+		{"org with dispatch and roles", "version: '1'\ndispatch:\n  platform: github\nroles:\n  - triage\n", false},
+		{"org with inference", "version: '1'\ninference:\n  provider: vertex\n", false},
+		{"org with defaults", "version: '1'\ndefaults:\n  roles:\n    - triage\n", false},
+		{"per-repo without roles", "version: '1'\nkill_switch: false\n", true},
+		{"minimal (no discriminator)", "version: '1'\n", true},
+		{"invalid yaml", "[[[bad", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isPerRepoYAML([]byte(tt.yaml)))
+		})
+	}
+}
+
+func TestTryLoadFullsendConfig_PerRepoMalformed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("roles:\n  triage: true\n"), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	assert.Nil(t, cfg)
+}
+
+func TestTryLoadFullsendConfig_OrgConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"version: \"1\"\ndispatch:\n  platform: github\nallowed_remote_resources:\n  - \"https://example.com/\"\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	require.NotNil(t, cfg)
+	assert.Equal(t, "github", cfg.Dispatch.Platform)
+	assert.Equal(t, []string{"https://example.com/"}, cfg.AllowedRemoteResources)
+}
+
+func TestRequireFullsendConfig_PerRepoMalformed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("roles:\n  triage: true\n"), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg, err := requireFullsendConfig(path, printer)
+	assert.Nil(t, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing per-repo config")
 }
 
 func TestRunAgent_MalformedOrgConfig(t *testing.T) {
@@ -242,7 +431,7 @@ func TestRunAgent_MalformedOrgConfig(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\n"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
 	require.NoError(t, os.WriteFile(
@@ -253,7 +442,8 @@ func TestRunAgent_MalformedOrgConfig(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -267,7 +457,7 @@ func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte(fmt.Sprintf("agent: \"https://example.com/agents/code.md#sha256=%s\"\n", agentHash)),
+		[]byte(fmt.Sprintf("agent: \"https://example.com/agents/code.md#sha256=%s\"\nrole: test\n", agentHash)),
 		0o644,
 	))
 	require.NoError(t, os.WriteFile(
@@ -278,9 +468,10 @@ func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing org config")
+	assert.Contains(t, err.Error(), "parsing config")
 }
 
 func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
@@ -292,24 +483,26 @@ func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
 	agentHash := fetch.ComputeSHA256([]byte("agent content"))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte(fmt.Sprintf("agent: \"https://example.com/agents/code.md#sha256=%s\"\n", agentHash)),
+		[]byte(fmt.Sprintf("agent: \"https://example.com/agents/code.md#sha256=%s\"\nrole: test\n", agentHash)),
 		0o644,
 	))
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "URL-referenced resources require an org-level config.yaml")
+	assert.Contains(t, err.Error(), "URL-referenced resources require a config.yaml")
 }
 
 func TestRunAgent_WithURLBase(t *testing.T) {
 	// Harness with a URL base — exercises the baseDeps logging loop.
-	baseContent := []byte("agent: agents/shared.md\n")
+	baseContent := []byte("agent: agents/shared.md\nrole: test\n")
 	baseHash := fetch.ComputeSHA256(baseContent)
 
 	srv, policy := newLockTestServer(t, map[string][]byte{
-		"/base.yaml": baseContent,
+		"/base.yaml":        baseContent,
+		"/agents/shared.md": []byte("# shared agent"),
 	})
 
 	dir := t.TempDir()
@@ -323,7 +516,7 @@ func TestRunAgent_WithURLBase(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte(fmt.Sprintf("base: \"%s/base.yaml#sha256=%s\"\n", srv.URL, baseHash)),
+		[]byte(fmt.Sprintf("base: \"%s/base.yaml#sha256=%s\"\nrole: test\n", srv.URL, baseHash)),
 		0o644,
 	))
 	require.NoError(t, os.WriteFile(
@@ -337,7 +530,8 @@ func TestRunAgent_WithURLBase(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -361,9 +555,10 @@ func TestRunAgent_URLBaseNoOrgConfig(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "URL-referenced resources require an org-level config.yaml")
+	assert.Contains(t, err.Error(), "URL-referenced resources require a config.yaml")
 }
 
 func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
@@ -388,9 +583,10 @@ func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
-	err := runAgent(context.Background(), "code", dir, "", "/tmp/repo", "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing org config")
+	assert.Contains(t, err.Error(), "parsing config")
 }
 
 func TestBuildScanContextCommand_SourcesEnv(t *testing.T) {
@@ -399,6 +595,16 @@ func TestBuildScanContextCommand_SourcesEnv(t *testing.T) {
 	assert.Contains(t, cmd, ". /sandbox/workspace/.env &&")
 	assert.Contains(t, cmd, "FULLSEND_TRACE_ID='"+traceID+"'")
 	assert.Contains(t, cmd, "-exec fullsend scan context")
+}
+
+func TestBuildScanContextCommand_AcceptsAdoptedTraceID(t *testing.T) {
+	// A trace id adopted from an inbound W3C traceparent (issue #2779) is
+	// dashed hex but not UUID v4; it must survive validation, not be replaced
+	// with the "invalid-trace-id" sentinel.
+	traceID := "4f3a9c1b-2d8e-0a7c-1f0b-1e2d3c4a5b6d"
+	cmd := buildScanContextCommand("/sandbox/workspace/repo", traceID)
+	assert.Contains(t, cmd, "FULLSEND_TRACE_ID='"+traceID+"'")
+	assert.NotContains(t, cmd, "invalid-trace-id")
 }
 
 func TestCopyFile(t *testing.T) {
@@ -465,6 +671,615 @@ func TestRunCommand_HasEnvFileFlag(t *testing.T) {
 	assert.Equal(t, []string{"/tmp/a.env", "/tmp/b.env"}, val)
 }
 
+func TestRunAgent_ConfigAgentLocalPath(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "custom.md"),
+		[]byte("You are a custom agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "custom.yaml"),
+		[]byte("agent: agents/custom.md\nrole: test\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/custom.yaml\nallowed_remote_resources:\n  - \"https://example.com/\"\n"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "custom", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_ConfigAgentURL(t *testing.T) {
+	harnessContent := []byte("agent: agents/remote.md\nrole: test\n")
+	harnessHash := fetch.ComputeSHA256(harnessContent)
+
+	srv, policy := newLockTestServer(t, map[string][]byte{
+		"/harness/triage.yaml": harnessContent,
+		"/agents/remote.md":    []byte("You are a remote agent."),
+	})
+
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "remote.md"),
+		[]byte("You are a remote agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte(fmt.Sprintf("agents:\n  - \"%s/harness/triage.yaml#sha256=%s\"\nallowed_remote_resources:\n  - \"%s/\"\n", srv.URL, harnessHash, srv.URL)),
+		0o644,
+	))
+
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "triage", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_ConfigAgentOverridesScaffold(t *testing.T) {
+	// When config has an agent with the same name as a scaffold agent,
+	// the config source is used instead of the scaffold wrapper.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a custom code agent."),
+		0o644,
+	))
+	// Config-driven local path agent named "code" — should take precedence
+	// over any scaffold "code" harness wrapper.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\nallowed_remote_resources:\n  - \"https://example.com/\"\n"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_ScaffoldFallback(t *testing.T) {
+	// When config has agents but the requested agent is not in config,
+	// fall back to disk-based resolution.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
+		0o644,
+	))
+	// Config has agents but "code" is not among them — should fall back to disk.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/other.yaml\nallowed_remote_resources:\n  - \"https://example.com/\"\n"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_UnknownAgentName(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	// Config has agents but "nonexistent" is not among them, and no file on disk.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/other.yaml\nallowed_remote_resources:\n  - \"https://example.com/\"\n"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "nonexistent", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "harness file not found")
+}
+
+func TestResolveAgentSource_NoConfig(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
+		0o644,
+	))
+
+	printer := ui.New(io.Discard)
+	path, deps, err := resolveAgentSource(context.Background(), dir, "code", nil, nil, harness.ComposeOpts{}, printer)
+	require.NoError(t, err)
+	assert.Contains(t, path, "code.yaml")
+	assert.Empty(t, deps)
+}
+
+// canonTempDir returns t.TempDir() with symlinks resolved, so equality
+// assertions against containedLocalPath's symlink-resolved output hold on
+// hosts where the temp dir sits behind a symlink (e.g. macOS, where /var
+// is a symlink to /private/var).
+func canonTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	return dir
+}
+
+func TestResolveAgentSource_ConfigLocalPath(t *testing.T) {
+	dir := canonTempDir(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "custom.yaml"),
+		[]byte("agent: agents/custom.md\nrole: test\n"),
+		0o644,
+	))
+
+	orgCfg := &config.OrgConfig{
+		Agents: []config.AgentEntry{
+			{Source: "harness/custom.yaml"},
+		},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(io.Discard)
+	path, deps, err := resolveAgentSource(context.Background(), dir, "custom", nil, orgCfg, harness.ComposeOpts{}, printer)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dir, "harness", "custom.yaml"), path)
+	assert.Empty(t, deps)
+}
+
+func TestResolveAgentSource_ConfigLocalPathNotFound(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	orgCfg := &config.OrgConfig{
+		Agents: []config.AgentEntry{
+			{Source: "harness/missing.yaml"},
+		},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(io.Discard)
+	_, _, err := resolveAgentSource(context.Background(), dir, "missing", nil, orgCfg, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config agent missing")
+}
+
+func TestResolveAgentSource_ConfigLocalPathAbsoluteRejected(t *testing.T) {
+	dir := t.TempDir()
+
+	orgCfg := &config.OrgConfig{
+		Agents: []config.AgentEntry{
+			{Source: "/etc/evil.yaml"},
+		},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(io.Discard)
+	_, _, err := resolveAgentSource(context.Background(), dir, "evil", nil, orgCfg, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "absolute paths")
+}
+
+func TestResolveAgentSource_ConfigLocalPathTraversalRejected(t *testing.T) {
+	dir := t.TempDir()
+
+	orgCfg := &config.OrgConfig{
+		Agents: []config.AgentEntry{
+			{Source: "harness/../../etc/passwd"},
+		},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(io.Discard)
+	_, _, err := resolveAgentSource(context.Background(), dir, "passwd", nil, orgCfg, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "path traversal")
+}
+
+func TestResolveAgentSource_AgentsRepoFallback_UnknownAgent(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	fakeClient := forge.NewFakeClient()
+	printer := ui.New(io.Discard)
+	_, _, err := resolveAgentSource(context.Background(), dir, "nonexistent", fakeClient, nil, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "harness file not found")
+}
+
+func TestResolveAgentSource_AgentsRepoFallback_Offline(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	fakeClient := forge.NewFakeClient()
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{
+		FetchPolicy: fetch.FetchPolicy{Offline: true},
+	}
+	_, _, err := resolveAgentSource(context.Background(), dir, "triage", fakeClient, nil, opts, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "harness file not found")
+}
+
+func TestResolveAgentSource_AgentsRepoFallback_NoClient(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	printer := ui.New(io.Discard)
+	_, _, err := resolveAgentSource(context.Background(), dir, "triage", nil, nil, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "harness file not found")
+}
+
+func TestResolveAgentSource_AgentsRepoFallback_DiskFallback(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "triage.yaml"),
+		[]byte("agent: agents/triage.md\nrole: test\n"),
+		0o644,
+	))
+
+	printer := ui.New(io.Discard)
+	path, deps, err := resolveAgentSource(context.Background(), dir, "triage", nil, nil, harness.ComposeOpts{}, printer)
+	require.NoError(t, err)
+	assert.Contains(t, path, "triage.yaml")
+	assert.Empty(t, deps)
+}
+
+func TestTryAgentsRepoFallback_UnknownAgent(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	printer := ui.New(io.Discard)
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "custom-agent", fakeClient, harness.ComposeOpts{}, printer)
+	assert.False(t, ok)
+}
+
+func TestTryAgentsRepoFallback_Offline(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{FetchPolicy: fetch.FetchPolicy{Offline: true}}
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	assert.False(t, ok)
+}
+
+func TestTryAgentsRepoFallback_NilClient(t *testing.T) {
+	printer := ui.New(io.Discard)
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", nil, harness.ComposeOpts{}, printer)
+	assert.False(t, ok)
+}
+
+func TestTryAgentsRepoFallback_GetRefError(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Errors["GetRef"] = fmt.Errorf("rate limited")
+	printer := ui.New(io.Discard)
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, harness.ComposeOpts{}, printer)
+	assert.False(t, ok)
+}
+
+func TestTryAgentsRepoFallback_NotAllowlisted(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = "abc123def456789012345678901234567890abcd"
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{
+		OrgAllowlist: []string{"https://example.com/"},
+	}
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	assert.False(t, ok)
+}
+
+func TestTryAgentsRepoFallback_ExplicitlyEmptyAllowlist(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = "abc123def456789012345678901234567890abcd"
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{
+		OrgAllowlist: []string{},
+	}
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	assert.False(t, ok)
+}
+
+func TestTryAgentsRepoFallback_CaseNormalization(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = "abc123def456789012345678901234567890abcd"
+	printer := ui.New(io.Discard)
+
+	// "Triage" should pass the known-agent check but would have caused a 404
+	// before the case-normalization fix. Now it uses "triage" in the URL.
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "Triage", fakeClient, harness.ComposeOpts{}, printer)
+	// Fallback skips because fetch fails (no HTTP server), but it shouldn't
+	// panic and should get past the known-agent gate.
+	assert.False(t, ok)
+}
+
+func TestTryAgentsRepoFallback_ShortSHA(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = "abc"
+	printer := ui.New(io.Discard)
+
+	// Short SHA fails hex validation — exercises both validation and bounds guard.
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, harness.ComposeOpts{}, printer)
+	assert.False(t, ok)
+}
+
+func TestTryAgentsRepoFallback_InvalidSHA(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"
+	printer := ui.New(io.Discard)
+
+	// Non-hex characters should be rejected by SHA validation.
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, harness.ComposeOpts{}, printer)
+	assert.False(t, ok)
+}
+
+func TestTryAgentsRepoFallback_AllKnownAgents(t *testing.T) {
+	for _, name := range []string{"triage", "code", "fix", "review", "retro", "prioritize"} {
+		t.Run(name, func(t *testing.T) {
+			fakeClient := forge.NewFakeClient()
+			printer := ui.New(io.Discard)
+			// Should pass the known-agent gate (not return false immediately).
+			// GetBranchRef will fail since no ref is set, confirming we got past the gate.
+			_, _, ok := tryAgentsRepoFallback(context.Background(), name, fakeClient, harness.ComposeOpts{}, printer)
+			assert.False(t, ok)
+		})
+	}
+}
+
+func TestTryAgentsRepoFallback_SuccessPath(t *testing.T) {
+	harnessContent := []byte("agent: agents/triage.md\nrole: test\n")
+	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expectedPath := "/" + fakeSHA + "/harness/triage.yaml"
+		if r.URL.Path == expectedPath {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(harnessContent)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	hostPort := strings.TrimPrefix(srv.URL, "https://")
+	hostname, port, _ := net.SplitHostPort(hostPort)
+
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+
+	orig := defaultAgentsRepoURLPrefix
+	defaultAgentsRepoURLPrefix = srv.URL + "/"
+	t.Cleanup(func() { defaultAgentsRepoURLPrefix = orig })
+
+	workDir := t.TempDir()
+
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = fakeSHA
+
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: workDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+	}
+
+	path, deps, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	require.True(t, ok, "expected fallback to succeed")
+	assert.NotEmpty(t, path)
+	assert.Len(t, deps, 1)
+	assert.Contains(t, deps[0].URL, fakeSHA)
+	assert.Equal(t, "file", deps[0].Type)
+	assert.NotEmpty(t, deps[0].SHA256)
+}
+
+func TestTryAgentsRepoFallback_AuditLog(t *testing.T) {
+	harnessContent := []byte("agent: agents/triage.md\nrole: test\n")
+	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expectedPath := "/" + fakeSHA + "/harness/triage.yaml"
+		if r.URL.Path == expectedPath {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(harnessContent)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	hostPort := strings.TrimPrefix(srv.URL, "https://")
+	hostname, port, _ := net.SplitHostPort(hostPort)
+
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+
+	orig := defaultAgentsRepoURLPrefix
+	defaultAgentsRepoURLPrefix = srv.URL + "/"
+	t.Cleanup(func() { defaultAgentsRepoURLPrefix = orig })
+
+	workDir := t.TempDir()
+	auditLog := filepath.Join(workDir, "audit.jsonl")
+
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = fakeSHA
+
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: workDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+		AuditLogPath:  auditLog,
+		TraceID:       "test-trace-123",
+	}
+
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	require.True(t, ok, "expected fallback to succeed")
+
+	auditContent, err := os.ReadFile(auditLog)
+	require.NoError(t, err)
+	assert.Contains(t, string(auditContent), fakeSHA)
+	assert.Contains(t, string(auditContent), "test-trace-123")
+	assert.Contains(t, string(auditContent), `"fetch_type":"static"`)
+}
+
+func TestTryAgentsRepoFallback_CachePutFailure(t *testing.T) {
+	harnessContent := []byte("agent: agents/triage.md\nrole: test\n")
+	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expectedPath := "/" + fakeSHA + "/harness/triage.yaml"
+		if r.URL.Path == expectedPath {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(harnessContent)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	hostPort := strings.TrimPrefix(srv.URL, "https://")
+	hostname, port, _ := net.SplitHostPort(hostPort)
+
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+
+	orig := defaultAgentsRepoURLPrefix
+	defaultAgentsRepoURLPrefix = srv.URL + "/"
+	t.Cleanup(func() { defaultAgentsRepoURLPrefix = orig })
+
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = fakeSHA
+
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: "/nonexistent/path/that/will/fail",
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+	}
+
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	assert.False(t, ok, "expected fallback to fail when cache write fails")
+}
+
+func TestTryAgentsRepoFallback_FetchURLError(t *testing.T) {
+	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	hostPort := strings.TrimPrefix(srv.URL, "https://")
+	hostname, port, _ := net.SplitHostPort(hostPort)
+
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+
+	orig := defaultAgentsRepoURLPrefix
+	defaultAgentsRepoURLPrefix = srv.URL + "/"
+	t.Cleanup(func() { defaultAgentsRepoURLPrefix = orig })
+
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = fakeSHA
+
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+	}
+
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	assert.False(t, ok)
+}
+
+func TestContainedLocalPath_Valid(t *testing.T) {
+	dir := canonTempDir(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "agent.yaml"), []byte("test"), 0o644))
+	got, err := containedLocalPath(dir, "harness/agent.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dir, "harness", "agent.yaml"), got)
+}
+
+func TestContainedLocalPath_AbsoluteRejected(t *testing.T) {
+	dir := t.TempDir()
+	_, err := containedLocalPath(dir, "/etc/evil.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be relative, not absolute")
+}
+
+func TestContainedLocalPath_TraversalRejected(t *testing.T) {
+	dir := t.TempDir()
+	_, err := containedLocalPath(dir, "harness/../../etc/passwd")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "escapes fullsend directory")
+}
+
+func TestContainedLocalPath_DotSegmentsCleaned(t *testing.T) {
+	dir := canonTempDir(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "agent.yaml"), []byte("test"), 0o644))
+	got, err := containedLocalPath(dir, "harness/./agent.yaml")
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dir, "harness", "agent.yaml"), got)
+}
+
+func TestContainedLocalPath_SymlinkEscapeRejected(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(outside, "evil.yaml"), []byte("pwned"), 0o644))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.Symlink(filepath.Join(outside, "evil.yaml"), filepath.Join(dir, "harness", "evil.yaml")))
+	_, err := containedLocalPath(dir, "harness/evil.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "escapes fullsend directory via symlink")
+}
+
 func TestApplySandboxImageOverride_Applied(t *testing.T) {
 	t.Setenv("FULLSEND_SANDBOX_IMAGE", "ghcr.io/fullsend-ai/fullsend-sandbox:dev")
 
@@ -509,6 +1324,99 @@ func TestHasAgentsMD_OtherFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("# claude"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# readme"), 0o644))
 	assert.False(t, hasAgentsMD(dir))
+}
+
+func TestHasClaudeMD_UpperCase(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("# claude"), 0o644))
+	assert.True(t, hasClaudeMD(dir))
+}
+
+func TestHasClaudeMD_LowerCase(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "claude.md"), []byte("# claude"), 0o644))
+	assert.True(t, hasClaudeMD(dir))
+}
+
+func TestHasClaudeMD_TitleCase(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "Claude.md"), []byte("# claude"), 0o644))
+	assert.True(t, hasClaudeMD(dir))
+}
+
+func TestHasClaudeMD_Missing(t *testing.T) {
+	dir := t.TempDir()
+	assert.False(t, hasClaudeMD(dir))
+}
+
+func TestHasClaudeMD_OtherFiles(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("# agents"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte("# readme"), 0o644))
+	assert.False(t, hasClaudeMD(dir))
+}
+
+func TestHasClaudeMD_DotPrefixed(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".claude.md"), []byte("# claude"), 0o644))
+	assert.True(t, hasClaudeMD(dir))
+}
+
+func TestClaudeMDPointerContent(t *testing.T) {
+	// Verify the injected CLAUDE.md content references AGENTS.md and
+	// ends with a newline (so the file is well-formed).
+	assert.Contains(t, claudeMDPointerContent, "AGENTS.md")
+	assert.True(t, strings.HasSuffix(claudeMDPointerContent, "\n"), "content should end with newline")
+}
+
+func TestDoInjectClaudeMDPointer_Success(t *testing.T) {
+	var cmds []string
+	mockExec := func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		cmds = append(cmds, cmd)
+		return "", "", 0, nil
+	}
+
+	printer := ui.New(io.Discard)
+	doInjectClaudeMDPointer("test-sandbox", "/workspace/repo", printer, mockExec)
+
+	require.Len(t, cmds, 2)
+	assert.Contains(t, cmds[0], "CLAUDE.md")
+	assert.Contains(t, cmds[0], "/workspace/repo/CLAUDE.md")
+	assert.Contains(t, cmds[0], "AGENTS.md") // content references AGENTS.md
+	assert.Contains(t, cmds[1], ".git/info/exclude")
+	assert.Contains(t, cmds[1], "CLAUDE.md")
+}
+
+func TestDoInjectClaudeMDPointer_WriteFails(t *testing.T) {
+	var cmds []string
+	mockExec := func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		cmds = append(cmds, cmd)
+		return "", "write error", 1, fmt.Errorf("write failed")
+	}
+
+	printer := ui.New(io.Discard)
+	doInjectClaudeMDPointer("test-sandbox", "/workspace/repo", printer, mockExec)
+
+	// Should have attempted only the write, not the exclude.
+	require.Len(t, cmds, 1)
+}
+
+func TestDoInjectClaudeMDPointer_ExcludeFails(t *testing.T) {
+	callCount := 0
+	mockExec := func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		callCount++
+		if callCount == 2 {
+			return "", "exclude error", 1, fmt.Errorf("exclude failed")
+		}
+		return "", "", 0, nil
+	}
+
+	printer := ui.New(io.Discard)
+	doInjectClaudeMDPointer("test-sandbox", "/workspace/repo", printer, mockExec)
+
+	// Both commands should have been attempted (write succeeds, exclude fails
+	// but function continues).
+	assert.Equal(t, 2, callCount)
 }
 
 func TestEnvToList_Sorted(t *testing.T) {
@@ -1008,6 +1916,46 @@ func TestValidationFailMessage_TrimsOutput(t *testing.T) {
 	assert.Equal(t, "some output", msg)
 }
 
+func TestValidationEnv_IncludesSchemaWhenSet(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "/tmp/test-schema.json",
+		},
+	}
+	env := validationEnv(h, "/repo", "/run")
+	assert.Contains(t, env, "FULLSEND_OUTPUT_SCHEMA=/tmp/test-schema.json")
+	assert.Contains(t, env, "TARGET_REPO_DIR=/repo")
+	assert.Contains(t, env, "FULLSEND_RUN_DIR=/run")
+	assert.Contains(t, env, "FOO=bar")
+}
+
+func TestValidationEnv_OmitsSchemaWhenEmpty(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+		},
+	}
+	env := validationEnv(h, "/repo", "/run")
+	for _, e := range env {
+		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
+			"FULLSEND_OUTPUT_SCHEMA should not be set when Schema is empty")
+	}
+}
+
+func TestValidationEnv_OmitsSchemaWhenNoValidationLoop(t *testing.T) {
+	h := &harness.Harness{
+		RunnerEnv: map[string]string{"FOO": "bar"},
+	}
+	env := validationEnv(h, "/repo", "/run")
+	for _, e := range env {
+		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
+			"FULLSEND_OUTPUT_SCHEMA should not be set when ValidationLoop is nil")
+	}
+}
+
 func TestOpenTeeReader_EmptyPath(t *testing.T) {
 	src := strings.NewReader("hello")
 	printer := ui.New(io.Discard)
@@ -1243,6 +2191,183 @@ func TestBootstrapEnv_SkipsFetchVarsWhenEmpty(t *testing.T) {
 	assert.Contains(t, err.Error(), "copying .env file to sandbox")
 }
 
+func TestBootstrapEnv_ValidationLoopSchemaPrecedence(t *testing.T) {
+	dir := t.TempDir()
+	schemaFile := filepath.Join(dir, "schema.json")
+	require.NoError(t, os.WriteFile(schemaFile, []byte(`{"type":"object"}`), 0o644))
+
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		ValidationLoop: &harness.ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: schemaFile,
+		},
+		RunnerEnv: map[string]string{
+			"FULLSEND_OUTPUT_SCHEMA": "/should/not/be/used",
+		},
+	}
+
+	err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil)
+
+	// Expected to fail at sandbox operations — the schema code path is
+	// exercised before the failure.
+	require.Error(t, err)
+}
+
+func TestBootstrapEnv_ValidationLoopSchemaFallback(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		RunnerEnv: map[string]string{
+			"FULLSEND_OUTPUT_SCHEMA": "/nonexistent/schema.json",
+		},
+	}
+
+	err := bootstrapEnv("nonexistent-sandbox", "/workspace/repo", h, nil)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "copying .env file to sandbox")
+}
+
+func TestExpandValidationLoopSchema(t *testing.T) {
+	dir := t.TempDir()
+	schemaDir := filepath.Join(dir, "schemas")
+	require.NoError(t, os.MkdirAll(schemaDir, 0o755))
+	schemaPath := filepath.Join(schemaDir, "result.json")
+	require.NoError(t, os.WriteFile(schemaPath, []byte(`{"type":"object"}`), 0o644))
+
+	expander := func(key string) string {
+		if key == "FULLSEND_DIR" {
+			return dir
+		}
+		return ""
+	}
+
+	h := &harness.Harness{
+		ValidationLoop: &harness.ValidationLoop{
+			Schema: "${FULLSEND_DIR}/schemas/result.json",
+		},
+	}
+
+	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
+		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, expander)
+	}
+
+	assert.Equal(t, schemaPath, h.ValidationLoop.Schema)
+	_, err := os.Stat(h.ValidationLoop.Schema)
+	require.NoError(t, err, "expanded schema path should exist")
+}
+
+func TestBuildSandboxEnvLines_FromEnvSandbox(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"GITHUB_PR_URL": "https://github.com/org/repo/pull/1",
+				"GH_TOKEN":      "tok123",
+			},
+		},
+	}
+
+	lines := buildSandboxEnvLines(h)
+	assert.Contains(t, lines, "export GH_TOKEN='tok123'")
+	assert.Contains(t, lines, "export GITHUB_PR_URL='https://github.com/org/repo/pull/1'")
+}
+
+func TestBuildSandboxEnvLines_NilEnv(t *testing.T) {
+	h := &harness.Harness{Agent: "agents/test.md", Role: "test"}
+	lines := buildSandboxEnvLines(h)
+	assert.Nil(t, lines)
+}
+
+func TestBuildSandboxEnvLines_EmptySandbox(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env:   &harness.EnvConfig{Runner: map[string]string{"FOO": "bar"}},
+	}
+	lines := buildSandboxEnvLines(h)
+	assert.Nil(t, lines)
+}
+
+func TestBuildSandboxEnvLines_EscapesSingleQuotes(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{"MSG": "it's a test"},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export MSG='it'\\''s a test'", lines[0])
+}
+
+func TestBuildSandboxEnvLines_SortedKeys(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"ZZZ": "last",
+				"AAA": "first",
+			},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 2)
+	assert.Equal(t, "export AAA='first'", lines[0])
+	assert.Equal(t, "export ZZZ='last'", lines[1])
+}
+
+func TestBuildSandboxEnvLines_SkipsInvalidKeys(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"VALID_KEY":  "ok",
+				"bad key":    "spaces",
+				"'; rm -rf ": "inject",
+			},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export VALID_KEY='ok'", lines[0])
+}
+
+func TestBuildSandboxEnvLines_EmptyValue(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{"EMPTY": ""},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export EMPTY=''", lines[0])
+}
+
+func TestBuildSandboxEnvLines_SkipsReservedKeys(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &harness.EnvConfig{
+			Sandbox: map[string]string{
+				"CUSTOM_VAR":           "allowed",
+				"PATH":                 "/evil",
+				"FULLSEND_FETCH_TOKEN": "stolen",
+				"FULLSEND_OUTPUT_DIR":  "/tmp/bad",
+			},
+		},
+	}
+	lines := buildSandboxEnvLines(h)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "export CUSTOM_VAR='allowed'", lines[0])
+}
+
 func TestShouldStartFetchService_AllowRuntimeFetch(t *testing.T) {
 	h := &harness.Harness{
 		Agent:                  "agents/test.md",
@@ -1281,14 +2406,17 @@ func TestShouldStartFetchService_NoRemoteResources(t *testing.T) {
 	assert.Empty(t, warning)
 }
 
-func TestSetupFetchService_WithForgeClient(t *testing.T) {
+func TestSetupFetchService_WithTreeFetcher(t *testing.T) {
 	tmpDir := t.TempDir()
 	h := &harness.Harness{Agent: "agents/test.md"}
-	mockClient := &mockForgeClient{}
+	mockFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, nil
+	}
 
 	env, shutdown, err := setupFetchService(
 		context.Background(),
-		mockClient,
+		mockFetcher,
+		"test-token",
 		h,
 		func() (string, error) { return "", fmt.Errorf("should not be called") },
 		fetchsvc.ServiceConfig{
@@ -1306,7 +2434,7 @@ func TestSetupFetchService_WithForgeClient(t *testing.T) {
 	assert.Len(t, env.token, 64)
 }
 
-func TestSetupFetchService_ResolvesTokenWhenNoForgeClient(t *testing.T) {
+func TestSetupFetchService_ResolvesTokenWhenNoGitToken(t *testing.T) {
 	tmpDir := t.TempDir()
 	h := &harness.Harness{
 		Agent:                  "agents/test.md",
@@ -1317,6 +2445,7 @@ func TestSetupFetchService_ResolvesTokenWhenNoForgeClient(t *testing.T) {
 	env, shutdown, err := setupFetchService(
 		context.Background(),
 		nil,
+		"",
 		h,
 		func() (string, error) { tokenResolved = true; return "ghp_test", nil },
 		fetchsvc.ServiceConfig{
@@ -1333,13 +2462,14 @@ func TestSetupFetchService_ResolvesTokenWhenNoForgeClient(t *testing.T) {
 	assert.NotEmpty(t, env.addr)
 }
 
-func TestSetupFetchService_NoForgeClientNoRemoteResources(t *testing.T) {
+func TestSetupFetchService_NoTokenNoRemoteResources(t *testing.T) {
 	tmpDir := t.TempDir()
 	h := &harness.Harness{Agent: "agents/test.md"}
 
 	env, shutdown, err := setupFetchService(
 		context.Background(),
 		nil,
+		"",
 		h,
 		func() (string, error) { return "", fmt.Errorf("should not be called") },
 		fetchsvc.ServiceConfig{
@@ -1366,6 +2496,7 @@ func TestSetupFetchService_TokenResolutionFails(t *testing.T) {
 	env, shutdown, err := setupFetchService(
 		context.Background(),
 		nil,
+		"",
 		h,
 		func() (string, error) { return "", fmt.Errorf("no token available") },
 		fetchsvc.ServiceConfig{
@@ -1402,6 +2533,7 @@ func TestSetupFetchService_CustomMaxFetches(t *testing.T) {
 	env, shutdown, err := setupFetchService(
 		context.Background(),
 		nil,
+		"",
 		h,
 		func() (string, error) { return "ghp_test", nil },
 		cfg,
@@ -1419,10 +2551,6 @@ func TestEffectiveMaxRuntimeFetches_MatchesFetchsvcDefault(t *testing.T) {
 		t.Fatalf("harness default %d != fetchsvc.DefaultMaxFetches %d — update defaultMaxRuntimeFetches in harness.go",
 			h.EffectiveMaxRuntimeFetches(), fetchsvc.DefaultMaxFetches)
 	}
-}
-
-type mockForgeClient struct {
-	forge.Client
 }
 
 func TestSetupStatusNotifier_MintURL(t *testing.T) {
@@ -1479,25 +2607,6 @@ func TestSetupStatusNotifier_NoMintURL(t *testing.T) {
 	assert.Contains(t, err.Error(), "no mint URL available")
 }
 
-func TestSetupStatusNotifier_DeprecatedToken(t *testing.T) {
-	tmpDir := t.TempDir()
-	printer := ui.New(io.Discard)
-
-	sOpts := statusOpts{
-		statusRepo:  "org/repo",
-		statusNum:   7,
-		statusToken: "test-static-token",
-	}
-
-	t.Setenv("GITHUB_RUN_ID", "run-42")
-	t.Setenv("FULLSEND_MINT_URL", "")
-
-	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
-	require.NoError(t, err)
-	assert.NotNil(t, n)
-	assert.False(t, n.HasClientFactory(), "client factory should not be set when using deprecated static token")
-}
-
 func TestSetupStatusNotifier_InvalidRepo(t *testing.T) {
 	tmpDir := t.TempDir()
 	printer := ui.New(io.Discard)
@@ -1520,12 +2629,93 @@ func TestRunCommand_HasMintURLFlag(t *testing.T) {
 	assert.Equal(t, "", f.DefValue)
 }
 
-func TestRunCommand_StatusTokenFlagDeprecated(t *testing.T) {
-	cmd := newRunCmd()
+func TestSetupStatusNotifier_FactoryMintSuccess(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
 
+	origMint := statusMintToken
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "coder", req.Role)
+		assert.Equal(t, []string{"repo"}, req.Repos)
+		return &mintclient.MintResult{Token: "ghs_test_minted"}, nil
+	}
+	defer func() { statusMintToken = origMint }()
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+	t.Setenv("GITHUB_ACTIONS", "true")
+
+	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
+	require.NoError(t, err)
+
+	client, err := n.InvokeClientFactory(context.Background())
+	require.NoError(t, err)
+	assert.NotNil(t, client)
+}
+
+func TestSetupStatusNotifier_FactoryMintError(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	origMint := statusMintToken
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return nil, fmt.Errorf("OIDC unavailable")
+	}
+	defer func() { statusMintToken = origMint }()
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+
+	n, err := setupStatusNotifier(tmpDir, "review", sOpts, printer)
+	require.NoError(t, err)
+
+	client, err := n.InvokeClientFactory(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "OIDC unavailable")
+	assert.Nil(t, client)
+}
+
+func TestSetupStatusNotifier_FactoryRejectsMalformedToken(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	origMint := statusMintToken
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "not-a-valid-token-format!"}, nil
+	}
+	defer func() { statusMintToken = origMint }()
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+
+	n, err := setupStatusNotifier(tmpDir, "coder", sOpts, printer)
+	require.NoError(t, err)
+
+	client, err := n.InvokeClientFactory(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected characters")
+	assert.Nil(t, client)
+}
+
+func TestRunCommand_StatusTokenFlagRemoved(t *testing.T) {
+	cmd := newRunCmd()
 	f := cmd.Flags().Lookup("status-token")
-	require.NotNil(t, f, "run command should have --status-token flag for backwards compatibility")
-	assert.NotEmpty(t, f.Deprecated, "--status-token flag should be marked deprecated")
+	assert.Nil(t, f, "--status-token flag should no longer exist")
 }
 
 func TestTitleCase(t *testing.T) {
@@ -1572,13 +2762,12 @@ func TestSetupStatusNotifier_RunIDFallback(t *testing.T) {
 	printer := ui.New(io.Discard)
 
 	sOpts := statusOpts{
-		statusRepo:  "org/repo",
-		statusNum:   7,
-		statusToken: "test-static-token",
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
 	}
 
 	t.Setenv("GITHUB_RUN_ID", "")
-	t.Setenv("FULLSEND_MINT_URL", "")
 
 	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
 	require.NoError(t, err)
@@ -1594,16 +2783,713 @@ func TestSetupStatusNotifier_PRHeadSHA(t *testing.T) {
 	require.NoError(t, os.WriteFile(eventFile, []byte(eventPayload), 0o644))
 
 	sOpts := statusOpts{
-		statusRepo:  "org/repo",
-		statusNum:   7,
-		statusToken: "test-static-token",
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
 	}
 
 	t.Setenv("GITHUB_EVENT_PATH", eventFile)
 	t.Setenv("GITHUB_RUN_ID", "run-42")
-	t.Setenv("FULLSEND_MINT_URL", "")
 
 	n, err := setupStatusNotifier(tmpDir, "code", sOpts, printer)
 	require.NoError(t, err)
 	assert.NotNil(t, n)
+}
+
+func TestEmitDiagnostic_Warning(t *testing.T) {
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	diag := harness.Diagnostic{
+		Severity: harness.SeverityWarning,
+		Field:    "role",
+		Message:  "test warning message",
+	}
+	emitDiagnostic(printer, diag)
+
+	output := buf.String()
+	assert.Contains(t, output, "warning")
+	assert.Contains(t, output, "role")
+	assert.Contains(t, output, "test warning message")
+}
+
+func TestEmitDiagnostic_Error(t *testing.T) {
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	diag := harness.Diagnostic{
+		Severity: harness.SeverityError,
+		Field:    "agent",
+		Message:  "test error message",
+	}
+	emitDiagnostic(printer, diag)
+
+	output := buf.String()
+	assert.Contains(t, output, "error")
+	assert.Contains(t, output, "agent")
+	assert.Contains(t, output, "test error message")
+}
+
+func TestEmitDiagnosticWithContext(t *testing.T) {
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+
+	diag := harness.Diagnostic{
+		Severity: harness.SeverityWarning,
+		Field:    "role",
+		Message:  "role is not set",
+	}
+	emitDiagnosticWithContext(printer, "triage", diag)
+
+	output := buf.String()
+	assert.Contains(t, output, "triage")
+	assert.Contains(t, output, "warning")
+	assert.Contains(t, output, "role")
+}
+
+func TestRunAgent_ErrorOnMissingRole(t *testing.T) {
+	// Verifies that runAgent fails with a hard error when harness has no role.
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	// Harness without role field
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\n"),
+		0o644,
+	))
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid harness: role field is required")
+}
+
+func TestWriteMetricsJSON(t *testing.T) {
+	dir := t.TempDir()
+	m := aggregateMetrics{
+		NumTurns:     12,
+		TotalCostUSD: 0.58,
+		Iterations:   2,
+		ToolCalls:    34,
+	}
+	m.TokenUsage.Input = 18000
+	m.TokenUsage.Output = 5200
+
+	if err := writeMetricsJSON(dir, m); err != nil {
+		t.Fatalf("writeMetricsJSON failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "metrics.json"))
+	if err != nil {
+		t.Fatalf("reading metrics.json: %v", err)
+	}
+
+	var got aggregateMetrics
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshalling metrics.json: %v", err)
+	}
+
+	if got.NumTurns != 12 {
+		t.Errorf("num_turns = %d, want 12", got.NumTurns)
+	}
+	if got.TotalCostUSD != 0.58 {
+		t.Errorf("total_cost_usd = %f, want 0.58", got.TotalCostUSD)
+	}
+	if got.TokenUsage.Input != 18000 {
+		t.Errorf("token_usage.input = %d, want 18000", got.TokenUsage.Input)
+	}
+	if got.TokenUsage.Output != 5200 {
+		t.Errorf("token_usage.output = %d, want 5200", got.TokenUsage.Output)
+	}
+	if got.Iterations != 2 {
+		t.Errorf("iterations = %d, want 2", got.Iterations)
+	}
+	if got.ToolCalls != 34 {
+		t.Errorf("tool_calls = %d, want 34", got.ToolCalls)
+	}
+}
+
+// --- mintAgentToken tests ---
+
+func TestMintAgentToken_SkipsWhenNoMintURL(t *testing.T) {
+	printer := ui.New(io.Discard)
+	minted, _, err := mintAgentToken(context.Background(), "coder", "", printer)
+	require.NoError(t, err)
+	assert.False(t, minted)
+}
+
+func TestMintAgentToken_SkipsWhenNoRole(t *testing.T) {
+	printer := ui.New(io.Discard)
+	minted, _, err := mintAgentToken(context.Background(), "", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	assert.False(t, minted)
+}
+
+func TestMintAgentToken_CoderRole(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "https://mint.example.com", req.MintURL)
+		assert.Equal(t, "coder", req.Role)
+		assert.Equal(t, []string{"my-repo"}, req.Repos)
+		return &mintclient.MintResult{Token: "ghs_coder_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	assert.True(t, minted)
+	require.NotNil(t, cleanup)
+
+	assert.Equal(t, "ghs_coder_token", os.Getenv("GH_TOKEN"))
+	assert.Equal(t, "ghs_coder_token", os.Getenv("PUSH_TOKEN"))
+	assert.Equal(t, "github-app", os.Getenv("PUSH_TOKEN_SOURCE"))
+
+	cleanup()
+	assert.Equal(t, "", os.Getenv("GH_TOKEN"), "cleanup should restore GH_TOKEN to original empty value")
+	assert.Equal(t, "", os.Getenv("PUSH_TOKEN"), "cleanup should restore PUSH_TOKEN to original empty value")
+	assert.Equal(t, "", os.Getenv("PUSH_TOKEN_SOURCE"), "cleanup should restore PUSH_TOKEN_SOURCE to original empty value")
+
+	output := buf.String()
+	assert.Contains(t, output, "Minting agent token (role: coder)")
+	assert.Contains(t, output, "Agent token minted")
+}
+
+func TestMintAgentToken_ReviewRole(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "review", req.Role)
+		return &mintclient.MintResult{Token: "ghs_review_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("REVIEW_TOKEN", "")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "review", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	assert.True(t, minted)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+
+	assert.Equal(t, "ghs_review_token", os.Getenv("GH_TOKEN"))
+	assert.Equal(t, "ghs_review_token", os.Getenv("REVIEW_TOKEN"))
+}
+
+func TestMintAgentToken_RetroRole_NoExtras(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "retro", req.Role)
+		assert.Equal(t, []string{"my-repo", ".fullsend"}, req.Repos)
+		return &mintclient.MintResult{Token: "ghs_retro_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("MINT_REPOS", "my-repo,.fullsend")
+	t.Setenv("GH_TOKEN", "")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "retro", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	assert.True(t, minted)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+
+	assert.Equal(t, "ghs_retro_token", os.Getenv("GH_TOKEN"))
+}
+
+func TestMintAgentToken_ResolvesAliases(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "coder", req.Role, "code should resolve to coder")
+		return &mintclient.MintResult{Token: "ghs_alias_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "code", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	assert.True(t, minted)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+
+	assert.Equal(t, "ghs_alias_token", os.Getenv("PUSH_TOKEN"))
+}
+
+func TestMintAgentToken_TriageRole_NoExtras(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		assert.Equal(t, "triage", req.Role)
+		return &mintclient.MintResult{Token: "ghs_triage_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "should-not-change")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	assert.True(t, minted)
+	require.NotNil(t, cleanup)
+	defer cleanup()
+
+	assert.Equal(t, "ghs_triage_token", os.Getenv("GH_TOKEN"))
+	assert.Equal(t, "should-not-change", os.Getenv("PUSH_TOKEN"), "triage should not set PUSH_TOKEN")
+}
+
+func TestMintAgentToken_MintError(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return nil, fmt.Errorf("OIDC exchange failed")
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+
+	printer := ui.New(io.Discard)
+	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "minting agent token for role coder")
+}
+
+func TestMintAgentToken_RepoResolutionError(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	// No REPO_FULL_NAME and no MINT_REPOS set
+	printer := ui.New(io.Discard)
+	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving mint repos for role coder")
+}
+
+func TestMintAgentToken_RejectsMalformedToken(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "bad token with spaces!", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+
+	printer := ui.New(io.Discard)
+	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected characters")
+}
+
+func TestMintAgentToken_MasksTokenInGitHubActions(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_maskable", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GH_TOKEN", "")
+
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", printer)
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	require.NoError(t, err)
+	assert.True(t, minted)
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	var buf bytes.Buffer
+	io.Copy(&buf, r)
+	assert.Contains(t, buf.String(), "::add-mask::ghs_maskable")
+}
+
+// --- resolveMintRepos tests ---
+
+func TestResolveMintRepos_FromMINT_REPOS(t *testing.T) {
+	t.Setenv("MINT_REPOS", "repo-a,repo-b")
+	repos, err := resolveMintRepos()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"repo-a", "repo-b"}, repos)
+}
+
+func TestResolveMintRepos_TrimsWhitespace(t *testing.T) {
+	t.Setenv("MINT_REPOS", " repo-a , repo-b ")
+	repos, err := resolveMintRepos()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"repo-a", "repo-b"}, repos)
+}
+
+func TestResolveMintRepos_FromREPO_FULL_NAME(t *testing.T) {
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	repos, err := resolveMintRepos()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"my-repo"}, repos)
+}
+
+func TestResolveMintRepos_MINT_REPOS_TakesPrecedence(t *testing.T) {
+	t.Setenv("MINT_REPOS", "override-repo")
+	t.Setenv("REPO_FULL_NAME", "org/other-repo")
+	repos, err := resolveMintRepos()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"override-repo"}, repos)
+}
+
+func TestResolveMintRepos_NeitherSet(t *testing.T) {
+	_, err := resolveMintRepos()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MINT_REPOS or REPO_FULL_NAME must be set")
+}
+
+func TestResolveMintRepos_InvalidREPO_FULL_NAME(t *testing.T) {
+	t.Setenv("REPO_FULL_NAME", "no-slash")
+	_, err := resolveMintRepos()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "owner/repo format")
+}
+
+func TestResolveMintRepos_EmptyRepoInREPO_FULL_NAME(t *testing.T) {
+	t.Setenv("REPO_FULL_NAME", "org/")
+	_, err := resolveMintRepos()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "owner/repo format")
+}
+
+func TestResolveMintRepos_EmptyMINT_REPOS_FallsBack(t *testing.T) {
+	t.Setenv("MINT_REPOS", ",,,")
+	t.Setenv("REPO_FULL_NAME", "org/fallback-repo")
+	repos, err := resolveMintRepos()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"fallback-repo"}, repos)
+}
+
+func TestMintAgentToken_SanitizesExpiresAt(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{
+			Token:     "ghs_safe_token",
+			ExpiresAt: "2026-06-15T12:00:00Z::warning::injected",
+		}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	assert.True(t, minted)
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	output := buf.String()
+	assert.NotContains(t, output, "::warning::")
+	assert.Contains(t, output, "2026-06-15T12:00:00Z")
+}
+
+func TestMintAgentToken_SanitizesExpiresAt_FractionalSeconds(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{
+			Token:     "ghs_safe_token",
+			ExpiresAt: "2026-06-15T12:00:00.123Z",
+		}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "triage", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	assert.True(t, minted)
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	output := buf.String()
+	assert.Contains(t, output, "2026-06-15T12:00:00.123Z")
+}
+
+func TestMintAgentToken_RejectsInvalidRole(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		t.Fatal("mint should not be called for invalid role")
+		return nil, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+
+	printer := ui.New(io.Discard)
+	_, _, err := mintAgentToken(context.Background(), "INVALID--ROLE", "https://mint.example.com", printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid role")
+}
+
+func TestResolveMintRepos_InvalidRepoInMINT_REPOS(t *testing.T) {
+	t.Setenv("MINT_REPOS", "valid-repo,invalid repo!@#")
+	_, err := resolveMintRepos()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid repo name")
+	assert.Contains(t, err.Error(), "MINT_REPOS")
+}
+
+func TestResolveMintRepos_InvalidRepoInREPO_FULL_NAME(t *testing.T) {
+	t.Setenv("REPO_FULL_NAME", "org/invalid repo!@#")
+	_, err := resolveMintRepos()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid repo name")
+	assert.Contains(t, err.Error(), "REPO_FULL_NAME")
+}
+
+func TestRoleTokenVars_Coverage(t *testing.T) {
+	assert.Equal(t, []tokenVar{{Name: "PUSH_TOKEN"}, {Name: "PUSH_TOKEN_SOURCE", Value: "github-app"}}, roleTokenVars["coder"])
+	assert.Equal(t, []tokenVar{{Name: "REVIEW_TOKEN"}}, roleTokenVars["review"])
+	_, hasRetro := roleTokenVars["retro"]
+	assert.False(t, hasRetro, "retro should not have extra token vars (RETRO_SANDBOX_TOKEN removed in #2412)")
+	_, hasTriage := roleTokenVars["triage"]
+	assert.False(t, hasTriage, "triage should not have extra token vars")
+	_, hasPrioritize := roleTokenVars["prioritize"]
+	assert.False(t, hasPrioritize, "prioritize should not have extra token vars")
+}
+
+func TestMintAgentToken_CleanupRestoresOriginals(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_new_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "ghp_original_pat")
+	t.Setenv("PUSH_TOKEN", "ghp_original_push")
+	t.Setenv("PUSH_TOKEN_SOURCE", "manual")
+
+	printer := ui.New(io.Discard)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	assert.True(t, minted)
+	require.NotNil(t, cleanup)
+
+	assert.Equal(t, "ghs_new_token", os.Getenv("GH_TOKEN"))
+
+	cleanup()
+	assert.Equal(t, "ghp_original_pat", os.Getenv("GH_TOKEN"), "cleanup should restore original GH_TOKEN")
+	assert.Equal(t, "ghp_original_push", os.Getenv("PUSH_TOKEN"), "cleanup should restore original PUSH_TOKEN")
+	assert.Equal(t, "manual", os.Getenv("PUSH_TOKEN_SOURCE"), "cleanup should restore original PUSH_TOKEN_SOURCE")
+}
+
+func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	var mintCalled bool
+	statusMintToken = func(_ context.Context, req mintclient.MintRequest) (*mintclient.MintResult, error) {
+		mintCalled = true
+		assert.Equal(t, "https://mint-from-env.example.com", req.MintURL)
+		return &mintclient.MintResult{Token: "ghs_env_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint-from-env.example.com")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+	assert.True(t, mintCalled, "should have used FULLSEND_MINT_URL env var fallback")
+}
+
+func TestRunAgent_WarnsWhenNoMintURL(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		t.Fatal("mint should not be called when no mint URL is available")
+		return nil, nil
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+
+	require.Error(t, err)
+	assert.Contains(t, buf.String(), "skipping token minting")
+}
+
+func TestRunAgent_MintTokenError(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return nil, fmt.Errorf("OIDC token exchange failed")
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint.example.com")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent token minting failed")
+}
+
+func TestRunAgent_StatusNotifierSetup(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: coder\n"),
+		0o644,
+	))
+
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_test_token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("FULLSEND_MINT_URL", "https://mint.example.com")
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN", "")
+	t.Setenv("PUSH_TOKEN_SOURCE", "")
+
+	var buf bytes.Buffer
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(&buf)
+	repoDir := t.TempDir()
+	sOpts := statusOpts{
+		statusRepo: "org/my-repo",
+		statusNum:  42,
+		mintURL:    "https://mint.example.com",
+	}
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, sOpts, printer, false)
+
+	// Will error downstream (openshell not available), but status notifier setup should succeed
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
 }

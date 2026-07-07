@@ -52,6 +52,12 @@ git log --oneline -10 -- <test-file-path>
 - Read any security-sensitive files related to the change (auth
   middleware, RBAC configuration, sandboxing code) even if they are not
   directly modified.
+- **Cross-file verification:** If you intend to reference a file's
+  contents in a finding — even a file not in the diff — you MUST read
+  that file first. Never claim a file contains specific text without
+  having read it in this session. If you cannot read the file (e.g., it
+  is in another repository or inaccessible), state that you were unable
+  to verify the contents rather than assuming what they contain.
 
 ### 3. Evaluate each dimension
 
@@ -160,9 +166,9 @@ already stripped the payload.
 
 - Does the change trace to a linked issue or authorized feature request?
 - Does the implementation match what the linked issue describes?
-- Is the scope appropriate to the claimed tier (bug fix vs. new
-  feature)? A change that adds new capability is a feature, not a bug
-  fix, regardless of how it is labeled.
+- Is the scope appropriate to the claimed intent authorization tier
+  (bug fix vs. new feature)? A change that adds new capability is a
+  feature, not a bug fix, regardless of how it is labeled.
 - Does the change go beyond what the linked issue authorized?
 - Does the change fit the overall design of the module/system?
 - Is the complexity proportional to the value delivered?
@@ -207,13 +213,25 @@ For each issue identified, record:
   `test-weakened`, `tier-mismatch`, `injection-pattern`,
   `unicode-steganography`, `data-exposure`, `naming-convention`
 - **Description:** natural-language explanation of the finding
-- **Location:** relative file path and line number(s)
+- **Location:** relative file path and line number(s). Verify each
+  line number: the content at the cited line must be the specific
+  code or text your finding discusses, not a nearby line in the same
+  section. Re-read the file at the line you plan to cite and confirm
+  the match. If the content does not match, find the correct line. If
+  you cannot determine the correct line, omit it rather than guessing.
 - **Remediation:** suggested fix or action (required for critical/high)
 - **Actionable:** whether the finding should become tracked follow-up
   work if the PR is approved. Use `true` only for concrete low/info
   items that can be fixed independently after merge. Use `false` for
   observations, praise, broad suggestions, and anything already handled
   by the PR.
+
+**Cross-file finding self-check:** Before recording any finding that
+asserts what a specific file contains, verify that you read that file
+during step 2. If you did not read it, read it now before finalizing
+the finding. If the file is unreadable, reframe the finding to state
+that the contents could not be verified — do not assert unverified
+contents as fact.
 
 #### Severity anchoring (re-reviews)
 

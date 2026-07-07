@@ -9,6 +9,7 @@ import (
 type harnessBootstrap struct {
 	sandboxName string
 	agentPath   string
+	agentName   string
 	skillDirs   []string
 	pluginDirs  []string
 }
@@ -20,6 +21,7 @@ type harnessBootstrapWithHooks struct {
 
 func (b *harnessBootstrap) SandboxName() string  { return b.sandboxName }
 func (b *harnessBootstrap) AgentPath() string    { return b.agentPath }
+func (b *harnessBootstrap) AgentName() string    { return b.agentName }
 func (b *harnessBootstrap) SkillDirs() []string  { return b.skillDirs }
 func (b *harnessBootstrap) PluginDirs() []string { return b.pluginDirs }
 
@@ -27,10 +29,11 @@ func (b *harnessBootstrapWithHooks) ClaudeSandboxHooks() security.ClaudeSandboxH
 	return b.hooks
 }
 
-func newHarnessBootstrap(h *harness.Harness, sandboxName string) runtime.BootstrapInput {
+func newHarnessBootstrap(h *harness.Harness, sandboxName, agentName string) runtime.BootstrapInput {
 	base := &harnessBootstrap{
 		sandboxName: sandboxName,
 		agentPath:   h.Agent,
+		agentName:   agentName,
 		skillDirs:   h.Skills,
 		pluginDirs:  h.Plugins,
 	}

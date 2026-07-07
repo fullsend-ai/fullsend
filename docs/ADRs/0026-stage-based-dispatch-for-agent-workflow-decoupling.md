@@ -15,7 +15,7 @@ Date: 2026-04-28
 
 ## Status
 
-Accepted (Option C superseded by [ADR 0041](0041-synchronous-workflow-call-event-dispatch.md) for the event-driven dispatch path)
+Accepted (Option C superseded by [ADR 0041](0041-synchronous-workflow-call-event-dispatch.md) for the event-driven dispatch path; `# fullsend-stage:` markers superseded by harness CEL triggers in [ADR 0061](0061-harness-cel-dispatch.md))
 
 ## Context
 

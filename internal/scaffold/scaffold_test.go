@@ -61,7 +61,6 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		"agents/triage.md",
 		"agents/code.md",
 		"env/gcp-vertex.env",
-		"env/triage.env",
 		"env/code-agent.env",
 		"harness/triage.yaml",
 		"harness/code.yaml",
@@ -79,11 +78,11 @@ func TestFullsendRepoFilesExist(t *testing.T) {
 		"scripts/validate-output-schema.sh",
 		"scripts/fullsend-check-output",
 		"scripts/validate-source-repo.sh",
+		"skills/autonomy-readiness/SKILL.md",
 		"skills/code-implementation/SKILL.md",
 		"skills/issue-labels/SKILL.md",
 		"templates/shim-workflow-call.yaml",
 		"agents/prioritize.md",
-		"env/prioritize.env",
 		"harness/prioritize.yaml",
 		"policies/prioritize.yaml",
 		"schemas/prioritize-result.schema.json",
@@ -145,6 +144,21 @@ func TestShimWorkflowCallTemplateContent(t *testing.T) {
 	assert.NotContains(t, s, "curl")
 }
 
+func TestShimPerRepoTemplateContent(t *testing.T) {
+	content, err := FullsendRepoFile("templates/shim-per-repo.yaml")
+	require.NoError(t, err)
+	s := string(content)
+	assert.True(t, strings.HasPrefix(s, "---\n"), "per-repo shim must start with YAML document start marker")
+	assert.Contains(t, s, "dispatch:")
+	assert.Contains(t, s, "stop-fix:")
+	assert.Contains(t, s, "__REUSABLE_DISPATCH__")
+	assert.Contains(t, s, "install_mode: per-repo")
+	// Per-role concurrency lives in reusable-dispatch.yml, not a monolithic shim group (#2452).
+	assert.NotContains(t, s, "fullsend-dispatch-${{")
+	assert.NotRegexp(t, `(?m)^\s+concurrency:`, s)
+	assert.Contains(t, s, "per-role cancel-in-progress groups live in reusable-dispatch.yml")
+}
+
 func TestShimTriggerParity(t *testing.T) {
 	// Both shim templates must declare the same event trigger types so that
 	// per-repo and workflow-call installation modes have identical behavior.
@@ -193,6 +207,7 @@ func TestDispatchWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "/fs-fix")
 	assert.Contains(t, s, "/fs-retro")
 	assert.Contains(t, s, "/fs-prioritize")
+	assert.Contains(t, s, "ready-for-triage")
 	assert.Contains(t, s, "ready-to-code")
 	assert.Contains(t, s, "ready-for-review")
 	assert.Contains(t, s, "TRIGGERING_LABEL")
@@ -204,9 +219,11 @@ func TestDispatchWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "opened|synchronize|ready_for_review")
 	// /code must only run on issues, not PRs
 	assert.Contains(t, s, "ISSUE_HAS_PR")
-	// Author association checks
+	// Authorization checks (collaborator permission API using .role_name)
 	assert.Contains(t, s, "is_authorized")
-	assert.Contains(t, s, "OWNER|MEMBER|COLLABORATOR")
+	assert.Contains(t, s, "has_write_permission")
+	assert.Contains(t, s, ".role_name")
+	assert.Contains(t, s, "admin|maintain|write")
 	assert.Contains(t, s, `COMMENT_AUTHOR_ASSOC`)
 	// Auto-triage requires assoc != NONE or issue author
 	assert.Contains(t, s, "is_issue_author")
@@ -349,7 +366,8 @@ func TestTriageWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "event_type")
 	assert.Contains(t, s, "source_repo")
 	assert.Contains(t, s, "event_payload")
-	assert.Contains(t, s, "fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@v0")
+	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
+	assert.NotContains(t, s, "distribution_mode")
 	assert.Contains(t, s, "FULLSEND_MINT_URL")
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
@@ -388,7 +406,8 @@ func TestCodeWorkflowContent(t *testing.T) {
 	s := string(content)
 	assert.Contains(t, s, "# fullsend-stage: code")
 	assert.Contains(t, s, "workflow_dispatch")
-	assert.Contains(t, s, "fullsend-ai/fullsend/.github/workflows/reusable-code.yml@v0")
+	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
+	assert.NotContains(t, s, "distribution_mode")
 	assert.Contains(t, s, "FULLSEND_MINT_URL")
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
@@ -413,7 +432,8 @@ func TestReviewWorkflowContent(t *testing.T) {
 	s := string(content)
 	assert.Contains(t, s, "# fullsend-stage: review")
 	assert.Contains(t, s, "workflow_dispatch")
-	assert.Contains(t, s, "fullsend-ai/fullsend/.github/workflows/reusable-review.yml@v0")
+	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
+	assert.NotContains(t, s, "distribution_mode")
 	assert.Contains(t, s, "FULLSEND_MINT_URL")
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
@@ -437,7 +457,8 @@ func TestFixWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "# fullsend-stage: fix")
 	assert.Contains(t, s, "workflow_dispatch")
 	assert.Contains(t, s, "trigger_source")
-	assert.Contains(t, s, "fullsend-ai/fullsend/.github/workflows/reusable-fix.yml@v0")
+	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
+	assert.NotContains(t, s, "distribution_mode")
 	assert.Contains(t, s, "FULLSEND_MINT_URL")
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
@@ -461,7 +482,8 @@ func TestRetroWorkflowContent(t *testing.T) {
 	s := string(content)
 	assert.Contains(t, s, "# fullsend-stage: retro")
 	assert.Contains(t, s, "workflow_dispatch")
-	assert.Contains(t, s, "fullsend-ai/fullsend/.github/workflows/reusable-retro.yml@v0")
+	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
+	assert.NotContains(t, s, "distribution_mode")
 	assert.Contains(t, s, "FULLSEND_MINT_URL")
 	assert.NotContains(t, s, "secrets: inherit")
 	assert.Contains(t, s, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
@@ -608,7 +630,8 @@ func TestHarnessesLoadAndValidate(t *testing.T) {
 				assert.Nil(t, h.Forge, "Forge should be nil after resolution")
 				assert.NotEmpty(t, h.PreScript, "PreScript should be set after forge resolution")
 				assert.NotEmpty(t, h.PostScript, "PostScript should be set after forge resolution")
-				assert.NotEmpty(t, h.RunnerEnv, "RunnerEnv should be non-empty after merge")
+				hasRunnerEnv := len(h.RunnerEnv) > 0 || (h.Env != nil && len(h.Env.Runner) > 0)
+				assert.True(t, hasRunnerEnv, "RunnerEnv or Env.Runner should be non-empty after merge")
 
 				resolveErr := h.ResolveRelativeTo(dir)
 				require.NoError(t, resolveErr, "ResolveRelativeTo should succeed")
@@ -645,7 +668,7 @@ func TestHarnessForgeRunnerEnvMerge(t *testing.T) {
 		},
 		{
 			file:            "code.yaml",
-			topLevelKeys:    []string{"TARGET_BRANCH"},
+			topLevelKeys:    []string{"CODE_ALLOWED_TARGET_BRANCHES", "FULLSEND_OUTPUT_SCHEMA", "FULLSEND_OUTPUT_FILE"},
 			forgeGithubKeys: []string{"PUSH_TOKEN", "PUSH_TOKEN_SOURCE", "REPO_FULL_NAME", "ISSUE_NUMBER", "REPO_DIR"},
 		},
 		{
@@ -676,11 +699,22 @@ func TestHarnessForgeRunnerEnvMerge(t *testing.T) {
 			h, loadErr := harness.LoadWithOpts(harnessPath, harness.LoadOpts{ForgePlatform: "github"})
 			require.NoError(t, loadErr)
 
+			// Build a combined env map from both legacy RunnerEnv and new Env.Runner.
+			combined := make(map[string]string)
+			for k, v := range h.RunnerEnv {
+				combined[k] = v
+			}
+			if h.Env != nil {
+				for k, v := range h.Env.Runner {
+					combined[k] = v
+				}
+			}
+
 			for _, key := range tt.topLevelKeys {
-				assert.Contains(t, h.RunnerEnv, key, "merged RunnerEnv should contain top-level key %s", key)
+				assert.Contains(t, combined, key, "merged env should contain top-level key %s", key)
 			}
 			for _, key := range tt.forgeGithubKeys {
-				assert.Contains(t, h.RunnerEnv, key, "merged RunnerEnv should contain forge.github key %s", key)
+				assert.Contains(t, combined, key, "merged env should contain forge.github key %s", key)
 			}
 		})
 	}
@@ -695,7 +729,7 @@ func TestRepoMaintenanceWorkflowContent(t *testing.T) {
 		"push trigger must include workflow_call shim template so changes propagate to enrolled repos")
 	assert.NotContains(t, s, "templates/shim-workflow.yaml",
 		"PAT shim template reference should be removed")
-	assert.Contains(t, s, "fullsend-ai/fullsend/.github/actions/mint-token@v0")
+	assert.Contains(t, s, "fullsend-ai/fullsend/.github/actions/mint-token@__FULLSEND_AI_REF__")
 	assert.Contains(t, s, "Checkout upstream scripts")
 	assert.Contains(t, s, "Prepare scripts")
 	assert.Contains(t, s, "customized/scripts")
@@ -742,7 +776,8 @@ func TestPrioritizeWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "event_type")
 	assert.Contains(t, s, "source_repo")
 	assert.Contains(t, s, "event_payload")
-	assert.Contains(t, s, "fullsend-ai/fullsend/.github/workflows/reusable-prioritize.yml@v0")
+	assert.Contains(t, s, "__REUSABLE_WORKFLOW__")
+	assert.NotContains(t, s, "distribution_mode")
 	assert.Contains(t, s, "FULLSEND_MINT_URL")
 	assert.Contains(t, s, "FULLSEND_PROJECT_NUMBER")
 	assert.NotContains(t, s, "secrets: inherit")
@@ -751,7 +786,6 @@ func TestPrioritizeWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "concurrency:")
 	assert.Contains(t, s, "fullsend-prioritize-")
 	assert.Contains(t, s, "cancel-in-progress: true")
-	// Permissions required by the reusable workflow
 	assert.Contains(t, s, "permissions:")
 	assert.Contains(t, s, "actions: write")
 	assert.Contains(t, s, "id-token: write")
@@ -776,12 +810,11 @@ func TestPrioritizeSchedulerWorkflowContent(t *testing.T) {
 	require.NotEqual(t, -1, guardIndex)
 	require.NotEqual(t, -1, projectViewIndex)
 	assert.Less(t, guardIndex, projectViewIndex, "PROJECT_NUMBER must be checked before gh project view")
-	assert.Contains(t, s, "fullsend-ai/fullsend/.github/actions/mint-token@v0")
+	assert.Contains(t, s, "fullsend-ai/fullsend/.github/actions/mint-token@__FULLSEND_AI_REF__")
 	assert.Contains(t, s, "role: fullsend")
 	assert.Contains(t, s, "id-token: write")
 	assert.NotContains(t, s, "create-github-app-token")
 	assert.NotContains(t, s, "FULLSEND_FULLSEND_CLIENT_ID")
-	assert.NotContains(t, s, "./.github/actions/")
 }
 
 func TestPrioritizeSchedulerSkipsWhenProjectNumberUnset(t *testing.T) {
@@ -874,7 +907,9 @@ func TestPrioritizeHarnessContent(t *testing.T) {
 	assert.Contains(t, s, "agents/prioritize.md")
 	assert.Contains(t, s, "pre_script")
 	assert.Contains(t, s, "post_script")
-	assert.Contains(t, s, "runner_env")
+	assert.Contains(t, s, "env:")
+	assert.Contains(t, s, "runner:")
+	assert.Contains(t, s, "sandbox:")
 	assert.Contains(t, s, "PROJECT_NUMBER")
 }
 

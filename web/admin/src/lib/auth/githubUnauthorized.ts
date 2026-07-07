@@ -7,8 +7,7 @@
  * {@link notifyGitHubUserUnauthorized} from any other user-token GitHub path that can return 401
  * so behaviour stays consistent.
  */
-export const GITHUB_USER_UNAUTHORIZED_EVENT =
-  "fullsend:github-unauthorized" as const;
+export const GITHUB_USER_UNAUTHORIZED_EVENT = "fullsend:github-unauthorized" as const;
 
 export function notifyGitHubUserUnauthorized(): void {
   window.dispatchEvent(new CustomEvent(GITHUB_USER_UNAUTHORIZED_EVENT));

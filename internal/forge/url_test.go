@@ -115,6 +115,121 @@ func TestParseForgeURL(t *testing.T) {
 	}
 }
 
+func TestParseRawContentURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    *ForgeURLInfo
+		wantErr string
+	}{
+		{
+			name:  "valid raw URL with SHA ref and path",
+			input: "https://raw.githubusercontent.com/fullsend-ai/fullsend/a06f8626/skills/pr-review",
+			want: &ForgeURLInfo{
+				Forge: "github",
+				Owner: "fullsend-ai",
+				Repo:  "fullsend",
+				Ref:   "a06f8626",
+				Path:  "skills/pr-review",
+			},
+		},
+		{
+			name:  "URL with fragment stripped",
+			input: "https://raw.githubusercontent.com/org/repo/abc123/path/to/file#sha256=def456",
+			want: &ForgeURLInfo{
+				Forge: "github",
+				Owner: "org",
+				Repo:  "repo",
+				Ref:   "abc123",
+				Path:  "path/to/file",
+			},
+		},
+		{
+			name:  "ref only, no path",
+			input: "https://raw.githubusercontent.com/owner/repo/main",
+			want: &ForgeURLInfo{
+				Forge: "github",
+				Owner: "owner",
+				Repo:  "repo",
+				Ref:   "main",
+				Path:  "",
+			},
+		},
+		{
+			name:  "deep nested path",
+			input: "https://raw.githubusercontent.com/org/repo/v1.0.0/a/b/c/d/e",
+			want: &ForgeURLInfo{
+				Forge: "github",
+				Owner: "org",
+				Repo:  "repo",
+				Ref:   "v1.0.0",
+				Path:  "a/b/c/d/e",
+			},
+		},
+		{
+			name:    "wrong host",
+			input:   "https://github.com/owner/repo/tree/main/path",
+			wantErr: "not a raw.githubusercontent.com URL",
+		},
+		{
+			name:    "HTTP not HTTPS",
+			input:   "http://raw.githubusercontent.com/owner/repo/ref",
+			wantErr: "unsupported scheme",
+		},
+		{
+			name:    "too few segments — only owner and repo",
+			input:   "https://raw.githubusercontent.com/owner/repo",
+			wantErr: "URL path too short",
+		},
+		{
+			name:    "too few segments — only owner",
+			input:   "https://raw.githubusercontent.com/owner",
+			wantErr: "URL path too short",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ParseRawContentURL(tt.input)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestForgeURLInfo_CloneURL(t *testing.T) {
+	tests := []struct {
+		name string
+		info ForgeURLInfo
+		want string
+	}{
+		{
+			name: "github",
+			info: ForgeURLInfo{Forge: "github", Owner: "fullsend-ai", Repo: "library"},
+			want: "https://github.com/fullsend-ai/library.git",
+		},
+		{
+			name: "gitlab",
+			info: ForgeURLInfo{Forge: "gitlab", Owner: "my-org", Repo: "my-repo"},
+			want: "https://gitlab.com/my-org/my-repo.git",
+		},
+		{
+			name: "unknown forge uses forge as host",
+			info: ForgeURLInfo{Forge: "gitea.example.com", Owner: "org", Repo: "repo"},
+			want: "https://gitea.example.com/org/repo.git",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.info.CloneURL())
+		})
+	}
+}
+
 func TestIsSupportedForge(t *testing.T) {
 	tests := []struct {
 		name     string

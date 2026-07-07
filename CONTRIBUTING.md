@@ -2,6 +2,18 @@
 
 Thank you for your interest in contributing! This document covers the social norms and processes we follow. For where to place your contribution (problem docs, ADRs, etc.), see the [README](README.md#how-to-contribute).
 
+## First-Time Contributors
+
+This project uses a **vouch system**. AI tools make it trivial to generate plausible-looking but low-quality contributions, so we require first-time contributors to be vouched by a maintainer before submitting pull requests.
+
+1. Open a [Vouch Request](https://github.com/fullsend-ai/fullsend/discussions/new?category=vouch-request) discussion.
+2. Describe what you want to change and why.
+3. Write in your own words — do not have an AI generate the request. Requests that read like LLM output will be denied.
+4. A maintainer will comment `/vouch` if approved.
+5. Once vouched, you can submit pull requests.
+
+**If you are not vouched, any pull request you open will be automatically closed.** Org members and collaborators with write access bypass this check.
+
 ## Commit messages
 
 This project uses [Conventional Commits](https://www.conventionalcommits.org/). See [COMMITS.md](COMMITS.md) for the full specification, type selection rules, and examples.
@@ -18,7 +30,9 @@ This project uses the [Probot DCO app](https://github.com/apps/dco) to enforce s
 
 ### Opening a PR
 
-- Run `make lint` before pushing and fix any failures.
+- Stage your changes, then run `make lint` before pushing and fix any failures.
+- For Go changes, run `make go-test` and add tests for new or modified logic. CI uploads coverage to Codecov and enforces the thresholds in [`.codecov.yml`](.codecov.yml): **80% patch coverage** on changed lines (5% tolerance) and **no more than 1% drop** in overall project coverage relative to the base branch.
+- **If your PR introduces a breaking change**, the PR title must carry the `!` suffix (e.g., `feat(harness)!: require role field`). GoReleaser builds release notes from PR titles — a missing `!` means users get no warning before upgrading. See [COMMITS.md](COMMITS.md#breaking-changes) for how to identify breaking changes and what to include in the commit body.
 - Keep PRs focused. One problem area or decision per PR is easier to review than a grab-bag.
 - If your change touches a problem doc, make sure the "Open questions" section still makes sense after your edit.
 

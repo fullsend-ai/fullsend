@@ -13,6 +13,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/sticky"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -86,6 +87,12 @@ has moved, a stale-head failure is posted instead.`,
 			if err != nil {
 				return fmt.Errorf("parsing review result: %w", err)
 			}
+
+			// Sanitize review content through the output security
+			// pipeline before posting to the forge. This redacts
+			// leaked secrets and normalizes zero-width unicode
+			// obfuscation that could bypass pattern-based redaction.
+			parsed = sanitizeReviewResult(parsed, printer)
 
 			// CLI flag takes precedence over JSON field.
 			if headSHA != "" {
@@ -326,13 +333,17 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 	// accept review comments on lines outside the PR diff. The
 	// findings themselves remain in the sticky comment body and
 	// continue to influence the review verdict.
-	inlineComments, fileFiltered, lineFiltered := findingsToReviewComments(findings, diffHunks)
+	//
+	// Findings whose file is in the PR diff but whose line falls
+	// outside any diff hunk are posted as file-level comments so
+	// they remain visible on the PR code.
+	inlineComments, fileFiltered, fileLevelFallback := findingsToReviewComments(findings, diffHunks)
 
 	if fileFiltered > 0 {
 		printer.StepWarn(fmt.Sprintf("%d inline comment(s) omitted (file not in PR diff) — findings still count toward verdict", fileFiltered))
 	}
-	if lineFiltered > 0 {
-		printer.StepWarn(fmt.Sprintf("%d inline comment(s) omitted (line not in any diff hunk) — findings still count toward verdict", lineFiltered))
+	if fileLevelFallback > 0 {
+		printer.StepInfo(fmt.Sprintf("%d finding(s) posted as file-level comment(s) (line outside diff hunk)", fileLevelFallback))
 	}
 
 	// COMMENT verdicts skip the formal review unless there are inline-
@@ -366,15 +377,22 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 // findingsToReviewComments converts review findings with file and line
 // locations into inline review comments. Findings without a file path
 // or line number are omitted — they remain in the sticky comment body.
+//
 // When diffHunks is non-nil, findings referencing files outside the PR
-// diff or lines outside any diff hunk are omitted to avoid GitHub 422
-// errors. Files with empty hunk lists (binary files, truncated patches)
-// skip line-level filtering — the file is known to be in the diff but
-// hunk coverage is unavailable. Returns the comments and counts of
-// findings dropped for each reason (file not in diff, line not in hunk).
+// diff are omitted to avoid GitHub 422 errors. Findings whose file is
+// in the diff but whose line falls outside any diff hunk are posted as
+// file-level comments (Line=0) so they remain visible on the PR code;
+// the original line number is included in the comment body since file-
+// level comments have no line annotation in the UI. Files with empty hunk lists (binary files, truncated
+// patches) skip line-level filtering — the file is known to be in the
+// diff but hunk coverage is unavailable.
+//
+// Returns the comments, count of findings dropped because their file
+// was not in the diff, and count of findings that fell back to
+// file-level comments.
 func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][2]int) ([]forge.ReviewComment, int, int) {
 	var comments []forge.ReviewComment
-	var fileFiltered, lineFiltered int
+	var fileFiltered, fileLevelFallback int
 	for _, f := range findings {
 		if f.File == "" || f.Line <= 0 {
 			continue
@@ -386,7 +404,17 @@ func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][
 				continue
 			}
 			if len(hunks) > 0 && !lineInHunks(f.Line, hunks) {
-				lineFiltered++
+				// Fall back to file-level comments so findings
+				// remain visible on the PR even when the exact
+				// line is outside the changed region. Include the
+				// original line number in the body since file-level
+				// comments have no line annotation in the UI.
+				body := fmt.Sprintf("_Line %d_ · %s", f.Line, formatFindingComment(f))
+				comments = append(comments, forge.ReviewComment{
+					Path: f.File,
+					Body: body,
+				})
+				fileLevelFallback++
 				continue
 			}
 		}
@@ -396,7 +424,7 @@ func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][
 			Body: formatFindingComment(f),
 		})
 	}
-	return comments, fileFiltered, lineFiltered
+	return comments, fileFiltered, fileLevelFallback
 }
 
 // formatFindingComment renders a single review finding as a Markdown
@@ -504,6 +532,58 @@ func minimizeStaleReviews(ctx context.Context, client forge.Client, user string,
 		}
 	}
 	printer.StepDone("Stale reviews minimized")
+}
+
+// sanitizeReviewResult runs the security output pipeline over all
+// user-visible text fields in a ReviewResult. This catches leaked
+// secrets and zero-width–obfuscated tokens before they reach the
+// forge API.
+func sanitizeReviewResult(r ReviewResult, printer *ui.Printer) ReviewResult {
+	pipeline := security.OutputPipeline()
+
+	// Sanitize the main body.
+	if r.Body != "" {
+		result := pipeline.Scan(r.Body)
+		if result.Sanitized != "" {
+			r.Body = result.Sanitized
+			printer.StepWarn(fmt.Sprintf("Sanitized review body (%d finding(s))", len(result.Findings)))
+			for _, f := range result.Findings {
+				printer.StepWarn(fmt.Sprintf("  %s: %s", f.Name, f.Detail))
+			}
+		}
+	}
+
+	// Sanitize finding fields — severity, category, description, and
+	// remediation are all interpolated into Markdown posted to the
+	// forge and could carry secrets from agent output.
+	for i := range r.Findings {
+		if r.Findings[i].Severity != "" {
+			result := pipeline.Scan(r.Findings[i].Severity)
+			if result.Sanitized != "" {
+				r.Findings[i].Severity = result.Sanitized
+			}
+		}
+		if r.Findings[i].Category != "" {
+			result := pipeline.Scan(r.Findings[i].Category)
+			if result.Sanitized != "" {
+				r.Findings[i].Category = result.Sanitized
+			}
+		}
+		if r.Findings[i].Description != "" {
+			result := pipeline.Scan(r.Findings[i].Description)
+			if result.Sanitized != "" {
+				r.Findings[i].Description = result.Sanitized
+			}
+		}
+		if r.Findings[i].Remediation != "" {
+			result := pipeline.Scan(r.Findings[i].Remediation)
+			if result.Sanitized != "" {
+				r.Findings[i].Remediation = result.Sanitized
+			}
+		}
+	}
+
+	return r
 }
 
 // parseReviewResult attempts to parse the body as a JSON ReviewResult.

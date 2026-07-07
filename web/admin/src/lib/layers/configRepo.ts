@@ -1,18 +1,12 @@
 import type { LayerReport } from "../status/types";
-import {
-  CONFIG_FILE_PATH,
-  CONFIG_REPO_NAME,
-} from "./constants";
+import { CONFIG_FILE_PATH, CONFIG_REPO_NAME } from "./constants";
 import type { LayerGithub } from "./githubClient";
 import { parseOrgConfigYaml, validateOrgConfig } from "./orgConfigParse";
 
 /**
  * Read-only port of `ConfigRepoLayer.Analyze` (`internal/layers/configrepo.go`).
  */
-export async function analyzeConfigRepoLayer(
-  org: string,
-  gh: LayerGithub,
-): Promise<LayerReport> {
+export async function analyzeConfigRepoLayer(org: string, gh: LayerGithub): Promise<LayerReport> {
   const report: LayerReport = {
     name: "config-repo",
     status: "unknown",
@@ -24,10 +18,7 @@ export async function analyzeConfigRepoLayer(
   const exists = await gh.getRepoExists(org, CONFIG_REPO_NAME);
   if (!exists) {
     report.status = "not_installed";
-    report.wouldInstall = [
-      `create ${CONFIG_REPO_NAME} repository`,
-      `write ${CONFIG_FILE_PATH}`,
-    ];
+    report.wouldInstall = [`create ${CONFIG_REPO_NAME} repository`, `write ${CONFIG_FILE_PATH}`];
     return report;
   }
 

@@ -15,6 +15,9 @@ allowed-tools: Bash(bash skills/merge-queue/scripts/*:*)
 Run `bash skills/merge-queue/scripts/enqueue-pr.sh [PR_NUMBER_OR_URL]` to enqueue a PR.
 Omit the argument to enqueue the current branch's PR.
 
+If the PR is not yet eligible (checks pending, missing approvals), use
+`await-and-enqueue.sh` instead — see below.
+
 ### Accepted input formats
 
 - **PR number:** `652` (uses the current repo context from `gh`)
@@ -37,6 +40,18 @@ Run `bash skills/merge-queue/scripts/dequeue-reason.sh <PR_NUMBER_OR_URL>` to fi
 
 Shows each removal event's timestamp, reason (e.g. `failed_checks`, `merge_conflict`), and the commit SHA at the time of removal.
 
+## Await and enqueue
+
+Run `bash skills/merge-queue/scripts/await-and-enqueue.sh [PR_NUMBER_OR_URL]` to
+poll a PR until all required checks pass and the PR is approved, then
+automatically enqueue it. Exits early if any check fails.
+
+Use this when `enqueue-pr.sh` rejects a PR because checks are still pending.
+GitHub's `auto-merge` API (`gh pr merge --auto`) does not work with merge
+queues, so this script fills that gap.
+
+Set `POLL_INTERVAL` (default: 30 seconds) to control how often it checks.
+
 ## Prerequisites
 
 - `gh` CLI authenticated with write access to the target repository
@@ -48,3 +63,5 @@ Shows each removal event's timestamp, reason (e.g. `failed_checks`, `merge_confl
 - **"Pull request is already in the merge queue"** — the PR was previously enqueued; no action needed.
 - **"Pull request is not mergeable"** — the PR may need approvals, passing checks, or conflict resolution before it can be enqueued.
 - **"Resource not accessible by integration"** — the `gh` token lacks sufficient permissions.
+- **"status checks are expected"** — required checks haven't finished yet. Use `await-and-enqueue.sh` to poll and enqueue once they pass.
+- **`gh pr merge --auto` fails with merge queues** — GitHub's auto-merge API does not support merge queues. Use `await-and-enqueue.sh` instead.

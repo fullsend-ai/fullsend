@@ -1003,3 +1003,64 @@ func TestFakeClient_CommitFilesErrSeq(t *testing.T) {
 		require.ErrorIs(t, err, ErrNonFastForward)
 	})
 }
+
+func TestIsTreeTruncated(t *testing.T) {
+	assert.True(t, IsTreeTruncated(ErrTreeTruncated))
+	assert.True(t, IsTreeTruncated(errors.Join(errors.New("wrapper"), ErrTreeTruncated)))
+	assert.False(t, IsTreeTruncated(errors.New("some other error")))
+	assert.False(t, IsTreeTruncated(nil))
+}
+
+func TestFakeClient_ListRepositoryFiles(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns files matching owner/repo prefix", func(t *testing.T) {
+		fc := &FakeClient{
+			FileContents: map[string][]byte{
+				"org/repo/file1.go": []byte("a"),
+				"org/repo/dir/f2":   []byte("b"),
+				"org/other/nope":    []byte("c"),
+			},
+		}
+		paths, err := fc.ListRepositoryFiles(ctx, "org", "repo")
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"file1.go", "dir/f2"}, paths)
+	})
+
+	t.Run("returns nil for empty repo", func(t *testing.T) {
+		fc := &FakeClient{FileContents: map[string][]byte{}}
+		paths, err := fc.ListRepositoryFiles(ctx, "org", "repo")
+		require.NoError(t, err)
+		assert.Empty(t, paths)
+	})
+
+	t.Run("returns injected error", func(t *testing.T) {
+		fc := &FakeClient{
+			Errors: map[string]error{
+				"ListRepositoryFiles": ErrTreeTruncated,
+			},
+		}
+		_, err := fc.ListRepositoryFiles(ctx, "org", "repo")
+		require.ErrorIs(t, err, ErrTreeTruncated)
+	})
+}
+
+func TestFakeClient_ListRepositoryFiles_ConcurrentSafe(t *testing.T) {
+	fc := &FakeClient{
+		FileContents: map[string][]byte{
+			"org/repo/a": []byte("a"),
+			"org/repo/b": []byte("b"),
+		},
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := fc.ListRepositoryFiles(context.Background(), "org", "repo")
+			assert.NoError(t, err)
+		}()
+	}
+	wg.Wait()
+}

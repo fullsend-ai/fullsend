@@ -19,12 +19,25 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, token, org 
 	t.Helper()
 	t.Log("[cleanup] Scanning for stale resources from previous runs...")
 
-	// 1. Delete .fullsend repo if it exists.
-	_, err := client.GetRepo(ctx, org, forge.ConfigRepoName)
-	if err == nil {
-		t.Logf("[cleanup] Deleting stale %s repo", forge.ConfigRepoName)
-		if delErr := client.DeleteRepo(ctx, org, forge.ConfigRepoName); delErr != nil {
-			t.Logf("[cleanup] Warning: could not delete %s: %v", forge.ConfigRepoName, delErr)
+	// 1. Close open PRs on .fullsend, then delete the config repo and any
+	// numbered forks (.fullsend-1, …) left from prior PR-based install runs.
+	if _, err := client.GetRepo(ctx, org, forge.ConfigRepoName); err == nil {
+		prs, listErr := client.ListRepoPullRequests(ctx, org, forge.ConfigRepoName)
+		if listErr != nil {
+			t.Logf("[cleanup] Warning: could not list PRs on %s: %v", forge.ConfigRepoName, listErr)
+		} else {
+			for _, pr := range prs {
+				t.Logf("[cleanup] Closing stale PR #%d on %s: %s", pr.Number, forge.ConfigRepoName, pr.Title)
+				closePR(ctx, token, org, forge.ConfigRepoName, pr.Number, t)
+			}
+		}
+	}
+	for _, name := range listOrgRepoNames(ctx, token, org, t) {
+		if strings.HasPrefix(name, ".fullsend") {
+			t.Logf("[cleanup] Deleting stale repo %s", name)
+			if delErr := client.DeleteRepo(ctx, org, name); delErr != nil {
+				t.Logf("[cleanup] Warning: could not delete %s: %v", name, delErr)
+			}
 		}
 	}
 
@@ -42,7 +55,7 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, token, org 
 	// 3. Ensure test-repo exists and has at least one commit (needed for
 	// enrollment testing). An empty repo (no commits) causes the
 	// reconcile-repos script to fail with "Could not get default branch tree".
-	_, err = client.GetRepo(ctx, org, testRepo)
+	_, err := client.GetRepo(ctx, org, testRepo)
 	if forge.IsNotFound(err) {
 		t.Logf("[cleanup] Creating missing %s repo", testRepo)
 		if _, createErr := client.CreateRepo(ctx, org, testRepo, "E2E test repo", false); createErr != nil {
@@ -57,6 +70,9 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, token, org 
 	} else if getErr != nil {
 		t.Logf("[cleanup] Warning: could not check README in %s: %v", testRepo, getErr)
 	}
+
+	// Clear per-repo install guard so enroll-all includes test-repo.
+	deleteRepoVariable(ctx, token, org, testRepo, forge.PerRepoGuardVar, t)
 
 	// 4. Delete stale enrollment and unenrollment branches from test-repo.
 	deleteBranch(ctx, token, org, testRepo, "fullsend/onboard", t)
@@ -79,7 +95,91 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, token, org 
 		}
 	}
 
+	// 7. Delete stale FULLSEND_PER_REPO_INSTALL guard variable from test-repo.
+	// reconcile-repos.sh skips repos with this variable set to true.
+	if delErr := client.DeleteRepoVariable(ctx, org, testRepo, forge.PerRepoGuardVar); delErr != nil {
+		t.Logf("[cleanup] Warning: could not delete per-repo guard variable: %v", delErr)
+	}
+
 	t.Log("[cleanup] Stale resource scan complete")
+}
+
+// listOrgRepoNames returns repository names in an org via the GitHub REST API.
+func listOrgRepoNames(ctx context.Context, token, org string, t *testing.T) []string {
+	t.Helper()
+	var names []string
+	page := 1
+	for {
+		url := fmt.Sprintf("https://api.github.com/orgs/%s/repos?per_page=100&page=%d&type=all", org, page)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			t.Logf("[cleanup] Warning: could not list org repos: %v", err)
+			return names
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Accept", "application/vnd.github+json")
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Logf("[cleanup] Warning: could not list org repos: %v", err)
+			return names
+		}
+
+		var batch []struct {
+			Name string `json:"name"`
+		}
+		decodeErr := json.NewDecoder(resp.Body).Decode(&batch)
+		resp.Body.Close()
+		if decodeErr != nil {
+			t.Logf("[cleanup] Warning: could not decode org repo list: %v", decodeErr)
+			return names
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Logf("[cleanup] Warning: list org repos returned status %d", resp.StatusCode)
+			return names
+		}
+		if len(batch) == 0 {
+			break
+		}
+		for _, repo := range batch {
+			names = append(names, repo.Name)
+		}
+		if len(batch) < 100 {
+			break
+		}
+		page++
+	}
+	return names
+}
+
+// deleteRepoVariable deletes a repository Actions variable via the GitHub REST API.
+// Idempotent: 404 is ignored.
+func deleteRepoVariable(ctx context.Context, token, org, repo, name string, t *testing.T) {
+	t.Helper()
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/variables/%s", org, repo, name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		t.Logf("[cleanup] Warning: could not create variable delete request: %v", err)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Logf("[cleanup] Warning: could not delete repo variable %s: %v", name, err)
+		return
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusNoContent:
+		t.Logf("[cleanup] Deleted stale repo variable %s on %s", name, repo)
+	case http.StatusNotFound:
+		// Variable doesn't exist.
+	default:
+		t.Logf("[cleanup] Warning: unexpected status deleting repo variable %s: %d", name, resp.StatusCode)
+	}
 }
 
 // deleteBranch deletes a branch from a repo using the GitHub API directly

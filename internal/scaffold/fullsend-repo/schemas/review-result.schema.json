@@ -23,6 +23,9 @@
     "reason": {
       "type": "string",
       "enum": ["tool-failure", "missing-context", "ambiguous-findings", "token-limit"]
+    },
+    "label_actions": {
+      "$ref": "#/$defs/label_actions"
     }
   },
   "allOf": [
@@ -61,6 +64,32 @@
         "actionable": {
           "type": "boolean",
           "description": "True when this non-blocking finding should be tracked as a follow-up issue if the review approves."
+        }
+      },
+      "additionalProperties": false
+    },
+    "label_actions": {
+      "type": "object",
+      "required": ["reason", "actions"],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Single sentence explaining why these labels are being applied or removed"
+        },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "required": ["action", "label"],
+            "properties": {
+              "action": { "type": "string", "enum": ["add", "remove"] },
+              "label": { "type": "string", "minLength": 1, "pattern": "^[a-zA-Z0-9._/: +-]+$" }
+            },
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false

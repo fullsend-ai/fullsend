@@ -2,12 +2,19 @@ package harness
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
+	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/gitfetch"
 	"gopkg.in/yaml.v3"
 )
 
@@ -25,6 +32,7 @@ type Dependency struct {
 	FetchedAt time.Time
 	CacheHit  bool
 	Type      string // "file" for base harnesses
+	Warning   string // non-fatal warning about this dependency (e.g., partial skill fetch)
 }
 
 // ComposeOpts controls base composition behavior.
@@ -46,9 +54,27 @@ type ComposeOpts struct {
 	// If empty, ResolveForge is a no-op.
 	ForgePlatform string
 
-	// OrgAllowlist is the org-level allowed_remote_resources from config.yaml.
-	// Base URLs must match a prefix in this list.
+	// OrgAllowlist is the allowed_remote_resources from config.yaml (org-level
+	// or per-repo-level). Base URLs and agent source URLs must match a prefix
+	// in this list. Callers should merge org and per-repo allowlists when both
+	// are available.
 	OrgAllowlist []string
+
+	// TreeFetcher fetches all files under a path in a remote repository.
+	// When nil, defaults to gitfetch.FetchTree (git sparse checkout).
+	TreeFetcher gitfetch.TreeFetchFunc
+
+	// GitToken is an optional token for authenticating git fetches.
+	// Empty means unauthenticated (sufficient for public repos).
+	GitToken string
+
+	// SourceURL is the URL from which the harness was fetched (e.g., via
+	// FetchAgentHarness for config-registered agents). When set and the harness
+	// has no base: field, LoadWithBase resolves relative resource paths (agent,
+	// policy, skills, scripts) against this URL using the same infrastructure
+	// as base composition (ADR-0045). If empty, no URL resolution is performed
+	// for no-base harnesses.
+	SourceURL string
 
 	// allowSelfAllowlist permits using the child harness's own AllowedRemoteResources
 	// when OrgAllowlist is empty. This is for testing only; production callers should
@@ -78,7 +104,31 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	}
 
 	if child.Base == "" {
-		// No base — same as LoadWithOpts
+		// No base — resolve URL-sourced resources if the harness was
+		// fetched from a URL (ADR-0045). Config-registered agents fetched
+		// via FetchAgentHarness have relative paths that must be resolved
+		// against the source URL before validation.
+		var deps []Dependency
+		if opts.SourceURL != "" {
+			scriptDeps, err := resolveBaseScripts(ctx, child, opts.SourceURL, opts.OrgAllowlist, opts)
+			if err != nil {
+				return nil, nil, fmt.Errorf("resolving URL-sourced scripts: %w", err)
+			}
+			deps = append(deps, scriptDeps...)
+
+			resourceDeps, err := resolveBaseResources(ctx, child, opts.SourceURL, opts.OrgAllowlist, opts)
+			if err != nil {
+				return nil, nil, fmt.Errorf("resolving URL-sourced resources: %w", err)
+			}
+			deps = append(deps, resourceDeps...)
+
+			hostFileDeps, err := resolveBaseHostFiles(ctx, child, opts.SourceURL, opts.OrgAllowlist, opts)
+			if err != nil {
+				return nil, nil, fmt.Errorf("resolving URL-sourced host_files: %w", err)
+			}
+			deps = append(deps, hostFileDeps...)
+		}
+
 		if err := child.validateForge(); err != nil {
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
 		}
@@ -88,7 +138,7 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		if err := child.Validate(); err != nil {
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
 		}
-		return child, nil, nil
+		return child, deps, nil
 	}
 
 	// Org allowlist is the authority for URL bases.
@@ -180,8 +230,36 @@ func loadBaseChain(
 			return nil, nil, fmt.Errorf("parsing base harness from %s: %w", cleanURL, err)
 		}
 
-		// For URL bases, relative paths in the base resolve against the child's directory
-		// (scripts are always local per ADR-0038's "no remote executables" rule)
+		// Resolve script fields in the base by fetching them from the base's
+		// source URL. This extends ADR-0038: standalone script URL references
+		// (pre_script: https://...) remain rejected, but scripts inherited
+		// through base: composition are fetched using the same integrity and
+		// allowlist infrastructure. After resolution, all script paths are
+		// local cache paths, so ValidateResourceTypes still passes.
+		scriptDeps, err := resolveBaseScripts(ctx, base, baseRef, allowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving base scripts from %s: %w", cleanURL, err)
+		}
+		deps = append(deps, scriptDeps...)
+
+		// Declarative resources (agent, policy, skills) inherited from a
+		// URL base are fetched and cached locally so they don't resolve
+		// against the child's directory where they may not exist.
+		resourceDeps, err := resolveBaseResources(ctx, base, baseRef, allowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving base resources from %s: %w", cleanURL, err)
+		}
+		deps = append(deps, resourceDeps...)
+
+		// host_files with relative src paths need the same fetch-cache-rewrite
+		// treatment as scripts and resources. Entries using ${VAR} expansion
+		// are left unchanged — they resolve at bootstrap time on the host.
+		hostFileDeps, err := resolveBaseHostFiles(ctx, base, baseRef, allowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving base host_files from %s: %w", cleanURL, err)
+		}
+		deps = append(deps, hostFileDeps...)
+
 		baseDir = childDir
 	} else {
 		// Local path base
@@ -442,6 +520,14 @@ func mergeBaseIntoChild(base, child *Harness) {
 		child.RunnerEnv = merged
 	}
 
+	// Env: merge sub-maps independently, child keys win (ADR 0055)
+	if base.Env != nil {
+		if child.Env == nil {
+			child.Env = &EnvConfig{}
+		}
+		child.Env.mergeEnvFrom(base.Env, false)
+	}
+
 	// Pointer structs: child replaces if non-nil
 	if child.ValidationLoop == nil {
 		child.ValidationLoop = base.ValidationLoop
@@ -457,6 +543,588 @@ func mergeBaseIntoChild(base, child *Harness) {
 	if base.Forge != nil {
 		child.Forge = mergeForgeBlocks(base.Forge, child.Forge)
 	}
+}
+
+// resolveBaseScripts fetches script fields from a URL-referenced base harness.
+// For each script field (pre_script, post_script, validation_loop.script) that
+// is a non-empty relative path, the script is fetched from the base URL's
+// directory, cached content-addressed, and the field is rewritten to the local
+// cache path. Forge-level scripts are also resolved. agent_input is excluded
+// because runtime treats it as a directory (uploaded recursively).
+// Returns additional dependencies for the fetched scripts.
+func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
+	// Script paths in harness YAMLs are relative to the scaffold root (the
+	// parent of the harness/ directory), not the YAML file. Use
+	// urlParentDirPrefix to match the local resolution behavior where
+	// ResolveRelativeTo is called with absFullsendDir (the workspace root).
+	baseURLDir := urlParentDirPrefix(baseURL)
+	if baseURLDir == "" {
+		return nil, fmt.Errorf("cannot determine directory from base URL")
+	}
+
+	var deps []Dependency
+
+	// agent_input is excluded: runtime treats it as a directory (uploaded
+	// recursively), so single-file fetch is not appropriate.
+	scriptFields := []struct {
+		name string
+		ptr  *string
+	}{
+		{"pre_script", &base.PreScript},
+		{"post_script", &base.PostScript},
+	}
+
+	for _, f := range scriptFields {
+		if *f.ptr == "" {
+			continue
+		}
+		if err := validateBaseRelPath(f.name, *f.ptr); err != nil {
+			return nil, err
+		}
+		dep, cachePath, err := fetchBaseFile(ctx, f.name, baseURLDir, *f.ptr, allowlist, opts, "script", true)
+		if err != nil {
+			return nil, err
+		}
+		*f.ptr = cachePath
+		deps = append(deps, dep)
+	}
+
+	if base.ValidationLoop != nil && base.ValidationLoop.Script != "" {
+		if err := validateBaseRelPath("validation_loop.script", base.ValidationLoop.Script); err != nil {
+			return nil, err
+		}
+		dep, cachePath, err := fetchBaseFile(ctx, "validation_loop.script", baseURLDir, base.ValidationLoop.Script, allowlist, opts, "script", true)
+		if err != nil {
+			return nil, err
+		}
+		base.ValidationLoop.Script = cachePath
+		deps = append(deps, dep)
+	}
+	if base.ValidationLoop != nil && base.ValidationLoop.Schema != "" {
+		if err := validateBaseRelPath("validation_loop.schema", base.ValidationLoop.Schema); err != nil {
+			return nil, err
+		}
+		dep, cachePath, err := fetchBaseFile(ctx, "validation_loop.schema", baseURLDir, base.ValidationLoop.Schema, allowlist, opts, "resource", false)
+		if err != nil {
+			return nil, err
+		}
+		base.ValidationLoop.Schema = cachePath
+		deps = append(deps, dep)
+	}
+
+	for platform, fc := range base.Forge {
+		if fc == nil {
+			continue
+		}
+		forgeScripts := []struct {
+			name string
+			ptr  *string
+		}{
+			{fmt.Sprintf("forge.%s.pre_script", platform), &fc.PreScript},
+			{fmt.Sprintf("forge.%s.post_script", platform), &fc.PostScript},
+		}
+		for _, f := range forgeScripts {
+			if *f.ptr == "" {
+				continue
+			}
+			if err := validateBaseRelPath(f.name, *f.ptr); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseFile(ctx, f.name, baseURLDir, *f.ptr, allowlist, opts, "script", true)
+			if err != nil {
+				return nil, err
+			}
+			*f.ptr = cachePath
+			deps = append(deps, dep)
+		}
+		if fc.ValidationLoop != nil && fc.ValidationLoop.Script != "" {
+			fieldName := fmt.Sprintf("forge.%s.validation_loop.script", platform)
+			if err := validateBaseRelPath(fieldName, fc.ValidationLoop.Script); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, fc.ValidationLoop.Script, allowlist, opts, "script", true)
+			if err != nil {
+				return nil, err
+			}
+			fc.ValidationLoop.Script = cachePath
+			deps = append(deps, dep)
+		}
+		if fc.ValidationLoop != nil && fc.ValidationLoop.Schema != "" {
+			fieldName := fmt.Sprintf("forge.%s.validation_loop.schema", platform)
+			if err := validateBaseRelPath(fieldName, fc.ValidationLoop.Schema); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, fc.ValidationLoop.Schema, allowlist, opts, "resource", false)
+			if err != nil {
+				return nil, err
+			}
+			fc.ValidationLoop.Schema = cachePath
+			deps = append(deps, dep)
+		}
+	}
+
+	// agent_input is a directory at runtime (uploaded recursively) and cannot
+	// be fetched as a single file from a URL. Clear it so it doesn't resolve
+	// against the child's local directory where it won't exist.
+	if base.AgentInput != "" {
+		base.AgentInput = ""
+	}
+
+	return deps, nil
+}
+
+// resolveBaseResources fetches declarative resource fields (agent, policy,
+// skills) from a URL-referenced base harness. For agent and policy (single
+// files), the file is fetched, cached content-addressed, and the field is
+// rewritten to the local cache path. For skills (directories), SKILL.md is
+// fetched and cached as a directory via CachePutDir, and the field is
+// rewritten to the cache tree directory. Fields that are already URLs or
+// absolute paths are left unchanged — they will be handled by
+// ResolveHarness in the caller.
+func resolveBaseResources(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
+	baseURLDir := urlParentDirPrefix(baseURL)
+	if baseURLDir == "" {
+		return nil, fmt.Errorf("cannot determine directory from base URL")
+	}
+
+	var deps []Dependency
+
+	fileFields := []struct {
+		name string
+		ptr  *string
+	}{
+		{"agent", &base.Agent},
+		{"policy", &base.Policy},
+	}
+
+	for _, f := range fileFields {
+		if *f.ptr == "" || IsURL(*f.ptr) || filepath.IsAbs(*f.ptr) {
+			continue
+		}
+		if err := validateBaseRelPath(f.name, *f.ptr); err != nil {
+			return nil, err
+		}
+		dep, cachePath, err := fetchBaseFile(ctx, f.name, baseURLDir, *f.ptr, allowlist, opts, "resource", false)
+		if err != nil {
+			return nil, err
+		}
+		*f.ptr = cachePath
+		deps = append(deps, dep)
+	}
+
+	for i, skill := range base.Skills {
+		if skill == "" || IsURL(skill) || filepath.IsAbs(skill) {
+			continue
+		}
+		fieldName := fmt.Sprintf("skills[%d]", i)
+		if err := validateBaseRelPath(fieldName, skill); err != nil {
+			return nil, err
+		}
+		dep, localDir, err := fetchBaseSkill(ctx, fieldName, baseURLDir, skill, allowlist, opts)
+		if err != nil {
+			return nil, err
+		}
+		base.Skills[i] = localDir
+		deps = append(deps, dep)
+	}
+
+	return deps, nil
+}
+
+// resolveBaseHostFiles fetches host_files with relative src paths from a
+// URL-referenced base harness. For each host_files entry whose src is a
+// non-empty relative path (not a ${VAR} reference, URL, or absolute path),
+// the file is fetched from the base URL's directory, cached content-addressed,
+// and the src field is rewritten to the local cache path. This ensures
+// host_files inherited through base: composition resolve correctly at sandbox
+// setup time, the same way scripts and resources do.
+func resolveBaseHostFiles(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
+	baseURLDir := urlParentDirPrefix(baseURL)
+	if baseURLDir == "" {
+		return nil, fmt.Errorf("cannot determine directory from base URL")
+	}
+
+	var deps []Dependency
+
+	for i := range base.HostFiles {
+		src := base.HostFiles[i].Src
+		if src == "" || strings.Contains(src, "${") || IsURL(src) || filepath.IsAbs(src) {
+			continue
+		}
+		fieldName := fmt.Sprintf("host_files[%d].src", i)
+		if err := validateBaseRelPath(fieldName, src); err != nil {
+			return nil, err
+		}
+		dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, src, allowlist, opts, "resource", false)
+		if err != nil {
+			return nil, err
+		}
+		base.HostFiles[i].Src = cachePath
+		deps = append(deps, dep)
+	}
+
+	return deps, nil
+}
+
+// validateBaseRelPath validates that a relative path inherited from a URL base
+// is safe to resolve. Rejects null bytes, query/fragment markers, URLs,
+// absolute paths, and path traversal segments.
+func validateBaseRelPath(field, val string) error {
+	if strings.ContainsRune(val, 0) {
+		return fmt.Errorf("base %s must not contain null bytes (got %q)", field, val)
+	}
+	if strings.ContainsAny(val, "?#") {
+		return fmt.Errorf("base %s must not contain query or fragment markers (got %q)", field, val)
+	}
+	if IsURL(val) {
+		return fmt.Errorf("base %s must be a relative path, not a URL (got %q)", field, val)
+	}
+	if filepath.IsAbs(val) {
+		return fmt.Errorf("base %s must be a relative path, not an absolute path (got %q)", field, val)
+	}
+	for _, seg := range strings.Split(val, "/") {
+		if seg == ".." {
+			return fmt.Errorf("base %s must not contain path traversal segments (got %q)", field, val)
+		}
+	}
+	return nil
+}
+
+// fetchBaseFile fetches a single file from a URL derived from the base
+// harness's directory and the file's relative path. The file is cached
+// content-addressed and the local cache path is returned. When executable
+// is true, the cached file is chmod'd to 0o755. depType controls the
+// Dependency.Type and audit log FetchType ("script" or "resource").
+func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allowlist []string, opts ComposeOpts, depType string, executable bool) (Dependency, string, error) {
+	fileURL := baseURLDir + relPath
+
+	allowedBy := matchingAllowedPrefix(fileURL, allowlist)
+	if allowedBy == "" {
+		return Dependency{}, "", fmt.Errorf("base %s: URL %q is not in allowed_remote_resources", field, fileURL)
+	}
+
+	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, fileURL)
+	if indexHit {
+		content, entry, err := fetch.CacheGet(opts.WorkspaceRoot, hash)
+		if err == nil && content != nil {
+			cachePath, cpErr := fetch.CachePath(opts.WorkspaceRoot, hash)
+			if cpErr != nil {
+				return Dependency{}, "", fmt.Errorf("base %s: computing cache path: %w", field, cpErr)
+			}
+			contentPath := filepath.Join(cachePath, "content")
+
+			if executable {
+				if chErr := os.Chmod(contentPath, 0o755); chErr != nil {
+					return Dependency{}, "", fmt.Errorf("base %s: setting executable permission on cached file: %w", field, chErr)
+				}
+			}
+
+			if aErr := auditBaseFetch(opts, fileURL, hash, allowedBy, true, entry.FetchTime, depType); aErr != nil {
+				return Dependency{}, "", aErr
+			}
+
+			return Dependency{
+				Field:     field,
+				URL:       fileURL,
+				LocalPath: contentPath,
+				SHA256:    hash,
+				FetchedAt: entry.FetchTime,
+				CacheHit:  true,
+				Type:      depType,
+			}, contentPath, nil
+		}
+	}
+
+	if opts.FetchPolicy.Offline {
+		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, fileURL)
+	}
+
+	content, err := fetch.FetchURL(ctx, fileURL, opts.FetchPolicy)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: fetching %s: %w", field, fileURL, err)
+	}
+
+	if err := fetch.CachePut(opts.WorkspaceRoot, fileURL, content); err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: caching: %w", field, err)
+	}
+
+	hash = fetch.ComputeSHA256(content)
+	cachePath, err := fetch.CachePath(opts.WorkspaceRoot, hash)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: computing cache path: %w", field, err)
+	}
+	contentPath := filepath.Join(cachePath, "content")
+
+	if executable {
+		if chErr := os.Chmod(contentPath, 0o755); chErr != nil {
+			return Dependency{}, "", fmt.Errorf("base %s: setting executable permission: %w", field, chErr)
+		}
+	}
+
+	if iErr := urlIndexPut(opts.WorkspaceRoot, fileURL, hash); iErr != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: updating URL index: %w", field, iErr)
+	}
+
+	fetchedAt := time.Now().UTC()
+	if aErr := auditBaseFetch(opts, fileURL, hash, allowedBy, false, fetchedAt, depType); aErr != nil {
+		return Dependency{}, "", aErr
+	}
+
+	return Dependency{
+		Field:     field,
+		URL:       fileURL,
+		LocalPath: contentPath,
+		SHA256:    hash,
+		FetchedAt: fetchedAt,
+		CacheHit:  false,
+		Type:      depType,
+	}, contentPath, nil
+}
+
+// fetchBaseSkill fetches a skill directory from a URL-referenced base harness.
+// It uses git sparse checkout (via TreeFetcher) to fetch the full directory
+// tree (SKILL.md plus companion files like sub-agents/, scripts/, meta-prompts/).
+func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, allowlist []string, opts ComposeOpts) (Dependency, string, error) {
+	skillDirURL := baseURLDir + skillPath
+	skillFileURL := skillDirURL + "/SKILL.md"
+
+	allowedBy := matchingAllowedPrefix(skillFileURL, allowlist)
+	if allowedBy == "" {
+		return Dependency{}, "", fmt.Errorf("base %s: URL %q is not in allowed_remote_resources", field, skillFileURL)
+	}
+
+	// Check cache first (keyed by SKILL.md URL for backward compat).
+	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, skillFileURL)
+	var staleFallback *Dependency
+	var staleFallbackPath string
+	if indexHit {
+		treeHash, ok := urlIndexLookup(opts.WorkspaceRoot, "skill:"+skillFileURL)
+		if ok {
+			treePath, entry, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
+			if err == nil && treePath != "" {
+				cachedDep := Dependency{
+					Field:     field,
+					URL:       skillFileURL,
+					LocalPath: treePath,
+					SHA256:    treeHash,
+					FetchedAt: entry.FetchTime,
+					CacheHit:  true,
+					Type:      "directory",
+				}
+				if !entry.FullListing && !opts.FetchPolicy.Offline {
+					staleFallback = &cachedDep
+					staleFallbackPath = treePath
+				} else {
+					if aErr := auditBaseFetch(opts, skillFileURL, treeHash, allowedBy, true, entry.FetchTime, "skill"); aErr != nil {
+						return Dependency{}, "", aErr
+					}
+					return cachedDep, treePath, nil
+				}
+			}
+		}
+		_ = hash
+	}
+
+	if opts.FetchPolicy.Offline {
+		if staleFallback != nil {
+			return *staleFallback, staleFallbackPath, nil
+		}
+		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, skillFileURL)
+	}
+
+	dep, dirPath, err := fetchBaseSkillDir(ctx, field, skillDirURL, skillFileURL, skillPath, allowedBy, allowlist, opts)
+	if err != nil && staleFallback != nil {
+		if !isTransientFetchError(err) {
+			return Dependency{}, "", err
+		}
+		staleFallback.Warning = fmt.Sprintf("using stale cached content (re-fetch failed: %s)", err)
+		return *staleFallback, staleFallbackPath, nil
+	}
+	return dep, dirPath, err
+}
+
+// isTransientFetchError returns true for errors that indicate a temporary
+// network issue where serving stale cached content is appropriate.
+func isTransientFetchError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	var transient *gitfetch.TransientError
+	return errors.As(err, &transient)
+}
+
+// fetchBaseSkillDir fetches the full skill directory via git sparse checkout.
+func fetchBaseSkillDir(ctx context.Context, field, skillDirURL, skillFileURL, skillPath, allowedBy string, allowlist []string, opts ComposeOpts) (Dependency, string, error) {
+	dirPrefix := skillDirURL + "/"
+	if ab := matchingAllowedPrefix(dirPrefix, allowlist); ab == "" {
+		return Dependency{}, "", fmt.Errorf("base %s: skill directory URL %q is not in allowed_remote_resources", field, dirPrefix)
+	}
+
+	forgeInfo, err := forge.ParseRawContentURL(skillDirURL)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for skill directory fetch: %w", field, err)
+	}
+
+	fetcher := opts.TreeFetcher
+	if fetcher == nil {
+		fetcher = gitfetch.FetchTree
+	}
+
+	files, err := fetcher(ctx, forgeInfo.CloneURL(), forgeInfo.Path, forgeInfo.Ref, opts.GitToken)
+	if err != nil {
+		if opts.GitToken == "" {
+			return Dependency{}, "", fmt.Errorf("base %s: fetching skill directory %s: %w (hint: set GH_TOKEN or GITHUB_TOKEN for private repos)", field, skillPath, err)
+		}
+		return Dependency{}, "", fmt.Errorf("base %s: fetching skill directory %s: %w", field, skillPath, err)
+	}
+
+	if _, ok := files["SKILL.md"]; !ok {
+		return Dependency{}, "", fmt.Errorf("base %s: skill directory %s has no SKILL.md", field, skillPath)
+	}
+
+	treeHash, err := fetch.CachePutDir(opts.WorkspaceRoot, skillFileURL, files, fetch.DirCachePutOpts{FullListing: true})
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: caching skill directory: %w", field, err)
+	}
+
+	treePath, _, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: reading cached skill directory: %w", field, err)
+	}
+
+	if iErr := urlIndexPut(opts.WorkspaceRoot, skillFileURL, treeHash); iErr != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: updating URL index: %w", field, iErr)
+	}
+	if iErr := urlIndexPut(opts.WorkspaceRoot, "skill:"+skillFileURL, treeHash); iErr != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: updating URL index for skill tree: %w", field, iErr)
+	}
+
+	fetchedAt := time.Now().UTC()
+	if aErr := auditBaseFetch(opts, skillFileURL, treeHash, allowedBy, false, fetchedAt, "skill"); aErr != nil {
+		return Dependency{}, "", aErr
+	}
+
+	return Dependency{
+		Field:     field,
+		URL:       skillFileURL,
+		LocalPath: treePath,
+		SHA256:    treeHash,
+		FetchedAt: fetchedAt,
+		CacheHit:  false,
+		Type:      "directory",
+	}, treePath, nil
+}
+
+// auditBaseFetch appends a fetch audit log entry for a base composition fetch.
+func auditBaseFetch(opts ComposeOpts, fileURL, hash, allowedBy string, cacheHit bool, fetchedAt time.Time, fetchType string) error {
+	if opts.AuditLogPath == "" {
+		return nil
+	}
+	return fetch.AppendFetchAudit(opts.AuditLogPath, fetch.FetchAuditEntry{
+		TraceID:   opts.TraceID,
+		FetchTime: fetchedAt,
+		URL:       fileURL,
+		SHA256:    hash,
+		FetchType: "base_" + fetchType,
+		AllowedBy: allowedBy,
+		CacheHit:  cacheHit,
+	})
+}
+
+// urlDirPrefix returns the directory portion of a URL (everything up to and
+// including the last "/" before the filename). The integrity hash fragment
+// is stripped first. Returns "" if the URL cannot be parsed.
+func urlDirPrefix(rawURL string) string {
+	cleanURL, _, _ := ParseIntegrityHash(rawURL)
+	parsed, err := url.Parse(cleanURL)
+	if err != nil {
+		return ""
+	}
+	dir := path.Dir(parsed.Path)
+	if dir == "." || dir == "" {
+		return ""
+	}
+	if !strings.HasSuffix(dir, "/") {
+		dir += "/"
+	}
+	parsed.Path = dir
+	parsed.RawPath = ""
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
+// urlParentDirPrefix returns the parent of the directory containing the URL's
+// file. Script paths in harness YAMLs are relative to the scaffold root (the
+// parent of the harness/ directory), not the YAML file itself. This matches
+// local resolution where ResolveRelativeTo uses absFullsendDir (the workspace
+// root), which is the parent of the harness/ directory.
+func urlParentDirPrefix(rawURL string) string {
+	cleanURL, _, _ := ParseIntegrityHash(rawURL)
+	parsed, err := url.Parse(cleanURL)
+	if err != nil {
+		return ""
+	}
+	dir := path.Dir(path.Dir(parsed.Path))
+	if dir == "." || dir == "" {
+		return ""
+	}
+	if !strings.HasSuffix(dir, "/") {
+		dir += "/"
+	}
+	parsed.Path = dir
+	parsed.RawPath = ""
+	parsed.Fragment = ""
+	return parsed.String()
+}
+
+// urlIndexPath returns the path to the URL-to-hash index file.
+func urlIndexPath(workspaceRoot string) string {
+	return filepath.Join(workspaceRoot, ".fullsend-cache", "url-index.json")
+}
+
+// urlIndexLookup reads the URL-to-hash index and returns the SHA256 for the
+// given URL. Returns ("", false) on miss or read error.
+func urlIndexLookup(workspaceRoot, rawURL string) (string, bool) {
+	if workspaceRoot == "" {
+		return "", false
+	}
+	data, err := os.ReadFile(urlIndexPath(workspaceRoot))
+	if err != nil {
+		return "", false
+	}
+	var index map[string]string
+	if err := json.Unmarshal(data, &index); err != nil {
+		return "", false
+	}
+	hash, ok := index[rawURL]
+	return hash, ok
+}
+
+// urlIndexPut records a URL→SHA256 mapping in the index file.
+func urlIndexPut(workspaceRoot, rawURL, hash string) error {
+	if workspaceRoot == "" {
+		return nil
+	}
+	idxPath := urlIndexPath(workspaceRoot)
+	if err := os.MkdirAll(filepath.Dir(idxPath), 0o700); err != nil {
+		return err
+	}
+
+	var index map[string]string
+	data, err := os.ReadFile(idxPath)
+	if err == nil {
+		_ = json.Unmarshal(data, &index)
+	}
+	if index == nil {
+		index = make(map[string]string)
+	}
+	index[rawURL] = hash
+
+	out, err := json.MarshalIndent(index, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(idxPath, out, 0o600)
 }
 
 // mergeHostFiles concatenates base and child host files, with child entries
@@ -542,8 +1210,28 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 		}
 	}
 
+	// Env: merge sub-maps, child keys win (ADR 0055)
+	if base.Env != nil {
+		if child.Env == nil {
+			child.Env = &EnvConfig{}
+		}
+		child.Env.mergeEnvFrom(base.Env, false)
+	}
+
 	// ValidationLoop: child replaces if non-nil
 	if child.ValidationLoop == nil {
 		child.ValidationLoop = base.ValidationLoop
 	}
+}
+
+// FetchAgentHarness fetches a URL-sourced agent harness using the same
+// infrastructure as base composition (ADR 0038). It downloads the content,
+// verifies the integrity hash, caches it, and returns the local cache path
+// so the caller can pass it to LoadWithBase.
+func FetchAgentHarness(ctx context.Context, rawURL string, opts ComposeOpts) (localPath string, dep Dependency, err error) {
+	dep, _, err = fetchBaseURL(ctx, rawURL, opts.OrgAllowlist, opts)
+	if err != nil {
+		return "", Dependency{}, fmt.Errorf("fetching agent harness %s: %w", rawURL, err)
+	}
+	return dep.LocalPath, dep, nil
 }

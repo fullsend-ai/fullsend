@@ -22,6 +22,7 @@ func TestLoadWithBase_BackwardCompat(t *testing.T) {
 
 	path := writeTestHarness(t, dir, "simple.yaml", `
 agent: agents/test.md
+role: test
 timeout_minutes: 5
 `)
 
@@ -32,7 +33,7 @@ timeout_minutes: 5
 	assert.Equal(t, 5, h.TimeoutMinutes)
 	assert.Empty(t, h.Base, "base field should be empty (no base)")
 	assert.Nil(t, deps, "baseDeps should be nil when no base is used")
-	assert.Empty(t, h.Role)
+	assert.Equal(t, "test", h.Role)
 	assert.Empty(t, h.Slug)
 	assert.Nil(t, h.Forge)
 }
@@ -45,6 +46,7 @@ func TestLoadWithBase_BaseWithForgeAndIdentity(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/shared.md
+role: test
 model: sonnet
 skills:
   - base-skill-1
@@ -118,6 +120,7 @@ func TestLoadWithBase_BaseWithForgeSkillsConcatenation(t *testing.T) {
 
 	writeTestHarness(t, dir, "base.yaml", `
 agent: agents/test.md
+role: test
 skills:
   - base-s1
 forge:
@@ -153,6 +156,65 @@ forge:
 	}, h.Skills)
 }
 
+// TestLoadWithBase_EnvMergesThroughFullPipeline exercises the full load pipeline
+// with env:, base:, and forge: together, verifying that base composition (child
+// wins) and forge resolution (forge wins) produce the expected merged env maps.
+func TestLoadWithBase_EnvMergesThroughFullPipeline(t *testing.T) {
+	dir := t.TempDir()
+
+	// Create the referenced agent file so Validate doesn't fail.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "agents/test.md"), []byte("# test"), 0o644))
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+env:
+  runner:
+    BASE_R: base_r
+    SHARED: from_base
+  sandbox:
+    BASE_S: base_s
+forge:
+  github:
+    env:
+      runner:
+        GH_R: gh_r
+      sandbox:
+        GH_S: gh_s
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+env:
+  runner:
+    SHARED: from_child
+    CHILD_R: child_r
+  sandbox:
+    CHILD_S: child_s
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		ForgePlatform: "github",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, h.Env)
+
+	// Base composition: child wins on SHARED.
+	assert.Equal(t, "from_child", h.Env.Runner["SHARED"])
+	// Base composition: BASE_R inherited from base.
+	assert.Equal(t, "base_r", h.Env.Runner["BASE_R"])
+	// Child's own key.
+	assert.Equal(t, "child_r", h.Env.Runner["CHILD_R"])
+	// Forge resolution: GH_R merged in (forge wins).
+	assert.Equal(t, "gh_r", h.Env.Runner["GH_R"])
+
+	// Sandbox side.
+	assert.Equal(t, "base_s", h.Env.Sandbox["BASE_S"])
+	assert.Equal(t, "child_s", h.Env.Sandbox["CHILD_S"])
+	assert.Equal(t, "gh_s", h.Env.Sandbox["GH_S"])
+}
+
 // TestLoadWithBase_NoBaseIdenticalToLoadWithOpts verifies that loading the same
 // harness (no base field) through both LoadWithOpts and LoadWithBase produces
 // identical results.
@@ -161,6 +223,7 @@ func TestLoadWithBase_NoBaseIdenticalToLoadWithOpts(t *testing.T) {
 
 	content := `
 agent: agents/test.md
+role: test
 model: opus
 skills:
   - skill-a

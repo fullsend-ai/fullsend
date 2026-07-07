@@ -1,6 +1,6 @@
 ---
 title: "35. Layered content resolution"
-status: Accepted
+status: Superseded
 relates_to:
   - agent-infrastructure
   - agent-architecture
@@ -17,11 +17,11 @@ Date: 2026-05-09
 
 ## Status
 
-Accepted
+Superseded by [ADR 0064](0064-deprecate-customized-directory-overlay.md).
 
 ## Context
 
-[ADR 0003](0003-org-config-repo-convention.md) designed a three-tier layering
+[ADR 0003](0003-org-config-repo-convention.md) designed a three-tier configuration layering
 model — `fullsend defaults < org .fullsend config < per-repo overrides` — but
 the runtime never implemented it. The scaffold (`internal/scaffold/scaffold.go`)
 copies all ~82 files from `internal/scaffold/fullsend-repo/` into every
@@ -61,9 +61,13 @@ they are populated at runtime from upstream.
 "Prepare workspace" step that checks out upstream defaults from
 `fullsend-ai/fullsend` at the ref supplied via `fullsend_ai_ref` (PR #1278
 replaced the earlier checkout at `@v0` with a checkout at a
-caller-controlled ref), copies them into the main dirs (`agents/`, `skills/`,
+caller-controlled ref; since superseded by `job.workflow_sha` which
+eliminates the need for the caller to pass a ref — see PR #2689),
+copies them into the main dirs (`agents/`, `skills/`,
 etc.), then copies customizations on top so override files replace upstream
-defaults. The workflow inspects `install_mode` to resolve the correct
+defaults. When `--vendor` has committed upstream mirror content under
+`.defaults/`, the sparse checkout is skipped (see
+[ADR 0047](0047-vendored-installs-with-vendor-flag.md)). The workflow inspects `install_mode` to resolve the correct
 customization base:
 
 - `per-org`: reads from `customized/`

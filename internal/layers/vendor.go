@@ -8,6 +8,8 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/binary"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
+	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
 const (
@@ -89,9 +91,91 @@ func VendorCommitMessage(source binary.Source, version, destPath string, sizeByt
 func RemoveStaleBinaryCommitMessage(destPath string) string {
 	title := "chore: remove vendored fullsend binary"
 	body := strings.Join([]string{
-		"Reason: --vendor-fullsend-binary not set; removing stale binary so CI uses released versions",
+		"Reason: --vendor not set; removing stale binary so CI uses released versions",
 		fmt.Sprintf("Path: %s", destPath),
-		"Note: re-run install with --vendor-fullsend-binary to upload again",
+		"Note: re-run install with --vendor to upload again",
 	}, "\n")
 	return title + "\n\n" + body
+}
+
+// VendorContentCommitMessage returns a commit message for vendored content upload.
+func VendorContentCommitMessage(version, pathPrefix string, fileCount int) string {
+	title := "chore: vendor fullsend workflow and agent content"
+	body := strings.Join([]string{
+		fmt.Sprintf("CLI version: %s", version),
+		fmt.Sprintf("Prefix: %s", pathPrefix),
+		fmt.Sprintf("Files: %d", fileCount),
+		"Source: --vendor install",
+	}, "\n")
+	return title + "\n\n" + body
+}
+
+// RemoveStaleContentCommitMessage returns title + body for stale content deletion.
+func RemoveStaleContentCommitMessage(path string) string {
+	title := "chore: remove stale vendored fullsend content"
+	body := strings.Join([]string{
+		"Reason: --vendor not set; removing stale vendored content",
+		fmt.Sprintf("Path: %s", path),
+	}, "\n")
+	return title + "\n\n" + body
+}
+
+// RemoveStaleVendoredAssetsCommitMessage returns title + body for batch stale deletion.
+func RemoveStaleVendoredAssetsCommitMessage(paths []string) string {
+	title := "chore: remove stale vendored fullsend assets"
+	lines := []string{
+		"Reason: --vendor not set; removing stale vendored binary and content",
+		fmt.Sprintf("Paths: %d", len(paths)),
+	}
+	for _, p := range paths {
+		lines = append(lines, fmt.Sprintf("- %s", p))
+	}
+	return title + "\n\n" + strings.Join(lines, "\n")
+}
+
+// DeleteVendoredPaths removes stale vendored paths in a single commit when possible.
+func DeleteVendoredPaths(ctx context.Context, client forge.Client, owner, repo string, paths []string) (int, error) {
+	if len(paths) == 0 {
+		return 0, nil
+	}
+	msg := RemoveStaleVendoredAssetsCommitMessage(paths)
+	deleted, err := client.DeleteFiles(ctx, owner, repo, msg, paths)
+	if err != nil {
+		return 0, err
+	}
+	return deleted, nil
+}
+
+// RemoveStaleVendoredAssets deletes vendored assets when --vendor is not set.
+// It skips work when neither the vendor manifest nor vendored binary exists.
+func RemoveStaleVendoredAssets(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo, workflowPrefix, binaryPath string) error {
+	manifestPath := scaffold.VendorManifestPath(workflowPrefix)
+	_, manifestErr := client.GetFileContent(ctx, owner, repo, manifestPath)
+	if manifestErr != nil && forge.IsNotFound(manifestErr) {
+		_, binErr := client.GetFileContent(ctx, owner, repo, binaryPath)
+		if binErr != nil && forge.IsNotFound(binErr) {
+			return nil
+		}
+		if binErr != nil {
+			return fmt.Errorf("checking vendored binary: %w", binErr)
+		}
+	} else if manifestErr != nil {
+		return fmt.Errorf("checking vendor manifest: %w", manifestErr)
+	}
+
+	paths, err := scaffold.ResolveVendoredCleanupPaths(ctx, client, owner, repo, workflowPrefix, binaryPath)
+	if err != nil {
+		return fmt.Errorf("resolving vendored cleanup paths: %w", err)
+	}
+
+	printer.StepStart("Removing stale vendored content")
+	removed, err := DeleteVendoredPaths(ctx, client, owner, repo, paths)
+	if err != nil {
+		printer.StepFail("Failed to remove vendored content")
+		return fmt.Errorf("deleting vendored content: %w", err)
+	}
+	if removed > 0 {
+		printer.StepDone(fmt.Sprintf("Removed %d stale vendored files", removed))
+	}
+	return nil
 }

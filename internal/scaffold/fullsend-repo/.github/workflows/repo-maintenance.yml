@@ -18,10 +18,10 @@ permissions:
 jobs:
   reconcile:
     name: Reconcile enrollment
-    runs-on: ubuntu-latest
+    runs-on: __GH_RUNNER__
     steps:
       - name: Checkout .fullsend
-        uses: actions/checkout@v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Extract all repo names from config
         id: repo-list
@@ -40,7 +40,7 @@ jobs:
 
       - name: Checkout upstream scripts
         if: steps.repo-list.outputs.skip != 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: fullsend-ai/fullsend
           ref: v0
@@ -67,7 +67,7 @@ jobs:
       - name: Mint fullsend token
         if: steps.repo-list.outputs.skip != 'true'
         id: app-token
-        uses: fullsend-ai/fullsend/.github/actions/mint-token@v0
+        uses: fullsend-ai/fullsend/.github/actions/mint-token@__FULLSEND_AI_REF__
         with:
           role: fullsend
           repos: ${{ steps.repo-list.outputs.names }}

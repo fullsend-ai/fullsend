@@ -10,7 +10,7 @@
 #   - SOURCE_REPO
 set -euo pipefail
 
-PRIOR_FILE=${GITHUB_WORKSPACE}/prior-review.txt
+PRIOR_FILE=${GITHUB_WORKSPACE:-/tmp}/prior-review.txt
 REVIEW_BOT="${ORG_NAME}-review[bot]"
 PROVENANCE="none"
 
@@ -41,9 +41,9 @@ if [[ -z "${COMMENT_JSON}" || "${COMMENT_JSON}" == "null" ]]; then
 
     : > "${PRIOR_FILE}"  # truncate to 0 bytes
     # shellcheck disable=SC2129
-    echo "prior_review_file=${PRIOR_FILE}" >> "${GITHUB_OUTPUT}"
-    echo "prior_sha=" >> "${GITHUB_OUTPUT}"
-    echo "prior_review_provenance=${PROVENANCE}" >> "${GITHUB_OUTPUT}"
+    echo "prior_review_file=${PRIOR_FILE}" >> "${GITHUB_OUTPUT:-/dev/null}"
+    echo "prior_sha=" >> "${GITHUB_OUTPUT:-/dev/null}"
+    echo "prior_review_provenance=${PROVENANCE}" >> "${GITHUB_OUTPUT:-/dev/null}"
     exit 0
 fi
 
@@ -69,9 +69,9 @@ fi
 if [[ "${PROVENANCE}" != "app-verified" ]]; then
     : > "${PRIOR_FILE}"  # truncate to 0 bytes
     # shellcheck disable=SC2129
-    echo "prior_review_file=${PRIOR_FILE}" >> "${GITHUB_OUTPUT}"
-    echo "prior_sha=" >> "${GITHUB_OUTPUT}"
-    echo "prior_review_provenance=${PROVENANCE}" >> "${GITHUB_OUTPUT}"
+    echo "prior_review_file=${PRIOR_FILE}" >> "${GITHUB_OUTPUT:-/dev/null}"
+    echo "prior_sha=" >> "${GITHUB_OUTPUT:-/dev/null}"
+    echo "prior_review_provenance=${PROVENANCE}" >> "${GITHUB_OUTPUT:-/dev/null}"
     exit 0
 fi
 
@@ -88,18 +88,18 @@ if [[ "${BYTE_COUNT}" -gt "${MAX_BYTES}" ]]; then
     BYTE_COUNT=0
 fi
 
-echo "prior_review_file=${PRIOR_FILE}" >> "${GITHUB_OUTPUT}"
+echo "prior_review_file=${PRIOR_FILE}" >> "${GITHUB_OUTPUT:-/dev/null}"
 
 if [[ "${BYTE_COUNT}" -gt 1 ]]; then
     # Extract SHA from current section only (before sticky history sentinels)
     CURRENT_SECTION="$(awk '/<!-- sticky:history-start -->/{exit} {print}' "${PRIOR_FILE}")"
     PRIOR_SHA="$(echo "${CURRENT_SECTION}" \
         | grep -oP '(?<=\*\*Head SHA:\*\* )[0-9a-f]{7,64}' | head -1 || true)"
-    echo "prior_sha=${PRIOR_SHA}" >> "${GITHUB_OUTPUT}"
+    echo "prior_sha=${PRIOR_SHA}" >> "${GITHUB_OUTPUT:-/dev/null}"
     echo "Prior review SHA: ${PRIOR_SHA:-none}"
 else
     echo "No usable prior review content"
-    echo "prior_sha=" >> "${GITHUB_OUTPUT}"
+    echo "prior_sha=" >> "${GITHUB_OUTPUT:-/dev/null}"
 fi
 
-echo "prior_review_provenance=${PROVENANCE}" >> "${GITHUB_OUTPUT}"
+echo "prior_review_provenance=${PROVENANCE}" >> "${GITHUB_OUTPUT:-/dev/null}"

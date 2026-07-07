@@ -52,20 +52,13 @@ export function loadToken(): StoredToken | null {
   }
   if (!o || typeof o !== "object") return null;
   const t = o as Record<string, unknown>;
-  const accessToken =
-    typeof t.accessToken === "string" ? t.accessToken.trim() : "";
+  const accessToken = typeof t.accessToken === "string" ? t.accessToken.trim() : "";
   if (!accessToken) return null;
   const tokenType =
-    typeof t.tokenType === "string" && t.tokenType.length > 0
-      ? t.tokenType
-      : "bearer";
+    typeof t.tokenType === "string" && t.tokenType.length > 0 ? t.tokenType : "bearer";
 
   const expiresAt = parseExpiresAt(t.expiresAt);
-  if (
-    typeof expiresAt === "number" &&
-    expiresAt > 0 &&
-    Date.now() > expiresAt
-  ) {
+  if (typeof expiresAt === "number" && expiresAt > 0 && Date.now() > expiresAt) {
     clearSession();
     return null;
   }

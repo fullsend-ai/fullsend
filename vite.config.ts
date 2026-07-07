@@ -5,7 +5,6 @@ import { normalizePath } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { defineConfig } from "vitest/config";
 import type { Plugin } from "vite";
-import { fullsendDocsPlugin } from "./web/docs/build/vitePluginDocs";
 
 const repoRoot = path.dirname(fileURLToPath(import.meta.url));
 const webRoot = path.join(repoRoot, "web");
@@ -22,8 +21,6 @@ function spaFallbackPlugin(): Plugin {
           req.url = "/index.html";
         } else if (url.startsWith("/admin/") && !path.extname(url)) {
           req.url = "/admin/index.html";
-        } else if (url.startsWith("/docs/") && !path.extname(url)) {
-          req.url = "/docs/index.html";
         }
         next();
       });
@@ -94,11 +91,6 @@ export default defineConfig(({ command }) => ({
         ),
       ],
     }),
-    svelte({
-      configFile: path.join(webRoot, "docs/svelte.config.js"),
-      include: normalizePath(path.join(webRoot, "docs/**/*.svelte")),
-    }),
-    fullsendDocsPlugin(repoRoot),
     spaFallbackPlugin(),
     adminDevEnvLogPlugin(),
     adminRequestLogPlugin(),
@@ -107,7 +99,6 @@ export default defineConfig(({ command }) => ({
     rollupOptions: {
       input: {
         admin: path.join(webRoot, "admin/index.html"),
-        docs: path.join(webRoot, "docs/index.html"),
       },
     },
   },
@@ -118,11 +109,8 @@ export default defineConfig(({ command }) => ({
   },
   test: {
     environment: "jsdom",
-    environmentMatchGlobs: [["docs/build/**/*.test.ts", "node"]],
     include: [
       "admin/src/**/*.test.ts",
-      "docs/build/**/*.test.ts",
-      "docs/src/**/*.test.ts",
     ],
     passWithNoTests: true,
   },

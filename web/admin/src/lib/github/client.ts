@@ -19,8 +19,7 @@ export function createUserOctokit(accessToken: string): Octokit {
       // Octokit throws on 401 before returning; the branch below handles that.
       return response as OctokitResponse<unknown>;
     } catch (e: unknown) {
-      const rec =
-        e && typeof e === "object" ? (e as Record<string, unknown>) : null;
+      const rec = e && typeof e === "object" ? (e as Record<string, unknown>) : null;
       const status =
         typeof rec?.status === "number"
           ? rec.status

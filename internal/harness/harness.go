@@ -2,9 +2,7 @@ package harness
 
 import (
 	"fmt"
-	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -12,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/urlutil"
 )
 
 var (
@@ -188,8 +187,51 @@ type APIServer struct {
 // ValidationLoop configures a deterministic validation step after the agent exits.
 type ValidationLoop struct {
 	Script        string `yaml:"script"`
+	Schema        string `yaml:"schema,omitempty"`
 	MaxIterations int    `yaml:"max_iterations"`
 	FeedbackMode  string `yaml:"feedback_mode,omitempty"`
+}
+
+// EnvConfig holds environment variable maps for runner and sandbox targets.
+// Replaces runner_env (ADR 0055). Values support ${VAR} expansion from the
+// host environment.
+type EnvConfig struct {
+	Runner  map[string]string `yaml:"runner,omitempty"`
+	Sandbox map[string]string `yaml:"sandbox,omitempty"`
+}
+
+// mergeEnvFrom merges src into dst. When srcWins is true, src keys overwrite
+// dst keys on collision (used for forge resolution). When srcWins is false,
+// dst keys are preserved on collision (used for base composition where child
+// keys win).
+func (dst *EnvConfig) mergeEnvFrom(src *EnvConfig, srcWins bool) {
+	if src == nil {
+		return
+	}
+	if src.Runner != nil {
+		if dst.Runner == nil {
+			dst.Runner = make(map[string]string, len(src.Runner))
+		}
+		for k, v := range src.Runner {
+			if srcWins {
+				dst.Runner[k] = v
+			} else if _, exists := dst.Runner[k]; !exists {
+				dst.Runner[k] = v
+			}
+		}
+	}
+	if src.Sandbox != nil {
+		if dst.Sandbox == nil {
+			dst.Sandbox = make(map[string]string, len(src.Sandbox))
+		}
+		for k, v := range src.Sandbox {
+			if srcWins {
+				dst.Sandbox[k] = v
+			} else if _, exists := dst.Sandbox[k]; !exists {
+				dst.Sandbox[k] = v
+			}
+		}
+	}
 }
 
 // Harness is the per-agent configuration that the runner reads to provision
@@ -214,6 +256,7 @@ type Harness struct {
 	AgentInput             string                  `yaml:"agent_input,omitempty"`
 	ValidationLoop         *ValidationLoop         `yaml:"validation_loop,omitempty"`
 	RunnerEnv              map[string]string       `yaml:"runner_env,omitempty"`
+	Env                    *EnvConfig              `yaml:"env,omitempty"`
 	TimeoutMinutes         int                     `yaml:"timeout_minutes,omitempty"`
 	SandboxTimeoutSeconds  int                     `yaml:"sandbox_timeout_seconds,omitempty"`
 	Security               *SecurityConfig         `yaml:"security,omitempty"`
@@ -319,13 +362,14 @@ func (h *Harness) Validate() error {
 	if h.Model != "" && !validModelName.MatchString(h.Model) {
 		return fmt.Errorf("model %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -, ., @)", h.Model)
 	}
-	if h.Role != "" {
-		if !validRoleName.MatchString(h.Role) {
-			return fmt.Errorf("role %q contains invalid characters (allowed: a-z, 0-9, _, -; must start with a lowercase letter)", h.Role)
-		}
-		if strings.Contains(h.Role, "--") {
-			return fmt.Errorf("role %q must not contain double hyphens", h.Role)
-		}
+	if h.Role == "" {
+		return fmt.Errorf("role field is required")
+	}
+	if !validRoleName.MatchString(h.Role) {
+		return fmt.Errorf("role %q contains invalid characters (allowed: a-z, 0-9, _, -; must start with a lowercase letter)", h.Role)
+	}
+	if strings.Contains(h.Role, "--") {
+		return fmt.Errorf("role %q must not contain double hyphens", h.Role)
 	}
 	if h.Slug != "" && !validSlugName.MatchString(h.Slug) {
 		return fmt.Errorf("slug %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -; must start with a letter or digit)", h.Slug)
@@ -482,14 +526,19 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 		if h.ValidationLoop.Script, err = resolve("validation_loop.script", h.ValidationLoop.Script); err != nil {
 			return err
 		}
+		if h.ValidationLoop.Schema != "" && !strings.Contains(h.ValidationLoop.Schema, "${") {
+			if h.ValidationLoop.Schema, err = resolve("validation_loop.schema", h.ValidationLoop.Schema); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
 
-// ValidateRunnerEnvWith checks that all ${VAR} references in RunnerEnv and
-// HostFiles.Src are defined in the host environment using the provided lookup
-// function. Variables set to an empty string are allowed; only truly unset
-// variables produce an error.
+// ValidateRunnerEnvWith checks that all ${VAR} references in RunnerEnv,
+// Env.Runner, Env.Sandbox, and HostFiles.Src are defined in the host
+// environment using the provided lookup function. Variables set to an empty
+// string are allowed; only truly unset variables produce an error.
 func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) error {
 	checkVarRefs := func(source, value string) error {
 		for _, match := range envVarRef.FindAllStringSubmatch(value, -1) {
@@ -512,6 +561,23 @@ func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) erro
 		}
 		if err := checkVarRefs(fmt.Sprintf("host_files[%d].src", i), hf.Src); err != nil {
 			return err
+		}
+	}
+	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
+		if err := checkVarRefs("validation_loop.schema", h.ValidationLoop.Schema); err != nil {
+			return err
+		}
+	}
+	if h.Env != nil {
+		for k, v := range h.Env.Runner {
+			if err := checkVarRefs(fmt.Sprintf("env.runner[%s]", k), v); err != nil {
+				return err
+			}
+		}
+		for k, v := range h.Env.Sandbox {
+			if err := checkVarRefs(fmt.Sprintf("env.sandbox[%s]", k), v); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -582,6 +648,11 @@ func (h *Harness) ValidateFilesExist() error {
 		if err := check("validation_loop.script", h.ValidationLoop.Script); err != nil {
 			return err
 		}
+		if h.ValidationLoop.Schema != "" && !strings.Contains(h.ValidationLoop.Schema, "${") {
+			if err := check("validation_loop.schema", h.ValidationLoop.Schema); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -627,13 +698,13 @@ func (h *Harness) ValidateAllowedRemoteResources(orgAllowlist []string) error {
 		if strings.Contains(strings.ToLower(entry), "%25") {
 			return fmt.Errorf("allowed_remote_resources[%d]: %q contains double-encoded sequence", i, entry)
 		}
-		normEntry, entryOK := normalizeURLPath(strings.ToLower(entry))
+		normEntry, entryOK := urlutil.NormalizeURLPath(strings.ToLower(entry))
 		if !entryOK {
 			return fmt.Errorf("allowed_remote_resources[%d]: %q cannot be normalized", i, entry)
 		}
 		covered := false
 		for _, orgEntry := range orgAllowlist {
-			normOrg, orgOK := normalizeURLPath(strings.ToLower(orgEntry))
+			normOrg, orgOK := urlutil.NormalizeURLPath(strings.ToLower(orgEntry))
 			if !orgOK {
 				continue
 			}
@@ -670,6 +741,9 @@ func (h *Harness) ValidateResourceTypes() error {
 	}
 	if h.ValidationLoop != nil && h.ValidationLoop.Script != "" && IsURL(h.ValidationLoop.Script) {
 		return fmt.Errorf("validation_loop.script must be a local path, not a URL")
+	}
+	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" && IsURL(h.ValidationLoop.Schema) {
+		return fmt.Errorf("validation_loop.schema must be a local path, not a URL")
 	}
 	for i, hf := range h.HostFiles {
 		if IsURL(hf.Src) {
@@ -773,12 +847,12 @@ func (h *Harness) MatchingAllowedPrefix(rawURL string) string {
 	if strings.Contains(lower, "%25") {
 		return ""
 	}
-	normalized, ok := normalizeURLPath(lower)
+	normalized, ok := urlutil.NormalizeURLPath(lower)
 	if !ok {
 		return ""
 	}
 	for _, prefix := range h.AllowedRemoteResources {
-		normPrefix, prefixOK := normalizeURLPath(strings.ToLower(prefix))
+		normPrefix, prefixOK := urlutil.NormalizeURLPath(strings.ToLower(prefix))
 		if !prefixOK {
 			continue
 		}
@@ -792,47 +866,5 @@ func (h *Harness) MatchingAllowedPrefix(rawURL string) string {
 // MatchingAllowedPrefixInList checks if a URL matches any prefix in the given allowlist.
 // Returns the matching prefix or "" if none match. Standalone version of MatchingAllowedPrefix.
 func MatchingAllowedPrefixInList(rawURL string, allowlist []string) string {
-	lower := strings.ToLower(rawURL)
-	if strings.Contains(lower, "%25") {
-		return ""
-	}
-	normalized, ok := normalizeURLPath(lower)
-	if !ok {
-		return ""
-	}
-	for _, prefix := range allowlist {
-		normPrefix, prefixOK := normalizeURLPath(strings.ToLower(prefix))
-		if !prefixOK {
-			continue
-		}
-		if strings.HasPrefix(normalized, normPrefix) {
-			return prefix
-		}
-	}
-	return ""
-}
-
-// normalizeURLPath parses a URL, percent-decodes and cleans its path, and
-// returns the reconstructed URL string. Returns false if parsing fails.
-func normalizeURLPath(rawURL string) (string, bool) {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return "", false
-	}
-	unescaped, err := url.PathUnescape(parsed.Path)
-	if err != nil {
-		return "", false
-	}
-	if strings.ContainsRune(unescaped, '\\') {
-		return "", false
-	}
-	rawPath := parsed.Path
-	parsed.Path = path.Clean(unescaped)
-	parsed.RawPath = ""
-	if parsed.Path == "." {
-		parsed.Path = "/"
-	} else if strings.HasSuffix(rawPath, "/") && !strings.HasSuffix(parsed.Path, "/") {
-		parsed.Path += "/"
-	}
-	return parsed.String(), true
+	return urlutil.MatchingAllowedPrefixInList(rawURL, allowlist)
 }
