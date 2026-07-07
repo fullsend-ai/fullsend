@@ -271,6 +271,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		composeOpts.SourceURL = fetchDeps[0].URL
 	}
 
+	// Propagate the default allowlist when no config.yaml provided one.
+	// tryAgentsRepoFallback defaults internally, but that local default
+	// wasn't reaching LoadWithBase → resolveBaseScripts. See #3396.
+	propagateDefaultAllowlist(&composeOpts)
+
 	// If the harness has a URL base and org config failed to load,
 	// load it strictly now so LoadWithBase gets a proper error path
 	// rather than an unhelpful "URL base requires allowed_remote_resources".
@@ -2678,6 +2683,18 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 	}
 	printer.StepDone(fmt.Sprintf("Agent %s resolved from config (local path)", agent.Name))
 	return contained, nil, nil
+}
+
+// propagateDefaultAllowlist ensures composeOpts carries the default
+// allowed-remote-resources list when no org config supplied one.
+// tryAgentsRepoFallback applies this default internally for its own fetch,
+// but the caller must also propagate it so that downstream harness
+// composition (LoadWithBase → resolveBaseScripts) sees a consistent
+// allowlist. See #3396.
+func propagateDefaultAllowlist(opts *harness.ComposeOpts) {
+	if opts.OrgAllowlist == nil {
+		opts.OrgAllowlist = config.DefaultAllowedRemoteResources()
+	}
 }
 
 // tryAgentsRepoFallback attempts to resolve an agent from the default agents
