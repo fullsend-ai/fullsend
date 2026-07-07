@@ -181,3 +181,63 @@ func TestAcquireOrg_RateLimitSkipsRemainingOrgs(t *testing.T) {
 	assert.Equal(t, 1, firstPassAttempts,
 		"should only attempt 1 org before detecting rate limit and skipping the rest")
 }
+
+func TestAcquireOrg_RateLimitReturnsSentinelError(t *testing.T) {
+	fake := forge.NewFakeClient()
+	ctx := context.Background()
+
+	pool := []string{"test-org-1", "test-org-2"}
+
+	// Inject a persistent rate-limit error.
+	fake.Errors = map[string]error{
+		"CreateRepo": &gh.APIError{
+			StatusCode: 403,
+			Message:    "API rate limit exceeded for user ID 12345",
+		},
+	}
+
+	// Use a short timeout so the test doesn't block.
+	_, err := acquireOrgWithClient(ctx, fake, "", "run-rl", pool, 1*time.Second, t.Logf)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errAllOrgsRateLimited,
+		"should return errAllOrgsRateLimited when rate limits persist")
+}
+
+func TestAcquireOrg_RateLimitBacksOff(t *testing.T) {
+	fake := forge.NewFakeClient()
+	ctx := context.Background()
+
+	pool := []string{"test-org-1"}
+
+	// Inject a persistent rate-limit error.
+	fake.Errors = map[string]error{
+		"CreateRepo": &gh.APIError{
+			StatusCode: 403,
+			Message:    "API rate limit exceeded for user ID 12345",
+		},
+	}
+
+	var logs []string
+	logf := func(format string, args ...any) {
+		msg := fmt.Sprintf(format, args...)
+		logs = append(logs, msg)
+		t.Log(msg)
+	}
+
+	// Use 2s timeout — enough for the first pass + one backoff round
+	// (rateLimitBackoffInitial is 30s, so only the first pass runs
+	// before the timeout expires).
+	_, err := acquireOrgWithClient(ctx, fake, "", "run-bo", pool, 2*time.Second, logf)
+	require.Error(t, err)
+
+	// Verify backoff logging appeared.
+	backoffSeen := false
+	for _, msg := range logs {
+		if strings.Contains(msg, "backing off") {
+			backoffSeen = true
+			break
+		}
+	}
+	assert.True(t, backoffSeen,
+		"should log rate-limit backoff during polling")
+}

@@ -22,6 +22,7 @@ func NewFakeClient() *FakeClient {
 		DirContents:     make(map[string][]DirectoryEntry),
 		FileContentsRef: make(map[string][]byte),
 		BranchRefs:      make(map[string]string),
+		Refs:            make(map[string]string),
 	}
 }
 
@@ -111,6 +112,7 @@ type FakeClient struct {
 
 	// Pre-populated data
 	Repos                     []Repository
+	OrgRepos                  map[string][]Repository // per-org repos; when set, ListOrgRepos uses this instead of Repos
 	FileContents              map[string][]byte       // key: "owner/repo/path"
 	WorkflowRuns              map[string]*WorkflowRun // key: "owner/repo/workflow"
 	Workflows                 map[string]*Workflow    // key: "owner/repo/workflow"
@@ -154,6 +156,9 @@ type FakeClient struct {
 
 	// Branch refs for GetBranchRef.
 	BranchRefs map[string]string // key: "owner/repo/branch" → commit SHA
+
+	// Refs for GetRef.
+	Refs map[string]string // key: "owner/repo/refPath" → commit SHA
 
 	// Error injection: key is method name, value is error to return.
 	Errors map[string]error
@@ -200,7 +205,9 @@ type FakeClient struct {
 	DeletedRepos           []string // "owner/repo"
 	DeletedFiles           []FileRecord
 	CreatedSecrets         []SecretRecord
+	DeletedSecrets         []SecretRecord
 	Variables              []VariableRecord
+	DeletedVariables       []VariableRecord
 	DeletedOrgSecrets      []string // "org/name"
 	CreatedOrgSecrets      []OrgSecretRecord
 	CreatedOrgVariables    []OrgVariableRecord
@@ -229,7 +236,7 @@ func (f *FakeClient) err(method string) error {
 	return f.Errors[method]
 }
 
-func (f *FakeClient) ListOrgRepos(_ context.Context, _ string) ([]Repository, error) {
+func (f *FakeClient) ListOrgRepos(_ context.Context, org string) ([]Repository, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -237,8 +244,13 @@ func (f *FakeClient) ListOrgRepos(_ context.Context, _ string) ([]Repository, er
 		return nil, e
 	}
 
+	source := f.Repos
+	if f.OrgRepos != nil {
+		source = f.OrgRepos[org]
+	}
+
 	var result []Repository
-	for _, r := range f.Repos {
+	for _, r := range source {
 		if r.Archived || r.Fork || r.Private {
 			continue
 		}
@@ -576,6 +588,27 @@ func (f *FakeClient) CommitFilesToBranch(_ context.Context, owner, repo, branch,
 	return changed, nil
 }
 
+func (f *FakeClient) getRefLocked(owner, repo, refPath string) (string, bool) {
+	key := owner + "/" + repo + "/" + refPath
+	sha, ok := f.Refs[key]
+	return sha, ok
+}
+
+func (f *FakeClient) GetRef(_ context.Context, owner, repo, refPath string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetRef"); e != nil {
+		return "", e
+	}
+
+	sha, ok := f.getRefLocked(owner, repo, refPath)
+	if !ok {
+		return "", fmt.Errorf("%w: ref %s in %s/%s", ErrNotFound, refPath, owner, repo)
+	}
+	return sha, nil
+}
+
 func (f *FakeClient) GetBranchRef(_ context.Context, owner, repo, branch string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -583,11 +616,13 @@ func (f *FakeClient) GetBranchRef(_ context.Context, owner, repo, branch string)
 	if e := f.err("GetBranchRef"); e != nil {
 		return "", e
 	}
-
 	key := owner + "/" + repo + "/" + branch
-	sha, ok := f.BranchRefs[key]
+	if sha, ok := f.BranchRefs[key]; ok {
+		return sha, nil
+	}
+	sha, ok := f.getRefLocked(owner, repo, "heads/"+branch)
 	if !ok {
-		return "", fmt.Errorf("%w: branch %s in %s/%s", ErrNotFound, branch, owner, repo)
+		return "", fmt.Errorf("%w: ref heads/%s in %s/%s", ErrNotFound, branch, owner, repo)
 	}
 	return sha, nil
 }
@@ -770,6 +805,26 @@ func (f *FakeClient) CreateRepoSecret(_ context.Context, owner, repo, name, valu
 	return nil
 }
 
+func (f *FakeClient) DeleteRepoSecret(_ context.Context, owner, repo, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DeleteRepoSecret"); e != nil {
+		return e
+	}
+
+	key := owner + "/" + repo + "/" + name
+	if f.Secrets != nil {
+		delete(f.Secrets, key)
+	}
+	f.DeletedSecrets = append(f.DeletedSecrets, SecretRecord{
+		Owner: owner,
+		Repo:  repo,
+		Name:  name,
+	})
+	return nil
+}
+
 func (f *FakeClient) RepoSecretExists(_ context.Context, owner, repo, name string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -792,6 +847,15 @@ func (f *FakeClient) CreateOrUpdateRepoVariable(_ context.Context, owner, repo, 
 		return e
 	}
 
+	key := owner + "/" + repo + "/" + name
+	if f.VariableValues == nil {
+		f.VariableValues = make(map[string]string)
+	}
+	f.VariableValues[key] = value
+	if f.VariablesExist == nil {
+		f.VariablesExist = make(map[string]bool)
+	}
+	f.VariablesExist[key] = true
 	f.Variables = append(f.Variables, VariableRecord{
 		Owner: owner,
 		Repo:  repo,
@@ -831,6 +895,25 @@ func (f *FakeClient) GetRepoVariable(_ context.Context, owner, repo, name string
 	return "", false, nil
 }
 
+func (f *FakeClient) ListRepoVariables(_ context.Context, owner, repo string) (map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListRepoVariables"); e != nil {
+		return nil, e
+	}
+
+	prefix := owner + "/" + repo + "/"
+	result := make(map[string]string)
+	for key, val := range f.VariableValues {
+		if strings.HasPrefix(key, prefix) {
+			name := strings.TrimPrefix(key, prefix)
+			result[name] = val
+		}
+	}
+	return result, nil
+}
+
 func (f *FakeClient) DeleteRepoVariable(_ context.Context, owner, repo, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -846,6 +929,11 @@ func (f *FakeClient) DeleteRepoVariable(_ context.Context, owner, repo, name str
 	if f.VariablesExist != nil {
 		delete(f.VariablesExist, key)
 	}
+	f.DeletedVariables = append(f.DeletedVariables, VariableRecord{
+		Owner: owner,
+		Repo:  repo,
+		Name:  name,
+	})
 	return nil
 }
 

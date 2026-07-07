@@ -524,6 +524,82 @@ func TestFakeClient_DeleteRepoVariable(t *testing.T) {
 	assert.False(t, existsInExists)
 }
 
+func TestFakeClient_ListRepoVariables(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns matching variables", func(t *testing.T) {
+		fc := &FakeClient{
+			VariableValues: map[string]string{
+				"org/repo/FOO":       "bar",
+				"org/repo/BAZ":       "qux",
+				"org/other-repo/FOO": "other",
+			},
+		}
+
+		vars, err := fc.ListRepoVariables(ctx, "org", "repo")
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"FOO": "bar", "BAZ": "qux"}, vars)
+	})
+
+	t.Run("empty when no variables", func(t *testing.T) {
+		fc := &FakeClient{}
+		vars, err := fc.ListRepoVariables(ctx, "org", "repo")
+		require.NoError(t, err)
+		assert.Empty(t, vars)
+	})
+
+	t.Run("error injection", func(t *testing.T) {
+		fc := &FakeClient{Errors: map[string]error{"ListRepoVariables": errors.New("fail")}}
+		_, err := fc.ListRepoVariables(ctx, "org", "repo")
+		assert.Error(t, err)
+	})
+}
+
+func TestFakeClient_DeleteRepoSecret(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("deletes existing secret", func(t *testing.T) {
+		fc := &FakeClient{
+			Secrets: map[string]bool{
+				"org/repo/MY_SECRET": true,
+			},
+		}
+
+		err := fc.DeleteRepoSecret(ctx, "org", "repo", "MY_SECRET")
+		require.NoError(t, err)
+		assert.False(t, fc.Secrets["org/repo/MY_SECRET"])
+		require.Len(t, fc.DeletedSecrets, 1)
+		assert.Equal(t, "MY_SECRET", fc.DeletedSecrets[0].Name)
+	})
+
+	t.Run("idempotent when nil secrets map", func(t *testing.T) {
+		fc := &FakeClient{}
+		err := fc.DeleteRepoSecret(ctx, "org", "repo", "NONEXISTENT")
+		require.NoError(t, err)
+		require.Len(t, fc.DeletedSecrets, 1)
+	})
+
+	t.Run("error injection", func(t *testing.T) {
+		fc := &FakeClient{Errors: map[string]error{"DeleteRepoSecret": errors.New("fail")}}
+		err := fc.DeleteRepoSecret(ctx, "org", "repo", "SECRET")
+		assert.Error(t, err)
+	})
+}
+
+func TestFakeClient_CreateThenListVariables(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{}
+
+	err := fc.CreateOrUpdateRepoVariable(ctx, "org", "repo", "FOO", "bar")
+	require.NoError(t, err)
+	err = fc.CreateOrUpdateRepoVariable(ctx, "org", "repo", "BAZ", "qux")
+	require.NoError(t, err)
+
+	vars, err := fc.ListRepoVariables(ctx, "org", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"FOO": "bar", "BAZ": "qux"}, vars)
+}
+
 func TestFakeClient_ErrorInjection(t *testing.T) {
 	ctx := context.Background()
 	injected := errors.New("injected error")
@@ -614,6 +690,13 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 			_, err := fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")
 			return err
 		}},
+		{"DeleteRepoSecret", func(fc *FakeClient) error {
+			return fc.DeleteRepoSecret(ctx, "o", "r", "n")
+		}},
+		{"ListRepoVariables", func(fc *FakeClient) error {
+			_, err := fc.ListRepoVariables(ctx, "o", "r")
+			return err
+		}},
 	}
 
 	for _, m := range methods {
@@ -685,6 +768,8 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_ = fc.DeleteIssueComment(ctx, "o", "r", 1)
 			_, _ = fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
 			_, _ = fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")
+			_ = fc.DeleteRepoSecret(ctx, "o", "r", "n")
+			_, _ = fc.ListRepoVariables(ctx, "o", "r")
 		}(i)
 	}
 
@@ -787,6 +872,87 @@ func TestFakeClient_CreateBranch_PerRepoErrors(t *testing.T) {
 		err := fc.CreateBranch(ctx, "upstream", "repo", "branch")
 		require.Error(t, err)
 		assert.True(t, IsAlreadyExists(err))
+	})
+}
+
+func TestFakeClient_GetRef(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns SHA for existing ref", func(t *testing.T) {
+		fc := &FakeClient{
+			Refs: map[string]string{
+				"owner/repo/tags/v0": "abc123",
+			},
+		}
+		sha, err := fc.GetRef(ctx, "owner", "repo", "tags/v0")
+		require.NoError(t, err)
+		assert.Equal(t, "abc123", sha)
+	})
+
+	t.Run("returns ErrNotFound for missing ref", func(t *testing.T) {
+		fc := &FakeClient{
+			Refs: map[string]string{},
+		}
+		_, err := fc.GetRef(ctx, "owner", "repo", "tags/v0")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrNotFound)
+	})
+
+	t.Run("returns injected error", func(t *testing.T) {
+		fc := &FakeClient{
+			Errors: map[string]error{
+				"GetRef": errors.New("boom"),
+			},
+			Refs: map[string]string{
+				"owner/repo/tags/v0": "abc123",
+			},
+		}
+		_, err := fc.GetRef(ctx, "owner", "repo", "tags/v0")
+		require.Error(t, err)
+		assert.Equal(t, "boom", err.Error())
+	})
+}
+
+func TestFakeClient_GetBranchRef_DelegatesToGetRef(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("BranchRefs takes priority", func(t *testing.T) {
+		fc := &FakeClient{
+			BranchRefs: map[string]string{
+				"owner/repo/main": "branch-sha",
+			},
+			Refs: map[string]string{
+				"owner/repo/heads/main": "ref-sha",
+			},
+		}
+		sha, err := fc.GetBranchRef(ctx, "owner", "repo", "main")
+		require.NoError(t, err)
+		assert.Equal(t, "branch-sha", sha)
+	})
+
+	t.Run("falls through to GetRef when not in BranchRefs", func(t *testing.T) {
+		fc := &FakeClient{
+			Refs: map[string]string{
+				"owner/repo/heads/main": "ref-sha",
+			},
+		}
+		sha, err := fc.GetBranchRef(ctx, "owner", "repo", "main")
+		require.NoError(t, err)
+		assert.Equal(t, "ref-sha", sha)
+	})
+
+	t.Run("GetBranchRef error injection works independently", func(t *testing.T) {
+		fc := &FakeClient{
+			Errors: map[string]error{
+				"GetBranchRef": errors.New("branch error"),
+			},
+			BranchRefs: map[string]string{
+				"owner/repo/main": "sha",
+			},
+		}
+		_, err := fc.GetBranchRef(ctx, "owner", "repo", "main")
+		require.Error(t, err)
+		assert.Equal(t, "branch error", err.Error())
 	})
 }
 

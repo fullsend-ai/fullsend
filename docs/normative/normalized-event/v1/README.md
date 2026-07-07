@@ -19,12 +19,13 @@ can reuse them; **v1 normative scope is GitHub Actions only** (see
 
 ## Scope (v1)
 
-v1 adapters and examples target **GitHub** only:
+v1 adapters and examples target **GitHub** webhooks and **Jira poll** input:
 
-- `source.system` is `github`, `manual`, or `schedule`.
-- `repo`, `head_repo`, and `base_repo` use GitHub `owner/repo` slugs.
-- The `gha-event` input driver is the production adapter; `json` supports tests
-  and replay.
+- `source.system` is `github`, `jira`, `manual`, or `schedule`.
+- `repo` is the target Fullsend repository (`owner/repo` GitHub slug) for all
+  systems — including Jira poll events (see [jira-poll-adapter.md](jira-poll-adapter.md)).
+- The `gha-event` input driver is the production GitHub adapter; `jira-poll` is
+  the production Jira poll adapter; `json` supports tests and replay.
 
 Other forges (e.g. GitLab) are **not** part of this normative version. See
 [Future forges](#future-forges) for illustrative notes only.
@@ -48,6 +49,7 @@ Input drivers map native forge events into this struct:
 | Driver | Source | v1 status |
 |--------|--------|-----------|
 | `gha-event` | `GITHUB_EVENT_PATH` + `gh` snapshot for labels and change-proposal metadata | Production |
+| `jira-poll` | Jira issue search + changelog/comments since `lastCheck` ([jira-poll-adapter.md](jira-poll-adapter.md), [ADR 0063](../../../ADRs/0063-polling-based-work-discovery.md)) | Production (poll) |
 | `json` | stdin or `--input-file` | Tests, replay |
 
 Adapters must populate:
@@ -259,12 +261,12 @@ Example: **GitLab** ([gitlab-implementation.md](../../../problems/gitlab-impleme
 
 | Concern | Illustrative mapping (future) |
 |---------|-------------------------------|
-| Input driver | `gitlab-event` from GitLab webhook payload |
-| `source.system` | `gitlab` (new enum value) |
-| `repo` slug | Nested group path (`group/subgroup/project`) — requires wider `repo_path` pattern |
+| Input driver | `gitlab-poll` from GitLab CI event payload (cron-polled or `merge_request_event`; see [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) |
+| `source.system` | `gitlab` (new enum value — not yet in the v1 schema; requires the Phase 0 schema change from the [implementation plan](../../../plans/gitlab-cron-polling-implementation.md)) |
+| `repo` slug | Nested group path (`group/subgroup/project`) — requires wider `repo_path` pattern (not yet in the v1 schema; requires the Phase 0 schema change) |
 | MR events | `merge_request_event` → `entity.kind: change_proposal` |
 | Notes | `note` → `transition.kind: comment_added` |
-| Role mapping | Guest→`read`, Reporter→`read`, Developer→`write`, Maintainer→`maintain`, Owner→`admin` |
+| Role mapping | Guest→`read`, Reporter→`triage`, Developer→`write`, Maintainer→`maintain`, Owner→`admin` |
 
 Implementers must not assume these GitLab mappings until a future normative
 version publishes them.

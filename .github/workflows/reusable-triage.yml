@@ -86,15 +86,20 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${INSTALL_MODE}" != "per-org" && "${INSTALL_MODE}" != "per-repo" ]]; then
-            echo "::error::Invalid install_mode '${INSTALL_MODE}': must be 'per-org' or 'per-repo'"
+            printf 'Received install_mode: %q\n' "${INSTALL_MODE}"
+            echo "::error::Invalid install_mode: must be 'per-org' or 'per-repo'"
             exit 1
           fi
           SRC=".defaults/internal/scaffold/fullsend-repo"
           LAYERED_DIRS="agents skills schemas harness plugins policies scripts env"
+          DEST=""
+          if [[ "${INSTALL_MODE}" == "per-repo" ]]; then
+            DEST=".fullsend/"
+          fi
           for dir in ${LAYERED_DIRS}; do
             if [[ -d "${SRC}/${dir}" ]]; then
-              mkdir -p "${dir}"
-              cp -r "${SRC}/${dir}/." "${dir}/"
+              mkdir -p "${DEST}${dir}"
+              cp -r "${SRC}/${dir}/." "${DEST}${dir}/"
             fi
           done
           CUSTOM_BASE="customized"
@@ -106,8 +111,8 @@ jobs:
               find "${CUSTOM_BASE}/${dir}" -type f ! -name '.gitkeep' -print0 \
                 | while IFS= read -r -d '' f; do
                     rel="${f#"${CUSTOM_BASE}"/}"
-                    mkdir -p "$(dirname "${rel}")"
-                    cp "${f}" "${rel}"
+                    mkdir -p "$(dirname "${DEST}${rel}")"
+                    cp "${f}" "${DEST}${rel}"
                   done
             fi
           done
@@ -144,6 +149,7 @@ jobs:
         with:
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
 
       - name: Setup agent environment
         env:
@@ -161,6 +167,7 @@ jobs:
         with:
           agent: triage
           version: ${{ inputs.fullsend_version }}
+          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ inputs.source_repo }}
           status-number: ${{ fromJSON(inputs.event_payload).issue.number }}

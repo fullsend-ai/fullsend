@@ -51,7 +51,7 @@ Possible criteria (all TBD — this needs experimentation):
 - History of successful agent-reviewed PRs (agents review but don't merge, humans validate the agent's judgment)
 - No recent security incidents attributable to missed review
 
-These criteria are all properties of the repo and the agents. But graduation also changes the role of the humans responsible for guarded paths — from active participants to approvers of agent output. Whether those humans can remain effective in that reduced role is an open question explored in [human-factors.md](human-factors.md).
+These criteria are all properties of the repo and the agents. [Trustworthiness evidence](trustworthiness-evidence.md) explores a structured portfolio model for composing these signals into trust decisions. But graduation also changes the role of the humans responsible for guarded paths — from active participants to approvers of agent output. Whether those humans can remain effective in that reduced role is an open question explored in [human-factors.md](human-factors.md).
 
 ## The probationary period
 
@@ -103,4 +103,4 @@ This addresses the gap where the binary model can miss risky changes that don't 
 - How do we handle the CODEOWNERS bootstrap — who decides the initial set of guarded paths?
 - Should graduation criteria include human factors — not just "can agents be trusted here?" but "can the humans responsible for guarded paths remain effective once they stop implementing?" (See [human-factors.md](human-factors.md))
 - Automation research suggests that [intermediate levels of automation preserve better human oversight than full automation](human-factors.md#the-out-of-the-loop-performance-problem). Does this argue for a third autonomy level between "human-approved" and "fully autonomous" — one where agents do most of the work but humans retain some implementation role?
-- If autonomy can be revoked, should human engagement metrics (approval times, review depth, domain expert confidence) be among the triggers, alongside code quality metrics?
+- If autonomy can be revoked, should human engagement metrics (approval times, review depth, domain expert confidence) be among the triggers, alongside code quality metrics? Agent flapping rate is another candidate signal — see [flapping-convergence.md](flapping-convergence.md).

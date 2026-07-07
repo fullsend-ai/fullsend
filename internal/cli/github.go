@@ -16,6 +16,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/inference"
 	"github.com/fullsend-ai/fullsend/internal/inference/vertex"
 	"github.com/fullsend-ai/fullsend/internal/layers"
+	"github.com/fullsend-ai/fullsend/internal/maputil"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -263,10 +264,10 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 		printer.Blank()
 		printer.StepInfo("Would set repository variables:")
-		for _, name := range sortedStringMapKeys(repoVars) {
+		for _, name := range maputil.SortedKeys(repoVars) {
 			printer.StepInfo(fmt.Sprintf("  %s = %s", name, repoVars[name]))
 		}
-		secretNames := sortedStringMapKeys(repoSecrets)
+		secretNames := maputil.SortedKeys(repoSecrets)
 		printer.StepInfo(fmt.Sprintf("Would set %d repository secrets:", len(secretNames)))
 		for _, name := range secretNames {
 			printer.StepInfo(fmt.Sprintf("  %s", name))

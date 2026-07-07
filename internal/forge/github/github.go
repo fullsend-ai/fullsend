@@ -1299,21 +1299,42 @@ func (c *LiveClient) DeleteFile(ctx context.Context, owner, repo, path, message 
 	})
 }
 
-// GetBranchRef returns the HEAD commit SHA for the named branch.
-func (c *LiveClient) GetBranchRef(ctx context.Context, owner, repo, branch string) (string, error) {
-	refResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", owner, repo, branch))
+// GetRef returns the commit SHA for the given ref path (e.g., "heads/main", "tags/v0").
+func (c *LiveClient) GetRef(ctx context.Context, owner, repo, refPath string) (string, error) {
+	refResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/ref/%s", owner, repo, refPath))
 	if err != nil {
-		return "", fmt.Errorf("get branch ref %s/%s@%s: %w", owner, repo, branch, err)
+		return "", fmt.Errorf("get ref %s/%s@%s: %w", owner, repo, refPath, err)
 	}
 	var ref struct {
 		Object struct {
-			SHA string `json:"sha"`
+			SHA  string `json:"sha"`
+			Type string `json:"type"`
 		} `json:"object"`
 	}
 	if err := decodeJSON(refResp, &ref); err != nil {
-		return "", fmt.Errorf("decode branch ref: %w", err)
+		return "", fmt.Errorf("decode ref: %w", err)
+	}
+	if ref.Object.Type == "tag" {
+		tagResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/tags/%s", owner, repo, ref.Object.SHA))
+		if err != nil {
+			return "", fmt.Errorf("dereference tag %s: %w", ref.Object.SHA, err)
+		}
+		var tag struct {
+			Object struct {
+				SHA string `json:"sha"`
+			} `json:"object"`
+		}
+		if err := decodeJSON(tagResp, &tag); err != nil {
+			return "", fmt.Errorf("decode tag object: %w", err)
+		}
+		return tag.Object.SHA, nil
 	}
 	return ref.Object.SHA, nil
+}
+
+// GetBranchRef returns the HEAD commit SHA for the named branch.
+func (c *LiveClient) GetBranchRef(ctx context.Context, owner, repo, branch string) (string, error) {
+	return c.GetRef(ctx, owner, repo, "heads/"+branch)
 }
 
 // CreateBranch creates a new branch from the repository's default branch.
@@ -1832,6 +1853,61 @@ func (c *LiveClient) DeleteRepoVariable(ctx context.Context, owner, repo, name s
 		return nil
 	}
 	return &APIError{StatusCode: resp.StatusCode, Message: "unexpected status deleting repo variable"}
+}
+
+// ListRepoVariables returns all Actions variables for a repository as a
+// name-to-value map. Results are paginated; the method follows pagination
+// until all variables are fetched or the safety page cap is reached.
+func (c *LiveClient) ListRepoVariables(ctx context.Context, owner, repo string) (map[string]string, error) {
+	const maxPages = 100
+	result := make(map[string]string)
+	var totalCount, fetched int
+
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("/repos/%s/%s/actions/variables?per_page=100&page=%d", owner, repo, page)
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list repo variables page %d: %w", page, err)
+		}
+
+		var body struct {
+			TotalCount int `json:"total_count"`
+			Variables  []struct {
+				Name  string `json:"name"`
+				Value string `json:"value"`
+			} `json:"variables"`
+		}
+		if err := decodeJSON(resp, &body); err != nil {
+			return nil, fmt.Errorf("decode repo variables page %d: %w", page, err)
+		}
+
+		totalCount = body.TotalCount
+		for _, v := range body.Variables {
+			result[v.Name] = v.Value
+		}
+		fetched += len(body.Variables)
+
+		if fetched >= totalCount || len(body.Variables) == 0 {
+			return result, nil
+		}
+	}
+
+	return nil, fmt.Errorf("list repo variables: pagination exceeded %d pages (fetched %d of %d variables)", maxPages, len(result), totalCount)
+}
+
+// DeleteRepoSecret deletes a repository Actions secret. It is idempotent:
+// a 404 (secret already gone) is not treated as an error.
+func (c *LiveClient) DeleteRepoSecret(ctx context.Context, owner, repo, name string) error {
+	resp, err := c.do(ctx, http.MethodDelete, fmt.Sprintf("/repos/%s/%s/actions/secrets/%s", owner, repo, name), nil)
+	if err != nil {
+		return fmt.Errorf("delete repo secret %s: %w", name, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+	return &APIError{StatusCode: resp.StatusCode, Message: "unexpected status deleting repo secret"}
 }
 
 // GetWorkflow returns a workflow definition by filename (e.g. repo-maintenance.yml).
