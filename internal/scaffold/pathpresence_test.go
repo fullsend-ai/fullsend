@@ -89,6 +89,20 @@ func TestComparePathPresence_ForgeError(t *testing.T) {
 	assert.Contains(t, err.Error(), "listing repository files")
 }
 
+func TestComparePathPresence_TreeTruncated(t *testing.T) {
+	client := &forge.FakeClient{
+		Errors: map[string]error{
+			"ListRepositoryFiles": forge.ErrTreeTruncated,
+		},
+	}
+
+	_, err := ComparePathPresence(context.Background(), client, "org", ".fullsend", []string{
+		".defaults/action.yml",
+	})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, forge.ErrTreeTruncated)
+}
+
 func TestComparePathPresence_UsesOneAPICall(t *testing.T) {
 	// Verify that ComparePathPresence uses ListRepositoryFiles (batch)
 	// rather than per-path GetFileContent. We inject an error on

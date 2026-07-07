@@ -41,6 +41,43 @@ func IsBranchProtected(err error) bool {
 	return errors.Is(err, ErrBranchProtected)
 }
 
+// ErrForbidden indicates that the operation was denied due to
+// insufficient permissions (e.g., the user lacks push access).
+var ErrForbidden = errors.New("forbidden")
+
+// IsForbidden reports whether err indicates a permission denial.
+func IsForbidden(err error) bool {
+	return errors.Is(err, ErrForbidden)
+}
+
+// ErrTreeTruncated indicates that the repository's Git tree is too large
+// to retrieve in a single API call. Callers that receive this error should
+// fall back to per-path existence checks.
+var ErrTreeTruncated = errors.New("tree truncated")
+
+// IsTreeTruncated reports whether err indicates a truncated tree response.
+func IsTreeTruncated(err error) bool {
+	return errors.Is(err, ErrTreeTruncated)
+}
+
+// ErrNoChanges indicates that a change proposal could not be created
+// because there are no differences between the head and base branches.
+var ErrNoChanges = errors.New("no changes between branches")
+
+// IsNoChanges reports whether err indicates a no-diff PR creation attempt.
+func IsNoChanges(err error) bool {
+	return errors.Is(err, ErrNoChanges)
+}
+
+// ErrNonFastForward indicates that a ref update was rejected because
+// the update is not a fast-forward (e.g. auto_init race on new repos).
+var ErrNonFastForward = errors.New("non-fast-forward update")
+
+// IsNonFastForward reports whether err indicates a non-fast-forward rejection.
+func IsNonFastForward(err error) bool {
+	return errors.Is(err, ErrNonFastForward)
+}
+
 // Repository represents a repository on a git forge.
 type Repository struct {
 	ID            int64
@@ -57,6 +94,8 @@ type ChangeProposal struct {
 	URL    string
 	Title  string
 	Number int
+	Head   string
+	Base   string
 }
 
 // WorkflowRun represents a CI/CD workflow execution.
@@ -67,6 +106,14 @@ type WorkflowRun struct {
 	Conclusion string // "success", "failure", "cancelled", etc.
 	HTMLURL    string
 	CreatedAt  string
+}
+
+// Workflow represents a workflow definition registered with the forge.
+type Workflow struct {
+	ID    int
+	Name  string
+	Path  string
+	State string // "active", "disabled", etc.
 }
 
 // Annotation represents a check-run annotation (e.g. from ::notice:: or
@@ -108,9 +155,15 @@ type PullRequestReview struct {
 // ReviewComment represents an inline comment on a specific line of a
 // pull request diff. These are submitted as part of a formal PR review
 // via the GitHub "Create a review" API.
+//
+// When Line is 0, the comment is attached to the file as a whole rather
+// than a specific line. This is used for findings that reference a file
+// in the diff but a line outside any diff hunk. Forge implementations
+// translate Line==0 into the appropriate API representation (e.g.,
+// GitHub's subject_type: "file").
 type ReviewComment struct {
 	Path string // relative file path in the repository
-	Line int    // line number in the diff (right side)
+	Line int    // line number in the diff (right side); 0 for file-level comments
 	Body string // comment body (Markdown)
 }
 
@@ -129,6 +182,19 @@ type Installation struct {
 	AppSlug       string
 	AppOwnerLogin string // GitHub login of the app owner (org or user)
 	Permissions   map[string]string
+}
+
+// OrgVariable is an org-level GitHub Actions variable.
+type OrgVariable struct {
+	Name  string
+	Value string
+}
+
+// UserIdentity holds a forge user's display name and email, used for
+// constructing Signed-off-by trailers in commit messages.
+type UserIdentity struct {
+	Name  string // display name (may equal login if no name is set)
+	Email string // primary or noreply email
 }
 
 // TreeFile represents a file to be committed via the Git Trees API.
@@ -172,6 +238,37 @@ type Client interface {
 	CreateRepo(ctx context.Context, org, name, description string, private bool) (*Repository, error)
 	DeleteRepo(ctx context.Context, owner, repo string) error
 
+	// FindExistingFork checks whether the authenticated user already has
+	// a fork of owner/repo. It returns the fork owner login and repo
+	// name if found, or empty strings when no fork exists. The repo
+	// name may differ from the upstream name when the user already has
+	// an unrelated repo with the same name (GitHub appends a suffix
+	// like "-1"). Only actual API errors are returned as err; "not
+	// found" is not an error.
+	//
+	// Cross-forge contract: implementations must check for an existing
+	// fork owned by the authenticated user. The semantics of "fork" are
+	// platform-specific (e.g., GitHub forks vs GitLab project forks).
+	// Returning ("", "", nil) signals no fork exists. Implementations
+	// must not return ErrNotFound for missing forks — that is the
+	// empty-string convention.
+	FindExistingFork(ctx context.Context, owner, repo string) (forkOwner, forkRepo string, err error)
+
+	// CreateFork creates a fork of the given repository under the
+	// authenticated user's account. It returns the fork owner login
+	// and the actual repo name of the fork. The repo name may differ
+	// from the upstream name when the user already has an unrelated
+	// repo with the same name (GitHub appends a suffix like "-1").
+	// If a fork already exists, it returns the existing fork's owner
+	// and repo name without error (idempotent).
+	//
+	// Cross-forge contract: implementations must create a personal
+	// fork of the upstream repo. The call must be idempotent — if the
+	// fork already exists, return its metadata without error.
+	// Implementations should return both owner and repo name from the
+	// API response, not assume the repo name matches the upstream.
+	CreateFork(ctx context.Context, owner, repo string) (forkOwner, forkRepo string, err error)
+
 	// File operations
 	CreateFile(ctx context.Context, owner, repo, path, message string, content []byte) error
 
@@ -185,6 +282,11 @@ type Client interface {
 	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
 	DeleteFile(ctx context.Context, owner, repo, path, message string) error
 
+	// DeleteFiles atomically removes multiple paths in a single commit via the
+	// Git Trees API. Missing paths are skipped. Returns the number of paths
+	// removed, or (0, nil) when none of the paths exist.
+	DeleteFiles(ctx context.Context, owner, repo, message string, paths []string) (deleted int, err error)
+
 	// ListDirectoryContents returns all files and subdirectories at the given
 	// path in a repository at the specified ref (commit SHA, branch, or tag).
 	// When recursive is true, nested subdirectories are flattened into the
@@ -193,9 +295,11 @@ type Client interface {
 	ListDirectoryContents(ctx context.Context, owner, repo, path, ref string, recursive bool) ([]DirectoryEntry, error)
 
 	// ListRepositoryFiles returns all file paths in the repository's default
-	// branch using the Git Trees API. This retrieves the entire tree in a
-	// single API call, making it efficient for batch path-existence checks.
+	// branch. This retrieves the entire tree in a single API call, making it
+	// efficient for batch path-existence checks.
 	// Returns ErrNotFound if the repository does not exist.
+	// Returns ErrTreeTruncated if the repository tree is too large to retrieve
+	// in a single call; callers should fall back to per-path checks.
 	ListRepositoryFiles(ctx context.Context, owner, repo string) ([]string, error)
 
 	// GetFileContentAtRef retrieves the content of a file at a specific ref
@@ -214,7 +318,15 @@ type Client interface {
 	// have the expected content, no commit is created.
 	CommitFilesToBranch(ctx context.Context, owner, repo, branch, message string, files []TreeFile) (committed bool, err error)
 
+	// Ref operations
+	// GetRef returns the commit SHA for the given ref path (e.g., "heads/main", "tags/v0").
+	// Returns forge.ErrNotFound if the ref does not exist.
+	GetRef(ctx context.Context, owner, repo, refPath string) (sha string, err error)
+
 	// Branch operations
+	// GetBranchRef returns the HEAD commit SHA for the named branch.
+	// Returns forge.ErrNotFound if the branch does not exist.
+	GetBranchRef(ctx context.Context, owner, repo, branch string) (sha string, err error)
 	CreateBranch(ctx context.Context, owner, repo, branchName string) error
 	CreateFileOnBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
 	// CreateOrUpdateFileOnBranch creates or updates a file on a specific branch.
@@ -232,17 +344,33 @@ type Client interface {
 	// Authentication
 	GetAuthenticatedUser(ctx context.Context) (string, error)
 
+	// GetAuthenticatedUserIdentity returns the display name and email of
+	// the authenticated user. This is used to construct Signed-off-by
+	// trailers for commits created via the forge API.
+	//
+	// Returns ErrNotFound when the identity cannot be determined (e.g.,
+	// GitHub App installation tokens that cannot call /user).
+	GetAuthenticatedUserIdentity(ctx context.Context) (*UserIdentity, error)
+
 	// GetTokenScopes returns the OAuth scopes granted to the current token.
 	// On GitHub, this is read from the X-OAuth-Scopes response header.
 	// Returns nil (not an error) if the forge doesn't support scope introspection.
 	GetTokenScopes(ctx context.Context) ([]string, error)
 
+	// IsInstallationToken reports whether the current token is a GitHub App
+	// installation access token (as opposed to a user PAT or OAuth token).
+	// Used to skip OAuth scope preflight, which does not apply to installation tokens.
+	IsInstallationToken(ctx context.Context) (bool, error)
+
 	// Secrets and variables
 	CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error
 	RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error)
+	DeleteRepoSecret(ctx context.Context, owner, repo, name string) error
 	CreateOrUpdateRepoVariable(ctx context.Context, owner, repo, name, value string) error
 	RepoVariableExists(ctx context.Context, owner, repo, name string) (bool, error)
 	GetRepoVariable(ctx context.Context, owner, repo, name string) (string, bool, error)
+	ListRepoVariables(ctx context.Context, owner, repo string) (map[string]string, error)
+	DeleteRepoVariable(ctx context.Context, owner, repo, name string) error
 
 	// Org-level secrets (for cross-repo dispatch tokens)
 	CreateOrgSecret(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error
@@ -255,7 +383,12 @@ type Client interface {
 
 	// Org-level variables (for dispatch function URL)
 	CreateOrUpdateOrgVariable(ctx context.Context, org, name, value string, selectedRepoIDs []int64) error
+	// CreateOrUpdateOrgVariableAll creates or updates an org-wide Actions variable
+	// (visibility all). Used for mint FOREIGN policy variables read via the org API.
+	CreateOrUpdateOrgVariableAll(ctx context.Context, org, name, value string) error
 	OrgVariableExists(ctx context.Context, org, name string) (bool, error)
+	GetOrgVariable(ctx context.Context, org, name string) (value string, exists bool, err error)
+	ListOrgVariables(ctx context.Context, org string) ([]OrgVariable, error)
 	DeleteOrgVariable(ctx context.Context, org, name string) error
 	SetOrgVariableRepos(ctx context.Context, org, name string, repoIDs []int64) error
 	// GetOrgVariableRepos returns the list of repository IDs that have access
@@ -263,6 +396,7 @@ type Client interface {
 	GetOrgVariableRepos(ctx context.Context, org, name string) ([]int64, error)
 
 	// CI/Workflow operations
+	GetWorkflow(ctx context.Context, owner, repo, workflowFile string) (*Workflow, error)
 	GetLatestWorkflowRun(ctx context.Context, owner, repo, workflowFile string) (*WorkflowRun, error)
 	GetWorkflowRun(ctx context.Context, owner, repo string, runID int) (*WorkflowRun, error)
 	DispatchWorkflow(ctx context.Context, owner, repo, workflowFile, ref string, inputs map[string]string) error
@@ -297,6 +431,12 @@ type Client interface {
 
 	// Change proposal merge
 	MergeChangeProposal(ctx context.Context, owner, repo string, number int) error
+
+	// UpdatePullRequestBranch updates a pull request's head branch by
+	// merging the base branch into it (equivalent to clicking "Update branch"
+	// on GitHub). This is needed when the base branch has advanced and the
+	// PR branch is out of date, which causes merge 409 errors.
+	UpdatePullRequestBranch(ctx context.Context, owner, repo string, number int) error
 
 	// Workflow run listing
 	ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile string) ([]WorkflowRun, error)
