@@ -3572,6 +3572,16 @@ post_script: scripts/post-triage.sh
 		SourceURL:     sourceURL,
 	}
 	propagateDefaultAllowlist(&opts)
+	assert.Equal(t, config.DefaultAllowedRemoteResources(), opts.OrgAllowlist,
+		"propagateDefaultAllowlist should set the default list")
+
+	// Verify the real default list covers the fallback URL shape.
+	// A future edit to DefaultAllowedRemoteResources() that drops the
+	// agents repo prefix would regress #3396 silently without this.
+	sampleURL := defaultAgentsRepoURLPrefix + strings.Repeat("a", 40) + "/scripts/pre-triage.sh"
+	assert.NotEmpty(t, harness.MatchingAllowedPrefixInList(sampleURL, config.DefaultAllowedRemoteResources()),
+		"DefaultAllowedRemoteResources must cover the agents repo fallback URL shape")
+
 	// Override allowlist to match test server (default points at github.com).
 	opts.OrgAllowlist = []string{srv.URL + "/"}
 

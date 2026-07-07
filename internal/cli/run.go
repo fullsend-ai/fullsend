@@ -2691,6 +2691,11 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 // but the caller must also propagate it so that downstream harness
 // composition (LoadWithBase → resolveBaseScripts) sees a consistent
 // allowlist. See #3396.
+//
+// This applies when OrgAllowlist is nil (no config.yaml, or config.yaml
+// omits allowed_remote_resources). An explicitly empty list ([]string{})
+// is left as-is to preserve deny-all semantics — orgs that want no remote
+// resources must write an explicit empty allowed_remote_resources: [].
 func propagateDefaultAllowlist(opts *harness.ComposeOpts) {
 	if opts.OrgAllowlist == nil {
 		opts.OrgAllowlist = config.DefaultAllowedRemoteResources()
