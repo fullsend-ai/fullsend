@@ -471,6 +471,24 @@ func (f *FakeClient) DeleteFile(_ context.Context, owner, repo, path, message st
 	return nil
 }
 
+func (f *FakeClient) ListRepositoryFiles(_ context.Context, owner, repo string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListRepositoryFiles"); e != nil {
+		return nil, e
+	}
+
+	prefix := owner + "/" + repo + "/"
+	var paths []string
+	for key := range f.FileContents {
+		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
+			paths = append(paths, key[len(prefix):])
+		}
+	}
+	return paths, nil
+}
+
 func (f *FakeClient) DeleteFiles(_ context.Context, owner, repo, message string, paths []string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -50,6 +50,16 @@ func IsForbidden(err error) bool {
 	return errors.Is(err, ErrForbidden)
 }
 
+// ErrTreeTruncated indicates that the repository's Git tree is too large
+// to retrieve in a single API call. Callers that receive this error should
+// fall back to per-path existence checks.
+var ErrTreeTruncated = errors.New("tree truncated")
+
+// IsTreeTruncated reports whether err indicates a truncated tree response.
+func IsTreeTruncated(err error) bool {
+	return errors.Is(err, ErrTreeTruncated)
+}
+
 // ErrNoChanges indicates that a change proposal could not be created
 // because there are no differences between the head and base branches.
 var ErrNoChanges = errors.New("no changes between branches")
@@ -283,6 +293,14 @@ type Client interface {
 	// result with paths relative to the listed directory.
 	// Returns forge.ErrNotFound if the path does not exist or is not a directory.
 	ListDirectoryContents(ctx context.Context, owner, repo, path, ref string, recursive bool) ([]DirectoryEntry, error)
+
+	// ListRepositoryFiles returns all file paths in the repository's default
+	// branch. This retrieves the entire tree in a single API call, making it
+	// efficient for batch path-existence checks.
+	// Returns ErrNotFound if the repository does not exist.
+	// Returns ErrTreeTruncated if the repository tree is too large to retrieve
+	// in a single call; callers should fall back to per-path checks.
+	ListRepositoryFiles(ctx context.Context, owner, repo string) ([]string, error)
 
 	// GetFileContentAtRef retrieves the content of a file at a specific ref
 	// (commit SHA, branch, or tag). Unlike GetFileContent which reads from
