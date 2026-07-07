@@ -13,38 +13,14 @@ The goal of this document is that you configure Fullsend for your GitHub reposit
 * Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI.
 * Download the latest [gh](https://cli.github.com/) CLI and authenticate with it.
 
-### Token resolution
-
-The `fullsend` CLI resolves a GitHub token in this order:
-
-1. `GH_TOKEN` environment variable
-2. `GITHUB_TOKEN` environment variable
-3. `gh auth token` (GitHub CLI)
-
-For most organizations, the token from `gh auth login` works. However, if
-your organization restricts personal access token types (Settings → Personal
-access tokens → Restrict access via PAT type), `gh auth login` may produce a
-token that GitHub rejects with a 403 error.
-
-In that case, create a **fine-grained personal access token** at
-<https://github.com/settings/personal-access-tokens/new> scoped to the
-target repository with these permissions:
-
-| Permission | Level | Why |
-|---|---|---|
-| Contents | Read and write | Commits `.fullsend/config.yaml` and scaffold files |
-| Workflows | Read and write | Writes/updates files under `.github/workflows/` |
-| Secrets | Read and write | Sets `FULLSEND_GCP_PROJECT_ID` / `FULLSEND_GCP_WIF_PROVIDER` |
-| Variables | Read and write | Sets `FULLSEND_MINT_URL` / `FULLSEND_GCP_REGION` |
-| Metadata | Read-only | GitHub-required baseline |
-| Pull requests | Read and write | Only needed without `--direct` |
-
-Export it before running setup so it takes priority:
-
-```bash
-export GH_TOKEN=github_pat_...
-fullsend github setup <org>/<repo> ...
-```
+> **Note:** If your organization restricts classic personal access tokens,
+> `gh auth login` may produce a token that GitHub rejects with a 403. Create a
+> [fine-grained PAT](https://github.com/settings/personal-access-tokens/new)
+> scoped to the target repository with **Contents**, **Workflows**, **Secrets**,
+> **Variables** (read/write), **Pull requests** (read/write — not needed with
+> `--direct`), and **Metadata** (read-only), then `export GH_TOKEN=github_pat_...`
+> before running setup. The CLI checks `GH_TOKEN` → `GITHUB_TOKEN` → `gh auth token`,
+> in that order.
 
 ## Installing GitHub Applications
 
