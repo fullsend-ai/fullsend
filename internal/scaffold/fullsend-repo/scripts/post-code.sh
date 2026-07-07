@@ -129,7 +129,8 @@ maybe_assign_pr() {
     --add-assignee "${assignee}" 2>&1)" || {
     echo "::warning::Failed to assign PR #${pr_number} to ${assignee} — continuing"
     if [[ -n "${assign_err}" ]]; then
-      echo "::warning::${assign_err}"
+      # Strip :: sequences so API error text cannot inject workflow commands.
+      echo "::warning::${assign_err//::/ }"
     fi
   }
 }
