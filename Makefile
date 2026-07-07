@@ -72,9 +72,12 @@ bootstrap:
 	@echo "    Make sure $(BOOTSTRAP_BIN_DIR) is on your PATH."
 
 ensure-hooks:
-	@if [ ! -f .git/hooks/pre-commit ]; then \
-		echo "==> Installing pre-commit hooks..."; \
-		pre-commit install; \
+	@if [ -z "$$CI" ] && [ -z "$$(git config --get core.hooksPath 2>/dev/null)" ]; then \
+		hooks_dir=$$(git rev-parse --git-path hooks 2>/dev/null); \
+		if [ -n "$$hooks_dir" ] && [ ! -f "$$hooks_dir/pre-commit" ]; then \
+			echo "==> Installing pre-commit hooks..."; \
+			pre-commit install; \
+		fi; \
 	fi
 
 lint: ensure-hooks
