@@ -75,10 +75,31 @@ Authorization is enforced by `fullsend dispatch` per
 
 ## State
 
-- `state.labels` — label names from `fields.labels` at event time.
+- `state.labels` — label names from `fields.labels` at event time, subject to
+  the privacy gate below.
 - `state.change_proposal` — omitted. Change-proposal stages (`fix`, PR-linked
   `review`, merge `retro`) are forge-scoped; harness CEL triggers for those
   stages MUST require `entity.kind == 'change_proposal'` or equivalent guards.
+- `state.privacy_gate.source_hash` — SHA-256 of the pre-gate event payload,
+  present when the privacy gate applied a transformation. See below.
+
+## Privacy gate
+
+Per [ADR 0068](../../../ADRs/0068-privacy-allowlist-for-poll-input-drivers.md),
+`jira-poll` applies a configurable allowlist to Jira fields **before**
+constructing `NormalizedEvent`. The gate is configured under
+`poll.input_drivers[].privacy_gate` in `.fullsend/config.yaml`:
+
+| Field | Effect |
+|-------|--------|
+| `allowed_fields` | Only listed fields are read into `NormalizedEvent`. Defaults to `[summary, issue_type, priority, labels]`. Fields not listed are omitted at construction, not filtered post hoc. |
+| `comment_template` | When set, replaces `transition.comment.body` / `event_payload.comment` with a bounded, named-slot projection instead of the verbatim Jira comment. |
+
+When `privacy_gate` is omitted entirely, the default allowlist above applies
+— this is a change from the unfiltered mapping this document originally
+described. Installations where the Jira project and target repo share a
+trust boundary can widen `allowed_fields` or omit `comment_template` to
+restore pass-through behavior.
 
 ## Execution ref projection
 
@@ -90,7 +111,7 @@ When `source.system` is `jira`, projection supplements the GitHub-shaped
 | `FULLSEND_WORK_ITEM_URL` | `entity.url` |
 | `FULLSEND_WORK_ITEM_SOURCE` | `jira` |
 | `FULLSEND_WORK_ITEM_KEY` | `entity.key` |
-| `event_payload.comment` | `transition.comment` when present |
+| `event_payload.comment` | `transition.comment` when present, subject to the privacy gate's `comment_template` |
 | `GITHUB_ISSUE_URL` | Omit or empty — not a GitHub issue |
 | `status-number` | `entity.id` (numeric Jira id) |
 
