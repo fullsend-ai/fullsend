@@ -1,0 +1,35 @@
+{
+  "repo": "acme-group/platform/backend",
+  "entity": {
+    "kind": "change_proposal",
+    "id": 42,
+    "url": "https://gitlab.com/acme-group/platform/backend/-/merge_requests/42"
+  },
+  "transition": {
+    "kind": "opened"
+  },
+  "actor": {
+    "id": "dev-user",
+    "kind": "human",
+    "role": "write",
+    "is_entity_author": true
+  },
+  "state": {
+    "labels": [],
+    "change_proposal": {
+      "id": 42,
+      "head_repo": "acme-group/platform/backend",
+      "base_repo": "acme-group/platform/backend",
+      "head_ref": "feature/add-logging",
+      "base_ref": "main",
+      "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "author_id": "dev-user",
+      "is_fork": false
+    }
+  },
+  "source": {
+    "system": "gitlab",
+    "raw_type": "merge_request",
+    "raw_action": "opened"
+  }
+}

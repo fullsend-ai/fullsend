@@ -1282,6 +1282,84 @@ func (c *LiveClient) listDirContents(ctx context.Context, owner, repo, path, ref
 	return result, nil
 }
 
+// ListRepositoryFiles returns all file paths in the default branch using
+// the Git Trees API (single recursive call).
+func (c *LiveClient) ListRepositoryFiles(ctx context.Context, owner, repo string) ([]string, error) {
+	// 1. Get default branch.
+	repoResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
+	if err != nil {
+		return nil, fmt.Errorf("get repo: %w", err)
+	}
+	var repoInfo struct {
+		DefaultBranch string `json:"default_branch"`
+	}
+	if err := decodeJSON(repoResp, &repoInfo); err != nil {
+		return nil, fmt.Errorf("decode repo info: %w", err)
+	}
+
+	// 2. Get branch ref → commit SHA.
+	var commitSHA string
+	if err := c.retryOnRepoRace(ctx, "get branch ref", func() error {
+		refResp, refErr := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/ref/heads/%s", owner, repo, repoInfo.DefaultBranch))
+		if refErr != nil {
+			return fmt.Errorf("get branch ref: %w", refErr)
+		}
+		var ref struct {
+			Object struct {
+				SHA string `json:"sha"`
+			} `json:"object"`
+		}
+		if decErr := decodeJSON(refResp, &ref); decErr != nil {
+			return fmt.Errorf("decode ref: %w", decErr)
+		}
+		commitSHA = ref.Object.SHA
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	// 3. Get commit → tree SHA.
+	cResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/commits/%s", owner, repo, commitSHA))
+	if err != nil {
+		return nil, fmt.Errorf("get commit: %w", err)
+	}
+	var commitObj struct {
+		Tree struct {
+			SHA string `json:"sha"`
+		} `json:"tree"`
+	}
+	if err := decodeJSON(cResp, &commitObj); err != nil {
+		return nil, fmt.Errorf("decode commit: %w", err)
+	}
+
+	// 4. Get recursive tree → file paths.
+	treeResp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/git/trees/%s?recursive=1", owner, repo, commitObj.Tree.SHA))
+	if err != nil {
+		return nil, fmt.Errorf("get tree: %w", err)
+	}
+	var tree struct {
+		Tree []struct {
+			Path string `json:"path"`
+			Type string `json:"type"` // "blob" or "tree"
+		} `json:"tree"`
+		Truncated bool `json:"truncated"`
+	}
+	if err := decodeJSON(treeResp, &tree); err != nil {
+		return nil, fmt.Errorf("decode tree: %w", err)
+	}
+	if tree.Truncated {
+		return nil, fmt.Errorf("repository tree too large: %w", forge.ErrTreeTruncated)
+	}
+
+	paths := make([]string, 0, len(tree.Tree))
+	for _, entry := range tree.Tree {
+		if entry.Type == "blob" {
+			paths = append(paths, entry.Path)
+		}
+	}
+	return paths, nil
+}
+
 // DeleteFile deletes a file from the repository's default branch.
 // It first fetches the file to obtain its SHA (required by the GitHub Contents
 // API), then issues the DELETE. Retries on transient 404/409 errors.
