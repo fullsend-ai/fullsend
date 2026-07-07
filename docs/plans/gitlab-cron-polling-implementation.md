@@ -137,7 +137,7 @@ func extractHost(remoteURL string) string {
 ### NormalizedEvent schema updates
 
 Three schema changes are required before the `gitlab-poll` input driver can
-emit valid `NormalizedEvent` values:
+emit valid `NormalizedEvent` values. **Status: completed** (PR #3191).
 
 1. **`source.system` enum**: Add `"gitlab"` to the allowed values. The v1
    versioning policy permits adding new enum values as a non-breaking change.
