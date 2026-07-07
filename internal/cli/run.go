@@ -269,12 +269,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// field (ADR-0045 resource resolution for config-registered agents).
 	if len(fetchDeps) > 0 && fetchDeps[0].URL != "" {
 		composeOpts.SourceURL = fetchDeps[0].URL
-	}
 
-	// Propagate the default allowlist when no config.yaml provided one.
-	// tryAgentsRepoFallback defaults internally, but that local default
-	// wasn't reaching LoadWithBase → resolveBaseScripts. See #3396.
-	propagateDefaultAllowlist(&composeOpts)
+		// Propagate the default allowlist when the agents-repo fallback
+		// set SourceURL. tryAgentsRepoFallback defaults internally for
+		// its own fetch, but that local default wasn't reaching
+		// LoadWithBase → resolveBaseScripts. Scoped to the fallback
+		// path to preserve the deny-all contract for config-present
+		// harnesses with URL bases. See #3396.
+		propagateDefaultAllowlist(&composeOpts)
+	}
 
 	// If the harness has a URL base and org config failed to load,
 	// load it strictly now so LoadWithBase gets a proper error path

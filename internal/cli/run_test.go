@@ -3507,6 +3507,12 @@ func TestPropagateDefaultAllowlist(t *testing.T) {
 		propagateDefaultAllowlist(&opts)
 		assert.Equal(t, custom, opts.OrgAllowlist)
 	})
+
+	t.Run("explicit empty slice stays deny-all", func(t *testing.T) {
+		opts := harness.ComposeOpts{OrgAllowlist: []string{}}
+		propagateDefaultAllowlist(&opts)
+		assert.Empty(t, opts.OrgAllowlist, "explicit empty list must not be replaced with defaults")
+	})
 }
 
 func TestAgentsRepoFallback_LoadWithBase_NilAllowlist(t *testing.T) {
