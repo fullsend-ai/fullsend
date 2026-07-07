@@ -269,6 +269,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// field (ADR-0045 resource resolution for config-registered agents).
 	if len(fetchDeps) > 0 && fetchDeps[0].URL != "" {
 		composeOpts.SourceURL = fetchDeps[0].URL
+
+		// Propagate the default allowlist when the agents-repo fallback
+		// set SourceURL. tryAgentsRepoFallback defaults internally for
+		// its own fetch, but that local default wasn't reaching
+		// LoadWithBase → resolveBaseScripts. Scoped to the fallback
+		// path to preserve the deny-all contract for config-present
+		// harnesses with URL bases. See #3396.
+		propagateDefaultAllowlist(&composeOpts)
 	}
 
 	// If the harness has a URL base and org config failed to load,
@@ -2678,6 +2686,23 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 	}
 	printer.StepDone(fmt.Sprintf("Agent %s resolved from config (local path)", agent.Name))
 	return contained, nil, nil
+}
+
+// propagateDefaultAllowlist ensures composeOpts carries the default
+// allowed-remote-resources list when no org config supplied one.
+// tryAgentsRepoFallback applies this default internally for its own fetch,
+// but the caller must also propagate it so that downstream harness
+// composition (LoadWithBase → resolveBaseScripts) sees a consistent
+// allowlist. See #3396.
+//
+// This applies when OrgAllowlist is nil (no config.yaml, or config.yaml
+// omits allowed_remote_resources). An explicitly empty list ([]string{})
+// is left as-is to preserve deny-all semantics — orgs that want no remote
+// resources must write an explicit empty allowed_remote_resources: [].
+func propagateDefaultAllowlist(opts *harness.ComposeOpts) {
+	if opts.OrgAllowlist == nil {
+		opts.OrgAllowlist = config.DefaultAllowedRemoteResources()
+	}
 }
 
 // tryAgentsRepoFallback attempts to resolve an agent from the default agents
