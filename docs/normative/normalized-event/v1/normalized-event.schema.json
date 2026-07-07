@@ -298,11 +298,12 @@
             "minLength": 1,
             "maxLength": 255
           },
-          "description": "Snapshot of label names on the entity at event time. Empty when a poll input driver's privacy gate does not allowlist labels (ADR 0068) -- always present to satisfy this field's required status, regardless of gating."
+          "description": "Snapshot of label names on the entity at event time. Empty when a poll input driver's privacy gate does not allowlist labels (ADR 0068) — always present to satisfy this field's required status, regardless of gating."
         },
         "privacy_gate": {
           "type": "object",
           "additionalProperties": false,
+          "required": ["source_hash"],
           "properties": {
             "source_hash": {
               "type": "string",

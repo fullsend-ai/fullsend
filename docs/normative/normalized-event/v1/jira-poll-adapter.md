@@ -81,30 +81,47 @@ Authorization is enforced by `fullsend dispatch` per
 - `state.change_proposal` — omitted. Change-proposal stages (`fix`, PR-linked
   `review`, merge `retro`) are forge-scoped; harness CEL triggers for those
   stages MUST require `entity.kind == 'change_proposal'` or equivalent guards.
-- `state.privacy_gate.source_hash` — SHA-256 of the pre-gate event payload,
-  present when the privacy gate applied a transformation. See below.
+- `state.privacy_gate.source_hash` — SHA-256 correlation fingerprint of the
+  pre-gate Jira source payload, present when the privacy gate applied a
+  transformation. See below.
 
 ## Privacy gate
 
 Per [ADR 0068](../../../ADRs/0068-privacy-allowlist-for-poll-input-drivers.md),
-`jira-poll` applies a configurable allowlist to Jira fields **before**
-constructing `NormalizedEvent`. The gate is configured under
-`poll.input_drivers[].privacy_gate` in `.fullsend/config.yaml`:
+`jira-poll` applies a configurable allowlist to Jira **source** fields
+**before** constructing `NormalizedEvent`. `allowed_fields` governs Jira
+content read for `comment_template` interpolation and `state.labels`; it
+does not govern `NormalizedEvent`'s structurally required identifiers
+(`repo`, `entity.id`/`url`/`key`, `actor.id`/`kind`, `source.system`/
+`raw_type`, `transition.kind`), which are always emitted regardless of
+gating. The gate is configured under `poll.input_drivers[].privacy_gate` in
+`.fullsend/config.yaml`:
 
 | Field | Effect |
 |-------|--------|
-| `allowed_fields` | Only listed fields are read into `NormalizedEvent`. Defaults to `[summary, issue_type, priority, labels]`. Fields not listed are omitted at construction, not filtered post hoc. **Exception:** `state.labels` is a required `NormalizedEvent` field and is always emitted; when `labels` is absent from `allowed_fields`, the driver sets `state.labels: []` instead of omitting the field. |
-| `comment_template` | When set, replaces `transition.comment.body` / `event_payload.comment` with a bounded, named-slot projection instead of the verbatim Jira comment. |
+| `allowed_fields` | Only listed Jira fields are read at all. Defaults to `[summary, issue_type, priority, labels]`. Fields not listed are never read into driver memory, not filtered post hoc. **Exception:** `state.labels` is a required `NormalizedEvent` field and is always emitted; when `labels` is absent from `allowed_fields`, the driver sets `state.labels: []` instead of omitting the field. |
+| `comment_template` | When set, replaces `transition.comment.body` / `event_payload.comment` with a bounded, named-slot projection instead of the verbatim Jira comment. **MUST** only reference field names present in `allowed_fields` — the driver rejects configuration that violates this at load time. Substituted values **MUST** be sanitized (newlines and template-structure characters stripped or escaped) before interpolation, so a crafted field value cannot inject content indistinguishable from the template's own structure. |
+
+`entity.url` and `entity.key` are always emitted and are not subject to
+`allowed_fields`, since `fullsend poll cancel` and runner lock-refresh
+resolve a run back to its source issue by URL/key (ADR 0063). This is an
+accepted, documented gap — see ADR 0068's Consequences.
 
 When the gate applies any transformation, `state.privacy_gate.source_hash`
-is set to the SHA-256 hash of the pre-gate event payload (see
-[normalized-event.schema.json](normalized-event.schema.json)).
+is set to the SHA-256 hash of the pre-gate Jira source payload, computed
+over the RFC 8785 JSON Canonicalization Scheme so the hash is reproducible
+across implementations (see
+[normalized-event.schema.json](normalized-event.schema.json)). The hash is
+a correlation/tamper-evidence fingerprint, not a verification mechanism —
+it cannot itself confirm what was gated unless the pre-gate payload is
+independently available to recompute against.
 
-When `privacy_gate` is omitted entirely, the default allowlist above applies
-— this is a change from the unfiltered mapping this document originally
-described. Installations where the Jira project and target repo share a
-trust boundary can widen `allowed_fields` or omit `comment_template` to
-restore pass-through behavior.
+When `privacy_gate` is omitted entirely, or present with `allowed_fields`
+itself omitted, the default allowlist above applies — this is a change from
+the unfiltered mapping this document originally described. Installations
+where the Jira project and target repo share a trust boundary can widen
+`allowed_fields` or omit `comment_template` to restore pass-through
+behavior.
 
 ## Execution ref projection
 
