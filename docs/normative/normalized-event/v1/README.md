@@ -1,11 +1,10 @@
 # NormalizedEvent v1
 
-GitHub-oriented routing input for `fullsend dispatch` and harness CEL `trigger`
+Forge-neutral routing input for `fullsend dispatch` and harness CEL `trigger`
 expressions ([ADR 0061](../../../ADRs/0061-harness-cel-dispatch.md)).
 
-The field names and transition vocabulary are forge-neutral so future adapters
-can reuse them; **v1 normative scope is GitHub Actions only** (see
-[Scope](#scope-v1)).
+The field names and transition vocabulary are forge-neutral; **v1 normative
+scope covers GitHub, GitLab, and Jira** (see [Scope](#scope-v1)).
 
 ## Contract
 
@@ -19,16 +18,17 @@ can reuse them; **v1 normative scope is GitHub Actions only** (see
 
 ## Scope (v1)
 
-v1 adapters and examples target **GitHub** webhooks and **Jira poll** input:
+v1 adapters and examples target **GitHub** webhooks, **GitLab** cron-poll
+input, and **Jira poll** input:
 
-- `source.system` is `github`, `jira`, `manual`, or `schedule`.
-- `repo` is the target Fullsend repository (`owner/repo` GitHub slug) for all
-  systems — including Jira poll events (see [jira-poll-adapter.md](jira-poll-adapter.md)).
-- The `gha-event` input driver is the production GitHub adapter; `jira-poll` is
-  the production Jira poll adapter; `json` supports tests and replay.
-
-Other forges (e.g. GitLab) are **not** part of this normative version. See
-[Future forges](#future-forges) for illustrative notes only.
+- `source.system` is `github`, `gitlab`, `jira`, `manual`, or `schedule`.
+- `repo` is the target Fullsend repository (`owner/repo` for GitHub,
+  `group/subgroup/project` for GitLab) for all systems — including Jira poll
+  events (see [jira-poll-adapter.md](jira-poll-adapter.md)).
+- The `gha-event` input driver is the production GitHub adapter; `gitlab-poll`
+  is the production GitLab adapter ([ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md));
+  `jira-poll` is the production Jira poll adapter; `json` supports tests and
+  replay.
 
 ## Versioning
 
@@ -49,6 +49,7 @@ Input drivers map native forge events into this struct:
 | Driver | Source | v1 status |
 |--------|--------|-----------|
 | `gha-event` | `GITHUB_EVENT_PATH` + `gh` snapshot for labels and change-proposal metadata | Production |
+| `gitlab-poll` | GitLab CI event payload (cron-polled; [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) | Production (poll) |
 | `jira-poll` | Jira issue search + changelog/comments since `lastCheck` ([jira-poll-adapter.md](jira-poll-adapter.md), [ADR 0063](../../../ADRs/0063-polling-based-work-discovery.md)) | Production (poll) |
 | `json` | stdin or `--input-file` | Tests, replay |
 
@@ -101,6 +102,7 @@ cross-field equality.
 | `edited` | Title/body/metadata edit without new commits |
 | `synchronized` | Head branch received new commits (GitHub `synchronize`) |
 | `updated` | Legacy umbrella; prefer `edited` or `synchronized` for new adapters |
+| `merged` | Change proposal merged into target branch |
 | `closed`, `marked_ready`, `label_changed`, `comment_added`, `review_submitted` | As named |
 
 ### Comment extraction
@@ -183,7 +185,7 @@ contract):
 | Execution ref field | Source in `NormalizedEvent` |
 |---------------------|----------------------------|
 | `source_repo` | `repo` |
-| `event_type` | `source.raw_type` (GitHub Actions event name; see note below) |
+| `event_type` | `source.raw_type` (native event name from the source forge; see notes below) |
 | `event_action` | `source.raw_action` when present |
 | `event_payload.issue` | `entity` when `entity.kind == "work_item"`: `{number: entity.id, html_url: entity.url}` |
 | `event_payload.pull_request` | See below |
@@ -251,22 +253,23 @@ No execution-ref field requires information outside this schema when adapters
 have populated `state.change_proposal` for change-proposal workloads, except
 `project_number` (prioritize env) and `run-url` (runtime).
 
-## Future forges
+**GitLab event projection:** the table above uses GitHub-oriented examples, but
+the same projection logic applies to GitLab events. `source.raw_type` carries
+the GitLab object type (e.g. `merge_request`, `note`), and
+`event_payload.pull_request` uses the same GitHub-shaped structure for backward
+compatibility — the GitLab adapter maps MR fields into this shape so downstream
+workflows do not need forge-specific handling.
 
-The v1 schema intentionally omits forge systems beyond GitHub. A future
-`normalized-event/v2/` (or v1.x extension) may add adapters for other forges.
-**The following is illustrative only — not normative for v1.**
+## GitLab adapter notes
 
-Example: **GitLab** ([gitlab-implementation.md](../../../problems/gitlab-implementation.md)):
+GitLab is a normative v1 source system ([gitlab-implementation.md](../../../problems/gitlab-implementation.md)):
 
-| Concern | Illustrative mapping (future) |
-|---------|-------------------------------|
+| Concern | Mapping |
+|---------|---------|
 | Input driver | `gitlab-poll` from GitLab CI event payload (cron-polled or `merge_request_event`; see [ADR 0067](../../../ADRs/0067-gitlab-cron-polling-event-dispatch.md)) |
-| `source.system` | `gitlab` (new enum value — not yet in the v1 schema; requires the Phase 0 schema change from the [implementation plan](../../../plans/gitlab-cron-polling-implementation.md)) |
-| `repo` slug | Nested group path (`group/subgroup/project`) — requires wider `repo_path` pattern (not yet in the v1 schema; requires the Phase 0 schema change) |
+| `source.system` | `gitlab` |
+| `repo` slug | Nested group path (`group/subgroup/project`) — `repo_path` pattern supports multi-segment paths |
 | MR events | `merge_request_event` → `entity.kind: change_proposal` |
+| MR merge | `merge_request_event` (state=merged) → `transition.kind: merged` (primary path for retro-stage dispatch; GitLab merge and close are distinct events) |
 | Notes | `note` → `transition.kind: comment_added` |
 | Role mapping | Guest→`read`, Reporter→`triage`, Developer→`write`, Maintainer→`maintain`, Owner→`admin` |
-
-Implementers must not assume these GitLab mappings until a future normative
-version publishes them.
