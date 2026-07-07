@@ -65,6 +65,7 @@ func TestPreflight_InstallationToken(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.OK(), "installation tokens should skip OAuth scope preflight")
 	assert.True(t, result.Skipped)
+	assert.Equal(t, SkipInstallationToken, result.SkippedReason)
 	assert.Equal(t, []string{"repo", "workflow"}, result.Required)
 }
 
@@ -82,6 +83,7 @@ func TestPreflight_NilScopes_FineGrainedToken(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.OK(), "should pass when scopes can't be introspected")
 	assert.True(t, result.Skipped, "should indicate preflight was skipped")
+	assert.Equal(t, SkipFineGrained, result.SkippedReason)
 }
 
 func TestPreflight_GetTokenScopesError(t *testing.T) {
@@ -133,6 +135,7 @@ func TestPreflightResult_SkipGuidance(t *testing.T) {
 		assert.Contains(t, guidance, "repo")
 		assert.Contains(t, guidance, "workflow")
 		assert.Contains(t, guidance, "Contents (read/write)")
+		assert.Contains(t, guidance, "Pull requests (read/write)")
 		assert.Contains(t, guidance, "Workflows (read/write)")
 		assert.Contains(t, guidance, "Metadata (read-only)")
 	})

@@ -2080,13 +2080,12 @@ func runPreflight(ctx context.Context, stack *layers.Stack, op layers.Operation,
 	}
 
 	if result.Skipped {
-		printer.StepWarn("Preflight skipped: fine-grained token detected (scopes cannot be verified)")
-		if guidance := result.SkipGuidance(); guidance != "" {
-			for _, line := range strings.Split(guidance, "\n") {
-				if line != "" {
-					printer.StepInfo(line)
-				}
-			}
+		switch result.SkippedReason {
+		case layers.SkipInstallationToken:
+			printer.StepWarn("Preflight skipped: installation token (OAuth scopes do not apply)")
+		default:
+			printer.StepWarn("Preflight skipped: fine-grained token detected (scopes cannot be verified)")
+			printSkipGuidance(printer, result)
 		}
 	} else {
 		printer.StepDone("Token permissions verified")
@@ -2898,14 +2897,7 @@ func checkTokenScopes(ctx context.Context, client forge.Client, printer *ui.Prin
 
 	if granted == nil {
 		printer.StepWarn("Preflight skipped: fine-grained token detected (scopes cannot be verified)")
-		result := &layers.PreflightResult{Required: required, Skipped: true}
-		if guidance := result.SkipGuidance(); guidance != "" {
-			for _, line := range strings.Split(guidance, "\n") {
-				if line != "" {
-					printer.StepInfo(line)
-				}
-			}
-		}
+		printSkipGuidance(printer, &layers.PreflightResult{Required: required, Skipped: true})
 		return nil
 	}
 
@@ -2935,6 +2927,18 @@ func checkTokenScopes(ctx context.Context, client forge.Client, printer *ui.Prin
 
 	printer.StepDone("Token permissions verified")
 	return nil
+}
+
+// printSkipGuidance prints fine-grained permission guidance when
+// preflight is skipped due to a fine-grained token.
+func printSkipGuidance(printer *ui.Printer, result *layers.PreflightResult) {
+	if guidance := result.SkipGuidance(); guidance != "" {
+		for _, line := range strings.Split(guidance, "\n") {
+			if line != "" {
+				printer.StepInfo(line)
+			}
+		}
+	}
 }
 
 // patForbiddenGuidance returns a formatted error message when an org

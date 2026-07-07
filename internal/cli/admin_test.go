@@ -1378,6 +1378,24 @@ func TestCheckPerRepoScopes_DoesNotRequireAdminOrg(t *testing.T) {
 	require.NoError(t, err, "per-repo should not require admin:org scope")
 }
 
+func TestPatForbiddenGuidance(t *testing.T) {
+	guidance := patForbiddenGuidance("test-org", "test-repo")
+	assert.Contains(t, guidance, `"test-org"`)
+	assert.Contains(t, guidance, "test-org/test-repo")
+	assert.Contains(t, guidance, "GH_TOKEN")
+	assert.Contains(t, guidance, "GITHUB_TOKEN")
+	assert.Contains(t, guidance, "gh auth token")
+	assert.Contains(t, guidance, "Contents:")
+	assert.Contains(t, guidance, "Workflows:")
+	assert.Contains(t, guidance, "Secrets:")
+	assert.Contains(t, guidance, "Variables:")
+	assert.Contains(t, guidance, "Pull requests:")
+	assert.Contains(t, guidance, "Metadata:")
+	assert.Contains(t, guidance, "https://github.com/settings/personal-access-tokens/new")
+	assert.Contains(t, guidance, "export GH_TOKEN=github_pat_")
+	assert.Contains(t, guidance, "fullsend github setup test-org/test-repo")
+}
+
 func TestPerRepoRequiredScopes_SubsetOfInstallScopes(t *testing.T) {
 	installSet := make(map[string]bool)
 	for _, s := range installRequiredScopes {
