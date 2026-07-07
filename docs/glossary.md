@@ -44,7 +44,11 @@ See [Default agents vs. custom agents](agents/topics/default-vs-custom.md).
 
 ### Custom Agent
 
-An agent whose definition diverges from the default agents in ways beyond documented extension points — typically by replacing the system prompt, pre/post scripts, slug, or validation loop. A custom agent may use `base` inheritance to re-use parts of a default agent, but the modifications change the agent's identity. An agent whose `base` chain does not trace back to a default agent harness in `fullsend-ai/fullsend` is custom by definition.
+An agent that is not a [configured default agent](#configured-default-agent). There are two kinds:
+
+1. **Custom agent extending a default** — uses `base` inheritance from a default agent harness but replaces identity-defining components (system prompt, pre/post scripts, slug, or validation loop) beyond the documented extension points. It re-uses parts of a default agent but is no longer recognizably that agent.
+2. **Custom from-scratch agent** — its `base` chain does not trace back to a default agent harness in `fullsend-ai/fullsend`, or it has no `base` at all. It is built independently, even if it happens to resemble a default agent.
+
 See [Default agents vs. custom agents](agents/topics/default-vs-custom.md) and [Building custom agents](guides/user/building-custom-agents.md).
 
 ## D
