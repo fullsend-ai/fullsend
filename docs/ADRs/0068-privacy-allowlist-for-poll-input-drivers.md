@@ -82,6 +82,11 @@ poll:
   `allowed_fields` are read into `NormalizedEvent`. Fields not listed
   (description, comment body, custom fields, reporter identity beyond role
   mapping) are omitted at construction time, not merely hidden from display.
+  Exception: `state.labels` is a required `NormalizedEvent` field
+  ([schema](../normative/normalized-event/v1/normalized-event.schema.json))
+  and is always emitted; when `labels` is absent from `allowed_fields`, the
+  driver sets `state.labels` to an empty array rather than omitting the
+  field, keeping the event schema-valid without leaking label content.
 - **Template-projected free text.** `comment_template`, when set, replaces
   `transition.comment.body`/`event_payload.comment` with a bounded,
   named-slot projection instead of the verbatim Jira comment.

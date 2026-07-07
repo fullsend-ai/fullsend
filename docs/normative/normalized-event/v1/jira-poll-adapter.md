@@ -23,6 +23,7 @@ The following fields are defined in
 |-------|------------|
 | `source.system` | Enum includes `jira` |
 | `entity.key` | Optional for GitHub; **required** when `source.system` is `jira` |
+| `state.privacy_gate` | Optional object with `source_hash` (see [Privacy gate](#privacy-gate) below) |
 
 When `source.system` is `jira`, `entity.key` MUST be present (e.g. `PROJ-123`).
 
@@ -92,8 +93,12 @@ constructing `NormalizedEvent`. The gate is configured under
 
 | Field | Effect |
 |-------|--------|
-| `allowed_fields` | Only listed fields are read into `NormalizedEvent`. Defaults to `[summary, issue_type, priority, labels]`. Fields not listed are omitted at construction, not filtered post hoc. |
+| `allowed_fields` | Only listed fields are read into `NormalizedEvent`. Defaults to `[summary, issue_type, priority, labels]`. Fields not listed are omitted at construction, not filtered post hoc. **Exception:** `state.labels` is a required `NormalizedEvent` field and is always emitted; when `labels` is absent from `allowed_fields`, the driver sets `state.labels: []` instead of omitting the field. |
 | `comment_template` | When set, replaces `transition.comment.body` / `event_payload.comment` with a bounded, named-slot projection instead of the verbatim Jira comment. |
+
+When the gate applies any transformation, `state.privacy_gate.source_hash`
+is set to the SHA-256 hash of the pre-gate event payload (see
+[normalized-event.schema.json](normalized-event.schema.json)).
 
 When `privacy_gate` is omitted entirely, the default allowlist above applies
 — this is a change from the unfiltered mapping this document originally
