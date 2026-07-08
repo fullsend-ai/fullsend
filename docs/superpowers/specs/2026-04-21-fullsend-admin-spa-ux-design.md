@@ -283,4 +283,3 @@ States are **mutually exclusive** on the trailing side except where noted (actio
 ## Related documents
 
 - [`2026-04-06-fullsend-admin-spa-design.md`](2026-04-06-fullsend-admin-spa-design.md) — architecture, auth, org/repo model, org-level wizards.
-- [`../plans/2026-04-12-fullsend-admin-spa.md`](../plans/2026-04-12-fullsend-admin-spa.md) — implementation plan and tasks.
