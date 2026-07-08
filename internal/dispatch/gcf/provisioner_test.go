@@ -1826,7 +1826,7 @@ func TestProvisionWIF_InvalidProjectID(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid GCP project ID")
 }
 
-func TestProvisionWIF_NormalizesOrgCase(t *testing.T) {
+func TestProvisionWIF_PreservesOrgCase(t *testing.T) {
 	fake := newFakeGCFClient()
 	p := NewProvisioner(Config{
 		ProjectID:  "my-project",
@@ -1835,7 +1835,7 @@ func TestProvisionWIF_NormalizesOrgCase(t *testing.T) {
 
 	_, err := p.ProvisionWIF(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, "assertion.repository_owner == 'acme'", fake.lastWIFProviderConfig.AttributeCondition)
+	assert.Equal(t, "assertion.repository_owner == 'ACME'", fake.lastWIFProviderConfig.AttributeCondition)
 }
 
 func TestProvisionWIF_RepoScoped(t *testing.T) {
@@ -1859,7 +1859,7 @@ func TestProvisionWIF_RepoScoped(t *testing.T) {
 	assert.NotContains(t, fake.calls, "GetWIFProvider")
 }
 
-func TestProvisionWIF_RepoScoped_LowercasesRepo(t *testing.T) {
+func TestProvisionWIF_RepoScoped_PreservesRepoCase(t *testing.T) {
 	fake := newFakeGCFClient()
 	p := NewProvisioner(Config{
 		ProjectID:  "my-project",
@@ -1870,8 +1870,9 @@ func TestProvisionWIF_RepoScoped_LowercasesRepo(t *testing.T) {
 	_, err := p.ProvisionWIF(context.Background())
 	require.NoError(t, err)
 
-	assert.Equal(t, "assertion.repository == 'acme/widget'", fake.lastWIFProviderConfig.AttributeCondition)
-	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/acme/widget")
+	assert.Equal(t, "assertion.repository == 'Acme/Widget'", fake.lastWIFProviderConfig.AttributeCondition)
+	assert.Equal(t, "gh-acme-widget", fake.lastWIFProviderID, "provider ID should still be lowercased")
+	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/Acme/Widget")
 	assert.Equal(t, "Acme/Widget", p.cfg.Repo, "ProvisionWIF should not mutate p.cfg.Repo")
 }
 
@@ -1992,6 +1993,38 @@ func TestProvisionWIF_OrgScoped_MergesExistingOrgs(t *testing.T) {
 	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/acme/.fullsend")
 }
 
+func TestProvisionWIF_OrgScoped_PreservesOrgCase(t *testing.T) {
+	fake := newFakeGCFClient()
+	p := NewProvisioner(Config{
+		ProjectID:  "my-project",
+		GitHubOrgs: []string{"AcmeCorp"},
+	}, fake)
+
+	_, err := p.ProvisionWIF(context.Background())
+	require.NoError(t, err)
+
+	assert.Equal(t, "assertion.repository_owner == 'AcmeCorp'", fake.lastWIFProviderConfig.AttributeCondition)
+	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/AcmeCorp/.fullsend")
+}
+
+func TestProvisionWIF_OrgScoped_MergeDedupsCase(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.wifProvider = &WIFProviderInfo{
+		AttributeCondition: "assertion.repository_owner == 'AcmeCorp'",
+	}
+	p := NewProvisioner(Config{
+		ProjectID:  "my-project",
+		GitHubOrgs: []string{"acmecorp"},
+	}, fake)
+
+	_, err := p.ProvisionWIF(context.Background())
+	require.NoError(t, err)
+
+	// Installing org's case wins over existing condition's case.
+	assert.Equal(t, "assertion.repository_owner == 'acmecorp'",
+		fake.lastWIFProviderConfig.AttributeCondition)
+}
+
 func TestProvisionWIF_OrgScoped_GetProviderError_FailsToPreventClobber(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.errs["GetWIFProvider"] = fmt.Errorf("transient error")
@@ -2014,7 +2047,7 @@ func TestParseConditionOrgs(t *testing.T) {
 		{"single org", "assertion.repository_owner == 'acme'", []string{"acme"}},
 		{"multiple orgs", "assertion.repository_owner in ['alpha', 'beta', 'gamma']", []string{"alpha", "beta", "gamma"}},
 		{"legacy repo-scoped", "assertion.repository == 'acme/.fullsend'", []string{"acme"}},
-		{"mixed case normalized", "assertion.repository_owner in ['AcMe', 'BETA']", []string{"acme", "beta"}},
+		{"mixed case preserved", "assertion.repository_owner in ['AcMe', 'BETA']", []string{"AcMe", "BETA"}},
 		{"empty condition", "", nil},
 		{"no quoted orgs", "assertion.repository_owner == true", nil},
 	}
@@ -3384,7 +3417,7 @@ func TestEnsureOrgInWIFCondition_AddsOrgAndStripsPlaceholder(t *testing.T) {
 	err := p.EnsureOrgInWIFCondition(context.Background(), "Acme")
 	require.NoError(t, err)
 	assert.Contains(t, fake.(*fakeGCFClient).calls, "UpdateWIFProvider")
-	assert.Contains(t, fake.(*fakeGCFClient).lastWIFProviderConfig.AttributeCondition, "'acme'")
+	assert.Contains(t, fake.(*fakeGCFClient).lastWIFProviderConfig.AttributeCondition, "'Acme'")
 	assert.NotContains(t, fake.(*fakeGCFClient).lastWIFProviderConfig.AttributeCondition, PlaceholderOrg)
 }
 
@@ -3419,6 +3452,24 @@ func TestRemoveOrgFromWIFCondition_RemovesOrgAndAddsPlaceholder(t *testing.T) {
 	assert.Contains(t, fake.(*fakeGCFClient).calls, "UpdateWIFProvider")
 	assert.Contains(t, fake.(*fakeGCFClient).lastWIFProviderConfig.AttributeCondition, "'other'")
 	assert.NotContains(t, fake.(*fakeGCFClient).lastWIFProviderConfig.AttributeCondition, "'acme'")
+}
+
+func TestRemoveOrgFromWIFCondition_CaseInsensitiveMatch(t *testing.T) {
+	fake := NewFakeGCFClient(WithFakeWIFProvider(&WIFProviderInfo{
+		AttributeCondition: "assertion.repository_owner in ['AcmeCorp', 'other']",
+	}))
+	p := NewProvisioner(Config{
+		ProjectID:   "proj1",
+		Region:      "us-central1",
+		WIFPoolName: "fullsend-pool",
+		WIFProvider: "github-oidc",
+	}, fake)
+
+	err := p.RemoveOrgFromWIFCondition(context.Background(), "acmecorp")
+	require.NoError(t, err)
+	assert.Contains(t, fake.(*fakeGCFClient).calls, "UpdateWIFProvider")
+	assert.Contains(t, fake.(*fakeGCFClient).lastWIFProviderConfig.AttributeCondition, "'other'")
+	assert.NotContains(t, fake.(*fakeGCFClient).lastWIFProviderConfig.AttributeCondition, "AcmeCorp")
 }
 
 func TestRemoveOrgFromWIFCondition_NoOpWhenOrgAbsent(t *testing.T) {
