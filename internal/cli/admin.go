@@ -995,6 +995,9 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 	scaffoldCommitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool) error {
 		targetRepo, repoErr := client.GetRepo(ctx, owner, repo)
 		if repoErr != nil {
+			if gh.IsPATForbiddenError(repoErr) {
+				return handlePATForbidden(printer, owner, repo, repoErr)
+			}
 			return fmt.Errorf("getting repo info: %w", repoErr)
 		}
 		commitMsg := fmt.Sprintf("chore: initialize fullsend-%s per-repo installation", version)
@@ -1166,6 +1169,9 @@ func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.
 
 	targetRepo, err := client.GetRepo(ctx, owner, repo)
 	if err != nil {
+		if gh.IsPATForbiddenError(err) {
+			return handlePATForbidden(printer, owner, repo, err)
+		}
 		return fmt.Errorf("getting repo info: %w", err)
 	}
 	commitMsg := fmt.Sprintf("chore: initialize fullsend-%s per-repo installation", version)
@@ -2068,7 +2074,15 @@ func runPreflight(ctx context.Context, stack *layers.Stack, op layers.Operation,
 	}
 
 	if result.Skipped {
-		printer.StepWarn("Preflight skipped: fine-grained token detected (scopes cannot be verified)")
+		switch result.SkippedReason {
+		case layers.SkipInstallationToken:
+			printer.StepWarn("Preflight skipped: installation token (OAuth scopes do not apply)")
+		case layers.SkipFineGrained:
+			printer.StepWarn("Preflight skipped: fine-grained token detected (scopes cannot be verified)")
+			printSkipGuidance(printer, result)
+		default:
+			printer.StepWarn(fmt.Sprintf("Preflight skipped: %s", result.SkippedReason))
+		}
 	} else {
 		printer.StepDone("Token permissions verified")
 	}
@@ -2879,6 +2893,7 @@ func checkTokenScopes(ctx context.Context, client forge.Client, printer *ui.Prin
 
 	if granted == nil {
 		printer.StepWarn("Preflight skipped: fine-grained token detected (scopes cannot be verified)")
+		printSkipGuidance(printer, &layers.PreflightResult{Required: required, Skipped: true, SkippedReason: layers.SkipFineGrained})
 		return nil
 	}
 
@@ -2908,6 +2923,47 @@ func checkTokenScopes(ctx context.Context, client forge.Client, printer *ui.Prin
 
 	printer.StepDone("Token permissions verified")
 	return nil
+}
+
+// printSkipGuidance prints fine-grained permission guidance when
+// preflight is skipped due to a fine-grained token.
+func printSkipGuidance(printer *ui.Printer, result *layers.PreflightResult) {
+	if guidance := result.SkipGuidance(); guidance != "" {
+		for _, line := range strings.Split(guidance, "\n") {
+			if line != "" {
+				printer.StepInfo(line)
+			}
+		}
+	}
+}
+
+func handlePATForbidden(printer *ui.Printer, owner, repo string, err error) error {
+	printer.StepFail("Classic PAT rejected by organization")
+	printer.Blank()
+	printer.ErrorBox("Token not accepted", patForbiddenGuidance(owner, repo))
+	return fmt.Errorf("organization forbids classic PATs: %w", err)
+}
+
+func patForbiddenGuidance(owner, repo string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Organization %q forbids classic personal access tokens.\n\n", owner)
+	b.WriteString("The CLI resolves tokens in this order:\n")
+	b.WriteString("  1. GH_TOKEN environment variable\n")
+	b.WriteString("  2. GITHUB_TOKEN environment variable\n")
+	b.WriteString("  3. gh auth token (GitHub CLI)\n\n")
+	b.WriteString("The token that resolved was rejected. To fix this, create a\n")
+	b.WriteString("fine-grained PAT at https://github.com/settings/personal-access-tokens/new\n")
+	fmt.Fprintf(&b, "scoped to %s/%s with these permissions:\n\n", owner, repo)
+	b.WriteString("  • Contents:      read/write\n")
+	b.WriteString("  • Workflows:     read/write\n")
+	b.WriteString("  • Secrets:       read/write\n")
+	b.WriteString("  • Variables:     read/write\n")
+	b.WriteString("  • Pull requests: read/write (without --direct)\n")
+	b.WriteString("  • Metadata:      read-only  (required by GitHub)\n\n")
+	b.WriteString("Then export it before running setup:\n")
+	fmt.Fprintf(&b, "  export GH_TOKEN=github_pat_...\n")
+	fmt.Fprintf(&b, "  fullsend github setup %s/%s", owner, repo)
+	return b.String()
 }
 
 // Helper functions.

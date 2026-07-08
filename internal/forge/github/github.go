@@ -118,6 +118,19 @@ func IsRateLimitError(err error) bool {
 	return false
 }
 
+// IsPATForbiddenError reports whether err is a GitHub 403 indicating
+// that the org forbids classic personal access tokens. This specific
+// message means the caller needs a fine-grained PAT, GitHub App, or
+// OAuth App token instead.
+func IsPATForbiddenError(err error) bool {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		return false
+	}
+	return apiErr.StatusCode == http.StatusForbidden &&
+		strings.Contains(strings.ToLower(apiErr.Message), "forbids access via a personal access token")
+}
+
 const maxRetries = 5
 
 // do performs an HTTP request against the GitHub API with retry on rate limits.

@@ -1256,10 +1256,16 @@ func TestCheckInstallScopes_FineGrainedToken(t *testing.T) {
 	client := &forge.FakeClient{
 		TokenScopes: nil,
 	}
-	printer := ui.New(&discardWriter{})
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
 
 	err := checkInstallScopes(context.Background(), client, printer)
 	require.NoError(t, err)
+	output := buf.String()
+	assert.Contains(t, output, "fine-grained token detected")
+	assert.Contains(t, output, "repo")
+	assert.Contains(t, output, "workflow")
+	assert.Contains(t, output, "admin:org")
 }
 
 func TestCheckInstallScopes_InstallationToken(t *testing.T) {
@@ -1328,10 +1334,16 @@ func TestCheckPerRepoScopes_FineGrainedToken(t *testing.T) {
 	client := &forge.FakeClient{
 		TokenScopes: nil,
 	}
-	printer := ui.New(&discardWriter{})
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
 
 	err := checkPerRepoScopes(context.Background(), client, printer)
 	require.NoError(t, err)
+	output := buf.String()
+	assert.Contains(t, output, "fine-grained token detected")
+	assert.Contains(t, output, "repo")
+	assert.Contains(t, output, "workflow")
+	assert.NotContains(t, output, "admin:org")
 }
 
 func TestCheckPerRepoScopes_InstallationToken(t *testing.T) {
@@ -1364,6 +1376,24 @@ func TestCheckPerRepoScopes_DoesNotRequireAdminOrg(t *testing.T) {
 
 	err := checkPerRepoScopes(context.Background(), client, printer)
 	require.NoError(t, err, "per-repo should not require admin:org scope")
+}
+
+func TestPatForbiddenGuidance(t *testing.T) {
+	guidance := patForbiddenGuidance("test-org", "test-repo")
+	assert.Contains(t, guidance, `"test-org"`)
+	assert.Contains(t, guidance, "test-org/test-repo")
+	assert.Contains(t, guidance, "GH_TOKEN")
+	assert.Contains(t, guidance, "GITHUB_TOKEN")
+	assert.Contains(t, guidance, "gh auth token")
+	assert.Contains(t, guidance, "Contents:")
+	assert.Contains(t, guidance, "Workflows:")
+	assert.Contains(t, guidance, "Secrets:")
+	assert.Contains(t, guidance, "Variables:")
+	assert.Contains(t, guidance, "Pull requests:")
+	assert.Contains(t, guidance, "Metadata:")
+	assert.Contains(t, guidance, "https://github.com/settings/personal-access-tokens/new")
+	assert.Contains(t, guidance, "export GH_TOKEN=github_pat_")
+	assert.Contains(t, guidance, "fullsend github setup test-org/test-repo")
 }
 
 func TestPerRepoRequiredScopes_SubsetOfInstallScopes(t *testing.T) {
