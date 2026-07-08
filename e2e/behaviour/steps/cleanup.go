@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/e2e/behaviour/world"
@@ -15,12 +16,9 @@ func CleanupScenario(w *world.World) {
 			worldLogf(w, "behaviour cleanup: close issue #%d: %v", w.IssueNumber, err)
 		}
 	}
-	if w.ArtifactDir != "" {
-		ciArtifactDir := strings.TrimSpace(os.Getenv("BEHAVIOUR_ARTIFACT_DIR"))
-		if ciArtifactDir == "" || w.ArtifactDir != ciArtifactDir {
-			if err := os.RemoveAll(w.ArtifactDir); err != nil {
-				worldLogf(w, "behaviour cleanup: remove artifact dir: %v", err)
-			}
+	if w.ArtifactDir != "" && shouldRemoveArtifactDir(w.ArtifactDir, os.Getenv("BEHAVIOUR_ARTIFACT_DIR")) {
+		if err := os.RemoveAll(w.ArtifactDir); err != nil {
+			worldLogf(w, "behaviour cleanup: remove artifact dir: %v", err)
 		}
 	}
 	if len(w.DummyOps) > 0 {
@@ -29,6 +27,25 @@ func CleanupScenario(w *world.World) {
 			worldLogf(w, "behaviour cleanup: clear dummy script: %v", err)
 		}
 	}
+}
+
+// shouldRemoveArtifactDir reports whether cleanup may delete artifactDir.
+// Dirs under BEHAVIOUR_ARTIFACT_DIR are preserved for CI upload-artifact.
+func shouldRemoveArtifactDir(artifactDir, ciArtifactDir string) bool {
+	ciArtifactDir = strings.TrimSpace(ciArtifactDir)
+	if ciArtifactDir == "" {
+		return true
+	}
+	return !artifactDirUnderCIRoot(artifactDir, ciArtifactDir)
+}
+
+func artifactDirUnderCIRoot(dir, ciRoot string) bool {
+	cleanDir := filepath.Clean(dir)
+	cleanRoot := filepath.Clean(ciRoot)
+	if cleanDir == cleanRoot {
+		return true
+	}
+	return strings.HasPrefix(cleanDir, cleanRoot+string(os.PathSeparator))
 }
 
 func worldLogf(w *world.World, format string, args ...any) {
