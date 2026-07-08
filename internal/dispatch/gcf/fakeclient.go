@@ -181,6 +181,16 @@ func (f *fakeGCFClient) GetFunction(_ context.Context, _, _, _ string) (*Functio
 	}
 	return f.functionInfo, nil
 }
+func (f *fakeGCFClient) GetCloudRunServiceURI(_ context.Context, _, _, _ string) (string, error) {
+	f.calls = append(f.calls, "GetCloudRunServiceURI")
+	if err := f.errs["GetCloudRunServiceURI"]; err != nil {
+		return "", err
+	}
+	if f.functionInfo != nil && f.functionInfo.URI != "" {
+		return f.functionInfo.URI, nil
+	}
+	return f.functionURL, nil
+}
 func (f *fakeGCFClient) UploadFunctionSource(_ context.Context, _, _ string, _ []byte) (json.RawMessage, error) {
 	f.calls = append(f.calls, "UploadFunctionSource")
 	if err := f.errs["UploadFunctionSource"]; err != nil {

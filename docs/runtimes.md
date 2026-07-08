@@ -1,8 +1,15 @@
 # Agent runtimes
 
-Fullsend's `fullsend run` command delegates in-sandbox agent execution to a pluggable **runtime**. Today only **Claude Code** is registered; the `internal/runtime` package defines the contracts new runtimes must implement.
+Fullsend's `fullsend run` command delegates in-sandbox agent execution to a pluggable **runtime**. Recognized values in org `config.yaml` `defaults.runtime` are **`claude`** (production default) and **`dummy`** (behaviour tests only). Install with `fullsend admin install --runtime dummy` on dedicated test orgs. The runner resolves the backend via `runtime.ResolveFromConfig()` after loading the org config.
 
-When adding a runtime, fill in the security matrix below and wire the implementation through `runtime.Default()`.
+When adding a runtime, fill in the security matrix below and register it in `runtime.Resolve()`.
+
+## Registered runtimes
+
+| Runtime | Purpose | Inference |
+|---------|---------|-----------|
+| `claude` | Production agent runs via Claude Code | Required |
+| `dummy` | Behaviour tests — scripted ops in real sandbox | None |
 
 ## Security feature matrix
 

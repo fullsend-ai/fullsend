@@ -2573,7 +2573,7 @@ func TestEnsureOrgInMint_NilReturn(t *testing.T) {
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme-corp")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found in project")
+	assert.Contains(t, err.Error(), "mint function not found")
 }
 
 func TestEnsureOrgInMint_LowercasesOrg(t *testing.T) {
@@ -2820,14 +2820,14 @@ func TestRegisterPerRepoWIF_Idempotent(t *testing.T) {
 	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
 }
 
-func TestRegisterPerRepoWIF_FunctionNotFound(t *testing.T) {
+func TestRegisterPerRepoWIF_ServiceNotFound(t *testing.T) {
 	fake := newFakeGCFClient()
-	fake.functionInfo = nil
+	fake.errs["GetServiceTrafficEnvVars"] = fmt.Errorf("unexpected status 404 getting Cloud Run service")
 
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
 	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/my-service")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "mint function not found")
+	assert.Contains(t, err.Error(), "reading traffic-serving env vars")
 }
 
 func TestRegisterPerRepoWIF_LowercasesRepo(t *testing.T) {
@@ -2877,12 +2877,12 @@ func TestRegisterPerRepoWIF_NilEnvVars(t *testing.T) {
 
 func TestRegisterPerRepoWIF_GetFunctionError(t *testing.T) {
 	fake := newFakeGCFClient()
-	fake.errs["GetFunction"] = fmt.Errorf("permission denied")
+	fake.errs["GetServiceTrafficEnvVars"] = fmt.Errorf("permission denied")
 
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
 	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/my-service")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "getting mint function")
+	assert.Contains(t, err.Error(), "reading traffic-serving env vars")
 }
 
 func TestRegisterPerRepoWIF_PartialFailureSurfacesRevision(t *testing.T) {
@@ -3626,4 +3626,21 @@ func TestRemoveRoleFromMint_UpdateEnvVarsError(t *testing.T) {
 	err := p.RemoveRoleFromMint(context.Background(), "review")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "updating mint env vars")
+}
+
+func TestDiscoverMint_FallsBackToCloudRunOnCFForbidden(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetFunction"] = fmt.Errorf("unexpected status 403 checking function: Permission 'cloudfunctions.functions.get' denied")
+	fake.functionInfo = &FunctionInfo{URI: "https://mint.example.com"}
+	fake.trafficEnvVars = map[string]string{
+		"ROLE_APP_IDS": `{"triage":"123"}`,
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	d, err := p.DiscoverMint(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://mint.example.com", d.URL)
+	assert.Equal(t, map[string]string{"triage": "123"}, d.RoleAppIDs)
+	assert.Contains(t, fake.calls, "GetCloudRunServiceURI")
+	assert.Contains(t, fake.calls, "GetServiceTrafficEnvVars")
 }

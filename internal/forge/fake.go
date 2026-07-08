@@ -112,13 +112,17 @@ type FakeClient struct {
 
 	// Pre-populated data
 	Repos                     []Repository
-	OrgRepos                  map[string][]Repository // per-org repos; when set, ListOrgRepos uses this instead of Repos
-	FileContents              map[string][]byte       // key: "owner/repo/path"
-	WorkflowRuns              map[string]*WorkflowRun // key: "owner/repo/workflow"
-	Workflows                 map[string]*Workflow    // key: "owner/repo/workflow"
-	AuthenticatedUser         string                  // login returned by GetAuthenticatedUser
-	AuthenticatedUserIdentity *UserIdentity           // identity returned by GetAuthenticatedUserIdentity
-	OrgPlan                   string                  // plan name returned by GetOrgPlan (default: "free")
+	OrgRepos                  map[string][]Repository  // per-org repos; when set, ListOrgRepos uses this instead of Repos
+	FileContents              map[string][]byte        // key: "owner/repo/path"
+	WorkflowRuns              map[string]*WorkflowRun  // key: "owner/repo/workflow"
+	RecentWorkflowRuns        map[string][]WorkflowRun // key: "owner/repo"
+	WorkflowRunArtifacts      map[int][]WorkflowArtifact
+	WorkflowArtifactContents  map[int][]byte
+	RepositoryArtifacts       map[string][]RepositoryArtifact // key: owner/repo
+	Workflows                 map[string]*Workflow            // key: "owner/repo/workflow"
+	AuthenticatedUser         string                          // login returned by GetAuthenticatedUser
+	AuthenticatedUserIdentity *UserIdentity                   // identity returned by GetAuthenticatedUserIdentity
+	OrgPlan                   string                          // plan name returned by GetOrgPlan (default: "free")
 	Installations             []Installation
 	Secrets                   map[string]bool             // key: "owner/repo/name"
 	PullRequests              map[string][]ChangeProposal // key: "owner/repo"
@@ -1054,6 +1058,49 @@ func (f *FakeClient) CreateIssue(_ context.Context, owner, repo, title, body str
 	return &issue, nil
 }
 
+func (f *FakeClient) AddIssueLabels(_ context.Context, owner, repo string, number int, labels ...string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("AddIssueLabels"); e != nil {
+		return e
+	}
+	key := owner + "/" + repo
+	issues := f.OpenIssues[key]
+	for i := range issues {
+		if issues[i].Number != number {
+			continue
+		}
+		seen := make(map[string]struct{}, len(issues[i].Labels))
+		for _, l := range issues[i].Labels {
+			seen[l] = struct{}{}
+		}
+		for _, l := range labels {
+			if _, ok := seen[l]; !ok {
+				issues[i].Labels = append(issues[i].Labels, l)
+				seen[l] = struct{}{}
+			}
+		}
+		f.OpenIssues[key][i] = issues[i]
+		return nil
+	}
+	return fmt.Errorf("issue #%d not found", number)
+}
+
+func (f *FakeClient) GetIssue(_ context.Context, owner, repo string, number int) (*Issue, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("GetIssue"); e != nil {
+		return nil, e
+	}
+	for _, issue := range f.OpenIssues[owner+"/"+repo] {
+		if issue.Number == number {
+			copy := issue
+			return &copy, nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
 func (f *FakeClient) CloseIssue(_ context.Context, _, _ string, _ int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1320,6 +1367,62 @@ func (f *FakeClient) ListWorkflowRuns(_ context.Context, owner, repo, workflowFi
 		return []WorkflowRun{*run}, nil
 	}
 	return nil, nil
+}
+
+func (f *FakeClient) ListWorkflowRunArtifacts(_ context.Context, _, _ string, runID int) ([]WorkflowArtifact, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListWorkflowRunArtifacts"); e != nil {
+		return nil, e
+	}
+	if f.WorkflowRunArtifacts == nil {
+		return nil, nil
+	}
+	return append([]WorkflowArtifact(nil), f.WorkflowRunArtifacts[runID]...), nil
+}
+
+func (f *FakeClient) ListRecentWorkflowRuns(_ context.Context, owner, repo string, perPage int) ([]WorkflowRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListRecentWorkflowRuns"); e != nil {
+		return nil, e
+	}
+	key := owner + "/" + repo
+	runs := f.RecentWorkflowRuns[key]
+	if perPage > 0 && len(runs) > perPage {
+		runs = runs[:perPage]
+	}
+	return append([]WorkflowRun(nil), runs...), nil
+}
+
+func (f *FakeClient) DownloadWorkflowRunArtifact(_ context.Context, _, _ string, artifactID int) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("DownloadWorkflowRunArtifact"); e != nil {
+		return nil, e
+	}
+	if f.WorkflowArtifactContents == nil {
+		return nil, ErrNotFound
+	}
+	data, ok := f.WorkflowArtifactContents[artifactID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return append([]byte(nil), data...), nil
+}
+
+func (f *FakeClient) ListRepositoryArtifacts(_ context.Context, owner, repo string, perPage int) ([]RepositoryArtifact, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListRepositoryArtifacts"); e != nil {
+		return nil, e
+	}
+	key := owner + "/" + repo
+	arts := f.RepositoryArtifacts[key]
+	if perPage > 0 && len(arts) > perPage {
+		arts = arts[:perPage]
+	}
+	return append([]RepositoryArtifact(nil), arts...), nil
 }
 
 func (f *FakeClient) GetWorkflowRunLogs(_ context.Context, _, _ string, _ int) (string, error) {

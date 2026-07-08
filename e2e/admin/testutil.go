@@ -1,4 +1,4 @@
-//go:build e2e
+//go:build e2e || behaviour
 
 package admin
 
@@ -321,7 +321,42 @@ type envConfig struct {
 	mintURL      string
 	useMint      bool
 	gcpProjectID string
+	wifProvider  string
 	lockTimeout  time.Duration
+}
+
+// EnvConfig is the exported view of envConfig for behaviour tests.
+type EnvConfig struct {
+	MintURL      string
+	UseMint      bool
+	GCPProjectID string
+	WIFProvider  string
+	LockTimeout  time.Duration
+}
+
+func (c envConfig) exported() EnvConfig {
+	return EnvConfig{
+		MintURL:      c.mintURL,
+		UseMint:      c.useMint,
+		GCPProjectID: c.gcpProjectID,
+		WIFProvider:  c.wifProvider,
+		LockTimeout:  c.lockTimeout,
+	}
+}
+
+func (c EnvConfig) internal() envConfig {
+	return envConfig{
+		mintURL:      c.MintURL,
+		useMint:      c.UseMint,
+		gcpProjectID: c.GCPProjectID,
+		wifProvider:  c.WIFProvider,
+		lockTimeout:  c.LockTimeout,
+	}
+}
+
+// LoadEnvConfig reads and validates required env vars for e2e and behaviour tests.
+func LoadEnvConfig(t *testing.T) EnvConfig {
+	return loadEnvConfig(t).exported()
 }
 
 // loadEnvConfig reads and validates required env vars. Calls t.Skip if
@@ -339,6 +374,7 @@ func loadEnvConfig(t *testing.T) envConfig {
 	}
 
 	gcpProjectID := os.Getenv("E2E_GCP_PROJECT_ID")
+	wifProvider := os.Getenv("E2E_GCP_WIF_PROVIDER")
 
 	lockTimeout := defaultLockTimeout
 	if v := os.Getenv("E2E_LOCK_TIMEOUT"); v != "" {
@@ -353,6 +389,7 @@ func loadEnvConfig(t *testing.T) envConfig {
 		mintURL:      mintURL,
 		useMint:      useMint,
 		gcpProjectID: gcpProjectID,
+		wifProvider:  wifProvider,
 		lockTimeout:  lockTimeout,
 	}
 }
@@ -450,6 +487,34 @@ func addIssueLabel(ctx context.Context, token, owner, repo string, issueNum int,
 	return fmt.Errorf("unexpected status %d adding label %q: %s", resp.StatusCode, label, body)
 }
 
+// BuildCLIBinary compiles the fullsend CLI binary once per test run.
+func BuildCLIBinary(t *testing.T) string {
+	return buildCLIBinary(t)
+}
+
+// RunCLI executes the fullsend CLI with the given args, passing GITHUB_TOKEN.
+func RunCLI(t *testing.T, binary, token string, args ...string) string {
+	return runCLI(t, binary, token, args...)
+}
+
+// TryRunCLI is like RunCLI but returns an error instead of calling t.Fatalf.
+func TryRunCLI(binary, token string, args ...string) (string, error) {
+	modRoot, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
+	if err != nil {
+		return "", fmt.Errorf("finding module root: %w", err)
+	}
+	dir := strings.TrimSpace(string(modRoot))
+	cmd := exec.Command(binary, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GITHUB_TOKEN="+token, "CI=true")
+	out, runErr := cmd.CombinedOutput()
+	output := string(out)
+	if runErr != nil {
+		return output, fmt.Errorf("[cli] fullsend %s failed: %w\n%s", strings.Join(args, " "), runErr, output)
+	}
+	return output, nil
+}
+
 // buildCLIBinary compiles the fullsend CLI binary once per test run.
 func buildCLIBinary(t *testing.T) string {
 	t.Helper()
@@ -538,4 +603,19 @@ func retryOnNotFound(ctx context.Context, maxAttempts int, fn func() error) erro
 		}
 	}
 	return err
+}
+
+// AcquireOrg exports org pool acquisition for behaviour tests.
+func AcquireOrg(ctx context.Context, cfg EnvConfig, runID string, pool []string, timeout time.Duration, logf func(string, ...any)) (string, string, error) {
+	return acquireOrg(ctx, cfg.internal(), runID, pool, timeout, logf)
+}
+
+// OrgPool returns the halfsend org names used for parallel e2e runs.
+func OrgPool() []string {
+	return orgPool
+}
+
+// NewLiveClient creates a GitHub API client from a token.
+func NewLiveClient(token string) *gh.LiveClient {
+	return newLiveClient(token)
 }
