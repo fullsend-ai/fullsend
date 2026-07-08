@@ -6,7 +6,7 @@ default agent ships with built-in skills, and you can extend or replace them by
 committing your own skills to your repository.
 
 For general project-wide instructions (code style, test conventions,
-architecture rules), see [Customizing with AGENTS.md](customizing-with-agents-md.md).
+architecture rules), see [Configuring with AGENTS.md](customizing-with-agents-md.md).
 This guide covers skills specifically.
 
 ## What is a skill?

@@ -1,8 +1,8 @@
 # Default, derived, and custom agents
 
-Fullsend ships six default agents in
-[fullsend-ai/agents](https://github.com/fullsend-ai/agents): triage,
-prioritize, code, review, fix, and retro. Each can be configured and extended.
+Fullsend ships a set of default agents in
+[fullsend-ai/agents](https://github.com/fullsend-ai/agents). Each can be
+configured and extended.
 At some point, enough modification turns a configured default into something
 different. This document defines three tiers:
 
@@ -18,9 +18,7 @@ different. This document defines three tiers:
 
 ## Why the distinction matters
 
-This is a bit of a
-[Ship of Theseus](https://en.wikipedia.org/wiki/Ship_of_Theseus) exercise.
-The question has a practical purpose, though. We want two things simultaneously:
+We want two things simultaneously:
 
 1. **Encourage derived and custom agents.** The harness, sandbox, and `base`
    composition system exist so teams can build agents tailored to their
@@ -39,10 +37,10 @@ your needs genuinely diverge from the default agent's charter.
 
 ## The rule
 
-> If a modification uses a method documented as a recommended extension point
-> for that agent, the result is still a **configured default agent**. If it
-> uses any other method, the result is a **derived agent** that re-uses parts
-> of a default.
+> If a modification uses a documented extension point for that agent, or a
+> general-purpose harness field that does not alter the agent's identity, the
+> result is still a **configured default agent**. If it replaces
+> identity-defining components, the result is a **derived agent**.
 
 Each default agent documents its extension points in
 [`docs/agents/<agent>.md`](../). The review agent, for example, documents
@@ -72,11 +70,11 @@ agent is custom by definition — regardless of how similar it looks.
 | Add skills via `skills:` | Configured default | Skills extend knowledge. The agent's core behavior is unchanged. |
 | Add repo-level skills in `.agents/skills/` | Configured default | Repo skills are discovered automatically; no harness change needed. |
 | Add project instructions via `AGENTS.md` | Configured default | All agents read `AGENTS.md`. This is the standard customization path. |
-| Override a built-in skill via `customized/skills/` | Configured default | Documented extension point ([Customizing with Skills](../../guides/user/customizing-with-skills.md#overriding-built-in-skills)). |
+| Override a built-in skill via `customized/skills/` | Configured default | Documented extension point ([Configuring with Skills](../../guides/user/customizing-with-skills.md#overriding-built-in-skills)). |
 | Replace the sandbox image with one based on the default image | Configured default | The agent's behavior is unchanged; the environment is augmented. |
 | Add plugins via `plugins:` | Configured default | Plugins extend tooling without changing the agent's identity. |
 | Add host files via `host_files:` | Configured default | Additional data for the sandbox. The agent itself is unchanged. |
-| Change the sandbox policy (`policy:`) | Configured default | With [policy composition](https://github.com/fullsend-ai/fullsend/pull/2671), an agent with an augmented policy is still the same agent. |
+| Change the sandbox policy (`policy:`) | Configured default | Policy composition lets you augment an agent's policy without changing its identity. |
 | **Replace the agent system prompt** (`agent:`) | **Derived** | The system prompt (sometimes called the subagent definition file) provides the primary instructions for the agent. Replacing it creates a different agent. |
 | **Replace pre or post scripts** (`pre_script:`, `post_script:`) | **Derived** | Scripts control the agent's integration with external systems. Different scripts mean different behavior at the pipeline boundary. |
 | **Replace the app role slug** (`slug:`) | **Derived**\* | The slug determines who the agent authenticates as. A different identity is a different agent. |
@@ -90,11 +88,11 @@ for a stated purpose, that override does not make the agent derived.
 ## See also
 
 - [Agents reference](../) — default agent documentation and extension points
-- [Customizing agents](../../guides/user/customizing-agents.md) — harness
+- [Configuring agents](../../guides/user/customizing-agents.md) — harness
   configuration and layered content resolution
-- [Customizing with AGENTS.md](../../guides/user/customizing-with-agents-md.md)
+- [Configuring with AGENTS.md](../../guides/user/customizing-with-agents-md.md)
   — project-wide instructions for all agents
-- [Customizing with skills](../../guides/user/customizing-with-skills.md) —
+- [Configuring with skills](../../guides/user/customizing-with-skills.md) —
   extending or replacing built-in skills
 - [Building custom agents](../../guides/user/building-custom-agents.md) —
   creating a new agent from scratch

@@ -105,7 +105,7 @@ git clone git@github:{org}/{target_repository} /tmp/target-repo
 
 Next clone the repository where the agent lives, in this guide case you need to
 clone Fullsend's repository. To learn more about custom agents visit
-[Customizing Agents](customizing-agents.md).
+[Configuring Agents](customizing-agents.md).
 
 ```bash
 git clone --depth 1 https://github.com/fullsend-ai/fullsend.git /tmp/fullsend-ai_fullsend/

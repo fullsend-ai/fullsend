@@ -39,7 +39,7 @@ See [security-threat-model.md](problems/security-threat-model.md) and [architect
 
 ### Configured Default Agent
 
-A [default agent](#default-agent) whose behavior has been adjusted using only the extension points documented for that agent — environment variables, skills, `AGENTS.md` instructions, sandbox image layers, plugins, or host files. The agent's identity (system prompt, scripts, slug, validation loop) is unchanged; it is still recognizably the same default agent.
+A [default agent](#default-agent) whose behavior has been adjusted using documented extension points or general-purpose harness fields that do not alter the agent's identity — environment variables, skills, `AGENTS.md` instructions, sandbox image layers, plugins, or host files. The agent's identity (system prompt, scripts, slug, validation loop) is unchanged; it is still recognizably the same default agent.
 See [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
 
 ### Custom Agent
@@ -56,7 +56,7 @@ See [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
 
 ### Default Agent
 
-One of the six agents shipped by fullsend: triage, prioritize, code, review, fix, and retro. Default agents are defined by harness files in `fullsend-ai/fullsend` and agent definitions in `fullsend-ai/agents`. A default agent remains a default agent when customized through its documented extension points (becoming a [configured default agent](#configured-default-agent)); it becomes a [derived agent](#derived-agent) when modifications go beyond those points.
+An agent shipped by fullsend, defined by harness files in `fullsend-ai/fullsend` and agent definitions in `fullsend-ai/agents`. A default agent remains a default agent when configured through its documented extension points (becoming a [configured default agent](#configured-default-agent)); it becomes a [derived agent](#derived-agent) when modifications go beyond those points.
 See [Agents reference](agents/) and [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
 
 ### Debouncing

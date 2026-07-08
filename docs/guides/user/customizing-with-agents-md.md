@@ -6,7 +6,7 @@ read its `AGENTS.md` file — the same file human contributors use. No fullsend
 configuration changes needed.
 
 For agent-specific customization using skills, see
-[Customizing with Skills](customizing-with-skills.md).
+[Configuring with Skills](customizing-with-skills.md).
 
 ## What to put in AGENTS.md
 
@@ -149,4 +149,4 @@ prompt injection before the agent starts.
 ## See also
 
 - [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)
-  — `AGENTS.md` customization keeps you in "configured default agent" territory
+  — `AGENTS.md` configuration keeps you in "configured default agent" territory
