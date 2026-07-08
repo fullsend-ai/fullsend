@@ -61,13 +61,16 @@ func tryLoadFullsendConfig(path string, printer *ui.Printer) *config.OrgConfig {
 			printer.StepWarn("Per-repo config malformed (remote resource allowlist unavailable): " + perRepoErr.Error())
 			return nil
 		}
-		return config.OrgConfigFromPerRepo(perRepo)
+		orgCfg := config.OrgConfigFromPerRepo(perRepo)
+		orgCfg.AllowedRemoteResources = config.EnsureDefaultAllowedRemoteResources(orgCfg.AllowedRemoteResources)
+		return orgCfg
 	}
 	cfg, parseErr := config.ParseOrgConfig(data)
 	if parseErr != nil {
 		printer.StepWarn("Org config malformed (remote resource allowlist unavailable): " + parseErr.Error())
 		return nil
 	}
+	cfg.AllowedRemoteResources = config.EnsureDefaultAllowedRemoteResources(cfg.AllowedRemoteResources)
 	return cfg
 }
 
@@ -97,13 +100,16 @@ func requireFullsendConfig(path string, printer *ui.Printer) (*config.OrgConfig,
 			printer.StepFail("Failed to parse per-repo config")
 			return nil, fmt.Errorf("parsing per-repo config: %w", perRepoErr)
 		}
-		return config.OrgConfigFromPerRepo(perRepo), nil
+		orgCfg := config.OrgConfigFromPerRepo(perRepo)
+		orgCfg.AllowedRemoteResources = config.EnsureDefaultAllowedRemoteResources(orgCfg.AllowedRemoteResources)
+		return orgCfg, nil
 	}
 	cfg, parseErr := config.ParseOrgConfig(data)
 	if parseErr != nil {
 		printer.StepFail("Failed to parse org config")
 		return nil, fmt.Errorf("parsing org config: %w", parseErr)
 	}
+	cfg.AllowedRemoteResources = config.EnsureDefaultAllowedRemoteResources(cfg.AllowedRemoteResources)
 	return cfg, nil
 }
 
