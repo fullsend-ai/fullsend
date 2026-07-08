@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -610,20 +611,69 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	// 2b. Ensure providers exist on the gateway (if any declared).
 	if len(h.Providers) > 0 {
+		// Enable provider-backed policy composition on the gateway.
+		provV2Start := time.Now()
+		printer.StepStart("Enabling providers v2")
+		if err := sandbox.EnableProvidersV2(); err != nil {
+			printer.StepFail("Failed to enable providers v2")
+			return fmt.Errorf("enabling providers v2: %w", err)
+		}
+		printer.StepDone(fmt.Sprintf("Providers v2 enabled (%.1fs)", time.Since(provV2Start).Seconds()))
+
+		// Import provider profiles (if profiles/ directory exists).
+		profilesDir := filepath.Join(absFullsendDir, "profiles")
+		profileStart := time.Now()
+		printer.StepStart("Importing provider profiles")
+		if err := sandbox.ImportProfiles(profilesDir); err != nil {
+			printer.StepFail("Failed to import provider profiles")
+			return fmt.Errorf("importing provider profiles: %w", err)
+		}
+		printer.StepDone(fmt.Sprintf("Provider profiles imported (%.1fs)", time.Since(profileStart).Seconds()))
+
 		providersDir := filepath.Join(absFullsendDir, "providers")
-		providerDefs, err := harness.LoadProviderDefs(providersDir)
+		declared := make(map[string]struct{}, len(h.Providers))
+		for _, p := range h.Providers {
+			declared[p] = struct{}{}
+		}
+		providerDefs, err := harness.LoadProviderDefs(providersDir, declared)
 		if err != nil {
 			printer.StepFail("Failed to load provider definitions")
 			return fmt.Errorf("loading provider definitions: %w", err)
 		}
+		created := make(map[string]struct{}, len(providerDefs))
+		var (
+			mu   sync.Mutex
+			wg   sync.WaitGroup
+			errs []error
+		)
 		for _, pd := range providerDefs {
-			providerStart := time.Now()
-			printer.StepStart("Ensuring provider: " + pd.Name)
-			if err := sandbox.EnsureProvider(pd.Name, pd.Type, pd.Credentials, pd.Config); err != nil {
-				printer.StepFail("Failed to create provider " + pd.Name)
-				return fmt.Errorf("ensuring provider %q: %w", pd.Name, err)
+			if _, ok := declared[pd.Name]; !ok {
+				continue
 			}
-			printer.StepDone(fmt.Sprintf("Provider ready: %s (%.1fs)", pd.Name, time.Since(providerStart).Seconds()))
+			created[pd.Name] = struct{}{}
+			wg.Add(1)
+			go func(pd harness.ProviderDef) {
+				defer wg.Done()
+				providerStart := time.Now()
+				printer.StepStart("Ensuring provider: " + pd.Name)
+				if err := sandbox.EnsureProvider(pd.Name, pd.Type, pd.Credentials, pd.Config); err != nil {
+					printer.StepFail("Failed to create provider " + pd.Name)
+					mu.Lock()
+					errs = append(errs, fmt.Errorf("ensuring provider %q: %w", pd.Name, err))
+					mu.Unlock()
+					return
+				}
+				printer.StepDone(fmt.Sprintf("Provider ready: %s (%.1fs)", pd.Name, time.Since(providerStart).Seconds()))
+			}(pd)
+		}
+		wg.Wait()
+		if err := errors.Join(errs...); err != nil {
+			return err
+		}
+		for _, p := range h.Providers {
+			if _, ok := created[p]; !ok {
+				printer.StepWarn(fmt.Sprintf("Provider %q declared in harness but no definition found in %s", p, providersDir))
+			}
 		}
 	}
 

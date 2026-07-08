@@ -12,7 +12,12 @@ agent: agents/code.md
 doc: docs/agents/code.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-code:latest
-policy: policies/code.yaml
+policy: policies/base.yaml
+providers:
+  - vertex-ai
+  - github
+  - package-registries
+  - gitleaks
 
 role: coder
 slug: fullsend-ai-coder

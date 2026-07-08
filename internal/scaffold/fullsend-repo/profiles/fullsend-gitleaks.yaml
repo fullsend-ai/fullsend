@@ -1,0 +1,23 @@
+---
+id: fullsend-gitleaks
+display_name: Fullsend Gitleaks
+description: GitHub releases access for gitleaks binary download
+category: data
+endpoints:
+  - host: github.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  - host: objects.githubusercontent.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  - host: release-assets.githubusercontent.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+binaries:
+  - "**/pre-commit"

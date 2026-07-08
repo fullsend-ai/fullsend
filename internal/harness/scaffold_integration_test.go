@@ -55,7 +55,7 @@ slug: test-triage
 	assert.Equal(t, "agents/triage.md", h.Agent)
 	assert.Equal(t, "opus", h.Model)
 	assert.Equal(t, "ghcr.io/fullsend-ai/fullsend-sandbox:latest", h.Image)
-	assert.Equal(t, "policies/triage.yaml", h.Policy)
+	assert.Equal(t, "policies/base.yaml", h.Policy)
 
 	// PreScript and PostScript populated after forge.github resolution.
 	assert.NotEmpty(t, h.PreScript, "PreScript should be set after forge resolution")

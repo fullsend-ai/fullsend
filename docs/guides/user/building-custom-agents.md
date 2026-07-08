@@ -123,6 +123,10 @@ image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 policy: customized/policies/my-agent.yaml
 role: my-agent
 
+providers:
+  - vertex-ai          # Required: model access (Anthropic API + GCP)
+  - github             # GitHub API + Git transport
+
 host_files:
   # GCP credentials for Vertex AI (required for model access)
   - src: env/gcp-vertex.env
@@ -178,6 +182,8 @@ The agent never has direct access to credentials. The pre-script uses credential
 
 ## Step 3: Define the sandbox policy
 
+The sandbox policy controls filesystem, process, and landlock restrictions. Network access is handled separately through provider profiles (see below).
+
 Create `.fullsend/customized/policies/my-agent.yaml`:
 
 ```yaml
@@ -191,43 +197,58 @@ landlock:
 process:
   run_as_user: sandbox
   run_as_group: sandbox
+```
+
+Most custom agents can reuse the scaffold's `policies/base.yaml` instead of creating their own. Override only when your agent has specific filesystem or process requirements.
+
+### Network access via providers (recommended)
+
+The recommended way to grant network access is through provider profiles declared in the harness. Add a `providers` field to your harness YAML:
+
+```yaml
+providers:
+  - vertex-ai       # Anthropic API + GCP (required for model access)
+  - github           # GitHub API + Git transport
+  - package-registries  # npm, PyPI, Go modules (optional)
+```
+
+Each provider has a profile that defines its endpoints and binaries. When the sandbox starts, the gateway composes these profiles into the effective network policy automatically. This keeps endpoint definitions in one place and avoids copy-pasting network blocks across agents.
+
+The scaffold ships with profiles for common services. To see what's available:
+
+```bash
+ls .fullsend/providers/     # provider definitions (name + type)
+ls .fullsend/profiles/      # profile YAMLs (endpoints + binaries)
+```
+
+For services not covered by existing profiles, you can either create a custom profile or use inline `network_policies` in your policy YAML (both approaches work — composition is additive).
+
+### Network access via inline policies (alternative)
+
+You can also define network rules directly in the policy YAML. This is useful for one-off endpoints specific to a single agent:
+
+```yaml
 network_policies:
-  # Required: Vertex AI for model access
-  vertex_ai:
-    name: vertex-ai
+  my_service:
+    name: my-service
     endpoints:
-      - host: "*.googleapis.com"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-write
-      - host: "api.anthropic.com"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-write
-    binaries:
-      - path: "**/claude"
-      - path: "**/node"
-  # Optional: GitHub API access (if agent needs it)
-  github_api:
-    name: github-api
-    endpoints:
-      - host: "api.github.com"
+      - host: "api.example.com"
         port: 443
         protocol: rest
         enforcement: enforce
         access: read-only
     binaries:
-      - path: "**/gh"
       - path: "**/curl"
 ```
 
+Inline rules and provider-composed rules coexist — composition is additive. If both define the same endpoint, the duplicate is harmless.
+
 ### Policy design principles
 
-- **Vertex AI is always required** — the agent needs it to talk to the LLM.
+- **Vertex AI is always required** — the agent needs it to talk to the LLM. Use the `vertex-ai` provider.
 - **Add network access only for what the agent needs.** If the agent doesn't need web search, don't allow it.
 - **Use `binaries` to restrict which programs can access each endpoint.** This prevents the agent from using unexpected tools to exfiltrate data.
+- **Prefer providers for shared services.** Use inline policies only for agent-specific endpoints.
 - **Never allow APIs from the sandbox.** All network reads happen in pre-scripts; all network writes happen in post-scripts.
 
 ## Step 4: Define the output schema
