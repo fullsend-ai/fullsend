@@ -53,7 +53,7 @@ What we are actively building and shipping. Categories are ordered by priority f
 
 Making fullsend a platform teams can adopt incrementally and extend freely. This is the team's highest priority for July — driven by user demand for custom agents, better configuration, and simplified adoption.
 
-The custom agent interface needs to be clean enough that replatforming an existing agent is straightforward, not a rewrite. An agent catalog (an "awesome list" style repository for discovering and sharing agent definitions) will make the ecosystem more visible and navigable. Shareable config profiles let teams preconfigure a deployment with a single URL. Scribe agent enhancements address multiple outstanding user requests and will move to the agents repo as part of the re-platforming effort.
+The custom agent interface needs to be clean enough that replatforming an existing agent is straightforward, not a rewrite. Easy local agent runs let users test-drive custom agents and skills before wiring them into CI. An agent catalog (an "awesome list" style repository for discovering and sharing agent definitions) will make the ecosystem more visible and navigable. Shareable config profiles let teams preconfigure a deployment with a single URL. Scribe agent enhancements address multiple outstanding user requests and will move to the agents repo as part of the re-platforming effort.
 
 Examples of work that could move this forward:
 
