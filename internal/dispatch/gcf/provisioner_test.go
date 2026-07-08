@@ -3436,6 +3436,24 @@ func TestEnsureOrgInWIFCondition_NoOpWhenAlreadyPresent(t *testing.T) {
 	assert.NotContains(t, fake.(*fakeGCFClient).calls, "UpdateWIFProvider")
 }
 
+func TestEnsureOrgInWIFCondition_ReEnrollmentInstallingCaseWins(t *testing.T) {
+	fake := NewFakeGCFClient(WithFakeWIFProvider(&WIFProviderInfo{
+		AttributeCondition: "assertion.repository_owner == 'acme'",
+	}))
+	p := NewProvisioner(Config{
+		ProjectID:   "proj1",
+		Region:      "us-central1",
+		WIFPoolName: "fullsend-pool",
+		WIFProvider: "github-oidc",
+	}, fake)
+
+	err := p.EnsureOrgInWIFCondition(context.Background(), "ACME")
+	require.NoError(t, err)
+	assert.Contains(t, fake.(*fakeGCFClient).calls, "UpdateWIFProvider")
+	assert.Equal(t, "assertion.repository_owner == 'ACME'",
+		fake.(*fakeGCFClient).lastWIFProviderConfig.AttributeCondition)
+}
+
 func TestRemoveOrgFromWIFCondition_RemovesOrgAndAddsPlaceholder(t *testing.T) {
 	fake := NewFakeGCFClient(WithFakeWIFProvider(&WIFProviderInfo{
 		AttributeCondition: "assertion.repository_owner in ['acme', 'other']",
