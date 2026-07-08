@@ -3647,3 +3647,106 @@ func TestIsOrgConfigData_HeaderlessOrgByStructure(t *testing.T) {
 	data := []byte("version: \"1\"\ndefaults:\n  roles:\n    - triage\nrepos:\n  widget:\n    enabled: true\n")
 	assert.True(t, isOrgConfigData(data))
 }
+
+func TestPropagateDefaultAllowlist(t *testing.T) {
+	t.Run("nil allowlist gets default", func(t *testing.T) {
+		opts := harness.ComposeOpts{}
+		propagateDefaultAllowlist(&opts)
+		assert.Equal(t, config.DefaultAllowedRemoteResources(), opts.OrgAllowlist)
+	})
+
+	t.Run("existing allowlist preserved", func(t *testing.T) {
+		custom := []string{"https://example.com/"}
+		opts := harness.ComposeOpts{OrgAllowlist: custom}
+		propagateDefaultAllowlist(&opts)
+		assert.Equal(t, custom, opts.OrgAllowlist)
+	})
+
+	t.Run("explicit empty slice stays deny-all", func(t *testing.T) {
+		opts := harness.ComposeOpts{OrgAllowlist: []string{}}
+		propagateDefaultAllowlist(&opts)
+		assert.Empty(t, opts.OrgAllowlist, "explicit empty list must not be replaced with defaults")
+	})
+}
+
+func TestAgentsRepoFallback_LoadWithBase_NilAllowlist(t *testing.T) {
+	// Integration test for #3396: a URL-sourced harness (from agents-repo
+	// fallback) with pre_script/post_script must succeed when OrgAllowlist
+	// is populated via propagateDefaultAllowlist.
+	preScript := []byte("#!/bin/bash\necho pre")
+	postScript := []byte("#!/bin/bash\necho post")
+	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
+
+	harnessContent := []byte(`role: triage
+slug: triage
+agent: agents/triage.md
+pre_script: scripts/pre-triage.sh
+post_script: scripts/post-triage.sh
+`)
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/"+fakeSHA+"/harness/triage.yaml":
+			_, _ = w.Write(harnessContent)
+		case r.URL.Path == "/"+fakeSHA+"/scripts/pre-triage.sh":
+			_, _ = w.Write(preScript)
+		case r.URL.Path == "/"+fakeSHA+"/scripts/post-triage.sh":
+			_, _ = w.Write(postScript)
+		case r.URL.Path == "/"+fakeSHA+"/agents/triage.md":
+			_, _ = w.Write([]byte("# triage agent"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	hostPort := strings.TrimPrefix(srv.URL, "https://")
+	hostname, port, _ := net.SplitHostPort(hostPort)
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+
+	workDir := t.TempDir()
+	sourceURL := srv.URL + "/" + fakeSHA + "/harness/triage.yaml"
+
+	// Write harness locally (simulating the cache write from tryAgentsRepoFallback).
+	harnessDir := filepath.Join(workDir, "harness")
+	require.NoError(t, os.MkdirAll(harnessDir, 0o755))
+	harnessPath := filepath.Join(harnessDir, "triage.yaml")
+	require.NoError(t, os.WriteFile(harnessPath, harnessContent, 0o644))
+
+	// Without the fix: OrgAllowlist nil + SourceURL set → fails.
+	_, _, err := harness.LoadWithBase(context.Background(), harnessPath, harness.ComposeOpts{
+		WorkspaceRoot: workDir,
+		FetchPolicy:   policy,
+		SourceURL:     sourceURL,
+		// OrgAllowlist nil — reproduces the bug.
+	})
+	require.Error(t, err, "should fail with nil allowlist")
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+
+	// With the fix: propagateDefaultAllowlist sets the default → succeeds.
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: workDir,
+		FetchPolicy:   policy,
+		SourceURL:     sourceURL,
+	}
+	propagateDefaultAllowlist(&opts)
+	assert.Equal(t, config.DefaultAllowedRemoteResources(), opts.OrgAllowlist,
+		"propagateDefaultAllowlist should set the default list")
+
+	// Verify the real default list covers the fallback URL shape.
+	// A future edit to DefaultAllowedRemoteResources() that drops the
+	// agents repo prefix would regress #3396 silently without this.
+	sampleURL := defaultAgentsRepoURLPrefix + strings.Repeat("a", 40) + "/scripts/pre-triage.sh"
+	assert.NotEmpty(t, harness.MatchingAllowedPrefixInList(sampleURL, config.DefaultAllowedRemoteResources()),
+		"DefaultAllowedRemoteResources must cover the agents repo fallback URL shape")
+
+	// Override allowlist to match test server (default points at github.com).
+	opts.OrgAllowlist = []string{srv.URL + "/"}
+
+	h, _, err := harness.LoadWithBase(context.Background(), harnessPath, opts)
+	require.NoError(t, err, "should succeed with allowlist propagated")
+	assert.True(t, filepath.IsAbs(h.PreScript), "pre_script should be resolved to cache path")
+	assert.True(t, filepath.IsAbs(h.PostScript), "post_script should be resolved to cache path")
+}

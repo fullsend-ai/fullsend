@@ -25,6 +25,10 @@ const (
 	workflowDispatchRetryAttempts = 24
 	workflowDispatchRetryInitial  = 3 * time.Second
 	workflowDispatchRetryMax      = 15 * time.Second
+
+	enrollmentWaitTimeout = 3 * time.Minute  // max time to wait for the workflow run
+	enrollmentPollInitial = 2 * time.Second  // initial polling interval for status checks
+	enrollmentPollMax     = 15 * time.Second // maximum polling interval (backoff cap)
 )
 
 // EnrollmentLayer monitors workflow-driven enrollment of target repos.
@@ -38,6 +42,7 @@ type EnrollmentLayer struct {
 	disabledRepos   []string
 	ui              *ui.Printer
 	scaffoldPending bool
+	waitTimeout     time.Duration // test override; 0 uses enrollmentWaitTimeout
 }
 
 // Compile-time check that EnrollmentLayer implements Layer.
@@ -113,7 +118,8 @@ func (l *EnrollmentLayer) Install(ctx context.Context) error {
 		l.ui.StepDone("dispatched repo-maintenance workflow")
 	}
 
-	// Wait for the workflow run to complete.
+	// Wait for the workflow run to complete (bounded by enrollmentWaitTimeout).
+	l.ui.StepStart("waiting for enrollment workflow to complete")
 	run, err := l.awaitWorkflowRun(ctx, dispatchTime)
 	if err != nil {
 		if dispatchErr != nil {
@@ -214,18 +220,39 @@ func isWorkflowDispatchNotReady(err error) bool {
 }
 
 // awaitWorkflowRun polls for a repo-maintenance workflow run created after
-// dispatchTime and waits for it to complete.
+// dispatchTime and waits for it to complete. It uses exponential backoff
+// and a bounded timeout to avoid long silent waits.
 func (l *EnrollmentLayer) awaitWorkflowRun(ctx context.Context, dispatchTime time.Time) (*forge.WorkflowRun, error) {
-	for attempt := range 36 { // 3 minutes max
+	timeout := enrollmentWaitTimeout
+	if l.waitTimeout > 0 {
+		timeout = l.waitTimeout
+	}
+	deadline := time.Now().Add(timeout)
+	interval := enrollmentPollInitial
+	start := time.Now()
+
+	for {
+		if time.Now().After(deadline) {
+			elapsed := time.Since(start).Round(time.Second)
+			return nil, fmt.Errorf(
+				"timed out after %s waiting for repo-maintenance workflow; "+
+					"check the workflow in .fullsend for details",
+				elapsed,
+			)
+		}
+
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-time.After(interval):
 		}
+
+		elapsed := time.Since(start).Round(time.Second)
 
 		runs, err := l.client.ListWorkflowRuns(ctx, l.org, forge.ConfigRepoName, repoMaintenanceWorkflow)
 		if err != nil {
-			l.ui.StepInfo(fmt.Sprintf("waiting for workflow run (attempt %d)...", attempt+1))
+			l.ui.StepInfo(fmt.Sprintf("waiting for workflow registration (%s elapsed)...", elapsed))
+			interval = nextInterval(interval)
 			continue
 		}
 
@@ -242,11 +269,21 @@ func (l *EnrollmentLayer) awaitWorkflowRun(ctx context.Context, dispatchTime tim
 			if run.Status == "completed" {
 				return run, nil
 			}
-			l.ui.StepInfo(fmt.Sprintf("workflow run: %s (%s)", run.HTMLURL, run.Status))
+			l.ui.StepInfo(fmt.Sprintf("workflow run %s (%s, %s elapsed)", run.HTMLURL, run.Status, elapsed))
 			break // found our run, keep waiting
 		}
+
+		interval = nextInterval(interval)
 	}
-	return nil, fmt.Errorf("timed out waiting for repo-maintenance workflow")
+}
+
+// nextInterval doubles the polling interval up to enrollmentPollMax.
+func nextInterval(current time.Duration) time.Duration {
+	next := current * 2
+	if next > enrollmentPollMax {
+		return enrollmentPollMax
+	}
+	return next
 }
 
 // showWorkflowLogs fetches and displays workflow run logs locally so the user
