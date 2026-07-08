@@ -252,7 +252,7 @@ Fullsend provides a base set of agent definitions. The adopting organization's *
 - Config-level agent registration: an `agents` list in both `OrgConfig` and `PerRepoConfig` declares agent harness sources as pinned URLs or local paths, replacing compiled-in agent discovery ([ADR 0058](ADRs/0058-agent-registration.md)).
 - Runtime resolution: `fullsend run <name>` resolves agents in three tiers: (1) config entries from `OrgConfig.Agents` (highest priority), (2) runtime fallback to the `fullsend-ai/agents` repository for known first-party agents not in config, (3) scaffold-embedded harnesses on disk. The agents-repo fallback is a transitional mechanism for the [agent extraction](plans/agent-extraction-to-agents-repo.md); it will be removed once all users have migrated to config-driven registration (ADR 0058 Phase 5).
 - Additive merge: config entries overlay scaffold-discovered agents (config wins on name collision), enabling gradual extraction of first-party agents without disrupting existing installations. Builds on [ADR 0045](ADRs/0045-forge-portable-harness-schema.md) harness identity model.
-- CLI management: `fullsend agent add/list/update/remove` manages config entries and auto-pins URLs to a commit SHA with an integrity hash.
+- CLI management: `fullsend agent add|list|update|remove|migrate-customizations` manages config entries and auto-pins URLs to a commit SHA with an integrity hash.
 
 **Open questions:**
 

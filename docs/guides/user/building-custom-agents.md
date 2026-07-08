@@ -1,5 +1,11 @@
 # Building custom agents
 
+> **Deprecated:** This guide uses the `customized/` directory overlay, which is
+> deprecated per [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
+> For new custom agents, register them in `config.yaml` with a local `source:`
+> path instead. Run `fullsend agent migrate-customizations --dry-run` to
+> preview migrating existing customizations.
+
 This guide walks through creating a new custom agent from scratch on a per-repo fullsend installation.
 
 For customizing existing agents (overriding harnesses, skills, or policies), see [Customizing agents](customizing-agents.md).
