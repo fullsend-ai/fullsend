@@ -70,11 +70,13 @@ Collect **all** taken ADR numbers from these three sources:
    every ADR number from open PRs targeting the same base branch:
 
 ```bash
-bash skills/renumber-adr/scripts/inflight-adr-numbers.sh <target-branch>
+bash skills/renumber-adr/scripts/inflight-adr-numbers.sh <target-branch> <current-pr-number>
 ```
 
-   The script prints one four-digit number per line. If it produces no
-   output, there are no in-flight ADR numbers to worry about.
+   Pass the current PR number so the script excludes it (avoiding
+   self-collision). The script prints one four-digit number per line.
+   If it produces no output, there are no in-flight ADR numbers to
+   worry about.
 
 Combine all three sets of taken numbers. For each new ADR in this branch,
 check whether its number appears in the combined set. If none of the new ADR
