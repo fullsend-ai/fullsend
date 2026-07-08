@@ -121,7 +121,9 @@ Use multiple searches with different keyword combinations if the first returns n
 - **Skip the proposal** if a recently closed issue addressed the same problem (closed in the last 90 days) — the fix may already be in flight.
 - **Include the proposal** only if you are confident no existing issue covers it, or if your proposal meaningfully refines an existing one in a way that warrants a new issue.
 
-When skipping, note the duplicate in your `summary` field so the human understands what was filtered and why.
+**Do not file "evidence for" issues.** When your analysis produces evidence that supports or corroborates an existing open issue, put it in your `summary` field — not in a new proposal. Do not title proposals "Evidence for #XXXX" or use any other framing that makes a duplicate look like a new issue. The summary is posted as a comment on the originating PR, which preserves the data point. Filing evidence as a separate proposal creates noise that compounds across retro runs.
+
+When skipping, note the duplicate in your `summary` field — include the issue number and what specific evidence this retro found, so the human understands what was filtered and why.
 
 ## Localization guidance
 
