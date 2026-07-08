@@ -102,6 +102,7 @@ func newAgentCmd() *cobra.Command {
 	cmd.AddCommand(newAgentListCmd())
 	cmd.AddCommand(newAgentUpdateCmd())
 	cmd.AddCommand(newAgentRemoveCmd())
+	cmd.AddCommand(newAgentMigrateCustomizationsCmd())
 	return cmd
 }
 

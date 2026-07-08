@@ -825,6 +825,19 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	// 4. Compute expected blob SHAs and filter to changed files.
 	var changedEntries []map[string]any
 	for _, f := range files {
+		if f.Delete {
+			if _, exists := existing[f.Path]; !exists {
+				continue
+			}
+			changedEntries = append(changedEntries, map[string]any{
+				"path": f.Path,
+				"mode": "100644",
+				"type": "blob",
+				"sha":  nil,
+			})
+			continue
+		}
+
 		expectedSHA := blobSHA(f.Content)
 		info, exists := existing[f.Path]
 		if exists && info.sha == expectedSHA && info.mode == f.Mode {

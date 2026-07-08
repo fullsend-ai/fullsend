@@ -90,6 +90,8 @@ implemented and in production.
 
 - Users who placed files in `customized/` must migrate to `base:`
   composition, URL references, or config-based registration.
+  `fullsend agent migrate-customizations` automates this conversion and
+  delivers the changes via pull request.
 - Deprecation warnings during install and updated documentation will guide
   migration.
 - The reusable workflows become simpler — no overlay loop, no

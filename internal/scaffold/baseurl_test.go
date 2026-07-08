@@ -169,6 +169,37 @@ func TestHarnessNames(t *testing.T) {
 	})
 }
 
+func TestHarnessContent(t *testing.T) {
+	t.Run("returns valid YAML bytes", func(t *testing.T) {
+		data, err := HarnessContent("review")
+		require.NoError(t, err)
+		assert.True(t, len(data) > 0)
+		assert.Contains(t, string(data), "agent:")
+	})
+
+	t.Run("invalid name errors", func(t *testing.T) {
+		_, err := HarnessContent("INVALID")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "invalid harness name")
+	})
+
+	t.Run("unknown harness errors", func(t *testing.T) {
+		_, err := HarnessContent("nonexistent")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "unknown harness")
+	})
+
+	t.Run("matches content hash", func(t *testing.T) {
+		data, err := HarnessContent("triage")
+		require.NoError(t, err)
+		sum := sha256.Sum256(data)
+		actual := hex.EncodeToString(sum[:])
+		expected, err := HarnessContentHash("triage")
+		require.NoError(t, err)
+		assert.Equal(t, expected, actual)
+	})
+}
+
 func TestHarnessBaseURLWithHashAllHarnesses(t *testing.T) {
 	sha := "abcdef0123456789abcdef0123456789abcdef01"
 
