@@ -40,23 +40,24 @@ See [security-threat-model.md](problems/security-threat-model.md) and [architect
 ### Configured Default Agent
 
 A [default agent](#default-agent) whose behavior has been adjusted using only the extension points documented for that agent — environment variables, skills, `AGENTS.md` instructions, sandbox image layers, plugins, or host files. The agent's identity (system prompt, scripts, slug, validation loop) is unchanged; it is still recognizably the same default agent.
-See [Default agents vs. custom agents](agents/topics/default-vs-custom.md).
+See [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
 
 ### Custom Agent
 
-An agent that is not a [configured default agent](#configured-default-agent). There are two kinds:
+An agent whose `base` chain does not trace back to a default agent harness in `fullsend-ai/fullsend`, or that has no `base` at all. A custom agent is built from scratch, even if it happens to resemble a default agent. Contrast with [derived agent](#derived-agent), which starts from a default.
+See [Default, derived, and custom agents](agents/topics/default-vs-custom.md) and [Building custom agents](guides/user/building-custom-agents.md).
 
-1. **Custom agent extending a default** — uses `base` inheritance from a default agent harness but replaces identity-defining components (system prompt, pre/post scripts, slug, or validation loop) beyond the documented extension points. It re-uses parts of a default agent but is no longer recognizably that agent.
-2. **Custom from-scratch agent** — its `base` chain does not trace back to a default agent harness in `fullsend-ai/fullsend`, or it has no `base` at all. It is built independently, even if it happens to resemble a default agent.
+### Derived Agent
 
-See [Default agents vs. custom agents](agents/topics/default-vs-custom.md) and [Building custom agents](guides/user/building-custom-agents.md).
+An agent that uses `base` inheritance from a default agent harness but replaces identity-defining components (system prompt, pre/post scripts, slug, or validation loop) beyond the documented extension points. It re-uses parts of a default agent but is no longer recognizably that agent. Contrast with [configured default agent](#configured-default-agent) (stays within extension points) and [custom agent](#custom-agent) (built from scratch).
+See [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
 
 ## D
 
 ### Default Agent
 
-One of the six agents shipped by fullsend: triage, prioritize, code, review, fix, and retro. Default agents are defined by harness files in `fullsend-ai/fullsend` and agent definitions in `fullsend-ai/agents`. A default agent remains a default agent when customized through its documented extension points (becoming a [configured default agent](#configured-default-agent)); it becomes a [custom agent](#custom-agent) when modifications go beyond those points.
-See [Agents reference](agents/) and [Default agents vs. custom agents](agents/topics/default-vs-custom.md).
+One of the six agents shipped by fullsend: triage, prioritize, code, review, fix, and retro. Default agents are defined by harness files in `fullsend-ai/fullsend` and agent definitions in `fullsend-ai/agents`. A default agent remains a default agent when customized through its documented extension points (becoming a [configured default agent](#configured-default-agent)); it becomes a [derived agent](#derived-agent) when modifications go beyond those points.
+See [Agents reference](agents/) and [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
 
 ### Debouncing
 

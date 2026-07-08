@@ -38,7 +38,7 @@ Guides for developers working in repositories where fullsend is active.
 - [Customizing with AGENTS.md](user/customizing-with-agents-md.md) — Guide agents using your repo's AGENTS.md file
 - [Customizing with skills](user/customizing-with-skills.md) — Extend or replace built-in agent skills with custom skill documents
 - [Building custom agents from scratch](user/building-custom-agents.md) — Create a new agent from scratch on a per-repo fullsend installation
-- [Default agents vs. custom agents](../agents/topics/default-vs-custom.md) — When customization crosses into custom agent territory
+- [Default, derived, and custom agents](../agents/topics/default-vs-custom.md) — When customization crosses into derived or custom agent territory
 
 ## Development
 

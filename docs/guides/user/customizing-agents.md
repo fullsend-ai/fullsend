@@ -415,7 +415,7 @@ my-repo/
 
 ## See Also
 
-- [Default agents vs. custom agents](../../agents/topics/default-vs-custom.md) - When does customization cross into custom agent territory?
+- [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md) - When does customization cross into derived or custom agent territory?
 - [Getting Started](../getting-started/) - Initial setup
 - [Bugfix Workflow](bugfix-workflow.md) - How agents work together
 - [Standalone Mint](../infrastructure/standalone-mint.md) - Running your own mint with custom agent roles

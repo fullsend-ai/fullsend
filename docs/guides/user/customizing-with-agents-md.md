@@ -148,5 +148,5 @@ prompt injection before the agent starts.
 
 ## See also
 
-- [Default agents vs. custom agents](../../agents/topics/default-vs-custom.md)
+- [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)
   — `AGENTS.md` customization keeps you in "configured default agent" territory

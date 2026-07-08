@@ -166,5 +166,5 @@ apply to all agents and human contributors alike.
 
 ## See also
 
-- [Default agents vs. custom agents](../../agents/topics/default-vs-custom.md)
+- [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)
   — adding skills keeps you in "configured default agent" territory
