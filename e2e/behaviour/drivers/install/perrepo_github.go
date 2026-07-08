@@ -115,9 +115,14 @@ func (d *perRepoDriver) provisionPerRepoInference(target, project string) (strin
 }
 
 func parseInferenceStatusWIFProvider(output string) (string, error) {
-	start := strings.Index(output, "{")
+	statusKey := `"status":`
+	keyIdx := strings.Index(output, statusKey)
+	if keyIdx < 0 {
+		return "", fmt.Errorf("no JSON status object in output")
+	}
+	start := strings.LastIndex(output[:keyIdx], "{")
 	if start < 0 {
-		return "", fmt.Errorf("no JSON in output")
+		return "", fmt.Errorf("no JSON status object in output")
 	}
 	var status struct {
 		Status      string `json:"status"`

@@ -381,6 +381,8 @@ func extractArtifactZip(name string, zipData []byte, destDir string) error {
 	defer zr.Close()
 
 	const perFileLimit = 10 << 20
+	const totalExtractLimit = 100 << 20
+	var totalExtracted int64
 	for _, f := range zr.File {
 		if f.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("artifact zip %q contains symlink entry %q", safeName, f.Name)
@@ -406,6 +408,10 @@ func extractArtifactZip(name string, zipData []byte, destDir string) error {
 		rc.Close()
 		if err != nil {
 			return fmt.Errorf("read artifact entry %q: %w", f.Name, err)
+		}
+		totalExtracted += int64(len(data))
+		if totalExtracted > totalExtractLimit {
+			return fmt.Errorf("artifact zip %q exceeds %d byte aggregate extraction limit", safeName, totalExtractLimit)
 		}
 		if err := os.WriteFile(outPath, data, 0o644); err != nil {
 			return err

@@ -94,7 +94,7 @@ func TestResolveSandboxPathRejectsAbsoluteOutsideWorkspace(t *testing.T) {
 func TestExecuteBehaviourOpUnknown(t *testing.T) {
 	t.Parallel()
 
-	err := executeBehaviourOp("unused", t.TempDir(), BehaviourOperation{Op: "nope"})
+	err := executeBehaviourOp(DummyRuntime{}, "unused", t.TempDir(), BehaviourOperation{Op: "nope"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown op")
 }
@@ -192,7 +192,7 @@ func TestExecuteBehaviourScript_ValidationFailures(t *testing.T) {
 		{Op: "read_file", Description: "missing path"},
 		{Op: "url_get", Description: "missing url"},
 	}}
-	results, err := executeBehaviourScript(context.Background(), "unused", t.TempDir(), script)
+	results, err := executeBehaviourScript(context.Background(), DummyRuntime{}, "unused", t.TempDir(), script)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "requires a path")
 	require.Len(t, results.Operations, 2)
@@ -205,7 +205,7 @@ func TestExecuteBehaviourScript_ValidationFailures(t *testing.T) {
 func TestExecuteBehaviourOp_ReadFileEmptyPath(t *testing.T) {
 	t.Parallel()
 
-	err := executeBehaviourOp("unused", t.TempDir(), BehaviourOperation{Op: "read_file"})
+	err := executeBehaviourOp(DummyRuntime{}, "unused", t.TempDir(), BehaviourOperation{Op: "read_file"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "requires a path")
 }
@@ -213,7 +213,7 @@ func TestExecuteBehaviourOp_ReadFileEmptyPath(t *testing.T) {
 func TestExecuteBehaviourOp_URLGetEmpty(t *testing.T) {
 	t.Parallel()
 
-	err := executeBehaviourOp("unused", t.TempDir(), BehaviourOperation{Op: "url_get"})
+	err := executeBehaviourOp(DummyRuntime{}, "unused", t.TempDir(), BehaviourOperation{Op: "url_get"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "requires a URL")
 }
@@ -273,7 +273,7 @@ func TestExecuteBehaviourOp_ReadFileExecFailure(t *testing.T) {
 
 	base := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(base, "f.txt"), []byte("x"), 0o644))
-	err := executeBehaviourOp("nonexistent-sandbox", base, BehaviourOperation{
+	err := executeBehaviourOp(DummyRuntime{}, "nonexistent-sandbox", base, BehaviourOperation{
 		Op:   "read_file",
 		Args: "f.txt",
 	})
@@ -283,7 +283,7 @@ func TestExecuteBehaviourOp_ReadFileExecFailure(t *testing.T) {
 func TestExecuteBehaviourOp_URLGetExecFailure(t *testing.T) {
 	t.Parallel()
 
-	err := executeBehaviourOp("nonexistent-sandbox", t.TempDir(), BehaviourOperation{
+	err := executeBehaviourOp(DummyRuntime{}, "nonexistent-sandbox", t.TempDir(), BehaviourOperation{
 		Op:   "url_get",
 		Args: "https://example.com",
 	})
@@ -293,7 +293,7 @@ func TestExecuteBehaviourOp_URLGetExecFailure(t *testing.T) {
 func TestExecuteBehaviourOp_WriteFixtureInvalidArgs(t *testing.T) {
 	t.Parallel()
 
-	err := executeBehaviourOp("nonexistent-sandbox", t.TempDir(), BehaviourOperation{
+	err := executeBehaviourOp(DummyRuntime{}, "nonexistent-sandbox", t.TempDir(), BehaviourOperation{
 		Op:   "write_fixture",
 		Args: "only-one-part",
 	})
@@ -303,16 +303,13 @@ func TestExecuteBehaviourOp_WriteFixtureInvalidArgs(t *testing.T) {
 func TestWriteBehaviourResults(t *testing.T) {
 	t.Parallel()
 
-	err := writeBehaviourResults("nonexistent-sandbox", BehaviourResults{
+	err := DummyRuntime{}.writeBehaviourResults("nonexistent-sandbox", BehaviourResults{
 		Operations: []BehaviourOpResult{{Success: true, Description: "ok"}},
 	})
 	require.Error(t, err)
 }
 
 func TestDummyRuntime_RunFailedOps(t *testing.T) {
-	orig := writeBehaviourResultsFn
-	writeBehaviourResultsFn = writeBehaviourResults
-	t.Cleanup(func() { writeBehaviourResultsFn = orig })
 	fullsendDir := t.TempDir()
 	scriptDir := filepath.Join(fullsendDir, "behaviour")
 	require.NoError(t, os.MkdirAll(scriptDir, 0o755))
@@ -334,10 +331,6 @@ func TestDummyRuntime_RunFailedOps(t *testing.T) {
 }
 
 func TestDummyRuntime_RunOpFailureReturnsNilGoError(t *testing.T) {
-	orig := writeBehaviourResultsFn
-	writeBehaviourResultsFn = func(string, BehaviourResults) error { return nil }
-	t.Cleanup(func() { writeBehaviourResultsFn = orig })
-
 	fullsendDir := t.TempDir()
 	scriptDir := filepath.Join(fullsendDir, "behaviour")
 	require.NoError(t, os.MkdirAll(scriptDir, 0o755))
@@ -348,7 +341,7 @@ func TestDummyRuntime_RunOpFailureReturnsNilGoError(t *testing.T) {
 `
 	require.NoError(t, os.WriteFile(filepath.Join(scriptDir, "current-scenario.yaml"), []byte(script), 0o644))
 
-	rt := DummyRuntime{}
+	rt := DummyRuntime{WriteResultsFn: func(string, BehaviourResults) error { return nil }}
 	exit, err := rt.Run(context.Background(), RunParams{
 		SandboxName: "nonexistent-sandbox",
 		RepoDir:     t.TempDir(),
@@ -359,16 +352,16 @@ func TestDummyRuntime_RunOpFailureReturnsNilGoError(t *testing.T) {
 }
 
 func TestExecuteBehaviourOp_URLGetNonZeroExit(t *testing.T) {
-	orig := sandboxExecFn
-	sandboxExecFn = func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+	t.Parallel()
+
+	rt := DummyRuntime{ExecFn: func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
 		if strings.Contains(cmd, "curl") {
 			return "", "blocked by sandbox policy", 22, nil
 		}
 		return "", "", 0, nil
-	}
-	t.Cleanup(func() { sandboxExecFn = orig })
+	}}
 
-	err := executeBehaviourOp("sandbox", t.TempDir(), BehaviourOperation{
+	err := executeBehaviourOp(rt, "sandbox", t.TempDir(), BehaviourOperation{
 		Op:   "url_get",
 		Args: "https://www.google.com/search?q=foo",
 	})
@@ -378,13 +371,13 @@ func TestExecuteBehaviourOp_URLGetNonZeroExit(t *testing.T) {
 }
 
 func TestExecuteBehaviourOp_ReadFileNonZeroExit(t *testing.T) {
-	orig := sandboxExecFn
-	sandboxExecFn = func(_ string, _ string, _ time.Duration) (string, string, int, error) {
-		return "", "missing file", 1, nil
-	}
-	t.Cleanup(func() { sandboxExecFn = orig })
+	t.Parallel()
 
-	err := executeBehaviourOp("sandbox", t.TempDir(), BehaviourOperation{
+	rt := DummyRuntime{ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+		return "", "missing file", 1, nil
+	}}
+
+	err := executeBehaviourOp(rt, "sandbox", t.TempDir(), BehaviourOperation{
 		Op:   "read_file",
 		Args: "output/missing.json",
 	})
@@ -393,18 +386,16 @@ func TestExecuteBehaviourOp_ReadFileNonZeroExit(t *testing.T) {
 }
 
 func TestExecuteBehaviourOp_WriteFixtureSuccess(t *testing.T) {
-	origExec := sandboxExecFn
-	origUpload := sandboxUploadFn
-	sandboxExecFn = func(_ string, _ string, _ time.Duration) (string, string, int, error) {
-		return "", "", 0, nil
-	}
-	sandboxUploadFn = func(_, _, _ string) error { return nil }
-	t.Cleanup(func() {
-		sandboxExecFn = origExec
-		sandboxUploadFn = origUpload
-	})
+	t.Parallel()
 
-	err := executeBehaviourOp("sandbox", t.TempDir(), BehaviourOperation{
+	rt := DummyRuntime{
+		ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+			return "", "", 0, nil
+		},
+		UploadFn: func(_, _, _ string) error { return nil },
+	}
+
+	err := executeBehaviourOp(rt, "sandbox", t.TempDir(), BehaviourOperation{
 		Op:      "write_fixture",
 		Args:    "output/agent-result.json, fixtures/triage/sufficient.json",
 		Content: `{"action":"sufficient"}`,
@@ -413,15 +404,15 @@ func TestExecuteBehaviourOp_WriteFixtureSuccess(t *testing.T) {
 }
 
 func TestWriteBehaviourResultsSuccess(t *testing.T) {
-	orig := sandboxUploadFn
+	t.Parallel()
+
 	var uploaded bool
-	sandboxUploadFn = func(_, _, _ string) error {
+	rt := DummyRuntime{UploadFn: func(_, _, _ string) error {
 		uploaded = true
 		return nil
-	}
-	t.Cleanup(func() { sandboxUploadFn = orig })
+	}}
 
-	err := writeBehaviourResults("sandbox", BehaviourResults{
+	err := rt.writeBehaviourResults("sandbox", BehaviourResults{
 		Operations: []BehaviourOpResult{{Description: "ok", Success: true}},
 	})
 	require.NoError(t, err)
@@ -445,7 +436,7 @@ func TestExecuteBehaviourScript_CancelledContext(t *testing.T) {
 	script := &BehaviourScript{Ops: []BehaviourOperation{
 		{Op: "read_file", Args: "x.txt", Description: "read"},
 	}}
-	_, err := executeBehaviourScript(ctx, "sandbox", t.TempDir(), script)
+	_, err := executeBehaviourScript(ctx, DummyRuntime{}, "sandbox", t.TempDir(), script)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cancelled")
 }

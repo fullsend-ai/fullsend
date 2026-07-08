@@ -2842,9 +2842,11 @@ func TestAddIssueLabels(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "POST", r.Method)
 		assert.Equal(t, "/repos/org/repo/issues/7/labels", r.URL.Path)
-		var labels []string
-		require.NoError(t, json.NewDecoder(r.Body).Decode(&labels))
-		assert.Equal(t, []string{"ready-for-triage"}, labels)
+		var body struct {
+			Labels []string `json:"labels"`
+		}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		assert.Equal(t, []string{"ready-for-triage"}, body.Labels)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer srv.Close()

@@ -2172,7 +2172,7 @@ func (c *LiveClient) AddIssueLabels(ctx context.Context, owner, repo string, num
 	if len(labels) == 0 {
 		return nil
 	}
-	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/labels", owner, repo, number), labels)
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/labels", owner, repo, number), map[string][]string{"labels": labels})
 	if err != nil {
 		return fmt.Errorf("add issue labels: %w", err)
 	}

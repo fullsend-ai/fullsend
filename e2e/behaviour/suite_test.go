@@ -25,6 +25,9 @@ func TestBehaviourSuite(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping behaviour tests in short mode")
 	}
+	if c := os.Getenv("GODOG_CONCURRENCY"); c != "" && c != "1" {
+		t.Fatalf("behaviour suite does not support GODOG_CONCURRENCY=%q (shared World); use serial runs until parallel support lands", c)
+	}
 
 	cfg := env.LoadRunnerConfig()
 	if err := cfg.Validate(); err != nil {
@@ -78,16 +81,17 @@ func TestBehaviourSuite(t *testing.T) {
 		RepoFull:  org + "/" + testRepo,
 	}
 
-	// World is shared across scenarios; godog runs serially by default. Do not
-	// pass --concurrency without giving each scenario its own World in Before.
+	// World is shared across scenarios; pin concurrency to 1 until each scenario
+	// gets its own World and behaviour script path (see follow-up issue).
 	suite := godog.TestSuite{
 		Name:                "behaviour",
 		ScenarioInitializer: func(sc *godog.ScenarioContext) { initializeScenario(sc, w) },
 		Options: &godog.Options{
-			Format:   "pretty",
-			Paths:    []string{"features"},
-			TestingT: t,
-			Tags:     os.Getenv("GODOG_TAGS"),
+			Format:      "pretty",
+			Paths:       []string{"features"},
+			TestingT:    t,
+			Tags:        os.Getenv("GODOG_TAGS"),
+			Concurrency: 1,
 		},
 	}
 	if st := suite.Run(); st != 0 {

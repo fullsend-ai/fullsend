@@ -3,6 +3,7 @@ package githubactions
 import (
 	"archive/zip"
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -100,6 +101,26 @@ func TestExtractArtifactZip_SanitizesName(t *testing.T) {
 	require.NoError(t, extractArtifactZip("../../weird/name", buf.Bytes(), dest))
 	_, err = os.Stat(filepath.Join(dest, "name", "ok.txt"))
 	require.NoError(t, err)
+}
+
+func TestExtractArtifactZip_RejectsAggregateLimit(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	const chunk = 10 << 20 // per-file limit
+	for i := 0; i < 11; i++ {
+		w, err := zw.Create(fmt.Sprintf("part-%d.bin", i))
+		require.NoError(t, err)
+		_, err = w.Write(bytes.Repeat([]byte("x"), chunk))
+		require.NoError(t, err)
+	}
+	require.NoError(t, zw.Close())
+
+	dest := t.TempDir()
+	err := extractArtifactZip("artifact", buf.Bytes(), dest)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "aggregate extraction limit")
 }
 
 func TestNewestRepositoryArtifactCreatedAt(t *testing.T) {

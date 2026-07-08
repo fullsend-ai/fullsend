@@ -54,7 +54,16 @@ func TestParseInferenceStatusWIFProvider_OK(t *testing.T) {
 func TestParseInferenceStatusWIFProvider_NoJSON(t *testing.T) {
 	_, err := parseInferenceStatusWIFProvider("no json here")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no JSON")
+	assert.Contains(t, err.Error(), "no JSON status object")
+}
+
+func TestParseInferenceStatusWIFProvider_IgnoresLeadingNoise(t *testing.T) {
+	out := `Running inference status...
+log line with { brace noise
+{"status":"healthy","FULLSEND_GCP_WIF_PROVIDER":"projects/1/locations/global/workloadIdentityPools/p/providers/x"}`
+	got, err := parseInferenceStatusWIFProvider(out)
+	require.NoError(t, err)
+	assert.Equal(t, "projects/1/locations/global/workloadIdentityPools/p/providers/x", got)
 }
 
 func TestParseInferenceStatusWIFProvider_Unhealthy(t *testing.T) {

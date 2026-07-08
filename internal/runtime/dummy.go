@@ -20,14 +20,11 @@ import (
 const behaviourScriptRelPath = "behaviour/current-scenario.yaml"
 const behaviourResultsFile = "behaviour-results.json"
 
-// writeBehaviourResultsFn is the production writer; tests may replace it.
-var writeBehaviourResultsFn = writeBehaviourResults
+type sandboxExecFunc func(sandboxName, cmd string, timeout time.Duration) (stdout, stderr string, exitCode int, err error)
 
-// sandboxExecFn and sandboxUploadFn are production defaults; tests may replace them.
-var (
-	sandboxExecFn   = sandbox.Exec
-	sandboxUploadFn = sandbox.Upload
-)
+type sandboxUploadFunc func(sandboxName, localPath, remotePath string) error
+
+type writeBehaviourResultsFunc func(sandboxName string, results BehaviourResults) error
 
 // BehaviourOperation is a single scripted step for the dummy runtime.
 type BehaviourOperation struct {
@@ -55,7 +52,34 @@ type BehaviourResults struct {
 }
 
 // DummyRuntime executes scripted operations in the real OpenShell sandbox.
-type DummyRuntime struct{}
+// ExecFn, UploadFn, and WriteResultsFn are optional test overrides; production
+// uses sandbox.Exec, sandbox.Upload, and writeBehaviourResults.
+type DummyRuntime struct {
+	ExecFn         sandboxExecFunc
+	UploadFn       sandboxUploadFunc
+	WriteResultsFn writeBehaviourResultsFunc
+}
+
+func (r DummyRuntime) execFn() sandboxExecFunc {
+	if r.ExecFn != nil {
+		return r.ExecFn
+	}
+	return sandbox.Exec
+}
+
+func (r DummyRuntime) uploadFn() sandboxUploadFunc {
+	if r.UploadFn != nil {
+		return r.UploadFn
+	}
+	return sandbox.Upload
+}
+
+func (r DummyRuntime) writeResultsFn() writeBehaviourResultsFunc {
+	if r.WriteResultsFn != nil {
+		return r.WriteResultsFn
+	}
+	return r.writeBehaviourResults
+}
 
 func (DummyRuntime) Name() string { return "dummy" }
 
@@ -67,10 +91,10 @@ func (DummyRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
 
 func (DummyRuntime) EnvExports() []string { return nil }
 
-func (DummyRuntime) Bootstrap(input BootstrapInput) error {
+func (r DummyRuntime) Bootstrap(input BootstrapInput) error {
 	sandboxName := input.SandboxName()
 	mkdirCmd := fmt.Sprintf("mkdir -p %s/output %s/.dummy", sandbox.SandboxWorkspace, sandbox.SandboxWorkspace)
-	_, _, _, err := sandboxExecFn(sandboxName, mkdirCmd, 10*time.Second)
+	_, _, _, err := r.execFn()(sandboxName, mkdirCmd, 10*time.Second)
 	return err
 }
 
@@ -81,8 +105,8 @@ func (r DummyRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 		return 1, err
 	}
 
-	results, scriptErr := executeBehaviourScript(ctx, params.SandboxName, params.RepoDir, script)
-	if writeErr := writeBehaviourResultsFn(params.SandboxName, results); writeErr != nil {
+	results, scriptErr := executeBehaviourScript(ctx, r, params.SandboxName, params.RepoDir, script)
+	if writeErr := r.writeResultsFn()(params.SandboxName, results); writeErr != nil {
 		return 1, writeErr
 	}
 
@@ -104,7 +128,7 @@ func (r DummyRuntime) Run(ctx context.Context, params RunParams, printer *ui.Pri
 
 func (r DummyRuntime) ClearIterationArtifacts(sandboxName string) error {
 	clearCmd := fmt.Sprintf("rm -rf %s/output/*", r.WorkspaceDir())
-	_, _, _, err := sandboxExecFn(sandboxName, clearCmd, 10*time.Second)
+	_, _, _, err := r.execFn()(sandboxName, clearCmd, 10*time.Second)
 	return err
 }
 
@@ -138,7 +162,7 @@ func LoadBehaviourScript(path string) (*BehaviourScript, error) {
 	return &script, nil
 }
 
-func executeBehaviourScript(ctx context.Context, sandboxName, repoDir string, script *BehaviourScript) (BehaviourResults, error) {
+func executeBehaviourScript(ctx context.Context, rt DummyRuntime, sandboxName, repoDir string, script *BehaviourScript) (BehaviourResults, error) {
 	var results BehaviourResults
 	var firstErr error
 	for _, op := range script.Ops {
@@ -146,7 +170,7 @@ func executeBehaviourScript(ctx context.Context, sandboxName, repoDir string, sc
 			return results, fmt.Errorf("behaviour script cancelled: %w", err)
 		}
 		res := BehaviourOpResult{Description: op.Description}
-		if err := executeBehaviourOp(sandboxName, repoDir, op); err != nil {
+		if err := executeBehaviourOp(rt, sandboxName, repoDir, op); err != nil {
 			res.Success = false
 			res.Error = err.Error()
 			if firstErr == nil {
@@ -160,7 +184,7 @@ func executeBehaviourScript(ctx context.Context, sandboxName, repoDir string, sc
 	return results, firstErr
 }
 
-func executeBehaviourOp(sandboxName, repoDir string, op BehaviourOperation) error {
+func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op BehaviourOperation) error {
 	switch op.Op {
 	case "read_file":
 		path := strings.TrimSpace(op.Args)
@@ -172,7 +196,7 @@ func executeBehaviourOp(sandboxName, repoDir string, op BehaviourOperation) erro
 			return err
 		}
 		cmd := fmt.Sprintf("test -r %s", shellQuote(remotePath))
-		_, stderr, exitCode, err := sandboxExecFn(sandboxName, cmd, 30*time.Second)
+		_, stderr, exitCode, err := rt.execFn()(sandboxName, cmd, 30*time.Second)
 		if err != nil {
 			return fmt.Errorf("read_file exec: %w", err)
 		}
@@ -189,7 +213,7 @@ func executeBehaviourOp(sandboxName, repoDir string, op BehaviourOperation) erro
 			return err
 		}
 		cmd := fmt.Sprintf("curl -sf -- %s -o /dev/null", shellQuote(rawURL))
-		_, stderr, exitCode, err := sandboxExecFn(sandboxName, cmd, 60*time.Second)
+		_, stderr, exitCode, err := rt.execFn()(sandboxName, cmd, 60*time.Second)
 		if err != nil {
 			return fmt.Errorf("url_get exec: %w", err)
 		}
@@ -208,7 +232,7 @@ func executeBehaviourOp(sandboxName, repoDir string, op BehaviourOperation) erro
 		}
 		parentDir := filepath.Dir(remoteDest)
 		mkdirCmd := fmt.Sprintf("mkdir -p %s", shellQuote(parentDir))
-		if _, _, _, err := sandboxExecFn(sandboxName, mkdirCmd, 10*time.Second); err != nil {
+		if _, _, _, err := rt.execFn()(sandboxName, mkdirCmd, 10*time.Second); err != nil {
 			return fmt.Errorf("write_fixture mkdir: %w", err)
 		}
 		tmp, err := os.CreateTemp("", "behaviour-fixture-*")
@@ -221,7 +245,7 @@ func executeBehaviourOp(sandboxName, repoDir string, op BehaviourOperation) erro
 			return fmt.Errorf("write_fixture write temp: %w", err)
 		}
 		tmp.Close()
-		if err := sandboxUploadFn(sandboxName, tmp.Name(), remoteDest); err != nil {
+		if err := rt.uploadFn()(sandboxName, tmp.Name(), remoteDest); err != nil {
 			return fmt.Errorf("write_fixture upload: %w", err)
 		}
 		return nil
@@ -278,7 +302,7 @@ func resolveSandboxPath(base, rel string) (string, error) {
 	return resolved, nil
 }
 
-func writeBehaviourResults(sandboxName string, results BehaviourResults) error {
+func (r DummyRuntime) writeBehaviourResults(sandboxName string, results BehaviourResults) error {
 	data, err := json.MarshalIndent(results, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling behaviour results: %w", err)
@@ -294,7 +318,7 @@ func writeBehaviourResults(sandboxName string, results BehaviourResults) error {
 	}
 	tmp.Close()
 	remotePath := filepath.Join(sandbox.SandboxWorkspace, "output", behaviourResultsFile)
-	return sandboxUploadFn(sandboxName, tmp.Name(), remotePath)
+	return r.uploadFn()(sandboxName, tmp.Name(), remotePath)
 }
 
 func shellQuote(s string) string {
