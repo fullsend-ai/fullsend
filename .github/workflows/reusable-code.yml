@@ -66,6 +66,13 @@ jobs:
     steps:
       - name: Checkout config repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # checkout@v7 blocks fork PR checkouts on pull_request_target by default.
+          # Safe here: only .fullsend/ config is read, no fork code is executed,
+          # and credentials are not persisted.
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
       - name: Checkout upstream defaults
         # Keep in sync with --vendor marker paths (see internal/scaffold/vendorcontent.go VendoredMarkerPath).
