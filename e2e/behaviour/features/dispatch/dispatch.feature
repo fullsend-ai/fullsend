@@ -83,3 +83,25 @@ Feature: Harness CEL dispatch
     And the pull request is labeled "ready-for-pr-ping"
     Then the harness "pr-ping" workflow completes successfully
     And the agent will succeed to Prove PR execution
+
+  Scenario: PR review dispatches review-only harness
+    Given a custom harness "review-ping" with:
+      """
+      agent: agents/triage.md
+      role: triage
+      slug: fullsend-ai-review-ping
+      model: opus
+      image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      trigger: |
+        event.entity.kind == "change_proposal"
+        && event.transition.kind == "review_submitted"
+        && event.transition.review.state == "approved"
+      """
+    And a dummy agent that would:
+      | description              | op           | args                                                    |
+      | Review payload present   | assert_json  | .fullsend/dispatch/event-payload.json,pull_request.number |
+      | Prove review execution   | write_fixture| output/dispatch-review-ok.json, fixtures/dispatch/ok.json |
+    When a pull request is opened
+    And an approved review is submitted on the pull request
+    Then the harness "review-ping" workflow completes successfully
+    And the agent will succeed to Prove review execution

@@ -381,6 +381,51 @@ func TestLoadGHAEvent_MissingNestedFields(t *testing.T) {
 	assert.Contains(t, err.Error(), "missing pull_request")
 }
 
+func TestLoadGHAEvent_PRReviewSubmitted(t *testing.T) {
+	raw := map[string]any{
+		"action": "submitted",
+		"review": map[string]any{
+			"user":  map[string]any{"login": "alice", "type": "User"},
+			"state": "APPROVED",
+			"body":  "looks good",
+		},
+		"pull_request": map[string]any{
+			"number":   float64(99),
+			"html_url": "https://github.com/o/r/pull/99",
+			"user":     map[string]any{"login": "bob"},
+			"labels":   []any{},
+			"head": map[string]any{
+				"ref":  "feature",
+				"sha":  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				"repo": map[string]any{"full_name": "o/r"},
+			},
+			"base": map[string]any{
+				"ref":  "main",
+				"repo": map[string]any{"full_name": "o/r"},
+			},
+		},
+		"sender": map[string]any{"login": "alice", "type": "User"},
+	}
+	path := writeEventFile(t, raw)
+
+	client := forge.NewFakeClient()
+	client.CollaboratorPermissions = map[string]string{"o/r/alice": "write"}
+
+	ev, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+		EventPath:  path,
+		EventName:  "pull_request_review",
+		Repository: "o/r",
+		Forge:      client,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, normevent.EntityChangeProposal, ev.Entity.Kind)
+	assert.Equal(t, normevent.TransitionReviewSubmitted, ev.Transition.Kind)
+	require.NotNil(t, ev.Transition.Review)
+	assert.Equal(t, "approved", ev.Transition.Review.State)
+	assert.Equal(t, "alice", ev.Transition.Review.ReviewerID)
+	assert.Equal(t, normevent.RoleWrite, ev.Actor.Role)
+}
+
 func copyMap(m map[string]any) map[string]any {
 	out := make(map[string]any, len(m))
 	for k, v := range m {

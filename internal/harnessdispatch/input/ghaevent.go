@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"unicode/utf8"
@@ -85,6 +86,8 @@ func mapGitHubWebhook(ctx context.Context, opts GHAEventOptions, raw map[string]
 		if len(parts) == 2 {
 			if perm, err := opts.Forge.GetCollaboratorPermission(ctx, parts[0], parts[1], actorID); err == nil {
 				role = normevent.MapGitHubPermission(perm)
+			} else {
+				log.Printf("harness dispatch: collaborator permission lookup failed for %s on %s: %v", actorID, opts.Repository, err)
 			}
 		}
 	}
@@ -114,6 +117,8 @@ func mapGitHubWebhook(ctx context.Context, opts GHAEventOptions, raw map[string]
 		return mapIssuesEvent(ev, raw, action, actorID)
 	case "pull_request_target", "pull_request":
 		return mapPREvent(ev, raw, action, actorID)
+	case "pull_request_review":
+		return mapPRReviewEvent(ev, raw, action, actorID)
 	case "issue_comment":
 		return mapIssueCommentEvent(ctx, opts, ev, raw, actorID)
 	default:
@@ -152,10 +157,59 @@ func mapIssuesEvent(ev *normevent.Event, raw map[string]any, action, actorID str
 			Name:   stringField(label, "name"),
 			Action: act,
 		}
+	case "closed":
+		ev.Transition.Kind = normevent.TransitionClosed
 	default:
 		ev.Transition.Kind = normevent.TransitionUpdated
 	}
 	return ev, nil
+}
+
+func mapPRReviewEvent(ev *normevent.Event, raw map[string]any, action, actorID string) (*normevent.Event, error) {
+	pr := nestedMap(raw, "pull_request")
+	if pr == nil {
+		return nil, fmt.Errorf("pull_request_review event missing pull_request")
+	}
+	review := nestedMap(raw, "review")
+	if review == nil {
+		return nil, fmt.Errorf("pull_request_review event missing review")
+	}
+
+	ev.Entity = entityFromPR(pr)
+	reviewerID := stringField(review, "user", "login")
+	if reviewerID == "" {
+		reviewerID = actorID
+	}
+	ev.Actor.IsEntityAuthor = strings.EqualFold(stringField(pr, "user", "login"), reviewerID)
+	ev.State.Labels = labelNames(pr)
+	ev.State.ChangeProposal = changeProposalFromPR(pr)
+
+	switch action {
+	case "submitted":
+		ev.Transition.Kind = normevent.TransitionReviewSubmitted
+		ev.Transition.Review = &normevent.Review{
+			State:      mapGitHubReviewState(stringField(review, "state")),
+			ReviewerID: reviewerID,
+		}
+	default:
+		ev.Transition.Kind = normevent.TransitionUpdated
+	}
+	return ev, nil
+}
+
+func mapGitHubReviewState(state string) string {
+	switch strings.ToUpper(strings.TrimSpace(state)) {
+	case "APPROVED":
+		return "approved"
+	case "CHANGES_REQUESTED":
+		return "changes_requested"
+	case "COMMENTED":
+		return "commented"
+	case "DISMISSED":
+		return "dismissed"
+	default:
+		return strings.ToLower(strings.TrimSpace(state))
+	}
 }
 
 func mapPREvent(ev *normevent.Event, raw map[string]any, action, actorID string) (*normevent.Event, error) {

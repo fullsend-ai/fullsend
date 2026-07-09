@@ -31,6 +31,9 @@ func registerDispatchSteps(ctx *godog.ScenarioContext, w *world.World) {
 	ctx.Step(`^the pull request is labeled "([^"]+)"$`, func(label string) error {
 		return whenPullRequestLabeled(w, label)
 	})
+	ctx.Step(`^an approved review is submitted on the pull request$`, func() error {
+		return whenPullRequestReviewApproved(w)
+	})
 }
 
 func givenCustomHarness(w *world.World, name, doc string) error {
@@ -154,4 +157,12 @@ func whenPullRequestLabeled(w *world.World, label string) error {
 	}
 	w.ScenarioStart = time.Now()
 	return w.SCM.AddIssueLabels(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber, label)
+}
+
+func whenPullRequestReviewApproved(w *world.World) error {
+	if w.PRNumber == 0 {
+		return fmt.Errorf("no pull request opened")
+	}
+	w.ScenarioStart = time.Now()
+	return w.SCM.SubmitPullRequestReview(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber, "APPROVE")
 }

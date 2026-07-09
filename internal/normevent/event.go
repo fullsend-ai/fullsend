@@ -203,6 +203,11 @@ func (e *Event) Validate() error {
 		if e.Transition.Label == nil {
 			return fmt.Errorf("normalized event: transition.label required for label_changed")
 		}
+		switch e.Transition.Label.Action {
+		case "added", "removed":
+		default:
+			return fmt.Errorf("normalized event: transition.label.action must be added or removed")
+		}
 	case TransitionCommentAdded:
 		if e.Transition.Comment == nil {
 			return fmt.Errorf("normalized event: transition.comment required for comment_added")

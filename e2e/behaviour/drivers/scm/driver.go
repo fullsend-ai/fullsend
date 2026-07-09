@@ -17,5 +17,6 @@ type Driver interface {
 	CreateBranch(ctx context.Context, owner, repo, branch string) error
 	CommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
 	CreateChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*forge.ChangeProposal, error)
+	SubmitPullRequestReview(ctx context.Context, owner, repo string, number int, event string) error
 	CloseIssue(ctx context.Context, owner, repo string, number int) error
 }

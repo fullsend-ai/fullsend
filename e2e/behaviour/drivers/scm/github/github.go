@@ -61,6 +61,14 @@ func (d *Driver) CreateChangeProposal(ctx context.Context, owner, repo, title, b
 	return d.Client.CreateChangeProposal(ctx, owner, repo, title, body, head, base)
 }
 
+func (d *Driver) SubmitPullRequestReview(ctx context.Context, owner, repo string, number int, event string) error {
+	sha, err := d.Client.GetPullRequestHeadSHA(ctx, owner, repo, number)
+	if err != nil {
+		return err
+	}
+	return d.Client.CreatePullRequestReview(ctx, owner, repo, number, event, "behaviour test review", sha, nil)
+}
+
 // ParseRepo splits "owner/repo" into owner and repo name.
 func ParseRepo(fullName string) (owner, repo string, err error) {
 	return scm.ParseRepo(fullName)

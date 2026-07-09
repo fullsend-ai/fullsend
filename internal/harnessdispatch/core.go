@@ -23,11 +23,11 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 		return nil, fmt.Errorf("config dir is required")
 	}
 
-	ks, err := KillSwitchActive(opts.ConfigDir)
+	cfg, err := LoadConfigDir(opts.ConfigDir)
 	if err != nil {
 		return nil, err
 	}
-	if ks {
+	if cfg.KillSwitch {
 		return nil, nil
 	}
 
@@ -35,12 +35,7 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 		return nil, nil
 	}
 
-	agents, err := MergedConfigAgents(opts.ConfigDir)
-	if err != nil {
-		return nil, err
-	}
-
-	candidates, err := ListTriggeredHarnesses(ctx, opts.ConfigDir, agents)
+	candidates, err := ListTriggeredHarnesses(ctx, opts.ConfigDir, cfg, cfg.Agents)
 	if err != nil {
 		return nil, err
 	}

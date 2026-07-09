@@ -35,19 +35,19 @@ image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
 
-	out, err := ListTriggeredHarnesses(context.Background(), dir, cfg.Agents)
+	out, err := ListTriggeredHarnesses(context.Background(), dir, cfg, cfg.Agents)
 	require.NoError(t, err)
 	assert.Empty(t, out)
 }
 
-func TestResolveHarnessPath_RejectsURL(t *testing.T) {
-	_, err := resolveHarnessPath("/tmp", config.AgentEntry{Source: "https://example.com/harness.yaml"})
+func TestResolveHarnessPath_RejectsTraversal(t *testing.T) {
+	_, err := resolveHarnessPath(context.Background(), t.TempDir(), config.AgentEntry{Source: "../../etc/passwd"}, nil)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "URL agent sources")
+	assert.Contains(t, err.Error(), "escapes config directory")
 }
 
 func TestResolveHarnessPath_MissingFile(t *testing.T) {
-	_, err := resolveHarnessPath(t.TempDir(), config.AgentEntry{Source: "harness/missing.yaml"})
+	_, err := resolveHarnessPath(context.Background(), t.TempDir(), config.AgentEntry{Source: "harness/missing.yaml"}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "harness path")
 }
@@ -60,19 +60,23 @@ func TestListTriggeredHarnesses_MissingHarness(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
 
-	_, err = ListTriggeredHarnesses(context.Background(), dir, cfg.Agents)
+	_, err = ListTriggeredHarnesses(context.Background(), dir, cfg, cfg.Agents)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing")
 }
 
 func TestMatchHarnesses_InvalidTrigger(t *testing.T) {
 	ev := mustEvent(t, "issue-opened.json")
-	_, err := MatchHarnesses([]TriggeredHarness{{
+	matched, err := MatchHarnesses([]TriggeredHarness{{
 		Name:    "bad",
+		Harness: &harness.Harness{Trigger: "event.entity.kind == \"work_item\""},
+	}, {
+		Name:    "broken",
 		Harness: &harness.Harness{Trigger: "!!!"},
 	}}, ev)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "evaluating trigger")
+	require.NoError(t, err)
+	require.Len(t, matched, 1)
+	assert.Equal(t, "bad", matched[0].Name)
 }
 
 func TestMatchHarnesses_NoCandidates(t *testing.T) {
