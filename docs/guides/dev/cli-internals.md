@@ -38,6 +38,8 @@ fullsend
 │   ├── status       <org>                   # Analyze GitHub-side state
 │   ├── uninstall    <org>                   # Remove fullsend GitHub configuration
 │   └── sync-scaffold <org>                  # Update workflow templates
+├── repos                                    # Manage per-repo installations via manifest
+│   └── status                               # Compare manifest against actual repo state
 ├── agent                                    # Manage agent registrations in config
 │   ├── add          <url-or-path>            # Register an agent (URL auto-pinned)
 │   ├── list                                  # List registered agents
@@ -603,4 +605,4 @@ var executableFiles = map[string]struct{}{
 - [Advanced setup](../infrastructure/advanced-setup.md) — Alternative installation paths and setup flags
 - [Mint service administration](../infrastructure/mint-administration.md) — Deploying and managing the token mint
 - [Infrastructure Reference](../infrastructure/infrastructure-reference.md) — Infrastructure details
-- [Customizing Agents](../user/customizing-agents.md) — User customization guide
+- [Configuring Agents](../user/customizing-agents.md) — User configuration guide

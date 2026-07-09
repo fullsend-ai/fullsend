@@ -335,40 +335,78 @@ type MintDiscovery struct {
 	PerRepoWIFRepos []string
 }
 
-// DiscoverMint fetches the mint function once and returns its URL and
-// ROLE_APP_IDS in a single API call. Returns ErrFunctionNotFound (wrapped)
-// if the function does not exist.
+// DiscoverMint fetches the mint service once and returns its URL and
+// ROLE_APP_IDS. Gen2 mint is backed by Cloud Run; when the Cloud Functions
+// API is unavailable (common for WIF principals with run.admin only), discovery
+// falls back to the Cloud Run API.
 func (p *Provisioner) DiscoverMint(ctx context.Context) (*MintDiscovery, error) {
-	fn, err := p.gcpAPI.GetFunction(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
-	if err != nil {
-		return nil, fmt.Errorf("checking mint function: %w", err)
+	fn, cfErr := p.gcpAPI.GetFunction(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if cfErr == nil && fn != nil && fn.URI != "" {
+		return mintDiscoveryFromEnvVars(fn.URI, fn.EnvVars), nil
 	}
-	if fn == nil || fn.URI == "" {
+	if cfErr != nil && !isCloudFunctionsPermissionDenied(cfErr) {
+		return nil, fmt.Errorf("checking mint function: %w", cfErr)
+	}
+
+	d, runErr := p.discoverMintFromCloudRun(ctx)
+	if runErr != nil {
+		return nil, runErr
+	}
+	return d, nil
+}
+
+func isCloudFunctionsPermissionDenied(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "cloudfunctions.functions.get")
+}
+
+func (p *Provisioner) discoverMintFromCloudRun(ctx context.Context) (*MintDiscovery, error) {
+	uri, err := p.gcpAPI.GetCloudRunServiceURI(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return nil, fmt.Errorf("checking mint Cloud Run service: %w", err)
+	}
+	if uri == "" {
 		return nil, fmt.Errorf("%w: %s in project %s region %s",
 			ErrFunctionNotFound, functionName, p.cfg.ProjectID, p.cfg.Region)
 	}
 
-	result := &MintDiscovery{URL: fn.URI}
-	if fn.EnvVars != nil {
-		if raw := fn.EnvVars["ROLE_APP_IDS"]; raw != "" {
-			var m map[string]string
-			if err := json.Unmarshal([]byte(raw), &m); err != nil {
-				log.Printf("warning: malformed ROLE_APP_IDS in mint function: %v", err)
-			} else {
-				result.RoleAppIDs = m
-			}
-		}
-		if raw := fn.EnvVars["PER_REPO_WIF_REPOS"]; raw != "" {
-			for _, entry := range strings.Split(raw, ",") {
-				entry = strings.TrimSpace(entry)
-				if entry != "" {
-					result.PerRepoWIFRepos = append(result.PerRepoWIFRepos, entry)
-				}
-			}
-			sort.Strings(result.PerRepoWIFRepos)
+	envVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	if err != nil {
+		return nil, fmt.Errorf("reading mint Cloud Run env vars: %w", err)
+	}
+	return mintDiscoveryFromEnvVars(uri, envVars), nil
+}
+
+func mintDiscoveryFromEnvVars(uri string, envVars map[string]string) *MintDiscovery {
+	result := &MintDiscovery{URL: uri}
+	if envVars == nil {
+		return result
+	}
+	if raw := envVars["ROLE_APP_IDS"]; raw != "" {
+		var m map[string]string
+		if err := json.Unmarshal([]byte(raw), &m); err != nil {
+			log.Printf("warning: malformed ROLE_APP_IDS in mint function: %v", err)
+		} else {
+			result.RoleAppIDs = m
 		}
 	}
-	return result, nil
+	if raw := envVars["PER_REPO_WIF_REPOS"]; raw != "" {
+		for _, entry := range strings.Split(raw, ",") {
+			entry = strings.TrimSpace(entry)
+			if entry != "" {
+				result.PerRepoWIFRepos = append(result.PerRepoWIFRepos, entry)
+			}
+		}
+		sort.Strings(result.PerRepoWIFRepos)
+	}
+	return result
+}
+
+func (p *Provisioner) resolveMintURI(ctx context.Context) (string, error) {
+	d, err := p.DiscoverMint(ctx)
+	if err != nil {
+		return "", err
+	}
+	return d.URL, nil
 }
 
 // GetFunctionURL returns the URL of the deployed mint function.
@@ -429,16 +467,16 @@ func (p *Provisioner) isTrafficMintPublic(ctx context.Context) (bool, error) {
 func (p *Provisioner) EnsureOrgInMint(ctx context.Context, expectedURL string, org string) error {
 	org = strings.ToLower(org)
 
-	fn, err := p.gcpAPI.GetFunction(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+	mintURI, err := p.resolveMintURI(ctx)
 	if err != nil {
 		return fmt.Errorf("getting mint function: %w", err)
 	}
-	if fn == nil {
+	if mintURI == "" {
 		return fmt.Errorf("mint function %q not found in project %s region %s", functionName, p.cfg.ProjectID, p.cfg.Region)
 	}
 
-	if fn.URI != expectedURL {
-		return fmt.Errorf("mint URL mismatch: expected %q but function has %q", expectedURL, fn.URI)
+	if mintURI != expectedURL {
+		return fmt.Errorf("mint URL mismatch: expected %q but function has %q", expectedURL, mintURI)
 	}
 
 	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
@@ -505,16 +543,6 @@ func (p *Provisioner) RegisterPerRepoWIF(ctx context.Context, repo string) error
 		return fmt.Errorf("repo name cannot contain commas, got %q", repo)
 	}
 
-	fn, err := p.gcpAPI.GetFunction(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
-	if err != nil {
-		return fmt.Errorf("getting mint function: %w", err)
-	}
-	if fn == nil {
-		return fmt.Errorf("mint function not found")
-	}
-
-	// Read env vars from the traffic-serving revision to avoid stale data
-	// on partial failure or historical divergence (same fix as EnsureOrgInMint).
 	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
 	if err != nil {
 		return fmt.Errorf("reading traffic-serving env vars: %w", err)
@@ -574,7 +602,7 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 		return nil, fmt.Errorf("at least one GitHub org is required")
 	}
 	seen := make(map[string]bool)
-	for i, org := range p.cfg.GitHubOrgs {
+	for _, org := range p.cfg.GitHubOrgs {
 		if !mintcore.GitHubOrgPattern.MatchString(org) || strings.Contains(org, "--") {
 			return nil, fmt.Errorf("invalid GitHub org name: %q", org)
 		}
@@ -583,7 +611,6 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 			return nil, fmt.Errorf("duplicate GitHub org after normalization: %q", org)
 		}
 		seen[lower] = true
-		p.cfg.GitHubOrgs[i] = lower
 	}
 	for role := range p.cfg.AgentPEMs {
 		if !mintcore.RolePattern.MatchString(role) {
@@ -1143,10 +1170,10 @@ func parseConditionOrgs(condition string) []string {
 		if strings.HasSuffix(part, fullsendRepoSuffix) {
 			org := strings.TrimSuffix(part, fullsendRepoSuffix)
 			if mintcore.GitHubOrgPattern.MatchString(org) {
-				orgs = append(orgs, strings.ToLower(org))
+				orgs = append(orgs, org)
 			}
 		} else if mintcore.GitHubOrgPattern.MatchString(part) {
-			orgs = append(orgs, strings.ToLower(part))
+			orgs = append(orgs, part)
 		}
 	}
 	return orgs
@@ -1182,9 +1209,7 @@ func (p *Provisioner) ensureWIFPoolAndProvider(ctx context.Context, installingOr
 		attrCondition = buildPublicAttributeCondition()
 	} else {
 		allOrgs = make([]string, len(installingOrgs))
-		for i, org := range installingOrgs {
-			allOrgs[i] = strings.ToLower(org)
-		}
+		copy(allOrgs, installingOrgs)
 	}
 	existingProvider, getErr := p.gcpAPI.GetWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)
 	if getErr != nil {
@@ -1197,19 +1222,21 @@ func (p *Provisioner) ensureWIFPoolAndProvider(ctx context.Context, installingOr
 	if !p.cfg.PublicMint {
 		if existingProvider != nil {
 			existingOrgs := parseConditionOrgs(existingProvider.AttributeCondition)
-			merged := make(map[string]bool)
-			for _, org := range allOrgs {
+			// Case-insensitive dedup: use lowered key, preserve canonical case.
+			// Installing orgs take precedence over existing ones when casing differs.
+			merged := make(map[string]string)
+			for _, org := range existingOrgs {
 				if org != PlaceholderOrg {
-					merged[org] = true
+					merged[strings.ToLower(org)] = org
 				}
 			}
-			for _, org := range existingOrgs {
-				if org != PlaceholderOrg && !merged[org] {
-					merged[org] = true
+			for _, org := range allOrgs {
+				if org != PlaceholderOrg {
+					merged[strings.ToLower(org)] = org
 				}
 			}
 			allOrgs = make([]string, 0, len(merged))
-			for org := range merged {
+			for _, org := range merged {
 				allOrgs = append(allOrgs, org)
 			}
 			if len(allOrgs) == 0 {
@@ -1234,8 +1261,6 @@ func (p *Provisioner) ensureWIFPoolAndProvider(ctx context.Context, installingOr
 // GrantOrgVertexAIAccess grants roles/aiplatform.user to an org's .fullsend
 // repo principal so that enrolled org workflows can call Agent Platform.
 func (p *Provisioner) GrantOrgVertexAIAccess(ctx context.Context, org string) error {
-	org = strings.ToLower(org)
-
 	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
 	if err != nil {
 		return fmt.Errorf("getting project number: %w", err)
@@ -1245,7 +1270,6 @@ func (p *Provisioner) GrantOrgVertexAIAccess(ctx context.Context, org string) er
 }
 
 func (p *Provisioner) grantOrgVertexAIAccessWithNumber(ctx context.Context, projectNumber, org string) error {
-	org = strings.ToLower(org)
 	principal := fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.repository/%s/.fullsend",
 		projectNumber, p.cfg.WIFPoolName, org)
 	if err := p.gcpAPI.SetProjectIAMBinding(ctx, p.cfg.ProjectID, principal, "roles/aiplatform.user"); err != nil {
@@ -1255,7 +1279,6 @@ func (p *Provisioner) grantOrgVertexAIAccessWithNumber(ctx context.Context, proj
 }
 
 func (p *Provisioner) grantRepoVertexAIAccessWithNumber(ctx context.Context, projectNumber, repo string) error {
-	repo = strings.ToLower(repo)
 	principal := fmt.Sprintf("principalSet://iam.googleapis.com/projects/%s/locations/global/workloadIdentityPools/%s/attribute.repository/%s",
 		projectNumber, p.cfg.WIFPoolName, repo)
 	if err := p.gcpAPI.SetProjectIAMBinding(ctx, p.cfg.ProjectID, principal, "roles/aiplatform.user"); err != nil {
@@ -1269,8 +1292,6 @@ func (p *Provisioner) grantRepoVertexAIAccessWithNumber(ctx context.Context, pro
 // Strips the deploy-time placeholder (PlaceholderOrg) if present.
 // WARNING: read-modify-write without locking — concurrent calls may race.
 func (p *Provisioner) EnsureOrgInWIFCondition(ctx context.Context, org string) error {
-	org = strings.ToLower(org)
-
 	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
 	if err != nil {
 		return fmt.Errorf("getting project number: %w", err)
@@ -1285,16 +1306,16 @@ func (p *Provisioner) EnsureOrgInWIFCondition(ctx context.Context, org string) e
 	}
 
 	existingOrgs := parseConditionOrgs(existing.AttributeCondition)
-	merged := make(map[string]bool)
+	merged := make(map[string]string)
 	for _, o := range existingOrgs {
 		if o != PlaceholderOrg {
-			merged[o] = true
+			merged[strings.ToLower(o)] = o
 		}
 	}
-	merged[org] = true
+	merged[strings.ToLower(org)] = org
 
 	allOrgs := make([]string, 0, len(merged))
-	for o := range merged {
+	for _, o := range merged {
 		allOrgs = append(allOrgs, o)
 	}
 	sort.Strings(allOrgs)
@@ -1315,8 +1336,6 @@ func (p *Provisioner) EnsureOrgInWIFCondition(ctx context.Context, org string) e
 // attribute condition.
 // WARNING: read-modify-write without locking — concurrent calls may race.
 func (p *Provisioner) RemoveOrgFromWIFCondition(ctx context.Context, org string) error {
-	org = strings.ToLower(org)
-
 	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
 	if err != nil {
 		return fmt.Errorf("getting project number: %w", err)
@@ -1333,7 +1352,7 @@ func (p *Provisioner) RemoveOrgFromWIFCondition(ctx context.Context, org string)
 	existingOrgs := parseConditionOrgs(existing.AttributeCondition)
 	var filtered []string
 	for _, o := range existingOrgs {
-		if o != org {
+		if !strings.EqualFold(o, org) {
 			filtered = append(filtered, o)
 		}
 	}
@@ -1429,32 +1448,31 @@ func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err
 			return "", fmt.Errorf("duplicate GitHub org after normalization: %q", org)
 		}
 		seen[lower] = true
-		orgs[i] = lower
+		orgs[i] = org
 	}
 
 	var projectNumber string
 	providerID := p.cfg.WIFProvider
-	repo := strings.ToLower(p.cfg.Repo)
 	if p.cfg.Repo != "" {
 		// Repo-scoped: dedicated provider per repo, no org merge.
 		// Each repo gets a unique provider ID (via BuildRepoProviderID),
 		// so no risk of clobbering another repo's WIF condition.
-		parts := strings.SplitN(repo, "/", 2)
-		origParts := strings.SplitN(p.cfg.Repo, "/", 2)
+		parts := strings.SplitN(p.cfg.Repo, "/", 2)
 		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 			return "", fmt.Errorf("repo must be in owner/repo format, got %q", p.cfg.Repo)
 		}
-		if !mintcore.GitHubOrgPattern.MatchString(parts[0]) || strings.Contains(parts[0], "--") {
-			return "", fmt.Errorf("invalid repo owner %q: must be a valid GitHub org/user name", origParts[0])
+		partsLower := [2]string{strings.ToLower(parts[0]), strings.ToLower(parts[1])}
+		if !mintcore.GitHubOrgPattern.MatchString(partsLower[0]) || strings.Contains(partsLower[0], "--") {
+			return "", fmt.Errorf("invalid repo owner %q: must be a valid GitHub org/user name", parts[0])
 		}
-		if !githubRepoSlugPattern.MatchString(parts[1]) {
-			return "", fmt.Errorf("invalid repo name %q: must contain only alphanumeric, hyphens, dots, or underscores", origParts[1])
+		if !githubRepoSlugPattern.MatchString(partsLower[1]) {
+			return "", fmt.Errorf("invalid repo name %q: must contain only alphanumeric, hyphens, dots, or underscores", parts[1])
 		}
-		if parts[1] == "." || parts[1] == ".." {
-			return "", fmt.Errorf("invalid repo name %q: cannot be \".\" or \"..\"", origParts[1])
+		if partsLower[1] == "." || partsLower[1] == ".." {
+			return "", fmt.Errorf("invalid repo name %q: cannot be \".\" or \"..\"", parts[1])
 		}
-		if strings.HasSuffix(parts[1], ".git") {
-			return "", fmt.Errorf("invalid repo name %q: cannot end with \".git\"", origParts[1])
+		if strings.HasSuffix(partsLower[1], ".git") {
+			return "", fmt.Errorf("invalid repo name %q: cannot end with \".git\"", parts[1])
 		}
 		var err error
 		projectNumber, err = p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
@@ -1464,8 +1482,8 @@ func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err
 		if err := p.gcpAPI.CreateWIFPool(ctx, projectNumber, p.cfg.WIFPoolName, "Fullsend GitHub OIDC Pool"); err != nil {
 			return "", fmt.Errorf("creating WIF pool: %w", err)
 		}
-		providerID = mintcore.BuildRepoProviderID(parts[0], parts[1])
-		attrCondition := fmt.Sprintf("assertion.repository == '%s'", repo)
+		providerID = mintcore.BuildRepoProviderID(partsLower[0], partsLower[1])
+		attrCondition := fmt.Sprintf("assertion.repository == '%s'", p.cfg.Repo)
 		audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, providerID)}
 		if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, providerID, OIDCProviderConfig{
 			IssuerURI:          oidcIssuer,
@@ -1484,10 +1502,10 @@ func (p *Provisioner) ProvisionWIF(ctx context.Context) (wifProvider string, err
 	}
 
 	if p.cfg.Repo != "" {
-		if err := p.grantRepoVertexAIAccessWithNumber(ctx, projectNumber, repo); err != nil {
+		if err := p.grantRepoVertexAIAccessWithNumber(ctx, projectNumber, p.cfg.Repo); err != nil {
 			return "", err
 		}
-		log.Printf("granted roles/aiplatform.user to %s (propagation may take several minutes)", repo)
+		log.Printf("granted roles/aiplatform.user to %s (propagation may take several minutes)", p.cfg.Repo)
 	} else {
 		for _, org := range orgs {
 			if err := p.grantOrgVertexAIAccessWithNumber(ctx, projectNumber, org); err != nil {

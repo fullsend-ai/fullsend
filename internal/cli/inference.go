@@ -138,13 +138,13 @@ func runInferenceProvisionDryRun(cmd *cobra.Command, printer *ui.Printer, org, r
 		parts := strings.SplitN(repo, "/", 2)
 		providerID := mintcore.BuildRepoProviderID(parts[0], parts[1])
 		printer.StepInfo(fmt.Sprintf("WIF provider: %s (repo-scoped)", providerID))
-		printer.StepInfo(fmt.Sprintf("Condition:    assertion.repository == '%s'", strings.ToLower(repo)))
+		printer.StepInfo(fmt.Sprintf("Condition:    assertion.repository == '%s'", repo))
 	} else {
 		printer.Header("Dry run: provision WIF for org-scoped inference")
 		printer.Blank()
 		printer.StepInfo(fmt.Sprintf("Organization: %s", org))
 		printer.StepInfo(fmt.Sprintf("WIF provider: %s (org-scoped)", provider))
-		printer.StepInfo(fmt.Sprintf("Condition:    assertion.repository_owner == '%s'", strings.ToLower(org)))
+		printer.StepInfo(fmt.Sprintf("Condition:    assertion.repository_owner == '%s'", org))
 	}
 
 	printer.Blank()

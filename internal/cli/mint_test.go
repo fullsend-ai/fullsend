@@ -807,6 +807,15 @@ func TestRunMintEnrollOrg_DryRun(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRunMintEnrollOrg_DryRunPreservesCaseInPreview(t *testing.T) {
+	withMintGCFClient(t, mintDiscoveryClient())
+	out := &strings.Builder{}
+	printer := ui.New(out)
+	err := runMintEnrollOrg(context.Background(), printer, "AcmeCorp", "my-project", "us-central1", true)
+	require.NoError(t, err)
+	assert.Contains(t, out.String(), "Would add AcmeCorp to WIF provider condition")
+}
+
 func TestRunMintEnrollOrg_NoRoleAppIDs(t *testing.T) {
 	withMintGCFClient(t, gcf.NewFakeGCFClient(
 		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
@@ -832,6 +841,18 @@ func TestRunMintEnrollOrg_Success(t *testing.T) {
 	printer := ui.New(&strings.Builder{})
 	err := runMintEnrollOrg(context.Background(), printer, "acme", "my-project", "us-central1", false)
 	require.NoError(t, err)
+}
+
+func TestRunMintEnrollOrg_PreservesCaseInWIFCondition(t *testing.T) {
+	client := mintDiscoveryClient()
+	withMintGCFClient(t, client)
+	printer := ui.New(&strings.Builder{})
+	err := runMintEnrollOrg(context.Background(), printer, "AcmeCorp", "my-project", "us-central1", false)
+	require.NoError(t, err)
+
+	condition := gcf.LastWIFProviderCondition(client)
+	assert.Contains(t, condition, "AcmeCorp")
+	assert.NotContains(t, condition, "acmecorp")
 }
 
 func TestRunMintEnrollOrg_PublicMode(t *testing.T) {
@@ -1107,6 +1128,16 @@ func TestRunMintEnrollRepo_Success(t *testing.T) {
 	printer := ui.New(&strings.Builder{})
 	err := runMintEnrollRepo(context.Background(), printer, "acme/widget", "my-project", "us-central1", false)
 	require.NoError(t, err)
+}
+
+func TestRunMintEnrollRepo_PreservesCaseInWIFCondition(t *testing.T) {
+	client := mintDiscoveryClient()
+	withMintGCFClient(t, client)
+	printer := ui.New(&strings.Builder{})
+	err := runMintEnrollRepo(context.Background(), printer, "Acme/Widget", "my-project", "us-central1", false)
+	require.NoError(t, err)
+
+	assert.Equal(t, "assertion.repository == 'Acme/Widget'", gcf.LastWIFProviderCondition(client))
 }
 
 func TestRunMintEnrollRepo_PublicMode(t *testing.T) {

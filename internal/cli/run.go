@@ -18,6 +18,8 @@ import (
 	"sync"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/spf13/cobra"
 
 	"github.com/fullsend-ai/fullsend/internal/binary"
@@ -134,6 +136,80 @@ func writeMetricsJSON(dir string, m aggregateMetrics) error {
 	return os.WriteFile(filepath.Join(dir, metricsFile), append(data, '\n'), 0o644)
 }
 
+var (
+	errParsingConfigRuntime = errors.New("parsing config for runtime selection")
+	errResolvingRuntime     = errors.New("resolving runtime")
+)
+
+func resolveBackendFromConfigData(orgConfigData []byte) (agentruntime.Backend, error) {
+	if isOrgConfigData(orgConfigData) {
+		orgCfg, orgErr := config.ParseOrgConfig(orgConfigData)
+		if orgErr != nil {
+			return agentruntime.Backend{}, fmt.Errorf("%w: %w", errParsingConfigRuntime, orgErr)
+		}
+		backend, resolveErr := agentruntime.ResolveFromConfig(orgCfg)
+		if resolveErr != nil {
+			return agentruntime.Backend{}, fmt.Errorf("%w: %w", errResolvingRuntime, resolveErr)
+		}
+		return backend, nil
+	}
+	perRepoCfg, perRepoErr := config.ParsePerRepoConfig(orgConfigData)
+	if perRepoErr != nil {
+		return agentruntime.Backend{}, fmt.Errorf("%w: %w", errParsingConfigRuntime, perRepoErr)
+	}
+	backend, resolveErr := agentruntime.ResolveFromPerRepoConfig(perRepoCfg)
+	if resolveErr != nil {
+		return agentruntime.Backend{}, fmt.Errorf("%w: %w", errResolvingRuntime, resolveErr)
+	}
+	return backend, nil
+}
+
+func isOrgConfigData(data []byte) bool {
+	text := string(data)
+	if strings.Contains(text, "fullsend per-repo configuration") {
+		return false
+	}
+	if strings.Contains(text, "fullsend organization configuration") {
+		return true
+	}
+	var probe struct {
+		Dispatch *struct {
+			Platform string `yaml:"platform"`
+		} `yaml:"dispatch"`
+		Defaults *struct {
+			Roles []string `yaml:"roles"`
+		} `yaml:"defaults"`
+		Repos map[string]any `yaml:"repos"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return false
+	}
+	return probe.Dispatch != nil || probe.Defaults != nil || len(probe.Repos) > 0
+}
+
+func backendFromConfigFile(path string) (agentruntime.Backend, string, error) {
+	data, readErr := os.ReadFile(path)
+	source := path
+	if readErr != nil && os.IsNotExist(readErr) {
+		alt := filepath.Join(filepath.Dir(path), ".fullsend", "config.yaml")
+		data, readErr = os.ReadFile(alt)
+		if readErr == nil {
+			source = alt
+		}
+	}
+	if readErr == nil {
+		backend, resolveErr := resolveBackendFromConfigData(data)
+		if resolveErr != nil {
+			return agentruntime.Backend{}, source, resolveErr
+		}
+		return backend, source, nil
+	}
+	if os.IsNotExist(readErr) {
+		return agentruntime.Default(), "default (config not found)", nil
+	}
+	return agentruntime.Backend{}, source, fmt.Errorf("reading config.yaml for runtime selection: %w", readErr)
+}
+
 func newRunCmd() *cobra.Command {
 	var fullsendDir string
 	var outputBase string
@@ -229,7 +305,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// HasURLReferences will enforce its presence later if needed.
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
 	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
-	var orgAllowlist []string
+	// Fallback for absent config; EnsureDefaultAllowedRemoteResources
+	// handles the omitted-field case when a config is present.
+	orgAllowlist := config.DefaultAllowedRemoteResources()
 	if orgCfg != nil {
 		orgAllowlist = orgCfg.AllowedRemoteResources
 	}
@@ -271,14 +349,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// field (ADR-0045 resource resolution for config-registered agents).
 	if len(fetchDeps) > 0 && fetchDeps[0].URL != "" {
 		composeOpts.SourceURL = fetchDeps[0].URL
-
-		// Propagate the default allowlist when the agents-repo fallback
-		// set SourceURL. tryAgentsRepoFallback defaults internally for
-		// its own fetch, but that local default wasn't reaching
-		// LoadWithBase → resolveBaseScripts. Scoped to the fallback
-		// path to preserve the deny-all contract for config-present
-		// harnesses with URL bases. See #3396.
-		propagateDefaultAllowlist(&composeOpts)
 	}
 
 	// If the harness has a URL base and org config failed to load,
@@ -844,7 +914,21 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// 7. Bootstrap sandbox.
-	backend := agentruntime.Default()
+	var backend agentruntime.Backend
+	orgConfigPath = filepath.Join(absFullsendDir, "config.yaml")
+	backend, configSource, backendErr := backendFromConfigFile(orgConfigPath)
+	if backendErr != nil {
+		switch {
+		case errors.Is(backendErr, errParsingConfigRuntime):
+			printer.StepFail("Failed to parse config.yaml")
+		case errors.Is(backendErr, errResolvingRuntime):
+			printer.StepFail("Failed to resolve runtime")
+		default:
+			printer.StepFail("Failed to load config.yaml")
+		}
+		return backendErr
+	}
+	fmt.Fprintf(os.Stderr, "runtime: selected %q from %s\n", backend.Runtime.Name(), configSource)
 	rt := backend.Runtime
 	tx := backend.Transcripts
 	bootstrapStart := time.Now()
@@ -1093,6 +1177,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			AgentBaseName: agentBaseName,
 			Model:         h.Model,
 			RepoDir:       remoteRepositoryDir,
+			FullsendDir:   absFullsendDir,
 			PluginDirs:    pluginDirs,
 			Debug:         debug,
 			Timeout:       timeout,
@@ -2759,23 +2844,6 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 	return contained, nil, nil
 }
 
-// propagateDefaultAllowlist ensures composeOpts carries the default
-// allowed-remote-resources list when no org config supplied one.
-// tryAgentsRepoFallback applies this default internally for its own fetch,
-// but the caller must also propagate it so that downstream harness
-// composition (LoadWithBase → resolveBaseScripts) sees a consistent
-// allowlist. See #3396.
-//
-// This applies when OrgAllowlist is nil (no config.yaml, or config.yaml
-// omits allowed_remote_resources). An explicitly empty list ([]string{})
-// is left as-is to preserve deny-all semantics — orgs that want no remote
-// resources must write an explicit empty allowed_remote_resources: [].
-func propagateDefaultAllowlist(opts *harness.ComposeOpts) {
-	if opts.OrgAllowlist == nil {
-		opts.OrgAllowlist = config.DefaultAllowedRemoteResources()
-	}
-}
-
 // tryAgentsRepoFallback attempts to resolve an agent from the default agents
 // repository (fullsend-ai/agents) by fetching the latest harness from the
 // main branch. This is a transitional mechanism to support the extraction of
@@ -2798,9 +2866,6 @@ func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient fo
 	}
 
 	allowlist := composeOpts.OrgAllowlist
-	if allowlist == nil {
-		allowlist = config.DefaultAllowedRemoteResources()
-	}
 
 	tagRef := "tags/" + config.DefaultUpstreamRef
 	tagSHA, err := forgeClient.GetRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, tagRef)

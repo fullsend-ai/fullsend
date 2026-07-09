@@ -181,6 +181,16 @@ func (f *fakeGCFClient) GetFunction(_ context.Context, _, _, _ string) (*Functio
 	}
 	return f.functionInfo, nil
 }
+func (f *fakeGCFClient) GetCloudRunServiceURI(_ context.Context, _, _, _ string) (string, error) {
+	f.calls = append(f.calls, "GetCloudRunServiceURI")
+	if err := f.errs["GetCloudRunServiceURI"]; err != nil {
+		return "", err
+	}
+	if f.functionInfo != nil && f.functionInfo.URI != "" {
+		return f.functionInfo.URI, nil
+	}
+	return f.functionURL, nil
+}
 func (f *fakeGCFClient) UploadFunctionSource(_ context.Context, _, _ string, _ []byte) (json.RawMessage, error) {
 	f.calls = append(f.calls, "UploadFunctionSource")
 	if err := f.errs["UploadFunctionSource"]; err != nil {
@@ -295,4 +305,16 @@ func WithFakeErrors(errs map[string]error) FakeGCFOption {
 
 func WithFakeWIFProvider(p *WIFProviderInfo) FakeGCFOption {
 	return func(f *fakeGCFClient) { f.wifProvider = p }
+}
+
+// LastWIFProviderCondition returns the AttributeCondition passed to the most
+// recent CreateWIFProvider or UpdateWIFProvider call on a fake client, for
+// cross-package test assertions. Returns "" if client isn't a fake or no
+// call was made yet.
+func LastWIFProviderCondition(client GCFClient) string {
+	f, ok := client.(*fakeGCFClient)
+	if !ok {
+		return ""
+	}
+	return f.lastWIFProviderConfig.AttributeCondition
 }

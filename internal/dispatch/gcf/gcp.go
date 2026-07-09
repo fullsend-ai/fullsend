@@ -124,6 +124,9 @@ type GCFClient interface {
 
 	// Cloud Functions v2
 	GetFunction(ctx context.Context, projectID, region, functionName string) (*FunctionInfo, error)
+	// GetCloudRunServiceURI returns the public URI of the Cloud Run service
+	// backing a Gen2 Cloud Function (same name as the function).
+	GetCloudRunServiceURI(ctx context.Context, projectID, region, serviceName string) (string, error)
 	UploadFunctionSource(ctx context.Context, projectID, region string, sourceZip []byte) (storageSource json.RawMessage, err error)
 	CreateFunction(ctx context.Context, projectID, region, functionName string, cfg FunctionConfig) (string, error)
 	UpdateFunction(ctx context.Context, projectID, region, functionName string, cfg FunctionConfig) (string, error)
@@ -974,6 +977,34 @@ func (c *LiveGCFClient) GetFunction(ctx context.Context, projectID, region, func
 		Region:  region,
 		EnvVars: result.ServiceConfig.EnvironmentVariables,
 	}, nil
+}
+
+// GetCloudRunServiceURI returns the public URI of a Cloud Run service.
+func (c *LiveGCFClient) GetCloudRunServiceURI(ctx context.Context, projectID, region, serviceName string) (string, error) {
+	serviceURL := fmt.Sprintf("https://run.googleapis.com/v2/projects/%s/locations/%s/services/%s",
+		url.PathEscape(projectID), url.PathEscape(region), url.PathEscape(serviceName))
+
+	resp, err := c.Client.DoRequest(ctx, http.MethodGet, serviceURL, "")
+	if err != nil {
+		return "", fmt.Errorf("getting Cloud Run service: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return "", nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return "", fmt.Errorf("unexpected status %d getting Cloud Run service: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
+	}
+
+	var service struct {
+		URI string `json:"uri"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&service); err != nil {
+		return "", fmt.Errorf("decoding Cloud Run service: %w", err)
+	}
+	return service.URI, nil
 }
 
 // UploadFunctionSource generates a signed upload URL and uploads the source zip.

@@ -228,6 +228,8 @@ sandbox:
   filesystem: ephemeral
 ```
 
+Backend selection for behaviour tests (`defaults.runtime` / per-repo `runtime: dummy`) is documented in [ADR 0066](0066-behaviour-tests-with-gherkin-and-drivers.md), not in the org config example above.
+
 Per-repo overrides in `repos/<repo-name>.yaml` can override org defaults
 (within the bounds of org-wide guardrails that cannot be weakened).
 

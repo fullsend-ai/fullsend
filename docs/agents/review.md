@@ -72,8 +72,8 @@ the upstream default -- no other configuration needed.
 > config-driven agent registration instead. Run `fullsend agent migrate-customizations`
 > to migrate existing overrides.
 
-See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
-[Customizing with Skills](../guides/user/customizing-with-skills.md).
+See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
+[Configuring with Skills](../guides/user/customizing-with-skills.md).
 
 ### Variables
 
