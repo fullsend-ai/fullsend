@@ -36,8 +36,7 @@ overrides. Jira
 credentials stay on the GitHub Actions host and never enter the agent
 sandbox, following the prefetch model from
 [ADR 0017](0017-credential-isolation-for-sandboxed-agents.md).
-
-Today this setup is entirely manual. The enrollment CLI automates it.
+Today this setup is entirely manual; the enrollment CLI automates it.
 
 Repo-to-issue association (which code repository handles which Jira issue)
 is a separate concern handled by the poll driver design and is out of scope
