@@ -70,6 +70,20 @@ func TestReadRun_MissingSummarySkipsExport(t *testing.T) {
 	assert.Equal(t, 0, sink.requestCount())
 }
 
+func TestReadRun_SummaryWithoutTelemetryFileIsNoOp(t *testing.T) {
+	sink := newOTLPSink(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", sink.srv.URL)
+
+	// The converse of a missing summary: a summary with no telemetry file
+	// (hand-pruned artifacts). Nothing to export, no error, no network.
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, telemetry.SummaryFile),
+		[]byte(`{"traceparent":"00-`+testTraceID+`-a1b2c3d4e5f60718-01"}`), 0o644))
+
+	require.NoError(t, ExportRunDir(dir, testVersion))
+	assert.Equal(t, 0, sink.requestCount())
+}
+
 func TestReadRun_UnpairedStartSkipped(t *testing.T) {
 	sink := newOTLPSink(t)
 	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", sink.srv.URL)
@@ -100,15 +114,36 @@ func TestReadRun_MalformedLinesSkipped(t *testing.T) {
 	dir := t.TempDir()
 	writeRunFixture(t, dir, defaultTC(), 0)
 
-	// Corrupt the file: append garbage and a torn line (crash artifact).
+	// Corrupt the file: append blank lines, garbage, and a torn line (crash
+	// artifacts).
 	f, err := os.OpenFile(filepath.Join(dir, telemetry.TelemetryFile), os.O_APPEND|os.O_WRONLY, 0o644)
 	require.NoError(t, err)
-	_, err = f.WriteString("not json at all\n" + `{"v":1,"event":"span_start","trace_id":"x","spa`)
+	_, err = f.WriteString("\n \nnot json at all\n" + `{"v":1,"event":"span_start","trace_id":"x","spa`)
 	require.NoError(t, err)
 	require.NoError(t, f.Close())
 
 	require.NoError(t, ExportRunDir(dir, testVersion))
 	assert.Len(t, sink.spans(), 3, "well-formed spans exported; garbage skipped")
+}
+
+func TestReadRun_OversizedLineReportsError(t *testing.T) {
+	sink := newOTLPSink(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", sink.srv.URL)
+
+	dir := t.TempDir()
+	writeRunFixture(t, dir, defaultTC(), 0)
+
+	// A line beyond the scanner's 1 MiB cap is an I/O-level failure, not a
+	// skippable bad record: the error is reported (the runner warns and moves
+	// on) and nothing is exported.
+	f, err := os.OpenFile(filepath.Join(dir, telemetry.TelemetryFile), os.O_APPEND|os.O_WRONLY, 0o644)
+	require.NoError(t, err)
+	_, err = f.WriteString(strings.Repeat("a", 2*1024*1024) + "\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+
+	require.Error(t, ExportRunDir(dir, testVersion))
+	assert.Equal(t, 0, sink.requestCount())
 }
 
 func TestReadRun_InvalidIDsSkipped(t *testing.T) {
@@ -172,6 +207,9 @@ func TestReadRun_OddSpanLinesSkipped(t *testing.T) {
 		// bad timestamps
 		`{"v":1,"event":"span_start","trace_id":"` + tid + `","span_id":"cccccccccccccccc","parent":"","name":"bad-ts","ts":"yesterday"}`,
 		`{"v":1,"event":"span_end","trace_id":"` + tid + `","span_id":"cccccccccccccccc","parent":"","name":"bad-ts","ts":"2026-07-02T10:00:01Z","status":"ok"}`,
+		// bad end timestamp (start side fine)
+		`{"v":1,"event":"span_start","trace_id":"` + tid + `","span_id":"dddddddddddddddd","parent":"","name":"bad-end-ts","ts":"2026-07-02T10:00:00Z"}`,
+		`{"v":1,"event":"span_end","trace_id":"` + tid + `","span_id":"dddddddddddddddd","parent":"","name":"bad-end-ts","ts":"tomorrow","status":"ok"}`,
 		// good root end; span_end without work item id exercises the
 		// start-side fallback
 		`{"v":1,"event":"span_end","trace_id":"` + tid + `","span_id":"a1b2c3d4e5f60718","parent":"","name":"run","ts":"2026-07-02T10:00:02Z","status":"ok"}`,
@@ -232,4 +270,26 @@ func TestReadRun_NumberFidelity(t *testing.T) {
 	assert.Equal(t, int64(9007199254740993), attrs["big"].GetIntValue(), "2^53+1 preserved exactly")
 	assert.Equal(t, int64(-7), attrs["neg"].GetIntValue())
 	assert.InDelta(t, 0.5, attrs["frac"].GetDoubleValue(), 1e-12)
+}
+
+func TestReadRun_NumberBeyondFloat64DegradesToString(t *testing.T) {
+	sink := newOTLPSink(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", sink.srv.URL)
+
+	// A number that fits neither int64 nor float64 (hand-written artifact; L1
+	// never emits one) degrades to its literal string — never dropped, never
+	// a panic.
+	dir := t.TempDir()
+	lines := []string{
+		`{"v":1,"event":"span_start","trace_id":"` + testTraceID + `","span_id":"a1b2c3d4e5f60718","parent":"","name":"run","ts":"2026-07-02T10:00:00Z","fullsend.work_item_id":"wi"}`,
+		`{"v":1,"event":"span_end","trace_id":"` + testTraceID + `","span_id":"a1b2c3d4e5f60718","parent":"","name":"run","ts":"2026-07-02T10:00:01Z","status":"ok","attrs":{"huge":1e400}}`,
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, telemetry.TelemetryFile),
+		[]byte(strings.Join(lines, "\n")+"\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, telemetry.SummaryFile),
+		[]byte(`{"traceparent":"00-`+testTraceID+`-a1b2c3d4e5f60718-01"}`), 0o644))
+
+	require.NoError(t, ExportRunDir(dir, testVersion))
+	attrs := sink.spanAttrs(t, "run")
+	assert.Equal(t, "1e400", attrs["huge"].GetStringValue())
 }
