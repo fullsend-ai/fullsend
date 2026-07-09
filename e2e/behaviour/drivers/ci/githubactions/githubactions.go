@@ -431,10 +431,9 @@ func readLimited(r io.Reader, limit int64) ([]byte, error) {
 	return data, nil
 }
 
-const harnessRunPrefix = "Harness run ("
-
 // WaitForHarnessAgent waits for a successful harness-run workflow and artifact for agent.
 func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent string, after time.Time) (*forge.WorkflowRun, error) {
+	artifactName := "fullsend-" + agent
 	deadline := time.Now().Add(dispatchWait)
 	for time.Now().Before(deadline) {
 		select {
@@ -442,33 +441,25 @@ func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent str
 			return nil, ctx.Err()
 		case <-time.After(dispatchPoll):
 		}
-		runs, err := d.Client.ListRecentWorkflowRuns(ctx, owner, repo, 40)
+		arts, err := d.Client.ListRepositoryArtifacts(ctx, owner, repo, 100)
 		if err != nil {
 			continue
 		}
-		want := harnessRunPrefix + agent + ")"
-		for _, run := range runs {
-			if run.Name != want {
-				continue
-			}
-			runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
-			if parseErr != nil || runTime.Before(after) {
-				continue
-			}
-			if run.Status == "completed" {
-				if run.Conclusion != "success" {
-					return nil, fmt.Errorf("harness run %q concluded with %q", want, run.Conclusion)
-				}
-				return &run, nil
-			}
-			full, err := d.Client.GetWorkflowRun(ctx, owner, repo, run.ID)
-			if err == nil && full.Status == "completed" {
-				if full.Conclusion != "success" {
-					return nil, fmt.Errorf("harness run %q concluded with %q", want, full.Conclusion)
-				}
-				return full, nil
-			}
+		art := selectRepositoryArtifactAfter(arts, artifactName, after)
+		if art == nil {
+			continue
 		}
+		run, err := d.Client.GetWorkflowRun(ctx, owner, repo, art.WorkflowRunID)
+		if err != nil {
+			continue
+		}
+		if run.Status != "completed" {
+			continue
+		}
+		if run.Conclusion != "success" {
+			return nil, fmt.Errorf("harness run for %q concluded with %q", agent, run.Conclusion)
+		}
+		return run, nil
 	}
 	return nil, fmt.Errorf("harness agent %q did not complete successfully", agent)
 }
@@ -476,23 +467,6 @@ func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent str
 // AssertNoHarnessAgentArtifact ensures no fullsend-{agent} artifact appeared after trigger time.
 func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, agent string, after time.Time) error {
 	artifactName := "fullsend-" + agent
-	runs, err := d.Client.ListRecentWorkflowRuns(ctx, owner, repo, 40)
-	if err != nil {
-		return err
-	}
-	want := harnessRunPrefix + agent + ")"
-	for _, run := range runs {
-		runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
-		if parseErr != nil || runTime.Before(after) {
-			continue
-		}
-		if run.Name != want {
-			continue
-		}
-		return fmt.Errorf("expected harness %q not to run, but workflow %q run %d exists (status=%s conclusion=%s)",
-			agent, want, run.ID, run.Status, run.Conclusion)
-	}
-	// Also ensure no repository artifact with that name after trigger.
 	arts, err := d.Client.ListRepositoryArtifacts(ctx, owner, repo, 30)
 	if err != nil {
 		return err

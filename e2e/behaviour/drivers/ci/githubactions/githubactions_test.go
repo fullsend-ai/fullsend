@@ -3,6 +3,7 @@ package githubactions
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -131,4 +132,32 @@ func TestNewestRepositoryArtifactCreatedAt(t *testing.T) {
 		{CreatedAt: "2026-01-02T00:00:00Z"},
 	}
 	assert.Equal(t, "2026-01-02T00:00:00Z", newestRepositoryArtifactCreatedAt(arts))
+}
+
+func TestWaitForHarnessAgent_FromRepositoryArtifact(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			{
+				ID:            10,
+				Name:          "fullsend-issue-ping",
+				CreatedAt:     "2026-01-02T00:00:00Z",
+				WorkflowRunID: 99,
+			},
+		},
+	}
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID: 99, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:00Z",
+		},
+	}
+
+	d := &Driver{Client: client}
+	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "issue-ping", after)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, 99, run.ID)
 }
