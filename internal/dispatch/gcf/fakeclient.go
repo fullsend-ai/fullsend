@@ -98,10 +98,6 @@ func (f *fakeGCFClient) GetWIFProvider(_ context.Context, _, _, _ string) (*WIFP
 }
 func (f *fakeGCFClient) UpdateWIFProvider(_ context.Context, _, _, _ string, cfg OIDCProviderConfig) error {
 	f.lastWIFProviderConfig = cfg
-	f.wifProvider = &WIFProviderInfo{
-		AttributeCondition: cfg.AttributeCondition,
-		AllowedAudiences:   cfg.AllowedAudiences,
-	}
 	return f.record("UpdateWIFProvider")
 }
 func (f *fakeGCFClient) GetSecret(_ context.Context, _ string, sid string) error {
@@ -299,4 +295,16 @@ func WithFakeErrors(errs map[string]error) FakeGCFOption {
 
 func WithFakeWIFProvider(p *WIFProviderInfo) FakeGCFOption {
 	return func(f *fakeGCFClient) { f.wifProvider = p }
+}
+
+// LastWIFProviderCondition returns the AttributeCondition passed to the most
+// recent CreateWIFProvider or UpdateWIFProvider call on a fake client, for
+// cross-package test assertions. Returns "" if client isn't a fake or no
+// call was made yet.
+func LastWIFProviderCondition(client GCFClient) string {
+	f, ok := client.(*fakeGCFClient)
+	if !ok {
+		return ""
+	}
+	return f.lastWIFProviderConfig.AttributeCondition
 }

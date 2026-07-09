@@ -706,7 +706,7 @@ func runMintEnrollOrg(ctx context.Context, printer *ui.Printer, org, project, re
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
 		printer.StepInfo(fmt.Sprintf("  Would add %s to ALLOWED_ORGS", org))
-		printer.StepInfo(fmt.Sprintf("  Would add %s to WIF provider condition", org))
+		printer.StepInfo(fmt.Sprintf("  Would add %s to WIF provider condition", originalCaseOrg))
 		printer.Blank()
 		printer.StepInfo("To grant Agent Platform access, run 'fullsend inference provision' separately")
 		return nil
@@ -740,6 +740,7 @@ func runMintEnrollOrg(ctx context.Context, printer *ui.Printer, org, project, re
 }
 
 func runMintEnrollRepo(ctx context.Context, printer *ui.Printer, repoFullName, project, region string, dryRun bool) error {
+	originalCaseRepo := repoFullName
 	repoFullName = strings.ToLower(repoFullName)
 	parts := strings.SplitN(repoFullName, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
@@ -764,7 +765,7 @@ func runMintEnrollRepo(ctx context.Context, printer *ui.Printer, repoFullName, p
 		ProjectID:  project,
 		Region:     region,
 		GitHubOrgs: []string{owner},
-		Repo:       repoFullName,
+		Repo:       originalCaseRepo,
 	}, gcpClient)
 
 	// Step 1: Discover existing mint.
