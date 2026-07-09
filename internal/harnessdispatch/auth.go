@@ -11,16 +11,22 @@ import (
 // so bash routing treats issues.labeled / pull_request_target.labeled as
 // implicitly authorized (including bot-to-bot handoffs). Mirror that here
 // for GitHub label-added events only so installation bots are not denied
-// when the collaborator API returns no role for bot accounts.
+// when the collaborator API returns no role for bot accounts. Installation
+// bots submitting pull_request_review events get the same treatment.
 func IsAuthorized(event *normevent.Event) bool {
 	if event == nil {
 		return false
 	}
-	if event.Source.System == normevent.SystemGitHub &&
-		event.Transition.Kind == normevent.TransitionLabelChanged &&
-		event.Transition.Label != nil &&
-		event.Transition.Label.Action == "added" {
-		return true
+	if event.Source.System == normevent.SystemGitHub {
+		if event.Transition.Kind == normevent.TransitionLabelChanged &&
+			event.Transition.Label != nil &&
+			event.Transition.Label.Action == "added" {
+			return true
+		}
+		if event.Transition.Kind == normevent.TransitionReviewSubmitted &&
+			event.Actor.Kind == normevent.ActorBot {
+			return true
+		}
 	}
 	return normevent.IsWriteAuthorized(event.Actor.Role)
 }

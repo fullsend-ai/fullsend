@@ -46,6 +46,41 @@ func TestIsAuthorized_LabelAddedRequiresGitHub(t *testing.T) {
 	assert.False(t, IsAuthorized(ev))
 }
 
+func TestIsAuthorized_BotReviewSubmittedOnGitHub(t *testing.T) {
+	ev := &normevent.Event{
+		Transition: normevent.Transition{
+			Kind: normevent.TransitionReviewSubmitted,
+			Review: &normevent.Review{
+				State:      "commented",
+				ReviewerID: "fullsend-ai-e2e[bot]",
+			},
+		},
+		Source: normevent.Source{System: normevent.SystemGitHub},
+		Actor: normevent.Actor{
+			ID:   "fullsend-ai-e2e[bot]",
+			Kind: normevent.ActorBot,
+			Role: normevent.RoleNone,
+		},
+	}
+	assert.True(t, IsAuthorized(ev))
+}
+
+func TestIsAuthorized_HumanReviewRequiresWriteRole(t *testing.T) {
+	ev := &normevent.Event{
+		Transition: normevent.Transition{
+			Kind: normevent.TransitionReviewSubmitted,
+			Review: &normevent.Review{State: "commented", ReviewerID: "alice"},
+		},
+		Source: normevent.Source{System: normevent.SystemGitHub},
+		Actor: normevent.Actor{
+			ID:   "alice",
+			Kind: normevent.ActorHuman,
+			Role: normevent.RoleNone,
+		},
+	}
+	assert.False(t, IsAuthorized(ev))
+}
+
 func TestIsAuthorized_LabelRemovedRequiresWriteRole(t *testing.T) {
 	ev := &normevent.Event{
 		Transition: normevent.Transition{
