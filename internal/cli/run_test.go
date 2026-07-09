@@ -3495,28 +3495,44 @@ func TestRunAgent_StatusNotifierSetup(t *testing.T) {
 }
 
 func TestClearDirContents(t *testing.T) {
-	dir := t.TempDir()
+	t.Run("populated directory", func(t *testing.T) {
+		dir := t.TempDir()
 
-	// Create some files and a subdirectory.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a"), 0o644))
-	require.NoError(t, os.Mkdir(filepath.Join(dir, "sub"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "sub", "b.txt"), []byte("b"), 0o644))
+		// Create some files and a subdirectory.
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a"), 0o644))
+		require.NoError(t, os.Mkdir(filepath.Join(dir, "sub"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "sub", "b.txt"), []byte("b"), 0o644))
 
-	// Grab inode before clearing.
-	infoBefore, err := os.Stat(dir)
-	require.NoError(t, err)
+		// Grab inode before clearing.
+		infoBefore, err := os.Stat(dir)
+		require.NoError(t, err)
 
-	require.NoError(t, clearDirContents(dir))
+		require.NoError(t, clearDirContents(dir))
 
-	// Directory itself still exists with the same inode.
-	infoAfter, err := os.Stat(dir)
-	require.NoError(t, err)
-	assert.True(t, os.SameFile(infoBefore, infoAfter), "directory inode should be preserved")
+		// Directory itself still exists with the same inode.
+		infoAfter, err := os.Stat(dir)
+		require.NoError(t, err)
+		assert.True(t, os.SameFile(infoBefore, infoAfter), "directory inode should be preserved")
 
-	// Contents are gone.
-	entries, err := os.ReadDir(dir)
-	require.NoError(t, err)
-	assert.Empty(t, entries)
+		// Contents are gone.
+		entries, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		assert.Empty(t, entries)
+	})
+
+	t.Run("empty directory", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, clearDirContents(dir))
+
+		entries, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		assert.Empty(t, entries)
+	})
+
+	t.Run("non-existent directory", func(t *testing.T) {
+		err := clearDirContents(filepath.Join(t.TempDir(), "does-not-exist"))
+		require.Error(t, err)
+	})
 }
 
 func TestResolveBackendFromConfigData_OrgConfig(t *testing.T) {
