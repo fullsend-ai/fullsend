@@ -68,7 +68,7 @@ func TestIsAuthorized_BotReviewSubmittedOnGitHub(t *testing.T) {
 func TestIsAuthorized_HumanReviewRequiresWriteRole(t *testing.T) {
 	ev := &normevent.Event{
 		Transition: normevent.Transition{
-			Kind: normevent.TransitionReviewSubmitted,
+			Kind:   normevent.TransitionReviewSubmitted,
 			Review: &normevent.Review{State: "commented", ReviewerID: "alice"},
 		},
 		Source: normevent.Source{System: normevent.SystemGitHub},
