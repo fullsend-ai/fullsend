@@ -119,6 +119,16 @@ direct control over what to fix:
 The fix agent also triggers automatically when the [review agent](review.md) submits a
 "changes requested" review on a same-repo PR (fork PRs are blocked).
 
+For **bot-authored PRs** (e.g., PRs opened by the code agent), automatic fixing
+happens with no extra setup — the fix agent responds to review feedback out of
+the box.
+
+For **human-authored PRs**, the fix agent will not auto-fix review feedback
+unless you opt in by adding the `fullsend-fix` label. This prevents the agent
+from pushing commits to your branch without your consent. You can still use
+`/fs-fix` at any time regardless of the label — the label only controls
+automatic (bot-triggered) runs.
+
 `/fs-fix-stop` adds the `fullsend-no-fix` label to the PR, preventing any
 further bot-triggered fix runs. Human-triggered `/fs-fix` commands still work.
 Remove the label or use `/fs-fix` to re-engage.
@@ -127,7 +137,8 @@ Remove the label or use `/fs-fix` to re-engage.
 
 | Label | Meaning |
 |-------|---------|
-| `fullsend-no-fix` | Prevents bot-triggered fix runs on this PR. Applied by `/fs-fix-stop`. Human `/fs-fix` commands are unaffected. |
+| `fullsend-fix` | Enables automatic bot-triggered fix runs on human-authored PRs. Without this label, the fix agent only runs on human PRs when explicitly invoked via `/fs-fix`. Bot-authored PRs do not need this label. |
+| `fullsend-no-fix` | Prevents bot-triggered fix runs on this PR. Applied by `/fs-fix-stop`. Human `/fs-fix` commands are unaffected. Takes priority over `fullsend-fix`. |
 | `needs-human` | The fix agent is approaching its iteration cap and needs human direction. Applied automatically when a bot-triggered fix iteration reaches the warning threshold. |
 
 ## Configuration and extension
