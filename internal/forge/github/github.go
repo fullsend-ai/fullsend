@@ -2640,7 +2640,6 @@ func (c *LiveClient) DismissPullRequestReview(ctx context.Context, owner, repo s
 func (c *LiveClient) MergeChangeProposal(ctx context.Context, owner, repo string, number int) error {
 	const maxAttempts = 3
 	mergePath := fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, number)
-	updatePath := fmt.Sprintf("/repos/%s/%s/pulls/%d/update-branch", owner, repo, number)
 
 	var lastMergeErr error
 	for attempt := range maxAttempts {
@@ -2657,15 +2656,9 @@ func (c *LiveClient) MergeChangeProposal(ctx context.Context, owner, repo string
 		lastMergeErr = err
 
 		if attempt < maxAttempts-1 {
-			// Update the PR branch to incorporate base branch changes.
-			updateResp, updateErr := c.do(ctx, http.MethodPut, updatePath, map[string]string{})
-			if updateErr != nil {
-				return fmt.Errorf("update pull request #%d branch: %w", number, updateErr)
+			if err := c.UpdatePullRequestBranch(ctx, owner, repo, number); err != nil {
+				return fmt.Errorf("merge pull request #%d: update branch failed: %w", number, err)
 			}
-			if err := checkStatus(updateResp, http.StatusAccepted, http.StatusOK); err != nil {
-				return fmt.Errorf("update pull request #%d branch: %w", number, err)
-			}
-			updateResp.Body.Close()
 
 			select {
 			case <-time.After(3 * time.Second):
