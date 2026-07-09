@@ -43,8 +43,8 @@ on issues (not PRs). The code agent is also triggered automatically when the
 
 ## Configuration and extension
 
-See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
-[Configuring with Skills](../guides/user/customizing-with-skills.md).
+See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
+[Customizing with Skills](../guides/user/customizing-with-skills.md).
 
 ### Variables
 
