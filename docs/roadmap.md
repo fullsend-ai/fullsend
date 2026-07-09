@@ -66,6 +66,7 @@ Examples of work that could move this forward:
 - Selective agent enablement in config ([#581](https://github.com/fullsend-ai/fullsend/issues/581), [#604](https://github.com/fullsend-ai/fullsend/issues/604))
 - Authorization model for agent invocations ([#1662](https://github.com/fullsend-ai/fullsend/issues/1662), [#1687](https://github.com/fullsend-ai/fullsend/issues/1687))
 - Provider and profile resolution from URL-referenced bases ([#2672](https://github.com/fullsend-ai/fullsend/issues/2672))
+- Easy local agent runs — test drive custom agents and skills locally ([#1963](https://github.com/fullsend-ai/fullsend/issues/1963), [#595](https://github.com/fullsend-ai/fullsend/issues/595))
 
 ### Infrastructure
 
@@ -81,7 +82,6 @@ Examples of work that could move this forward:
 - GitLab support — webhook bridge, GitLab CI as trigger/coordination layer ([#1964](https://github.com/fullsend-ai/fullsend/issues/1964))
 - Forge-portable harness schema ([#1605](https://github.com/fullsend-ai/fullsend/issues/1605))
 - OpenCode alignment with global engineering working group ([#1260](https://github.com/fullsend-ai/fullsend/issues/1260), [#1935](https://github.com/fullsend-ai/fullsend/issues/1935))
-- Standalone local runtime and self-hosted support ([#1963](https://github.com/fullsend-ai/fullsend/issues/1963), [#595](https://github.com/fullsend-ai/fullsend/issues/595))
 - Refactor runAgent for testability ([#2831](https://github.com/fullsend-ai/fullsend/issues/2831))
 
 ### Observability
