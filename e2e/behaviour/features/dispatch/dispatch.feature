@@ -95,13 +95,13 @@ Feature: Harness CEL dispatch
       trigger: |
         event.entity.kind == "change_proposal"
         && event.transition.kind == "review_submitted"
-        && event.transition.review.state == "approved"
+        && event.transition.review.state == "commented"
       """
     And a dummy agent that would:
       | description              | op           | args                                                    |
       | Review payload present   | assert_json  | .fullsend/dispatch/event-payload.json,pull_request.number |
       | Prove review execution   | write_fixture| output/dispatch-review-ok.json, fixtures/dispatch/ok.json |
     When a pull request is opened
-    And an approved review is submitted on the pull request
+    And a review comment is submitted on the pull request
     Then the harness "review-ping" workflow completes successfully
     And the agent will succeed to Prove review execution

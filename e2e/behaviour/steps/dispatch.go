@@ -31,8 +31,8 @@ func registerDispatchSteps(ctx *godog.ScenarioContext, w *world.World) {
 	ctx.Step(`^the pull request is labeled "([^"]+)"$`, func(label string) error {
 		return whenPullRequestLabeled(w, label)
 	})
-	ctx.Step(`^an approved review is submitted on the pull request$`, func() error {
-		return whenPullRequestReviewApproved(w)
+	ctx.Step(`^a review comment is submitted on the pull request$`, func() error {
+		return whenPullRequestReviewComment(w)
 	})
 }
 
@@ -159,10 +159,11 @@ func whenPullRequestLabeled(w *world.World, label string) error {
 	return w.SCM.AddIssueLabels(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber, label)
 }
 
-func whenPullRequestReviewApproved(w *world.World) error {
+func whenPullRequestReviewComment(w *world.World) error {
 	if w.PRNumber == 0 {
 		return fmt.Errorf("no pull request opened")
 	}
 	w.ScenarioStart = time.Now()
-	return w.SCM.SubmitPullRequestReview(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber, "APPROVE")
+	// COMMENT works when the e2e bot authored the PR; APPROVE returns 422 self-review.
+	return w.SCM.SubmitPullRequestReview(context.Background(), w.RepoOwner, w.RepoName, w.PRNumber, "COMMENT")
 }
