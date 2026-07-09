@@ -13,8 +13,10 @@ import (
 // for GitHub label-added events only so installation bots are not denied
 // when the collaborator API returns no role for bot accounts.
 func IsAuthorized(event *normevent.Event) bool {
-	if event != nil &&
-		event.Source.System == normevent.SystemGitHub &&
+	if event == nil {
+		return false
+	}
+	if event.Source.System == normevent.SystemGitHub &&
 		event.Transition.Kind == normevent.TransitionLabelChanged &&
 		event.Transition.Label != nil &&
 		event.Transition.Label.Action == "added" {

@@ -77,4 +77,6 @@ func TestIsAuthorized_OpenedRequiresWriteRole(t *testing.T) {
 
 	ev.Actor.Role = normevent.RoleWrite
 	assert.True(t, IsAuthorized(ev))
+
+	assert.False(t, IsAuthorized(nil))
 }
