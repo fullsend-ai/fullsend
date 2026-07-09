@@ -33,8 +33,11 @@ The compute and orchestration layer that runs agent workloads. Responsible for p
 
 This is the "where do agents physically run" question — whether that's a managed platform, internal Kubernetes, CI runners repurposed for agent work, or something purpose-built.
 
-Infrastructure platform choice and configuration are specified in each target
-repository's **`.fullsend/`** directory ([ADR 0033](ADRs/0033-per-repo-installation-mode.md)).
+Infrastructure platform choice and configuration live in each target
+repository's **`.fullsend/`** directory. Per-repo installation is the sole
+supported deployment model; the dedicated org-level `<org>/.fullsend` config
+repo is deprecated ([ADR 0033](ADRs/0033-per-repo-installation-mode.md),
+[deprecate-per-org-install plan](plans/deprecate-per-org-install.md)).
 
 **Decided:**
 
@@ -391,11 +394,18 @@ Fullsend uses a three-tier configuration inheritance model for all configuration
                 (base)                (extend/override)        (extend/tighten)
 ```
 
+In per-repo installation the middle tier is replaced by files inside the
+target repo: `.fullsend/config.base.yaml` (vendor preset or baseline) and
+`.fullsend/config.yaml` (repo overlay), with code defaults below both. The
+org-tier box above describes the historical per-org model, now deprecated
+([ADR 0068](ADRs/0068-ready-made-configuration-presets.md),
+[deprecate-per-org-install plan](plans/deprecate-per-org-install.md)).
+
 Skills flow downward through this stack. A repo-level skill might encode domain knowledge ("this repo uses a custom ORM — here's how queries work"). An org-level skill might encode org conventions ("all services use structured logging via zerolog"). Upstream fullsend provides foundational skills (code implementation, triage coordination, testing conventions).
 
 AGENTS.md files follow the same layering. A repo's `.fullsend/AGENTS.md` gives agents repo-specific instructions (build commands, test patterns, architectural constraints). The org's `.fullsend/agents/` directory provides role-specific agent definitions that apply across all enrolled repos.
 
-See [ADR 0003](ADRs/0003-org-config-repo-convention.md) for the config repo convention and [ADR 0024](ADRs/0024-harness-definitions.md) for harness definitions. In per-repo installation, `.fullsend/config.base.yaml` replaces the org-tier `config.yaml` and `.fullsend/config.yaml` is the repo overlay; unset values still fall back to code defaults ([ADR 0068](ADRs/0068-ready-made-configuration-presets.md)).
+See [ADR 0003](ADRs/0003-org-config-repo-convention.md) for the config repo convention and [ADR 0024](ADRs/0024-harness-definitions.md) for harness definitions.
 
 **Decided:**
 

@@ -38,6 +38,14 @@ there; much of the effective configuration still comes from flags and ephemeral
 provisioning. That makes repeatable, vendor-curated installs harder than they
 need to be.
 
+[ADR 0064](0064-deprecate-customized-directory-overlay.md) deprecates the
+`customized/` directory overlay; `config.base.yaml` is the successor mechanism
+for distributing a shared baseline into each target repo's `.fullsend/`.
+
+This ADR applies only to **per-repo** installation. Per-org installation via a
+dedicated `<org>/.fullsend` config repo is deprecated and out of scope
+([deprecate-per-org-install plan](../plans/deprecate-per-org-install.md)).
+
 [ADR 0029](0029-central-token-mint-secretless-fullsend.md) already treats
 `job_workflow_ref` as the trust binding for mint authorization. The same
 pattern can authorize inference backends without per-adopter enrollment, when
@@ -51,6 +59,10 @@ Concrete workflow pinning and backend policy are left to follow-on ADRs.
 - **Single monolithic `config.yaml`:** Simpler than flags, but mixes
   vendor-provided defaults with repo-specific overrides and complicates upgrades
   of the preset layer.
+- **Layered base + overlay files (chosen):** Separate vendor baseline
+  (`.fullsend/config.base.yaml`) from repo overrides (`.fullsend/config.yaml`),
+  resolved through accessor methods. Supports preset distribution and clean
+  upgrades.
 
 ## Decision
 
@@ -68,10 +80,12 @@ stored in the target repository as:
 **Relationship to the three-tier model.** [ADR 0003](0003-org-config-repo-convention.md)
 and `docs/architecture.md` describe configuration inheritance as upstream
 defaults, then org `.fullsend`, then per-repo overrides. Per-repo installation
-drops the dedicated org config repo; `config.base.yaml` fills the org tier's
-configuration role. A vendor preset committed as `config.base.yaml` can be reused across
-repos in one org or distributed unchanged across org boundaries — the same
-portability benefit org-wide config provided, without a separate `<org>/.fullsend`
+is the sole supported deployment model; the dedicated org config repo is
+deprecated (see [deprecate-per-org-install plan](../plans/deprecate-per-org-install.md)).
+`config.base.yaml` in each target repo fills the org tier's former
+configuration role — not a revival of per-org installs. A vendor preset
+committed as `config.base.yaml` can be reused across repos in one org or
+distributed unchanged across org boundaries without a separate `<org>/.fullsend`
 repository. `config.yaml` remains the per-repo overlay. Lookup order is overlay
 → base → **code defaults** in `internal/config` (and related packages): values
 not set in either file still resolve from compiled-in defaults, as today.
@@ -97,7 +111,7 @@ accepts `--config <path-or-url>`. The installer:
 Presets may be local files or HTTPS URLs. The flag is optional; advanced
 installs that assemble configuration manually remain supported.
 
-**4. Drop per-adopter mint and inference enrollment from the install path.**
+**4. Omit per-adopter mint and inference enrollment (target state).**
 When a preset targets shared infrastructure authorized via `job_workflow_ref`
 to workflows in `fullsend-ai/fullsend`, the installer does not run mint
 enrollment or inference WIF provisioning. Trust is established by the
