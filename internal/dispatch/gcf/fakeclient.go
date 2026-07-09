@@ -98,6 +98,10 @@ func (f *fakeGCFClient) GetWIFProvider(_ context.Context, _, _, _ string) (*WIFP
 }
 func (f *fakeGCFClient) UpdateWIFProvider(_ context.Context, _, _, _ string, cfg OIDCProviderConfig) error {
 	f.lastWIFProviderConfig = cfg
+	f.wifProvider = &WIFProviderInfo{
+		AttributeCondition: cfg.AttributeCondition,
+		AllowedAudiences:   cfg.AllowedAudiences,
+	}
 	return f.record("UpdateWIFProvider")
 }
 func (f *fakeGCFClient) GetSecret(_ context.Context, _ string, sid string) error {

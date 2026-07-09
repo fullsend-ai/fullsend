@@ -654,6 +654,7 @@ func verifyEnrollment(ctx context.Context, printer *ui.Printer, provisioner enro
 }
 
 func runMintEnrollOrg(ctx context.Context, printer *ui.Printer, org, project, region string, dryRun bool) error {
+	originalCaseOrg := org
 	org = strings.ToLower(org)
 	if err := validateOrgName(org); err != nil {
 		return err
@@ -721,7 +722,7 @@ func runMintEnrollOrg(ctx context.Context, printer *ui.Printer, org, project, re
 	verifyEnrollment(ctx, printer, provisioner, org, project)
 
 	printer.StepStart("Updating WIF provider condition")
-	if err := provisioner.EnsureOrgInWIFCondition(ctx, org); err != nil {
+	if err := provisioner.EnsureOrgInWIFCondition(ctx, originalCaseOrg); err != nil {
 		printer.StepFail("Failed to update WIF condition")
 		return fmt.Errorf("updating WIF condition: %w", err)
 	}
@@ -935,6 +936,7 @@ func confirmUnenroll(printer *ui.Printer, target string, reader *bufio.Reader, i
 }
 
 func runMintUnenrollOrg(ctx context.Context, printer *ui.Printer, org, project, region string, dryRun, yolo bool, stdin *os.File) error {
+	originalCaseOrg := org
 	org = strings.ToLower(org)
 	if err := validateOrgName(org); err != nil {
 		return err
@@ -1005,7 +1007,7 @@ func runMintUnenrollOrg(ctx context.Context, printer *ui.Printer, org, project, 
 
 	// Step 3: Remove org from WIF provider condition.
 	printer.StepStart("Updating WIF provider condition")
-	if err := provisioner.RemoveOrgFromWIFCondition(ctx, org); err != nil {
+	if err := provisioner.RemoveOrgFromWIFCondition(ctx, originalCaseOrg); err != nil {
 		printer.StepFail("Failed to update WIF condition")
 		return fmt.Errorf("updating WIF condition: %w", err)
 	}

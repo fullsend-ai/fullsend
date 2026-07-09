@@ -834,6 +834,19 @@ func TestRunMintEnrollOrg_Success(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRunMintEnrollOrg_PreservesCaseInWIFCondition(t *testing.T) {
+	client := mintDiscoveryClient()
+	withMintGCFClient(t, client)
+	printer := ui.New(&strings.Builder{})
+	err := runMintEnrollOrg(context.Background(), printer, "AcmeCorp", "my-project", "us-central1", false)
+	require.NoError(t, err)
+
+	updated, err := client.GetWIFProvider(context.Background(), "123456789", "", "")
+	require.NoError(t, err)
+	assert.Contains(t, updated.AttributeCondition, "AcmeCorp")
+	assert.NotContains(t, updated.AttributeCondition, "acmecorp")
+}
+
 func TestRunMintEnrollOrg_PublicMode(t *testing.T) {
 	withMintGCFClient(t, publicMintDiscoveryClient())
 	out := &strings.Builder{}
