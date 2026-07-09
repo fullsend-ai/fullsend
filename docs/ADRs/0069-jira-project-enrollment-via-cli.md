@@ -20,11 +20,12 @@ Accepted
 
 ## Context
 
-Fullsend's dispatch model assumes events originate from GitHub — issues,
-PRs, and comments flow through the shim workflow
+Fullsend's dispatch model (see [agent-infrastructure](../problems/agent-infrastructure.md))
+assumes events originate from GitHub — issues, PRs, and comments flow
+through the shim workflow
 ([ADR 0034](0034-centralized-shim-routing-via-dispatch.md)) into agent
-pipelines. Enterprise teams commonly use Jira Enterprise/Cloud for backlog management,
-so Jira issues need an entry path into the same pipeline.
+pipelines. Enterprise teams commonly use Jira Enterprise/Cloud for backlog
+management, so Jira issues need an entry path into the same pipeline.
 
 A working proof-of-concept ([manish-jira](https://github.com/rh-hemartin-fullsendai/manish-jira))
 validated the approach: Jira Automation rules fire webhooks to GitHub's
@@ -77,14 +78,12 @@ The Automation API currently requires site admin for write operations
 returns 403, the CLI prints pre-filled manual instructions for creating
 the rules in the Jira UI.
 
-No new agents are introduced. Existing agents gain Jira awareness through
-harness composition ([ADR 0045](0045-forge-portable-harness-schema.md)) —
-Jira-specific pre/post scripts and `forge:` overrides are the repo
-admin's responsibility, not part of enrollment.
-
-The CLI follows the `fullsend github` command pattern: cobra subcommands,
-credential resolution cascade (flag → env → prompt), and `--dry-run`
-support.
+The enrollment scope is the event bridge and credentials only — agent-level
+Jira awareness (pre/post scripts, `forge:` overrides via
+[ADR 0045](0045-forge-portable-harness-schema.md)) is the repo admin's
+responsibility. The CLI follows the `fullsend github` command pattern:
+cobra subcommands, credential resolution cascade (flag → env → prompt),
+and `--dry-run` support.
 
 ## Consequences
 
