@@ -426,6 +426,32 @@ func TestLoadGHAEvent_PRReviewSubmitted(t *testing.T) {
 	assert.Equal(t, normevent.RoleWrite, ev.Actor.Role)
 }
 
+func TestLoadGHAEvent_IssuesClosed(t *testing.T) {
+	raw := map[string]any{
+		"action": "closed",
+		"issue": map[string]any{
+			"number":   float64(42),
+			"html_url": "https://github.com/o/r/issues/42",
+			"user":     map[string]any{"login": "alice"},
+			"labels":   []any{},
+		},
+		"sender": map[string]any{"login": "alice", "type": "User"},
+	}
+	path := writeEventFile(t, raw)
+
+	client := forge.NewFakeClient()
+	client.CollaboratorPermissions = map[string]string{"o/r/alice": "write"}
+
+	ev, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+		EventPath:  path,
+		EventName:  "issues",
+		Repository: "o/r",
+		Forge:      client,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, normevent.TransitionClosed, ev.Transition.Kind)
+}
+
 func copyMap(m map[string]any) map[string]any {
 	out := make(map[string]any, len(m))
 	for k, v := range m {
