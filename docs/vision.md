@@ -35,7 +35,7 @@ The current bugfix workflow spans three phases. The remaining phases are planned
                 ***Feedback*** ◄─── Monitor ◄─────── Delivery
 ```
 
-**Current (bugfix workflow):** An issue reports a bug (***feedback***). An agent triages, implements a fix (***execution***), and validates it against tests and review (***verification***). Humans must set strategic intent and approve guardrails; the rest may be fully autonomous based on configuration.
+**Current (bugfix workflow):** An issue reports a bug (***feedback***). An agent triages, implements a fix (***execution***), and validates it against tests and review (***verification***). Humans must set strategic intent and approve guardrails; everything else may be fully autonomous based on configuration.
 
 **Planned:** Discovery (identifying what needs work from production signals and tech debt), refinement (scoping and decomposing work), prioritization (ordering the backlog), delivery (merge-to-production with graduated autonomy), and monitor (production observability feeding back into the loop).
 
