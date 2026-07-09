@@ -519,6 +519,35 @@ func TestCreateBranch_Forbidden(t *testing.T) {
 	assert.True(t, forge.IsForbidden(err), "CreateBranch 403 should wrap ErrForbidden")
 }
 
+func TestGetPullRequestInfo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/owner/repo/pulls/42", r.URL.Path)
+		json.NewEncoder(w).Encode(map[string]any{
+			"number":   42,
+			"html_url": "https://github.com/owner/repo/pull/42",
+			"user":     map[string]any{"login": "alice"},
+			"head": map[string]any{
+				"ref":  "feature",
+				"sha":  "deadbeef",
+				"repo": map[string]any{"full_name": "owner/repo"},
+			},
+			"base": map[string]any{
+				"ref":  "main",
+				"repo": map[string]any{"full_name": "owner/repo"},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	info, err := client.GetPullRequestInfo(context.Background(), "owner", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, 42, info.Number)
+	assert.Equal(t, "feature", info.HeadRef)
+	assert.False(t, info.IsFork)
+}
+
 func TestCreateChangeProposal(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "POST", r.Method)

@@ -192,6 +192,9 @@ type FakeClient struct {
 	// Pull request head SHA for GetPullRequestHeadSHA.
 	PullRequestHeadSHA string
 
+	// Pull request info for GetPullRequestInfo.
+	PullRequestInfos map[string]PullRequestInfo // key: "owner/repo/number"
+
 	// Pull request files for ListPullRequestFiles.
 	PRFiles map[string][]string // key: "owner/repo/number"
 
@@ -1235,6 +1238,21 @@ func (f *FakeClient) MinimizeComment(_ context.Context, nodeID, reason string) e
 		Reason: reason,
 	})
 	return nil
+}
+
+func (f *FakeClient) GetPullRequestInfo(_ context.Context, owner, repo string, number int) (*PullRequestInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("GetPullRequestInfo"); e != nil {
+		return nil, e
+	}
+	if f.PullRequestInfos != nil {
+		key := fmt.Sprintf("%s/%s/%d", owner, repo, number)
+		if info, ok := f.PullRequestInfos[key]; ok {
+			return &info, nil
+		}
+	}
+	return nil, ErrNotFound
 }
 
 func (f *FakeClient) GetPullRequestHeadSHA(_ context.Context, _, _ string, _ int) (string, error) {

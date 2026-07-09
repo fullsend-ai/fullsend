@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -19,6 +20,8 @@ import (
 
 const behaviourScriptRelPath = "behaviour/current-scenario.yaml"
 const behaviourResultsFile = "behaviour-results.json"
+
+var envVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 type sandboxExecFunc func(sandboxName, cmd string, timeout time.Duration) (stdout, stderr string, exitCode int, err error)
 
@@ -254,7 +257,10 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 		if varName == "" {
 			return fmt.Errorf("assert_env requires a variable name")
 		}
-		cmd := fmt.Sprintf("test -n \"${%s}\"", varName)
+		if !envVarNamePattern.MatchString(varName) {
+			return fmt.Errorf("assert_env invalid variable name %q", varName)
+		}
+		cmd := fmt.Sprintf("v=$(printenv -- %s); test -n \"$v\"", shellQuote(varName))
 		_, stderr, exitCode, err := rt.execFn()(sandboxName, cmd, 30*time.Second)
 		if err != nil {
 			return fmt.Errorf("assert_env exec: %w", err)

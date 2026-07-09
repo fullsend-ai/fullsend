@@ -489,18 +489,8 @@ func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, 
 		if run.Name != want {
 			continue
 		}
-		if run.Status != "completed" || run.Conclusion != "success" {
-			continue
-		}
-		arts, err := d.Client.ListWorkflowRunArtifacts(ctx, owner, repo, run.ID)
-		if err != nil {
-			return err
-		}
-		for _, a := range arts {
-			if a.Name == artifactName {
-				return fmt.Errorf("expected harness %q not to run, but artifact %q was uploaded on run %d", agent, artifactName, run.ID)
-			}
-		}
+		return fmt.Errorf("expected harness %q not to run, but workflow %q run %d exists (status=%s conclusion=%s)",
+			agent, want, run.ID, run.Status, run.Conclusion)
 	}
 	// Also ensure no repository artifact with that name after trigger.
 	arts, err := d.Client.ListRepositoryArtifacts(ctx, owner, repo, 30)

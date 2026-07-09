@@ -115,7 +115,7 @@ func mapGitHubWebhook(ctx context.Context, opts GHAEventOptions, raw map[string]
 	case "pull_request_target", "pull_request":
 		return mapPREvent(ev, raw, action, actorID)
 	case "issue_comment":
-		return mapIssueCommentEvent(ev, raw, actorID)
+		return mapIssueCommentEvent(ctx, opts, ev, raw, actorID)
 	default:
 		return nil, fmt.Errorf("unsupported github event name %q", opts.EventName)
 	}
@@ -204,7 +204,7 @@ func mapPREvent(ev *normevent.Event, raw map[string]any, action, actorID string)
 	return ev, nil
 }
 
-func mapIssueCommentEvent(ev *normevent.Event, raw map[string]any, actorID string) (*normevent.Event, error) {
+func mapIssueCommentEvent(ctx context.Context, opts GHAEventOptions, ev *normevent.Event, raw map[string]any, actorID string) (*normevent.Event, error) {
 	issue := nestedMap(raw, "issue")
 	if issue == nil {
 		return nil, fmt.Errorf("issue_comment missing issue")
@@ -213,12 +213,21 @@ func mapIssueCommentEvent(ev *normevent.Event, raw map[string]any, actorID strin
 	ev.Actor.IsEntityAuthor = strings.EqualFold(stringField(issue, "user", "login"), actorID)
 	ev.State.Labels = labelNames(issue)
 
-	if pr := nestedMap(issue, "pull_request"); pr != nil {
-		num := intField(pr, "number")
+	if _, isPR := issue["pull_request"]; isPR {
+		num := intField(issue, "number")
 		if num > 0 {
+			prURL := issuePullRequestURL(stringField(issue, "html_url"), opts.Repository, num)
 			ev.Entity.LinkedChangeProposal = &normevent.LinkedChangeProposal{
 				ID:  num,
-				URL: stringField(issue, "html_url"),
+				URL: prURL,
+			}
+			if opts.Forge != nil {
+				parts := strings.SplitN(opts.Repository, "/", 2)
+				if len(parts) == 2 {
+					if info, err := opts.Forge.GetPullRequestInfo(ctx, parts[0], parts[1], num); err == nil {
+						ev.State.ChangeProposal = changeProposalFromPullRequestInfo(info)
+					}
+				}
 			}
 		}
 	}
@@ -252,6 +261,32 @@ func entityFromPR(pr map[string]any) normevent.Entity {
 		ID:   intField(pr, "number"),
 		URL:  stringField(pr, "html_url"),
 	}
+}
+
+func changeProposalFromPullRequestInfo(info *forge.PullRequestInfo) *normevent.ChangeProposal {
+	if info == nil {
+		return nil
+	}
+	return &normevent.ChangeProposal{
+		ID:       info.Number,
+		HeadRepo: info.HeadRepo,
+		BaseRepo: info.BaseRepo,
+		HeadRef:  info.HeadRef,
+		BaseRef:  info.BaseRef,
+		HeadSHA:  info.HeadSHA,
+		AuthorID: info.AuthorID,
+		IsFork:   info.IsFork,
+	}
+}
+
+func issuePullRequestURL(issueURL, repo string, number int) string {
+	if strings.Contains(issueURL, "/issues/") {
+		return strings.Replace(issueURL, "/issues/", "/pull/", 1)
+	}
+	if parts := strings.SplitN(repo, "/", 2); len(parts) == 2 {
+		return fmt.Sprintf("https://github.com/%s/%s/pull/%d", parts[0], parts[1], number)
+	}
+	return issueURL
 }
 
 func changeProposalFromPR(pr map[string]any) *normevent.ChangeProposal {

@@ -216,7 +216,7 @@ jobs:
             }
           fi
           # e2e/admin: behaviour suite reuses exported admin test helpers
-          if echo "$FILES" | grep -qE '^e2e/behaviour/|^e2e/admin/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/|^internal/layers/|^internal/scaffold/fullsend-repo/|^internal/forge/|^internal/harness/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^Makefile$|^\.github/workflows/e2e\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
+          if echo "$FILES" | grep -qE '^e2e/behaviour/|^e2e/admin/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/|^internal/layers/|^internal/scaffold/fullsend-repo/|^internal/forge/|^internal/harness/|^internal/harnessdispatch/|^internal/normevent/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^Makefile$|^\.github/workflows/e2e\.yml$|^\.github/workflows/reusable-dispatch\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No behaviour-relevant files changed — skipping behaviour tests"

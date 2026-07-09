@@ -488,6 +488,17 @@ func TestExecuteBehaviourOp_AssertJSONBadArgs(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestExecuteBehaviourOp_AssertEnvInvalidName(t *testing.T) {
+	t.Parallel()
+
+	err := executeBehaviourOp(DummyRuntime{}, "sandbox", t.TempDir(), BehaviourOperation{
+		Op:   "assert_env",
+		Args: "GITHUB_ISSUE_URL; rm -rf /",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid variable name")
+}
+
 func TestExecuteBehaviourScript_CancelledContext(t *testing.T) {
 	t.Parallel()
 

@@ -2449,6 +2449,51 @@ func (c *LiveClient) MinimizeComment(ctx context.Context, nodeID, reason string)
 	return nil
 }
 
+// GetPullRequestInfo returns branch/repo context for a pull request.
+func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string, number int) (*forge.PullRequestInfo, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number))
+	if err != nil {
+		return nil, fmt.Errorf("get pull request #%d: %w", number, err)
+	}
+
+	var pr struct {
+		Number  int    `json:"number"`
+		HTMLURL string `json:"html_url"`
+		User    struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Head struct {
+			Ref  string `json:"ref"`
+			SHA  string `json:"sha"`
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
+		} `json:"head"`
+		Base struct {
+			Ref  string `json:"ref"`
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
+		} `json:"base"`
+	}
+	if err := decodeJSON(resp, &pr); err != nil {
+		return nil, fmt.Errorf("decode pull request #%d: %w", number, err)
+	}
+	headRepo := pr.Head.Repo.FullName
+	baseRepo := pr.Base.Repo.FullName
+	return &forge.PullRequestInfo{
+		Number:   pr.Number,
+		HTMLURL:  pr.HTMLURL,
+		HeadRepo: headRepo,
+		BaseRepo: baseRepo,
+		HeadRef:  pr.Head.Ref,
+		BaseRef:  pr.Base.Ref,
+		HeadSHA:  pr.Head.SHA,
+		AuthorID: pr.User.Login,
+		IsFork:   headRepo != "" && baseRepo != "" && !strings.EqualFold(headRepo, baseRepo),
+	}, nil
+}
+
 // GetPullRequestHeadSHA returns the current HEAD commit SHA of a pull request.
 func (c *LiveClient) GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error) {
 	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number))

@@ -98,6 +98,19 @@ type ChangeProposal struct {
 	Base   string
 }
 
+// PullRequestInfo carries branch/repo context for dispatch enrichment.
+type PullRequestInfo struct {
+	Number   int
+	HTMLURL  string
+	HeadRepo string
+	BaseRepo string
+	HeadRef  string
+	BaseRef  string
+	HeadSHA  string
+	AuthorID string
+	IsFork   bool
+}
+
 // WorkflowRun represents a CI/CD workflow execution.
 type WorkflowRun struct {
 	ID         int
@@ -431,6 +444,7 @@ type Client interface {
 	MinimizeComment(ctx context.Context, nodeID, reason string) error
 
 	// Pull request operations
+	GetPullRequestInfo(ctx context.Context, owner, repo string, number int) (*PullRequestInfo, error)
 	GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error)
 	// ListPullRequestFiles returns the relative file paths changed by a pull
 	// request. On GitHub, the API caps results at 3000 files total.

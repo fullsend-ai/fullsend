@@ -578,6 +578,7 @@ jobs:
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
           sparse-checkout: |
             .fullsend/
+            bin/fullsend
           sparse-checkout-cone-mode: false
 
       - name: Run fullsend dispatch

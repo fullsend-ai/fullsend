@@ -121,10 +121,11 @@ func TestLoadGHAEvent_IssueComment(t *testing.T) {
 	raw := map[string]any{
 		"action": "created",
 		"issue": map[string]any{
-			"number":   float64(42),
-			"html_url": "https://github.com/o/r/issues/42",
-			"user":     map[string]any{"login": "alice"},
-			"labels":   []any{},
+			"number":       float64(42),
+			"html_url":     "https://github.com/o/r/issues/42",
+			"user":         map[string]any{"login": "alice"},
+			"labels":       []any{},
+			"pull_request": map[string]any{},
 		},
 		"comment": map[string]any{
 			"body": "/fs-fix please repair",
@@ -135,6 +136,18 @@ func TestLoadGHAEvent_IssueComment(t *testing.T) {
 
 	client := forge.NewFakeClient()
 	client.CollaboratorPermissions = map[string]string{"o/r/alice": "write"}
+	client.PullRequestInfos = map[string]forge.PullRequestInfo{
+		"o/r/42": {
+			Number:   42,
+			HTMLURL:  "https://github.com/o/r/pull/42",
+			HeadRepo: "o/r",
+			BaseRepo: "o/r",
+			HeadRef:  "feature",
+			BaseRef:  "main",
+			HeadSHA:  "abc",
+			AuthorID: "bot",
+		},
+	}
 
 	ev, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
 		EventPath:  path,
@@ -145,7 +158,10 @@ func TestLoadGHAEvent_IssueComment(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, normevent.TransitionCommentAdded, ev.Transition.Kind)
 	assert.Equal(t, "/fs-fix", ev.Transition.Comment.Command)
-	assert.Equal(t, "please repair", ev.Transition.Comment.Instruction)
+	assert.NotNil(t, ev.Entity.LinkedChangeProposal)
+	assert.Equal(t, 42, ev.Entity.LinkedChangeProposal.ID)
+	assert.Equal(t, "https://github.com/o/r/pull/42", ev.Entity.LinkedChangeProposal.URL)
+	assert.NotNil(t, ev.State.ChangeProposal)
 }
 
 func TestLoadGHAEvent_UnsupportedEvent(t *testing.T) {
