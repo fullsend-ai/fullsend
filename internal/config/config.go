@@ -185,6 +185,34 @@ func DefaultAllowedRemoteResources() []string {
 	}
 }
 
+// EnsureDefaultAllowedRemoteResources returns a new slice with default
+// allowed-remote-resources prefixes merged into the provided list.
+// Nil input (field omitted from YAML) returns defaults alone.
+// An explicit empty slice (allowed_remote_resources: []) is returned
+// unchanged to preserve deny-all semantics. Non-empty input gets any
+// missing defaults appended (preserving the caller's original ordering).
+func EnsureDefaultAllowedRemoteResources(existing []string) []string {
+	if existing == nil {
+		return DefaultAllowedRemoteResources()
+	}
+	if len(existing) == 0 {
+		return existing
+	}
+	defaults := DefaultAllowedRemoteResources()
+	seen := make(map[string]bool, len(existing))
+	for _, e := range existing {
+		seen[e] = true
+	}
+	result := make([]string, len(existing))
+	copy(result, existing)
+	for _, d := range defaults {
+		if !seen[d] {
+			result = append(result, d)
+		}
+	}
+	return result
+}
+
 // DefaultAgentEntries computes default agent URL entries for the given
 // harness names at a specific commit SHA. Each entry is a pinned
 // raw.githubusercontent.com URL with an integrity hash.

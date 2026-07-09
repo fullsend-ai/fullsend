@@ -64,7 +64,9 @@ validation_loop:                     # script is required; these sub-fields are 
   feedback_mode: stderr          # "stderr", "stdout", or "exit_code" (optional)
 
 allowed_remote_resources:        # URL prefixes allowed for remote skills/agents/policies
-  - https://github.com/org/       # Resources must match a prefix to be fetched
+  - https://github.com/org/       # Omit field: first-party defaults apply automatically
+                                   # Non-empty list: your entries + first-party defaults appended
+                                   # Set to [] to deny all remote fetches (deny-all)
 allow_runtime_fetch: true         # Opt-in to runtime skill fetching (default: false)
 max_runtime_fetches: 10           # Max runtime fetch requests per run (1–1000, default: 10)
 
