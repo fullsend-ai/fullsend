@@ -46,7 +46,7 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg *config.P
 }
 
 func configAllowlist(cfg *config.PerRepoConfig) []string {
-	if cfg == nil || len(cfg.AllowedRemoteResources) == 0 {
+	if cfg == nil || cfg.AllowedRemoteResources == nil {
 		return config.DefaultAllowedRemoteResources()
 	}
 	return cfg.AllowedRemoteResources

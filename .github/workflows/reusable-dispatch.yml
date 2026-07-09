@@ -720,12 +720,19 @@ jobs:
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
 
       - name: Setup agent environment
+        shell: bash
         env:
-          AGENT_PREFIX: ${{ format('{0}_', matrix.role) }}
-          TRIAGE_TARGET_REPO_DIR: target-repo
-          TRIAGE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          TRIAGE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
-        run: bash .github/scripts/setup-agent-env.sh
+          MATRIX_ROLE: ${{ matrix.role }}
+          GCP_PROJECT: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          GCP_REGION: ${{ inputs.gcp_region }}
+        run: |
+          set -euo pipefail
+          ROLE_UPPER=$(echo "${MATRIX_ROLE}" | tr '[:lower:]' '[:upper:]')
+          export AGENT_PREFIX="${ROLE_UPPER}_"
+          export "${ROLE_UPPER}_TARGET_REPO_DIR=target-repo"
+          export "${ROLE_UPPER}_ANTHROPIC_VERTEX_PROJECT_ID=${GCP_PROJECT}"
+          export "${ROLE_UPPER}_CLOUD_ML_REGION=${GCP_REGION}"
+          bash .github/scripts/setup-agent-env.sh
 
       - name: Export dispatch context env
         id: dispatch-env

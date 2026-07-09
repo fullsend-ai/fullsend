@@ -280,6 +280,8 @@ func mapIssueCommentEvent(ctx context.Context, opts GHAEventOptions, ev *normeve
 				if len(parts) == 2 {
 					if info, err := opts.Forge.GetPullRequestInfo(ctx, parts[0], parts[1], num); err == nil {
 						ev.State.ChangeProposal = changeProposalFromPullRequestInfo(info)
+					} else {
+						log.Printf("harness dispatch: pull request info lookup failed for #%d on %s: %v", num, opts.Repository, err)
 					}
 				}
 			}
