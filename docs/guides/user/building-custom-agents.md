@@ -1,8 +1,21 @@
-# Building custom agents
+# Building custom agents from scratch
 
-This guide walks through creating a new custom agent from scratch on a per-repo fullsend installation.
+> **Deprecated:** This guide uses the `customized/` directory overlay, which is
+> deprecated per [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
+> For new custom agents, register them in `config.yaml` with a local `source:`
+> path instead. Run `fullsend agent migrate-customizations --dry-run` to
+> preview migrating existing customizations.
 
-For customizing existing agents (overriding harnesses, skills, or policies), see [Customizing agents](customizing-agents.md).
+This guide walks through creating a custom from-scratch agent on a per-repo
+fullsend installation.
+
+Before building from scratch, consider whether extending a default agent would
+meet your needs. You can use `base` inheritance to start from a default agent's
+harness and override only what differs — see
+[Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)
+for the distinction and when each approach makes sense.
+
+For configuring existing agents (overriding harnesses, skills, or policies), see [Configuring agents](customizing-agents.md).
 
 ## Prerequisites
 
@@ -22,7 +35,7 @@ A custom agent is composed of six parts:
   skills/          # Knowledge documents mounted into the sandbox
 ```
 
-At build time, the workflow layers these customized files on top of the upstream fullsend defaults. Your files override the defaults — anything you don't customize uses the standard fullsend configuration. See [Customizing agents — Layered Configuration Resolution](customizing-agents.md#layered-configuration-resolution) for details on how the layering works.
+At build time, the workflow layers these customized files on top of the upstream fullsend defaults. Your files override the defaults — anything you don't customize uses the standard fullsend configuration. See [Configuring agents — Layered Configuration Resolution](customizing-agents.md#layered-configuration-resolution) for details on how the layering works.
 
 The key security invariant: agents run inside an untrusted [sandbox](../../glossary.md#sandbox) with no credentials. Pre-scripts fetch data *before* the sandbox starts; post-scripts act on agent output *after* the sandbox exits. Agents never have direct write access to external systems. See the [security threat model](../../problems/security-threat-model.md) for the full trust model.
 
@@ -123,6 +136,10 @@ image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 policy: customized/policies/my-agent.yaml
 role: my-agent
 
+providers:
+  - vertex-ai          # Required: model access (Anthropic API + GCP)
+  - github             # GitHub API + Git transport
+
 host_files:
   # GCP credentials for Vertex AI (required for model access)
   - src: env/gcp-vertex.env
@@ -166,7 +183,7 @@ timeout_minutes: 20
 # max_runtime_fetches: 10
 ```
 
-See [Customizing agents — Harness YAML Structure](customizing-agents.md#harness-yaml-structure) for the full field reference (including optional `security`, `providers`, `plugins`, and runtime fetch blocks).
+See [Configuring agents — Harness YAML Structure](customizing-agents.md#harness-yaml-structure) for the full field reference (including optional `security`, `providers`, `plugins`, and runtime fetch blocks).
 
 The key pattern to understand is how data flows into the sandbox through `host_files`:
 
@@ -177,6 +194,8 @@ The key pattern to understand is how data flows into the sandbox through `host_f
 The agent never has direct access to credentials. The pre-script uses credentials to fetch data, writes it to a file, and the harness copies the file (not the credentials) into the sandbox.
 
 ## Step 3: Define the sandbox policy
+
+The sandbox policy controls filesystem, process, and landlock restrictions. Network access is handled separately through provider profiles (see below).
 
 Create `.fullsend/customized/policies/my-agent.yaml`:
 
@@ -191,43 +210,58 @@ landlock:
 process:
   run_as_user: sandbox
   run_as_group: sandbox
+```
+
+Most custom agents can reuse the scaffold's `policies/base.yaml` instead of creating their own. Override only when your agent has specific filesystem or process requirements.
+
+### Network access via providers (recommended)
+
+The recommended way to grant network access is through provider profiles declared in the harness. Add a `providers` field to your harness YAML:
+
+```yaml
+providers:
+  - vertex-ai       # Anthropic API + GCP (required for model access)
+  - github           # GitHub API + Git transport
+  - package-registries  # npm, PyPI, Go modules (optional)
+```
+
+Each provider has a profile that defines its endpoints and binaries. When the sandbox starts, the gateway composes these profiles into the effective network policy automatically. This keeps endpoint definitions in one place and avoids copy-pasting network blocks across agents.
+
+The scaffold ships with profiles for common services. To see what's available:
+
+```bash
+ls .fullsend/providers/     # provider definitions (name + type)
+ls .fullsend/profiles/      # profile YAMLs (endpoints + binaries)
+```
+
+For services not covered by existing profiles, you can either create a custom profile or use inline `network_policies` in your policy YAML (both approaches work — composition is additive).
+
+### Network access via inline policies (alternative)
+
+You can also define network rules directly in the policy YAML. This is useful for one-off endpoints specific to a single agent:
+
+```yaml
 network_policies:
-  # Required: Vertex AI for model access
-  vertex_ai:
-    name: vertex-ai
+  my_service:
+    name: my-service
     endpoints:
-      - host: "*.googleapis.com"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-write
-      - host: "api.anthropic.com"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-write
-    binaries:
-      - path: "**/claude"
-      - path: "**/node"
-  # Optional: GitHub API access (if agent needs it)
-  github_api:
-    name: github-api
-    endpoints:
-      - host: "api.github.com"
+      - host: "api.example.com"
         port: 443
         protocol: rest
         enforcement: enforce
         access: read-only
     binaries:
-      - path: "**/gh"
       - path: "**/curl"
 ```
 
+Inline rules and provider-composed rules coexist — composition is additive. If both define the same endpoint, the duplicate is harmless.
+
 ### Policy design principles
 
-- **Vertex AI is always required** — the agent needs it to talk to the LLM.
+- **Vertex AI is always required** — the agent needs it to talk to the LLM. Use the `vertex-ai` provider.
 - **Add network access only for what the agent needs.** If the agent doesn't need web search, don't allow it.
 - **Use `binaries` to restrict which programs can access each endpoint.** This prevents the agent from using unexpected tools to exfiltrate data.
+- **Prefer providers for shared services.** Use inline policies only for agent-specific endpoints.
 - **Never allow APIs from the sandbox.** All network reads happen in pre-scripts; all network writes happen in post-scripts.
 
 ## Step 4: Define the output schema
@@ -341,7 +375,7 @@ The post-script runs on the trusted runner with full credentials, but reads outp
 
 ## Step 6: Create skills (optional)
 
-[Skills](../../glossary.md#skill) are Markdown documents mounted into the sandbox that provide domain knowledge the agent can reference. See [Customizing agents — Adding a Custom Skill](customizing-agents.md#adding-a-custom-skill) for how to create one.
+[Skills](../../glossary.md#skill) are Markdown documents mounted into the sandbox that provide domain knowledge the agent can reference. See [Configuring agents — Adding a Custom Skill](customizing-agents.md#adding-a-custom-skill) for how to create one.
 
 Place your skill at `.fullsend/customized/skills/my-skill/SKILL.md`, then reference it in both the agent frontmatter (`skills: [my-skill]`) and the harness (`skills: [customized/skills/my-skill]`).
 
@@ -592,7 +626,7 @@ When creating a new agent, you need these files:
 
 ## Reference
 
-- [Customizing agents](customizing-agents.md) — override existing agent harnesses, skills, and policies
+- [Configuring agents](customizing-agents.md) — override existing agent harnesses, skills, and policies
 - [Bugfix workflow](bugfix-workflow.md) — how the built-in agents work together end to end
 - [Getting Started](../getting-started/README.md) — prerequisite: admin setup guide
 - [Architecture overview](../../architecture.md) — component vocabulary and execution stack

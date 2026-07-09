@@ -8,6 +8,19 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
+// SkipReason describes why a preflight check was skipped.
+type SkipReason string
+
+const (
+	// SkipNone means the preflight was not skipped.
+	SkipNone SkipReason = ""
+	// SkipInstallationToken means the token is a GitHub App installation token.
+	SkipInstallationToken SkipReason = "installation"
+	// SkipFineGrained means the token is a fine-grained PAT whose
+	// permissions cannot be introspected.
+	SkipFineGrained SkipReason = "fine-grained"
+)
+
 // PreflightResult describes what a preflight check found.
 type PreflightResult struct {
 	// Required is the set of scopes the operation needs.
@@ -19,6 +32,8 @@ type PreflightResult struct {
 	// Skipped is true when scope introspection was unavailable
 	// (e.g., fine-grained tokens that don't report scopes).
 	Skipped bool
+	// SkippedReason indicates why the preflight was skipped.
+	SkippedReason SkipReason
 }
 
 // OK returns true if no scopes are missing.
@@ -34,6 +49,35 @@ var scopeDescriptions = map[string]string{
 	"workflow":    "create and update GitHub Actions workflow files",
 	"admin:org":   "manage organization-level Actions secrets (dispatch token)",
 	"delete_repo": "delete the .fullsend config repository (uninstall only)",
+}
+
+// fineGrainedEquivalents maps OAuth scopes to equivalent fine-grained
+// PAT permissions. Used in skip guidance when scopes cannot be verified.
+var fineGrainedEquivalents = map[string]string{
+	"repo":        "Contents (read/write), Secrets (read/write), Variables (read/write), Pull requests (read/write)",
+	"workflow":    "Workflows (read/write)",
+	"admin:org":   "Organization administration (read/write)",
+	"delete_repo": "Administration (read/write)",
+}
+
+// SkipGuidance returns a human-readable message listing the scopes
+// that could not be verified and their fine-grained equivalents.
+func (r *PreflightResult) SkipGuidance() string {
+	if r.SkippedReason != SkipFineGrained || len(r.Required) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Could not verify scopes: %s\n", strings.Join(r.Required, ", "))
+	b.WriteString("Ensure your token has these fine-grained permissions:\n")
+	for _, scope := range r.Required {
+		if equiv, ok := fineGrainedEquivalents[scope]; ok {
+			fmt.Fprintf(&b, "  • %s → %s\n", scope, equiv)
+		} else {
+			fmt.Fprintf(&b, "  • %s\n", scope)
+		}
+	}
+	b.WriteString("  • Metadata (read-only) — required by GitHub for all tokens")
+	return b.String()
 }
 
 // Error returns a human-readable error describing missing scopes and
@@ -80,7 +124,7 @@ func (s *Stack) Preflight(ctx context.Context, op Operation, client forge.Client
 		return nil, fmt.Errorf("detecting installation token: %w", err)
 	}
 	if isInstallation {
-		return &PreflightResult{Required: required, Skipped: true}, nil
+		return &PreflightResult{Required: required, Skipped: true, SkippedReason: SkipInstallationToken}, nil
 	}
 
 	granted, err := client.GetTokenScopes(ctx)
@@ -91,7 +135,7 @@ func (s *Stack) Preflight(ctx context.Context, op Operation, client forge.Client
 	// If the forge can't report scopes (fine-grained tokens return nil),
 	// we can't validate. Let the operation proceed but warn the caller.
 	if granted == nil {
-		return &PreflightResult{Required: required, Skipped: true}, nil
+		return &PreflightResult{Required: required, Skipped: true, SkippedReason: SkipFineGrained}, nil
 	}
 
 	grantedSet := make(map[string]bool, len(granted))

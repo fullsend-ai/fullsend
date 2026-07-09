@@ -13,6 +13,24 @@ The goal of this document is that you configure Fullsend for your GitHub reposit
 * Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI.
 * Download the latest [gh](https://cli.github.com/) CLI and authenticate with it.
 
+> **Note:** If your organization restricts classic personal access tokens,
+> `gh auth login` may produce a token that GitHub rejects with a 403. Create a
+> [fine-grained PAT](https://github.com/settings/personal-access-tokens/new)
+> scoped to the target repository with **Contents**, **Workflows**, **Secrets**,
+> **Variables** (read/write), **Pull requests** (read/write — not needed with
+> `--direct`), and **Metadata** (read-only), then `export GH_TOKEN=github_pat_...`
+> before running setup. The CLI checks `GH_TOKEN` → `GITHUB_TOKEN` → `gh auth token`,
+> in that order.
+>
+> **Fork limitation:** Fine-grained PATs are scoped to a single GitHub
+> organization and cannot create forks across org boundaries. When the CLI
+> detects a fine-grained token, the fork delivery option (`[f]`) is
+> unavailable. The CLI will offer the upstream option (`[u]`), which pushes
+> a branch to the target repository and creates a PR containing the fullsend
+> scaffolding files. No changes are made to the default branch until the PR
+> is merged. This limitation only applies to the initial setup — after setup,
+> fullsend agents use their own GitHub App tokens and do not require a fork.
+
 ## Installing GitHub Applications
 
 Install the following agent applications to your organization

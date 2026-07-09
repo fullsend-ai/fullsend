@@ -3,7 +3,11 @@ agent: agents/retro.md
 doc: docs/agents/retro.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
-policy: policies/retro.yaml
+policy: policies/base.yaml
+providers:
+  - vertex-ai
+  - github-ro
+  - github-artifacts
 
 role: retro
 slug: fullsend-ai-retro

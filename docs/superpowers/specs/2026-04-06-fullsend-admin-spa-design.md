@@ -46,7 +46,7 @@ Mirror the existing **layer model** and the **GitHub REST/GraphQL** usage of `in
 
 - **Production GitHub App** registered for the **official admin origin** (homepage + SPA entry as callback, e.g. `https://<origin>/admin/` with `redirect_uri` matching Vite `base`; GitHub appends `?code=&state=` on the document URL, which the SPA reads once then clears via `history.replaceState` to `#/`).
 - User completes **user authorization** for that app; the SPA exchanges the `code` for tokens per **current GitHub documentation** for **GitHub App user access tokens**.
-- **Verification gate before implementation:** Task 1 in [`2026-04-12-fullsend-admin-spa.md`](../plans/2026-04-12-fullsend-admin-spa.md) records hands-on outcomes; GitHub’s docs already require **`client_secret`** for the web-application exchange (see **Open items** and **Appendix A**). If maintainer Part B/C notes differ, update those sections after the experiment.
+- **Verification gate before implementation:** GitHub’s docs already require **`client_secret`** for the web-application exchange (see **Open items** and **Appendix A**).
 - Tokens: **short TTL**; store in **`localStorage`**; **sign-out** clears storage; handle **refresh** if GitHub provides it, otherwise **re-auth**.
 
 ### Self-hosted

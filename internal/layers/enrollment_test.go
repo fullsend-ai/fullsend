@@ -529,6 +529,110 @@ func TestEnrollmentLayer_Analyze_PerRepoGuardCheckError(t *testing.T) {
 	assert.Contains(t, report.Details[1], "guard check failed, skipped")
 }
 
+func TestEnrollmentLayer_Install_ContextCancelled(t *testing.T) {
+	// No workflow runs configured — awaitWorkflowRun will poll until
+	// context is cancelled. FakeClient.GetWorkflow returns active by
+	// default, so awaitWorkflowRegistration passes immediately.
+	client := &forge.FakeClient{}
+	repos := []string{"repo-a"}
+	layer, buf := newEnrollmentLayer(t, client, repos, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel immediately so the first poll iteration exits.
+	cancel()
+
+	err := layer.Install(ctx)
+	require.NoError(t, err) // Install treats timeout/cancel as non-fatal
+
+	output := buf.String()
+	assert.Contains(t, output, "could not confirm enrollment")
+}
+
+func TestEnrollmentLayer_Install_Timeout(t *testing.T) {
+	// Use a very short waitTimeout so the test doesn't block.
+	client := &forge.FakeClient{}
+	repos := []string{"repo-a"}
+	layer, buf := newEnrollmentLayer(t, client, repos, nil)
+	layer.waitTimeout = 100 * time.Millisecond
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err) // Install treats timeout as non-fatal
+
+	output := buf.String()
+	assert.Contains(t, output, "could not confirm enrollment")
+	assert.Contains(t, output, "timed out")
+}
+
+func TestEnrollmentLayer_Install_InProgressThenCompletes(t *testing.T) {
+	now := time.Now().UTC()
+	client := &progressClient{
+		FakeClient: forge.FakeClient{
+			WorkflowRuns: map[string]*forge.WorkflowRun{
+				"test-org/.fullsend/repo-maintenance.yml": {
+					ID:         1,
+					Status:     "completed",
+					Conclusion: "success",
+					CreatedAt:  now.Add(time.Minute).Format(time.RFC3339),
+					HTMLURL:    "https://github.com/test-org/.fullsend/actions/runs/1",
+				},
+			},
+		},
+	}
+	repos := []string{"repo-a"}
+	layer, buf := newEnrollmentLayer(t, client, repos, nil)
+
+	err := layer.Install(context.Background())
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "in_progress")
+	assert.Contains(t, output, "enrollment completed successfully")
+}
+
+// progressClient returns an in_progress run on the first ListWorkflowRuns
+// call, then a completed run on subsequent calls.
+type progressClient struct {
+	forge.FakeClient
+	callCount int
+}
+
+func (c *progressClient) ListWorkflowRuns(_ context.Context, org, repo, workflow string) ([]forge.WorkflowRun, error) {
+	c.callCount++
+	key := org + "/" + repo + "/" + workflow
+	run, ok := c.WorkflowRuns[key]
+	if !ok {
+		return nil, nil
+	}
+	if c.callCount == 1 {
+		return []forge.WorkflowRun{{
+			ID:        run.ID,
+			Status:    "in_progress",
+			CreatedAt: run.CreatedAt,
+			HTMLURL:   run.HTMLURL,
+		}}, nil
+	}
+	return []forge.WorkflowRun{*run}, nil
+}
+
+func TestNextInterval(t *testing.T) {
+	tests := []struct {
+		name     string
+		current  time.Duration
+		expected time.Duration
+	}{
+		{"doubles small interval", 2 * time.Second, 4 * time.Second},
+		{"doubles again", 4 * time.Second, 8 * time.Second},
+		{"caps at max", 8 * time.Second, enrollmentPollMax},
+		{"stays at max", enrollmentPollMax, enrollmentPollMax},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := nextInterval(tt.current)
+			assert.Equal(t, tt.expected, got)
+		})
+	}
+}
+
 func TestEnrollmentLayer_Install_WorkflowRegistrationWait(t *testing.T) {
 	now := time.Now().UTC()
 	client := &registrationWaitClient{

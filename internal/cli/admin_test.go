@@ -1256,10 +1256,16 @@ func TestCheckInstallScopes_FineGrainedToken(t *testing.T) {
 	client := &forge.FakeClient{
 		TokenScopes: nil,
 	}
-	printer := ui.New(&discardWriter{})
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
 
 	err := checkInstallScopes(context.Background(), client, printer)
 	require.NoError(t, err)
+	output := buf.String()
+	assert.Contains(t, output, "fine-grained token detected")
+	assert.Contains(t, output, "repo")
+	assert.Contains(t, output, "workflow")
+	assert.Contains(t, output, "admin:org")
 }
 
 func TestCheckInstallScopes_InstallationToken(t *testing.T) {
@@ -1328,10 +1334,16 @@ func TestCheckPerRepoScopes_FineGrainedToken(t *testing.T) {
 	client := &forge.FakeClient{
 		TokenScopes: nil,
 	}
-	printer := ui.New(&discardWriter{})
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
 
 	err := checkPerRepoScopes(context.Background(), client, printer)
 	require.NoError(t, err)
+	output := buf.String()
+	assert.Contains(t, output, "fine-grained token detected")
+	assert.Contains(t, output, "repo")
+	assert.Contains(t, output, "workflow")
+	assert.NotContains(t, output, "admin:org")
 }
 
 func TestCheckPerRepoScopes_InstallationToken(t *testing.T) {
@@ -1366,6 +1378,24 @@ func TestCheckPerRepoScopes_DoesNotRequireAdminOrg(t *testing.T) {
 	require.NoError(t, err, "per-repo should not require admin:org scope")
 }
 
+func TestPatForbiddenGuidance(t *testing.T) {
+	guidance := patForbiddenGuidance("test-org", "test-repo")
+	assert.Contains(t, guidance, `"test-org"`)
+	assert.Contains(t, guidance, "test-org/test-repo")
+	assert.Contains(t, guidance, "GH_TOKEN")
+	assert.Contains(t, guidance, "GITHUB_TOKEN")
+	assert.Contains(t, guidance, "gh auth token")
+	assert.Contains(t, guidance, "Contents:")
+	assert.Contains(t, guidance, "Workflows:")
+	assert.Contains(t, guidance, "Secrets:")
+	assert.Contains(t, guidance, "Variables:")
+	assert.Contains(t, guidance, "Pull requests:")
+	assert.Contains(t, guidance, "Metadata:")
+	assert.Contains(t, guidance, "https://github.com/settings/personal-access-tokens/new")
+	assert.Contains(t, guidance, "export GH_TOKEN=github_pat_")
+	assert.Contains(t, guidance, "fullsend github setup test-org/test-repo")
+}
+
 func TestPerRepoRequiredScopes_SubsetOfInstallScopes(t *testing.T) {
 	installSet := make(map[string]bool)
 	for _, s := range installRequiredScopes {
@@ -1386,6 +1416,15 @@ func TestInstallCmd_PerRepoRejectsInvalidRole(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid role name")
+}
+
+func TestInstallCmd_RejectsInvalidRuntime(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"admin", "install", "acme", "--runtime", "bogus", "--dry-run"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid --runtime")
 }
 
 func TestInstallCmd_PerRepoRejectsOwnerWithDots(t *testing.T) {
@@ -1854,6 +1893,7 @@ func TestRunDryRun_WithDiscoveredRepos(t *testing.T) {
 		context.Background(), client, printer, "testorg",
 		[]string{"myrepo"},
 		config.DefaultAgentRoles(),
+		"claude",
 		nil,
 		"",
 		true,
@@ -1865,6 +1905,23 @@ func TestRunDryRun_WithDiscoveredRepos(t *testing.T) {
 	)
 	require.NoError(t, err)
 	assert.Contains(t, buf.String(), "Layer: vendor")
+}
+
+func TestLoadExistingRuntime(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	client := forge.NewFakeClient()
+	assert.Equal(t, "", loadExistingRuntime(ctx, client, "acme"))
+
+	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, config.DefaultAgentRoles(), "", "acme")
+	cfg.Defaults.Runtime = "dummy"
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	client.FileContents = map[string][]byte{
+		"acme/" + forge.ConfigRepoName + "/config.yaml": data,
+	}
+	assert.Equal(t, "dummy", loadExistingRuntime(ctx, client, "acme"))
 }
 
 func TestRunAnalyze_WithFakeClient(t *testing.T) {
@@ -1890,7 +1947,7 @@ func TestRunInstall_RequiresAgentCredsWhenMintEnabled(t *testing.T) {
 
 	err := runInstall(
 		context.Background(), client, ui.New(&bytes.Buffer{}), "testorg",
-		[]string{}, config.DefaultAgentRoles(), nil,
+		[]string{}, config.DefaultAgentRoles(), "claude", nil,
 		nil, "",
 		false, "", "",
 		"gcf", "test-project", "us-central1", "", true,
@@ -1916,7 +1973,7 @@ func TestRunInstall_WithSkipMintCheck(t *testing.T) {
 
 	err := runInstall(
 		context.Background(), client, ui.New(&bytes.Buffer{}), "testorg",
-		nil, config.DefaultAgentRoles(), agentCreds,
+		nil, config.DefaultAgentRoles(), "claude", agentCreds,
 		nil, "",
 		false, "", "",
 		"gcf", "test-project", "us-central1", "", true,
@@ -1942,7 +1999,7 @@ func TestRunInstall_DiscoversRepos(t *testing.T) {
 	var buf bytes.Buffer
 	err := runInstall(
 		context.Background(), client, ui.New(&buf), "testorg",
-		nil, config.DefaultAgentRoles(), agentCreds,
+		nil, config.DefaultAgentRoles(), "claude", agentCreds,
 		nil, "",
 		false, "", "",
 		"gcf", "test-project", "us-central1", "", true,
@@ -1963,7 +2020,7 @@ func TestRunInstall_InvalidEnabledRepo(t *testing.T) {
 
 	err := runInstall(
 		context.Background(), client, ui.New(&bytes.Buffer{}), "testorg",
-		[]string{"missing-repo"}, config.DefaultAgentRoles(), nil,
+		[]string{"missing-repo"}, config.DefaultAgentRoles(), "claude", nil,
 		nil, "",
 		false, "", "",
 		"gcf", "test-project", "us-central1", "", true,
@@ -1990,7 +2047,7 @@ func TestRunInstall_WithVendorAndSkipMint(t *testing.T) {
 	var buf bytes.Buffer
 	err := runInstall(
 		context.Background(), client, ui.New(&buf), "testorg",
-		nil, config.DefaultAgentRoles(), agentCreds,
+		nil, config.DefaultAgentRoles(), "claude", agentCreds,
 		nil, "",
 		true, "", "",
 		"gcf", "test-project", "us-central1", "", true,

@@ -41,6 +41,15 @@ func IsBranchProtected(err error) bool {
 	return errors.Is(err, ErrBranchProtected)
 }
 
+// ErrNonFastForward indicates that a ref update was rejected because the
+// branch advanced concurrently (not a fast-forward).
+var ErrNonFastForward = errors.New("non-fast-forward update")
+
+// IsNonFastForward reports whether err indicates a non-fast-forward rejection.
+func IsNonFastForward(err error) bool {
+	return errors.Is(err, ErrNonFastForward)
+}
+
 // ErrForbidden indicates that the operation was denied due to
 // insufficient permissions (e.g., the user lacks push access).
 var ErrForbidden = errors.New("forbidden")
@@ -69,15 +78,6 @@ func IsNoChanges(err error) bool {
 	return errors.Is(err, ErrNoChanges)
 }
 
-// ErrNonFastForward indicates that a ref update was rejected because
-// the update is not a fast-forward (e.g. auto_init race on new repos).
-var ErrNonFastForward = errors.New("non-fast-forward update")
-
-// IsNonFastForward reports whether err indicates a non-fast-forward rejection.
-func IsNonFastForward(err error) bool {
-	return errors.Is(err, ErrNonFastForward)
-}
-
 // Repository represents a repository on a git forge.
 type Repository struct {
 	ID            int64
@@ -102,10 +102,25 @@ type ChangeProposal struct {
 type WorkflowRun struct {
 	ID         int
 	Name       string
+	Event      string // GitHub trigger event, e.g. "issues", "issue_comment"
 	Status     string // "queued", "in_progress", "completed"
 	Conclusion string // "success", "failure", "cancelled", etc.
 	HTMLURL    string
 	CreatedAt  string
+}
+
+// WorkflowArtifact is a file bundle uploaded by a workflow run.
+type WorkflowArtifact struct {
+	ID   int
+	Name string
+}
+
+// RepositoryArtifact is an artifact stored for a repository, with metadata.
+type RepositoryArtifact struct {
+	ID            int
+	Name          string
+	CreatedAt     string
+	WorkflowRunID int
 }
 
 // Workflow represents a workflow definition registered with the forge.
@@ -200,10 +215,12 @@ type UserIdentity struct {
 // TreeFile represents a file to be committed via the Git Trees API.
 // Mode controls file permissions: "100644" for regular files,
 // "100755" for executable files (e.g., shell scripts).
+// When Delete is true, the file is removed from the tree.
 type TreeFile struct {
 	Path    string
 	Content []byte
 	Mode    string // "100644" or "100755"
+	Delete  bool   // remove file from tree instead of adding/updating
 }
 
 // DirectoryEntry represents a file or subdirectory in a repository directory listing.
@@ -403,6 +420,8 @@ type Client interface {
 
 	// Issue operations
 	CreateIssue(ctx context.Context, owner, repo, title, body string, labels ...string) (*Issue, error)
+	AddIssueLabels(ctx context.Context, owner, repo string, number int, labels ...string) error
+	GetIssue(ctx context.Context, owner, repo string, number int) (*Issue, error)
 	CloseIssue(ctx context.Context, owner, repo string, number int) error
 	ListOpenIssues(ctx context.Context, owner, repo string, labels ...string) ([]Issue, error)
 	ListIssueComments(ctx context.Context, owner, repo string, number int) ([]IssueComment, error)
@@ -440,6 +459,15 @@ type Client interface {
 
 	// Workflow run listing
 	ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile string) ([]WorkflowRun, error)
+	// ListRecentWorkflowRuns returns recent workflow runs across all workflows.
+	ListRecentWorkflowRuns(ctx context.Context, owner, repo string, perPage int) ([]WorkflowRun, error)
+
+	// ListWorkflowRunArtifacts returns artifacts uploaded by a workflow run.
+	ListWorkflowRunArtifacts(ctx context.Context, owner, repo string, runID int) ([]WorkflowArtifact, error)
+	// DownloadWorkflowRunArtifact returns the zip archive for a workflow artifact.
+	DownloadWorkflowRunArtifact(ctx context.Context, owner, repo string, artifactID int) ([]byte, error)
+	// ListRepositoryArtifacts returns recent artifacts stored for a repository.
+	ListRepositoryArtifacts(ctx context.Context, owner, repo string, perPage int) ([]RepositoryArtifact, error)
 
 	// GetWorkflowRunLogs downloads the logs for a workflow run as plain text.
 	// On GitHub, this fetches job logs for each job in the run.

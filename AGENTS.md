@@ -91,7 +91,7 @@ All git forge operations (GitHub API calls, PR comments, issue creation, workflo
 
 **When reviewing PRs:** Flag any direct `exec.Command("gh", ...)`, raw GitHub API calls, or other forge-specific operations outside `internal/forge/github/` as a medium-severity or higher finding. This is an architectural violation, not a style preference.
 
-**Action workflows (`action.yml`):** The forge abstraction extends to `action.yml` bash scripts. New GitHub API operations in action steps should be implemented as `fullsend` CLI subcommands (under `internal/cli/`) that use `forge.Client`, not as inline `gh api` calls. Existing `gh api` calls in `action.yml` that predate this rule are grandfathered but should be migrated when touched.
+**Composite action (`action.yml`):** The forge abstraction extends to `action.yml` bash scripts. New GitHub API operations in action steps should be implemented as `fullsend` CLI subcommands (under `internal/cli/`) that use `forge.Client`, not as inline `gh api` calls. Existing `gh api` calls in `action.yml` that predate this rule are grandfathered but should be migrated when touched.
 
 ## Architecture Decision Records (ADRs)
 
@@ -166,6 +166,6 @@ The term "tier" is used in multiple distinct contexts across this codebase. Alwa
 |---|---|---|
 | **credential delivery tier** | The four-tier model for how agents receive credentials: (1) prefetch + post-process, (2) providers + L7, (3) host-side REST server, (4) host files | [ADR 0025](docs/ADRs/0025-provider-credential-delivery-for-sandboxed-agents.md) |
 | **intent authorization tier** | The four-tier model for change authorization: (0) standing rules, (1) tactical/issue, (2) strategic, (3) organizational | [intent-representation.md](docs/problems/intent-representation.md) |
-| **configuration tier** | The three-tier inheritance model for agent configuration: upstream defaults → org config → per-repo overrides | [ADR 0035](docs/ADRs/0035-layered-content-resolution.md) |
+| **configuration tier** | The three-tier inheritance model for agent configuration: upstream defaults → org config → per-repo overrides. The `customized/` overlay mechanism (ADR-0035) is deprecated; use config-driven agent registration per [ADR 0064](docs/ADRs/0064-deprecate-customized-directory-overlay.md) | [ADR 0035](docs/ADRs/0035-layered-content-resolution.md) |
 
 **Do not** use bare "Tier N" or "tier" without a prefix — the same number means different things in different contexts (e.g., "Tier 2" could be provider-based credential delivery or strategic intent authorization). External tier references (e.g., "GitLab Free tier", "GitHub plan tiers") are exempt from this convention.

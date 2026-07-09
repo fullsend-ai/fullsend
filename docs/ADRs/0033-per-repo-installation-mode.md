@@ -137,7 +137,7 @@ Per-repo requirements: repo admin + org admin to install GitHub Apps on the repo
 target-repo/
 ├── .github/workflows/fullsend.yml    ← single workflow file (~70 lines, shim)
 ├── .fullsend/                        ← in-repo config workspace (optional)
-│   ├── customized/                  ← user overrides (same convention as per-org)
+│   ├── customized/                  ← user overrides (deprecated by ADR-0064)
 │   │   ├── agents/                 ← agent prompt overrides
 │   │   ├── harness/                ← harness config overrides
 │   │   ├── policies/               ← sandbox policies

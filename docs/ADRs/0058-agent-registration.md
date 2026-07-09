@@ -59,7 +59,8 @@ scaffold-discovered agents; collision is keyed by agent name (explicit
 favor of config, enabling gradual migration. Once all first-party agents are extracted, config
 becomes authoritative and the scaffold fallback is removed.
 
-A `fullsend agent` CLI subcommand (`add`, `list`, `update`, `remove`)
+A `fullsend agent` CLI subcommand (`add`, `list`, `update`, `remove`;
+plus `migrate-customizations` per [ADR 0064](0064-deprecate-customized-directory-overlay.md))
 manages entries (single-user CLI operations; no concurrency guard on
 config read/write) and auto-pins URLs to a commit SHA with an
 integrity hash. Per-repo config gains `allowed_remote_resources` so per-repo

@@ -69,9 +69,13 @@ Sandbox defaults (network policy, filesystem restrictions) are configured in the
 **Open questions:**
 
 - What is the right isolation level — process, container, microVM, or separate cluster? (See [agent-infrastructure.md](problems/agent-infrastructure.md) and [security-threat-model.md](problems/security-threat-model.md).)
-- How granular is network regulation? Allowlist of endpoints, or coarser controls? (A **protocol gateway** toward approved model and MCP endpoints is one way to narrow egress without handing agents raw internet access; see [landscape.md](landscape.md#agent-gateway).)
+- ~~How granular is network regulation? Allowlist of endpoints, or coarser controls?~~ Decided in [ADR 0065](ADRs/0065-provider-backed-policy-composition.md): network access is granted through provider profiles with per-endpoint allowlists.
 - Does the sandbox provide a pre-built environment (tools, language runtimes, repo clones), or does the agent set up its own workspace within the sandbox?
 - ~~Is the sandbox the same for all agent roles, or does each role get a differently-scoped sandbox?~~ Decided in [ADR 0020](ADRs/0020-composable-single-responsibility-agents-with-individual-sandboxes.md): each agent gets its own sandbox with policies designed for its responsibility.
+
+**Decided:**
+
+- Provider-backed policy composition: network access is granted through provider profiles declared in harness files. Policy files define only non-composable sandbox restrictions (filesystem, landlock, process). A single `base.yaml` replaces per-agent policy files in the scaffold. Inline `network_policies` continue to work but providers are the recommended approach ([ADR 0065](ADRs/0065-provider-backed-policy-composition.md)).
 
 ## Agent Harness
 
@@ -128,7 +132,11 @@ This is the thing that actually reasons and acts. Everything else in this docume
 
 **Decided (implementation):**
 
-- The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; the MVP registers Claude Code only. Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `ClaudeHooksBootstrap` for sandbox tool hooks. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
+- The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; production orgs default to Claude Code. Runtime selection is configured in `defaults.runtime` on the org `config.yaml` and resolved via `runtime.ResolveFromConfig()`. A **dummy** runtime executes scripted operations in the real OpenShell sandbox for behaviour tests (inference removed). Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `ClaudeHooksBootstrap` for sandbox tool hooks. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
+
+### Behaviour testing
+
+End-to-end **behaviour tests** under `e2e/behaviour/` validate deterministic platform code — dispatch routing, harness loading, sandbox policy, SCM mutations — with the LLM layer removed via the dummy runtime. Tests exercise real GitHub and GitHub Actions through pluggable SCM and CI drivers; Gherkin scenarios stay install-mode agnostic while runner env vars select backends. This coverage is **orthogonal** to LLM and instruction testing in [testing-agents.md](problems/testing-agents.md). See [ADR 0066](ADRs/0066-behaviour-tests-with-gherkin-and-drivers.md).
 
 **Open questions:**
 
@@ -252,7 +260,7 @@ Fullsend provides a base set of agent definitions. The adopting organization's *
 - Config-level agent registration: an `agents` list in both `OrgConfig` and `PerRepoConfig` declares agent harness sources as pinned URLs or local paths, replacing compiled-in agent discovery ([ADR 0058](ADRs/0058-agent-registration.md)).
 - Runtime resolution: `fullsend run <name>` resolves agents in three tiers: (1) config entries from `OrgConfig.Agents` (highest priority), (2) runtime fallback to the `fullsend-ai/agents` repository for known first-party agents not in config, (3) scaffold-embedded harnesses on disk. The agents-repo fallback is a transitional mechanism for the [agent extraction](plans/agent-extraction-to-agents-repo.md); it will be removed once all users have migrated to config-driven registration (ADR 0058 Phase 5).
 - Additive merge: config entries overlay scaffold-discovered agents (config wins on name collision), enabling gradual extraction of first-party agents without disrupting existing installations. Builds on [ADR 0045](ADRs/0045-forge-portable-harness-schema.md) harness identity model.
-- CLI management: `fullsend agent add/list/update/remove` manages config entries and auto-pins URLs to a commit SHA with an integrity hash.
+- CLI management: `fullsend agent add|list|update|remove|migrate-customizations` manages config entries and auto-pins URLs to a commit SHA with an integrity hash.
 
 **Open questions:**
 
@@ -600,7 +608,8 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
                  ║ │ Loads harness/code.yaml:                                  │ ║
                  ║ │   agent: agents/code.md                                   │ ║
                  ║ │   image: ghcr.io/fullsend-ai/fullsend-code:latest         │ ║
-                 ║ │   policy: policies/code.yaml                              │ ║
+                 ║ │   policy: policies/base.yaml                              │ ║
+                 ║ │   providers: [vertex-ai, github, package-registries]      │ ║
                  ║ │   skills: [skills/code-implementation]                    │ ║
                  ║ │   pre_script: scripts/pre-code.sh                         │ ║
                  ║ │   post_script: scripts/post-code.sh                       │ ║
@@ -611,7 +620,7 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
                  ║ │ ┌───────────────────────────────────────────────────────┐ │ ║
                  ║ │ │ OPENSHELL SANDBOX                                     │ │ ║
                  ║ │ │                                                       │ │ ║
-                 ║ │ │ Created with --from image, --policy code.yaml.        │ │ ║
+                 ║ │ │ Created with --from image, --policy base.yaml.        │ │ ║
                  ║ │ │ Bootstrapped via openshell upload/exec:               │ │ ║
                  ║ │ │   agent def    → /sandbox/claude-config/agents/       │ │ ║
                  ║ │ │   skills       → /sandbox/claude-config/skills/       │ │ ║

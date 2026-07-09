@@ -1,4 +1,4 @@
-//go:build e2e
+//go:build e2e || behaviour
 
 package admin
 
@@ -48,6 +48,27 @@ func resolveMintURL() string {
 		return u
 	}
 	return cli.DefaultMintURL
+}
+
+// DefaultHostedMintGCPProject is the GCP project hosting the public mint service.
+// See docs/guides/infrastructure/mint-administration.md.
+const DefaultHostedMintGCPProject = "it-gcp-konflux-dev-fullsend"
+
+// MintEnrollProjectID returns the GCP project for `fullsend mint enroll`.
+// Inference may use a different project via E2E_GCP_PROJECT_ID; the hosted mint
+// always lives in DefaultHostedMintGCPProject unless E2E_GCP_MINT_PROJECT_ID is set.
+func MintEnrollProjectID(cfg EnvConfig) string {
+	if p := strings.TrimSpace(os.Getenv("E2E_GCP_MINT_PROJECT_ID")); p != "" {
+		return p
+	}
+	mintURL := strings.TrimSpace(cfg.MintURL)
+	if mintURL == "" {
+		mintURL = cli.DefaultMintURL
+	}
+	if mintURL == cli.DefaultMintURL {
+		return DefaultHostedMintGCPProject
+	}
+	return strings.TrimSpace(cfg.GCPProjectID)
 }
 
 // resolveE2EToken mints a cross-org e2e installation token for targetOrg.

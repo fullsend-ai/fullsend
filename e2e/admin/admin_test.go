@@ -69,7 +69,7 @@ func setupE2ETest(t *testing.T) *e2eEnv {
 		releaseLock(context.Background(), client, org, runID, t)
 	})
 
-	cleanupStaleResources(context.Background(), client, token, org, t)
+	CleanupStaleResources(context.Background(), client, token, org, t)
 
 	return &e2eEnv{
 		cfg:           cfg,

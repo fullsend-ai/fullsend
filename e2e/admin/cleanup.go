@@ -1,4 +1,4 @@
-//go:build e2e
+//go:build e2e || behaviour
 
 package admin
 
@@ -13,9 +13,14 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// cleanupStaleResources removes leftover resources from previous test runs.
+type cleanupLogger interface {
+	Helper()
+	Logf(format string, args ...any)
+}
+
+// CleanupStaleResources removes leftover resources from previous test runs.
 // This is the "teardown-first" part of the dual cleanup strategy.
-func cleanupStaleResources(ctx context.Context, client forge.Client, token, org string, t *testing.T) {
+func CleanupStaleResources(ctx context.Context, client forge.Client, token, org string, t *testing.T) {
 	t.Helper()
 	t.Log("[cleanup] Scanning for stale resources from previous runs...")
 
@@ -104,6 +109,39 @@ func cleanupStaleResources(ctx context.Context, client forge.Client, token, org 
 	t.Log("[cleanup] Stale resource scan complete")
 }
 
+// TeardownPerRepoInstall removes per-repo fullsend artifacts from a test repository.
+func TeardownPerRepoInstall(ctx context.Context, client forge.Client, token, org, repo string, logf func(string, ...any)) {
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	log := &funcLogger{logf: logf}
+	log.Logf("[cleanup] Tearing down per-repo install on %s/%s", org, repo)
+	deleteBranch(ctx, token, org, repo, "fullsend/onboard", log)
+	deleteBranch(ctx, token, org, repo, "fullsend/offboard", log)
+	deleteShimWorkflow(ctx, token, org, repo, log)
+	prs, err := client.ListRepoPullRequests(ctx, org, repo)
+	if err != nil {
+		log.Logf("[cleanup] Warning: could not list PRs: %v", err)
+		return
+	}
+	for _, pr := range prs {
+		if strings.Contains(pr.Title, "fullsend") {
+			log.Logf("[cleanup] Closing stale PR #%d: %s", pr.Number, pr.Title)
+			closePR(ctx, token, org, repo, pr.Number, log)
+		}
+	}
+}
+
+type funcLogger struct {
+	logf func(string, ...any)
+}
+
+func (f *funcLogger) Helper() {}
+
+func (f *funcLogger) Logf(format string, args ...any) {
+	f.logf(format, args...)
+}
+
 // listOrgRepoNames returns repository names in an org via the GitHub REST API.
 func listOrgRepoNames(ctx context.Context, token, org string, t *testing.T) []string {
 	t.Helper()
@@ -184,13 +222,13 @@ func deleteRepoVariable(ctx context.Context, token, org, repo, name string, t *t
 
 // deleteBranch deletes a branch from a repo using the GitHub API directly
 // (forge.Client doesn't have DeleteBranch).
-func deleteBranch(ctx context.Context, token, org, repo, branch string, t *testing.T) {
-	t.Helper()
+func deleteBranch(ctx context.Context, token, org, repo, branch string, log cleanupLogger) {
+	log.Helper()
 	branchRef := "heads/" + branch
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/refs/%s", org, repo, branchRef)
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 	if err != nil {
-		t.Logf("[cleanup] Warning: could not create branch delete request: %v", err)
+		log.Logf("[cleanup] Warning: could not create branch delete request: %v", err)
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -198,31 +236,31 @@ func deleteBranch(ctx context.Context, token, org, repo, branch string, t *testi
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Logf("[cleanup] Warning: could not delete branch %s: %v", branch, err)
+		log.Logf("[cleanup] Warning: could not delete branch %s: %v", branch, err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNoContent {
-		t.Logf("[cleanup] Deleted stale branch %s", branch)
+		log.Logf("[cleanup] Deleted stale branch %s", branch)
 	} else if resp.StatusCode == http.StatusNotFound {
 		// Branch doesn't exist, nothing to do.
 	} else {
-		t.Logf("[cleanup] Warning: unexpected status deleting branch %s: %d", branch, resp.StatusCode)
+		log.Logf("[cleanup] Warning: unexpected status deleting branch %s: %d", branch, resp.StatusCode)
 	}
 }
 
 // deleteShimWorkflow removes the fullsend shim workflow from a repo's default
 // branch. This cleans up after Phase 2.5 which merges the enrollment PR.
-func deleteShimWorkflow(ctx context.Context, token, org, repo string, t *testing.T) {
-	t.Helper()
+func deleteShimWorkflow(ctx context.Context, token, org, repo string, log cleanupLogger) {
+	log.Helper()
 	shimPath := ".github/workflows/fullsend.yaml"
 
 	// Get the file's SHA (required for deletion).
 	getURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s", org, repo, shimPath)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, getURL, nil)
 	if err != nil {
-		t.Logf("[cleanup] Warning: could not create request to check shim file: %v", err)
+		log.Logf("[cleanup] Warning: could not create request to check shim file: %v", err)
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -230,7 +268,7 @@ func deleteShimWorkflow(ctx context.Context, token, org, repo string, t *testing
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Logf("[cleanup] Warning: could not check shim file: %v", err)
+		log.Logf("[cleanup] Warning: could not check shim file: %v", err)
 		return
 	}
 	defer resp.Body.Close()
@@ -239,7 +277,7 @@ func deleteShimWorkflow(ctx context.Context, token, org, repo string, t *testing
 		return // File doesn't exist, nothing to do.
 	}
 	if resp.StatusCode != http.StatusOK {
-		t.Logf("[cleanup] Warning: unexpected status checking shim file: %d", resp.StatusCode)
+		log.Logf("[cleanup] Warning: unexpected status checking shim file: %d", resp.StatusCode)
 		return
 	}
 
@@ -247,7 +285,7 @@ func deleteShimWorkflow(ctx context.Context, token, org, repo string, t *testing
 		SHA string `json:"sha"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&fileInfo); err != nil {
-		t.Logf("[cleanup] Warning: could not decode shim file info: %v", err)
+		log.Logf("[cleanup] Warning: could not decode shim file info: %v", err)
 		return
 	}
 
@@ -261,12 +299,12 @@ func deleteShimWorkflow(ctx context.Context, token, org, repo string, t *testing
 	}
 	deletePayload, err := json.Marshal(deleteBody)
 	if err != nil {
-		t.Logf("[cleanup] Warning: could not marshal delete payload: %v", err)
+		log.Logf("[cleanup] Warning: could not marshal delete payload: %v", err)
 		return
 	}
 	delReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, getURL, strings.NewReader(string(deletePayload)))
 	if err != nil {
-		t.Logf("[cleanup] Warning: could not create delete request for shim: %v", err)
+		log.Logf("[cleanup] Warning: could not create delete request for shim: %v", err)
 		return
 	}
 	delReq.Header.Set("Authorization", "Bearer "+token)
@@ -275,26 +313,26 @@ func deleteShimWorkflow(ctx context.Context, token, org, repo string, t *testing
 
 	delResp, err := http.DefaultClient.Do(delReq)
 	if err != nil {
-		t.Logf("[cleanup] Warning: could not delete shim file: %v", err)
+		log.Logf("[cleanup] Warning: could not delete shim file: %v", err)
 		return
 	}
 	defer delResp.Body.Close()
 
 	if delResp.StatusCode == http.StatusOK || delResp.StatusCode == http.StatusNoContent {
-		t.Logf("[cleanup] Deleted stale shim workflow from %s", repo)
+		log.Logf("[cleanup] Deleted stale shim workflow from %s", repo)
 	} else {
-		t.Logf("[cleanup] Warning: unexpected status deleting shim file: %d", delResp.StatusCode)
+		log.Logf("[cleanup] Warning: unexpected status deleting shim file: %d", delResp.StatusCode)
 	}
 }
 
 // closePR closes a pull request using the GitHub API directly.
-func closePR(ctx context.Context, token, org, repo string, number int, t *testing.T) {
-	t.Helper()
+func closePR(ctx context.Context, token, org, repo string, number int, log cleanupLogger) {
+	log.Helper()
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%d", org, repo, number)
 	body := strings.NewReader(`{"state":"closed"}`)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, url, body)
 	if err != nil {
-		t.Logf("[cleanup] Warning: could not create PR close request: %v", err)
+		log.Logf("[cleanup] Warning: could not create PR close request: %v", err)
 		return
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
@@ -303,15 +341,15 @@ func closePR(ctx context.Context, token, org, repo string, number int, t *testin
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		t.Logf("[cleanup] Warning: could not close PR #%d: %v", number, err)
+		log.Logf("[cleanup] Warning: could not close PR #%d: %v", number, err)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
-		t.Logf("[cleanup] Closed stale PR #%d", number)
+		log.Logf("[cleanup] Closed stale PR #%d", number)
 	} else {
-		t.Logf("[cleanup] Warning: unexpected status closing PR #%d: %d", number, resp.StatusCode)
+		log.Logf("[cleanup] Warning: unexpected status closing PR #%d: %d", number, resp.StatusCode)
 	}
 }
 

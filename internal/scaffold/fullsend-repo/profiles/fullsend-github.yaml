@@ -1,0 +1,21 @@
+---
+id: fullsend-github
+display_name: Fullsend GitHub
+description: GitHub API and Git operations for fullsend agents
+category: source_control
+endpoints:
+  - host: api.github.com
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+  - host: github.com
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+binaries:
+  - "**/gh"
+  - "**/git"
+  - "**/node"
+  - "**/pre-commit"

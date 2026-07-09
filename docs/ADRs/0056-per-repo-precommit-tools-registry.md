@@ -26,7 +26,7 @@ Related: [#1270](https://github.com/fullsend-ai/fullsend/issues/1270)
 PR #1055 introduced `.pre-commit-tools.yaml` — a registry mapping
 pre-commit hooks to the system tools they require. The registry can be
 fully replaced at the org level via `customized/scripts/` (L1 override,
-[ADR 0035](0035-layered-content-resolution.md)), but repos needing one extra tool must copy the entire file.
+[ADR 0035](0035-layered-content-resolution.md); `customized/` deprecated by [ADR 0064](0064-deprecate-customized-directory-overlay.md)), but repos needing one extra tool must copy the entire file.
 
 ## Decision
 

@@ -3,7 +3,10 @@ agent: agents/review.md
 doc: docs/agents/review.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-code:latest
-policy: policies/review.yaml
+policy: policies/base.yaml
+providers:
+  - vertex-ai
+  - github-ro
 
 role: review
 slug: fullsend-ai-review

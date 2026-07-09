@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -247,6 +248,7 @@ func newInstallCmd() *cobra.Command {
 	var skipMintCheck bool
 	var publicApps bool
 	var appSet string
+	var runtimeName string
 	var direct bool
 	// Per-repo flags.
 	var mintURL string
@@ -345,6 +347,17 @@ Inference authentication:
 			roles, err := parseAgentRoles(agents)
 			if err != nil {
 				return err
+			}
+
+			selectedRuntime := runtimeName
+			if !cmd.Flags().Changed("runtime") {
+				selectedRuntime = loadExistingRuntime(ctx, client, org)
+			}
+			if selectedRuntime == "" {
+				selectedRuntime = "claude"
+			}
+			if !slices.Contains(config.ValidRuntimes(), selectedRuntime) {
+				return fmt.Errorf("invalid --runtime %q: must be one of %s", selectedRuntime, strings.Join(config.ValidRuntimes(), ", "))
 			}
 
 			if skipMintCheck {
@@ -506,7 +519,7 @@ Inference authentication:
 			printer.Blank()
 
 			if dryRun {
-				return runDryRun(ctx, client, printer, org, repos, roles, inferenceProvider, inferenceProviderName, skipMintCheck, mintURL, allRepos, vendor, fullsendBinary, fullsendSource)
+				return runDryRun(ctx, client, printer, org, repos, roles, selectedRuntime, inferenceProvider, inferenceProviderName, skipMintCheck, mintURL, allRepos, vendor, fullsendBinary, fullsendSource)
 			}
 
 			if err := checkInstallScopes(ctx, client, printer); err != nil {
@@ -549,7 +562,7 @@ Inference authentication:
 				agentCreds = creds
 			}
 
-			return runInstall(ctx, client, printer, org, repos, roles, agentCreds, inferenceProvider, inferenceProviderName, vendor, fullsendBinary, fullsendSource, mintProvider, mintProject, mintRegion, mintSourceDir, mintSkipDeploy, mintURL, skipMintCheck, direct, allRepos)
+			return runInstall(ctx, client, printer, org, repos, roles, selectedRuntime, agentCreds, inferenceProvider, inferenceProviderName, vendor, fullsendBinary, fullsendSource, mintProvider, mintProject, mintRegion, mintSourceDir, mintSkipDeploy, mintURL, skipMintCheck, direct, allRepos)
 		},
 	}
 
@@ -570,6 +583,7 @@ Inference authentication:
 	cmd.Flags().BoolVar(&skipMintCheck, "skip-mint-check", false, "skip mint validation, GCP provisioning, and app setup; requires --mint-url")
 	cmd.Flags().BoolVar(&publicApps, "public", false, "create public (unlisted) GitHub Apps installable by other orgs")
 	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps (e.g., myorg creates myorg-fullsend, myorg-coder)")
+	cmd.Flags().StringVar(&runtimeName, "runtime", "claude", "agent runtime for fullsend run (claude or dummy; dummy is for behaviour test orgs only)")
 	// Shared flags.
 	cmd.Flags().StringVar(&mintURL, "mint-url", DefaultMintURL, "token mint URL for OIDC token exchange (default: hosted public mint)")
 	cmd.Flags().BoolVar(&direct, "direct", false, "push scaffold files directly to the default branch instead of creating a PR")
@@ -995,6 +1009,9 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 	scaffoldCommitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool) error {
 		targetRepo, repoErr := client.GetRepo(ctx, owner, repo)
 		if repoErr != nil {
+			if gh.IsPATForbiddenError(repoErr) {
+				return handlePATForbidden(printer, owner, repo, repoErr)
+			}
 			return fmt.Errorf("getting repo info: %w", repoErr)
 		}
 		commitMsg := fmt.Sprintf("chore: initialize fullsend-%s per-repo installation", version)
@@ -1166,6 +1183,9 @@ func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.
 
 	targetRepo, err := client.GetRepo(ctx, owner, repo)
 	if err != nil {
+		if gh.IsPATForbiddenError(err) {
+			return handlePATForbidden(printer, owner, repo, err)
+		}
 		return fmt.Errorf("getting repo info: %w", err)
 	}
 	commitMsg := fmt.Sprintf("chore: initialize fullsend-%s per-repo installation", version)
@@ -1300,7 +1320,7 @@ func newAnalyzeCmd() *cobra.Command {
 
 // runDryRun builds a layer stack with empty credentials and analyzes.
 // If discoveredRepos is non-nil, it will be used instead of calling ListOrgRepos.
-func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, inferenceProvider inference.Provider, inferenceProviderName string, skipMintCheck bool, mintURL string, discoveredRepos []forge.Repository, vendor bool, fullsendBinary, fullsendSource string) error {
+func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, runtimeName string, inferenceProvider inference.Provider, inferenceProviderName string, skipMintCheck bool, mintURL string, discoveredRepos []forge.Repository, vendor bool, fullsendBinary, fullsendSource string) error {
 	printer.Header("Dry run - analyzing what install would do")
 	printer.Blank()
 
@@ -1338,6 +1358,7 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 	}
 
 	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
+	cfg.Defaults.Runtime = runtimeName
 	cfg.Dispatch.Mode = "oidc-mint"
 
 	user, err := client.GetAuthenticatedUser(ctx)
@@ -1601,7 +1622,7 @@ func validateEnabledRepos(enabledRepos, discoveredNames []string) error {
 
 // runInstall performs the full installation.
 // If discoveredRepos is non-nil, it will be used instead of calling ListOrgRepos.
-func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, agentCreds []layers.AgentCredentials, inferenceProvider inference.Provider, inferenceProviderName string, vendor bool, fullsendBinary, fullsendSource, mintProvider, mintProject, mintRegion, mintSourceDir string, mintSkipDeploy bool, mintURL string, skipMintCheck, direct bool, discoveredRepos []forge.Repository) error {
+func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, org string, enabledRepos, roles []string, runtimeName string, agentCreds []layers.AgentCredentials, inferenceProvider inference.Provider, inferenceProviderName string, vendor bool, fullsendBinary, fullsendSource, mintProvider, mintProject, mintRegion, mintSourceDir string, mintSkipDeploy bool, mintURL string, skipMintCheck, direct bool, discoveredRepos []forge.Repository) error {
 	var allRepos []forge.Repository
 	var err error
 
@@ -1640,6 +1661,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	enrolledRepoIDs := collectEnrolledRepoIDs(allRepos, enabledRepos)
 
 	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
+	cfg.Defaults.Runtime = runtimeName
 	cfg.Dispatch.Mode = "oidc-mint"
 
 	user, err := client.GetAuthenticatedUser(ctx)
@@ -2068,7 +2090,15 @@ func runPreflight(ctx context.Context, stack *layers.Stack, op layers.Operation,
 	}
 
 	if result.Skipped {
-		printer.StepWarn("Preflight skipped: fine-grained token detected (scopes cannot be verified)")
+		switch result.SkippedReason {
+		case layers.SkipInstallationToken:
+			printer.StepWarn("Preflight skipped: installation token (OAuth scopes do not apply)")
+		case layers.SkipFineGrained:
+			printer.StepWarn("Preflight skipped: fine-grained token detected (scopes cannot be verified)")
+			printSkipGuidance(printer, result)
+		default:
+			printer.StepWarn(fmt.Sprintf("Preflight skipped: %s", result.SkippedReason))
+		}
 	} else {
 		printer.StepDone("Token permissions verified")
 	}
@@ -2122,6 +2152,21 @@ func printAnalysis(ctx context.Context, stack *layers.Stack, printer *ui.Printer
 	}
 
 	return nil
+}
+
+// loadExistingRuntime reads defaults.runtime from an existing config.yaml in
+// .fullsend, if available. This prevents re-installs without --runtime from
+// silently resetting the runtime selection.
+func loadExistingRuntime(ctx context.Context, client forge.Client, org string) string {
+	data, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
+	if err != nil {
+		return ""
+	}
+	cfg, err := config.ParseOrgConfig(data)
+	if err != nil {
+		return ""
+	}
+	return cfg.Defaults.Runtime
 }
 
 // loadExistingInferenceProvider reads the inference provider name from
@@ -2879,6 +2924,7 @@ func checkTokenScopes(ctx context.Context, client forge.Client, printer *ui.Prin
 
 	if granted == nil {
 		printer.StepWarn("Preflight skipped: fine-grained token detected (scopes cannot be verified)")
+		printSkipGuidance(printer, &layers.PreflightResult{Required: required, Skipped: true, SkippedReason: layers.SkipFineGrained})
 		return nil
 	}
 
@@ -2908,6 +2954,47 @@ func checkTokenScopes(ctx context.Context, client forge.Client, printer *ui.Prin
 
 	printer.StepDone("Token permissions verified")
 	return nil
+}
+
+// printSkipGuidance prints fine-grained permission guidance when
+// preflight is skipped due to a fine-grained token.
+func printSkipGuidance(printer *ui.Printer, result *layers.PreflightResult) {
+	if guidance := result.SkipGuidance(); guidance != "" {
+		for _, line := range strings.Split(guidance, "\n") {
+			if line != "" {
+				printer.StepInfo(line)
+			}
+		}
+	}
+}
+
+func handlePATForbidden(printer *ui.Printer, owner, repo string, err error) error {
+	printer.StepFail("Classic PAT rejected by organization")
+	printer.Blank()
+	printer.ErrorBox("Token not accepted", patForbiddenGuidance(owner, repo))
+	return fmt.Errorf("organization forbids classic PATs: %w", err)
+}
+
+func patForbiddenGuidance(owner, repo string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Organization %q forbids classic personal access tokens.\n\n", owner)
+	b.WriteString("The CLI resolves tokens in this order:\n")
+	b.WriteString("  1. GH_TOKEN environment variable\n")
+	b.WriteString("  2. GITHUB_TOKEN environment variable\n")
+	b.WriteString("  3. gh auth token (GitHub CLI)\n\n")
+	b.WriteString("The token that resolved was rejected. To fix this, create a\n")
+	b.WriteString("fine-grained PAT at https://github.com/settings/personal-access-tokens/new\n")
+	fmt.Fprintf(&b, "scoped to %s/%s with these permissions:\n\n", owner, repo)
+	b.WriteString("  • Contents:      read/write\n")
+	b.WriteString("  • Workflows:     read/write\n")
+	b.WriteString("  • Secrets:       read/write\n")
+	b.WriteString("  • Variables:     read/write\n")
+	b.WriteString("  • Pull requests: read/write (without --direct)\n")
+	b.WriteString("  • Metadata:      read-only  (required by GitHub)\n\n")
+	b.WriteString("Then export it before running setup:\n")
+	fmt.Fprintf(&b, "  export GH_TOKEN=github_pat_...\n")
+	fmt.Fprintf(&b, "  fullsend github setup %s/%s", owner, repo)
+	return b.String()
 }
 
 // Helper functions.

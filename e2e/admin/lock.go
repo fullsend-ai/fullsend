@@ -1,4 +1,7 @@
-//go:build e2e
+//go:build e2e || behaviour
+
+//
+// Shared org-pool helpers for admin e2e and behaviour tests (both use AcquireOrg).
 
 package admin
 
@@ -194,6 +197,11 @@ func releaseLock(ctx context.Context, client forge.Client, org, runID string, t 
 		return
 	}
 	t.Logf("[e2e-lock] Lock released (run: %s)", truncateUUID(runID))
+}
+
+// ReleaseLock deletes the org lock repo when the run still holds it.
+func ReleaseLock(ctx context.Context, client forge.Client, org, runID string, t *testing.T) {
+	releaseLock(ctx, client, org, runID, t)
 }
 
 // tryReclaimStaleLock checks whether the lock on org is stale (older than

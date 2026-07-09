@@ -6,7 +6,7 @@ default agent ships with built-in skills, and you can extend or replace them by
 committing your own skills to your repository.
 
 For general project-wide instructions (code style, test conventions,
-architecture rules), see [Customizing with AGENTS.md](customizing-with-agents-md.md).
+architecture rules), see [Configuring with AGENTS.md](customizing-with-agents-md.md).
 This guide covers skills specifically.
 
 ## What is a skill?
@@ -116,6 +116,10 @@ when available.
 
 ## Overriding built-in skills
 
+> **Deprecated:** The `customized/` overlay described below is deprecated per
+> [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
+> Use `base:` composition and config-driven agent registration instead.
+
 To intentionally **replace** a built-in skill with your own version, use the
 `customized/` overlay ([ADR 0035](../../ADRs/0035-layered-content-resolution.md)).
 This replaces the skill at the config layer before the agent starts — the
@@ -134,7 +138,8 @@ engine, not through project-level skill discovery.
 
 ### Built-in skills
 
-These skills ship with fullsend and can be overridden via `customized/skills/`:
+These skills ship with fullsend and can be overridden via `customized/skills/`
+(deprecated per ADR-0064 — use config-driven agent registration instead):
 
 | Agent | Skill | Purpose |
 |-------|-------|---------|
@@ -158,3 +163,8 @@ apply to all agents and human contributors alike.
 
 - **Don't duplicate AGENTS.md content in skills.** If an instruction applies
   to all agents, put it in `AGENTS.md`. Skills are for agent-specific behavior.
+
+## See also
+
+- [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)
+  — adding skills keeps you in "configured default agent" territory
