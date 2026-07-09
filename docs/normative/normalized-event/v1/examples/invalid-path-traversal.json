@@ -1,0 +1,26 @@
+{
+  "_comment": "INVALID — this fixture demonstrates a repo path containing '..' that adapters MUST reject. The JSON Schema repo_path pattern permits this syntactically; rejection is an adapter-level responsibility.",
+  "repo": "acme-group/../secrets",
+  "entity": {
+    "kind": "change_proposal",
+    "id": 1,
+    "url": "https://gitlab.com/acme-group/../secrets/-/merge_requests/1"
+  },
+  "transition": {
+    "kind": "opened"
+  },
+  "actor": {
+    "id": "attacker",
+    "kind": "human",
+    "role": "external",
+    "is_entity_author": true
+  },
+  "state": {
+    "labels": []
+  },
+  "source": {
+    "system": "gitlab",
+    "raw_type": "merge_request",
+    "raw_action": "opened"
+  }
+}

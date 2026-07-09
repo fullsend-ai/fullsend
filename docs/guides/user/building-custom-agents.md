@@ -1,5 +1,11 @@
 # Building custom agents
 
+> **Deprecated:** This guide uses the `customized/` directory overlay, which is
+> deprecated per [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
+> For new custom agents, register them in `config.yaml` with a local `source:`
+> path instead. Run `fullsend agent migrate-customizations --dry-run` to
+> preview migrating existing customizations.
+
 This guide walks through creating a new custom agent from scratch on a per-repo fullsend installation.
 
 For customizing existing agents (overriding harnesses, skills, or policies), see [Customizing agents](customizing-agents.md).
@@ -67,9 +73,13 @@ cat "$MY_INPUT_FILE" | jq .
 
 [Describe what the agent should extract and how to reason about it]
 
-### Phase 2: Do work
+### Phase 2: Compose a greeting
 
-[Describe the agent's main work — analysis, research, generation, etc.]
+Based on the issue content, compose a friendly greeting that:
+
+- Acknowledges the issue author by mentioning what they reported
+- Confirms the agent has read the issue
+- Is concise (1-2 sentences)
 
 ### Phase 3: Write result
 
@@ -78,7 +88,7 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 ```json
 {
   "status": "complete",
-  "result": { ... }
+  "greeting": "Hello! I've reviewed your issue about [topic]. Thanks for the detailed report!"
 }
 ```
 
@@ -87,6 +97,7 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 - You do NOT write code, create issues, or modify anything.
   Your only output is the JSON result file.
 - The JSON must be valid and parseable. No markdown fences.
+- Keep the greeting under 280 characters.
 ````
 
 ### Key frontmatter fields
@@ -116,20 +127,25 @@ agent: customized/agents/my-agent.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 policy: customized/policies/my-agent.yaml
+role: my-agent
+
+providers:
+  - vertex-ai          # Required: model access (Anthropic API + GCP)
+  - github             # GitHub API + Git transport
 
 host_files:
   # GCP credentials for Vertex AI (required for model access)
   - src: env/gcp-vertex.env
-    dest: /tmp/workspace/.env.d/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
     expand: true
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
-    dest: /tmp/workspace/.gcp-credentials.json
+    dest: /tmp/.gcp-credentials.json
   - src: ${GCP_OIDC_TOKEN_FILE}
-    dest: /tmp/workspace/.gcp-oidc-token
+    dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
   # Your custom input files (written by pre-script)
   - src: /tmp/workspace/my-input.json
-    dest: /tmp/workspace/my-input.json
+    dest: /sandbox/workspace/my-input.json
     optional: true
 
 skills:
@@ -149,6 +165,7 @@ env:
     MY_VAR: "${MY_VAR}"
     ISSUE_KEY: "${ISSUE_KEY}"
     GH_TOKEN: "${GH_TOKEN}"  # auto-minted in CI when --mint-url is provided
+    FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/customized/schemas/my-agent-result.schema.json
 
 timeout_minutes: 20
 
@@ -171,6 +188,8 @@ The agent never has direct access to credentials. The pre-script uses credential
 
 ## Step 3: Define the sandbox policy
 
+The sandbox policy controls filesystem, process, and landlock restrictions. Network access is handled separately through provider profiles (see below).
+
 Create `.fullsend/customized/policies/my-agent.yaml`:
 
 ```yaml
@@ -184,44 +203,59 @@ landlock:
 process:
   run_as_user: sandbox
   run_as_group: sandbox
+```
+
+Most custom agents can reuse the scaffold's `policies/base.yaml` instead of creating their own. Override only when your agent has specific filesystem or process requirements.
+
+### Network access via providers (recommended)
+
+The recommended way to grant network access is through provider profiles declared in the harness. Add a `providers` field to your harness YAML:
+
+```yaml
+providers:
+  - vertex-ai       # Anthropic API + GCP (required for model access)
+  - github           # GitHub API + Git transport
+  - package-registries  # npm, PyPI, Go modules (optional)
+```
+
+Each provider has a profile that defines its endpoints and binaries. When the sandbox starts, the gateway composes these profiles into the effective network policy automatically. This keeps endpoint definitions in one place and avoids copy-pasting network blocks across agents.
+
+The scaffold ships with profiles for common services. To see what's available:
+
+```bash
+ls .fullsend/providers/     # provider definitions (name + type)
+ls .fullsend/profiles/      # profile YAMLs (endpoints + binaries)
+```
+
+For services not covered by existing profiles, you can either create a custom profile or use inline `network_policies` in your policy YAML (both approaches work — composition is additive).
+
+### Network access via inline policies (alternative)
+
+You can also define network rules directly in the policy YAML. This is useful for one-off endpoints specific to a single agent:
+
+```yaml
 network_policies:
-  # Required: Vertex AI for model access
-  vertex_ai:
-    name: vertex-ai
+  my_service:
+    name: my-service
     endpoints:
-      - host: "*.googleapis.com"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-write
-      - host: "api.anthropic.com"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-write
-    binaries:
-      - path: "**/claude"
-      - path: "**/node"
-  # Optional: GitHub API access (if agent needs it)
-  github_api:
-    name: github-api
-    endpoints:
-      - host: "api.github.com"
+      - host: "api.example.com"
         port: 443
         protocol: rest
         enforcement: enforce
         access: read-only
     binaries:
-      - path: "**/gh"
       - path: "**/curl"
 ```
 
+Inline rules and provider-composed rules coexist — composition is additive. If both define the same endpoint, the duplicate is harmless.
+
 ### Policy design principles
 
-- **Vertex AI is always required** — the agent needs it to talk to the LLM.
+- **Vertex AI is always required** — the agent needs it to talk to the LLM. Use the `vertex-ai` provider.
 - **Add network access only for what the agent needs.** If the agent doesn't need web search, don't allow it.
 - **Use `binaries` to restrict which programs can access each endpoint.** This prevents the agent from using unexpected tools to exfiltrate data.
-- **Never allow Jira/internal APIs from the sandbox.** All Jira reads happen in pre-scripts; all Jira writes happen in post-scripts.
+- **Prefer providers for shared services.** Use inline policies only for agent-specific endpoints.
+- **Never allow APIs from the sandbox.** All network reads happen in pre-scripts; all network writes happen in post-scripts.
 
 ## Step 4: Define the output schema
 
@@ -232,18 +266,15 @@ Create `.fullsend/customized/schemas/my-agent-result.schema.json`:
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "My Agent Result",
   "type": "object",
-  "required": ["status"],
+  "required": ["status", "greeting"],
   "properties": {
     "status": {
       "type": "string",
       "enum": ["complete", "needs_input", "error"]
     },
-    "result": {
-      "type": "object"
-    },
-    "comment": {
+    "greeting": {
       "type": "string",
-      "maxLength": 4000
+      "maxLength": 280
     }
   }
 }
@@ -263,12 +294,6 @@ set -euo pipefail
 
 WORKSPACE="/tmp/workspace"
 mkdir -p "$WORKSPACE"
-
-if [[ "${ISSUE_SOURCE}" == "jira" ]]; then
-  AUTH=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)
-  curl -sSf -H "Authorization: Basic $AUTH" \
-    "https://${JIRA_HOST}/rest/api/3/issue/${ISSUE_KEY}" \
-    > "$WORKSPACE/my-input.json"
 
 elif [[ "${ISSUE_SOURCE}" == "github" ]]; then
   gh issue view "$ISSUE_KEY" --repo "$REPO_FULL_NAME" \
@@ -309,7 +334,7 @@ if ! jq empty "${RESULT_FILE}" 2>/dev/null; then
 fi
 
 STATUS=$(jq -r '.status // ""' "${RESULT_FILE}")
-COMMENT=$(jq -r '.comment // ""' "${RESULT_FILE}")
+GREETING=$(jq -r '.greeting // ""' "${RESULT_FILE}")
 
 # Validate status against known values before acting on it.
 case "${STATUS}" in
@@ -324,6 +349,12 @@ case "${STATUS}" in
     exit 1
     ;;
 esac
+
+# Post the greeting as a comment on the issue.
+if [[ -n "${GREETING}" && "${STATUS}" == "complete" ]]; then
+  gh issue comment "${ISSUE_KEY}" --repo "${REPO_FULL_NAME}" --body "${GREETING}"
+  echo "Posted greeting to issue #${ISSUE_KEY}"
+fi
 ```
 
 ### Post-script security considerations
@@ -360,10 +391,14 @@ on:
         required: true
         type: string
       issue_source:
-        description: 'Issue source: jira or github'
+        description: 'Issue source: github'
         required: true
         type: string
         default: 'github'
+
+permissions:
+  contents: read
+  issues: write
 
 concurrency:
   group: my-agent-${{ inputs.issue_key || 'unknown' }}
@@ -429,10 +464,10 @@ jobs:
 
       - name: Run my-agent
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ISSUE_KEY: ${{ inputs.issue_key }}
           ISSUE_SOURCE: ${{ inputs.issue_source || 'github' }}
-          MY_VAR: ABCD
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO_FULL_NAME: ${{ github.repository }}
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}
         run: |
@@ -464,6 +499,49 @@ jobs:
 5. **`ANTHROPIC_VERTEX_PROJECT_ID` and `CLOUD_ML_REGION`** — must be in the workflow `env` block so the `gcp-vertex.env` file (copied into the sandbox with `expand: true`) resolves correctly.
 
 6. **All `env.runner` variables** must appear in the workflow `env` block. If your harness references `MY_VAR: "${MY_VAR}"`, the workflow must set `MY_VAR`.
+
+### Bringing your own identity
+
+To make the agent comment as an application other than `github-actions` create a new application,
+install it in your repository and generate a key for it. Then upload it alongside the app id
+to your repo:
+
+```bash
+gh secret set MY_AGENT_APP_PRIVATE_KEY --repo OWNER/REPO < path/to/private-key.pem
+gh variable set MY_AGENT_APP_ID --repo OWNER/REPO --body "123456"
+```
+
+Next modify the workflow you create to run `fullsend run` to add a new step:
+
+```yaml
+- name: Generate app token
+  id: app-token
+  uses: actions/create-github-app-token@v3
+  with:
+    app-id: ${{ vars.MY_AGENT_APP_ID }}
+    private-key: ${{ secrets.MY_AGENT_APP_PRIVATE_KEY }}
+    repositories: ${{ github.event.repository.name }}
+```
+
+And then modify where the `GH_TOKEN` variable comes from:
+
+```yaml
+- name: Run my-agent
+  env:
+    GH_TOKEN: ${{ steps.app-token.outputs.token }}
+    ...
+```
+
+**Note**: if your agent creates commits, add a step that runs:
+
+```bash
+git config --global user.name "my-agent[bot]"
+git config --global user.email "${{ vars.MY_AGENT_APP_ID }}+my-agent[bot]@users.noreply.github.com"
+```
+
+**Note**: in order to distribute the identity you need to share the PEM and the ID
+or setup a custom mint for your identities. See [Standalone Mint](../infrastructure/standalone-mint.md)
+for more information.
 
 ## Step 8: Trigger the agent
 

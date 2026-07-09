@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -55,6 +56,9 @@ func fakeFunctionSourceDir(t *testing.T) string {
 	os.MkdirAll(mintcoreDir, 0755)
 	os.WriteFile(filepath.Join(mintcoreDir, "go.mod"), []byte("module mintcore\n\ngo 1.23\n"), 0644)
 	os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644)
+	// Add a version.go that should be skipped by bundleFunctionSource
+	// (it generates its own version.go with stamped values).
+	os.WriteFile(filepath.Join(mintcoreDir, "version.go"), []byte("package mintcore\n\nvar Version = \"disk\"\n"), 0644)
 	return dir
 }
 
@@ -351,7 +355,7 @@ func TestProvisioner_Provision_ExistingFunction(t *testing.T) {
 
 func TestProvisioner_Provision_SkipsRedeployWhenUnchanged(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	sourceZip, err := bundleFunctionSource(srcDir)
+	sourceZip, err := bundleFunctionSource(srcDir, "", "")
 	require.NoError(t, err)
 	srcHash := sha256Hex(sourceZip)
 
@@ -394,7 +398,7 @@ func TestProvisioner_Provision_SkipsRedeployWhenUnchanged(t *testing.T) {
 
 func TestProvisioner_Provision_SameHashAutoRoutesToExistingMint(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	sourceZip, err := bundleFunctionSource(srcDir)
+	sourceZip, err := bundleFunctionSource(srcDir, "", "")
 	require.NoError(t, err)
 	srcHash := sha256Hex(sourceZip)
 
@@ -532,7 +536,7 @@ func TestProvisioner_Provision_CodeChanged_UpdatesFunction(t *testing.T) {
 
 func TestProvisioner_Provision_SameCodeNewOrg_EnvVarOnlyUpdate(t *testing.T) {
 	srcDir := fakeFunctionSourceDir(t)
-	sourceZip, err := bundleFunctionSource(srcDir)
+	sourceZip, err := bundleFunctionSource(srcDir, "", "")
 	require.NoError(t, err)
 	srcHash := sha256Hex(sourceZip)
 
@@ -663,6 +667,32 @@ func TestProvisioner_Provision_BundledMode(t *testing.T) {
 	assert.Contains(t, fake.calls, "GetSecret")
 	assert.Contains(t, fake.calls, "CreateSecret")
 	assert.Contains(t, fake.calls, "AddSecretVersion")
+}
+
+func TestProvisioner_Provision_BundledMode_PublicMintSkipsPerRepoWIF(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://fullsend-mint-shared.run.app",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "*",
+		},
+	}
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": "*",
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:  "shared-project",
+		GitHubOrgs: []string{"test-org"},
+		AgentPEMs:  singleRolePEMs(),
+		MintURL:    "https://fullsend-mint-shared.run.app",
+		Repo:       "test-org/my-repo",
+	}, fake)
+
+	vars, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://fullsend-mint-shared.run.app", vars["FULLSEND_MINT_URL"])
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
 }
 
 func TestProvisioner_Provision_BundledMode_MissingProjectID(t *testing.T) {
@@ -1211,7 +1241,7 @@ func TestBundleFunctionSource_EmptyDir(t *testing.T) {
 	os.MkdirAll(mintcoreDir, 0755)
 	os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644)
 
-	_, err := bundleFunctionSource(dir)
+	_, err := bundleFunctionSource(dir, "", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no deployable source files")
 }
@@ -1224,7 +1254,7 @@ func TestBundleFunctionSource_MissingGoMod(t *testing.T) {
 	os.MkdirAll(mintcoreDir, 0755)
 	os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644)
 
-	_, err := bundleFunctionSource(dir)
+	_, err := bundleFunctionSource(dir, "", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing go.mod")
 }
@@ -1240,7 +1270,7 @@ func TestBundleFunctionSource_SkipsTestFiles(t *testing.T) {
 	os.MkdirAll(mintcoreDir, 0755)
 	os.WriteFile(filepath.Join(mintcoreDir, "stub.go"), []byte("package mintcore\n"), 0644)
 
-	data, err := bundleFunctionSource(dir)
+	data, err := bundleFunctionSource(dir, "", "")
 	require.NoError(t, err)
 
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
@@ -1257,7 +1287,7 @@ func TestBundleFunctionSource_SkipsTestFiles(t *testing.T) {
 }
 
 func TestBundleFunctionSource_EmptyPath_UsesEmbedded(t *testing.T) {
-	data, err := bundleFunctionSource("")
+	data, err := bundleFunctionSource("", "", "")
 	require.NoError(t, err)
 	require.NotEmpty(t, data)
 
@@ -1275,7 +1305,7 @@ func TestBundleFunctionSource_EmptyPath_UsesEmbedded(t *testing.T) {
 }
 
 func TestBundleFunctionSource_NonexistentDir_UsesEmbedded(t *testing.T) {
-	data, err := bundleFunctionSource("/nonexistent/path/to/mint")
+	data, err := bundleFunctionSource("/nonexistent/path/to/mint", "", "")
 	require.NoError(t, err)
 	require.NotEmpty(t, data)
 
@@ -1292,7 +1322,7 @@ func TestBundleFunctionSource_NonexistentDir_UsesEmbedded(t *testing.T) {
 }
 
 func TestBundleEmbeddedMintSource(t *testing.T) {
-	data, err := bundleEmbeddedMintSource()
+	data, err := bundleEmbeddedMintSource("", "")
 	require.NoError(t, err)
 	require.NotEmpty(t, data)
 
@@ -1318,7 +1348,112 @@ func TestBundleEmbeddedMintSource(t *testing.T) {
 	assert.Contains(t, names, "mintcore/foreign.go")
 	assert.Contains(t, names, "mintcore/interfaces.go")
 	assert.Contains(t, names, "mintcore/go.sum")
-	assert.Len(t, names, 15)
+	assert.Contains(t, names, "mintcore/version.go")
+	assert.Len(t, names, 16)
+}
+
+func TestBundleEmbeddedMintSource_StampsVersion(t *testing.T) {
+	data, err := bundleEmbeddedMintSource("1.2.3", "deadbeef")
+	require.NoError(t, err)
+
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	require.NoError(t, err)
+
+	for _, f := range zr.File {
+		if f.Name != "mintcore/version.go" {
+			continue
+		}
+		rc, err := f.Open()
+		require.NoError(t, err)
+		content, err := io.ReadAll(rc)
+		rc.Close()
+		require.NoError(t, err)
+
+		src := string(content)
+		assert.Contains(t, src, `Version = "1.2.3"`)
+		assert.Contains(t, src, `Commit  = "deadbeef"`)
+		return
+	}
+	t.Fatal("mintcore/version.go not found in zip")
+}
+
+func TestBundleFunctionSource_StampsVersion(t *testing.T) {
+	srcDir := fakeFunctionSourceDir(t)
+	data, err := bundleFunctionSource(srcDir, "0.99.0", "cafebabe")
+	require.NoError(t, err)
+
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	require.NoError(t, err)
+
+	for _, f := range zr.File {
+		if f.Name != "mintcore/version.go" {
+			continue
+		}
+		rc, err := f.Open()
+		require.NoError(t, err)
+		content, err := io.ReadAll(rc)
+		rc.Close()
+		require.NoError(t, err)
+
+		src := string(content)
+		assert.Contains(t, src, `Version = "0.99.0"`)
+		assert.Contains(t, src, `Commit  = "cafebabe"`)
+		return
+	}
+	t.Fatal("mintcore/version.go not found in zip")
+}
+
+func TestBundleFunctionSource_SkipsOnDiskVersionGo(t *testing.T) {
+	// fakeFunctionSourceDir creates a mintcore/version.go on disk with
+	// Version = "disk". bundleFunctionSource should skip it and generate
+	// its own version.go with the provided version and commit values.
+	srcDir := fakeFunctionSourceDir(t)
+	data, err := bundleFunctionSource(srcDir, "2.0.0", "aabbcc")
+	require.NoError(t, err)
+
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	require.NoError(t, err)
+
+	for _, f := range zr.File {
+		if f.Name != "mintcore/version.go" {
+			continue
+		}
+		rc, err := f.Open()
+		require.NoError(t, err)
+		content, err := io.ReadAll(rc)
+		rc.Close()
+		require.NoError(t, err)
+
+		src := string(content)
+		assert.Contains(t, src, `Version = "2.0.0"`)
+		assert.Contains(t, src, `Commit  = "aabbcc"`)
+		assert.NotContains(t, src, `"disk"`, "on-disk version.go should have been skipped")
+		return
+	}
+	t.Fatal("mintcore/version.go not found in zip")
+}
+
+func TestWriteVersionGoToZip(t *testing.T) {
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	err := writeVersionGoToZip(w, "mintcore/version.go", "3.0.0", "ff0011")
+	require.NoError(t, err)
+	require.NoError(t, w.Close())
+
+	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	require.NoError(t, err)
+	require.Len(t, zr.File, 1)
+
+	rc, err := zr.File[0].Open()
+	require.NoError(t, err)
+	content, err := io.ReadAll(rc)
+	rc.Close()
+	require.NoError(t, err)
+
+	src := string(content)
+	assert.Contains(t, src, "package mintcore")
+	assert.Contains(t, src, `Version = "3.0.0"`)
+	assert.Contains(t, src, `Commit  = "ff0011"`)
 }
 
 func TestEmbeddedMintSource_MatchesOriginal(t *testing.T) {
@@ -1903,6 +2038,174 @@ func TestBuildAttributeCondition(t *testing.T) {
 	})
 }
 
+func TestBuildPublicAttributeCondition(t *testing.T) {
+	assert.Equal(t, publicAttributeCondition, buildPublicAttributeCondition())
+}
+
+func TestIsPublicAttributeCondition(t *testing.T) {
+	assert.True(t, isPublicAttributeCondition(publicAttributeCondition))
+	assert.True(t, isPublicAttributeCondition("  "+publicAttributeCondition+"  "))
+	assert.False(t, isPublicAttributeCondition("assertion.repository_owner == 'acme'"))
+}
+
+func TestProvisioner_Provision_PublicMintFirstDeploy(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetSecret"] = ErrSecretNotFound
+	fake.functionInfoAfterCreate = &FunctionInfo{
+		Name:  "projects/my-project/locations/us-central1/functions/fullsend-mint",
+		State: "ACTIVE",
+		URI:   "https://fullsend-mint-public.run.app",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "*",
+		},
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:         "my-project",
+		PublicMint:        true,
+		AgentPEMs:         singleRolePEMs(),
+		AgentAppIDs:       singleRoleAppIDs(),
+		FunctionSourceDir: fakeFunctionSourceDir(t),
+	}, fake)
+
+	vars, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://fullsend-mint-public.run.app", vars["FULLSEND_MINT_URL"])
+	assert.Equal(t, publicAttributeCondition, fake.lastWIFProviderConfig.AttributeCondition)
+	require.NotNil(t, fake.lastCreateFunctionEnvVars)
+	assert.Equal(t, "*", fake.lastCreateFunctionEnvVars["ALLOWED_ORGS"])
+	assert.NotContains(t, fake.calls, "SetProjectIAMBinding")
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
+func TestProvisioner_Provision_PublicMintRedeploy(t *testing.T) {
+	srcDir := fakeFunctionSourceDir(t)
+	sourceZip, err := bundleFunctionSource(srcDir, "", "")
+	require.NoError(t, err)
+	srcHash := sha256Hex(sourceZip)
+
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		Name:  "projects/my-project/locations/us-central1/functions/fullsend-mint",
+		State: "ACTIVE",
+		URI:   "https://fullsend-mint-public.run.app",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS":           "*",
+			"FULLSEND_SOURCE_HASH":   srcHash,
+			"ROLE_APP_IDS":           `{"coder":"12345"}`,
+			"ALLOWED_ROLES":          "coder",
+			"ALLOWED_WORKFLOW_FILES": "*",
+		},
+	}
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": "*",
+	}
+	fake.wifProvider = &WIFProviderInfo{
+		AttributeCondition: publicAttributeCondition,
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:         "my-project",
+		PublicMint:        true,
+		AgentPEMs:         singleRolePEMs(),
+		AgentAppIDs:       singleRoleAppIDs(),
+		FunctionSourceDir: srcDir,
+	}, fake)
+
+	vars, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://fullsend-mint-public.run.app", vars["FULLSEND_MINT_URL"])
+	assert.Equal(t, publicAttributeCondition, fake.lastWIFProviderConfig.AttributeCondition)
+	assert.NotContains(t, fake.calls, "UpdateFunction")
+}
+
+func TestProvisioner_Provision_PublicIntoTightMintRejected(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		State: "ACTIVE",
+		URI:   "https://fullsend-mint-tight.run.app",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": PlaceholderOrg,
+		},
+	}
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": PlaceholderOrg,
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:         "my-project",
+		PublicMint:        true,
+		AgentPEMs:         singleRolePEMs(),
+		AgentAppIDs:       singleRoleAppIDs(),
+		FunctionSourceDir: fakeFunctionSourceDir(t),
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tight mode")
+	assert.NotContains(t, fake.calls, "CreateWIFProvider")
+}
+
+func TestProvisioner_Provision_TightIntoPublicMintRejected(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		State: "ACTIVE",
+		URI:   "https://fullsend-mint-public.run.app",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "*",
+		},
+	}
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": "*",
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:         "my-project",
+		GitHubOrgs:        []string{PlaceholderOrg},
+		AgentPEMs:         singleRolePEMs(),
+		AgentAppIDs:       singleRoleAppIDs(),
+		FunctionSourceDir: fakeFunctionSourceDir(t),
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--public")
+	assert.NotContains(t, fake.calls, "CreateWIFProvider")
+}
+
+func TestProvisioner_Provision_TightPlaceholderRedeployAllowed(t *testing.T) {
+	srcDir := fakeFunctionSourceDir(t)
+	sourceZip, err := bundleFunctionSource(srcDir, "", "")
+	require.NoError(t, err)
+	srcHash := sha256Hex(sourceZip)
+
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		State: "ACTIVE",
+		URI:   "https://fullsend-mint-tight.run.app",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS":         PlaceholderOrg,
+			"FULLSEND_SOURCE_HASH": srcHash,
+			"ROLE_APP_IDS":         `{"coder":"12345"}`,
+		},
+	}
+	fake.trafficEnvVars = map[string]string{
+		"ALLOWED_ORGS": PlaceholderOrg,
+	}
+
+	p := newTestProvisioner(Config{
+		ProjectID:         "my-project",
+		GitHubOrgs:        []string{PlaceholderOrg},
+		AgentPEMs:         singleRolePEMs(),
+		AgentAppIDs:       singleRoleAppIDs(),
+		FunctionSourceDir: srcDir,
+	}, fake)
+
+	_, err = p.Provision(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "CreateWIFProvider")
+}
+
 func TestBuildRepoProviderID(t *testing.T) {
 	tests := []struct {
 		owner, repo string
@@ -2270,7 +2573,7 @@ func TestEnsureOrgInMint_NilReturn(t *testing.T) {
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
 	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "acme-corp")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not found in project")
+	assert.Contains(t, err.Error(), "mint function not found")
 }
 
 func TestEnsureOrgInMint_LowercasesOrg(t *testing.T) {
@@ -2419,6 +2722,60 @@ func TestEnsureOrgInMint_ProceedsOnFirstEnrollment(t *testing.T) {
 	assert.Equal(t, "new-org", fake.lastUpdateServiceEnvVars["ALLOWED_ORGS"])
 }
 
+func TestParseAllowedOrgsEnv(t *testing.T) {
+	assert.Equal(t, []string{"*"}, mintcore.ParseAllowedOrgs("*"))
+	assert.Equal(t, []string{"org-a", "org-b"}, mintcore.ParseAllowedOrgs(" org-a , org-b "))
+	assert.Nil(t, mintcore.ParseAllowedOrgs(""))
+}
+
+func TestEnsureOrgInMint_PublicModeNoOp(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "*",
+			"ROLE_APP_IDS": `{"coder":"100"}`,
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.EnsureOrgInMint(context.Background(), "https://mint.example.com", "new-org")
+	require.NoError(t, err)
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
+func TestRegisterPerRepoWIF_PublicModeRejected(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "*",
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/my-service")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "public mode")
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
+func TestRemoveOrgFromMint_PublicModeRejected(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.functionInfo = &FunctionInfo{
+		URI: "https://mint.example.com",
+		EnvVars: map[string]string{
+			"ALLOWED_ORGS": "*",
+		},
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	err := p.RemoveOrgFromMint(context.Background(), "acme-corp")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "public mode")
+	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
+}
+
 func TestRegisterPerRepoWIF_AddsNewRepo(t *testing.T) {
 	fake := newFakeGCFClient()
 	fake.functionInfo = &FunctionInfo{
@@ -2463,14 +2820,14 @@ func TestRegisterPerRepoWIF_Idempotent(t *testing.T) {
 	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
 }
 
-func TestRegisterPerRepoWIF_FunctionNotFound(t *testing.T) {
+func TestRegisterPerRepoWIF_ServiceNotFound(t *testing.T) {
 	fake := newFakeGCFClient()
-	fake.functionInfo = nil
+	fake.errs["GetServiceTrafficEnvVars"] = fmt.Errorf("unexpected status 404 getting Cloud Run service")
 
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
 	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/my-service")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "mint function not found")
+	assert.Contains(t, err.Error(), "reading traffic-serving env vars")
 }
 
 func TestRegisterPerRepoWIF_LowercasesRepo(t *testing.T) {
@@ -2520,12 +2877,12 @@ func TestRegisterPerRepoWIF_NilEnvVars(t *testing.T) {
 
 func TestRegisterPerRepoWIF_GetFunctionError(t *testing.T) {
 	fake := newFakeGCFClient()
-	fake.errs["GetFunction"] = fmt.Errorf("permission denied")
+	fake.errs["GetServiceTrafficEnvVars"] = fmt.Errorf("permission denied")
 
 	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
 	err := p.RegisterPerRepoWIF(context.Background(), "acme-corp/my-service")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "getting mint function")
+	assert.Contains(t, err.Error(), "reading traffic-serving env vars")
 }
 
 func TestRegisterPerRepoWIF_PartialFailureSurfacesRevision(t *testing.T) {
@@ -3269,4 +3626,21 @@ func TestRemoveRoleFromMint_UpdateEnvVarsError(t *testing.T) {
 	err := p.RemoveRoleFromMint(context.Background(), "review")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "updating mint env vars")
+}
+
+func TestDiscoverMint_FallsBackToCloudRunOnCFForbidden(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetFunction"] = fmt.Errorf("unexpected status 403 checking function: Permission 'cloudfunctions.functions.get' denied")
+	fake.functionInfo = &FunctionInfo{URI: "https://mint.example.com"}
+	fake.trafficEnvVars = map[string]string{
+		"ROLE_APP_IDS": `{"triage":"123"}`,
+	}
+
+	p := NewProvisioner(Config{ProjectID: "proj1", Region: "us-central1"}, fake)
+	d, err := p.DiscoverMint(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "https://mint.example.com", d.URL)
+	assert.Equal(t, map[string]string{"triage": "123"}, d.RoleAppIDs)
+	assert.Contains(t, fake.calls, "GetCloudRunServiceURI")
+	assert.Contains(t, fake.calls, "GetServiceTrafficEnvVars")
 }

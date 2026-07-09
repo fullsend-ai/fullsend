@@ -42,7 +42,11 @@ fullsend
 │   ├── add          <url-or-path>            # Register an agent (URL auto-pinned)
 │   ├── list                                  # List registered agents
 │   ├── update       <name> [sha]             # Re-pin URL agent to new commit SHA
-│   └── remove       <name>                   # Unregister agent from config
+│   ├── remove       <name>                   # Unregister agent from config
+│   └── migrate-customizations               # Migrate customized/ → config agents
+│       ├── --fullsend-dir <dir>             #   Base directory with .fullsend layout
+│       ├── --repo <owner/repo>              #   Target repo for migration PR
+│       └── --dry-run                        #   Preview changes without PR
 ├── lock             [agent-name]              # Pin remote deps to lock.yaml
 │   ├── --all                                #   Lock all harnesses in the harness directory
 │   ├── --fullsend-dir <path>                #   Base directory with .fullsend layout
@@ -84,6 +88,28 @@ fullsend
     ├── --mint-url <url>                     #   Mint service URL for on-demand token (default: $FULLSEND_MINT_URL)
     └── --role <string>                      #   Agent role for minting (required with --mint-url)
 ```
+
+### Migrate Customizations
+
+The `fullsend agent migrate-customizations` command converts `customized/` directory overlays (deprecated by [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md)) into config-driven agents with `base:` composition harnesses. It scans the local `customized/` directory, classifies each override, and delivers changes via PR:
+
+```bash
+# Preview what would change (no PR created)
+fullsend agent migrate-customizations --fullsend-dir .fullsend --dry-run
+
+# Create a migration PR
+fullsend agent migrate-customizations --fullsend-dir .fullsend --repo owner/repo
+```
+
+Migration actions per agent:
+
+| Override type | Detection | Action |
+|---------------|-----------|--------|
+| Dead | Agent already registered in config | Delete customized files |
+| Custom | Not in upstream scaffold | Move files, register local path in config |
+| Modified | Standard scaffold agent, not in config | Compute `base:` composition harness via `DiffHarness`, register in config |
+
+The diff engine (`internal/harness/diff.go`) computes the minimal child harness that reproduces the customized version when composed with the upstream base. It mirrors `mergeBaseIntoChild` semantics: scalar overrides, slice concatenation extras, map merge deltas, and security fields always included.
 
 ### Command Decomposition
 
@@ -186,7 +212,8 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │ Phase 5: Write scaffold + config files                     │ │
 │  │                                                            │ │
-│  │  Both modes: write workflow files + customized/ dirs       │ │
+│  │  Both modes: write workflow files (customized/ deprecated  │ │
+│  │  by ADR-0064; use migrate-customizations to convert)      │ │
 │  │  CommitScaffoldFiles() delivery modes:                      │ │
 │  │    Default (PR):  create feature branch → commit → open PR │ │
 │  │    --direct:      try CommitFiles (default branch)         │ │
@@ -243,7 +270,7 @@ Both modes call the same functions (`runAppSetup`, `gcf.NewProvisioner`, `Provis
 | **2. App setup** | `runAppSetup()` → PEMs + App IDs | All 7 roles by default | Excludes "fullsend" role |
 | **3. Mint** | `gcf.Provision()` or `EnsureOrgInMint()` | — | + `RegisterPerRepoWIF()` |
 | **4. WIF** | `ProvisionWIF()` | Org-wide provider ID | `mintcore.BuildRepoProviderID()` (repo-scoped) |
-| **5. Scaffold** | `scaffold.PerRepoCustomizedDirs()` / `WalkFullsendRepo()` | Creates `.fullsend` repo, pushes workflows + optional binary | Writes `.fullsend/` dir + shim workflow + optional binary in target repo |
+| **5. Scaffold** | `repos.BuildScaffoldFiles()` (via `scaffold.CollectPerRepoInstallFiles()`) | Creates `.fullsend` repo, pushes workflows + optional binary | Writes `.fullsend/` dir + shim workflow + optional binary in target repo |
 | **6. Secrets** | Same secret names, same API calls | Config repo + org variable | Target repo + `PER_REPO_GUARD` |
 | **7. Enrollment** | — | `EnrollmentLayer` enables repos | No-op (self-contained) |
 
@@ -267,7 +294,7 @@ Install:      process 1→8 (forward)
 Uninstall:    process 8→1 (reverse)
 ```
 
-Per-repo mode does not use the layer stack — it runs the same phases inline in `runPerRepoInstall()` and `runGitHubSetupPerRepo()` since there's no need for composable uninstall ordering with a single repo. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers; per-org mode uses `VendorBinaryLayer`.
+Per-repo mode does not use the layer stack — `runPerRepoInstall()` delegates to `repos.Install()` (from `internal/repos`) for the core install logic (guard check, WIF provisioning, scaffold commit, variable/secret writes), while `runGitHubSetupPerRepo()` handles GitHub-specific setup. There's no need for composable uninstall ordering with a single repo. Vendoring (when `--vendor` is set) and stale asset cleanup are handled inline or via shared helpers; per-org mode uses `VendorBinaryLayer`.
 
 ### Binary acquisition (`internal/binary`)
 
@@ -549,6 +576,7 @@ var executableFiles = map[string]struct{}{
 |------|-------|---------|
 | `internal/cli/root.go` | ~34 | CLI entry point, command registration |
 | `internal/cli/admin.go` | ~2415 | Install/uninstall/analyze/enable/disable |
+| `internal/cli/migrate.go` | ~520 | Migrate customized/ overrides to config-driven agents |
 | `internal/cli/mint.go` | ~1022 | Mint deploy/enroll/unenroll/status |
 | `internal/cli/inference.go` | ~408 | Inference WIF provision/status |
 | `internal/cli/github.go` | ~966 | GitHub setup/set/status/uninstall/sync-scaffold/enroll/unenroll |

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -16,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/spf13/cobra"
 
@@ -49,7 +52,35 @@ const (
 
 	// metricsFile is the filename written to the run directory with behavioral metrics.
 	metricsFile = "metrics.json"
+
+	// Default agents repository for runtime fallback when an agent is not
+	// registered in config. The binary resolves the commit SHA for the
+	// floating version tag (config.DefaultUpstreamRef) and fetches the
+	// harness dynamically.
+	defaultAgentsRepoOwner = "fullsend-ai"
+	defaultAgentsRepoName  = "agents"
 )
+
+// defaultAgentsRepoURLPrefix is the base URL for fetching agent harnesses
+// from the agents repository. It is a var (not const) to allow test overrides.
+var defaultAgentsRepoURLPrefix = "https://raw.githubusercontent.com/fullsend-ai/agents/"
+
+// defaultAgentsRepoKnownAgents lists first-party agents available in the
+// fullsend-ai/agents repository. Only these agents are eligible for the
+// runtime fallback — custom agents are never tried against the agents repo.
+//
+// This is a transitional mechanism to support agent extraction (see
+// docs/plans/agent-extraction-to-agents-repo.md). It will be removed once
+// all users have migrated to config-driven agent registration (ADR 0058
+// Phase 5 / extraction plan Step 7).
+var defaultAgentsRepoKnownAgents = map[string]bool{
+	"triage":     true,
+	"code":       true,
+	"fix":        true,
+	"review":     true,
+	"retro":      true,
+	"prioritize": true,
+}
 
 // statusMintToken is the test seam for minting tokens. Shared by both
 // setupStatusNotifier (status comment tokens) and mintAgentToken (agent
@@ -102,6 +133,80 @@ func writeMetricsJSON(dir string, m aggregateMetrics) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(dir, metricsFile), append(data, '\n'), 0o644)
+}
+
+var (
+	errParsingConfigRuntime = errors.New("parsing config for runtime selection")
+	errResolvingRuntime     = errors.New("resolving runtime")
+)
+
+func resolveBackendFromConfigData(orgConfigData []byte) (agentruntime.Backend, error) {
+	if isOrgConfigData(orgConfigData) {
+		orgCfg, orgErr := config.ParseOrgConfig(orgConfigData)
+		if orgErr != nil {
+			return agentruntime.Backend{}, fmt.Errorf("%w: %w", errParsingConfigRuntime, orgErr)
+		}
+		backend, resolveErr := agentruntime.ResolveFromConfig(orgCfg)
+		if resolveErr != nil {
+			return agentruntime.Backend{}, fmt.Errorf("%w: %w", errResolvingRuntime, resolveErr)
+		}
+		return backend, nil
+	}
+	perRepoCfg, perRepoErr := config.ParsePerRepoConfig(orgConfigData)
+	if perRepoErr != nil {
+		return agentruntime.Backend{}, fmt.Errorf("%w: %w", errParsingConfigRuntime, perRepoErr)
+	}
+	backend, resolveErr := agentruntime.ResolveFromPerRepoConfig(perRepoCfg)
+	if resolveErr != nil {
+		return agentruntime.Backend{}, fmt.Errorf("%w: %w", errResolvingRuntime, resolveErr)
+	}
+	return backend, nil
+}
+
+func isOrgConfigData(data []byte) bool {
+	text := string(data)
+	if strings.Contains(text, "fullsend per-repo configuration") {
+		return false
+	}
+	if strings.Contains(text, "fullsend organization configuration") {
+		return true
+	}
+	var probe struct {
+		Dispatch *struct {
+			Platform string `yaml:"platform"`
+		} `yaml:"dispatch"`
+		Defaults *struct {
+			Roles []string `yaml:"roles"`
+		} `yaml:"defaults"`
+		Repos map[string]any `yaml:"repos"`
+	}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return false
+	}
+	return probe.Dispatch != nil || probe.Defaults != nil || len(probe.Repos) > 0
+}
+
+func backendFromConfigFile(path string) (agentruntime.Backend, string, error) {
+	data, readErr := os.ReadFile(path)
+	source := path
+	if readErr != nil && os.IsNotExist(readErr) {
+		alt := filepath.Join(filepath.Dir(path), ".fullsend", "config.yaml")
+		data, readErr = os.ReadFile(alt)
+		if readErr == nil {
+			source = alt
+		}
+	}
+	if readErr == nil {
+		backend, resolveErr := resolveBackendFromConfigData(data)
+		if resolveErr != nil {
+			return agentruntime.Backend{}, source, resolveErr
+		}
+		return backend, source, nil
+	}
+	if os.IsNotExist(readErr) {
+		return agentruntime.Default(), "default (config not found)", nil
+	}
+	return agentruntime.Backend{}, source, fmt.Errorf("reading config.yaml for runtime selection: %w", readErr)
 }
 
 func newRunCmd() *cobra.Command {
@@ -223,8 +328,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		GitToken:      composeGitToken,
 	}
 
-	// Resolve agent source: config agents take precedence over disk harnesses.
-	harnessPath, fetchDeps, err := resolveAgentSource(ctx, absFullsendDir, agentName, orgCfg, composeOpts, printer)
+	// Resolve agent source: config agents take precedence, then agents repo
+	// fallback, then disk harnesses.
+	var fallbackForgeClient forge.Client
+	if composeGitToken != "" {
+		fallbackForgeClient = gh.New(composeGitToken)
+	}
+	harnessPath, fetchDeps, err := resolveAgentSource(ctx, absFullsendDir, agentName, fallbackForgeClient, orgCfg, composeOpts, printer)
 	if err != nil {
 		return err
 	}
@@ -236,6 +346,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// field (ADR-0045 resource resolution for config-registered agents).
 	if len(fetchDeps) > 0 && fetchDeps[0].URL != "" {
 		composeOpts.SourceURL = fetchDeps[0].URL
+
+		// Propagate the default allowlist when the agents-repo fallback
+		// set SourceURL. tryAgentsRepoFallback defaults internally for
+		// its own fetch, but that local default wasn't reaching
+		// LoadWithBase → resolveBaseScripts. Scoped to the fallback
+		// path to preserve the deny-all contract for config-present
+		// harnesses with URL bases. See #3396.
+		propagateDefaultAllowlist(&composeOpts)
 	}
 
 	// If the harness has a URL base and org config failed to load,
@@ -569,20 +687,69 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	// 2b. Ensure providers exist on the gateway (if any declared).
 	if len(h.Providers) > 0 {
+		// Enable provider-backed policy composition on the gateway.
+		provV2Start := time.Now()
+		printer.StepStart("Enabling providers v2")
+		if err := sandbox.EnableProvidersV2(); err != nil {
+			printer.StepFail("Failed to enable providers v2")
+			return fmt.Errorf("enabling providers v2: %w", err)
+		}
+		printer.StepDone(fmt.Sprintf("Providers v2 enabled (%.1fs)", time.Since(provV2Start).Seconds()))
+
+		// Import provider profiles (if profiles/ directory exists).
+		profilesDir := filepath.Join(absFullsendDir, "profiles")
+		profileStart := time.Now()
+		printer.StepStart("Importing provider profiles")
+		if err := sandbox.ImportProfiles(profilesDir); err != nil {
+			printer.StepFail("Failed to import provider profiles")
+			return fmt.Errorf("importing provider profiles: %w", err)
+		}
+		printer.StepDone(fmt.Sprintf("Provider profiles imported (%.1fs)", time.Since(profileStart).Seconds()))
+
 		providersDir := filepath.Join(absFullsendDir, "providers")
-		providerDefs, err := harness.LoadProviderDefs(providersDir)
+		declared := make(map[string]struct{}, len(h.Providers))
+		for _, p := range h.Providers {
+			declared[p] = struct{}{}
+		}
+		providerDefs, err := harness.LoadProviderDefs(providersDir, declared)
 		if err != nil {
 			printer.StepFail("Failed to load provider definitions")
 			return fmt.Errorf("loading provider definitions: %w", err)
 		}
+		created := make(map[string]struct{}, len(providerDefs))
+		var (
+			mu   sync.Mutex
+			wg   sync.WaitGroup
+			errs []error
+		)
 		for _, pd := range providerDefs {
-			providerStart := time.Now()
-			printer.StepStart("Ensuring provider: " + pd.Name)
-			if err := sandbox.EnsureProvider(pd.Name, pd.Type, pd.Credentials, pd.Config); err != nil {
-				printer.StepFail("Failed to create provider " + pd.Name)
-				return fmt.Errorf("ensuring provider %q: %w", pd.Name, err)
+			if _, ok := declared[pd.Name]; !ok {
+				continue
 			}
-			printer.StepDone(fmt.Sprintf("Provider ready: %s (%.1fs)", pd.Name, time.Since(providerStart).Seconds()))
+			created[pd.Name] = struct{}{}
+			wg.Add(1)
+			go func(pd harness.ProviderDef) {
+				defer wg.Done()
+				providerStart := time.Now()
+				printer.StepStart("Ensuring provider: " + pd.Name)
+				if err := sandbox.EnsureProvider(pd.Name, pd.Type, pd.Credentials, pd.Config); err != nil {
+					printer.StepFail("Failed to create provider " + pd.Name)
+					mu.Lock()
+					errs = append(errs, fmt.Errorf("ensuring provider %q: %w", pd.Name, err))
+					mu.Unlock()
+					return
+				}
+				printer.StepDone(fmt.Sprintf("Provider ready: %s (%.1fs)", pd.Name, time.Since(providerStart).Seconds()))
+			}(pd)
+		}
+		wg.Wait()
+		if err := errors.Join(errs...); err != nil {
+			return err
+		}
+		for _, p := range h.Providers {
+			if _, ok := created[p]; !ok {
+				printer.StepWarn(fmt.Sprintf("Provider %q declared in harness but no definition found in %s", p, providersDir))
+			}
 		}
 	}
 
@@ -743,7 +910,21 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// 7. Bootstrap sandbox.
-	backend := agentruntime.Default()
+	var backend agentruntime.Backend
+	orgConfigPath = filepath.Join(absFullsendDir, "config.yaml")
+	backend, configSource, backendErr := backendFromConfigFile(orgConfigPath)
+	if backendErr != nil {
+		switch {
+		case errors.Is(backendErr, errParsingConfigRuntime):
+			printer.StepFail("Failed to parse config.yaml")
+		case errors.Is(backendErr, errResolvingRuntime):
+			printer.StepFail("Failed to resolve runtime")
+		default:
+			printer.StepFail("Failed to load config.yaml")
+		}
+		return backendErr
+	}
+	fmt.Fprintf(os.Stderr, "runtime: selected %q from %s\n", backend.Runtime.Name(), configSource)
 	rt := backend.Runtime
 	tx := backend.Transcripts
 	bootstrapStart := time.Now()
@@ -992,6 +1173,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			AgentBaseName: agentBaseName,
 			Model:         h.Model,
 			RepoDir:       remoteRepositoryDir,
+			FullsendDir:   absFullsendDir,
 			PluginDirs:    pluginDirs,
 			Debug:         debug,
 			Timeout:       timeout,
@@ -2346,15 +2528,8 @@ func setupStatusNotifier(fullsendDir string, role string, sOpts statusOpts, prin
 
 	var notifyCfg config.StatusNotificationConfig
 	orgConfigPath := filepath.Join(fullsendDir, "config.yaml")
-	if data, err := os.ReadFile(orgConfigPath); err == nil {
-		orgCfg, parseErr := config.ParseOrgConfig(data)
-		if parseErr != nil {
-			printer.StepWarn("Failed to parse config.yaml for status notifications: " + parseErr.Error())
-		} else if orgCfg.Defaults.StatusNotifications != nil {
-			notifyCfg = *orgCfg.Defaults.StatusNotifications
-		}
-	} else if !os.IsNotExist(err) {
-		printer.StepWarn("Failed to read config.yaml for status notifications: " + err.Error())
+	if orgCfg := tryLoadFullsendConfig(orgConfigPath, printer); orgCfg != nil && orgCfg.Defaults.StatusNotifications != nil {
+		notifyCfg = *orgCfg.Defaults.StatusNotifications
 	}
 
 	sha := os.Getenv("GITHUB_SHA")
@@ -2592,11 +2767,15 @@ func validateRepoNames(repos []string) error {
 }
 
 // resolveAgentSource resolves the harness path for an agent, checking
-// config-registered agents before falling back to disk-based lookup.
+// config-registered agents first, then falling back to the agents repo
+// (fullsend-ai/agents), then to disk-based lookup.
 // Returns the local filesystem path to the harness (cached for URL sources)
 // and any fetch dependencies from URL-based agent resolution.
-func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, orgCfg *config.OrgConfig, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, error) {
+func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forgeClient forge.Client, orgCfg *config.OrgConfig, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, error) {
 	if orgCfg == nil || len(orgCfg.Agents) == 0 {
+		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
+			return path, deps, nil
+		}
 		path, err := resolveHarnessPath(fullsendDir, agentName, printer)
 		return path, nil, err
 	}
@@ -2621,6 +2800,9 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, orgC
 
 	agent := config.LookupMergedAgent(merged, agentName)
 	if agent == nil || !agent.IsConfig {
+		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
+			return path, deps, nil
+		}
 		path, err := resolveHarnessPath(fullsendDir, agentName, printer)
 		return path, nil, err
 	}
@@ -2645,6 +2827,124 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, orgC
 	}
 	printer.StepDone(fmt.Sprintf("Agent %s resolved from config (local path)", agent.Name))
 	return contained, nil, nil
+}
+
+// propagateDefaultAllowlist ensures composeOpts carries the default
+// allowed-remote-resources list when no org config supplied one.
+// tryAgentsRepoFallback applies this default internally for its own fetch,
+// but the caller must also propagate it so that downstream harness
+// composition (LoadWithBase → resolveBaseScripts) sees a consistent
+// allowlist. See #3396.
+//
+// This applies when OrgAllowlist is nil (no config.yaml, or config.yaml
+// omits allowed_remote_resources). An explicitly empty list ([]string{})
+// is left as-is to preserve deny-all semantics — orgs that want no remote
+// resources must write an explicit empty allowed_remote_resources: [].
+func propagateDefaultAllowlist(opts *harness.ComposeOpts) {
+	if opts.OrgAllowlist == nil {
+		opts.OrgAllowlist = config.DefaultAllowedRemoteResources()
+	}
+}
+
+// tryAgentsRepoFallback attempts to resolve an agent from the default agents
+// repository (fullsend-ai/agents) by fetching the latest harness from the
+// main branch. This is a transitional mechanism to support the extraction of
+// first-party agents into a separate repository (fullsend-ai/agents) without
+// requiring config changes from existing users.
+//
+// Returns (path, deps, true) on success, or ("", nil, false) if the fallback
+// should be skipped (offline, no forge client, agent not known, not allowlisted, etc.).
+// All errors are non-fatal — the caller falls through to disk-based lookup.
+func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, bool) {
+	normalizedName := strings.ToLower(agentName)
+	if !defaultAgentsRepoKnownAgents[normalizedName] {
+		return "", nil, false
+	}
+	if composeOpts.FetchPolicy.Offline {
+		return "", nil, false
+	}
+	if forgeClient == nil {
+		return "", nil, false
+	}
+
+	allowlist := composeOpts.OrgAllowlist
+	if allowlist == nil {
+		allowlist = config.DefaultAllowedRemoteResources()
+	}
+
+	tagRef := "tags/" + config.DefaultUpstreamRef
+	tagSHA, err := forgeClient.GetRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, tagRef)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Could not resolve %s/%s@%s: %v", defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef, err))
+		return "", nil, false
+	}
+	if !commitSHAPattern.MatchString(tagSHA) {
+		printer.StepWarn(fmt.Sprintf("Invalid SHA from %s/%s@%s: %q", defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef, tagSHA))
+		return "", nil, false
+	}
+
+	rawURL := defaultAgentsRepoURLPrefix + tagSHA + "/harness/" + normalizedName + ".yaml"
+
+	if harness.MatchingAllowedPrefixInList(rawURL, allowlist) == "" {
+		printer.StepWarn(fmt.Sprintf("Agents repo fallback skipped for %s: URL not in allowed_remote_resources", agentName))
+		return "", nil, false
+	}
+
+	shortSHA := tagSHA
+	if len(shortSHA) > 12 {
+		shortSHA = shortSHA[:12]
+	}
+	printer.StepStart(fmt.Sprintf("Fetching agent %s from %s/%s@%s", agentName, defaultAgentsRepoOwner, defaultAgentsRepoName, shortSHA))
+
+	content, err := fetch.FetchURL(ctx, rawURL, composeOpts.FetchPolicy)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to fetch agent %s from agents repo: %v", agentName, err))
+		return "", nil, false
+	}
+
+	// Content is fetched once and used directly — no self-referential hash
+	// verification. Supply-chain integrity relies on the commit-pinned URL,
+	// TLS transport, and the org allowlist. Config-registered agents get
+	// stronger pinning because their hashes are set at enrollment time.
+	contentHash := fetch.ComputeSHA256(content)
+
+	if err := fetch.CachePut(composeOpts.WorkspaceRoot, rawURL, content); err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to cache agents repo content: %v", err))
+		return "", nil, false
+	}
+
+	cachePath, err := fetch.CachePath(composeOpts.WorkspaceRoot, contentHash)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Failed to resolve cache path for agent %s: %v", agentName, err))
+		return "", nil, false
+	}
+	localPath := filepath.Join(cachePath, "content")
+
+	if composeOpts.AuditLogPath != "" {
+		if err := fetch.AppendFetchAudit(composeOpts.AuditLogPath, fetch.FetchAuditEntry{
+			TraceID:   composeOpts.TraceID,
+			FetchTime: time.Now().UTC(),
+			URL:       rawURL,
+			SHA256:    contentHash,
+			FetchType: "static",
+			AllowedBy: harness.MatchingAllowedPrefixInList(rawURL, allowlist),
+			CacheHit:  false,
+		}); err != nil {
+			printer.StepWarn(fmt.Sprintf("Failed to write fetch audit log: %v", err))
+		}
+	}
+
+	dep := harness.Dependency{
+		Field:     "base",
+		URL:       rawURL,
+		LocalPath: localPath,
+		SHA256:    contentHash,
+		FetchedAt: time.Now().UTC(),
+		Type:      "file",
+	}
+
+	printer.StepDone(fmt.Sprintf("Agent %s resolved from %s/%s@%s", agentName, defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef))
+	return localPath, []harness.Dependency{dep}, true
 }
 
 // containedLocalPath resolves a relative source path against baseDir and

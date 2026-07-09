@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -17,16 +19,49 @@ func configAgentNames(agents []config.AgentEntry) []string {
 	return names
 }
 
-// tryLoadOrgConfig attempts to load org config from the given path.
-// Returns nil without error when the file is absent (best-effort).
-// Logs warnings via printer for non-ENOENT read errors and parse errors.
-func tryLoadOrgConfig(path string, printer *ui.Printer) *config.OrgConfig {
+// isPerRepoYAML probes raw YAML for structural markers that distinguish
+// PerRepoConfig from OrgConfig. OrgConfig has org-only top-level keys
+// (dispatch, repos, inference, defaults); PerRepoConfig never does. When
+// no org-only key is present we default to per-repo: the shared fields
+// parse identically under either parser, and this avoids silently
+// dropping the per-repo Roles field on configs that omit it.
+func isPerRepoYAML(data []byte) bool {
+	var probe map[string]interface{}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return false
+	}
+	for _, key := range []string{"dispatch", "repos", "inference", "defaults"} {
+		if _, ok := probe[key]; ok {
+			return false
+		}
+	}
+	return true
+}
+
+// tryLoadFullsendConfig attempts to load an org or per-repo config.yaml
+// from the given path. Returns nil without error when the file is absent
+// (best-effort). Per-repo config is adapted to OrgConfig via
+// OrgConfigFromPerRepo so callers see a unified type.
+func tryLoadFullsendConfig(path string, printer *ui.Printer) *config.OrgConfig {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			printer.StepWarn("Org config unreadable (remote resource allowlist unavailable): " + err.Error())
+			printer.StepWarn("Fullsend config unreadable (remote resource allowlist unavailable): " + err.Error())
 		}
 		return nil
+	}
+	var probe interface{}
+	if yamlErr := yaml.Unmarshal(data, &probe); yamlErr != nil {
+		printer.StepWarn("Config malformed (remote resource allowlist unavailable): " + yamlErr.Error())
+		return nil
+	}
+	if isPerRepoYAML(data) {
+		perRepo, perRepoErr := config.ParsePerRepoConfig(data)
+		if perRepoErr != nil {
+			printer.StepWarn("Per-repo config malformed (remote resource allowlist unavailable): " + perRepoErr.Error())
+			return nil
+		}
+		return config.OrgConfigFromPerRepo(perRepo)
 	}
 	cfg, parseErr := config.ParseOrgConfig(data)
 	if parseErr != nil {
@@ -36,17 +71,33 @@ func tryLoadOrgConfig(path string, printer *ui.Printer) *config.OrgConfig {
 	return cfg
 }
 
-// requireOrgConfig loads org config from the given path with strict error
-// handling. Returns differentiated errors for missing files, unreadable
-// files, and parse failures.
-func requireOrgConfig(path string, printer *ui.Printer) (*config.OrgConfig, error) {
+// tryLoadOrgConfig loads an org or per-repo config.yaml (best-effort).
+var tryLoadOrgConfig = tryLoadFullsendConfig
+
+// requireFullsendConfig loads an org or per-repo config.yaml from the
+// given path with strict error handling. Returns differentiated errors
+// for missing files, unreadable files, and parse failures.
+func requireFullsendConfig(path string, printer *ui.Printer) (*config.OrgConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		printer.StepFail("Failed to load org config")
+		printer.StepFail("Failed to load fullsend config")
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("URL-referenced resources require an org-level config.yaml with allowed_remote_resources (expected at %s)", path)
+			return nil, fmt.Errorf("URL-referenced resources require a config.yaml with allowed_remote_resources (expected at %s)", path)
 		}
-		return nil, fmt.Errorf("reading org config for remote resource validation: %w", err)
+		return nil, fmt.Errorf("reading fullsend config for remote resource validation: %w", err)
+	}
+	var probe interface{}
+	if yamlErr := yaml.Unmarshal(data, &probe); yamlErr != nil {
+		printer.StepFail("Failed to parse config")
+		return nil, fmt.Errorf("parsing config: %w", yamlErr)
+	}
+	if isPerRepoYAML(data) {
+		perRepo, perRepoErr := config.ParsePerRepoConfig(data)
+		if perRepoErr != nil {
+			printer.StepFail("Failed to parse per-repo config")
+			return nil, fmt.Errorf("parsing per-repo config: %w", perRepoErr)
+		}
+		return config.OrgConfigFromPerRepo(perRepo), nil
 	}
 	cfg, parseErr := config.ParseOrgConfig(data)
 	if parseErr != nil {
@@ -55,3 +106,6 @@ func requireOrgConfig(path string, printer *ui.Printer) (*config.OrgConfig, erro
 	}
 	return cfg, nil
 }
+
+// requireOrgConfig loads an org or per-repo config.yaml (strict).
+var requireOrgConfig = requireFullsendConfig

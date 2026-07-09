@@ -75,6 +75,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | Developer | `fullsend agent list` | List registered agents and their sources |
 | Developer | `fullsend agent update <name> [sha]` | Re-pin a URL agent to a new commit SHA |
 | Developer | `fullsend agent remove <name>` | Unregister an agent from config |
+| Developer | `fullsend agent migrate-customizations` | Migrate `customized/` overlays to config-driven agents via PR |
 
 The typical handoff: a GCP admin runs `mint deploy` + `mint enroll` + `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`.
 

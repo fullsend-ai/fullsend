@@ -15,7 +15,7 @@ Playwright or stored sessions.
 
 Before running e2e locally or in CI:
 
-1. **Pool orgs** (`halfsend-01` … `halfsend-06`) provisioned per [Pool org provisioning](#pool-org-provisioning) below
+1. **Pool orgs** (`halfsend-01` … `halfsend-12`) provisioned per [Pool org provisioning](#pool-org-provisioning) below
 2. **Mint** deployed with `e2e` role enrolled and `ALLOWED_ORGS` including `fullsend-ai`
 3. **CI only:** pool orgs with `FULLSEND_FOREIGN_E2E_REPOS` authorizing `fullsend-ai/fullsend`
 4. **Local only:** `gh auth login` (or `GH_TOKEN` / `GITHUB_TOKEN`) with admin access on pool orgs
@@ -36,10 +36,12 @@ Optional environment variables:
 | `GH_TOKEN` / `GITHUB_TOKEN` | Override token source for local runs |
 | `FULLSEND_MINT_URL` | Override mint endpoint (default: hosted public mint, same as `fullsend admin --mint-url`) |
 | `E2E_LOCK_TIMEOUT` | Max wait for a free pool org (default 10m) |
-| `E2E_GCP_PROJECT_ID` | GCP project for inference-related setup (if needed) |
+| `E2E_GCP_PROJECT_ID` | GCP project for inference setup (`github setup --inference-project`) |
+
+Behaviour tests use the same pool orgs but install via `fullsend github setup` (per-repo) instead of `fullsend admin install`. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
 
 Tests acquire an exclusive lock on one org from the pool (`halfsend-01` …
-`halfsend-06`) — see [ADR 0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md).
+`halfsend-12`) — see [ADR 0040](../../ADRs/0040-org-pool-for-parallel-e2e-tests.md).
 
 ## CI runs
 
@@ -55,9 +57,33 @@ Required repository secrets:
 |--------|---------|
 | `E2E_GCP_WIF_PROVIDER` | GCP WIF provider (inference / auxiliary GCP access) |
 | `E2E_GCP_SERVICE_ACCOUNT` | GCP service account for WIF |
-| `E2E_GCP_PROJECT_ID` | GCP project ID |
+| `E2E_GCP_PROJECT_ID` | GCP project ID for inference secrets (`github setup --inference-project`) |
 
 Mint URL uses the hosted public endpoint by default (same as `fullsend admin --mint-url`). Override with org/repo variable `FULLSEND_MINT_URL` if needed; no separate e2e secret.
+
+### Behaviour tests and per-repo mint enrollment
+
+Behaviour tests install fullsend in **per-repo** mode (`fullsend github setup`). Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; that requires per-repo mint enrollment (`PER_REPO_WIF_REPOS`). The install driver does **not** run `mint enroll` — pool org `test-repo` repos must be enrolled once by a GCP admin on the hosted mint project.
+
+Inference (`E2E_GCP_PROJECT_ID`) and mint (`it-gcp-konflux-dev-fullsend` for the hosted mint) may be different GCP projects. The behaviour install driver runs `fullsend inference provision <org>/test-repo` using CI credentials on the inference project (same access model as admin e2e), then passes the repo-scoped WIF provider to `github setup`. `E2E_GCP_WIF_PROVIDER` authenticates the CI job itself; it is not written to pool org repos.
+
+The CI service account needs inference-provision IAM on `E2E_GCP_PROJECT_ID`:
+
+| IAM role | Purpose |
+|----------|---------|
+| `roles/iam.workloadIdentityPoolAdmin` | Create/update repo-scoped inference WIF providers |
+| `roles/resourcemanager.projectIamAdmin` | Grant `roles/aiplatform.user` to repo WIF principals |
+
+One-time enrollment for all pool orgs (idempotent):
+
+```bash
+export GCP_PROJECT=it-gcp-konflux-dev-fullsend
+for i in $(seq -w 1 12); do
+  fullsend mint enroll "halfsend-${i}/test-repo" --project="$GCP_PROJECT" --region=us-central1
+done
+```
+
+Re-run enrollment when adding a new pool org or after mint infrastructure changes that drop `PER_REPO_WIF_REPOS` entries. See [mint-administration.md](../infrastructure/mint-administration.md) for required operator IAM.
 
 ## Pool org provisioning
 
@@ -82,7 +108,7 @@ fullsend admin foreign list --org halfsend-01
 # expect e2e → fullsend-ai/fullsend
 ```
 
-Existing pool orgs (`halfsend-01` … `halfsend-06`) need a one-time operator pass: install the e2e app (if missing) and run:
+Existing pool orgs (`halfsend-01` … `halfsend-12`) need a one-time operator pass: install the e2e app (if missing) and run:
 
 ```bash
 fullsend admin foreign allow --org halfsend-NN --role e2e --caller fullsend-ai/fullsend

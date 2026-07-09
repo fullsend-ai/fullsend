@@ -2,12 +2,16 @@ package sandbox
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -23,6 +27,7 @@ const (
 	readyCtxBuffer  = 10 * time.Second
 	maxReadyTimeout = 600 * time.Second
 	transferTimeout = 5 * time.Minute
+	providerTimeout = 30 * time.Second
 
 	DefaultMaxCreateAttempts = 3
 	retryInitialBackoff      = 5 * time.Second
@@ -111,7 +116,9 @@ func inGitDir(path, root string) bool {
 func EnsureProvider(name, providerType string, credentials, config map[string]string) error {
 	args, extraEnv, secrets := buildProviderArgs(name, providerType, credentials, config)
 
-	cmd := exec.Command("openshell", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "openshell", args...)
 	cmd.Env = append(os.Environ(), extraEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -125,7 +132,7 @@ func EnsureProvider(name, providerType string, credentials, config map[string]st
 		for _, s := range secrets {
 			outStr = strings.ReplaceAll(outStr, s, "***")
 		}
-		return fmt.Errorf("provider create %q failed: %s", name, outStr)
+		return fmt.Errorf("provider create %q failed: %w (output: %s)", name, err, outStr)
 	}
 	return nil
 }
@@ -133,7 +140,9 @@ func EnsureProvider(name, providerType string, credentials, config map[string]st
 // updateProvider runs openshell provider update for an already-existing provider.
 func updateProvider(name string, credentials, config map[string]string, extraEnv, secrets []string) error {
 	args := buildProviderUpdateArgs(name, credentials, config)
-	cmd := exec.Command("openshell", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "openshell", args...)
 	cmd.Env = append(os.Environ(), extraEnv...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -141,7 +150,7 @@ func updateProvider(name string, credentials, config map[string]string, extraEnv
 		for _, s := range secrets {
 			outStr = strings.ReplaceAll(outStr, s, "***")
 		}
-		return fmt.Errorf("provider update %q failed: %s", name, outStr)
+		return fmt.Errorf("provider update %q failed: %w (output: %s)", name, err, outStr)
 	}
 	return nil
 }
@@ -150,11 +159,20 @@ func updateProvider(name string, credentials, config map[string]string, extraEnv
 // The update subcommand takes a positional name (not --name/--type).
 func buildProviderUpdateArgs(name string, credentials, config map[string]string) []string {
 	args := []string{"provider", "update", name}
-	for k := range credentials {
-		args = append(args, "--credential", k)
+	credKeys := sortedKeys(credentials)
+	for _, k := range credKeys {
+		expanded := os.ExpandEnv(credentials[k])
+		if expanded != "" {
+			args = append(args, "--credential", k)
+		} else {
+			// Empty value: use inline KEY= form to avoid env var lookup.
+			// See https://github.com/NVIDIA/OpenShell/issues/1978
+			args = append(args, "--credential", k+"=")
+		}
 	}
-	for k, v := range config {
-		expanded := os.ExpandEnv(v)
+	cfgKeys := sortedKeys(config)
+	for _, k := range cfgKeys {
+		expanded := os.ExpandEnv(config[k])
 		args = append(args, "--config", k+"="+expanded)
 	}
 	return args
@@ -171,20 +189,35 @@ func buildProviderArgs(name, providerType string, credentials, config map[string
 		"--type", providerType,
 	}
 
-	for k, v := range credentials {
-		expanded := os.ExpandEnv(v)
+	credKeys := sortedKeys(credentials)
+	for _, k := range credKeys {
+		expanded := os.ExpandEnv(credentials[k])
 		if expanded != "" {
 			secrets = append(secrets, expanded)
+			extraEnv = append(extraEnv, fmt.Sprintf("%s=%s", k, expanded))
+			args = append(args, "--credential", k)
+		} else {
+			// Empty value: use inline KEY= form to avoid env var lookup.
+			// See https://github.com/NVIDIA/OpenShell/issues/1978
+			args = append(args, "--credential", k+"=")
 		}
-		extraEnv = append(extraEnv, fmt.Sprintf("%s=%s", k, expanded))
-		args = append(args, "--credential", k)
 	}
-	for k, v := range config {
-		expanded := os.ExpandEnv(v)
+	cfgKeys := sortedKeys(config)
+	for _, k := range cfgKeys {
+		expanded := os.ExpandEnv(config[k])
 		args = append(args, "--config", k+"="+expanded)
 	}
 
 	return args, extraEnv, secrets
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // EnsureAvailable checks that the openshell binary is in PATH.
@@ -206,6 +239,117 @@ func CheckGateway() error {
 	}
 	if strings.TrimSpace(string(out)) == "" {
 		return fmt.Errorf("no openshell gateway configured -- start openshell-gateway before running fullsend")
+	}
+	return nil
+}
+
+// ImportProfiles imports provider profile YAMLs from a directory into the
+// gateway via openshell provider profile import. If the directory does not
+// exist, this is a no-op. This allows callers to import profiles from optional
+// directories without checking existence first.
+//
+// Idempotency is hash-based: the function computes a SHA-256 digest of the
+// profile directory contents and compares it against a cached value in a temp
+// file. When the hash matches (profiles unchanged), the import is skipped
+// entirely. This makes parallel fullsend run invocations safe — only the
+// first process imports, and subsequent processes see the cache hit.
+//
+// When profiles have changed (hash mismatch or no cache), existing profiles
+// are deleted and reimported. If the reimport fails because a parallel process
+// already imported them, the error is treated as success.
+func ImportProfiles(dir string) error {
+	if _, err := os.Stat(dir); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("checking profiles directory %s: %w", dir, err)
+	}
+
+	currentHash, err := hashProfileDir(dir)
+	if err != nil {
+		return fmt.Errorf("hashing profiles directory %s: %w", dir, err)
+	}
+
+	cachePath := profileCachePath(dir)
+	if cached, readErr := os.ReadFile(cachePath); readErr == nil {
+		if strings.TrimSpace(string(cached)) == currentHash {
+			return nil
+		}
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("reading profiles directory %s: %w", dir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || (!strings.HasSuffix(e.Name(), ".yaml") && !strings.HasSuffix(e.Name(), ".yml")) {
+			continue
+		}
+		id := strings.TrimSuffix(strings.TrimSuffix(e.Name(), ".yaml"), ".yml")
+		// Best-effort delete; ignore errors (profile may not exist yet).
+		ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
+		exec.CommandContext(ctx, "openshell", "provider", "profile", "delete", id).CombinedOutput() //nolint:errcheck
+		cancel()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "openshell", "provider", "profile", "import", "--from", dir).CombinedOutput()
+	if err != nil {
+		outStr := strings.ToLower(string(out))
+		if strings.Contains(outStr, "already exists") {
+			// A parallel process imported the profiles — safe to continue.
+			os.WriteFile(cachePath, []byte(currentHash), 0o600) //nolint:errcheck
+			return nil
+		}
+		return fmt.Errorf("provider profile import from %s failed: %w (output: %s)", dir, err, strings.TrimSpace(string(out)))
+	}
+	os.WriteFile(cachePath, []byte(currentHash), 0o600) //nolint:errcheck
+	return nil
+}
+
+// hashProfileDir computes a deterministic SHA-256 digest of all YAML files in
+// a directory. The digest covers both filenames and file contents so that any
+// change to any profile is detected.
+func hashProfileDir(dir string) (string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	for _, e := range entries {
+		if e.IsDir() || (!strings.HasSuffix(e.Name(), ".yaml") && !strings.HasSuffix(e.Name(), ".yml")) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return "", err
+		}
+		fileHash := sha256.Sum256(data)
+		fmt.Fprintf(h, "%s:%x\n", e.Name(), fileHash)
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// profileCachePath returns a temp file path for caching the profile directory
+// hash. The path is keyed to the absolute directory path so that different
+// fullsend-dir values get separate caches.
+func profileCachePath(dir string) string {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		absDir = dir
+	}
+	dirHash := sha256.Sum256([]byte(absDir))
+	return filepath.Join(os.TempDir(), "fullsend-profiles-"+hex.EncodeToString(dirHash[:8])+".sha256")
+}
+
+// EnableProvidersV2 enables the providers_v2_enabled setting globally in the
+// openshell gateway. This is idempotent and can be called multiple times.
+func EnableProvidersV2() error {
+	ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "openshell", "settings", "set", "--key", "providers_v2_enabled", "--value", "true", "--global", "--yes").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to enable providers_v2: %w (output: %s)", err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

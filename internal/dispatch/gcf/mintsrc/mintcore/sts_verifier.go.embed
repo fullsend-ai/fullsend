@@ -140,7 +140,7 @@ func (v *STSVerifier) prevalidate(token string) (*Claims, error) {
 		return nil, err
 	}
 
-	if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, v.perRepoWIFRepos, v.allowedWorkflows); err != nil {
+	if err := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, v.allowedOrgs, v.perRepoWIFRepos, v.allowedWorkflows); err != nil {
 		return nil, err
 	}
 

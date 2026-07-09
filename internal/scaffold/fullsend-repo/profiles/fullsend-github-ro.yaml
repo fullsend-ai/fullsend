@@ -1,0 +1,19 @@
+---
+id: fullsend-github-ro
+display_name: Fullsend GitHub (read-only)
+description: Read-only GitHub API access for fullsend agents
+category: source_control
+endpoints:
+  - host: api.github.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  - host: github.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+binaries:
+  - "**/gh"
+  - "**/node"

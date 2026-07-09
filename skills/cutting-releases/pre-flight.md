@@ -49,6 +49,23 @@ Classify each change as:
 - **Breaking** (removed/renamed inputs, outputs, jobs, new required
   secrets) — block the release until resolved.
 
+## A2. Check agents repo state
+
+The release workflow tags `fullsend-ai/agents` with the same version
+after GoReleaser succeeds. Verify agents is in a healthy state:
+
+```
+gh run list --repo fullsend-ai/agents --limit=5
+```
+
+Check for open PRs that should be merged before releasing:
+
+```
+gh pr list --repo fullsend-ai/agents --state=open --limit=5
+```
+
+If there are critical open PRs, resolve them before proceeding.
+
 ## B. Audit scaffold and template changes
 
 ```

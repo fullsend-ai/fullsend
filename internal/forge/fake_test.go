@@ -524,6 +524,82 @@ func TestFakeClient_DeleteRepoVariable(t *testing.T) {
 	assert.False(t, existsInExists)
 }
 
+func TestFakeClient_ListRepoVariables(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns matching variables", func(t *testing.T) {
+		fc := &FakeClient{
+			VariableValues: map[string]string{
+				"org/repo/FOO":       "bar",
+				"org/repo/BAZ":       "qux",
+				"org/other-repo/FOO": "other",
+			},
+		}
+
+		vars, err := fc.ListRepoVariables(ctx, "org", "repo")
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"FOO": "bar", "BAZ": "qux"}, vars)
+	})
+
+	t.Run("empty when no variables", func(t *testing.T) {
+		fc := &FakeClient{}
+		vars, err := fc.ListRepoVariables(ctx, "org", "repo")
+		require.NoError(t, err)
+		assert.Empty(t, vars)
+	})
+
+	t.Run("error injection", func(t *testing.T) {
+		fc := &FakeClient{Errors: map[string]error{"ListRepoVariables": errors.New("fail")}}
+		_, err := fc.ListRepoVariables(ctx, "org", "repo")
+		assert.Error(t, err)
+	})
+}
+
+func TestFakeClient_DeleteRepoSecret(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("deletes existing secret", func(t *testing.T) {
+		fc := &FakeClient{
+			Secrets: map[string]bool{
+				"org/repo/MY_SECRET": true,
+			},
+		}
+
+		err := fc.DeleteRepoSecret(ctx, "org", "repo", "MY_SECRET")
+		require.NoError(t, err)
+		assert.False(t, fc.Secrets["org/repo/MY_SECRET"])
+		require.Len(t, fc.DeletedSecrets, 1)
+		assert.Equal(t, "MY_SECRET", fc.DeletedSecrets[0].Name)
+	})
+
+	t.Run("idempotent when nil secrets map", func(t *testing.T) {
+		fc := &FakeClient{}
+		err := fc.DeleteRepoSecret(ctx, "org", "repo", "NONEXISTENT")
+		require.NoError(t, err)
+		require.Len(t, fc.DeletedSecrets, 1)
+	})
+
+	t.Run("error injection", func(t *testing.T) {
+		fc := &FakeClient{Errors: map[string]error{"DeleteRepoSecret": errors.New("fail")}}
+		err := fc.DeleteRepoSecret(ctx, "org", "repo", "SECRET")
+		assert.Error(t, err)
+	})
+}
+
+func TestFakeClient_CreateThenListVariables(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{}
+
+	err := fc.CreateOrUpdateRepoVariable(ctx, "org", "repo", "FOO", "bar")
+	require.NoError(t, err)
+	err = fc.CreateOrUpdateRepoVariable(ctx, "org", "repo", "BAZ", "qux")
+	require.NoError(t, err)
+
+	vars, err := fc.ListRepoVariables(ctx, "org", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"FOO": "bar", "BAZ": "qux"}, vars)
+}
+
 func TestFakeClient_ErrorInjection(t *testing.T) {
 	ctx := context.Background()
 	injected := errors.New("injected error")
@@ -610,8 +686,19 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 			_, err := fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
 			return err
 		}},
+		{"ListRepositoryFiles", func(fc *FakeClient) error {
+			_, err := fc.ListRepositoryFiles(ctx, "o", "r")
+			return err
+		}},
 		{"GetFileContentAtRef", func(fc *FakeClient) error {
 			_, err := fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")
+			return err
+		}},
+		{"DeleteRepoSecret", func(fc *FakeClient) error {
+			return fc.DeleteRepoSecret(ctx, "o", "r", "n")
+		}},
+		{"ListRepoVariables", func(fc *FakeClient) error {
+			_, err := fc.ListRepoVariables(ctx, "o", "r")
 			return err
 		}},
 	}
@@ -684,7 +771,10 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_, _ = fc.GetOrgVariableRepos(ctx, "o", "n")
 			_ = fc.DeleteIssueComment(ctx, "o", "r", 1)
 			_, _ = fc.ListDirectoryContents(ctx, "o", "r", "p", "main", false)
+			_, _ = fc.ListRepositoryFiles(ctx, "o", "r")
 			_, _ = fc.GetFileContentAtRef(ctx, "o", "r", "p", "main")
+			_ = fc.DeleteRepoSecret(ctx, "o", "r", "n")
+			_, _ = fc.ListRepoVariables(ctx, "o", "r")
 		}(i)
 	}
 
@@ -790,6 +880,87 @@ func TestFakeClient_CreateBranch_PerRepoErrors(t *testing.T) {
 	})
 }
 
+func TestFakeClient_GetRef(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns SHA for existing ref", func(t *testing.T) {
+		fc := &FakeClient{
+			Refs: map[string]string{
+				"owner/repo/tags/v0": "abc123",
+			},
+		}
+		sha, err := fc.GetRef(ctx, "owner", "repo", "tags/v0")
+		require.NoError(t, err)
+		assert.Equal(t, "abc123", sha)
+	})
+
+	t.Run("returns ErrNotFound for missing ref", func(t *testing.T) {
+		fc := &FakeClient{
+			Refs: map[string]string{},
+		}
+		_, err := fc.GetRef(ctx, "owner", "repo", "tags/v0")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrNotFound)
+	})
+
+	t.Run("returns injected error", func(t *testing.T) {
+		fc := &FakeClient{
+			Errors: map[string]error{
+				"GetRef": errors.New("boom"),
+			},
+			Refs: map[string]string{
+				"owner/repo/tags/v0": "abc123",
+			},
+		}
+		_, err := fc.GetRef(ctx, "owner", "repo", "tags/v0")
+		require.Error(t, err)
+		assert.Equal(t, "boom", err.Error())
+	})
+}
+
+func TestFakeClient_GetBranchRef_DelegatesToGetRef(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("BranchRefs takes priority", func(t *testing.T) {
+		fc := &FakeClient{
+			BranchRefs: map[string]string{
+				"owner/repo/main": "branch-sha",
+			},
+			Refs: map[string]string{
+				"owner/repo/heads/main": "ref-sha",
+			},
+		}
+		sha, err := fc.GetBranchRef(ctx, "owner", "repo", "main")
+		require.NoError(t, err)
+		assert.Equal(t, "branch-sha", sha)
+	})
+
+	t.Run("falls through to GetRef when not in BranchRefs", func(t *testing.T) {
+		fc := &FakeClient{
+			Refs: map[string]string{
+				"owner/repo/heads/main": "ref-sha",
+			},
+		}
+		sha, err := fc.GetBranchRef(ctx, "owner", "repo", "main")
+		require.NoError(t, err)
+		assert.Equal(t, "ref-sha", sha)
+	})
+
+	t.Run("GetBranchRef error injection works independently", func(t *testing.T) {
+		fc := &FakeClient{
+			Errors: map[string]error{
+				"GetBranchRef": errors.New("branch error"),
+			},
+			BranchRefs: map[string]string{
+				"owner/repo/main": "sha",
+			},
+		}
+		_, err := fc.GetBranchRef(ctx, "owner", "repo", "main")
+		require.Error(t, err)
+		assert.Equal(t, "branch error", err.Error())
+	})
+}
+
 func TestIsForbidden(t *testing.T) {
 	assert.True(t, IsForbidden(ErrForbidden))
 	assert.True(t, IsForbidden(errors.Join(errors.New("wrapper"), ErrForbidden)))
@@ -802,6 +973,104 @@ func TestIsNonFastForward(t *testing.T) {
 	assert.True(t, IsNonFastForward(errors.Join(errors.New("wrapper"), ErrNonFastForward)))
 	assert.False(t, IsNonFastForward(errors.New("some error")))
 	assert.False(t, IsNonFastForward(nil))
+}
+
+func TestFakeClient_GetIssue(t *testing.T) {
+	fc := NewFakeClient()
+	issue, err := fc.CreateIssue(context.Background(), "org", "repo", "t", "b")
+	require.NoError(t, err)
+
+	got, err := fc.GetIssue(context.Background(), "org", "repo", issue.Number)
+	require.NoError(t, err)
+	assert.Equal(t, issue.Number, got.Number)
+
+	_, err = fc.GetIssue(context.Background(), "org", "repo", 999)
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestFakeClient_AddIssueLabels(t *testing.T) {
+	fc := NewFakeClient()
+	issue, err := fc.CreateIssue(context.Background(), "org", "repo", "t", "b")
+	require.NoError(t, err)
+
+	require.NoError(t, fc.AddIssueLabels(context.Background(), "org", "repo", issue.Number, "ready-for-triage"))
+	got, err := fc.GetIssue(context.Background(), "org", "repo", issue.Number)
+	require.NoError(t, err)
+	assert.Contains(t, got.Labels, "ready-for-triage")
+
+	require.Error(t, fc.AddIssueLabels(context.Background(), "org", "repo", 999, "x"))
+}
+
+func TestFakeClient_ListRecentWorkflowRuns(t *testing.T) {
+	fc := NewFakeClient()
+	fc.RecentWorkflowRuns = map[string][]WorkflowRun{
+		"org/repo": {
+			{ID: 1, Name: "Triage Agent", Status: "completed", Conclusion: "success", CreatedAt: "2024-01-01T00:00:00Z"},
+		},
+	}
+	runs, err := fc.ListRecentWorkflowRuns(context.Background(), "org", "repo", 10)
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+}
+
+func TestFakeClient_ListWorkflowRunArtifacts(t *testing.T) {
+	fc := NewFakeClient()
+	fc.WorkflowRunArtifacts = map[int][]WorkflowArtifact{
+		42: {{ID: 5, Name: "fullsend-triage"}},
+	}
+
+	arts, err := fc.ListWorkflowRunArtifacts(context.Background(), "org", "repo", 42)
+	require.NoError(t, err)
+	require.Len(t, arts, 1)
+	assert.Equal(t, "fullsend-triage", arts[0].Name)
+
+	arts, err = fc.ListWorkflowRunArtifacts(context.Background(), "org", "repo", 99)
+	require.NoError(t, err)
+	assert.Nil(t, arts)
+}
+
+func TestFakeClient_DownloadWorkflowRunArtifact(t *testing.T) {
+	fc := NewFakeClient()
+	fc.WorkflowArtifactContents = map[int][]byte{
+		9: []byte("artifact-bytes"),
+	}
+
+	data, err := fc.DownloadWorkflowRunArtifact(context.Background(), "org", "repo", 9)
+	require.NoError(t, err)
+	assert.Equal(t, []byte("artifact-bytes"), data)
+
+	_, err = fc.DownloadWorkflowRunArtifact(context.Background(), "org", "repo", 99)
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestFakeClient_ListRepositoryArtifacts(t *testing.T) {
+	fc := NewFakeClient()
+	fc.RepositoryArtifacts = map[string][]RepositoryArtifact{
+		"org/repo": {
+			{ID: 1, Name: "a"},
+			{ID: 2, Name: "b"},
+		},
+	}
+
+	arts, err := fc.ListRepositoryArtifacts(context.Background(), "org", "repo", 1)
+	require.NoError(t, err)
+	require.Len(t, arts, 1)
+	assert.Equal(t, 1, arts[0].ID)
+
+	arts, err = fc.ListRepositoryArtifacts(context.Background(), "org", "repo", 0)
+	require.NoError(t, err)
+	assert.Len(t, arts, 2)
+}
+
+func TestFakeClient_AddIssueLabels_Idempotent(t *testing.T) {
+	fc := NewFakeClient()
+	issue, err := fc.CreateIssue(context.Background(), "org", "repo", "t", "b")
+	require.NoError(t, err)
+
+	require.NoError(t, fc.AddIssueLabels(context.Background(), "org", "repo", issue.Number, "ready-for-triage", "ready-for-triage"))
+	got, err := fc.GetIssue(context.Background(), "org", "repo", issue.Number)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"ready-for-triage"}, got.Labels)
 }
 
 func TestFakeClient_CommitFilesErrSeq(t *testing.T) {
@@ -831,4 +1100,118 @@ func TestFakeClient_CommitFilesErrSeq(t *testing.T) {
 		_, err = fc.CommitFiles(ctx, "o", "r", "m", files)
 		require.ErrorIs(t, err, ErrNonFastForward)
 	})
+}
+
+func TestFakeClient_GetRepo(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{
+		Repos: []Repository{{Name: "repo", FullName: "org/repo"}},
+	}
+
+	repo, err := fc.GetRepo(ctx, "org", "repo")
+	require.NoError(t, err)
+	assert.Equal(t, "org/repo", repo.FullName)
+
+	_, err = fc.GetRepo(ctx, "org", "missing")
+	require.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestFakeClient_GetOrgPlan(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{}
+
+	plan, err := fc.GetOrgPlan(ctx, "org")
+	require.NoError(t, err)
+	assert.Equal(t, "free", plan)
+
+	fc.OrgPlan = "enterprise"
+	plan, err = fc.GetOrgPlan(ctx, "org")
+	require.NoError(t, err)
+	assert.Equal(t, "enterprise", plan)
+}
+
+func TestFakeClient_ListWorkflowRuns(t *testing.T) {
+	ctx := context.Background()
+	run := WorkflowRun{ID: 42, Status: "completed", Conclusion: "success"}
+	fc := &FakeClient{
+		WorkflowRuns: map[string]*WorkflowRun{
+			"org/repo/ci.yml": &run,
+		},
+	}
+
+	runs, err := fc.ListWorkflowRuns(ctx, "org", "repo", "ci.yml")
+	require.NoError(t, err)
+	require.Len(t, runs, 1)
+	assert.Equal(t, 42, runs[0].ID)
+
+	runs, err = fc.ListWorkflowRuns(ctx, "org", "repo", "missing.yml")
+	require.NoError(t, err)
+	assert.Nil(t, runs)
+}
+
+func TestFakeClient_DispatchWorkflow(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{}
+	require.NoError(t, fc.DispatchWorkflow(ctx, "org", "repo", "ci.yml", "main", map[string]string{"k": "v"}))
+}
+
+func TestIsTreeTruncated(t *testing.T) {
+	assert.True(t, IsTreeTruncated(ErrTreeTruncated))
+	assert.True(t, IsTreeTruncated(errors.Join(errors.New("wrapper"), ErrTreeTruncated)))
+	assert.False(t, IsTreeTruncated(errors.New("some other error")))
+	assert.False(t, IsTreeTruncated(nil))
+}
+
+func TestFakeClient_ListRepositoryFiles(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("returns files matching owner/repo prefix", func(t *testing.T) {
+		fc := &FakeClient{
+			FileContents: map[string][]byte{
+				"org/repo/file1.go": []byte("a"),
+				"org/repo/dir/f2":   []byte("b"),
+				"org/other/nope":    []byte("c"),
+			},
+		}
+		paths, err := fc.ListRepositoryFiles(ctx, "org", "repo")
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"file1.go", "dir/f2"}, paths)
+	})
+
+	t.Run("returns nil for empty repo", func(t *testing.T) {
+		fc := &FakeClient{FileContents: map[string][]byte{}}
+		paths, err := fc.ListRepositoryFiles(ctx, "org", "repo")
+		require.NoError(t, err)
+		assert.Empty(t, paths)
+	})
+
+	t.Run("returns injected error", func(t *testing.T) {
+		fc := &FakeClient{
+			Errors: map[string]error{
+				"ListRepositoryFiles": ErrTreeTruncated,
+			},
+		}
+		_, err := fc.ListRepositoryFiles(ctx, "org", "repo")
+		require.ErrorIs(t, err, ErrTreeTruncated)
+	})
+}
+
+func TestFakeClient_ListRepositoryFiles_ConcurrentSafe(t *testing.T) {
+	fc := &FakeClient{
+		FileContents: map[string][]byte{
+			"org/repo/a": []byte("a"),
+			"org/repo/b": []byte("b"),
+		},
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := fc.ListRepositoryFiles(context.Background(), "org", "repo")
+			assert.NoError(t, err)
+		}()
+	}
+	wg.Wait()
 }

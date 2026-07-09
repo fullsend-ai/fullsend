@@ -65,6 +65,7 @@ func TestPreflight_InstallationToken(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.OK(), "installation tokens should skip OAuth scope preflight")
 	assert.True(t, result.Skipped)
+	assert.Equal(t, SkipInstallationToken, result.SkippedReason)
 	assert.Equal(t, []string{"repo", "workflow"}, result.Required)
 }
 
@@ -82,6 +83,7 @@ func TestPreflight_NilScopes_FineGrainedToken(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, result.OK(), "should pass when scopes can't be introspected")
 	assert.True(t, result.Skipped, "should indicate preflight was skipped")
+	assert.Equal(t, SkipFineGrained, result.SkippedReason)
 }
 
 func TestPreflight_GetTokenScopesError(t *testing.T) {
@@ -121,6 +123,48 @@ func TestCollectRequiredScopes(t *testing.T) {
 
 	scopes := stack.CollectRequiredScopes(OpInstall)
 	assert.ElementsMatch(t, []string{"repo", "workflow", "delete_repo"}, scopes)
+}
+
+func TestPreflightResult_SkipGuidance(t *testing.T) {
+	t.Run("lists required scopes and fine-grained equivalents", func(t *testing.T) {
+		r := &PreflightResult{
+			Required:      []string{"repo", "workflow"},
+			Skipped:       true,
+			SkippedReason: SkipFineGrained,
+		}
+		guidance := r.SkipGuidance()
+		assert.Contains(t, guidance, "repo")
+		assert.Contains(t, guidance, "workflow")
+		assert.Contains(t, guidance, "Contents (read/write)")
+		assert.Contains(t, guidance, "Pull requests (read/write)")
+		assert.Contains(t, guidance, "Workflows (read/write)")
+		assert.Contains(t, guidance, "Metadata (read-only)")
+	})
+
+	t.Run("includes admin:org for install scopes", func(t *testing.T) {
+		r := &PreflightResult{
+			Required:      []string{"repo", "workflow", "admin:org"},
+			Skipped:       true,
+			SkippedReason: SkipFineGrained,
+		}
+		guidance := r.SkipGuidance()
+		assert.Contains(t, guidance, "admin:org")
+		assert.Contains(t, guidance, "Organization administration")
+	})
+
+	t.Run("returns empty for no required scopes", func(t *testing.T) {
+		r := &PreflightResult{Skipped: true, SkippedReason: SkipFineGrained}
+		assert.Empty(t, r.SkipGuidance())
+	})
+
+	t.Run("returns empty for installation token", func(t *testing.T) {
+		r := &PreflightResult{
+			Required:      []string{"repo", "workflow"},
+			Skipped:       true,
+			SkippedReason: SkipInstallationToken,
+		}
+		assert.Empty(t, r.SkipGuidance())
+	})
 }
 
 func TestPreflightResult_Error(t *testing.T) {

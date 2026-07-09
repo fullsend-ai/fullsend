@@ -250,7 +250,17 @@ When `fullsend run <name>` is invoked:
    Role and slug come from the harness content itself.
 4. **Local path source:** resolve the path relative to `.fullsend/`
    and load the harness file directly.
-5. **Scaffold source** (no config override): load the scaffold harness
+5. **Agents repo fallback** (transitional): for known first-party
+   agents not found in config, resolve the latest harness from
+   `fullsend-ai/agents` at runtime. The fallback resolves the floating
+   version tag (`v0`) SHA via the forge client, constructs a commit-pinned
+   URL, checks the org allowlist, fetches via `fetch.FetchURL`, and
+   caches content directly. Supply-chain integrity relies on the
+   commit-pinned URL, TLS transport, and the org allowlist. This tier
+   exists to support the [agent extraction](agent-extraction-to-agents-repo.md)
+   without requiring config changes from existing users and will be
+   removed once all users have migrated (Step 7).
+6. **Scaffold source** (no config override): load the scaffold harness
    as today.
 
 The `--harness` flag, when given a name instead of a file path, uses
@@ -440,3 +450,9 @@ PRs 2 and 3 can be developed in parallel after PR 1 merges. PR 4
 is the cleanup that depends on everything else. Phase 5 is a
 follow-up tracked by a GitHub issue, filed once all first-party
 agents have been extracted from the scaffold.
+
+**Related:** `fullsend agent migrate-customizations` (implemented in
+ADR-0064 / PR #2932) migrates existing `customized/` overrides into
+config-driven agents. It uses `DiffHarness` to compute minimal `base:`
+composition harnesses and registers agents via the same config schema
+defined in Phase 1.
