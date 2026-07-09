@@ -86,14 +86,14 @@ func ExportRunDir(dir, serviceVersion string) error {
 	// Pre-validate: on a malformed endpoint value the SDK reports to its
 	// global error handler and silently falls back to localhost:4318 — a
 	// typo would spray spans at localhost. Refuse instead.
-	if u, err := url.Parse(endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-		return fmt.Errorf("OTLP endpoint %q is not an http(s) URL; export skipped", endpoint)
+	if u, err := url.Parse(endpoint); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("OTLP endpoint %q is not an absolute http(s) URL with a host; export skipped", endpoint)
 	}
 	// Only OTLP over HTTP/protobuf is implemented (matches MLflow and the
 	// published guide). Silently posting protobuf at a gRPC-only endpoint
 	// fails cryptically, so refuse loudly.
 	if p := protocolFromEnv(); p != "" && p != "http/protobuf" {
-		return fmt.Errorf("OTEL_EXPORTER_OTLP_PROTOCOL %q is not supported (only http/protobuf); export skipped", p)
+		return fmt.Errorf("OTEL_EXPORTER_OTLP_(TRACES_)PROTOCOL %q is not supported (only http/protobuf); export skipped", p)
 	}
 
 	spans, sampled, err := readRun(dir, serviceVersion)

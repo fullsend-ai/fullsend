@@ -19,6 +19,19 @@ configuration required:
 These files are always written, even when no OTLP backend is configured. They
 contain metadata only — no prompts, completions, or source code content.
 
+## Prerequisites
+
+Level 1 requires nothing. To enable OTLP export (Level 2 and Level 3) you need:
+
+- An **OTLP/HTTP-capable backend** and its endpoint URL — e.g. Jaeger, Tempo,
+  Grafana, MLflow ≥ 3.6, or any OpenTelemetry Collector.
+- Any **backend authentication** (bearer token or basic auth) for the
+  `OTEL_EXPORTER_OTLP_TRACES_HEADERS` variable.
+- **Network reachability** from where runs execute (your machine or CI runners)
+  to the backend endpoint.
+- For a backend behind a **private CA** (e.g. an internal MLflow): the CA
+  certificate bundle, pointed to by `OTEL_EXPORTER_OTLP_CERTIFICATE`.
+
 ## Enabling OTLP export (Level 2)
 
 To send metadata spans to an OpenTelemetry-compatible backend, set one of the
@@ -219,19 +232,23 @@ Two conventions keep a shared backend navigable as repos onboard:
 
 Run an agent locally with traces going to a local backend:
 
-```bash
-# Start a local Jaeger instance (OTLP-compatible)
-podman run -d --name jaeger \
-  -p 16686:16686 \
-  -p 4318:4318 \
-  jaegertracing/jaeger
+1. Start a local Jaeger instance (OTLP-compatible):
 
-# Run an agent with tracing enabled
-export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"
-fullsend run triage --issue 42
+   ```bash
+   podman run -d --name jaeger \
+     -p 16686:16686 \
+     -p 4318:4318 \
+     jaegertracing/jaeger
+   ```
 
-# View traces at http://localhost:16686
-```
+2. Point the exporter at it and run an agent:
+
+   ```bash
+   export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"
+   fullsend run triage --issue 42
+   ```
+
+3. View the traces at <http://localhost:16686>.
 
 Other lightweight local backends:
 

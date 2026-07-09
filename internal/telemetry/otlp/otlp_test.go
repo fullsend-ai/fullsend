@@ -205,7 +205,7 @@ func TestExportRunDir_MalformedEndpointFailsOpen(t *testing.T) {
 	dir := t.TempDir()
 	writeRunFixture(t, dir, defaultTC(), 0)
 
-	for _, bad := range []string{"://bad", "not a url", "ftp://host:4318"} {
+	for _, bad := range []string{"://bad", "not a url", "ftp://host:4318", "http://"} {
 		t.Run(bad, func(t *testing.T) {
 			t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", bad)
 			err := ExportRunDir(dir, testVersion)
