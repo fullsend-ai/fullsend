@@ -3,6 +3,7 @@ package forge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -1071,6 +1072,87 @@ func TestFakeClient_AddIssueLabels_Idempotent(t *testing.T) {
 	got, err := fc.GetIssue(context.Background(), "org", "repo", issue.Number)
 	require.NoError(t, err)
 	assert.Equal(t, []string{"ready-for-triage"}, got.Labels)
+}
+
+func TestIsNotSupported(t *testing.T) {
+	assert.True(t, IsNotSupported(ErrNotSupported))
+	assert.True(t, IsNotSupported(fmt.Errorf("wrap: %w", ErrNotSupported)))
+	assert.False(t, IsNotSupported(ErrNotFound))
+	assert.False(t, IsNotSupported(nil))
+}
+
+func TestNewFakeClient_MapsInitialized(t *testing.T) {
+	fc := NewFakeClient()
+	assert.NotNil(t, fc.ProtectedBranches)
+	assert.NotNil(t, fc.PipelineSchedules)
+}
+
+func TestFakeClient_PipelineScheduleRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	id, err := fc.CreatePipelineSchedule(ctx, "org", "repo", "main", "nightly", "0 0 * * *", nil)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), id)
+
+	schedules, err := fc.ListPipelineSchedules(ctx, "org", "repo")
+	require.NoError(t, err)
+	require.Len(t, schedules, 1)
+	assert.Equal(t, "nightly", schedules[0].Description)
+	assert.Equal(t, "main", schedules[0].Ref)
+	assert.Equal(t, "0 0 * * *", schedules[0].Cron)
+	assert.True(t, schedules[0].Active)
+
+	err = fc.DeletePipelineSchedule(ctx, "org", "repo", id)
+	require.NoError(t, err)
+
+	schedules, err = fc.ListPipelineSchedules(ctx, "org", "repo")
+	require.NoError(t, err)
+	assert.Empty(t, schedules)
+
+	assert.Equal(t, []int64{id}, fc.DeletedScheduleIDs)
+}
+
+func TestFakeClient_UpdateCIVariable_RecordsProtected(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	err := fc.UpdateCIVariable(ctx, "org", "repo", "KEY", "val", true)
+	require.NoError(t, err)
+	require.Len(t, fc.UpdatedVariables, 1)
+	assert.True(t, fc.UpdatedVariables[0].Protected)
+	assert.Equal(t, "KEY", fc.UpdatedVariables[0].Name)
+
+	err = fc.UpdateCIVariable(ctx, "org", "repo", "KEY2", "val2", false)
+	require.NoError(t, err)
+	require.Len(t, fc.UpdatedVariables, 2)
+	assert.False(t, fc.UpdatedVariables[1].Protected)
+}
+
+func TestFakeClient_IsProtectedBranch(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+	fc.ProtectedBranches["org/repo/main"] = true
+
+	protected, err := fc.IsProtectedBranch(ctx, "org", "repo", "main")
+	require.NoError(t, err)
+	assert.True(t, protected)
+
+	protected, err = fc.IsProtectedBranch(ctx, "org", "repo", "dev")
+	require.NoError(t, err)
+	assert.False(t, protected)
+}
+
+func TestFakeClient_CreateProtectedCIVariable(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	err := fc.CreateProtectedCIVariable(ctx, "org", "repo", "SECRET_KEY", "secret-val")
+	require.NoError(t, err)
+	require.Len(t, fc.CreatedProtectedVars, 1)
+	assert.Equal(t, "SECRET_KEY", fc.CreatedProtectedVars[0].Name)
+	assert.Equal(t, "secret-val", fc.CreatedProtectedVars[0].Value)
+	assert.True(t, fc.CreatedProtectedVars[0].Protected)
 }
 
 func TestFakeClient_CommitFilesErrSeq(t *testing.T) {
