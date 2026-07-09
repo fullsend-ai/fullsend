@@ -175,6 +175,37 @@ func TestLoadGHAEvent_UnsupportedEvent(t *testing.T) {
 	assert.Contains(t, err.Error(), "unsupported github event")
 }
 
+func TestLoadGHAEvent_MissingEventPath(t *testing.T) {
+	t.Setenv("GITHUB_EVENT_PATH", "")
+	_, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+		EventPath:  "",
+		Repository: "o/r",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "GITHUB_EVENT_PATH")
+}
+
+func TestLoadGHAEvent_LabeledMissingLabel(t *testing.T) {
+	raw := map[string]any{
+		"action": "labeled",
+		"issue": map[string]any{
+			"number":   float64(1),
+			"html_url": "https://github.com/o/r/issues/1",
+			"user":     map[string]any{"login": "alice"},
+			"labels":   []any{},
+		},
+		"sender": map[string]any{"login": "alice", "type": "User"},
+	}
+	path := writeEventFile(t, raw)
+	_, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+		EventPath:  path,
+		EventName:  "issues",
+		Repository: "o/r",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing label")
+}
+
 func writeEventFile(t *testing.T, raw map[string]any) string {
 	t.Helper()
 	data, err := json.Marshal(raw)

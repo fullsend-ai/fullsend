@@ -112,6 +112,38 @@ func TestNewDispatchCmd_Flags(t *testing.T) {
 	assert.Equal(t, "gha-matrix", flag.DefValue)
 }
 
+func TestRunDispatch_UnknownOutputDriver(t *testing.T) {
+	dir := t.TempDir()
+	writeDispatchFixture(t, dir)
+	eventPath := filepath.Join(t.TempDir(), "event.json")
+	eventJSON := []byte(`{
+  "repo": "fullsend-ai/demo",
+  "entity": {"kind": "work_item", "id": 42, "url": "https://github.com/fullsend-ai/demo/issues/42"},
+  "transition": {"kind": "label_changed", "label": {"name": "ready-for-ping", "action": "added"}},
+  "actor": {"id": "alice", "kind": "human", "role": "write", "is_entity_author": false},
+  "state": {"labels": ["ready-for-ping"]},
+  "source": {"system": "github", "raw_type": "issues", "raw_action": "labeled"}
+}`)
+	require.NoError(t, os.WriteFile(eventPath, eventJSON, 0o644))
+
+	err := runDispatch(context.Background(), dispatchOpts{
+		inputDriver:  "json",
+		outputDriver: "nope",
+		inputFile:    eventPath,
+		configDir:    dir,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown output driver")
+}
+
+func TestRunDispatch_GHAEventMissingEventPath(t *testing.T) {
+	t.Setenv("GITHUB_EVENT_PATH", "")
+	err := runDispatch(context.Background(), dispatchOpts{
+		inputDriver: "gha-event",
+	})
+	require.Error(t, err)
+}
+
 func writeDispatchFixture(t *testing.T, dir string) {
 	t.Helper()
 	harnessDir := filepath.Join(dir, "harness")

@@ -97,6 +97,18 @@ trigger: |
 `
 }
 
+func TestDispatch_NilEvent(t *testing.T) {
+	_, err := Dispatch(context.Background(), Options{ConfigDir: t.TempDir()})
+	require.Error(t, err)
+}
+
+func TestMergedConfigAgents_InvalidYAML(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(":\n- bad"), 0o644))
+	_, err := MergedConfigAgents(dir)
+	require.Error(t, err)
+}
+
 func writeHarnessConfig(t *testing.T, dir, harnessYAML string) {
 	t.Helper()
 	harnessDir := filepath.Join(dir, "harness")
