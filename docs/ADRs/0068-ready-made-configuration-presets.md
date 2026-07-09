@@ -44,7 +44,7 @@ for distributing a shared baseline into each target repo's `.fullsend/`.
 
 This ADR applies only to **per-repo** installation. Per-org installation via a
 dedicated `<org>/.fullsend` config repo is deprecated and out of scope
-([deprecate-per-org-install plan](../plans/deprecate-per-org-install.md)).
+([ADR 0044](0044-deprecate-per-org-installation-mode.md)).
 
 [ADR 0029](0029-central-token-mint-secretless-fullsend.md) already treats
 `job_workflow_ref` as the trust binding for mint authorization. The same
@@ -81,7 +81,7 @@ stored in the target repository as:
 and `docs/architecture.md` describe configuration inheritance as upstream
 defaults, then org `.fullsend`, then per-repo overrides. Per-repo installation
 is the sole supported deployment model; the dedicated org config repo is
-deprecated (see [deprecate-per-org-install plan](../plans/deprecate-per-org-install.md)).
+deprecated ([ADR 0044](0044-deprecate-per-org-installation-mode.md)).
 `config.base.yaml` in each target repo fills the org tier's former
 configuration role — not a revival of per-org installs. A vendor preset
 committed as `config.base.yaml` can be reused across repos in one org or

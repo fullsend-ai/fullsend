@@ -35,9 +35,9 @@ This is the "where do agents physically run" question — whether that's a manag
 
 Infrastructure platform choice and configuration live in each target
 repository's **`.fullsend/`** directory. Per-repo installation is the sole
-supported deployment model; the dedicated org-level `<org>/.fullsend` config
-repo is deprecated ([ADR 0033](ADRs/0033-per-repo-installation-mode.md),
-[deprecate-per-org-install plan](plans/deprecate-per-org-install.md)).
+supported deployment model ([ADR 0033](ADRs/0033-per-repo-installation-mode.md));
+the dedicated org-level `<org>/.fullsend` config repo is deprecated
+([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md)).
 
 **Decided:**
 
@@ -398,8 +398,8 @@ In per-repo installation the middle tier is replaced by files inside the
 target repo: `.fullsend/config.base.yaml` (vendor preset or baseline) and
 `.fullsend/config.yaml` (repo overlay), with code defaults below both. The
 org-tier box above describes the historical per-org model, now deprecated
-([ADR 0068](ADRs/0068-ready-made-configuration-presets.md),
-[deprecate-per-org-install plan](plans/deprecate-per-org-install.md)).
+([ADR 0044](ADRs/0044-deprecate-per-org-installation-mode.md),
+[ADR 0068](ADRs/0068-ready-made-configuration-presets.md)).
 
 Skills flow downward through this stack. A repo-level skill might encode domain knowledge ("this repo uses a custom ORM — here's how queries work"). An org-level skill might encode org conventions ("all services use structured logging via zerolog"). Upstream fullsend provides foundational skills (code implementation, triage coordination, testing conventions).
 
