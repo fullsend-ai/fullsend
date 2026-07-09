@@ -43,3 +43,11 @@ func TestKillSwitchActive_OrgConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, active)
 }
+
+func TestKillSwitchActive_InvalidConfig(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("not: valid: yaml: ["), 0o644))
+	_, err := KillSwitchActive(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing config")
+}

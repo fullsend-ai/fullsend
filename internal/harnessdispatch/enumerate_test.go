@@ -11,6 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
@@ -43,6 +44,35 @@ func TestResolveHarnessPath_RejectsURL(t *testing.T) {
 	_, err := resolveHarnessPath("/tmp", config.AgentEntry{Source: "https://example.com/harness.yaml"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "URL agent sources")
+}
+
+func TestResolveHarnessPath_MissingFile(t *testing.T) {
+	_, err := resolveHarnessPath(t.TempDir(), config.AgentEntry{Source: "harness/missing.yaml"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "harness path")
+}
+
+func TestListTriggeredHarnesses_MissingHarness(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.NewPerRepoConfig(nil, "o/r")
+	cfg.Agents = []config.AgentEntry{{Name: "missing", Source: "harness/missing.yaml"}}
+	data, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
+
+	_, err = ListTriggeredHarnesses(context.Background(), dir, cfg.Agents)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "missing")
+}
+
+func TestMatchHarnesses_InvalidTrigger(t *testing.T) {
+	ev := mustEvent(t, "issue-opened.json")
+	_, err := MatchHarnesses([]TriggeredHarness{{
+		Name:    "bad",
+		Harness: &harness.Harness{Trigger: "!!!"},
+	}}, ev)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "evaluating trigger")
 }
 
 func TestMatchHarnesses_NoCandidates(t *testing.T) {
