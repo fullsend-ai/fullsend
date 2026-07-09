@@ -275,15 +275,20 @@ func TestExportRunDir_SDKDisabled(t *testing.T) {
 }
 
 func TestExportRunDir_TracesExporterNone(t *testing.T) {
-	sink := newOTLPSink(t)
-	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", sink.srv.URL)
-	t.Setenv("OTEL_TRACES_EXPORTER", "none")
+	// The OTel spec recommends case-insensitive comparison of env var values.
+	for _, v := range []string{"none", "NONE", "None"} {
+		t.Run(v, func(t *testing.T) {
+			sink := newOTLPSink(t)
+			t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", sink.srv.URL)
+			t.Setenv("OTEL_TRACES_EXPORTER", v)
 
-	dir := t.TempDir()
-	writeRunFixture(t, dir, defaultTC(), 0)
+			dir := t.TempDir()
+			writeRunFixture(t, dir, defaultTC(), 0)
 
-	require.NoError(t, ExportRunDir(dir, testVersion))
-	assert.Equal(t, 0, sink.requestCount(), "OTEL_TRACES_EXPORTER=none must be honored")
+			require.NoError(t, ExportRunDir(dir, testVersion))
+			assert.Equal(t, 0, sink.requestCount(), "OTEL_TRACES_EXPORTER=%s must be honored", v)
+		})
+	}
 }
 
 func TestExportRunDir_UnsupportedProtocolRejected(t *testing.T) {

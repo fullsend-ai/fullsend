@@ -80,7 +80,7 @@ func ExportRunDir(dir, serviceVersion string) error {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("OTEL_SDK_DISABLED")), "true") {
 		return nil
 	}
-	if strings.TrimSpace(os.Getenv("OTEL_TRACES_EXPORTER")) == "none" {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("OTEL_TRACES_EXPORTER")), "none") {
 		return nil
 	}
 	// Pre-validate: on a malformed endpoint value the SDK reports to its
