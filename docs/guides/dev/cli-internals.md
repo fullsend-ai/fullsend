@@ -603,4 +603,4 @@ var executableFiles = map[string]struct{}{
 - [Advanced setup](../infrastructure/advanced-setup.md) — Alternative installation paths and setup flags
 - [Mint service administration](../infrastructure/mint-administration.md) — Deploying and managing the token mint
 - [Infrastructure Reference](../infrastructure/infrastructure-reference.md) — Infrastructure details
-- [Customizing Agents](../user/customizing-agents.md) — User customization guide
+- [Configuring Agents](../user/customizing-agents.md) — User configuration guide
