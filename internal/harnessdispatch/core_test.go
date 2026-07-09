@@ -45,6 +45,9 @@ func TestDispatch_CELIssueMatch(t *testing.T) {
 	ev := mustEvent(t, "ready-to-code-labeled.json")
 	ev.Transition.Label.Name = "ready-for-ping"
 	ev.State.Labels = []string{"ready-for-ping"}
+	// gha-event maps installation bots to role none when the collaborator API
+	// has no entry; label-added events must still dispatch (ADR 0054).
+	ev.Actor.Role = normevent.RoleNone
 
 	refs, err := Dispatch(context.Background(), Options{ConfigDir: dir, Event: ev})
 	require.NoError(t, err)
