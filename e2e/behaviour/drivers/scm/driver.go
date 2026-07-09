@@ -12,6 +12,10 @@ type Driver interface {
 	AddIssueLabels(ctx context.Context, owner, repo string, number int, labels ...string) error
 	AddComment(ctx context.Context, owner, repo string, number int, body string) (*forge.IssueComment, error)
 	GetIssue(ctx context.Context, owner, repo string, number int) (*forge.Issue, error)
+	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
 	CommitFile(ctx context.Context, owner, repo, path, message string, content []byte) error
+	CreateBranch(ctx context.Context, owner, repo, branch string) error
+	CommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
+	CreateChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*forge.ChangeProposal, error)
 	CloseIssue(ctx context.Context, owner, repo string, number int) error
 }

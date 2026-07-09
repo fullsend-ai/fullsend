@@ -282,6 +282,7 @@ type Harness struct {
 	AllowRuntimeFetch      bool                    `yaml:"allow_runtime_fetch,omitempty"` // opt-in to runtime skill fetching (default: false)
 	MaxRuntimeFetches      *int                    `yaml:"max_runtime_fetches,omitempty"` // per-run fetch cap; nil = default (10), valid range 1-1000
 	Forge                  map[string]*ForgeConfig `yaml:"forge,omitempty"`
+	Trigger                string                  `yaml:"trigger,omitempty"` // optional CEL boolean over normevent (ADR 0061)
 }
 
 // Load reads a harness YAML file from path, unmarshals it, and validates it.
@@ -439,6 +440,9 @@ func (h *Harness) Validate() error {
 	}
 	if err := h.validateForge(); err != nil {
 		return err
+	}
+	if err := ValidateTriggerExpression(h.Trigger); err != nil {
+		return fmt.Errorf("trigger: %w", err)
 	}
 	// ValidateAllowedRemoteResources requires the org allowlist and is called
 	// by the integration layer, not here.

@@ -143,6 +143,9 @@ type FakeClient struct {
 	// App client IDs for GetAppClientID
 	AppClientIDs map[string]string // key: app slug → client ID
 
+	// CollaboratorPermissions maps "owner/repo/username" → role_name for GetCollaboratorPermission.
+	CollaboratorPermissions map[string]string
+
 	// Org-level secret state
 	OrgSecrets       map[string]bool    // key: "org/name"
 	OrgSecretRepoIDs map[string][]int64 // key: "org/name" → repo IDs
@@ -1468,6 +1471,23 @@ func (f *FakeClient) GetAppClientID(_ context.Context, slug string) (string, err
 		}
 	}
 	return "", fmt.Errorf("%w: app %s", ErrNotFound, slug)
+}
+
+func (f *FakeClient) GetCollaboratorPermission(_ context.Context, owner, repo, username string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetCollaboratorPermission"); e != nil {
+		return "", e
+	}
+
+	key := owner + "/" + repo + "/" + username
+	if f.CollaboratorPermissions != nil {
+		if role, ok := f.CollaboratorPermissions[key]; ok {
+			return role, nil
+		}
+	}
+	return "", ErrNotFound
 }
 
 func (f *FakeClient) CreateOrgSecret(_ context.Context, org, name, value string, selectedRepoIDs []int64) error {

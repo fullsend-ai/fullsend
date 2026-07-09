@@ -36,6 +36,9 @@ type World struct {
 	IssueTitle     string
 	WorkflowRun    *forge.WorkflowRun
 	TriageWorkflow string
+
+	DispatchAgent string
+	PRNumber      int
 }
 
 const BehaviourScriptRepoPath = "behaviour/current-scenario.yaml"

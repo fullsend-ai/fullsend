@@ -3220,3 +3220,30 @@ func TestDeleteRepoSecret(t *testing.T) {
 		assert.Contains(t, err.Error(), "unexpected status")
 	})
 }
+
+func TestGetCollaboratorPermission(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "/repos/o/r/collaborators/alice/permission", r.URL.Path)
+			json.NewEncoder(w).Encode(map[string]string{"role_name": "write"})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		role, err := client.GetCollaboratorPermission(context.Background(), "o", "r", "alice")
+		require.NoError(t, err)
+		assert.Equal(t, "write", role)
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.GetCollaboratorPermission(context.Background(), "o", "r", "nobody")
+		require.Error(t, err)
+		assert.True(t, forge.IsNotFound(err))
+	})
+}

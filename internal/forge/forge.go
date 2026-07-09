@@ -482,4 +482,9 @@ type Client interface {
 
 	// GetAppClientID returns the Client ID for a GitHub App identified by slug.
 	GetAppClientID(ctx context.Context, slug string) (string, error)
+
+	// GetCollaboratorPermission returns the effective GitHub collaborator
+	// permission role_name for username on owner/repo (ADR 0054).
+	// Returns forge.ErrNotFound when the user has no explicit permission.
+	GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (role string, err error)
 }

@@ -2986,6 +2986,25 @@ func (c *LiveClient) GetAppClientID(ctx context.Context, slug string) (string, e
 	return app.ClientID, nil
 }
 
+func (c *LiveClient) GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (string, error) {
+	path := fmt.Sprintf("/repos/%s/%s/collaborators/%s/permission",
+		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return "", fmt.Errorf("get collaborator permission for %s: %w", username, err)
+	}
+	var perm struct {
+		RoleName string `json:"role_name"`
+	}
+	if err := decodeJSON(resp, &perm); err != nil {
+		return "", fmt.Errorf("decode collaborator permission for %s: %w", username, err)
+	}
+	if perm.RoleName == "" {
+		return "", fmt.Errorf("%w: no permission for %s", forge.ErrNotFound, username)
+	}
+	return perm.RoleName, nil
+}
+
 // CreateOrgSecret creates or updates an encrypted organization-level secret
 // scoped to the given repository IDs.
 // The value is trimmed of whitespace before encryption to prevent corruption

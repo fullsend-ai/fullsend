@@ -45,6 +45,22 @@ func (d *Driver) GetIssue(ctx context.Context, owner, repo string, number int) (
 	return d.Client.GetIssue(ctx, owner, repo, number)
 }
 
+func (d *Driver) GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error) {
+	return d.Client.GetFileContent(ctx, owner, repo, path)
+}
+
+func (d *Driver) CreateBranch(ctx context.Context, owner, repo, branch string) error {
+	return d.Client.CreateBranch(ctx, owner, repo, branch)
+}
+
+func (d *Driver) CommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error {
+	return d.Client.CreateOrUpdateFileOnBranch(ctx, owner, repo, branch, path, message, content)
+}
+
+func (d *Driver) CreateChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*forge.ChangeProposal, error) {
+	return d.Client.CreateChangeProposal(ctx, owner, repo, title, body, head, base)
+}
+
 // ParseRepo splits "owner/repo" into owner and repo name.
 func ParseRepo(fullName string) (owner, repo string, err error) {
 	return scm.ParseRepo(fullName)
