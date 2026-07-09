@@ -29,8 +29,10 @@ so Jira issues need an entry path into the same pipeline.
 A working proof-of-concept ([manish-jira](https://github.com/rh-hemartin-fullsendai/manish-jira))
 validated the approach: Jira Automation rules fire webhooks to GitHub's
 `repository_dispatch` API, a dispatch workflow validates enrollment and
-routes to agent workflows, and agents use the customization layer
-(`.fullsend/customized/`) to handle Jira-specific event formats. Jira
+routes to agent workflows, and agents use harness composition
+([ADR 0045](0045-forge-portable-harness-schema.md)) to handle
+Jira-specific event formats via `base:`, `pre_script`, and `forge:`
+overrides. Jira
 credentials stay on the GitHub Actions host and never enter the agent
 sandbox, following the prefetch model from
 [ADR 0017](0017-credential-isolation-for-sandboxed-agents.md).
@@ -77,8 +79,9 @@ returns 403, the CLI prints pre-filled manual instructions for creating
 the rules in the Jira UI.
 
 No new agents are introduced. Existing agents gain Jira awareness through
-the customization layer — Jira-specific pre/post scripts and agent prompt
-sections are the repo admin's responsibility, not part of enrollment.
+harness composition ([ADR 0045](0045-forge-portable-harness-schema.md)) —
+Jira-specific pre/post scripts and `forge:` overrides are the repo
+admin's responsibility, not part of enrollment.
 
 The CLI follows the `fullsend github` command pattern: cobra subcommands,
 credential resolution cascade (flag → env → prompt), and `--dry-run`
