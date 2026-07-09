@@ -2642,6 +2642,7 @@ func (c *LiveClient) MergeChangeProposal(ctx context.Context, owner, repo string
 	mergePath := fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, number)
 	updatePath := fmt.Sprintf("/repos/%s/%s/pulls/%d/update-branch", owner, repo, number)
 
+	var lastMergeErr error
 	for attempt := range maxAttempts {
 		resp, err := c.put(ctx, mergePath, map[string]string{"merge_method": "squash"})
 		if err == nil {
@@ -2653,14 +2654,19 @@ func (c *LiveClient) MergeChangeProposal(ctx context.Context, owner, repo string
 		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusConflict {
 			return fmt.Errorf("merge pull request #%d: %w", number, err)
 		}
-
-		// Update the PR branch to incorporate base branch changes.
-		updateResp, updateErr := c.do(ctx, http.MethodPut, updatePath, map[string]string{})
-		if updateErr == nil {
-			updateResp.Body.Close()
-		}
+		lastMergeErr = err
 
 		if attempt < maxAttempts-1 {
+			// Update the PR branch to incorporate base branch changes.
+			updateResp, updateErr := c.do(ctx, http.MethodPut, updatePath, map[string]string{})
+			if updateErr != nil {
+				return fmt.Errorf("update pull request #%d branch: %w", number, updateErr)
+			}
+			if err := checkStatus(updateResp, http.StatusAccepted, http.StatusOK); err != nil {
+				return fmt.Errorf("update pull request #%d branch: %w", number, err)
+			}
+			updateResp.Body.Close()
+
 			select {
 			case <-time.After(3 * time.Second):
 			case <-ctx.Done():
@@ -2669,7 +2675,7 @@ func (c *LiveClient) MergeChangeProposal(ctx context.Context, owner, repo string
 		}
 	}
 
-	return fmt.Errorf("merge pull request #%d: branch remained out of date after %d update-and-retry attempts", number, maxAttempts)
+	return fmt.Errorf("merge pull request #%d: branch remained out of date after %d update-and-retry attempts: %w", number, maxAttempts, lastMergeErr)
 }
 
 // UpdatePullRequestBranch updates a PR's head branch by merging the base

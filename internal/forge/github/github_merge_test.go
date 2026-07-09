@@ -116,6 +116,6 @@ func TestMergeChangeProposal_409PersistsAfterRetries(t *testing.T) {
 	err := client.MergeChangeProposal(context.Background(), "org", "repo", 7)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "merge pull request #7")
-	// Should have tried multiple times before giving up.
-	assert.Greater(t, mergeAttempts.Load(), int32(1), "should have retried merge")
+	// Should have tried exactly maxAttempts times before giving up.
+	assert.Equal(t, int32(3), mergeAttempts.Load(), "should have retried merge exactly 3 times")
 }
