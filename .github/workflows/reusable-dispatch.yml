@@ -604,7 +604,13 @@ jobs:
             --output-driver gha-matrix \
             --config-dir .fullsend \
             --event-action "${EVENT_ACTION}")
-          echo "matrix=${MATRIX}" >> "${GITHUB_OUTPUT}"
+          DELIM="MATRIX_$(openssl rand -hex 8)"
+          {
+            echo "matrix<<${DELIM}"
+            printf '%s' "${MATRIX}"
+            echo
+            echo "${DELIM}"
+          } >> "${GITHUB_OUTPUT}"
 
   harness-run:
     name: Harness run (${{ matrix.agent }})
