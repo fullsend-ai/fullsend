@@ -261,6 +261,29 @@ func TestResolveHarness_SkillDirCacheHit(t *testing.T) {
 		"cache-hit skill path basename should be the skill directory name from the URL")
 }
 
+func TestResolveHarness_SkillDirDotDotFallsBackToTree(t *testing.T) {
+	skillMD := []byte("# DotDot skill")
+
+	reg := newSkillRegistry()
+	files := map[string][]byte{"SKILL.md": skillMD}
+	treeHash := reg.register("skills/..", files)
+
+	root := t.TempDir()
+	h := &harness.Harness{
+		Skills:                 []string{forgeSkillURL("skills/..", treeHash)},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		TreeFetcher:   reg.fetcher(),
+	})
+	require.NoError(t, err)
+	require.Len(t, deps, 1)
+	assert.Equal(t, "tree", filepath.Base(h.Skills[0]),
+		"skill path with '..' basename should fall back to 'tree' to prevent traversal")
+}
+
 func TestResolveHarness_SkillDirHashMismatch(t *testing.T) {
 	reg := newSkillRegistry()
 	reg.register("skills/tampered", map[string][]byte{"SKILL.md": []byte("wrong content")})

@@ -362,7 +362,7 @@ func resolveSkillDirURL(ctx context.Context, field, rawURL string, h *harness.Ha
 	// Create a symlink named after the skill directory so downstream consumers
 	// (sandbox upload, logging) see the real skill name instead of "tree".
 	skillName := filepath.Base(forgeInfo.Path)
-	if skillName == "" || skillName == "." {
+	if skillName == "" || skillName == "." || skillName == ".." {
 		skillName = "tree"
 	}
 	namedPath := filepath.Join(filepath.Dir(treePath), skillName)
