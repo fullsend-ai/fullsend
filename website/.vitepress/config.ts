@@ -6,24 +6,41 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const docsDir = path.resolve(__dirname, "..", "..", "docs");
 
+const excludeFiles = new Set([
+  "AGENTS.md",
+  "CLAUDE.md",
+  "CODEOWNERS",
+  "LICENSE",
+  "CONTRIBUTING.md",
+]);
+const excludeDirs = new Set([".github", "0000-experiment-template"]);
+
 function getMarkdownFiles(dir: string, base: string): { text: string; link: string }[] {
   const fullDir = path.resolve(docsDir, dir);
   if (!fs.existsSync(fullDir)) return [];
   const items: { text: string; link: string }[] = [];
   for (const entry of fs.readdirSync(fullDir).sort()) {
     const entryPath = path.resolve(fullDir, entry);
-    if (entry.endsWith(".md") && entry !== "README.md") {
+    if (entry.endsWith(".md") && entry !== "README.md" && !excludeFiles.has(entry)) {
       const slug = entry.replace(/\.md$/, "");
       const content = fs.readFileSync(entryPath, "utf-8");
       const fmTitleMatch = content.match(/^title:\s*["']?(.+?)["']?\s*$/m);
       const titleMatch = content.match(/^#\s+(.+)$/m);
       items.push({ text: fmTitleMatch?.[1] || titleMatch?.[1] || slug, link: `/${base}/${slug}` });
-    } else if (fs.statSync(entryPath).isDirectory()) {
+    } else if (
+      fs.statSync(entryPath).isDirectory() &&
+      !excludeDirs.has(entry) &&
+      !entry.startsWith(".")
+    ) {
       const readme = path.resolve(entryPath, "README.md");
       if (fs.existsSync(readme)) {
         const content = fs.readFileSync(readme, "utf-8");
+        const fmTitleMatch = content.match(/^title:\s*["']?(.+?)["']?\s*$/m);
         const titleMatch = content.match(/^#\s+(.+)$/m);
-        items.push({ text: titleMatch?.[1] || entry, link: `/${base}/${entry}/` });
+        items.push({
+          text: fmTitleMatch?.[1] || titleMatch?.[1] || entry,
+          link: `/${base}/${entry}/`,
+        });
       }
     }
   }
@@ -209,7 +226,10 @@ export default defineConfig({
             { text: "Customizing Agents", link: "/guides/user/customizing-agents" },
             { text: "Customizing with AGENTS.md", link: "/guides/user/customizing-with-agents-md" },
             { text: "Customizing with Skills", link: "/guides/user/customizing-with-skills" },
-            { text: "Building custom agents from scratch", link: "/guides/user/building-custom-agents" },
+            {
+              text: "Building custom agents from scratch",
+              link: "/guides/user/building-custom-agents",
+            },
             { text: "Running Agents Locally", link: "/guides/user/running-agents-locally" },
           ],
         },
