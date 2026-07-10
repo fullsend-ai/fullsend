@@ -992,6 +992,24 @@ func fetchBaseSkillDir(ctx context.Context, field, skillDirURL, skillFileURL, sk
 		return Dependency{}, "", fmt.Errorf("base %s: reading cached skill directory: %w", field, err)
 	}
 
+	// Create a symlink named after the skill directory so downstream consumers
+	// (sandbox upload, logging) see the real skill name instead of "tree".
+	skillName := filepath.Base(forgeInfo.Path)
+	if skillName == "" || skillName == "." || skillName == ".." || skillName == "metadata.json" {
+		skillName = "tree"
+	}
+	namedPath := filepath.Join(filepath.Dir(treePath), skillName)
+	if namedPath != treePath {
+		if _, err := os.Lstat(namedPath); os.IsNotExist(err) {
+			if err := os.Symlink("tree", namedPath); err != nil && !os.IsExist(err) {
+				return Dependency{}, "", fmt.Errorf("base %s: creating named symlink: %w", field, err)
+			}
+		} else if err != nil {
+			return Dependency{}, "", fmt.Errorf("base %s: checking named symlink: %w", field, err)
+		}
+		treePath = namedPath
+	}
+
 	if iErr := urlIndexPut(opts.WorkspaceRoot, skillFileURL, treeHash); iErr != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: updating URL index: %w", field, iErr)
 	}

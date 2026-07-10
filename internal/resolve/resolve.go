@@ -369,9 +369,11 @@ func resolveSkillDirURL(ctx context.Context, field, rawURL string, h *harness.Ha
 	if namedPath != treePath {
 		// Idempotent: only create if it doesn't already exist.
 		if _, err := os.Lstat(namedPath); os.IsNotExist(err) {
-			if err := os.Symlink("tree", namedPath); err != nil {
+			if err := os.Symlink("tree", namedPath); err != nil && !os.IsExist(err) {
 				return Dependency{}, "", fmt.Errorf("creating named symlink for %s: %w", field, err)
 			}
+		} else if err != nil {
+			return Dependency{}, "", fmt.Errorf("checking named symlink for %s: %w", field, err)
 		}
 		treePath = namedPath
 	}
