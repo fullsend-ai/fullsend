@@ -275,6 +275,14 @@ complex PR that triggers all conditions legitimately needs all 6.
   schemas, or CLI args are modified. Skip entirely for PRs that don't
   touch public API surface.
 
+**Mechanical/value-only override:** When triage classifies a change as
+"mechanical/value-only" per the scope constraint table in section 3e
+(e.g., digest bumps, version bumps, hash swaps, URL updates, feature
+flag toggles), dispatch only the always-included sub-agents
+(`correctness` + `style-conventions`) and suppress all conditional
+triggers (`security`, `intent-coherence`, `docs-currency`,
+`cross-repo-contracts`).
+
 **Dispatch examples:**
 
 | PR type                        | Agents dispatched                                                                |
@@ -286,6 +294,7 @@ complex PR that triggers all conditions legitimately needs all 6.
 | Large refactor across packages | correctness, style-conventions, intent-coherence, docs-currency                  |
 | CI/CD pipeline change          | correctness, security, style-conventions, intent-coherence                       |
 | DB migration + API change      | correctness, security, style-conventions, cross-repo-contracts, docs-currency    |
+| Dependency version bump (lockfile + manifest only) | correctness, style-conventions                                    |
 
 #### 3d. Prepare context packages
 
