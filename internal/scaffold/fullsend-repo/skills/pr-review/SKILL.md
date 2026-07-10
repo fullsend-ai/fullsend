@@ -150,21 +150,23 @@ FETCH_FILES=$(echo "$PR_FILES" \
   | jq -r '.[] | select(.status != "removed") | .filename' \
   | grep -v -E '\.(png|jpg|jpeg|gif|ico|svg|woff2?|ttf|eot|pdf|zip|tar|gz|bin|exe|dll|so|dylib|wasm|pb\.go|lock)$')
 
-# For small PRs (≤20 files and ≤5000 lines), fetch all; for large PRs,
-# select a subset per dimension in step 3d.
-echo "$FETCH_FILES" | while IFS= read -r FILE; do
-  RESP=$(gh api "repos/${REPO_FULL_NAME}/contents/${FILE}?ref=${HEAD_SHA}" 2>&1) || {
-    echo "::warning::Skipping ${FILE}: contents API error" >&2
-    continue
-  }
-  echo "$RESP" | jq -r '.content' | base64 -d
-done
+# Only fetch all files for small PRs; large PRs defer to step 3d
+if [ "$FILE_COUNT" -le 20 ] && [ "$LINE_COUNT" -le 5000 ]; then
+  echo "$FETCH_FILES" | while IFS= read -r FILE; do
+    RESP=$(gh api "repos/${REPO_FULL_NAME}/contents/${FILE}?ref=${HEAD_SHA}" 2>&1) || {
+      echo "::warning::Skipping ${FILE}: contents API error" >&2
+      continue
+    }
+    echo "$RESP" | jq -r '.content' | base64 -d
+  done
+fi
 ```
 
 **Size guard for large PRs:** If the PR exceeds 20 changed files or
-5000 total changed lines, do not fetch all files upfront. Instead,
-defer file selection to step 3d (context package assembly), where the
-orchestrator selects dimension-relevant files for each sub-agent:
+5000 total changed lines, the code above skips the upfront fetch.
+Instead, file selection is deferred to step 3d (context package
+assembly), where the orchestrator selects dimension-relevant files for
+each sub-agent:
 
 - **correctness:** files with the most changes, test files, and files
   they import
@@ -173,11 +175,12 @@ orchestrator selects dimension-relevant files for each sub-agent:
 - **style-conventions:** files with the most changes
 - **other dimensions:** files most relevant to their review scope
 
-For omitted changed files in large PRs, sub-agents should fetch them
-via the GitHub contents API (using `HEAD_SHA`) rather than reading from
-disk, since disk contains base-branch code. Include `HEAD_SHA` and
-`REPO_FULL_NAME` in the context package so sub-agents can make these
-API calls.
+For omitted changed files in large PRs, sub-agents must fetch them
+via the GitHub contents API (using `HEAD_SHA`), **not** from disk —
+disk contains base-branch code, not the PR head. Include `HEAD_SHA`
+and `REPO_FULL_NAME` in the context package so sub-agents can make
+these API calls. Unchanged files (call sites, dependencies) are safe
+to read from disk since they are the same on both branches.
 
 If the PR body references linked issues, fetch them for intent context:
 

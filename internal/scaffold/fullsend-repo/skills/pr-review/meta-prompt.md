@@ -45,9 +45,13 @@ function/class name (not line number)
 - **Use the source files provided in the "Source files (PR head)"
   section below.** These are the full contents of changed files at the
   PR head commit — they reflect the actual code being reviewed, not
-  the base branch. Only read additional files from disk if you need
-  context beyond the changed files provided (e.g., call sites,
-  dependencies, or sibling files for pattern comparison).
+  the base branch.
+- Only read files from disk if they are **unchanged** files you need
+  for context (e.g., call sites, dependencies, or sibling files for
+  pattern comparison). For any **changed** file not included in the
+  source files section (large PR case), fetch it via the GitHub
+  contents API (`gh api "repos/.../contents/<path>?ref=<HEAD_SHA>"
+  --jq '.content' | base64 -d`) — do not read it from disk.
 - Do not re-read files that are already provided in the source files
   section. This wastes tokens and risks reading stale base-branch code.
 - Stay within your owned dimension — discard findings outside it
