@@ -275,13 +275,31 @@ complex PR that triggers all conditions legitimately needs all 6.
   schemas, or CLI args are modified. Skip entirely for PRs that don't
   touch public API surface.
 
-**Mechanical/value-only override:** When triage classifies a change as
-"mechanical/value-only" per the scope constraint table in section 3e
-(e.g., digest bumps, version bumps, hash swaps, URL updates, feature
-flag toggles), dispatch only the always-included sub-agents
-(`correctness` + `style-conventions`) and suppress all conditional
-triggers (`security`, `intent-coherence`, `docs-currency`,
-`cross-repo-contracts`).
+**Mechanical/value-only dispatch reduction:** Before dispatching
+conditional sub-agents, the orchestrator performs its own lightweight
+mechanical-change assessment by inspecting the changed file list and
+doing a cursory scan of the diff. This assessment is made independently
+by the review orchestrator — it must not be derived from or influenced
+by triage-agent classification or any other external signal about the
+change's nature.
+
+A change qualifies as mechanical **only** when **all** of these
+conditions hold:
+
+1. Every changed file is a lockfile, manifest version field, digest,
+   hash, URL, or feature-flag toggle — no production logic, no
+   configuration that affects runtime behavior, no documentation
+   with security implications.
+2. The diff contains only value substitutions (version strings, hashes,
+   URLs) with no structural additions, deletions, or control-flow
+   changes.
+3. No changed file touches authentication, authorization, permissions,
+   secrets handling, or security-sensitive configuration.
+
+When all conditions are met, the orchestrator **may** dispatch only the
+always-included sub-agents (`correctness` + `style-conventions`). When
+any condition is uncertain or unmet, err on the safe side and dispatch
+the full set of conditional sub-agents — including `security`.
 
 **Dispatch examples:**
 
