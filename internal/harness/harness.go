@@ -806,8 +806,12 @@ func (h *Harness) ValidateResourceTypes() error {
 				return fmt.Errorf("skills[%d] URL must include #sha256=... integrity hash", i)
 			}
 			cleanURL, _, _ := ParseIntegrityHash(s)
-			if _, err := forge.ParseForgeURL(cleanURL); err != nil {
+			info, err := forge.ParseForgeURL(cleanURL)
+			if err != nil {
 				return fmt.Errorf("skills[%d] URL must be hosted on a supported forge (github.com): %w", i, err)
+			}
+			if info.Forge != "github" {
+				return fmt.Errorf("skills[%d] forge %q is recognized but fetch support has not landed yet", i, info.Forge)
 			}
 		}
 	}

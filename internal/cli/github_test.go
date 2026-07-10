@@ -445,6 +445,17 @@ func TestGitHubUninstallCmd_HasFlags(t *testing.T) {
 	require.NotNil(t, appSetFlag, "expected --app-set flag")
 }
 
+func TestRunGitHubUninstall_NonGitHub_SkipsAppUninstall(t *testing.T) {
+	inner := forge.NewFakeClient()
+	client := &nonGitHubClient{Client: inner}
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runGitHubUninstall(context.Background(), client, printer, "acme", "fullsend-ai")
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "App uninstall is not available on this forge")
+}
+
 func TestRunGitHubUninstall_DeletesResources(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Repos = []forge.Repository{

@@ -100,6 +100,55 @@ func TestParseForgeURL(t *testing.T) {
 				Path:  "skills/foo",
 			},
 		},
+		{
+			name:  "GitLab tree URL",
+			input: "https://gitlab.com/my-group/my-repo/-/tree/main/src/lib",
+			want: &ForgeURLInfo{
+				Forge: "gitlab",
+				Owner: "my-group",
+				Repo:  "my-repo",
+				Ref:   "main",
+				Path:  "src/lib",
+			},
+		},
+		{
+			name:  "GitLab blob URL",
+			input: "https://gitlab.com/my-group/my-repo/-/blob/abc123/README.md",
+			want: &ForgeURLInfo{
+				Forge: "gitlab",
+				Owner: "my-group",
+				Repo:  "my-repo",
+				Ref:   "abc123",
+				Path:  "README.md",
+			},
+		},
+		{
+			name:  "GitLab nested groups",
+			input: "https://gitlab.com/top/sub/deep/my-repo/-/tree/v1.0/docs",
+			want: &ForgeURLInfo{
+				Forge: "gitlab",
+				Owner: "top/sub/deep",
+				Repo:  "my-repo",
+				Ref:   "v1.0",
+				Path:  "docs",
+			},
+		},
+		{
+			name:  "GitLab root path no trailing path",
+			input: "https://gitlab.com/group/repo/-/tree/main",
+			want: &ForgeURLInfo{
+				Forge: "gitlab",
+				Owner: "group",
+				Repo:  "repo",
+				Ref:   "main",
+				Path:  "",
+			},
+		},
+		{
+			name:    "GitLab URL missing dash separator",
+			input:   "https://gitlab.com/group/repo",
+			wantErr: "URL path too short",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -237,7 +286,7 @@ func TestIsSupportedForge(t *testing.T) {
 		want     bool
 	}{
 		{"github.com", "github.com", true},
-		{"gitlab.com not yet supported", "gitlab.com", false},
+		{"gitlab.com — recognized but no fetch support yet", "gitlab.com", false},
 		{"example.com", "example.com", false},
 		{"empty string", "", false},
 	}

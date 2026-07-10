@@ -333,8 +333,8 @@ ADR 0045 is accepted and its implementation (Phases 1–4) is complete.
   `OrgVariableExists`, `DeleteOrgVariable`, `SetOrgVariableRepos`,
   `GetOrgVariableRepos`, `CreateOrgSecret`, `OrgSecretExists`,
   `DeleteOrgSecret`, `SetOrgSecretRepos`, `GetOrgSecretRepos`,
-  `ListOrgRepos`). Keep `ListOrgInstallations` (per-repo app discovery)
-  and `GetOrgPlan` (plan detection).
+  `ListOrgRepos`). Keep `ListOrgInstallations` (now on `GitHubExtensions`,
+  per-repo app discovery) and `GetOrgPlan` (plan detection).
 - Remove the `FULLSEND_PER_REPO_INSTALL` guard variable and all
   guard-checking logic (no longer needed when per-org enrollment
   does not exist).
@@ -374,7 +374,8 @@ release checklist. The summary below captures the high-level ordering.
 - PR 9: Remove per-org scaffold templates; rename per-repo scaffolds.
 - PR 10: Remove org-level forge methods (10 secret/variable methods,
   `ListOrgRepos`); remove `PerRepoGuardVar`; keep
-  `ListOrgInstallations` (per-repo app discovery) and `GetOrgPlan`.
+  `ListOrgInstallations` (now on `GitHubExtensions`, per-repo app
+  discovery) and `GetOrgPlan`.
 - PR 11: Simplify dispatch provisioner; retain `Config.GitHubOrgs`
   (needed by `EnsureOrgInMint`).
 - PR 12: Simplify appsetup; remove per-org branching.

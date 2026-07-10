@@ -78,6 +78,15 @@ func IsNoChanges(err error) bool {
 	return errors.Is(err, ErrNoChanges)
 }
 
+// ErrNotSupported indicates that the forge implementation does not
+// support the requested operation.
+var ErrNotSupported = errors.New("operation not supported by this forge")
+
+// IsNotSupported reports whether err indicates an unsupported operation.
+func IsNotSupported(err error) bool {
+	return errors.Is(err, ErrNotSupported)
+}
+
 // Repository represents a repository on a git forge.
 type Repository struct {
 	ID            int64
@@ -477,9 +486,49 @@ type Client interface {
 	// etc.) from all jobs in a workflow run.
 	GetWorkflowRunAnnotations(ctx context.Context, owner, repo string, runID int) ([]Annotation, error)
 
-	// App installation operations
-	ListOrgInstallations(ctx context.Context, org string) ([]Installation, error)
+	// Branch protection
+	// IsProtectedBranch returns true if the given branch has protection
+	// rules enabled. Returns ErrNotSupported if the forge does not
+	// expose branch-protection queries.
+	IsProtectedBranch(ctx context.Context, owner, repo, branch string) (bool, error)
 
-	// GetAppClientID returns the Client ID for a GitHub App identified by slug.
+	// Pipeline schedules and branch-restricted CI variables live on
+	// the base Client because both GitHub Actions and GitLab CI support
+	// timed triggers. However, the branch-restricted/protected variable
+	// semantics and pipeline schedule APIs have no GitHub Actions
+	// analogue, so GitHub stubs return ErrNotSupported.
+	// GitHubExtensions is reserved for operations with no cross-forge
+	// analogue (App installations, OAuth client IDs).
+	// The existing RepoVariable methods model GitHub Actions variables;
+	// the CIVariable methods below model GitLab CI protected variables
+	// (branch-restricted, unmasked).
+	CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error)
+	DeletePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error
+	ListPipelineSchedules(ctx context.Context, owner, repo string) ([]PipelineSchedule, error)
+
+	// CI/CD branch-restricted variables (distinct from RepoVariable methods).
+	UpdateCIVariable(ctx context.Context, owner, repo, name, value string, protected bool) error
+	// CreateProtectedCIVariable creates a branch-restricted, unmasked CI/CD variable.
+	// Values are visible in pipeline logs; use CreateRepoSecret for credentials.
+	CreateProtectedCIVariable(ctx context.Context, owner, repo, name, value string) error
+}
+
+// PipelineSchedule represents a scheduled pipeline trigger.
+type PipelineSchedule struct {
+	ID           int64
+	Description  string
+	Ref          string
+	Cron         string
+	CronTimezone string
+	Active       bool
+}
+
+// GitHubExtensions provides GitHub-specific operations that are not
+// part of the cross-forge Client interface. Callers should type-assert
+// to this interface when they need GitHub App installation features.
+type GitHubExtensions interface {
+	// ListOrgInstallations returns all GitHub App installations for the org.
+	ListOrgInstallations(ctx context.Context, org string) ([]Installation, error)
+	// GetAppClientID returns the OAuth client ID for the named GitHub App.
 	GetAppClientID(ctx context.Context, slug string) (string, error)
 }
