@@ -53,16 +53,16 @@ func TestExtractSafeContext(t *testing.T) {
 			want:     "make test",
 		},
 		{
-			name:     "bash with args",
+			name:     "bash with short arg (no redaction)",
 			toolName: "Bash",
-			input:    map[string]interface{}{"command": "curl -H 'Bearer token123' https://api.example.com"},
-			want:     "curl -H 'Bearer token123' https://api.example.com",
+			input:    map[string]interface{}{"command": "curl -H 'Bearer short' https://api.example.com"},
+			want:     "curl -H 'Bearer short' https://api.example.com",
 		},
 		{
-			name:     "bash with env var prefix",
+			name:     "bash with github token redacted",
 			toolName: "Bash",
-			input:    map[string]interface{}{"command": "API_KEY=secret123 curl https://api.example.com"},
-			want:     "API_KEY=secret123 curl https://api.example.com",
+			input:    map[string]interface{}{"command": "curl -H 'Authorization: Bearer ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' https://api.github.com"},
+			want:     "curl -H 'Authorization: Bearer *** https://api.github.com",
 		},
 		{
 			name:     "read file",
@@ -382,6 +382,72 @@ func TestSanitizeOutput(t *testing.T) {
 				t.Errorf("sanitizeOutput(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSanitizeStreamText(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "preserves newlines",
+			input: "line one\nline two\nline three",
+			want:  "line one\nline two\nline three",
+		},
+		{
+			name:  "strips ANSI but preserves newlines",
+			input: "\x1b[31mred\x1b[0m\nclean",
+			want:  "red\nclean",
+		},
+		{
+			name:  "breaks GHA commands across newlines",
+			input: "text\n::error::pwned",
+			want:  "text\n: :error: :pwned",
+		},
+		{
+			name:  "strips control chars except newline",
+			input: "hello\x00\tworld\nok",
+			want:  "hello  world\nok",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeStreamText(tt.input)
+			if got != tt.want {
+				t.Errorf("sanitizeStreamText(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRendererSanitizesThinkingAndText(t *testing.T) {
+	var buf bytes.Buffer
+	r, _ := newTestRenderer(&buf)
+
+	// Thinking with ANSI escape should be stripped
+	r.Handle(ThinkingEvent{Text: "\x1b[31minjected\x1b[0m"})
+	r.Handle(ToolUseEvent{Name: "Read", Summary: "/a.go"}) // force block transition
+
+	output := buf.String()
+	if strings.Contains(output, "\x1b[") {
+		t.Errorf("ANSI escape leaked through thinking event: %q", output)
+	}
+	if !strings.Contains(output, "injected") {
+		t.Errorf("expected sanitized thinking text, got: %s", output)
+	}
+
+	buf.Reset()
+	r2, _ := newTestRenderer(&buf)
+
+	// Text with GHA command injection
+	r2.Handle(TextEvent{Text: "hello\n::error::pwned"})
+	r2.Handle(ToolUseEvent{Name: "Read", Summary: "/b.go"})
+
+	output = buf.String()
+	if strings.Contains(output, "::error::") {
+		t.Errorf("GHA workflow command leaked through text event: %q", output)
 	}
 }
 

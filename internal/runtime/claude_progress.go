@@ -8,6 +8,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -338,8 +339,24 @@ func progressParser(r io.Reader, printer *ui.Printer, start time.Time, metrics *
 	})
 }
 
+// progressRedactor scrubs secrets from tool context strings before display.
+var progressRedactor = security.NewSecretRedactor()
+
 // extractSafeContext returns a safe, non-secret string for progress display.
+// The result is run through SecretRedactor to scrub tokens, keys, and
+// credentials before anything reaches the terminal or CI annotations.
 func extractSafeContext(toolName string, input json.RawMessage) string {
+	raw := extractRawContext(toolName, input)
+	if raw == "" {
+		return ""
+	}
+	if result := progressRedactor.Scan(raw); result.Sanitized != "" {
+		return result.Sanitized
+	}
+	return raw
+}
+
+func extractRawContext(toolName string, input json.RawMessage) string {
 	if len(input) == 0 {
 		return ""
 	}

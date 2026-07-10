@@ -29,8 +29,9 @@ type TextEvent struct {
 func (TextEvent) agentEvent() {}
 
 // ToolUseEvent is emitted when a tool invocation completes.
-// Name is the tool name ("tool" for unknown/non-allowlisted tools).
-// Summary is a pre-computed one-line description safe for display.
+// Name is the raw tool name from the runtime stream.
+// Summary is a one-line context string from extractSafeContext; it is
+// empty for tools not recognized by that function.
 type ToolUseEvent struct {
 	Name    string
 	Summary string

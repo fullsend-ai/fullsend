@@ -44,9 +44,10 @@ func (r *EventRenderer) Handle(evt AgentEvent) {
 		}
 		r.seenInit = true
 		r.endBlock()
-		label := e.Model
+		model := sanitizeOutput(e.Model)
+		label := model
 		if e.Version != "" {
-			label = fmt.Sprintf("%s (v%s)", e.Model, e.Version)
+			label = fmt.Sprintf("%s (v%s)", model, sanitizeOutput(e.Version))
 		}
 		r.printer.Header("Agent: " + label)
 	case ThinkingEvent:
@@ -55,14 +56,14 @@ func (r *EventRenderer) Handle(evt AgentEvent) {
 			r.printer.Raw(thinkingStyle.Render("  \U0001f9e0 "))
 			r.inThinking = true
 		}
-		r.printer.Raw(thinkingStyle.Render(e.Text))
+		r.printer.Raw(thinkingStyle.Render(sanitizeStreamText(e.Text)))
 	case TextEvent:
 		if !r.inText {
 			r.endBlock()
 			r.printer.Raw("  \U0001f4ac ")
 			r.inText = true
 		}
-		r.printer.Raw(e.Text)
+		r.printer.Raw(sanitizeStreamText(e.Text))
 	case ToolUseEvent:
 		r.endBlock()
 		r.metrics.ToolCalls.Add(1)
@@ -92,14 +93,15 @@ func (r *EventRenderer) Handle(evt AgentEvent) {
 		r.metrics.OutputTokens = e.OutputTokens
 		r.metrics.CacheCreationInputTokens = e.CacheCreationInputTokens
 		r.metrics.CacheReadInputTokens = e.CacheReadInputTokens
+		subtype := sanitizeOutput(e.Subtype)
 		label := "Result"
-		if e.Subtype != "" {
-			label = fmt.Sprintf("Result: %s", e.Subtype)
+		if subtype != "" {
+			label = fmt.Sprintf("Result: %s", subtype)
 		}
 		if e.IsError {
 			label = "Result: ERROR"
-			if e.Subtype != "" {
-				label = fmt.Sprintf("Result: ERROR (%s)", e.Subtype)
+			if subtype != "" {
+				label = fmt.Sprintf("Result: ERROR (%s)", subtype)
 			}
 		}
 		r.printer.Header(label)
