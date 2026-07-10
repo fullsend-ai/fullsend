@@ -197,6 +197,7 @@ export default defineConfig({
             { text: "Fix", link: "/agents/fix" },
             { text: "Retro", link: "/agents/retro" },
             { text: "Prioritize", link: "/agents/prioritize" },
+            { text: "Default vs. Custom", link: "/agents/topics/default-vs-custom" },
           ],
         },
         {
@@ -208,7 +209,7 @@ export default defineConfig({
             { text: "Customizing Agents", link: "/guides/user/customizing-agents" },
             { text: "Customizing with AGENTS.md", link: "/guides/user/customizing-with-agents-md" },
             { text: "Customizing with Skills", link: "/guides/user/customizing-with-skills" },
-            { text: "Building Custom Agents", link: "/guides/user/building-custom-agents" },
+            { text: "Building custom agents from scratch", link: "/guides/user/building-custom-agents" },
             { text: "Running Agents Locally", link: "/guides/user/running-agents-locally" },
           ],
         },

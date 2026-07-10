@@ -20,8 +20,8 @@ config (see [ADR 0058](../ADRs/0058-agent-registration.md)).
 All agents can be configured by adding instructions and skills to your
 repository. Changes to `AGENTS.md` affect every agent; skills let you tune how
 a specific agent performs a specific task. See
-[Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
-[Configuring with Skills](../guides/user/customizing-with-skills.md).
+[Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
+[Customizing with Skills](../guides/user/customizing-with-skills.md).
 
 At some point, enough configuration turns a configured default agent into a
 derived agent. See [Default, derived, and custom agents](topics/default-vs-custom.md)
