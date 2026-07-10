@@ -6,14 +6,12 @@ import { fileURLToPath } from "node:url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const docsDir = path.resolve(__dirname, "..", "..", "docs");
 
-const excludeFiles = new Set([
-  "AGENTS.md",
-  "CLAUDE.md",
-  "CODEOWNERS",
-  "LICENSE",
-  "CONTRIBUTING.md",
-]);
-const excludeDirs = new Set([".github", "0000-experiment-template"]);
+/** Non-content entry: template placeholder or repo-metadata (ALL-CAPS) name. */
+function isNonContent(entry: string): boolean {
+  if (/^0000-.*-template/.test(entry)) return true;
+  const base = entry.replace(/\.md$/, "");
+  return /^[A-Z][A-Z0-9_-]*$/.test(base);
+}
 
 function getMarkdownFiles(dir: string, base: string): { text: string; link: string }[] {
   const fullDir = path.resolve(docsDir, dir);
@@ -21,7 +19,7 @@ function getMarkdownFiles(dir: string, base: string): { text: string; link: stri
   const items: { text: string; link: string }[] = [];
   for (const entry of fs.readdirSync(fullDir).sort()) {
     const entryPath = path.resolve(fullDir, entry);
-    if (entry.endsWith(".md") && entry !== "README.md" && !excludeFiles.has(entry)) {
+    if (entry.endsWith(".md") && entry !== "README.md" && !isNonContent(entry)) {
       const slug = entry.replace(/\.md$/, "");
       const content = fs.readFileSync(entryPath, "utf-8");
       const fmTitleMatch = content.match(/^title:\s*["']?(.+?)["']?\s*$/m);
@@ -29,8 +27,8 @@ function getMarkdownFiles(dir: string, base: string): { text: string; link: stri
       items.push({ text: fmTitleMatch?.[1] || titleMatch?.[1] || slug, link: `/${base}/${slug}` });
     } else if (
       fs.statSync(entryPath).isDirectory() &&
-      !excludeDirs.has(entry) &&
-      !entry.startsWith(".")
+      !entry.startsWith(".") &&
+      !isNonContent(entry)
     ) {
       const readme = path.resolve(entryPath, "README.md");
       if (fs.existsSync(readme)) {
