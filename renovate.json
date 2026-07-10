@@ -23,6 +23,11 @@
         "NVIDIA/OpenShell"
       ],
       "groupName": "openshell"
+    },
+    {
+      "description": "Group Cloudflare Worker packages to prevent broken lockfile-only PRs from peer dependency conflicts",
+      "matchPackageNames": ["/^@cloudflare\\//", "wrangler", "miniflare"],
+      "groupName": "cloudflare-workers"
     }
   ],
   "postUpdateOptions": ["gomodTidy"],
