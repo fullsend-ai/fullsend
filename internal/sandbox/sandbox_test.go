@@ -637,6 +637,52 @@ func TestImportProfile_OpenshellNotInPath(t *testing.T) {
 	assert.Contains(t, err.Error(), "openshell")
 }
 
+func TestImportProfile_Success(t *testing.T) {
+	dir := t.TempDir()
+
+	script := `#!/bin/sh
+exit 0
+`
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := ImportProfile(context.Background(), "/some/my-profile.yaml")
+	assert.NoError(t, err)
+}
+
+func TestImportProfile_AlreadyExists(t *testing.T) {
+	dir := t.TempDir()
+
+	script := `#!/bin/sh
+echo "profile already exists" >&2
+exit 1
+`
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := ImportProfile(context.Background(), "/some/my-profile.yaml")
+	assert.NoError(t, err, "idempotent import should not return an error")
+}
+
+func TestImportProfile_OtherError(t *testing.T) {
+	dir := t.TempDir()
+
+	script := `#!/bin/sh
+echo "connection refused" >&2
+exit 1
+`
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := ImportProfile(context.Background(), "/some/my-profile.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "my-profile.yaml")
+	assert.Contains(t, err.Error(), "connection refused")
+}
+
 // TestEnsureProvider_AlreadyExists_FallsBackToUpdate uses a fake openshell
 // script: first invocation exits 1 with AlreadyExists, second exits 0.
 func TestEnsureProvider_AlreadyExists_FallsBackToUpdate(t *testing.T) {

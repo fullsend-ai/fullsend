@@ -3872,6 +3872,63 @@ func TestDedupResolvedProfiles(t *testing.T) {
 	}
 }
 
+func TestDedupResolvedProviders(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     []resolve.ResolvedProvider
+		wantNames []string
+	}{
+		{
+			name:      "empty",
+			input:     nil,
+			wantNames: nil,
+		},
+		{
+			name:      "single",
+			input:     []resolve.ResolvedProvider{{Def: harness.ProviderDef{Name: "a"}}},
+			wantNames: []string{"a"},
+		},
+		{
+			name: "no duplicates",
+			input: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "a"}},
+				{Def: harness.ProviderDef{Name: "b"}},
+			},
+			wantNames: []string{"a", "b"},
+		},
+		{
+			name: "last wins",
+			input: []resolve.ResolvedProvider{
+				{Def: harness.ProviderDef{Name: "a"}, LocalPath: "/base/a"},
+				{Def: harness.ProviderDef{Name: "b"}, LocalPath: "/base/b"},
+				{Def: harness.ProviderDef{Name: "a"}, LocalPath: "/child/a"},
+			},
+			wantNames: []string{"b", "a"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dedupResolvedProviders(tt.input)
+			if tt.wantNames == nil {
+				assert.Len(t, got, len(tt.input))
+				return
+			}
+			var names []string
+			for _, rp := range got {
+				names = append(names, rp.Def.Name)
+			}
+			assert.Equal(t, tt.wantNames, names)
+			if tt.name == "last wins" {
+				for _, rp := range got {
+					if rp.Def.Name == "a" {
+						assert.Equal(t, "/child/a", rp.LocalPath)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestMergeProviderDefs(t *testing.T) {
 	tests := []struct {
 		name         string

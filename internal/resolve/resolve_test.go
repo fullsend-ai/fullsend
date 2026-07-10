@@ -1534,3 +1534,45 @@ func TestWarnLiteralCredentials(t *testing.T) {
 		})
 	}
 }
+
+func TestParseProfileID(t *testing.T) {
+	tests := []struct {
+		name    string
+		data    []byte
+		wantID  string
+		wantErr string
+	}{
+		{
+			name:   "valid",
+			data:   []byte("id: my-profile\nname: My Profile\n"),
+			wantID: "my-profile",
+		},
+		{
+			name:    "missing id",
+			data:    []byte("name: No ID\n"),
+			wantErr: "no id field",
+		},
+		{
+			name:    "invalid yaml",
+			data:    []byte(":::not valid yaml\n\t{["),
+			wantErr: "parsing profile YAML",
+		},
+		{
+			name:    "empty input",
+			data:    []byte{},
+			wantErr: "no id field",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id, err := ParseProfileID(tt.data)
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantID, id)
+		})
+	}
+}
