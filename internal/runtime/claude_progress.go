@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/fullsend-ai/fullsend/internal/security"
@@ -16,6 +15,7 @@ const (
 	maxCommandDisplay = 120
 	maxPatternDisplay = 50
 	maxPathDisplay    = 200
+	maxToolInputSize  = 1 << 20 // 1MB cap for accumulated tool input JSON
 	tokenThreshold    = 5000
 )
 
@@ -200,7 +200,9 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				case "thinking_delta":
 					onEvent(ThinkingEvent{Text: d.Thinking})
 				case "input_json_delta":
-					toolInputJSON.WriteString(d.PartialJSON)
+					if toolInputJSON.Len() < maxToolInputSize {
+						toolInputJSON.WriteString(d.PartialJSON)
+					}
 				}
 
 			case "content_block_stop":
@@ -235,6 +237,7 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				}
 				if err := json.Unmarshal(wrapper.Event, &msg); err == nil {
 					totalInput = msg.Message.Usage.InputTokens
+					totalOutput = 0
 					totalCacheRead = msg.Message.Usage.CacheReadInputTokens
 					totalCacheWrite = msg.Message.Usage.CacheCreationInputTokens
 				}
@@ -329,11 +332,23 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 // progressParser reads NDJSON from Claude Code's stream-json output and emits
 // progress updates via the printer. It is a thin wrapper around parseClaudeStream
 // that creates an EventRenderer and populates RunMetrics.
-func progressParser(r io.Reader, printer *ui.Printer, start time.Time, metrics *RunMetrics) error {
-	renderer := NewEventRenderer(printer, start, metrics)
+func progressParser(r io.Reader, printer *ui.Printer, metrics *RunMetrics) error {
+	renderer := NewEventRenderer(printer)
 	return parseClaudeStream(r, func(evt AgentEvent) {
-		if init, ok := evt.(InitEvent); ok && metrics.Model == "" {
-			metrics.Model = init.Model
+		switch e := evt.(type) {
+		case InitEvent:
+			if metrics.Model == "" {
+				metrics.Model = e.Model
+			}
+		case ResultEvent:
+			metrics.NumTurns = e.NumTurns
+			metrics.TotalCostUSD = e.TotalCostUSD
+			metrics.InputTokens = e.InputTokens
+			metrics.OutputTokens = e.OutputTokens
+			metrics.CacheCreationInputTokens = e.CacheCreationInputTokens
+			metrics.CacheReadInputTokens = e.CacheReadInputTokens
+		case ToolUseEvent:
+			metrics.ToolCalls.Add(1)
 		}
 		renderer.Handle(evt)
 	})

@@ -164,33 +164,37 @@ The existing `extractSafeContext`, `extractBinaryName`, and `allowedTools`
 functions are reused to build `ToolUseEvent.Summary`. Unknown tools get
 name `"tool"` and empty summary.
 
-The old `progressParser` signature is preserved as a thin wrapper:
+`progressParser` is a thin wrapper that creates a renderer and metrics handler:
 
 ```go
-func progressParser(r io.Reader, printer *ui.Printer, start time.Time, metrics *RunMetrics) error {
-    renderer := NewEventRenderer(printer, start, metrics)
-    return parseClaudeStream(r, renderer.Handle)
+func progressParser(r io.Reader, printer *ui.Printer, metrics *RunMetrics) error {
+    renderer := NewEventRenderer(printer)
+    return parseClaudeStream(r, func(evt AgentEvent) {
+        // populate metrics from events
+        renderer.Handle(evt)
+    })
 }
 ```
 
-This maintains backward compatibility for any internal callers.
+Metrics population (model, tool count, result stats) is handled by the caller's
+wrapper — not the renderer — so custom `OnEvent` handlers also get correct metrics.
 
 ## EventRenderer
 
 File: `internal/runtime/renderer.go`
 
+`EventRenderer` is a pure rendering concern — it writes formatted output to the
+printer but does not populate `RunMetrics`.
+
 ```go
 type EventRenderer struct {
     printer    *ui.Printer
-    start      time.Time
-    metrics    *RunMetrics
     isCI       bool
     inText     bool
     inThinking bool
-    lastTokenTotal int
 }
 
-func NewEventRenderer(printer *ui.Printer, start time.Time, metrics *RunMetrics) *EventRenderer
+func NewEventRenderer(printer *ui.Printer) *EventRenderer
 func (r *EventRenderer) Handle(evt AgentEvent)
 ```
 
@@ -230,8 +234,14 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 
     handler := params.OnEvent
     if handler == nil {
-        renderer := NewEventRenderer(printer, start, metrics)
+        renderer := NewEventRenderer(printer)
         handler = renderer.Handle
+    }
+    // Always wrap to capture metrics regardless of custom/default handler.
+    innerHandler := handler
+    handler = func(evt AgentEvent) {
+        // populate metrics from InitEvent, ResultEvent, ToolUseEvent
+        innerHandler(evt)
     }
 
     if parseErr := parseClaudeStream(r, handler); parseErr != nil {

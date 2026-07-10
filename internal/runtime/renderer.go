@@ -3,7 +3,6 @@ package runtime
 import (
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -14,19 +13,16 @@ import (
 // types produce clean output boundaries.
 type EventRenderer struct {
 	printer    *ui.Printer
-	metrics    *RunMetrics
 	isCI       bool
 	inText     bool
 	inThinking bool
 	seenInit   bool
 }
 
-// NewEventRenderer creates a renderer that writes to the given printer
-// and populates metrics as events arrive.
-func NewEventRenderer(printer *ui.Printer, start time.Time, metrics *RunMetrics) *EventRenderer {
+// NewEventRenderer creates a renderer that writes to the given printer.
+func NewEventRenderer(printer *ui.Printer) *EventRenderer {
 	return &EventRenderer{
 		printer: printer,
-		metrics: metrics,
 		isCI:    os.Getenv("GITHUB_ACTIONS") == "true",
 	}
 }
@@ -66,7 +62,6 @@ func (r *EventRenderer) Handle(evt AgentEvent) {
 		r.printer.Raw(sanitizeStreamText(e.Text))
 	case ToolUseEvent:
 		r.endBlock()
-		r.metrics.ToolCalls.Add(1)
 		var msg string
 		if e.Summary != "" {
 			msg = fmt.Sprintf("%s: %s", e.Name, e.Summary)
@@ -87,12 +82,6 @@ func (r *EventRenderer) Handle(evt AgentEvent) {
 		))
 	case ResultEvent:
 		r.endBlock()
-		r.metrics.NumTurns = e.NumTurns
-		r.metrics.TotalCostUSD = e.TotalCostUSD
-		r.metrics.InputTokens = e.InputTokens
-		r.metrics.OutputTokens = e.OutputTokens
-		r.metrics.CacheCreationInputTokens = e.CacheCreationInputTokens
-		r.metrics.CacheReadInputTokens = e.CacheReadInputTokens
 		subtype := sanitizeOutput(e.Subtype)
 		label := "Result"
 		if subtype != "" {

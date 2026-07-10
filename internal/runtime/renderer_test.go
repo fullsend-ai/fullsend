@@ -5,21 +5,18 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-func newTestRenderer(buf *bytes.Buffer) (*EventRenderer, *RunMetrics) {
+func newTestRenderer(buf *bytes.Buffer) *EventRenderer {
 	printer := ui.New(buf)
-	metrics := &RunMetrics{}
-	r := NewEventRenderer(printer, time.Now(), metrics)
-	return r, metrics
+	return NewEventRenderer(printer)
 }
 
 func TestRendererInitEvent(t *testing.T) {
 	var buf bytes.Buffer
-	r, _ := newTestRenderer(&buf)
+	r := newTestRenderer(&buf)
 
 	r.Handle(InitEvent{Model: "claude-opus-4-6", Version: "1.2.3"})
 
@@ -31,7 +28,7 @@ func TestRendererInitEvent(t *testing.T) {
 
 func TestRendererDuplicateInitEventSuppressed(t *testing.T) {
 	var buf bytes.Buffer
-	r, _ := newTestRenderer(&buf)
+	r := newTestRenderer(&buf)
 
 	r.Handle(InitEvent{Model: "claude-opus-4-6", Version: "1.2.3"})
 	r.Handle(InitEvent{Model: "claude-opus-4-6"})
@@ -45,7 +42,7 @@ func TestRendererDuplicateInitEventSuppressed(t *testing.T) {
 
 func TestRendererToolUseEvent(t *testing.T) {
 	var buf bytes.Buffer
-	r, metrics := newTestRenderer(&buf)
+	r := newTestRenderer(&buf)
 
 	r.Handle(ToolUseEvent{Name: "Read", Summary: "/src/main.go"})
 
@@ -55,9 +52,6 @@ func TestRendererToolUseEvent(t *testing.T) {
 	}
 	if !strings.Contains(output, "/src/main.go") {
 		t.Errorf("expected summary in output, got: %s", output)
-	}
-	if metrics.ToolCalls.Load() != 1 {
-		t.Errorf("expected 1 tool call, got %d", metrics.ToolCalls.Load())
 	}
 }
 
@@ -72,7 +66,7 @@ func TestRendererToolUseEventCI(t *testing.T) {
 	os.Stderr = stderrW
 	defer func() { os.Stderr = oldStderr }()
 
-	r, _ := newTestRenderer(&buf)
+	r := newTestRenderer(&buf)
 	r.Handle(ToolUseEvent{Name: "Bash", Summary: "make"})
 
 	stderrW.Close()
@@ -86,7 +80,7 @@ func TestRendererToolUseEventCI(t *testing.T) {
 
 func TestRendererThinkingEvent(t *testing.T) {
 	var buf bytes.Buffer
-	r, _ := newTestRenderer(&buf)
+	r := newTestRenderer(&buf)
 
 	r.Handle(ThinkingEvent{Text: "Let me consider"})
 
@@ -98,7 +92,7 @@ func TestRendererThinkingEvent(t *testing.T) {
 
 func TestRendererTextEvent(t *testing.T) {
 	var buf bytes.Buffer
-	r, _ := newTestRenderer(&buf)
+	r := newTestRenderer(&buf)
 
 	r.Handle(TextEvent{Text: "Here is the answer"})
 
@@ -110,7 +104,7 @@ func TestRendererTextEvent(t *testing.T) {
 
 func TestRendererBlockTransition(t *testing.T) {
 	var buf bytes.Buffer
-	r, _ := newTestRenderer(&buf)
+	r := newTestRenderer(&buf)
 
 	// Thinking -> Tool should close thinking block first
 	r.Handle(ThinkingEvent{Text: "pondering"})
@@ -127,7 +121,7 @@ func TestRendererBlockTransition(t *testing.T) {
 
 func TestRendererResultEvent(t *testing.T) {
 	var buf bytes.Buffer
-	r, metrics := newTestRenderer(&buf)
+	r := newTestRenderer(&buf)
 
 	r.Handle(ResultEvent{
 		NumTurns:                 8,
@@ -138,29 +132,21 @@ func TestRendererResultEvent(t *testing.T) {
 		CacheReadInputTokens:     5000,
 	})
 
-	if metrics.NumTurns != 8 {
-		t.Errorf("expected 8 turns, got %d", metrics.NumTurns)
+	output := buf.String()
+	if !strings.Contains(output, "Result") {
+		t.Errorf("expected Result header, got: %s", output)
 	}
-	if metrics.TotalCostUSD != 0.42 {
-		t.Errorf("expected cost 0.42, got %f", metrics.TotalCostUSD)
+	if !strings.Contains(output, "8") {
+		t.Errorf("expected turns in output, got: %s", output)
 	}
-	if metrics.InputTokens != 12000 {
-		t.Errorf("expected 12000 input tokens, got %d", metrics.InputTokens)
-	}
-	if metrics.OutputTokens != 3400 {
-		t.Errorf("expected 3400 output tokens, got %d", metrics.OutputTokens)
-	}
-	if metrics.CacheCreationInputTokens != 8000 {
-		t.Errorf("expected 8000 cache creation tokens, got %d", metrics.CacheCreationInputTokens)
-	}
-	if metrics.CacheReadInputTokens != 5000 {
-		t.Errorf("expected 5000 cache read tokens, got %d", metrics.CacheReadInputTokens)
+	if !strings.Contains(output, "$0.4200") {
+		t.Errorf("expected cost in output, got: %s", output)
 	}
 }
 
 func TestRendererResultEventWithError(t *testing.T) {
 	var buf bytes.Buffer
-	r, _ := newTestRenderer(&buf)
+	r := newTestRenderer(&buf)
 
 	r.Handle(ResultEvent{
 		NumTurns:     3,
@@ -181,7 +167,7 @@ func TestRendererResultEventWithError(t *testing.T) {
 
 func TestRendererErrorEvent(t *testing.T) {
 	var buf bytes.Buffer
-	r, _ := newTestRenderer(&buf)
+	r := newTestRenderer(&buf)
 
 	r.Handle(ErrorEvent{ErrorType: "overloaded_error", Message: "rate limited"})
 
@@ -196,7 +182,7 @@ func TestRendererErrorEvent(t *testing.T) {
 
 func TestRendererRetryEvent(t *testing.T) {
 	var buf bytes.Buffer
-	r, _ := newTestRenderer(&buf)
+	r := newTestRenderer(&buf)
 
 	r.Handle(RetryEvent{Attempt: 2, MaxRetries: 5, DelayMs: 1000, Error: "timeout"})
 
@@ -211,7 +197,7 @@ func TestRendererRetryEvent(t *testing.T) {
 
 func TestRendererTokensEvent(t *testing.T) {
 	var buf bytes.Buffer
-	r, _ := newTestRenderer(&buf)
+	r := newTestRenderer(&buf)
 
 	r.Handle(TokensEvent{InputTokens: 4000, OutputTokens: 2000, CacheRead: 500, CacheWrite: 200})
 

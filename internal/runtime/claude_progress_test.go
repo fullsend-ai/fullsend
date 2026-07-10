@@ -147,10 +147,9 @@ func TestProgressParser(t *testing.T) {
 	input := strings.NewReader(strings.Join(lines, "\n"))
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	start := time.Now()
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, start, metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
@@ -180,7 +179,7 @@ func TestProgressParserStreamEventsProcessed(t *testing.T) {
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
@@ -202,7 +201,7 @@ func TestProgressParserMalformedJSON(t *testing.T) {
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
@@ -222,7 +221,7 @@ func TestProgressParserUnknownToolShowsNameNoContext(t *testing.T) {
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
@@ -251,7 +250,7 @@ func TestProgressParserReaderError(t *testing.T) {
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	err := progressParser(pr, printer, time.Now(), metrics)
+	err := progressParser(pr, printer, metrics)
 
 	if err == nil {
 		t.Error("expected error from broken reader, got nil")
@@ -271,7 +270,7 @@ func TestProgressParserOversizedLineSkipped(t *testing.T) {
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
@@ -424,7 +423,7 @@ func TestSanitizeStreamText(t *testing.T) {
 
 func TestRendererSanitizesThinkingAndText(t *testing.T) {
 	var buf bytes.Buffer
-	r, _ := newTestRenderer(&buf)
+	r := newTestRenderer(&buf)
 
 	// Thinking with ANSI escape should be stripped
 	r.Handle(ThinkingEvent{Text: "\x1b[31minjected\x1b[0m"})
@@ -439,7 +438,7 @@ func TestRendererSanitizesThinkingAndText(t *testing.T) {
 	}
 
 	buf.Reset()
-	r2, _ := newTestRenderer(&buf)
+	r2 := newTestRenderer(&buf)
 
 	// Text with GHA command injection
 	r2.Handle(TextEvent{Text: "hello\n::error::pwned"})
@@ -463,7 +462,7 @@ func TestProgressParserCapturesResultMetrics(t *testing.T) {
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
@@ -509,7 +508,7 @@ func TestProgressParserCountsToolCallsFromNestedMessage(t *testing.T) {
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
@@ -533,7 +532,7 @@ func TestProgressParserCapturesModelFromAssistantWhenSystemLacksIt(t *testing.T)
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
@@ -555,7 +554,7 @@ func TestProgressParserCapturesModelFromSystemEvent(t *testing.T) {
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
@@ -574,7 +573,7 @@ func TestProgressParserNoResultEvent(t *testing.T) {
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 

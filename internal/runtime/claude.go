@@ -107,13 +107,28 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 
 	handler := params.OnEvent
 	if handler == nil {
-		renderer := NewEventRenderer(printer, start, metrics)
-		handler = func(evt AgentEvent) {
-			if init, ok := evt.(InitEvent); ok && metrics.Model == "" {
-				metrics.Model = init.Model
+		renderer := NewEventRenderer(printer)
+		handler = renderer.Handle
+	}
+	// Always wrap handler to capture metrics regardless of custom/default path.
+	innerHandler := handler
+	handler = func(evt AgentEvent) {
+		switch e := evt.(type) {
+		case InitEvent:
+			if metrics.Model == "" {
+				metrics.Model = e.Model
 			}
-			renderer.Handle(evt)
+		case ResultEvent:
+			metrics.NumTurns = e.NumTurns
+			metrics.TotalCostUSD = e.TotalCostUSD
+			metrics.InputTokens = e.InputTokens
+			metrics.OutputTokens = e.OutputTokens
+			metrics.CacheCreationInputTokens = e.CacheCreationInputTokens
+			metrics.CacheReadInputTokens = e.CacheReadInputTokens
+		case ToolUseEvent:
+			metrics.ToolCalls.Add(1)
 		}
+		innerHandler(evt)
 	}
 
 	if parseErr := parseClaudeStream(r, handler); parseErr != nil {
