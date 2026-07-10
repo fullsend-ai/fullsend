@@ -276,6 +276,7 @@ type Harness struct {
 	RunnerEnv              map[string]string       `yaml:"runner_env,omitempty"`
 	Env                    *EnvConfig              `yaml:"env,omitempty"`
 	TimeoutMinutes         int                     `yaml:"timeout_minutes,omitempty"`
+	ReadonlyRepo           bool                    `yaml:"readonly_repo,omitempty"`
 	SandboxTimeoutSeconds  int                     `yaml:"sandbox_timeout_seconds,omitempty"`
 	Security               *SecurityConfig         `yaml:"security,omitempty"`
 	AllowedRemoteResources []string                `yaml:"allowed_remote_resources,omitempty"`
