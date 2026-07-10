@@ -1,26 +1,34 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"strings"
 
-	"github.com/spf13/cobra"
-
+	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
+	"github.com/spf13/cobra"
 )
 
 func newReposCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "repos",
 		Short: "Manage per-repo installations across multiple orgs",
-		Long:  "Commands for managing fullsend per-repo installations at scale via a declarative repos.yaml manifest.",
+		Long: `Manage per-repo fullsend installations at scale via a declarative repos.yaml manifest.
+
+The repos subcommand group provides bulk operations for platform administrators
+managing fullsend across many repositories and organizations.`,
 	}
 	cmd.AddCommand(newReposInitCmd())
+	cmd.AddCommand(newReposInstallCmd())
 	cmd.AddCommand(newReposStatusCmd())
 	return cmd
 }
@@ -288,4 +296,196 @@ func printStatusTable(cmd *cobra.Command, result *repos.StatusResult) {
 		fmt.Fprintf(out, ", %d errored", result.Summary.Errored)
 	}
 	fmt.Fprintln(out)
+}
+
+// reposInstallConfig holds flag values and testing overrides for repos install.
+type reposInstallConfig struct {
+	manifest      string
+	dryRun        bool
+	repoFilter    []string
+	skipMintCheck bool
+	concurrency   int
+	roles         []string
+	direct        bool
+
+	// Testing overrides — when non-nil, used instead of resolving from
+	// the environment. Not set by CLI flag parsing.
+	testClient      forge.Client
+	testProvisioner repos.WIFProvisioner
+}
+
+func newReposInstallCmd() *cobra.Command {
+	opts := &reposInstallConfig{}
+
+	cmd := &cobra.Command{
+		Use:   "install",
+		Short: "Install fullsend on repos defined in a manifest",
+		Long: `Install fullsend on repos not yet installed, as defined in a repos.yaml manifest.
+
+Runs in three phases:
+  1. Parallel discovery: check which repos are already installed
+  2. Sequential WIF: provision WIF infrastructure per repo (not concurrent-safe)
+  3. Parallel scaffold: commit scaffold files and write variables/secrets`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runReposInstall(cmd.Context(), opts)
+		},
+	}
+
+	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path or URL to repos.yaml manifest")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "preview what would be installed without making changes")
+	cmd.Flags().StringArrayVar(&opts.repoFilter, "repo", nil, "install specific repos only (repeatable)")
+	cmd.Flags().BoolVar(&opts.skipMintCheck, "skip-mint-check", false, "skip mint URL discovery and org registration (EnsureOrgInMint)")
+	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 4, "max parallel operations (1-32)")
+	cmd.Flags().StringSliceVar(&opts.roles, "roles", config.PerRepoDefaultRoles(), "agent roles to install")
+	cmd.Flags().BoolVar(&opts.direct, "direct", false, "push scaffold directly to default branch (skip PR)")
+
+	return cmd
+}
+
+func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
+	if opts.concurrency < 1 || opts.concurrency > 32 {
+		return fmt.Errorf("--concurrency must be between 1 and 32, got %d", opts.concurrency)
+	}
+
+	printer := ui.New(os.Stdout)
+
+	printer.StepStart("Loading manifest")
+	manifest, err := repos.LoadManifest(ctx, opts.manifest)
+	if err != nil {
+		return fmt.Errorf("loading manifest: %w", err)
+	}
+	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", len(manifest.Repos)))
+
+	var client forge.Client
+	if opts.testClient != nil {
+		client = opts.testClient
+	} else {
+		token, tokenErr := resolveToken()
+		if tokenErr != nil {
+			return tokenErr
+		}
+		client = newGitHubLiveClient(token)
+	}
+
+	if err := checkPerRepoScopes(ctx, client, printer); err != nil {
+		return err
+	}
+
+	upstreamRef, upstreamTag := resolveUpstreamRef()
+
+	provisionerFactory := func(resolved repos.ResolvedConfig) repos.WIFProvisioner {
+		if opts.testProvisioner != nil {
+			return opts.testProvisioner
+		}
+		mintProv := &gcfProvisionerAdapter{
+			provisioner: gcf.NewProvisioner(gcf.Config{
+				ProjectID:   resolved.MintProject,
+				Region:      resolved.MintRegion,
+				GitHubOrgs:  []string{resolved.Owner},
+				Repo:        resolved.Owner + "/" + resolved.Repo,
+				WIFPoolName: gcf.DefaultInferencePool,
+				MintURL:     resolved.MintURL,
+			}, gcf.NewLiveGCFClient(resolved.MintProject)),
+		}
+		wifProv := &gcfProvisionerAdapter{
+			provisioner: gcf.NewProvisioner(gcf.Config{
+				ProjectID:   resolved.InferenceProject,
+				Region:      resolved.InferenceRegion,
+				GitHubOrgs:  []string{resolved.Owner},
+				Repo:        resolved.Owner + "/" + resolved.Repo,
+				WIFPoolName: gcf.DefaultInferencePool,
+			}, gcf.NewLiveGCFClient(resolved.InferenceProject)),
+		}
+		return &splitProjectAdapter{mint: mintProv, inference: wifProv}
+	}
+
+	scaffoldCommitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool) error {
+		targetRepo, repoErr := client.GetRepo(ctx, owner, repo)
+		if repoErr != nil {
+			return fmt.Errorf("getting repo info: %w", repoErr)
+		}
+		commitMsg := "chore: initialize fullsend per-repo installation"
+		prTitle := "chore: initialize fullsend per-repo installation"
+		prBody := "This PR adds the fullsend scaffold files for per-repo installation.\n\n" +
+			"Merge this PR to activate fullsend workflows."
+		_, commitErr := layers.CommitScaffoldFiles(ctx, client, printer, owner, repo,
+			targetRepo.DefaultBranch, commitMsg, prTitle, prBody, files, direct, nil)
+		return commitErr
+	}
+
+	cfg := repos.BatchInstallConfig{
+		Manifest:       manifest,
+		DryRun:         opts.dryRun,
+		RepoFilter:     opts.repoFilter,
+		MaxConcurrency: opts.concurrency,
+		SkipMintCheck:  opts.skipMintCheck,
+		Roles:          opts.roles,
+		UpstreamRef:    upstreamRef,
+		UpstreamTag:    upstreamTag,
+		Direct:         opts.direct,
+	}
+
+	progressFn := func(repo, phase, msg string) {
+		switch phase {
+		case "org-mint":
+			printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
+		case "done":
+			printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
+		default:
+			printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
+		}
+	}
+
+	printer.Blank()
+	if opts.dryRun {
+		printer.StepStart("Dry-run: previewing installation")
+	} else {
+		printer.StepStart("Installing fullsend on manifest repos")
+	}
+
+	result, err := repos.BatchInstall(ctx, cfg, client, provisionerFactory, scaffoldCommitFn, progressFn)
+	if err != nil {
+		return err
+	}
+
+	printer.Blank()
+	printer.StepDone(fmt.Sprintf("Batch install complete: %d installed, %d skipped, %d failed",
+		len(result.Installed), len(result.Skipped), len(result.Failed)))
+
+	for _, r := range result.Failed {
+		printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
+	}
+
+	if len(result.Failed) > 0 {
+		return fmt.Errorf("%d repos failed to install", len(result.Failed))
+	}
+	return nil
+}
+
+// splitProjectAdapter routes WIFProvisioner methods to the correct GCP project:
+// ProvisionWIF targets the inference project (IAM resources) while mint
+// operations target the mint project (Cloud Function env vars).
+type splitProjectAdapter struct {
+	mint      repos.WIFProvisioner
+	inference repos.WIFProvisioner
+}
+
+func (s *splitProjectAdapter) DiscoverMint(ctx context.Context) (*repos.MintDiscovery, error) {
+	return s.mint.DiscoverMint(ctx)
+}
+
+func (s *splitProjectAdapter) ProvisionWIF(ctx context.Context) (string, error) {
+	return s.inference.ProvisionWIF(ctx)
+}
+
+func (s *splitProjectAdapter) RegisterPerRepoWIF(ctx context.Context, repo string) error {
+	return s.mint.RegisterPerRepoWIF(ctx, repo)
+}
+
+func (s *splitProjectAdapter) EnsureOrgInMint(ctx context.Context, expectedURL string, org string) error {
+	return s.mint.EnsureOrgInMint(ctx, expectedURL, org)
+}
+
+func (s *splitProjectAdapter) DeletePerRepoWIF(ctx context.Context, repo string) error {
+	return s.mint.DeletePerRepoWIF(ctx, repo)
 }

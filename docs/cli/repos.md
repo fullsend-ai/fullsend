@@ -11,6 +11,7 @@ Manage per-repo installations across multiple orgs via a declarative `repos.yaml
 | Command | Description |
 |---------|-------------|
 | `fullsend repos init <org\|owner/repo>` | Generate a repos.yaml manifest by discovering existing installations |
+| `fullsend repos install` | Install fullsend on uninstalled manifest repos |
 | `fullsend repos status` | Compare manifest against actual repo state |
 
 ## `repos init`
@@ -58,6 +59,60 @@ For org targets, one of `--all` or `--repos` is required:
 
 - `--all`: include all discovered repos
 - `--repos`: include only the specified repos (comma-separated `owner/repo` names)
+
+## `repos install`
+
+Install fullsend on repos defined in a manifest that are not yet installed.
+
+Runs in three phases:
+
+1. **Parallel discovery** — check which repos are already installed via guard variables
+2. **Sequential WIF** — provision WIF infrastructure per repo (not concurrent-safe)
+3. **Parallel scaffold** — commit scaffold files and write variables/secrets
+
+```bash
+fullsend repos install -f repos.yaml
+fullsend repos install --dry-run
+fullsend repos install --repo acme/api --repo acme/web
+fullsend repos install --direct --concurrency 8
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-f`, `--manifest` | `repos.yaml` | Path or URL to repos.yaml manifest |
+| `--dry-run` | `false` | Preview what would be installed without making changes |
+| `--repo` | (all) | Install specific repos only (repeatable) |
+| `--skip-mint-check` | `false` | Skip mint URL discovery and org registration (EnsureOrgInMint). Use when orgs are already registered in the mint. |
+| `--concurrency` | `4` | Max parallel operations (1-32) |
+| `--roles` | `triage,coder,review,fix,retro,prioritize` | Agent roles to install |
+| `--direct` | `false` | Push scaffold directly to default branch (skip PR) |
+
+### Common workflows
+
+Install all repos from a manifest (first run — registers new orgs in the mint):
+
+```bash
+fullsend repos install -f repos.yaml
+```
+
+Preview changes without modifying infrastructure:
+
+```bash
+fullsend repos install -f repos.yaml --dry-run
+```
+
+Install specific repos (orgs already registered):
+
+```bash
+fullsend repos install --repo acme/api --repo acme/web --skip-mint-check
+```
+
+> **Note:** Without `--skip-mint-check`, `repos install` will register any new
+> orgs found in the manifest into the mint's `ALLOWED_ORGS`. This modifies
+> shared mint infrastructure. Use `--skip-mint-check` when orgs are already
+> registered or when you want to skip this step.
 
 ## `repos status`
 
