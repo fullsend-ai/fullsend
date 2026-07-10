@@ -76,6 +76,7 @@ Sandbox defaults (network policy, filesystem restrictions) are configured in the
 **Decided:**
 
 - Provider-backed policy composition: network access is granted through provider profiles declared in harness files. Policy files define only non-composable sandbox restrictions (filesystem, landlock, process). A single `base.yaml` replaces per-agent policy files in the scaffold. Inline `network_policies` continue to work but providers are the recommended approach ([ADR 0065](ADRs/0065-provider-backed-policy-composition.md)).
+- Subagent sandbox isolation: subagents spawned within a stage run in isolated child sandboxes with independently scoped providers and policies, extending the per-step isolation model from [ADR 0020](ADRs/0020-composable-single-responsibility-agents-with-individual-sandboxes.md) to intra-stage execution. A host-side API server ([ADR 0046](ADRs/0046-host-side-api-server-design.md) pattern) manages child sandbox lifecycle; the parent agent uses a `fullsend-agent` CLI instead of in-sandbox delegation ([ADR 0070](ADRs/0070-subagent-harness-schema-and-sandboxed-execution-lifecycle.md)).
 
 ## Agent Harness
 
@@ -117,6 +118,7 @@ The harness draws its configuration from the adopting organization's **`.fullsen
   `trigger` boolean evaluated against a forge-neutral `NormalizedEvent`.
   `fullsend dispatch` matches events to harnesses via input/output drivers
   ([ADR 0061](ADRs/0061-harness-cel-dispatch.md)).
+- Subagent harness schema: subagent harnesses extend the [ADR 0024](ADRs/0024-harness-definitions.md) schema with `params` (spawn-time parameters), `output` (result contract with JSON schema), and `subagent_harnesses` (parent-side profile declarations). `fullsend subagent run` manages the child sandbox lifecycle. Fields inapplicable to subagents (`post_script`, `runner_env`, `api_servers`) are validated out ([ADR 0070](ADRs/0070-subagent-harness-schema-and-sandboxed-execution-lifecycle.md)).
 
 **Open questions:**
 
