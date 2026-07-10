@@ -2,9 +2,13 @@ package cli
 
 import (
 	"bytes"
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,6 +21,7 @@ func TestReposCommand_HasSubcommands(t *testing.T) {
 		names[sub.Name()] = true
 	}
 	assert.True(t, names["init"], "expected init subcommand")
+	assert.True(t, names["install"], "expected install subcommand")
 	assert.True(t, names["status"], "expected status subcommand")
 }
 
@@ -451,4 +456,188 @@ func TestPrintStatusTable_ColumnAlignment(t *testing.T) {
 	// Header and data lines should have consistent column positions
 	headerRefIdx := strings.Index(lines[0], "REF")
 	assert.Greater(t, headerRefIdx, 0, "REF header should be present")
+}
+
+type trackingProvisioner struct {
+	label string
+	calls []string
+}
+
+func (p *trackingProvisioner) DiscoverMint(_ context.Context) (*repos.MintDiscovery, error) {
+	p.calls = append(p.calls, "DiscoverMint")
+	return &repos.MintDiscovery{URL: p.label}, nil
+}
+
+func (p *trackingProvisioner) ProvisionWIF(_ context.Context) (string, error) {
+	p.calls = append(p.calls, "ProvisionWIF")
+	return "projects/100000/locations/global/workloadIdentityPools/fake-pool/providers/" + p.label, nil
+}
+
+func (p *trackingProvisioner) RegisterPerRepoWIF(_ context.Context, _ string) error {
+	p.calls = append(p.calls, "RegisterPerRepoWIF")
+	return nil
+}
+
+func (p *trackingProvisioner) EnsureOrgInMint(_ context.Context, _, _ string) error {
+	p.calls = append(p.calls, "EnsureOrgInMint")
+	return nil
+}
+
+func (p *trackingProvisioner) DeletePerRepoWIF(_ context.Context, _ string) error {
+	p.calls = append(p.calls, "DeletePerRepoWIF")
+	return nil
+}
+
+func TestSplitProjectAdapter_MethodRouting(t *testing.T) {
+	mint := &trackingProvisioner{label: "mint"}
+	inference := &trackingProvisioner{label: "inference"}
+	adapter := &splitProjectAdapter{mint: mint, inference: inference}
+	ctx := context.Background()
+
+	disc, err := adapter.DiscoverMint(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "mint", disc.URL, "DiscoverMint should route to mint")
+
+	provider, err := adapter.ProvisionWIF(ctx)
+	require.NoError(t, err)
+	assert.Contains(t, provider, "inference", "ProvisionWIF should route to inference")
+
+	require.NoError(t, adapter.RegisterPerRepoWIF(ctx, "o/r"))
+	require.NoError(t, adapter.EnsureOrgInMint(ctx, "url", "org"))
+	require.NoError(t, adapter.DeletePerRepoWIF(ctx, "o/r"))
+
+	assert.Equal(t, []string{"DiscoverMint", "RegisterPerRepoWIF", "EnsureOrgInMint", "DeletePerRepoWIF"}, mint.calls)
+	assert.Equal(t, []string{"ProvisionWIF"}, inference.calls)
+}
+
+func writeTestManifest(t *testing.T, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	p := filepath.Join(dir, "repos.yaml")
+	require.NoError(t, os.WriteFile(p, []byte(content), 0o644))
+	return p
+}
+
+func newInstallFakeClient(repoNames ...string) *forge.FakeClient {
+	fc := forge.NewFakeClient()
+	fc.InstallationToken = true
+	for _, r := range repoNames {
+		parts := strings.SplitN(r, "/", 2)
+		fc.Repos = append(fc.Repos, forge.Repository{
+			FullName:      r,
+			Name:          parts[1],
+			DefaultBranch: "main",
+		})
+	}
+	return fc
+}
+
+const testManifestYAML = `version: 1
+mint:
+  url: https://mint.example.com
+  project: mint-proj
+  region: us-central1
+defaults:
+  inference_project: inf-proj
+  inference_region: us-central1
+  fullsend_ref: v1.0.0
+repos:
+  - repo: acme/api
+`
+
+func TestRunReposInstall_ConcurrencyValidation(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+
+	tests := []struct {
+		name        string
+		concurrency int
+	}{
+		{"zero", 0},
+		{"negative", -1},
+		{"too_high", 33},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runReposInstall(context.Background(), &reposInstallConfig{
+				manifest:    manifestPath,
+				concurrency: tt.concurrency,
+				testClient:  fc,
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "--concurrency must be between 1 and 32")
+		})
+	}
+}
+
+func TestRunReposInstall_DryRun(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+	prov := &trackingProvisioner{label: "test"}
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:        manifestPath,
+		concurrency:     4,
+		dryRun:          true,
+		roles:           []string{"triage"},
+		testClient:      fc,
+		testProvisioner: prov,
+	})
+	require.NoError(t, err)
+}
+
+func TestRunReposInstall_Success(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+	prov := &trackingProvisioner{label: "test"}
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:        manifestPath,
+		concurrency:     4,
+		roles:           []string{"triage"},
+		direct:          true,
+		testClient:      fc,
+		testProvisioner: prov,
+	})
+	require.NoError(t, err)
+}
+
+func TestRunReposInstall_InvalidManifestPath(t *testing.T) {
+	fc := newInstallFakeClient()
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:    "/nonexistent/repos.yaml",
+		concurrency: 4,
+		testClient:  fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading manifest")
+}
+
+func TestRunReposInstall_FailedReposReturnError(t *testing.T) {
+	yaml := `version: 1
+mint:
+  url: https://mint.example.com
+  project: mint-proj
+  region: us-central1
+defaults:
+  inference_project: ""
+  inference_region: us-central1
+  fullsend_ref: v1.0.0
+repos:
+  - repo: acme/api
+`
+	manifestPath := writeTestManifest(t, yaml)
+	fc := newInstallFakeClient("acme/api")
+	prov := &trackingProvisioner{label: "test"}
+
+	err := runReposInstall(context.Background(), &reposInstallConfig{
+		manifest:        manifestPath,
+		concurrency:     4,
+		roles:           []string{"triage"},
+		testClient:      fc,
+		testProvisioner: prov,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to install")
 }

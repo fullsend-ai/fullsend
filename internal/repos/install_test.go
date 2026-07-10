@@ -4,30 +4,34 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-// fakeWIFProvisioner is a test double for WIFProvisioner.
 type fakeWIFProvisioner struct {
+	mu              sync.Mutex
 	discoverResult  *MintDiscovery
 	discoverErr     error
 	provisionResult string
 	provisionErr    error
 
-	// Call recorders.
 	discoverCalled  bool
 	provisionCalled bool
 }
 
 func (f *fakeWIFProvisioner) DiscoverMint(_ context.Context) (*MintDiscovery, error) {
+	f.mu.Lock()
 	f.discoverCalled = true
+	f.mu.Unlock()
 	return f.discoverResult, f.discoverErr
 }
 
 func (f *fakeWIFProvisioner) ProvisionWIF(_ context.Context) (string, error) {
+	f.mu.Lock()
 	f.provisionCalled = true
+	f.mu.Unlock()
 	return f.provisionResult, f.provisionErr
 }
 
@@ -46,16 +50,17 @@ func (f *fakeWIFProvisioner) DeletePerRepoWIF(_ context.Context, _ string) error
 // noopProgress is a no-op progress callback for tests.
 func noopProgress(_, _, _ string) {}
 
-// fakeScaffoldCommit is a test double for ScaffoldCommitFunc that records
-// calls and returns configurable results.
 type fakeScaffoldCommit struct {
+	mu     sync.Mutex
 	called bool
 	err    error
 }
 
 func (f *fakeScaffoldCommit) fn() ScaffoldCommitFunc {
 	return func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool) error {
+		f.mu.Lock()
 		f.called = true
+		f.mu.Unlock()
 		return f.err
 	}
 }
