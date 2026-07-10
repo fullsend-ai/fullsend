@@ -14,9 +14,84 @@ func TestReposCommand_HasSubcommands(t *testing.T) {
 	cmd := newReposCmd()
 	names := make(map[string]bool)
 	for _, sub := range cmd.Commands() {
-		names[sub.Use] = true
+		names[sub.Name()] = true
 	}
+	assert.True(t, names["init"], "expected init subcommand")
 	assert.True(t, names["status"], "expected status subcommand")
+}
+
+func TestReposCommand_RegisteredInRoot(t *testing.T) {
+	cmd := newRootCmd()
+	names := make(map[string]bool)
+	for _, sub := range cmd.Commands() {
+		names[sub.Name()] = true
+	}
+	assert.True(t, names["repos"], "expected repos subcommand on root")
+}
+
+func TestReposInitCmd_RequiresArg(t *testing.T) {
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "init"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "accepts 1 arg(s)")
+}
+
+func TestReposInitCmd_Flags(t *testing.T) {
+	cmd := newReposInitCmd()
+
+	outputFlag := cmd.Flags().Lookup("output")
+	require.NotNil(t, outputFlag, "expected --output flag")
+	assert.Equal(t, "repos.yaml", outputFlag.DefValue)
+
+	reposFlag := cmd.Flags().Lookup("repos")
+	require.NotNil(t, reposFlag, "expected --repos flag")
+
+	allFlag := cmd.Flags().Lookup("all")
+	require.NotNil(t, allFlag, "expected --all flag")
+	assert.Equal(t, "false", allFlag.DefValue)
+
+	mintProjectFlag := cmd.Flags().Lookup("mint-project")
+	require.NotNil(t, mintProjectFlag, "expected --mint-project flag")
+
+	mintRegionFlag := cmd.Flags().Lookup("mint-region")
+	require.NotNil(t, mintRegionFlag, "expected --mint-region flag")
+	assert.Equal(t, "us-central1", mintRegionFlag.DefValue)
+
+	inferenceProjectFlag := cmd.Flags().Lookup("inference-project")
+	require.NotNil(t, inferenceProjectFlag, "expected --inference-project flag")
+
+	concurrencyFlag := cmd.Flags().Lookup("concurrency")
+	require.NotNil(t, concurrencyFlag, "expected --concurrency flag")
+	assert.Equal(t, "8", concurrencyFlag.DefValue)
+
+	forceFlag := cmd.Flags().Lookup("force")
+	require.NotNil(t, forceFlag, "expected --force flag")
+	assert.Equal(t, "false", forceFlag.DefValue)
+}
+
+func TestReposInitCmd_OutputShorthand(t *testing.T) {
+	cmd := newReposInitCmd()
+	outputFlag := cmd.Flags().ShorthandLookup("o")
+	require.NotNil(t, outputFlag, "expected -o shorthand for --output")
+}
+
+func TestReposInitCmd_ValidatesOrgName(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "init", "--", "-invalid"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot start or end with a hyphen")
+}
+
+func TestReposInitCmd_ReposAllMutuallyExclusive(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"repos", "init", "test-org", "--all", "--repos", "foo/bar"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "if any flags in the group [repos all] are set none of the others can be")
 }
 
 func TestReposStatusCmd_Flags(t *testing.T) {
@@ -240,11 +315,11 @@ func TestReposStatusCmd_WiredToRoot(t *testing.T) {
 	root := newRootCmd()
 	found := false
 	for _, cmd := range root.Commands() {
-		if cmd.Use == "repos" {
+		if cmd.Name() == "repos" {
 			found = true
 			statusFound := false
 			for _, sub := range cmd.Commands() {
-				if sub.Use == "status" {
+				if sub.Name() == "status" {
 					statusFound = true
 				}
 			}
