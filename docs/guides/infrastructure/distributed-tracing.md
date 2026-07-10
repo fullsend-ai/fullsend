@@ -30,7 +30,9 @@ Level 1 requires nothing. To enable OTLP export (Level 2 and Level 3) you need:
 - **Network reachability** from where runs execute (your machine or CI runners)
   to the backend endpoint.
 - For a backend behind a **private CA** (e.g. an internal MLflow): the CA
-  certificate bundle, pointed to by `OTEL_EXPORTER_OTLP_CERTIFICATE`.
+  certificate bundle, pointed to by `OTEL_EXPORTER_OTLP_CERTIFICATE`. Local
+  and bring-your-own-workflow runs only — the managed workflows do not yet
+  pass a CA bundle through.
 
 ## Enabling OTLP export (Level 2)
 
@@ -63,6 +65,10 @@ Operational details:
 - **Export timing:** spans are exported once, when the run closes, inside a
   hard wall-clock budget (5 seconds). There is no mid-run network traffic; a
   dead endpoint costs at most the budget and one warning line.
+- **Crashed runs are not exported:** export replays the finalized artifacts,
+  so a run that never finalizes (crash, OOM, SIGKILL) writes no
+  `run-summary.json` and exports nothing. Its `run-telemetry.jsonl` remains
+  the local forensic record.
 - **Sampling:** when the run continues an inbound `TRACEPARENT` whose W3C
   sampled flag is unset (`-00`), the upstream sampling decision is respected:
   nothing is exported. Local files are always written regardless.
@@ -195,18 +201,43 @@ Fullsend-specific attributes:
 | `fullsend.tool_calls` | `agent` spans | Tool invocations in the iteration |
 | `agent` | `run` span | Agent name (predates `gen_ai.agent.name`; kept for Level 1 consumers) |
 
-## GHA workflow configuration example
+## GHA workflow configuration
 
-Add these environment variables to workflow jobs that run `fullsend run`:
+### Managed workflows
+
+Only the **triage** stage forwards OTEL configuration in this release; the
+other agents (code, fix, review, retro, prioritize) do not export yet.
+
+To enable export for triage runs, set on the org (or repo) that hosts the
+fullsend caller workflows:
+
+1. Actions **variable** `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` — the backend's
+   full traces URL (e.g. `https://mlflow.example.com/v1/traces`).
+2. Actions **secret** `OTEL_EXPORTER_OTLP_TRACES_HEADERS` — the complete
+   header string, auth and routing included (e.g.
+   `Authorization=Bearer%20<token>,x-mlflow-experiment-id=42`).
+3. Optional: Actions **variable** `OTEL_RESOURCE_ATTRIBUTES` — static
+   `k=v,k=v` trace tags. The value is used verbatim: `${{ github.* }}`
+   expressions evaluate only in workflow YAML, not in variables.
+
+Installations scaffolded before this release must also forward the secret
+(add `OTEL_EXPORTER_OTLP_TRACES_HEADERS` under `secrets:`) until the scaffold
+is re-synced: in the `.fullsend` repo's `triage.yml` (per-org), or in the
+fullsend shim workflow's dispatch job (per-repo).
+
+### Bring your own workflow
+
+Add the environment variables to any job that runs `fullsend run`:
 
 ```yaml
 env:
-  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "${{ secrets.OTLP_ENDPOINT }}"
-  OTEL_EXPORTER_OTLP_TRACES_HEADERS: "Authorization=Bearer ${{ secrets.OTLP_TOKEN }}"
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}"
+  OTEL_EXPORTER_OTLP_TRACES_HEADERS: "${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}"
 ```
 
-The secret names and values depend on your chosen backend. Consult your
-backend's documentation for the endpoint URL and authentication mechanism.
+Any variable and secret names work here — the values reach the exporter
+as-is. Consult your backend's documentation for the endpoint URL and
+authentication mechanism.
 
 ### Organizing traces for an org
 
@@ -223,6 +254,10 @@ Two conventions keep a shared backend navigable as repos onboard:
    env:
      OTEL_RESOURCE_ATTRIBUTES: "fullsend.repo=${{ github.repository }},fullsend.agent=triage,deployment.environment=prod"
    ```
+
+   The example is inline workflow `env:`, where `${{ github.* }}` evaluates.
+   On the managed path, set the `OTEL_RESOURCE_ATTRIBUTES` Actions variable
+   to a static value instead — variables are not expression-expanded.
 
    These become filterable trace tags (enable them as columns in MLflow's
    Traces table). `fullsend.work_item_id` is already on every span, so runs
