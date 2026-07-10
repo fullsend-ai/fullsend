@@ -41,6 +41,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/statuscomment"
 	"github.com/fullsend-ai/fullsend/internal/telemetry"
+	"github.com/fullsend-ai/fullsend/internal/telemetry/otlp"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -788,11 +789,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var lastExitCode int
 	var transcriptErrorOverride bool
 	rec := telemetry.New(runDir, traceCtx, agentName, workItemID, runStart)
-	defer func() { rec.Finalize(telemetryExitCode(lastExitCode, runErr)) }()
+	defer func() {
+		rec.Finalize(telemetryExitCode(lastExitCode, runErr))
+		// ADR 0050 Level 2: best-effort OTLP export of the finalized
+		// artifacts. Inert without an endpoint configured; fail-open — a
+		// dead endpoint costs at most the package's bounded budget and
+		// never affects the run's outcome.
+		if err := otlp.ExportRunDir(runDir, Version()); err != nil {
+			printer.StepWarn("OTLP export failed (run unaffected): " + err.Error())
+		}
+	}()
 
 	createStart := time.Now()
 	printer.StepStart("Creating sandbox: " + sandboxName)
-	sandboxSpan := rec.StartSpan("sandbox_create", "", nil)
+	sandboxSpan := rec.StartSpan("sandbox_create", "", map[string]any{"gen_ai.operation.name": "create_agent"})
 
 	readyTimeout := time.Duration(h.SandboxTimeoutSeconds) * time.Second
 	if err := sandbox.CreateWithRetry(sandboxName, h.Providers, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout); err != nil {
@@ -1160,7 +1170,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		heartbeatDone := make(chan struct{})
 		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
 
-		agentSpan := rec.StartSpan("agent", "", map[string]any{"iteration": iteration})
+		agentSpan := rec.StartSpan("agent", "", agentSpanStartAttrs(iteration, agentName))
 		var metrics agentruntime.RunMetrics
 		exitCode, runErr := rt.Run(ctx, agentruntime.RunParams{
 			SandboxName:   sandboxName,
@@ -1774,6 +1784,17 @@ func validationFailMessage(output []byte, execErr error) string {
 // roundUSD rounds a dollar amount to cents for the telemetry output;
 // metrics.json keeps full precision.
 func roundUSD(c float64) float64 { return math.Round(c*100) / 100 }
+
+// agentSpanStartAttrs builds the span_start attributes for one agent
+// iteration: the iteration counter plus the OTEL GenAI semconv identity
+// (gen_ai.operation.name, gen_ai.agent.name) named by ADR 0050.
+func agentSpanStartAttrs(iteration int, agentName string) map[string]any {
+	return map[string]any{
+		"iteration":             iteration,
+		"gen_ai.operation.name": "invoke_agent",
+		"gen_ai.agent.name":     agentName,
+	}
+}
 
 // agentSpanEndAttrs builds the span_end attributes for one agent iteration,
 // using OTEL GenAI semconv names (gen_ai.*) so the later L2 OTLP transform is
