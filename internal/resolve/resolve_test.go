@@ -284,6 +284,29 @@ func TestResolveHarness_SkillDirDotDotFallsBackToTree(t *testing.T) {
 		"skill path with '..' basename should fall back to 'tree' to prevent traversal")
 }
 
+func TestResolveHarness_SkillDirMetadataJsonFallsBackToTree(t *testing.T) {
+	skillMD := []byte("# MetadataJson skill")
+
+	reg := newSkillRegistry()
+	files := map[string][]byte{"SKILL.md": skillMD}
+	treeHash := reg.register("skills/metadata.json", files)
+
+	root := t.TempDir()
+	h := &harness.Harness{
+		Skills:                 []string{forgeSkillURL("skills/metadata.json", treeHash)},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		TreeFetcher:   reg.fetcher(),
+	})
+	require.NoError(t, err)
+	require.Len(t, deps, 1)
+	assert.Equal(t, "tree", filepath.Base(h.Skills[0]),
+		"skill path with 'metadata.json' basename should fall back to 'tree' to avoid cache file collision")
+}
+
 func TestResolveHarness_SkillDirHashMismatch(t *testing.T) {
 	reg := newSkillRegistry()
 	reg.register("skills/tampered", map[string][]byte{"SKILL.md": []byte("wrong content")})
