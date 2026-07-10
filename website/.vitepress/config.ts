@@ -246,6 +246,8 @@ export default defineConfig({
               text: "Development",
               collapsed: true,
               items: [
+                { text: "Behaviour Drivers", link: "/guides/dev/behaviour-drivers" },
+                { text: "Behaviour Testing", link: "/guides/dev/behaviour-testing" },
                 { text: "CLI Internals", link: "/guides/dev/cli-internals" },
                 { text: "E2E Testing", link: "/guides/dev/e2e-testing" },
                 { text: "Testing Workflows", link: "/guides/dev/testing-workflows" },
