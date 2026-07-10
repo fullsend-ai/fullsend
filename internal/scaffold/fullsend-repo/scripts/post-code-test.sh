@@ -778,6 +778,117 @@ run_precommit_retry_test "precommit-passes-with-unstaged" \
 run_precommit_retry_test "precommit-retry-passes-but-left-unstaged" \
   "1" "yes" "0" "blocked:retry-left-unstaged" "yes"
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the review label EXIT trap decision logic from
+# post-code.sh. Given whether a PR number was captured and whether GH_TOKEN
+# is available, returns the action the trap would take.
+#
+# The real trap applies the label on ANY exit (success or failure) as long as
+# PR_NUMBER_FOR_REVIEW is set. This decouples label application from script
+# success, ensuring bot-authored PRs always get review dispatch.
+# ---------------------------------------------------------------------------
+decide_review_label_action() {
+  local pr_number="$1"
+
+  if [ -n "${pr_number}" ]; then
+    echo "apply:${pr_number}"
+  else
+    echo "skip:no-pr"
+  fi
+}
+
+run_review_label_test() {
+  local test_name="$1"
+  local pr_number="$2"
+  local expected="$3"
+
+  local actual
+  actual="$(decide_review_label_action "${pr_number}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  pr_number: '${pr_number}'"
+    echo "  expected:  '${expected}'"
+    echo "  actual:    '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Review label EXIT trap test cases ---
+
+# New PR created → label should be applied
+run_review_label_test "review-label-new-pr" \
+  "42" "apply:42"
+
+# Existing PR detected → label should be applied (handles case where
+# a previous run created the PR but failed before labeling)
+run_review_label_test "review-label-existing-pr" \
+  "99" "apply:99"
+
+# No PR created (script exited before PR creation) → no label
+run_review_label_test "review-label-no-pr" \
+  "" "skip:no-pr"
+
+# ---------------------------------------------------------------------------
+# Test helper — verifies that PR_NUMBER_FOR_REVIEW is set at the right
+# points in the script flow. Reimplements the two paths where the variable
+# is assigned: new PR creation and existing PR detection.
+# ---------------------------------------------------------------------------
+set_pr_number_for_review() {
+  local path="$1"        # "new" or "existing"
+  local pr_url="$2"      # e.g. "https://github.com/org/repo/pull/42"
+  local existing_num="$3" # e.g. "99" (only used for "existing" path)
+
+  if [ "${path}" = "new" ]; then
+    echo "${pr_url##*/}"
+  elif [ "${path}" = "existing" ]; then
+    echo "${existing_num}"
+  else
+    echo ""
+  fi
+}
+
+run_pr_number_extraction_test() {
+  local test_name="$1"
+  local path="$2"
+  local pr_url="$3"
+  local existing_num="$4"
+  local expected="$5"
+
+  local actual
+  actual="$(set_pr_number_for_review "${path}" "${pr_url}" "${existing_num}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  path:          '${path}'"
+    echo "  pr_url:        '${pr_url}'"
+    echo "  existing_num:  '${existing_num}'"
+    echo "  expected:      '${expected}'"
+    echo "  actual:        '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- PR number extraction test cases ---
+
+# New PR URL → extract number from URL
+run_pr_number_extraction_test "extract-pr-number-from-url" \
+  "new" "https://github.com/my-org/my-repo/pull/42" "" "42"
+
+# Existing PR → use number directly
+run_pr_number_extraction_test "existing-pr-number" \
+  "existing" "" "99" "99"
+
+# New PR with multi-digit number
+run_pr_number_extraction_test "extract-multi-digit-pr-number" \
+  "new" "https://github.com/org/repo/pull/3998" "" "3998"
+
 # --- Summary ---
 
 echo ""

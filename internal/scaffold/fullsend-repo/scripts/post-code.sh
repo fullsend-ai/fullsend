@@ -135,6 +135,31 @@ if appropriate."
 trap report_failure_to_issue ERR
 
 # ---------------------------------------------------------------------------
+# Review label cleanup — apply ready-for-review as soon as a PR exists.
+#
+# This EXIT trap ensures the label is applied even when the script fails or
+# is killed after PR creation/detection. Without the label, bot-authored PRs
+# never receive automated review: the pull_request_target.opened dispatch
+# path requires collaborator status (which GitHub App bots lack), so the
+# label-based issues.labeled path is the only route to review dispatch.
+#
+# PR_NUMBER_FOR_REVIEW is set when a PR is created or an existing PR is
+# detected. The trap is a no-op when the variable is empty (e.g., when the
+# script exits before reaching the PR creation step).
+# ---------------------------------------------------------------------------
+PR_NUMBER_FOR_REVIEW=""
+apply_review_label_on_exit() {
+  if [ -n "${PR_NUMBER_FOR_REVIEW}" ]; then
+    echo "Applying ready-for-review label to PR #${PR_NUMBER_FOR_REVIEW}..."
+    GH_TOKEN="${GH_TOKEN:-${PUSH_TOKEN}}" gh issue edit "${PR_NUMBER_FOR_REVIEW}" \
+      --repo "${REPO_FULL_NAME}" \
+      --add-label "ready-for-review" 2>/dev/null || \
+      echo "::warning::Failed to apply ready-for-review label to PR #${PR_NUMBER_FOR_REVIEW}"
+  fi
+}
+trap apply_review_label_on_exit EXIT
+
+# ---------------------------------------------------------------------------
 # 1. Verify feature branch
 # ---------------------------------------------------------------------------
 BRANCH="$(git branch --show-current)"
@@ -461,6 +486,7 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
   echo "PR #${EXISTING_PR_NUM} already exists — branch updated with new commits"
   echo "PR: ${EXISTING_PR_URL}"
   echo "pr_url=${EXISTING_PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
+  PR_NUMBER_FOR_REVIEW="${EXISTING_PR_NUM}"
   exit 0
 fi
 
@@ -532,13 +558,8 @@ rm -f "${PR_CREATE_STDERR}"
 echo "PR created: ${PR_URL}"
 echo "pr_url=${PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
 
-# Apply ready-for-review label so the review agent is dispatched via the
-# issues.labeled path. The pull_request_target.opened event requires the PR
-# author to pass is_event_actor_authorized, which fails for bot accounts
-# (GitHub App bots have no collaborator role). The label-based path has no
-# explicit auth gate — label application itself requires write access.
-PR_NUMBER_FROM_URL="${PR_URL##*/}"
-gh issue edit "${PR_NUMBER_FROM_URL}" \
-  --repo "${REPO_FULL_NAME}" \
-  --add-label "ready-for-review" 2>/dev/null || \
-  echo "::warning::Failed to apply ready-for-review label to PR #${PR_NUMBER_FROM_URL}"
+# Set PR number so the EXIT trap applies the ready-for-review label.
+# The trap handles label application for both this path and the existing-PR
+# path, ensuring the label is applied even if the script fails after this
+# point. See the apply_review_label_on_exit trap near the top of this file.
+PR_NUMBER_FOR_REVIEW="${PR_URL##*/}"
