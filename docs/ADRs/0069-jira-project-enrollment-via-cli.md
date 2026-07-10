@@ -40,12 +40,13 @@ sandbox, following the prefetch model from
 Today this setup is entirely manual; the enrollment CLI automates it.
 
 Repo-to-issue association (which code repository handles which Jira issue)
-is a separate concern handled by the poll driver design and is out of scope
+is a separate concern handled by the poll driver design
+([ADR 0063](0063-polling-based-work-discovery.md)) and is out of scope
 for this ADR.
 
 ## Options
 
-### Alternative: Jira Connect or Forge app
+### Option 1: Jira Connect or Forge app
 
 A Jira Connect or Forge app could receive webhooks natively without
 `repository_dispatch` as a bridge. Rejected because it requires hosting an
@@ -53,12 +54,13 @@ external service, an app distribution and consent flow, and a fundamentally
 larger product scope. The CLI-only approach delivers value without
 operational infrastructure.
 
-### Alternative: Polling via scheduled workflows
+### Option 2: Polling via scheduled workflows
 
 A GitHub Actions schedule could poll Jira for new issues using JQL.
 Rejected for the enrollment path — polling adds latency and complexity.
-However, the poll driver design may use this pattern for repo association,
-which is a separate concern.
+However, the poll driver design
+([ADR 0063](0063-polling-based-work-discovery.md)) may use this pattern
+for repo association, which is a separate concern.
 
 ## Decision
 
@@ -98,4 +100,5 @@ and `--dry-run` support.
 - Jira API token rotation is the repo admin's responsibility — re-running
   `fullsend jira enroll` with a new token updates the secret.
 - Repo association is intentionally out of scope — the poll driver design
-  addresses which issues route to which code repositories.
+  ([ADR 0063](0063-polling-based-work-discovery.md)) addresses which
+  issues route to which code repositories.
