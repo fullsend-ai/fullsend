@@ -1,0 +1,52 @@
+name: SCM Emulate Driver
+
+# This job needs zero secrets — it spawns a local vercel-labs/emulate
+# subprocess (no live GitHub org, no GCP WIF, no mint). Unlike e2e.yml's
+# pull_request_target-based jobs, it uses plain pull_request so fork PRs
+# check out and run directly with the default read-only GITHUB_TOKEN, no
+# gate/authorization step needed. See docs/guides/dev/behaviour-drivers.md
+# for what this package does and does not cover.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'e2e/behaviour/drivers/scm/emulate/**'
+      - 'e2e/behaviour/drivers/scm/driver.go'
+      - 'e2e/behaviour/drivers/scm/github/**'
+      - 'internal/forge/github/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/scm-emulate.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'e2e/behaviour/drivers/scm/emulate/**'
+      - 'e2e/behaviour/drivers/scm/driver.go'
+      - 'e2e/behaviour/drivers/scm/github/**'
+      - 'internal/forge/github/**'
+      - 'go.mod'
+      - 'go.sum'
+      - '.github/workflows/scm-emulate.yml'
+  merge_group:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22'
+
+      - name: Run scm/emulate driver tests
+        run: go test -tags behaviour -race -count=1 -v ./e2e/behaviour/drivers/scm/emulate/...

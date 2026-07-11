@@ -44,6 +44,28 @@ Teardown removes shim workflows, stale branches, and open fullsend PRs on `test-
 
 Use `forge.Client` for operations it already exposes; add REST helpers inside the driver package only when necessary (e.g. `GetIssue` with labels).
 
+## Local emulator (`scm/emulate`)
+
+`e2e/behaviour/drivers/scm/emulate/` implements `scm.Driver` against a locally spawned
+[vercel-labs/emulate](https://github.com/vercel-labs/emulate) GitHub instance instead of live
+GitHub — no pool org, no mint, no secrets, sub-second per test. It reuses `scm/github`'s driver
+unmodified: `emulate.Start` just points `forge/github.LiveClient` at the emulator's localhost
+URL via `WithBaseURL` and wraps it with `github.New`.
+
+This package deliberately does **not** follow the "Adding an SCM driver" checklist above — it
+is not registered as a `BEHAVIOUR_SCM` value and is not wired into `suite_test.go`. emulate's
+Actions endpoints are REST record-level only (list/get/dispatch/cancel/logs as data); it does
+not execute real workflow YAML. So it can never satisfy `ci.Driver` for scenarios like
+`triage.feature` that assert on real agent execution — pairing it with `BEHAVIOUR_CI=githubactions`
+would silently produce a suite that can never observe what it's supposed to test. Import it
+directly in Go test code that only needs SCM-level state (issues, labels, comments) and no
+live Actions run — e.g. a future dispatch-routing test, or `eval/`-layer fixture setup.
+
+There is no reset endpoint: `reset()` in emulate is reachable only through its programmatic
+`createEmulator()` API, not the CLI-spawned server this package shells out to. Start one
+`Instance` per test binary (see `emulate_test.go`'s `TestMain`) and let each test create its
+own issue — `CreateIssue` returns a fresh, unique number every call, so tests don't collide.
+
 ## Adding a CI driver
 
 1. Implement `ci.Driver` — `WaitForWorkflow`, `AssertNoWorkflow`, `GetRunLogs`, `DownloadArtifacts`.
@@ -58,7 +80,7 @@ Steps use `world.Install` for config repo paths (`ConfigOwner`, `ConfigRepo`, `C
 
 ## Testing drivers
 
-Prefer unit tests with `httptest` for REST helpers. Optional smoke scenarios against live backends mirror admin e2e credentials (`GITHUB_TOKEN`, halfsend org pool).
+Prefer unit tests with `httptest` for REST helpers. Optional smoke scenarios against live backends mirror admin e2e credentials (`GITHUB_TOKEN`, halfsend org pool). For scenarios that only need SCM-level state and no live Actions run, prefer `scm/emulate` (above) over `httptest` or live credentials — real multi-endpoint behavior (create → label → read-back) without hand-stubbing each response.
 
 ## Future backends checklist
 
