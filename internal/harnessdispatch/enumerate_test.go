@@ -35,21 +35,31 @@ image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
 
-	out, err := ListTriggeredHarnesses(context.Background(), dir, cfg, cfg.Agents)
+	dirCfg, err := config.LoadFromDir(dir, config.LoadOpts{MissingOK: false})
+	require.NoError(t, err)
+
+	out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg)
 	require.NoError(t, err)
 	assert.Empty(t, out)
 }
 
-func TestResolveHarnessPath_RejectsTraversal(t *testing.T) {
-	_, err := resolveHarnessPath(context.Background(), t.TempDir(), config.AgentEntry{Source: "../../etc/passwd"}, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "escapes config directory")
-}
+func TestListTriggeredHarnesses_DuplicateName(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.NewPerRepoConfig(nil, "o/r")
+	cfg.Agents = []config.AgentEntry{
+		{Name: "Ping", Source: "harness/a.yaml"},
+		{Name: "ping", Source: "harness/b.yaml"},
+	}
+	data, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
 
-func TestResolveHarnessPath_MissingFile(t *testing.T) {
-	_, err := resolveHarnessPath(context.Background(), t.TempDir(), config.AgentEntry{Source: "harness/missing.yaml"}, nil)
+	dirCfg, err := config.LoadFromDir(dir, config.LoadOpts{MissingOK: false})
+	require.NoError(t, err)
+
+	_, err = ListTriggeredHarnesses(context.Background(), dir, dirCfg)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "harness path")
+	assert.Contains(t, err.Error(), "duplicate agent name")
 }
 
 func TestListTriggeredHarnesses_MissingHarness(t *testing.T) {
@@ -60,7 +70,10 @@ func TestListTriggeredHarnesses_MissingHarness(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
 
-	_, err = ListTriggeredHarnesses(context.Background(), dir, cfg, cfg.Agents)
+	dirCfg, err := config.LoadFromDir(dir, config.LoadOpts{MissingOK: false})
+	require.NoError(t, err)
+
+	_, err = ListTriggeredHarnesses(context.Background(), dir, dirCfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "missing")
 }

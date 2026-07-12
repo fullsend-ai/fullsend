@@ -2807,26 +2807,37 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 		return path, nil, err
 	}
 
-	if harness.IsURL(agent.Source) {
-		printer.StepStart(fmt.Sprintf("Fetching agent harness: %s", agent.Name))
-		localPath, dep, err := harness.FetchAgentHarness(ctx, agent.Source, composeOpts)
-		if err != nil {
-			printer.StepFail("Failed to fetch agent harness")
-			return "", nil, fmt.Errorf("resolving config agent %s: %w", agent.Name, err)
-		}
-		printer.StepDone(fmt.Sprintf("Agent %s resolved from config (URL)", agent.Name))
-		return localPath, []harness.Dependency{dep}, nil
+	entry := findConfigAgentEntry(orgCfg.Agents, agent.Name)
+	if entry == nil {
+		return "", nil, fmt.Errorf("config agent %s: entry not found", agent.Name)
 	}
 
-	contained, err := containedLocalPath(fullsendDir, agent.Source)
-	if err != nil {
-		return "", nil, fmt.Errorf("config agent %s: %w", agent.Name, err)
+	if harness.IsURL(agent.Source) {
+		printer.StepStart(fmt.Sprintf("Fetching agent harness: %s", agent.Name))
 	}
-	if _, err := os.Stat(contained); err != nil {
-		return "", nil, fmt.Errorf("config agent %s: local path %s: %w", agent.Name, agent.Source, err)
+	resolved, err := harness.ResolveRegisteredPath(ctx, fullsendDir, *entry, orgCfg.AllowedRemoteResources, composeOpts)
+	if err != nil {
+		if harness.IsURL(agent.Source) {
+			printer.StepFail("Failed to fetch agent harness")
+		}
+		return "", nil, fmt.Errorf("resolving config agent %s: %w", agent.Name, err)
+	}
+	if harness.IsURL(agent.Source) {
+		printer.StepDone(fmt.Sprintf("Agent %s resolved from config (URL)", agent.Name))
+		return resolved.Path, []harness.Dependency{resolved.Dep}, nil
 	}
 	printer.StepDone(fmt.Sprintf("Agent %s resolved from config (local path)", agent.Name))
-	return contained, nil, nil
+	return resolved.Path, nil, nil
+}
+
+func findConfigAgentEntry(agents []config.AgentEntry, name string) *config.AgentEntry {
+	lower := strings.ToLower(name)
+	for i := range agents {
+		if strings.ToLower(agents[i].DerivedName()) == lower {
+			return &agents[i]
+		}
+	}
+	return nil
 }
 
 // propagateDefaultAllowlist ensures composeOpts carries the default
@@ -2945,30 +2956,4 @@ func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient fo
 
 	printer.StepDone(fmt.Sprintf("Agent %s resolved from %s/%s@%s", agentName, defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef))
 	return localPath, []harness.Dependency{dep}, true
-}
-
-// containedLocalPath resolves a relative source path against baseDir and
-// verifies the result stays within baseDir. Returns an error for absolute
-// paths or paths that escape via traversal.
-func containedLocalPath(baseDir, source string) (string, error) {
-	if filepath.IsAbs(source) {
-		return "", fmt.Errorf("local path must be relative, not absolute")
-	}
-	resolved := filepath.Clean(filepath.Join(baseDir, source))
-	if rel, err := filepath.Rel(baseDir, resolved); err != nil || strings.HasPrefix(rel, "..") {
-		return "", fmt.Errorf("local path %q escapes fullsend directory", source)
-	}
-	// Resolve symlinks and re-check containment to prevent symlink escape.
-	real, err := filepath.EvalSymlinks(resolved)
-	if err != nil {
-		return "", err
-	}
-	realBase, err := filepath.EvalSymlinks(baseDir)
-	if err != nil {
-		return "", err
-	}
-	if rel, err := filepath.Rel(realBase, real); err != nil || strings.HasPrefix(rel, "..") {
-		return "", fmt.Errorf("local path %q escapes fullsend directory via symlink", source)
-	}
-	return real, nil
 }

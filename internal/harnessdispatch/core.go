@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
@@ -23,11 +24,11 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 		return nil, fmt.Errorf("config dir is required")
 	}
 
-	cfg, err := LoadConfigDir(opts.ConfigDir)
+	dirCfg, err := config.LoadFromDir(opts.ConfigDir, config.LoadOpts{MissingOK: true})
 	if err != nil {
 		return nil, err
 	}
-	if cfg.KillSwitch {
+	if dirCfg.KillSwitch {
 		return nil, nil
 	}
 
@@ -35,7 +36,7 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 		return nil, nil
 	}
 
-	candidates, err := ListTriggeredHarnesses(ctx, opts.ConfigDir, cfg, cfg.Agents)
+	candidates, err := ListTriggeredHarnesses(ctx, opts.ConfigDir, dirCfg)
 	if err != nil {
 		return nil, err
 	}

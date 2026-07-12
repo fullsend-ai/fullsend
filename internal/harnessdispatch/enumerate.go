@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -21,64 +20,39 @@ type TriggeredHarness struct {
 }
 
 // ListTriggeredHarnesses returns config-registered agents whose harness has a non-empty trigger.
-func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg *config.PerRepoConfig, agents []config.AgentEntry) ([]TriggeredHarness, error) {
-	if len(agents) == 0 {
+func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg *config.DirConfig) ([]TriggeredHarness, error) {
+	registered, err := harness.RegisteredAgents(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if len(registered) == 0 {
 		return nil, nil
 	}
-	allowlist := configAllowlist(cfg)
+
+	allowlist := cfg.AllowedRemoteResources
+	if allowlist == nil {
+		allowlist = config.DefaultAllowedRemoteResources()
+	}
+
 	var out []TriggeredHarness
-	for _, entry := range agents {
-		name := entry.DerivedName()
-		path, err := resolveHarnessPath(ctx, configDir, entry, allowlist)
+	for _, agent := range registered {
+		resolved, err := harness.ResolveRegisteredPath(ctx, configDir, agent.Entry, allowlist, harness.ComposeOpts{
+			WorkspaceRoot: filepath.Dir(configDir),
+			OrgAllowlist:  allowlist,
+		})
 		if err != nil {
-			return nil, fmt.Errorf("agent %s: %w", name, err)
+			return nil, fmt.Errorf("agent %s: %w", agent.Name, err)
 		}
-		h, err := harness.Load(path)
+		h, err := harness.Load(resolved.Path)
 		if err != nil {
-			return nil, fmt.Errorf("agent %s: %w", name, err)
+			return nil, fmt.Errorf("agent %s: %w", agent.Name, err)
 		}
 		if strings.TrimSpace(h.Trigger) == "" {
 			continue
 		}
-		out = append(out, TriggeredHarness{Name: name, Harness: h, Path: path})
+		out = append(out, TriggeredHarness{Name: agent.Name, Harness: h, Path: resolved.Path})
 	}
 	return out, nil
-}
-
-func configAllowlist(cfg *config.PerRepoConfig) []string {
-	if cfg == nil || cfg.AllowedRemoteResources == nil {
-		return config.DefaultAllowedRemoteResources()
-	}
-	return cfg.AllowedRemoteResources
-}
-
-func resolveHarnessPath(ctx context.Context, configDir string, entry config.AgentEntry, allowlist []string) (string, error) {
-	if harness.IsURL(entry.Source) {
-		opts := harness.ComposeOpts{
-			WorkspaceRoot: filepath.Dir(configDir),
-			OrgAllowlist:  allowlist,
-		}
-		localPath, _, err := harness.FetchAgentHarness(ctx, entry.Source, opts)
-		if err != nil {
-			return "", err
-		}
-		return localPath, nil
-	}
-	return containedHarnessPath(configDir, entry.Source)
-}
-
-func containedHarnessPath(configDir, source string) (string, error) {
-	if filepath.IsAbs(source) {
-		return "", fmt.Errorf("local harness path must be relative, not absolute")
-	}
-	resolved := filepath.Clean(filepath.Join(configDir, source))
-	if rel, err := filepath.Rel(configDir, resolved); err != nil || strings.HasPrefix(rel, "..") {
-		return "", fmt.Errorf("harness path %q escapes config directory", source)
-	}
-	if _, err := os.Stat(resolved); err != nil {
-		return "", fmt.Errorf("harness path %s: %w", source, err)
-	}
-	return resolved, nil
 }
 
 // MatchHarnesses evaluates CEL triggers and returns matching harnesses.
@@ -103,7 +77,7 @@ func MatchHarnesses(candidates []TriggeredHarness, event *normevent.Event) ([]Tr
 
 // MergedConfigAgents loads agent entries from per-repo config directory.
 func MergedConfigAgents(configDir string) ([]config.AgentEntry, error) {
-	cfg, err := LoadConfigDir(configDir)
+	cfg, err := config.LoadFromDir(configDir, config.LoadOpts{MissingOK: true})
 	if err != nil {
 		return nil, err
 	}
