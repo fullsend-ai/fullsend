@@ -65,6 +65,7 @@ GH_CRED_HELPER='!f(){ echo "password=${GH_TOKEN}"; };f'
 git -c "credential.helper=${GH_CRED_HELPER}" \
   clone "https://x-access-token@github.com/${EPHEMERAL_REPO}.git" "$TARGET_DIR"
 git -C "$TARGET_DIR" config credential.helper "${GH_CRED_HELPER}"
+git -C "$TARGET_DIR" config commit.gpgsign false
 
 if [[ -d "${CASE_SOURCE_DIR}/repo" ]]; then
   cp -a "${CASE_SOURCE_DIR}/repo/." "$TARGET_DIR/"
