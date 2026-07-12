@@ -36,5 +36,6 @@ func (f *FilesystemPEMAccessor) AccessPEM(_ context.Context, role string) ([]byt
 	if err != nil {
 		return nil, fmt.Errorf("reading PEM for role %q: %w", role, err)
 	}
+	WarnWorkersPEMSize(secretRole, data)
 	return data, nil
 }

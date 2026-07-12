@@ -92,15 +92,15 @@ Introduce a **public mint mode** when `ALLOWED_ORGS` contains `*`, with `job_wor
 11. **Deferred to future ADRs (mint-only):**
     - Dedicated reusable workflow(s) for custom agent **stages** beyond the built-in set.
     - **Prioritize** on `workflow_dispatch`: whether manual prioritize mints via an upstream `reusable-*.yml` or remains tight-mint-only until wired ([ADR 0041](0041-synchronous-workflow-call-event-dispatch.md) keeps non-event `workflow_dispatch` entry points).
-    - **Mint infrastructure** (WIF pool/provider provisioning, Cloud Function deployment, CEL definitions, abuse controls, WAF, monitoring): see [ADR 0063](0063-public-community-mint-architecture.md).
-    - **Hosted mint enrollment:** resolved — public mode (`ALLOWED_ORGS=*`) + shared App install per §1 and [ADR 0063](0063-public-community-mint-architecture.md).
+    - Mint infrastructure: WIF pool/provider provisioning, Cloud Function deployment, CEL definitions, abuse controls, WAF, and monitoring.
+    - Hosted mint enrollment policy: whether the fullsend-operated hosted mint adopts public mode (`ALLOWED_ORGS=*`) or remains tight with explicit enrollment.
 
 12. **Normative specs (`docs/normative/`).** Not required for this decision. The reference mint is implemented in `internal/mintcore/` and configured via documented env vars; this ADR plus [ADR 0029](0029-central-token-mint-secretless-fullsend.md) are the contract for that implementation. A versioned normative spec is **out of scope** until there are multiple independent mint implementations that must interoperate on the same byte-level env and claim rules.
 
 ## Consequences
 
 - Public mode: `ALLOWED_ORGS=*`, permissive provider id in `WIF_PROVIDER_NAME`, `PER_REPO_WIF_REPOS` empty. Tight mode: explicit `ALLOWED_ORGS`, org-merged provider in `WIF_PROVIDER_NAME`, optional `PER_REPO_WIF_REPOS` list.
-- Provider provisioning and IAM for the **hosted** public mint are specified in [ADR 0063](0063-public-community-mint-architecture.md); tight/self-managed deployments remain operator-defined.
+- Provider provisioning and IAM are deferred to a mint infrastructure ADR; this ADR does not specify how providers are created.
 - Custom agents remain configuration-only unless a new shared App, mint role, and upstream workflow file are added.
 - Per-repo **public** mint assumes event-driven runs mint from `fullsend-ai/fullsend` reusables per [ADR 0041](0041-synchronous-workflow-call-event-dispatch.md) and [ADR 0033](0033-per-repo-installation-mode.md). Legacy `{org}/.fullsend/` provenance is not supported in public mode and is deprecated by [ADR 0044](0044-deprecate-per-org-installation-mode.md).
 - Ref-any on `fullsend-ai/fullsend` at the mint layer trades pinning rigor for simpler rollout; caller-level SHA pinning per [ADR 0031](0031-reusable-workflows-for-action-installed-distribution.md) remains the recommended org/repo control.
@@ -126,7 +126,7 @@ Introduce a **public mint mode** when `ALLOWED_ORGS` contains `*`, with `job_wor
 |-------|-------------|
 | Custom-agent reusable workflow | Future ADR |
 | Prioritize mint path under public mode | Resolve when non-event workflows are wired to reusables ([ADR 0041](0041-synchronous-workflow-call-event-dispatch.md)) |
-| Mint WIF providers, IAM, deployment, abuse/WAF | [ADR 0063](0063-public-community-mint-architecture.md) |
-| Hosted mint public-mode enrollment | [ADR 0063](0063-public-community-mint-architecture.md) + §1 here |
+| Mint WIF providers, IAM, deployment, abuse/WAF | Future ADR (all provisioning) |
+| Hosted mint public-mode enrollment | Resolve when moving hosted mint to `ALLOWED_ORGS=*` |
 | Normative mint contract | Deferred until multiple implementations; not needed now |
 | Stricter `@ref` allowlist on upstream workflows | Optional later hardening |

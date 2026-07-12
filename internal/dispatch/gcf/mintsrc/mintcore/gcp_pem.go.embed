@@ -77,6 +77,7 @@ func (s *GCPSecretPEMAccessor) AccessPEM(ctx context.Context, role string) ([]by
 	if err != nil {
 		return nil, fmt.Errorf("decoding secret data: %w", err)
 	}
+	WarnWorkersPEMSize(secretRole, data)
 	return data, nil
 }
 
