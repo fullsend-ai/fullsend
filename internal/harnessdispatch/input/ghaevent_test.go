@@ -271,6 +271,20 @@ func TestLoadGHAEvent_PRSynchronizeAndClose(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, normevent.TransitionClosed, ev.Transition.Kind)
+
+	editedRaw := map[string]any{
+		"action":       "edited",
+		"pull_request": prBase,
+		"sender":       map[string]any{"login": "alice", "type": "User"},
+	}
+	ev, err = input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+		EventPath:  writeEventFile(t, editedRaw),
+		EventName:  "pull_request_target",
+		Repository: "o/r",
+		Forge:      client,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, normevent.TransitionEdited, ev.Transition.Kind)
 }
 
 func TestLoadGHAEvent_IssuesReopenedAndEdited(t *testing.T) {
@@ -359,6 +373,30 @@ func TestLoadGHAEvent_IssueCommentFallbackURLAndLongBody(t *testing.T) {
 	assert.Equal(t, "https://github.com/o/r/pull/42", ev.Entity.LinkedChangeProposal.URL)
 	assert.Equal(t, "note", ev.Transition.Comment.Command)
 	assert.Len(t, []rune(ev.Transition.Comment.Body), 4096)
+}
+
+func TestLoadGHAEvent_IssueCommentGHESPullURL(t *testing.T) {
+	raw := map[string]any{
+		"action": "created",
+		"issue": map[string]any{
+			"number":       float64(42),
+			"html_url":     "https://ghe.example.com/o/r/issues/42",
+			"user":         map[string]any{"login": "alice"},
+			"labels":       []any{},
+			"pull_request": map[string]any{},
+		},
+		"comment": map[string]any{"body": "note"},
+		"sender":  map[string]any{"login": "alice", "type": "User"},
+	}
+	path := writeEventFile(t, raw)
+
+	ev, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+		EventPath:  path,
+		EventName:  "issue_comment",
+		Repository: "o/r",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "https://ghe.example.com/o/r/pull/42", ev.Entity.LinkedChangeProposal.URL)
 }
 
 func TestLoadGHAEvent_MissingNestedFields(t *testing.T) {

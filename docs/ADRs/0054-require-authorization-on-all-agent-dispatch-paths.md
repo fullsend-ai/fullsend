@@ -125,6 +125,15 @@ push access to the repository."
 | `pull_request_review.submitted` | Reviewer | Already gated (requires review-bot authorship) |
 | `issue_comment` (needs-info re-triage) | Commenter | Weaker gate: `author_association != NONE` or issue author (intentional — allows clarification from external reporters) |
 
+**CEL harness dispatch (`fullsend dispatch`):** The Go authorization gate
+(`harnessdispatch.IsAuthorized`) intentionally stays agent-generic. GitHub
+installation bots on `review_submitted` and label-added events bypass the
+write-role check when the collaborator API returns no role for bot accounts.
+Harness CEL trigger expressions must enforce stage-specific constraints —
+review state, bot identity, fork/label guards — rather than encoding fixed
+stage routing in the auth layer. Bash `reusable-dispatch.yml` routing remains
+the reference for built-in stage→agent mappings; custom harnesses use CEL.
+
 For external contributors (issues opened or PRs submitted by
 non-members), the agent does not fire automatically. A maintainer can
 still trigger the agent explicitly by:

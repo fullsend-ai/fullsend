@@ -112,5 +112,6 @@ repos: not-a-map
 func TestIsPerRepoYAML(t *testing.T) {
 	assert.True(t, IsPerRepoYAML([]byte("version: \"1\"\nagents: []\n")))
 	assert.False(t, IsPerRepoYAML([]byte("version: \"1\"\ndispatch:\n  platform: github-actions\n")))
+	assert.False(t, IsPerRepoYAML([]byte("version: \"1\"\ndispatch:\n  platform: \"\"\n")))
 	assert.False(t, IsPerRepoYAML([]byte("not yaml")))
 }

@@ -35,6 +35,7 @@ on:
       - 'Makefile'
       - '.github/scripts/**'
       - '.github/workflows/e2e.yml'
+      - '.github/workflows/reusable-dispatch.yml'
       - 'action.yml'
       - '.github/actions/check-e2e-authorization/**'
       - 'scripts/check-e2e-authorization.sh'

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"strings"
 	"unicode/utf8"
@@ -252,6 +253,8 @@ func mapPREvent(ev *normevent.Event, raw map[string]any, action, actorID string)
 			Name:   stringField(label, "name"),
 			Action: act,
 		}
+	case "edited":
+		ev.Transition.Kind = normevent.TransitionEdited
 	default:
 		ev.Transition.Kind = normevent.TransitionUpdated
 	}
@@ -338,6 +341,13 @@ func changeProposalFromPullRequestInfo(info *forge.PullRequestInfo) *normevent.C
 func issuePullRequestURL(issueURL, repo string, number int) string {
 	if strings.Contains(issueURL, "/issues/") {
 		return strings.Replace(issueURL, "/issues/", "/pull/", 1)
+	}
+	if issueURL != "" {
+		if u, err := url.Parse(issueURL); err == nil && u.Scheme != "" && u.Host != "" {
+			if parts := strings.SplitN(repo, "/", 2); len(parts) == 2 {
+				return fmt.Sprintf("%s://%s/%s/%s/pull/%d", u.Scheme, u.Host, parts[0], parts[1], number)
+			}
+		}
 	}
 	if parts := strings.SplitN(repo, "/", 2); len(parts) == 2 {
 		return fmt.Sprintf("https://github.com/%s/%s/pull/%d", parts[0], parts[1], number)

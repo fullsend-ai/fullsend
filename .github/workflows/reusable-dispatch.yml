@@ -767,7 +767,13 @@ jobs:
             echo "::error::event_payload missing issue or pull_request html_url"
             exit 1
           fi
-          echo "issue_url=${URL}" >> "${GITHUB_OUTPUT}"
+          DELIM="ISSUE_URL_$(openssl rand -hex 8)"
+          {
+            echo "issue_url<<${DELIM}"
+            printf '%s' "${URL}"
+            echo
+            echo "${DELIM}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Run harness agent
         uses: ./.defaults/

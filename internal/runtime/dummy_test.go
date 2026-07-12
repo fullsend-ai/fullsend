@@ -488,6 +488,17 @@ func TestExecuteBehaviourOp_AssertJSONBadArgs(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestExecuteBehaviourOp_AssertJSONInvalidPath(t *testing.T) {
+	t.Parallel()
+
+	err := executeBehaviourOp(DummyRuntime{}, "sandbox", t.TempDir(), BehaviourOperation{
+		Op:   "assert_json",
+		Args: ".fullsend/dispatch/event-payload.json,issue.number; rm -rf /",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid json_path")
+}
+
 func TestExecuteBehaviourOp_AssertEnvInvalidName(t *testing.T) {
 	t.Parallel()
 

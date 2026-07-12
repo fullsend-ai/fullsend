@@ -23,6 +23,8 @@ const behaviourResultsFile = "behaviour-results.json"
 
 var envVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+var jsonPathPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$`)
+
 type sandboxExecFunc func(sandboxName, cmd string, timeout time.Duration) (stdout, stderr string, exitCode int, err error)
 
 type sandboxUploadFunc func(sandboxName, localPath, remotePath string) error
@@ -294,6 +296,9 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 		}
 		path := strings.TrimSpace(parts[0])
 		jsonPath := strings.TrimSpace(parts[1])
+		if !jsonPathPattern.MatchString(jsonPath) {
+			return fmt.Errorf("assert_json invalid json_path %q", jsonPath)
+		}
 		remotePath, err := resolveSandboxPath(sandbox.SandboxWorkspace, path)
 		if err != nil {
 			return err

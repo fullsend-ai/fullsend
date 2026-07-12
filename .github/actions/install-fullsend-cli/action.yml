@@ -23,13 +23,13 @@ inputs:
 outputs:
   fullsend-path:
     description: Absolute path to the installed fullsend binary.
-    value: ${{ steps.install.outputs.fullsend-path }}
+    value: ${{ steps.install-vendored.outputs.fullsend-path || steps.install-upstream.outputs.fullsend-path }}
 
 runs:
   using: composite
   steps:
     - name: Install vendored binary
-      id: install
+      id: install-vendored
       if: inputs.mode == 'vendored'
       shell: bash
       env:
@@ -37,7 +37,7 @@ runs:
       run: |
         set -euo pipefail
         if [[ ! -f "${VENDORED}" ]]; then
-          echo "::error::vendored binary not found at ${VENDORED}"
+          echo "vendored binary not found" >&2
           exit 1
         fi
         mkdir -p "${RUNNER_TEMP}/fullsend"
@@ -78,7 +78,7 @@ runs:
         cache-dependency-path: ${{ runner.temp }}/fullsend-src/go.sum
 
     - name: Build fullsend from source
-      id: install
+      id: install-upstream
       if: inputs.mode == 'upstream'
       shell: bash
       run: |
