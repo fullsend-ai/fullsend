@@ -579,6 +579,7 @@ jobs:
           sparse-checkout: |
             .fullsend/
             .defaults/action.yml
+            .defaults/.github/actions/install-fullsend-cli/
             .fullsend/.defaults/action.yml
           sparse-checkout-cone-mode: false
 
@@ -603,11 +604,19 @@ jobs:
             exit 1
           fi
 
-      - name: Install fullsend CLI
+      - name: Install fullsend CLI (vendored defaults)
+        if: steps.mode.outputs.mode == 'vendored'
+        uses: ./.defaults/.github/actions/install-fullsend-cli
+        with:
+          mode: vendored
+          vendored_path: .fullsend/bin/fullsend
+          github_token: ${{ github.token }}
+
+      - name: Install fullsend CLI (upstream workflow)
+        if: steps.mode.outputs.mode == 'upstream'
         uses: ./.github/actions/install-fullsend-cli
         with:
-          mode: ${{ steps.mode.outputs.mode }}
-          vendored_path: .fullsend/bin/fullsend
+          mode: upstream
           workflow_repository: ${{ job.workflow_repository }}
           workflow_sha: ${{ job.workflow_sha }}
           github_token: ${{ github.token }}
