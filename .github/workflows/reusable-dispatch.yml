@@ -578,8 +578,39 @@ jobs:
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
           sparse-checkout: |
             .fullsend/
-            bin/fullsend
+            .defaults/action.yml
+            .fullsend/.defaults/action.yml
           sparse-checkout-cone-mode: false
+
+      - name: Detect dispatch CLI install mode
+        id: mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f .defaults/action.yml || -f .fullsend/.defaults/action.yml ]]; then
+            echo "mode=vendored" >> "${GITHUB_OUTPUT}"
+          else
+            echo "mode=upstream" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Guard vendored install
+        if: steps.mode.outputs.mode == 'vendored'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f .fullsend/bin/fullsend ]]; then
+            echo "::error::broken --vendor install: vendored marker present but .fullsend/bin/fullsend is missing"
+            exit 1
+          fi
+
+      - name: Install fullsend CLI
+        uses: ./.github/actions/install-fullsend-cli
+        with:
+          mode: ${{ steps.mode.outputs.mode }}
+          vendored_path: .fullsend/bin/fullsend
+          workflow_repository: ${{ job.workflow_repository }}
+          workflow_sha: ${{ job.workflow_sha }}
+          github_token: ${{ github.token }}
 
       - name: Run fullsend dispatch
         id: dispatch
@@ -589,17 +620,7 @@ jobs:
           EVENT_ACTION: ${{ inputs.event_action }}
         run: |
           set -euo pipefail
-          FULLSEND=""
-          if [[ -f ".fullsend/bin/fullsend" ]]; then
-            FULLSEND=".fullsend/bin/fullsend"
-          elif [[ -f "bin/fullsend" ]]; then
-            FULLSEND="bin/fullsend"
-          else
-            echo "::error::vendored fullsend binary not found"
-            exit 1
-          fi
-          chmod +x "${FULLSEND}"
-          MATRIX=$("${FULLSEND}" dispatch \
+          MATRIX=$(fullsend dispatch \
             --input-driver gha-event \
             --output-driver gha-matrix \
             --config-dir .fullsend \
