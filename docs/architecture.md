@@ -51,7 +51,7 @@ the dedicated org-level `<org>/.fullsend` config repo is deprecated
 - Event-driven stage dispatch: eliminate `workflow_dispatch` + `gh workflow run` fan-out from `dispatch.yml` in favor of synchronous `workflow_call` so the dispatched run stays linked to the caller ([ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
 - Multi-repo management: a `fullsend repos` subcommand group with a declarative `repos.yaml` manifest for managing per-repo installations at scale — bulk install, status, sync, upgrade, and removal across repos and orgs ([ADR 0057](ADRs/0057-repos-management.md)).
 - Dispatch version-skew resolution: per-repo `reusable-dispatch.yml` inlines stage workflow jobs directly, eliminating `@v0` references to `reusable-{stage}.yml` ([ADR 0062](ADRs/0062-dispatch-version-skew.md)).
-- Ready-made configuration presets: `fullsend github setup --config <path-or-url>` installs a vendor preset as `.fullsend/config.base.yaml` and a stub `.fullsend/config.yaml` overlay in the target repository; mint URL, inference backend, and related settings live in configuration files resolved through accessor methods, not CLI flags. Shared-infrastructure presets drop per-adopter mint and inference enrollment in favor of `job_workflow_ref` trust to upstream workflows ([ADR 0068](ADRs/0068-ready-made-configuration-presets.md)).
+- Ready-made configuration presets: `fullsend github setup --config <path-or-url>` installs a vendor preset as `.fullsend/config.base.yaml` and a stub `.fullsend/config.yaml` overlay in the target repository; mint URL, inference backend, and related settings live in configuration files resolved through accessor methods, not CLI flags. Shared-infrastructure presets will drop per-adopter mint and inference enrollment (target state) in favor of `job_workflow_ref` trust to upstream workflows ([ADR 0068](ADRs/0068-ready-made-configuration-presets.md)); enrollment remains required until follow-on ADRs land.
 - GitLab event dispatch: two-path model — native CI triggers (`merge_request_event`) for MR events, cron-based polling for issues/comments/labels. No external infrastructure (no webhook bridge). Bot PAT via OIDC/WIF from Secret Manager or protected CI/CD variable. Per-repo only ([ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
 
 **Open questions:**
@@ -69,7 +69,9 @@ The sandbox is a security primitive. Its job is containment: if an agent is comp
 
 Ecosystem projects reuse the word *sandbox* for different workload shapes. For example, [Kubernetes SIG Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) targets **stateful, singleton** agent runtimes (long-lived sessions), whereas many fullsend-style workflows emphasize **short-lived, task-scoped** runs with tight isolation and observability. How those patterns compare is discussed in [agent-infrastructure.md](problems/agent-infrastructure.md#kubernetes-sig-agent-sandbox).
 
-Sandbox defaults (network policy, filesystem restrictions) are configured in the adopting organization's **`.fullsend`** repository and can be overridden per-repo. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
+Sandbox defaults (network policy, filesystem restrictions) are configured in
+each target repository's **`.fullsend/`** directory
+([ADR 0033](ADRs/0033-per-repo-installation-mode.md)).
 
 **Open questions:**
 
@@ -88,7 +90,11 @@ The configuration and context layer that prepares an agent for its task. Respons
 
 The harness is what makes a generic LLM into a specific agent with a specific role. It assembles what the agent needs to know and what it's allowed to do before the agent starts working.
 
-The harness draws its configuration from the adopting organization's **`.fullsend`** repository — skills, workflow definitions, and agent behavioral instructions are assembled from the layered config (fullsend defaults, then org config, then per-repo overrides). (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
+The harness draws its configuration from each target repository's
+**`.fullsend/`** directory — skills, workflow definitions, and agent behavioral
+instructions are assembled from the layered config (fullsend defaults, then
+repo baseline and overrides)
+([ADR 0033](ADRs/0033-per-repo-installation-mode.md)).
 
 **Decided:**
 
@@ -209,7 +215,10 @@ Where agent behavioral rules live. Responsible for holding autonomy levels, revi
 
 Policy is distinct from the harness (which configures *how* an agent works) and from intent (which defines *what* work is authorized). Policy defines the *boundaries* of agent behavior — what an agent is allowed to do regardless of what it's asked to do.
 
-The adopting organization's **`.fullsend`** repository is the natural home for policy configuration — org-wide guardrails, per-repo autonomy levels, and escalation rules all live there, governed by the org's own CODEOWNERS and review process. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
+Each target repository's **`.fullsend/`** directory holds policy
+configuration — guardrails, autonomy levels, and escalation rules governed by
+the repo's CODEOWNERS and review process
+([ADR 0033](ADRs/0033-per-repo-installation-mode.md)).
 
 **Open questions:**
 
@@ -223,7 +232,10 @@ The system that provides authorized intent for agent work. Responsible for repre
 
 Intent answers the question "should this change exist?" before anyone asks "is this change correct?" Without authorized intent, an agent has no basis for deciding what to work on or whether its output matches what was asked for.
 
-The adopting organization's **`.fullsend`** repository holds the pointer to the intent source (for example, `intent_repo: your-org/features`), so tooling discovers where intent lives without hardcoding. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
+Each target repository's **`.fullsend/`** directory holds the pointer to the
+intent source (for example, `intent_repo: your-org/features`), so tooling
+discovers where intent lives without hardcoding
+([ADR 0033](ADRs/0033-per-repo-installation-mode.md)).
 
 **Open questions:**
 
@@ -258,7 +270,12 @@ The catalog of available agent roles and their configurations. Responsible for d
 
 The registry is the bridge between the abstract roles defined in [agent-architecture.md](problems/agent-architecture.md) (correctness sub-agent, intent & coherence sub-agent, security sub-agent, etc.) and the concrete runtime configurations that the harness uses to set up each agent.
 
-Fullsend provides a base set of agent definitions. The adopting organization's **`.fullsend`** repository extends this with org-specific agents in its `agents/` directory, following the inheritance model: fullsend defaults, then org config, then per-repo overrides. (See [ADR 0003](ADRs/0003-org-config-repo-convention.md).)
+Fullsend provides a base set of agent definitions. Each target repository's
+**`.fullsend/`** directory extends this with repo-specific agents, following
+the inheritance model: fullsend defaults, then repo baseline (`config.base.yaml`
+/ harness `base:` references), then repo overrides
+([ADR 0033](ADRs/0033-per-repo-installation-mode.md),
+[ADR 0058](ADRs/0058-agent-registration.md)).
 
 **Decided:**
 
