@@ -65,6 +65,13 @@ on:
         required: false
       FULLSEND_GCP_PROJECT_ID:
         required: true
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS:
+        description: >-
+          OTLP headers for ADR 0050 Level 2 trace export, forwarded to the
+          triage stage (baggage-style k=v,k=v; may carry auth, hence a
+          secret). Optional — unset leaves export disabled unless the
+          endpoint variable alone suffices.
+        required: false
 
 jobs:
   route:
@@ -453,6 +460,7 @@ jobs:
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
 
   code:
     name: Code

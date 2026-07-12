@@ -7,22 +7,25 @@ import (
 	"sync"
 )
 
-// Compile-time check that FakeClient implements Client.
+// Compile-time interface checks.
 var _ Client = (*FakeClient)(nil)
+var _ GitHubExtensions = (*FakeClient)(nil)
 
 // NewFakeClient returns a FakeClient with all maps initialised.
 func NewFakeClient() *FakeClient {
 	return &FakeClient{
-		FileContents:    make(map[string][]byte),
-		WorkflowRuns:    make(map[string]*WorkflowRun),
-		Secrets:         make(map[string]bool),
-		VariablesExist:  make(map[string]bool),
-		VariableValues:  make(map[string]string),
-		Errors:          make(map[string]error),
-		DirContents:     make(map[string][]DirectoryEntry),
-		FileContentsRef: make(map[string][]byte),
-		BranchRefs:      make(map[string]string),
-		Refs:            make(map[string]string),
+		FileContents:      make(map[string][]byte),
+		WorkflowRuns:      make(map[string]*WorkflowRun),
+		Secrets:           make(map[string]bool),
+		VariablesExist:    make(map[string]bool),
+		VariableValues:    make(map[string]string),
+		Errors:            make(map[string]error),
+		DirContents:       make(map[string][]DirectoryEntry),
+		FileContentsRef:   make(map[string][]byte),
+		BranchRefs:        make(map[string]string),
+		Refs:              make(map[string]string),
+		ProtectedBranches: make(map[string]bool),
+		PipelineSchedules: make(map[string][]PipelineSchedule),
 	}
 }
 
@@ -52,6 +55,7 @@ type OrgVariableRecord struct {
 // VariableRecord records a variable creation/update call.
 type VariableRecord struct {
 	Owner, Repo, Name, Value string
+	Protected                bool
 }
 
 // UpdatedCommentRecord records an issue comment update call.
@@ -155,6 +159,12 @@ type FakeClient struct {
 	OrgVariableValues  map[string]string  // key: "org/name" → value
 	OrgVariableRepoIDs map[string][]int64 // key: "org/name" → repo IDs
 
+	// Protected branches for IsProtectedBranch.
+	ProtectedBranches map[string]bool // key: "owner/repo/branch"
+
+	// Pipeline schedules for List/Create/DeletePipelineSchedule.
+	PipelineSchedules map[string][]PipelineSchedule // key: "owner/repo"
+
 	// Directory listings for ListDirectoryContents.
 	DirContents map[string][]DirectoryEntry // key: "owner/repo/path@ref"
 
@@ -231,6 +241,10 @@ type FakeClient struct {
 	CommittedFilesToBranch []CommitFilesToBranchRecord
 	CreatedForks           []string // "owner/repo"
 	DeletedComments        []int    // comment IDs
+	CreatedSchedules       []PipelineSchedule
+	DeletedScheduleIDs     []int64
+	UpdatedVariables       []VariableRecord
+	CreatedProtectedVars   []VariableRecord
 
 	// internal counters
 	proposalCounter int
@@ -1713,5 +1727,111 @@ func (f *FakeClient) DeleteOrgVariable(_ context.Context, org, name string) erro
 
 	f.DeletedOrgVariables = append(f.DeletedOrgVariables, org+"/"+name)
 	delete(f.OrgVariables, org+"/"+name)
+	return nil
+}
+
+func (f *FakeClient) IsProtectedBranch(_ context.Context, owner, repo, branch string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("IsProtectedBranch"); e != nil {
+		return false, e
+	}
+
+	key := owner + "/" + repo + "/" + branch
+	return f.ProtectedBranches[key], nil
+}
+
+func (f *FakeClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref, description, cron string, _ map[string]string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CreatePipelineSchedule"); e != nil {
+		return 0, e
+	}
+
+	s := PipelineSchedule{
+		ID:          int64(len(f.CreatedSchedules) + 1),
+		Description: description,
+		Ref:         ref,
+		Cron:        cron,
+		Active:      true,
+	}
+	f.CreatedSchedules = append(f.CreatedSchedules, s)
+	key := owner + "/" + repo
+	if f.PipelineSchedules == nil {
+		f.PipelineSchedules = make(map[string][]PipelineSchedule)
+	}
+	f.PipelineSchedules[key] = append(f.PipelineSchedules[key], s)
+	return s.ID, nil
+}
+
+func (f *FakeClient) DeletePipelineSchedule(_ context.Context, owner, repo string, scheduleID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DeletePipelineSchedule"); e != nil {
+		return e
+	}
+
+	f.DeletedScheduleIDs = append(f.DeletedScheduleIDs, scheduleID)
+	key := owner + "/" + repo
+	if f.PipelineSchedules != nil {
+		schedules := f.PipelineSchedules[key]
+		filtered := schedules[:0]
+		for _, s := range schedules {
+			if s.ID != scheduleID {
+				filtered = append(filtered, s)
+			}
+		}
+		f.PipelineSchedules[key] = filtered
+	}
+	return nil
+}
+
+func (f *FakeClient) ListPipelineSchedules(_ context.Context, owner, repo string) ([]PipelineSchedule, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListPipelineSchedules"); e != nil {
+		return nil, e
+	}
+
+	return f.PipelineSchedules[owner+"/"+repo], nil
+}
+
+func (f *FakeClient) UpdateCIVariable(_ context.Context, owner, repo, name, value string, protected bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("UpdateCIVariable"); e != nil {
+		return e
+	}
+
+	f.UpdatedVariables = append(f.UpdatedVariables, VariableRecord{
+		Owner:     owner,
+		Repo:      repo,
+		Name:      name,
+		Value:     value,
+		Protected: protected,
+	})
+	return nil
+}
+
+func (f *FakeClient) CreateProtectedCIVariable(_ context.Context, owner, repo, name, value string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CreateProtectedCIVariable"); e != nil {
+		return e
+	}
+
+	f.CreatedProtectedVars = append(f.CreatedProtectedVars, VariableRecord{
+		Owner:     owner,
+		Repo:      repo,
+		Name:      name,
+		Value:     value,
+		Protected: true,
+	})
 	return nil
 }

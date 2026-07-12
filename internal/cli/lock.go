@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/lock"
@@ -173,7 +174,9 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
 	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
-	var orgAllowlist []string
+	// Fallback for absent config; EnsureDefaultAllowedRemoteResources
+	// handles the omitted-field case when a config is present.
+	orgAllowlist := config.DefaultAllowedRemoteResources()
 	if orgCfg != nil {
 		orgAllowlist = orgCfg.AllowedRemoteResources
 	}

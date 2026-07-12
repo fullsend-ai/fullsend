@@ -85,10 +85,12 @@ func mapGitHubWebhook(ctx context.Context, opts GHAEventOptions, raw map[string]
 	if opts.Forge != nil && actorID != "" {
 		parts := strings.SplitN(opts.Repository, "/", 2)
 		if len(parts) == 2 {
-			if perm, err := opts.Forge.GetCollaboratorPermission(ctx, parts[0], parts[1], actorID); err == nil {
-				role = normevent.MapGitHubPermission(perm)
-			} else {
-				log.Printf("harness dispatch: collaborator permission lookup failed for %s on %s: %v", actorID, opts.Repository, err)
+			if gh, ok := opts.Forge.(forge.GitHubExtensions); ok {
+				if perm, err := gh.GetCollaboratorPermission(ctx, parts[0], parts[1], actorID); err == nil {
+					role = normevent.MapGitHubPermission(perm)
+				} else {
+					log.Printf("harness dispatch: collaborator permission lookup failed for %s on %s: %v", actorID, opts.Repository, err)
+				}
 			}
 		}
 	}

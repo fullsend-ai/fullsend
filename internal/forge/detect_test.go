@@ -231,5 +231,5 @@ func TestDetectForgeDistinctFromIsSupportedForge(t *testing.T) {
 	assert.Equal(t, "gitlab", forge)
 
 	assert.False(t, IsSupportedForge("gitlab.com"),
-		"IsSupportedForge gates ParseForgeURL support, not detection")
+		"IsSupportedForge gates fetch support (harness validation), not URL parsing or detection")
 }

@@ -23,7 +23,7 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.0",
-    "@cloudflare/workers-types": "^4.20250420.0",
+    "@cloudflare/workers-types": "^5.20260708.1",
     "@eslint/js": "^10.0.1",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@tsconfig/svelte": "^5.0.0",

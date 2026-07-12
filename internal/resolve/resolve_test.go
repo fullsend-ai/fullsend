@@ -294,6 +294,21 @@ func TestResolveHarness_SkillNonForgeURLRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "supported forge")
 }
 
+func TestResolveHarness_GitLabURLRejected(t *testing.T) {
+	fakeHash := strings.Repeat("a", 64)
+	h := &harness.Harness{
+		Skills:                 []string{fmt.Sprintf("https://gitlab.com/org/repo/-/tree/main/skills/review#sha256=%s", fakeHash)},
+		AllowedRemoteResources: []string{"https://gitlab.com/org/repo/"},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   fetch.FetchPolicy{},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetch support has not landed yet")
+}
+
 func TestResolveHarness_DiamondDependency(t *testing.T) {
 	reg := newSkillRegistry()
 

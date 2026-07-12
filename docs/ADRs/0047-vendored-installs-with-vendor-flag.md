@@ -90,15 +90,6 @@ When present, upstream sparse checkout is skipped. Infra is referenced from
 Layered agent content is copied from `.defaults/internal/scaffold/fullsend-repo/`
 onto the workspace root at job start (inline prepare step).
 
-The `harness-dispatch` job in `reusable-dispatch.yml` uses the same vendored
-marker (`.defaults/action.yml` or `.fullsend/.defaults/action.yml`) to choose
-the dispatch CLI source: **vendored** installs run `.fullsend/bin/fullsend`
-from the caller repo; **layered** installs build `fullsend dispatch` from
-`job.workflow_repository` at `job.workflow_sha` and never execute a caller-repo
-binary for routing logic. Vendored per-repo installs that need per-repo mint
-enrollment must run `fullsend mint enroll owner/repo` (see
-[e2e-testing.md](../guides/dev/e2e-testing.md)).
-
 Thin caller `uses:` paths are rendered at install/sync time (local `./...` when
 `--vendor`, upstream `@v0` when layered).
 

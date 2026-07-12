@@ -529,6 +529,9 @@ func parseAgentSourceURL(source string) (*forge.ForgeURLInfo, error) {
 	}
 	info, err = forge.ParseForgeURL(cleanSource)
 	if err == nil {
+		if info.Forge != "github" {
+			return nil, fmt.Errorf("forge %q is recognized but fetch support has not landed yet", info.Forge)
+		}
 		return info, nil
 	}
 	return parseGenericURL(cleanSource)

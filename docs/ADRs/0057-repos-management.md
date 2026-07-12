@@ -123,3 +123,10 @@ and implementation details are in the
 - [ADR 0048](0048-automatic-updates.md) — `--upstream-ref` version pinning
 - [Implementation plan: repos management](../plans/repos-management.md)
 - [Implementation plan: repos init](../plans/repos-init.md)
+
+## Implementation status
+
+`repos install` (batch install with WIF serialization) is being implemented in PR #3033.
+Remaining subcommands (`repos init`, `repos status`, `repos sync`,
+`repos upgrade`, `repos upgrade-mint`, `repos remove`) are tracked in the
+[repos management plan](../plans/repos-management.md).

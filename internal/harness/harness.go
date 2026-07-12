@@ -276,6 +276,7 @@ type Harness struct {
 	RunnerEnv              map[string]string       `yaml:"runner_env,omitempty"`
 	Env                    *EnvConfig              `yaml:"env,omitempty"`
 	TimeoutMinutes         int                     `yaml:"timeout_minutes,omitempty"`
+	ReadonlyRepo           bool                    `yaml:"readonly_repo,omitempty"`
 	SandboxTimeoutSeconds  int                     `yaml:"sandbox_timeout_seconds,omitempty"`
 	Security               *SecurityConfig         `yaml:"security,omitempty"`
 	AllowedRemoteResources []string                `yaml:"allowed_remote_resources,omitempty"`
@@ -810,8 +811,12 @@ func (h *Harness) ValidateResourceTypes() error {
 				return fmt.Errorf("skills[%d] URL must include #sha256=... integrity hash", i)
 			}
 			cleanURL, _, _ := ParseIntegrityHash(s)
-			if _, err := forge.ParseForgeURL(cleanURL); err != nil {
+			info, err := forge.ParseForgeURL(cleanURL)
+			if err != nil {
 				return fmt.Errorf("skills[%d] URL must be hosted on a supported forge (github.com): %w", i, err)
+			}
+			if info.Forge != "github" {
+				return fmt.Errorf("skills[%d] forge %q is recognized but fetch support has not landed yet", i, info.Forge)
 			}
 		}
 	}

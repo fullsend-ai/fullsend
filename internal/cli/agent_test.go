@@ -632,6 +632,13 @@ func TestParseAgentSourceURL_GitHubBlobToRawConversion(t *testing.T) {
 	assert.Equal(t, "https://raw.githubusercontent.com/my-org/agents/"+testCommitSHA+"/harness/triage.yaml", rawURL)
 }
 
+func TestParseAgentSourceURL_GitLabURLRejected(t *testing.T) {
+	gitlabURL := "https://gitlab.com/my-org/agents/-/blob/" + testCommitSHA + "/harness/triage.yaml"
+	_, err := parseAgentSourceURL(gitlabURL)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetch support has not landed yet")
+}
+
 func TestRunAgentAdd_NonGitHubUpdateRequiresExplicitSHA(t *testing.T) {
 	dir := t.TempDir()
 	hash := "7777777777777777777777777777777777777777777777777777777777777777"

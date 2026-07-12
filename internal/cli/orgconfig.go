@@ -36,9 +36,13 @@ func tryLoadFullsendConfig(path string, printer *ui.Printer) *config.OrgConfig {
 		return nil
 	}
 	if dirCfg.IsOrg {
-		return dirCfg.Org
+		cfg := dirCfg.Org
+		cfg.AllowedRemoteResources = config.EnsureDefaultAllowedRemoteResources(cfg.AllowedRemoteResources)
+		return cfg
 	}
-	return config.OrgConfigFromPerRepo(dirCfg.PerRepo)
+	orgCfg := config.OrgConfigFromPerRepo(dirCfg.PerRepo)
+	orgCfg.AllowedRemoteResources = config.EnsureDefaultAllowedRemoteResources(orgCfg.AllowedRemoteResources)
+	return orgCfg
 }
 
 // tryLoadOrgConfig loads an org or per-repo config.yaml (best-effort).
@@ -59,7 +63,14 @@ func requireFullsendConfig(path string, printer *ui.Printer) (*config.OrgConfig,
 	if dirCfg.IsOrg {
 		return dirCfg.Org, nil
 	}
-	return config.OrgConfigFromPerRepo(dirCfg.PerRepo), nil
+	if dirCfg.IsOrg {
+		cfg := dirCfg.Org
+		cfg.AllowedRemoteResources = config.EnsureDefaultAllowedRemoteResources(cfg.AllowedRemoteResources)
+		return cfg, nil
+	}
+	orgCfg := config.OrgConfigFromPerRepo(dirCfg.PerRepo)
+	orgCfg.AllowedRemoteResources = config.EnsureDefaultAllowedRemoteResources(orgCfg.AllowedRemoteResources)
+	return orgCfg, nil
 }
 
 // requireOrgConfig loads an org or per-repo config.yaml (strict).

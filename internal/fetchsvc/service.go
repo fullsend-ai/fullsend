@@ -130,6 +130,9 @@ func (s *Service) HandleFetch(ctx context.Context, req FetchRequest) (FetchRespo
 	if err != nil {
 		return FetchResponse{}, &fetchError{"skill URLs must be hosted on a supported forge", http.StatusBadRequest}
 	}
+	if forgeInfo.Forge != "github" {
+		return FetchResponse{}, &fetchError{fmt.Sprintf("forge %q is recognized but fetch support has not landed yet", forgeInfo.Forge), http.StatusBadRequest}
+	}
 
 	if forgeInfo.Path == "" {
 		return FetchResponse{}, &fetchError{"skill URL must include a path to a directory", http.StatusBadRequest}

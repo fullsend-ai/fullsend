@@ -31,8 +31,9 @@ type LiveClient struct {
 	baseURL string
 }
 
-// Compile-time interface check.
+// Compile-time interface checks.
 var _ forge.Client = (*LiveClient)(nil)
+var _ forge.GitHubExtensions = (*LiveClient)(nil)
 
 // New creates a new GitHub client with the given personal access token.
 func New(token string) *LiveClient {
@@ -3352,6 +3353,53 @@ func (c *LiveClient) GetOrgVariableRepos(ctx context.Context, org, name string) 
 		ids[i] = r.ID
 	}
 	return ids, nil
+}
+
+// IsProtectedBranch checks whether the given branch has protection rules
+// enabled on GitHub by querying the branch protection API endpoint.
+// GitHub returns 404 both when a branch exists but is not protected and
+// when the branch/repo does not exist. We distinguish the two by
+// inspecting the API error message: "Branch not protected" means the
+// branch exists but has no protection rules.
+func (c *LiveClient) IsProtectedBranch(ctx context.Context, owner, repo, branch string) (bool, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/branches/%s/protection", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(branch)))
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			if strings.EqualFold(apiErr.Message, "Branch not protected") {
+				return false, nil
+			}
+			return false, fmt.Errorf("check branch protection: %w", err)
+		}
+		return false, fmt.Errorf("check branch protection: %w", err)
+	}
+	resp.Body.Close()
+	return true, nil
+}
+
+// CreatePipelineSchedule is not supported on GitHub.
+func (c *LiveClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref, description, cron string, _ map[string]string) (int64, error) {
+	return 0, forge.ErrNotSupported
+}
+
+// DeletePipelineSchedule is not supported on GitHub.
+func (c *LiveClient) DeletePipelineSchedule(_ context.Context, owner, repo string, scheduleID int64) error {
+	return forge.ErrNotSupported
+}
+
+// ListPipelineSchedules is not supported on GitHub.
+func (c *LiveClient) ListPipelineSchedules(_ context.Context, owner, repo string) ([]forge.PipelineSchedule, error) {
+	return nil, forge.ErrNotSupported
+}
+
+// UpdateCIVariable is not supported on GitHub.
+func (c *LiveClient) UpdateCIVariable(_ context.Context, _, _, _, _ string, _ bool) error {
+	return forge.ErrNotSupported
+}
+
+// CreateProtectedCIVariable is not supported on GitHub.
+func (c *LiveClient) CreateProtectedCIVariable(_ context.Context, _, _, _, _ string) error {
+	return forge.ErrNotSupported
 }
 
 // isNotFound checks whether an error is a 404 API error.

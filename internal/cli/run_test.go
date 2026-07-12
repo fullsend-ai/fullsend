@@ -275,7 +275,12 @@ func TestTryLoadFullsendConfig_PerRepoFallback(t *testing.T) {
 	printer := ui.New(io.Discard)
 	cfg := tryLoadFullsendConfig(path, printer)
 	require.NotNil(t, cfg)
-	assert.Equal(t, []string{"https://example.com/"}, cfg.AllowedRemoteResources)
+	expected := []string{
+		"https://example.com/",
+		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
+		"https://raw.githubusercontent.com/fullsend-ai/agents/",
+	}
+	assert.Equal(t, expected, cfg.AllowedRemoteResources)
 	require.Len(t, cfg.Agents, 1)
 	assert.Equal(t, "lint", cfg.Agents[0].Name)
 	assert.Equal(t, []string{"triage"}, cfg.Defaults.Roles)
@@ -354,7 +359,12 @@ func TestRequireFullsendConfig_PerRepoFallback(t *testing.T) {
 	cfg, err := requireFullsendConfig(path, printer)
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
-	assert.Equal(t, []string{"https://example.com/"}, cfg.AllowedRemoteResources)
+	expected := []string{
+		"https://example.com/",
+		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
+		"https://raw.githubusercontent.com/fullsend-ai/agents/",
+	}
+	assert.Equal(t, expected, cfg.AllowedRemoteResources)
 	assert.Equal(t, []string{"triage"}, cfg.Defaults.Roles)
 }
 
@@ -402,7 +412,53 @@ func TestTryLoadFullsendConfig_OrgConfig(t *testing.T) {
 	cfg := tryLoadFullsendConfig(path, printer)
 	require.NotNil(t, cfg)
 	assert.Equal(t, "github", cfg.Dispatch.Platform)
-	assert.Equal(t, []string{"https://example.com/"}, cfg.AllowedRemoteResources)
+	expected := []string{
+		"https://example.com/",
+		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
+		"https://raw.githubusercontent.com/fullsend-ai/agents/",
+	}
+	assert.Equal(t, expected, cfg.AllowedRemoteResources)
+}
+
+func TestTryLoadFullsendConfig_ExplicitEmptyAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"version: \"1\"\ndispatch:\n  platform: github\nallowed_remote_resources: []\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	require.NotNil(t, cfg)
+	assert.Empty(t, cfg.AllowedRemoteResources, "explicit empty [] must preserve deny-all")
+}
+
+func TestTryLoadFullsendConfig_OmittedAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"version: \"1\"\ndispatch:\n  platform: github\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	require.NotNil(t, cfg)
+	assert.Equal(t, config.DefaultAllowedRemoteResources(), cfg.AllowedRemoteResources,
+		"omitted field must get defaults")
+}
+
+func TestRequireFullsendConfig_ExplicitEmptyAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"version: \"1\"\ndispatch:\n  platform: github\nallowed_remote_resources: []\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg, err := requireFullsendConfig(path, printer)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Empty(t, cfg.AllowedRemoteResources, "explicit empty [] must preserve deny-all")
 }
 
 func TestRequireFullsendConfig_PerRepoMalformed(t *testing.T) {
@@ -3605,31 +3661,20 @@ func TestIsOrgConfigData_HeaderlessOrgByStructure(t *testing.T) {
 	assert.True(t, isOrgConfigData(data))
 }
 
-func TestPropagateDefaultAllowlist(t *testing.T) {
-	t.Run("nil allowlist gets default", func(t *testing.T) {
-		opts := harness.ComposeOpts{}
-		propagateDefaultAllowlist(&opts)
-		assert.Equal(t, config.DefaultAllowedRemoteResources(), opts.OrgAllowlist)
-	})
-
-	t.Run("existing allowlist preserved", func(t *testing.T) {
-		custom := []string{"https://example.com/"}
-		opts := harness.ComposeOpts{OrgAllowlist: custom}
-		propagateDefaultAllowlist(&opts)
-		assert.Equal(t, custom, opts.OrgAllowlist)
-	})
-
-	t.Run("explicit empty slice stays deny-all", func(t *testing.T) {
-		opts := harness.ComposeOpts{OrgAllowlist: []string{}}
-		propagateDefaultAllowlist(&opts)
-		assert.Empty(t, opts.OrgAllowlist, "explicit empty list must not be replaced with defaults")
-	})
+func TestDefaultAllowlistCoversAgentsRepoFallback(t *testing.T) {
+	// Verify the default allowlist covers the agents repo fallback URL shape.
+	// A future edit to DefaultAllowedRemoteResources() that drops the
+	// agents repo prefix would regress #3396 silently without this.
+	sampleURL := defaultAgentsRepoURLPrefix + strings.Repeat("a", 40) + "/scripts/pre-triage.sh"
+	assert.NotEmpty(t, harness.MatchingAllowedPrefixInList(sampleURL, config.DefaultAllowedRemoteResources()),
+		"DefaultAllowedRemoteResources must cover the agents repo fallback URL shape")
 }
 
-func TestAgentsRepoFallback_LoadWithBase_NilAllowlist(t *testing.T) {
+func TestAgentsRepoFallback_LoadWithBase_DefaultAllowlist(t *testing.T) {
 	// Integration test for #3396: a URL-sourced harness (from agents-repo
 	// fallback) with pre_script/post_script must succeed when OrgAllowlist
-	// is populated via propagateDefaultAllowlist.
+	// carries the default allowlist (now always set via config loading or
+	// the nil-config fallback in runAgent).
 	preScript := []byte("#!/bin/bash\necho pre")
 	postScript := []byte("#!/bin/bash\necho post")
 	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
@@ -3666,44 +3711,21 @@ post_script: scripts/post-triage.sh
 	workDir := t.TempDir()
 	sourceURL := srv.URL + "/" + fakeSHA + "/harness/triage.yaml"
 
-	// Write harness locally (simulating the cache write from tryAgentsRepoFallback).
 	harnessDir := filepath.Join(workDir, "harness")
 	require.NoError(t, os.MkdirAll(harnessDir, 0o755))
 	harnessPath := filepath.Join(harnessDir, "triage.yaml")
 	require.NoError(t, os.WriteFile(harnessPath, harnessContent, 0o644))
 
-	// Without the fix: OrgAllowlist nil + SourceURL set → fails.
-	_, _, err := harness.LoadWithBase(context.Background(), harnessPath, harness.ComposeOpts{
-		WorkspaceRoot: workDir,
-		FetchPolicy:   policy,
-		SourceURL:     sourceURL,
-		// OrgAllowlist nil — reproduces the bug.
-	})
-	require.Error(t, err, "should fail with nil allowlist")
-	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
-
-	// With the fix: propagateDefaultAllowlist sets the default → succeeds.
+	// With the test server's URL in the allowlist, LoadWithBase succeeds.
 	opts := harness.ComposeOpts{
 		WorkspaceRoot: workDir,
 		FetchPolicy:   policy,
 		SourceURL:     sourceURL,
+		OrgAllowlist:  []string{srv.URL + "/"},
 	}
-	propagateDefaultAllowlist(&opts)
-	assert.Equal(t, config.DefaultAllowedRemoteResources(), opts.OrgAllowlist,
-		"propagateDefaultAllowlist should set the default list")
-
-	// Verify the real default list covers the fallback URL shape.
-	// A future edit to DefaultAllowedRemoteResources() that drops the
-	// agents repo prefix would regress #3396 silently without this.
-	sampleURL := defaultAgentsRepoURLPrefix + strings.Repeat("a", 40) + "/scripts/pre-triage.sh"
-	assert.NotEmpty(t, harness.MatchingAllowedPrefixInList(sampleURL, config.DefaultAllowedRemoteResources()),
-		"DefaultAllowedRemoteResources must cover the agents repo fallback URL shape")
-
-	// Override allowlist to match test server (default points at github.com).
-	opts.OrgAllowlist = []string{srv.URL + "/"}
 
 	h, _, err := harness.LoadWithBase(context.Background(), harnessPath, opts)
-	require.NoError(t, err, "should succeed with allowlist propagated")
+	require.NoError(t, err, "should succeed with allowlist set")
 	assert.True(t, filepath.IsAbs(h.PreScript), "pre_script should be resolved to cache path")
 	assert.True(t, filepath.IsAbs(h.PostScript), "post_script should be resolved to cache path")
 }

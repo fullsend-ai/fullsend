@@ -33,7 +33,7 @@ The per-org model touches these subsystems:
 | Layer stack | `internal/layers/configrepo.go`, `dispatch.go`, `enrollment.go`, `secrets.go`, `inference.go`, `vendorbinary.go` | `ConfigRepoLayer`, `DispatchTokenLayer`, `EnrollmentLayer`, `buildLayerStack()` |
 | Config | `internal/config/config.go` | `OrgConfig`, `NewOrgConfig`, `ParseOrgConfig`, `EnabledRepos`, `DisabledRepos`, `DefaultAgentRoles` |
 | Scaffold | `internal/scaffold/fullsend-repo/` | `dispatch.yml`, thin callers, `shim-workflow-call.yaml`, `repo-maintenance.yml`, `CustomizedDirs()` |
-| Forge interface | `internal/forge/forge.go`, `github/github.go`, `fake.go` | 11 org-level methods to remove (5 secret, 5 variable, `ListOrgRepos`), 2 retained (`ListOrgInstallations`, `GetOrgPlan`), `PerRepoGuardVar` |
+| Forge interface | `internal/forge/forge.go`, `github/github.go`, `fake.go` | 11 org-level methods to remove (5 secret, 5 variable, `ListOrgRepos`), 2 retained (`ListOrgInstallations` via `GitHubExtensions`, `GetOrgPlan`), `PerRepoGuardVar` |
 | Dispatch | `internal/dispatch/dispatch.go`, `gcf/provisioner.go` | `OrgSecretNames`, `OrgVariableNames`, PEM-sharing logic, org-wide WIF |
 | Appsetup | `internal/appsetup/appsetup.go` | `findExistingInstallation` (org-level app discovery) |
 | Mint | `internal/mintcore/claims.go` | `.fullsend` workflow ref pattern, `ValidateOrgAllowed` |
@@ -641,9 +641,9 @@ SetOrgVariableRepos(ctx context.Context, org, name string, repoIDs []int64) erro
 GetOrgVariableRepos(ctx context.Context, org, name string) ([]int64, error)
 
 // Org installations — DO NOT remove:
-// ListOrgInstallations is also used by per-repo install path
-// (detectSharedApps in admin.go, findExistingInstallation and
-// ensureInstalled in appsetup.go).
+// ListOrgInstallations (now on GitHubExtensions) is also used by per-repo
+// install path (detectSharedApps in admin.go, findExistingInstallation
+// and ensureInstalled in appsetup.go).
 ```
 
 Remove `PerRepoGuardVar` constant and all its callers (these are
@@ -667,8 +667,9 @@ The guard variable is no longer needed when per-org enrollment does not
 exist. All callers are explicitly covered: per-repo paths in this PR,
 `enrollment.go` in PR 7, and `reconcile-repos.sh` in PR 9.
 
-Keep `ListOrgInstallations()` — used by per-repo app discovery
-(`detectSharedApps`, `findExistingInstallation`, `ensureInstalled`).
+Keep `ListOrgInstallations()` (now on `GitHubExtensions`) — used by
+per-repo app discovery (`detectSharedApps`, `findExistingInstallation`,
+`ensureInstalled`).
 Remove `ListOrgRepos()` — all callers (`admin.go` enrollment discovery,
 `github.go` org setup, `dispatch.go` layer) are per-org code paths
 removed in earlier PRs; no per-repo callers exist.
@@ -683,7 +684,7 @@ Remove implementations of the 10 removed interface methods:
 - `CreateOrUpdateOrgVariable`, `OrgVariableExists`, `DeleteOrgVariable`,
   `SetOrgVariableRepos`, `GetOrgVariableRepos` (~200 lines)
 
-Keep `ListOrgInstallations` implementation (retained in interface).
+Keep `ListOrgInstallations` implementation (retained on `GitHubExtensions`).
 
 **`internal/forge/fake.go`:**
 
@@ -701,8 +702,8 @@ Remove:
 - Any test files that use fake org methods: update to remove.
 
 **After merge:** Forge interface has no org-level secret/variable methods.
-`ListOrgInstallations` retained for per-repo app discovery. ~400 lines
-removed from GitHub implementation.
+`ListOrgInstallations` retained (on `GitHubExtensions`) for per-repo app
+discovery. ~400 lines removed from GitHub implementation.
 
 ---
 
@@ -753,8 +754,9 @@ Keep `Provision()`, `StoreAgentPEM()`, `Name()`.
 **`internal/appsetup/appsetup.go`:**
 
 - Keep `findExistingInstallation()` and `ensureInstalled()` — these use
-  `ListOrgInstallations()` which is retained (app installation discovery
-  is an org-level GitHub API operation regardless of fullsend install mode).
+  `ListOrgInstallations()` via `GitHubExtensions` type assertion (app
+  installation discovery is an org-level GitHub API operation regardless
+  of fullsend install mode).
 - Simplify `Run()`: remove any per-org-specific branching (e.g. org-level
   app creation paths that differ from per-repo). The shared app discovery
   flow (`detectSharedApps` → `findExistingInstallation`) works for both
@@ -771,7 +773,7 @@ Keep `Provision()`, `StoreAgentPEM()`, `Name()`.
   cases.
 
 **After merge:** Appsetup retains shared app discovery
-(`findExistingInstallation`, `ensureInstalled` via `ListOrgInstallations`)
+(`findExistingInstallation`, `ensureInstalled` via `GitHubExtensions.ListOrgInstallations`)
 while per-org-specific branching is removed.
 
 ---

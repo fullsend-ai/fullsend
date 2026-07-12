@@ -71,6 +71,10 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | GCP Admin (Mint) | `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
 | GCP Admin (Mint) | `fullsend mint status` | Inspect mint state and PEM health |
 
+| Fleet Admin | `fullsend repos init <org\|owner/repo>` | Generate a `repos.yaml` manifest by discovering existing installations |
+| Platform Admin | `fullsend repos install -f repos.yaml` | Bulk-install fullsend on repos from a declarative manifest (parallel discovery → sequential WIF → parallel scaffold) |
+| Fleet Admin | `fullsend repos status` | Compare `repos.yaml` manifest against actual per-repo state (drift detection) |
+
 | Developer | `fullsend agent add <url-or-path>` | Register an agent in config (URL auto-pinned to commit SHA) |
 | Developer | `fullsend agent list` | List registered agents and their sources |
 | Developer | `fullsend agent update <name> [sha]` | Re-pin a URL agent to a new commit SHA |
