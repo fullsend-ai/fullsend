@@ -283,9 +283,6 @@ run_test_failure_stderr() {
 
 # shellcheck shell=bash
 
-[[ -n "${GITHUB_API_CSMA_SH_LOADED:-}" ]] && return 0
-GITHUB_API_CSMA_SH_LOADED=1
-
 _github_csma_max_attempts() {
   echo "${GITHUB_CSMA_MAX_ATTEMPTS:-8}"
 }

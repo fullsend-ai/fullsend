@@ -11,8 +11,9 @@ import (
 // with a suggestion to use the --forge flag.
 //
 // Note: this detects the forge from a remote URL, which is distinct from
-// IsSupportedForge (used by ParseForgeURL for full URL parsing support).
-// A forge may be detectable here before full URL parsing is implemented.
+// IsSupportedForge (which gates fetch support in harness validation).
+// URL parsing uses isRecognizedForge; a forge may be parseable before
+// fetch support is implemented.
 func DetectForge(remoteURL string) (string, error) {
 	host := extractHost(remoteURL)
 	if host == "" {

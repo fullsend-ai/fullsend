@@ -33,23 +33,18 @@ post-script to post. In interactive mode, it posts directly via
 
 ## Sub-agent roster
 
-Sub-agent definitions live in `sub-agents/` relative to this file.
-Each is a markdown file with frontmatter specifying `name`, `model`,
-and `description`.
+Sub-agent discovery: The sub-agents' definitions are in `sub-agents/`
+relative to this file.
 
-| Sub-agent              | Model  | Dispatch   | Dimension                                                                      |
-|------------------------|--------|------------|--------------------------------------------------------------------------------|
-| `correctness`          | opus   | parallel   | Logic errors, edge cases, nil handling, API contracts, test adequacy/integrity |
-| `security`             | opus   | parallel   | Auth, data exposure, privilege escalation, injection defense, content security |
-| `intent-coherence`     | sonnet | parallel   | Authorization, scope, intent authorization tier matching, architectural fit, design coherence |
-| `style-conventions`    | sonnet | parallel   | Naming, error handling idioms, API shape, code organization                    |
-| `docs-currency`        | sonnet | parallel   | Documentation staleness (follows docs-review skill inline)                     |
-| `cross-repo-contracts` | sonnet | parallel   | API contract breakage affecting other repos (conditional)                      |
-| `challenger`           | opus   | sequential | Adversarial challenge of findings, false-positive removal, deduplication       |
-
-The Model column reflects each sub-agent's current frontmatter. Any
-value accepted by the Agent tool's `model` parameter is valid in
-sub-agent frontmatter.
+| Sub-agent              | Dispatch   | Dimensions                                                                                                              |
+|------------------------|------------|-------------------------------------------------------------------------------------------------------------------------|
+| `correctness`          | parallel   | Logic errors, edge cases, nil handling, API contracts, test adequacy/integrity                                          |
+| `security`             | parallel   | Security vulnerabilities, auth/access control, data exposure, injection defense, privilege escalation, content security |
+| `intent-coherence`     | parallel   | Architectural coherence & fit, design coherence, intent alignment, PR scope, scope authorization, tier matching         |
+| `style-conventions`    | parallel   | Repo-specific naming, error-handling idioms, API shape, code organization                                               |
+| `docs-currency`        | parallel   | Documentation staleness (follows docs-review skill inline)                                                              |
+| `cross-repo-contracts` | parallel   | API contract breakage affecting other repos (conditional)                                                               |
+| `challenger`           | sequential | Adversarial challenge of findings, false-positive removal, deduplication                                                |
 
 ## Findings vs inline comments
 
@@ -255,7 +250,8 @@ dimensions are relevant:
 #### 3c. Select sub-agents
 
 Based on the domain classification, select sub-agents for dispatch.
-All selected sub-agents run in parallel.
+All selected sub-agents run in parallel (with the exception of the
+challenger, which runs by itself after all other sub-agents have finished).
 
 **Dispatch sub-agents based on the classification — typically 3-6.**
 The orchestrator should auto-select which sub-agents are relevant for
@@ -336,9 +332,7 @@ the constraint first.
 
 For each selected sub-agent:
 
-1. Read the sub-agent definition from `sub-agents/{name}.md`
-2. Extract the `model` from frontmatter
-3. Compose the spawn prompt from these parts:
+1. Compose the spawn prompt from:
 
    **Part 0 — Scope constraint (conditional):** If `scope_constraint`
    from step 3e is not `"none"`, prepend:
@@ -399,12 +393,8 @@ For each selected sub-agent:
    REVIEW_SUB_AGENT_TRUE
    ```
 
-4. Spawn via Agent tool with:
-   - `model`: from the sub-agent frontmatter (any value accepted by
-     the Agent tool's `model` parameter)
-   - `subagent_type`: `Explore` (read-only — sub-agents do not write)
-   - `run_in_background`: `true`
-   - `prompt`: composed from parts 1–5
+2. Spawn the subagents with their `prompt` argument composed from parts
+   1–5 above
 
 **All sub-agents MUST be dispatched simultaneously** — include all
 Agent calls in a single message so they run concurrently. This is the
@@ -520,8 +510,7 @@ fresh context. The challenger has not seen the orchestrator's synthesis
 — it receives only the raw findings and the diff, preserving context
 isolation.
 
-1. Read `sub-agents/challenger.md` for the sub-agent definition
-2. Compose the spawn prompt from:
+1. Compose the spawn prompt from:
 
    **Part 1 — Sub-agent definition:** the full markdown body of the
    challenger sub-agent file (everything after the frontmatter)
@@ -555,10 +544,8 @@ isolation.
    REVIEW_SUB_AGENT_TRUE
    ```
 
-3. Spawn via Agent tool with:
-   - `model`: from the challenger sub-agent frontmatter (`opus`)
-   - `subagent_type`: `Explore` (read-only)
-   - `prompt`: composed from parts 1–4
+2. Spawn the subagents with their `prompt` argument composed from parts
+   1–4 above
 
    **Prompt size guard:** If the combined context package (findings
    JSON + diff + file list + PR metadata) exceeds 80 000 tokens,
@@ -571,7 +558,7 @@ isolation.
    needs their findings as input), so it is dispatched sequentially,
    not in the parallel batch from step 4.
 
-4. Consume the challenger's output. The challenger returns a **different
+3. Consume the challenger's output. The challenger returns a **different
    format** from dimension sub-agents: an object with
    `adjudicated_findings` and `removed_findings` arrays (not a flat
    finding array). Parse accordingly:
@@ -583,15 +570,15 @@ isolation.
      part of the standard finding schema.
    - If `adjudicated_findings` is empty but the pre-challenger finding
      set was non-empty, treat this as a challenger failure (fall back
-     per step 5 below). A legitimate challenger pass that removes all
-     findings is unlikely — an empty result more likely indicates a
-     parsing error or context truncation.
+     per the immediate next step below). A legitimate challenger pass
+     that removes all findings is unlikely — an empty result more likely
+     indicates a parsing error or context truncation.
    - Otherwise, replace the merged finding set with the challenger's
      `adjudicated_findings`.
    - Log any `removed_findings` for transparency but do not include
      them in the final review.
 
-5. If the challenger sub-agent fails (timeout, error, empty
+4. If the challenger sub-agent fails (timeout, error, empty
    response), fall back to using the pre-challenger merged finding
    set from steps 6a–6c. Record an **info**-level finding:
 

@@ -38,6 +38,25 @@ fullsend
 │   ├── status       <org>                   # Analyze GitHub-side state
 │   ├── uninstall    <org>                   # Remove fullsend GitHub configuration
 │   └── sync-scaffold <org>                  # Update workflow templates
+├── repos                                    # Manage per-repo installations via manifest
+│   ├── init         <org|owner/repo>        # Generate repos.yaml from discovered installs
+│   │   ├── --output, -o <path>              #   Output path (default: repos.yaml, - for stdout)
+│   │   ├── --repos <list>                   #   Comma-separated repos to include
+│   │   ├── --all                            #   Include all eligible repos
+│   │   ├── --mint-project <id>              #   GCP project for the mint
+│   │   ├── --mint-region <region>           #   GCP region for the mint (default: us-central1)
+│   │   ├── --inference-project <id>         #   Default GCP project for inference
+│   │   ├── --force                          #   Overwrite output file if it exists
+│   │   └── --concurrency <int>              #   Max parallel API calls (default: 8)
+│   ├── install                              # Install fullsend on uninstalled manifest repos
+│   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
+│   │   ├── --dry-run                        #   Preview without making changes
+│   │   ├── --repo <owner/repo>              #   Install specific repos only (repeatable)
+│   │   ├── --skip-mint-check                #   Skip org registration in mint
+│   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
+│   │   ├── --roles <list>                   #   Agent roles (default: triage,coder,review,fix,retro,prioritize)
+│   │   └── --direct                         #   Push scaffold to default branch (skip PR)
+│   └── status                               # Compare manifest against actual repo state
 ├── agent                                    # Manage agent registrations in config
 │   ├── add          <url-or-path>            # Register an agent (URL auto-pinned)
 │   ├── list                                  # List registered agents
@@ -603,4 +622,4 @@ var executableFiles = map[string]struct{}{
 - [Advanced setup](../infrastructure/advanced-setup.md) — Alternative installation paths and setup flags
 - [Mint service administration](../infrastructure/mint-administration.md) — Deploying and managing the token mint
 - [Infrastructure Reference](../infrastructure/infrastructure-reference.md) — Infrastructure details
-- [Customizing Agents](../user/customizing-agents.md) — User customization guide
+- [Configuring Agents](../user/customizing-agents.md) — User configuration guide

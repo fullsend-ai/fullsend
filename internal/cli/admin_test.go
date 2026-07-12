@@ -3289,6 +3289,54 @@ func TestGCFWIFAdapter_DeletePerRepoWIF_Success(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// nonGitHubClient wraps forge.Client without GitHubExtensions.
+type nonGitHubClient struct {
+	forge.Client
+}
+
+func TestRunUninstall_NonGitHub_SkipsAppUninstall(t *testing.T) {
+	inner := forge.NewFakeClient()
+	inner.TokenScopes = []string{"admin:org", "repo", "delete_repo"}
+	inner.Errors["GetFileContent"] = errors.New("not found")
+	client := &nonGitHubClient{Client: inner}
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runUninstall(context.Background(), client, printer, "test-org", "fullsend-ai", appsetup.NopBrowser{}, strings.NewReader(""))
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "App uninstall is not available on this forge")
+}
+
+func TestResolveSharedRoleAppIDs_NonGitHub_ReturnsError(t *testing.T) {
+	inner := forge.NewFakeClient()
+	client := &nonGitHubClient{Client: inner}
+
+	existingIDs := map[string]string{"coder": "100"}
+	_, err := resolveSharedRoleAppIDs(context.Background(), client, existingIDs, "acme", []string{"coder"})
+	require.Error(t, err)
+	assert.True(t, forge.IsNotSupported(err))
+}
+
+func TestDetectSharedApps_NonGitHub_ReturnsRoleOnlyIDs(t *testing.T) {
+	old := detectSharedAppsGCFClientFactory
+	detectSharedAppsGCFClientFactory = func(string) gcf.GCFClient {
+		return gcf.NewFakeGCFClient(gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
+			URI:     "https://mint.example.com",
+			EnvVars: map[string]string{"ROLE_APP_IDS": `{"coder":"100"}`},
+		}))
+	}
+	t.Cleanup(func() { detectSharedAppsGCFClientFactory = old })
+
+	inner := forge.NewFakeClient()
+	client := &nonGitHubClient{Client: inner}
+
+	slugs, roleIDs, err := detectSharedApps(context.Background(), client, ui.New(&strings.Builder{}), "acme", []string{"coder"}, "mint-project", "us-central1")
+	require.NoError(t, err)
+	assert.Nil(t, slugs)
+	assert.Equal(t, map[string]string{"coder": "100"}, roleIDs)
+}
+
 func TestToAgentCredentials(t *testing.T) {
 	ac := &appsetup.AppCredentials{
 		AppID:    42,

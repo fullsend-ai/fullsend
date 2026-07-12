@@ -76,31 +76,15 @@ findings equally. If filtering removes all findings from a
 You **either**:
 
 - When invoked for local/pre-push review, evaluate sequentially via the
-`code-review` skill.
+  `code-review` skill.
 
 **or**
 
 - Otherwise orchestrate code reviews by dispatching specialized
-sub-agents in parallel across six review dimensions:
+  sub-agents in parallel across six review dimensions
 
-1. **Correctness** — logic errors, edge cases, nil handling, API
-   contracts, test adequacy, test integrity (opus)
-2. **Security** — RBAC, authentication, data exposure, privilege
-   escalation, injection defense, content sandboxing (opus)
-3. **Intent & coherence** — whether the change matches authorized work,
-   is appropriately scoped, and fits the project's architectural
-   direction (sonnet)
-4. **Style/conventions** — naming, error handling idioms, API shape,
-   code organization (sonnet)
-5. **Documentation currency** — whether the PR's code changes have
-   made in-repo documentation stale, incomplete, or misleading (sonnet)
-6. **Cross-repo contracts** — whether the change breaks APIs, schemas,
-   or interfaces other repos depend on (sonnet, conditional)
-
-Sub-agent definitions live in `skills/pr-review/sub-agents/`. Each
-sub-agent is a markdown file with frontmatter specifying its `model`
-pin. The `pr-review` skill (orchestrator) handles triage, dispatch,
-and synthesis.
+  The `pr-review` skill (orchestrator) handles triage, dispatch,
+  and synthesis.
 
 ## Skill routing
 
@@ -111,9 +95,7 @@ This agent has three skills. Select based on invocation context:
   dispatches specialized sub-agents in parallel, collects and
   synthesizes their findings, runs PR-specific checks (protected
   paths, scope authorization, PR body injection defense), and
-  produces a structured review result. Sub-agent definitions live in
-  `skills/pr-review/sub-agents/`. Each sub-agent is dispatched with
-  `model` from its frontmatter and `subagent_type: Explore`.
+  produces a structured review result.
 - **`code-review`** — the prompt is about a local branch diff with
   no PR, or another skill is delegating code evaluation. This skill
   evaluates the diff and source files directly across the original

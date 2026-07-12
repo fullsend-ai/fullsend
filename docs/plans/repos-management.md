@@ -831,7 +831,7 @@ variable values to simulate installed/non-installed repos.
 
 ## Phase 2: Write Operations
 
-### PR 5: `fullsend repos install` (bulk install with WIF serialization)
+### PR 5: `fullsend repos install` (bulk install with WIF serialization) — **In Review**
 
 **Scope:** New CLI command. Creates infrastructure.
 
@@ -858,8 +858,11 @@ type BatchInstallConfig struct {
     DryRun         bool
     RepoFilter     []string
     MaxConcurrency int
-    SkipAppSetup   bool
     SkipMintCheck  bool
+    Roles          []string
+    UpstreamRef    string
+    UpstreamTag    string
+    Direct         bool
 }
 
 type BatchInstallResult struct {

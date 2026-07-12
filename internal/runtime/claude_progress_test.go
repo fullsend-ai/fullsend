@@ -13,30 +13,28 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-func TestExtractBinaryName(t *testing.T) {
+func TestCollapseCommand(t *testing.T) {
 	tests := []struct {
 		cmd  string
 		want string
 	}{
-		{"make test", "make"},
-		{"git commit -s -m 'msg'", "git"},
-		{"/usr/bin/make lint", "make"},
-		{"  go test ./...", "go"},
+		{"make test", "make test"},
+		{"git commit -s -m 'msg'", "git commit -s -m 'msg'"},
+		{"/usr/bin/make lint", "/usr/bin/make lint"},
+		{"  go test ./...", "go test ./..."},
 		{"", ""},
-		{"gh pr create --title 'x'", "gh"},
-		{"curl -H 'Authorization: Bearer SECRET' https://api.example.com", "curl"},
-		// KEY=VALUE env var prefixes are skipped.
-		{"SECRET=val make test", "make"},
-		{"FOO=bar BAZ=qux /usr/bin/go test", "go"},
-		// All tokens are KEY=VALUE — return empty.
-		{"FOO=bar BAZ=qux", ""},
+		{"gh pr create --title 'x'", "gh pr create --title 'x'"},
+		// Multi-line commands are collapsed.
+		{"echo hello\necho world", "echo hello echo world"},
 		// Whitespace-only input.
 		{"   \t  ", ""},
+		// Long commands are truncated.
+		{"echo " + strings.Repeat("x", 200), "echo " + strings.Repeat("x", 115) + "…"},
 	}
 	for _, tt := range tests {
-		got := extractBinaryName(tt.cmd)
+		got := collapseCommand(tt.cmd)
 		if got != tt.want {
-			t.Errorf("extractBinaryName(%q) = %q, want %q", tt.cmd, got, tt.want)
+			t.Errorf("collapseCommand(%q) = %q, want %q", tt.cmd, got, tt.want)
 		}
 	}
 }
@@ -52,19 +50,19 @@ func TestExtractSafeContext(t *testing.T) {
 			name:     "bash command",
 			toolName: "Bash",
 			input:    map[string]interface{}{"command": "make test"},
-			want:     "make",
+			want:     "make test",
 		},
 		{
-			name:     "bash with secret in args",
+			name:     "bash with short arg (no redaction)",
 			toolName: "Bash",
-			input:    map[string]interface{}{"command": "curl -H 'Bearer token123' https://api.example.com"},
-			want:     "curl",
+			input:    map[string]interface{}{"command": "curl -H 'Bearer short' https://api.example.com"},
+			want:     "curl -H 'Bearer short' https://api.example.com",
 		},
 		{
-			name:     "bash with env var prefix",
+			name:     "bash with github token redacted",
 			toolName: "Bash",
-			input:    map[string]interface{}{"command": "API_KEY=secret123 curl https://api.example.com"},
-			want:     "curl",
+			input:    map[string]interface{}{"command": "curl -H 'Authorization: Bearer ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' https://api.github.com"},
+			want:     "curl -H 'Authorization: Bearer *** https://api.github.com",
 		},
 		{
 			name:     "read file",
@@ -115,9 +113,9 @@ func TestExtractSafeContext(t *testing.T) {
 			want:     "**/*.go",
 		},
 		{
-			name:     "unknown tool returns empty",
-			toolName: "Agent",
-			input:    map[string]interface{}{"prompt": "do something"},
+			name:     "unrecognized tool returns empty",
+			toolName: "Skill",
+			input:    map[string]interface{}{"skill_name": "issue-labels"},
 			want:     "",
 		},
 		{
@@ -149,10 +147,9 @@ func TestProgressParser(t *testing.T) {
 	input := strings.NewReader(strings.Join(lines, "\n"))
 	var buf bytes.Buffer
 	printer := ui.New(&buf)
-	start := time.Now()
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, start, metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
@@ -169,10 +166,11 @@ func TestProgressParser(t *testing.T) {
 	}
 }
 
-func TestProgressParserIgnoresStreamEvents(t *testing.T) {
+func TestProgressParserStreamEventsProcessed(t *testing.T) {
 	lines := []string{
-		`{"type":"stream_event","event":{"type":"content_block_start","content_block":{"type":"tool_use","name":"Edit"}}}`,
-		`{"type":"stream_event","event":{"type":"content_block_stop"}}`,
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"Edit"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\":\"/src/main.go\"}"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
 		`{"type":"assistant","content":[{"type":"tool_use","name":"Edit","input":{"file_path":"/src/main.go"}}]}`,
 	}
 
@@ -181,12 +179,13 @@ func TestProgressParserIgnoresStreamEvents(t *testing.T) {
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
+	// Tool counted once from stream_event, not again from assistant fallback
 	if metrics.ToolCalls.Load() != 1 {
-		t.Errorf("expected 1 tool call (stream_event ignored), got %d", metrics.ToolCalls.Load())
+		t.Errorf("expected 1 tool call (from stream_event, assistant suppressed), got %d", metrics.ToolCalls.Load())
 	}
 }
 
@@ -202,7 +201,7 @@ func TestProgressParserMalformedJSON(t *testing.T) {
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
@@ -211,9 +210,9 @@ func TestProgressParserMalformedJSON(t *testing.T) {
 	}
 }
 
-func TestProgressParserUnknownToolAllowlisted(t *testing.T) {
+func TestProgressParserUnknownToolShowsNameNoContext(t *testing.T) {
 	lines := []string{
-		`{"type":"assistant","content":[{"type":"tool_use","name":"EvilTool","input":{"secret":"should-not-appear"}}]}`,
+		`{"type":"assistant","content":[{"type":"tool_use","name":"CustomTool","input":{"secret":"should-not-appear"}}]}`,
 		`{"type":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/main.go"}}]}`,
 	}
 
@@ -222,7 +221,7 @@ func TestProgressParserUnknownToolAllowlisted(t *testing.T) {
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
@@ -231,32 +230,11 @@ func TestProgressParserUnknownToolAllowlisted(t *testing.T) {
 	}
 
 	output := buf.String()
-	if strings.Contains(output, "EvilTool") {
-		t.Errorf("unknown tool name should not appear in output, got: %s", output)
+	if !strings.Contains(output, "CustomTool") {
+		t.Errorf("expected tool name in output, got: %s", output)
 	}
-	if !strings.Contains(output, "tool") {
-		t.Errorf("expected generic 'tool' label for unknown tool, got: %s", output)
-	}
-}
-
-func TestProgressParserUnknownToolAssistantNoContext(t *testing.T) {
-	lines := []string{
-		`{"type":"assistant","content":[{"type":"tool_use","name":"CustomTool","input":{"secret":"should-not-appear"}}]}`,
-	}
-
-	input := strings.NewReader(strings.Join(lines, "\n"))
-	var buf bytes.Buffer
-	printer := ui.New(&buf)
-	metrics := &RunMetrics{}
-
-	_ = progressParser(input, printer, time.Now(), metrics)
-
-	output := buf.String()
 	if strings.Contains(output, "should-not-appear") {
-		t.Errorf("non-allowlisted tool should not extract context, got: %s", output)
-	}
-	if strings.Contains(output, "CustomTool") {
-		t.Errorf("non-allowlisted tool name should not appear, got: %s", output)
+		t.Errorf("unknown tool should not extract context, got: %s", output)
 	}
 }
 
@@ -272,7 +250,7 @@ func TestProgressParserReaderError(t *testing.T) {
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	err := progressParser(pr, printer, time.Now(), metrics)
+	err := progressParser(pr, printer, metrics)
 
 	if err == nil {
 		t.Error("expected error from broken reader, got nil")
@@ -292,7 +270,7 @@ func TestProgressParserOversizedLineSkipped(t *testing.T) {
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
@@ -406,6 +384,72 @@ func TestSanitizeOutput(t *testing.T) {
 	}
 }
 
+func TestSanitizeStreamText(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "preserves newlines",
+			input: "line one\nline two\nline three",
+			want:  "line one\nline two\nline three",
+		},
+		{
+			name:  "strips ANSI but preserves newlines",
+			input: "\x1b[31mred\x1b[0m\nclean",
+			want:  "red\nclean",
+		},
+		{
+			name:  "breaks GHA commands across newlines",
+			input: "text\n::error::pwned",
+			want:  "text\n: :error: :pwned",
+		},
+		{
+			name:  "strips control chars except newline",
+			input: "hello\x00\tworld\nok",
+			want:  "hello  world\nok",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeStreamText(tt.input)
+			if got != tt.want {
+				t.Errorf("sanitizeStreamText(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRendererSanitizesThinkingAndText(t *testing.T) {
+	var buf bytes.Buffer
+	r := newTestRenderer(&buf)
+
+	// Thinking with ANSI escape should be stripped
+	r.Handle(ThinkingEvent{Text: "\x1b[31minjected\x1b[0m"})
+	r.Handle(ToolUseEvent{Name: "Read", Summary: "/a.go"}) // force block transition
+
+	output := buf.String()
+	if strings.Contains(output, "\x1b[") {
+		t.Errorf("ANSI escape leaked through thinking event: %q", output)
+	}
+	if !strings.Contains(output, "injected") {
+		t.Errorf("expected sanitized thinking text, got: %s", output)
+	}
+
+	buf.Reset()
+	r2 := newTestRenderer(&buf)
+
+	// Text with GHA command injection
+	r2.Handle(TextEvent{Text: "hello\n::error::pwned"})
+	r2.Handle(ToolUseEvent{Name: "Read", Summary: "/b.go"})
+
+	output = buf.String()
+	if strings.Contains(output, "::error::") {
+		t.Errorf("GHA workflow command leaked through text event: %q", output)
+	}
+}
+
 func TestProgressParserCapturesResultMetrics(t *testing.T) {
 	lines := []string{
 		`{"type":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/main.go"}}]}`,
@@ -418,7 +462,7 @@ func TestProgressParserCapturesResultMetrics(t *testing.T) {
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
@@ -464,7 +508,7 @@ func TestProgressParserCountsToolCallsFromNestedMessage(t *testing.T) {
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
@@ -488,7 +532,7 @@ func TestProgressParserCapturesModelFromAssistantWhenSystemLacksIt(t *testing.T)
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
@@ -510,7 +554,7 @@ func TestProgressParserCapturesModelFromSystemEvent(t *testing.T) {
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
@@ -529,7 +573,7 @@ func TestProgressParserNoResultEvent(t *testing.T) {
 	printer := ui.New(&buf)
 	metrics := &RunMetrics{}
 
-	if err := progressParser(input, printer, time.Now(), metrics); err != nil {
+	if err := progressParser(input, printer, metrics); err != nil {
 		t.Fatalf("progressParser returned error: %v", err)
 	}
 
@@ -583,5 +627,302 @@ func TestHeartbeatConcurrency(t *testing.T) {
 	output := buf.String()
 	if !strings.Contains(output, "main goroutine") {
 		t.Errorf("expected main goroutine output, got: %s", output)
+	}
+}
+
+// --- parseClaudeStream tests ---
+
+func collectEvents(t *testing.T, input string) []AgentEvent {
+	t.Helper()
+	var events []AgentEvent
+	err := parseClaudeStream(strings.NewReader(input), func(evt AgentEvent) {
+		events = append(events, evt)
+	})
+	if err != nil {
+		t.Fatalf("parseClaudeStream returned error: %v", err)
+	}
+	return events
+}
+
+func TestParseClaudeStreamInitEvent(t *testing.T) {
+	input := `{"type":"system","subtype":"init","model":"claude-opus-4-6","claude_code_version":"1.0.50"}`
+	events := collectEvents(t, input)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	init, ok := events[0].(InitEvent)
+	if !ok {
+		t.Fatalf("expected InitEvent, got %T", events[0])
+	}
+	if init.Model != "claude-opus-4-6" {
+		t.Errorf("expected model claude-opus-4-6, got %q", init.Model)
+	}
+	if init.Version != "1.0.50" {
+		t.Errorf("expected version 1.0.50, got %q", init.Version)
+	}
+}
+
+func TestParseClaudeStreamRetryEvent(t *testing.T) {
+	input := `{"type":"system","subtype":"api_retry","attempt":2,"max_retries":5,"retry_delay_ms":1000,"error":"overloaded"}`
+	events := collectEvents(t, input)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	retry, ok := events[0].(RetryEvent)
+	if !ok {
+		t.Fatalf("expected RetryEvent, got %T", events[0])
+	}
+	if retry.Attempt != 2 || retry.MaxRetries != 5 || retry.DelayMs != 1000 || retry.Error != "overloaded" {
+		t.Errorf("unexpected retry event: %+v", retry)
+	}
+}
+
+func TestParseClaudeStreamTextDeltas(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello "}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"world"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+	var texts []string
+	for _, e := range events {
+		if te, ok := e.(TextEvent); ok {
+			texts = append(texts, te.Text)
+		}
+	}
+	if len(texts) != 2 || texts[0] != "hello " || texts[1] != "world" {
+		t.Errorf("expected two text deltas [hello ] [world], got %v", texts)
+	}
+}
+
+func TestParseClaudeStreamThinkingDeltas(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+	var thinking []string
+	for _, e := range events {
+		if te, ok := e.(ThinkingEvent); ok {
+			thinking = append(thinking, te.Text)
+		}
+	}
+	if len(thinking) != 1 || thinking[0] != "hmm" {
+		t.Errorf("expected one thinking delta [hmm], got %v", thinking)
+	}
+}
+
+func TestParseClaudeStreamToolUse(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"Read"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\""}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":":\"/src/main.go\"}"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+	var tools []ToolUseEvent
+	for _, e := range events {
+		if te, ok := e.(ToolUseEvent); ok {
+			tools = append(tools, te)
+		}
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool event, got %d", len(tools))
+	}
+	if tools[0].Name != "Read" {
+		t.Errorf("expected tool name Read, got %q", tools[0].Name)
+	}
+	if tools[0].Summary != "/src/main.go" {
+		t.Errorf("expected summary /src/main.go, got %q", tools[0].Summary)
+	}
+}
+
+func TestParseClaudeStreamUnknownToolShowsNameNoContext(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"Skill"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"skill_name\":\"issue-labels\"}"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+	var tools []ToolUseEvent
+	for _, e := range events {
+		if te, ok := e.(ToolUseEvent); ok {
+			tools = append(tools, te)
+		}
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool event, got %d", len(tools))
+	}
+	if tools[0].Name != "Skill" {
+		t.Errorf("expected real tool name 'Skill', got %q", tools[0].Name)
+	}
+	if tools[0].Summary != "" {
+		t.Errorf("expected empty summary for unrecognized tool, got %q", tools[0].Summary)
+	}
+}
+
+func TestParseClaudeStreamResultEvent(t *testing.T) {
+	input := `{"type":"result","num_turns":8,"total_cost_usd":0.42,"is_error":false,"subtype":"success","usage":{"input_tokens":12000,"output_tokens":3400,"cache_creation_input_tokens":8000,"cache_read_input_tokens":5000}}`
+	events := collectEvents(t, input)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	result, ok := events[0].(ResultEvent)
+	if !ok {
+		t.Fatalf("expected ResultEvent, got %T", events[0])
+	}
+	if result.NumTurns != 8 || result.TotalCostUSD != 0.42 {
+		t.Errorf("unexpected result: %+v", result)
+	}
+	if result.InputTokens != 12000 || result.OutputTokens != 3400 {
+		t.Errorf("unexpected token counts: %+v", result)
+	}
+}
+
+func TestParseClaudeStreamErrorEvent(t *testing.T) {
+	input := `{"type":"stream_event","event":{"type":"error","error":{"type":"overloaded_error","message":"rate limited"}}}`
+	events := collectEvents(t, input)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	errEvt, ok := events[0].(ErrorEvent)
+	if !ok {
+		t.Fatalf("expected ErrorEvent, got %T", events[0])
+	}
+	if errEvt.ErrorType != "overloaded_error" || errEvt.Message != "rate limited" {
+		t.Errorf("unexpected error event: %+v", errEvt)
+	}
+}
+
+func TestParseClaudeStreamResultEventWithError(t *testing.T) {
+	input := `{"type":"result","num_turns":3,"total_cost_usd":0.10,"is_error":true,"subtype":"error_max_turns","result":"Max turns reached","usage":{"input_tokens":5000,"output_tokens":1000}}`
+	events := collectEvents(t, input)
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	result, ok := events[0].(ResultEvent)
+	if !ok {
+		t.Fatalf("expected ResultEvent, got %T", events[0])
+	}
+	if !result.IsError {
+		t.Error("expected IsError to be true")
+	}
+	if result.ErrorMessage != "Max turns reached" {
+		t.Errorf("expected error message 'Max turns reached', got %q", result.ErrorMessage)
+	}
+	if result.Subtype != "error_max_turns" {
+		t.Errorf("expected subtype error_max_turns, got %q", result.Subtype)
+	}
+}
+
+func TestParseClaudeStreamAssistantFallback(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/main.go"}}]}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+	var tools []ToolUseEvent
+	for _, e := range events {
+		if te, ok := e.(ToolUseEvent); ok {
+			tools = append(tools, te)
+		}
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool event from assistant fallback, got %d", len(tools))
+	}
+	if tools[0].Name != "Read" || tools[0].Summary != "/src/main.go" {
+		t.Errorf("unexpected tool event: %+v", tools[0])
+	}
+}
+
+func TestParseClaudeStreamAssistantFallbackTextAndThinking(t *testing.T) {
+	lines := []string{
+		`{"type":"assistant","message":{"model":"claude-opus-4-6","content":[{"type":"thinking","thinking":"Let me analyze this."}]}}`,
+		`{"type":"assistant","message":{"model":"claude-opus-4-6","content":[{"type":"text","text":"I'll read the file now."}]}}`,
+		`{"type":"assistant","message":{"model":"claude-opus-4-6","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/a.go"}}]}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	var thinking []ThinkingEvent
+	var texts []TextEvent
+	var tools []ToolUseEvent
+	for _, e := range events {
+		switch ev := e.(type) {
+		case ThinkingEvent:
+			thinking = append(thinking, ev)
+		case TextEvent:
+			texts = append(texts, ev)
+		case ToolUseEvent:
+			tools = append(tools, ev)
+		}
+	}
+	if len(thinking) != 1 || thinking[0].Text != "Let me analyze this." {
+		t.Errorf("expected 1 thinking event with correct text, got %v", thinking)
+	}
+	if len(texts) != 1 || texts[0].Text != "I'll read the file now." {
+		t.Errorf("expected 1 text event with correct text, got %v", texts)
+	}
+	if len(tools) != 1 {
+		t.Errorf("expected 1 tool event, got %d", len(tools))
+	}
+}
+
+func TestParseClaudeStreamTokensEvent(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000,"cache_read_input_tokens":500,"cache_creation_input_tokens":200}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":1000}}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	var tokens []TokensEvent
+	for _, e := range events {
+		if te, ok := e.(TokensEvent); ok {
+			tokens = append(tokens, te)
+		}
+	}
+	// Total = 4000 + 1000 + 500 + 200 = 5700, crosses 5k threshold
+	if len(tokens) != 1 {
+		t.Fatalf("expected 1 tokens event, got %d", len(tokens))
+	}
+	if tokens[0].InputTokens != 4000 || tokens[0].OutputTokens != 1000 {
+		t.Errorf("unexpected token counts: %+v", tokens[0])
+	}
+	if tokens[0].CacheRead != 500 || tokens[0].CacheWrite != 200 {
+		t.Errorf("unexpected cache counts: %+v", tokens[0])
+	}
+}
+
+func TestParseClaudeStreamTokensEventThrottled(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":4000}}}}`,
+		`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":200}}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+
+	var tokens []TokensEvent
+	for _, e := range events {
+		if te, ok := e.(TokensEvent); ok {
+			tokens = append(tokens, te)
+		}
+	}
+	// Total = 4200, below 5k threshold
+	if len(tokens) != 0 {
+		t.Fatalf("expected 0 tokens events (below threshold), got %d", len(tokens))
+	}
+}
+
+func TestParseClaudeStreamAssistantSuppressedWhenStreaming(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+		`{"type":"assistant","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/main.go"}}]}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+	for _, e := range events {
+		if _, ok := e.(ToolUseEvent); ok {
+			t.Error("assistant message should not emit ToolUseEvent when stream_events are active")
+		}
 	}
 }

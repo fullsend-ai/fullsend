@@ -41,6 +41,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/statuscomment"
 	"github.com/fullsend-ai/fullsend/internal/telemetry"
+	"github.com/fullsend-ai/fullsend/internal/telemetry/otlp"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -304,7 +305,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// HasURLReferences will enforce its presence later if needed.
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
 	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
-	var orgAllowlist []string
+	// Fallback for absent config; EnsureDefaultAllowedRemoteResources
+	// handles the omitted-field case when a config is present.
+	orgAllowlist := config.DefaultAllowedRemoteResources()
 	if orgCfg != nil {
 		orgAllowlist = orgCfg.AllowedRemoteResources
 	}
@@ -346,14 +349,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// field (ADR-0045 resource resolution for config-registered agents).
 	if len(fetchDeps) > 0 && fetchDeps[0].URL != "" {
 		composeOpts.SourceURL = fetchDeps[0].URL
-
-		// Propagate the default allowlist when the agents-repo fallback
-		// set SourceURL. tryAgentsRepoFallback defaults internally for
-		// its own fetch, but that local default wasn't reaching
-		// LoadWithBase → resolveBaseScripts. Scoped to the fallback
-		// path to preserve the deny-all contract for config-present
-		// harnesses with URL bases. See #3396.
-		propagateDefaultAllowlist(&composeOpts)
 	}
 
 	// If the harness has a URL base and org config failed to load,
@@ -794,11 +789,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var lastExitCode int
 	var transcriptErrorOverride bool
 	rec := telemetry.New(runDir, traceCtx, agentName, workItemID, runStart)
-	defer func() { rec.Finalize(telemetryExitCode(lastExitCode, runErr)) }()
+	defer func() {
+		rec.Finalize(telemetryExitCode(lastExitCode, runErr))
+		// ADR 0050 Level 2: best-effort OTLP export of the finalized
+		// artifacts. Inert without an endpoint configured; fail-open — a
+		// dead endpoint costs at most the package's bounded budget and
+		// never affects the run's outcome.
+		if err := otlp.ExportRunDir(runDir, Version()); err != nil {
+			printer.StepWarn("OTLP export failed (run unaffected): " + err.Error())
+		}
+	}()
 
 	createStart := time.Now()
 	printer.StepStart("Creating sandbox: " + sandboxName)
-	sandboxSpan := rec.StartSpan("sandbox_create", "", nil)
+	sandboxSpan := rec.StartSpan("sandbox_create", "", map[string]any{"gen_ai.operation.name": "create_agent"})
 
 	readyTimeout := time.Duration(h.SandboxTimeoutSeconds) * time.Second
 	if err := sandbox.CreateWithRetry(sandboxName, h.Providers, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout); err != nil {
@@ -1017,7 +1021,27 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepDone(fmt.Sprintf("Agent-input files copied (%.1fs)", time.Since(inputStart).Seconds()))
 	}
 
-	// 8c. Host-side scan (Path A): scan the target repo's context files
+	// 8c. Make the target repo read-only if the harness opts in.
+	// Runs after all repo-directory writes (8a, 8a-2) are complete.
+	// Excludes .git/ so git operations (index.lock, etc.) still work.
+	if h.ReadonlyRepo {
+		// -prune skips .git traversal entirely; -not -type l prevents symlink traversal.
+		// chown ensures the sandbox user (run_as_user) owns .git/ after root-owned extraction.
+		chmodCmd := fmt.Sprintf(
+			"find %s -path '*/.git' -prune -o -not -type l -exec chmod a-w {} + && chown -R sandbox:sandbox %s/.git && chmod -R u+w %s/.git",
+			remoteRepositoryDir, remoteRepositoryDir, remoteRepositoryDir,
+		)
+		if _, stderr, exitCode, err := sandbox.Exec(sandboxName, chmodCmd, 30*time.Second); err != nil {
+			printer.StepFail("Could not make repo read-only: " + err.Error())
+			return fmt.Errorf("Read-only repo enforcement failed: %w", err)
+		} else if exitCode != 0 {
+			printer.StepFail("Could not make repo read-only (exit " + fmt.Sprintf("%d", exitCode) + "): " + stderr)
+			return fmt.Errorf("read-only repo enforcement failed: exit code %d", exitCode)
+		}
+		printer.StepDone("Target repo set to read-only")
+	}
+
+	// 8d. Host-side scan (Path A): scan the target repo's context files
 	// (CLAUDE.md, AGENTS.md, SKILL.md, etc.) before the agent processes them.
 	// The target branch may contain attacker-controlled files from a PR.
 	if h.SecurityEnabled() {
@@ -1166,7 +1190,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		heartbeatDone := make(chan struct{})
 		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
 
-		agentSpan := rec.StartSpan("agent", "", map[string]any{"iteration": iteration})
+		agentSpan := rec.StartSpan("agent", "", agentSpanStartAttrs(iteration, agentName))
 		var metrics agentruntime.RunMetrics
 		exitCode, runErr := rt.Run(ctx, agentruntime.RunParams{
 			SandboxName:   sandboxName,
@@ -1780,6 +1804,17 @@ func validationFailMessage(output []byte, execErr error) string {
 // roundUSD rounds a dollar amount to cents for the telemetry output;
 // metrics.json keeps full precision.
 func roundUSD(c float64) float64 { return math.Round(c*100) / 100 }
+
+// agentSpanStartAttrs builds the span_start attributes for one agent
+// iteration: the iteration counter plus the OTEL GenAI semconv identity
+// (gen_ai.operation.name, gen_ai.agent.name) named by ADR 0050.
+func agentSpanStartAttrs(iteration int, agentName string) map[string]any {
+	return map[string]any{
+		"iteration":             iteration,
+		"gen_ai.operation.name": "invoke_agent",
+		"gen_ai.agent.name":     agentName,
+	}
+}
 
 // agentSpanEndAttrs builds the span_end attributes for one agent iteration,
 // using OTEL GenAI semconv names (gen_ai.*) so the later L2 OTLP transform is
@@ -2829,23 +2864,6 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 	return contained, nil, nil
 }
 
-// propagateDefaultAllowlist ensures composeOpts carries the default
-// allowed-remote-resources list when no org config supplied one.
-// tryAgentsRepoFallback applies this default internally for its own fetch,
-// but the caller must also propagate it so that downstream harness
-// composition (LoadWithBase → resolveBaseScripts) sees a consistent
-// allowlist. See #3396.
-//
-// This applies when OrgAllowlist is nil (no config.yaml, or config.yaml
-// omits allowed_remote_resources). An explicitly empty list ([]string{})
-// is left as-is to preserve deny-all semantics — orgs that want no remote
-// resources must write an explicit empty allowed_remote_resources: [].
-func propagateDefaultAllowlist(opts *harness.ComposeOpts) {
-	if opts.OrgAllowlist == nil {
-		opts.OrgAllowlist = config.DefaultAllowedRemoteResources()
-	}
-}
-
 // tryAgentsRepoFallback attempts to resolve an agent from the default agents
 // repository (fullsend-ai/agents) by fetching the latest harness from the
 // main branch. This is a transitional mechanism to support the extraction of
@@ -2868,9 +2886,6 @@ func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient fo
 	}
 
 	allowlist := composeOpts.OrgAllowlist
-	if allowlist == nil {
-		allowlist = config.DefaultAllowedRemoteResources()
-	}
 
 	tagRef := "tags/" + config.DefaultUpstreamRef
 	tagSHA, err := forgeClient.GetRef(ctx, defaultAgentsRepoOwner, defaultAgentsRepoName, tagRef)

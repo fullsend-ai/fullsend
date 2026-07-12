@@ -3220,3 +3220,87 @@ func TestDeleteRepoSecret(t *testing.T) {
 		assert.Contains(t, err.Error(), "unexpected status")
 	})
 }
+
+func TestIsProtectedBranch(t *testing.T) {
+	t.Run("protected", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "GET", r.Method)
+			assert.Equal(t, "/repos/owner/repo/branches/main/protection", r.URL.Path)
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"url":"https://api.github.com/repos/owner/repo/branches/main/protection"}`)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		protected, err := client.IsProtectedBranch(context.Background(), "owner", "repo", "main")
+		require.NoError(t, err)
+		assert.True(t, protected)
+	})
+
+	t.Run("not protected", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Branch not protected"}`)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		protected, err := client.IsProtectedBranch(context.Background(), "owner", "repo", "dev")
+		require.NoError(t, err)
+		assert.False(t, protected)
+	})
+}
+
+func TestIsProtectedBranch_NotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"Not Found"}`)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.IsProtectedBranch(context.Background(), "owner", "repo", "nonexistent")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "check branch protection")
+}
+
+func TestIsProtectedBranch_SlashInBranch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/owner/repo/branches/release%2F1.2/protection", r.URL.RawPath)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"url":"https://api.github.com/repos/owner/repo/branches/release%2F1.2/protection"}`)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	protected, err := client.IsProtectedBranch(context.Background(), "owner", "repo", "release/1.2")
+	require.NoError(t, err)
+	assert.True(t, protected)
+}
+
+func TestUnsupportedMethods(t *testing.T) {
+	client := New("test-token")
+	ctx := context.Background()
+
+	t.Run("CreatePipelineSchedule", func(t *testing.T) {
+		_, err := client.CreatePipelineSchedule(ctx, "o", "r", "main", "desc", "0 * * * *", nil)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("DeletePipelineSchedule", func(t *testing.T) {
+		err := client.DeletePipelineSchedule(ctx, "o", "r", 1)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("ListPipelineSchedules", func(t *testing.T) {
+		_, err := client.ListPipelineSchedules(ctx, "o", "r")
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("UpdateCIVariable", func(t *testing.T) {
+		err := client.UpdateCIVariable(ctx, "o", "r", "KEY", "val", false)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+	t.Run("CreateProtectedCIVariable", func(t *testing.T) {
+		err := client.CreateProtectedCIVariable(ctx, "o", "r", "KEY", "val")
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
+}

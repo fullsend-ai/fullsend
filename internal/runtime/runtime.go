@@ -30,7 +30,8 @@ type RunParams struct {
 	PluginDirs    []string
 	Debug         string
 	Timeout       time.Duration
-	OutputPath    string // if set, tee stream-json stdout to this file
+	OutputPath    string           // if set, tee stream-json stdout to this file
+	OnEvent       func(AgentEvent) // if non-nil, called with normalized events during Run
 }
 
 // TranscriptError holds extracted error information from a runtime transcript.

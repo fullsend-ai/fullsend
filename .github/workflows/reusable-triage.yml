@@ -47,6 +47,12 @@ on:
         required: true
       FULLSEND_GCP_PROJECT_ID:
         required: true
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS:
+        description: >-
+          OTLP headers for ADR 0050 Level 2 trace export (baggage-style
+          k=v,k=v; may carry auth, hence a secret). Optional — unset leaves
+          export disabled unless the endpoint variable alone suffices.
+        required: false
 
 concurrency:
   group: fullsend-triage-agent-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number || fromJSON(inputs.event_payload).pull_request.number }}
@@ -171,6 +177,12 @@ jobs:
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(inputs.event_payload).issue.html_url }}
           REPO_FULL_NAME: ${{ inputs.source_repo }}
+          # ADR 0050 Level 2: orgs opt into OTLP trace export by defining the
+          # endpoint as an Actions variable (and, when the backend needs auth
+          # or routing headers, the headers secret). Unset = export inert.
+          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
+          OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
+          OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
         with:
           agent: triage
           version: ${{ inputs.fullsend_version }}

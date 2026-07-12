@@ -36,14 +36,14 @@ Add to `internal/forge/forge.go`:
 
 ```go
 IsProtectedBranch(ctx context.Context, owner, repo, branch string) (bool, error)
-CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (scheduleID string, err error)
-DeletePipelineSchedule(ctx context.Context, owner, repo, scheduleID string) error
+CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error)
+DeletePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error
 ListPipelineSchedules(ctx context.Context, owner, repo string) ([]PipelineSchedule, error)
-UpdateVariable(ctx context.Context, owner, repo, key, value string) error
-CreateProtectedVariable(ctx context.Context, owner, repo, key, value string) error
+UpdateCIVariable(ctx context.Context, owner, repo, name, value string, protected bool) error
+CreateProtectedCIVariable(ctx context.Context, owner, repo, name, value string) error
 ```
 
-These methods are forge-neutral by design. `IsProtectedBranch` maps to GitHub's branch protection API and GitLab's protected branches API. `CreatePipelineSchedule` and `DeletePipelineSchedule` are GitLab-native; the GitHub implementation returns `ErrNotSupported`. `UpdateVariable` maps to GitLab's CI/CD variable API. `CreateProtectedVariable` creates a CI/CD variable with `Protected: true, Masked: false` — used for poll state variables (watermark, label state) that must not be accessible on non-protected branches but whose values are not secrets.
+These methods are forge-neutral by design. `IsProtectedBranch` maps to GitHub's branch protection API and GitLab's protected branches API. `CreatePipelineSchedule` and `DeletePipelineSchedule` are GitLab-native; the GitHub implementation returns `ErrNotSupported`. `UpdateCIVariable` maps to GitLab's CI/CD variable API. `CreateProtectedCIVariable` creates a CI/CD variable with `Protected: true, Masked: false` — used for poll state variables (watermark, label state) that must not be accessible on non-protected branches but whose values are not secrets. The "CI" prefix distinguishes these from the existing `RepoVariable` methods which model GitHub Actions variables.
 
 ### New sentinel error
 
@@ -206,8 +206,8 @@ Single-token constructor for the bot project access token. The token is used for
 | `CreatePipelineSchedule` | `PipelineSchedules.CreatePipelineSchedule` | GitLab-specific |
 | `DeletePipelineSchedule` | `PipelineSchedules.DeletePipelineSchedule` | GitLab-specific |
 | `ListPipelineSchedules` | `PipelineSchedules.ListProjectPipelineSchedules` | For uninstall cleanup |
-| `UpdateVariable` | `ProjectVariables.UpdateVariable` | For poll watermark |
-| `CreateProtectedVariable` | `ProjectVariables.CreateVariable` | With `Protected: true`, `Masked: false` — for poll state |
+| `UpdateCIVariable` | `ProjectVariables.UpdateVariable` | For poll watermark |
+| `CreateProtectedCIVariable` | `ProjectVariables.CreateVariable` | With `Protected: true`, `Masked: false` — for poll state |
 | `DispatchWorkflow` | → `ErrNotSupported` | GitHub-only |
 | `ListOrgInstallations` | → `GitHubExtensions` (not on base interface) | GitHub-only |
 | `GetAppClientID` | → `GitHubExtensions` (not on base interface) | GitHub-only |
@@ -1061,7 +1061,7 @@ func (p *Poller) persistLabelState(ctx context.Context, owner, repo string, stat
     if err != nil {
         return fmt.Errorf("marshal label state: %w", err)
     }
-    if err := p.client.UpdateVariable(ctx, owner, repo, "FULLSEND_LABEL_STATE", string(stateBytes)); err != nil {
+    if err := p.client.UpdateCIVariable(ctx, owner, repo, "FULLSEND_LABEL_STATE", string(stateBytes), true); err != nil {
         return fmt.Errorf("persist label state: %w", err)
     }
     return nil
@@ -1093,7 +1093,7 @@ func (p *Poller) watermarkVarName() string {
 }
 
 func (p *Poller) updateWatermark(ctx context.Context, owner, repo string, t time.Time) error {
-    return p.client.UpdateVariable(ctx, owner, repo, p.watermarkVarName(), t.Format(time.RFC3339))
+    return p.client.UpdateCIVariable(ctx, owner, repo, p.watermarkVarName(), t.Format(time.RFC3339), true)
 }
 ```
 
@@ -1673,19 +1673,19 @@ func runGitLabPerRepoInstall(ctx context.Context, target string, opts installOpt
         "chore: add fullsend CI/CD pipeline", scaffoldFiles)
 
     // 12. Set protected CI/CD variables.
-    // Use CreateProtectedVariable (Protected: true, Masked: false) for
+    // Use CreateProtectedCIVariable (Protected: true, Masked: false) for
     // configuration identifiers — CreateRepoSecret (Protected + Masked)
     // requires values >= 8 characters (e.g. "wif" would fail) and masks
     // GCP resource names in logs, hindering debugging.
-    client.CreateProtectedVariable(ctx, owner, repo, "FULLSEND_CREDENTIAL_MODE", credentialMode)
+    client.CreateProtectedCIVariable(ctx, owner, repo, "FULLSEND_CREDENTIAL_MODE", credentialMode)
     if credentialMode == "wif" {
-        client.CreateProtectedVariable(ctx, owner, repo, "FULLSEND_WIF_PROVIDER", wifProviderResourceName)
-        client.CreateProtectedVariable(ctx, owner, repo, "FULLSEND_SA", serviceAccountEmail)
-        client.CreateProtectedVariable(ctx, owner, repo, "FULLSEND_BOT_TOKEN_SECRET", secretManagerSecretName)
-        client.CreateProtectedVariable(ctx, owner, repo, "FULLSEND_GCP_PROJECT_ID", opts.gcpProject)
+        client.CreateProtectedCIVariable(ctx, owner, repo, "FULLSEND_WIF_PROVIDER", wifProviderResourceName)
+        client.CreateProtectedCIVariable(ctx, owner, repo, "FULLSEND_SA", serviceAccountEmail)
+        client.CreateProtectedCIVariable(ctx, owner, repo, "FULLSEND_BOT_TOKEN_SECRET", secretManagerSecretName)
+        client.CreateProtectedCIVariable(ctx, owner, repo, "FULLSEND_GCP_PROJECT_ID", opts.gcpProject)
     }
-    client.CreateProtectedVariable(ctx, owner, repo, "FULLSEND_FORGE", "gitlab")
-    client.CreateProtectedVariable(ctx, owner, repo, "FULLSEND_PER_REPO_INSTALL", "true")
+    client.CreateProtectedCIVariable(ctx, owner, repo, "FULLSEND_FORGE", "gitlab")
+    client.CreateProtectedCIVariable(ctx, owner, repo, "FULLSEND_PER_REPO_INSTALL", "true")
 
     // 13. Initialize poll watermarks (protected — must not be accessible
     // to pipelines on non-protected branches to prevent tampering).
@@ -1696,9 +1696,9 @@ func runGitLabPerRepoInstall(ctx context.Context, target string, opts installOpt
     // full-poll re-discovers it) is harmless — resource_group serialization
     // ensures at most one pipeline at a time; see ADR 0067.
     initTime := time.Now().Format(time.RFC3339)
-    client.CreateProtectedVariable(ctx, owner, repo, "FULLSEND_LAST_POLL_AT_FAST", initTime)
-    client.CreateProtectedVariable(ctx, owner, repo, "FULLSEND_LAST_POLL_AT_FULL", initTime)
-    client.CreateProtectedVariable(ctx, owner, repo, "FULLSEND_LABEL_STATE", "{}")
+    client.CreateProtectedCIVariable(ctx, owner, repo, "FULLSEND_LAST_POLL_AT_FAST", initTime)
+    client.CreateProtectedCIVariable(ctx, owner, repo, "FULLSEND_LAST_POLL_AT_FULL", initTime)
+    client.CreateProtectedCIVariable(ctx, owner, repo, "FULLSEND_LABEL_STATE", "{}")
 
     // 14. Set up inference WIF (if --inference-project provided)
 
@@ -1816,7 +1816,7 @@ Add implementations to `internal/forge/fake.go` for:
 - `IsProtectedBranch` — configurable return value
 - `CreatePipelineSchedule` — record call, return fake schedule ID
 - `DeletePipelineSchedule` — record call
-- `UpdateVariable` — record call
+- `UpdateCIVariable` — record call
 
 ## Security-Critical Code Paths
 

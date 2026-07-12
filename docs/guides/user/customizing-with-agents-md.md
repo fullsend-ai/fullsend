@@ -6,7 +6,7 @@ read its `AGENTS.md` file — the same file human contributors use. No fullsend
 configuration changes needed.
 
 For agent-specific customization using skills, see
-[Customizing with Skills](customizing-with-skills.md).
+[Configuring with Skills](customizing-with-skills.md).
 
 ## What to put in AGENTS.md
 
@@ -145,3 +145,8 @@ prompt injection before the agent starts.
   detailed context in the package directory where it's relevant rather than
   loading every agent with everything. For example, database migration
   review checklists belong in `db/migrations/AGENTS.md`, not the root file.
+
+## See also
+
+- [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)
+  — `AGENTS.md` configuration keeps you in "configured default agent" territory

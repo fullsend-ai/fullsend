@@ -1152,6 +1152,81 @@ func TestValidateRSAPEM_NonRSAKey(t *testing.T) {
 	assert.Contains(t, err.Error(), "expected RSA")
 }
 
+// nonGitHubClient wraps a forge.Client without implementing
+// forge.GitHubExtensions, so type assertions to that interface fail.
+type nonGitHubClient struct {
+	forge.Client
+}
+
+func TestSetup_Run_NonGitHub_ReturnsErrNotSupported(t *testing.T) {
+	client := &nonGitHubClient{Client: forge.NewFakeClient()}
+	prompter := &fakePrompter{}
+	browser := newFakeBrowser()
+	printer := ui.New(&discardWriter{})
+
+	s := NewSetup(client, prompter, browser, printer)
+	_, err := s.Run(context.Background(), "myorg", "fullsend")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "app setup requires GitHub")
+	assert.True(t, forge.IsNotSupported(err))
+}
+
+func TestSetup_RecoverCreatedApp_NonGitHub_ReturnsNil(t *testing.T) {
+	client := &nonGitHubClient{Client: forge.NewFakeClient()}
+	printer := ui.New(&discardWriter{})
+
+	s := &Setup{
+		client:       client,
+		ui:           printer,
+		secretExists: func(string) (bool, error) { return true, nil },
+	}
+	creds, err := s.recoverCreatedApp(context.Background(), "myorg", "fullsend", "fullsend-ai-fullsend")
+	require.NoError(t, err)
+	assert.Nil(t, creds)
+}
+
+func TestSetup_HandleExistingApp_NonGitHub_ReturnsError(t *testing.T) {
+	client := &nonGitHubClient{Client: forge.NewFakeClient()}
+	printer := ui.New(&discardWriter{})
+
+	s := &Setup{
+		client: client,
+		ui:     printer,
+	}
+	inst := &forge.Installation{AppSlug: "test-app", AppID: 42}
+	_, err := s.handleExistingApp(context.Background(), inst, "myorg", "fullsend")
+	require.Error(t, err)
+	assert.True(t, forge.IsNotSupported(err))
+	assert.Contains(t, err.Error(), "looking up client ID")
+}
+
+func TestSetup_EnsureInstalled_NonGitHub_ReturnsError(t *testing.T) {
+	client := &nonGitHubClient{Client: forge.NewFakeClient()}
+	printer := ui.New(&discardWriter{})
+
+	s := &Setup{
+		client: client,
+		ui:     printer,
+	}
+	err := s.ensureInstalled(context.Background(), "myorg", "test-app")
+	require.Error(t, err)
+	assert.True(t, forge.IsNotSupported(err))
+}
+
+func TestSetup_FindExistingInstallation_NonGitHub_ReturnsNil(t *testing.T) {
+	client := &nonGitHubClient{Client: forge.NewFakeClient()}
+	printer := ui.New(&discardWriter{})
+
+	s := &Setup{
+		client: client,
+		ui:     printer,
+	}
+	inst, found, err := s.findExistingInstallation(context.Background(), "myorg", "fullsend", "fullsend-ai-fullsend")
+	require.NoError(t, err)
+	assert.False(t, found)
+	assert.Nil(t, inst)
+}
+
 // discardWriter implements io.Writer, discarding all output.
 type discardWriter struct{}
 

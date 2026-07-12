@@ -26,6 +26,11 @@ type ForgeURLInfo struct {
 //
 //	https://github.com/{owner}/{repo}/tree/{ref}/{path}   (directory)
 //	https://github.com/{owner}/{repo}/blob/{ref}/{path}   (file)
+//
+// Accepted GitLab formats (supports nested groups):
+//
+//	https://gitlab.com/{group}[/subgroup...]/{repo}/-/tree/{ref}/{path}
+//	https://gitlab.com/{group}[/subgroup...]/{repo}/-/blob/{ref}/{path}
 func ParseForgeURL(rawURL string) (*ForgeURLInfo, error) {
 	// Strip fragment (including #sha256=... integrity hashes) before parsing.
 	if idx := strings.LastIndex(rawURL, "#"); idx != -1 {
@@ -41,9 +46,12 @@ func ParseForgeURL(rawURL string) (*ForgeURLInfo, error) {
 	}
 
 	hostname := u.Hostname()
-	if !IsSupportedForge(hostname) {
+	if !isRecognizedForge(hostname) {
 		return nil, fmt.Errorf("unsupported forge host %q", hostname)
 	}
+
+	// Determine forge name from hostname.
+	forgeName := hostnameToForge(hostname)
 
 	// Split the path into segments, filtering out empty strings from leading/trailing slashes.
 	var segments []string
@@ -53,6 +61,11 @@ func ParseForgeURL(rawURL string) (*ForgeURLInfo, error) {
 		}
 	}
 
+	if forgeName == "gitlab" {
+		return parseGitLabURL(segments)
+	}
+
+	// GitHub format: /{owner}/{repo}/{tree|blob}/{ref}/{path...}
 	// Need at least 4 segments: owner, repo, type (tree/blob), ref.
 	if len(segments) < 4 {
 		return nil, fmt.Errorf("URL path too short: need at least /{owner}/{repo}/{tree|blob}/{ref}")
@@ -84,12 +97,76 @@ func ParseForgeURL(rawURL string) (*ForgeURLInfo, error) {
 	}
 
 	return &ForgeURLInfo{
-		Forge: "github",
+		Forge: forgeName,
 		Owner: owner,
 		Repo:  repo,
 		Path:  repoPath,
 		Ref:   ref,
 	}, nil
+}
+
+// parseGitLabURL parses a GitLab URL path (segments after the host).
+// GitLab uses "/-/" as a separator between the project path and
+// resource type. Nested groups are supported (e.g., group/subgroup/repo).
+//
+// Format: {group}[/subgroup...]/{repo}/-/{tree|blob}/{ref}/{path...}
+func parseGitLabURL(segments []string) (*ForgeURLInfo, error) {
+	// Find the "/-/" separator (represented as "-" in segments).
+	dashIdx := -1
+	for i, s := range segments {
+		if s == "-" {
+			dashIdx = i
+			break
+		}
+	}
+
+	if dashIdx < 0 {
+		return nil, fmt.Errorf("URL path too short: need at least /{group}/{repo}/-/{tree|blob}/{ref}")
+	}
+
+	// Need at least 2 segments before dash (group + repo) and 2 after (type + ref).
+	if dashIdx < 2 {
+		return nil, fmt.Errorf("URL path too short: need at least /{group}/{repo}/-/{tree|blob}/{ref}")
+	}
+	if len(segments) < dashIdx+3 {
+		return nil, fmt.Errorf("URL path too short: need at least /{group}/{repo}/-/{tree|blob}/{ref}")
+	}
+
+	// Everything before dash except the last segment is the owner (group/subgroups).
+	// The last segment before dash is the repo.
+	owner := strings.Join(segments[:dashIdx-1], "/")
+	repo := segments[dashIdx-1]
+	pathType := segments[dashIdx+1]
+	ref := segments[dashIdx+2]
+
+	if pathType != "tree" && pathType != "blob" {
+		return nil, fmt.Errorf("unsupported path type %q: expected \"tree\" or \"blob\"", pathType)
+	}
+
+	var repoPath string
+	if len(segments) > dashIdx+3 {
+		repoPath = strings.Join(segments[dashIdx+3:], "/")
+	}
+
+	return &ForgeURLInfo{
+		Forge: "gitlab",
+		Owner: owner,
+		Repo:  repo,
+		Path:  repoPath,
+		Ref:   ref,
+	}, nil
+}
+
+// hostnameToForge maps a forge hostname to its short name.
+func hostnameToForge(hostname string) string {
+	switch hostname {
+	case "github.com":
+		return "github"
+	case "gitlab.com":
+		return "gitlab"
+	default:
+		return hostname
+	}
 }
 
 // ParseRawContentURL extracts forge, owner, repo, path, and ref from a
@@ -173,7 +250,16 @@ func forgeHost(forge string) string {
 	}
 }
 
-// IsSupportedForge returns true if the hostname belongs to a recognized forge.
+// IsSupportedForge returns true if the hostname belongs to a forge with
+// full fetch/clone support. Use this for validating user-facing URLs
+// (e.g., skill references) where the system must actually be able to
+// retrieve content.
 func IsSupportedForge(hostname string) bool {
 	return hostname == "github.com"
+}
+
+// isRecognizedForge returns true for any forge whose URL format we can parse,
+// even if fetch support has not landed yet.
+func isRecognizedForge(hostname string) bool {
+	return hostname == "github.com" || hostname == "gitlab.com"
 }

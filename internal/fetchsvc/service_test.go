@@ -295,6 +295,25 @@ func TestHandleFetch_NonForgeURL(t *testing.T) {
 	}
 }
 
+func TestHandleFetch_GitLabURLRejected(t *testing.T) {
+	svc := New(ServiceConfig{
+		Harness:       testHarness("https://gitlab.com/org/repo/"),
+		WorkspaceRoot: t.TempDir(),
+		MaxFetches:    10,
+	})
+
+	_, err := svc.HandleFetch(context.Background(), FetchRequest{
+		URL: "https://gitlab.com/org/repo/-/tree/main/skills/foo#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	})
+
+	if err == nil {
+		t.Fatal("expected error for GitLab URL")
+	}
+	if !strings.Contains(err.Error(), "fetch support has not landed yet") {
+		t.Fatalf("error should mention fetch support: %v", err)
+	}
+}
+
 func TestHandleFetch_OfflineMode(t *testing.T) {
 	svc := New(ServiceConfig{
 		Harness: testHarness("https://github.com/org/repo/"),

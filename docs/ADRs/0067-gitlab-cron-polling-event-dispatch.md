@@ -398,7 +398,7 @@ secret storage.
   protected branches API
 - `CreatePipelineSchedule` / `DeletePipelineSchedule` — GitLab-native; GitHub
   returns `ErrNotSupported`
-- `UpdateVariable` — for poll watermark management
+- `UpdateCIVariable` — for poll watermark management
 
 A new `ErrNotSupported` sentinel (complementing the existing forge
 sentinel errors) allows forge

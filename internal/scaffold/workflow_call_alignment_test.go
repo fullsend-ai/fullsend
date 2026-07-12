@@ -326,6 +326,34 @@ func TestReusableDispatchProjectNumberInput(t *testing.T) {
 		"prioritize job should thread project_number from dispatch inputs")
 }
 
+// TestOTELHeadersSecretThreading validates that the optional OTLP headers
+// secret (#2862) is forwarded along both installation-mode chains to
+// reusable-triage.yml. TestWorkflowCallInputAlignment only enforces required
+// secrets — an omitted optional forward silently arrives empty, which turns
+// into a 401 at authenticated backends instead of failing loudly.
+func TestOTELHeadersSecretThreading(t *testing.T) {
+	const forward = "OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}"
+
+	cases := []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		// consumer: env injection on the agent step
+		{"reusable-triage.yml", loadRepoFile(".github/workflows/reusable-triage.yml")},
+		// per-repo chain: shim → reusable-dispatch → reusable-triage
+		{"scaffold/templates/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml")},
+		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
+		// per-org chain: thin caller → reusable-triage
+		{"scaffold/triage.yml", loadScaffoldFile(".github/workflows/triage.yml")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Contains(t, string(tc.content(t)), forward,
+				"%s must forward/inject the OTLP headers secret", tc.name)
+		})
+	}
+}
+
 // TestReusableDispatchStageConcurrency validates per-role cancel-in-progress groups
 // on all stage jobs in reusable-dispatch.yml (#981, #982, ADR 0033).
 func TestReusableDispatchStageConcurrency(t *testing.T) {
