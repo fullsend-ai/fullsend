@@ -24,10 +24,11 @@ FAILURES=0
 determine_outcome_label() {
   local action="$1"
   local downgraded="$2"
+  local is_draft="${3:-false}"
 
-  if [ "${action}" = "approve" ] && [ "${downgraded}" = "false" ]; then
+  if [ "${action}" = "approve" ] && [ "${downgraded}" = "false" ] && [ "${is_draft}" != "true" ]; then
     echo "ready-for-merge"
-  elif [ "${action}" = "approve" ] && [ "${downgraded}" = "true" ]; then
+  elif [ "${action}" = "approve" ] && { [ "${downgraded}" = "true" ] || [ "${is_draft}" = "true" ]; }; then
     echo "requires-manual-review"
   elif [ "${action}" = "comment" ]; then
     echo "requires-manual-review"
@@ -45,9 +46,10 @@ run_test() {
   local action="$2"
   local downgraded="$3"
   local expected="$4"
+  local is_draft="${5:-false}"
 
   local actual
-  actual="$(determine_outcome_label "${action}" "${downgraded}")"
+  actual="$(determine_outcome_label "${action}" "${downgraded}" "${is_draft}")"
 
   if [ "${actual}" != "${expected}" ]; then
     echo "FAIL: ${test_name}"
@@ -98,6 +100,18 @@ run_test "failure-action-no-label" \
 
 run_test "unknown-action-no-label" \
   "banana" "false" "none"
+
+# Draft PR: approve without downgrade on a draft → requires-manual-review
+run_test "approve-no-downgrade-draft" \
+  "approve" "false" "requires-manual-review" "true"
+
+# Draft PR: approve with downgrade on a draft → requires-manual-review
+run_test "approve-with-downgrade-draft" \
+  "approve" "true" "requires-manual-review" "true"
+
+# Non-draft: explicit false behaves like omitting the argument
+run_test "approve-no-downgrade-not-draft" \
+  "approve" "false" "ready-for-merge" "false"
 
 # ---------------------------------------------------------------------------
 # Severity-threshold filtering logic
@@ -355,9 +369,9 @@ cat > "${MOCK_BIN}/gh" <<MOCKEOF
 #!/usr/bin/env bash
 # Mock gh: handle specific subcommands, log everything else.
 
-# gh pr view ... --json state ... → OPEN
+# gh pr view ... --json state,isDraft ... → JSON with OPEN + isDraft
 if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json state"* ]]; then
-  echo "OPEN"
+  echo "{\"state\":\"OPEN\",\"isDraft\":\${MOCK_IS_DRAFT:-false}}"
   exit 0
 fi
 
@@ -421,7 +435,7 @@ run_label_test() {
     return
   fi
 
-  if ! grep -qF "${expected_pattern}" "${GH_LOG}"; then
+  if ! grep -qF -- "${expected_pattern}" "${GH_LOG}"; then
     echo "FAIL: ${test_name} — expected pattern '${expected_pattern}' not found in gh calls"
     echo "Actual calls:"
     cat "${GH_LOG}"
@@ -460,7 +474,7 @@ run_label_test_stdout() {
     return
   fi
 
-  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
     echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
     echo "Actual stdout:"
     cat "${TMPDIR}/stdout-${test_name}.log"
@@ -499,7 +513,7 @@ run_label_test_no_pattern() {
     return
   fi
 
-  if grep -qF "${forbidden_pattern}" "${GH_LOG}"; then
+  if grep -qF -- "${forbidden_pattern}" "${GH_LOG}"; then
     echo "FAIL: ${test_name} — forbidden pattern '${forbidden_pattern}' was found in gh calls"
     echo "Actual calls:"
     cat "${GH_LOG}"
@@ -609,7 +623,7 @@ run_label_test_with_env() {
     return
   fi
 
-  if ! grep -qF "${expected_pattern}" "${GH_LOG}"; then
+  if ! grep -qF -- "${expected_pattern}" "${GH_LOG}"; then
     echo "FAIL: ${test_name} — expected pattern '${expected_pattern}' not found in gh calls"
     echo "Actual calls:"
     cat "${GH_LOG}"
@@ -657,7 +671,7 @@ run_label_test_with_env_stdout() {
     return
   fi
 
-  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
     echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
     echo "Actual stdout:"
     cat "${TMPDIR}/stdout-${test_name}.log"
@@ -672,6 +686,23 @@ run_label_test_with_env_stdout "severity-filter-downgrade-log-message" \
   '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Issues found","findings":[{"severity":"low","category":"style","file":"a.go","description":"minor"}]}' \
   "All findings removed by severity filter" \
   "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
+
+# --- Draft PR integration tests ---
+# These invoke the real post-review.sh with MOCK_IS_DRAFT=true to verify that
+# approve verdicts on draft PRs receive requires-manual-review instead of
+# ready-for-merge.
+
+# Draft PR with approve verdict → requires-manual-review (not ready-for-merge)
+run_label_test_with_env "draft-pr-approve-gets-manual-review" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  "--add-label requires-manual-review" \
+  "MOCK_IS_DRAFT" "true"
+
+# Draft PR with approve verdict — verify stdout mentions draft suppression
+run_label_test_with_env_stdout "draft-pr-approve-log-message" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  "Draft PR" \
+  "MOCK_IS_DRAFT" "true"
 
 # --- Summary ---
 
