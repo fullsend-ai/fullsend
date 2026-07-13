@@ -50,9 +50,6 @@ func buildHandler() (http.Handler, error) {
 	if err != nil {
 		return nil, fmt.Errorf("initializing PEM accessor: %w", err)
 	}
-	if err := mintcore.WarnAllPEMsInDir(os.Getenv("PEM_DIR")); err != nil {
-		log.Printf("warning: scanning PEM directory: %v", err)
-	}
 
 	handler, err := mintcore.NewHandler(pemAccessor, verifier)
 	if err != nil {
