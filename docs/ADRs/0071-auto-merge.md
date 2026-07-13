@@ -24,7 +24,7 @@ Our review bot (`fullsend-ai-review`) can approve PRs, but GitHub only counts
 an approval toward branch protection when the reviewer has write access
 (`contents: write`). The review app has `contents: read` — giving it write
 access would violate the least-privilege boundary in
-[ADR 7](0007-per-role-github-apps.md). See
+[ADR 0007](0007-per-role-github-apps.md). See
 [agent-architecture.md](../problems/agent-architecture.md) and
 [security-threat-model.md](../problems/security-threat-model.md).
 
@@ -79,7 +79,41 @@ Use options C and D together.
 This is the most **reversible** path. If a dedicated merge agent turns out to
 be the better UX, having once had a more capable review agent does not make
 that harder — we stand up the new agent and deprecate the env var. Going the
-other direction (standalone agent first, then collapsing back) would be.
+other direction (standalone agent first, then collapsing back) would be harder
+because the standalone agent accumulates its own orchestration logic that must
+be reconciled.
+
+### Token handoff
+
+When `REVIEW_AUTO_MERGE` is set, the harness mints a token from the
+`fullsend-ai-merge` app instead of `fullsend-ai-review`. If the merge app is
+not installed on the repo, the agent fails hard — this is a misconfiguration.
+Normal review operations (reading code, posting comments) do not change; only
+the auto-merge step requires the elevated token.
+
+### Security considerations
+
+- **Credential isolation.** The merge app token is minted per-run and scoped to
+  the triggering repo. The review agent never holds both the merge token and a
+  provider credential simultaneously — sandbox isolation
+  ([ADR 0017](0017-credential-isolation-for-sandboxed-agents.md)) keeps them
+  separated.
+- **Prompt injection blast radius.** A compromised review agent with the merge
+  token can enable auto-merge on the PR it was invoked for. It cannot merge
+  arbitrary PRs — branch protection (required reviewers, status checks) still
+  gates the actual merge. The blast radius is one PR, same as today.
+- **CODEOWNERS bypass scope.** Blank-owner entries only remove the code-owner
+  review requirement for the listed paths (`go.mod`, `go.sum`). CI status
+  checks remain the primary safety gate for those files.
+- **`REVIEW_AUTO_MERGE` delivery protection.** The env var is set in the
+  repo's workflow file, not by the agent. An attacker who can modify the
+  workflow file already has write access to the repo.
+
+### Implementation deferral
+
+Implementation of `REVIEW_AUTO_MERGE` in `review.yaml` and `post-review.sh`
+is deferred to a follow-up PR. This ADR records the decision; the follow-up
+wires it up.
 
 ## Consequences
 
@@ -88,4 +122,4 @@ other direction (standalone agent first, then collapsing back) would be.
 - No new agent to maintain — auto-merge is a small addition to `post-review.sh`.
 - If the env-var approach proves wrong, standing up a dedicated agent is not made harder by this decision.
 - Blank-owner CODEOWNERS entries remove code-owner review for listed files; CI status checks remain the primary safety gate.
-- The merge app's `contents: write` is a higher-value target if compromised — same mitigations from [ADR 7](0007-per-role-github-apps.md) apply.
+- The merge app's `contents: write` is a higher-value target if compromised — same mitigations from [ADR 0007](0007-per-role-github-apps.md) apply.
