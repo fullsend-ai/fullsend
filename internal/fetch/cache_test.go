@@ -373,3 +373,61 @@ func TestCacheConcurrentPut(t *testing.T) {
 	assert.Equal(t, content, got)
 	assert.Equal(t, hash, entry.SHA256)
 }
+
+func TestCacheNamedSymlink(t *testing.T) {
+	t.Run("creates symlink with skill name", func(t *testing.T) {
+		dir := t.TempDir()
+		treePath := filepath.Join(dir, "tree")
+		require.NoError(t, os.Mkdir(treePath, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(treePath, "SKILL.md"), []byte("hi"), 0o600))
+
+		got, err := CacheNamedSymlink(treePath, "pr-review")
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join(dir, "pr-review"), got)
+		assert.FileExists(t, filepath.Join(got, "SKILL.md"))
+	})
+
+	t.Run("idempotent on second call", func(t *testing.T) {
+		dir := t.TempDir()
+		treePath := filepath.Join(dir, "tree")
+		require.NoError(t, os.Mkdir(treePath, 0o755))
+
+		_, err := CacheNamedSymlink(treePath, "review")
+		require.NoError(t, err)
+		got, err := CacheNamedSymlink(treePath, "review")
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join(dir, "review"), got)
+	})
+
+	t.Run("reserved names fall back to tree", func(t *testing.T) {
+		for _, name := range []string{"", ".", "..", "metadata.json"} {
+			dir := t.TempDir()
+			treePath := filepath.Join(dir, "tree")
+			require.NoError(t, os.Mkdir(treePath, 0o755))
+
+			got, err := CacheNamedSymlink(treePath, name)
+			require.NoError(t, err)
+			assert.Equal(t, treePath, got, "reserved name %q should return treePath unchanged", name)
+		}
+	})
+
+	t.Run("concurrent creation tolerates EEXIST", func(t *testing.T) {
+		dir := t.TempDir()
+		treePath := filepath.Join(dir, "tree")
+		require.NoError(t, os.Mkdir(treePath, 0o755))
+
+		var wg sync.WaitGroup
+		errs := make([]error, 10)
+		for i := range errs {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				_, errs[idx] = CacheNamedSymlink(treePath, "skill")
+			}(i)
+		}
+		wg.Wait()
+		for i, err := range errs {
+			assert.NoError(t, err, "goroutine %d", i)
+		}
+	})
+}
