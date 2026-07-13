@@ -69,8 +69,9 @@ the inbound event path (Jira Automation → GitHub `repository_dispatch`)
 and the outbound credential path (Jira API token as GitHub secret) for a
 single Jira project.
 
-The command creates or updates a `.jira.yml` enrollment config (project
-key, host), attempts to create Jira Automation rules via the
+The command adds Jira project entries to the `integrations.jira` key in
+`.fullsend/config.yaml` (project key, host), attempts to create Jira
+Automation rules via the
 [Automation Rule Management API](https://developer.atlassian.com/cloud/automation/rest/api-group-rule-management/),
 commits dispatch and agent workflow files, and sets Jira credential
 secrets on the repo. Enrollment is idempotent.
