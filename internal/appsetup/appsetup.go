@@ -263,7 +263,16 @@ func (s *Setup) Run(ctx context.Context, org, role string) (*AppCredentials, err
 	// just need to be installed — not re-created via the manifest flow.
 	// When --public was passed, install without prompting. Otherwise, ask
 	// the user to confirm so they don't accidentally create a duplicate.
-	clientID, lookupErr := s.client.GetAppClientID(ctx, slug)
+	var clientID string
+	var lookupErr error
+	if ghExt, ok := s.client.(forge.GitHubExtensions); ok {
+		clientID, lookupErr = ghExt.GetAppClientID(ctx, slug)
+	} else {
+		lookupErr = forge.ErrNotSupported
+	}
+	if forge.IsNotSupported(lookupErr) {
+		return nil, fmt.Errorf("app setup requires GitHub: %w", forge.ErrNotSupported)
+	}
 	if lookupErr != nil && !forge.IsNotFound(lookupErr) {
 		return nil, fmt.Errorf("checking existing app %s: %w", slug, lookupErr)
 	}
@@ -343,8 +352,13 @@ func (s *Setup) recoverCreatedApp(ctx context.Context, org, role, slug string) (
 		}
 	}
 
+	ghExt, ok := s.client.(forge.GitHubExtensions)
+	if !ok {
+		s.ui.StepInfo("Skipping app recovery: forge does not support GitHub App lookups")
+		return nil, nil
+	}
 	for _, candidate := range candidates {
-		clientID, err := s.client.GetAppClientID(ctx, candidate)
+		clientID, err := ghExt.GetAppClientID(ctx, candidate)
 		if err != nil {
 			continue
 		}
@@ -371,7 +385,11 @@ func (s *Setup) recoverCreatedApp(ctx context.Context, org, role, slug string) (
 func (s *Setup) findExistingInstallation(
 	ctx context.Context, org, role, expectedSlug string,
 ) (*forge.Installation, bool, error) {
-	installations, err := s.client.ListOrgInstallations(ctx, org)
+	ghExt, ok := s.client.(forge.GitHubExtensions)
+	if !ok {
+		return nil, false, nil
+	}
+	installations, err := ghExt.ListOrgInstallations(ctx, org)
 	if err != nil {
 		return nil, false, err
 	}
@@ -532,7 +550,11 @@ func (s *Setup) isAppIDStale(org, role string, liveID int) bool {
 func (s *Setup) handleExistingApp(ctx context.Context, inst *forge.Installation, org, role string) (*AppCredentials, error) {
 	s.ui.StepDone(fmt.Sprintf("Found existing app: %s (ID: %d)", inst.AppSlug, inst.AppID))
 
-	clientID, err := s.client.GetAppClientID(ctx, inst.AppSlug)
+	ghExt, ok := s.client.(forge.GitHubExtensions)
+	if !ok {
+		return nil, fmt.Errorf("looking up client ID for %s: %w", inst.AppSlug, forge.ErrNotSupported)
+	}
+	clientID, err := ghExt.GetAppClientID(ctx, inst.AppSlug)
 	if err != nil {
 		return nil, fmt.Errorf("looking up client ID for %s: %w", inst.AppSlug, err)
 	}
@@ -851,7 +873,12 @@ const installPollInterval = 2 * time.Second
 const installPollTimeout = 5 * time.Minute
 
 func (s *Setup) ensureInstalled(ctx context.Context, org, slug string) error {
-	installations, err := s.client.ListOrgInstallations(ctx, org)
+	ghExt, ok := s.client.(forge.GitHubExtensions)
+	if !ok {
+		return fmt.Errorf("listing installations: %w", forge.ErrNotSupported)
+	}
+
+	installations, err := ghExt.ListOrgInstallations(ctx, org)
 	if err != nil {
 		return fmt.Errorf("listing installations: %w", err)
 	}
@@ -884,7 +911,7 @@ func (s *Setup) ensureInstalled(ctx context.Context, org, slug string) error {
 		case <-pollCtx.Done():
 			return fmt.Errorf("timed out waiting for app %s to be installed on %s", slug, org)
 		case <-time.After(installPollInterval):
-			installations, err := s.client.ListOrgInstallations(pollCtx, org)
+			installations, err := ghExt.ListOrgInstallations(pollCtx, org)
 			if err != nil {
 				continue // transient errors — keep polling
 			}

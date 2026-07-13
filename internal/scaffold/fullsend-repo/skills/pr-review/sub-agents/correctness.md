@@ -1,7 +1,12 @@
 ---
-name: review-correctness
-description: Evaluates logic correctness, edge cases, test adequacy, and test integrity.
+name: correctness
+description: >-
+  Evaluates logic correctness, edge cases, nil handling, API contracts,
+  test adequacy/integrity.
 model: opus
+tools: Read, Grep, Glob
+permissionMode: dontAsk
+background: true
 ---
 
 # Correctness

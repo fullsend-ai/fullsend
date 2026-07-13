@@ -7,6 +7,7 @@ policy: policies/base.yaml
 providers:
   - vertex-ai
   - github-ro
+readonly_repo: true
 
 role: review
 slug: fullsend-ai-review

@@ -1640,6 +1640,35 @@ role: test
 	assert.Nil(t, h.MaxRuntimeFetches)
 }
 
+func TestLoad_ReadonlyRepoField(t *testing.T) {
+	content := `
+agent: agents/review.md
+readonly_repo: true
+role: review
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+	assert.True(t, h.ReadonlyRepo)
+}
+
+func TestLoad_ReadonlyRepoFieldOmitted(t *testing.T) {
+	content := `
+agent: agents/code.md
+role: code
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+	assert.False(t, h.ReadonlyRepo)
+}
+
 // --- ValidForgePlatform tests ---
 
 func TestValidForgePlatform(t *testing.T) {

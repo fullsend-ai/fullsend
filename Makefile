@@ -102,7 +102,9 @@ go-build:
 	go build -ldflags "-X github.com/fullsend-ai/fullsend/internal/cli.version=$(VERSION)" -o bin/fullsend ./cmd/fullsend/
 
 go-test:
-	GH_TOKEN= GITHUB_TOKEN= go test -race -cover ./...
+	GH_TOKEN= GITHUB_TOKEN= \
+	GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false \
+	go test -race -cover ./...
 
 go-lint:
 	golangci-lint run ./...

@@ -906,9 +906,17 @@ func runGitHubUninstall(ctx context.Context, client forge.Client, printer *ui.Pr
 		printer.StepDone("Deleted org secret " + name)
 	}
 
-	installations, listErr := client.ListOrgInstallations(ctx, org)
+	var installations []forge.Installation
+	var listErr error
+	if ghExt, ok := client.(forge.GitHubExtensions); ok {
+		installations, listErr = ghExt.ListOrgInstallations(ctx, org)
+	} else {
+		listErr = forge.ErrNotSupported
+	}
 	var existingSlugs []string
-	if listErr == nil {
+	if forge.IsNotSupported(listErr) {
+		printer.StepInfo("App uninstall is not available on this forge — skipping")
+	} else if listErr == nil {
 		installedSet := make(map[string]bool, len(installations))
 		for _, inst := range installations {
 			installedSet[inst.AppSlug] = true
@@ -921,7 +929,6 @@ func runGitHubUninstall(ctx context.Context, client forge.Client, printer *ui.Pr
 			}
 		}
 	} else {
-		// Can't check — fall back to showing all of them.
 		printer.StepWarn("Could not verify which apps exist; showing all")
 		existingSlugs = agentSlugs
 	}

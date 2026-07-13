@@ -306,3 +306,15 @@ func WithFakeErrors(errs map[string]error) FakeGCFOption {
 func WithFakeWIFProvider(p *WIFProviderInfo) FakeGCFOption {
 	return func(f *fakeGCFClient) { f.wifProvider = p }
 }
+
+// LastWIFProviderCondition returns the AttributeCondition passed to the most
+// recent CreateWIFProvider or UpdateWIFProvider call on a fake client, for
+// cross-package test assertions. Returns "" if client isn't a fake or no
+// call was made yet.
+func LastWIFProviderCondition(client GCFClient) string {
+	f, ok := client.(*fakeGCFClient)
+	if !ok {
+		return ""
+	}
+	return f.lastWIFProviderConfig.AttributeCondition
+}

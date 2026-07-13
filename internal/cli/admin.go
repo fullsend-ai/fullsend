@@ -1400,7 +1400,11 @@ func resolveSharedRoleAppIDs(ctx context.Context, client forge.Client, existingI
 		return nil, fmt.Errorf("mint has no existing ROLE_APP_IDS — cannot determine app IDs for %s", owner)
 	}
 
-	installations, err := client.ListOrgInstallations(ctx, owner)
+	ghExt, ok := client.(forge.GitHubExtensions)
+	if !ok {
+		return nil, fmt.Errorf("listing installations for %s: %w", owner, forge.ErrNotSupported)
+	}
+	installations, err := ghExt.ListOrgInstallations(ctx, owner)
 	if err != nil {
 		return nil, fmt.Errorf("listing installations for %s: %w", owner, err)
 	}
@@ -1452,7 +1456,11 @@ func detectSharedApps(ctx context.Context, client forge.Client, printer *ui.Prin
 	}
 	roleOnly := mintcore.RoleOnlyAppIDs(existingIDs)
 
-	installations, err := client.ListOrgInstallations(ctx, org)
+	ghExt, ok := client.(forge.GitHubExtensions)
+	if !ok {
+		return nil, roleOnly, nil
+	}
+	installations, err := ghExt.ListOrgInstallations(ctx, org)
 	if err != nil {
 		return nil, roleOnly, nil
 	}
@@ -1837,8 +1845,17 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 		// Find which slugs correspond to real installed apps.
 		var existingSlugs []string
 		appIDs := make(map[string]int)
-		appInstallations, listErr := client.ListOrgInstallations(ctx, org)
-		if listErr == nil {
+		ghExt, ghOK := client.(forge.GitHubExtensions)
+		var appInstallations []forge.Installation
+		var listErr error
+		if ghOK {
+			appInstallations, listErr = ghExt.ListOrgInstallations(ctx, org)
+		} else {
+			listErr = forge.ErrNotSupported
+		}
+		if forge.IsNotSupported(listErr) {
+			printer.StepInfo("App uninstall is not available on this forge — skipping")
+		} else if listErr == nil {
 			for _, inst := range appInstallations {
 				appIDs[inst.AppSlug] = inst.ID
 			}
@@ -1881,7 +1898,7 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 			printer.Blank()
 
 			printer.StepStart("Verifying if apps were removed")
-			freshInstalls, verifyErr := client.ListOrgInstallations(ctx, org)
+			freshInstalls, verifyErr := ghExt.ListOrgInstallations(ctx, org)
 			if verifyErr != nil {
 				printer.StepWarn(fmt.Sprintf("Could not get installations for org %s: %v", org, verifyErr))
 			} else {

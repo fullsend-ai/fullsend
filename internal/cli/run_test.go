@@ -141,11 +141,23 @@ func TestRunCommand_RejectsNegativeMaxResources(t *testing.T) {
 	assert.Contains(t, err.Error(), "--max-resources must be >= 1")
 }
 
+// useFakeOpenshell prepends testdata/ to PATH so the stub openshell binary
+// is found instead of a real installation, causing tests to fail fast at
+// sandbox.EnsureAvailable instead of actually running agents.
+func useFakeOpenshell(t *testing.T) {
+	t.Helper()
+	testdataDir, err := filepath.Abs("testdata")
+	require.NoError(t, err)
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", testdataDir+string(filepath.ListSeparator)+origPath)
+}
+
 func TestRunAgent_HarnessLoadPipeline(t *testing.T) {
 	// Exercises the early runAgent pipeline: absFullsendDir, policy,
 	// org config loading, LoadWithBase, baseDeps, ResolveRelativeTo.
 	// The function fails later at sandbox.EnsureAvailable (no openshell
 	// in test env), but by then all harness-loading code paths are covered.
+	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
@@ -170,6 +182,7 @@ func TestRunAgent_HarnessLoadPipeline(t *testing.T) {
 }
 
 func TestRunAgent_YMLFallback(t *testing.T) {
+	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
@@ -194,6 +207,7 @@ func TestRunAgent_YMLFallback(t *testing.T) {
 }
 
 func TestRunAgent_HarnessNotFound(t *testing.T) {
+	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
@@ -208,6 +222,7 @@ func TestRunAgent_HarnessNotFound(t *testing.T) {
 func TestRunAgent_HarnessLoadWithOrgConfig(t *testing.T) {
 	// Same as above but with a config.yaml present, covering the
 	// orgCfg != nil → orgAllowlist path.
+	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
@@ -275,7 +290,12 @@ func TestTryLoadFullsendConfig_PerRepoFallback(t *testing.T) {
 	printer := ui.New(io.Discard)
 	cfg := tryLoadFullsendConfig(path, printer)
 	require.NotNil(t, cfg)
-	assert.Equal(t, []string{"https://example.com/"}, cfg.AllowedRemoteResources)
+	expected := []string{
+		"https://example.com/",
+		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
+		"https://raw.githubusercontent.com/fullsend-ai/agents/",
+	}
+	assert.Equal(t, expected, cfg.AllowedRemoteResources)
 	require.Len(t, cfg.Agents, 1)
 	assert.Equal(t, "lint", cfg.Agents[0].Name)
 	assert.Equal(t, []string{"triage"}, cfg.Defaults.Roles)
@@ -354,7 +374,12 @@ func TestRequireFullsendConfig_PerRepoFallback(t *testing.T) {
 	cfg, err := requireFullsendConfig(path, printer)
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
-	assert.Equal(t, []string{"https://example.com/"}, cfg.AllowedRemoteResources)
+	expected := []string{
+		"https://example.com/",
+		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
+		"https://raw.githubusercontent.com/fullsend-ai/agents/",
+	}
+	assert.Equal(t, expected, cfg.AllowedRemoteResources)
 	assert.Equal(t, []string{"triage"}, cfg.Defaults.Roles)
 }
 
@@ -402,7 +427,53 @@ func TestTryLoadFullsendConfig_OrgConfig(t *testing.T) {
 	cfg := tryLoadFullsendConfig(path, printer)
 	require.NotNil(t, cfg)
 	assert.Equal(t, "github", cfg.Dispatch.Platform)
-	assert.Equal(t, []string{"https://example.com/"}, cfg.AllowedRemoteResources)
+	expected := []string{
+		"https://example.com/",
+		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
+		"https://raw.githubusercontent.com/fullsend-ai/agents/",
+	}
+	assert.Equal(t, expected, cfg.AllowedRemoteResources)
+}
+
+func TestTryLoadFullsendConfig_ExplicitEmptyAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"version: \"1\"\ndispatch:\n  platform: github\nallowed_remote_resources: []\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	require.NotNil(t, cfg)
+	assert.Empty(t, cfg.AllowedRemoteResources, "explicit empty [] must preserve deny-all")
+}
+
+func TestTryLoadFullsendConfig_OmittedAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"version: \"1\"\ndispatch:\n  platform: github\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	require.NotNil(t, cfg)
+	assert.Equal(t, config.DefaultAllowedRemoteResources(), cfg.AllowedRemoteResources,
+		"omitted field must get defaults")
+}
+
+func TestRequireFullsendConfig_ExplicitEmptyAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"version: \"1\"\ndispatch:\n  platform: github\nallowed_remote_resources: []\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg, err := requireFullsendConfig(path, printer)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Empty(t, cfg.AllowedRemoteResources, "explicit empty [] must preserve deny-all")
 }
 
 func TestRequireFullsendConfig_PerRepoMalformed(t *testing.T) {
@@ -420,6 +491,7 @@ func TestRequireFullsendConfig_PerRepoMalformed(t *testing.T) {
 func TestRunAgent_MalformedOrgConfig(t *testing.T) {
 	// A malformed config.yaml should produce a warning but not prevent
 	// local-only harnesses from proceeding through the pipeline.
+	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
@@ -449,6 +521,7 @@ func TestRunAgent_MalformedOrgConfig(t *testing.T) {
 }
 
 func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
+	useFakeOpenshell(t)
 	// A malformed config.yaml with URL-referenced resources should fail
 	// with a parse error on the re-attempt inside HasURLReferences.
 	agentHash := fetch.ComputeSHA256([]byte("agent content"))
@@ -475,6 +548,7 @@ func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 }
 
 func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
+	useFakeOpenshell(t)
 	// Harness with URL agent but no config.yaml → exercises the
 	// orgCfg == nil path inside HasURLReferences.
 	dir := t.TempDir()
@@ -497,6 +571,7 @@ func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
 
 func TestRunAgent_WithURLBase(t *testing.T) {
 	// Harness with a URL base — exercises the baseDeps logging loop.
+	useFakeOpenshell(t)
 	baseContent := []byte("agent: agents/shared.md\nrole: test\n")
 	baseHash := fetch.ComputeSHA256(baseContent)
 
@@ -537,6 +612,7 @@ func TestRunAgent_WithURLBase(t *testing.T) {
 }
 
 func TestRunAgent_URLBaseNoOrgConfig(t *testing.T) {
+	useFakeOpenshell(t)
 	// Harness with a URL base but no config.yaml — exercises the
 	// pre-check that loads config strictly when a URL base is detected.
 	baseContent := []byte("agent: agents/shared.md\n")
@@ -562,6 +638,7 @@ func TestRunAgent_URLBaseNoOrgConfig(t *testing.T) {
 }
 
 func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
+	useFakeOpenshell(t)
 	// Harness with a URL base and malformed config.yaml — exercises the
 	// pre-check parse error path.
 	baseContent := []byte("agent: agents/shared.md\n")
@@ -672,6 +749,7 @@ func TestRunCommand_HasEnvFileFlag(t *testing.T) {
 }
 
 func TestRunAgent_ConfigAgentLocalPath(t *testing.T) {
+	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
@@ -701,6 +779,7 @@ func TestRunAgent_ConfigAgentLocalPath(t *testing.T) {
 }
 
 func TestRunAgent_ConfigAgentURL(t *testing.T) {
+	useFakeOpenshell(t)
 	harnessContent := []byte("agent: agents/remote.md\nrole: test\n")
 	harnessHash := fetch.ComputeSHA256(harnessContent)
 
@@ -736,6 +815,7 @@ func TestRunAgent_ConfigAgentURL(t *testing.T) {
 }
 
 func TestRunAgent_ConfigAgentOverridesScaffold(t *testing.T) {
+	useFakeOpenshell(t)
 	// When config has an agent with the same name as a scaffold agent,
 	// the config source is used instead of the scaffold wrapper.
 	dir := t.TempDir()
@@ -769,6 +849,7 @@ func TestRunAgent_ConfigAgentOverridesScaffold(t *testing.T) {
 }
 
 func TestRunAgent_ScaffoldFallback(t *testing.T) {
+	useFakeOpenshell(t)
 	// When config has agents but the requested agent is not in config,
 	// fall back to disk-based resolution.
 	dir := t.TempDir()
@@ -801,6 +882,7 @@ func TestRunAgent_ScaffoldFallback(t *testing.T) {
 }
 
 func TestRunAgent_UnknownAgentName(t *testing.T) {
+	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
@@ -2848,6 +2930,7 @@ func TestEmitDiagnosticWithContext(t *testing.T) {
 }
 
 func TestRunAgent_ErrorOnMissingRole(t *testing.T) {
+	useFakeOpenshell(t)
 	// Verifies that runAgent fails with a hard error when harness has no role.
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
@@ -3334,6 +3417,7 @@ func TestMintAgentToken_CleanupRestoresOriginals(t *testing.T) {
 }
 
 func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {
+	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
@@ -3377,6 +3461,7 @@ func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {
 }
 
 func TestRunAgent_WarnsWhenNoMintURL(t *testing.T) {
+	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
@@ -3413,6 +3498,7 @@ func TestRunAgent_WarnsWhenNoMintURL(t *testing.T) {
 }
 
 func TestRunAgent_MintTokenError(t *testing.T) {
+	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
@@ -3449,6 +3535,7 @@ func TestRunAgent_MintTokenError(t *testing.T) {
 }
 
 func TestRunAgent_StatusNotifierSetup(t *testing.T) {
+	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
@@ -3492,6 +3579,47 @@ func TestRunAgent_StatusNotifierSetup(t *testing.T) {
 	// Will error downstream (openshell not available), but status notifier setup should succeed
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestClearDirContents(t *testing.T) {
+	t.Run("populated directory", func(t *testing.T) {
+		dir := t.TempDir()
+
+		// Create some files and a subdirectory.
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a"), 0o644))
+		require.NoError(t, os.Mkdir(filepath.Join(dir, "sub"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "sub", "b.txt"), []byte("b"), 0o644))
+
+		// Grab inode before clearing.
+		infoBefore, err := os.Stat(dir)
+		require.NoError(t, err)
+
+		require.NoError(t, clearDirContents(dir))
+
+		// Directory itself still exists with the same inode.
+		infoAfter, err := os.Stat(dir)
+		require.NoError(t, err)
+		assert.True(t, os.SameFile(infoBefore, infoAfter), "directory inode should be preserved")
+
+		// Contents are gone.
+		entries, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		assert.Empty(t, entries)
+	})
+
+	t.Run("empty directory", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, clearDirContents(dir))
+
+		entries, err := os.ReadDir(dir)
+		require.NoError(t, err)
+		assert.Empty(t, entries)
+	})
+
+	t.Run("non-existent directory", func(t *testing.T) {
+		err := clearDirContents(filepath.Join(t.TempDir(), "does-not-exist"))
+		require.Error(t, err)
+	})
 }
 
 func TestResolveBackendFromConfigData_OrgConfig(t *testing.T) {
@@ -3648,31 +3776,20 @@ func TestIsOrgConfigData_HeaderlessOrgByStructure(t *testing.T) {
 	assert.True(t, isOrgConfigData(data))
 }
 
-func TestPropagateDefaultAllowlist(t *testing.T) {
-	t.Run("nil allowlist gets default", func(t *testing.T) {
-		opts := harness.ComposeOpts{}
-		propagateDefaultAllowlist(&opts)
-		assert.Equal(t, config.DefaultAllowedRemoteResources(), opts.OrgAllowlist)
-	})
-
-	t.Run("existing allowlist preserved", func(t *testing.T) {
-		custom := []string{"https://example.com/"}
-		opts := harness.ComposeOpts{OrgAllowlist: custom}
-		propagateDefaultAllowlist(&opts)
-		assert.Equal(t, custom, opts.OrgAllowlist)
-	})
-
-	t.Run("explicit empty slice stays deny-all", func(t *testing.T) {
-		opts := harness.ComposeOpts{OrgAllowlist: []string{}}
-		propagateDefaultAllowlist(&opts)
-		assert.Empty(t, opts.OrgAllowlist, "explicit empty list must not be replaced with defaults")
-	})
+func TestDefaultAllowlistCoversAgentsRepoFallback(t *testing.T) {
+	// Verify the default allowlist covers the agents repo fallback URL shape.
+	// A future edit to DefaultAllowedRemoteResources() that drops the
+	// agents repo prefix would regress #3396 silently without this.
+	sampleURL := defaultAgentsRepoURLPrefix + strings.Repeat("a", 40) + "/scripts/pre-triage.sh"
+	assert.NotEmpty(t, harness.MatchingAllowedPrefixInList(sampleURL, config.DefaultAllowedRemoteResources()),
+		"DefaultAllowedRemoteResources must cover the agents repo fallback URL shape")
 }
 
-func TestAgentsRepoFallback_LoadWithBase_NilAllowlist(t *testing.T) {
+func TestAgentsRepoFallback_LoadWithBase_DefaultAllowlist(t *testing.T) {
 	// Integration test for #3396: a URL-sourced harness (from agents-repo
 	// fallback) with pre_script/post_script must succeed when OrgAllowlist
-	// is populated via propagateDefaultAllowlist.
+	// carries the default allowlist (now always set via config loading or
+	// the nil-config fallback in runAgent).
 	preScript := []byte("#!/bin/bash\necho pre")
 	postScript := []byte("#!/bin/bash\necho post")
 	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
@@ -3709,44 +3826,21 @@ post_script: scripts/post-triage.sh
 	workDir := t.TempDir()
 	sourceURL := srv.URL + "/" + fakeSHA + "/harness/triage.yaml"
 
-	// Write harness locally (simulating the cache write from tryAgentsRepoFallback).
 	harnessDir := filepath.Join(workDir, "harness")
 	require.NoError(t, os.MkdirAll(harnessDir, 0o755))
 	harnessPath := filepath.Join(harnessDir, "triage.yaml")
 	require.NoError(t, os.WriteFile(harnessPath, harnessContent, 0o644))
 
-	// Without the fix: OrgAllowlist nil + SourceURL set → fails.
-	_, _, err := harness.LoadWithBase(context.Background(), harnessPath, harness.ComposeOpts{
-		WorkspaceRoot: workDir,
-		FetchPolicy:   policy,
-		SourceURL:     sourceURL,
-		// OrgAllowlist nil — reproduces the bug.
-	})
-	require.Error(t, err, "should fail with nil allowlist")
-	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
-
-	// With the fix: propagateDefaultAllowlist sets the default → succeeds.
+	// With the test server's URL in the allowlist, LoadWithBase succeeds.
 	opts := harness.ComposeOpts{
 		WorkspaceRoot: workDir,
 		FetchPolicy:   policy,
 		SourceURL:     sourceURL,
+		OrgAllowlist:  []string{srv.URL + "/"},
 	}
-	propagateDefaultAllowlist(&opts)
-	assert.Equal(t, config.DefaultAllowedRemoteResources(), opts.OrgAllowlist,
-		"propagateDefaultAllowlist should set the default list")
-
-	// Verify the real default list covers the fallback URL shape.
-	// A future edit to DefaultAllowedRemoteResources() that drops the
-	// agents repo prefix would regress #3396 silently without this.
-	sampleURL := defaultAgentsRepoURLPrefix + strings.Repeat("a", 40) + "/scripts/pre-triage.sh"
-	assert.NotEmpty(t, harness.MatchingAllowedPrefixInList(sampleURL, config.DefaultAllowedRemoteResources()),
-		"DefaultAllowedRemoteResources must cover the agents repo fallback URL shape")
-
-	// Override allowlist to match test server (default points at github.com).
-	opts.OrgAllowlist = []string{srv.URL + "/"}
 
 	h, _, err := harness.LoadWithBase(context.Background(), harnessPath, opts)
-	require.NoError(t, err, "should succeed with allowlist propagated")
+	require.NoError(t, err, "should succeed with allowlist set")
 	assert.True(t, filepath.IsAbs(h.PreScript), "pre_script should be resolved to cache path")
 	assert.True(t, filepath.IsAbs(h.PostScript), "post_script should be resolved to cache path")
 }
