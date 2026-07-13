@@ -31,6 +31,12 @@ access would violate the least-privilege boundary in
 We also need the bot's approval to satisfy CODEOWNERS for dependency files
 (`go.mod`, `go.sum`). GitHub App bots cannot appear as CODEOWNERS entries.
 
+The review agent implementation now lives in `fullsend-ai/agents`, but
+auto-merge touches core design concerns — GitHub App identity boundaries,
+credential isolation, and CODEOWNERS policy — that are central architectural
+decisions. This ADR records the decision here; implementation follows in the
+agents repo.
+
 ## Options
 
 ### A. Add `contents: write` to the review app
