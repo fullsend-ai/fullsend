@@ -129,7 +129,7 @@ When using `base:` composition, the base harness can declare its own providers a
 - **Profiles:** base + child lists are concatenated; deduplicated by profile `id` (child wins)
 - **Providers:** base + child lists are concatenated; local names shadow URL-resolved names of the same `name`
 
-Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_remote_resources` prefix. See [ADR 0068](../../ADRs/0068-portable-provider-profile-resolution.md) for full details.
+Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_remote_resources` prefix. See [ADR 0070](../../ADRs/0070-portable-provider-profile-resolution.md) for full details.
 
 ## Layered Configuration Resolution
 

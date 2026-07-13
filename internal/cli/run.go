@@ -697,23 +697,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepWarn(w)
 	}
 
-	// 2c. Import resolved profiles to the gateway.
-	result.Profiles = dedupResolvedProfiles(result.Profiles)
-	for _, rp := range result.Profiles {
-		profileStart := time.Now()
-		printer.StepStart("Importing profile: " + rp.ID)
-		if err := sandbox.ImportProfile(ctx, rp.LocalPath); err != nil {
-			printer.StepFail("Failed to import profile " + rp.ID)
-			return fmt.Errorf("importing profile %q: %w", rp.ID, err)
-		}
-		printer.StepDone(fmt.Sprintf("Profile imported: %s (%.1fs)", rp.ID, time.Since(profileStart).Seconds()))
-	}
-
-	// 2d. Ensure providers exist on the gateway (if any declared).
+	// 2c. Ensure providers v2 is enabled and import profiles + providers.
+	// Profiles are a providers-v2 concept (ADR 0065), so EnableProvidersV2
+	// must run before any profile import — both URL-resolved and directory.
 	// Only harness-declared and URL-resolved providers are loaded and created;
 	// directory providers not referenced by this harness are skipped entirely.
+	result.Profiles = dedupResolvedProfiles(result.Profiles)
 	allProviderNames := append([]string{}, h.Providers...)
-	if len(h.Providers) > 0 || len(result.Providers) > 0 {
+	if len(h.Providers) > 0 || len(result.Providers) > 0 || len(result.Profiles) > 0 {
 		// Enable provider-backed policy composition on the gateway.
 		provV2Start := time.Now()
 		printer.StepStart("Enabling providers v2")
@@ -722,6 +713,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			return fmt.Errorf("enabling providers v2: %w", err)
 		}
 		printer.StepDone(fmt.Sprintf("Providers v2 enabled (%.1fs)", time.Since(provV2Start).Seconds()))
+
+		// Import URL-resolved profiles to the gateway.
+		for _, rp := range result.Profiles {
+			profileStart := time.Now()
+			printer.StepStart("Importing profile: " + rp.ID)
+			if err := sandbox.ImportProfile(ctx, rp.ID, rp.LocalPath); err != nil {
+				printer.StepFail("Failed to import profile " + rp.ID)
+				return fmt.Errorf("importing profile %q: %w", rp.ID, err)
+			}
+			printer.StepDone(fmt.Sprintf("Profile imported: %s (%.1fs)", rp.ID, time.Since(profileStart).Seconds()))
+		}
 
 		// Import provider profiles (if profiles/ directory exists).
 		profilesDir := filepath.Join(absFullsendDir, "profiles")
@@ -748,6 +750,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		for _, name := range shadowedProviders {
 			printer.StepWarn(fmt.Sprintf("Local provider %q shadows URL-resolved provider of the same name", name))
 		}
+		urlProviderNames := make(map[string]bool, len(result.Providers))
+		for _, rp := range result.Providers {
+			urlProviderNames[rp.Def.Name] = true
+		}
+		for _, name := range shadowedProviders {
+			delete(urlProviderNames, name)
+		}
 
 		var (
 			mu   sync.Mutex
@@ -760,7 +769,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				defer wg.Done()
 				providerStart := time.Now()
 				printer.StepStart("Ensuring provider: " + pd.Name)
-				if err := sandbox.EnsureProvider(ctx, pd.Name, pd.Type, pd.Credentials, pd.Config); err != nil {
+				if err := sandbox.EnsureProvider(ctx, pd.Name, pd.Type, pd.Credentials, pd.Config, urlProviderNames[pd.Name]); err != nil {
 					printer.StepFail("Failed to create provider " + pd.Name)
 					mu.Lock()
 					errs = append(errs, fmt.Errorf("ensuring provider %q: %w", pd.Name, err))
@@ -773,6 +782,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		wg.Wait()
 		if err := errors.Join(errs...); err != nil {
 			return err
+		}
+		created := make(map[string]struct{}, len(allDefs))
+		for _, pd := range allDefs {
+			created[pd.Name] = struct{}{}
+		}
+		for _, p := range h.Providers {
+			if _, ok := created[p]; !ok {
+				printer.StepWarn(fmt.Sprintf("Provider %q declared in harness but no definition found in %s", p, providersDir))
+			}
 		}
 
 		allProviderNames = sandboxProviderNames(h.Providers, result.Providers)
@@ -787,7 +805,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	securityTraceID, traceCtx := resolveTraceIdentity(os.Getenv("TRACEPARENT"))
 	workItemID := resolveWorkItemID()
 
-	// 2e. Run pre-script on the host (if configured).
+	// 2d. Run pre-script on the host (if configured).
 	if h.PreScript != "" {
 		preStart := time.Now()
 		printer.StepStart("Running pre-script: " + h.PreScript)

@@ -1523,3 +1523,49 @@ func TestResolveFromLock_EmptyAllowlistDeniesURLs(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no longer in allowed_remote_resources")
 }
+
+func TestResolveFromLock_ProfileAndProviderReconstruction(t *testing.T) {
+	profileContent := []byte("id: anthropic\nname: Anthropic\n")
+	profileHash := fetch.ComputeSHA256(profileContent)
+
+	providerContent := []byte("name: my-provider\ntype: anthropic\ncredentials:\n  API_KEY: ${ANTHROPIC_KEY}\n")
+	providerHash := fetch.ComputeSHA256(providerContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/profiles/anthropic.yaml", profileContent))
+	require.NoError(t, fetch.CachePut(root, "https://example.com/providers/my.yaml", providerContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "openshell.profiles[0]",
+				URL:    "https://example.com/profiles/anthropic.yaml",
+				SHA256: profileHash,
+			},
+			{
+				Field:  "providers[0]",
+				URL:    "https://example.com/providers/my.yaml",
+				SHA256: providerHash,
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent: "agents/code.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{"https://example.com/profiles/anthropic.yaml#sha256=" + profileHash},
+		},
+		Providers:              []string{"https://example.com/providers/my.yaml#sha256=" + providerHash},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Profiles, 1)
+	assert.Equal(t, "anthropic", lockResult.Profiles[0].ID)
+	require.Len(t, lockResult.Providers, 1)
+	assert.Equal(t, "my-provider", lockResult.Providers[0].Def.Name)
+	assert.Equal(t, "anthropic", lockResult.Providers[0].Def.Type)
+	require.Len(t, lockResult.Deps, 2)
+}

@@ -36,7 +36,7 @@ func TestBuildProviderArgs_BareKeyCredentials(t *testing.T) {
 		"BASE_URL": "https://api.example.com",
 	}
 
-	args, extraEnv, secrets := buildProviderArgs("test-provider", "anthropic", credentials, config)
+	args, extraEnv, secrets := buildProviderArgs("test-provider", "anthropic", credentials, config, false)
 
 	// Args must use bare-key form: --credential API_KEY (no =value).
 	assert.Contains(t, args, "--credential")
@@ -78,7 +78,7 @@ func TestBuildProviderArgs_KeyRemapping(t *testing.T) {
 		"PROVIDER_KEY": "${HOST_VAR_NAME}",
 	}
 
-	args, extraEnv, _ := buildProviderArgs("p", "custom", credentials, nil)
+	args, extraEnv, _ := buildProviderArgs("p", "custom", credentials, nil, false)
 
 	// Bare key uses the credential key name, not the host var name.
 	for _, arg := range args {
@@ -97,7 +97,7 @@ func TestBuildProviderArgs_EmptyCredential(t *testing.T) {
 		"KEY": "${EMPTY_VAR}",
 	}
 
-	args, extraEnv, secrets := buildProviderArgs("p", "custom", credentials, nil)
+	args, extraEnv, secrets := buildProviderArgs("p", "custom", credentials, nil, false)
 
 	// Empty values use inline KEY= form, not bare-key + env.
 	assert.Empty(t, extraEnv)
@@ -186,6 +186,30 @@ func TestImportProfiles_EmptyDirSkips(t *testing.T) {
 
 	err = ImportProfiles(dir)
 	assert.NoError(t, err)
+}
+
+func TestImportProfiles_MissingIDField(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "noid.yaml"), []byte("name: some-profile"), 0o644))
+	err := ImportProfiles(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "profile has no id field")
+}
+
+func TestProfileIDFromFile(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "test.yaml"), []byte("id: actual-id\nname: something"), 0o644))
+	id, err := profileIDFromFile(filepath.Join(dir, "test.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, "actual-id", id)
+}
+
+func TestProfileIDFromFile_MissingID(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "test.yaml"), []byte("name: something"), 0o644))
+	_, err := profileIDFromFile(filepath.Join(dir, "test.yaml"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no id field")
 }
 
 func TestHashProfileDir_Deterministic(t *testing.T) {
@@ -613,7 +637,7 @@ func TestBuildProviderUpdateArgs(t *testing.T) {
 	credentials := map[string]string{"TOKEN": "${MY_TOKEN}"}
 	config := map[string]string{"BASE_URL": "https://example.com"}
 
-	args := buildProviderUpdateArgs("myprovider", credentials, config)
+	args := buildProviderUpdateArgs("myprovider", credentials, config, false)
 
 	assert.Equal(t, "provider", args[0])
 	assert.Equal(t, "update", args[1])
@@ -632,7 +656,7 @@ func TestBuildProviderUpdateArgs(t *testing.T) {
 func TestImportProfile_OpenshellNotInPath(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 
-	err := ImportProfile(context.Background(), "/some/profile.yaml")
+	err := ImportProfile(context.Background(), "test-profile", "/some/profile.yaml")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -647,7 +671,7 @@ exit 0
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
 	t.Setenv("PATH", dir)
 
-	err := ImportProfile(context.Background(), "/some/my-profile.yaml")
+	err := ImportProfile(context.Background(), "my-profile", "/some/my-profile.yaml")
 	assert.NoError(t, err)
 }
 
@@ -662,7 +686,7 @@ exit 1
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
 	t.Setenv("PATH", dir)
 
-	err := ImportProfile(context.Background(), "/some/my-profile.yaml")
+	err := ImportProfile(context.Background(), "my-profile", "/some/my-profile.yaml")
 	assert.NoError(t, err, "idempotent import should not return an error")
 }
 
@@ -677,7 +701,7 @@ exit 1
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
 	t.Setenv("PATH", dir)
 
-	err := ImportProfile(context.Background(), "/some/my-profile.yaml")
+	err := ImportProfile(context.Background(), "my-profile", "/some/my-profile.yaml")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "my-profile.yaml")
 	assert.Contains(t, err.Error(), "connection refused")
@@ -704,7 +728,7 @@ fi
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
 	t.Setenv("PATH", dir)
 
-	err := EnsureProvider(context.Background(), "github", "github", map[string]string{"TOKEN": "tok"}, nil)
+	err := EnsureProvider(context.Background(), "github", "github", map[string]string{"TOKEN": "tok"}, nil, false)
 	assert.NoError(t, err)
 }
 
@@ -720,7 +744,7 @@ exit 1
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
 	t.Setenv("PATH", dir)
 
-	err := EnsureProvider(context.Background(), "github", "github", nil, nil)
+	err := EnsureProvider(context.Background(), "github", "github", nil, nil, false)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "provider create")
 }
@@ -743,7 +767,7 @@ fi
 	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
 	t.Setenv("PATH", dir)
 
-	err := EnsureProvider(context.Background(), "github", "github", map[string]string{"TOKEN": "supersecret"}, nil)
+	err := EnsureProvider(context.Background(), "github", "github", map[string]string{"TOKEN": "supersecret"}, nil, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "provider update")
 	assert.NotContains(t, err.Error(), "supersecret", "secret must be redacted in update error")
@@ -781,7 +805,7 @@ func TestEnsureProvider_RejectsReservedCredentialKeys(t *testing.T) {
 			// PATH is empty so openshell won't be found, but reserved key
 			// check runs before exec.
 			t.Setenv("PATH", "")
-			err := EnsureProvider(context.Background(), "p", "custom", map[string]string{tt.key: "${SOME_VAR}"}, nil)
+			err := EnsureProvider(context.Background(), "p", "custom", map[string]string{tt.key: "${SOME_VAR}"}, nil, true)
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.Contains(t, err.Error(), "reserved environment variable")
@@ -792,5 +816,59 @@ func TestEnsureProvider_RejectsReservedCredentialKeys(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestEnsureProvider_AllowsReservedKeysForLocalProviders(t *testing.T) {
+	t.Setenv("PATH", "")
+	err := EnsureProvider(context.Background(), "p", "custom", map[string]string{"PATH": "val"}, nil, false)
+	// Should fail with exec error (openshell not found), NOT reserved key error.
+	if err != nil {
+		assert.NotContains(t, err.Error(), "reserved environment variable")
+	}
+}
+
+func TestBuildProviderArgs_ConfigNotExpandedForURL(t *testing.T) {
+	t.Setenv("SECRET_VAR", "leaked-secret")
+
+	config := map[string]string{
+		"model": "${SECRET_VAR}",
+	}
+
+	args, _, _ := buildProviderArgs("p", "custom", nil, config, true)
+
+	for _, arg := range args {
+		assert.NotContains(t, arg, "leaked-secret",
+			"URL-fetched provider config must not expand env vars")
+	}
+	assert.Contains(t, args, "model=${SECRET_VAR}",
+		"URL-fetched provider config should preserve literal value")
+}
+
+func TestBuildProviderArgs_ConfigExpandedForLocal(t *testing.T) {
+	t.Setenv("MY_URL", "https://example.com")
+
+	config := map[string]string{
+		"base_url": "${MY_URL}",
+	}
+
+	args, _, _ := buildProviderArgs("p", "custom", nil, config, false)
+
+	assert.Contains(t, args, "base_url=https://example.com",
+		"local provider config should expand env vars")
+}
+
+func TestBuildProviderUpdateArgs_ConfigNotExpandedForURL(t *testing.T) {
+	t.Setenv("SECRET_VAR", "leaked-secret")
+
+	config := map[string]string{
+		"model": "${SECRET_VAR}",
+	}
+
+	args := buildProviderUpdateArgs("p", nil, config, true)
+
+	for _, arg := range args {
+		assert.NotContains(t, arg, "leaked-secret",
+			"URL-fetched provider config must not expand env vars on update")
 	}
 }

@@ -674,8 +674,14 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			if def.Name == "" {
 				return resolve.ResolveResult{}, fmt.Errorf("cached provider %s has no name", lockDep.Field)
 			}
+			if !resolve.ValidIdentifier(def.Name) {
+				return resolve.ResolveResult{}, fmt.Errorf("cached provider %s: name %q contains invalid characters", lockDep.Field, def.Name)
+			}
 			if def.Type == "" {
 				return resolve.ResolveResult{}, fmt.Errorf("cached provider %s has no type", lockDep.Field)
+			}
+			if !resolve.ValidIdentifier(def.Type) {
+				return resolve.ResolveResult{}, fmt.Errorf("cached provider %s: type %q contains invalid characters", lockDep.Field, def.Type)
 			}
 			if w := resolve.WarnLiteralCredentials(def.Name, def.Credentials); w != "" {
 				dep.Warning = w

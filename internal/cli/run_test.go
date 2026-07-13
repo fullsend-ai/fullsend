@@ -153,6 +153,17 @@ func useFakeOpenshell(t *testing.T) {
 	t.Setenv("PATH", testdataDir+string(filepath.ListSeparator)+origPath)
 }
 
+// useFakeOpenshellProviders uses a stub that passes CheckGateway and handles
+// provider/profile/sandbox commands, allowing tests to exercise the full
+// provider/profile orchestration block in runAgent.
+func useFakeOpenshellProviders(t *testing.T) {
+	t.Helper()
+	stubDir, err := filepath.Abs(filepath.Join("testdata", "providers-stub"))
+	require.NoError(t, err)
+	origPath := os.Getenv("PATH")
+	t.Setenv("PATH", stubDir+string(filepath.ListSeparator)+origPath)
+}
+
 func TestRunAgent_HarnessLoadPipeline(t *testing.T) {
 	// Exercises the early runAgent pipeline: absFullsendDir, policy,
 	// org config loading, LoadWithBase, baseDeps, ResolveRelativeTo.
@@ -624,6 +635,69 @@ func TestRunAgent_WithURLBase(t *testing.T) {
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_ProviderProfileOrchestration(t *testing.T) {
+	// Exercises the provider/profile orchestration block in runAgent
+	// (steps 2a-2c): CheckGateway, checkProviderProfileIntegrity,
+	// EnableProvidersV2, ImportProfile, EnsureProvider, CreateWithRetry.
+	// Uses the providers-stub that passes all openshell commands.
+	useFakeOpenshellProviders(t)
+
+	profileContent := []byte("id: anthropic\nname: Anthropic\n")
+	profileHash := fetch.ComputeSHA256(profileContent)
+
+	providerContent := []byte("name: my-claude\ntype: anthropic\ncredentials:\n  API_KEY: ${MY_API_KEY}\n")
+	providerHash := fetch.ComputeSHA256(providerContent)
+
+	srv, policy := newLockTestServer(t, map[string][]byte{
+		"/profiles/anthropic.yaml":  profileContent,
+		"/providers/my-claude.yaml": providerContent,
+	})
+
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte(fmt.Sprintf(`agent: agents/code.md
+role: test
+providers:
+  - "%s/providers/my-claude.yaml#sha256=%s"
+openshell:
+  profiles:
+    - "%s/profiles/anthropic.yaml#sha256=%s"
+`, srv.URL, providerHash, srv.URL, profileHash)),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte(fmt.Sprintf("allowed_remote_resources:\n  - \"%s/\"\n", srv.URL)),
+		0o644,
+	))
+
+	fetch.DefaultPolicy = policy
+	defer func() { fetch.DefaultPolicy = fetch.FetchPolicy{} }()
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	// The test will fail after the orchestration block (e.g. during
+	// bootstrapCommon or pre-script setup), but it must NOT fail at
+	// the gateway check or provider/profile steps.
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "gateway check failed")
+	assert.NotContains(t, err.Error(), "enabling providers v2")
+	assert.NotContains(t, err.Error(), "importing profile")
+	assert.NotContains(t, err.Error(), "ensuring provider")
+	assert.NotContains(t, err.Error(), "creating sandbox")
 }
 
 func TestRunAgent_URLBaseNoOrgConfig(t *testing.T) {
@@ -4151,4 +4225,40 @@ func TestCheckProviderProfileIntegrity(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDedupResolvedProfiles_ComposeScenario(t *testing.T) {
+	// Simulates base+child compose: base declares profile "anthropic" at one
+	// URL, child redeclares it at another. After concatenation (base first,
+	// child second) and dedup, child's version should win.
+	baseProfile := resolve.ResolvedProfile{
+		ID:        "anthropic",
+		LocalPath: "/cache/base/anthropic.yaml",
+	}
+	childProfile := resolve.ResolvedProfile{
+		ID:        "anthropic",
+		LocalPath: "/cache/child/anthropic.yaml",
+	}
+	got := dedupResolvedProfiles([]resolve.ResolvedProfile{baseProfile, childProfile})
+	require.Len(t, got, 1)
+	assert.Equal(t, "anthropic", got[0].ID)
+	assert.Equal(t, "/cache/child/anthropic.yaml", got[0].LocalPath)
+}
+
+func TestDedupResolvedProviders_ComposeScenario(t *testing.T) {
+	// Simulates base+child compose: both declare provider "my-claude",
+	// child's version should win after dedup.
+	baseProvider := resolve.ResolvedProvider{
+		Def:       harness.ProviderDef{Name: "my-claude", Type: "claude-code"},
+		LocalPath: "/cache/base/my-claude.yaml",
+	}
+	childProvider := resolve.ResolvedProvider{
+		Def:       harness.ProviderDef{Name: "my-claude", Type: "claude-code-v2"},
+		LocalPath: "/cache/child/my-claude.yaml",
+	}
+	got := dedupResolvedProviders([]resolve.ResolvedProvider{baseProvider, childProvider})
+	require.Len(t, got, 1)
+	assert.Equal(t, "my-claude", got[0].Def.Name)
+	assert.Equal(t, "claude-code-v2", got[0].Def.Type)
+	assert.Equal(t, "/cache/child/my-claude.yaml", got[0].LocalPath)
 }

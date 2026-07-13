@@ -1,5 +1,5 @@
 ---
-title: "68. Portable provider and profile resolution"
+title: "70. Portable provider and profile resolution"
 status: Accepted
 relates_to:
   - agent-architecture
@@ -13,7 +13,7 @@ topics:
   - remote-resources
 ---
 
-# 68. Portable provider and profile resolution
+# 70. Portable provider and profile resolution
 
 Date: 2026-07-03
 
@@ -114,14 +114,17 @@ Downstream code sees only local paths and names.
 
 ### Integration in `run.go`
 
-The provider import flow (currently lines 570-587) expands to:
+The provider import flow expands to:
 
-1. Import resolved profiles to the gateway (`openshell provider profile import`)
-2. Load local provider defs from `providers/` dir (existing `LoadProviderDefs`)
-3. Merge with URL-resolved provider defs from resolution phase
-4. **Validate referential integrity:** For each URL-resolved provider's `type`
-   field, verify it matches a URL-resolved profile `id`. Local providers are
-   validated by the gateway at creation time (step 5).
+1. Check gateway availability (`CheckGateway`)
+2. **Validate referential integrity** (fail-fast, before any gateway mutations):
+   deduplicate URL-resolved providers, then verify each URL-resolved provider's
+   `type` matches a URL-resolved profile `id`. Local providers are validated
+   by the gateway at creation time (step 5).
+3. Enable providers v2 and import resolved profiles to the gateway
+   (`openshell provider profile import`)
+4. Load local provider defs from `providers/` dir (existing `LoadProviderDefs`),
+   merge with URL-resolved provider defs from resolution phase
 5. Create/ensure each provider on the gateway (existing `EnsureProvider`)
 
 Referential integrity failure is a hard error:

@@ -62,6 +62,17 @@ type ProfileYAML struct {
 	ID string `yaml:"id"`
 }
 
+// validIdentifier matches the same format as harness.validProviderName:
+// alphanumeric, underscore, and hyphen. Applied to URL-fetched profile
+// ids and provider names/types to close the trust-boundary gap between
+// local and URL-sourced definitions.
+var validIdentifier = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
+
+// ValidIdentifier reports whether s is a safe identifier for use in CLI
+// arguments and gateway operations: starts with an alphanumeric, then
+// alphanumerics, underscores, or hyphens.
+func ValidIdentifier(s string) bool { return validIdentifier.MatchString(s) }
+
 // ParseProfileID extracts and validates the profile id from YAML content.
 func ParseProfileID(data []byte) (string, error) {
 	var prof ProfileYAML
@@ -70,6 +81,9 @@ func ParseProfileID(data []byte) (string, error) {
 	}
 	if prof.ID == "" {
 		return "", fmt.Errorf("profile has no id field")
+	}
+	if !validIdentifier.MatchString(prof.ID) {
+		return "", fmt.Errorf("profile id %q contains invalid characters (must match [a-zA-Z0-9_-]+)", prof.ID)
 	}
 	return prof.ID, nil
 }
@@ -274,8 +288,14 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 		if def.Name == "" {
 			return ResolveResult{}, fmt.Errorf("providers[%d]: provider name is required in %s", i, dep.URL)
 		}
+		if !validIdentifier.MatchString(def.Name) {
+			return ResolveResult{}, fmt.Errorf("providers[%d]: provider name %q contains invalid characters (must match [a-zA-Z0-9][a-zA-Z0-9_-]*) in %s", i, def.Name, dep.URL)
+		}
 		if def.Type == "" {
 			return ResolveResult{}, fmt.Errorf("providers[%d]: provider type is required in %s", i, dep.URL)
+		}
+		if !validIdentifier.MatchString(def.Type) {
+			return ResolveResult{}, fmt.Errorf("providers[%d]: provider type %q contains invalid characters (must match [a-zA-Z0-9][a-zA-Z0-9_-]*) in %s", i, def.Type, dep.URL)
 		}
 
 		if w := WarnLiteralCredentials(def.Name, def.Credentials); w != "" {

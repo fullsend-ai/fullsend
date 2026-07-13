@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -108,16 +110,21 @@ func inGitDir(path, root string) bool {
 
 // ImportProfile imports a single openshell provider profile from a YAML
 // file. The profile defines a provider type schema (credentials, endpoints).
-// If the profile already exists, the import is a no-op (openshell is
-// idempotent for profile imports).
-func ImportProfile(ctx context.Context, profilePath string) error {
-	cmd := exec.CommandContext(ctx, "openshell", "provider", "profile", "import", profilePath)
+// To ensure content changes propagate on persistent gateways, the profile
+// is deleted by id before re-importing (mirroring the ImportProfiles flow).
+func ImportProfile(ctx context.Context, id, profilePath string) error {
+	// Best-effort delete so content changes propagate (same pattern as ImportProfiles).
+	delCtx, delCancel := context.WithTimeout(ctx, providerTimeout)
+	exec.CommandContext(delCtx, "openshell", "provider", "profile", "delete", id).CombinedOutput() //nolint:errcheck
+	delCancel()
+
+	importCtx, importCancel := context.WithTimeout(ctx, providerTimeout)
+	defer importCancel()
+	cmd := exec.CommandContext(importCtx, "openshell", "provider", "profile", "import", profilePath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		// openshell exits non-zero when the profile already exists;
-		// treat this as success (idempotent import).
 		outStr := strings.ToLower(string(out))
-		if strings.Contains(outStr, "profile already exists") {
+		if strings.Contains(outStr, "already exists") {
 			return nil
 		}
 		return fmt.Errorf("profile import %q failed: openshell: %w\noutput: %s", filepath.Base(profilePath), err, bytes.TrimSpace(out))
@@ -170,6 +177,9 @@ var reservedCredentialKeys = map[string]bool{
 	// Git config — could inject hooks or redirect operations
 	"GIT_CONFIG_GLOBAL": true,
 	"GIT_EXEC_PATH":     true,
+	"GIT_SSH_COMMAND":   true,
+	"GIT_TEMPLATE_DIR":  true,
+	"GIT_ASKPASS":       true,
 }
 
 // EnsureProvider creates or updates a provider on the gateway. Credential
@@ -180,14 +190,16 @@ var reservedCredentialKeys = map[string]bool{
 // never appear on the process command line. The expanded values are injected
 // into the child process environment, where openshell reads them directly.
 // See https://docs.nvidia.com/openshell/latest/sandboxes/manage-providers#bare-key-form
-func EnsureProvider(ctx context.Context, name, providerType string, credentials, config map[string]string) error {
-	for k := range credentials {
-		if reservedCredentialKeys[strings.ToUpper(k)] {
-			return fmt.Errorf("provider %q: credential key %q is a reserved environment variable name", name, k)
+func EnsureProvider(ctx context.Context, name, providerType string, credentials, config map[string]string, fromURL bool) error {
+	if fromURL {
+		for k := range credentials {
+			if reservedCredentialKeys[strings.ToUpper(k)] {
+				return fmt.Errorf("provider %q: credential key %q is a reserved environment variable name", name, k)
+			}
 		}
 	}
 
-	args, extraEnv, secrets := buildProviderArgs(name, providerType, credentials, config)
+	args, extraEnv, secrets := buildProviderArgs(name, providerType, credentials, config, fromURL)
 
 	createCtx, cancel := context.WithTimeout(ctx, providerTimeout)
 	defer cancel()
@@ -200,7 +212,7 @@ func EnsureProvider(ctx context.Context, name, providerType string, credentials,
 		if strings.Contains(strings.ToLower(outStr), "provider already exists") {
 			// Provider exists from a prior run — update it with current credentials.
 			// Pass original ctx (not createCtx) so updateProvider gets a fresh timeout.
-			return updateProvider(ctx, name, credentials, config, extraEnv, secrets)
+			return updateProvider(ctx, name, credentials, config, extraEnv, secrets, fromURL)
 		}
 		// Redact known credential values from error output.
 		for _, s := range secrets {
@@ -212,8 +224,8 @@ func EnsureProvider(ctx context.Context, name, providerType string, credentials,
 }
 
 // updateProvider runs openshell provider update for an already-existing provider.
-func updateProvider(ctx context.Context, name string, credentials, config map[string]string, extraEnv, secrets []string) error {
-	args := buildProviderUpdateArgs(name, credentials, config)
+func updateProvider(ctx context.Context, name string, credentials, config map[string]string, extraEnv, secrets []string, fromURL bool) error {
+	args := buildProviderUpdateArgs(name, credentials, config, fromURL)
 	ctx, cancel := context.WithTimeout(ctx, providerTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "openshell", args...)
@@ -231,7 +243,7 @@ func updateProvider(ctx context.Context, name string, credentials, config map[st
 
 // buildProviderUpdateArgs constructs CLI args for openshell provider update.
 // The update subcommand takes a positional name (not --name/--type).
-func buildProviderUpdateArgs(name string, credentials, config map[string]string) []string {
+func buildProviderUpdateArgs(name string, credentials, config map[string]string, fromURL bool) []string {
 	args := []string{"provider", "update", name}
 	credKeys := sortedKeys(credentials)
 	for _, k := range credKeys {
@@ -246,8 +258,11 @@ func buildProviderUpdateArgs(name string, credentials, config map[string]string)
 	}
 	cfgKeys := sortedKeys(config)
 	for _, k := range cfgKeys {
-		expanded := os.ExpandEnv(config[k])
-		args = append(args, "--config", k+"="+expanded)
+		v := config[k]
+		if !fromURL {
+			v = os.ExpandEnv(v)
+		}
+		args = append(args, "--config", k+"="+v)
 	}
 	return args
 }
@@ -257,7 +272,7 @@ func buildProviderUpdateArgs(name string, credentials, config map[string]string)
 // so secret values never appear on the process command line. The expanded values
 // are returned as extra env vars to be set on the child process.
 // See https://docs.nvidia.com/openshell/latest/sandboxes/manage-providers#bare-key-form
-func buildProviderArgs(name, providerType string, credentials, config map[string]string) (args, extraEnv, secrets []string) {
+func buildProviderArgs(name, providerType string, credentials, config map[string]string, fromURL bool) (args, extraEnv, secrets []string) {
 	args = []string{"provider", "create",
 		"--name", name,
 		"--type", providerType,
@@ -278,8 +293,11 @@ func buildProviderArgs(name, providerType string, credentials, config map[string
 	}
 	cfgKeys := sortedKeys(config)
 	for _, k := range cfgKeys {
-		expanded := os.ExpandEnv(config[k])
-		args = append(args, "--config", k+"="+expanded)
+		v := config[k]
+		if !fromURL {
+			v = os.ExpandEnv(v)
+		}
+		args = append(args, "--config", k+"="+v)
 	}
 
 	return args, extraEnv, secrets
@@ -359,7 +377,10 @@ func ImportProfiles(dir string) error {
 		if e.IsDir() || (!strings.HasSuffix(e.Name(), ".yaml") && !strings.HasSuffix(e.Name(), ".yml")) {
 			continue
 		}
-		id := strings.TrimSuffix(strings.TrimSuffix(e.Name(), ".yaml"), ".yml")
+		id, err := profileIDFromFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			return fmt.Errorf("reading profile id from %s: %w", e.Name(), err)
+		}
 		// Best-effort delete; ignore errors (profile may not exist yet).
 		ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
 		exec.CommandContext(ctx, "openshell", "provider", "profile", "delete", id).CombinedOutput() //nolint:errcheck
@@ -379,6 +400,24 @@ func ImportProfiles(dir string) error {
 	}
 	os.WriteFile(cachePath, []byte(currentHash), 0o600) //nolint:errcheck
 	return nil
+}
+
+// profileIDFromFile reads a profile YAML file and returns its id field.
+func profileIDFromFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	var prof struct {
+		ID string `yaml:"id"`
+	}
+	if err := yaml.Unmarshal(data, &prof); err != nil {
+		return "", fmt.Errorf("parsing YAML: %w", err)
+	}
+	if prof.ID == "" {
+		return "", fmt.Errorf("profile has no id field")
+	}
+	return prof.ID, nil
 }
 
 // hashProfileDir computes a deterministic SHA-256 digest of all YAML files in

@@ -1468,6 +1468,66 @@ credentials:
 	assert.Contains(t, result.Deps[0].Warning, "do not look like ${VAR} references")
 }
 
+func TestResolveHarness_ProviderURLInvalidName(t *testing.T) {
+	providerContent := []byte(`name: "-flag-injection"
+type: claude-code
+credentials:
+  ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+`)
+	providerHash := fetch.ComputeSHA256(providerContent)
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(providerContent)
+	}))
+
+	root := t.TempDir()
+	providerURL := fmt.Sprintf("%s/providers/bad.yaml#sha256=%s", srv.URL, providerHash)
+	h := &harness.Harness{
+		Agent:                  "agents/test.md",
+		Role:                   "test",
+		Providers:              []string{providerURL},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		FetchPolicy:   policy,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "provider name")
+	assert.Contains(t, err.Error(), "invalid characters")
+}
+
+func TestResolveHarness_ProviderURLInvalidType(t *testing.T) {
+	providerContent := []byte(`name: my-claude
+type: "../traversal"
+credentials:
+  ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
+`)
+	providerHash := fetch.ComputeSHA256(providerContent)
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(providerContent)
+	}))
+
+	root := t.TempDir()
+	providerURL := fmt.Sprintf("%s/providers/bad.yaml#sha256=%s", srv.URL, providerHash)
+	h := &harness.Harness{
+		Agent:                  "agents/test.md",
+		Role:                   "test",
+		Providers:              []string{providerURL},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		FetchPolicy:   policy,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "provider type")
+	assert.Contains(t, err.Error(), "invalid characters")
+}
+
 func TestResolveHarness_LocalProvidersUnchanged(t *testing.T) {
 	h := &harness.Harness{
 		Agent:     "agents/test.md",
@@ -1561,6 +1621,26 @@ func TestParseProfileID(t *testing.T) {
 			name:    "empty input",
 			data:    []byte{},
 			wantErr: "no id field",
+		},
+		{
+			name:    "id with leading dash (flag injection)",
+			data:    []byte("id: -h\n"),
+			wantErr: "invalid characters",
+		},
+		{
+			name:    "id with spaces",
+			data:    []byte("id: my profile\n"),
+			wantErr: "invalid characters",
+		},
+		{
+			name:    "id with shell metacharacters",
+			data:    []byte("id: foo;rm -rf /\n"),
+			wantErr: "invalid characters",
+		},
+		{
+			name:   "valid id with underscores and digits",
+			data:   []byte("id: my_profile_2\n"),
+			wantID: "my_profile_2",
 		},
 	}
 	for _, tt := range tests {

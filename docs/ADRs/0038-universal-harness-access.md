@@ -22,7 +22,7 @@ Date: 2026-05-07
 
 Accepted
 
-*Extended by [ADR 0068](0068-portable-provider-profile-resolution.md), which
+*Extended by [ADR 0070](0070-portable-provider-profile-resolution.md), which
 adds URL support to `providers` and introduces `openshell.profiles` — extending
 portable resolution to provider and profile definitions.*
 

@@ -133,7 +133,7 @@ repo baseline and overrides)
   base harnesses that carry their own provider/profile dependencies.
   URL-resolved providers are validated against `allowed_remote_resources`
   and merged with local definitions at resolution time
-  ([ADR 0068](ADRs/0068-portable-provider-profile-resolution.md)).
+  ([ADR 0070](ADRs/0070-portable-provider-profile-resolution.md)).
 
 **Open questions:**
 
