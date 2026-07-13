@@ -600,17 +600,12 @@ jobs:
           if [[ -f .fullsend/config.yaml ]]; then
             if grep -qE 'source:[[:space:]]*https?://' .fullsend/config.yaml; then
               has_triggers=true
-            else
-              while IFS= read -r src; do
-                src="${src#"${src%%[![:space:]]*}"}"
-                src="${src%"${src##*[![:space:]]}"}"
-                [[ -z "${src}" ]] && continue
-                path=".fullsend/${src}"
-                if [[ -f "${path}" ]] && grep -qE '^trigger:' "${path}"; then
-                  has_triggers=true
-                  break
-                fi
-              done < <(grep -E '^[[:space:]]*source:' .fullsend/config.yaml | sed -E 's/^[[:space:]]*source:[[:space:]]*//')
+            elif grep -qE '^[[:space:]]*agents:' .fullsend/config.yaml \
+              && grep -qE '^[[:space:]]*-[[:space:]]*name:|^[[:space:]]*name:' .fullsend/config.yaml; then
+              # Agents are registered; let dispatch enumerate triggers. Skipping only
+              # when the config has no agents avoids false negatives from harness path
+              # layout while still skipping the CLI install on empty configs.
+              has_triggers=true
             fi
           fi
           echo "has_triggers=${has_triggers}" >> "${GITHUB_OUTPUT}"
