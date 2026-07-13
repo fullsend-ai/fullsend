@@ -591,8 +591,31 @@ jobs:
             .fullsend/.defaults/action.yml
           sparse-checkout-cone-mode: false
 
+      - name: Detect registered harness triggers
+        id: triggers
+        shell: bash
+        run: |
+          set -euo pipefail
+          has_triggers=false
+          if [[ -f .fullsend/config.yaml ]]; then
+            if grep -qE 'source:[[:space:]]*https?://' .fullsend/config.yaml; then
+              has_triggers=true
+            else
+              shopt -s nullglob
+              for src in $(grep -E '^[[:space:]]*source:' .fullsend/config.yaml | sed -E 's/^[[:space:]]*source:[[:space:]]*//'); do
+                path=".fullsend/${src}"
+                if [[ -f "${path}" ]] && grep -qE '^trigger:' "${path}"; then
+                  has_triggers=true
+                  break
+                fi
+              done
+            fi
+          fi
+          echo "has_triggers=${has_triggers}" >> "${GITHUB_OUTPUT}"
+
       - name: Detect dispatch CLI install mode
         id: mode
+        if: steps.triggers.outputs.has_triggers == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -603,7 +626,7 @@ jobs:
           fi
 
       - name: Guard vendored install
-        if: steps.mode.outputs.mode == 'vendored'
+        if: steps.triggers.outputs.has_triggers == 'true' && steps.mode.outputs.mode == 'vendored'
         shell: bash
         run: |
           set -euo pipefail
@@ -612,22 +635,68 @@ jobs:
             exit 1
           fi
 
+      - name: Restore fullsend CLI cache
+        if: steps.triggers.outputs.has_triggers == 'true'
+        id: cli-cache
+        uses: actions/cache/restore@5a3ec84e3dbd861d4c4b439f47a3d2b4b9f0c5e0 # v4.2.3
+        with:
+          path: ${{ runner.temp }}/fullsend-cache
+          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ job.workflow_sha }}
+
       - name: Install fullsend CLI (vendored defaults)
-        if: steps.mode.outputs.mode == 'vendored'
+        if: steps.triggers.outputs.has_triggers == 'true' && steps.mode.outputs.mode == 'vendored' && steps.cli-cache.outputs.cache-hit != 'true'
         uses: ./.defaults/.github/actions/install-fullsend-cli
         with:
           mode: vendored
           vendored_path: .fullsend/bin/fullsend
           github_token: ${{ github.token }}
 
+      - name: Checkout upstream install action
+        if: steps.triggers.outputs.has_triggers == 'true' && steps.mode.outputs.mode == 'upstream' && steps.cli-cache.outputs.cache-hit != 'true'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .workflow-actions
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/install-fullsend-cli/
+          sparse-checkout-cone-mode: false
+
       - name: Install fullsend CLI (upstream workflow)
-        if: steps.mode.outputs.mode == 'upstream'
-        uses: ./.github/actions/install-fullsend-cli
+        if: steps.triggers.outputs.has_triggers == 'true' && steps.mode.outputs.mode == 'upstream' && steps.cli-cache.outputs.cache-hit != 'true'
+        uses: ./.workflow-actions/.github/actions/install-fullsend-cli
         with:
           mode: upstream
           workflow_repository: ${{ job.workflow_repository }}
           workflow_sha: ${{ job.workflow_sha }}
           github_token: ${{ github.token }}
+
+      - name: Expose cached fullsend CLI
+        if: steps.triggers.outputs.has_triggers == 'true' && steps.cli-cache.outputs.cache-hit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_dir="${RUNNER_TEMP}/fullsend"
+          mkdir -p "${install_dir}"
+          cp "${RUNNER_TEMP}/fullsend-cache/fullsend" "${install_dir}/fullsend"
+          chmod +x "${install_dir}/fullsend"
+          echo "${install_dir}" >> "${GITHUB_PATH}"
+
+      - name: Prepare fullsend CLI cache artifact
+        if: steps.triggers.outputs.has_triggers == 'true' && steps.cli-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/fullsend-cache"
+          cp "${RUNNER_TEMP}/fullsend/fullsend" "${RUNNER_TEMP}/fullsend-cache/fullsend"
+
+      - name: Save fullsend CLI cache
+        if: steps.triggers.outputs.has_triggers == 'true' && steps.cli-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84e3dbd861d4c4b439f47a3d2b4b9f0c5e0 # v4.2.3
+        with:
+          path: ${{ runner.temp }}/fullsend-cache
+          key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ job.workflow_sha }}
 
       - name: Run fullsend dispatch
         id: dispatch
@@ -637,6 +706,10 @@ jobs:
           EVENT_ACTION: ${{ inputs.event_action }}
         run: |
           set -euo pipefail
+          if [[ "${{ steps.triggers.outputs.has_triggers }}" != "true" ]]; then
+            echo 'matrix={"include":[]}' >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
           MATRIX=$(fullsend dispatch \
             --input-driver gha-event \
             --output-driver gha-matrix \

@@ -2482,6 +2482,7 @@ func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string,
 	}
 	headRepo := pr.Head.Repo.FullName
 	baseRepo := pr.Base.Repo.FullName
+	isFork := headRepo == "" || baseRepo == "" || !strings.EqualFold(headRepo, baseRepo)
 	return &forge.PullRequestInfo{
 		Number:   pr.Number,
 		HTMLURL:  pr.HTMLURL,
@@ -2491,7 +2492,7 @@ func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string,
 		BaseRef:  pr.Base.Ref,
 		HeadSHA:  pr.Head.SHA,
 		AuthorID: pr.User.Login,
-		IsFork:   headRepo != "" && baseRepo != "" && !strings.EqualFold(headRepo, baseRepo),
+		IsFork:   isFork,
 	}, nil
 }
 

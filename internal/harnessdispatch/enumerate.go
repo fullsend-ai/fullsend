@@ -2,7 +2,6 @@ package harnessdispatch
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"path/filepath"
 	"strings"
@@ -41,11 +40,13 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg *config.D
 			OrgAllowlist:  allowlist,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("agent %s: %w", agent.Name, err)
+			log.Printf("harness dispatch: skipping agent %s: resolve failed: %v", agent.Name, err)
+			continue
 		}
 		h, err := harness.Load(resolved.Path)
 		if err != nil {
-			return nil, fmt.Errorf("agent %s: %w", agent.Name, err)
+			log.Printf("harness dispatch: skipping agent %s: load failed: %v", agent.Name, err)
+			continue
 		}
 		if strings.TrimSpace(h.Trigger) == "" {
 			continue

@@ -54,6 +54,14 @@ func TestIsWriteAuthorized(t *testing.T) {
 func TestMapGitHubPermission(t *testing.T) {
 	assert.Equal(t, RoleWrite, MapGitHubPermission("write"))
 	assert.Equal(t, RoleNone, MapGitHubPermission("unknown"))
+	assert.Equal(t, RoleNone, MapGitHubPermission("custom-docs-role"))
+}
+
+func TestComputeChangeProposalIsFork(t *testing.T) {
+	assert.False(t, ComputeChangeProposalIsFork("o/r", "o/r"))
+	assert.True(t, ComputeChangeProposalIsFork("fork/r", "o/r"))
+	assert.True(t, ComputeChangeProposalIsFork("", "o/r"))
+	assert.True(t, ComputeChangeProposalIsFork("o/r", ""))
 }
 
 func TestToMap_RoundTrip(t *testing.T) {

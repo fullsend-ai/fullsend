@@ -123,7 +123,7 @@ func mapGitHubWebhook(ctx context.Context, opts GHAEventOptions, raw map[string]
 	case "pull_request_review":
 		return mapPRReviewEvent(ev, raw, action, actorID)
 	case "issue_comment":
-		return mapIssueCommentEvent(ctx, opts, ev, raw, actorID)
+		return mapIssueCommentEvent(ctx, opts, raw, action, actorID)
 	default:
 		return nil, fmt.Errorf("unsupported github event name %q", opts.EventName)
 	}
@@ -263,11 +263,48 @@ func mapPREvent(ev *normevent.Event, raw map[string]any, action, actorID string)
 	return ev, nil
 }
 
-func mapIssueCommentEvent(ctx context.Context, opts GHAEventOptions, ev *normevent.Event, raw map[string]any, actorID string) (*normevent.Event, error) {
+func mapIssueCommentEvent(ctx context.Context, opts GHAEventOptions, raw map[string]any, action, actorID string) (*normevent.Event, error) {
 	issue := nestedMap(raw, "issue")
 	if issue == nil {
 		return nil, fmt.Errorf("issue_comment missing issue")
 	}
+	ev := &normevent.Event{
+		Repo: opts.Repository,
+		Actor: normevent.Actor{
+			ID:             actorID,
+			Kind:           normevent.ActorHuman,
+			Role:           normevent.RoleNone,
+			IsEntityAuthor: false,
+		},
+		Source: normevent.Source{
+			System:  normevent.SystemGitHub,
+			RawType: opts.EventName,
+		},
+		State: normevent.State{
+			Labels: []string{},
+		},
+	}
+	if action != "" {
+		ev.Source.RawAction = action
+	}
+
+	sender := nestedMap(raw, "sender")
+	if strings.HasSuffix(strings.ToLower(actorID), "[bot]") || stringField(sender, "type") == "Bot" {
+		ev.Actor.Kind = normevent.ActorBot
+	}
+	if opts.Forge != nil && actorID != "" {
+		parts := strings.SplitN(opts.Repository, "/", 2)
+		if len(parts) == 2 {
+			if gh, ok := opts.Forge.(forge.GitHubExtensions); ok {
+				if perm, err := gh.GetCollaboratorPermission(ctx, parts[0], parts[1], actorID); err == nil {
+					ev.Actor.Role = normevent.MapGitHubPermission(perm)
+				} else {
+					log.Printf("harness dispatch: collaborator permission lookup failed for %s on %s: %v", actorID, opts.Repository, err)
+				}
+			}
+		}
+	}
+
 	ev.Entity = entityFromIssue(issue)
 	ev.Actor.IsEntityAuthor = strings.EqualFold(stringField(issue, "user", "login"), actorID)
 	ev.State.Labels = labelNames(issue)
@@ -299,7 +336,16 @@ func mapIssueCommentEvent(ctx context.Context, opts GHAEventOptions, ev *normeve
 	}
 	body := stringField(comment, "body")
 	cmd, instr := extractCommentCommand(body)
-	ev.Transition.Kind = normevent.TransitionCommentAdded
+	switch action {
+	case "created":
+		ev.Transition.Kind = normevent.TransitionCommentAdded
+	case "edited":
+		ev.Transition.Kind = normevent.TransitionCommentEdited
+	case "deleted":
+		ev.Transition.Kind = normevent.TransitionCommentDeleted
+	default:
+		return nil, fmt.Errorf("unsupported issue_comment action %q", action)
+	}
 	ev.Transition.Comment = &normevent.Comment{
 		Command:     cmd,
 		Body:        truncateRunes(body, 4096),
@@ -364,7 +410,6 @@ func changeProposalFromPR(pr map[string]any) *normevent.ChangeProposal {
 	baseRepo := nestedMap(base, "repo")
 	headFull := stringField(headRepo, "full_name")
 	baseFull := stringField(baseRepo, "full_name")
-	isFork := headFull != "" && baseFull != "" && !strings.EqualFold(headFull, baseFull)
 	return &normevent.ChangeProposal{
 		ID:       intField(pr, "number"),
 		HeadRepo: headFull,
@@ -373,7 +418,7 @@ func changeProposalFromPR(pr map[string]any) *normevent.ChangeProposal {
 		BaseRef:  stringField(base, "ref"),
 		HeadSHA:  stringField(head, "sha"),
 		AuthorID: stringField(pr, "user", "login"),
-		IsFork:   isFork,
+		IsFork:   normevent.ComputeChangeProposalIsFork(headFull, baseFull),
 	}
 }
 

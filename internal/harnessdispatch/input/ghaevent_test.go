@@ -165,6 +165,72 @@ func TestLoadGHAEvent_IssueComment(t *testing.T) {
 	assert.NotNil(t, ev.State.ChangeProposal)
 }
 
+func TestLoadGHAEvent_IssueCommentEditedAndDeleted(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.CollaboratorPermissions = map[string]string{"o/r/alice": "write"}
+	issue := map[string]any{
+		"number":   float64(42),
+		"html_url": "https://github.com/o/r/issues/42",
+		"user":     map[string]any{"login": "alice"},
+		"labels":   []any{},
+	}
+
+	for action, want := range map[string]normevent.TransitionKind{
+		"edited":  normevent.TransitionCommentEdited,
+		"deleted": normevent.TransitionCommentDeleted,
+	} {
+		raw := map[string]any{
+			"action":  action,
+			"issue":   issue,
+			"comment": map[string]any{"body": "updated text"},
+			"sender":  map[string]any{"login": "alice", "type": "User"},
+		}
+		ev, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+			EventPath:  writeEventFile(t, raw),
+			EventName:  "issue_comment",
+			Repository: "o/r",
+			Forge:      client,
+		})
+		require.NoError(t, err, action)
+		assert.Equal(t, want, ev.Transition.Kind, action)
+	}
+}
+
+func TestLoadGHAEvent_GhostForkFailsClosed(t *testing.T) {
+	raw := map[string]any{
+		"action": "opened",
+		"pull_request": map[string]any{
+			"number":   float64(100),
+			"html_url": "https://github.com/o/r/pull/100",
+			"user":     map[string]any{"login": "alice"},
+			"labels":   []any{},
+			"head": map[string]any{
+				"ref": "feature",
+				"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+			},
+			"base": map[string]any{
+				"ref":  "main",
+				"repo": map[string]any{"full_name": "o/r"},
+			},
+		},
+		"sender": map[string]any{"login": "alice", "type": "User"},
+	}
+	path := writeEventFile(t, raw)
+
+	client := forge.NewFakeClient()
+	client.CollaboratorPermissions = map[string]string{"o/r/alice": "write"}
+
+	ev, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+		EventPath:  path,
+		EventName:  "pull_request_target",
+		Repository: "o/r",
+		Forge:      client,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, ev.State.ChangeProposal)
+	assert.True(t, ev.State.ChangeProposal.IsFork)
+}
+
 func TestLoadGHAEvent_UnsupportedEvent(t *testing.T) {
 	path := writeEventFile(t, map[string]any{"action": "published"})
 	_, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{

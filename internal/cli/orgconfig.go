@@ -61,9 +61,6 @@ func requireFullsendConfig(path string, printer *ui.Printer) (*config.OrgConfig,
 		return nil, fmt.Errorf("reading fullsend config for remote resource validation: %w", err)
 	}
 	if dirCfg.IsOrg {
-		return dirCfg.Org, nil
-	}
-	if dirCfg.IsOrg {
 		cfg := dirCfg.Org
 		cfg.AllowedRemoteResources = config.EnsureDefaultAllowedRemoteResources(cfg.AllowedRemoteResources)
 		return cfg, nil

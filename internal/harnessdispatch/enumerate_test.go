@@ -64,8 +64,20 @@ func TestListTriggeredHarnesses_DuplicateName(t *testing.T) {
 
 func TestListTriggeredHarnesses_MissingHarness(t *testing.T) {
 	dir := t.TempDir()
+	harnessDir := filepath.Join(dir, "harness")
+	require.NoError(t, os.MkdirAll(harnessDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(harnessDir, "good.yaml"), []byte(`agent: agents/triage.md
+role: triage
+slug: good
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+trigger: event.entity.kind == "work_item"
+`), 0o644))
 	cfg := config.NewPerRepoConfig(nil, "o/r")
-	cfg.Agents = []config.AgentEntry{{Name: "missing", Source: "harness/missing.yaml"}}
+	cfg.Agents = []config.AgentEntry{
+		{Name: "good", Source: "harness/good.yaml"},
+		{Name: "missing", Source: "harness/missing.yaml"},
+	}
 	data, err := yaml.Marshal(cfg)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
@@ -73,9 +85,10 @@ func TestListTriggeredHarnesses_MissingHarness(t *testing.T) {
 	dirCfg, err := config.LoadFromDir(dir, config.LoadOpts{MissingOK: false})
 	require.NoError(t, err)
 
-	_, err = ListTriggeredHarnesses(context.Background(), dir, dirCfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "missing")
+	out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg)
+	require.NoError(t, err)
+	require.Len(t, out, 1)
+	assert.Equal(t, "good", out[0].Name)
 }
 
 func TestMatchHarnesses_InvalidTrigger(t *testing.T) {

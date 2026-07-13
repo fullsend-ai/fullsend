@@ -902,6 +902,12 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 		if ok {
 			treePath, entry, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
 			if err == nil && treePath != "" {
+				// Apply the same symlink renaming as fetchBaseSkillDir so
+				// cache-hit paths return the real skill name, not "tree".
+				treePath, err = fetch.CacheNamedSymlink(treePath, filepath.Base(skillPath))
+				if err != nil {
+					return Dependency{}, "", fmt.Errorf("base %s: %w", field, err)
+				}
 				cachedDep := Dependency{
 					Field:     field,
 					URL:       skillFileURL,
@@ -990,6 +996,13 @@ func fetchBaseSkillDir(ctx context.Context, field, skillDirURL, skillFileURL, sk
 	treePath, _, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("base %s: reading cached skill directory: %w", field, err)
+	}
+
+	// Create a symlink named after the skill directory so downstream consumers
+	// (sandbox upload, logging) see the real skill name instead of "tree".
+	treePath, err = fetch.CacheNamedSymlink(treePath, filepath.Base(forgeInfo.Path))
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: %w", field, err)
 	}
 
 	if iErr := urlIndexPut(opts.WorkspaceRoot, skillFileURL, treeHash); iErr != nil {

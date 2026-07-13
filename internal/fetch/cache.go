@@ -340,6 +340,30 @@ func CacheGetDir(workspaceRoot, hash string) (string, *DirCacheEntry, error) {
 	return treeDir, &entry, nil
 }
 
+// CacheNamedSymlink creates a symlink in a cache directory so that the
+// directory can be referenced by a human-readable skill name instead of the
+// cache-internal "tree" directory name. It sanitizes the skill name, handles
+// race conditions (concurrent symlink creation), and returns the symlinked
+// path. If the skill name is invalid or matches a reserved cache file, the
+// original treePath is returned unchanged.
+func CacheNamedSymlink(treePath, skillName string) (string, error) {
+	if skillName == "" || skillName == "." || skillName == ".." || skillName == "metadata.json" {
+		skillName = "tree"
+	}
+	namedPath := filepath.Join(filepath.Dir(treePath), skillName)
+	if namedPath == treePath {
+		return treePath, nil
+	}
+	if _, err := os.Lstat(namedPath); os.IsNotExist(err) {
+		if err := os.Symlink("tree", namedPath); err != nil && !os.IsExist(err) {
+			return "", fmt.Errorf("creating named symlink: %w", err)
+		}
+	} else if err != nil {
+		return "", fmt.Errorf("checking named symlink: %w", err)
+	}
+	return namedPath, nil
+}
+
 // atomicWrite writes data to a temporary file in dir, then renames it to the
 // final name. This ensures readers never see a partially-written file.
 func atomicWrite(dir, name string, data []byte) error {

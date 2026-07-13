@@ -55,6 +55,8 @@ const (
 	TransitionMarkedReady     TransitionKind = "marked_ready"
 	TransitionLabelChanged    TransitionKind = "label_changed"
 	TransitionCommentAdded    TransitionKind = "comment_added"
+	TransitionCommentEdited   TransitionKind = "comment_edited"
+	TransitionCommentDeleted  TransitionKind = "comment_deleted"
 	TransitionReviewSubmitted TransitionKind = "review_submitted"
 )
 
@@ -208,9 +210,9 @@ func (e *Event) Validate() error {
 		default:
 			return fmt.Errorf("normalized event: transition.label.action must be added or removed")
 		}
-	case TransitionCommentAdded:
+	case TransitionCommentAdded, TransitionCommentEdited, TransitionCommentDeleted:
 		if e.Transition.Comment == nil {
-			return fmt.Errorf("normalized event: transition.comment required for comment_added")
+			return fmt.Errorf("normalized event: transition.comment required for %s", e.Transition.Kind)
 		}
 	case TransitionReviewSubmitted:
 		if e.Transition.Review == nil {
@@ -257,6 +259,9 @@ func IsWriteAuthorized(role ActorRole) bool {
 }
 
 // MapGitHubPermission maps GitHub collaborator API role_name to ActorRole.
+// Custom repository roles are not resolved here; they map to RoleNone, matching
+// the bash routing gate and keeping dispatch semantics restrictive until custom
+// roles are handled platform-wide.
 func MapGitHubPermission(roleName string) ActorRole {
 	switch strings.ToLower(strings.TrimSpace(roleName)) {
 	case "admin":
@@ -272,4 +277,14 @@ func MapGitHubPermission(roleName string) ActorRole {
 	default:
 		return RoleNone
 	}
+}
+
+// ComputeChangeProposalIsFork reports whether a change proposal is fork-based.
+// Missing head or base repo metadata is treated as fork (fail-closed) so CEL
+// guards like !event.state.change_proposal.is_fork stay trustworthy.
+func ComputeChangeProposalIsFork(headRepo, baseRepo string) bool {
+	if headRepo == "" || baseRepo == "" {
+		return true
+	}
+	return !strings.EqualFold(headRepo, baseRepo)
 }

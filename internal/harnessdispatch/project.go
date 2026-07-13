@@ -8,6 +8,9 @@ import (
 )
 
 // ProjectExecutionRef maps a matched harness and event to an execution ref.
+// Harness role values must be registered in the mint service ALLOWED_ROLES policy;
+// custom role names pass harness validation but fail token minting with HTTP 403
+// until mint enrollment is extended for the org.
 func ProjectExecutionRef(agentName string, role string, event *normevent.Event) (ExecutionRef, error) {
 	payload, err := buildEventPayload(event)
 	if err != nil {

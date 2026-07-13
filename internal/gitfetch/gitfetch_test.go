@@ -16,6 +16,20 @@ import (
 	"time"
 )
 
+// testGitEnv returns environment variables for ephemeral test repos,
+// including signing disable so global gitsign/gpgsign config is not invoked.
+func testGitEnv() []string {
+	return []string{
+		"GIT_AUTHOR_NAME=test",
+		"GIT_AUTHOR_EMAIL=test@test.com",
+		"GIT_COMMITTER_NAME=test",
+		"GIT_COMMITTER_EMAIL=test@test.com",
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=commit.gpgsign",
+		"GIT_CONFIG_VALUE_0=false",
+	}
+}
+
 // createTestRepo creates a git repo in a temp dir with the given files,
 // commits them, and returns the file:// URL and commit SHA.
 func createTestRepo(t *testing.T, files map[string]string) (repoURL, commitSHA string) {
@@ -29,12 +43,7 @@ func createTestRepo(t *testing.T, files map[string]string) (repoURL, commitSHA s
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=test",
-			"GIT_AUTHOR_EMAIL=test@test.com",
-			"GIT_COMMITTER_NAME=test",
-			"GIT_COMMITTER_EMAIL=test@test.com",
-		)
+		cmd.Env = append(os.Environ(), testGitEnv()...)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, out)
@@ -43,6 +52,7 @@ func createTestRepo(t *testing.T, files map[string]string) (repoURL, commitSHA s
 	}
 
 	run("init", "-b", "main")
+	run("config", "commit.gpgsign", "false")
 
 	for path, content := range files {
 		full := filepath.Join(dir, filepath.FromSlash(path))
@@ -153,12 +163,7 @@ func TestFetchTree_TagRef(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=test",
-			"GIT_AUTHOR_EMAIL=test@test.com",
-			"GIT_COMMITTER_NAME=test",
-			"GIT_COMMITTER_EMAIL=test@test.com",
-		)
+		cmd.Env = append(os.Environ(), testGitEnv()...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 		}
@@ -428,18 +433,14 @@ func TestFetchTree_SymlinkRejected(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=test",
-			"GIT_AUTHOR_EMAIL=test@test.com",
-			"GIT_COMMITTER_NAME=test",
-			"GIT_COMMITTER_EMAIL=test@test.com",
-		)
+		cmd.Env = append(os.Environ(), testGitEnv()...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 		}
 	}
 
 	run("init", "-b", "main")
+	run("config", "commit.gpgsign", "false")
 
 	skillDir := filepath.Join(dir, "skills", "evil")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
@@ -612,12 +613,7 @@ func TestFetchTree_AuthFallbackHTTP(t *testing.T) {
 		t.Helper()
 		cmd := exec.Command("git", args...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=test",
-			"GIT_AUTHOR_EMAIL=test@test.com",
-			"GIT_COMMITTER_NAME=test",
-			"GIT_COMMITTER_EMAIL=test@test.com",
-		)
+		cmd.Env = append(os.Environ(), testGitEnv()...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 		}
@@ -631,6 +627,7 @@ func TestFetchTree_AuthFallbackHTTP(t *testing.T) {
 	workDir := t.TempDir()
 	gitCmd(workDir, "clone", bareDir, "work")
 	work := filepath.Join(workDir, "work")
+	gitCmd(work, "config", "commit.gpgsign", "false")
 	skillDir := filepath.Join(work, "skills", "review")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		t.Fatal(err)

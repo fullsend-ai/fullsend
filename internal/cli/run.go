@@ -1290,7 +1290,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		// 9d. Extract target repo back to host. SafeDownload removes dangerous
 		// symlinks (absolute or repo-escaping) and .git/hooks/ to prevent sandbox escape.
-		if clearErr := os.RemoveAll(hostRepositoryDir); clearErr != nil {
+		//
+		// Clear the contents of the directory rather than removing the directory
+		// itself. Removing the directory would invalidate the inode, which breaks
+		// any shell whose CWD points at it (the next command in that shell would
+		// fail with "getwd: no such file or directory").
+		printer.StepInfo(fmt.Sprintf("Clearing %s before extraction", hostRepositoryDir))
+		if clearErr := clearDirContents(hostRepositoryDir); clearErr != nil {
 			return fmt.Errorf("clearing local repo %s before extraction: %w", hostRepositoryDir, clearErr)
 		}
 		repoExtractStart := time.Now()
@@ -2971,4 +2977,46 @@ func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient fo
 
 	printer.StepDone(fmt.Sprintf("Agent %s resolved from %s/%s@%s", agentName, defaultAgentsRepoOwner, defaultAgentsRepoName, config.DefaultUpstreamRef))
 	return localPath, []harness.Dependency{dep}, true
+}
+
+// containedLocalPath resolves a relative source path against baseDir and
+// verifies the result stays within baseDir. Returns an error for absolute
+// paths or paths that escape via traversal.
+func containedLocalPath(baseDir, source string) (string, error) {
+	if filepath.IsAbs(source) {
+		return "", fmt.Errorf("local path must be relative, not absolute")
+	}
+	resolved := filepath.Clean(filepath.Join(baseDir, source))
+	if rel, err := filepath.Rel(baseDir, resolved); err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("local path %q escapes fullsend directory", source)
+	}
+	// Resolve symlinks and re-check containment to prevent symlink escape.
+	real, err := filepath.EvalSymlinks(resolved)
+	if err != nil {
+		return "", err
+	}
+	realBase, err := filepath.EvalSymlinks(baseDir)
+	if err != nil {
+		return "", err
+	}
+	if rel, err := filepath.Rel(realBase, real); err != nil || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("local path %q escapes fullsend directory via symlink", source)
+	}
+	return real, nil
+}
+
+// clearDirContents removes all entries inside dir without removing dir itself.
+// This preserves the directory inode so that shells whose CWD points at dir
+// continue to work after the call.
+func clearDirContents(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			return err
+		}
+	}
+	return nil
 }
