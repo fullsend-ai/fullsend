@@ -3005,6 +3005,7 @@ func TestFetchBaseSkill_FullDirectory(t *testing.T) {
 	assert.Equal(t, "directory", dep.Type)
 	assert.Empty(t, dep.Warning)
 	assert.False(t, dep.CacheHit)
+	assert.Equal(t, "pr-review", filepath.Base(localDir), "fresh-fetch path should return skill name, not 'tree'")
 
 	// Verify all companion files exist in the cached directory.
 	skillMD, err := os.ReadFile(filepath.Join(localDir, "SKILL.md"))

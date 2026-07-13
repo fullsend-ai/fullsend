@@ -904,20 +904,9 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 			if err == nil && treePath != "" {
 				// Apply the same symlink renaming as fetchBaseSkillDir so
 				// cache-hit paths return the real skill name, not "tree".
-				skillName := filepath.Base(skillPath)
-				if skillName == "" || skillName == "." || skillName == ".." || skillName == "metadata.json" {
-					skillName = "tree"
-				}
-				namedPath := filepath.Join(filepath.Dir(treePath), skillName)
-				if namedPath != treePath {
-					if _, lErr := os.Lstat(namedPath); os.IsNotExist(lErr) {
-						if sErr := os.Symlink("tree", namedPath); sErr != nil && !os.IsExist(sErr) {
-							return Dependency{}, "", fmt.Errorf("base %s: creating named symlink: %w", field, sErr)
-						}
-					} else if lErr != nil {
-						return Dependency{}, "", fmt.Errorf("base %s: checking named symlink: %w", field, lErr)
-					}
-					treePath = namedPath
+				treePath, err = fetch.CacheNamedSymlink(treePath, filepath.Base(skillPath))
+				if err != nil {
+					return Dependency{}, "", fmt.Errorf("base %s: %w", field, err)
 				}
 				cachedDep := Dependency{
 					Field:     field,
@@ -1011,20 +1000,9 @@ func fetchBaseSkillDir(ctx context.Context, field, skillDirURL, skillFileURL, sk
 
 	// Create a symlink named after the skill directory so downstream consumers
 	// (sandbox upload, logging) see the real skill name instead of "tree".
-	skillName := filepath.Base(forgeInfo.Path)
-	if skillName == "" || skillName == "." || skillName == ".." || skillName == "metadata.json" {
-		skillName = "tree"
-	}
-	namedPath := filepath.Join(filepath.Dir(treePath), skillName)
-	if namedPath != treePath {
-		if _, err := os.Lstat(namedPath); os.IsNotExist(err) {
-			if err := os.Symlink("tree", namedPath); err != nil && !os.IsExist(err) {
-				return Dependency{}, "", fmt.Errorf("base %s: creating named symlink: %w", field, err)
-			}
-		} else if err != nil {
-			return Dependency{}, "", fmt.Errorf("base %s: checking named symlink: %w", field, err)
-		}
-		treePath = namedPath
+	treePath, err = fetch.CacheNamedSymlink(treePath, filepath.Base(forgeInfo.Path))
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: %w", field, err)
 	}
 
 	if iErr := urlIndexPut(opts.WorkspaceRoot, skillFileURL, treeHash); iErr != nil {

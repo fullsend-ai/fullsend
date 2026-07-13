@@ -361,21 +361,9 @@ func resolveSkillDirURL(ctx context.Context, field, rawURL string, h *harness.Ha
 
 	// Create a symlink named after the skill directory so downstream consumers
 	// (sandbox upload, logging) see the real skill name instead of "tree".
-	skillName := filepath.Base(forgeInfo.Path)
-	if skillName == "" || skillName == "." || skillName == ".." || skillName == "metadata.json" {
-		skillName = "tree"
-	}
-	namedPath := filepath.Join(filepath.Dir(treePath), skillName)
-	if namedPath != treePath {
-		// Idempotent: only create if it doesn't already exist.
-		if _, err := os.Lstat(namedPath); os.IsNotExist(err) {
-			if err := os.Symlink("tree", namedPath); err != nil && !os.IsExist(err) {
-				return Dependency{}, "", fmt.Errorf("creating named symlink for %s: %w", field, err)
-			}
-		} else if err != nil {
-			return Dependency{}, "", fmt.Errorf("checking named symlink for %s: %w", field, err)
-		}
-		treePath = namedPath
+	treePath, err = fetch.CacheNamedSymlink(treePath, filepath.Base(forgeInfo.Path))
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("naming cached skill for %s: %w", field, err)
 	}
 
 	if opts.AuditLogPath != "" {
