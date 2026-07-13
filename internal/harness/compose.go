@@ -902,6 +902,23 @@ func fetchBaseSkill(ctx context.Context, field, baseURLDir, skillPath string, al
 		if ok {
 			treePath, entry, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
 			if err == nil && treePath != "" {
+				// Apply the same symlink renaming as fetchBaseSkillDir so
+				// cache-hit paths return the real skill name, not "tree".
+				skillName := filepath.Base(skillPath)
+				if skillName == "" || skillName == "." || skillName == ".." || skillName == "metadata.json" {
+					skillName = "tree"
+				}
+				namedPath := filepath.Join(filepath.Dir(treePath), skillName)
+				if namedPath != treePath {
+					if _, lErr := os.Lstat(namedPath); os.IsNotExist(lErr) {
+						if sErr := os.Symlink("tree", namedPath); sErr != nil && !os.IsExist(sErr) {
+							return Dependency{}, "", fmt.Errorf("base %s: creating named symlink: %w", field, sErr)
+						}
+					} else if lErr != nil {
+						return Dependency{}, "", fmt.Errorf("base %s: checking named symlink: %w", field, lErr)
+					}
+					treePath = namedPath
+				}
 				cachedDep := Dependency{
 					Field:     field,
 					URL:       skillFileURL,

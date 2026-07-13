@@ -2798,6 +2798,31 @@ func TestFetchBaseSkill_CacheHit_AuditError(t *testing.T) {
 	assert.Contains(t, err.Error(), "audit")
 }
 
+func TestFetchBaseSkill_CacheHit_UsesSkillNameNotTree(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	skillFileURL := "https://raw.githubusercontent.com/org/repo/ref1/skills/pr-review/SKILL.md"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	files := map[string][]byte{"SKILL.md": []byte("# PR Review")}
+	treeHash, err := fetch.CachePutDir(cacheDir, skillFileURL, files, fetch.DirCachePutOpts{FullListing: true})
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, skillFileURL, treeHash))
+	require.NoError(t, urlIndexPut(cacheDir, "skill:"+skillFileURL, treeHash))
+
+	dep, localDir, err := fetchBaseSkill(context.Background(), "skills[0]",
+		"https://raw.githubusercontent.com/org/repo/ref1/",
+		"skills/pr-review", allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		})
+	require.NoError(t, err)
+	assert.True(t, dep.CacheHit)
+	assert.Equal(t, "pr-review", filepath.Base(localDir), "cache-hit path should return skill name, not 'tree'")
+	assert.FileExists(t, filepath.Join(localDir, "SKILL.md"))
+}
+
 func TestFetchBaseSkill_DefaultTreeFetcherUsed(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
