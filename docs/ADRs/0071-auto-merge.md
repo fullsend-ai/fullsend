@@ -1,5 +1,5 @@
 ---
-title: "62. Auto-merge"
+title: "71. Auto-merge"
 status: Accepted
 relates_to:
   - agent-architecture
@@ -10,7 +10,7 @@ topics:
   - auto-merge
 ---
 
-# 62. Auto-merge
+# 71. Auto-merge
 
 Date: 2026-06-30
 
