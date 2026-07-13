@@ -214,10 +214,13 @@ func TestResolveHarness_SkillDirFetchAndCache(t *testing.T) {
 	assert.Equal(t, treeHash, deps[0].SHA256)
 	assert.False(t, deps[0].CacheHit)
 
-	// Verify h.Skills[0] is a directory path (the tree/ subdirectory).
+	// Verify h.Skills[0] is a directory path whose basename is the skill
+	// directory name from the URL ("review"), not the cache-internal "tree".
 	info, err := os.Stat(h.Skills[0])
 	require.NoError(t, err)
 	assert.True(t, info.IsDir())
+	assert.Equal(t, "review", filepath.Base(h.Skills[0]),
+		"skill path basename should be the skill directory name from the URL, not 'tree'")
 
 	// Verify SKILL.md is inside the cached directory.
 	got, err := os.ReadFile(filepath.Join(h.Skills[0], "SKILL.md"))
@@ -254,6 +257,54 @@ func TestResolveHarness_SkillDirCacheHit(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, deps, 1)
 	assert.True(t, deps[0].CacheHit)
+	assert.Equal(t, "cached", filepath.Base(h.Skills[0]),
+		"cache-hit skill path basename should be the skill directory name from the URL")
+}
+
+func TestResolveHarness_SkillDirDotDotFallsBackToTree(t *testing.T) {
+	skillMD := []byte("# DotDot skill")
+
+	reg := newSkillRegistry()
+	files := map[string][]byte{"SKILL.md": skillMD}
+	treeHash := reg.register("skills/..", files)
+
+	root := t.TempDir()
+	h := &harness.Harness{
+		Skills:                 []string{forgeSkillURL("skills/..", treeHash)},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		TreeFetcher:   reg.fetcher(),
+	})
+	require.NoError(t, err)
+	require.Len(t, deps, 1)
+	assert.Equal(t, "tree", filepath.Base(h.Skills[0]),
+		"skill path with '..' basename should fall back to 'tree' to prevent traversal")
+}
+
+func TestResolveHarness_SkillDirMetadataJsonFallsBackToTree(t *testing.T) {
+	skillMD := []byte("# MetadataJson skill")
+
+	reg := newSkillRegistry()
+	files := map[string][]byte{"SKILL.md": skillMD}
+	treeHash := reg.register("skills/metadata.json", files)
+
+	root := t.TempDir()
+	h := &harness.Harness{
+		Skills:                 []string{forgeSkillURL("skills/metadata.json", treeHash)},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	deps, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		TreeFetcher:   reg.fetcher(),
+	})
+	require.NoError(t, err)
+	require.Len(t, deps, 1)
+	assert.Equal(t, "tree", filepath.Base(h.Skills[0]),
+		"skill path with 'metadata.json' basename should fall back to 'tree' to avoid cache file collision")
 }
 
 func TestResolveHarness_SkillDirHashMismatch(t *testing.T) {
@@ -621,6 +672,10 @@ func TestResolveHarness_MultipleSkills(t *testing.T) {
 	assert.Equal(t, "/local/skills/debug", h.Skills[0])
 	assert.False(t, harness.IsURL(h.Skills[1]))
 	assert.False(t, harness.IsURL(h.Skills[2]))
+
+	// Verify skills resolve to directories named after the URL path, not "tree".
+	assert.Equal(t, "one", filepath.Base(h.Skills[1]))
+	assert.Equal(t, "two", filepath.Base(h.Skills[2]))
 
 	// Verify skills resolve to directories with SKILL.md inside.
 	got1, err := os.ReadFile(filepath.Join(h.Skills[1], "SKILL.md"))
