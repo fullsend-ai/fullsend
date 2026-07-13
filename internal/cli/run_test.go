@@ -143,7 +143,7 @@ func TestRunCommand_RejectsNegativeMaxResources(t *testing.T) {
 
 // useFakeOpenshell prepends testdata/ to PATH so the stub openshell binary
 // is found instead of a real installation, causing tests to fail fast at
-// sandbox.EnsureAvailable instead of actually running agents.
+// sandbox.CheckGateway instead of actually running agents.
 func useFakeOpenshell(t *testing.T) {
 	t.Helper()
 	testdataDir, err := filepath.Abs("testdata")
@@ -155,8 +155,8 @@ func useFakeOpenshell(t *testing.T) {
 func TestRunAgent_HarnessLoadPipeline(t *testing.T) {
 	// Exercises the early runAgent pipeline: absFullsendDir, policy,
 	// org config loading, LoadWithBase, baseDeps, ResolveRelativeTo.
-	// The function fails later at sandbox.EnsureAvailable (no openshell
-	// in test env), but by then all harness-loading code paths are covered.
+	// The function fails later at sandbox.CheckGateway (stub exits 1),
+	// but by then all harness-loading code paths are covered.
 	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
