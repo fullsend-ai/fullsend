@@ -601,14 +601,16 @@ jobs:
             if grep -qE 'source:[[:space:]]*https?://' .fullsend/config.yaml; then
               has_triggers=true
             else
-              shopt -s nullglob
-              for src in $(grep -E '^[[:space:]]*source:' .fullsend/config.yaml | sed -E 's/^[[:space:]]*source:[[:space:]]*//'); do
+              while IFS= read -r src; do
+                src="${src#"${src%%[![:space:]]*}"}"
+                src="${src%"${src##*[![:space:]]}"}"
+                [[ -z "${src}" ]] && continue
                 path=".fullsend/${src}"
                 if [[ -f "${path}" ]] && grep -qE '^trigger:' "${path}"; then
                   has_triggers=true
                   break
                 fi
-              done
+              done < <(grep -E '^[[:space:]]*source:' .fullsend/config.yaml | sed -E 's/^[[:space:]]*source:[[:space:]]*//')
             fi
           fi
           echo "has_triggers=${has_triggers}" >> "${GITHUB_OUTPUT}"
