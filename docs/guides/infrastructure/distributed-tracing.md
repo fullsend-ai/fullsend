@@ -7,17 +7,16 @@ Decided in [ADR 0050](../../ADRs/0050-distributed-tracing-instrumentation.md).
 
 ## Zero-configuration baseline (Level 1)
 
-Every `fullsend run` produces two files in the run output directory with no
+Every `fullsend run` produces one file in the run output directory with no
 configuration required:
 
-- **`run-telemetry.jsonl`** — NDJSON stream of lifecycle events (step starts,
-  completions, failures, warnings) with timestamps, durations, and trace IDs.
-- **`run-summary.json`** — Aggregated run summary including agent name, exit
-  code, step timings, total duration, and a W3C `traceparent` value for
-  downstream correlation.
+- **`run-telemetry.jsonl`** — OTLP JSON spans covering the run lifecycle
+  (sandbox creation, agent iterations, validation) with timestamps, durations,
+  trace IDs, and token/cost attributes.
 
-These files are always written, even when no OTLP backend is configured. They
-contain metadata only — no prompts, completions, or source code content.
+This file is written on every run unless `OTEL_SDK_DISABLED=true`, which
+suppresses all telemetry output including the local file. It contains
+metadata only — no prompts, completions, or source code content.
 
 ## Prerequisites
 
@@ -50,8 +49,8 @@ export OTEL_EXPORTER_OTLP_ENDPOINT="https://your-backend:4318"
 **Precedence:** `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` > `OTEL_EXPORTER_OTLP_ENDPOINT`.
 Headers follow the same pattern: `OTEL_EXPORTER_OTLP_TRACES_HEADERS` > `OTEL_EXPORTER_OTLP_HEADERS`.
 
-Local files (`run-telemetry.jsonl`, `run-summary.json`) are always produced
-with no configuration needed (Level 1).
+The local file (`run-telemetry.jsonl`) is produced with no configuration
+needed (Level 1), unless `OTEL_SDK_DISABLED=true`.
 
 When an endpoint is configured, spans are exported via OTLP/HTTP. Any backend
 that speaks OTLP works: Jaeger, Grafana Tempo, MLflow, Arize Phoenix,
@@ -62,24 +61,25 @@ still produced and the run is not affected.
 
 Operational details:
 
-- **Export timing:** spans are exported once, when the run closes, inside a
-  hard wall-clock budget (5 seconds). There is no mid-run network traffic; a
-  dead endpoint costs at most the budget and one warning line.
-- **Crashed runs are not exported:** export replays the finalized artifacts,
-  so a run that never finalizes (crash, OOM, SIGKILL) writes no
-  `run-summary.json` and exports nothing. Its `run-telemetry.jsonl` remains
-  the local forensic record.
+- **Export timing:** spans are exported live via the OTel SDK's batch
+  processor as they complete. On shutdown, the provider flushes remaining
+  spans within a 5-second budget. A dead endpoint does not block the run.
+- **Crashed runs:** completed spans that were already flushed mid-run reach
+  the backend; spans still in the batch buffer are lost. The local
+  `run-telemetry.jsonl` (written synchronously per span) remains the
+  forensic record.
 - **Sampling:** when the run continues an inbound `TRACEPARENT` whose W3C
   sampled flag is unset (`-00`), the upstream sampling decision is respected:
-  nothing is exported. Local files are always written regardless.
+  nothing is exported. The local file is still written.
 - **Protocol:** OTLP over `http/protobuf` only. Setting
   `OTEL_EXPORTER_OTLP_PROTOCOL` (or the traces-specific variant) to anything
   else — e.g. `grpc` — skips export with a warning rather than posting
   protobuf at a gRPC endpoint.
 - **Validation:** a malformed endpoint value skips export with a warning; it
   is never silently replaced with the SDK's `localhost:4318` default.
-- **Kill switches:** `OTEL_SDK_DISABLED=true` and `OTEL_TRACES_EXPORTER=none`
-  are honored.
+- **Kill switches:** `OTEL_SDK_DISABLED=true` disables all telemetry output
+  (OTLP export *and* the local file). `OTEL_TRACES_EXPORTER=none` disables
+  only the OTLP export; the local file is still written.
 - **Private CAs:** point `OTEL_EXPORTER_OTLP_CERTIFICATE` at a PEM bundle for
   backends with certificates outside the system trust store. There is no
   skip-verify option.
@@ -105,7 +105,7 @@ export OTEL_EXPORTER_OTLP_TRACES_HEADERS="authorization=Basic%20${CREDS_B64},x-m
 > input/output token counts priced against MLflow's internal model table. It
 > excludes cache-creation/cache-read tokens, which dominate agent-run cost.
 > The authoritative figure is the runtime-reported `fullsend.cost_usd` on
-> `agent` spans (also in `run-summary.json`).
+> `agent` spans (also in `run-telemetry.jsonl`).
 
 ## Enabling content capture (Level 3)
 
@@ -153,9 +153,6 @@ independent GHA workflows), `TRACEPARENT` must be propagated manually — for
 example, via hidden issue/PR comments. GitHub webhooks do not support custom
 trace headers natively.
 
-The `run-summary.json` includes the `traceparent` value so downstream
-consumers (scripts, other agents) can continue the trace chain.
-
 ## Span structure
 
 A run produces this span hierarchy (span names match the `name` field in
@@ -196,10 +193,10 @@ Fullsend-specific attributes:
 
 | Attribute | On | Description |
 |-----------|-----|-------------|
-| `fullsend.work_item_id` | every span | Work item identity (e.g. `owner/repo#123`) — the primary cross-run correlation key |
+| `fullsend.work_item_id` | `run` span | Work item identity (e.g. `owner/repo#123`) — the primary cross-run correlation key |
 | `fullsend.cost_usd` | `agent` spans | Iteration cost in USD, rounded to cents |
 | `fullsend.tool_calls` | `agent` spans | Tool invocations in the iteration |
-| `agent` | `run` span | Agent name (predates `gen_ai.agent.name`; kept for Level 1 consumers) |
+| `fullsend.agent` | `run` span | Agent name (renamed from bare `agent` in the OTel SDK migration) |
 
 ## GHA workflow configuration
 
@@ -260,8 +257,8 @@ Two conventions keep a shared backend navigable as repos onboard:
    to a static value instead — variables are not expression-expanded.
 
    These become filterable trace tags (enable them as columns in MLflow's
-   Traces table). `fullsend.work_item_id` is already on every span, so runs
-   for the same issue correlate without configuration.
+   Traces table). `fullsend.work_item_id` is on the root `run` span, so runs
+   for the same issue correlate by filtering on the root span.
 
 ## Local development
 
