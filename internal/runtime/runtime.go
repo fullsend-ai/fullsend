@@ -26,10 +26,12 @@ type RunParams struct {
 	AgentBaseName string
 	Model         string
 	RepoDir       string
+	FullsendDir   string
 	PluginDirs    []string
 	Debug         string
 	Timeout       time.Duration
-	OutputPath    string // if set, tee stream-json stdout to this file
+	OutputPath    string           // if set, tee stream-json stdout to this file
+	OnEvent       func(AgentEvent) // if non-nil, called with normalized events during Run
 }
 
 // TranscriptError holds extracted error information from a runtime transcript.
@@ -61,7 +63,7 @@ type Backend struct {
 	Transcripts TranscriptHandler
 }
 
-// Default returns the configured agent backend (Claude Code today).
+// Default returns the Claude Code backend. Prefer ResolveFromConfig for org-aware selection.
 func Default() Backend {
 	r := ClaudeRuntime{}
 	return Backend{Runtime: r, Transcripts: r}

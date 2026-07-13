@@ -1,0 +1,6 @@
+---
+name: github-artifacts
+type: fullsend-github-artifacts
+# Workaround: https://github.com/NVIDIA/OpenShell/issues/1978
+credentials:
+  _NOOP_GITHUB_ARTIFACTS: ""

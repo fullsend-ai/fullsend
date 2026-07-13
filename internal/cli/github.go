@@ -16,6 +16,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/inference"
 	"github.com/fullsend-ai/fullsend/internal/inference/vertex"
 	"github.com/fullsend-ai/fullsend/internal/layers"
+	"github.com/fullsend-ai/fullsend/internal/maputil"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -65,6 +66,7 @@ type githubSetupConfig struct {
 	fullsendSource       string
 	dryRun               bool
 	direct               bool
+	runtime              string
 }
 
 func newGitHubSetupCmd() *cobra.Command {
@@ -142,6 +144,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	cmd.Flags().BoolVar(&cfg.enrollNone, "enroll-none", false, "skip repository enrollment without prompting")
 	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "print actions without making changes")
 	cmd.Flags().BoolVar(&cfg.direct, "direct", false, "push scaffold files directly to the default branch instead of creating a PR")
+	cmd.Flags().StringVar(&cfg.runtime, "runtime", "", "agent runtime for per-repo config (e.g. claude, dummy)")
 	addVendorFlags(cmd, &cfg.vendor, &cfg.fullsendBinary, &cfg.fullsendSource)
 
 	return cmd
@@ -212,6 +215,9 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	}
 
 	perRepoCfg := config.NewPerRepoConfig(roles, cfg.target)
+	if cfg.runtime != "" {
+		perRepoCfg.Runtime = cfg.runtime
+	}
 	if err := perRepoCfg.Validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
@@ -263,10 +269,10 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 		printer.Blank()
 		printer.StepInfo("Would set repository variables:")
-		for _, name := range sortedStringMapKeys(repoVars) {
+		for _, name := range maputil.SortedKeys(repoVars) {
 			printer.StepInfo(fmt.Sprintf("  %s = %s", name, repoVars[name]))
 		}
-		secretNames := sortedStringMapKeys(repoSecrets)
+		secretNames := maputil.SortedKeys(repoSecrets)
 		printer.StepInfo(fmt.Sprintf("Would set %d repository secrets:", len(secretNames)))
 		for _, name := range secretNames {
 			printer.StepInfo(fmt.Sprintf("  %s", name))
@@ -900,9 +906,17 @@ func runGitHubUninstall(ctx context.Context, client forge.Client, printer *ui.Pr
 		printer.StepDone("Deleted org secret " + name)
 	}
 
-	installations, listErr := client.ListOrgInstallations(ctx, org)
+	var installations []forge.Installation
+	var listErr error
+	if ghExt, ok := client.(forge.GitHubExtensions); ok {
+		installations, listErr = ghExt.ListOrgInstallations(ctx, org)
+	} else {
+		listErr = forge.ErrNotSupported
+	}
 	var existingSlugs []string
-	if listErr == nil {
+	if forge.IsNotSupported(listErr) {
+		printer.StepInfo("App uninstall is not available on this forge — skipping")
+	} else if listErr == nil {
 		installedSet := make(map[string]bool, len(installations))
 		for _, inst := range installations {
 			installedSet[inst.AppSlug] = true
@@ -915,7 +929,6 @@ func runGitHubUninstall(ctx context.Context, client forge.Client, printer *ui.Pr
 			}
 		}
 	} else {
-		// Can't check — fall back to showing all of them.
 		printer.StepWarn("Could not verify which apps exist; showing all")
 		existingSlugs = agentSlugs
 	}

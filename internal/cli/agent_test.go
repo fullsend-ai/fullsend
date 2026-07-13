@@ -632,6 +632,13 @@ func TestParseAgentSourceURL_GitHubBlobToRawConversion(t *testing.T) {
 	assert.Equal(t, "https://raw.githubusercontent.com/my-org/agents/"+testCommitSHA+"/harness/triage.yaml", rawURL)
 }
 
+func TestParseAgentSourceURL_GitLabURLRejected(t *testing.T) {
+	gitlabURL := "https://gitlab.com/my-org/agents/-/blob/" + testCommitSHA + "/harness/triage.yaml"
+	_, err := parseAgentSourceURL(gitlabURL)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetch support has not landed yet")
+}
+
 func TestRunAgentAdd_NonGitHubUpdateRequiresExplicitSHA(t *testing.T) {
 	dir := t.TempDir()
 	hash := "7777777777777777777777777777777777777777777777777777777777777777"
@@ -1182,7 +1189,7 @@ allowed_remote_resources:
 
 func TestNewAgentCmd_HasSubcommands(t *testing.T) {
 	cmd := newAgentCmd()
-	assert.Len(t, cmd.Commands(), 4)
+	assert.Len(t, cmd.Commands(), 5)
 	names := make([]string, len(cmd.Commands()))
 	for i, c := range cmd.Commands() {
 		names[i] = c.Name()
@@ -1191,4 +1198,5 @@ func TestNewAgentCmd_HasSubcommands(t *testing.T) {
 	assert.Contains(t, names, "list")
 	assert.Contains(t, names, "update")
 	assert.Contains(t, names, "remove")
+	assert.Contains(t, names, "migrate-customizations")
 }

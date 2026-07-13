@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help bootstrap lint lint-all check fmt \
+.PHONY: help bootstrap ensure-hooks lint lint-all check fmt \
        mindmap go-build go-test go-lint go-fmt go-vet go-tidy \
        lint-md-links script-test test \
        e2e-test behaviour-test lint-eval-cases functional-tests
@@ -28,7 +28,7 @@ help:
 	@echo "  script-test          - Run shell script tests (post-triage, post-code, post-review, pre-fetch-prior-review, reconcile-repos, validate-output-schema)"
 	@echo "  test                 - Run all checks: lint-all, go-test, script-test, lint-eval-cases"
 	@echo "  e2e-test             - Run admin e2e tests (CI: OIDC mint; local: gh auth login or GH_TOKEN)"
-	@echo "  behaviour-test       - Run Gherkin behaviour tests (CI: OIDC mint; local: gh auth login or GH_TOKEN)"
+	@echo "  behaviour-test       - Run Gherkin behaviour tests (installs fullsend per-repo; CI: OIDC mint)"
 	@echo "  lint-eval-cases      - Lint eval case definitions (annotations.yaml completeness)"
 	@echo "  functional-tests     - Run functional agent tests (requires EVAL_ORG, FULLSEND_DIR, GH_TOKEN, GCP creds)"
 
@@ -71,10 +71,19 @@ bootstrap:
 	@echo "==> Bootstrap complete!"
 	@echo "    Make sure $(BOOTSTRAP_BIN_DIR) is on your PATH."
 
-lint:
+ensure-hooks:
+	@if [ -z "$$CI" ] && [ -z "$$(git config --get core.hooksPath 2>/dev/null)" ]; then \
+		hooks_dir=$$(git rev-parse --git-path hooks 2>/dev/null); \
+		if [ -n "$$hooks_dir" ] && [ ! -f "$$hooks_dir/pre-commit" ]; then \
+			echo "==> Installing pre-commit hooks..."; \
+			pre-commit install; \
+		fi; \
+	fi
+
+lint: ensure-hooks
 	pre-commit run
 
-lint-all:
+lint-all: ensure-hooks
 	pre-commit run --all-files
 
 check:

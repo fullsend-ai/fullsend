@@ -293,18 +293,3 @@ func PathsFromInstallFiles(files InstallFiles) []string {
 	sort.Strings(paths)
 	return paths
 }
-
-// ComparePathPresence checks which expected paths exist in the repo.
-func ComparePathPresence(ctx context.Context, client forge.Client, owner, repo string, expected []string) (missing []string, err error) {
-	for _, path := range expected {
-		_, err := client.GetFileContent(ctx, owner, repo, path)
-		if err != nil {
-			if forge.IsNotFound(err) {
-				missing = append(missing, path)
-				continue
-			}
-			return nil, fmt.Errorf("checking %s: %w", path, err)
-		}
-	}
-	return missing, nil
-}

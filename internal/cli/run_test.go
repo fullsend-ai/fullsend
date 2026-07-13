@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,6 +25,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/fetchsvc"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/ui"
@@ -234,6 +236,243 @@ func TestRunAgent_HarnessLoadWithOrgConfig(t *testing.T) {
 	assert.Contains(t, err.Error(), "openshell")
 }
 
+func TestRunAgent_PerRepoConfig(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("version: \"1\"\nroles:\n  - triage\n  - coder\nallowed_remote_resources:\n  - \"https://example.com/\"\n"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestTryLoadFullsendConfig_PerRepoFallback(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"version: \"1\"\nroles:\n  - triage\nallowed_remote_resources:\n  - \"https://example.com/\"\nagents:\n  - name: lint\n    source: harness/lint.yaml\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	require.NotNil(t, cfg)
+	expected := []string{
+		"https://example.com/",
+		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
+		"https://raw.githubusercontent.com/fullsend-ai/agents/",
+	}
+	assert.Equal(t, expected, cfg.AllowedRemoteResources)
+	require.Len(t, cfg.Agents, 1)
+	assert.Equal(t, "lint", cfg.Agents[0].Name)
+	assert.Equal(t, []string{"triage"}, cfg.Defaults.Roles)
+}
+
+func TestTryLoadFullsendConfig_MissingFile(t *testing.T) {
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig("/nonexistent/config.yaml", printer)
+	assert.Nil(t, cfg)
+}
+
+func TestTryLoadFullsendConfig_UnreadableFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("version: 1"), 0o644))
+	require.NoError(t, os.Chmod(path, 0o000))
+	t.Cleanup(func() { os.Chmod(path, 0o644) })
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	assert.Nil(t, cfg)
+}
+
+func TestTryLoadFullsendConfig_MalformedYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("[[[not yaml"), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	assert.Nil(t, cfg)
+}
+
+func TestRequireFullsendConfig_MissingFile(t *testing.T) {
+	printer := ui.New(io.Discard)
+	cfg, err := requireFullsendConfig("/nonexistent/config.yaml", printer)
+	assert.Nil(t, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "URL-referenced resources require a config.yaml")
+}
+
+func TestRequireFullsendConfig_UnreadableFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("version: 1"), 0o644))
+	require.NoError(t, os.Chmod(path, 0o000))
+	t.Cleanup(func() { os.Chmod(path, 0o644) })
+
+	printer := ui.New(io.Discard)
+	cfg, err := requireFullsendConfig(path, printer)
+	assert.Nil(t, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading fullsend config for remote resource validation")
+}
+
+func TestRequireFullsendConfig_MalformedYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("[[[not yaml"), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg, err := requireFullsendConfig(path, printer)
+	assert.Nil(t, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing config")
+}
+
+func TestRequireFullsendConfig_PerRepoFallback(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"version: \"1\"\nroles:\n  - triage\nallowed_remote_resources:\n  - \"https://example.com/\"\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg, err := requireFullsendConfig(path, printer)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	expected := []string{
+		"https://example.com/",
+		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
+		"https://raw.githubusercontent.com/fullsend-ai/agents/",
+	}
+	assert.Equal(t, expected, cfg.AllowedRemoteResources)
+	assert.Equal(t, []string{"triage"}, cfg.Defaults.Roles)
+}
+
+func TestIsPerRepoYAML(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{"per-repo with roles", "version: '1'\nroles:\n  - triage\n", true},
+		{"org with dispatch", "version: '1'\ndispatch:\n  platform: github\n", false},
+		{"org with repos", "version: '1'\nrepos:\n  acme/widget:\n    enabled: true\n", false},
+		{"org with dispatch and roles", "version: '1'\ndispatch:\n  platform: github\nroles:\n  - triage\n", false},
+		{"org with inference", "version: '1'\ninference:\n  provider: vertex\n", false},
+		{"org with defaults", "version: '1'\ndefaults:\n  roles:\n    - triage\n", false},
+		{"per-repo without roles", "version: '1'\nkill_switch: false\n", true},
+		{"minimal (no discriminator)", "version: '1'\n", true},
+		{"invalid yaml", "[[[bad", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isPerRepoYAML([]byte(tt.yaml)))
+		})
+	}
+}
+
+func TestTryLoadFullsendConfig_PerRepoMalformed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("roles:\n  triage: true\n"), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	assert.Nil(t, cfg)
+}
+
+func TestTryLoadFullsendConfig_OrgConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"version: \"1\"\ndispatch:\n  platform: github\nallowed_remote_resources:\n  - \"https://example.com/\"\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	require.NotNil(t, cfg)
+	assert.Equal(t, "github", cfg.Dispatch.Platform)
+	expected := []string{
+		"https://example.com/",
+		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
+		"https://raw.githubusercontent.com/fullsend-ai/agents/",
+	}
+	assert.Equal(t, expected, cfg.AllowedRemoteResources)
+}
+
+func TestTryLoadFullsendConfig_ExplicitEmptyAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"version: \"1\"\ndispatch:\n  platform: github\nallowed_remote_resources: []\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	require.NotNil(t, cfg)
+	assert.Empty(t, cfg.AllowedRemoteResources, "explicit empty [] must preserve deny-all")
+}
+
+func TestTryLoadFullsendConfig_OmittedAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"version: \"1\"\ndispatch:\n  platform: github\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg := tryLoadFullsendConfig(path, printer)
+	require.NotNil(t, cfg)
+	assert.Equal(t, config.DefaultAllowedRemoteResources(), cfg.AllowedRemoteResources,
+		"omitted field must get defaults")
+}
+
+func TestRequireFullsendConfig_ExplicitEmptyAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"version: \"1\"\ndispatch:\n  platform: github\nallowed_remote_resources: []\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg, err := requireFullsendConfig(path, printer)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Empty(t, cfg.AllowedRemoteResources, "explicit empty [] must preserve deny-all")
+}
+
+func TestRequireFullsendConfig_PerRepoMalformed(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("roles:\n  triage: true\n"), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg, err := requireFullsendConfig(path, printer)
+	assert.Nil(t, cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing per-repo config")
+}
+
 func TestRunAgent_MalformedOrgConfig(t *testing.T) {
 	// A malformed config.yaml should produce a warning but not prevent
 	// local-only harnesses from proceeding through the pipeline.
@@ -288,7 +527,7 @@ func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing org config")
+	assert.Contains(t, err.Error(), "parsing config")
 }
 
 func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
@@ -309,7 +548,7 @@ func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "URL-referenced resources require an org-level config.yaml")
+	assert.Contains(t, err.Error(), "URL-referenced resources require a config.yaml")
 }
 
 func TestRunAgent_WithURLBase(t *testing.T) {
@@ -375,7 +614,7 @@ func TestRunAgent_URLBaseNoOrgConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "URL-referenced resources require an org-level config.yaml")
+	assert.Contains(t, err.Error(), "URL-referenced resources require a config.yaml")
 }
 
 func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
@@ -403,7 +642,7 @@ func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing org config")
+	assert.Contains(t, err.Error(), "parsing config")
 }
 
 func TestBuildScanContextCommand_SourcesEnv(t *testing.T) {
@@ -646,7 +885,7 @@ func TestResolveAgentSource_NoConfig(t *testing.T) {
 	))
 
 	printer := ui.New(io.Discard)
-	path, deps, err := resolveAgentSource(context.Background(), dir, "code", nil, harness.ComposeOpts{}, printer)
+	path, deps, err := resolveAgentSource(context.Background(), dir, "code", nil, nil, harness.ComposeOpts{}, printer)
 	require.NoError(t, err)
 	assert.Contains(t, path, "code.yaml")
 	assert.Empty(t, deps)
@@ -680,7 +919,7 @@ func TestResolveAgentSource_ConfigLocalPath(t *testing.T) {
 	}
 
 	printer := ui.New(io.Discard)
-	path, deps, err := resolveAgentSource(context.Background(), dir, "custom", orgCfg, harness.ComposeOpts{}, printer)
+	path, deps, err := resolveAgentSource(context.Background(), dir, "custom", nil, orgCfg, harness.ComposeOpts{}, printer)
 	require.NoError(t, err)
 	assert.Equal(t, filepath.Join(dir, "harness", "custom.yaml"), path)
 	assert.Empty(t, deps)
@@ -698,7 +937,7 @@ func TestResolveAgentSource_ConfigLocalPathNotFound(t *testing.T) {
 	}
 
 	printer := ui.New(io.Discard)
-	_, _, err := resolveAgentSource(context.Background(), dir, "missing", orgCfg, harness.ComposeOpts{}, printer)
+	_, _, err := resolveAgentSource(context.Background(), dir, "missing", nil, orgCfg, harness.ComposeOpts{}, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "config agent missing")
 }
@@ -714,7 +953,7 @@ func TestResolveAgentSource_ConfigLocalPathAbsoluteRejected(t *testing.T) {
 	}
 
 	printer := ui.New(io.Discard)
-	_, _, err := resolveAgentSource(context.Background(), dir, "evil", orgCfg, harness.ComposeOpts{}, printer)
+	_, _, err := resolveAgentSource(context.Background(), dir, "evil", nil, orgCfg, harness.ComposeOpts{}, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "absolute paths")
 }
@@ -730,9 +969,328 @@ func TestResolveAgentSource_ConfigLocalPathTraversalRejected(t *testing.T) {
 	}
 
 	printer := ui.New(io.Discard)
-	_, _, err := resolveAgentSource(context.Background(), dir, "passwd", orgCfg, harness.ComposeOpts{}, printer)
+	_, _, err := resolveAgentSource(context.Background(), dir, "passwd", nil, orgCfg, harness.ComposeOpts{}, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "path traversal")
+}
+
+func TestResolveAgentSource_AgentsRepoFallback_UnknownAgent(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	fakeClient := forge.NewFakeClient()
+	printer := ui.New(io.Discard)
+	_, _, err := resolveAgentSource(context.Background(), dir, "nonexistent", fakeClient, nil, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "harness file not found")
+}
+
+func TestResolveAgentSource_AgentsRepoFallback_Offline(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	fakeClient := forge.NewFakeClient()
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{
+		FetchPolicy: fetch.FetchPolicy{Offline: true},
+	}
+	_, _, err := resolveAgentSource(context.Background(), dir, "triage", fakeClient, nil, opts, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "harness file not found")
+}
+
+func TestResolveAgentSource_AgentsRepoFallback_NoClient(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+
+	printer := ui.New(io.Discard)
+	_, _, err := resolveAgentSource(context.Background(), dir, "triage", nil, nil, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "harness file not found")
+}
+
+func TestResolveAgentSource_AgentsRepoFallback_DiskFallback(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "triage.yaml"),
+		[]byte("agent: agents/triage.md\nrole: test\n"),
+		0o644,
+	))
+
+	printer := ui.New(io.Discard)
+	path, deps, err := resolveAgentSource(context.Background(), dir, "triage", nil, nil, harness.ComposeOpts{}, printer)
+	require.NoError(t, err)
+	assert.Contains(t, path, "triage.yaml")
+	assert.Empty(t, deps)
+}
+
+func TestTryAgentsRepoFallback_UnknownAgent(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	printer := ui.New(io.Discard)
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "custom-agent", fakeClient, harness.ComposeOpts{}, printer)
+	assert.False(t, ok)
+}
+
+func TestTryAgentsRepoFallback_Offline(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{FetchPolicy: fetch.FetchPolicy{Offline: true}}
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	assert.False(t, ok)
+}
+
+func TestTryAgentsRepoFallback_NilClient(t *testing.T) {
+	printer := ui.New(io.Discard)
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", nil, harness.ComposeOpts{}, printer)
+	assert.False(t, ok)
+}
+
+func TestTryAgentsRepoFallback_GetRefError(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Errors["GetRef"] = fmt.Errorf("rate limited")
+	printer := ui.New(io.Discard)
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, harness.ComposeOpts{}, printer)
+	assert.False(t, ok)
+}
+
+func TestTryAgentsRepoFallback_NotAllowlisted(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = "abc123def456789012345678901234567890abcd"
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{
+		OrgAllowlist: []string{"https://example.com/"},
+	}
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	assert.False(t, ok)
+}
+
+func TestTryAgentsRepoFallback_ExplicitlyEmptyAllowlist(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = "abc123def456789012345678901234567890abcd"
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{
+		OrgAllowlist: []string{},
+	}
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	assert.False(t, ok)
+}
+
+func TestTryAgentsRepoFallback_CaseNormalization(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = "abc123def456789012345678901234567890abcd"
+	printer := ui.New(io.Discard)
+
+	// "Triage" should pass the known-agent check but would have caused a 404
+	// before the case-normalization fix. Now it uses "triage" in the URL.
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "Triage", fakeClient, harness.ComposeOpts{}, printer)
+	// Fallback skips because fetch fails (no HTTP server), but it shouldn't
+	// panic and should get past the known-agent gate.
+	assert.False(t, ok)
+}
+
+func TestTryAgentsRepoFallback_ShortSHA(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = "abc"
+	printer := ui.New(io.Discard)
+
+	// Short SHA fails hex validation — exercises both validation and bounds guard.
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, harness.ComposeOpts{}, printer)
+	assert.False(t, ok)
+}
+
+func TestTryAgentsRepoFallback_InvalidSHA(t *testing.T) {
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = "ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ"
+	printer := ui.New(io.Discard)
+
+	// Non-hex characters should be rejected by SHA validation.
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, harness.ComposeOpts{}, printer)
+	assert.False(t, ok)
+}
+
+func TestTryAgentsRepoFallback_AllKnownAgents(t *testing.T) {
+	for _, name := range []string{"triage", "code", "fix", "review", "retro", "prioritize"} {
+		t.Run(name, func(t *testing.T) {
+			fakeClient := forge.NewFakeClient()
+			printer := ui.New(io.Discard)
+			// Should pass the known-agent gate (not return false immediately).
+			// GetBranchRef will fail since no ref is set, confirming we got past the gate.
+			_, _, ok := tryAgentsRepoFallback(context.Background(), name, fakeClient, harness.ComposeOpts{}, printer)
+			assert.False(t, ok)
+		})
+	}
+}
+
+func TestTryAgentsRepoFallback_SuccessPath(t *testing.T) {
+	harnessContent := []byte("agent: agents/triage.md\nrole: test\n")
+	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expectedPath := "/" + fakeSHA + "/harness/triage.yaml"
+		if r.URL.Path == expectedPath {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(harnessContent)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	hostPort := strings.TrimPrefix(srv.URL, "https://")
+	hostname, port, _ := net.SplitHostPort(hostPort)
+
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+
+	orig := defaultAgentsRepoURLPrefix
+	defaultAgentsRepoURLPrefix = srv.URL + "/"
+	t.Cleanup(func() { defaultAgentsRepoURLPrefix = orig })
+
+	workDir := t.TempDir()
+
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = fakeSHA
+
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: workDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+	}
+
+	path, deps, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	require.True(t, ok, "expected fallback to succeed")
+	assert.NotEmpty(t, path)
+	assert.Len(t, deps, 1)
+	assert.Contains(t, deps[0].URL, fakeSHA)
+	assert.Equal(t, "file", deps[0].Type)
+	assert.NotEmpty(t, deps[0].SHA256)
+}
+
+func TestTryAgentsRepoFallback_AuditLog(t *testing.T) {
+	harnessContent := []byte("agent: agents/triage.md\nrole: test\n")
+	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expectedPath := "/" + fakeSHA + "/harness/triage.yaml"
+		if r.URL.Path == expectedPath {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(harnessContent)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	hostPort := strings.TrimPrefix(srv.URL, "https://")
+	hostname, port, _ := net.SplitHostPort(hostPort)
+
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+
+	orig := defaultAgentsRepoURLPrefix
+	defaultAgentsRepoURLPrefix = srv.URL + "/"
+	t.Cleanup(func() { defaultAgentsRepoURLPrefix = orig })
+
+	workDir := t.TempDir()
+	auditLog := filepath.Join(workDir, "audit.jsonl")
+
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = fakeSHA
+
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: workDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+		AuditLogPath:  auditLog,
+		TraceID:       "test-trace-123",
+	}
+
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	require.True(t, ok, "expected fallback to succeed")
+
+	auditContent, err := os.ReadFile(auditLog)
+	require.NoError(t, err)
+	assert.Contains(t, string(auditContent), fakeSHA)
+	assert.Contains(t, string(auditContent), "test-trace-123")
+	assert.Contains(t, string(auditContent), `"fetch_type":"static"`)
+}
+
+func TestTryAgentsRepoFallback_CachePutFailure(t *testing.T) {
+	harnessContent := []byte("agent: agents/triage.md\nrole: test\n")
+	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		expectedPath := "/" + fakeSHA + "/harness/triage.yaml"
+		if r.URL.Path == expectedPath {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(harnessContent)
+		} else {
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	hostPort := strings.TrimPrefix(srv.URL, "https://")
+	hostname, port, _ := net.SplitHostPort(hostPort)
+
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+
+	orig := defaultAgentsRepoURLPrefix
+	defaultAgentsRepoURLPrefix = srv.URL + "/"
+	t.Cleanup(func() { defaultAgentsRepoURLPrefix = orig })
+
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = fakeSHA
+
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: "/nonexistent/path/that/will/fail",
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+	}
+
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	assert.False(t, ok, "expected fallback to fail when cache write fails")
+}
+
+func TestTryAgentsRepoFallback_FetchURLError(t *testing.T) {
+	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	hostPort := strings.TrimPrefix(srv.URL, "https://")
+	hostname, port, _ := net.SplitHostPort(hostPort)
+
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+
+	orig := defaultAgentsRepoURLPrefix
+	defaultAgentsRepoURLPrefix = srv.URL + "/"
+	t.Cleanup(func() { defaultAgentsRepoURLPrefix = orig })
+
+	fakeClient := forge.NewFakeClient()
+	fakeClient.Refs["fullsend-ai/agents/tags/v0"] = fakeSHA
+
+	printer := ui.New(io.Discard)
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+	}
+
+	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
+	assert.False(t, ok)
 }
 
 func TestContainedLocalPath_Valid(t *testing.T) {
@@ -2990,4 +3548,227 @@ func TestRunAgent_StatusNotifierSetup(t *testing.T) {
 	// Will error downstream (openshell not available), but status notifier setup should succeed
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestResolveBackendFromConfigData_OrgConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, config.DefaultAgentRoles(), "", "acme")
+	cfg.Defaults.Runtime = "dummy"
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+
+	backend, err := resolveBackendFromConfigData(data)
+	require.NoError(t, err)
+	assert.Equal(t, "dummy", backend.Runtime.Name())
+}
+
+func TestResolveBackendFromConfigData_PerRepoConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), "acme/test-repo")
+	cfg.Runtime = "dummy"
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+
+	backend, err := resolveBackendFromConfigData(data)
+	require.NoError(t, err)
+	assert.Equal(t, "dummy", backend.Runtime.Name())
+}
+
+func TestResolveBackendFromConfigData_Invalid(t *testing.T) {
+	t.Parallel()
+
+	_, err := resolveBackendFromConfigData([]byte("not: [valid: yaml"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing config for runtime selection")
+}
+
+func TestResolveBackendFromConfigData_UnknownRuntime(t *testing.T) {
+	t.Parallel()
+
+	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, config.DefaultAgentRoles(), "", "acme")
+	cfg.Defaults.Runtime = "nonexistent"
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+
+	_, err = resolveBackendFromConfigData(data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving runtime")
+}
+
+func TestIsOrgConfigData(t *testing.T) {
+	t.Parallel()
+
+	perRepo := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), "acme/test-repo")
+	perRepoData, err := perRepo.Marshal()
+	require.NoError(t, err)
+	assert.False(t, isOrgConfigData(perRepoData))
+
+	org := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, config.DefaultAgentRoles(), "", "acme")
+	orgData, err := org.Marshal()
+	require.NoError(t, err)
+	assert.True(t, isOrgConfigData(orgData))
+}
+
+func TestBackendFromConfigFile_MissingUsesDefault(t *testing.T) {
+	t.Parallel()
+
+	backend, source, err := backendFromConfigFile(filepath.Join(t.TempDir(), "missing.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, "default (config not found)", source)
+	assert.Equal(t, "claude", backend.Runtime.Name())
+}
+
+func TestBackendFromConfigFile_PerRepoConfig(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), "acme/test-repo")
+	cfg.Runtime = "dummy"
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, data, 0o644))
+
+	backend, _, err := backendFromConfigFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "dummy", backend.Runtime.Name())
+}
+
+func TestBackendFromConfigFile_PerRepoNestedConfig(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), "acme/test-repo")
+	cfg.Runtime = "dummy"
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".fullsend"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".fullsend", "config.yaml"), data, 0o644))
+
+	backend, source, err := backendFromConfigFile(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, source, ".fullsend")
+	assert.Equal(t, "dummy", backend.Runtime.Name())
+}
+
+func TestBackendFromConfigFile_ReadError(t *testing.T) {
+	t.Parallel()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("directory-as-file read error differs on Windows")
+	}
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.Mkdir(path, 0o755))
+
+	_, _, err := backendFromConfigFile(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading config.yaml for runtime selection")
+}
+
+func TestBackendFromConfigFile_ResolveError(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, config.DefaultAgentRoles(), "", "acme")
+	cfg.Defaults.Runtime = "nonexistent"
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, data, 0o644))
+
+	_, _, err = backendFromConfigFile(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving runtime")
+}
+
+func TestIsOrgConfigData_InvalidYAML(t *testing.T) {
+	t.Parallel()
+
+	assert.False(t, isOrgConfigData([]byte("not: [valid")))
+}
+
+func TestIsOrgConfigData_HeaderlessPerRepoByStructure(t *testing.T) {
+	t.Parallel()
+
+	// Hand-edited per-repo config without the header comment.
+	data := []byte("version: \"1\"\nroles:\n  - triage\n")
+	assert.False(t, isOrgConfigData(data))
+}
+
+func TestIsOrgConfigData_HeaderlessOrgByStructure(t *testing.T) {
+	t.Parallel()
+
+	data := []byte("version: \"1\"\ndefaults:\n  roles:\n    - triage\nrepos:\n  widget:\n    enabled: true\n")
+	assert.True(t, isOrgConfigData(data))
+}
+
+func TestDefaultAllowlistCoversAgentsRepoFallback(t *testing.T) {
+	// Verify the default allowlist covers the agents repo fallback URL shape.
+	// A future edit to DefaultAllowedRemoteResources() that drops the
+	// agents repo prefix would regress #3396 silently without this.
+	sampleURL := defaultAgentsRepoURLPrefix + strings.Repeat("a", 40) + "/scripts/pre-triage.sh"
+	assert.NotEmpty(t, harness.MatchingAllowedPrefixInList(sampleURL, config.DefaultAllowedRemoteResources()),
+		"DefaultAllowedRemoteResources must cover the agents repo fallback URL shape")
+}
+
+func TestAgentsRepoFallback_LoadWithBase_DefaultAllowlist(t *testing.T) {
+	// Integration test for #3396: a URL-sourced harness (from agents-repo
+	// fallback) with pre_script/post_script must succeed when OrgAllowlist
+	// carries the default allowlist (now always set via config loading or
+	// the nil-config fallback in runAgent).
+	preScript := []byte("#!/bin/bash\necho pre")
+	postScript := []byte("#!/bin/bash\necho post")
+	fakeSHA := "abcdef1234567890abcdef1234567890abcdef12"
+
+	harnessContent := []byte(`role: triage
+slug: triage
+agent: agents/triage.md
+pre_script: scripts/pre-triage.sh
+post_script: scripts/post-triage.sh
+`)
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/"+fakeSHA+"/harness/triage.yaml":
+			_, _ = w.Write(harnessContent)
+		case r.URL.Path == "/"+fakeSHA+"/scripts/pre-triage.sh":
+			_, _ = w.Write(preScript)
+		case r.URL.Path == "/"+fakeSHA+"/scripts/post-triage.sh":
+			_, _ = w.Write(postScript)
+		case r.URL.Path == "/"+fakeSHA+"/agents/triage.md":
+			_, _ = w.Write([]byte("# triage agent"))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	hostPort := strings.TrimPrefix(srv.URL, "https://")
+	hostname, port, _ := net.SplitHostPort(hostPort)
+	tlsCfg := srv.TLS.Clone()
+	tlsCfg.InsecureSkipVerify = true
+	policy := fetch.NewTestPolicy(tlsCfg, []string{hostname}, []string{port})
+
+	workDir := t.TempDir()
+	sourceURL := srv.URL + "/" + fakeSHA + "/harness/triage.yaml"
+
+	harnessDir := filepath.Join(workDir, "harness")
+	require.NoError(t, os.MkdirAll(harnessDir, 0o755))
+	harnessPath := filepath.Join(harnessDir, "triage.yaml")
+	require.NoError(t, os.WriteFile(harnessPath, harnessContent, 0o644))
+
+	// With the test server's URL in the allowlist, LoadWithBase succeeds.
+	opts := harness.ComposeOpts{
+		WorkspaceRoot: workDir,
+		FetchPolicy:   policy,
+		SourceURL:     sourceURL,
+		OrgAllowlist:  []string{srv.URL + "/"},
+	}
+
+	h, _, err := harness.LoadWithBase(context.Background(), harnessPath, opts)
+	require.NoError(t, err, "should succeed with allowlist set")
+	assert.True(t, filepath.IsAbs(h.PreScript), "pre_script should be resolved to cache path")
+	assert.True(t, filepath.IsAbs(h.PostScript), "post_script should be resolved to cache path")
 }

@@ -11,9 +11,9 @@ description: >-
 ## Overview
 
 When multiple PRs add ADRs concurrently, they may pick the same four-digit
-number. This skill detects collisions against the target branch and renumbers
-the ADR file, its internal title/heading, and every reference to it across the
-repository.
+number. This skill detects collisions against the target branch **and** against
+ADR numbers introduced by other open PRs, then renumbers the ADR file, its
+internal title/heading, and every reference to it across the repository.
 
 ## When to Use
 
@@ -55,14 +55,35 @@ For each new ADR file, extract its four-digit number from the filename
 (`NNNN-short-description.md`). Check whether any file with the same `NNNN`
 prefix exists on the target branch.
 
-If there are no collisions, report that all numbers are clear and stop.
+If there are no collisions with the target branch, continue to step 3 anyway —
+there may still be collisions with numbers claimed by other open PRs.
 
-### 3. Find the next available number
+### 3. Collect in-flight ADR numbers and check for collisions
 
-For each colliding ADR, determine the next available four-digit number.
-Consider both the target branch ADR files **and** other new ADR files in this
-branch (to avoid collisions among the branch's own ADRs). Pick the lowest
-unused number.
+Collect **all** taken ADR numbers from these three sources:
+
+1. **Target branch ADR files** (from step 2).
+2. **Other new ADR files in this branch** (to avoid collisions among the
+   branch's own ADRs).
+3. **ADR files introduced by other open PRs.** This is critical — multiple
+   PRs may be adding ADRs concurrently. Run the helper script to collect
+   every ADR number from open PRs targeting the same base branch:
+
+```bash
+bash skills/renumber-adr/scripts/inflight-adr-numbers.sh <target-branch> <current-pr-number>
+```
+
+   Pass the current PR number so the script excludes it (avoiding
+   self-collision). The script prints one four-digit number per line.
+   If it produces no output, there are no in-flight ADR numbers to
+   worry about.
+
+Combine all three sets of taken numbers. For each new ADR in this branch,
+check whether its number appears in the combined set. If none of the new ADR
+numbers collide with any taken number, report that all numbers are clear and
+stop.
+
+For each colliding ADR, pick the lowest unused four-digit number.
 
 ### 4. Rename the file
 
@@ -127,5 +148,8 @@ After all renames and reference updates:
 - **Handle multiple ADRs.** If the branch adds several ADRs and more than one
   collides, renumber all of them before updating references (so cross-references
   among the new ADRs are correct).
+- **Check open PRs.** Always check ADR numbers introduced by other open PRs
+  targeting the same base branch. A number that is clear on the target branch
+  today may collide with another PR that merges first.
 - **Do not modify ADR content** beyond the number in the title and heading.
   Substantial ADR content is not rewritten once accepted; this skill only fixes numbering.

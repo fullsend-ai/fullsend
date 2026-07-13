@@ -108,6 +108,7 @@ type CommentNotificationConfig struct {
 // RepoDefaults holds default settings applied to all repos.
 type RepoDefaults struct {
 	Roles                    []string                  `yaml:"roles"`
+	Runtime                  string                    `yaml:"runtime,omitempty"`
 	MaxImplementationRetries int                       `yaml:"max_implementation_retries"`
 	AutoMerge                bool                      `yaml:"auto_merge"`
 	StatusNotifications      *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
@@ -156,6 +157,11 @@ func ValidProviders() []string {
 	return []string{"vertex"}
 }
 
+// ValidRuntimes returns the set of recognized agent runtimes.
+func ValidRuntimes() []string {
+	return []string{"claude", "dummy"}
+}
+
 // DefaultAgentRoles returns the standard set of agent roles installed
 // when no custom roles are specified. The fix stage reuses the coder
 // app (role: coder) so it does not need a separate app or PEM.
@@ -177,6 +183,34 @@ func DefaultAllowedRemoteResources() []string {
 		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
 		"https://raw.githubusercontent.com/fullsend-ai/agents/",
 	}
+}
+
+// EnsureDefaultAllowedRemoteResources returns a new slice with default
+// allowed-remote-resources prefixes merged into the provided list.
+// Nil input (field omitted from YAML) returns defaults alone.
+// An explicit empty slice (allowed_remote_resources: []) is returned
+// unchanged to preserve deny-all semantics. Non-empty input gets any
+// missing defaults appended (preserving the caller's original ordering).
+func EnsureDefaultAllowedRemoteResources(existing []string) []string {
+	if existing == nil {
+		return DefaultAllowedRemoteResources()
+	}
+	if len(existing) == 0 {
+		return existing
+	}
+	defaults := DefaultAllowedRemoteResources()
+	seen := make(map[string]bool, len(existing))
+	for _, e := range existing {
+		seen[e] = true
+	}
+	result := make([]string, len(existing))
+	copy(result, existing)
+	for _, d := range defaults {
+		if !seen[d] {
+			result = append(result, d)
+		}
+	}
+	return result
 }
 
 // DefaultAgentEntries computes default agent URL entries for the given
@@ -220,6 +254,7 @@ func NewOrgConfig(allRepos, enabledRepos, roles []string, inferenceProvider, org
 		},
 		Defaults: RepoDefaults{
 			Roles:                    roles,
+			Runtime:                  "claude",
 			MaxImplementationRetries: 2,
 			AutoMerge:                false,
 		},
@@ -293,6 +328,12 @@ func (c *OrgConfig) Validate() error {
 		validProviders := ValidProviders()
 		if !slices.Contains(validProviders, c.Inference.Provider) {
 			return fmt.Errorf("invalid inference provider %q: must be one of %s", c.Inference.Provider, strings.Join(validProviders, ", "))
+		}
+	}
+	if rt := c.Defaults.Runtime; rt != "" {
+		validRuntimes := ValidRuntimes()
+		if !slices.Contains(validRuntimes, rt) {
+			return fmt.Errorf("invalid runtime %q: must be one of %s", rt, strings.Join(validRuntimes, ", "))
 		}
 	}
 	if err := validateStatusNotifications(c.Defaults.StatusNotifications); err != nil {
@@ -407,6 +448,7 @@ func (c *OrgConfig) DefaultRoles() []string {
 type PerRepoConfig struct {
 	Version                string              `yaml:"version"`
 	KillSwitch             bool                `yaml:"kill_switch,omitempty"`
+	Runtime                string              `yaml:"runtime,omitempty"`
 	Roles                  []string            `yaml:"roles,omitempty"`
 	Agents                 []AgentEntry        `yaml:"agents,omitempty"`
 	AllowedRemoteResources []string            `yaml:"allowed_remote_resources,omitempty"`
@@ -438,6 +480,21 @@ func NewPerRepoConfig(roles []string, targetRepo string) *PerRepoConfig {
 		}
 	}
 	return cfg
+}
+
+// OrgConfigFromPerRepo adapts a PerRepoConfig into an OrgConfig so callers
+// that expect OrgConfig can work uniformly with both config formats. Shared
+// fields and Roles (mapped to Defaults.Roles) are copied; OrgConfig-specific
+// fields (Dispatch, Inference, Repos) remain zero-valued.
+func OrgConfigFromPerRepo(pr *PerRepoConfig) *OrgConfig {
+	return &OrgConfig{
+		Version:                pr.Version,
+		KillSwitch:             pr.KillSwitch,
+		Defaults:               RepoDefaults{Roles: pr.Roles, Runtime: pr.Runtime},
+		Agents:                 pr.Agents,
+		AllowedRemoteResources: pr.AllowedRemoteResources,
+		CreateIssues:           pr.CreateIssues,
+	}
 }
 
 // ParsePerRepoConfig parses YAML bytes into a PerRepoConfig.
@@ -479,6 +536,12 @@ func (c *PerRepoConfig) Validate() error {
 	}
 	if err := validateCreateIssues(c.CreateIssues); err != nil {
 		return err
+	}
+	if rt := c.Runtime; rt != "" {
+		validRuntimes := ValidRuntimes()
+		if !slices.Contains(validRuntimes, rt) {
+			return fmt.Errorf("invalid runtime %q: must be one of %s", rt, strings.Join(validRuntimes, ", "))
+		}
 	}
 	return nil
 }

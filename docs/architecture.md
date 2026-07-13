@@ -47,6 +47,7 @@ Infrastructure platform choice and configuration are specified in the adopting o
 - Event-driven stage dispatch: eliminate `workflow_dispatch` + `gh workflow run` fan-out from `dispatch.yml` in favor of synchronous `workflow_call` so the dispatched run stays linked to the caller ([ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
 - Multi-repo management: a `fullsend repos` subcommand group with a declarative `repos.yaml` manifest for managing per-repo installations at scale — bulk install, status, sync, upgrade, and removal across repos and orgs ([ADR 0057](ADRs/0057-repos-management.md)).
 - Dispatch version-skew resolution: per-repo `reusable-dispatch.yml` inlines stage workflow jobs directly, eliminating `@v0` references to `reusable-{stage}.yml` ([ADR 0062](ADRs/0062-dispatch-version-skew.md)).
+- GitLab event dispatch: two-path model — native CI triggers (`merge_request_event`) for MR events, cron-based polling for issues/comments/labels. No external infrastructure (no webhook bridge). Bot PAT via OIDC/WIF from Secret Manager or protected CI/CD variable. Per-repo only ([ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
 
 **Open questions:**
 
@@ -68,9 +69,13 @@ Sandbox defaults (network policy, filesystem restrictions) are configured in the
 **Open questions:**
 
 - What is the right isolation level — process, container, microVM, or separate cluster? (See [agent-infrastructure.md](problems/agent-infrastructure.md) and [security-threat-model.md](problems/security-threat-model.md).)
-- How granular is network regulation? Allowlist of endpoints, or coarser controls? (A **protocol gateway** toward approved model and MCP endpoints is one way to narrow egress without handing agents raw internet access; see [landscape.md](landscape.md#agent-gateway).)
+- ~~How granular is network regulation? Allowlist of endpoints, or coarser controls?~~ Decided in [ADR 0065](ADRs/0065-provider-backed-policy-composition.md): network access is granted through provider profiles with per-endpoint allowlists.
 - Does the sandbox provide a pre-built environment (tools, language runtimes, repo clones), or does the agent set up its own workspace within the sandbox?
 - ~~Is the sandbox the same for all agent roles, or does each role get a differently-scoped sandbox?~~ Decided in [ADR 0020](ADRs/0020-composable-single-responsibility-agents-with-individual-sandboxes.md): each agent gets its own sandbox with policies designed for its responsibility.
+
+**Decided:**
+
+- Provider-backed policy composition: network access is granted through provider profiles declared in harness files. Policy files define only non-composable sandbox restrictions (filesystem, landlock, process). A single `base.yaml` replaces per-agent policy files in the scaffold. Inline `network_policies` continue to work but providers are the recommended approach ([ADR 0065](ADRs/0065-provider-backed-policy-composition.md)).
 
 ## Agent Harness
 
@@ -127,7 +132,11 @@ This is the thing that actually reasons and acts. Everything else in this docume
 
 **Decided (implementation):**
 
-- The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; the MVP registers Claude Code only. Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `ClaudeHooksBootstrap` for sandbox tool hooks. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
+- The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; production orgs default to Claude Code. Runtime selection is configured in `defaults.runtime` on the org `config.yaml` and resolved via `runtime.ResolveFromConfig()`. A **dummy** runtime executes scripted operations in the real OpenShell sandbox for behaviour tests (inference removed). Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `ClaudeHooksBootstrap` for sandbox tool hooks. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
+
+### Behaviour testing
+
+End-to-end **behaviour tests** under `e2e/behaviour/` validate deterministic platform code — dispatch routing, harness loading, sandbox policy, SCM mutations — with the LLM layer removed via the dummy runtime. Tests exercise real GitHub and GitHub Actions through pluggable SCM and CI drivers; Gherkin scenarios stay install-mode agnostic while runner env vars select backends. This coverage is **orthogonal** to LLM and instruction testing in [testing-agents.md](problems/testing-agents.md). See [ADR 0066](ADRs/0066-behaviour-tests-with-gherkin-and-drivers.md).
 
 **Open questions:**
 
@@ -149,7 +158,7 @@ Identity is not the same as trust. An agent's identity lets it authenticate to e
 - Per-role GitHub Apps with manifest-based creation. Each agent role gets its own app with scoped permissions. PEMs stored in Secret Manager as `fullsend-{role}-app-pem` — one secret per role, shared across orgs on a mint. `ROLE_APP_IDS` uses the same shared-per-role model (`coder` → app ID). Org isolation is enforced via `ALLOWED_ORGS`, WIF conditions, and installation verification ([ADR 0007](ADRs/0007-per-role-github-apps.md), [ADR 0033](ADRs/0033-per-repo-installation-mode.md)). Public multi-tenant mint (`ALLOWED_ORGS=*`) with upstream-only workflow provenance is defined in [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); upstream-only provenance limits which workflows can call the mint, complementing [ADR 0029](ADRs/0029-central-token-mint-secretless-fullsend.md) multi-tenant blast-radius concerns.
 - Cross-org mint authorization: workflows may request tokens for a different org via optional `target_org` when the target org installs the role App and sets `FULLSEND_FOREIGN_<role>_REPOS`. Empty `repos` yields installation-wide tokens on either path; cross-org adds FOREIGN gating, same-org relies on WIF/OIDC enrollment ([ADR 0060](ADRs/0060-cross-org-mint-authorization-via-org-variables.md)).
 - Standalone mint deployment: `cmd/mint/` provides a self-contained HTTP server that uses direct JWKS verification and filesystem PEM storage instead of GCP infrastructure. It shares the `internal/mintcore/` library with the GCF mint and adds support for custom role permissions and a fallback proxy to an upstream mint. Custom role permissions live in mintcore (not `cmd/mint/`) so that `RolePermissionsFor`, `HasRole`, and `CreateInstallationToken` return a unified view without callers needing to distinguish built-in from custom roles. The GCF mint never calls `RegisterCustomRolePermissions`, so the code is inert there. See the [standalone mint guide](guides/infrastructure/standalone-mint.md).
-- Hosted public community mint: steady-state deployment on Cloudflare Workers (JWKS + WAF + single ops console), with interim GCP Cloud Function acceptable until the Worker port is production-ready. Trust policy (`ALLOWED_ORGS=*`, upstream-only workflow provenance) is in [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); deployment, edge security, monitoring, and phasing are in [ADR 0063](ADRs/0063-public-community-mint-architecture.md). Enrollment is installing the shared Apps—no per-org mint env registration ([#1145](https://github.com/fullsend-ai/fullsend/issues/1145)).
+- Hosted public community mint: steady-state deployment on Cloudflare Workers (JWKS + WAF + single ops console), with interim GCP Cloud Function acceptable until the Worker port is production-ready. Trust policy (`ALLOWED_ORGS=*`, upstream-only workflow provenance) is in [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); deployment, edge security, monitoring, and phasing are in [ADR 0068](ADRs/0068-public-community-mint-architecture.md). Enrollment is installing the shared Apps—no per-org mint env registration ([#1145](https://github.com/fullsend-ai/fullsend/issues/1145)).
 
 One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer/oidcx): a service that accepts OIDC identity tokens and exchanges them for short-lived access tokens. It can mint tokens scoped to selected GitHub repositories and permissions, or to selected Oxide silos and permissions, and it also ships with a GitHub Action wrapper. In a Fullsend deployment, this can be used by the sandbox entrypoint to narrow a broad GitHub App identity down to only the specific permissions an agent needs for the current run.
 
@@ -158,7 +167,7 @@ One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer
 - ~~What identity model fits best — separate bot accounts per agent role, a single bot account with role metadata, GitHub App installations, or something else?~~ Decided in [ADR 0007](ADRs/0007-per-role-github-apps.md).
 - How are credentials rotated and revoked, and who has authority to do that?
 - Does the identity provider integrate with existing secrets management, or is it a new system?
-- How will per-role identity work on GitLab and Forgejo, which lack GitHub's app manifest flow?
+- How will per-role identity work on GitLab and Forgejo, which lack GitHub's app manifest flow? GitLab uses a bot PAT credential model (via OIDC/WIF or protected CI/CD variable) — see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md).
 
 ## Agent Dispatch and Coordination Layer
 
@@ -173,10 +182,19 @@ The existing design principle is that [the repo is the coordinator](problems/age
   evaluated by `fullsend dispatch` with pluggable input/output drivers
   operating on a `NormalizedEvent` struct
   ([ADR 0061](ADRs/0061-harness-cel-dispatch.md)).
+- Per-repo **polling** complements webhook dispatch: `fullsend poll` uses poll
+  input drivers to discover work from remote systems (Jira first), coordinates
+  via source-native write-then-verify locks, and feeds the same dispatch pipeline
+  as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
+  scope is per-repo mode only.
+- GitLab dispatch uses cron-polled scheduled pipelines for issue/comment/label events and native `merge_request_event` for MR events. No webhook bridge required (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
 
 **Open questions:**
 
-- Is GitHub's event system sufficient, or do we need additional coordination logic (e.g. to prevent two code agents from picking up the same issue)?
+- Is GitHub's event system sufficient for forge-native duplicate protection, or
+  do we need additional coordination beyond label/state conventions and agent
+  idempotency? (Jira polling per ADR 0063 uses entity-property locks and runner
+  lock refresh.)
 - How does work assignment interact with the backlog/priority agent described in [agent-architecture.md](problems/agent-architecture.md)?
 - What happens when work needs to be cancelled, retried, or reassigned?
 - Does the coordinator need state (a queue, a lock, a claim system), or can it be stateless and event-driven?
@@ -241,9 +259,9 @@ Fullsend provides a base set of agent definitions. The adopting organization's *
 **Decided:**
 
 - Config-level agent registration: an `agents` list in both `OrgConfig` and `PerRepoConfig` declares agent harness sources as pinned URLs or local paths, replacing compiled-in agent discovery ([ADR 0058](ADRs/0058-agent-registration.md)).
-- Runtime resolution: `fullsend run <name>` looks up the agent in config and loads the harness directly from the URL or path — no intermediate wrapper files on disk. Role and slug come from the harness content itself.
+- Runtime resolution: `fullsend run <name>` resolves agents in three tiers: (1) config entries from `OrgConfig.Agents` (highest priority), (2) runtime fallback to the `fullsend-ai/agents` repository for known first-party agents not in config, (3) scaffold-embedded harnesses on disk. The agents-repo fallback is a transitional mechanism for the [agent extraction](plans/agent-extraction-to-agents-repo.md); it will be removed once all users have migrated to config-driven registration (ADR 0058 Phase 5).
 - Additive merge: config entries overlay scaffold-discovered agents (config wins on name collision), enabling gradual extraction of first-party agents without disrupting existing installations. Builds on [ADR 0045](ADRs/0045-forge-portable-harness-schema.md) harness identity model.
-- CLI management: `fullsend agent add/list/update/remove` manages config entries and auto-pins URLs to a commit SHA with an integrity hash.
+- CLI management: `fullsend agent add|list|update|remove|migrate-customizations` manages config entries and auto-pins URLs to a commit SHA with an integrity hash.
 
 **Open questions:**
 
@@ -591,7 +609,8 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
                  ║ │ Loads harness/code.yaml:                                  │ ║
                  ║ │   agent: agents/code.md                                   │ ║
                  ║ │   image: ghcr.io/fullsend-ai/fullsend-code:latest         │ ║
-                 ║ │   policy: policies/code.yaml                              │ ║
+                 ║ │   policy: policies/base.yaml                              │ ║
+                 ║ │   providers: [vertex-ai, github, package-registries]      │ ║
                  ║ │   skills: [skills/code-implementation]                    │ ║
                  ║ │   pre_script: scripts/pre-code.sh                         │ ║
                  ║ │   post_script: scripts/post-code.sh                       │ ║
@@ -602,7 +621,7 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
                  ║ │ ┌───────────────────────────────────────────────────────┐ │ ║
                  ║ │ │ OPENSHELL SANDBOX                                     │ │ ║
                  ║ │ │                                                       │ │ ║
-                 ║ │ │ Created with --from image, --policy code.yaml.        │ │ ║
+                 ║ │ │ Created with --from image, --policy base.yaml.        │ │ ║
                  ║ │ │ Bootstrapped via openshell upload/exec:               │ │ ║
                  ║ │ │   agent def    → /sandbox/claude-config/agents/       │ │ ║
                  ║ │ │   skills       → /sandbox/claude-config/skills/       │ │ ║

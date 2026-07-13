@@ -33,7 +33,7 @@ The per-org model touches these subsystems:
 | Layer stack | `internal/layers/configrepo.go`, `dispatch.go`, `enrollment.go`, `secrets.go`, `inference.go`, `vendorbinary.go` | `ConfigRepoLayer`, `DispatchTokenLayer`, `EnrollmentLayer`, `buildLayerStack()` |
 | Config | `internal/config/config.go` | `OrgConfig`, `NewOrgConfig`, `ParseOrgConfig`, `EnabledRepos`, `DisabledRepos`, `DefaultAgentRoles` |
 | Scaffold | `internal/scaffold/fullsend-repo/` | `dispatch.yml`, thin callers, `shim-workflow-call.yaml`, `repo-maintenance.yml`, `CustomizedDirs()` |
-| Forge interface | `internal/forge/forge.go`, `github/github.go`, `fake.go` | 11 org-level methods to remove (5 secret, 5 variable, `ListOrgRepos`), 2 retained (`ListOrgInstallations`, `GetOrgPlan`), `PerRepoGuardVar` |
+| Forge interface | `internal/forge/forge.go`, `github/github.go`, `fake.go` | 11 org-level methods to remove (5 secret, 5 variable, `ListOrgRepos`), 2 retained (`ListOrgInstallations` via `GitHubExtensions`, `GetOrgPlan`), `PerRepoGuardVar` |
 | Dispatch | `internal/dispatch/dispatch.go`, `gcf/provisioner.go` | `OrgSecretNames`, `OrgVariableNames`, PEM-sharing logic, org-wide WIF |
 | Appsetup | `internal/appsetup/appsetup.go` | `findExistingInstallation` (org-level app discovery) |
 | Mint | `internal/mintcore/claims.go` | `.fullsend` workflow ref pattern, `ValidateOrgAllowed` |
@@ -440,10 +440,11 @@ All per-org commands gone.
   into the renamed `Config` struct and `ParseConfig()`. This field is
   accessed by `run.go` (~lines 189, 192, 201, 205, 237, 243) and
   `lock.go` (~lines 170, 173, 181, 185, 264, 268, 270) via
-  `tryLoadOrgConfig()`/`requireOrgConfig()` in `orgconfig.go`. Update
-  `orgconfig.go` to use `config.ParseConfig()` instead of
-  `config.ParseOrgConfig()` and rename functions/file accordingly
-  (e.g. `tryLoadConfig()`/`requireConfig()`, rename file to
+  `tryLoadFullsendConfig()`/`requireFullsendConfig()` (renamed from
+  `tryLoadOrgConfig()`/`requireOrgConfig()`, which remain as var
+  aliases) in `orgconfig.go`. Update `orgconfig.go` to use
+  `config.ParseConfig()` instead of `config.ParseOrgConfig()` and
+  rename functions/file accordingly (e.g. rename file to
   `configloader.go` or inline into callers).
 
 **Update all callers:**
@@ -468,11 +469,12 @@ All per-org commands gone.
   `DefaultRoles()` for consistency. Effectively dead code after
   per-org removal.
 - `internal/cli/orgconfig.go`: Update `config.ParseOrgConfig()` calls
-  (~lines 22, 42) to `config.ParseConfig()`. Rename
-  `tryLoadOrgConfig()` → `tryLoadConfig()`, `requireOrgConfig()` →
-  `requireConfig()`. Rename file to `configloader.go` or inline.
-- `internal/cli/run.go`: Update `tryLoadOrgConfig()`/
-  `requireOrgConfig()` calls (~lines 189, 198, 201, 235, 237) and
+  to `config.ParseConfig()`. The functions were already renamed to
+  `tryLoadFullsendConfig()`/`requireFullsendConfig()` (PR #3000); var
+  aliases `tryLoadOrgConfig`/`requireOrgConfig` can be removed.
+  Rename file to `configloader.go` or inline.
+- `internal/cli/run.go`: Update `tryLoadOrgConfig`/
+  `requireOrgConfig` var alias calls (~lines 189, 198, 201, 235, 237) and
   `orgCfg.AllowedRemoteResources` accesses (~lines 192, 205, 243)
   to use the renamed config type and loader functions. Also update
   `config.ParseOrgConfig()` (~line 1974): this call reads
@@ -483,8 +485,8 @@ All per-org commands gone.
   and update `ParseConfig()` to populate it. This keeps status
   notification configuration available in per-repo mode without
   importing the full `RepoDefaults` sub-struct.
-- `internal/cli/lock.go`: Update `tryLoadOrgConfig()`/
-  `requireOrgConfig()` calls (~lines 170, 181, 264) and
+- `internal/cli/lock.go`: Update `tryLoadOrgConfig`/
+  `requireOrgConfig` var alias calls (~lines 170, 181, 264) and
   `orgCfg.AllowedRemoteResources` accesses (~lines 173, 185, 268,
   270) to use the renamed config type and loader functions.
 - Any other files importing `config.PerRepoConfig` or
@@ -639,9 +641,9 @@ SetOrgVariableRepos(ctx context.Context, org, name string, repoIDs []int64) erro
 GetOrgVariableRepos(ctx context.Context, org, name string) ([]int64, error)
 
 // Org installations — DO NOT remove:
-// ListOrgInstallations is also used by per-repo install path
-// (detectSharedApps in admin.go, findExistingInstallation and
-// ensureInstalled in appsetup.go).
+// ListOrgInstallations (now on GitHubExtensions) is also used by per-repo
+// install path (detectSharedApps in admin.go, findExistingInstallation
+// and ensureInstalled in appsetup.go).
 ```
 
 Remove `PerRepoGuardVar` constant and all its callers (these are
@@ -665,8 +667,9 @@ The guard variable is no longer needed when per-org enrollment does not
 exist. All callers are explicitly covered: per-repo paths in this PR,
 `enrollment.go` in PR 7, and `reconcile-repos.sh` in PR 9.
 
-Keep `ListOrgInstallations()` — used by per-repo app discovery
-(`detectSharedApps`, `findExistingInstallation`, `ensureInstalled`).
+Keep `ListOrgInstallations()` (now on `GitHubExtensions`) — used by
+per-repo app discovery (`detectSharedApps`, `findExistingInstallation`,
+`ensureInstalled`).
 Remove `ListOrgRepos()` — all callers (`admin.go` enrollment discovery,
 `github.go` org setup, `dispatch.go` layer) are per-org code paths
 removed in earlier PRs; no per-repo callers exist.
@@ -681,7 +684,7 @@ Remove implementations of the 10 removed interface methods:
 - `CreateOrUpdateOrgVariable`, `OrgVariableExists`, `DeleteOrgVariable`,
   `SetOrgVariableRepos`, `GetOrgVariableRepos` (~200 lines)
 
-Keep `ListOrgInstallations` implementation (retained in interface).
+Keep `ListOrgInstallations` implementation (retained on `GitHubExtensions`).
 
 **`internal/forge/fake.go`:**
 
@@ -699,8 +702,8 @@ Remove:
 - Any test files that use fake org methods: update to remove.
 
 **After merge:** Forge interface has no org-level secret/variable methods.
-`ListOrgInstallations` retained for per-repo app discovery. ~400 lines
-removed from GitHub implementation.
+`ListOrgInstallations` retained (on `GitHubExtensions`) for per-repo app
+discovery. ~400 lines removed from GitHub implementation.
 
 ---
 
@@ -751,8 +754,9 @@ Keep `Provision()`, `StoreAgentPEM()`, `Name()`.
 **`internal/appsetup/appsetup.go`:**
 
 - Keep `findExistingInstallation()` and `ensureInstalled()` — these use
-  `ListOrgInstallations()` which is retained (app installation discovery
-  is an org-level GitHub API operation regardless of fullsend install mode).
+  `ListOrgInstallations()` via `GitHubExtensions` type assertion (app
+  installation discovery is an org-level GitHub API operation regardless
+  of fullsend install mode).
 - Simplify `Run()`: remove any per-org-specific branching (e.g. org-level
   app creation paths that differ from per-repo). The shared app discovery
   flow (`detectSharedApps` → `findExistingInstallation`) works for both
@@ -769,7 +773,7 @@ Keep `Provision()`, `StoreAgentPEM()`, `Name()`.
   cases.
 
 **After merge:** Appsetup retains shared app discovery
-(`findExistingInstallation`, `ensureInstalled` via `ListOrgInstallations`)
+(`findExistingInstallation`, `ensureInstalled` via `GitHubExtensions.ListOrgInstallations`)
 while per-org-specific branching is removed.
 
 ---

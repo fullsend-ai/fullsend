@@ -1,4 +1,4 @@
-//go:build e2e
+//go:build e2e || behaviour
 
 package admin
 
@@ -21,6 +21,11 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 )
+
+// errAllOrgsRateLimited is returned by acquireOrg when every pool org
+// was skipped due to GitHub API rate limiting. Callers can detect this
+// with errors.Is and t.Skip instead of failing the test.
+var errAllOrgsRateLimited = errors.New("all pool orgs rate-limited")
 
 const (
 	// testRepo is a pre-existing repo in the test org for enrollment testing.
@@ -45,6 +50,14 @@ const (
 	// than the longest expected e2e run (~7 min) but shorter than the
 	// job timeout (30 min).
 	staleLockTimeout = 15 * time.Minute
+
+	// rateLimitBackoffInitial is the first backoff interval after a
+	// rate-limit error during pool acquisition.
+	rateLimitBackoffInitial = 30 * time.Second
+
+	// rateLimitBackoffMax caps the exponential backoff between
+	// rate-limited polling rounds.
+	rateLimitBackoffMax = 2 * time.Minute
 )
 
 // orgPool is the set of GitHub orgs available for parallel e2e test runs.
@@ -76,6 +89,7 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 	// First pass: try each org without waiting. If a lock exists but is
 	// stale (older than staleLockTimeout), force-acquire it so we don't
 	// waste pool capacity on crashed runs.
+	sawRateLimit := false
 	for _, org := range shuffled {
 		logf("[org-pool] Trying to acquire %s...", org)
 		token, tokErr := tokenForOrg(ctx, cfg, org)
@@ -92,6 +106,7 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 			// just burns quota and delays recovery. Break immediately.
 			if gh.IsRateLimitError(err) {
 				logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
+				sawRateLimit = true
 				break
 			}
 			// Only attempt stale lock recovery for 422 errors (repo
@@ -120,20 +135,29 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 	}
 
 	// All orgs are locked. Round-robin poll until one frees up or
-	// the shared deadline expires.
+	// the shared deadline expires. Use exponential backoff when
+	// rate-limited to let the quota recover (#2875).
 	logf("[org-pool] All %d orgs are locked, polling with timeout %s", len(pool), timeout)
 	deadline := time.Now().Add(timeout)
+	rateLimitSeen := sawRateLimit
+	backoff := rateLimitBackoffInitial
 	for time.Now().Before(deadline) {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			break
 		}
-		wait := min(lockPollInterval, remaining)
+		pollWait := lockPollInterval
+		if rateLimitSeen {
+			pollWait = backoff
+			logf("[org-pool] Rate-limited, backing off %s before next round", pollWait)
+		}
+		wait := min(pollWait, remaining)
 		select {
 		case <-time.After(wait):
 		case <-ctx.Done():
 			return "", "", ctx.Err()
 		}
+		roundRateLimited := false
 		for _, org := range shuffled {
 			token, tokErr := tokenForOrg(ctx, cfg, org)
 			if tokErr != nil {
@@ -147,6 +171,7 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 				logf("[org-pool] Error trying %s: %v", org, err)
 				if gh.IsRateLimitError(err) {
 					logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
+					roundRateLimited = true
 					break
 				}
 				var apiErr *gh.APIError
@@ -170,8 +195,19 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 				}
 			}
 		}
+		if roundRateLimited {
+			rateLimitSeen = true
+			backoff = min(backoff*2, rateLimitBackoffMax)
+		} else {
+			// Rate limit cleared — reset to normal polling.
+			rateLimitSeen = false
+			backoff = rateLimitBackoffInitial
+		}
 	}
 
+	if rateLimitSeen {
+		return "", "", fmt.Errorf("could not acquire any org from pool after %s: %w", timeout, errAllOrgsRateLimited)
+	}
 	return "", "", fmt.Errorf("could not acquire any org from pool after %s (tried %d orgs)", timeout, len(pool))
 }
 
@@ -186,6 +222,7 @@ func acquireOrgFromClient(ctx context.Context, client forge.Client, token, runID
 	copy(shuffled, pool)
 	rand.Shuffle(len(shuffled), func(i, j int) { shuffled[i], shuffled[j] = shuffled[j], shuffled[i] })
 
+	sawRateLimit := false
 	for _, org := range shuffled {
 		logf("[org-pool] Trying to acquire %s...", org)
 		acquired, err := tryCreateLock(ctx, client, org, runID, logf)
@@ -193,6 +230,7 @@ func acquireOrgFromClient(ctx context.Context, client forge.Client, token, runID
 			logf("[org-pool] Error trying %s: %v", org, err)
 			if gh.IsRateLimitError(err) {
 				logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
+				sawRateLimit = true
 				break
 			}
 			var apiErr *gh.APIError
@@ -214,22 +252,31 @@ func acquireOrgFromClient(ctx context.Context, client forge.Client, token, runID
 	}
 
 	deadline := time.Now().Add(timeout)
+	rateLimitSeen := sawRateLimit
+	backoff := rateLimitBackoffInitial
 	for time.Now().Before(deadline) {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			break
 		}
-		wait := min(lockPollInterval, remaining)
+		pollWait := lockPollInterval
+		if rateLimitSeen {
+			pollWait = backoff
+			logf("[org-pool] Rate-limited, backing off %s before next round", pollWait)
+		}
+		wait := min(pollWait, remaining)
 		select {
 		case <-time.After(wait):
 		case <-ctx.Done():
 			return "", "", ctx.Err()
 		}
+		roundRateLimited := false
 		for _, org := range shuffled {
 			acquired, err := tryCreateLock(ctx, client, org, runID, logf)
 			if err != nil {
 				if gh.IsRateLimitError(err) {
 					logf("[org-pool] Hit rate limit, skipping remaining orgs this round")
+					roundRateLimited = true
 					break
 				}
 				var apiErr *gh.APIError
@@ -249,6 +296,16 @@ func acquireOrgFromClient(ctx context.Context, client forge.Client, token, runID
 				}
 			}
 		}
+		if roundRateLimited {
+			rateLimitSeen = true
+			backoff = min(backoff*2, rateLimitBackoffMax)
+		} else {
+			rateLimitSeen = false
+			backoff = rateLimitBackoffInitial
+		}
+	}
+	if rateLimitSeen {
+		return "", "", fmt.Errorf("could not acquire any org from pool after %s: %w", timeout, errAllOrgsRateLimited)
 	}
 	return "", "", fmt.Errorf("could not acquire any org from pool after %s (tried %d orgs)", timeout, len(pool))
 }
@@ -264,7 +321,42 @@ type envConfig struct {
 	mintURL      string
 	useMint      bool
 	gcpProjectID string
+	wifProvider  string
 	lockTimeout  time.Duration
+}
+
+// EnvConfig is the exported view of envConfig for behaviour tests.
+type EnvConfig struct {
+	MintURL      string
+	UseMint      bool
+	GCPProjectID string
+	WIFProvider  string
+	LockTimeout  time.Duration
+}
+
+func (c envConfig) exported() EnvConfig {
+	return EnvConfig{
+		MintURL:      c.mintURL,
+		UseMint:      c.useMint,
+		GCPProjectID: c.gcpProjectID,
+		WIFProvider:  c.wifProvider,
+		LockTimeout:  c.lockTimeout,
+	}
+}
+
+func (c EnvConfig) internal() envConfig {
+	return envConfig{
+		mintURL:      c.MintURL,
+		useMint:      c.UseMint,
+		gcpProjectID: c.GCPProjectID,
+		wifProvider:  c.WIFProvider,
+		lockTimeout:  c.LockTimeout,
+	}
+}
+
+// LoadEnvConfig reads and validates required env vars for e2e and behaviour tests.
+func LoadEnvConfig(t *testing.T) EnvConfig {
+	return loadEnvConfig(t).exported()
 }
 
 // loadEnvConfig reads and validates required env vars. Calls t.Skip if
@@ -282,6 +374,7 @@ func loadEnvConfig(t *testing.T) envConfig {
 	}
 
 	gcpProjectID := os.Getenv("E2E_GCP_PROJECT_ID")
+	wifProvider := os.Getenv("E2E_GCP_WIF_PROVIDER")
 
 	lockTimeout := defaultLockTimeout
 	if v := os.Getenv("E2E_LOCK_TIMEOUT"); v != "" {
@@ -296,6 +389,7 @@ func loadEnvConfig(t *testing.T) envConfig {
 		mintURL:      mintURL,
 		useMint:      useMint,
 		gcpProjectID: gcpProjectID,
+		wifProvider:  wifProvider,
 		lockTimeout:  lockTimeout,
 	}
 }
@@ -393,6 +487,34 @@ func addIssueLabel(ctx context.Context, token, owner, repo string, issueNum int,
 	return fmt.Errorf("unexpected status %d adding label %q: %s", resp.StatusCode, label, body)
 }
 
+// BuildCLIBinary compiles the fullsend CLI binary once per test run.
+func BuildCLIBinary(t *testing.T) string {
+	return buildCLIBinary(t)
+}
+
+// RunCLI executes the fullsend CLI with the given args, passing GITHUB_TOKEN.
+func RunCLI(t *testing.T, binary, token string, args ...string) string {
+	return runCLI(t, binary, token, args...)
+}
+
+// TryRunCLI is like RunCLI but returns an error instead of calling t.Fatalf.
+func TryRunCLI(binary, token string, args ...string) (string, error) {
+	modRoot, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
+	if err != nil {
+		return "", fmt.Errorf("finding module root: %w", err)
+	}
+	dir := strings.TrimSpace(string(modRoot))
+	cmd := exec.Command(binary, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GITHUB_TOKEN="+token, "CI=true")
+	out, runErr := cmd.CombinedOutput()
+	output := string(out)
+	if runErr != nil {
+		return output, fmt.Errorf("[cli] fullsend %s failed: %w\n%s", strings.Join(args, " "), runErr, output)
+	}
+	return output, nil
+}
+
 // buildCLIBinary compiles the fullsend CLI binary once per test run.
 func buildCLIBinary(t *testing.T) string {
 	t.Helper()
@@ -481,4 +603,19 @@ func retryOnNotFound(ctx context.Context, maxAttempts int, fn func() error) erro
 		}
 	}
 	return err
+}
+
+// AcquireOrg exports org pool acquisition for behaviour tests.
+func AcquireOrg(ctx context.Context, cfg EnvConfig, runID string, pool []string, timeout time.Duration, logf func(string, ...any)) (string, string, error) {
+	return acquireOrg(ctx, cfg.internal(), runID, pool, timeout, logf)
+}
+
+// OrgPool returns the halfsend org names used for parallel e2e runs.
+func OrgPool() []string {
+	return orgPool
+}
+
+// NewLiveClient creates a GitHub API client from a token.
+func NewLiveClient(token string) *gh.LiveClient {
+	return newLiveClient(token)
 }

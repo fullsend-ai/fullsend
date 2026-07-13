@@ -3,7 +3,7 @@ module github.com/fullsend-ai/fullsend/internal/mint
 go 1.26
 
 require (
-	github.com/GoogleCloudPlatform/functions-framework-go v1.9.0
+	github.com/GoogleCloudPlatform/functions-framework-go v1.9.2
 	github.com/fullsend-ai/fullsend/internal/mintcore v0.0.0
 )
 

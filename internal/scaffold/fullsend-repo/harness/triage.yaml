@@ -3,7 +3,10 @@ agent: agents/triage.md
 doc: docs/agents/triage.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
-policy: policies/triage.yaml
+policy: policies/base.yaml
+providers:
+  - vertex-ai
+  - github
 
 role: triage
 slug: fullsend-ai-triage

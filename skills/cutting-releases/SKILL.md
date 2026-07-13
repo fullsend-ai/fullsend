@@ -4,7 +4,7 @@ description: >
   Use when the user wants to tag a release, cut a release candidate, or ship a
   new version. Also use when asking about release process, versioning, or how
   GoReleaser is configured.
-allowed-tools: Read, Grep, Glob, AskUserQuestion, Bash(git tag:*), Bash(git log:*), Bash(git diff:*), Bash(git pull:*), Bash(git push:*), Bash(gh release:*), Bash(gh run:*), Bash(git checkout:*), Bash(git fetch:*), Bash(bash skills/cutting-releases/scripts/install-binary.sh:*)
+allowed-tools: Read, Grep, Glob, AskUserQuestion, Bash(git tag:*), Bash(git log:*), Bash(git diff:*), Bash(git pull:*), Bash(git push:*), Bash(gh release:*), Bash(gh run:*), Bash(gh api:*), Bash(gh pr:*), Bash(git checkout:*), Bash(git fetch:*), Bash(bash skills/cutting-releases/scripts/install-binary.sh:*)
 ---
 
 # Cutting Releases
@@ -114,7 +114,51 @@ gh run list --workflow=release.yml --limit=1
 Read [post-flight.md](post-flight.md) in this skill's directory and
 follow the post-flight verification procedure.
 
-### 9. Install the binary locally
+### 9. Write release highlights
+
+After post-flight confirms the release is published, write a short user-facing
+summary highlighting the changes that matter most to end users.
+
+1. **Gather the raw changelog.** Run `gh release view <tag> --json body -q .body`
+   to get the auto-generated release body.
+2. **Research the actual changes.** Do not rely on PR titles or one-line
+   summaries — they often undersell or misrepresent user impact. Launch an
+   `Agent` sub-agent to read the full body, diff, and comments of every merged
+   PR in the release (`gh pr view <number>`, `gh pr diff <number>`). The agent
+   should identify which changes affect user-visible behavior, CLI flags,
+   configuration, error messages, performance, or compatibility — and flag
+   anything that looks like a breaking change or notable upgrade, even if the
+   PR title doesn't say so.
+3. **Draft highlights.** Write one or more paragraphs of prose (not
+   bullet lists — use only one paragraph if only one is necessary)
+   focusing on *what changed for the user*, not internal refactors.
+   Bold the names of features or areas being discussed (e.g. **token mint**,
+   **`fullsend init`**). Use code fences where showing a command or config
+   snippet helps illustrate a change. Skip items that have no user-visible
+   effect. Full coverage of every change is a non-goal — clarity and impact
+   are the goals.
+4. **Present the draft to the user.** Use `AskUserQuestion` to show the
+   proposed highlights text and ask:
+
+   > Here are the draft release highlights I'd prepend to the release body.
+   > Edit freely or say "looks good" to proceed.
+
+5. **Prepend to the release.** Once confirmed (with any edits applied), fetch
+   the current release body, prepend the highlights separated by a horizontal
+   rule (`---`), and update the release:
+
+   ```
+   gh release edit <tag> --notes "$(cat <<'EOF'
+   <highlights>
+
+   ---
+
+   <existing body>
+   EOF
+   )"
+   ```
+
+### 10. Install the binary locally
 
 Use `AskUserQuestion` to ask where to install (default: `~/.local/bin/`),
 then run the install script using its repo-root-relative path:
@@ -135,3 +179,9 @@ installs the binary as `fullsend-<tag>` so multiple versions can coexist.
 - **The `v0` tag** is a moving tag consumed by downstream orgs for reusable
   workflows. It is automatically moved by the release workflow after
   GoReleaser completes (skipped for pre-release tags).
+- **The `fullsend-ai/agents` repo** is tagged with the same version
+  automatically. After GoReleaser completes, the release workflow
+  pushes the tag to agents using an org-owned GitHub App token
+  (`RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY`). That tag push
+  triggers agents' own `release.yml`, which creates a GitHub Release
+  and moves its `v0` floating tag.

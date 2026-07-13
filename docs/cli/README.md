@@ -17,13 +17,14 @@ Download the latest binary from [GitHub Releases](https://github.com/fullsend-ai
 | [`fullsend github`](github.md) | Configure GitHub orgs and repos — setup, enrollment, day-2 operations |
 | [`fullsend inference`](inference.md) | Manage GCP Workload Identity Federation for Agent Platform access |
 | [`fullsend mint`](mint.md) | Deploy and manage the OIDC token mint service |
+| [`fullsend repos`](repos.md) | Manage per-repo installations at scale via declarative manifest |
 
 ## Additional commands
 
 | Command | Description |
 |---------|-------------|
 | `fullsend run` | Execute an agent locally in a sandbox. See [running agents locally](../guides/user/running-agents-locally.md). |
-| `fullsend agent` | Manage agent registrations in config (add, list, update, remove) |
+| `fullsend agent` | Manage agent registrations in config. Subcommands: `add`, `list`, `update`, `remove` (CRUD) and `migrate-customizations` (one-time migration of `customized/` overrides to config-driven agents per ADR-0064) |
 | `fullsend lock [agent-name]` | Pin remote dependencies to `lock.yaml` |
 | `fullsend scan` | Run security scanners on agent input/output |
 

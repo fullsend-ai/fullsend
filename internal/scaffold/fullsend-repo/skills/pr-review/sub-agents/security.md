@@ -1,7 +1,12 @@
 ---
-name: review-security
-description: Evaluates security vulnerabilities, auth/access control, data exposure, and injection defense.
+name: security
+description: >-
+  Evaluates security vulnerabilities, auth/access control, data exposure,
+  injection defense, privilege escalation, and content security.
 model: opus
+tools: Read, Grep, Glob
+permissionMode: dontAsk
+background: true
 ---
 
 # Security

@@ -19,9 +19,11 @@ Date: 2026-04-29
 
 Deprecated — the harness-level forge-specific vs. forge-neutral split
 is now addressed by [ADR 0045](0045-forge-portable-harness-schema.md)
-(forge-portable harness schema). The broader GitLab support architecture
-(CI/CD pipeline mapping, PAT-based auth, webhook bridging) documented
-here remains reference material.
+(forge-portable harness schema). The webhook bridge approach described
+here is superseded by [ADR 0067](0067-gitlab-cron-polling-event-dispatch.md)
+(cron-polling event dispatch), which eliminates webhooks entirely. The
+broader GitLab support architecture (CI/CD pipeline mapping, PAT-based
+auth) documented here remains reference material.
 
 ## Context
 

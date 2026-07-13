@@ -252,6 +252,13 @@ func TestResolveTraceIdentity(t *testing.T) {
 	}
 }
 
+func TestAgentSpanStartAttrs(t *testing.T) {
+	attrs := agentSpanStartAttrs(3, "code")
+	assert.Equal(t, 3, attrs["iteration"])
+	assert.Equal(t, "invoke_agent", attrs["gen_ai.operation.name"])
+	assert.Equal(t, "code", attrs["gen_ai.agent.name"])
+}
+
 func TestAgentSpanEndAttrs(t *testing.T) {
 	var m agentruntime.RunMetrics
 	m.Model = "claude-opus-4-6"

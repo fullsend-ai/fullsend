@@ -80,8 +80,28 @@ func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.P
 	}
 
 	// No existing fork — decide whether to create one.
+	// Fine-grained PATs are scoped to a single org and cannot create cross-org
+	// forks, so the fork option is unavailable when one is detected.
+	isFineGrained, fgErr := isFineGrainedToken(ctx, client)
+	if fgErr != nil {
+		printer.StepWarn(fmt.Sprintf("Could not detect token type: %v", fgErr))
+	}
+
 	useFork := true
-	if in != nil {
+	if isFineGrained {
+		if in != nil {
+			confirmed, promptErr := promptUpstreamOnly(printer, in, owner, repo)
+			if promptErr != nil {
+				return false, fmt.Errorf("reading delivery choice: %w", promptErr)
+			}
+			if !confirmed {
+				return false, fmt.Errorf("upstream delivery declined by user")
+			}
+		} else {
+			printer.StepInfo("Non-interactive mode: fine-grained token detected, pushing to upstream")
+		}
+		useFork = false
+	} else if in != nil {
 		choice, promptErr := promptForkChoice(printer, in)
 		if promptErr != nil {
 			return false, fmt.Errorf("reading fork choice: %w", promptErr)
@@ -312,6 +332,61 @@ func promptForkChoice(printer *ui.Printer, in io.Reader) (bool, error) {
 		}
 	}
 	return true, fmt.Errorf("too many invalid attempts")
+}
+
+// isFineGrainedToken reports whether the current token is a fine-grained PAT.
+// Fine-grained PATs return nil from GetTokenScopes because GitHub doesn't
+// populate the X-OAuth-Scopes header for them.
+func isFineGrainedToken(ctx context.Context, client forge.Client) (bool, error) {
+	isInstall, err := client.IsInstallationToken(ctx)
+	if err != nil {
+		return false, err
+	}
+	if isInstall {
+		return false, nil
+	}
+
+	scopes, err := client.GetTokenScopes(ctx)
+	if err != nil {
+		return false, err
+	}
+	return scopes == nil, nil
+}
+
+// promptUpstreamOnly explains that the fork option is unavailable with a
+// fine-grained PAT and asks the user to confirm pushing to upstream. The
+// upstream path creates a PR with the fullsend scaffolding files — it does
+// not push directly to the default branch.
+func promptUpstreamOnly(printer *ui.Printer, in io.Reader, owner, repo string) (bool, error) {
+	printer.Blank()
+	printer.StepWarn("Fine-grained token detected — fork option is not available.")
+	printer.StepInfo("Fine-grained PATs are scoped to a single organization and cannot")
+	printer.StepInfo("create forks in other accounts. This is a GitHub platform limitation.")
+	printer.Blank()
+	printer.StepInfo(fmt.Sprintf("Option [u] will push a branch to %s/%s and create a PR", owner, repo))
+	printer.StepInfo("containing the fullsend scaffolding files (config, workflows, secrets).")
+	printer.StepInfo("No changes are made to the default branch until the PR is merged.")
+	printer.Blank()
+
+	const maxAttempts = 5
+	reader := bufio.NewReader(in)
+	for i := 0; i < maxAttempts; i++ {
+		printer.StepInfo("Proceed with upstream PR? [y/n]: ")
+		line, err := reader.ReadString('\n')
+		if err != nil && line == "" {
+			return false, err
+		}
+		choice := strings.TrimSpace(strings.ToLower(line))
+		switch choice {
+		case "y", "yes":
+			return true, nil
+		case "n", "no":
+			return false, nil
+		default:
+			printer.StepWarn("Invalid choice. Please enter 'y' or 'n'.")
+		}
+	}
+	return false, fmt.Errorf("too many invalid attempts")
 }
 
 // commitScaffoldDirect pushes files directly to the default branch, falling

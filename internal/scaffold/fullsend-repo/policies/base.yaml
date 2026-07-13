@@ -1,0 +1,19 @@
+---
+version: 1
+
+# Base sandbox policy shared by all agents.
+#
+# Defines non-composable sandbox restrictions: filesystem access,
+# landlock, and process identity. Network access is provided
+# entirely by provider profiles via provider-backed policy
+# composition (ADR 0065).
+
+filesystem_policy:
+  include_workdir: true
+  read_only: [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log]
+  read_write: [/sandbox, /tmp, /dev/null]
+landlock:
+  compatibility: best_effort
+process:
+  run_as_user: sandbox
+  run_as_group: sandbox

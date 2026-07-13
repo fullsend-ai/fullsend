@@ -588,6 +588,11 @@ forge-specific artifact. The harness and agent definition are portable.
   removing an agent is deleting a file, adding one is creating a thin
   wrapper with `base:`.
 
+- **Bidirectional composition.** The `base:` merge semantics have an
+  inverse (`DiffHarness`) used by [ADR 0064](0064-deprecate-customized-directory-overlay.md)'s
+  `migrate-customizations` command. Changes to merge rules must be
+  reflected in both directions.
+
 - **Default URL allowlist for `base` composition.** `fullsend install`
   sets `allowed_remote_resources` in `config.yaml` to include the
   fullsend scaffold URL prefix

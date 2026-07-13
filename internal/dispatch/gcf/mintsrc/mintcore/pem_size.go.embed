@@ -11,7 +11,7 @@ import (
 
 // CloudflareWorkersSecretMaxBytes is the per-secret size limit for Cloudflare
 // Workers (see Cloudflare Workers secrets documentation). Community mint
-// steady-state (ADR 0063) stores shared App PEMs as Worker secrets.
+// steady-state (ADR 0068) stores shared App PEMs as Worker secrets.
 const CloudflareWorkersSecretMaxBytes = 5120
 
 var workersPEMWarnOnce sync.Map

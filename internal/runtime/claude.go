@@ -105,7 +105,33 @@ func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Prin
 		}
 	}
 
-	if parseErr := progressParser(r, printer, start, metrics); parseErr != nil {
+	handler := params.OnEvent
+	if handler == nil {
+		renderer := NewEventRenderer(printer)
+		handler = renderer.Handle
+	}
+	// Always wrap handler to capture metrics regardless of custom/default path.
+	innerHandler := handler
+	handler = func(evt AgentEvent) {
+		switch e := evt.(type) {
+		case InitEvent:
+			if metrics.Model == "" {
+				metrics.Model = e.Model
+			}
+		case ResultEvent:
+			metrics.NumTurns = e.NumTurns
+			metrics.TotalCostUSD = e.TotalCostUSD
+			metrics.InputTokens = e.InputTokens
+			metrics.OutputTokens = e.OutputTokens
+			metrics.CacheCreationInputTokens = e.CacheCreationInputTokens
+			metrics.CacheReadInputTokens = e.CacheReadInputTokens
+		case ToolUseEvent:
+			metrics.ToolCalls.Add(1)
+		}
+		innerHandler(evt)
+	}
+
+	if parseErr := parseClaudeStream(r, handler); parseErr != nil {
 		fmt.Fprintf(os.Stderr, "  progress parser: %v\n", sanitizeOutput(parseErr.Error()))
 		cancel()
 		io.Copy(io.Discard, r)

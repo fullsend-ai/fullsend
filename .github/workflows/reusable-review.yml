@@ -65,6 +65,13 @@ jobs:
     steps:
       - name: Checkout config repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # checkout@v7 blocks fork PR checkouts on pull_request_target by default.
+          # Safe here: only .fullsend/ config is read, no fork code is executed,
+          # and credentials are not persisted.
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
       - name: Checkout upstream defaults
         if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
@@ -86,15 +93,20 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "${INSTALL_MODE}" != "per-org" && "${INSTALL_MODE}" != "per-repo" ]]; then
-            echo "::error::Invalid install_mode '${INSTALL_MODE}': must be 'per-org' or 'per-repo'"
+            printf 'Received install_mode: %q\n' "${INSTALL_MODE}"
+            echo "::error::Invalid install_mode: must be 'per-org' or 'per-repo'"
             exit 1
           fi
           SRC=".defaults/internal/scaffold/fullsend-repo"
           LAYERED_DIRS="agents skills schemas harness plugins policies scripts env"
+          DEST=""
+          if [[ "${INSTALL_MODE}" == "per-repo" ]]; then
+            DEST=".fullsend/"
+          fi
           for dir in ${LAYERED_DIRS}; do
             if [[ -d "${SRC}/${dir}" ]]; then
-              mkdir -p "${dir}"
-              cp -r "${SRC}/${dir}/." "${dir}/"
+              mkdir -p "${DEST}${dir}"
+              cp -r "${SRC}/${dir}/." "${DEST}${dir}/"
             fi
           done
           CUSTOM_BASE="customized"
@@ -106,8 +118,8 @@ jobs:
               find "${CUSTOM_BASE}/${dir}" -type f ! -name '.gitkeep' -print0 \
                 | while IFS= read -r -d '' f; do
                     rel="${f#"${CUSTOM_BASE}"/}"
-                    mkdir -p "$(dirname "${rel}")"
-                    cp "${f}" "${rel}"
+                    mkdir -p "$(dirname "${DEST}${rel}")"
+                    cp "${f}" "${DEST}${rel}"
                   done
             fi
           done
@@ -148,13 +160,15 @@ jobs:
              || fromJSON(inputs.event_payload).issue.number }}
           ORG_NAME: ${{ github.repository_owner }}
           REVIEW_APP_CLIENT_ID: ${{ vars.FULLSEND_REVIEW_CLIENT_ID }}
-        run: bash scripts/pre-fetch-prior-review.sh
+          FULLSEND_DIR: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
+        run: bash "${FULLSEND_DIR:+$FULLSEND_DIR/}scripts/pre-fetch-prior-review.sh"
 
       - name: Setup GCP and prepare credentials
         uses: ./.defaults/.github/actions/setup-gcp
         with:
           gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
           gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
 
       - name: Setup agent environment
         env:
@@ -176,6 +190,7 @@ jobs:
           PRIOR_REVIEW_PROVENANCE: ${{ steps.prior-review.outputs.prior_review_provenance }}
         with:
           agent: review
+          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           version: ${{ inputs.fullsend_version }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ inputs.source_repo }}

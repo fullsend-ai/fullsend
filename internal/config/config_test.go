@@ -381,6 +381,27 @@ func TestValidProviders(t *testing.T) {
 	assert.Equal(t, []string{"vertex"}, providers)
 }
 
+func TestValidRuntimes(t *testing.T) {
+	runtimes := ValidRuntimes()
+	assert.Contains(t, runtimes, "claude")
+	assert.Contains(t, runtimes, "dummy")
+}
+
+func TestOrgConfigValidateRuntime(t *testing.T) {
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:   []string{"triage"},
+			Runtime: "dummy",
+		},
+	}
+	require.NoError(t, cfg.Validate())
+
+	cfg.Defaults.Runtime = "invalid"
+	require.Error(t, cfg.Validate())
+}
+
 func TestParseOrgConfig_KillSwitch(t *testing.T) {
 	yamlData := `
 version: "1"
@@ -616,6 +637,20 @@ func TestPerRepoConfigValidate_EmptyRoles(t *testing.T) {
 		Roles:   []string{},
 	}
 	assert.NoError(t, cfg.Validate())
+}
+
+func TestPerRepoConfigValidate_Runtime(t *testing.T) {
+	cfg := &PerRepoConfig{
+		Version: "1",
+		Roles:   []string{"triage"},
+		Runtime: "dummy",
+	}
+	assert.NoError(t, cfg.Validate())
+
+	cfg.Runtime = "invalid"
+	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid runtime")
 }
 
 func TestParsePerRepoConfig(t *testing.T) {
@@ -1675,4 +1710,86 @@ func TestOrgConfig_RoundTrip_WithAgents(t *testing.T) {
 	assert.Equal(t, original.Agents[0].Source, parsed.Agents[0].Source)
 	assert.Equal(t, original.Agents[1].Name, parsed.Agents[1].Name)
 	assert.Equal(t, original.AllowedRemoteResources, parsed.AllowedRemoteResources)
+}
+
+func TestOrgConfigFromPerRepo(t *testing.T) {
+	pr := &PerRepoConfig{
+		Version:    "1",
+		KillSwitch: true,
+		Roles:      []string{"triage", "coder"},
+		Runtime:    "dummy",
+		Agents: []AgentEntry{
+			{Name: "lint", Source: "harness/lint.yaml"},
+		},
+		AllowedRemoteResources: []string{"https://example.com/"},
+		CreateIssues: &CreateIssuesConfig{
+			AllowTargets: AllowTargets{Repos: []string{"org/repo"}},
+		},
+	}
+
+	org := OrgConfigFromPerRepo(pr)
+
+	assert.Equal(t, "1", org.Version)
+	assert.True(t, org.KillSwitch)
+	require.Len(t, org.Agents, 1)
+	assert.Equal(t, "lint", org.Agents[0].Name)
+	assert.Equal(t, []string{"https://example.com/"}, org.AllowedRemoteResources)
+	require.NotNil(t, org.CreateIssues)
+	assert.Equal(t, []string{"org/repo"}, org.CreateIssues.AllowTargets.Repos)
+	assert.Equal(t, []string{"triage", "coder"}, org.Defaults.Roles)
+	assert.Equal(t, "dummy", org.Defaults.Runtime)
+	assert.Nil(t, org.Repos)
+	assert.Empty(t, org.Dispatch.Platform)
+}
+
+func TestEnsureDefaultAllowedRemoteResources(t *testing.T) {
+	defaults := DefaultAllowedRemoteResources()
+
+	t.Run("nil input returns defaults", func(t *testing.T) {
+		result := EnsureDefaultAllowedRemoteResources(nil)
+		assert.Equal(t, defaults, result)
+	})
+
+	t.Run("explicit empty preserves deny-all", func(t *testing.T) {
+		result := EnsureDefaultAllowedRemoteResources([]string{})
+		assert.NotNil(t, result)
+		assert.Empty(t, result)
+	})
+
+	t.Run("custom entries preserved with defaults appended", func(t *testing.T) {
+		custom := []string{"https://example.com/foo/"}
+		result := EnsureDefaultAllowedRemoteResources(custom)
+		expected := []string{
+			"https://example.com/foo/",
+			"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
+			"https://raw.githubusercontent.com/fullsend-ai/agents/",
+		}
+		assert.Equal(t, expected, result)
+	})
+
+	t.Run("already has defaults produces no duplicates", func(t *testing.T) {
+		result := EnsureDefaultAllowedRemoteResources(defaults)
+		assert.Equal(t, defaults, result)
+	})
+
+	t.Run("partial overlap adds only missing default", func(t *testing.T) {
+		partial := []string{defaults[0], "https://example.com/bar/"}
+		result := EnsureDefaultAllowedRemoteResources(partial)
+		expected := []string{defaults[0], "https://example.com/bar/", defaults[1]}
+		assert.Equal(t, expected, result)
+	})
+
+	t.Run("idempotent", func(t *testing.T) {
+		first := EnsureDefaultAllowedRemoteResources([]string{"https://example.com/"})
+		second := EnsureDefaultAllowedRemoteResources(first)
+		assert.Equal(t, first, second)
+	})
+
+	t.Run("does not mutate input", func(t *testing.T) {
+		input := []string{"https://example.com/"}
+		inputCopy := make([]string, len(input))
+		copy(inputCopy, input)
+		_ = EnsureDefaultAllowedRemoteResources(input)
+		assert.Equal(t, inputCopy, input)
+	})
 }

@@ -14,9 +14,10 @@ import (
 )
 
 var (
-	validAgentName  = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
-	validModelName  = regexp.MustCompile(`^[a-zA-Z0-9_.@-]+$`)
-	validPluginName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	validAgentName    = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	validModelName    = regexp.MustCompile(`^[a-zA-Z0-9_.@-]+$`)
+	validPluginName   = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+	validProviderName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 	// validRoleName mirrors mintcore.RolePattern — duplicated to avoid coupling harness→mintcore.
 	validRoleName = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
 	validSlugName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
@@ -49,9 +50,15 @@ type ProviderDef struct {
 	Config      map[string]string `yaml:"config,omitempty"` // e.g. OPENAI_BASE_URL
 }
 
-// LoadProviderDefs reads all YAML files from a providers/ directory and returns
+// LoadProviderDefs reads YAML files from a providers/ directory and returns
 // the parsed definitions. Returns nil (no error) if the directory does not exist.
-func LoadProviderDefs(dir string) ([]ProviderDef, error) {
+// When only is non-nil, only files whose stem (filename without extension)
+// matches a key in the set are loaded.
+func LoadProviderDefs(dir string, only ...map[string]struct{}) ([]ProviderDef, error) {
+	var filter map[string]struct{}
+	if len(only) > 0 {
+		filter = only[0]
+	}
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return nil, nil
@@ -76,8 +83,19 @@ func LoadProviderDefs(dir string) ([]ProviderDef, error) {
 		if def.Name == "" {
 			return nil, fmt.Errorf("provider file %s: name is required", e.Name())
 		}
+		if !validProviderName.MatchString(def.Name) {
+			return nil, fmt.Errorf("provider file %s: name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", e.Name(), def.Name)
+		}
 		if def.Type == "" {
 			return nil, fmt.Errorf("provider file %s: type is required", e.Name())
+		}
+		if !validProviderName.MatchString(def.Type) {
+			return nil, fmt.Errorf("provider file %s: type %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", e.Name(), def.Type)
+		}
+		if filter != nil {
+			if _, ok := filter[def.Name]; !ok {
+				continue
+			}
 		}
 		defs = append(defs, def)
 	}
@@ -258,6 +276,7 @@ type Harness struct {
 	RunnerEnv              map[string]string       `yaml:"runner_env,omitempty"`
 	Env                    *EnvConfig              `yaml:"env,omitempty"`
 	TimeoutMinutes         int                     `yaml:"timeout_minutes,omitempty"`
+	ReadonlyRepo           bool                    `yaml:"readonly_repo,omitempty"`
 	SandboxTimeoutSeconds  int                     `yaml:"sandbox_timeout_seconds,omitempty"`
 	Security               *SecurityConfig         `yaml:"security,omitempty"`
 	AllowedRemoteResources []string                `yaml:"allowed_remote_resources,omitempty"`
@@ -378,6 +397,11 @@ func (h *Harness) Validate() error {
 		pluginBase := filepath.Base(p)
 		if !validPluginName.MatchString(pluginBase) {
 			return fmt.Errorf("plugins[%d] name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", i, pluginBase)
+		}
+	}
+	for i, p := range h.Providers {
+		if !validProviderName.MatchString(p) {
+			return fmt.Errorf("providers[%d] name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", i, p)
 		}
 	}
 	if h.TimeoutMinutes < 0 {
@@ -783,8 +807,12 @@ func (h *Harness) ValidateResourceTypes() error {
 				return fmt.Errorf("skills[%d] URL must include #sha256=... integrity hash", i)
 			}
 			cleanURL, _, _ := ParseIntegrityHash(s)
-			if _, err := forge.ParseForgeURL(cleanURL); err != nil {
+			info, err := forge.ParseForgeURL(cleanURL)
+			if err != nil {
 				return fmt.Errorf("skills[%d] URL must be hosted on a supported forge (github.com): %w", i, err)
+			}
+			if info.Forge != "github" {
+				return fmt.Errorf("skills[%d] forge %q is recognized but fetch support has not landed yet", i, info.Forge)
 			}
 		}
 	}

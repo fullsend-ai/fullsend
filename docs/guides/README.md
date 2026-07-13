@@ -37,7 +37,8 @@ Guides for developers working in repositories where fullsend is active.
 - [Customizing agents](user/customizing-agents.md) — Harness configurations and layered content resolution for your org and repos
 - [Customizing with AGENTS.md](user/customizing-with-agents-md.md) — Guide agents using your repo's AGENTS.md file
 - [Customizing with skills](user/customizing-with-skills.md) — Extend or replace built-in agent skills with custom skill documents
-- [Building custom agents](user/building-custom-agents.md) — Create a new agent from scratch on a per-repo fullsend installation
+- [Building custom agents from scratch](user/building-custom-agents.md) — Create a new agent from scratch on a per-repo fullsend installation
+- [Default, derived, and custom agents](../agents/topics/default-vs-custom.md) — When configuration crosses into derived or custom agent territory
 
 ## Development
 
@@ -45,4 +46,6 @@ Guides for contributors developing and testing fullsend itself.
 
 - [E2E testing](dev/e2e-testing.md) — Local and CI e2e runs, including PR authorization and `ok-to-test`
 - [CLI internals](dev/cli-internals.md) — Command structure, installation pipeline, and sandbox runtime
+- [Behaviour testing](dev/behaviour-testing.md) — Write Gherkin scenarios for end-to-end agent behaviour
+- [Behaviour test drivers](dev/behaviour-drivers.md) — Implement SCM and CI drivers for behaviour tests
 - [Testing workflow changes](dev/testing-workflows.md) — Point a live GitHub org at a branch to test workflow, action, and agent changes before release

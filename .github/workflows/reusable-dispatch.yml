@@ -65,6 +65,13 @@ on:
         required: false
       FULLSEND_GCP_PROJECT_ID:
         required: true
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS:
+        description: >-
+          OTLP headers for ADR 0050 Level 2 trace export, forwarded to the
+          triage stage (baggage-style k=v,k=v; may carry auth, hence a
+          secret). Optional — unset leaves export disabled unless the
+          endpoint variable alone suffices.
+        required: false
 
 jobs:
   route:
@@ -81,7 +88,13 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          # checkout@v7 blocks fork PR checkouts on pull_request_target by
+          # default. Safe here: only .fullsend/ config is read, no fork code
+          # is executed, and credentials are not persisted. Pin to base branch
+          # so kill-switch / role gating always reads trusted config.
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
           sparse-checkout: .fullsend/config.yaml
           sparse-checkout-cone-mode: false
 
@@ -447,6 +460,7 @@ jobs:
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
 
   code:
     name: Code

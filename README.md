@@ -35,11 +35,12 @@ This is not a product spec. It's an evolving exploration of a hard problem space
   - [Performance Verification](docs/problems/performance-verification.md) — Catching agent-introduced performance regressions before they reach production
   - [Production Feedback](docs/problems/production-feedback.md) — How platform execution signals feed back into what agents work on and how they assess risk
   - [Testing the Agents](docs/problems/testing-agents.md) — CI for prompts: regression testing, eval frameworks, and behavioral verification for agent instructions
-  - [GitLab Implementation](docs/problems/gitlab-implementation.md) — Implementation details for GitLab support: webhook security, dispatch pipelines, forge interface evolution
+  - [GitLab Implementation](docs/problems/gitlab-implementation.md) — Implementation details for GitLab support: cron-polling event dispatch, pipeline scheduling, forge interface evolution
   - [Operational Observability](docs/problems/operational-observability.md) — How do the humans operating an autonomous software factory understand what it is doing, debug it when it goes wrong, and improve it over time?
   - [Adaptive Agent Selection](docs/problems/adaptive-agent-selection.md) — Learning which agent/team/workflow configurations work best for which problem classes, using evolutionary algorithms and Thompson Sampling
   - [Platform Nativeness](docs/problems/platform-nativeness.md) — When the platform you automate is also the one you build on: which problems are inherent vs. self-inflicted
   - [Cross-Run Memory](docs/problems/cross-run-memory.md) — How agents learn from prior run outcomes without violating the ephemeral sandbox invariant
+  - [Trustworthiness Evidence](docs/problems/trustworthiness-evidence.md) — What evidence should be required before granting agents increasing autonomy?
 - **[docs/problems/applied/](docs/problems/applied/)** — Organization-specific considerations for downstream consumers:
   - [konflux-ci](docs/problems/applied/konflux-ci/) — Kubernetes-native CI/CD platform (the original proving ground)
 - **[docs/plans/](docs/plans/)** — Implementation plans for accepted or in-progress designs:
@@ -56,6 +57,8 @@ This is not a product spec. It's an evolving exploration of a hard problem space
   - [ADR-0046 Drift Scanner](docs/plans/2026-03-06-adr46-drift-scanner.md) — Implementation plan for ADR-0046 drift detection tool
   - [Repos Management](docs/plans/repos-management.md) — Implementation plan for declarative multi-repo management
   - [Repos Init](docs/plans/repos-init.md) — Implementation plan for `fullsend repos init` manifest bootstrapping
+  - [Agent Registration](docs/plans/agent-registration.md) — Implementation plan for config-driven agent registration and runtime resolution
+  - [Agent Extraction to Agents Repo](docs/plans/agent-extraction-to-agents-repo.md) — Plan for extracting first-party agents from the scaffold into the standalone agents repository
 - **[docs/guides/](docs/guides/)** — Practical how-to documentation for administrators and developers (see [ADR 0023](docs/ADRs/0023-user-documentation-structure.md))
 - **[docs/spikes/](docs/spikes/)** — Time-boxed investigations and trade-off analyses that inform ADRs (e.g. community mint hosting)
 - **[docs/ADRs/](docs/ADRs/)** — Architecture Decision Records for crystallizing specific decisions (see [ADR 0001](docs/ADRs/0001-use-adrs-for-decision-making.md))

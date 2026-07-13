@@ -1,5 +1,13 @@
 # GitLab Support Implementation Details
 
+> **Note:** The webhook-based dispatch approach described in this document is
+> superseded by [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md)
+> (cron-polling event dispatch), which eliminates webhooks entirely. For the
+> current implementation approach, see
+> [docs/plans/gitlab-cron-polling-implementation.md](../plans/gitlab-cron-polling-implementation.md).
+> The sections below on CI/CD pipeline mapping, PAT-based auth, and forge
+> interface evolution remain valid reference material.
+
 This document contains implementation details for GitLab support in fullsend. For the architectural decision and rationale, see [ADR-0028](../ADRs/0028-gitlab-support.md) (status: Deprecated — CI/CD pipeline mapping, PAT-based auth, and webhook bridging sections remain valid reference material; harness-level forge abstraction is now covered by [ADR-0045](../ADRs/0045-forge-portable-harness-schema.md)).
 
 ## Table of Contents
@@ -36,7 +44,7 @@ This document contains implementation details for GitLab support in fullsend. Fo
 2. **GitLab serverless functions**: Use GitLab's serverless integration to deploy a function that receives webhooks and translates to trigger API calls. Maintains compute-platform agnosticism (runs within GitLab infrastructure) but requires GitLab Premium/Ultimate tier.
 3. **Minimal bridge service**: Deploy a lightweight translation service (e.g., Cloud Run, Lambda) that receives webhooks and POSTs to the trigger API. This reintroduces the "hosted webhook receiver" concern from ADR-0009 but may be acceptable given GitLab's lack of a direct webhook-to-pipeline primitive.
 
-**Open question**: The webhook-to-trigger translation requirement creates an architectural tension. Options 2 and 3 both introduce additional infrastructure (serverless functions or hosted bridge), while option 1 reintroduces the security concern that webhooks were meant to solve. For GitLab Free tier deployments, option 3 (minimal bridge) is likely the only viable path. For Premium/Ultimate, option 2 (serverless) keeps compute within GitLab infrastructure. See ADR-0028 "Open Questions" for full analysis.
+**Open question**: The webhook-to-trigger translation requirement creates an architectural tension. Options 2 and 3 both introduce additional infrastructure (serverless functions or hosted bridge), while option 1 reintroduces the security concern that webhooks were meant to solve. For GitLab Free tier deployments, option 3 (minimal bridge) is likely the only viable path. For Premium/Ultimate, option 2 (serverless) keeps compute within GitLab infrastructure. See ADR-0028 "Open Questions" for full analysis. **Decided:** [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md) eliminates webhooks entirely — cron-based polling via scheduled GitLab CI/CD pipelines replaces the webhook bridge, removing the need for any translation intermediary.
 
 **Security requirements for webhook translation intermediary**:
 
@@ -371,7 +379,7 @@ This keeps the dispatch scanning logic identical across GitHub and GitLab.
 
 ## Forge Interface Evolution
 
-**Challenge**: ADR-0005 promises "Adding a new forge requires implementing `forge.Client` — no changes to layers, CLI, or app setup code." However, the current `forge.Client` interface contains GitHub-specific methods (`ListOrgInstallations`, `GetAppClientID`) and operations (`DispatchWorkflow`) that don't map directly to GitLab.
+**Challenge**: ADR-0005 promises "Adding a new forge requires implementing `forge.Client` — no changes to layers, CLI, or app setup code." However, the `forge.Client` interface previously contained GitHub-specific methods (`ListOrgInstallations`, `GetAppClientID`) that don't map to GitLab. These have since been moved to the `forge.GitHubExtensions` interface, and callers use type assertions. Operations like `DispatchWorkflow` remain on the base interface.
 
 ### Proposed Forge-Neutral Interface Additions
 
@@ -410,23 +418,16 @@ DeleteWebhook(ctx context.Context, owner, repo, webhookID string) error
 
 ### Existing GitHub-Specific Methods
 
-- `ListOrgInstallations(ctx, org) ([]Installation, error)` — GitHub App-specific. GitLab equivalent would list Project Access Tokens, but tokens are scoped per-project not org-wide. This method may need to become forge-specific or return an empty list for non-GitHub forges.
-- `GetAppClientID(ctx, slug) (string, error)` — GitHub App-specific. No GitLab equivalent. This should be deprecated or moved to a GitHub-specific extension interface.
+- `ListOrgInstallations(ctx, org) ([]Installation, error)` — GitHub App-specific. **Now moved to `forge.GitHubExtensions`**. GitLab equivalent would list Project Access Tokens, but tokens are scoped per-project not org-wide. Callers type-assert to `GitHubExtensions` and handle the fallback.
+- `GetAppClientID(ctx, slug) (string, error)` — GitHub App-specific. No GitLab equivalent. **Now moved to `forge.GitHubExtensions`**. Callers type-assert and fall back gracefully.
 - `DispatchWorkflow(ctx, owner, repo, workflowFile, ref, inputs)` — GitHub Actions-specific (targets a specific workflow file). Replaced by forge-neutral `TriggerPipeline` above.
 
 ### Backward Compatibility and Migration Strategy
 
 To prevent interface bloat while maintaining backward compatibility:
 
-1. **Deprecation phase**: Mark GitHub-specific methods with deprecation comments and update callers to use forge-neutral equivalents (`TriggerPipeline` instead of `DispatchWorkflow`, etc.). This phase allows gradual migration without breaking existing code.
-2. **Extension interfaces**: Move forge-specific methods that have no neutral equivalent (e.g., `GetAppClientID`) to optional extension interfaces:
-   ```go
-   type GitHubForgeClient interface {
-       Client
-       GetAppClientID(ctx context.Context, slug string) (string, error)
-   }
-   ```
-   Callers that need GitHub-specific behavior can type-assert to the extension interface.
+1. **Extension interfaces (implemented)**: GitHub-specific methods (`ListOrgInstallations`, `GetAppClientID`) have been moved to the `forge.GitHubExtensions` optional extension interface. Callers type-assert and handle non-GitHub forges gracefully.
+2. **Deprecation phase**: Mark remaining GitHub-specific methods with deprecation comments and update callers to use forge-neutral equivalents (`TriggerPipeline` instead of `DispatchWorkflow`, etc.). This phase allows gradual migration without breaking existing code.
 3. **Breaking change timeline**: After all internal callers migrate to forge-neutral methods, remove deprecated methods in a major version bump. Document this timeline in the interface godoc (e.g., "deprecated: use TriggerPipeline, will be removed in v2.0.0").
 
 This strategy limits interface growth to forge-neutral primitives while preserving GitHub-specific functionality via opt-in extension interfaces.

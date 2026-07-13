@@ -314,6 +314,9 @@ func resolveSkillDirURL(ctx context.Context, field, rawURL string, h *harness.Ha
 	if err != nil {
 		return Dependency{}, "", fmt.Errorf("%s: skill URLs must be hosted on a supported forge: %w", field, err)
 	}
+	if forgeInfo.Forge != "github" {
+		return Dependency{}, "", fmt.Errorf("%s: forge %q is recognized but fetch support has not landed yet", field, forgeInfo.Forge)
+	}
 
 	treePath, dirEntry, err := fetch.CacheGetDir(opts.WorkspaceRoot, expectedHash)
 	if err != nil {

@@ -7,21 +7,25 @@ import (
 	"sync"
 )
 
-// Compile-time check that FakeClient implements Client.
+// Compile-time interface checks.
 var _ Client = (*FakeClient)(nil)
+var _ GitHubExtensions = (*FakeClient)(nil)
 
 // NewFakeClient returns a FakeClient with all maps initialised.
 func NewFakeClient() *FakeClient {
 	return &FakeClient{
-		FileContents:    make(map[string][]byte),
-		WorkflowRuns:    make(map[string]*WorkflowRun),
-		Secrets:         make(map[string]bool),
-		VariablesExist:  make(map[string]bool),
-		VariableValues:  make(map[string]string),
-		Errors:          make(map[string]error),
-		DirContents:     make(map[string][]DirectoryEntry),
-		FileContentsRef: make(map[string][]byte),
-		BranchRefs:      make(map[string]string),
+		FileContents:      make(map[string][]byte),
+		WorkflowRuns:      make(map[string]*WorkflowRun),
+		Secrets:           make(map[string]bool),
+		VariablesExist:    make(map[string]bool),
+		VariableValues:    make(map[string]string),
+		Errors:            make(map[string]error),
+		DirContents:       make(map[string][]DirectoryEntry),
+		FileContentsRef:   make(map[string][]byte),
+		BranchRefs:        make(map[string]string),
+		Refs:              make(map[string]string),
+		ProtectedBranches: make(map[string]bool),
+		PipelineSchedules: make(map[string][]PipelineSchedule),
 	}
 }
 
@@ -51,6 +55,7 @@ type OrgVariableRecord struct {
 // VariableRecord records a variable creation/update call.
 type VariableRecord struct {
 	Owner, Repo, Name, Value string
+	Protected                bool
 }
 
 // UpdatedCommentRecord records an issue comment update call.
@@ -111,12 +116,17 @@ type FakeClient struct {
 
 	// Pre-populated data
 	Repos                     []Repository
-	FileContents              map[string][]byte       // key: "owner/repo/path"
-	WorkflowRuns              map[string]*WorkflowRun // key: "owner/repo/workflow"
-	Workflows                 map[string]*Workflow    // key: "owner/repo/workflow"
-	AuthenticatedUser         string                  // login returned by GetAuthenticatedUser
-	AuthenticatedUserIdentity *UserIdentity           // identity returned by GetAuthenticatedUserIdentity
-	OrgPlan                   string                  // plan name returned by GetOrgPlan (default: "free")
+	OrgRepos                  map[string][]Repository  // per-org repos; when set, ListOrgRepos uses this instead of Repos
+	FileContents              map[string][]byte        // key: "owner/repo/path"
+	WorkflowRuns              map[string]*WorkflowRun  // key: "owner/repo/workflow"
+	RecentWorkflowRuns        map[string][]WorkflowRun // key: "owner/repo"
+	WorkflowRunArtifacts      map[int][]WorkflowArtifact
+	WorkflowArtifactContents  map[int][]byte
+	RepositoryArtifacts       map[string][]RepositoryArtifact // key: owner/repo
+	Workflows                 map[string]*Workflow            // key: "owner/repo/workflow"
+	AuthenticatedUser         string                          // login returned by GetAuthenticatedUser
+	AuthenticatedUserIdentity *UserIdentity                   // identity returned by GetAuthenticatedUserIdentity
+	OrgPlan                   string                          // plan name returned by GetOrgPlan (default: "free")
 	Installations             []Installation
 	Secrets                   map[string]bool             // key: "owner/repo/name"
 	PullRequests              map[string][]ChangeProposal // key: "owner/repo"
@@ -146,6 +156,12 @@ type FakeClient struct {
 	OrgVariableValues  map[string]string  // key: "org/name" → value
 	OrgVariableRepoIDs map[string][]int64 // key: "org/name" → repo IDs
 
+	// Protected branches for IsProtectedBranch.
+	ProtectedBranches map[string]bool // key: "owner/repo/branch"
+
+	// Pipeline schedules for List/Create/DeletePipelineSchedule.
+	PipelineSchedules map[string][]PipelineSchedule // key: "owner/repo"
+
 	// Directory listings for ListDirectoryContents.
 	DirContents map[string][]DirectoryEntry // key: "owner/repo/path@ref"
 
@@ -154,6 +170,9 @@ type FakeClient struct {
 
 	// Branch refs for GetBranchRef.
 	BranchRefs map[string]string // key: "owner/repo/branch" → commit SHA
+
+	// Refs for GetRef.
+	Refs map[string]string // key: "owner/repo/refPath" → commit SHA
 
 	// Error injection: key is method name, value is error to return.
 	Errors map[string]error
@@ -200,7 +219,9 @@ type FakeClient struct {
 	DeletedRepos           []string // "owner/repo"
 	DeletedFiles           []FileRecord
 	CreatedSecrets         []SecretRecord
+	DeletedSecrets         []SecretRecord
 	Variables              []VariableRecord
+	DeletedVariables       []VariableRecord
 	DeletedOrgSecrets      []string // "org/name"
 	CreatedOrgSecrets      []OrgSecretRecord
 	CreatedOrgVariables    []OrgVariableRecord
@@ -214,6 +235,10 @@ type FakeClient struct {
 	CommittedFilesToBranch []CommitFilesToBranchRecord
 	CreatedForks           []string // "owner/repo"
 	DeletedComments        []int    // comment IDs
+	CreatedSchedules       []PipelineSchedule
+	DeletedScheduleIDs     []int64
+	UpdatedVariables       []VariableRecord
+	CreatedProtectedVars   []VariableRecord
 
 	// internal counters
 	proposalCounter int
@@ -229,7 +254,7 @@ func (f *FakeClient) err(method string) error {
 	return f.Errors[method]
 }
 
-func (f *FakeClient) ListOrgRepos(_ context.Context, _ string) ([]Repository, error) {
+func (f *FakeClient) ListOrgRepos(_ context.Context, org string) ([]Repository, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -237,8 +262,13 @@ func (f *FakeClient) ListOrgRepos(_ context.Context, _ string) ([]Repository, er
 		return nil, e
 	}
 
+	source := f.Repos
+	if f.OrgRepos != nil {
+		source = f.OrgRepos[org]
+	}
+
 	var result []Repository
-	for _, r := range f.Repos {
+	for _, r := range source {
 		if r.Archived || r.Fork || r.Private {
 			continue
 		}
@@ -459,6 +489,24 @@ func (f *FakeClient) DeleteFile(_ context.Context, owner, repo, path, message st
 	return nil
 }
 
+func (f *FakeClient) ListRepositoryFiles(_ context.Context, owner, repo string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListRepositoryFiles"); e != nil {
+		return nil, e
+	}
+
+	prefix := owner + "/" + repo + "/"
+	var paths []string
+	for key := range f.FileContents {
+		if len(key) > len(prefix) && key[:len(prefix)] == prefix {
+			paths = append(paths, key[len(prefix):])
+		}
+	}
+	return paths, nil
+}
+
 func (f *FakeClient) DeleteFiles(_ context.Context, owner, repo, message string, paths []string) (int, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -538,12 +586,7 @@ func (f *FakeClient) CommitFiles(_ context.Context, owner, repo, message string,
 		Files:   files,
 	})
 
-	if f.FileContents == nil {
-		f.FileContents = make(map[string][]byte)
-	}
-	for _, file := range files {
-		f.FileContents[owner+"/"+repo+"/"+file.Path] = file.Content
-	}
+	f.applyFileContents(owner, repo, files)
 
 	changed := f.CommitFilesChanged == nil || *f.CommitFilesChanged
 	return changed, nil
@@ -565,15 +608,45 @@ func (f *FakeClient) CommitFilesToBranch(_ context.Context, owner, repo, branch,
 		Files:   files,
 	})
 
+	f.applyFileContents(owner, repo, files)
+
+	changed := f.CommitFilesChanged == nil || *f.CommitFilesChanged
+	return changed, nil
+}
+
+func (f *FakeClient) applyFileContents(owner, repo string, files []TreeFile) {
 	if f.FileContents == nil {
 		f.FileContents = make(map[string][]byte)
 	}
 	for _, file := range files {
-		f.FileContents[owner+"/"+repo+"/"+file.Path] = file.Content
+		key := owner + "/" + repo + "/" + file.Path
+		if file.Delete {
+			delete(f.FileContents, key)
+		} else {
+			f.FileContents[key] = file.Content
+		}
+	}
+}
+
+func (f *FakeClient) getRefLocked(owner, repo, refPath string) (string, bool) {
+	key := owner + "/" + repo + "/" + refPath
+	sha, ok := f.Refs[key]
+	return sha, ok
+}
+
+func (f *FakeClient) GetRef(_ context.Context, owner, repo, refPath string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("GetRef"); e != nil {
+		return "", e
 	}
 
-	changed := f.CommitFilesChanged == nil || *f.CommitFilesChanged
-	return changed, nil
+	sha, ok := f.getRefLocked(owner, repo, refPath)
+	if !ok {
+		return "", fmt.Errorf("%w: ref %s in %s/%s", ErrNotFound, refPath, owner, repo)
+	}
+	return sha, nil
 }
 
 func (f *FakeClient) GetBranchRef(_ context.Context, owner, repo, branch string) (string, error) {
@@ -583,11 +656,13 @@ func (f *FakeClient) GetBranchRef(_ context.Context, owner, repo, branch string)
 	if e := f.err("GetBranchRef"); e != nil {
 		return "", e
 	}
-
 	key := owner + "/" + repo + "/" + branch
-	sha, ok := f.BranchRefs[key]
+	if sha, ok := f.BranchRefs[key]; ok {
+		return sha, nil
+	}
+	sha, ok := f.getRefLocked(owner, repo, "heads/"+branch)
 	if !ok {
-		return "", fmt.Errorf("%w: branch %s in %s/%s", ErrNotFound, branch, owner, repo)
+		return "", fmt.Errorf("%w: ref heads/%s in %s/%s", ErrNotFound, branch, owner, repo)
 	}
 	return sha, nil
 }
@@ -770,6 +845,26 @@ func (f *FakeClient) CreateRepoSecret(_ context.Context, owner, repo, name, valu
 	return nil
 }
 
+func (f *FakeClient) DeleteRepoSecret(_ context.Context, owner, repo, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DeleteRepoSecret"); e != nil {
+		return e
+	}
+
+	key := owner + "/" + repo + "/" + name
+	if f.Secrets != nil {
+		delete(f.Secrets, key)
+	}
+	f.DeletedSecrets = append(f.DeletedSecrets, SecretRecord{
+		Owner: owner,
+		Repo:  repo,
+		Name:  name,
+	})
+	return nil
+}
+
 func (f *FakeClient) RepoSecretExists(_ context.Context, owner, repo, name string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -792,6 +887,15 @@ func (f *FakeClient) CreateOrUpdateRepoVariable(_ context.Context, owner, repo, 
 		return e
 	}
 
+	key := owner + "/" + repo + "/" + name
+	if f.VariableValues == nil {
+		f.VariableValues = make(map[string]string)
+	}
+	f.VariableValues[key] = value
+	if f.VariablesExist == nil {
+		f.VariablesExist = make(map[string]bool)
+	}
+	f.VariablesExist[key] = true
 	f.Variables = append(f.Variables, VariableRecord{
 		Owner: owner,
 		Repo:  repo,
@@ -831,6 +935,25 @@ func (f *FakeClient) GetRepoVariable(_ context.Context, owner, repo, name string
 	return "", false, nil
 }
 
+func (f *FakeClient) ListRepoVariables(_ context.Context, owner, repo string) (map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListRepoVariables"); e != nil {
+		return nil, e
+	}
+
+	prefix := owner + "/" + repo + "/"
+	result := make(map[string]string)
+	for key, val := range f.VariableValues {
+		if strings.HasPrefix(key, prefix) {
+			name := strings.TrimPrefix(key, prefix)
+			result[name] = val
+		}
+	}
+	return result, nil
+}
+
 func (f *FakeClient) DeleteRepoVariable(_ context.Context, owner, repo, name string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -846,6 +969,11 @@ func (f *FakeClient) DeleteRepoVariable(_ context.Context, owner, repo, name str
 	if f.VariablesExist != nil {
 		delete(f.VariablesExist, key)
 	}
+	f.DeletedVariables = append(f.DeletedVariables, VariableRecord{
+		Owner: owner,
+		Repo:  repo,
+		Name:  name,
+	})
 	return nil
 }
 
@@ -942,6 +1070,49 @@ func (f *FakeClient) CreateIssue(_ context.Context, owner, repo, title, body str
 	}
 	f.OpenIssues[key] = append(f.OpenIssues[key], issue)
 	return &issue, nil
+}
+
+func (f *FakeClient) AddIssueLabels(_ context.Context, owner, repo string, number int, labels ...string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("AddIssueLabels"); e != nil {
+		return e
+	}
+	key := owner + "/" + repo
+	issues := f.OpenIssues[key]
+	for i := range issues {
+		if issues[i].Number != number {
+			continue
+		}
+		seen := make(map[string]struct{}, len(issues[i].Labels))
+		for _, l := range issues[i].Labels {
+			seen[l] = struct{}{}
+		}
+		for _, l := range labels {
+			if _, ok := seen[l]; !ok {
+				issues[i].Labels = append(issues[i].Labels, l)
+				seen[l] = struct{}{}
+			}
+		}
+		f.OpenIssues[key][i] = issues[i]
+		return nil
+	}
+	return fmt.Errorf("issue #%d not found", number)
+}
+
+func (f *FakeClient) GetIssue(_ context.Context, owner, repo string, number int) (*Issue, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("GetIssue"); e != nil {
+		return nil, e
+	}
+	for _, issue := range f.OpenIssues[owner+"/"+repo] {
+		if issue.Number == number {
+			copy := issue
+			return &copy, nil
+		}
+	}
+	return nil, ErrNotFound
 }
 
 func (f *FakeClient) CloseIssue(_ context.Context, _, _ string, _ int) error {
@@ -1212,6 +1383,62 @@ func (f *FakeClient) ListWorkflowRuns(_ context.Context, owner, repo, workflowFi
 	return nil, nil
 }
 
+func (f *FakeClient) ListWorkflowRunArtifacts(_ context.Context, _, _ string, runID int) ([]WorkflowArtifact, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListWorkflowRunArtifacts"); e != nil {
+		return nil, e
+	}
+	if f.WorkflowRunArtifacts == nil {
+		return nil, nil
+	}
+	return append([]WorkflowArtifact(nil), f.WorkflowRunArtifacts[runID]...), nil
+}
+
+func (f *FakeClient) ListRecentWorkflowRuns(_ context.Context, owner, repo string, perPage int) ([]WorkflowRun, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListRecentWorkflowRuns"); e != nil {
+		return nil, e
+	}
+	key := owner + "/" + repo
+	runs := f.RecentWorkflowRuns[key]
+	if perPage > 0 && len(runs) > perPage {
+		runs = runs[:perPage]
+	}
+	return append([]WorkflowRun(nil), runs...), nil
+}
+
+func (f *FakeClient) DownloadWorkflowRunArtifact(_ context.Context, _, _ string, artifactID int) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("DownloadWorkflowRunArtifact"); e != nil {
+		return nil, e
+	}
+	if f.WorkflowArtifactContents == nil {
+		return nil, ErrNotFound
+	}
+	data, ok := f.WorkflowArtifactContents[artifactID]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	return append([]byte(nil), data...), nil
+}
+
+func (f *FakeClient) ListRepositoryArtifacts(_ context.Context, owner, repo string, perPage int) ([]RepositoryArtifact, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListRepositoryArtifacts"); e != nil {
+		return nil, e
+	}
+	key := owner + "/" + repo
+	arts := f.RepositoryArtifacts[key]
+	if perPage > 0 && len(arts) > perPage {
+		arts = arts[:perPage]
+	}
+	return append([]RepositoryArtifact(nil), arts...), nil
+}
+
 func (f *FakeClient) GetWorkflowRunLogs(_ context.Context, _, _ string, _ int) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1462,5 +1689,111 @@ func (f *FakeClient) DeleteOrgVariable(_ context.Context, org, name string) erro
 
 	f.DeletedOrgVariables = append(f.DeletedOrgVariables, org+"/"+name)
 	delete(f.OrgVariables, org+"/"+name)
+	return nil
+}
+
+func (f *FakeClient) IsProtectedBranch(_ context.Context, owner, repo, branch string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("IsProtectedBranch"); e != nil {
+		return false, e
+	}
+
+	key := owner + "/" + repo + "/" + branch
+	return f.ProtectedBranches[key], nil
+}
+
+func (f *FakeClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref, description, cron string, _ map[string]string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CreatePipelineSchedule"); e != nil {
+		return 0, e
+	}
+
+	s := PipelineSchedule{
+		ID:          int64(len(f.CreatedSchedules) + 1),
+		Description: description,
+		Ref:         ref,
+		Cron:        cron,
+		Active:      true,
+	}
+	f.CreatedSchedules = append(f.CreatedSchedules, s)
+	key := owner + "/" + repo
+	if f.PipelineSchedules == nil {
+		f.PipelineSchedules = make(map[string][]PipelineSchedule)
+	}
+	f.PipelineSchedules[key] = append(f.PipelineSchedules[key], s)
+	return s.ID, nil
+}
+
+func (f *FakeClient) DeletePipelineSchedule(_ context.Context, owner, repo string, scheduleID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DeletePipelineSchedule"); e != nil {
+		return e
+	}
+
+	f.DeletedScheduleIDs = append(f.DeletedScheduleIDs, scheduleID)
+	key := owner + "/" + repo
+	if f.PipelineSchedules != nil {
+		schedules := f.PipelineSchedules[key]
+		filtered := schedules[:0]
+		for _, s := range schedules {
+			if s.ID != scheduleID {
+				filtered = append(filtered, s)
+			}
+		}
+		f.PipelineSchedules[key] = filtered
+	}
+	return nil
+}
+
+func (f *FakeClient) ListPipelineSchedules(_ context.Context, owner, repo string) ([]PipelineSchedule, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("ListPipelineSchedules"); e != nil {
+		return nil, e
+	}
+
+	return f.PipelineSchedules[owner+"/"+repo], nil
+}
+
+func (f *FakeClient) UpdateCIVariable(_ context.Context, owner, repo, name, value string, protected bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("UpdateCIVariable"); e != nil {
+		return e
+	}
+
+	f.UpdatedVariables = append(f.UpdatedVariables, VariableRecord{
+		Owner:     owner,
+		Repo:      repo,
+		Name:      name,
+		Value:     value,
+		Protected: protected,
+	})
+	return nil
+}
+
+func (f *FakeClient) CreateProtectedCIVariable(_ context.Context, owner, repo, name, value string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CreateProtectedCIVariable"); e != nil {
+		return e
+	}
+
+	f.CreatedProtectedVars = append(f.CreatedProtectedVars, VariableRecord{
+		Owner:     owner,
+		Repo:      repo,
+		Name:      name,
+		Value:     value,
+		Protected: true,
+	})
 	return nil
 }

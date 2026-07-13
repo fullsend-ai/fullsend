@@ -336,9 +336,11 @@ in parallel with PRs 4–8.
 
 ## Phase 1: Foundation
 
-### PR 1: Extract per-repo install logic into reusable package
+### PR 1: Extract per-repo install logic into reusable package ✓
 
-**Scope:** Refactor only. Zero behavioral change.
+**Status:** Implemented in [#3003](https://github.com/fullsend-ai/fullsend/pull/3003).
+
+**Scope:** Refactor only. Preserves install semantics.
 
 The existing `runPerRepoInstall()` in `internal/cli/admin.go` is ~450
 lines mixing install logic with CLI concerns (interactive prompts,
@@ -829,7 +831,7 @@ variable values to simulate installed/non-installed repos.
 
 ## Phase 2: Write Operations
 
-### PR 5: `fullsend repos install` (bulk install with WIF serialization)
+### PR 5: `fullsend repos install` (bulk install with WIF serialization) — **In Review**
 
 **Scope:** New CLI command. Creates infrastructure.
 
@@ -856,8 +858,11 @@ type BatchInstallConfig struct {
     DryRun         bool
     RepoFilter     []string
     MaxConcurrency int
-    SkipAppSetup   bool
     SkipMintCheck  bool
+    Roles          []string
+    UpstreamRef    string
+    UpstreamTag    string
+    Direct         bool
 }
 
 type BatchInstallResult struct {

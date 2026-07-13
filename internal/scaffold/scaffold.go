@@ -68,6 +68,8 @@ var layeredDirs = []string{
 	"harness/",
 	"plugins/",
 	"policies/",
+	"profiles/",
+	"providers/",
 	"scripts/",
 	"env/",
 }

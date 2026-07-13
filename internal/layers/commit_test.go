@@ -81,6 +81,7 @@ func TestCommitScaffoldViaPR_ExistingForkReused(t *testing.T) {
 func TestCommitScaffoldViaPR_NonInteractiveForksByDefault(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "contributor"
+	client.TokenScopes = []string{"repo", "workflow"}
 	client.Repos = append(client.Repos, forge.Repository{
 		FullName: "contributor/widget", DefaultBranch: "main",
 	})
@@ -100,6 +101,7 @@ func TestCommitScaffoldViaPR_NonInteractiveForksByDefault(t *testing.T) {
 func TestCommitScaffoldViaPR_InteractiveForkChoice(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "contributor"
+	client.TokenScopes = []string{"repo", "workflow"}
 	client.Repos = append(client.Repos, forge.Repository{
 		FullName: "contributor/widget", DefaultBranch: "main",
 	})
@@ -117,6 +119,7 @@ func TestCommitScaffoldViaPR_InteractiveForkChoice(t *testing.T) {
 func TestCommitScaffoldViaPR_InteractiveUpstreamChoice(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "contributor"
+	client.TokenScopes = []string{"repo", "workflow"}
 	printer, _ := newTestPrinter()
 
 	// Simulate user choosing upstream.
@@ -134,6 +137,7 @@ func TestCommitScaffoldViaPR_InteractiveUpstreamChoice(t *testing.T) {
 func TestCommitScaffoldViaPR_UpstreamForbidden(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "contributor"
+	client.TokenScopes = []string{"repo", "workflow"}
 	client.CreateBranchErrors = map[string]error{
 		"acme/widget": fmt.Errorf("API error: %w", forge.ErrForbidden),
 	}
@@ -171,6 +175,7 @@ func TestCommitScaffoldViaPR_CrossForkPRHead(t *testing.T) {
 func TestCommitScaffoldViaPR_FindExistingForkError(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "contributor"
+	client.TokenScopes = []string{"repo", "workflow"}
 	client.Errors = map[string]error{
 		"FindExistingFork": fmt.Errorf("API error"),
 	}
@@ -191,6 +196,7 @@ func TestCommitScaffoldViaPR_FindExistingForkError(t *testing.T) {
 func TestCommitScaffoldViaPR_CreateForkError(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "contributor"
+	client.TokenScopes = []string{"repo", "workflow"}
 	client.Errors = map[string]error{
 		"CreateFork": fmt.Errorf("rate limited"),
 	}
@@ -262,6 +268,117 @@ func TestCommitScaffoldDirect_NonFastForwardRetryFails(t *testing.T) {
 		"acme", "widget", "main", "msg", "title", "body", testFiles, true, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "network error")
+}
+
+func TestCommitScaffoldViaPR_FineGrainedSkipsFork_Interactive(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	// TokenScopes nil = fine-grained PAT
+	printer, buf := newTestPrinter()
+
+	// Simulate user confirming upstream.
+	in := strings.NewReader("y\n")
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, in)
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "Fine-grained token detected")
+	assert.Contains(t, output, "fork option is not available")
+	assert.Contains(t, output, "scaffolding files")
+	assert.Empty(t, client.CreatedForks, "should not attempt to fork")
+	// Branch created on upstream.
+	require.Len(t, client.CreatedBranches, 1)
+	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0])
+}
+
+func TestCommitScaffoldViaPR_FineGrainedDeclined(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	printer, _ := newTestPrinter()
+
+	in := strings.NewReader("n\n")
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, in)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "upstream delivery declined")
+}
+
+func TestCommitScaffoldViaPR_FineGrainedNonInteractive(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	printer, buf := newTestPrinter()
+
+	// nil reader = non-interactive → should auto-upstream (not fork).
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "fine-grained token detected")
+	assert.Contains(t, output, "pushing to upstream")
+	assert.Empty(t, client.CreatedForks, "should not attempt to fork")
+	require.Len(t, client.CreatedBranches, 1)
+	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0])
+}
+
+func TestPromptUpstreamOnly_Confirm(t *testing.T) {
+	printer, buf := newTestPrinter()
+	in := strings.NewReader("y\n")
+	confirmed, err := promptUpstreamOnly(printer, in, "acme", "widget")
+	require.NoError(t, err)
+	assert.True(t, confirmed)
+	assert.Contains(t, buf.String(), "acme/widget")
+	assert.Contains(t, buf.String(), "scaffolding files")
+}
+
+func TestPromptUpstreamOnly_Decline(t *testing.T) {
+	printer, _ := newTestPrinter()
+	in := strings.NewReader("n\n")
+	confirmed, err := promptUpstreamOnly(printer, in, "acme", "widget")
+	require.NoError(t, err)
+	assert.False(t, confirmed)
+}
+
+func TestPromptUpstreamOnly_InvalidThenConfirm(t *testing.T) {
+	printer, _ := newTestPrinter()
+	in := strings.NewReader("x\ny\n")
+	confirmed, err := promptUpstreamOnly(printer, in, "acme", "widget")
+	require.NoError(t, err)
+	assert.True(t, confirmed)
+}
+
+func TestPromptUpstreamOnly_MaxRetries(t *testing.T) {
+	printer, _ := newTestPrinter()
+	in := strings.NewReader("x\nx\nx\nx\nx\n")
+	_, err := promptUpstreamOnly(printer, in, "acme", "widget")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "too many invalid attempts")
+}
+
+func TestIsFineGrainedToken(t *testing.T) {
+	t.Run("nil scopes = fine-grained", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		fg, err := isFineGrainedToken(context.Background(), client)
+		require.NoError(t, err)
+		assert.True(t, fg)
+	})
+
+	t.Run("non-nil scopes = classic PAT", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.TokenScopes = []string{"repo", "workflow"}
+		fg, err := isFineGrainedToken(context.Background(), client)
+		require.NoError(t, err)
+		assert.False(t, fg)
+	})
+
+	t.Run("installation token = not fine-grained", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.InstallationToken = true
+		fg, err := isFineGrainedToken(context.Background(), client)
+		require.NoError(t, err)
+		assert.False(t, fg)
+	})
 }
 
 func TestPromptForkChoice_DefaultIsFork(t *testing.T) {

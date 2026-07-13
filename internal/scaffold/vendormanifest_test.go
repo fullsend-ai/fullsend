@@ -2,7 +2,6 @@ package scaffold
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -82,29 +81,6 @@ paths:
 `))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not allowed")
-}
-
-func TestComparePathPresence(t *testing.T) {
-	client := &forge.FakeClient{
-		FileContents: map[string][]byte{
-			"org/.fullsend/.defaults/action.yml": []byte("ok"),
-		},
-	}
-	missing, err := ComparePathPresence(context.Background(), client, "org", ".fullsend",
-		[]string{".defaults/action.yml", ".github/workflows/reusable-triage.yml"})
-	require.NoError(t, err)
-	assert.Equal(t, []string{".github/workflows/reusable-triage.yml"}, missing)
-}
-
-func TestComparePathPresence_GetFileContentError(t *testing.T) {
-	client := &forge.FakeClient{
-		Errors: map[string]error{
-			"GetFileContent": errors.New("network down"),
-		},
-	}
-	_, err := ComparePathPresence(context.Background(), client, "org", ".fullsend", []string{".defaults/action.yml"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "checking .defaults/action.yml")
 }
 
 func TestManagedVendoredContentPaths(t *testing.T) {

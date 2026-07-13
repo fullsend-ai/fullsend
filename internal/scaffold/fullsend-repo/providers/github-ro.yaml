@@ -1,0 +1,6 @@
+---
+name: github-ro
+type: fullsend-github-ro
+# Workaround: https://github.com/NVIDIA/OpenShell/issues/1978
+credentials:
+  _NOOP_GITHUB_RO: ""

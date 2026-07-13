@@ -41,6 +41,15 @@ func IsBranchProtected(err error) bool {
 	return errors.Is(err, ErrBranchProtected)
 }
 
+// ErrNonFastForward indicates that a ref update was rejected because the
+// branch advanced concurrently (not a fast-forward).
+var ErrNonFastForward = errors.New("non-fast-forward update")
+
+// IsNonFastForward reports whether err indicates a non-fast-forward rejection.
+func IsNonFastForward(err error) bool {
+	return errors.Is(err, ErrNonFastForward)
+}
+
 // ErrForbidden indicates that the operation was denied due to
 // insufficient permissions (e.g., the user lacks push access).
 var ErrForbidden = errors.New("forbidden")
@@ -48,6 +57,16 @@ var ErrForbidden = errors.New("forbidden")
 // IsForbidden reports whether err indicates a permission denial.
 func IsForbidden(err error) bool {
 	return errors.Is(err, ErrForbidden)
+}
+
+// ErrTreeTruncated indicates that the repository's Git tree is too large
+// to retrieve in a single API call. Callers that receive this error should
+// fall back to per-path existence checks.
+var ErrTreeTruncated = errors.New("tree truncated")
+
+// IsTreeTruncated reports whether err indicates a truncated tree response.
+func IsTreeTruncated(err error) bool {
+	return errors.Is(err, ErrTreeTruncated)
 }
 
 // ErrNoChanges indicates that a change proposal could not be created
@@ -59,13 +78,13 @@ func IsNoChanges(err error) bool {
 	return errors.Is(err, ErrNoChanges)
 }
 
-// ErrNonFastForward indicates that a ref update was rejected because
-// the update is not a fast-forward (e.g. auto_init race on new repos).
-var ErrNonFastForward = errors.New("non-fast-forward update")
+// ErrNotSupported indicates that the forge implementation does not
+// support the requested operation.
+var ErrNotSupported = errors.New("operation not supported by this forge")
 
-// IsNonFastForward reports whether err indicates a non-fast-forward rejection.
-func IsNonFastForward(err error) bool {
-	return errors.Is(err, ErrNonFastForward)
+// IsNotSupported reports whether err indicates an unsupported operation.
+func IsNotSupported(err error) bool {
+	return errors.Is(err, ErrNotSupported)
 }
 
 // Repository represents a repository on a git forge.
@@ -92,10 +111,25 @@ type ChangeProposal struct {
 type WorkflowRun struct {
 	ID         int
 	Name       string
+	Event      string // GitHub trigger event, e.g. "issues", "issue_comment"
 	Status     string // "queued", "in_progress", "completed"
 	Conclusion string // "success", "failure", "cancelled", etc.
 	HTMLURL    string
 	CreatedAt  string
+}
+
+// WorkflowArtifact is a file bundle uploaded by a workflow run.
+type WorkflowArtifact struct {
+	ID   int
+	Name string
+}
+
+// RepositoryArtifact is an artifact stored for a repository, with metadata.
+type RepositoryArtifact struct {
+	ID            int
+	Name          string
+	CreatedAt     string
+	WorkflowRunID int
 }
 
 // Workflow represents a workflow definition registered with the forge.
@@ -190,10 +224,12 @@ type UserIdentity struct {
 // TreeFile represents a file to be committed via the Git Trees API.
 // Mode controls file permissions: "100644" for regular files,
 // "100755" for executable files (e.g., shell scripts).
+// When Delete is true, the file is removed from the tree.
 type TreeFile struct {
 	Path    string
 	Content []byte
 	Mode    string // "100644" or "100755"
+	Delete  bool   // remove file from tree instead of adding/updating
 }
 
 // DirectoryEntry represents a file or subdirectory in a repository directory listing.
@@ -284,6 +320,14 @@ type Client interface {
 	// Returns forge.ErrNotFound if the path does not exist or is not a directory.
 	ListDirectoryContents(ctx context.Context, owner, repo, path, ref string, recursive bool) ([]DirectoryEntry, error)
 
+	// ListRepositoryFiles returns all file paths in the repository's default
+	// branch. This retrieves the entire tree in a single API call, making it
+	// efficient for batch path-existence checks.
+	// Returns ErrNotFound if the repository does not exist.
+	// Returns ErrTreeTruncated if the repository tree is too large to retrieve
+	// in a single call; callers should fall back to per-path checks.
+	ListRepositoryFiles(ctx context.Context, owner, repo string) ([]string, error)
+
 	// GetFileContentAtRef retrieves the content of a file at a specific ref
 	// (commit SHA, branch, or tag). Unlike GetFileContent which reads from
 	// the default branch, this reads from the specified ref.
@@ -299,6 +343,11 @@ type Client interface {
 	// branch. Like CommitFiles, it is idempotent: if all files already
 	// have the expected content, no commit is created.
 	CommitFilesToBranch(ctx context.Context, owner, repo, branch, message string, files []TreeFile) (committed bool, err error)
+
+	// Ref operations
+	// GetRef returns the commit SHA for the given ref path (e.g., "heads/main", "tags/v0").
+	// Returns forge.ErrNotFound if the ref does not exist.
+	GetRef(ctx context.Context, owner, repo, refPath string) (sha string, err error)
 
 	// Branch operations
 	// GetBranchRef returns the HEAD commit SHA for the named branch.
@@ -342,9 +391,11 @@ type Client interface {
 	// Secrets and variables
 	CreateRepoSecret(ctx context.Context, owner, repo, name, value string) error
 	RepoSecretExists(ctx context.Context, owner, repo, name string) (bool, error)
+	DeleteRepoSecret(ctx context.Context, owner, repo, name string) error
 	CreateOrUpdateRepoVariable(ctx context.Context, owner, repo, name, value string) error
 	RepoVariableExists(ctx context.Context, owner, repo, name string) (bool, error)
 	GetRepoVariable(ctx context.Context, owner, repo, name string) (string, bool, error)
+	ListRepoVariables(ctx context.Context, owner, repo string) (map[string]string, error)
 	DeleteRepoVariable(ctx context.Context, owner, repo, name string) error
 
 	// Org-level secrets (for cross-repo dispatch tokens)
@@ -378,6 +429,8 @@ type Client interface {
 
 	// Issue operations
 	CreateIssue(ctx context.Context, owner, repo, title, body string, labels ...string) (*Issue, error)
+	AddIssueLabels(ctx context.Context, owner, repo string, number int, labels ...string) error
+	GetIssue(ctx context.Context, owner, repo string, number int) (*Issue, error)
 	CloseIssue(ctx context.Context, owner, repo string, number int) error
 	ListOpenIssues(ctx context.Context, owner, repo string, labels ...string) ([]Issue, error)
 	ListIssueComments(ctx context.Context, owner, repo string, number int) ([]IssueComment, error)
@@ -415,6 +468,15 @@ type Client interface {
 
 	// Workflow run listing
 	ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile string) ([]WorkflowRun, error)
+	// ListRecentWorkflowRuns returns recent workflow runs across all workflows.
+	ListRecentWorkflowRuns(ctx context.Context, owner, repo string, perPage int) ([]WorkflowRun, error)
+
+	// ListWorkflowRunArtifacts returns artifacts uploaded by a workflow run.
+	ListWorkflowRunArtifacts(ctx context.Context, owner, repo string, runID int) ([]WorkflowArtifact, error)
+	// DownloadWorkflowRunArtifact returns the zip archive for a workflow artifact.
+	DownloadWorkflowRunArtifact(ctx context.Context, owner, repo string, artifactID int) ([]byte, error)
+	// ListRepositoryArtifacts returns recent artifacts stored for a repository.
+	ListRepositoryArtifacts(ctx context.Context, owner, repo string, perPage int) ([]RepositoryArtifact, error)
 
 	// GetWorkflowRunLogs downloads the logs for a workflow run as plain text.
 	// On GitHub, this fetches job logs for each job in the run.
@@ -424,9 +486,49 @@ type Client interface {
 	// etc.) from all jobs in a workflow run.
 	GetWorkflowRunAnnotations(ctx context.Context, owner, repo string, runID int) ([]Annotation, error)
 
-	// App installation operations
-	ListOrgInstallations(ctx context.Context, org string) ([]Installation, error)
+	// Branch protection
+	// IsProtectedBranch returns true if the given branch has protection
+	// rules enabled. Returns ErrNotSupported if the forge does not
+	// expose branch-protection queries.
+	IsProtectedBranch(ctx context.Context, owner, repo, branch string) (bool, error)
 
-	// GetAppClientID returns the Client ID for a GitHub App identified by slug.
+	// Pipeline schedules and branch-restricted CI variables live on
+	// the base Client because both GitHub Actions and GitLab CI support
+	// timed triggers. However, the branch-restricted/protected variable
+	// semantics and pipeline schedule APIs have no GitHub Actions
+	// analogue, so GitHub stubs return ErrNotSupported.
+	// GitHubExtensions is reserved for operations with no cross-forge
+	// analogue (App installations, OAuth client IDs).
+	// The existing RepoVariable methods model GitHub Actions variables;
+	// the CIVariable methods below model GitLab CI protected variables
+	// (branch-restricted, unmasked).
+	CreatePipelineSchedule(ctx context.Context, owner, repo, ref, description, cron string, variables map[string]string) (int64, error)
+	DeletePipelineSchedule(ctx context.Context, owner, repo string, scheduleID int64) error
+	ListPipelineSchedules(ctx context.Context, owner, repo string) ([]PipelineSchedule, error)
+
+	// CI/CD branch-restricted variables (distinct from RepoVariable methods).
+	UpdateCIVariable(ctx context.Context, owner, repo, name, value string, protected bool) error
+	// CreateProtectedCIVariable creates a branch-restricted, unmasked CI/CD variable.
+	// Values are visible in pipeline logs; use CreateRepoSecret for credentials.
+	CreateProtectedCIVariable(ctx context.Context, owner, repo, name, value string) error
+}
+
+// PipelineSchedule represents a scheduled pipeline trigger.
+type PipelineSchedule struct {
+	ID           int64
+	Description  string
+	Ref          string
+	Cron         string
+	CronTimezone string
+	Active       bool
+}
+
+// GitHubExtensions provides GitHub-specific operations that are not
+// part of the cross-forge Client interface. Callers should type-assert
+// to this interface when they need GitHub App installation features.
+type GitHubExtensions interface {
+	// ListOrgInstallations returns all GitHub App installations for the org.
+	ListOrgInstallations(ctx context.Context, org string) ([]Installation, error)
+	// GetAppClientID returns the OAuth client ID for the named GitHub App.
 	GetAppClientID(ctx context.Context, slug string) (string, error)
 }

@@ -1,0 +1,18 @@
+---
+id: fullsend-github-artifacts
+display_name: Fullsend GitHub Artifacts
+description: GitHub Actions artifact download endpoints
+category: data
+endpoints:
+  - host: "*.blob.core.windows.net"
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  - host: "*.actions.githubusercontent.com"
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+binaries:
+  - "**/gh"
