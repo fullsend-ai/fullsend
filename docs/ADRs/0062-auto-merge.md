@@ -22,13 +22,14 @@ Accepted
 
 Our review bot (`fullsend-ai-review`) can approve PRs, but GitHub only counts
 an approval toward branch protection when the reviewer has write access
-(`contents: write`) to the repository. The review app intentionally has
-`contents: read` — giving it write access would violate the least-privilege
-boundary established in [ADR 7](0007-per-role-github-apps.md).
+(`contents: write`). The review app has `contents: read` — giving it write
+access would violate the least-privilege boundary in
+[ADR 7](0007-per-role-github-apps.md). See
+[agent-architecture.md](../problems/agent-architecture.md) and
+[security-threat-model.md](../problems/security-threat-model.md).
 
 We also need the bot's approval to satisfy CODEOWNERS for dependency files
-(`go.mod`, `go.sum`). GitHub App bots cannot be listed as CODEOWNERS entries —
-they are not "users" in GitHub's model.
+(`go.mod`, `go.sum`). GitHub App bots cannot appear as CODEOWNERS entries.
 
 ## Options
 
@@ -38,36 +39,53 @@ Collapses the permission boundary between review and implementation roles.
 Every repo that installs the review app would grant it write access it doesn't
 otherwise need.
 
-### B. Create a separate `fullsend-ai-merge` app
+### B. Create a separate merge agent
 
-A new app with `contents: write` and `pull_requests: write`. Repos opt in to
-auto-merge by installing this app instead of (or alongside) the review app.
-The trust escalation is explicit and visible in GitHub's UI.
+A new agent with its own harness config, slug, and app identity
+(`fullsend-ai-merge`). Repos opt in by installing the merge app. Clean
+separation, but duplicates orchestration logic and adds a new agent to
+maintain.
 
-### C. Exempt dependency files via blank-owner CODEOWNERS entries
+### C. New app identity, same review agent, env-var toggle
+
+Create a `fullsend-ai-merge` app with `contents: write` and
+`pull_requests: write`, but teach the existing review agent to auto-merge when
+an env var (`REVIEW_AUTO_MERGE=true`) is set. Repos that want auto-merge
+install the merge app and set the var; repos that want read-only reviews keep
+`fullsend-ai-review` unchanged.
+
+### D. Exempt dependency files via blank-owner CODEOWNERS entries
 
 Use [blank-owner entries](https://github.com/orgs/community/discussions/23064)
-to remove the CODEOWNERS requirement for specific files. This is orthogonal to
-the app permission question — it addresses the CODEOWNERS gate, not the
-approval-counts gate.
+to remove the CODEOWNERS requirement for specific files. Orthogonal to the app
+permission question — addresses the CODEOWNERS gate, not the approval gate.
 
 ## Decision
 
-Use options B and C together:
+Use options C and D together.
 
 1. **Create a `fullsend-ai-merge` app** with `contents: write` and
-   `pull_requests: write`. Its approvals count toward branch protection. Repos
-   that want bot-driven auto-merge install this app; repos that only want
-   informational reviews keep `fullsend-ai-review`.
+   `pull_requests: write`. Repos that want bot-driven auto-merge install this
+   app alongside or instead of `fullsend-ai-review`.
 
-2. **Use blank-owner CODEOWNERS entries** for files that bots should be able to
-   approve (starting with `go.mod` and `go.sum`). This removes the CODEOWNERS
-   gate for those files without affecting other paths.
+2. **Add auto-merge behavior to the review agent**, gated behind
+   `REVIEW_AUTO_MERGE`. When the var is set and the review verdict is
+   `approve`, the post-script enables GitHub auto-merge on the PR. No new
+   agent harness — same `review.yaml`, same skills, same post-script.
+
+3. **Use blank-owner CODEOWNERS entries** for files bots should be able to
+   approve (starting with `go.mod` and `go.sum`).
+
+This is the most **reversible** path. If a dedicated merge agent turns out to
+be the better UX, having once had a more capable review agent does not make
+that harder — we stand up the new agent and deprecate the env var. Going the
+other direction (standalone agent first, then collapsing back) would be.
 
 ## Consequences
 
 - The review app stays read-only — no permission creep.
-- Auto-merge is an explicit opt-in per repo, visible in the GitHub App installation list.
-- Blank-owner CODEOWNERS entries remove code-owner review for the listed files; CI status checks remain the primary safety gate for those paths.
-- Adding a new app increases the number of apps to manage and enroll per org.
-- The merge app's `contents: write` permission is a higher-value target if compromised — the same mitigations from [ADR 7](0007-per-role-github-apps.md) apply (repo-scoped install, PEM in config repo secrets).
+- Auto-merge is opt-in per repo, visible in the GitHub App installation list.
+- No new agent to maintain — auto-merge is a small addition to `post-review.sh`.
+- If the env-var approach proves wrong, standing up a dedicated agent is not made harder by this decision.
+- Blank-owner CODEOWNERS entries remove code-owner review for listed files; CI status checks remain the primary safety gate.
+- The merge app's `contents: write` is a higher-value target if compromised — same mitigations from [ADR 7](0007-per-role-github-apps.md) apply.
