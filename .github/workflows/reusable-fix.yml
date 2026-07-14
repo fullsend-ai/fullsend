@@ -366,15 +366,14 @@ jobs:
           fi
           echo "review_file=${REVIEW_FILE}" >> "${GITHUB_OUTPUT}"
 
-      - name: Validate inputs
-        env:
-          PR_NUMBER: ${{ steps.context.outputs.pr_number }}
-          REPO_FULL_NAME: ${{ inputs.source_repo }}
-          TRIGGER_SOURCE: ${{ inputs.trigger_source }}
-          FIX_ITERATION: ${{ steps.context.outputs.iteration }}
-          HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
-          FULLSEND_DIR: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
-        run: bash "${FULLSEND_DIR:+$FULLSEND_DIR/}scripts/pre-fix.sh"
+      # Input validation (PR_NUMBER/REPO_FULL_NAME/TRIGGER_SOURCE format,
+      # instruction length cap, iteration cap) runs once, as the harness
+      # pre_script inside "Run fix agent" below (harness/fix.yaml declares
+      # pre_script: scripts/pre-fix.sh, with PR_NUMBER/REPO_FULL_NAME/
+      # TRIGGER_SOURCE/HUMAN_INSTRUCTION/FIX_ITERATION already wired through
+      # its runner_env). A duplicate inline call here previously ran the
+      # exact same script a second time for no consumer (issue #4718) —
+      # unlike the code-agent flow, nothing here gates on its output.
 
       - name: Setup GCP and prepare credentials
         uses: ./.defaults/.github/actions/setup-gcp

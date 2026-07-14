@@ -461,6 +461,94 @@ run_test_github_output "skip-output-false-on-no-token" \
   0 \
   "GH_TOKEN="
 
+# --- CODE_SKIP_EXISTING_PR_CHECK tests (issue #4718) ---
+#
+# harness/code.yaml sets this for the second (harness pre_script) invocation
+# of pre-code.sh, so the existing-human-PR search/label/comment side effects
+# — already performed by the reusable workflow's inline "Validate inputs"
+# step — don't run a second time.
+
+# Human PR exists, but the flag is set → check must be bypassed entirely,
+# not just short-circuited by the existing branches (no PR search, no
+# "Skipping code agent", proceeds as if no PR was found).
+run_test_stdout_excludes "gate-skip-flag-bypasses-check" \
+  "${HUMAN_PR_JSON}" \
+  "already performed by the workflow's inline gate" \
+  "Checking for existing open PRs" \
+  0 \
+  "CODE_SKIP_EXISTING_PR_CHECK=true"
+
+run_test_stdout_excludes "gate-skip-flag-does-not-skip-agent" \
+  "${HUMAN_PR_JSON}" \
+  "already performed by the workflow's inline gate" \
+  "Skipping code agent" \
+  0 \
+  "CODE_SKIP_EXISTING_PR_CHECK=true"
+
+# The flag skips the whole block, including the skipped= write — nothing
+# downstream reads GITHUB_OUTPUT from this invocation, so it must stay empty.
+run_test_github_output_excludes() {
+  local test_name="$1"
+  local pr_list_output="$2"
+  local excluded_output="$3"
+  local expect_exit="$4"
+  local extra_env="${5:-}"
+
+  local mock_bin
+  mock_bin="$(build_mock "${pr_list_output}")"
+  local gh_output="${TMPDIR}/github-output.txt"
+  : > "${gh_output}"
+
+  local env_cmd=(
+    env
+    PATH="${mock_bin}:${PATH}"
+    ISSUE_NUMBER="42"
+    REPO_FULL_NAME="test-org/test-repo"
+    GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+    GH_TOKEN="fake-token"
+    GITHUB_OUTPUT="${gh_output}"
+  )
+
+  if [[ -n "${extra_env}" ]]; then
+    while IFS= read -r kv; do
+      [[ -n "${kv}" ]] && env_cmd+=("${kv}")
+    done <<< "${extra_env}"
+  fi
+
+  local exit_code=0
+  "${env_cmd[@]}" bash "${PRE_SCRIPT}" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne ${expect_exit} ]]; then
+    echo "FAIL: ${test_name} — expected exit ${expect_exit}, got ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if grep -qF "${excluded_output}" "${gh_output}" 2>/dev/null; then
+    echo "FAIL: ${test_name} — GITHUB_OUTPUT unexpectedly contains '${excluded_output}'"
+    echo "Actual GITHUB_OUTPUT:"
+    cat "${gh_output}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_test_github_output_excludes "gate-skip-flag-writes-no-skipped-output" \
+  "${HUMAN_PR_JSON}" \
+  "skipped=" \
+  0 \
+  "CODE_SKIP_EXISTING_PR_CHECK=true"
+
+# Flag unset (default) → behavior is completely unchanged from before #4718:
+# the existing-PR check still runs and still blocks on a human PR.
+run_test_stdout "gate-skip-flag-unset-check-still-runs" \
+  "${HUMAN_PR_JSON}" \
+  "Checking for existing open PRs" \
+  0
+
 # --- Summary ---
 
 echo ""
