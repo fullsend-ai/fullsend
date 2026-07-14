@@ -1,0 +1,5 @@
+#!/bin/sh
+# Fake openshell that always fails — used by TestRunAgent_* tests to prevent
+# real sandbox execution. Tests expect to fail at sandbox.EnsureAvailable.
+echo "fake openshell stub for tests" >&2
+exit 1
