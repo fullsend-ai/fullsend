@@ -1,5 +1,3 @@
-//go:build behaviour
-
 package install
 
 import (
@@ -9,11 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/fullsend-ai/fullsend/e2e/admin"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
+	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
 const (
@@ -27,7 +25,7 @@ const (
 
 // perRepoDriver installs fullsend in per-repo mode via fullsend github setup.
 type perRepoDriver struct {
-	e2eCfg admin.EnvConfig
+	e2eCfg e2etest.EnvConfig
 	client forge.Client
 	token  string
 	binary string
@@ -49,7 +47,7 @@ func (s *perRepoState) TriageWorkflowFile() string { return perRepoTriageWorkflo
 func (s *perRepoState) AgentWorkflowFile() string  { return perRepoAgentWorkflow }
 func (s *perRepoState) AgentArtifactName() string  { return perRepoAgentArtifact }
 
-func newPerRepoDriver(e2eCfg admin.EnvConfig, client forge.Client, token, binary string, logf func(string, ...any)) Driver {
+func newPerRepoDriver(e2eCfg e2etest.EnvConfig, client forge.Client, token, binary string, logf func(string, ...any)) Driver {
 	return &perRepoDriver{
 		e2eCfg: e2eCfg,
 		client: client,
@@ -79,7 +77,7 @@ func (d *perRepoDriver) Install(ctx context.Context, org string) (State, error) 
 	}
 
 	d.logf("[install] running fullsend %s", strings.Join(args, " "))
-	if _, err := admin.TryRunCLI(d.binary, d.token, args...); err != nil {
+	if _, err := e2etest.TryRunCLI(d.binary, d.token, args...); err != nil {
 		return nil, fmt.Errorf("github setup %s: %w", target, err)
 	}
 
@@ -95,13 +93,13 @@ func (d *perRepoDriver) Install(ctx context.Context, org string) (State, error) 
 func (d *perRepoDriver) provisionPerRepoInference(target, project string) (string, error) {
 	provisionArgs := []string{"inference", "provision", target, "--project", project}
 	d.logf("[install] running fullsend %s", strings.Join(provisionArgs, " "))
-	if _, err := admin.TryRunCLI(d.binary, d.token, provisionArgs...); err != nil {
+	if _, err := e2etest.TryRunCLI(d.binary, d.token, provisionArgs...); err != nil {
 		return "", fmt.Errorf("inference provision %s: %w", target, err)
 	}
 
 	statusArgs := []string{"inference", "status", target, "--project", project, "--format", "json"}
 	d.logf("[install] running fullsend %s", strings.Join(statusArgs, " "))
-	out, err := admin.TryRunCLI(d.binary, d.token, statusArgs...)
+	out, err := e2etest.TryRunCLI(d.binary, d.token, statusArgs...)
 	if err != nil {
 		return "", fmt.Errorf("inference status %s: %w", target, err)
 	}
@@ -143,7 +141,7 @@ func parseInferenceStatusWIFProvider(output string) (string, error) {
 func (d *perRepoDriver) Teardown(ctx context.Context, org string, state State) error {
 	repo := state.TestRepo()
 	d.logf("[install] tearing down per-repo install on %s/%s", org, repo)
-	admin.TeardownPerRepoInstall(ctx, d.client, d.token, org, repo, d.logf)
+	e2etest.TeardownPerRepoInstall(ctx, d.client, d.token, org, repo, d.logf)
 	return nil
 }
 

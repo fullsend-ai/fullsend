@@ -40,3 +40,5 @@ Runtime selection is shared with production via `defaults.runtime` in org `confi
 - Dummy runtime op vocabulary stays minimal; new ops require runtime + docs updates when scenarios need them.
 - Behaviour tests depend on live external infrastructure: GitHub API, GitHub Actions runners, GCP WIF/mint, and the shared halfsend org pool. Transient outages, API rate limits, or pool org state corruption can fail the suite; CI distinguishes infrastructure failures from regressions via workflow logs and artifact inspection, but there is no offline fallback.
 - Behaviour tests share the halfsend org pool and lock mechanism with admin e2e tests (`e2e.yml` runs both jobs). Lock hold time scales with scenario count; pool size was doubled to absorb the additional load and can be increased again if contention appears.
+
+> **Note (2026-07):** Shared live-test infrastructure (org pool, CLI runner, cleanup) lives in `pkg/e2etest/`; the Gherkin framework lives in `pkg/behaviourtest/`. In-repo runners remain under `e2e/behaviour/` and `e2e/admin/`.

@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/fullsend-ai/fullsend/e2e/behaviour/artifacts"
-	"github.com/fullsend-ai/fullsend/e2e/behaviour/world"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/artifacts"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
 const issueOpenEvent = "issues"

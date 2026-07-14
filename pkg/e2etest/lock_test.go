@@ -1,6 +1,4 @@
-//go:build e2e
-
-package admin
+package e2etest
 
 import (
 	"context"
@@ -199,8 +197,8 @@ func TestAcquireOrg_RateLimitReturnsSentinelError(t *testing.T) {
 	// Use a short timeout so the test doesn't block.
 	_, err := acquireOrgWithClient(ctx, fake, "", "run-rl", pool, 1*time.Second, t.Logf)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, errAllOrgsRateLimited,
-		"should return errAllOrgsRateLimited when rate limits persist")
+	assert.ErrorIs(t, err, ErrAllOrgsRateLimited,
+		"should return ErrAllOrgsRateLimited when rate limits persist")
 }
 
 func TestAcquireOrg_RateLimitBacksOff(t *testing.T) {

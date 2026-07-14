@@ -18,7 +18,9 @@ coverage:
 ignore:
   - "**/*_test.go"
   - "**/testdata/**"
-  - "e2e/behaviour/**"
+  - "e2e/behaviour/suite_test.go"
+  - "e2e/behaviour/features/**"
+  - "e2e/behaviour/fixtures/**"
   - "docs/**"
   - "hack/**"
   - "experiments/**"

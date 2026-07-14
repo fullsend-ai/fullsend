@@ -3,7 +3,7 @@ package steps
 import (
 	"github.com/cucumber/godog"
 
-	"github.com/fullsend-ai/fullsend/e2e/behaviour/world"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
 func Register(ctx *godog.ScenarioContext, w *world.World) {

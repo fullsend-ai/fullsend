@@ -7,8 +7,8 @@ import (
 
 	"github.com/cucumber/godog"
 
-	"github.com/fullsend-ai/fullsend/e2e/behaviour/drivers/scm"
-	"github.com/fullsend-ai/fullsend/e2e/behaviour/world"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
 func registerTriageSteps(ctx *godog.ScenarioContext, w *world.World) {

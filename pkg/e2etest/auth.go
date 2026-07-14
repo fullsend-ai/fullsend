@@ -1,6 +1,4 @@
-//go:build e2e || behaviour
-
-package admin
+package e2etest
 
 import (
 	"context"

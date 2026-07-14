@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fullsend-ai/fullsend/e2e/behaviour/drivers/ci"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
 )
 
 const (

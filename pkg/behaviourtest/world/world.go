@@ -4,12 +4,12 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/fullsend-ai/fullsend/e2e/behaviour/drivers/ci"
-	"github.com/fullsend-ai/fullsend/e2e/behaviour/drivers/env"
-	"github.com/fullsend-ai/fullsend/e2e/behaviour/drivers/install"
-	"github.com/fullsend-ai/fullsend/e2e/behaviour/drivers/scm"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 )
 
 // World holds scenario state and injected drivers.
@@ -25,6 +25,9 @@ type World struct {
 	RepoName  string
 	Token     string
 	Logf      func(string, ...any)
+
+	// FixturesRoot is module-relative (e.g. "e2e/behaviour" or "behaviour").
+	FixturesRoot string
 
 	ScenarioStart time.Time
 

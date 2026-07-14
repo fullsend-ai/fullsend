@@ -1,9 +1,6 @@
-//go:build e2e || behaviour
-
-//
 // Shared org-pool helpers for admin e2e and behaviour tests (both use AcquireOrg).
 
-package admin
+package e2etest
 
 import (
 	"context"
@@ -20,7 +17,6 @@ import (
 // acquireLock attempts to acquire the distributed e2e lock by creating an
 // e2e-lock repo in the test org. If the lock is already held, it polls
 // until the lock is released or the timeout expires.
-//
 // The token parameter is needed for getRepoCreatedAt (direct API call).
 // Pass "" if using a fake client (skips age checks).
 func acquireLock(ctx context.Context, client forge.Client, token, org, runID string, timeout time.Duration, logf func(string, ...any)) error {

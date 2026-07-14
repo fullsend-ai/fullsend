@@ -11,7 +11,7 @@ import (
 	"github.com/cucumber/godog"
 	"gopkg.in/yaml.v3"
 
-	"github.com/fullsend-ai/fullsend/e2e/behaviour/world"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 	"github.com/fullsend-ai/fullsend/internal/config"
 )
 

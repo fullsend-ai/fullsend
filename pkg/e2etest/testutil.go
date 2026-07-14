@@ -1,9 +1,6 @@
-//go:build e2e || behaviour
-
-package admin
+package e2etest
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -22,14 +19,14 @@ import (
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 )
 
-// errAllOrgsRateLimited is returned by acquireOrg when every pool org
+// ErrAllOrgsRateLimited is returned by AcquireOrg when every pool org
 // was skipped due to GitHub API rate limiting. Callers can detect this
 // with errors.Is and t.Skip instead of failing the test.
-var errAllOrgsRateLimited = errors.New("all pool orgs rate-limited")
+var ErrAllOrgsRateLimited = errors.New("all pool orgs rate-limited")
 
 const (
-	// testRepo is a pre-existing repo in the test org for enrollment testing.
-	testRepo = "test-repo"
+	// TestRepo is the pre-existing repo in pool orgs used for enrollment testing.
+	TestRepo = "test-repo"
 
 	// lockRepo is the name of the distributed lock repo.
 	lockRepo = "e2e-lock"
@@ -206,7 +203,7 @@ func acquireOrg(ctx context.Context, cfg envConfig, runID string, pool []string,
 	}
 
 	if rateLimitSeen {
-		return "", "", fmt.Errorf("could not acquire any org from pool after %s: %w", timeout, errAllOrgsRateLimited)
+		return "", "", fmt.Errorf("could not acquire any org from pool after %s: %w", timeout, ErrAllOrgsRateLimited)
 	}
 	return "", "", fmt.Errorf("could not acquire any org from pool after %s (tried %d orgs)", timeout, len(pool))
 }
@@ -305,16 +302,10 @@ func acquireOrgFromClient(ctx context.Context, client forge.Client, token, runID
 		}
 	}
 	if rateLimitSeen {
-		return "", "", fmt.Errorf("could not acquire any org from pool after %s: %w", timeout, errAllOrgsRateLimited)
+		return "", "", fmt.Errorf("could not acquire any org from pool after %s: %w", timeout, ErrAllOrgsRateLimited)
 	}
 	return "", "", fmt.Errorf("could not acquire any org from pool after %s (tried %d orgs)", timeout, len(pool))
 }
-
-// defaultRoles is the standard set of agent roles.
-var defaultRoles = []string{"fullsend", "triage", "coder", "review", "retro", "prioritize"}
-
-// e2eAppSet is the app set prefix used by the shared public GitHub Apps.
-const e2eAppSet = "fullsend-ai"
 
 // envConfig holds required environment configuration.
 type envConfig struct {
@@ -432,64 +423,60 @@ func getRepoCreatedAt(ctx context.Context, token, org, repo string) (time.Time, 
 	return result.CreatedAt, nil
 }
 
-func ensureRepoLabel(ctx context.Context, token, owner, repo, label string) error {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/labels", owner, repo)
-	payload, err := json.Marshal(map[string]string{
-		"name":  label,
-		"color": "5319e7",
-	})
-	if err != nil {
-		return fmt.Errorf("encoding label payload: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return fmt.Errorf("creating label request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("creating repo label: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusUnprocessableEntity {
-		return nil
-	}
-	body, _ := io.ReadAll(resp.Body)
-	return fmt.Errorf("unexpected status %d creating label %q: %s", resp.StatusCode, label, body)
-}
-
-func addIssueLabel(ctx context.Context, token, owner, repo string, issueNum int, label string) error {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/labels", owner, repo, issueNum)
-	payload, err := json.Marshal(map[string][]string{"labels": {label}})
-	if err != nil {
-		return fmt.Errorf("encoding issue label payload: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return fmt.Errorf("creating issue label request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("adding issue label: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode == http.StatusOK {
-		return nil
-	}
-	body, _ := io.ReadAll(resp.Body)
-	return fmt.Errorf("unexpected status %d adding label %q: %s", resp.StatusCode, label, body)
-}
-
 // BuildCLIBinary compiles the fullsend CLI binary once per test run.
 func BuildCLIBinary(t *testing.T) string {
-	return buildCLIBinary(t)
+	return buildCLIBinary(t, modulePathForTest(t))
+}
+
+// BuildModuleBinary compiles cmd/fullsend from an explicit module path (for
+// external consumers pinning github.com/fullsend-ai/fullsend in go.mod).
+func BuildModuleBinary(t *testing.T, modulePath string) string {
+	t.Helper()
+	dir, err := moduleDir(modulePath)
+	if err != nil {
+		t.Fatalf("resolving module %s: %v", modulePath, err)
+	}
+	return buildCLIBinary(t, dir)
+}
+
+func modulePathForTest(t *testing.T) string {
+	t.Helper()
+	return ModuleRoot(t)
+}
+
+// ModuleRoot returns the directory of the module under test.
+func ModuleRoot(t *testing.T) string {
+	t.Helper()
+	modRoot, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
+	if err != nil {
+		t.Fatalf("finding module root: %v", err)
+	}
+	return strings.TrimSpace(string(modRoot))
+}
+
+func moduleDir(modulePath string) (string, error) {
+	out, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}", modulePath).Output()
+	if err != nil {
+		return "", fmt.Errorf("go list -m %s: %w", modulePath, err)
+	}
+	dir := strings.TrimSpace(string(out))
+	if dir == "" {
+		return "", fmt.Errorf("empty module dir for %s", modulePath)
+	}
+	return dir, nil
+}
+
+// buildCLIBinary compiles the fullsend CLI binary into t.TempDir().
+func buildCLIBinary(t *testing.T, modRoot string) string {
+	t.Helper()
+	binary := filepath.Join(t.TempDir(), "fullsend")
+	cmd := exec.Command("go", "build", "-o", binary, "./cmd/fullsend/")
+	cmd.Dir = modRoot
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("building fullsend binary: %s\n%s", err, out)
+	}
+	return binary
 }
 
 // RunCLI executes the fullsend CLI with the given args, passing GITHUB_TOKEN.
@@ -503,7 +490,20 @@ func TryRunCLI(binary, token string, args ...string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("finding module root: %w", err)
 	}
-	dir := strings.TrimSpace(string(modRoot))
+	return tryRunCLIFromDir(strings.TrimSpace(string(modRoot)), binary, token, args...)
+}
+
+// TryRunCLIWithT is like TryRunCLI but logs failures via t and uses ModuleRoot as cwd.
+func TryRunCLIWithT(t *testing.T, binary, token string, args ...string) (string, error) {
+	t.Helper()
+	out, err := tryRunCLIFromDir(ModuleRoot(t), binary, token, args...)
+	if err != nil {
+		t.Logf("TryRunCLI fullsend %s: %v\n%s", strings.Join(args, " "), err, out)
+	}
+	return out, err
+}
+
+func tryRunCLIFromDir(dir, binary, token string, args ...string) (string, error) {
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GITHUB_TOKEN="+token, "CI=true")
@@ -515,32 +515,8 @@ func TryRunCLI(binary, token string, args ...string) (string, error) {
 	return output, nil
 }
 
-// buildCLIBinary compiles the fullsend CLI binary once per test run.
-func buildCLIBinary(t *testing.T) string {
-	t.Helper()
-	modRoot, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
-	if err != nil {
-		t.Fatalf("finding module root: %v", err)
-	}
-	binary := filepath.Join(t.TempDir(), "fullsend")
-	cmd := exec.Command("go", "build", "-o", binary, "./cmd/fullsend/")
-	cmd.Dir = strings.TrimSpace(string(modRoot))
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("building fullsend binary: %s\n%s", err, out)
-	}
-	return binary
-}
-
-// runCLI executes the fullsend CLI with the given args, passing GITHUB_TOKEN.
-// By default the working directory is the module root. Use runCLIFromDir to
-// run from a subdirectory (GOMOD discovery makes this work for vendoring).
-func runCLI(t *testing.T, binary, token string, args ...string) string {
-	return runCLIFromDir(t, binary, token, moduleRoot(t), args...)
-}
-
-// runCLIFromDir runs the CLI with cwd set to dir.
-func runCLIFromDir(t *testing.T, binary, token, dir string, args ...string) string {
+// RunCLIFromDir runs the CLI with cwd set to dir.
+func RunCLIFromDir(t *testing.T, binary, token, dir string, args ...string) string {
 	t.Helper()
 	t.Logf("[cli] fullsend %s (cwd=%s)", strings.Join(args, " "), dir)
 
@@ -556,33 +532,9 @@ func runCLIFromDir(t *testing.T, binary, token, dir string, args ...string) stri
 	return output
 }
 
-// tryRunCLI is like runCLI but returns an error instead of calling t.Fatalf.
-// Use this when the caller needs to retry on transient failures (e.g., GitHub
-// propagation delays after repo creation).
-func tryRunCLI(t *testing.T, binary, token string, args ...string) (string, error) {
-	t.Helper()
-	dir := moduleRoot(t)
-	t.Logf("[cli] fullsend %s (cwd=%s)", strings.Join(args, " "), dir)
-
-	cmd := exec.Command(binary, args...)
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GITHUB_TOKEN="+token, "CI=true")
-	out, runErr := cmd.CombinedOutput()
-	output := string(out)
-	t.Logf("[cli] output:\n%s", output)
-	if runErr != nil {
-		return output, fmt.Errorf("[cli] fullsend %s failed: %w\n%s", strings.Join(args, " "), runErr, output)
-	}
-	return output, nil
-}
-
-func moduleRoot(t *testing.T) string {
-	t.Helper()
-	modRoot, err := exec.Command("go", "list", "-m", "-f", "{{.Dir}}").Output()
-	if err != nil {
-		t.Fatalf("finding module root: %v", err)
-	}
-	return strings.TrimSpace(string(modRoot))
+// runCLI executes the fullsend CLI with the given args, passing GITHUB_TOKEN.
+func runCLI(t *testing.T, binary, token string, args ...string) string {
+	return RunCLIFromDir(t, binary, token, ModuleRoot(t), args...)
 }
 
 // retryOnNotFound retries an operation up to maxAttempts times with linear
@@ -605,7 +557,7 @@ func retryOnNotFound(ctx context.Context, maxAttempts int, fn func() error) erro
 	return err
 }
 
-// AcquireOrg exports org pool acquisition for behaviour tests.
+// AcquireOrg scans the pool for an unlocked org and acquires its lock.
 func AcquireOrg(ctx context.Context, cfg EnvConfig, runID string, pool []string, timeout time.Duration, logf func(string, ...any)) (string, string, error) {
 	return acquireOrg(ctx, cfg.internal(), runID, pool, timeout, logf)
 }

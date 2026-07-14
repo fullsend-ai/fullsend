@@ -12,12 +12,10 @@ import (
 	"github.com/cucumber/godog"
 	"gopkg.in/yaml.v3"
 
-	"github.com/fullsend-ai/fullsend/e2e/behaviour/artifacts"
-	"github.com/fullsend-ai/fullsend/e2e/behaviour/world"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/artifacts"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
-
-const behaviourModuleRoot = "e2e/behaviour"
 
 func registerDummyAgentSteps(ctx *godog.ScenarioContext, w *world.World) {
 	ctx.Step(`^a dummy agent that would:$`, func(table *godog.Table) error {
@@ -49,7 +47,11 @@ func parseDummyAgentTable(w *world.World, table *godog.Table) error {
 		}
 	}
 
-	moduleRoot, err := findModuleSubdir(behaviourModuleRoot)
+	if strings.TrimSpace(w.FixturesRoot) == "" {
+		return fmt.Errorf("world.FixturesRoot is not set")
+	}
+
+	moduleRoot, err := findModuleSubdir(w.FixturesRoot)
 	if err != nil {
 		return err
 	}

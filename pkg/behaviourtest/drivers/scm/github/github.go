@@ -3,8 +3,8 @@ package github
 import (
 	"context"
 
-	"github.com/fullsend-ai/fullsend/e2e/behaviour/drivers/scm"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 )
 
 // Driver implements scm.Driver using forge.Client.

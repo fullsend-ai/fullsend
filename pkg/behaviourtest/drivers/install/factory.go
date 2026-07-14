@@ -1,19 +1,17 @@
-//go:build behaviour
-
 package install
 
 import (
 	"fmt"
 
-	"github.com/fullsend-ai/fullsend/e2e/admin"
-	"github.com/fullsend-ai/fullsend/e2e/behaviour/drivers/env"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
+	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
 // NewDriver returns the install driver for the configured BEHAVIOUR_INSTALL_MODE.
 func NewDriver(
 	cfg env.RunnerConfig,
-	e2eCfg admin.EnvConfig,
+	e2eCfg e2etest.EnvConfig,
 	client forge.Client,
 	token, binary string,
 	logf func(string, ...any),

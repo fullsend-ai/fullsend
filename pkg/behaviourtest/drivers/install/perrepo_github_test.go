@@ -1,5 +1,3 @@
-//go:build behaviour
-
 package install
 
 import (

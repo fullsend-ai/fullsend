@@ -1,6 +1,4 @@
-//go:build e2e || behaviour
-
-package admin
+package e2etest
 
 import (
 	"context"
@@ -60,49 +58,49 @@ func CleanupStaleResources(ctx context.Context, client forge.Client, token, org 
 	// 3. Ensure test-repo exists and has at least one commit (needed for
 	// enrollment testing). An empty repo (no commits) causes the
 	// reconcile-repos script to fail with "Could not get default branch tree".
-	_, err := client.GetRepo(ctx, org, testRepo)
+	_, err := client.GetRepo(ctx, org, TestRepo)
 	if forge.IsNotFound(err) {
-		t.Logf("[cleanup] Creating missing %s repo", testRepo)
-		if _, createErr := client.CreateRepo(ctx, org, testRepo, "E2E test repo", false); createErr != nil {
-			t.Logf("[cleanup] Warning: could not create %s: %v", testRepo, createErr)
+		t.Logf("[cleanup] Creating missing %s repo", TestRepo)
+		if _, createErr := client.CreateRepo(ctx, org, TestRepo, "E2E test repo", false); createErr != nil {
+			t.Logf("[cleanup] Warning: could not create %s: %v", TestRepo, createErr)
 		}
 	}
-	if _, getErr := client.GetFileContent(ctx, org, testRepo, "README.md"); forge.IsNotFound(getErr) {
-		t.Logf("[cleanup] Seeding %s with initial commit (repo is empty)", testRepo)
-		if seedErr := client.CreateFile(ctx, org, testRepo, "README.md", "chore: initialize repo for e2e testing", []byte("# test-repo\n\nE2E test repository.\n")); seedErr != nil {
-			t.Logf("[cleanup] Warning: could not seed %s: %v", testRepo, seedErr)
+	if _, getErr := client.GetFileContent(ctx, org, TestRepo, "README.md"); forge.IsNotFound(getErr) {
+		t.Logf("[cleanup] Seeding %s with initial commit (repo is empty)", TestRepo)
+		if seedErr := client.CreateFile(ctx, org, TestRepo, "README.md", "chore: initialize repo for e2e testing", []byte("# test-repo\n\nE2E test repository.\n")); seedErr != nil {
+			t.Logf("[cleanup] Warning: could not seed %s: %v", TestRepo, seedErr)
 		}
 	} else if getErr != nil {
-		t.Logf("[cleanup] Warning: could not check README in %s: %v", testRepo, getErr)
+		t.Logf("[cleanup] Warning: could not check README in %s: %v", TestRepo, getErr)
 	}
 
 	// Clear per-repo install guard so enroll-all includes test-repo.
-	deleteRepoVariable(ctx, token, org, testRepo, forge.PerRepoGuardVar, t)
+	deleteRepoVariable(ctx, token, org, TestRepo, forge.PerRepoGuardVar, t)
 
 	// 4. Delete stale enrollment and unenrollment branches from test-repo.
-	deleteBranch(ctx, token, org, testRepo, "fullsend/onboard", t)
-	deleteBranch(ctx, token, org, testRepo, "fullsend/offboard", t)
+	deleteBranch(ctx, token, org, TestRepo, "fullsend/onboard", t)
+	deleteBranch(ctx, token, org, TestRepo, "fullsend/offboard", t)
 
 	// 5. Delete shim workflow from test-repo's default branch (left behind
 	// when a previous run merged the enrollment PR in Phase 2.5).
-	deleteShimWorkflow(ctx, token, org, testRepo, t)
+	deleteShimWorkflow(ctx, token, org, TestRepo, t)
 
 	// 6. Close any open fullsend-related PRs in test-repo.
-	prs, err := client.ListRepoPullRequests(ctx, org, testRepo)
+	prs, err := client.ListRepoPullRequests(ctx, org, TestRepo)
 	if err != nil {
 		t.Logf("[cleanup] Warning: could not list PRs: %v", err)
 	} else {
 		for _, pr := range prs {
 			if strings.Contains(pr.Title, "fullsend") {
 				t.Logf("[cleanup] Closing stale PR #%d: %s", pr.Number, pr.Title)
-				closePR(ctx, token, org, testRepo, pr.Number, t)
+				closePR(ctx, token, org, TestRepo, pr.Number, t)
 			}
 		}
 	}
 
 	// 7. Delete stale FULLSEND_PER_REPO_INSTALL guard variable from test-repo.
 	// reconcile-repos.sh skips repos with this variable set to true.
-	if delErr := client.DeleteRepoVariable(ctx, org, testRepo, forge.PerRepoGuardVar); delErr != nil {
+	if delErr := client.DeleteRepoVariable(ctx, org, TestRepo, forge.PerRepoGuardVar); delErr != nil {
 		t.Logf("[cleanup] Warning: could not delete per-repo guard variable: %v", delErr)
 	}
 
@@ -351,20 +349,4 @@ func closePR(ctx context.Context, token, org, repo string, number int, log clean
 	} else {
 		log.Logf("[cleanup] Warning: unexpected status closing PR #%d: %d", number, resp.StatusCode)
 	}
-}
-
-// registerRepoCleanup registers a t.Cleanup that deletes a repo.
-func registerRepoCleanup(t *testing.T, client forge.Client, org, repo string) {
-	t.Helper()
-	t.Cleanup(func() {
-		ctx := context.Background()
-		_, err := client.GetRepo(ctx, org, repo)
-		if err != nil {
-			return // Already gone.
-		}
-		t.Logf("[cleanup] Deleting repo %s/%s", org, repo)
-		if delErr := client.DeleteRepo(ctx, org, repo); delErr != nil {
-			t.Errorf("[cleanup] could not delete %s/%s: %v", org, repo, delErr)
-		}
-	})
 }
