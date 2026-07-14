@@ -49,10 +49,11 @@ dedicated `<org>/.fullsend` config repo is deprecated and out of scope
 [ADR 0029](0029-central-token-mint-secretless-fullsend.md) already treats
 `job_workflow_ref` as the trust binding for mint authorization. Shared-infrastructure
 mint workflow pinning and `job_workflow_ref` validation are decided in
-[ADR 0059](0059-public-mint-mode-with-wildcard-allowlists.md). The same
-pattern may authorize inference backends without per-adopter enrollment when
-the caller's workflow is pinned to definitions in `fullsend-ai/fullsend`;
-inference-backend validation of `job_workflow_ref` remains open for a follow-on ADR.
+[ADR 0059](0059-public-mint-mode-with-wildcard-allowlists.md). How shared
+inference backends authorize callers — for example via `job_workflow_ref`,
+org/repo allowlists on inference WIF, or streamlined enrollment rather than
+full per-repo provisioning — is undecided and left to follow-on ADRs. This
+ADR does not presuppose that inference follows the mint public-mode model.
 
 ## Options
 
@@ -117,20 +118,16 @@ accepts `--config <path-or-url>` and optional `--config-hash <sha256>`. The inst
 Presets may be local files or HTTPS URLs. The flag is optional; advanced
 installs that assemble configuration manually remain supported.
 
-**4. Omit per-adopter mint and inference enrollment (target state).**
-When a preset targets shared infrastructure authorized via `job_workflow_ref`
-to workflows in `fullsend-ai/fullsend`, the installer does not run mint
-enrollment or inference WIF provisioning. Trust is established by the
-workflows the preset references, not by registering each repo with backend
-operators at install time.
-
-Workflow pinning and mint-side `job_workflow_ref` validation for shared
-infrastructure are decided in [ADR 0059](0059-public-mint-mode-with-wildcard-allowlists.md).
-Inference-backend validation of `job_workflow_ref` and compatibility for
-self-managed mint or inference paths that still require explicit enrollment
-remain open for follow-on ADRs. Until inference follow-on ADRs land,
-preset-based installs continue requiring inference enrollment steps where
-applicable.
+**4. Reduce per-adopter enrollment for shared infrastructure (target state).**
+When a preset targets shared infrastructure, the installer should minimize
+install-time backend registration. For **mint**, workflow pinning and
+`job_workflow_ref` validation are decided in
+[ADR 0059](0059-public-mint-mode-with-wildcard-allowlists.md). For
+**inference**, follow-on ADRs will choose among authorization models (which
+may include `job_workflow_ref` pinning, org/repo-scoped inference WIF
+allowlists with streamlined enrollment, or continued explicit provisioning
+for self-managed paths). Until those ADRs land, preset-based installs
+continue requiring inference enrollment and WIF provisioning where applicable.
 
 ## Consequences
 
@@ -149,7 +146,7 @@ applicable.
 - Self-managed and air-gapped deployments keep working via hand-authored
   configuration or flags that bypass shared presets.
 - Mint operators shift from per-repo onboarding to backend policy (workflow
-  allowlists per [ADR 0059](0059-public-mint-mode-with-wildcard-allowlists.md));
-  inference operators follow when inference-backend policy is decided.
-  Security review moves to preset curation and `job_workflow_ref` pinning
-  rather than install-time enrollment calls where shared infrastructure applies.
+  allowlists per [ADR 0059](0059-public-mint-mode-with-wildcard-allowlists.md)).
+  Inference operator policy and install-time enrollment shape remain open;
+  security review for shared presets covers preset curation regardless of
+  which inference authorization model is chosen.
