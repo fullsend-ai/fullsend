@@ -138,6 +138,7 @@ script-test:
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/reconcile-repos-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/validate-output-schema-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-code-test.sh)
+	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-fix-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh)
 	$(call run-timed,python3 internal/scaffold/fullsend-repo/scripts/process-fix-result-test.py)
 	$(call run-timed,python3 skills/topissues/scripts/topissues_test.py)
