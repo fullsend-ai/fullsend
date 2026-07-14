@@ -115,7 +115,7 @@ func (l *VendorBinaryLayer) Uninstall(_ context.Context) error { return nil }
 func (l *VendorBinaryLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 	report := &LayerReport{Name: l.Name()}
 
-	marker := scaffold.VendoredMarkerPath()
+	marker := l.workflowPrefix() + scaffold.VendoredMarkerPath()
 	_, markerErr := l.client.GetFileContent(ctx, l.org, l.repo, marker)
 	if markerErr != nil && !forge.IsNotFound(markerErr) {
 		return nil, fmt.Errorf("checking vendored marker at %s: %w", marker, markerErr)
@@ -130,6 +130,18 @@ func (l *VendorBinaryLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 
 	hasVendoredAssets := hasMarker || hasBinary
 
+	manifestMisaligned := false
+	if hasMarker != hasBinary {
+		manifestMisaligned = true
+		report.Details = append(report.Details, "partial vendored install — re-run with --vendor or remove stale assets")
+		if hasMarker && !hasBinary {
+			report.WouldFix = append(report.WouldFix, "restore vendored binary at "+l.binaryPath())
+		}
+		if hasBinary && !hasMarker {
+			report.WouldFix = append(report.WouldFix, "restore vendored content marker at "+marker)
+		}
+	}
+
 	if hasBinary {
 		report.Details = append(report.Details, fmt.Sprintf("vendored binary present at %s", l.binaryPath()))
 	} else {
@@ -141,7 +153,6 @@ func (l *VendorBinaryLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 		report.Details = append(report.Details, "vendored content marker absent")
 	}
 
-	manifestMisaligned := false
 	manifest, manifestFound, err := scaffold.ReadVendorManifest(ctx, l.client, l.org, l.repo, l.workflowPrefix())
 	if err != nil {
 		return nil, err

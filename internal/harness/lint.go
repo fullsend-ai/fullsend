@@ -71,5 +71,15 @@ func (h *Harness) Lint() []Diagnostic {
 		}
 	}
 
+	if strings.TrimSpace(h.Trigger) != "" {
+		if err := ValidateTriggerExpression(h.Trigger); err != nil {
+			diags = append(diags, Diagnostic{
+				Severity: SeverityError,
+				Field:    "trigger",
+				Message:  err.Error(),
+			})
+		}
+	}
+
 	return diags
 }

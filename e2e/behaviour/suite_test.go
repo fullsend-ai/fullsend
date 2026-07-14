@@ -118,6 +118,8 @@ func initializeScenario(sc *godog.ScenarioContext, w *world.World) {
 		w.DummyOps = nil
 		w.IssueNumber = 0
 		w.IssueTitle = ""
+		w.PRNumber = 0
+		w.DispatchAgent = ""
 		w.TriageWorkflow = ""
 		w.TriageTriggerEvent = ""
 		w.WorkflowRun = nil

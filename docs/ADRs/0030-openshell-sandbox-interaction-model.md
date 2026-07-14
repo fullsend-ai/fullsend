@@ -144,7 +144,7 @@ HTTP CONNECT endpoint — no direct TCP listener on the sandbox. Rsync over SSH
 extracts the modified target repo with `--no-links` (prevent symlink-based
 sandbox escape) and `--exclude .git/hooks/` (prevent injected executables).
 
-**Gateway: start once, reuse (Option A).** `EnsureGateway()` is idempotent. The
+**Gateway: start once, reuse (Option A).** `EnsureGateway()` (since renamed to `CheckGateway()`) is idempotent. The
 gateway persists across sandbox invocations within the same runner job.
 
 **Sandbox lifecycle** follows a fixed sequence: create (`openshell sandbox create
