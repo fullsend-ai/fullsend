@@ -128,6 +128,10 @@ jobs:
       # preCommands run under `/bin/sh` (dash on Ubuntu): no `pipefail` (bash-only).
       # Each newline in preCommands is a separate shell invocation — no line continuations or
       # multi-line printf; keep the secret bulk prep on one line so mktemp and the file path match.
+      # Keep `npx wrangler@<version>` explicit here (not bare `wrangler`): wrangler-action only
+      # rewrites a preCommands line to `npx wrangler ...` when the line starts with the literal
+      # string "wrangler"; this line starts with `set`, so bare `wrangler` isn't on $PATH and
+      # fails with "wrangler: not found" (broke prod/preview deploys, see #4861).
       - name: Deploy to production (Workers + static assets)
         id: cf-prod
         if: github.event.workflow_run.event == 'push'
@@ -137,7 +141,7 @@ jobs:
           workingDirectory: cloudflare_site
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          preCommands: set -eu; secrets_file="$(mktemp)"; printf '%s\n' "GITHUB_APP_CLIENT_SECRET=${GITHUB_APP_CLIENT_SECRET}" "TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY}" >"$secrets_file"; wrangler versions secret bulk "$secrets_file" --message "Production secrets (workflow-run ${{ github.event.workflow_run.id }})"; rm -f "$secrets_file"
+          preCommands: set -eu; secrets_file="$(mktemp)"; printf '%s\n' "GITHUB_APP_CLIENT_SECRET=${GITHUB_APP_CLIENT_SECRET}" "TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY}" >"$secrets_file"; npx wrangler@4.110.0 versions secret bulk "$secrets_file" --message "Production secrets (workflow-run ${{ github.event.workflow_run.id }})"; rm -f "$secrets_file"
           command: deploy --name="${{ vars.CLOUDFLARE_PROJECT_NAME }}"
           vars: |
             GITHUB_APP_CLIENT_ID
@@ -154,6 +158,8 @@ jobs:
       # Plain `vars` are only auto-injected for deploy/publish, so pass `--var` on `versions upload`.
       # preCommands run under `/bin/sh` (dash on Ubuntu): no `pipefail` (bash-only).
       # Each newline in preCommands is a separate shell invocation — keep secret bulk prep on one line.
+      # Keep `npx wrangler@<version>` explicit here (not bare `wrangler`) — see the prod deploy step
+      # above for why (#4861).
       - name: Upload preview version (Workers + static assets)
         id: cf-preview
         if: github.event.workflow_run.event == 'pull_request'
@@ -163,7 +169,7 @@ jobs:
           workingDirectory: cloudflare_site
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          preCommands: set -eu; secrets_file="$(mktemp)"; printf '%s\n' "GITHUB_APP_CLIENT_SECRET=${GITHUB_APP_CLIENT_SECRET}" "TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY}" >"$secrets_file"; wrangler versions secret bulk "$secrets_file" --message "PR preview secrets (workflow-run ${{ github.event.workflow_run.id }})"; rm -f "$secrets_file"
+          preCommands: set -eu; secrets_file="$(mktemp)"; printf '%s\n' "GITHUB_APP_CLIENT_SECRET=${GITHUB_APP_CLIENT_SECRET}" "TURNSTILE_SECRET_KEY=${TURNSTILE_SECRET_KEY}" >"$secrets_file"; npx wrangler@4.110.0 versions secret bulk "$secrets_file" --message "PR preview secrets (workflow-run ${{ github.event.workflow_run.id }})"; rm -f "$secrets_file"
           command: >-
             versions upload
             --name="${{ vars.CLOUDFLARE_PROJECT_NAME }}"
