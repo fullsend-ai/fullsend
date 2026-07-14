@@ -635,7 +635,7 @@ jobs:
       - name: Restore fullsend CLI cache
         if: steps.triggers.outputs.has_triggers == 'true'
         id: cli-cache
-        uses: actions/cache/restore@5a3ec84e3dbd861d4c4b439f47a3d2b4b9f0c5e0 # v4.2.3
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ${{ runner.temp }}/fullsend-cache
           key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ job.workflow_sha }}
@@ -690,7 +690,7 @@ jobs:
 
       - name: Save fullsend CLI cache
         if: steps.triggers.outputs.has_triggers == 'true' && steps.cli-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@5a3ec84e3dbd861d4c4b439f47a3d2b4b9f0c5e0 # v4.2.3
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: ${{ runner.temp }}/fullsend-cache
           key: fullsend-cli-${{ steps.mode.outputs.mode }}-${{ job.workflow_sha }}
