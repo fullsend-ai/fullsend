@@ -63,9 +63,5 @@ forge:
       REPO_FULL_NAME: "${REPO_FULL_NAME}"
       ISSUE_NUMBER: "${ISSUE_NUMBER}"
       REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
-      # reusable-code.yml's inline "Validate inputs" step already ran
-      # pre-code.sh's existing-human-PR check (GH API search + label +
-      # comment) before this pre_script invocation, to gate GCP/bot-identity/
-      # agent-env setup on its skipped= output. Don't repeat those side
-      # effects here (issue #4718).
+      # Skips the already-performed existing-PR check (issue #4718)
       CODE_SKIP_EXISTING_PR_CHECK: "true"
