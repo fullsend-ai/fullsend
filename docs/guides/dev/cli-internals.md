@@ -348,7 +348,7 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
-│  │ EnsureGateway()   │ Start/verify gateway service             │
+│  │ CheckGateway()    │ Start/verify gateway service             │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
@@ -455,7 +455,7 @@ details, see [Agent runtimes](../../runtimes.md).
 | Operation | CLI Command | Purpose |
 |-----------|------------|---------|
 | `EnsureAvailable()` | Check `openshell` binary | Verify runtime available |
-| `EnsureGateway()` | `openshell gateway ...` | Start inference gateway |
+| `CheckGateway()` | `openshell gateway ...` | Start inference gateway |
 | `EnsureProvider()` | `openshell provider ...` | Register model provider (bare-key form) |
 | `Create()` | `openshell sandbox create --image ...` | Spin up container |
 | `Exec()` | `openshell sandbox exec ...` | Run command in sandbox |
