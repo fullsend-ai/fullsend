@@ -80,7 +80,7 @@ Requires a Cloudflare login or API token in the environment per [Wrangler docs](
 
 **`Could not determine Workers deployment URL`.** The workflow reads `deployment-url` from `cloudflare/wrangler-action`, then falls back to parsing Wrangler stdout/stderr for a `workers.dev` URL. Upgrade **`wranglerVersion`** in the workflow if Wrangler output format changed.
 
-**Preview upload fails (PR builds).** Requires Wrangler **≥ 4.21.0** for `--preview-alias`. The deploy workflow pins **4.36.0**.
+**Preview upload fails (PR builds).** Requires Wrangler **≥ 4.21.0** for `--preview-alias`. The deploy workflow pins **4.110.0**.
 
 **Artifact download 404.** **Build Site** must upload artifact **`site`**; **Deploy Site** needs `actions: read`.
 
