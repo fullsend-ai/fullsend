@@ -66,6 +66,16 @@ See [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
 
 ## E
 
+### Eval Measurement
+
+A score, judge, or metric applied to agent (or agent-chain) behavior — for example cost per run, whether the code agent later passes review, or whether a review agent recommends merge and a human still intervenes. Measurements are not the inputs under test; they are what you score. The same measurement can be applied to curated [eval scenarios](#eval-scenario) or to live ("wild") production traffic, at agent scope or across the platform chain. Prefer this term (or synonyms *eval score* / *eval judge*) over the bare word "evals," which is ambiguous with [eval scenarios](#eval-scenario).
+See [testing-agents.md](problems/testing-agents.md) and [Observability](#observability).
+
+### Eval Scenario
+
+A fixed, reproducible test case — a concrete input with an expected outcome that you re-run when an agent changes. Example: triage is presented with an issue asking to add a cheeseburger to the README and is expected to reject and close it. Scenarios are maintained like tests: if intentional agent behavior changes, update the scenario expectations. They answer "did this change make the agent better or worse on known cases?" and can later grow by promoting interesting production cases from telemetry into the curated set. Distinct from [eval measurements](#eval-measurement) (the scores/judges applied to a scenario or to wild traffic). Prefer this term over the bare word "evals."
+See [testing-agents.md](problems/testing-agents.md) (golden-set evaluation).
+
 ### Entry Point
 
 The single deterministic component that receives forge events and decides which agent combination to run. On GitHub, events arrive via webhooks; on GitLab, via cron-polled scheduled pipelines (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)). Previously called **wrapper** — the rename was adopted to avoid confusion with the sandbox/wrapping layer (see [#101](https://github.com/fullsend-ai/fullsend/issues/101) for the terminology evolution). The entry point is non-AI: it is a conventional program (currently Go) that parses events, enforces ACLs on slash commands, validates label transitions, and dispatches to agent runtimes. It does not make LLM calls.
