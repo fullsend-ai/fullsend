@@ -1,12 +1,12 @@
 # AGENTS.md
 
-Fullsend is a platform for fully autonomous agentic development for GitHub-hosted organizations. It contains design documents organized by problem domain (`docs/`) and a Go CLI (`cmd/fullsend/`) that manages GitHub App setup and org configuration. See [README.md](README.md) for the full document index.
+Fullsend is a platform for fully autonomous agentic development for GitHub-hosted organizations. It contains design documents organized by problem domain (`docs/`) and a Go CLI (`cmd/fullsend/`) that manages GitHub App setup and org configuration. See [fullsend.sh](https://fullsend.sh) for the full documentation site.
 
 ## How to work in this repo
 
 - Problem documents (`docs/problems/`) should present multiple options with trade-offs, not prescribe single solutions.
 - Each problem document has an "Open questions" section — this is where unresolved issues live.
-- When adding new problem areas, create a new file in `docs/problems/` and link it from `README.md`.
+- When adding new problem areas, create a new file in `docs/problems/`. The documentation site auto-discovers files in this directory.
 - The security threat model (threat priority: external injection > insider > drift > supply chain) should inform all other documents.
 - Keep core problem documents organization-agnostic. Organization-specific details belong in `docs/problems/applied/<org-name>/`.
 - The target audience for problem documents is any contributor community considering autonomous agents — keep language accessible and avoid presuming solutions.
