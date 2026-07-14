@@ -34,8 +34,12 @@ export GH_TOKEN="${REVIEW_TOKEN}"
 CLEANUP_FILES=()
 trap 'rm -f "${CLEANUP_FILES[@]}"' EXIT
 
-# Refuse to post reviews on merged or closed PRs
-PR_STATE=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json state --jq '.state')
+# Refuse to post reviews on merged or closed PRs.
+# Also fetch isDraft for the outcome-label decision (draft PRs must not
+# receive ready-for-merge).
+PR_JSON=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json state,isDraft)
+PR_STATE=$(echo "${PR_JSON}" | jq -r '.state')
+IS_DRAFT=$(echo "${PR_JSON}" | jq -r '.isDraft')
 if [ "${PR_STATE}" != "OPEN" ]; then
   echo "PR is ${PR_STATE}, skipping review"
 
@@ -363,16 +367,20 @@ for stale_label in "ready-for-merge" "requires-manual-review" "rejected"; do
     --remove-label "${stale_label}" 2>/dev/null || true
 done
 
-if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "false" ]; then
+if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "false" ] && [ "${IS_DRAFT}" != "true" ]; then
   echo "Approve disposition — applying ready-for-merge label"
   gh label create "ready-for-merge" --repo "${REPO_FULL_NAME}" \
     --description "All reviewers approved — ready to merge" --color "0E8A16" \
     2>/dev/null || true
   gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
     --add-label "ready-for-merge" || true
-elif { [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "true" ]; } || \
+elif { [ "${ACTION}" = "approve" ] && { [ "${DOWNGRADED}" = "true" ] || [ "${IS_DRAFT}" = "true" ]; }; } || \
      [ "${ACTION}" = "comment" ]; then
-  echo "Review requires human judgment — applying requires-manual-review label"
+  if [ "${ACTION}" = "approve" ] && [ "${IS_DRAFT}" = "true" ]; then
+    echo "Draft PR — suppressing ready-for-merge, applying requires-manual-review label"
+  else
+    echo "Review requires human judgment — applying requires-manual-review label"
+  fi
   gh label create "requires-manual-review" --repo "${REPO_FULL_NAME}" \
     --description "Review requires human judgment" --color "FBCA04" \
     2>/dev/null || true
