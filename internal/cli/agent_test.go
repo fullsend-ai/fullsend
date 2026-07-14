@@ -1034,21 +1034,17 @@ func TestLoadAgentConfig_InvalidYAML(t *testing.T) {
 	require.NoError(t, err)
 	_, err = loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing org config")
+	assert.Contains(t, err.Error(), "parsing config")
 }
 
 func TestLoadAgentConfig_AmbiguousConfig(t *testing.T) {
 	dir := t.TempDir()
-	// Valid YAML that parses as org config but lacks dispatch.platform,
-	// and also fails per-repo parsing due to unknown field.
+	// Valid YAML with no org-only keys parses as per-repo config.
 	err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("unknown_field_only: true\n"), 0o644)
 	require.NoError(t, err)
-	_, err = loadAgentConfig(filepath.Join(dir, "config.yaml"))
-	// Per-repo config might parse this successfully (it's lenient), so only
-	// check error if it actually fails.
-	if err != nil {
-		assert.Contains(t, err.Error(), "dispatch.platform")
-	}
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	assert.False(t, cfg.isOrg)
 }
 
 func TestParseGenericURL_NotURL(t *testing.T) {
@@ -1091,6 +1087,22 @@ func TestRunAgentList_LoadError(t *testing.T) {
 	err := runAgentList("/nonexistent/path", printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading config")
+}
+
+func TestRunAgentList_InvalidConfig(t *testing.T) {
+	dir := t.TempDir()
+	writeOrgConfig(t, dir, `agents:
+  - name: Ping
+    source: harness/a.yaml
+  - name: ping
+    source: harness/b.yaml
+`)
+
+	var buf strings.Builder
+	printer := ui.New(&buf)
+	err := runAgentList(dir, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate agent name")
 }
 
 func TestRunAgentRemove_LoadError(t *testing.T) {

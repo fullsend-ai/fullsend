@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -19,6 +20,10 @@ import (
 
 const behaviourScriptRelPath = "behaviour/current-scenario.yaml"
 const behaviourResultsFile = "behaviour-results.json"
+
+var envVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+var jsonPathPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)*$`)
 
 type sandboxExecFunc func(sandboxName, cmd string, timeout time.Duration) (stdout, stderr string, exitCode int, err error)
 
@@ -247,6 +252,64 @@ func executeBehaviourOp(rt DummyRuntime, sandboxName, repoDir string, op Behavio
 		tmp.Close()
 		if err := rt.uploadFn()(sandboxName, tmp.Name(), remoteDest); err != nil {
 			return fmt.Errorf("write_fixture upload: %w", err)
+		}
+		return nil
+	case "assert_env":
+		varName := strings.TrimSpace(op.Args)
+		if varName == "" {
+			return fmt.Errorf("assert_env requires a variable name")
+		}
+		if !envVarNamePattern.MatchString(varName) {
+			return fmt.Errorf("assert_env invalid variable name %q", varName)
+		}
+		cmd := fmt.Sprintf("v=$(printenv -- %s); test -n \"$v\"", shellQuote(varName))
+		_, stderr, exitCode, err := rt.execFn()(sandboxName, cmd, 30*time.Second)
+		if err != nil {
+			return fmt.Errorf("assert_env exec: %w", err)
+		}
+		if exitCode != 0 {
+			return fmt.Errorf("assert_env %s unset or empty: %s", varName, strings.TrimSpace(stderr))
+		}
+		return nil
+	case "assert_file":
+		path := strings.TrimSpace(op.Args)
+		if path == "" {
+			return fmt.Errorf("assert_file requires a path")
+		}
+		remotePath, err := resolveSandboxPath(sandbox.SandboxWorkspace, path)
+		if err != nil {
+			return err
+		}
+		cmd := fmt.Sprintf("test -r %s", shellQuote(remotePath))
+		_, stderr, exitCode, err := rt.execFn()(sandboxName, cmd, 30*time.Second)
+		if err != nil {
+			return fmt.Errorf("assert_file exec: %w", err)
+		}
+		if exitCode != 0 {
+			return fmt.Errorf("assert_file %s missing: %s", path, strings.TrimSpace(stderr))
+		}
+		return nil
+	case "assert_json":
+		parts := strings.SplitN(op.Args, ",", 2)
+		if len(parts) != 2 {
+			return fmt.Errorf("assert_json args must be path,json_path")
+		}
+		path := strings.TrimSpace(parts[0])
+		jsonPath := strings.TrimSpace(parts[1])
+		if !jsonPathPattern.MatchString(jsonPath) {
+			return fmt.Errorf("assert_json invalid json_path %q", jsonPath)
+		}
+		remotePath, err := resolveSandboxPath(sandbox.SandboxWorkspace, path)
+		if err != nil {
+			return err
+		}
+		cmd := fmt.Sprintf("jq -e %s %s >/dev/null", shellQuote("."+jsonPath), shellQuote(remotePath))
+		_, stderr, exitCode, err := rt.execFn()(sandboxName, cmd, 30*time.Second)
+		if err != nil {
+			return fmt.Errorf("assert_json exec: %w", err)
+		}
+		if exitCode != 0 {
+			return fmt.Errorf("assert_json %s at %s: %s", jsonPath, path, strings.TrimSpace(stderr))
 		}
 		return nil
 	default:

@@ -401,7 +401,7 @@ func TestIsPerRepoYAML(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, isPerRepoYAML([]byte(tt.yaml)))
+			assert.Equal(t, tt.want, config.IsPerRepoYAML([]byte(tt.yaml)))
 		})
 	}
 }
@@ -460,6 +460,20 @@ func TestTryLoadFullsendConfig_OmittedAllowlist(t *testing.T) {
 	require.NotNil(t, cfg)
 	assert.Equal(t, config.DefaultAllowedRemoteResources(), cfg.AllowedRemoteResources,
 		"omitted field must get defaults")
+}
+
+func TestRequireFullsendConfig_OrgGetsDefaultAllowlist(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"version: \"1\"\norg: example\n",
+	), 0o644))
+
+	printer := ui.New(io.Discard)
+	cfg, err := requireFullsendConfig(path, printer)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	assert.Equal(t, config.DefaultAllowedRemoteResources(), cfg.AllowedRemoteResources)
 }
 
 func TestRequireFullsendConfig_ExplicitEmptyAllowlist(t *testing.T) {
@@ -1317,49 +1331,6 @@ func TestTryAgentsRepoFallback_FetchURLError(t *testing.T) {
 
 	_, _, ok := tryAgentsRepoFallback(context.Background(), "triage", fakeClient, opts, printer)
 	assert.False(t, ok)
-}
-
-func TestContainedLocalPath_Valid(t *testing.T) {
-	dir := canonTempDir(t)
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "agent.yaml"), []byte("test"), 0o644))
-	got, err := containedLocalPath(dir, "harness/agent.yaml")
-	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(dir, "harness", "agent.yaml"), got)
-}
-
-func TestContainedLocalPath_AbsoluteRejected(t *testing.T) {
-	dir := t.TempDir()
-	_, err := containedLocalPath(dir, "/etc/evil.yaml")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "must be relative, not absolute")
-}
-
-func TestContainedLocalPath_TraversalRejected(t *testing.T) {
-	dir := t.TempDir()
-	_, err := containedLocalPath(dir, "harness/../../etc/passwd")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "escapes fullsend directory")
-}
-
-func TestContainedLocalPath_DotSegmentsCleaned(t *testing.T) {
-	dir := canonTempDir(t)
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "agent.yaml"), []byte("test"), 0o644))
-	got, err := containedLocalPath(dir, "harness/./agent.yaml")
-	require.NoError(t, err)
-	assert.Equal(t, filepath.Join(dir, "harness", "agent.yaml"), got)
-}
-
-func TestContainedLocalPath_SymlinkEscapeRejected(t *testing.T) {
-	dir := t.TempDir()
-	outside := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(outside, "evil.yaml"), []byte("pwned"), 0o644))
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
-	require.NoError(t, os.Symlink(filepath.Join(outside, "evil.yaml"), filepath.Join(dir, "harness", "evil.yaml")))
-	_, err := containedLocalPath(dir, "harness/evil.yaml")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "escapes fullsend directory via symlink")
 }
 
 func TestApplySandboxImageOverride_Applied(t *testing.T) {

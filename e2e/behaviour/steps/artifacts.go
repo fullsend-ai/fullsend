@@ -36,6 +36,9 @@ func ensureTriageWorkflowComplete(w *world.World) error {
 }
 
 func ensureArtifacts(w *world.World) error {
+	if w.ArtifactDir != "" {
+		return nil
+	}
 	if err := ensureTriageWorkflowComplete(w); err != nil {
 		return err
 	}

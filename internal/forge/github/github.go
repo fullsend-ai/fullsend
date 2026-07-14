@@ -2450,6 +2450,52 @@ func (c *LiveClient) MinimizeComment(ctx context.Context, nodeID, reason string)
 	return nil
 }
 
+// GetPullRequestInfo returns branch/repo context for a pull request.
+func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string, number int) (*forge.PullRequestInfo, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number))
+	if err != nil {
+		return nil, fmt.Errorf("get pull request #%d: %w", number, err)
+	}
+
+	var pr struct {
+		Number  int    `json:"number"`
+		HTMLURL string `json:"html_url"`
+		User    struct {
+			Login string `json:"login"`
+		} `json:"user"`
+		Head struct {
+			Ref  string `json:"ref"`
+			SHA  string `json:"sha"`
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
+		} `json:"head"`
+		Base struct {
+			Ref  string `json:"ref"`
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
+		} `json:"base"`
+	}
+	if err := decodeJSON(resp, &pr); err != nil {
+		return nil, fmt.Errorf("decode pull request #%d: %w", number, err)
+	}
+	headRepo := pr.Head.Repo.FullName
+	baseRepo := pr.Base.Repo.FullName
+	isFork := headRepo == "" || baseRepo == "" || !strings.EqualFold(headRepo, baseRepo)
+	return &forge.PullRequestInfo{
+		Number:   pr.Number,
+		HTMLURL:  pr.HTMLURL,
+		HeadRepo: headRepo,
+		BaseRepo: baseRepo,
+		HeadRef:  pr.Head.Ref,
+		BaseRef:  pr.Base.Ref,
+		HeadSHA:  pr.Head.SHA,
+		AuthorID: pr.User.Login,
+		IsFork:   isFork,
+	}, nil
+}
+
 // GetPullRequestHeadSHA returns the current HEAD commit SHA of a pull request.
 func (c *LiveClient) GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error) {
 	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number))
@@ -2985,6 +3031,25 @@ func (c *LiveClient) GetAppClientID(ctx context.Context, slug string) (string, e
 		return "", fmt.Errorf("app %s has no client_id", slug)
 	}
 	return app.ClientID, nil
+}
+
+func (c *LiveClient) GetCollaboratorPermission(ctx context.Context, owner, repo, username string) (string, error) {
+	path := fmt.Sprintf("/repos/%s/%s/collaborators/%s/permission",
+		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return "", fmt.Errorf("get collaborator permission for %s: %w", username, err)
+	}
+	var perm struct {
+		RoleName string `json:"role_name"`
+	}
+	if err := decodeJSON(resp, &perm); err != nil {
+		return "", fmt.Errorf("decode collaborator permission for %s: %w", username, err)
+	}
+	if perm.RoleName == "" {
+		return "", fmt.Errorf("%w: no permission for %s", forge.ErrNotFound, username)
+	}
+	return perm.RoleName, nil
 }
 
 // CreateOrgSecret creates or updates an encrypted organization-level secret
