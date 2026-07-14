@@ -47,10 +47,12 @@ dedicated `<org>/.fullsend` config repo is deprecated and out of scope
 ([ADR 0044](0044-deprecate-per-org-installation-mode.md)).
 
 [ADR 0029](0029-central-token-mint-secretless-fullsend.md) already treats
-`job_workflow_ref` as the trust binding for mint authorization. The same
-pattern can authorize inference backends without per-adopter enrollment, when
-the caller's workflow is pinned to definitions in `fullsend-ai/fullsend`.
-Concrete workflow pinning and backend policy are left to follow-on ADRs.
+`job_workflow_ref` as the trust binding for mint authorization. Shared-infrastructure
+mint workflow pinning and `job_workflow_ref` validation are decided in
+[ADR 0059](0059-public-mint-mode-with-wildcard-allowlists.md). The same
+pattern may authorize inference backends without per-adopter enrollment when
+the caller's workflow is pinned to definitions in `fullsend-ai/fullsend`;
+inference-backend validation of `job_workflow_ref` remains open for a follow-on ADR.
 
 ## Options
 
@@ -70,6 +72,10 @@ Concrete workflow pinning and backend policy are left to follow-on ADRs.
 inference provider and backend parameters, and other values currently
 supplied via CLI flags belong in the per-repo configuration under `.fullsend/`.
 The installer reads configuration instead of reconstructing it from flags.
+Decision 1 applies to `fullsend github setup` (single-repo install). The
+[ADR 0057](0057-repos-management.md) bulk manifest path (`fullsend repos
+install` / `sync`) remains a distinct operator mechanism using GitHub Secrets
+and Variables until a follow-on change migrates it to per-repo config files.
 
 **2. Layered configuration with accessor-based lookup.** Configuration is
 stored in the target repository as:
@@ -99,11 +105,11 @@ appropriate). The design must allow additional file layers beyond base + overlay
 in the future without changing call sites.
 
 **3. `--config` install flag for ready-made presets.** `fullsend github setup`
-accepts `--config <path-or-url>`. The installer:
+accepts `--config <path-or-url>` and optional `--config-hash <sha256>`. The installer:
 
-1. Fetches or reads the preset document. The installer validates fetched content
-   against a content hash when provided; full integrity verification (signing,
-   allowlisting) is deferred to a follow-on ADR.
+1. Fetches or reads the preset document. When `--config-hash` is supplied,
+   the installer validates fetched content against that hash; signing and
+   preset URL allowlisting are deferred to a follow-on ADR.
 2. Commits it as `.fullsend/config.base.yaml` in the target repository.
 3. Writes a stub `.fullsend/config.yaml` containing only comments and empty or
    minimal override fields for the adopter to customize.
@@ -118,11 +124,13 @@ enrollment or inference WIF provisioning. Trust is established by the
 workflows the preset references, not by registering each repo with backend
 operators at install time.
 
-Follow-on ADRs will specify which upstream workflows are pinned, how inference
-backends validate `job_workflow_ref`, and compatibility for self-managed mint
-or inference paths that still require explicit enrollment. Until those ADRs
-land, preset-based installs continue requiring that enrollment steps be
-performed.
+Workflow pinning and mint-side `job_workflow_ref` validation for shared
+infrastructure are decided in [ADR 0059](0059-public-mint-mode-with-wildcard-allowlists.md).
+Inference-backend validation of `job_workflow_ref` and compatibility for
+self-managed mint or inference paths that still require explicit enrollment
+remain open for follow-on ADRs. Until inference follow-on ADRs land,
+preset-based installs continue requiring inference enrollment steps where
+applicable.
 
 ## Consequences
 
@@ -135,10 +143,13 @@ performed.
   documented per field.
 - Existing installations without `config.base.yaml` remain valid — accessors
   treat a missing base file as an empty layer, falling through to code defaults.
-- Preset URLs are a supply-chain trust surface; integrity verification
-  (hashing, signing) is a follow-on concern.
+- Preset URLs are a supply-chain trust surface; signing and preset URL
+  allowlisting are follow-on concerns (`--config-hash` validation is in scope
+  for `--config` installs).
 - Self-managed and air-gapped deployments keep working via hand-authored
   configuration or flags that bypass shared presets.
-- Mint and inference operators shift from per-repo onboarding to backend policy
-  (workflow allowlists); security review moves to preset curation and
-  `job_workflow_ref` pinning rather than install-time enrollment calls.
+- Mint operators shift from per-repo onboarding to backend policy (workflow
+  allowlists per [ADR 0059](0059-public-mint-mode-with-wildcard-allowlists.md));
+  inference operators follow when inference-backend policy is decided.
+  Security review moves to preset curation and `job_workflow_ref` pinning
+  rather than install-time enrollment calls where shared infrastructure applies.
