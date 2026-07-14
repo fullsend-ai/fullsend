@@ -143,7 +143,12 @@ The `mint`, `inference`, and `github` subcommands decompose setup into role-spec
 
 The typical handoff: a GCP admin runs `mint deploy`, `mint enroll`, and `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`. See [Advanced setup](../infrastructure/advanced-setup.md).
 
-> **Note:** The legacy `admin install` command wraps all phases into a single invocation but is deprecated. The standalone commands above are the recommended path. See the [Unified Installation Flow](#unified-installation-flow) section below for how the phases are structured internally.
+> **Note:** The legacy monolithic `admin install` (one opaque invocation for all
+> phases) is deprecated; use the standalone commands above for now. [ADR 0066](../../ADRs/0066-interactive-admin-install-guide.md)
+> accepts `admin install` as a future interactive guided orchestrator over those
+> same phases (not a monolith); that wizard is follow-on work. See the
+> [Unified Installation Flow](#unified-installation-flow) section below for how the
+> phases are structured internally.
 
 ### Token Resolution Chain
 
