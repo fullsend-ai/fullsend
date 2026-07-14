@@ -127,7 +127,7 @@ These `exec.Command` calls target the `openshell` binary directly (not SSH/SCP/r
 
 - `EnsureProvider()` — `openshell provider create`
 - `EnsureAvailable()` — `exec.LookPath("openshell")`
-- `EnsureGateway()` — `openshell gateway info/start`
+- `CheckGateway()` — `openshell gateway info/start`
 - `Create()` — `openshell sandbox create`
 - `Delete()` — `openshell sandbox delete`
 - `CollectLogs()` — `openshell logs`
