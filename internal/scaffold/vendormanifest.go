@@ -149,6 +149,7 @@ var vendoredDefaultsInfraPaths = []string{
 	".github/actions/check-e2e-authorization/action.yml",
 	".github/actions/install-fullsend-cli/action.yml",
 	".github/actions/mint-token/action.yml",
+	".github/actions/prepare-workspace/action.yml",
 	".github/actions/setup-gcp/action.yml",
 	".github/actions/validate-enrollment/action.yml",
 	".github/scripts/install-openshell.sh",

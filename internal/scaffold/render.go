@@ -2,7 +2,6 @@ package scaffold
 
 import (
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -122,12 +121,3 @@ func reusableDispatchUses(opts RenderOptions) string {
 	}
 	return uses
 }
-
-// RenderDispatchPerRepoStagePaths rewrites stage workflow paths for vendored
-// per-repo installs so reusable workflows reference .github/workflows/ (required
-// by GitHub Actions for local reusable workflow references).
-func RenderDispatchPerRepoStagePaths(content []byte) []byte {
-	return dispatchStageUses.ReplaceAll(content, []byte(`uses: ./.github/workflows/reusable-$1.yml`))
-}
-
-var dispatchStageUses = regexp.MustCompile(`uses: fullsend-ai/fullsend/\.github/workflows/reusable-([a-z-]+)\.yml@[^\s]+`)

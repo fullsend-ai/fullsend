@@ -1,0 +1,68 @@
+name: Prepare Workspace
+description: >-
+  Layer upstream defaults with org/repo overrides and validate enrollment.
+  Must be called AFTER the config repo and upstream defaults have been
+  checked out (the checkout steps must be inline in the job because this
+  action is only available once .defaults/ exists on disk).
+
+inputs:
+  install_mode:
+    description: "per-repo or per-org"
+    required: true
+  source_repo:
+    description: Target repository in owner/name form
+    required: true
+
+outputs:
+  repo_name:
+    description: Short repo name extracted by validate-enrollment
+    value: ${{ steps.repo-parts.outputs.name }}
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare workspace (upstream defaults + org/repo overrides)
+      shell: bash
+      env:
+        INSTALL_MODE: ${{ inputs.install_mode }}
+      run: |
+        set -euo pipefail
+        if [[ "${INSTALL_MODE}" != "per-org" && "${INSTALL_MODE}" != "per-repo" ]]; then
+          echo "::error::Invalid install_mode '${INSTALL_MODE}': must be 'per-org' or 'per-repo'"
+          exit 1
+        fi
+        SRC=".defaults/internal/scaffold/fullsend-repo"
+        LAYERED_DIRS="agents skills schemas harness plugins policies scripts env"
+        DEST=""
+        if [[ "${INSTALL_MODE}" == "per-repo" ]]; then
+          DEST=".fullsend/"
+        fi
+        for dir in ${LAYERED_DIRS}; do
+          if [[ -d "${SRC}/${dir}" ]]; then
+            mkdir -p "${DEST}${dir}"
+            cp -r "${SRC}/${dir}/." "${DEST}${dir}/"
+          fi
+        done
+        CUSTOM_BASE="customized"
+        if [[ "${INSTALL_MODE}" == "per-repo" ]]; then
+          CUSTOM_BASE=".fullsend/customized"
+        fi
+        for dir in ${LAYERED_DIRS}; do
+          if [[ -d "${CUSTOM_BASE}/${dir}" ]]; then
+            find "${CUSTOM_BASE}/${dir}" -type f ! -name '.gitkeep' -print0 \
+              | while IFS= read -r -d '' f; do
+                  rel="${f#"${CUSTOM_BASE}"/}"
+                  mkdir -p "$(dirname "${DEST}${rel}")"
+                  cp "${f}" "${DEST}${rel}"
+                done
+          fi
+        done
+        mkdir -p .github/scripts
+        cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
+
+    - name: Validate enrollment and extract repo metadata
+      id: repo-parts
+      uses: ./.defaults/.github/actions/validate-enrollment
+      with:
+        source_repo: ${{ inputs.source_repo }}
+        install_mode: ${{ inputs.install_mode }}
