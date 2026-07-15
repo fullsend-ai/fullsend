@@ -21,6 +21,7 @@ ignore:
   - "e2e/behaviour/suite_test.go"
   - "e2e/behaviour/features/**"
   - "e2e/behaviour/fixtures/**"
+  - "pkg/behaviourtest/steps/dispatch.go"
   - "docs/**"
   - "hack/**"
   - "experiments/**"
