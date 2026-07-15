@@ -105,7 +105,7 @@ func TestAdminInstallUninstall(t *testing.T) {
 	// The default PR path forks within the org and fails PR creation (422) in CI.
 	// Direct push still exercises install; PR-based delivery is covered on main
 	// and in local runs with a user token (gh auth login).
-	useDirectScaffold := env.cfg.useMint
+	useDirectScaffold := env.cfg.UseMint
 	if useDirectScaffold {
 		installArgs = append(installArgs, "--direct")
 	}
