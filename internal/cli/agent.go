@@ -14,6 +14,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
+	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/fullsend-ai/fullsend/internal/urlutil"
 )
@@ -71,25 +72,14 @@ func (ac *agentConfig) validate() error {
 }
 
 func loadAgentConfig(configPath string) (*agentConfig, error) {
-	data, err := os.ReadFile(configPath)
+	dirCfg, err := config.LoadFromDir(filepath.Dir(configPath), config.LoadOpts{MissingOK: false})
 	if err != nil {
-		return nil, fmt.Errorf("reading config: %w", err)
+		return nil, err
 	}
-
-	orgCfg, orgErr := config.ParseOrgConfig(data)
-	if orgErr == nil && orgCfg.Dispatch.Platform != "" {
-		return &agentConfig{isOrg: true, orgCfg: orgCfg}, nil
+	if dirCfg.IsOrg {
+		return &agentConfig{isOrg: true, orgCfg: dirCfg.Org}, nil
 	}
-
-	perRepoCfg, prErr := config.ParsePerRepoConfig(data)
-	if prErr == nil {
-		return &agentConfig{isOrg: false, perRepoCfg: perRepoCfg}, nil
-	}
-
-	if orgErr != nil {
-		return nil, fmt.Errorf("parsing org config: %w", orgErr)
-	}
-	return nil, fmt.Errorf("config lacks dispatch.platform (not org config) and per-repo parse failed: %w", prErr)
+	return &agentConfig{isOrg: false, perRepoCfg: dirCfg.PerRepo}, nil
 }
 
 func newAgentCmd() *cobra.Command {
@@ -279,13 +269,15 @@ func runAgentList(fullsendDir string, printer *ui.Printer) error {
 		return fmt.Errorf("resolving fullsend dir: %w", err)
 	}
 
-	configPath := filepath.Join(absDir, "config.yaml")
-	cfg, err := loadAgentConfig(configPath)
+	dirCfg, err := config.LoadFromDir(absDir, config.LoadOpts{MissingOK: false})
 	if err != nil {
 		return err
 	}
+	if _, err := harness.RegisteredAgents(dirCfg); err != nil {
+		return err
+	}
 
-	agents := cfg.agents()
+	agents := dirCfg.Agents
 	if len(agents) == 0 {
 		printer.StepInfo("No agents registered in config")
 		return nil

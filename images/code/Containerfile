@@ -49,6 +49,13 @@ RUN if command -v apt-get >/dev/null 2>&1; then \
 # env file overrides this with the OpenShell bundle if present.
 RUN git config --system http.sslCAInfo /etc/ssl/certs/ca-certificates.crt 2>/dev/null || true
 
+# Configure Git to use gitsign for commit signing (keyless signing via Sigstore).
+# Signing is opt-in: enabled per-agent via GIT_CONFIG_* env vars in the agents
+# repo, not globally. This avoids blocking commits when Sigstore endpoints are
+# not accessible or when signing is not needed.
+RUN git config --system gpg.format x509 \
+    && git config --system gpg.x509.program gitsign
+
 # ---------------------------------------------------------------------------
 # Go toolchain — needed to compile and run tests in Go-based target repos.
 # Without this the agent falls back to manual code review (no `go build`,
@@ -93,6 +100,26 @@ RUN case "$TARGETARCH" in \
     && mv "/tmp/lychee-${LY_TRIPLE}/lychee" /usr/local/bin/lychee \
     && chmod +x /usr/local/bin/lychee \
     && rm -rf /tmp/lychee.tar.gz "/tmp/lychee-${LY_TRIPLE}"
+
+# ---------------------------------------------------------------------------
+# gitsign — keyless Git signing using Sigstore. Used to cryptographically
+# sign agent commits with verifiable provenance via OIDC.
+# To update: bump GITSIGN_VERSION and GITSIGN_SHA256_{AMD64,ARM64} from:
+#   https://github.com/sigstore/gitsign/releases
+ARG GITSIGN_VERSION=0.16.1
+ARG GITSIGN_SHA256_AMD64=4a29a1f4b9add1f0f6d9a3e9e6ba0cffa121b971be82d62bb1496d7d1d877b0a
+ARG GITSIGN_SHA256_ARM64=66eb0378608c8fbceb497eecb58a525345549f46e9588616daa0f157624f33b4
+RUN case "$TARGETARCH" in \
+      amd64) GS_SHA="$GITSIGN_SHA256_AMD64" ;; \
+      arm64) GS_SHA="$GITSIGN_SHA256_ARM64" ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL \
+      "https://github.com/sigstore/gitsign/releases/download/v${GITSIGN_VERSION}/gitsign_${GITSIGN_VERSION}_linux_${TARGETARCH}" \
+      -o /tmp/gitsign \
+    && echo "${GS_SHA}  /tmp/gitsign" | sha256sum -c - \
+    && mv /tmp/gitsign /usr/local/bin/gitsign \
+    && chmod +x /usr/local/bin/gitsign
 
 # ---------------------------------------------------------------------------
 # gitleaks is already installed in the base sandbox image.

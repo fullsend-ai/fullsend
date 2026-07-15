@@ -1,0 +1,95 @@
+name: Install fullsend CLI
+description: >-
+  Install fullsend for harness-dispatch: copy a vendored repo binary or build
+  from the reusable workflow repository at workflow_sha.
+
+inputs:
+  mode:
+    description: Install mode — vendored (caller binary) or upstream (build at workflow_sha).
+    required: true
+  vendored_path:
+    description: Path to vendored binary in the caller checkout (vendored mode only).
+    default: .fullsend/bin/fullsend
+  workflow_repository:
+    description: Reusable workflow repository (owner/name) for upstream builds.
+    default: ${{ github.repository }}
+  workflow_sha:
+    description: Commit SHA to build when mode is upstream.
+    default: ${{ github.sha }}
+  github_token:
+    description: Token for cloning the workflow repository.
+    default: ${{ github.token }}
+
+outputs:
+  fullsend-path:
+    description: Absolute path to the installed fullsend binary.
+    value: ${{ steps.install-vendored.outputs.fullsend-path || steps.install-upstream.outputs.fullsend-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install vendored binary
+      id: install-vendored
+      if: inputs.mode == 'vendored'
+      shell: bash
+      env:
+        VENDORED: ${{ inputs.vendored_path }}
+      run: |
+        set -euo pipefail
+        if [[ ! -f "${VENDORED}" ]]; then
+          echo "vendored binary not found" >&2
+          exit 1
+        fi
+        mkdir -p "${RUNNER_TEMP}/fullsend"
+        cp "${VENDORED}" "${RUNNER_TEMP}/fullsend/fullsend"
+        chmod +x "${RUNNER_TEMP}/fullsend/fullsend"
+        echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
+        echo "fullsend-path=${RUNNER_TEMP}/fullsend/fullsend" >> "${GITHUB_OUTPUT}"
+
+    - name: Clone fullsend at workflow SHA for source build
+      if: inputs.mode == 'upstream'
+      shell: bash
+      env:
+        WORKFLOW_REPOSITORY: ${{ inputs.workflow_repository }}
+        WORKFLOW_SHA: ${{ inputs.workflow_sha }}
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        set -euo pipefail
+        echo "::add-mask::${GH_TOKEN}"
+        SRC="${RUNNER_TEMP}/fullsend-src"
+        REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${WORKFLOW_REPOSITORY}.git"
+        echo "Cloning ${WORKFLOW_REPOSITORY} at ref: ${WORKFLOW_SHA}"
+        git init "${SRC}"
+        git -C "${SRC}" remote add origin "${REMOTE}"
+        if ! git -C "${SRC}" fetch --depth 1 origin "${WORKFLOW_SHA}"; then
+          echo "Shallow fetch failed (ref may be a commit SHA); falling back to full clone"
+          rm -rf "${SRC}"
+          git clone "${REMOTE}" "${SRC}"
+          git -C "${SRC}" checkout "${WORKFLOW_SHA}"
+        else
+          git -C "${SRC}" checkout FETCH_HEAD
+        fi
+
+    - name: Set up Go for source build
+      if: inputs.mode == 'upstream'
+      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+      with:
+        go-version-file: ${{ runner.temp }}/fullsend-src/go.mod
+        cache-dependency-path: ${{ runner.temp }}/fullsend-src/go.sum
+
+    - name: Build fullsend from source
+      id: install-upstream
+      if: inputs.mode == 'upstream'
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "${RUNNER_TEMP}/fullsend"
+        cd "${RUNNER_TEMP}/fullsend-src"
+        make go-build
+        cp bin/fullsend "${RUNNER_TEMP}/fullsend/fullsend"
+        echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
+        echo "fullsend-path=${RUNNER_TEMP}/fullsend/fullsend" >> "${GITHUB_OUTPUT}"
+
+    - name: Print fullsend version
+      shell: bash
+      run: fullsend --version

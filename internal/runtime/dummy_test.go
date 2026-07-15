@@ -428,6 +428,88 @@ func TestValidateHTTPURL(t *testing.T) {
 	require.Error(t, validateHTTPURL("://missing"))
 }
 
+func TestExecuteBehaviourOp_AssertEnvEmpty(t *testing.T) {
+	t.Parallel()
+
+	err := executeBehaviourOp(DummyRuntime{}, "sandbox", t.TempDir(), BehaviourOperation{Op: "assert_env"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires a variable name")
+}
+
+func TestExecuteBehaviourOp_AssertEnvSuccess(t *testing.T) {
+	t.Parallel()
+
+	rt := DummyRuntime{ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+		return "", "", 0, nil
+	}}
+	err := executeBehaviourOp(rt, "sandbox", t.TempDir(), BehaviourOperation{
+		Op:   "assert_env",
+		Args: "GITHUB_ISSUE_URL",
+	})
+	require.NoError(t, err)
+}
+
+func TestExecuteBehaviourOp_AssertFileSuccess(t *testing.T) {
+	t.Parallel()
+
+	rt := DummyRuntime{ExecFn: func(_ string, _ string, _ time.Duration) (string, string, int, error) {
+		return "", "", 0, nil
+	}}
+	err := executeBehaviourOp(rt, "sandbox", t.TempDir(), BehaviourOperation{
+		Op:   "assert_file",
+		Args: ".fullsend/dispatch/event-payload.json",
+	})
+	require.NoError(t, err)
+}
+
+func TestExecuteBehaviourOp_AssertJSONSuccess(t *testing.T) {
+	t.Parallel()
+
+	rt := DummyRuntime{ExecFn: func(_ string, cmd string, _ time.Duration) (string, string, int, error) {
+		if strings.Contains(cmd, "jq") {
+			return "42", "", 0, nil
+		}
+		return "", "", 0, nil
+	}}
+	err := executeBehaviourOp(rt, "sandbox", t.TempDir(), BehaviourOperation{
+		Op:   "assert_json",
+		Args: ".fullsend/dispatch/event-payload.json,issue.number",
+	})
+	require.NoError(t, err)
+}
+
+func TestExecuteBehaviourOp_AssertJSONBadArgs(t *testing.T) {
+	t.Parallel()
+
+	err := executeBehaviourOp(DummyRuntime{}, "sandbox", t.TempDir(), BehaviourOperation{
+		Op:   "assert_json",
+		Args: "only-path",
+	})
+	require.Error(t, err)
+}
+
+func TestExecuteBehaviourOp_AssertJSONInvalidPath(t *testing.T) {
+	t.Parallel()
+
+	err := executeBehaviourOp(DummyRuntime{}, "sandbox", t.TempDir(), BehaviourOperation{
+		Op:   "assert_json",
+		Args: ".fullsend/dispatch/event-payload.json,issue.number; rm -rf /",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid json_path")
+}
+
+func TestExecuteBehaviourOp_AssertEnvInvalidName(t *testing.T) {
+	t.Parallel()
+
+	err := executeBehaviourOp(DummyRuntime{}, "sandbox", t.TempDir(), BehaviourOperation{
+		Op:   "assert_env",
+		Args: "GITHUB_ISSUE_URL; rm -rf /",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid variable name")
+}
+
 func TestExecuteBehaviourScript_CancelledContext(t *testing.T) {
 	t.Parallel()
 

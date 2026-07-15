@@ -254,6 +254,53 @@ func TestVendorBinaryLayer_Analyze_ManifestMissingPath(t *testing.T) {
 	assert.Contains(t, strings.Join(report.Details, " "), "manifest alignment: 1 missing path(s)")
 }
 
+func TestVendorBinaryLayer_Analyze_MarkerWithoutBinary(t *testing.T) {
+	client := &forge.FakeClient{
+		FileContents: map[string][]byte{
+			"test-org/.fullsend/.defaults/action.yml": []byte("marker"),
+		},
+	}
+	layer, _ := newVendorBinaryLayer(t, client, true, nil)
+
+	report, err := layer.Analyze(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, StatusDegraded, report.Status)
+	assert.Contains(t, strings.Join(report.Details, " "), "partial vendored install")
+	assert.Contains(t, report.WouldFix, "restore vendored binary at bin/fullsend")
+}
+
+func TestVendorBinaryLayer_Analyze_BinaryWithoutMarker(t *testing.T) {
+	client := &forge.FakeClient{
+		FileContents: map[string][]byte{
+			"test-org/.fullsend/bin/fullsend": []byte("binary-data"),
+		},
+	}
+	layer, _ := newVendorBinaryLayer(t, client, true, nil)
+
+	report, err := layer.Analyze(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, StatusDegraded, report.Status)
+	assert.Contains(t, strings.Join(report.Details, " "), "partial vendored install")
+	assert.Contains(t, report.WouldFix, "restore vendored content marker at .defaults/action.yml")
+}
+
+func TestVendorBinaryLayer_PerRepo_Analyze_MarkerWithoutBinary(t *testing.T) {
+	client := &forge.FakeClient{
+		FileContents: map[string][]byte{
+			"test-org/my-repo/.fullsend/.defaults/action.yml": []byte("marker"),
+		},
+	}
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	layer := NewVendorBinaryLayer("test-org", "my-repo", client, printer, true, nil)
+
+	report, err := layer.Analyze(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, StatusDegraded, report.Status)
+	assert.Contains(t, strings.Join(report.Details, " "), "partial vendored install")
+	assert.Contains(t, report.WouldFix, "restore vendored binary at .fullsend/bin/fullsend")
+}
+
 func TestVendorBinaryLayer_Analyze_GetFileContentError(t *testing.T) {
 	client := &forge.FakeClient{
 		Errors: map[string]error{

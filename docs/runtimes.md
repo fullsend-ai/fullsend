@@ -134,6 +134,16 @@ defense-in-depth passes before the agent starts:
 
 Critical findings block the run in `fail_mode: closed`.
 
+## Dummy runtime operations
+
+The `dummy` runtime executes a YAML script of operations inside the real sandbox (behaviour tests only). Besides `write_fixture` and `fail`, dispatch behaviour tests use:
+
+| Op | Args | Purpose |
+|----|------|---------|
+| `assert_env` | `VAR_NAME` | Assert env var is set and non-empty in the sandbox |
+| `assert_file` | `path` | Assert file exists and is readable under the workspace |
+| `assert_json` | `path,json_path` | Assert JSON file exists and dot-path field is present and non-null (uses `jq`) |
+
 ## Related docs
 
 - [cli-internals.md](guides/dev/cli-internals.md) — sandbox constants, key sandbox operations

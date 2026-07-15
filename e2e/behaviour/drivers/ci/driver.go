@@ -16,4 +16,6 @@ type Driver interface {
 	DownloadArtifacts(ctx context.Context, owner, repo string, runID int, destDir string) error
 	DownloadNamedArtifactFromRun(ctx context.Context, owner, repo string, runID int, artifactName string, destDir string) error
 	DownloadNamedArtifactAfter(ctx context.Context, owner, repo, artifactName string, after time.Time, destDir string) error
+	WaitForHarnessAgent(ctx context.Context, owner, repo, agent string, after time.Time) (*forge.WorkflowRun, error)
+	AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, agent string, after time.Time) error
 }
