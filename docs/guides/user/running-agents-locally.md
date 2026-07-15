@@ -70,6 +70,7 @@ gcloud projects add-iam-policy-binding {project-id} \
   --role="roles/aiplatform.user"
 
 gcloud iam service-accounts keys create fullsend-local-credentials.json \
+  --project={project-id} \
   --iam-account=fullsend-local@{project-id}.iam.gserviceaccount.com
 chmod 600 fullsend-local-credentials.json
 ```
