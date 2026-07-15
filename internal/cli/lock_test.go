@@ -266,19 +266,19 @@ allowed_remote_resources:
 	require.NoError(t, err)
 	require.NoError(t, h2.ResolveRelativeTo(dir))
 
-	deps, err := resolveFromLock(h2, entry, dir, printer)
+	lockResult, err := resolveFromLock(h2, entry, dir, printer)
 	require.NoError(t, err)
 
 	// Verify the round-trip: agent resolved as file, skill resolved as directory.
-	require.Len(t, deps, 2)
+	require.Len(t, lockResult.Deps, 2)
 
 	var agentDep, skillDep *resolve.Dependency
-	for i := range deps {
+	for i := range lockResult.Deps {
 		switch {
-		case deps[i].Field == "agent":
-			agentDep = &deps[i]
-		case strings.HasPrefix(deps[i].Field, "skills["):
-			skillDep = &deps[i]
+		case lockResult.Deps[i].Field == "agent":
+			agentDep = &lockResult.Deps[i]
+		case strings.HasPrefix(lockResult.Deps[i].Field, "skills["):
+			skillDep = &lockResult.Deps[i]
 		}
 	}
 	require.NotNil(t, agentDep, "should have agent dependency")
@@ -569,17 +569,18 @@ func TestResolveFromLock_Success(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent: "https://example.com/agents/code.md#sha256=" + agentHash,
+		Agent:                  "https://example.com/agents/code.md#sha256=" + agentHash,
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	deps, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
 	require.NoError(t, err)
-	require.Len(t, deps, 1)
+	require.Len(t, lockResult.Deps, 1)
 
-	assert.Equal(t, "agent", deps[0].Field)
-	assert.Equal(t, agentHash, deps[0].SHA256)
-	assert.True(t, deps[0].CacheHit)
+	assert.Equal(t, "agent", lockResult.Deps[0].Field)
+	assert.Equal(t, agentHash, lockResult.Deps[0].SHA256)
+	assert.True(t, lockResult.Deps[0].CacheHit)
 	assert.True(t, strings.HasSuffix(h.Agent, "/content"))
 }
 
@@ -595,7 +596,8 @@ func TestResolveFromLock_MissingCache(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent: "https://example.com/agents/code.md#sha256=0000000000000000000000000000000000000000000000000000000000000000",
+		Agent:                  "https://example.com/agents/code.md#sha256=0000000000000000000000000000000000000000000000000000000000000000",
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
@@ -622,14 +624,15 @@ func TestResolveFromLock_SkillSlots(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:  "agents/code.md",
-		Skills: []string{"https://example.com/skills/a#sha256=" + hashA, "https://example.com/skills/b#sha256=" + hashB},
+		Agent:                  "agents/code.md",
+		Skills:                 []string{"https://example.com/skills/a#sha256=" + hashA, "https://example.com/skills/b#sha256=" + hashB},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	deps, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
 	require.NoError(t, err)
-	require.Len(t, deps, 2)
+	require.Len(t, lockResult.Deps, 2)
 
 	assert.True(t, strings.HasSuffix(h.Skills[0], "/content"))
 	assert.True(t, strings.HasSuffix(h.Skills[1], "/content"))
@@ -649,14 +652,15 @@ func TestResolveFromLock_TransitiveDeps(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:  "agents/code.md",
-		Skills: []string{},
+		Agent:                  "agents/code.md",
+		Skills:                 []string{},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	deps, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
 	require.NoError(t, err)
-	require.Len(t, deps, 1)
+	require.Len(t, lockResult.Deps, 1)
 
 	// Transitive deps are appended as new skill entries.
 	require.Len(t, h.Skills, 1)
@@ -684,12 +688,13 @@ func TestResolveFromLock_DiamondDependency(t *testing.T) {
 		Skills: []string{
 			"https://example.com/skills/shared.md#sha256=" + sharedHash,
 		},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	deps, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
 	require.NoError(t, err)
-	require.Len(t, deps, 1)
+	require.Len(t, lockResult.Deps, 1)
 
 	// The direct URL reference should be filtered out.
 	// Only the transitive dep (appended) should remain.
@@ -726,18 +731,19 @@ func TestResolveFromLock_DirectoryType(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:  "agents/code.md",
-		Skills: []string{"https://github.com/org/repo/tree/main/skills/test#sha256=" + treeHash},
+		Agent:                  "agents/code.md",
+		Skills:                 []string{"https://github.com/org/repo/tree/main/skills/test#sha256=" + treeHash},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	deps, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
 	require.NoError(t, err)
-	require.Len(t, deps, 1)
+	require.Len(t, lockResult.Deps, 1)
 
-	assert.Equal(t, "directory", deps[0].Type)
-	assert.Equal(t, treeHash, deps[0].SHA256)
-	assert.True(t, deps[0].CacheHit)
+	assert.Equal(t, "directory", lockResult.Deps[0].Type)
+	assert.Equal(t, treeHash, lockResult.Deps[0].SHA256)
+	assert.True(t, lockResult.Deps[0].CacheHit)
 	assert.True(t, strings.HasSuffix(h.Skills[0], "/tree"))
 }
 
@@ -760,15 +766,16 @@ func TestResolveFromLock_EmptyTypeDefaultsToFile(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:  "agents/code.md",
-		Skills: []string{"https://example.com/skills/a#sha256=" + hash},
+		Agent:                  "agents/code.md",
+		Skills:                 []string{"https://example.com/skills/a#sha256=" + hash},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	deps, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
 	require.NoError(t, err)
-	require.Len(t, deps, 1)
-	assert.Equal(t, "file", deps[0].Type, "empty Type should default to file for backward compatibility")
+	require.Len(t, lockResult.Deps, 1)
+	assert.Equal(t, "file", lockResult.Deps[0].Type, "empty Type should default to file for backward compatibility")
 }
 
 func TestResolveFromLock_TransitivePolicySkipped(t *testing.T) {
@@ -785,14 +792,15 @@ func TestResolveFromLock_TransitivePolicySkipped(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:  "agents/code.md",
-		Skills: []string{},
+		Agent:                  "agents/code.md",
+		Skills:                 []string{},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	deps, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
 	require.NoError(t, err)
-	require.Len(t, deps, 1)
+	require.Len(t, lockResult.Deps, 1)
 
 	// Transitive policy should NOT be appended to skills.
 	assert.Empty(t, h.Skills)
@@ -817,8 +825,9 @@ func TestResolveFromLock_NoPartialMutation(t *testing.T) {
 
 	originalAgent := "https://example.com/agents/code.md#sha256=" + agentHash
 	h := &harness.Harness{
-		Agent:  originalAgent,
-		Policy: "https://example.com/policies/ro.yaml#sha256=0000000000000000000000000000000000000000000000000000000000000000",
+		Agent:                  originalAgent,
+		Policy:                 "https://example.com/policies/ro.yaml#sha256=0000000000000000000000000000000000000000000000000000000000000000",
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
@@ -890,16 +899,17 @@ func TestResolveFromLock_BaseFieldNoOp(t *testing.T) {
 	}
 
 	h := &harness.Harness{
-		Agent:  "https://example.com/agents/code.md#sha256=" + agentHash,
-		Skills: []string{"https://example.com/skills/a#sha256=" + skillHash},
+		Agent:                  "https://example.com/agents/code.md#sha256=" + agentHash,
+		Skills:                 []string{"https://example.com/skills/a#sha256=" + skillHash},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	deps, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
 	require.NoError(t, err)
 
 	// All three deps should be returned (base, agent, skill).
-	require.Len(t, deps, 3)
+	require.Len(t, lockResult.Deps, 3)
 
 	// Agent should be resolved to a cache path.
 	assert.True(t, strings.HasSuffix(h.Agent, "/content"), "agent should be resolved to cache path")
@@ -911,9 +921,9 @@ func TestResolveFromLock_BaseFieldNoOp(t *testing.T) {
 
 	// Verify the base dep has the correct field and is a cache hit.
 	var baseDep *resolve.Dependency
-	for i := range deps {
-		if deps[i].Field == "base" {
-			baseDep = &deps[i]
+	for i := range lockResult.Deps {
+		if lockResult.Deps[i].Field == "base" {
+			baseDep = &lockResult.Deps[i]
 			break
 		}
 	}
@@ -945,15 +955,16 @@ func TestResolveFromLock_ValidationLoopSchema(t *testing.T) {
 			Script: "scripts/validate.sh",
 			Schema: "https://example.com/schemas/result.json#sha256=" + schemaHash,
 		},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
 	}
 
 	printer := ui.New(os.Stdout)
-	deps, err := resolveFromLock(h, entry, root, printer)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
 	require.NoError(t, err)
-	require.Len(t, deps, 2)
+	require.Len(t, lockResult.Deps, 2)
 
-	assert.Equal(t, "validation_loop.schema", deps[1].Field)
-	assert.True(t, deps[1].CacheHit)
+	assert.Equal(t, "validation_loop.schema", lockResult.Deps[1].Field)
+	assert.True(t, lockResult.Deps[1].CacheHit)
 	assert.True(t, strings.HasSuffix(h.ValidationLoop.Schema, "/content"))
 }
 
@@ -1264,4 +1275,297 @@ func TestRunLock_ErrorOnMissingRole(t *testing.T) {
 	err := runLock(context.Background(), "code", dir, "", false, resolveFlags{}, printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid harness: role field is required")
+}
+
+func TestResolveFromLock_ProfileReconstruction(t *testing.T) {
+	profileContent := []byte("id: anthropic\nname: Anthropic\n")
+	profileHash := fetch.ComputeSHA256(profileContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/profiles/anthropic.yaml", profileContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "openshell.profiles[0]",
+				URL:    "https://example.com/profiles/anthropic.yaml",
+				SHA256: profileHash,
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent: "agents/code.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{"https://example.com/profiles/anthropic.yaml#sha256=" + profileHash},
+		},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+	require.Len(t, lockResult.Profiles, 1)
+	assert.Equal(t, "anthropic", lockResult.Profiles[0].ID)
+	assert.True(t, lockResult.Deps[0].CacheHit)
+}
+
+func TestResolveFromLock_ProfileEmptyID(t *testing.T) {
+	profileContent := []byte("name: NoID\n")
+	profileHash := fetch.ComputeSHA256(profileContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/profiles/noid.yaml", profileContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "openshell.profiles[0]",
+				URL:    "https://example.com/profiles/noid.yaml",
+				SHA256: profileHash,
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent: "agents/code.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{"https://example.com/profiles/noid.yaml#sha256=" + profileHash},
+		},
+		AllowedRemoteResources: []string{"https://example.com/", "https://github.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	_, err := resolveFromLock(h, entry, root, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "has no id")
+}
+
+func TestResolveFromLock_ProviderReconstruction(t *testing.T) {
+	providerContent := []byte("name: my-provider\ntype: anthropic\ncredentials:\n  API_KEY: ${ANTHROPIC_KEY}\n")
+	providerHash := fetch.ComputeSHA256(providerContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/providers/my.yaml", providerContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "providers[0]",
+				URL:    "https://example.com/providers/my.yaml",
+				SHA256: providerHash,
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Providers:              []string{"https://example.com/providers/my.yaml#sha256=" + providerHash},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Providers, 1)
+	assert.Equal(t, "my-provider", lockResult.Providers[0].Def.Name)
+	assert.Equal(t, "anthropic", lockResult.Providers[0].Def.Type)
+	assert.Empty(t, lockResult.Deps[0].Warning)
+}
+
+func TestResolveFromLock_ProviderMissingName(t *testing.T) {
+	providerContent := []byte("type: anthropic\n")
+	providerHash := fetch.ComputeSHA256(providerContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/providers/noname.yaml", providerContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "providers[0]",
+				URL:    "https://example.com/providers/noname.yaml",
+				SHA256: providerHash,
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Providers:              []string{"https://example.com/providers/noname.yaml#sha256=" + providerHash},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	_, err := resolveFromLock(h, entry, root, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "has no name")
+}
+
+func TestResolveFromLock_ProviderMissingType(t *testing.T) {
+	providerContent := []byte("name: my-provider\n")
+	providerHash := fetch.ComputeSHA256(providerContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/providers/notype.yaml", providerContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "providers[0]",
+				URL:    "https://example.com/providers/notype.yaml",
+				SHA256: providerHash,
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Providers:              []string{"https://example.com/providers/notype.yaml#sha256=" + providerHash},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	_, err := resolveFromLock(h, entry, root, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "has no type")
+}
+
+func TestResolveFromLock_ProviderLiteralCredentialWarning(t *testing.T) {
+	providerContent := []byte("name: my-provider\ntype: anthropic\ncredentials:\n  API_KEY: sk-hardcoded-secret\n")
+	providerHash := fetch.ComputeSHA256(providerContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/providers/literal.yaml", providerContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "providers[0]",
+				URL:    "https://example.com/providers/literal.yaml",
+				SHA256: providerHash,
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Providers:              []string{"https://example.com/providers/literal.yaml#sha256=" + providerHash},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+	assert.NotEmpty(t, lockResult.Deps[0].Warning)
+	assert.Contains(t, lockResult.Deps[0].Warning, "API_KEY")
+}
+
+func TestResolveFromLock_RejectsDisallowedURL(t *testing.T) {
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/agents/code.md", agentContent))
+
+	entry := &lock.HarnessLock{
+		Source: "harness/code.yaml",
+		SHA256: "abc",
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "agent",
+				URL:    "https://example.com/agents/code.md",
+				SHA256: agentHash,
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "https://example.com/agents/code.md#sha256=" + agentHash,
+		AllowedRemoteResources: []string{"https://other-domain.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	_, err := resolveFromLock(h, entry, root, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no longer in allowed_remote_resources")
+	assert.Contains(t, err.Error(), "example.com")
+}
+
+func TestResolveFromLock_EmptyAllowlistDeniesURLs(t *testing.T) {
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/agents/code.md", agentContent))
+
+	entry := &lock.HarnessLock{
+		Source: "harness/code.yaml",
+		SHA256: "abc",
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "agent",
+				URL:    "https://example.com/agents/code.md",
+				SHA256: agentHash,
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "https://example.com/agents/code.md#sha256=" + agentHash,
+		AllowedRemoteResources: nil,
+	}
+
+	printer := ui.New(os.Stdout)
+	_, err := resolveFromLock(h, entry, root, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no longer in allowed_remote_resources")
+}
+
+func TestResolveFromLock_ProfileAndProviderReconstruction(t *testing.T) {
+	profileContent := []byte("id: anthropic\nname: Anthropic\n")
+	profileHash := fetch.ComputeSHA256(profileContent)
+
+	providerContent := []byte("name: my-provider\ntype: anthropic\ncredentials:\n  API_KEY: ${ANTHROPIC_KEY}\n")
+	providerHash := fetch.ComputeSHA256(providerContent)
+
+	root := t.TempDir()
+	require.NoError(t, fetch.CachePut(root, "https://example.com/profiles/anthropic.yaml", profileContent))
+	require.NoError(t, fetch.CachePut(root, "https://example.com/providers/my.yaml", providerContent))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "openshell.profiles[0]",
+				URL:    "https://example.com/profiles/anthropic.yaml",
+				SHA256: profileHash,
+			},
+			{
+				Field:  "providers[0]",
+				URL:    "https://example.com/providers/my.yaml",
+				SHA256: providerHash,
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent: "agents/code.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{"https://example.com/profiles/anthropic.yaml#sha256=" + profileHash},
+		},
+		Providers:              []string{"https://example.com/providers/my.yaml#sha256=" + providerHash},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Profiles, 1)
+	assert.Equal(t, "anthropic", lockResult.Profiles[0].ID)
+	require.Len(t, lockResult.Providers, 1)
+	assert.Equal(t, "my-provider", lockResult.Providers[0].Def.Name)
+	assert.Equal(t, "anthropic", lockResult.Providers[0].Def.Type)
+	require.Len(t, lockResult.Deps, 2)
 }

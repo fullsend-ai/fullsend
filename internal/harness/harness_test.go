@@ -1191,6 +1191,21 @@ func TestHasURLReferences(t *testing.T) {
 			h:    Harness{Agent: "agents/test.md", Skills: []string{"skills/a", "https://example.com/s.md#sha256=abc"}},
 			want: true,
 		},
+		{
+			name: "URL profile",
+			h:    Harness{Agent: "agents/test.md", OpenShell: &OpenShellConfig{Profiles: []string{"https://example.com/p.yaml#sha256=abc"}}},
+			want: true,
+		},
+		{
+			name: "URL provider",
+			h:    Harness{Agent: "agents/test.md", Providers: []string{"https://example.com/prov.yaml#sha256=abc"}},
+			want: true,
+		},
+		{
+			name: "local provider only",
+			h:    Harness{Agent: "agents/test.md", Providers: []string{"my-provider"}},
+			want: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1693,4 +1708,94 @@ env:
 	require.NotNil(t, h.Env)
 	assert.Equal(t, map[string]string{"FOO": "bar"}, h.Env.Runner)
 	assert.Equal(t, map[string]string{"BAZ": "qux"}, h.Env.Sandbox)
+}
+
+func TestValidateResourceTypes_ProfilesRequireURL(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"local-path/profile.yaml"},
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell.profiles[0] must be a URL")
+}
+
+func TestValidateResourceTypes_ProfilesRequireIntegrityHash(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"https://github.com/org/repo/tree/main/profiles/claude-code.yaml"},
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell.profiles[0] URL must include #sha256=")
+}
+
+func TestValidateResourceTypes_ProfilesValidURL(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{
+				"https://github.com/org/repo/tree/main/profiles/claude-code.yaml#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			},
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.NoError(t, err)
+}
+
+func TestValidateResourceTypes_ProviderURLRequiresHash(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Role:      "test",
+		Providers: []string{"https://github.com/org/repo/tree/main/providers/my.yaml"},
+	}
+	err := h.ValidateResourceTypes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "providers[0] URL must include #sha256=")
+}
+
+func TestValidateResourceTypes_ProviderLocalNamePassesThrough(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Role:      "test",
+		Providers: []string{"my-local-provider"},
+	}
+	err := h.ValidateResourceTypes()
+	require.NoError(t, err)
+}
+
+func TestValidateResourceTypes_ProviderURLWithHashValid(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Providers: []string{
+			"https://github.com/org/repo/tree/main/providers/my.yaml#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.NoError(t, err)
+}
+
+func TestLoad_ProviderURLPassesValidation(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+providers:
+  - local-only
+  - "https://github.com/org/repo/tree/main/providers/my.yaml#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err, "Load must not reject URL providers via validProviderName")
+	assert.Len(t, h.Providers, 2)
 }

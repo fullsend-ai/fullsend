@@ -352,6 +352,11 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
+│  │ ImportProfile()   │ Import openshell provider profiles       │
+│  │                   │ (from URL-resolved openshell.profiles)   │
+│  └──────┬───────────┘                                           │
+│         ▼                                                       │
+│  ┌──────────────────┐                                           │
 │  │ EnsureProvider()  │ Register inference provider              │
 │  │                   │ (bare-key credential form)               │
 │  └──────┬───────────┘                                           │
@@ -456,6 +461,7 @@ details, see [Agent runtimes](../../runtimes.md).
 |-----------|------------|---------|
 | `EnsureAvailable()` | Check `openshell` binary | Verify runtime available |
 | `CheckGateway()` | `openshell gateway ...` | Start inference gateway |
+| `ImportProfile()` | `openshell provider profile import ...` | Import openshell provider profile |
 | `EnsureProvider()` | `openshell provider ...` | Register model provider (bare-key form) |
 | `Create()` | `openshell sandbox create --image ...` | Spin up container |
 | `Exec()` | `openshell sandbox exec ...` | Run command in sandbox |

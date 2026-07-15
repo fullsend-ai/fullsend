@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
@@ -307,7 +308,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			}
 		}
 
-		deps, resolveErr := resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
+		result, resolveErr := resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
 			WorkspaceRoot: absFullsendDir,
 			FetchPolicy:   policy,
 			AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
@@ -321,14 +322,17 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			return nil, fmt.Errorf("resolving remote resources: %w", resolveErr)
 		}
 
-		for _, dep := range deps {
+		for _, dep := range result.Deps {
+			if dep.Warning != "" {
+				printer.StepWarn(dep.Warning)
+			}
 			if !seen[dep.URL] {
 				seen[dep.URL] = true
 				allDeps = append(allDeps, dep)
 			}
 		}
 
-		printer.StepDone(fmt.Sprintf("Resolved %d dependencies", len(deps)))
+		printer.StepDone(fmt.Sprintf("Resolved %d dependencies", len(result.Deps)))
 	}
 
 	if len(allDeps) == 0 {
@@ -588,7 +592,7 @@ func lockForgePlatforms(harnessPath, forgePlatform string) ([]string, error) {
 // Mutations are collected first and applied only after all dependencies are
 // confirmed present in cache, so a partial failure leaves the harness unchanged
 // and the caller can safely fall back to network-based resolution.
-func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot string, printer *ui.Printer) ([]resolve.Dependency, error) {
+func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot string, printer *ui.Printer) (resolve.ResolveResult, error) {
 	type mutation struct {
 		field     string
 		localPath string
@@ -596,30 +600,40 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 
 	var mutations []mutation
 	var deps []resolve.Dependency
+	var profiles []resolve.ResolvedProfile
+	var providers []resolve.ResolvedProvider
 
 	for _, lockDep := range entry.Dependencies {
+		if h.MatchingAllowedPrefix(lockDep.URL) == "" {
+			return resolve.ResolveResult{}, fmt.Errorf(
+				"locked dependency %s (%s) is no longer in allowed_remote_resources — run 'fullsend lock' to update",
+				lockDep.Field, lockDep.URL)
+		}
+
 		var localPath string
+		var cachedContent []byte
 
 		if lockDep.Type == "directory" {
 			treePath, _, err := fetch.CacheGetDir(workspaceRoot, lockDep.SHA256)
 			if err != nil {
-				return nil, fmt.Errorf("dir cache integrity check failed for %s: %w", lockDep.Field, err)
+				return resolve.ResolveResult{}, fmt.Errorf("dir cache integrity check failed for %s: %w", lockDep.Field, err)
 			}
 			if treePath == "" {
-				return nil, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — run 'fullsend lock' to re-fetch", lockDep.Field, lockDep.URL, lockDep.SHA256)
+				return resolve.ResolveResult{}, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — run 'fullsend lock' to re-fetch", lockDep.Field, lockDep.URL, lockDep.SHA256)
 			}
 			localPath = treePath
 		} else {
 			content, _, err := fetch.CacheGet(workspaceRoot, lockDep.SHA256)
 			if err != nil {
-				return nil, fmt.Errorf("cache integrity check failed for %s: %w", lockDep.Field, err)
+				return resolve.ResolveResult{}, fmt.Errorf("cache integrity check failed for %s: %w", lockDep.Field, err)
 			}
 			if content == nil {
-				return nil, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — run 'fullsend lock' to re-fetch", lockDep.Field, lockDep.URL, lockDep.SHA256)
+				return resolve.ResolveResult{}, fmt.Errorf("dependency %s (%s) is pinned in lock file with sha256=%s but not in cache — run 'fullsend lock' to re-fetch", lockDep.Field, lockDep.URL, lockDep.SHA256)
 			}
+			cachedContent = content
 			cachePath, err := fetch.CachePath(workspaceRoot, lockDep.SHA256)
 			if err != nil {
-				return nil, fmt.Errorf("computing cache path for %s: %w", lockDep.Field, err)
+				return resolve.ResolveResult{}, fmt.Errorf("computing cache path for %s: %w", lockDep.Field, err)
 			}
 			localPath = filepath.Join(cachePath, "content")
 		}
@@ -629,7 +643,7 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			depType = "file"
 		}
 		mutations = append(mutations, mutation{field: lockDep.Field, localPath: localPath})
-		deps = append(deps, resolve.Dependency{
+		dep := resolve.Dependency{
 			Field:     lockDep.Field,
 			URL:       lockDep.URL,
 			LocalPath: localPath,
@@ -637,7 +651,44 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			FetchedAt: lockDep.FetchedAt,
 			CacheHit:  true,
 			Type:      depType,
-		})
+		}
+
+		// Reconstruct ResolvedProfile/ResolvedProvider from cached content
+		// (reuses bytes already loaded by CacheGet above).
+		// Profiles and providers are always file-type; skip for directories.
+		if cachedContent == nil {
+			deps = append(deps, dep)
+			continue
+		}
+		if strings.HasPrefix(lockDep.Field, "openshell.profiles[") {
+			id, err := resolve.ParseProfileID(cachedContent)
+			if err != nil {
+				return resolve.ResolveResult{}, fmt.Errorf("cached profile %s: %w", lockDep.Field, err)
+			}
+			profiles = append(profiles, resolve.ResolvedProfile{ID: id, LocalPath: localPath})
+		} else if strings.HasPrefix(lockDep.Field, "providers[") {
+			var def harness.ProviderDef
+			if err := yaml.Unmarshal(cachedContent, &def); err != nil {
+				return resolve.ResolveResult{}, fmt.Errorf("parsing cached provider %s: %w", lockDep.Field, err)
+			}
+			if def.Name == "" {
+				return resolve.ResolveResult{}, fmt.Errorf("cached provider %s has no name", lockDep.Field)
+			}
+			if !resolve.ValidIdentifier(def.Name) {
+				return resolve.ResolveResult{}, fmt.Errorf("cached provider %s: name %q contains invalid characters", lockDep.Field, def.Name)
+			}
+			if def.Type == "" {
+				return resolve.ResolveResult{}, fmt.Errorf("cached provider %s has no type", lockDep.Field)
+			}
+			if !resolve.ValidIdentifier(def.Type) {
+				return resolve.ResolveResult{}, fmt.Errorf("cached provider %s: type %q contains invalid characters", lockDep.Field, def.Type)
+			}
+			if w := resolve.WarnLiteralCredentials(def.Name, def.Credentials); w != "" {
+				dep.Warning = w
+			}
+			providers = append(providers, resolve.ResolvedProvider{Def: def, LocalPath: localPath})
+		}
+		deps = append(deps, dep)
 	}
 
 	// All deps confirmed in cache — apply mutations to the harness.
@@ -656,18 +707,18 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		case m.field == "pre_script":
 			h.PreScript = m.localPath
 			if err := os.Chmod(m.localPath, 0o755); err != nil {
-				return nil, fmt.Errorf("setting executable permission on cached pre_script: %w", err)
+				return resolve.ResolveResult{}, fmt.Errorf("setting executable permission on cached pre_script: %w", err)
 			}
 		case m.field == "post_script":
 			h.PostScript = m.localPath
 			if err := os.Chmod(m.localPath, 0o755); err != nil {
-				return nil, fmt.Errorf("setting executable permission on cached post_script: %w", err)
+				return resolve.ResolveResult{}, fmt.Errorf("setting executable permission on cached post_script: %w", err)
 			}
 		case m.field == "validation_loop.script":
 			if h.ValidationLoop != nil {
 				h.ValidationLoop.Script = m.localPath
 				if err := os.Chmod(m.localPath, 0o755); err != nil {
-					return nil, fmt.Errorf("setting executable permission on cached validation_loop.script: %w", err)
+					return resolve.ResolveResult{}, fmt.Errorf("setting executable permission on cached validation_loop.script: %w", err)
 				}
 			}
 		case strings.HasPrefix(m.field, "forge.") && strings.HasSuffix(m.field, ".pre_script"):
@@ -684,6 +735,12 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			}
 		case strings.HasPrefix(m.field, "forge.") && strings.HasSuffix(m.field, ".validation_loop.schema"):
 			// Same as forge pre_script above.
+		case strings.HasPrefix(m.field, "openshell.profiles["):
+			// Profiles don't mutate harness fields — they're consumed via
+			// the ResolvedProfile list built above.
+		case strings.HasPrefix(m.field, "providers["):
+			// Providers are consumed via ResolvedProvider list; URL entries
+			// are stripped from h.Providers below.
 		default:
 			var idx int
 			if _, err := fmt.Sscanf(m.field, "skills[%d]", &idx); err == nil && idx >= 0 && idx < len(h.Skills) {
@@ -708,5 +765,22 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 	}
 	h.Skills = filtered
 
-	return deps, nil
+	// Strip URL entries from providers — URL-resolved providers are now in
+	// the ResolvedProvider list, mirroring resolve.ResolveHarness behavior.
+	remainingProviders := h.Providers[:0]
+	for _, p := range h.Providers {
+		if !harness.IsURL(p) {
+			remainingProviders = append(remainingProviders, p)
+		}
+	}
+	h.Providers = remainingProviders
+	if h.OpenShell != nil {
+		h.OpenShell.Profiles = nil
+	}
+
+	return resolve.ResolveResult{
+		Deps:      deps,
+		Profiles:  profiles,
+		Providers: providers,
+	}, nil
 }

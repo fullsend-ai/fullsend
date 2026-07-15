@@ -1,0 +1,32 @@
+#!/bin/sh
+# Fake openshell that passes CheckGateway and handles provider/profile/sandbox
+# commands. Used by TestRunAgent tests that exercise the provider/profile
+# orchestration block past the gateway check.
+
+case "$1" in
+  gateway)
+    case "$2" in
+      list) echo "default-gateway"; exit 0 ;;
+    esac
+    ;;
+  settings)
+    exit 0
+    ;;
+  provider)
+    case "$2" in
+      profile|create|update)
+        exit 0
+        ;;
+    esac
+    ;;
+  sandbox)
+    case "$2" in
+      create|delete|ready|exec)
+        exit 0
+        ;;
+    esac
+    ;;
+esac
+
+echo "openshell stub: unhandled: $*" >&2
+exit 1

@@ -1105,6 +1105,76 @@ providers:
 	assert.Equal(t, []string{"provider-a", "provider-b"}, h.Providers)
 }
 
+func TestLoadWithBase_ProfilesConcat(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/base.md
+role: test
+openshell:
+  profiles:
+  - "https://github.com/org/repo/tree/main/profiles/claude-code.yaml#sha256=`+strings.Repeat("a", 64)+`"
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+openshell:
+  profiles:
+  - "https://github.com/org/repo/tree/main/profiles/vertex-ai.yaml#sha256=`+strings.Repeat("b", 64)+`"
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	require.Len(t, h.OpenShellProfiles(), 2)
+	assert.Contains(t, h.OpenShellProfiles()[0], "claude-code")
+	assert.Contains(t, h.OpenShellProfiles()[1], "vertex-ai")
+}
+
+func TestLoadWithBase_ProfilesChildOnlyInheritsBase(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/base.md
+role: test
+openshell:
+  profiles:
+  - "https://github.com/org/repo/tree/main/profiles/claude-code.yaml#sha256=`+strings.Repeat("a", 64)+`"
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	require.Len(t, h.OpenShellProfiles(), 1)
+	assert.Contains(t, h.OpenShellProfiles()[0], "claude-code")
+}
+
+func TestLoadWithBase_ProfilesChildOnlyNoBase(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/base.md
+role: test
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+openshell:
+  profiles:
+  - "https://github.com/org/repo/tree/main/profiles/vertex-ai.yaml#sha256=`+strings.Repeat("b", 64)+`"
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	require.Len(t, h.OpenShellProfiles(), 1)
+	assert.Contains(t, h.OpenShellProfiles()[0], "vertex-ai")
+}
+
 func TestLoadWithBase_TimeoutInheritance(t *testing.T) {
 	dir := t.TempDir()
 

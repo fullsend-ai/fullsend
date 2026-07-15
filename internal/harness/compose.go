@@ -492,6 +492,15 @@ func mergeBaseIntoChild(base, child *Harness) {
 		merged = append(merged, child.Providers...)
 		child.Providers = merged
 	}
+	if base.OpenShell != nil && len(base.OpenShell.Profiles) > 0 {
+		if child.OpenShell == nil {
+			child.OpenShell = &OpenShellConfig{}
+		}
+		merged := make([]string, 0, len(base.OpenShell.Profiles)+len(child.OpenShell.Profiles))
+		merged = append(merged, base.OpenShell.Profiles...)
+		merged = append(merged, child.OpenShell.Profiles...)
+		child.OpenShell.Profiles = merged
+	}
 	// AllowedRemoteResources, AllowRuntimeFetch, and MaxRuntimeFetches are
 	// NOT merged from base harnesses to prevent privilege escalation: a base
 	// cannot inject arbitrary URL prefixes or enable runtime fetching in the
