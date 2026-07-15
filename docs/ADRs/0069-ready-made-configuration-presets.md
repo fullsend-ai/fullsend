@@ -1,5 +1,5 @@
 ---
-title: "68. Ready-made configuration presets for simplified installation"
+title: "69. Ready-made configuration presets for simplified installation"
 status: Accepted
 relates_to:
   - agent-infrastructure
@@ -11,7 +11,7 @@ topics:
   - installation
 ---
 
-# 68. Ready-made configuration presets for simplified installation
+# 69. Ready-made configuration presets for simplified installation
 
 Date: 2026-06-29
 

@@ -31,7 +31,7 @@ Agent configuration is itself a security-critical attack surface. If someone can
 - Where does agent policy live? In the repos it governs (as CLAUDE.md, agent config files)? In a separate policy repo? In a central configuration system?
 - If policy lives in a separate repo, how does it get applied to target repos? Push-based (policy repo pushes to targets) or pull-based (agents read from policy repo at runtime)?
 - How do we audit changes to agent configuration? Git history helps if policy is in git, but we also need to detect unauthorized runtime changes.
-- How do we handle the bootstrap problem — who sets up the initial agent configuration for a new repo, and how is that initial setup secured? (Preset-based install and `config.base.yaml` / `config.yaml` layering decided in [ADR 0068](../ADRs/0068-ready-made-configuration-presets.md); workflow pinning and backend policy remain open.)
+- How do we handle the bootstrap problem — who sets up the initial agent configuration for a new repo, and how is that initial setup secured? (Preset-based install and `config.base.yaml` / `config.yaml` layering decided in [ADR 0069](../ADRs/0069-ready-made-configuration-presets.md); workflow pinning and backend policy remain open.)
 
 ### 3. Decision process
 
