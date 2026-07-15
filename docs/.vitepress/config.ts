@@ -259,6 +259,7 @@ export default defineConfig({
           collapsed: true,
           link: "/guides/",
           items: [
+            { text: "Adopting Fullsend Incrementally", link: "/guides/user/adoption" },
             { text: "Bugfix Workflow", link: "/guides/user/bugfix-workflow" },
             { text: "Issue Commands", link: "/guides/user/issues-commands" },
             {

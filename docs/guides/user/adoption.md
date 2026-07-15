@@ -53,7 +53,7 @@ Identify where agents lack context — are they misunderstanding your architectu
 
 Talk to your team — do people find the feedback helpful or noisy?
 
-**Optional: use fix agent on-demand.** The fix agent responds to `/fs-fix` on any PR. When the review agent flags issues on a PR you authored, you can invoke `/fs-fix` to let the agent address the findings instead of fixing manually. This is a low-risk way to experience agent-driven code changes while staying fully in control — the agent only touches the existing PR, and only when you ask. See the [fix agent documentation](../../agents/fix.md) for details.
+**Optional: use fix agent on-demand.** The fix agent responds to `/fs-fix` on any PR. When the review agent flags issues on a PR you authored, you can invoke `/fs-fix` to let the agent address the findings instead of fixing manually. This is a low-risk way to experience agent-driven code changes while staying fully in control — the agent only touches the existing PR, and only when you ask. Note that `/fs-fix` requires the coder GitHub App to be installed (it pushes commits), even if you haven't enabled the code agent yet. See the [fix agent documentation](../../agents/fix.md) for details.
 
 **Note:** Not all of this may apply to your team. If you manage issues outside GitHub, skip triage and prioritize — start with review. The point is to start with agents that observe and advise without changing your workflow.
 
