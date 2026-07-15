@@ -34,7 +34,7 @@ Advanced guides for platform operators who deploy and manage the GCP-side infras
 
 Guides for developers working in repositories where fullsend is active.
 
-- [Adopting fullsend: crawl, walk, run, fly](user/adoption.md) — Incremental adoption path from first agents to auto-merge
+- [Adopting fullsend incrementally](user/adoption.md) — Crawl, walk, run, fly: incremental adoption path from first agents to auto-merge
 - [Bugfix workflow](user/bugfix-workflow.md) — End-to-end guide to how fullsend handles a bug report from issue to merge
 - [Issue commands](user/issues-commands.md) — Slash commands and label triggers for interacting with agents
 - [Running agents locally](user/running-agents-locally.md) — Run fullsend agents on your machine using released binaries (macOS + Linux)
