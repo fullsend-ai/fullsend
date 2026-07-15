@@ -1,4 +1,4 @@
-# Adopting fullsend
+# Adopting fullsend incrementally
 
 How to introduce fullsend to your team incrementally, building trust at each stage before taking on more automation.
 
@@ -84,7 +84,7 @@ For teams with specific needs, fullsend offers deeper customization:
 
 Not every team will need all of these. Many teams find that a good AGENTS.md and a few environment variable tweaks are enough. See [customizing agents](customizing-agents.md) for a full overview, or [running agents locally](running-agents-locally.md) to test changes in your own environment.
 
-**Enable the retro agent** — it reviews agent runs and surfaces systematic problems, so you're not manually auditing agent behavior anymore. Pair it with a filing issues skill so retro files issues that follow your team's conventions — right labels, context, and acceptance criteria.
+**Enable the retro agent** — it reviews agent runs and surfaces systematic problems, so you're not manually auditing agent behavior anymore. Its post-script files issues from retro findings automatically, following your team's conventions — right labels, context, and acceptance criteria.
 
 **Custom agents for specific SDLC gaps:** If your workflow uses tooling outside GitHub that default agents don't cover, this is where you might start exploring derived or custom agents — for example, a triage agent that bridges to Jira, or a prioritization agent that reads from your planning tool. Most teams won't need this. See [building custom agents](building-custom-agents.md) and [default vs custom agents](../../agents/topics/default-vs-custom.md) for guidance.
 
@@ -103,12 +103,12 @@ Not every team will need all of these. Many teams find that a good AGENTS.md and
 
 **What you enable:**
 
-- **Code agent** — automatically picks up issues labeled `ready-to-code` (applied by triage for bugs, docs, and performance issues) and implements fixes, opening PRs. For features and other issue types, someone explicitly invokes `/fs-code` on the issue. This means enabling the code agent doesn't mean agents code on everything — it's scoped to bug fixes by default, with human control over the rest.
-- **Fix agent (automatic mode)** — now runs automatically when the review agent requests changes, not just on `/fs-fix` command.
+- **Code agent** — automatically picks up issues labeled `ready-to-code` (applied by triage for bugs, docs, and performance issues) and implements fixes, opening PRs. For features and other issue types, someone explicitly invokes `/fs-code` on the issue. This means enabling the code agent doesn't mean agents code on everything — it's scoped to bugs, docs, and performance issues by default, with human control over the rest.
+- **Fix agent on bot-authored PRs** — the fix agent auto-triggers on bot-authored PRs when the review agent requests changes. Since the code agent now produces bot-authored PRs, the review-fix loop runs automatically on agent work. For human-authored PRs, auto-fix requires the `fullsend-fix` label — or you can continue using `/fs-fix` on demand.
 
 **Preparation that pays off here:**
 
-**Retro agent loop** — the retro agent (enabled in Walk, with the filing issues skill) has been surfacing problems and filing issues. With the code agent active, those issues can now feed directly into the code agent, closing the loop.
+**Retro agent loop** — the retro agent (enabled in Walk) has been surfacing problems and filing issues. With the code agent active, those issues can now feed directly into the code agent, closing the loop.
 
 **PR conventions** — specify your merge strategy (squash / rebase / merge), commit message format, and PR description expectations in AGENTS.md or a skill. Agent PRs stay consistent with how your team works.
 
@@ -116,7 +116,7 @@ Not every team will need all of these. Many teams find that a good AGENTS.md and
 
 **What changes for the team:**
 
-- Agent-authored PRs start appearing alongside human-authored ones. Bug fixes are handled by agents; features and other work remain human-driven (unless explicitly triggered with `/fs-code`).
+- Agent-authored PRs start appearing alongside human-authored ones. Bugs, docs, and performance issues are handled by agents; features and other work remain human-driven (unless explicitly triggered with `/fs-code`).
 - The review and fix loop runs automatically on agent PRs — review agent flags issues, fix agent addresses them, review runs again.
 - The team now reviews both human and agent PRs.
 
@@ -141,17 +141,19 @@ See [bugfix workflow](bugfix-workflow.md) for the full agent-driven flow from is
 
 ### Progressive Auto-Merge
 
-Start small — enable auto-merge only for low-risk PR categories:
+Auto-merge can be achieved today using GitHub's native features and CODEOWNERS. The approach:
 
-- Documentation-only changes
-- Dependency updates (already common with Renovate / Dependabot)
-- Changes scoped to specific file paths the team is comfortable with
+1. Add the fullsend review bot as a CODEOWNER for specific low-risk paths (e.g., `docs/**`).
+2. Enable GitHub auto-merge on the repo.
+3. Configure branch protection to require CODEOWNERS approval and CI passing.
 
-Expand gradually based on trust — maybe PRs that pass all CI checks AND get unanimous agent review approval.
+When a PR only touches paths where the bot is a CODEOWNER, its approval satisfies the required review. CI passes, and GitHub auto-merges — no human approval needed for that scope.
 
-Risk-based criteria: the team defines what "low risk" means for their repo (file paths, change size, test coverage of affected code).
+Start small — docs-only paths, or dependency update paths already covered by Renovate / Dependabot. Expand gradually by adding more paths to the bot's CODEOWNERS entries as trust builds.
 
-The team always retains control — CODEOWNERS and branch protection are the safety net, and auto-merge scope can be dialed back at any time.
+The team always retains control — CODEOWNERS and branch protection are the safety net, and auto-merge scope can be dialed back at any time by editing CODEOWNERS.
+
+For more granular control, PR-level risk assessment ([#4698](https://github.com/fullsend-ai/fullsend/issues/4698)) will add a composite risk score that can further gate auto-merge eligibility based on change size, path sensitivity, and git history signals — not just file paths.
 
 ### Bring Your Own Agents
 
