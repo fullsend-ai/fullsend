@@ -4,12 +4,18 @@ import (
 	"testing"
 
 	"github.com/cucumber/godog"
+	messages "github.com/cucumber/messages/go/v21"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
+
+func TestTagNames(t *testing.T) {
+	names := tagNames([]*messages.PickleTag{{Name: "@foo"}, {Name: "@bar"}})
+	assert.Equal(t, []string{"@foo", "@bar"}, names)
+}
 
 func TestSkipErrorForTagNames(t *testing.T) {
 	w := &world.World{Config: env.RunnerConfig{InstallMode: "per-repo", SCM: "github"}}

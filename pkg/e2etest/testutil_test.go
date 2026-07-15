@@ -17,3 +17,25 @@ func TestTryRunCLIWithT_LogsOnFailure(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "version")
 }
+
+func TestTryRunCLIAndRunCLI(t *testing.T) {
+	binary := BuildCLIBinary(t)
+
+	out, err := TryRunCLI(binary, "token", "help")
+	require.NoError(t, err)
+	assert.Contains(t, out, "fullsend")
+
+	helpOut := RunCLI(t, binary, "token", "help")
+	assert.Contains(t, helpOut, "fullsend")
+}
+
+func TestRunCLIFromDir(t *testing.T) {
+	binary := BuildCLIBinary(t)
+	out := RunCLIFromDir(t, binary, "token", ModuleRoot(t), "help")
+	assert.Contains(t, out, "fullsend")
+}
+
+func TestModuleDir_Invalid(t *testing.T) {
+	_, err := moduleDir("github.com/fullsend-ai/fullsend/not-a-real-module-path")
+	require.Error(t, err)
+}
