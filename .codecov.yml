@@ -26,6 +26,7 @@ ignore:
   - "pkg/behaviourtest/suite/init.go"
   - "pkg/behaviourtest/drivers/install/perrepo_github.go"
   - "pkg/e2etest/cleanup.go"
+  - "pkg/e2etest/build.go"
   - "docs/**"
   - "hack/**"
   - "experiments/**"

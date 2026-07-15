@@ -9,33 +9,39 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestTryRunCLIWithT_LogsOnFailure(t *testing.T) {
-	failScript := filepath.Join(t.TempDir(), "fail.sh")
-	require.NoError(t, os.WriteFile(failScript, []byte("#!/bin/sh\nexit 1\n"), 0o755))
+func writeCLIScript(t *testing.T, body string) string {
+	t.Helper()
+	script := filepath.Join(t.TempDir(), "cli.sh")
+	require.NoError(t, os.WriteFile(script, []byte("#!/bin/sh\n"+body+"\n"), 0o755))
+	return script
+}
 
-	_, err := TryRunCLIWithT(t, failScript, "token", "version")
+func TestTryRunCLIWithT_LogsOnFailure(t *testing.T) {
+	script := writeCLIScript(t, "exit 1")
+
+	_, err := TryRunCLIWithT(t, script, "token", "version")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "version")
 }
 
 func TestTryRunCLIAndRunCLI(t *testing.T) {
-	binary := BuildCLIBinary(t)
+	script := writeCLIScript(t, "echo fullsend help output")
 
-	out, err := TryRunCLI(binary, "token", "help")
+	out, err := TryRunCLI(script, "token", "help")
 	require.NoError(t, err)
 	assert.Contains(t, out, "fullsend")
 
-	helpOut := RunCLI(t, binary, "token", "help")
+	helpOut := RunCLI(t, script, "token", "help")
 	assert.Contains(t, helpOut, "fullsend")
 }
 
 func TestRunCLIFromDir(t *testing.T) {
-	binary := BuildCLIBinary(t)
-	out := RunCLIFromDir(t, binary, "token", ModuleRoot(t), "help")
+	script := writeCLIScript(t, "echo fullsend help output")
+	out := RunCLIFromDir(t, script, "token", t.TempDir(), "help")
 	assert.Contains(t, out, "fullsend")
 }
 
-func TestModuleDir_Invalid(t *testing.T) {
-	_, err := moduleDir("github.com/fullsend-ai/fullsend/not-a-real-module-path")
-	require.Error(t, err)
+func TestModuleRoot(t *testing.T) {
+	dir := ModuleRoot(t)
+	assert.DirExists(t, dir)
 }

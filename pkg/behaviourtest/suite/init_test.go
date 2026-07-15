@@ -17,6 +17,21 @@ func TestTagNames(t *testing.T) {
 	assert.Equal(t, []string{"@foo", "@bar"}, names)
 }
 
+func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
+	w := &world.World{
+		PRNumber:      99,
+		DispatchAgent: "dispatch",
+		IssueNumber:   1,
+		ArtifactDir:   "/tmp/x",
+	}
+	resetScenarioWorld(w)
+	assert.Equal(t, 0, w.PRNumber)
+	assert.Equal(t, "", w.DispatchAgent)
+	assert.Equal(t, 0, w.IssueNumber)
+	assert.Equal(t, "", w.ArtifactDir)
+	assert.False(t, w.ScenarioStart.IsZero())
+}
+
 func TestSkipErrorForTagNames(t *testing.T) {
 	w := &world.World{Config: env.RunnerConfig{InstallMode: "per-repo", SCM: "github"}}
 

@@ -18,14 +18,7 @@ func InitScenario(sc *godog.ScenarioContext, w *world.World) {
 		if err := SkipErrorForTagNames(tagNames(sc.Tags), w); err != nil {
 			return ctx, err
 		}
-		w.ScenarioStart = time.Now()
-		w.DummyOps = nil
-		w.IssueNumber = 0
-		w.IssueTitle = ""
-		w.TriageWorkflow = ""
-		w.TriageTriggerEvent = ""
-		w.WorkflowRun = nil
-		w.ArtifactDir = ""
+		resetScenarioWorld(w)
 		return ctx, nil
 	})
 	sc.After(func(ctx context.Context, sc *godog.Scenario, err error) (context.Context, error) {
@@ -33,6 +26,19 @@ func InitScenario(sc *godog.ScenarioContext, w *world.World) {
 		return ctx, err
 	})
 	steps.Register(sc, w)
+}
+
+func resetScenarioWorld(w *world.World) {
+	w.ScenarioStart = time.Now()
+	w.DummyOps = nil
+	w.IssueNumber = 0
+	w.IssueTitle = ""
+	w.PRNumber = 0
+	w.DispatchAgent = ""
+	w.TriageWorkflow = ""
+	w.TriageTriggerEvent = ""
+	w.WorkflowRun = nil
+	w.ArtifactDir = ""
 }
 
 func tagNames(tags []*messages.PickleTag) []string {
