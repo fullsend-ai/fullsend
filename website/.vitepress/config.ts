@@ -220,6 +220,7 @@ export default defineConfig({
           collapsed: true,
           link: "/guides/",
           items: [
+            { text: "Adopting Fullsend Incrementally", link: "/guides/user/adoption" },
             { text: "Bugfix Workflow", link: "/guides/user/bugfix-workflow" },
             { text: "Customizing Agents", link: "/guides/user/customizing-agents" },
             { text: "Customizing with AGENTS.md", link: "/guides/user/customizing-with-agents-md" },
