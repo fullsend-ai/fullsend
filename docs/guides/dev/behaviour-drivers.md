@@ -6,16 +6,16 @@ Behaviour tests isolate forge-specific code behind drivers so Gherkin scenarios 
 
 | Interface | Package | Responsibility |
 |-----------|---------|----------------|
-| `scm.Driver` | `e2e/behaviour/drivers/scm` | Issues, comments, labels (via GetIssue), file commits |
-| `ci.Driver` | `e2e/behaviour/drivers/ci` | Workflow polling, logs, artifact download |
-| `install.Driver` | `e2e/behaviour/drivers/install` | Provision and tear down fullsend in the acquired pool org |
-| `install.State` | `e2e/behaviour/drivers/install` | Post-install config paths (script commits, workflow polling) |
+| `scm.Driver` | `pkg/behaviourtest/drivers/scm` | Issues, comments, labels (via GetIssue), file commits |
+| `ci.Driver` | `pkg/behaviourtest/drivers/ci` | Workflow polling, logs, artifact download |
+| `install.Driver` | `pkg/behaviourtest/drivers/install` | Provision and tear down fullsend in the acquired pool org |
+| `install.State` | `pkg/behaviourtest/drivers/install` | Post-install config paths (script commits, workflow polling) |
 
 v1 reference implementations:
 
-- `e2e/behaviour/drivers/scm/github/`
-- `e2e/behaviour/drivers/ci/githubactions/`
-- `e2e/behaviour/drivers/install/perrepo_github.go` (`BEHAVIOUR_INSTALL_MODE=per-repo`)
+- `pkg/behaviourtest/drivers/scm/github/`
+- `pkg/behaviourtest/drivers/ci/githubactions/`
+- `pkg/behaviourtest/drivers/install/perrepo_github.go` (`BEHAVIOUR_INSTALL_MODE=per-repo`)
 
 ## Runner configuration
 
@@ -27,18 +27,18 @@ BEHAVIOUR_CI=githubactions        # future: tekton, gitlabci
 BEHAVIOUR_INSTALL_MODE=per-repo   # v1 default and only supported value
 ```
 
-The suite in `e2e/behaviour/suite_test.go` acquires a pool org, runs pre-install cleanup, calls `install.Driver.Install`, then constructs SCM and CI drivers. Unsupported `BEHAVIOUR_INSTALL_MODE` values fail at suite startup.
+The suite in `e2e/behaviour/suite_test.go` (or an external runner) acquires a pool org via `pkg/e2etest`, runs pre-install cleanup, calls `install.Driver.Install`, constructs SCM and CI drivers, then runs godog with `pkg/behaviourtest/suite.InitScenario`. Unsupported `BEHAVIOUR_INSTALL_MODE` values fail at suite startup.
 
 ### Install driver (v1 per-repo)
 
 Uses `fullsend inference provision <org>/test-repo` then `fullsend github setup <org>/test-repo --vendor --direct --skip-app-setup --runtime dummy` with the repo-scoped WIF provider from provision (`E2E_GCP_PROJECT_ID`). Pool orgs must already have shared GitHub Apps, org-level mint enrollment, and per-repo mint enrollment for `test-repo` (one-time GCP admin step on the hosted mint project). The driver does not run `fullsend admin install` or `fullsend mint enroll`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
-Teardown removes shim workflows, stale branches, and open fullsend PRs on `test-repo` via shared helpers in `e2e/admin/cleanup.go`.
+Teardown removes shim workflows, stale branches, and open fullsend PRs on `test-repo` via `pkg/e2etest.TeardownPerRepoInstall`.
 
 ## Adding an SCM driver
 
-1. Implement `scm.Driver` in `e2e/behaviour/drivers/scm/<vendor>/`.
-2. Register the driver in `suite_test.go` when `BEHAVIOUR_SCM=<vendor>`.
+1. Implement `scm.Driver` in `pkg/behaviourtest/drivers/scm/<vendor>/`.
+2. Register the driver in the suite runner when `BEHAVIOUR_SCM=<vendor>`.
 3. Document the env var value here.
 4. Add `@skip:<vendor>` tags on scenarios that cannot run until the driver is complete.
 

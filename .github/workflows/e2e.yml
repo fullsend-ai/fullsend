@@ -17,6 +17,8 @@ on:
       - 'go.mod'
       - 'go.sum'
       - 'e2e/**'
+      - 'pkg/e2etest/**'
+      - 'pkg/behaviourtest/**'
       - 'internal/scaffold/fullsend-repo/**'
       - 'internal/security/hooks/**'
       - 'internal/dispatch/gcf/mintsrc/**'
@@ -129,7 +131,7 @@ jobs:
               exit 0
             }
           fi
-          if echo "$FILES" | grep -qE '\.go$|^go\.(mod|sum)$|^e2e/|^internal/scaffold/fullsend-repo/|^internal/security/hooks/|^internal/dispatch/gcf/mintsrc/|^internal/sentencetoken/english\.json$|^Makefile$|^\.github/scripts/|^\.github/workflows/e2e\.yml$|^action\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
+          if echo "$FILES" | grep -qE '\.go$|^go\.(mod|sum)$|^e2e/|^pkg/e2etest/|^internal/scaffold/fullsend-repo/|^internal/security/hooks/|^internal/dispatch/gcf/mintsrc/|^internal/sentencetoken/english\.json$|^Makefile$|^\.github/scripts/|^\.github/workflows/e2e\.yml$|^action\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No e2e-relevant files changed — skipping tests"
@@ -216,8 +218,8 @@ jobs:
               exit 0
             }
           fi
-          # e2e/admin: behaviour suite reuses exported admin test helpers
-          if echo "$FILES" | grep -qE '^e2e/behaviour/|^e2e/admin/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/|^internal/layers/|^internal/scaffold/fullsend-repo/|^internal/forge/|^internal/harness/|^internal/harnessdispatch/|^internal/normevent/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^Makefile$|^\.github/workflows/e2e\.yml$|^\.github/workflows/reusable-dispatch\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
+          # pkg/e2etest: shared pool/CLI/cleanup; pkg/behaviourtest: framework; e2e/admin: admin-only helpers
+          if echo "$FILES" | grep -qE '^e2e/behaviour/|^e2e/admin/|^pkg/e2etest/|^pkg/behaviourtest/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/|^internal/layers/|^internal/scaffold/fullsend-repo/|^internal/forge/|^internal/harness/|^internal/harnessdispatch/|^internal/normevent/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^Makefile$|^\.github/workflows/e2e\.yml$|^\.github/workflows/reusable-dispatch\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No behaviour-relevant files changed — skipping behaviour tests"

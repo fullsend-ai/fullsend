@@ -25,11 +25,12 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/layers"
+	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
 // e2eEnv holds the shared state for an e2e test run.
 type e2eEnv struct {
-	cfg           envConfig
+	cfg           e2etest.EnvConfig
 	org           string // the org acquired from the pool
 	client        *gh.LiveClient
 	token         string
@@ -45,31 +46,31 @@ func setupE2ETest(t *testing.T) *e2eEnv {
 		t.Skip("skipping e2e test in short mode")
 	}
 
-	cfg := loadEnvConfig(t)
+	cfg := e2etest.LoadEnvConfig(t)
 	screenshotDir := os.Getenv("E2E_SCREENSHOT_DIR")
 	if screenshotDir == "" {
 		screenshotDir = ".playwright"
 	}
 	_ = os.MkdirAll(screenshotDir, 0o755)
 
-	binary := buildCLIBinary(t)
+	binary := e2etest.BuildCLIBinary(t)
 
 	runID := uuid.New().String()
 	t.Logf("E2E run ID: %s", runID)
 
-	org, token, err := acquireOrg(context.Background(), cfg, runID, orgPool, cfg.lockTimeout, t.Logf)
-	if errors.Is(err, errAllOrgsRateLimited) {
+	org, token, err := e2etest.AcquireOrg(context.Background(), cfg, runID, e2etest.OrgPool(), cfg.LockTimeout, t.Logf)
+	if errors.Is(err, e2etest.ErrAllOrgsRateLimited) {
 		t.Skipf("skipping: GitHub API rate limits exhausted on all pool orgs: %v", err)
 	}
 	require.NoError(t, err, "acquiring org from pool")
 	t.Logf("Acquired org: %s", org)
 
-	client := newLiveClient(token)
+	client := e2etest.NewLiveClient(token)
 	t.Cleanup(func() {
-		releaseLock(context.Background(), client, org, runID, t)
+		e2etest.ReleaseLock(context.Background(), client, org, runID, t)
 	})
 
-	CleanupStaleResources(context.Background(), client, token, org, t)
+	e2etest.CleanupStaleResources(context.Background(), client, token, org, t)
 
 	return &e2eEnv{
 		cfg:           cfg,
@@ -92,23 +93,23 @@ func TestAdminInstallUninstall(t *testing.T) {
 		"admin", "install", env.org,
 		"--skip-app-setup",
 		"--skip-mint-check",
-		"--mint-url", env.cfg.mintURL,
+		"--mint-url", env.cfg.MintURL,
 		"--app-set", e2eAppSet,
 		"--enroll-all",
 		"--vendor",
 	}
-	if env.cfg.gcpProjectID != "" {
-		installArgs = append(installArgs, "--inference-project", env.cfg.gcpProjectID)
+	if env.cfg.GCPProjectID != "" {
+		installArgs = append(installArgs, "--inference-project", env.cfg.GCPProjectID)
 	}
 	// Mint installation tokens authenticate as the App bot, not the org owner.
 	// The default PR path forks within the org and fails PR creation (422) in CI.
 	// Direct push still exercises install; PR-based delivery is covered on main
 	// and in local runs with a user token (gh auth login).
-	useDirectScaffold := env.cfg.useMint
+	useDirectScaffold := env.cfg.UseMint
 	if useDirectScaffold {
 		installArgs = append(installArgs, "--direct")
 	}
-	runCLI(t, env.binary, env.token, installArgs...)
+	e2etest.RunCLI(t, env.binary, env.token, installArgs...)
 
 	// Verify install artifacts that exist regardless of delivery mode.
 	_, err := env.client.GetRepo(ctx, env.org, forge.ConfigRepoName)
@@ -147,7 +148,7 @@ func TestAdminInstallUninstall(t *testing.T) {
 			t.Logf("Analyze attempt %d failed, retrying in %s...", attempt, delay)
 			time.Sleep(delay)
 		}
-		out, analyzeErr := tryRunCLI(t, env.binary, env.token, "admin", "analyze", env.org)
+		out, analyzeErr := e2etest.TryRunCLIWithT(t, env.binary, env.token, "admin", "analyze", env.org)
 		if analyzeErr == nil {
 			analyzeOutput = out
 			break
@@ -210,7 +211,7 @@ func TestAdminInstallUninstall(t *testing.T) {
 		if attempt > 0 {
 			time.Sleep(3 * time.Second)
 		}
-		_, shimErr := env.client.GetFileContent(ctx, env.org, testRepo, ".github/workflows/fullsend.yaml")
+		_, shimErr := env.client.GetFileContent(ctx, env.org, e2etest.TestRepo, ".github/workflows/fullsend.yaml")
 		if shimErr == nil {
 			shimVerified = true
 			break
@@ -226,7 +227,7 @@ func TestAdminInstallUninstall(t *testing.T) {
 
 	// Phase 5: Uninstall via CLI subprocess.
 	t.Log("=== Phase 5: Uninstall ===")
-	runCLI(t, env.binary, env.token,
+	e2etest.RunCLI(t, env.binary, env.token,
 		"admin", "uninstall", env.org,
 		"--yolo",
 		"--app-set", e2eAppSet,
@@ -256,7 +257,7 @@ func mergeEnrollmentPR(t *testing.T, env *e2eEnv) {
 
 	const enrollPRTitle = "chore: connect to fullsend agent pipeline"
 
-	if _, err := env.client.GetFileContent(ctx, env.org, testRepo, ".github/workflows/fullsend.yaml"); err == nil {
+	if _, err := env.client.GetFileContent(ctx, env.org, e2etest.TestRepo, ".github/workflows/fullsend.yaml"); err == nil {
 		t.Log("Shim workflow already on default branch — enrollment complete")
 		return
 	}
@@ -266,12 +267,12 @@ func mergeEnrollmentPR(t *testing.T, env *e2eEnv) {
 		if attempt > 0 {
 			time.Sleep(5 * time.Second)
 		}
-		if _, err := env.client.GetFileContent(ctx, env.org, testRepo, ".github/workflows/fullsend.yaml"); err == nil {
+		if _, err := env.client.GetFileContent(ctx, env.org, e2etest.TestRepo, ".github/workflows/fullsend.yaml"); err == nil {
 			t.Log("Shim workflow appeared on default branch — enrollment complete")
 			return
 		}
-		prs, err := env.client.ListRepoPullRequests(ctx, env.org, testRepo)
-		require.NoError(t, err, "listing PRs for %s", testRepo)
+		prs, err := env.client.ListRepoPullRequests(ctx, env.org, e2etest.TestRepo)
+		require.NoError(t, err, "listing PRs for %s", e2etest.TestRepo)
 
 		for _, pr := range prs {
 			if pr.Title == enrollPRTitle || strings.Contains(pr.Title, "fullsend") {
@@ -283,9 +284,9 @@ func mergeEnrollmentPR(t *testing.T, env *e2eEnv) {
 		if enrollmentPR != nil {
 			break
 		}
-		t.Logf("Attempt %d: enrollment PR not yet visible for repository '%s/%s'", attempt+1, env.org, testRepo)
+		t.Logf("Attempt %d: enrollment PR not yet visible for repository '%s/%s'", attempt+1, env.org, e2etest.TestRepo)
 	}
-	require.NotNil(t, enrollmentPR, "enrollment PR should exist for %s/%s", env.org, testRepo)
+	require.NotNil(t, enrollmentPR, "enrollment PR should exist for %s/%s", env.org, e2etest.TestRepo)
 
 	t.Logf("Merging enrollment PR #%d: %s", enrollmentPR.Number, enrollmentPR.URL)
 
@@ -295,7 +296,7 @@ func mergeEnrollmentPR(t *testing.T, env *e2eEnv) {
 	const mergeRetries = 3
 	var mergeErr error
 	for attempt := range mergeRetries {
-		mergeErr = env.client.MergeChangeProposal(ctx, env.org, testRepo, enrollmentPR.Number)
+		mergeErr = env.client.MergeChangeProposal(ctx, env.org, e2etest.TestRepo, enrollmentPR.Number)
 		if mergeErr == nil {
 			break
 		}
@@ -306,7 +307,7 @@ func mergeEnrollmentPR(t *testing.T, env *e2eEnv) {
 		}
 
 		t.Logf("Merge attempt %d: 409 conflict, updating PR branch and retrying", attempt+1)
-		if updateErr := env.client.UpdatePullRequestBranch(ctx, env.org, testRepo, enrollmentPR.Number); updateErr != nil {
+		if updateErr := env.client.UpdatePullRequestBranch(ctx, env.org, e2etest.TestRepo, enrollmentPR.Number); updateErr != nil {
 			t.Logf("Warning: could not update PR branch: %v", updateErr)
 		}
 
@@ -507,15 +508,15 @@ Files over 64KB save fine if they contain only ASCII characters.`
 	// Bot-authored issues skip issues.opened dispatch (ADR 0054). Apply
 	// ready-for-triage in a follow-up call so the shim receives issues.labeled
 	// (#2636).
-	issue, err := env.client.CreateIssue(ctx, env.org, testRepo, issueTitle, issueBody)
+	issue, err := env.client.CreateIssue(ctx, env.org, e2etest.TestRepo, issueTitle, issueBody)
 	require.NoError(t, err, "creating test issue")
 	t.Logf("Created test issue #%d: %s", issue.Number, issue.URL)
-	require.NoError(t, ensureRepoLabel(ctx, env.token, env.org, testRepo, "ready-for-triage"))
+	require.NoError(t, ensureRepoLabel(ctx, env.token, env.org, e2etest.TestRepo, "ready-for-triage"))
 	triggerTime := time.Now()
-	require.NoError(t, addIssueLabel(ctx, env.token, env.org, testRepo, issue.Number, "ready-for-triage"))
+	require.NoError(t, addIssueLabel(ctx, env.token, env.org, e2etest.TestRepo, issue.Number, "ready-for-triage"))
 	t.Cleanup(func() {
 		t.Log("Closing test issue...")
-		if closeErr := env.client.CloseIssue(ctx, env.org, testRepo, issue.Number); closeErr != nil {
+		if closeErr := env.client.CloseIssue(ctx, env.org, e2etest.TestRepo, issue.Number); closeErr != nil {
 			t.Logf("warning: could not close test issue: %v", closeErr)
 		}
 	})
@@ -584,7 +585,7 @@ Files over 64KB save fine if they contain only ASCII characters.`
 
 	// Verify the triage agent posted a comment on the issue.
 	t.Log("Verifying triage agent posted a comment...")
-	comments, err := env.client.ListIssueComments(ctx, env.org, testRepo, issue.Number)
+	comments, err := env.client.ListIssueComments(ctx, env.org, e2etest.TestRepo, issue.Number)
 	require.NoError(t, err, "listing issue comments")
 	assert.NotEmpty(t, comments, "triage agent should have posted at least one comment on the issue")
 
@@ -599,7 +600,7 @@ Files over 64KB save fine if they contain only ASCII characters.`
 
 	// Verify labels: either needs-info (insufficient) or ready-to-code (sufficient).
 	t.Log("Verifying triage labels...")
-	labelURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/labels", env.org, testRepo, issue.Number)
+	labelURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/issues/%d/labels", env.org, e2etest.TestRepo, issue.Number)
 	labelReq, err := http.NewRequestWithContext(ctx, http.MethodGet, labelURL, nil)
 	require.NoError(t, err)
 	labelReq.Header.Set("Authorization", "Bearer "+env.token)
@@ -807,8 +808,8 @@ func runUnenrollmentTest(t *testing.T, env *e2eEnv) {
 	// Disable the test repo via CLI (updates config.yaml). The CLI now
 	// watches the repo-maintenance workflow to completion before returning,
 	// so the removal PR should already exist when this returns.
-	output := runCLI(t, env.binary, env.token,
-		"admin", "disable", "repos", env.org, testRepo, "--yolo", "--direct")
+	output := e2etest.RunCLI(t, env.binary, env.token,
+		"admin", "disable", "repos", env.org, e2etest.TestRepo, "--yolo", "--direct")
 	t.Logf("Disable repos output:\n%s", output)
 
 	// Always capture the repo-maintenance run's logs. Even when the run
@@ -832,7 +833,7 @@ func runUnenrollmentTest(t *testing.T, env *e2eEnv) {
 		if attempt > 0 {
 			time.Sleep(3 * time.Second)
 		}
-		prs, err := env.client.ListRepoPullRequests(ctx, env.org, testRepo)
+		prs, err := env.client.ListRepoPullRequests(ctx, env.org, e2etest.TestRepo)
 		if err != nil {
 			t.Logf("Attempt %d: error listing PRs: %v", attempt+1, err)
 			continue
@@ -850,18 +851,18 @@ func runUnenrollmentTest(t *testing.T, env *e2eEnv) {
 		t.Logf("Attempt %d: removal PR not yet visible", attempt+1)
 	}
 	if removalPR == nil {
-		msg := fmt.Sprintf("removal PR should exist for %s", testRepo)
+		msg := fmt.Sprintf("removal PR should exist for %s", e2etest.TestRepo)
 		if repoMaintRun != nil {
 			msg += fmt.Sprintf("; repo-maintenance run %d concluded with %q", repoMaintRun.ID, repoMaintRun.Conclusion)
 		}
 		t.Fatal(msg)
 	}
 	t.Logf("Found removal PR #%d: %s", removalPR.Number, removalPR.URL)
-	err := env.client.MergeChangeProposal(ctx, env.org, testRepo, removalPR.Number)
+	err := env.client.MergeChangeProposal(ctx, env.org, e2etest.TestRepo, removalPR.Number)
 	require.NoError(t, err, "merging removal PR")
 	time.Sleep(5 * time.Second)
-	_, err = env.client.GetFileContent(ctx, env.org, testRepo, ".github/workflows/fullsend.yaml")
-	require.True(t, forge.IsNotFound(err), "shim should be removed from %s after unenrollment", testRepo)
+	_, err = env.client.GetFileContent(ctx, env.org, e2etest.TestRepo, ".github/workflows/fullsend.yaml")
+	require.True(t, forge.IsNotFound(err), "shim should be removed from %s after unenrollment", e2etest.TestRepo)
 	t.Log("Verified shim is gone")
 }
 
@@ -871,25 +872,25 @@ func TestVendorFromSubdirectory(t *testing.T) {
 	env := setupE2ETest(t)
 	ctx := context.Background()
 
-	subdir := filepath.Join(moduleRoot(t), "internal", "cli")
+	subdir := filepath.Join(e2etest.ModuleRoot(t), "internal", "cli")
 	installArgs := []string{
 		"admin", "install", env.org,
 		"--skip-app-setup",
 		"--skip-mint-check",
-		"--mint-url", env.cfg.mintURL,
+		"--mint-url", env.cfg.MintURL,
 		"--app-set", e2eAppSet,
 		"--enroll-none",
 		"--vendor",
 		"--direct",
 	}
-	runCLIFromDir(t, env.binary, env.token, subdir, installArgs...)
+	e2etest.RunCLIFromDir(t, env.binary, env.token, subdir, installArgs...)
 
 	_, err := env.client.GetFileContent(ctx, env.org, forge.ConfigRepoName, layers.VendoredBinaryPath)
 	require.NoError(t, err, "vendored binary should exist at %s", layers.VendoredBinaryPath)
 
 	registerRepoCleanup(t, env.client, env.org, forge.ConfigRepoName)
 
-	runCLI(t, env.binary, env.token,
+	e2etest.RunCLI(t, env.binary, env.token,
 		"admin", "uninstall", env.org,
 		"--yolo",
 		"--app-set", e2eAppSet,

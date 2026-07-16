@@ -18,7 +18,15 @@ coverage:
 ignore:
   - "**/*_test.go"
   - "**/testdata/**"
-  - "e2e/behaviour/**"
+  - "e2e/behaviour/suite_test.go"
+  - "e2e/behaviour/features/**"
+  - "e2e/behaviour/fixtures/**"
+  # Integration-only; covered by behaviour/e2e CI jobs (not unit coverage upload).
+  - "pkg/behaviourtest/steps/dispatch.go"
+  - "pkg/behaviourtest/suite/init.go"
+  - "pkg/behaviourtest/drivers/install/perrepo_github.go"
+  - "pkg/e2etest/cleanup.go"
+  - "pkg/e2etest/build.go"
   - "docs/**"
   - "hack/**"
   - "experiments/**"

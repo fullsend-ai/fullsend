@@ -14,14 +14,25 @@ Add one when a **user-visible workflow** must be verified end-to-end (dispatch â
 
 ## Layout
 
+Shared framework (importable by external repos):
+
+```
+pkg/behaviourtest/
+  world/             # Scenario state
+  steps/             # Step definitions + CleanupScenario
+  artifacts/         # Artifact lookup helpers
+  drivers/           # SCM, CI, env, install interfaces + v1 impls
+  suite/             # InitScenario (tags, hooks, step registration)
+pkg/e2etest/         # Org pool, CLI runner, cleanup (shared with admin e2e)
+```
+
+In-repo runner and scenarios:
+
 ```
 e2e/behaviour/
   features/          # Portable Gherkin scenarios
   fixtures/          # Static content for write_fixture ops
-  steps/             # Step definitions
-  world/             # Scenario state
-  drivers/           # SCM, CI, env interfaces + v1 impls
-  suite_test.go      # godog entry (build tag: behaviour)
+  suite_test.go      # Thin godog entry (build tag: behaviour)
 ```
 
 ## Writing scenarios
@@ -83,3 +94,19 @@ E2E_GCP_WIF_PROVIDER=...      # CI job GCP auth (not written to pool test-repo s
 Triage scenarios apply the `ready-for-triage` label (not `/fs-triage` comments) because the per-repo shim ignores `issue_comment` events from bot users and CI uses minted e2e installation tokens.
 
 See [behaviour-drivers.md](behaviour-drivers.md) for driver configuration and [ADR 0066](../../ADRs/0066-behaviour-tests-with-gherkin-and-drivers.md) for the decision record.
+
+## Version pinning for `fullsend-ai/agents`
+
+External behaviour runners import the shared libraries from this module:
+
+```go
+require github.com/fullsend-ai/fullsend v0.x.y // released tag, not @main
+```
+
+- Import `github.com/fullsend-ai/fullsend/pkg/behaviourtest/...` for world, steps, drivers, and `suite.InitScenario`.
+- Import `github.com/fullsend-ai/fullsend/pkg/e2etest` for org pool acquisition, env config, CLI build/run, and cleanup.
+- Set `world.FixturesRoot` to the module-relative fixtures directory (e.g. `"behaviour"` in the agents repo).
+- Build the fullsend CLI with `e2etest.BuildModuleBinary(t, "github.com/fullsend-ai/fullsend")` â€” not `BuildCLIBinary`, which resolves the **current** module root.
+- Run with `-tags behaviour` and the same env vars as CI (see above).
+
+Bump the pinned version when behaviour step vocabulary or `pkg/e2etest` / `pkg/behaviourtest` APIs change.
