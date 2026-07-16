@@ -33,6 +33,8 @@ ignore:
   - "images/**"
   - "**/*.md"
   - "**/*.sh"
+  # See https://github.com/fullsend-ai/fullsend/issues/2831
+  - "internal/cli/run.go"
 
 comment:
   layout: "reach,diff,flags,files,footer"
