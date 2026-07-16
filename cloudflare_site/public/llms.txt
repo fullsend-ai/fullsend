@@ -1,0 +1,21 @@
+# Fullsend
+
+> Autonomous SDLC agents for your codebase
+
+Fullsend is a platform for fully autonomous agentic development for GitHub-hosted organizations. It provides triage, code generation, review, fix, retro, and prioritization agents that operate on GitHub issues and pull requests.
+
+## Docs
+
+- [Getting Started](https://fullsend.sh/docs/guides/getting-started/)
+- [Agents Overview](https://fullsend.sh/docs/agents/)
+- [Triage Agent](https://fullsend.sh/docs/agents/triage)
+- [Code Agent](https://fullsend.sh/docs/agents/code)
+- [Review Agent](https://fullsend.sh/docs/agents/review)
+- [Fix Agent](https://fullsend.sh/docs/agents/fix)
+- [Retro Agent](https://fullsend.sh/docs/agents/retro)
+- [Prioritize Agent](https://fullsend.sh/docs/agents/prioritize)
+- [Customizing Agents](https://fullsend.sh/docs/guides/user/customizing-agents)
+- [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizing-with-agents-md)
+- [Building Custom Agents](https://fullsend.sh/docs/guides/user/building-custom-agents)
+- [Architecture](https://fullsend.sh/docs/architecture)
+- [CLI Reference](https://fullsend.sh/docs/cli/)
