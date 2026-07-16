@@ -352,7 +352,7 @@ func discoverRepo(ctx context.Context, client forge.Client,
 
 	// Check for per-org enrollment.
 	if orgCfg != nil {
-		if repoConfig, exists := orgCfg.Repos[repo]; exists && repoConfig.Enabled {
+		if repoConfig, exists := orgCfg.RepoMap()[repo]; exists && repoConfig.Enabled {
 			progress(fullName, "discover", "per-org enrollment detected")
 			ref, err := readWorkflowRef(ctx, client, owner, repo)
 			if err != nil {
@@ -366,8 +366,8 @@ func discoverRepo(ctx context.Context, client forge.Client,
 				Repo:   repo,
 				Source: "per-org",
 			}
-			if orgCfg.Dispatch.MintURL != "" {
-				d.MintURL = orgCfg.Dispatch.MintURL
+			if mintURL := orgCfg.DispatchSettings().MintURL; mintURL != "" {
+				d.MintURL = mintURL
 			}
 			d.FullsendRef = ref
 			return d, nil
