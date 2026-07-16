@@ -99,6 +99,22 @@ func TestIsAuthorized_LabelRemovedRequiresWriteRole(t *testing.T) {
 	assert.False(t, IsAuthorized(ev))
 }
 
+func TestIsAuthorized_BotOpenedPRFallsThrough(t *testing.T) {
+	// Bot-opened PR events have no special bypass in the pre-CEL gate.
+	// Trusted-bot handling lives in bash dispatch (is_trusted_bot) and
+	// CEL trigger expressions, not here.
+	ev := &normevent.Event{
+		Transition: normevent.Transition{Kind: normevent.TransitionOpened},
+		Source:     normevent.Source{System: normevent.SystemGitHub},
+		Actor: normevent.Actor{
+			ID:   "myapp-coder[bot]",
+			Kind: normevent.ActorBot,
+			Role: normevent.RoleNone,
+		},
+	}
+	assert.False(t, IsAuthorized(ev))
+}
+
 func TestIsAuthorized_OpenedRequiresWriteRole(t *testing.T) {
 	ev := &normevent.Event{
 		Transition: normevent.Transition{Kind: normevent.TransitionOpened},

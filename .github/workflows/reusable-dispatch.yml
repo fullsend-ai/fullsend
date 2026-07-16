@@ -272,6 +272,11 @@ jobs:
                     STAGE="review"
                   fi
                   ;;
+                labeled)
+                  if [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
+                    STAGE="review"
+                  fi
+                  ;;
                 closed)
                   STAGE="retro"
                   ;;

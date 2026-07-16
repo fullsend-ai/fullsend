@@ -81,6 +81,41 @@ func TestLoadGHAEvent_PROpened(t *testing.T) {
 	assert.NotNil(t, ev.State.ChangeProposal)
 }
 
+func TestLoadGHAEvent_PROpenedByBot(t *testing.T) {
+	raw := map[string]any{
+		"action": "opened",
+		"pull_request": map[string]any{
+			"number":   float64(101),
+			"html_url": "https://github.com/o/r/pull/101",
+			"user":     map[string]any{"login": "myapp-coder[bot]"},
+			"labels":   []any{},
+			"head": map[string]any{
+				"ref":  "agent/fix-thing",
+				"sha":  "cccccccccccccccccccccccccccccccccccccccc",
+				"repo": map[string]any{"full_name": "o/r"},
+			},
+			"base": map[string]any{
+				"ref":  "main",
+				"repo": map[string]any{"full_name": "o/r"},
+			},
+		},
+		"sender": map[string]any{"login": "myapp-coder[bot]", "type": "Bot"},
+	}
+	path := writeEventFile(t, raw)
+
+	client := forge.NewFakeClient()
+
+	ev, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+		EventPath:  path,
+		EventName:  "pull_request_target",
+		Repository: "o/r",
+		Forge:      client,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, normevent.ActorBot, ev.Actor.Kind)
+	assert.Equal(t, normevent.RoleNone, ev.Actor.Role)
+}
+
 func TestLoadGHAEvent_PRLabeled(t *testing.T) {
 	raw := map[string]any{
 		"action": "labeled",
