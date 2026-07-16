@@ -10,4 +10,5 @@ func Register(ctx *godog.ScenarioContext, w *world.World) {
 	registerDummyAgentSteps(ctx, w)
 	registerTriageSteps(ctx, w)
 	registerDispatchSteps(ctx, w)
+	registerDispatchCountSteps(ctx, w)
 }

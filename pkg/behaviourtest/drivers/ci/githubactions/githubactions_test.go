@@ -134,6 +134,105 @@ func TestNewestRepositoryArtifactCreatedAt(t *testing.T) {
 	assert.Equal(t, "2026-01-02T00:00:00Z", newestRepositoryArtifactCreatedAt(arts))
 }
 
+func TestCountHarnessDispatches_ZeroArtifacts(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	// No artifacts at all.
+
+	d := &Driver{Client: client}
+	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "triage", after)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count)
+}
+
+func TestCountHarnessDispatches_SingleMatch(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			{ID: 1, Name: "fullsend-triage", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 10},
+		},
+	}
+
+	d := &Driver{Client: client}
+	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "triage", after)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+}
+
+func TestCountHarnessDispatches_MultipleMatches(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			{ID: 1, Name: "fullsend-triage", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 10},
+			{ID: 2, Name: "fullsend-triage", CreatedAt: "2026-01-03T00:00:00Z", WorkflowRunID: 20},
+			{ID: 3, Name: "fullsend-triage", CreatedAt: "2026-01-04T00:00:00Z", WorkflowRunID: 30},
+		},
+	}
+
+	d := &Driver{Client: client}
+	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "triage", after)
+	require.NoError(t, err)
+	assert.Equal(t, 3, count)
+}
+
+func TestCountHarnessDispatches_FiltersBeforeTime(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			{ID: 1, Name: "fullsend-triage", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 10}, // before
+			{ID: 2, Name: "fullsend-triage", CreatedAt: "2026-07-01T00:00:00Z", WorkflowRunID: 20}, // after
+		},
+	}
+
+	d := &Driver{Client: client}
+	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "triage", after)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+}
+
+func TestCountHarnessDispatches_FiltersOtherAgents(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			{ID: 1, Name: "fullsend-triage", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 10},
+			{ID: 2, Name: "fullsend-review", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 20},
+			{ID: 3, Name: "fullsend-code", CreatedAt: "2026-01-02T00:00:00Z", WorkflowRunID: 30},
+		},
+	}
+
+	d := &Driver{Client: client}
+	count, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "triage", after)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count)
+}
+
+func TestCountHarnessDispatches_APIError(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.Errors["ListRepositoryArtifacts"] = fmt.Errorf("API error")
+
+	d := &Driver{Client: client}
+	_, err := d.CountHarnessDispatches(context.Background(), "org", "repo", "triage", after)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "API error")
+}
+
 func TestWaitForHarnessAgent_FromRepositoryArtifact(t *testing.T) {
 	t.Parallel()
 
