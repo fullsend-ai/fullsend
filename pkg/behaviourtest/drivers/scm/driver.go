@@ -20,10 +20,12 @@ type Driver interface {
 	SubmitPullRequestReview(ctx context.Context, owner, repo string, number int, event string) error
 	CloseIssue(ctx context.Context, owner, repo string, number int) error
 
-	// CreateFork creates a fork of owner/repo under the authenticated
-	// user's account. It is idempotent — if a fork already exists, it
-	// returns the existing fork's owner and repo name.
-	CreateFork(ctx context.Context, owner, repo string) (forkOwner, forkRepo string, err error)
+	// CreateFork creates a fork of owner/repo within the same
+	// organization as the source repository, using the given
+	// forkName. It returns the actual repo name of the created
+	// fork. The call is idempotent — if a fork with the given
+	// name already exists, it returns without error.
+	CreateFork(ctx context.Context, owner, repo, forkName string) (forkRepo string, err error)
 
 	// CommitFileToFork commits a file to a branch on a fork repository.
 	// Analogous to CommitFileToBranch but targets the fork.

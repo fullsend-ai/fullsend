@@ -69,16 +69,8 @@ func (d *Driver) SubmitPullRequestReview(ctx context.Context, owner, repo string
 	return d.Client.CreatePullRequestReview(ctx, owner, repo, number, event, "behaviour test review", sha, nil)
 }
 
-func (d *Driver) CreateFork(ctx context.Context, owner, repo string) (string, string, error) {
-	// Idempotent: reuse existing fork if one already exists.
-	forkOwner, forkRepo, err := d.Client.FindExistingFork(ctx, owner, repo)
-	if err != nil {
-		return "", "", err
-	}
-	if forkOwner != "" {
-		return forkOwner, forkRepo, nil
-	}
-	return d.Client.CreateFork(ctx, owner, repo)
+func (d *Driver) CreateFork(ctx context.Context, owner, repo, forkName string) (string, error) {
+	return d.Client.CreateForkInOrg(ctx, owner, repo, owner, forkName)
 }
 
 func (d *Driver) CommitFileToFork(ctx context.Context, forkOwner, forkRepo, branch, path, message string, content []byte) error {

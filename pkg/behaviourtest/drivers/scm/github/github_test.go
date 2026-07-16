@@ -8,66 +8,28 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
-func TestCreateFork_ExistingFork(t *testing.T) {
+func TestCreateFork(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.ExistingForks = map[string]string{
-		"upstream/repo": "fork-user",
-	}
 	d := New(fc)
 
-	owner, repo, err := d.CreateFork(context.Background(), "upstream", "repo")
+	repo, err := d.CreateFork(context.Background(), "upstream", "repo", "my-fork")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if owner != "fork-user" {
-		t.Errorf("expected fork owner %q, got %q", "fork-user", owner)
-	}
-	if repo != "repo" {
-		t.Errorf("expected fork repo %q, got %q", "repo", repo)
-	}
-	// Should not have called CreateFork on the forge client.
-	if len(fc.CreatedForks) != 0 {
-		t.Errorf("expected no CreateFork calls, got %v", fc.CreatedForks)
-	}
-}
-
-func TestCreateFork_NewFork(t *testing.T) {
-	fc := forge.NewFakeClient()
-	fc.ForkOwner = "my-user"
-	d := New(fc)
-
-	owner, repo, err := d.CreateFork(context.Background(), "upstream", "repo")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if owner != "my-user" {
-		t.Errorf("expected fork owner %q, got %q", "my-user", owner)
-	}
-	if repo != "repo" {
-		t.Errorf("expected fork repo %q, got %q", "repo", repo)
+	if repo != "my-fork" {
+		t.Errorf("expected fork repo %q, got %q", "my-fork", repo)
 	}
 	if len(fc.CreatedForks) != 1 || fc.CreatedForks[0] != "upstream/repo" {
-		t.Errorf("expected CreateFork call for upstream/repo, got %v", fc.CreatedForks)
+		t.Errorf("expected CreateForkInOrg call for upstream/repo, got %v", fc.CreatedForks)
 	}
 }
 
-func TestCreateFork_FindExistingForkError(t *testing.T) {
+func TestCreateFork_Error(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.Errors["FindExistingFork"] = errors.New("api error")
+	fc.Errors["CreateForkInOrg"] = errors.New("create failed")
 	d := New(fc)
 
-	_, _, err := d.CreateFork(context.Background(), "upstream", "repo")
-	if err == nil || err.Error() != "api error" {
-		t.Fatalf("expected api error, got %v", err)
-	}
-}
-
-func TestCreateFork_CreateForkError(t *testing.T) {
-	fc := forge.NewFakeClient()
-	fc.Errors["CreateFork"] = errors.New("create failed")
-	d := New(fc)
-
-	_, _, err := d.CreateFork(context.Background(), "upstream", "repo")
+	_, err := d.CreateFork(context.Background(), "upstream", "repo", "my-fork")
 	if err == nil || err.Error() != "create failed" {
 		t.Fatalf("expected create failed error, got %v", err)
 	}

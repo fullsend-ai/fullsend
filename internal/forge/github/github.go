@@ -559,6 +559,32 @@ func (c *LiveClient) CreateFork(ctx context.Context, owner, repo string) (string
 	return fork.Owner.Login, fork.Name, nil
 }
 
+// CreateForkInOrg creates a fork of owner/repo under the specified
+// organization with the given name. If a fork already exists, the GitHub
+// API returns 202 with the existing fork metadata, so this call is
+// idempotent. Returns the actual repo name from the API response.
+func (c *LiveClient) CreateForkInOrg(ctx context.Context, owner, repo, org, forkName string) (string, error) {
+	body := map[string]any{
+		"organization": org,
+		"name":         forkName,
+	}
+	resp, err := c.do(ctx, http.MethodPost, fmt.Sprintf("/repos/%s/%s/forks", owner, repo), body)
+	if err != nil {
+		return "", fmt.Errorf("create fork of %s/%s in org %s: %w", owner, repo, org, err)
+	}
+	if err := checkStatus(resp, http.StatusOK, http.StatusCreated, http.StatusAccepted); err != nil {
+		return "", fmt.Errorf("create fork of %s/%s in org %s: %w", owner, repo, org, err)
+	}
+
+	var fork struct {
+		Name string `json:"name"`
+	}
+	if err := decodeJSON(resp, &fork); err != nil {
+		return "", fmt.Errorf("decode fork response: %w", err)
+	}
+	return fork.Name, nil
+}
+
 // CreateFile creates a new file on the repository's default branch.
 func (c *LiveClient) CreateFile(ctx context.Context, owner, repo, path, message string, content []byte) error {
 	return c.CreateFileOnBranch(ctx, owner, repo, "", path, message, content)

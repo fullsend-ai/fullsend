@@ -410,6 +410,18 @@ func (f *FakeClient) CreateFork(_ context.Context, owner, repo string) (string, 
 	return f.AuthenticatedUser, repo, nil
 }
 
+func (f *FakeClient) CreateForkInOrg(_ context.Context, owner, repo, org, forkName string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CreateForkInOrg"); e != nil {
+		return "", e
+	}
+
+	f.CreatedForks = append(f.CreatedForks, owner+"/"+repo)
+	return forkName, nil
+}
+
 func (f *FakeClient) CreateFile(_ context.Context, owner, repo, path, message string, content []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

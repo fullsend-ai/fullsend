@@ -308,6 +308,21 @@ type Client interface {
 	// API response, not assume the repo name matches the upstream.
 	CreateFork(ctx context.Context, owner, repo string) (forkOwner, forkRepo string, err error)
 
+	// CreateForkInOrg creates a fork of the given repository under
+	// the specified organization with the given name. It returns the
+	// actual repo name of the created fork. The call is idempotent —
+	// if a fork with the given name already exists under the org, it
+	// returns without error.
+	//
+	// Cross-forge contract: implementations must create an
+	// organization-scoped fork of the upstream repo. Unlike
+	// CreateFork (which targets the authenticated user's account),
+	// this targets a specific org and allows the caller to choose
+	// the fork name. Implementations should return the repo name
+	// from the API response, not assume it matches the requested
+	// name.
+	CreateForkInOrg(ctx context.Context, owner, repo, org, forkName string) (forkRepo string, err error)
+
 	// File operations
 	CreateFile(ctx context.Context, owner, repo, path, message string, content []byte) error
 
