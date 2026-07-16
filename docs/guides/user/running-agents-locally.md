@@ -11,7 +11,7 @@ Linux are supported with Podman as the container runtime.
 | Requirement | macOS | Linux |
 |-------------|-------|-------|
 | Container runtime | Podman Desktop with a running machine | Podman |
-| [OpenShell](https://github.com/NVIDIA/OpenShell) | 0.0.83 | 0.0.83 |
+| [OpenShell](https://github.com/NVIDIA/OpenShell) | [Pinned per release](https://github.com/fullsend-ai/fullsend/blob/main/.github/scripts/openshell-version.sh) | Same |
 | GCP project | [Agent Platform API](https://console.cloud.google.com/apis/library/aiplatform.googleapis.com) enabled with [Claude models](https://console.cloud.google.com/vertex-ai/model-garden) enabled | Same |
 | GCP credentials | Service account key (see section below) | Same |
 | GitHub PAT | Classic PAT with `repo` scope (see section below) | Same |
@@ -48,11 +48,15 @@ fullsend --version
 
 [OpenShell](https://github.com/NVIDIA/OpenShell) provides the sandbox runtime. There are multiple ways
 to install it, here we use one similar to how we download it on Fullsend. Use the version
-fullsend is pinned to — the source of truth is `.github/scripts/openshell-version.sh`
+fullsend is pinned to — the source of truth is
+[`.github/scripts/openshell-version.sh`](https://github.com/fullsend-ai/fullsend/blob/main/.github/scripts/openshell-version.sh)
 in the fullsend repo at your release tag (also printed on Fullsend workflow runs).
+This pin is bumped automatically by Renovate when new OpenShell releases are
+tagged, so the version below is an example — always check the pin file for
+the current value.
 
 ```bash
-export OPENSHELL_VERSION=0.0.83
+export OPENSHELL_VERSION=0.0.83  # check the pin file for the current version
 curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v${OPENSHELL_VERSION}/install.sh | OPENSHELL_VERSION=v${OPENSHELL_VERSION} sh
 openshell --version
 ```
