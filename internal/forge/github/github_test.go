@@ -3335,6 +3335,146 @@ func TestIsProtectedBranch_SlashInBranch(t *testing.T) {
 	assert.True(t, protected)
 }
 
+func TestCreateForkInOrg(t *testing.T) {
+	t.Run("creates fork in org successfully", func(t *testing.T) {
+		callNum := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callNum++
+			switch callNum {
+			case 1:
+				// Pre-check GET returns 404 (no existing repo)
+				assert.Equal(t, "GET", r.Method)
+				assert.Equal(t, "/repos/target-org/my-fork", r.URL.Path)
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+			case 2:
+				// Fork creation POST
+				assert.Equal(t, "POST", r.Method)
+				assert.Equal(t, "/repos/upstream/repo/forks", r.URL.Path)
+				var body map[string]any
+				json.NewDecoder(r.Body).Decode(&body)
+				assert.Equal(t, "target-org", body["organization"])
+				assert.Equal(t, "my-fork", body["name"])
+				w.WriteHeader(http.StatusAccepted)
+				json.NewEncoder(w).Encode(map[string]any{
+					"name": "my-fork",
+				})
+			}
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		forkRepo, err := client.CreateForkInOrg(context.Background(), "upstream", "repo", "target-org", "my-fork")
+		require.NoError(t, err)
+		assert.Equal(t, "my-fork", forkRepo)
+	})
+
+	t.Run("existing non-fork repo returns ErrNotFork", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "GET", r.Method)
+			assert.Equal(t, "/repos/target-org/my-fork", r.URL.Path)
+			json.NewEncoder(w).Encode(map[string]any{
+				"fork": false,
+				"name": "my-fork",
+			})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateForkInOrg(context.Background(), "upstream", "repo", "target-org", "my-fork")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, forge.ErrNotFork)
+		assert.Contains(t, err.Error(), "not a fork")
+	})
+
+	t.Run("existing fork of different source returns ErrNotFork", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "GET", r.Method)
+			json.NewEncoder(w).Encode(map[string]any{
+				"fork": true,
+				"name": "my-fork",
+				"parent": map[string]any{
+					"full_name": "other-owner/other-repo",
+				},
+			})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateForkInOrg(context.Background(), "upstream", "repo", "target-org", "my-fork")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, forge.ErrNotFork)
+		assert.Contains(t, err.Error(), "other-owner/other-repo")
+	})
+
+	t.Run("existing fork of same source is idempotent", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "GET", r.Method)
+			json.NewEncoder(w).Encode(map[string]any{
+				"fork": true,
+				"name": "my-fork",
+				"parent": map[string]any{
+					"full_name": "upstream/repo",
+				},
+			})
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		forkRepo, err := client.CreateForkInOrg(context.Background(), "upstream", "repo", "target-org", "my-fork")
+		require.NoError(t, err)
+		assert.Equal(t, "my-fork", forkRepo)
+	})
+
+	t.Run("pre-check non-200 falls through to fork creation", func(t *testing.T) {
+		callNum := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callNum++
+			switch callNum {
+			case 1:
+				// Pre-check returns 403 (not 200, not an error from do())
+				w.WriteHeader(http.StatusForbidden)
+				json.NewEncoder(w).Encode(map[string]any{"message": "Resource not accessible"})
+			case 2:
+				// Fork creation
+				w.WriteHeader(http.StatusAccepted)
+				json.NewEncoder(w).Encode(map[string]any{"name": "my-fork"})
+			}
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		forkRepo, err := client.CreateForkInOrg(context.Background(), "upstream", "repo", "target-org", "my-fork")
+		require.NoError(t, err)
+		assert.Equal(t, "my-fork", forkRepo)
+	})
+
+	t.Run("fork creation API error", func(t *testing.T) {
+		callNum := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callNum++
+			switch callNum {
+			case 1:
+				// Pre-check returns 404
+				w.WriteHeader(http.StatusNotFound)
+				json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+			case 2:
+				// Fork creation fails
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				json.NewEncoder(w).Encode(map[string]any{
+					"message": "Validation Failed",
+				})
+			}
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateForkInOrg(context.Background(), "upstream", "repo", "target-org", "my-fork")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "create fork")
+	})
+}
+
 func TestUnsupportedMethods(t *testing.T) {
 	client := New("test-token")
 	ctx := context.Background()
