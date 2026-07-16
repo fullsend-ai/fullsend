@@ -58,7 +58,15 @@ is_bot_user() {
 # Configuration
 # ---------------------------------------------------------------------------
 GITLEAKS_VERSION="8.30.1"
-GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+
+# Pinned checksums for supported platforms.  Source:
+#   https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt
+declare -A GITLEAKS_SHA256=(
+  [linux_x64]="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+  [linux_arm64]="e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080"
+  [darwin_x64]="dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709"
+  [darwin_arm64]="b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5"
+)
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -142,12 +150,36 @@ if [ "${NO_PUSH}" = "false" ]; then
 
   if ! command -v gitleaks >/dev/null 2>&1; then
     echo "Installing gitleaks v${GITLEAKS_VERSION}..."
+    # Detect platform — mirrors resolve_gitleaks() in scan-secrets.
+    _gl_os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    case "$(uname -m)" in
+      x86_64|amd64) _gl_arch="x64" ;;
+      aarch64|arm64) _gl_arch="arm64" ;;
+      *) echo "::error::Unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+    esac
+    _gl_key="${_gl_os}_${_gl_arch}"
+    _gl_sha="${GITLEAKS_SHA256[${_gl_key}]:-}"
+    if [ -z "${_gl_sha}" ]; then
+      echo "::error::No pinned gitleaks checksum for platform ${_gl_key}" >&2
+      exit 1
+    fi
+
     mkdir -p "${HOME}/.local/bin"
     curl -fsSL \
-      "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-      -o /tmp/gitleaks.tar.gz \
-      && echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c - \
-      && tar xzf /tmp/gitleaks.tar.gz -C "${HOME}/.local/bin" gitleaks \
+      "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_${_gl_key}.tar.gz" \
+      -o /tmp/gitleaks.tar.gz
+
+    # Verify checksum — sha256sum on Linux, shasum on macOS.
+    if command -v sha256sum >/dev/null 2>&1; then
+      echo "${_gl_sha}  /tmp/gitleaks.tar.gz" | sha256sum -c -
+    elif command -v shasum >/dev/null 2>&1; then
+      echo "${_gl_sha}  /tmp/gitleaks.tar.gz" | shasum -a 256 -c -
+    else
+      echo "::error::No sha256 tool available (need sha256sum or shasum)" >&2
+      exit 1
+    fi
+
+    tar xzf /tmp/gitleaks.tar.gz -C "${HOME}/.local/bin" gitleaks \
       && rm /tmp/gitleaks.tar.gz
     export PATH="${HOME}/.local/bin:${PATH}"
   fi

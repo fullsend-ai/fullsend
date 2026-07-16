@@ -778,6 +778,107 @@ run_precommit_retry_test "precommit-passes-with-unstaged" \
 run_precommit_retry_test "precommit-retry-passes-but-left-unstaged" \
   "1" "yes" "0" "blocked:retry-left-unstaged" "yes"
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the platform detection logic from post-code.sh
+# section 3 (gitleaks install). Given uname -s and uname -m outputs, returns
+# the platform key and selected checksum.
+# ---------------------------------------------------------------------------
+
+# Checksums must match the declare -A in post-code.sh and post-fix.sh.
+declare -A TEST_GITLEAKS_SHA256=(
+  [linux_x64]="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+  [linux_arm64]="e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080"
+  [darwin_x64]="dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709"
+  [darwin_arm64]="b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5"
+)
+
+detect_gitleaks_platform() {
+  local uname_s="$1"   # e.g. "Linux", "Darwin"
+  local uname_m="$2"   # e.g. "x86_64", "aarch64", "arm64"
+
+  local os arch
+  os="$(echo "${uname_s}" | tr '[:upper:]' '[:lower:]')"
+  case "${uname_m}" in
+    x86_64|amd64) arch="x64" ;;
+    aarch64|arm64) arch="arm64" ;;
+    *) echo "error:unsupported-arch:${uname_m}"; return 0 ;;
+  esac
+
+  local key="${os}_${arch}"
+  local sha="${TEST_GITLEAKS_SHA256[${key}]:-}"
+  if [ -z "${sha}" ]; then
+    echo "error:no-checksum:${key}"
+    return 0
+  fi
+
+  echo "ok:${key}:${sha}"
+}
+
+run_platform_test() {
+  local test_name="$1"
+  local uname_s="$2"
+  local uname_m="$3"
+  local expected_prefix="$4"
+
+  local actual
+  actual="$(detect_gitleaks_platform "${uname_s}" "${uname_m}")"
+
+  if [[ "${actual}" != ${expected_prefix}* ]]; then
+    echo "FAIL: ${test_name}"
+    echo "  uname_s:         '${uname_s}'"
+    echo "  uname_m:         '${uname_m}'"
+    echo "  expected prefix: '${expected_prefix}'"
+    echo "  actual:          '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Platform detection test cases ---
+
+# Standard Linux x86_64
+run_platform_test "platform-linux-x86_64" \
+  "Linux" "x86_64" "ok:linux_x64:"
+
+# Linux amd64 (alternative name for x86_64)
+run_platform_test "platform-linux-amd64" \
+  "Linux" "amd64" "ok:linux_x64:"
+
+# Linux ARM64 (aarch64)
+run_platform_test "platform-linux-aarch64" \
+  "Linux" "aarch64" "ok:linux_arm64:"
+
+# Linux ARM64 (arm64 variant)
+run_platform_test "platform-linux-arm64" \
+  "Linux" "arm64" "ok:linux_arm64:"
+
+# macOS x86_64
+run_platform_test "platform-darwin-x86_64" \
+  "Darwin" "x86_64" "ok:darwin_x64:"
+
+# macOS ARM64 (Apple Silicon)
+run_platform_test "platform-darwin-arm64" \
+  "Darwin" "arm64" "ok:darwin_arm64:"
+
+# Unsupported architecture → error
+run_platform_test "platform-unsupported-arch" \
+  "Linux" "s390x" "error:unsupported-arch:s390x"
+
+# Unsupported OS (known arch) → no checksum
+run_platform_test "platform-unsupported-os" \
+  "FreeBSD" "x86_64" "error:no-checksum:freebsd_x64"
+
+# Verify correct checksum is selected for each platform
+run_platform_test "platform-linux-x64-checksum" \
+  "Linux" "x86_64" \
+  "ok:linux_x64:551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+
+run_platform_test "platform-darwin-arm64-checksum" \
+  "Darwin" "arm64" \
+  "ok:darwin_arm64:b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5"
+
 # --- Summary ---
 
 echo ""
