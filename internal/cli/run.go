@@ -668,6 +668,26 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// 1d. Preflight dependency check for host-side scripts.
+	// When a validation_loop declares a preflight_check command, run it now
+	// to catch missing host dependencies (e.g. python3-jsonschema) before
+	// sandbox creation — not after the agent has already finished. See #5074.
+	if h.ValidationLoop != nil && h.ValidationLoop.PreflightCheck != "" {
+		printer.StepStart("Preflight: checking validation_loop dependencies")
+		preflightCmd := exec.Command("sh", "-c", h.ValidationLoop.PreflightCheck)
+		preflightCmd.Env = os.Environ()
+		preflightOut, preflightErr := preflightCmd.CombinedOutput()
+		if preflightErr != nil {
+			printer.StepFail("Preflight dependency check failed")
+			detail := strings.TrimSpace(string(preflightOut))
+			if detail != "" {
+				return fmt.Errorf("validation_loop.preflight_check failed: %s\n%s\nInstall the missing dependency before running this agent", h.ValidationLoop.PreflightCheck, detail)
+			}
+			return fmt.Errorf("validation_loop.preflight_check failed: %s\nInstall the missing dependency before running this agent", h.ValidationLoop.PreflightCheck)
+		}
+		printer.StepDone("Preflight dependency check passed")
+	}
+
 	// 2. Check openshell availability.
 	openshellStart := time.Now()
 	printer.StepStart("Checking openshell availability")

@@ -204,10 +204,11 @@ type APIServer struct {
 
 // ValidationLoop configures a deterministic validation step after the agent exits.
 type ValidationLoop struct {
-	Script        string `yaml:"script"`
-	Schema        string `yaml:"schema,omitempty"`
-	MaxIterations int    `yaml:"max_iterations"`
-	FeedbackMode  string `yaml:"feedback_mode,omitempty"`
+	Script         string `yaml:"script"`
+	Schema         string `yaml:"schema,omitempty"`
+	MaxIterations  int    `yaml:"max_iterations"`
+	FeedbackMode   string `yaml:"feedback_mode,omitempty"`
+	PreflightCheck string `yaml:"preflight_check,omitempty"` // shell command to validate host deps before sandbox creation
 }
 
 // EnvConfig holds environment variable maps for runner and sandbox targets.

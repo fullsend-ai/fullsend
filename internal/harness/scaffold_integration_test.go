@@ -87,6 +87,7 @@ slug: test-triage
 	assert.NotNil(t, h.ValidationLoop)
 	assert.Equal(t, "scripts/validate-output-schema.sh", h.ValidationLoop.Script)
 	assert.Equal(t, 2, h.ValidationLoop.MaxIterations)
+	assert.Equal(t, "python3 -c 'import jsonschema'", h.ValidationLoop.PreflightCheck)
 }
 
 // TestLoadWithBase_WrapperOverridesBaseFields verifies that wrapper-level

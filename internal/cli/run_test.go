@@ -2739,6 +2739,60 @@ func TestExpandValidationLoopSchema(t *testing.T) {
 	require.NoError(t, err, "expanded schema path should exist")
 }
 
+func TestPreflightCheck_PassingCommand(t *testing.T) {
+	// Simulate what run.go does for a passing preflight check.
+	h := &harness.Harness{
+		ValidationLoop: &harness.ValidationLoop{
+			Script:         "scripts/validate.sh",
+			PreflightCheck: "true",
+			MaxIterations:  2,
+		},
+	}
+
+	cmd := exec.Command("sh", "-c", h.ValidationLoop.PreflightCheck)
+	cmd.Env = os.Environ()
+	_, err := cmd.CombinedOutput()
+	require.NoError(t, err)
+}
+
+func TestPreflightCheck_FailingCommand(t *testing.T) {
+	// Simulate what run.go does for a failing preflight check.
+	h := &harness.Harness{
+		ValidationLoop: &harness.ValidationLoop{
+			Script:         "scripts/validate.sh",
+			PreflightCheck: "false",
+			MaxIterations:  2,
+		},
+	}
+
+	cmd := exec.Command("sh", "-c", h.ValidationLoop.PreflightCheck)
+	cmd.Env = os.Environ()
+	_, err := cmd.CombinedOutput()
+	require.Error(t, err)
+}
+
+func TestPreflightCheck_NoCheckConfigured(t *testing.T) {
+	// When no preflight_check is set, the check should be skipped.
+	h := &harness.Harness{
+		ValidationLoop: &harness.ValidationLoop{
+			Script:        "scripts/validate.sh",
+			MaxIterations: 2,
+		},
+	}
+
+	assert.Empty(t, h.ValidationLoop.PreflightCheck)
+}
+
+func TestPreflightCheck_NilValidationLoop(t *testing.T) {
+	// When no validation_loop is set, no check should run.
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+	}
+
+	assert.Nil(t, h.ValidationLoop)
+}
+
 func TestBuildSandboxEnvLines_FromEnvSandbox(t *testing.T) {
 	h := &harness.Harness{
 		Agent: "agents/test.md",
