@@ -114,6 +114,86 @@ Existing pool orgs (`halfsend-01` … `halfsend-12`) need a one-time operator pa
 fullsend admin foreign allow --org halfsend-NN --role e2e --caller fullsend-ai/fullsend
 ```
 
+## Test GitHub Apps
+
+The `fullsend-test-*` apps are **test-only** GitHub Apps owned by `fullsend-ai`,
+separate from the production `fullsend-ai-*` app set. They exist for temporary
+and test mints, including the Cloudflare Worker mint BT chain. There is **no
+`e2e` test app**. The `fix` role shares the coder test app and PEM (same as
+production).
+
+> **Warning:** Do **not** enroll these apps on the production community mint.
+> They are strictly for test infrastructure.
+
+### Role / app / secret inventory
+
+| Role | App Slug | App ID | Repository Secret |
+|------|----------|--------|-------------------|
+| fullsend | `fullsend-test-fullsend` | `4312984` | `TEST_FULLSEND_PEM` |
+| triage | `fullsend-test-triage` | `4312988` | `TEST_TRIAGE_PEM` |
+| coder | `fullsend-test-coder` | `4312994` | `TEST_CODER_PEM` |
+| review | `fullsend-test-review` | `4313005` | `TEST_REVIEW_PEM` |
+| retro | `fullsend-test-retro` | `4313010` | `TEST_RETRO_PEM` |
+| prioritize | `fullsend-test-prioritize` | `4313012` | `TEST_PRIORITIZE_PEM` |
+
+PEM private keys are stored as repository secrets on `fullsend-ai/fullsend`.
+The `fix` role reuses the coder app (`fullsend-test-coder`) and
+`TEST_CODER_PEM`.
+
+### Installation targets
+
+All six apps are installed with access to **all repositories** on
+`halfsend-01` through `halfsend-12`.
+
+### App permission scopes
+
+Each app is registered with the minimum permissions its corresponding role
+requires. Tokens minted for these apps are downscoped by the mint to the
+canonical role permissions (see `internal/mintcore/github.go`).
+
+| Role | Permissions |
+|------|-------------|
+| fullsend | `actions:write`, `actions_variables:read`, `administration:write`, `checks:read`, `contents:write`, `issues:read`, `members:read`, `metadata:read`, `organization_projects:read`, `pull_requests:write`, `workflows:write` |
+| triage | `contents:read`, `issues:write`, `metadata:read` |
+| coder | `checks:read`, `contents:write`, `issues:write`, `metadata:read`, `pull_requests:write` |
+| review | `checks:read`, `contents:read`, `issues:write`, `metadata:read`, `pull_requests:write` |
+| retro | `actions:read`, `contents:read`, `issues:write`, `metadata:read`, `pull_requests:write` |
+| prioritize | `contents:read`, `issues:write`, `metadata:read`, `organization_projects:write` |
+
+### Operator notes
+
+**PEM rotation:** Generate a new private key on the app's settings page
+(`https://github.com/apps/<slug>/settings`), then update the corresponding
+`TEST_*_PEM` repository secret on `fullsend-ai/fullsend`. If the app is
+enrolled on a test mint, update the PEM secret there as well.
+
+**Installing on a new pool org:** Install each app via its public install
+URL:
+
+```bash
+# For each app slug in the inventory table above:
+# https://github.com/apps/<slug>/installations/new
+# Select the target pool org and grant access to "All repositories".
+```
+
+**Using App IDs in `ROLE_APP_IDS` for temporary mints:** When configuring a
+temporary or test mint (e.g., the CF Worker mint), set `ROLE_APP_IDS` using
+the App IDs from the inventory table:
+
+```json
+{
+  "fullsend": "4312984",
+  "triage": "4312988",
+  "coder": "4312994",
+  "review": "4313005",
+  "retro": "4313010",
+  "prioritize": "4313012"
+}
+```
+
+Point the mint's PEM directory (or Secret Manager entries) at the
+corresponding `TEST_*_PEM` keys.
+
 ## CI authorization
 
 Pull requests trigger e2e via `pull_request_target` in
