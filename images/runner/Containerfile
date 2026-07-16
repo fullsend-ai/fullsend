@@ -1,0 +1,256 @@
+# Containerfile — runner image with the fullsend CLI and every host-side
+# run dependency pre-installed (#5183).
+#
+# Unlike images/sandbox/ and images/code/ (which agents run INSIDE, managed
+# by OpenShell), this image is the HOST side of `fullsend run`: the CLI plus
+# the binaries its pre-scripts, validation loop, and post-scripts invoke on
+# the machine running fullsend. It covers the same host-side dependency
+# surface the composite action assembles in CI, at the same pinned
+# versions, so local runs stop failing on missing or mismatched tools.
+#
+#   - fullsend        (built from this repo's source at the same ref)
+#   - openshell CLI   (pinned via .github/scripts/openshell-version.sh)
+#   - gh              (scaffold pre/post scripts: GitHub API, PR/issue ops)
+#   - gitleaks        (post-code/post-fix secret-scan gate)
+#   - pre-commit + gitlint (post-script hook runs on target repos)
+#   - python3 + jsonschema (validate-output-schema.sh, ADR 0022)
+#   - Go toolchain    (sandbox binary cross-compile fallback + Go pre-commit hooks)
+#   - gcloud          (not invoked by fullsend — included for the GCP
+#                      credential bootstrap in running-agents-locally.md)
+#   - git, jq, tar, curl
+#
+# NOT included (stays on the host): Podman, the openshell-gateway service,
+# and the sandbox supervisor image. The containerized CLI talks to the host
+# gateway over the network — sandboxes still spawn on the host.
+#
+# Built by .github/workflows/runner-image.yml on version tags and on
+# changes to images/runner/. Build context is the REPO ROOT (the fullsend
+# binary is compiled from source):
+#
+#   podman build -t fullsend-runner:local \
+#     -f images/runner/Containerfile .
+#
+# Published to: ghcr.io/fullsend-ai/fullsend-runner
+
+# ---------------------------------------------------------------------------
+# Build stage — compile the fullsend binary. Runs on the build platform and
+# cross-compiles for TARGETARCH so multi-arch builds avoid QEMU-emulated
+# Go compilation. UBI images pull anonymously from
+# registry.access.redhat.com — no Red Hat subscription required.
+# registry.access.redhat.com/ubi10/go-toolset:latest
+FROM --platform=$BUILDPLATFORM registry.access.redhat.com/ubi10/go-toolset@sha256:40eb0e19d90700b02aa1055810a637f307af48c2d1cb376905bc53e3e583af6f AS build
+
+USER 0
+WORKDIR /src
+COPY go.mod go.sum ./
+# go.mod replaces the mintcore module with a local path; its go.mod must be
+# present for go mod download to resolve the module graph.
+COPY internal/mintcore/go.mod internal/mintcore/go.sum* ./internal/mintcore/
+RUN go mod download
+COPY . .
+
+ARG TARGETARCH
+# Version metadata injected by CI; mirrors the ldflags in .goreleaser.yml so
+# `fullsend --version` inside the image reports the release version.
+ARG FULLSEND_VERSION=dev
+ARG FULLSEND_COMMIT=unknown
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
+    go build -trimpath \
+      -ldflags "-s -w -X github.com/fullsend-ai/fullsend/internal/cli.version=${FULLSEND_VERSION} -X github.com/fullsend-ai/fullsend/internal/cli.commitSHA=${FULLSEND_COMMIT}" \
+      -o /out/fullsend ./cmd/fullsend/
+
+# ---------------------------------------------------------------------------
+# Runtime stage — UBI 10 (anonymous pull from registry.access.redhat.com,
+# no subscription). Deliberately NOT ubi10/go-toolset: that is a builder
+# image carrying gcc and build deps (~1 GB); plain UBI plus the pinned Go
+# tarball below is far smaller. All tool versions are pinned explicitly
+# (pip transitive dependencies resolve at build time), so the tools match
+# the composite action's runs on GitHub-hosted runners regardless of the
+# distro underneath.
+#
+# No USER directive — the image deliberately runs as root. It is a local
+# convenience wrapper, not a sandbox (agents never run inside it), and
+# under rootless podman container root maps to the invoking host user, so
+# bind-mounted configs and repos keep sane ownership without UID mapping.
+# registry.access.redhat.com/ubi10/ubi:latest
+FROM registry.access.redhat.com/ubi10/ubi@sha256:802583cce6369422f62434fccd9bf310655c065cc9f4f60a007faf095e57afc7
+
+# NOTE: no SHELL directive — podman's default OCI image format ignores it,
+# so all RUN steps below stay POSIX-sh compatible for docker AND podman.
+
+# BuildKit automatic platform ARG — set by --platform during multi-arch builds.
+ARG TARGETARCH
+
+# ---------------------------------------------------------------------------
+# Base packages. python3 + pip back the validation loop
+# (validate-output-schema.sh); git/jq/curl are used throughout the CLI and
+# scaffold scripts; openssh-clients covers ssh git remotes; gzip and
+# findutils back the tar.gz extraction steps below. --allowerasing lets
+# full curl replace the base image's curl-minimal.
+RUN dnf install -y --allowerasing --setopt=install_weak_deps=False \
+      ca-certificates \
+      curl \
+      findutils \
+      git \
+      gzip \
+      jq \
+      openssh-clients \
+      python3 \
+      python3-pip \
+      tar \
+    && dnf clean all
+
+# ---------------------------------------------------------------------------
+# gcloud CLI — fullsend never invokes it, but the local-run guide's GCP
+# credential bootstrap (service account + ADC key creation) does. Google's
+# apt/yum repos only ship el8/el9 builds, so install the versioned release
+# tarball. gcloud runs on the system python3 (CLOUDSDK_PYTHON below); the
+# tarball's bundled Python runtime and anthoscli are removed to keep the
+# image small.
+# To update: bump GCLOUD_VERSION and refresh GCLOUD_SHA256_{AMD64,ARM64}
+# from the checksums at https://cloud.google.com/sdk/docs/install
+ENV CLOUDSDK_PYTHON=/usr/bin/python3
+ARG GCLOUD_VERSION=576.0.0
+ARG GCLOUD_SHA256_AMD64=7094a08e8fc3772cdbfb1a8a1920300f52fec5e370c9f9c803c2a3c8824a32c2
+ARG GCLOUD_SHA256_ARM64=be6077ade7b08312a250b49b5838473253c52e25358c63cfb2cfb4095503b5f2
+RUN case "$TARGETARCH" in \
+      amd64) GC_ARCH="x86_64"; GC_SHA="$GCLOUD_SHA256_AMD64" ;; \
+      arm64) GC_ARCH="arm";    GC_SHA="$GCLOUD_SHA256_ARM64" ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL \
+      "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-${GCLOUD_VERSION}-linux-${GC_ARCH}.tar.gz" \
+      -o /tmp/gcloud.tar.gz \
+    && echo "${GC_SHA}  /tmp/gcloud.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/gcloud.tar.gz -C /opt \
+    && rm -rf /opt/google-cloud-sdk/platform/bundledpythonunix \
+      /opt/google-cloud-sdk/bin/anthoscli \
+      /opt/google-cloud-sdk/platform/anthoscli_licenses \
+    && ln -s /opt/google-cloud-sdk/bin/gcloud /usr/local/bin/gcloud \
+    && ln -s /opt/google-cloud-sdk/bin/gsutil /usr/local/bin/gsutil \
+    && rm /tmp/gcloud.tar.gz \
+    && gcloud --version
+
+# ---------------------------------------------------------------------------
+# OpenShell CLI — client only; the gateway and supervisor stay on the host.
+# The version pin is sourced from the same file the composite action and
+# Renovate use, so the image can never drift from the tested version.
+# The release ships a static musl binary, verified against the release
+# checksums file.
+# The pin file is a bash script; extract the value instead of sourcing it
+# so this step runs under plain sh.
+COPY .github/scripts/openshell-version.sh /tmp/openshell-version.sh
+RUN OPENSHELL_VERSION="$(sed -n 's/^OPENSHELL_VERSION=//p' /tmp/openshell-version.sh)" \
+    && test -n "$OPENSHELL_VERSION" \
+    && case "$TARGETARCH" in \
+         amd64) OS_TRIPLE="x86_64-unknown-linux-musl" ;; \
+         arm64) OS_TRIPLE="aarch64-unknown-linux-musl" ;; \
+         *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL \
+      "https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}/openshell-${OS_TRIPLE}.tar.gz" \
+      -o /tmp/openshell.tar.gz \
+    && curl -fsSL \
+      "https://github.com/NVIDIA/OpenShell/releases/download/v${OPENSHELL_VERSION}/openshell-checksums-sha256.txt" \
+      -o /tmp/openshell-checksums.txt \
+    && grep " openshell-${OS_TRIPLE}.tar.gz\$" /tmp/openshell-checksums.txt \
+      | sed "s| openshell-${OS_TRIPLE}.tar.gz\$| /tmp/openshell.tar.gz|" \
+      | sha256sum -c - \
+    && mkdir -p /tmp/openshell \
+    && tar xzf /tmp/openshell.tar.gz -C /tmp/openshell \
+    && install -m 0755 "$(find /tmp/openshell -type f -name openshell | head -1)" /usr/local/bin/openshell \
+    && rm -rf /tmp/openshell /tmp/openshell.tar.gz /tmp/openshell-checksums.txt /tmp/openshell-version.sh \
+    && openshell --version
+
+# ---------------------------------------------------------------------------
+# gh — GitHub CLI used by the scaffold pre/post scripts. GitHub-hosted
+# runners ship it preinstalled; local machines do not.
+# To update: bump GH_VERSION and GH_SHA256_{AMD64,ARM64} from
+#   https://github.com/cli/cli/releases (gh_<version>_checksums.txt)
+ARG GH_VERSION=2.96.0
+ARG GH_SHA256_AMD64=83d5c2ccad5498f58bf6368acb1ab32588cf43ab3a4b1c301bf36328b1c8bd60
+ARG GH_SHA256_ARM64=06f86ec7103d41993b76cd78072f43595c34aaa56506d971d9860e67140bf909
+RUN case "$TARGETARCH" in \
+      amd64) GH_SHA="$GH_SHA256_AMD64" ;; \
+      arm64) GH_SHA="$GH_SHA256_ARM64" ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL \
+      "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${TARGETARCH}.tar.gz" \
+      -o /tmp/gh.tar.gz \
+    && echo "${GH_SHA}  /tmp/gh.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/gh.tar.gz -C /tmp \
+    && install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}/bin/gh" /usr/local/bin/gh \
+    && rm -rf /tmp/gh.tar.gz "/tmp/gh_${GH_VERSION}_linux_${TARGETARCH}"
+
+# ---------------------------------------------------------------------------
+# gitleaks — post-code.sh / post-fix.sh secret-scan gate. Baked in so the
+# scripts' self-install fallback (linux x64 only) never fires.
+# Version and checksums match images/sandbox/Containerfile.
+# To update: bump GITLEAKS_VERSION and GITLEAKS_SHA256_{AMD64,ARM64} from:
+#   https://github.com/gitleaks/gitleaks/releases
+ARG GITLEAKS_VERSION=8.30.1
+ARG GITLEAKS_SHA256_AMD64=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+ARG GITLEAKS_SHA256_ARM64=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080
+RUN case "$TARGETARCH" in \
+      amd64) GL_ARCH="x64";   GL_SHA="$GITLEAKS_SHA256_AMD64" ;; \
+      arm64) GL_ARCH="arm64"; GL_SHA="$GITLEAKS_SHA256_ARM64" ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL \
+      "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${GL_ARCH}.tar.gz" \
+      -o /tmp/gitleaks.tar.gz \
+    && echo "${GL_SHA}  /tmp/gitleaks.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/gitleaks.tar.gz -C /usr/local/bin gitleaks \
+    && rm /tmp/gitleaks.tar.gz
+
+# ---------------------------------------------------------------------------
+# Go toolchain — sandbox binary cross-compile fallback (internal/binary/
+# crosscompile.go) and pre-commit hooks in Go target repos. The composite
+# action installs Go pinned to the target repo's go.mod (go-version-file);
+# the image bakes a fixed toolchain instead. GOTOOLCHAIN=auto (set below)
+# lets target repos requiring a newer Go version download it automatically
+# at runtime without failing hard. Version and checksums match images/code/Containerfile.
+# To update: get the latest linux-{amd64,arm64} archive + sha256 from
+#   https://go.dev/dl/?mode=json
+ARG GO_VERSION=1.26.0
+ARG GO_SHA256_AMD64=aac1b08a0fb0c4e0a7c1555beb7b59180b05dfc5a3d62e40e9de90cd42f88235
+ARG GO_SHA256_ARM64=bd03b743eb6eb4193ea3c3fd3956546bf0e3ca5b7076c8226334afe6b75704cd
+RUN case "$TARGETARCH" in \
+      amd64) GO_SHA="$GO_SHA256_AMD64" ;; \
+      arm64) GO_SHA="$GO_SHA256_ARM64" ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz" \
+      -o /tmp/go.tar.gz \
+    && echo "${GO_SHA}  /tmp/go.tar.gz" | sha256sum -c - \
+    && tar -C /usr/local -xzf /tmp/go.tar.gz \
+    && rm /tmp/go.tar.gz
+
+# ---------------------------------------------------------------------------
+# pre-commit + gitlint (post-script hook runs) and jsonschema (validation
+# loop, ADR 0022). Versions match images/sandbox/Containerfile. The
+# composite action installs jsonschema as a range (>=4.18.0); the image
+# pins the exact version the sandbox image was tested with, since a
+# release image must be reproducible.
+ARG PRECOMMIT_VERSION=4.5.1
+ARG GITLINT_VERSION=0.19.1
+ARG JSONSCHEMA_VERSION=4.23.0
+RUN pip install --no-cache-dir --break-system-packages \
+      "pre-commit==${PRECOMMIT_VERSION}" \
+      "gitlint-core==${GITLINT_VERSION}" \
+      "jsonschema==${JSONSCHEMA_VERSION}"
+
+# ---------------------------------------------------------------------------
+# fullsend CLI, built in the build stage from this repo's source.
+COPY --from=build /out/fullsend /usr/local/bin/fullsend
+
+ENV PATH="/usr/local/go/bin:${PATH}"
+# Allow target repos with a newer go.mod toolchain directive to auto-download
+# the required toolchain at runtime rather than failing with "GOTOOLCHAIN=local".
+ENV GOTOOLCHAIN=auto
+
+WORKDIR /work
+
+ENTRYPOINT ["/usr/local/bin/fullsend"]
+CMD ["--help"]
