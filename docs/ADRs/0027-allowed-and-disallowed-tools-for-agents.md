@@ -58,13 +58,20 @@ behavior differs between `--agent` sessions and subagents:
 
 | Mechanism | `--agent` session | Subagent |
 |-----------|-------------------|----------|
-| `tools` in frontmatter | No effect | Restricts to listed tools |
-| `disallowedTools` in frontmatter | No effect | Removes listed tools |
+| `tools` in frontmatter | ~~No effect~~ see note | Restricts to listed tools |
+| `disallowedTools` in frontmatter | ~~No effect~~ see note | Removes listed tools |
 
-`tools` and `disallowedTools` only take effect when the agent runs as a
-subagent spawned via the Agent tool. In `--agent` sessions, `tools` neither
+`tools` and `disallowedTools` ~~only take effect when the agent runs as a
+subagent spawned via the Agent tool~~ see note. In `--agent` sessions, `tools` neither
 restricts nor grants tool access regardless of permission mode
 ([experiment](https://github.com/fullsend-ai/experiments/tree/main/tool-scoping)).
+
+> **Note (2026-07):** Since Claude Code v2.1.119 (April 2026), `tools`
+> and `disallowedTools` ARE enforced in `--agent`/`--print` sessions
+> but multiple bugs make them unreliable for steering. The decision to
+> use `permissions.deny` remains correct. See RCA (Root Cause Analysis)
+> [#5182](https://github.com/fullsend-ai/fullsend/discussions/5182)
+> and [#303](https://github.com/fullsend-ai/fullsend/issues/303).
 
 ## Options
 
@@ -156,6 +163,9 @@ not a security control — it improves agent focus and reduces wasted tokens.
 `tools` and `disallowedTools` in agent frontmatter have no effect in
 `--agent` sessions.
 
+> **Note (2026-07):** See updated behavior notes in Context section
+> above — both keys are now enforced (since v2.1.119) but unreliable.
+
 ## Consequences
 
 - Security enforcement stays in the sandbox — the only layer the agent
@@ -169,3 +179,5 @@ not a security control — it improves agent focus and reduces wasted tokens.
 - `tools` and `disallowedTools` have no effect in `--agent` sessions;
   they only apply to subagents spawned via the Agent tool.
 - Runtime-agnostic: the security model does not depend on Claude Code.
+
+> **Note (2026-07):** See updated behavior notes in Context section.
