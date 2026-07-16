@@ -205,6 +205,12 @@ type FakeClient struct {
 	// A nil entry means no error for that call.
 	CommitFilesErrSeq []error
 
+	// CreateReviewErrSeq is an error queue for CreatePullRequestReview.
+	// Each call shifts the first element; when empty, falls through to
+	// Errors["CreatePullRequestReview"]. A nil entry means no error
+	// for that call.
+	CreateReviewErrSeq []error
+
 	// Pull request head SHA for GetPullRequestHeadSHA.
 	PullRequestHeadSHA string
 
@@ -1349,6 +1355,13 @@ func (f *FakeClient) ListPullRequestFileDiffs(_ context.Context, owner, repo str
 func (f *FakeClient) CreatePullRequestReview(_ context.Context, owner, repo string, number int, event, body, commitSHA string, comments []ReviewComment) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if len(f.CreateReviewErrSeq) > 0 {
+		e := f.CreateReviewErrSeq[0]
+		f.CreateReviewErrSeq = f.CreateReviewErrSeq[1:]
+		if e != nil {
+			return e
+		}
+	}
 	if e := f.err("CreatePullRequestReview"); e != nil {
 		return e
 	}
