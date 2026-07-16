@@ -47,6 +47,15 @@ func TestRegisteredAgents_NilConfig(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestRegisteredAgents_TypedNilConfig(t *testing.T) {
+	// A typed nil (e.g. (*DirConfig)(nil) passed as ConfigReader) should
+	// be caught by the nil guard, not cause a panic on first method call.
+	var cfg config.ConfigReader = (*config.DirConfig)(nil)
+	_, err := RegisteredAgents(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config is required")
+}
+
 func TestRegisteredAgents_DuplicateName(t *testing.T) {
 	cfg := &config.DirConfig{
 		Agents: []config.AgentEntry{

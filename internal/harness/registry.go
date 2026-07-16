@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -23,23 +24,24 @@ type ResolvedPath struct {
 	Dep  Dependency
 }
 
-// RegisteredAgents validates and returns entries from a DirConfig.
-func RegisteredAgents(cfg *config.DirConfig) ([]RegisteredAgent, error) {
-	if cfg == nil {
+// RegisteredAgents validates and returns entries from a ConfigReader.
+func RegisteredAgents(cfg config.ConfigReader) ([]RegisteredAgent, error) {
+	if cfg == nil || reflect.ValueOf(cfg).IsNil() {
 		return nil, fmt.Errorf("config is required")
 	}
-	allowlist := cfg.AllowedRemoteResources
+	allowlist := cfg.AllowedResources()
 	if allowlist == nil {
 		allowlist = config.DefaultAllowedRemoteResources()
 	}
-	if err := config.ValidateAgentEntries(cfg.Agents, allowlist); err != nil {
+	agents := cfg.AgentEntries()
+	if err := config.ValidateAgentEntries(agents, allowlist); err != nil {
 		return nil, err
 	}
-	if len(cfg.Agents) == 0 {
+	if len(agents) == 0 {
 		return nil, nil
 	}
-	out := make([]RegisteredAgent, 0, len(cfg.Agents))
-	for _, entry := range cfg.Agents {
+	out := make([]RegisteredAgent, 0, len(agents))
+	for _, entry := range agents {
 		out = append(out, RegisteredAgent{
 			Entry:  entry,
 			Name:   entry.DerivedName(),
