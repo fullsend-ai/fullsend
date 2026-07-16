@@ -79,3 +79,14 @@ Non-sensitive configuration that today is stored as secrets only for convenience
 - **Trust binding:** Reliance on OIDC claims such as **`job_workflow_ref`** (and related issuer/subject rules) is security-critical: the mint must only tokenize callers that match **pinned, expected workflow definitions** in the real `.fullsend` repo (and org/repo rules you define). Spoofing a **fake** `.fullsend` in another org still yields tokens **scoped to that attacker’s org installations**, not cross-tenant access to unrelated orgs—but within an org, impact can still be severe.
 - **Availability:** Centralizing token issuance creates a **shared dependency**: if the mint is unreachable or unhealthy, agent workflows that depend on minted tokens may **stall** across dependent orgs (a **shared SPOF** unless you operate redundant endpoints, caches, or explicit fallback modes). This trades **per-repo secret sprawl and PAT operations** for **central operational responsibility** (uptime, incident response, key management).
 - Follow-on ADRs or normative specs should spell out cutover, PAT compatibility mode, and concrete dispatcher/shim wiring. When **this** ADR is **Accepted**, updates to older ADRs and living docs follow repo supersession rules ([ADR 0001](0001-use-adrs-for-decision-making.md)): **accepted** ADRs are not rewritten—only **status** and links to the successor—while [`docs/architecture.md`](../architecture.md) carries current truth. A checklist for **[ADR 0007](0007-per-role-github-apps.md)**, **[ADR 0008](0008-workflow-dispatch-for-cross-repo-dispatch.md)**, and **[ADR 0026](0026-stage-based-dispatch-for-agent-workflow-decoupling.md)** is posted on the pull request for when this ADR is merged as Accepted.
+
+## Subsequent decisions
+
+The following ADRs extend this mint design to cover per-repo installation and public multi-tenant deployment:
+
+| Topic | ADR |
+|-------|-----|
+| Per-repo installation mode — credential models, self-contained config, coexistence with per-org | [0033](0033-per-repo-installation-mode.md) |
+| Public mint mode — `ALLOWED_ORGS=*`, per-repo identity via `WIF_PROVIDER_NAME`, trust boundaries without org-level infrastructure, upstream-only workflow provenance | [0059](0059-public-mint-mode-with-wildcard-allowlists.md) |
+
+Together these address: per-repo GitHub App as the identity provider (ADR 0059 Decision 2–3), independent cloud service account boundaries (ADR 0059 Decision 2, ADR 0033 §6), trust model without org-level infrastructure (ADR 0059 Decision 1), and interaction between repo-level and org-level mints (ADR 0059 Decision 1 + 3, ADR 0033 §8).
