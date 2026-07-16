@@ -22,14 +22,7 @@ import (
 var commitSHAPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 func loadAgentConfig(configPath string) (config.ConfigWriter, error) {
-	dirCfg, err := config.LoadFromDir(filepath.Dir(configPath), config.LoadOpts{MissingOK: false})
-	if err != nil {
-		return nil, err
-	}
-	if dirCfg.IsOrg {
-		return dirCfg.Org, nil
-	}
-	return dirCfg.PerRepo, nil
+	return config.LoadConfigWriter(filepath.Dir(configPath), config.LoadOpts{MissingOK: false})
 }
 
 func newAgentCmd() *cobra.Command {

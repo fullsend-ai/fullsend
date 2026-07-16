@@ -311,6 +311,63 @@ func TestLoadConfig_InvalidYAML(t *testing.T) {
 	require.Error(t, err)
 }
 
+// --- LoadConfigWriter factory tests ---
+
+func TestLoadConfigWriter_OrgConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfg := NewOrgConfig(nil, nil, nil, "", "")
+	data, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
+
+	writer, err := LoadConfigWriter(dir, LoadOpts{})
+	require.NoError(t, err)
+	assert.True(t, writer.IsOrgMode())
+}
+
+func TestLoadConfigWriter_PerRepoConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfg := NewPerRepoConfig(nil, "o/r")
+	data, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
+
+	writer, err := LoadConfigWriter(dir, LoadOpts{})
+	require.NoError(t, err)
+	assert.False(t, writer.IsOrgMode())
+}
+
+func TestLoadConfigWriter_MissingOK(t *testing.T) {
+	dir := t.TempDir()
+	writer, err := LoadConfigWriter(dir, LoadOpts{MissingOK: true})
+	require.NoError(t, err)
+	assert.False(t, writer.IsOrgMode())
+}
+
+func TestLoadConfigWriter_MissingNotOK(t *testing.T) {
+	dir := t.TempDir()
+	_, err := LoadConfigWriter(dir, LoadOpts{})
+	require.Error(t, err)
+}
+
+func TestLoadConfigWriter_Mutate(t *testing.T) {
+	dir := t.TempDir()
+	cfg := NewPerRepoConfig(nil, "o/r")
+	data, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
+
+	writer, err := LoadConfigWriter(dir, LoadOpts{})
+	require.NoError(t, err)
+
+	writer.SetAgents([]AgentEntry{{Source: "harness/test.yaml"}})
+	assert.Len(t, writer.AgentEntries(), 1)
+
+	out, err := writer.Marshal()
+	require.NoError(t, err)
+	assert.Contains(t, string(out), "harness/test.yaml")
+}
+
 // --- Interface satisfaction tests ---
 
 func TestOrgConfig_SatisfiesConfigReader(t *testing.T) {
