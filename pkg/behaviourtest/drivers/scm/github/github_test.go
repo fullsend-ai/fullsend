@@ -113,3 +113,64 @@ func TestCreateForkChangeProposal_Error(t *testing.T) {
 		t.Fatalf("expected pr failed error, got %v", err)
 	}
 }
+
+func TestCreateFork_ExistingNonForkRepo(t *testing.T) {
+	fc := forge.NewFakeClient()
+	// Pre-populate with a non-fork repo that has the same name.
+	fc.Repos = []forge.Repository{
+		{Name: "my-fork", FullName: "upstream/my-fork", Fork: false},
+	}
+	d := New(fc)
+
+	_, err := d.CreateFork(context.Background(), "upstream", "repo", "my-fork")
+	if err == nil {
+		t.Fatal("expected error when repo exists but is not a fork")
+	}
+	if !forge.IsNotFork(err) {
+		t.Fatalf("expected ErrNotFork, got %v", err)
+	}
+}
+
+func TestCreateFork_ExistingForkOfDifferentSource(t *testing.T) {
+	fc := forge.NewFakeClient()
+	// Pre-populate with a fork of a different source repo.
+	fc.Repos = []forge.Repository{
+		{Name: "my-fork", FullName: "upstream/my-fork", Fork: true},
+	}
+	fc.ForkParents = map[string]string{
+		"upstream/my-fork": "other-owner/other-repo",
+	}
+	d := New(fc)
+
+	_, err := d.CreateFork(context.Background(), "upstream", "repo", "my-fork")
+	if err == nil {
+		t.Fatal("expected error when repo is a fork of a different source")
+	}
+	if !forge.IsNotFork(err) {
+		t.Fatalf("expected ErrNotFork, got %v", err)
+	}
+}
+
+func TestCreateFork_ExistingForkOfSameSource(t *testing.T) {
+	fc := forge.NewFakeClient()
+	// Pre-populate with a fork of the same source repo (idempotent case).
+	fc.Repos = []forge.Repository{
+		{Name: "my-fork", FullName: "upstream/my-fork", Fork: true},
+	}
+	fc.ForkParents = map[string]string{
+		"upstream/my-fork": "upstream/repo",
+	}
+	d := New(fc)
+
+	repo, err := d.CreateFork(context.Background(), "upstream", "repo", "my-fork")
+	if err != nil {
+		t.Fatalf("unexpected error for idempotent fork: %v", err)
+	}
+	if repo != "my-fork" {
+		t.Errorf("expected fork repo %q, got %q", "my-fork", repo)
+	}
+	// No new fork should have been created (idempotent).
+	if len(fc.CreatedForks) != 0 {
+		t.Errorf("expected no new fork creation for idempotent case, got %v", fc.CreatedForks)
+	}
+}

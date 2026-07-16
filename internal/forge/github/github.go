@@ -560,10 +560,51 @@ func (c *LiveClient) CreateFork(ctx context.Context, owner, repo string) (string
 }
 
 // CreateForkInOrg creates a fork of owner/repo under the specified
-// organization with the given name. If a fork already exists, the GitHub
-// API returns 202 with the existing fork metadata, so this call is
-// idempotent. Returns the actual repo name from the API response.
+// organization with the given name. If a fork of the source already
+// exists with the given name, the GitHub API returns 202 with the
+// existing fork metadata, so this call is idempotent. Returns the
+// actual repo name from the API response.
+//
+// If a repository with the target name already exists but is not a
+// fork of the source, returns forge.ErrNotFork. This pre-check
+// prevents a generic GitHub 422 error with a specific sentinel so
+// callers can handle the collision gracefully.
 func (c *LiveClient) CreateForkInOrg(ctx context.Context, owner, repo, org, forkName string) (string, error) {
+	sourceFullName := owner + "/" + repo
+
+	// Pre-check: if a repo with the target name already exists,
+	// verify it is a fork of the expected source. GitHub returns a
+	// generic 422 when the name is taken by a non-fork repo; this
+	// check gives callers a specific ErrNotFork sentinel.
+	checkResp, err := c.do(ctx, http.MethodGet, fmt.Sprintf("/repos/%s/%s", org, forkName), nil)
+	if err == nil {
+		if checkResp.StatusCode == http.StatusOK {
+			var existing struct {
+				Fork   bool   `json:"fork"`
+				Name   string `json:"name"`
+				Parent struct {
+					FullName string `json:"full_name"`
+				} `json:"parent"`
+			}
+			if decErr := decodeJSON(checkResp, &existing); decErr == nil {
+				if !existing.Fork {
+					return "", fmt.Errorf("repo %s/%s already exists and is not a fork: %w",
+						org, forkName, forge.ErrNotFork)
+				}
+				if existing.Parent.FullName != sourceFullName {
+					return "", fmt.Errorf("repo %s/%s is a fork of %s, not %s: %w",
+						org, forkName, existing.Parent.FullName, sourceFullName, forge.ErrNotFork)
+				}
+				// Existing fork of the correct source — idempotent.
+				return existing.Name, nil
+			}
+			// If we can't decode, fall through to fork creation.
+		} else {
+			checkResp.Body.Close()
+		}
+	}
+	// If the pre-check returned 404 or failed, proceed with fork creation.
+
 	body := map[string]any{
 		"organization": org,
 		"name":         forkName,

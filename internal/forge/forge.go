@@ -78,6 +78,15 @@ func IsNoChanges(err error) bool {
 	return errors.Is(err, ErrNoChanges)
 }
 
+// ErrNotFork indicates that a repository with the requested fork name
+// already exists but is not a fork of the expected source repository.
+var ErrNotFork = errors.New("repository exists but is not a fork of the source")
+
+// IsNotFork reports whether err indicates a non-fork name collision.
+func IsNotFork(err error) bool {
+	return errors.Is(err, ErrNotFork)
+}
+
 // ErrNotSupported indicates that the forge implementation does not
 // support the requested operation.
 var ErrNotSupported = errors.New("operation not supported by this forge")
@@ -311,8 +320,13 @@ type Client interface {
 	// CreateForkInOrg creates a fork of the given repository under
 	// the specified organization with the given name. It returns the
 	// actual repo name of the created fork. The call is idempotent —
-	// if a fork with the given name already exists under the org, it
-	// returns without error.
+	// if a fork of the source with the given name already exists
+	// under the org, it returns without error.
+	//
+	// If a repository with the given name already exists under the
+	// org but is not a fork of the source repository, the call
+	// returns ErrNotFork. This prevents silent name collisions
+	// with unrelated repositories.
 	//
 	// Cross-forge contract: implementations must create an
 	// organization-scoped fork of the upstream repo. Unlike
@@ -320,7 +334,8 @@ type Client interface {
 	// this targets a specific org and allows the caller to choose
 	// the fork name. Implementations should return the repo name
 	// from the API response, not assume it matches the requested
-	// name.
+	// name. Implementations must check for existing non-fork repos
+	// with the target name and return ErrNotFork when found.
 	CreateForkInOrg(ctx context.Context, owner, repo, org, forkName string) (forkRepo string, err error)
 
 	// File operations
