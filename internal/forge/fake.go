@@ -144,6 +144,12 @@ type FakeClient struct {
 	// by FindExistingFork. Entries simulate an already-existing fork.
 	ExistingForks map[string]string
 
+	// ForkParents maps "owner/repo" to the parent "owner/repo" for repos
+	// that have Fork=true in Repos. Used by CreateForkInOrg to verify
+	// that an existing fork has the expected parent (non-fork collision
+	// detection). Only consulted when a repo in Repos has Fork=true.
+	ForkParents map[string]string
+
 	// App client IDs for GetAppClientID
 	AppClientIDs map[string]string // key: app slug → client ID
 
@@ -408,6 +414,38 @@ func (f *FakeClient) CreateFork(_ context.Context, owner, repo string) (string, 
 		return f.ForkOwner, repo, nil
 	}
 	return f.AuthenticatedUser, repo, nil
+}
+
+func (f *FakeClient) CreateForkInOrg(_ context.Context, owner, repo, org, forkName string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CreateForkInOrg"); e != nil {
+		return "", e
+	}
+
+	// Check if a repo with the target name already exists.
+	targetFullName := org + "/" + forkName
+	sourceFullName := owner + "/" + repo
+	for _, r := range f.Repos {
+		if r.FullName == targetFullName {
+			if !r.Fork {
+				return "", fmt.Errorf("repo %s already exists and is not a fork: %w",
+					targetFullName, ErrNotFork)
+			}
+			if f.ForkParents != nil {
+				if parent, ok := f.ForkParents[targetFullName]; ok && parent != sourceFullName {
+					return "", fmt.Errorf("repo %s is a fork of %s, not %s: %w",
+						targetFullName, parent, sourceFullName, ErrNotFork)
+				}
+			}
+			// Existing fork of the correct source — idempotent.
+			return forkName, nil
+		}
+	}
+
+	f.CreatedForks = append(f.CreatedForks, owner+"/"+repo)
+	return forkName, nil
 }
 
 func (f *FakeClient) CreateFile(_ context.Context, owner, repo, path, message string, content []byte) error {

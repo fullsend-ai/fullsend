@@ -1081,6 +1081,69 @@ func TestIsNotSupported(t *testing.T) {
 	assert.False(t, IsNotSupported(nil))
 }
 
+func TestIsNotFork(t *testing.T) {
+	assert.True(t, IsNotFork(ErrNotFork))
+	assert.True(t, IsNotFork(fmt.Errorf("wrap: %w", ErrNotFork)))
+	assert.False(t, IsNotFork(ErrNotFound))
+	assert.False(t, IsNotFork(nil))
+}
+
+func TestFakeClient_CreateForkInOrg(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("creates fork when no collision", func(t *testing.T) {
+		fc := NewFakeClient()
+		forkRepo, err := fc.CreateForkInOrg(ctx, "upstream", "repo", "target-org", "my-fork")
+		require.NoError(t, err)
+		assert.Equal(t, "my-fork", forkRepo)
+		assert.Equal(t, []string{"upstream/repo"}, fc.CreatedForks)
+	})
+
+	t.Run("existing non-fork repo returns ErrNotFork", func(t *testing.T) {
+		fc := NewFakeClient()
+		fc.Repos = []Repository{
+			{Name: "my-fork", FullName: "target-org/my-fork", Fork: false},
+		}
+		_, err := fc.CreateForkInOrg(ctx, "upstream", "repo", "target-org", "my-fork")
+		require.Error(t, err)
+		assert.True(t, IsNotFork(err))
+	})
+
+	t.Run("existing fork of different source returns ErrNotFork", func(t *testing.T) {
+		fc := NewFakeClient()
+		fc.Repos = []Repository{
+			{Name: "my-fork", FullName: "target-org/my-fork", Fork: true},
+		}
+		fc.ForkParents = map[string]string{
+			"target-org/my-fork": "other-owner/other-repo",
+		}
+		_, err := fc.CreateForkInOrg(ctx, "upstream", "repo", "target-org", "my-fork")
+		require.Error(t, err)
+		assert.True(t, IsNotFork(err))
+	})
+
+	t.Run("existing fork of same source is idempotent", func(t *testing.T) {
+		fc := NewFakeClient()
+		fc.Repos = []Repository{
+			{Name: "my-fork", FullName: "target-org/my-fork", Fork: true},
+		}
+		fc.ForkParents = map[string]string{
+			"target-org/my-fork": "upstream/repo",
+		}
+		forkRepo, err := fc.CreateForkInOrg(ctx, "upstream", "repo", "target-org", "my-fork")
+		require.NoError(t, err)
+		assert.Equal(t, "my-fork", forkRepo)
+		assert.Empty(t, fc.CreatedForks) // no new fork created
+	})
+
+	t.Run("returns error when injected", func(t *testing.T) {
+		fc := NewFakeClient()
+		fc.Errors["CreateForkInOrg"] = errors.New("api error")
+		_, err := fc.CreateForkInOrg(ctx, "upstream", "repo", "target-org", "my-fork")
+		require.Error(t, err)
+	})
+}
+
 func TestNewFakeClient_MapsInitialized(t *testing.T) {
 	fc := NewFakeClient()
 	assert.NotNil(t, fc.ProtectedBranches)

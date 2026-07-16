@@ -19,4 +19,19 @@ type Driver interface {
 	CreateChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*forge.ChangeProposal, error)
 	SubmitPullRequestReview(ctx context.Context, owner, repo string, number int, event string) error
 	CloseIssue(ctx context.Context, owner, repo string, number int) error
+
+	// CreateFork creates a fork of owner/repo within the same
+	// organization as the source repository, using the given
+	// forkName. It returns the actual repo name of the created
+	// fork. The call is idempotent — if a fork with the given
+	// name already exists, it returns without error.
+	CreateFork(ctx context.Context, owner, repo, forkName string) (forkRepo string, err error)
+
+	// CommitFileToFork commits a file to a branch on a fork repository.
+	// Analogous to CommitFileToBranch but targets the fork.
+	CommitFileToFork(ctx context.Context, forkOwner, forkRepo, branch, path, message string, content []byte) error
+
+	// CreateForkChangeProposal opens a cross-fork pull request from
+	// forkOwner:headBranch into baseOwner/baseRepo's baseBranch.
+	CreateForkChangeProposal(ctx context.Context, baseOwner, baseRepo, title, body, forkOwner, headBranch, baseBranch string) (*forge.ChangeProposal, error)
 }
