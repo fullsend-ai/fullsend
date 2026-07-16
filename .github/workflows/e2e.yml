@@ -262,8 +262,10 @@ jobs:
           TEST_REVIEW_PEM: ${{ secrets.TEST_REVIEW_PEM }}
           TEST_RETRO_PEM: ${{ secrets.TEST_RETRO_PEM }}
           TEST_PRIORITIZE_PEM: ${{ secrets.TEST_PRIORITIZE_PEM }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          # Env names match Wrangler/mint deploy; values come from TEST_*-prefixed
+          # repo secrets (not the prod site-deploy CLOUDFLARE_* secrets).
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.TEST_CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.TEST_CLOUDFLARE_API_TOKEN }}
 
       - name: Upload behaviour debug artifacts
         if: failure() && steps.changes.outputs.relevant != 'false'
