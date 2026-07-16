@@ -21,65 +21,15 @@ import (
 
 var commitSHAPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
-type agentConfig struct {
-	isOrg      bool
-	orgCfg     *config.OrgConfig
-	perRepoCfg *config.PerRepoConfig
-}
-
-func (ac *agentConfig) agents() []config.AgentEntry {
-	if ac.isOrg {
-		return ac.orgCfg.Agents
-	}
-	return ac.perRepoCfg.Agents
-}
-
-func (ac *agentConfig) setAgents(agents []config.AgentEntry) {
-	if ac.isOrg {
-		ac.orgCfg.Agents = agents
-	} else {
-		ac.perRepoCfg.Agents = agents
-	}
-}
-
-func (ac *agentConfig) allowedRemoteResources() []string {
-	if ac.isOrg {
-		return ac.orgCfg.AllowedRemoteResources
-	}
-	return ac.perRepoCfg.AllowedRemoteResources
-}
-
-func (ac *agentConfig) setAllowedRemoteResources(resources []string) {
-	if ac.isOrg {
-		ac.orgCfg.AllowedRemoteResources = resources
-	} else {
-		ac.perRepoCfg.AllowedRemoteResources = resources
-	}
-}
-
-func (ac *agentConfig) marshal() ([]byte, error) {
-	if ac.isOrg {
-		return ac.orgCfg.Marshal()
-	}
-	return ac.perRepoCfg.Marshal()
-}
-
-func (ac *agentConfig) validate() error {
-	if ac.isOrg {
-		return ac.orgCfg.Validate()
-	}
-	return ac.perRepoCfg.Validate()
-}
-
-func loadAgentConfig(configPath string) (*agentConfig, error) {
+func loadAgentConfig(configPath string) (config.ConfigWriter, error) {
 	dirCfg, err := config.LoadFromDir(filepath.Dir(configPath), config.LoadOpts{MissingOK: false})
 	if err != nil {
 		return nil, err
 	}
 	if dirCfg.IsOrg {
-		return &agentConfig{isOrg: true, orgCfg: dirCfg.Org}, nil
+		return dirCfg.Org, nil
 	}
-	return &agentConfig{isOrg: false, perRepoCfg: dirCfg.PerRepo}, nil
+	return dirCfg.PerRepo, nil
 }
 
 func newAgentCmd() *cobra.Command {
@@ -222,10 +172,10 @@ func runAgentAdd(ctx context.Context, source, name, fullsendDir string, forgeCli
 
 		prefix := allowlistPrefixForURL(pinnedSource)
 		if prefix != "" {
-			resources := cfg.allowedRemoteResources()
+			resources := cfg.AllowedResources()
 			if !hasAllowlistPrefix(resources, prefix) {
 				printer.StepInfo("Adding " + prefix + " to allowed_remote_resources")
-				cfg.setAllowedRemoteResources(append(resources, prefix))
+				cfg.SetAllowedRemoteResources(append(resources, prefix))
 			}
 		}
 	} else {
@@ -240,18 +190,18 @@ func runAgentAdd(ctx context.Context, source, name, fullsendDir string, forgeCli
 	}
 
 	derivedName := entry.DerivedName()
-	agents := cfg.agents()
+	agents := cfg.AgentEntries()
 	if _, found := findAgentByName(agents, derivedName); found {
 		return fmt.Errorf("agent %q already exists in config", derivedName)
 	}
 
-	cfg.setAgents(append(agents, entry))
+	cfg.SetAgents(append(agents, entry))
 
-	if err := cfg.validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
 
-	data, err := cfg.marshal()
+	data, err := cfg.Marshal()
 	if err != nil {
 		return err
 	}
@@ -277,7 +227,7 @@ func runAgentList(fullsendDir string, printer *ui.Printer) error {
 		return err
 	}
 
-	agents := dirCfg.Agents
+	agents := dirCfg.AgentEntries()
 	if len(agents) == 0 {
 		printer.StepInfo("No agents registered in config")
 		return nil
@@ -313,7 +263,7 @@ func runAgentUpdate(ctx context.Context, agentName, explicitSHA, fullsendDir str
 		return err
 	}
 
-	agents := cfg.agents()
+	agents := cfg.AgentEntries()
 	idx, found := findAgentByName(agents, agentName)
 	if !found {
 		return fmt.Errorf("agent %q not found in config", agentName)
@@ -381,13 +331,13 @@ func runAgentUpdate(ctx context.Context, agentName, explicitSHA, fullsendDir str
 	printer.StepDone("Computed integrity hash")
 
 	agents[idx].Source = newURL + "#sha256=" + hash
-	cfg.setAgents(agents)
+	cfg.SetAgents(agents)
 
-	if err := cfg.validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
 
-	data, err := cfg.marshal()
+	data, err := cfg.Marshal()
 	if err != nil {
 		return err
 	}
@@ -411,7 +361,7 @@ func runAgentRemove(fullsendDir, agentName string, printer *ui.Printer) error {
 		return err
 	}
 
-	agents := cfg.agents()
+	agents := cfg.AgentEntries()
 	idx, found := findAgentByName(agents, agentName)
 	if !found {
 		return fmt.Errorf("agent %q not found in config", agentName)
@@ -419,12 +369,12 @@ func runAgentRemove(fullsendDir, agentName string, printer *ui.Printer) error {
 
 	removedEntry := agents[idx]
 	agents = append(agents[:idx], agents[idx+1:]...)
-	cfg.setAgents(agents)
+	cfg.SetAgents(agents)
 
 	if urlutil.IsURL(removedEntry.Source) {
 		prefix := allowlistPrefixForURL(removedEntry.Source)
 		if prefix != "" && !anyAgentUsesPrefix(agents, prefix) {
-			resources := cfg.allowedRemoteResources()
+			resources := cfg.AllowedResources()
 			cleaned := make([]string, 0, len(resources))
 			for _, r := range resources {
 				if r != prefix {
@@ -433,16 +383,16 @@ func runAgentRemove(fullsendDir, agentName string, printer *ui.Printer) error {
 			}
 			if len(cleaned) < len(resources) {
 				printer.StepInfo("Removed unused prefix from allowed_remote_resources: " + prefix)
-				cfg.setAllowedRemoteResources(cleaned)
+				cfg.SetAllowedRemoteResources(cleaned)
 			}
 		}
 	}
 
-	if err := cfg.validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("config validation failed: %w", err)
 	}
 
-	data, err := cfg.marshal()
+	data, err := cfg.Marshal()
 	if err != nil {
 		return err
 	}
