@@ -255,6 +255,15 @@ jobs:
           BEHAVIOUR_ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
           E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
           E2E_GCP_WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+          # CF mint BT path: temp Worker deploy needs role PEMs + Cloudflare creds
+          TEST_FULLSEND_PEM: ${{ secrets.TEST_FULLSEND_PEM }}
+          TEST_TRIAGE_PEM: ${{ secrets.TEST_TRIAGE_PEM }}
+          TEST_CODER_PEM: ${{ secrets.TEST_CODER_PEM }}
+          TEST_REVIEW_PEM: ${{ secrets.TEST_REVIEW_PEM }}
+          TEST_RETRO_PEM: ${{ secrets.TEST_RETRO_PEM }}
+          TEST_PRIORITIZE_PEM: ${{ secrets.TEST_PRIORITIZE_PEM }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
       - name: Upload behaviour debug artifacts
         if: failure() && steps.changes.outputs.relevant != 'false'
