@@ -69,6 +69,27 @@ func (d *Driver) SubmitPullRequestReview(ctx context.Context, owner, repo string
 	return d.Client.CreatePullRequestReview(ctx, owner, repo, number, event, "behaviour test review", sha, nil)
 }
 
+func (d *Driver) CreateFork(ctx context.Context, owner, repo string) (string, string, error) {
+	// Idempotent: reuse existing fork if one already exists.
+	forkOwner, forkRepo, err := d.Client.FindExistingFork(ctx, owner, repo)
+	if err != nil {
+		return "", "", err
+	}
+	if forkOwner != "" {
+		return forkOwner, forkRepo, nil
+	}
+	return d.Client.CreateFork(ctx, owner, repo)
+}
+
+func (d *Driver) CommitFileToFork(ctx context.Context, forkOwner, forkRepo, branch, path, message string, content []byte) error {
+	return d.Client.CreateOrUpdateFileOnBranch(ctx, forkOwner, forkRepo, branch, path, message, content)
+}
+
+func (d *Driver) CreateForkChangeProposal(ctx context.Context, baseOwner, baseRepo, title, body, forkOwner, headBranch, baseBranch string) (*forge.ChangeProposal, error) {
+	head := forkOwner + ":" + headBranch
+	return d.Client.CreateChangeProposal(ctx, baseOwner, baseRepo, title, body, head, baseBranch)
+}
+
 // ParseRepo splits "owner/repo" into owner and repo name.
 func ParseRepo(fullName string) (owner, repo string, err error) {
 	return scm.ParseRepo(fullName)
