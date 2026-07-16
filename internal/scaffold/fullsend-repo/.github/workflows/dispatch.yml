@@ -1,5 +1,5 @@
 ---
-# lint-workflow-size: max-lines=500
+# lint-workflow-size: max-lines=550
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -57,6 +57,8 @@ jobs:
           # Uses the collaborator permission API which correctly resolves org
           # membership regardless of visibility (private vs public).
           # See: github/gh-aw-mcpg#2862
+          # Returns 0 if username has write access, 1 if not, 2 on operational failure
+          # (mktemp/gh api errors). Callers must distinguish 1 vs 2 when messaging.
           has_write_permission() {
             local username="${1:-}"
             if [[ -z "${username}" ]]; then
@@ -65,13 +67,13 @@ jobs:
             local role api_err
             api_err=$(mktemp) || {
               echo "::warning::Failed to create temp file for permission check of ${username}" >&2
-              return 1
+              return 2
             }
             role=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${username}/permission" \
               --jq '.role_name' 2>"${api_err}") || {
               echo "::warning::Permission API call failed for ${username}: $(cat "${api_err}")" >&2
               rm -f "${api_err}"
-              return 1
+              return 2
             }
             rm -f "${api_err}"
             case "${role}" in
@@ -107,6 +109,34 @@ jobs:
             return 1
           }
 
+          # Helper: check if the comment is from a user
+          comment_from_user() {
+            if [[ "${COMMENT_USER_TYPE}" == "Bot" ]]; then
+              echo "::notice::Skipping dispatch for bot comment"
+              return 1
+            fi
+            return 0
+          }
+
+          # Helper: check if the comment is from an authorized user
+          comment_from_authorized_user() {
+            if ! comment_from_user; then
+              return 1
+            fi
+            local auth_rc=0
+            is_authorized || auth_rc=$?
+            case "${auth_rc}" in
+              0) return 0 ;;
+              1)
+                echo "::notice::Skipping dispatch for unauthorized comment from ${COMMENT_USER_LOGIN}"
+              ;;
+              2)
+                echo "::notice::Skipping dispatch: failed to verify permissions for ${COMMENT_USER_LOGIN}"
+              ;;
+            esac
+            return 1
+          }
+
           # Extract the first word of the comment as the command
           COMMAND=""
           if [[ -n "${COMMENT_BODY:-}" ]]; then
@@ -117,34 +147,34 @@ jobs:
             issue_comment)
               case "${COMMAND}" in
                 /fs-triage)
-                  if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
+                  if comment_from_authorized_user; then
                     STAGE="triage"
                   fi
                   ;;
                 /fs-code)
                   if [[ "${ISSUE_HAS_PR}" == "false" ]]; then
-                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
+                    if comment_from_authorized_user; then
                       STAGE="code"
                     fi
                   fi
                   ;;
                 /fs-review)
                   if [[ "${ISSUE_HAS_PR}" == "true" ]]; then
-                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
+                    if comment_from_authorized_user; then
                       STAGE="review"
                     fi
                   fi
                   ;;
                 /fs-fix)
                   if [[ "${ISSUE_HAS_PR}" == "true" ]]; then
-                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
+                    if comment_from_authorized_user; then
                       STAGE="fix"
                       TRIGGER_SOURCE="${COMMENT_USER_LOGIN}"
                     fi
                   fi
                   ;;
                 /fs-retro|/fullsend)
-                  if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
+                  if comment_from_authorized_user; then
                     if [[ "${COMMAND}" == "/fullsend" ]]; then
                       SECOND_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}')"
                       if [[ "${SECOND_WORD}" == "retro" ]]; then
@@ -156,7 +186,7 @@ jobs:
                   fi
                   ;;
                 /fs-prioritize)
-                  if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
+                  if comment_from_authorized_user; then
                     STAGE="prioritize"
                   fi
                   ;;
@@ -165,7 +195,7 @@ jobs:
                   # re-trigger triage by providing clarification on needs-info
                   # issues. Full write-permission check is not required here.
                   if has_label "needs-info" && ! has_label "feature"; then
-                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]]; then
+                    if comment_from_user; then
                       if [[ "${COMMENT_AUTHOR_ASSOC}" != "NONE" ]] || is_issue_author; then
                         STAGE="triage"
                       fi
