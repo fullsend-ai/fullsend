@@ -224,9 +224,13 @@ func TestDispatchWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, `COMMENT_AUTHOR_ASSOC`)
 	// Auto-triage requires assoc != NONE or issue author
 	assert.Contains(t, s, "is_issue_author")
-	// Bot filtering
+	// Bot filtering and skip notices via shared helpers
 	assert.Contains(t, s, `COMMENT_USER_TYPE`)
-	assert.Contains(t, s, `!= "Bot"`)
+	assert.Contains(t, s, `comment_from_user`)
+	assert.Contains(t, s, `comment_from_authorized_user`)
+	assert.Contains(t, s, `== "Bot"`)
+	assert.Contains(t, s, `Skipping dispatch for bot comment`)
+	assert.Contains(t, s, `Skipping dispatch for unauthorized comment`)
 	// No-fix label check (uses PR_LABELS for pull_request_review events)
 	assert.Contains(t, s, "fullsend-no-fix")
 	assert.Contains(t, s, "PR_LABELS")
