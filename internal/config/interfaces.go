@@ -1,5 +1,7 @@
 package config
 
+import "fmt"
+
 // --- Sub-interfaces for common behaviors ---
 
 // AgentLister provides read access to registered agent entries.
@@ -242,7 +244,13 @@ func LoadConfig(dir string, opts LoadOpts) (ConfigReader, error) {
 		return nil, err
 	}
 	if dc.IsOrg {
+		if dc.Org == nil {
+			return nil, fmt.Errorf("org config is nil despite IsOrg=true")
+		}
 		return dc.Org, nil
+	}
+	if dc.PerRepo == nil {
+		return nil, fmt.Errorf("per-repo config is nil despite IsOrg=false")
 	}
 	return dc.PerRepo, nil
 }

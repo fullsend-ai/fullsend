@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -25,7 +26,7 @@ type ResolvedPath struct {
 
 // RegisteredAgents validates and returns entries from a ConfigReader.
 func RegisteredAgents(cfg config.ConfigReader) ([]RegisteredAgent, error) {
-	if cfg == nil {
+	if cfg == nil || reflect.ValueOf(cfg).IsNil() {
 		return nil, fmt.Errorf("config is required")
 	}
 	allowlist := cfg.AllowedResources()
