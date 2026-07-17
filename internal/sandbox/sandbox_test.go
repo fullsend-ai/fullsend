@@ -1117,6 +1117,44 @@ func TestBuildProviderArgs_ConfigNotExpandedForURL(t *testing.T) {
 		"URL-fetched provider config should preserve literal value")
 }
 
+func TestShellQuote(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"simple", "'simple'"},
+		{"has space", "'has space'"},
+		{"it's", `'it'\''s'`},
+		{"", "''"},
+		{"a'b'c", `'a'\''b'\''c'`},
+		{"/tmp/upload file.txt", "'/tmp/upload file.txt'"},
+	}
+	for _, tt := range tests {
+		got := shellQuote(tt.input)
+		assert.Equal(t, tt.want, got, "shellQuote(%q)", tt.input)
+	}
+}
+
+func TestRandStringBytes_Length(t *testing.T) {
+	for _, n := range []int{0, 1, 10, 50} {
+		got := randStringBytes(n)
+		assert.Len(t, got, n)
+	}
+}
+
+func TestRandStringBytes_OnlyLetters(t *testing.T) {
+	s := randStringBytes(200)
+	for _, c := range s {
+		assert.Contains(t, letterBytes, string(c))
+	}
+}
+
+func TestRandStringBytes_NotConstant(t *testing.T) {
+	a := randStringBytes(20)
+	b := randStringBytes(20)
+	assert.NotEqual(t, a, b, "two random strings should differ")
+}
+
 func TestBuildProviderArgs_ConfigExpandedForLocal(t *testing.T) {
 	t.Setenv("MY_URL", "https://example.com")
 
