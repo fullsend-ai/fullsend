@@ -92,7 +92,7 @@ GOOGLE_APPLICATION_CREDENTIALS=fullsend-local-credentials.json
 ```
 
 **Tip**: if you plan to run the CLI from the
-[container image](#alternative-run-the-cli-from-the-container-image-linux-only)
+[container image](#run-from-a-container-linux)
 (Linux only) instead of the native binary, keep the key file and env file in
 your working directory — the container mounts it as `/work` and resolves
 `GOOGLE_APPLICATION_CREDENTIALS` relative to it.
@@ -130,7 +130,7 @@ can also use `--keep-sandbox` to debug failures (but remember to remove them).
 
 **Tip**: `fullsend run` uses multiple tools on your system. On Linux, instead
 of installing them all, you can use a container image fullsend publishes —
-see [Alternative: run the CLI from the container image](#alternative-run-the-cli-from-the-container-image-linux-only)
+see [Alternative: run the CLI from the container image](#run-from-a-container-linux)
 below. This does not currently work on macOS.
 
 **Note**: to run custom agents set `--fullsend-dir` to the directory where your
@@ -271,7 +271,7 @@ fullsend run triage \
 Status comment behavior is configured via `status_notifications` in
 `config.yaml`. See the [operations guide](../getting-started/operations.md#status-notifications).
 
-## Alternative: run the CLI from the container image (Linux only)
+## Run from a container (Linux)
 
 **macOS**: skip this section — the containerized CLI cannot reach the host
 gateway from a Podman machine. See the [macOS platform notes](#macos) for
