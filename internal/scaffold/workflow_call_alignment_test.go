@@ -480,6 +480,12 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 			assert.Contains(t, s, `has_repo_permission "${PR_USER_LOGIN}" write`,
 				"human PR auto-fix requires write+ on the PR author")
 			assert.Regexp(t, `(?s)PR_USER_LOGIN.*\[bot\].*STAGE="fix".*fullsend-fix.*has_repo_permission "\$\{PR_USER_LOGIN\}" write`, s)
+
+			// ready-to-code is a mutation path: write+ labeler or bot handoff
+			assert.Regexp(t, `(?s)ready-to-code" \]\]; then\s*\n.*is_event_actor_authorized "\$\{EVENT_SENDER_LOGIN\}"`, s)
+
+			// Retro on PR close remains intentionally ungated (documented)
+			assert.Regexp(t, `(?s)closed\)\s*\n\s+# Intentional ungated:.*\n\s+STAGE="retro"`, s)
 		})
 	}
 }

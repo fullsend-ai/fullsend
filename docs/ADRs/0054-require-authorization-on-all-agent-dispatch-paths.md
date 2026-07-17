@@ -183,16 +183,17 @@ permission list, not by bypassing the check.
 > Observation stages (triage, review) now accept the GitHub `triage`
 > role via a parameterized `has_repo_permission` helper (`min=triage`).
 > Mutation stages (code, fix, and other write-gated slash commands)
-> remain at `min=write`. This follows the extension path above rather
-> than bypassing the check.
+> remain at `min=write`. Label-triggered `ready-to-code` requires a
+> write+ labeler (or a bot, for agent handoff). Exception:
+> `pull_request_target.closed` → retro stays intentionally ungated so
+> any closer can trigger read-only lifecycle accounting. This follows
+> the extension path above rather than bypassing the check.
 
 ## Consequences
 
-- All dispatch paths require repository permission at a stage-appropriate
-  minimum (write+ for mutation stages; triage+ for observation stages —
-  see the [#5223](https://github.com/fullsend-ai/fullsend/issues/5223)
-  note above), closing the cost-exposure and abuse-surface gaps for both
-  slash commands and automatic triggers.
+- All dispatch paths require write-level repository permission,
+  closing the cost-exposure and abuse-surface gaps for both slash
+  commands and automatic triggers.
 - External users can no longer trigger agent runs by opening issues, PRs,
   or posting slash commands on public repos.
 - Maintainers retain full control: labels and slash commands let them

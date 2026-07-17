@@ -53,7 +53,8 @@ jobs:
           STAGE=""
           TRIGGER_SOURCE=""
 
-          # Collaborator role_name vs min (write|triage). #5223 / ADR 0054.
+          # Collaborator role_name vs min (write|triage). See #5223 / ADR 0054.
+          # API resolves org membership regardless of visibility (gh-aw-mcpg#2862).
           has_repo_permission() {
             local username="${1:-}" min="${2:-write}" role api_err
             [[ -z "${username}" ]] && return 1
@@ -185,7 +186,10 @@ jobs:
                 if [[ "${TRIGGERING_LABEL}" == "ready-for-triage" ]]; then
                   STAGE="triage"
                 elif [[ "${TRIGGERING_LABEL}" == "ready-to-code" ]]; then
-                  STAGE="code"
+                  # Mutation stage: write+ labeler, or bots (agent handoff).
+                  if [[ "${EVENT_SENDER_LOGIN}" =~ \[bot\]$ ]] || is_event_actor_authorized "${EVENT_SENDER_LOGIN}"; then
+                    STAGE="code"
+                  fi
                 elif [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
                   if [[ "${ISSUE_HAS_PR}" == "true" ]]; then
                     STAGE="review"
@@ -207,6 +211,8 @@ jobs:
                   fi
                   ;;
                 closed)
+                  # Intentional ungated: any closer may trigger read-only retro
+                  # (lifecycle accounting). See ADR 0054 #5223 note.
                   STAGE="retro"
                   ;;
               esac
