@@ -1247,6 +1247,35 @@ func TestFakeClient_CommitFilesErrSeq(t *testing.T) {
 	})
 }
 
+func TestFakeClient_CreateReviewErrSeq(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("first call errors, second succeeds", func(t *testing.T) {
+		fc := &FakeClient{
+			CreateReviewErrSeq: []error{fmt.Errorf("422 unprocessable")},
+		}
+		err := fc.CreatePullRequestReview(ctx, "o", "r", 1, "APPROVE", "", "", nil)
+		require.Error(t, err)
+		assert.Empty(t, fc.CreatedReviews)
+
+		err = fc.CreatePullRequestReview(ctx, "o", "r", 1, "APPROVE", "ok", "", nil)
+		require.NoError(t, err)
+		require.Len(t, fc.CreatedReviews, 1)
+	})
+
+	t.Run("nil entry means no error for that call", func(t *testing.T) {
+		fc := &FakeClient{
+			CreateReviewErrSeq: []error{nil, fmt.Errorf("fail")},
+		}
+		err := fc.CreatePullRequestReview(ctx, "o", "r", 1, "APPROVE", "", "", nil)
+		require.NoError(t, err)
+		require.Len(t, fc.CreatedReviews, 1)
+
+		err = fc.CreatePullRequestReview(ctx, "o", "r", 1, "APPROVE", "", "", nil)
+		require.Error(t, err)
+	})
+}
+
 func TestFakeClient_GetRepo(t *testing.T) {
 	ctx := context.Background()
 	fc := &FakeClient{

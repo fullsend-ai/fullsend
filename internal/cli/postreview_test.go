@@ -1373,6 +1373,39 @@ func TestIs422Error(t *testing.T) {
 	}
 }
 
+func TestSubmitFormalReview_422FallbackWithFileLevelComment(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			// Hunk covers lines 30-54 only.
+			{Path: "internal/service.go", Patch: "@@ -30,20 +30,25 @@ func main() {"},
+		},
+	}
+	fc.CreateReviewErrSeq = []error{
+		&gh.APIError{StatusCode: http.StatusUnprocessableEntity, Message: "Validation Failed"},
+		nil,
+	}
+
+	var out bytes.Buffer
+	printer := ui.New(&out)
+
+	findings := []ReviewFinding{
+		// Line 999 is outside hunk → becomes file-level comment (Line=0).
+		{Severity: "high", Category: "bug", File: "internal/service.go", Line: 999, Description: "Out of hunk."},
+	}
+
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "request-changes", "abc123", "", findings, false, printer)
+	require.NoError(t, err)
+
+	output := out.String()
+	assert.Contains(t, output, "file-level", "logRejectedComments should log file-level comment")
+	assert.Contains(t, output, "inline comments omitted due to 422")
+
+	require.Len(t, fc.CreatedReviews, 1)
+	assert.Contains(t, fc.CreatedReviews[0].Body, "internal/service.go")
+}
+
 func TestBuildFallbackReviewBody(t *testing.T) {
 	t.Run("with original body and comments", func(t *testing.T) {
 		comments := []forge.ReviewComment{
