@@ -56,6 +56,9 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 		return fmt.Errorf("copying agent definition: %w", err)
 	}
 
+	if err := duplicateDestinationNameError("skill", input.SkillDirs()); err != nil {
+		return err
+	}
 	for _, skillPath := range input.SkillDirs() {
 		if skillPath == "" {
 			continue
@@ -74,6 +77,9 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 		}
 	}
 	if len(pluginDirs) > 0 {
+		if err := duplicateDestinationNameError("plugin", pluginDirs, reservedPluginDestNames...); err != nil {
+			return err
+		}
 		if err := bootstrapPlugins(sandboxName, configDir, pluginDirs); err != nil {
 			return fmt.Errorf("bootstrapping plugins: %w", err)
 		}
@@ -228,6 +234,47 @@ func (ClaudeRuntime) EmitTranscriptErrors(w io.Writer, summaries []TranscriptErr
 	emitTranscriptErrors(w, summaries)
 }
 
+// reservedPluginDestNames are basenames bootstrapPlugins and
+// buildPluginConfigs create directly under configDir/plugins/ — two
+// marketplace-scaffolding directories plus the two shared registration
+// files every plugin in a Bootstrap call is recorded into. A plugin whose
+// directory shares one of these names would resolve to the same sandbox
+// destination: for the directories, UploadDir's rm -rf-before-extract wipes
+// the scaffolding for every plugin in the batch; for the JSON files, the
+// plugin's own directory upload replaces the file's destination with a
+// directory before buildPluginConfigs tries to write the file there.
+var reservedPluginDestNames = []string{"marketplaces", "cache", "known_marketplaces.json", "installed_plugins.json"}
+
+// duplicateDestinationNameError returns an error if two distinct paths in
+// paths share the same basename, or if a basename collides with one of
+// reserved. sandbox.UploadDir replaces its destination wholesale rather than
+// merging into it, so two different skills or plugins resolving to the same
+// sandbox directory name would otherwise upload one, then silently discard
+// it when the second overwrites it — the same "expected content silently
+// isn't there" failure mode as #5247, just reached through a naming
+// collision instead of a broken symlink.
+func duplicateDestinationNameError(kind string, paths []string, reserved ...string) error {
+	reservedSet := make(map[string]bool, len(reserved))
+	for _, r := range reserved {
+		reservedSet[r] = true
+	}
+	seen := make(map[string]string, len(paths))
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		base := filepath.Base(p)
+		if reservedSet[base] {
+			return fmt.Errorf("%s path %q resolves to %q, which is reserved for internal use", kind, p, base)
+		}
+		if prior, ok := seen[base]; ok && prior != p {
+			return fmt.Errorf("two %s paths both resolve to the sandbox name %q: %q and %q", kind, base, prior, p)
+		}
+		seen[base] = p
+	}
+	return nil
+}
+
 // resolveSkillDisplayName returns a human-friendly name for a skill directory.
 // It reads the SKILL.md frontmatter name if available, falling back to
 // filepath.Base for local skills where the directory name is already correct.
@@ -365,14 +412,15 @@ func bootstrapPlugins(sandboxName, configDir string, plugins []string) error {
 	mktBase := pluginsBase + "/marketplaces/" + marketplace
 
 	var mkdirParts, echoParts []string
-	mkdirParts = append(mkdirParts, mktBase+"/.claude-plugin")
+	mkdirParts = append(mkdirParts, shellQuote(mktBase+"/.claude-plugin"))
 	for _, p := range plugins {
 		name := filepath.Base(p)
+		pluginDir := mktBase + "/plugins/" + name
 		cacheDir := fmt.Sprintf("%s/cache/%s/%s/%s", pluginsBase, marketplace, name, version)
-		mkdirParts = append(mkdirParts, mktBase+"/plugins/"+name, cacheDir)
+		mkdirParts = append(mkdirParts, shellQuote(pluginDir), shellQuote(cacheDir))
 		echoParts = append(echoParts,
-			fmt.Sprintf("echo '# %s' > %s/README.md", name, cacheDir),
-			fmt.Sprintf("echo '# %s' > %s/plugins/%s/README.md", name, mktBase, name),
+			fmt.Sprintf("echo %s > %s", shellQuote("# "+name), shellQuote(cacheDir+"/README.md")),
+			fmt.Sprintf("echo %s > %s", shellQuote("# "+name), shellQuote(pluginDir+"/README.md")),
 		)
 	}
 	batchCmd := "mkdir -p " + strings.Join(mkdirParts, " ")

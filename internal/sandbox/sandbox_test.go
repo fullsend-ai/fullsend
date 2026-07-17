@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -583,6 +584,277 @@ func TestUploadDir_TarIncludesCopyfileDisable(t *testing.T) {
 	data, err := os.ReadFile(envFile)
 	require.NoError(t, err, "fake tar should have written env file")
 	assert.Equal(t, "1", strings.TrimSpace(string(data)), "COPYFILE_DISABLE should be set to 1")
+}
+
+// fakeOpenshell writes a script that logs every invocation's full argv to
+// logPath, and — when invoked as "sandbox upload <name> <local> <remote>" —
+// copies <local> to sentinelPath so the test can inspect exactly what bytes
+// would have been shipped to the sandbox. It always exits 0. The real system
+// tar (found via the pre-existing PATH) is used for archive creation, so
+// these tests prove actual content survives the transfer, not just that some
+// "tar -czf" command was invoked with the right flag.
+func fakeOpenshell(t *testing.T, binDir, logPath, sentinelPath string) {
+	t.Helper()
+	script := "#!/bin/sh\n" +
+		"echo \"$@\" >> " + shellQuote(logPath) + "\n" +
+		"if [ \"$2\" = \"upload\" ]; then cp \"$4\" " + shellQuote(sentinelPath) + "; fi\n" +
+		"exit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+}
+
+// extractTar extracts a tar.gz archive into a fresh temp dir using the real
+// system tar and returns the directory.
+func extractTar(t *testing.T, archivePath string) string {
+	t.Helper()
+	dest := t.TempDir()
+	out, err := exec.Command("tar", "-xzf", archivePath, "-C", dest).CombinedOutput()
+	require.NoError(t, err, "extracting archive: %s", string(out))
+	return dest
+}
+
+func TestUpload_SymlinkToDirectory_RealContentSurvivesTransfer(t *testing.T) {
+	// Reproduce the #5247 cache layout: a "tree" directory holding the real
+	// content, and a named symlink (as created by fetch.CacheNamedSymlink)
+	// pointing at it.
+	cacheDir := t.TempDir()
+	treeDir := filepath.Join(cacheDir, "tree")
+	require.NoError(t, os.MkdirAll(treeDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(treeDir, "SKILL.md"), []byte("real content"), 0o644))
+	require.NoError(t, os.Symlink("tree", filepath.Join(cacheDir, "pr-review")))
+
+	binDir := t.TempDir()
+	logPath := filepath.Join(binDir, "openshell.log")
+	sentinelPath := filepath.Join(binDir, "uploaded.tar.gz")
+	fakeOpenshell(t, binDir, logPath, sentinelPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := Upload("test-sandbox", filepath.Join(cacheDir, "pr-review"), "/sandbox/claude-config/skills/")
+	require.NoError(t, err)
+
+	// Prove the symlink's real target content — not a dangling symlink entry
+	// — actually made it into the archive that was "uploaded".
+	extracted := extractTar(t, sentinelPath)
+	got, err := os.ReadFile(filepath.Join(extracted, "SKILL.md"))
+	require.NoError(t, err, "SKILL.md should be present in the uploaded archive")
+	assert.Equal(t, "real content", string(got))
+
+	// Prove the destination the sandbox extracts to is the skill's real
+	// name, not the cache-internal "tree" directory name — the regression
+	// #5247 describes.
+	log, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(log), "/sandbox/claude-config/skills/pr-review",
+		"extraction destination should be named after the skill, not \"tree\"")
+}
+
+func TestUpload_RegularDirectory_WrapsUnderBasenameLikeBefore(t *testing.T) {
+	skillDir := filepath.Join(t.TempDir(), "my-skill")
+	require.NoError(t, os.MkdirAll(skillDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("plain dir content"), 0o644))
+
+	binDir := t.TempDir()
+	logPath := filepath.Join(binDir, "openshell.log")
+	sentinelPath := filepath.Join(binDir, "uploaded.tar.gz")
+	fakeOpenshell(t, binDir, logPath, sentinelPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := Upload("test-sandbox", skillDir, "/sandbox/claude-config/skills/")
+	require.NoError(t, err)
+
+	extracted := extractTar(t, sentinelPath)
+	got, err := os.ReadFile(filepath.Join(extracted, "SKILL.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "plain dir content", string(got))
+
+	log, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(log), "/sandbox/claude-config/skills/my-skill")
+}
+
+func TestUpload_DanglingSymlink_FailsInsteadOfSilentlySucceeding(t *testing.T) {
+	cacheDir := t.TempDir()
+	require.NoError(t, os.Symlink("missing-target", filepath.Join(cacheDir, "broken-skill")))
+
+	binDir := t.TempDir()
+	logPath := filepath.Join(binDir, "openshell.log")
+	sentinelPath := filepath.Join(binDir, "uploaded.tar.gz")
+	fakeOpenshell(t, binDir, logPath, sentinelPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := Upload("test-sandbox", filepath.Join(cacheDir, "broken-skill"), "/sandbox/claude-config/skills/")
+	// A dangling symlink must surface as an error now, not a silent
+	// no-content "success" the way the original bug did.
+	assert.Error(t, err)
+}
+
+func TestUpload_SymlinkToRegularFile_UploadsFileDirectly(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.txt")
+	require.NoError(t, os.WriteFile(target, []byte("file content"), 0o644))
+	link := filepath.Join(dir, "link.txt")
+	require.NoError(t, os.Symlink(target, link))
+
+	binDir := t.TempDir()
+	logPath := filepath.Join(binDir, "openshell.log")
+	sentinelPath := filepath.Join(binDir, "uploaded.tar.gz")
+	fakeOpenshell(t, binDir, logPath, sentinelPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := Upload("test-sandbox", link, "/sandbox/workspace/link.txt")
+	require.NoError(t, err)
+
+	// A symlink to a regular file must upload the file's content directly —
+	// not be misrouted into the tar/directory path, which would fail
+	// because "tar -C <file>" can't chdir into a non-directory.
+	got, readErr := os.ReadFile(sentinelPath)
+	require.NoError(t, readErr, "sentinel should be the uploaded file itself, not a tar archive")
+	assert.Equal(t, "file content", string(got))
+
+	// Upload must pass openshell the symlink's resolved real path, not the
+	// symlink itself, so correctness doesn't depend on whether openshell's
+	// own "sandbox upload" dereferences a symlink argument.
+	wantPath, err := filepath.EvalSymlinks(target)
+	require.NoError(t, err)
+	log, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	assert.Contains(t, string(log), "upload test-sandbox "+wantPath+" /sandbox/workspace/link.txt")
+	assert.NotContains(t, string(log), "upload test-sandbox "+link+" ",
+		"the symlink path itself should never reach openshell")
+}
+
+func TestUpload_ExactDestination_NoTrailingSlash(t *testing.T) {
+	skillDir := filepath.Join(t.TempDir(), "checked-out-skill")
+	require.NoError(t, os.MkdirAll(skillDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("exact dest content"), 0o644))
+
+	binDir := t.TempDir()
+	logPath := filepath.Join(binDir, "openshell.log")
+	sentinelPath := filepath.Join(binDir, "uploaded.tar.gz")
+	fakeOpenshell(t, binDir, logPath, sentinelPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// No trailing slash: remotePath is the exact destination directory,
+	// contents land there directly (not wrapped under skillDir's basename).
+	err := Upload("test-sandbox", skillDir, "/sandbox/claude-config/skills/exact-name")
+	require.NoError(t, err)
+
+	extracted := extractTar(t, sentinelPath)
+	got, readErr := os.ReadFile(filepath.Join(extracted, "SKILL.md"))
+	require.NoError(t, readErr)
+	assert.Equal(t, "exact dest content", string(got))
+
+	log, readErr := os.ReadFile(logPath)
+	require.NoError(t, readErr)
+	assert.Contains(t, string(log), "/sandbox/claude-config/skills/exact-name")
+	assert.NotContains(t, string(log), "/sandbox/claude-config/skills/exact-name/checked-out-skill")
+}
+
+// TestUpload_MaliciousBasename_ExtractCommandNotInjected proves the
+// shell-quoting fix by actually executing UploadDir's extract command
+// through a real "sh -c", the same way the sandbox would — not just
+// checking that a mocked command logged the right-looking string. A fake
+// "openshell" that only records argv (like fakeOpenshell above) would pass
+// this test even with the quoting removed, since it never runs anything;
+// this one genuinely runs the command so an injection would genuinely fire.
+func TestUpload_MaliciousBasename_ExtractCommandNotInjected(t *testing.T) {
+	cacheDir := t.TempDir()
+	treeDir := filepath.Join(cacheDir, "tree")
+	require.NoError(t, os.MkdirAll(treeDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(treeDir, "SKILL.md"), []byte("content"), 0o644))
+
+	pwnedMarker := filepath.Join(cacheDir, "PWNED")
+	t.Setenv("PWNED_MARKER", pwnedMarker)
+	// A skill/plugin basename derived from a fetched name could contain
+	// shell metacharacters; the extract command must treat it as inert data.
+	// The payload references $PWNED_MARKER (expanded only if injection
+	// actually fires) rather than embedding a literal "/"-containing path,
+	// since the basename itself must remain a valid single filename.
+	evilName := "evil'; touch \"$PWNED_MARKER\" #"
+	require.NoError(t, os.Symlink("tree", filepath.Join(cacheDir, evilName)))
+
+	destParent := t.TempDir()
+
+	binDir := t.TempDir()
+	// This fake genuinely executes: "upload" copies the local file to the
+	// literal remote path argument (both are real local paths in this
+	// test), and "exec" runs the trailing "sh -c <command>" argument for
+	// real via the host's own sh. This reproduces, on the test machine,
+	// exactly what UploadDir's extractCmd would do inside the sandbox.
+	script := "#!/bin/sh\n" +
+		"if [ \"$2\" = \"upload\" ]; then cp \"$4\" \"$5\"; exit 0; fi\n" +
+		"if [ \"$2\" = \"exec\" ]; then\n" +
+		"  for a in \"$@\"; do last=\"$a\"; done\n" +
+		"  sh -c \"$last\"\n" +
+		"  exit $?\n" +
+		"fi\n" +
+		"exit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := Upload("test-sandbox", filepath.Join(cacheDir, evilName), destParent+"/")
+	require.NoError(t, err)
+
+	// The injected "touch" must never have run.
+	_, statErr := os.Stat(pwnedMarker)
+	assert.True(t, os.IsNotExist(statErr), "malicious basename must not execute injected shell commands")
+
+	// The legitimate extract must still have succeeded, landing real
+	// content at the (oddly-named but correctly quoted) destination.
+	got, readErr := os.ReadFile(filepath.Join(destParent, evilName, "SKILL.md"))
+	require.NoError(t, readErr, "extraction should still succeed at the exact literal destination")
+	assert.Equal(t, "content", string(got))
+}
+
+func TestUpload_RegularFile_SkipsTarPath(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "settings.json")
+	require.NoError(t, os.WriteFile(f, []byte("{}"), 0o644))
+
+	binDir := t.TempDir()
+	logPath := filepath.Join(binDir, "openshell.log")
+	sentinelPath := filepath.Join(binDir, "uploaded.tar.gz")
+	fakeOpenshell(t, binDir, logPath, sentinelPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	err := Upload("test-sandbox", f, "/sandbox/claude-config/settings.json")
+	require.NoError(t, err)
+
+	// A regular file must go straight through "sandbox upload" with no tar
+	// archive step — the sentinel (only written on "sandbox upload") should
+	// be the file itself, not a .tar.gz.
+	got, err := os.ReadFile(sentinelPath)
+	require.NoError(t, err)
+	assert.Equal(t, "{}", string(got))
+
+	log, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(log), "upload test-sandbox "+f+" /sandbox/claude-config/settings.json")
+}
+
+func TestUpload_TrailingDotConvention_CopiesContentsWithoutWrapping(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "input.json"), []byte("agent input"), 0o644))
+
+	binDir := t.TempDir()
+	logPath := filepath.Join(binDir, "openshell.log")
+	sentinelPath := filepath.Join(binDir, "uploaded.tar.gz")
+	fakeOpenshell(t, binDir, logPath, sentinelPath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// Mirrors internal/cli/run.go's h.AgentInput+"/." -> remoteInput+"/" call.
+	err := Upload("test-sandbox", dir+"/.", "/sandbox/workspace/input/")
+	require.NoError(t, err)
+
+	extracted := extractTar(t, sentinelPath)
+	got, err := os.ReadFile(filepath.Join(extracted, "input.json"))
+	require.NoError(t, err)
+	assert.Equal(t, "agent input", string(got))
+
+	// Contents land directly at the destination, not wrapped under a
+	// subdirectory named "." or after dir's own basename.
+	log, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(log), "mkdir -p '/sandbox/workspace/input' &&")
+	assert.NotContains(t, string(log), "/sandbox/workspace/input/.")
 }
 
 func TestSanitizeDownload_RemovesAppleDoubleInGitDir(t *testing.T) {
