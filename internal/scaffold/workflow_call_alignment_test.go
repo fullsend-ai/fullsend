@@ -481,8 +481,13 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 				"human PR auto-fix requires write+ on the PR author")
 			assert.Regexp(t, `(?s)PR_USER_LOGIN.*\[bot\].*STAGE="fix".*fullsend-fix.*has_repo_permission "\$\{PR_USER_LOGIN\}" write`, s)
 
-			// ready-to-code is a mutation path: write+ labeler or bot handoff
-			assert.Regexp(t, `(?s)ready-to-code" \]\]; then\s*\n.*is_event_actor_authorized "\$\{EVENT_SENDER_LOGIN\}"`, s)
+			// ready-to-code is a mutation path: bot handoff OR write+ (default min)
+			assert.Regexp(t, `(?s)ready-to-code".*\\\[bot\\\]\$.*is_event_actor_authorized "\$\{EVENT_SENDER_LOGIN\}"`, s,
+				"ready-to-code must check bot bypass before write+ gate")
+			assert.Contains(t, s, `is_event_actor_authorized "${EVENT_SENDER_LOGIN}";`,
+				"ready-to-code write check must use default (write) min, not triage")
+			assert.NotRegexp(t, `(?s)ready-to-code".*is_event_actor_authorized "\$\{EVENT_SENDER_LOGIN\}" triage`, s,
+				"ready-to-code must not accept triage min on the mutation path")
 
 			// Retro on PR close remains intentionally ungated (documented)
 			assert.Regexp(t, `(?s)closed\)\s*\n\s+# Intentional ungated:.*\n\s+STAGE="retro"`, s)
