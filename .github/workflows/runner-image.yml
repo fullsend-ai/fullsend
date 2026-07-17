@@ -1,0 +1,143 @@
+name: Runner Image
+
+on:
+  push:
+    tags:
+      # Same pattern as release.yml — the runner image is a release
+      # artifact, so it must publish for exactly the tags that cut a
+      # release (sandbox-images.yml uses a looser two-component pattern).
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+    branches:
+      - main
+    paths:
+      - "images/runner/**"
+      - ".dockerignore"
+      - ".github/workflows/runner-image.yml"
+      - ".github/scripts/openshell-version.sh"
+  pull_request:
+    paths:
+      - "images/runner/**"
+      - ".dockerignore"
+      - ".github/workflows/runner-image.yml"
+      - ".github/scripts/openshell-version.sh"
+  workflow_dispatch:
+
+# NOTE: GitHub Actions ignores `paths` filters on tag pushes, so every
+# semver tag triggers a build. This is intentional — the runner image
+# bundles the fullsend CLI built from the tagged source, so it must be
+# published alongside every release (#5183). Branch pushes and PRs still
+# respect the paths filter.
+
+jobs:
+  build-runner:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    env:
+      RUNNER_IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/fullsend-runner
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+
+      # Mirror GoReleaser's version format: the tag without the leading v on
+      # tag pushes, a dev pseudo-version everywhere else. Injected into the
+      # binary via the same ldflags as .goreleaser.yml.
+      - name: Compute fullsend version
+        id: version
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            echo "value=${GITHUB_REF_NAME#v}" >> "${GITHUB_OUTPUT}"
+          else
+            echo "value=dev-${GITHUB_SHA::7}" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        with:
+          images: ${{ env.RUNNER_IMAGE_NAME }}
+          # No raw `latest` on main pushes (unlike the sandbox images):
+          # main builds carry a dev pseudo-version binary. The default
+          # `latest=auto` flavor still tags `latest` on non-prerelease
+          # semver tag pushes. `dev` is scoped to main-branch pushes so
+          # release builds never move it onto a release image.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=
+            type=raw,value=dev,enable=${{ github.ref == 'refs/heads/main' }}
+
+      # Build a single-platform image locally and smoke-test the dependency
+      # surface BEFORE anything is pushed — a broken tool must never reach
+      # the registry under a release tag or `latest`. Multi-arch builds
+      # cannot --load, so this is a separate linux/amd64 build; it seeds
+      # the GHA cache that the push build below reuses. The smoke test only
+      # exercises linux/amd64 — arm64 correctness is enforced by the
+      # per-arch checksum verification during the multi-arch build, which
+      # fails the workflow (before push) on a wrong-arch download.
+      - name: Build runner image for smoke test
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: images/runner/Containerfile
+          platforms: linux/amd64
+          load: true
+          tags: fullsend-runner:ci-smoke
+          build-args: |
+            FULLSEND_VERSION=${{ steps.version.outputs.value }}
+            FULLSEND_COMMIT=${{ github.sha }}
+          cache-from: type=gha,scope=runner
+          cache-to: type=gha,mode=max,scope=runner
+
+      - name: Validate host-side dependency surface
+        env:
+          EXPECTED_VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          docker run --rm --entrypoint '' -e EXPECTED_VERSION fullsend-runner:ci-smoke bash -c '
+            set -euo pipefail
+            fail() { echo "FAIL: $1"; exit 1; }
+            fullsend --version | grep -F "${EXPECTED_VERSION}" \
+              || fail "fullsend --version does not report ${EXPECTED_VERSION}"
+            openshell --version   || fail "openshell missing"
+            gh --version          || fail "gh missing"
+            gitleaks version      || fail "gitleaks missing"
+            pre-commit --version  || fail "pre-commit missing"
+            gitlint --version     || fail "gitlint missing"
+            python3 -c "import jsonschema" || fail "python3 jsonschema missing"
+            go version            || fail "go missing"
+            gcloud --version      || fail "gcloud missing"
+            git --version         || fail "git missing"
+            jq --version          || fail "jq missing"
+            tar --version >/dev/null || fail "tar missing"
+          '
+
+      # Multi-arch build and push, gated on the smoke test above. The
+      # amd64 leg replays from the GHA cache seeded by the smoke-test
+      # build; only the arm64 leg builds fresh here.
+      - name: Build and push
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: images/runner/Containerfile
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            FULLSEND_VERSION=${{ steps.version.outputs.value }}
+            FULLSEND_COMMIT=${{ github.sha }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=runner
+          cache-to: type=gha,mode=max,scope=runner
