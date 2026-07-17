@@ -35,6 +35,8 @@ managing fullsend across many repositories and organizations.`,
 	cmd.AddCommand(newReposInstallCmd())
 	cmd.AddCommand(newReposUninstallCmd())
 	cmd.AddCommand(newReposStatusCmd())
+	cmd.AddCommand(newReposUpgradeCmd())
+	cmd.AddCommand(newReposUpgradeMintCmd())
 	return cmd
 }
 
@@ -1007,4 +1009,222 @@ func (s *splitProjectAdapter) DeletePerRepoWIF(ctx context.Context, repo string)
 
 func (s *splitProjectAdapter) DeleteWIFProvider(ctx context.Context, repo string) error {
 	return s.inference.DeleteWIFProvider(ctx, repo)
+}
+
+// reposUpgradeConfig holds flag values and testing overrides for repos upgrade.
+type reposUpgradeConfig struct {
+	manifest    string
+	refOverride string
+	dryRun      bool
+	force       bool
+	concurrency int
+	direct      bool
+
+	// Testing overrides — when non-nil, used instead of resolving from
+	// the environment. Not set by CLI flag parsing.
+	testClient forge.Client
+}
+
+func newReposUpgradeCmd() *cobra.Command {
+	opts := &reposUpgradeConfig{}
+
+	cmd := &cobra.Command{
+		Use:   "upgrade [repos...]",
+		Short: "Upgrade scaffold shim ref across repos",
+		Long: `Upgrades the fullsend scaffold workflow ref for repos defined in a repos.yaml manifest.
+
+When repos are specified as positional arguments (owner/repo format), only those
+repos are upgraded. When no repos are specified, all manifest repos are upgraded.
+
+Reads each repo's current workflow file, compares against the manifest's
+fullsend_ref (or --ref override), and commits the updated workflow.
+
+Floating refs (latest, main, v0) are skipped. Downgrades are blocked
+unless --force is set.`,
+		Args: cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runReposUpgrade(cmd.Context(), opts, args)
+		},
+	}
+
+	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path or HTTPS URL to manifest file")
+	cmd.Flags().StringVar(&opts.refOverride, "ref", "", "override manifest fullsend_ref for all repos")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "preview what would be upgraded without making changes")
+	cmd.Flags().BoolVar(&opts.force, "force", false, "upgrade even if current ref is newer than target")
+	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 4, "max parallel operations")
+	cmd.Flags().BoolVar(&opts.direct, "direct", false, "push scaffold directly to default branch (skip PR)")
+
+	return cmd
+}
+
+func runReposUpgrade(ctx context.Context, opts *reposUpgradeConfig, repoFilter []string) error {
+	printer := ui.New(os.Stdout)
+
+	if opts.concurrency < 1 || opts.concurrency > 32 {
+		return fmt.Errorf("--concurrency must be between 1 and 32, got %d", opts.concurrency)
+	}
+
+	if opts.refOverride != "" && !repos.IsValidRef(opts.refOverride) {
+		return fmt.Errorf("--ref value %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", opts.refOverride)
+	}
+
+	printer.StepStart("Loading manifest")
+	m, err := repos.LoadManifest(ctx, opts.manifest)
+	if err != nil {
+		return fmt.Errorf("loading manifest: %w", err)
+	}
+	if err := m.Validate(); err != nil {
+		return fmt.Errorf("manifest validation failed: %w", err)
+	}
+	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", len(m.Repos)))
+
+	var client forge.Client
+	if opts.testClient != nil {
+		client = opts.testClient
+	} else {
+		token, tokenErr := resolveToken()
+		if tokenErr != nil {
+			return tokenErr
+		}
+		client = newGitHubLiveClient(token)
+	}
+
+	if err := checkPerRepoScopes(ctx, client, printer); err != nil {
+		return err
+	}
+
+	commitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, isDirect bool) error {
+		targetRepo, repoErr := client.GetRepo(ctx, owner, repo)
+		if repoErr != nil {
+			return fmt.Errorf("getting repo info: %w", repoErr)
+		}
+		commitMsg := "chore: upgrade fullsend scaffold ref"
+		prTitle := "chore: upgrade fullsend scaffold ref"
+		prBody := "This PR upgrades the fullsend scaffold workflow ref.\n\n" +
+			"Merge this PR to activate the updated workflows."
+		_, commitErr := layers.CommitScaffoldFiles(ctx, client, printer, owner, repo,
+			targetRepo.DefaultBranch, commitMsg, prTitle, prBody, files, isDirect, nil)
+		return commitErr
+	}
+
+	cfg := repos.UpgradeConfig{
+		Manifest:       m,
+		RefOverride:    opts.refOverride,
+		RepoFilter:     repoFilter,
+		DryRun:         opts.dryRun,
+		Force:          opts.force,
+		Direct:         opts.direct,
+		MaxConcurrency: opts.concurrency,
+	}
+
+	progressFn := func(repo, phase, msg string) {
+		switch phase {
+		case "done":
+			printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
+		default:
+			printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
+		}
+	}
+
+	printer.Blank()
+	if opts.dryRun {
+		printer.StepStart("Dry-run: previewing upgrades")
+	} else {
+		printer.StepStart("Upgrading repos")
+	}
+
+	results, err := repos.Upgrade(ctx, cfg, client, commitFn, progressFn)
+	if err != nil {
+		return err
+	}
+
+	var upgraded, skipped, failed int
+	for _, r := range results {
+		switch {
+		case r.Error != nil:
+			failed++
+			printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
+		case r.Upgraded:
+			upgraded++
+		case r.Skipped:
+			skipped++
+		}
+	}
+
+	printer.Blank()
+	printer.StepDone(fmt.Sprintf("Upgrade complete: %d upgraded, %d skipped, %d failed",
+		upgraded, skipped, failed))
+
+	if failed > 0 {
+		return fmt.Errorf("%d repos failed to upgrade", failed)
+	}
+	return nil
+}
+
+// reposUpgradeMintConfig holds flag values and testing overrides for repos upgrade-mint.
+type reposUpgradeMintConfig struct {
+	manifest string
+
+	// Testing overrides — when non-nil, used instead of resolving from
+	// the environment. Not set by CLI flag parsing.
+	testProvisioner repos.WIFProvisioner
+}
+
+func newReposUpgradeMintCmd() *cobra.Command {
+	opts := &reposUpgradeMintConfig{}
+
+	cmd := &cobra.Command{
+		Use:   "upgrade-mint",
+		Short: "Verify the token mint deployment",
+		Long: `Verifies the token mint Cloud Function matches the manifest configuration.
+
+Discovers the current mint deployment and checks that its URL matches
+the manifest's mint.url. Run this before 'repos upgrade' to ensure
+mint compatibility.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runReposUpgradeMint(cmd.Context(), opts)
+		},
+	}
+
+	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path or HTTPS URL to manifest file")
+
+	return cmd
+}
+
+func runReposUpgradeMint(ctx context.Context, opts *reposUpgradeMintConfig) error {
+	printer := ui.New(os.Stdout)
+
+	printer.StepStart("Loading manifest")
+	m, err := repos.LoadManifest(ctx, opts.manifest)
+	if err != nil {
+		return fmt.Errorf("loading manifest: %w", err)
+	}
+	if err := m.Validate(); err != nil {
+		return fmt.Errorf("manifest validation failed: %w", err)
+	}
+	printer.StepDone("Loaded manifest")
+
+	var provisioner repos.WIFProvisioner
+	if opts.testProvisioner != nil {
+		provisioner = opts.testProvisioner
+	} else {
+		provisioner = &gcfProvisionerAdapter{
+			provisioner: gcf.NewProvisioner(gcf.Config{
+				ProjectID: m.Mint.Project,
+				Region:    m.Mint.Region,
+				MintURL:   m.Mint.URL,
+			}, gcf.NewLiveGCFClient(m.Mint.Project)),
+		}
+	}
+
+	progressFn := func(repo, phase, msg string) {
+		printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
+	}
+
+	if err := repos.UpgradeMint(ctx, m, provisioner, progressFn); err != nil {
+		return err
+	}
+
+	printer.StepDone("Mint verified successfully")
+	return nil
 }
