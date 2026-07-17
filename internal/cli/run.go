@@ -41,8 +41,12 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/statuscomment"
 	"github.com/fullsend-ai/fullsend/internal/telemetry"
-	"github.com/fullsend-ai/fullsend/internal/telemetry/otlp"
 	"github.com/fullsend-ai/fullsend/internal/ui"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -263,10 +267,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	printer.Blank()
 	printer.Header("Running agent: " + agentName)
 	printer.Blank()
-
-	// runStart anchors the root telemetry span (ADR 0050); captured before any
-	// work so run-summary's total duration covers the whole invocation.
-	runStart := time.Now()
 
 	if rFlags.maxDepth < 0 {
 		return fmt.Errorf("--max-depth must be >= 0, got %d", rFlags.maxDepth)
@@ -796,31 +796,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		allProviderNames = sandboxProviderNames(h.Providers, result.Providers)
 	}
 
-	// Trace identity (ADR 0050 Level 1 + security correlation). Resolved here,
-	// before the pre-script, so TRACEPARENT can propagate to child processes.
-	// An inbound TRACEPARENT (nested/instrumented invocation, issue #2779) is
-	// adopted so the run continues the parent trace; otherwise a fresh id is
-	// generated. Either way one id serves as both the security finding/audit
-	// trace id (dashed UUID) and, dash-stripped, the W3C telemetry trace id.
-	securityTraceID, traceCtx := resolveTraceIdentity(os.Getenv("TRACEPARENT"))
 	workItemID := resolveWorkItemID()
 
-	// 2d. Run pre-script on the host (if configured).
-	if h.PreScript != "" {
-		preStart := time.Now()
-		printer.StepStart("Running pre-script: " + h.PreScript)
-		preCmd := exec.Command(h.PreScript)
-		preCmd.Env = childScriptEnv(h.RunnerEnv, telemetry.TraceParentWithFlags(traceCtx.TraceID, traceCtx.RootSpanID, traceCtx.Flags))
-		preCmd.Stdout = os.Stdout
-		preCmd.Stderr = os.Stderr
-		if err := preCmd.Run(); err != nil {
-			printer.StepFail("Pre-script failed")
-			return fmt.Errorf("running pre-script: %w", err)
-		}
-		printer.StepDone(fmt.Sprintf("Pre-script completed (%.1fs)", time.Since(preStart).Seconds()))
-	}
-
-	// 3. Create sandbox.
+	// 3. Create run directory and initialise tracer.
 	sandboxName := fmt.Sprintf("agent-%s-%d-%d", agentName, os.Getpid(), time.Now().Unix())
 	if outputBase == "" {
 		outputBase = filepath.Join(os.TempDir(), "fullsend")
@@ -830,35 +808,91 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return fmt.Errorf("creating run directory: %w", err)
 	}
 
-	// Level 1 telemetry recorder (ADR 0050). A disabled recorder is a safe
-	// no-op, so any telemetry failure never affects the run. Finalize is
-	// registered before the post-script and cleanup defers so that — by LIFO
-	// order — it runs last and the summary captures the whole run.
+	// OTel SDK tracer (ADR 0050). Setup creates a TracerProvider with a
+	// file exporter (always) and an OTLP exporter (when configured). On
+	// failure it returns a noop tracer so telemetry never affects the run.
+	// An inbound TRACEPARENT is adopted via the W3C propagator so the root
+	// span continues the parent trace.
 	var lastExitCode int
 	var transcriptErrorOverride bool
-	rec := telemetry.New(runDir, traceCtx, agentName, workItemID, runStart)
+	var runCount int
+	var aggMetrics aggregateMetrics
+	tracer, tracingCleanup := telemetry.Setup(runDir, Version())
+	tid := resolveTraceIdentity(ctx, tracer, os.Getenv("TRACEPARENT"), os.Getenv("TRACESTATE"), []attribute.KeyValue{
+		attribute.String("fullsend.agent", agentName),
+		attribute.String("fullsend.work_item_id", workItemID),
+		attribute.String("gen_ai.operation.name", "invoke_agent"),
+		attribute.String("gen_ai.agent.name", agentName),
+	})
+	ctx = tid.Ctx
+	rootSpan := tid.RootSpan
+	traceparent := tid.Traceparent
+	securityTraceID := security.GenerateTraceID()
+	rootSpan.SetAttributes(attribute.String("fullsend.security_trace_id", securityTraceID))
+
 	defer func() {
-		rec.Finalize(telemetryExitCode(lastExitCode, runErr))
-		// ADR 0050 Level 2: best-effort OTLP export of the finalized
-		// artifacts. Inert without an endpoint configured; fail-open — a
-		// dead endpoint costs at most the package's bounded budget and
-		// never affects the run's outcome.
-		if err := otlp.ExportRunDir(runDir, Version()); err != nil {
-			printer.StepWarn("OTLP export failed (run unaffected): " + err.Error())
+		exitCode := telemetryExitCode(lastExitCode, runErr)
+
+		rootSpan.SetAttributes(
+			attribute.Int("exit_code", exitCode),
+		)
+		if runCount > 0 {
+			rootSpan.SetAttributes(
+				attribute.String("gen_ai.request.model", aggMetrics.Model),
+				attribute.Int("gen_ai.usage.input_tokens", aggMetrics.TokenUsage.Input),
+				attribute.Int("gen_ai.usage.output_tokens", aggMetrics.TokenUsage.Output),
+				attribute.Int("gen_ai.usage.cache_creation_input_tokens", aggMetrics.TokenUsage.CacheCreation),
+				attribute.Int("gen_ai.usage.cache_read_input_tokens", aggMetrics.TokenUsage.CacheRead),
+				attribute.Float64("fullsend.cost_usd", roundUSD(aggMetrics.TotalCostUSD)),
+				attribute.Int("fullsend.num_turns", aggMetrics.NumTurns),
+				attribute.Int("fullsend.tool_calls", aggMetrics.ToolCalls),
+				attribute.Int("fullsend.iterations", runCount),
+			)
 		}
+
+		if runErr != nil {
+			rootSpan.SetStatus(codes.Error, runErr.Error())
+		} else {
+			rootSpan.SetStatus(codes.Ok, "")
+		}
+		rootSpan.End()
+
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		tracingCleanup(flushCtx)
 	}()
 
+	// 4. Run pre-script on the host (if configured).
+	if h.PreScript != "" {
+		preStart := time.Now()
+		printer.StepStart("Running pre-script: " + h.PreScript)
+		preCmd := exec.Command(h.PreScript)
+		preCmd.Env = childScriptEnv(h.RunnerEnv, traceparent)
+		preCmd.Stdout = os.Stdout
+		preCmd.Stderr = os.Stderr
+		if err := preCmd.Run(); err != nil {
+			printer.StepFail("Pre-script failed")
+			return fmt.Errorf("running pre-script: %w", err)
+		}
+		printer.StepDone(fmt.Sprintf("Pre-script completed (%.1fs)", time.Since(preStart).Seconds()))
+	}
+
+	// 4a. Create sandbox.
 	createStart := time.Now()
 	printer.StepStart("Creating sandbox: " + sandboxName)
-	sandboxSpan := rec.StartSpan("sandbox_create", "", map[string]any{"gen_ai.operation.name": "create_agent"})
+	_, sandboxSpan := tracer.Start(ctx, "sandbox_create", trace.WithAttributes(
+		attribute.String("gen_ai.operation.name", "create_agent"),
+	))
 
 	readyTimeout := time.Duration(h.SandboxTimeoutSeconds) * time.Second
 	if err := sandbox.CreateWithRetry(sandboxName, allProviderNames, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout); err != nil {
-		rec.EndSpan(sandboxSpan, "error", nil)
+		sandboxSpan.SetStatus(codes.Error, err.Error())
+		sandboxSpan.End()
 		printer.StepFail("Failed to create sandbox")
 		return fmt.Errorf("creating sandbox: %w", err)
 	}
-	rec.EndSpan(sandboxSpan, "ok", nil)
+	sandboxSpan.SetStatus(codes.Ok, "")
+	sandboxSpan.End()
 
 	// validationPassed is declared here (before the post-script defer) so the
 	// defer closure can guard on it. The post-script must only run when
@@ -908,7 +942,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepStart("Running post-script: " + h.PostScript)
 			postCmd := exec.Command(h.PostScript)
 			postCmd.Dir = runDir
-			postCmd.Env = childScriptEnv(h.RunnerEnv, telemetry.TraceParentWithFlags(traceCtx.TraceID, traceCtx.RootSpanID, traceCtx.Flags))
+			postCmd.Env = childScriptEnv(h.RunnerEnv, traceparent)
 			// Override REPO_DIR from childScriptEnv: the harness value points to a fixed
 			// location, but sandbox output is now extracted to a temp dir. exec uses
 			// last-value-wins so this append takes precedence. TODO(fullsend-ai/agents#191):
@@ -946,7 +980,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}()
 	printer.StepDone(fmt.Sprintf("Sandbox created (%.1fs)", time.Since(createStart).Seconds()))
 
-	// 4. Resolve target repo path (needed by bootstrap for env vars).
+	// 5. Resolve target repo path (needed by bootstrap for env vars).
 	hostRepositoryDir, err := filepath.Abs(targetRepo)
 	if err != nil {
 		return fmt.Errorf("resolving target repo path: %w", err)
@@ -1222,9 +1256,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		oidcWg.Wait()
 	}()
 
-	var runCount int
-	var aggMetrics aggregateMetrics
-
 	for iteration := 1; iteration <= maxIterations; iteration++ {
 		runCount = iteration
 		transcriptErrorOverride = false
@@ -1257,9 +1288,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		heartbeatDone := make(chan struct{})
 		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
 
-		agentSpan := rec.StartSpan("agent", "", agentSpanStartAttrs(iteration, agentName))
+		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
 		var metrics agentruntime.RunMetrics
-		exitCode, runErr := rt.Run(ctx, agentruntime.RunParams{
+		exitCode, runErr := rt.Run(agentCtx, agentruntime.RunParams{
 			SandboxName:   sandboxName,
 			AgentBaseName: agentBaseName,
 			Model:         h.Model,
@@ -1272,11 +1303,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
 
-		agentStatus := "ok"
+		agentSpan.SetAttributes(agentSpanEndAttrs(iteration, exitCode, rt.System(), &metrics)...)
 		if runErr != nil {
-			agentStatus = "error"
+			agentSpan.SetStatus(codes.Error, runErr.Error())
+		} else {
+			agentSpan.SetStatus(codes.Ok, "")
 		}
-		rec.EndSpan(agentSpan, agentStatus, agentSpanEndAttrs(iteration, exitCode, rt.System(), &metrics))
+		agentSpan.End()
 
 		// Accumulate behavioral metrics across iterations.
 		aggregateRunMetrics(&aggMetrics, &metrics, iteration)
@@ -1292,8 +1325,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
 				printer.StepWarn("Failed to write metrics.json: " + err.Error())
 			}
-			rec.SetMetrics(toTelemetryMetrics(aggMetrics))
-			rec.SetModel(aggMetrics.Model)
 			return fmt.Errorf("running agent (iteration %d): %w", iteration, runErr)
 		}
 		lastExitCode = exitCode
@@ -1399,8 +1430,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if err := writeMetricsJSON(runDir, aggMetrics); err != nil {
 		printer.StepWarn("Failed to write metrics.json: " + err.Error())
 	}
-	rec.SetMetrics(toTelemetryMetrics(aggMetrics))
-	rec.SetModel(aggMetrics.Model)
 
 	// 9e-bis. Surface transcript errors in workflow logs (GitHub Actions).
 	// Parse transcript JSONL files and emit ::error:: annotations so operators
@@ -1881,30 +1910,26 @@ func roundUSD(c float64) float64 { return math.Round(c*100) / 100 }
 // agentSpanStartAttrs builds the span_start attributes for one agent
 // iteration: the iteration counter plus the OTEL GenAI semconv identity
 // (gen_ai.operation.name, gen_ai.agent.name) named by ADR 0050.
-func agentSpanStartAttrs(iteration int, agentName string) map[string]any {
-	return map[string]any{
-		"iteration":             iteration,
-		"gen_ai.operation.name": "invoke_agent",
-		"gen_ai.agent.name":     agentName,
+func agentSpanStartAttrs(iteration int, agentName string) []attribute.KeyValue {
+	return []attribute.KeyValue{
+		attribute.Int("iteration", iteration),
+		attribute.String("gen_ai.operation.name", "invoke_agent"),
+		attribute.String("gen_ai.agent.name", agentName),
 	}
 }
 
-// agentSpanEndAttrs builds the span_end attributes for one agent iteration,
-// using OTEL GenAI semconv names (gen_ai.*) so the later L2 OTLP transform is
-// ~1:1. system is the runtime's gen_ai.system vendor (kept runtime-agnostic, not
-// hardcoded). Cost is rounded to cents; metrics.json keeps full precision.
-func agentSpanEndAttrs(iteration, exitCode int, system string, m *agentruntime.RunMetrics) map[string]any {
-	return map[string]any{
-		"iteration":                                iteration,
-		"exit_code":                                exitCode,
-		"gen_ai.system":                            system,
-		"gen_ai.request.model":                     m.Model,
-		"gen_ai.usage.input_tokens":                m.InputTokens,
-		"gen_ai.usage.output_tokens":               m.OutputTokens,
-		"gen_ai.usage.cache_creation_input_tokens": m.CacheCreationInputTokens,
-		"gen_ai.usage.cache_read_input_tokens":     m.CacheReadInputTokens,
-		"fullsend.cost_usd":                        roundUSD(m.TotalCostUSD),
-		"fullsend.tool_calls":                      int(m.ToolCalls.Load()),
+func agentSpanEndAttrs(iteration, exitCode int, system string, m *agentruntime.RunMetrics) []attribute.KeyValue {
+	return []attribute.KeyValue{
+		attribute.Int("iteration", iteration),
+		attribute.Int("exit_code", exitCode),
+		attribute.String("gen_ai.system", system),
+		attribute.String("gen_ai.request.model", m.Model),
+		attribute.Int("gen_ai.usage.input_tokens", m.InputTokens),
+		attribute.Int("gen_ai.usage.output_tokens", m.OutputTokens),
+		attribute.Int("gen_ai.usage.cache_creation_input_tokens", m.CacheCreationInputTokens),
+		attribute.Int("gen_ai.usage.cache_read_input_tokens", m.CacheReadInputTokens),
+		attribute.Float64("fullsend.cost_usd", roundUSD(m.TotalCostUSD)),
+		attribute.Int("fullsend.tool_calls", int(m.ToolCalls.Load())),
 	}
 }
 
@@ -1922,18 +1947,6 @@ func aggregateRunMetrics(agg *aggregateMetrics, m *agentruntime.RunMetrics, iter
 	agg.Iterations = iteration
 	if m.Model != "" {
 		agg.Model = m.Model
-	}
-}
-
-func toTelemetryMetrics(m aggregateMetrics) telemetry.RunMetrics {
-	return telemetry.RunMetrics{
-		InputTokens:              m.TokenUsage.Input,
-		OutputTokens:             m.TokenUsage.Output,
-		CacheCreationInputTokens: m.TokenUsage.CacheCreation,
-		CacheReadInputTokens:     m.TokenUsage.CacheRead,
-		TotalCostUSD:             roundUSD(m.TotalCostUSD),
-		NumTurns:                 m.NumTurns,
-		ToolCalls:                m.ToolCalls,
 	}
 }
 
@@ -1960,8 +1973,8 @@ func resolveWorkItemID() string {
 	return "unknown"
 }
 
-// telemetryExitCode maps the run's final state to the exit code recorded in
-// run-summary.json: the agent's last exit code, or 1 when the run failed for a
+// telemetryExitCode maps the run's final state to the exit code recorded on
+// the root span: the agent's last exit code, or 1 when the run failed for a
 // non-agent reason (lastExitCode 0 with a non-nil error) so a failure is never
 // reported as success.
 func telemetryExitCode(lastExitCode int, runErr error) int {
@@ -1971,27 +1984,43 @@ func telemetryExitCode(lastExitCode int, runErr error) int {
 	return lastExitCode
 }
 
-// resolveTraceIdentity resolves the run's trace identity (issue #2779). A
-// valid inbound W3C TRACEPARENT is adopted: its trace-id becomes both the
-// security trace id (re-dashed UUID) and the W3C telemetry trace-id, its
-// span-id becomes the root span's remote parent, and its trace-flags carry
-// the upstream sampling decision forward. Without a valid inbound value a
-// fresh identity is generated, exactly as Level 1 always did. TRACESTATE is
-// intentionally untouched — it passes through os.Environ to child scripts.
-func resolveTraceIdentity(inbound string) (securityTraceID string, tc telemetry.TraceContext) {
-	if traceID, parentSpanID, flags, ok := telemetry.ParseTraceParent(inbound); ok {
-		return telemetry.UUIDFromTraceID(traceID), telemetry.TraceContext{
-			TraceID:      traceID,
-			RootSpanID:   telemetry.NewSpanID(),
-			ParentSpanID: parentSpanID,
-			Flags:        flags,
-		}
+// traceIdentity holds the resolved trace context for a run.
+type traceIdentity struct {
+	Ctx         context.Context
+	RootSpan    trace.Span
+	Traceparent string
+	SpanKind    trace.SpanKind
+}
+
+// resolveTraceIdentity extracts an inbound W3C traceparent, starts the root
+// span, and computes the propagated traceparent with flag preservation.
+func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, inboundTS string, spanAttrs []attribute.KeyValue) traceIdentity {
+	ctx = propagation.TraceContext{}.Extract(ctx, propagation.MapCarrier{
+		"traceparent": inboundTP,
+		"tracestate":  inboundTS,
+	})
+	inboundSC := trace.SpanContextFromContext(ctx)
+
+	spanKind := trace.SpanKindInternal
+	opts := []trace.SpanStartOption{trace.WithAttributes(spanAttrs...)}
+	if inboundSC.IsRemote() {
+		spanKind = trace.SpanKindConsumer
+		opts = append(opts, trace.WithSpanKind(spanKind))
 	}
-	securityTraceID = security.GenerateTraceID()
-	return securityTraceID, telemetry.TraceContext{
-		TraceID:    telemetry.TraceIDFromUUID(securityTraceID),
-		RootSpanID: telemetry.NewSpanID(),
-		Flags:      "01",
+
+	ctx, rootSpan := tracer.Start(ctx, "run", opts...)
+
+	propagatedFlags := rootSpan.SpanContext().TraceFlags()
+	if inboundSC.IsValid() && inboundSC.IsRemote() && !inboundSC.IsSampled() {
+		propagatedFlags = inboundSC.TraceFlags()
+	}
+	traceparent := telemetry.TraceparentWithFlags(rootSpan.SpanContext(), propagatedFlags)
+
+	return traceIdentity{
+		Ctx:         ctx,
+		RootSpan:    rootSpan,
+		Traceparent: traceparent,
+		SpanKind:    spanKind,
 	}
 }
 
@@ -2468,14 +2497,8 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 			}
 			return nil
 		}
-		// Skip ONLY the recorder's own top-level telemetry artifacts (matched by
-		// exact path, not basename): they are metadata-only by construction, and
-		// run-telemetry.jsonl is still held open for append by the recorder during
-		// this scan — an in-place rewrite would truncate it under the open handle.
-		// Agent-written files that merely share these names (e.g. under an
-		// iteration output dir) are NOT exempt and must still be sanitized.
-		if path == filepath.Join(outputDir, telemetry.TelemetryFile) ||
-			path == filepath.Join(outputDir, telemetry.SummaryFile) {
+		// Skip the telemetry JSONL (metadata-only, still open for append).
+		if path == filepath.Join(outputDir, telemetry.TelemetryFile) {
 			return nil
 		}
 		content, readErr := os.ReadFile(path)
