@@ -16,6 +16,8 @@ Manage per-repo installations across multiple orgs via a declarative `repos.yaml
 | `fullsend repos remove <repos...>` | Remove repo entries from a repos.yaml manifest |
 | `fullsend repos uninstall <repos...>` | Tear down fullsend from specific repos |
 | `fullsend repos status` | Compare manifest against actual repo state |
+| `fullsend repos diff` | Show configuration drift between manifest and actual state |
+| `fullsend repos sync` | Reconcile configuration drift for installed repos |
 | `fullsend repos upgrade [repos...]` | Upgrade scaffold shim ref across repos |
 | `fullsend repos upgrade-mint` | Verify the token mint deployment matches the manifest |
 
@@ -158,6 +160,85 @@ The command returns a non-zero exit code when any repo has drift, is not install
 ### Authentication
 
 Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`.
+
+## `repos diff`
+
+Show configuration drift between the `repos.yaml` manifest and actual forge state. Only examines repos that are already installed (guard variable is `"true"`).
+
+```bash
+fullsend repos diff
+fullsend repos diff -f path/to/repos.yaml
+fullsend repos diff --repo owner/repo1 --repo owner/repo2
+fullsend repos diff --json
+```
+
+### Flags
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--manifest` | `-f` | `repos.yaml` | Path or HTTPS URL to manifest file |
+| `--json` | | `false` | Emit JSON output instead of table |
+| `--repo` | | | Filter to specific repos (repeatable) |
+| `--concurrency` | | `8` | Max parallel API calls |
+
+### JSON output
+
+With `--json`, returns a `DiffResult` object:
+
+```json
+{
+  "changes": [
+    {"owner": "acme", "repo": "api", "field": "FULLSEND_MINT_URL", "type": "variable", "action": "update", "old_value": "...", "new_value": "..."}
+  ],
+  "warnings": ["acme/web: not installed (guard variable missing) — run `repos install`"]
+}
+```
+
+### Exit codes
+
+Returns a non-zero exit code when drift exists (variables differ from manifest or secrets are missing). This makes it suitable for CI drift checks.
+
+## `repos sync`
+
+Reconcile configuration drift for installed repos by writing variables and secrets to match the manifest's desired state. Variables are only written when drift is detected; secrets are always written for convergence since their values cannot be read back.
+
+```bash
+fullsend repos sync
+fullsend repos sync -f repos.yaml --dry-run
+fullsend repos sync --repo acme/api --repo acme/web
+fullsend repos sync --json
+```
+
+### Flags
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--manifest` | `-f` | `repos.yaml` | Path or HTTPS URL to manifest file |
+| `--dry-run` | | `false` | Preview changes without applying them |
+| `--json` | | `false` | Emit JSON output instead of table |
+| `--repo` | | | Filter to specific repos (repeatable) |
+| `--concurrency` | | `4` | Max parallel operations (1-32) |
+
+### JSON output
+
+With `--json`, the output schema depends on mode:
+
+- **`sync --dry-run --json`** — returns a `DiffResult` (same schema as `repos diff --json`)
+- **`sync --json`** — returns a `SyncResult`:
+
+```json
+{
+  "applied": [
+    {"owner": "acme", "repo": "api", "field": "FULLSEND_MINT_URL", "type": "variable", "action": "update", "old_value": "...", "new_value": "..."}
+  ],
+  "failed": 0,
+  "warnings": []
+}
+```
+
+### Scope
+
+Sync reconciles variables (`FULLSEND_MINT_URL`, `FULLSEND_GCP_REGION`) and secrets (`FULLSEND_GCP_PROJECT_ID`). It does **not** touch scaffold shim version (`@ref`) or harness files — use `repos upgrade` for those.
 
 ## `repos add`
 

@@ -133,6 +133,4 @@ Implemented subcommands:
 - `repos status` — PR #4079
 - `repos add`, `repos remove`, `repos uninstall` — PR #4081
 - `repos upgrade`, `repos upgrade-mint` — PR #4080
-
-Remaining subcommands (`repos sync`, `repos diff`) are tracked in the
-[repos management plan](../plans/repos-management.md).
+- `repos diff`, `repos sync` — PR #4079

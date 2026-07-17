@@ -76,6 +76,17 @@ fullsend
 │   │   ├── --skip-wif-cleanup               #   Skip GCP WIF provider deletion
 │   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   ├── status                               # Compare manifest against actual repo state
+│   ├── diff                                 # Show configuration drift between manifest and actual state
+│   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
+│   │   ├── --json                           #   Emit JSON output instead of table
+│   │   ├── --repo <owner/repo>              #   Filter to specific repos (repeatable)
+│   │   └── --concurrency <int>              #   Max parallel API calls (default: 8)
+│   ├── sync                                 # Reconcile configuration drift for installed repos
+│   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
+│   │   ├── --dry-run                        #   Preview changes without applying them
+│   │   ├── --json                           #   Emit JSON output instead of table
+│   │   ├── --repo <owner/repo>              #   Filter to specific repos (repeatable)
+│   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   ├── upgrade        [repos...]            # Upgrade scaffold shim ref across repos
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --ref <version>                  #   Override manifest fullsend_ref for all repos
