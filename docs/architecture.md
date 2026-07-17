@@ -134,6 +134,16 @@ repo baseline and overrides)
   URL-resolved providers are validated against `allowed_remote_resources`
   and merged with local definitions at resolution time
   ([ADR 0070](ADRs/0070-portable-provider-profile-resolution.md)).
+- Tool proxies for transparent CLI interception: a `tool_proxies` harness
+  field maps CLI tool names to host-api servers
+  ([ADR 0046](ADRs/0046-host-side-api-server-design.md)). The runner generates
+  runtime-specific hooks (e.g. Claude Code `PreToolUse`) that intercept tool
+  calls and route them to the server. The security boundary is the network
+  policy, not the hook — `safe-push`
+  ([ADR 0032](ADRs/0032-safe-push-wrapper-for-sandboxed-agents.md)) remains
+  the mechanism for push policy enforcement where request-body inspection is
+  required
+  ([ADR 0073](ADRs/0073-tool-proxy-design-for-transparent-cli-interception.md)).
 
 **Open questions:**
 
