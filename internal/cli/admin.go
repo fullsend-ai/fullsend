@@ -1175,6 +1175,18 @@ func (a *gcfProvisionerAdapter) DeletePerRepoWIF(ctx context.Context, repo strin
 	return a.provisioner.RemoveRepoFromMint(ctx, repo)
 }
 
+func (a *gcfProvisionerAdapter) DeleteWIFProvider(ctx context.Context, repo string) error {
+	if a.provisioner == nil {
+		return fmt.Errorf("WIF provisioner not configured")
+	}
+	parts := strings.SplitN(repo, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("invalid repo format %q: expected owner/repo", repo)
+	}
+	providerID := mintcore.BuildRepoProviderID(strings.ToLower(parts[0]), strings.ToLower(parts[1]))
+	return a.provisioner.DeleteWIFProvider(ctx, providerID)
+}
+
 // applyPerRepoScaffold commits scaffold files to the repo's default branch
 // and configures the repository variables and secrets needed for fullsend.
 func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.Printer,

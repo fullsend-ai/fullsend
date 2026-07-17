@@ -126,7 +126,13 @@ and implementation details are in the
 
 ## Implementation status
 
-`repos install` (batch install with WIF serialization) is being implemented in PR #3033.
-Remaining subcommands (`repos init`, `repos status`, `repos sync`,
-`repos upgrade`, `repos upgrade-mint`, `repos remove`) are tracked in the
+Implemented subcommands:
+
+- `repos init` — PR #3033
+- `repos install` — PR #3033
+- `repos status` — PR #4079
+- `repos add`, `repos remove`, `repos uninstall` — PR #4081
+
+Remaining subcommands (`repos sync`, `repos diff`, `repos upgrade`,
+`repos upgrade-mint`) are tracked in the
 [repos management plan](../plans/repos-management.md).

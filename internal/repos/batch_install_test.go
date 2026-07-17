@@ -77,6 +77,10 @@ func (f *batchFakeProvisioner) DeletePerRepoWIF(_ context.Context, repo string) 
 	return f.deleteErr
 }
 
+func (f *batchFakeProvisioner) DeleteWIFProvider(_ context.Context, _ string) error {
+	return nil
+}
+
 // perRepoProvisioner tracks calls per repo and supports per-repo error injection.
 type perRepoProvisioner struct {
 	mu sync.Mutex
@@ -136,6 +140,10 @@ func (p *perRepoProvisioner) EnsureOrgInMint(_ context.Context, _ string, org st
 }
 
 func (p *perRepoProvisioner) DeletePerRepoWIF(_ context.Context, _ string) error {
+	return nil
+}
+
+func (p *perRepoProvisioner) DeleteWIFProvider(_ context.Context, _ string) error {
 	return nil
 }
 
@@ -1252,6 +1260,10 @@ func (c *cancellingOrgMintProvisioner) DeletePerRepoWIF(ctx context.Context, rep
 	return c.inner.DeletePerRepoWIF(ctx, repo)
 }
 
+func (c *cancellingOrgMintProvisioner) DeleteWIFProvider(_ context.Context, _ string) error {
+	return nil
+}
+
 // cancellingProvisioner cancels a context after N ProvisionWIF calls.
 type cancellingProvisioner struct {
 	inner       *batchFakeProvisioner
@@ -1284,6 +1296,10 @@ func (c *cancellingProvisioner) DeletePerRepoWIF(ctx context.Context, repo strin
 	return c.inner.DeletePerRepoWIF(ctx, repo)
 }
 
+func (c *cancellingProvisioner) DeleteWIFProvider(_ context.Context, _ string) error {
+	return nil
+}
+
 // trackingOrgProvisioner delegates to an inner provisioner but tracks org calls.
 type trackingOrgProvisioner struct {
 	inner    *batchFakeProvisioner
@@ -1312,4 +1328,8 @@ func (t *trackingOrgProvisioner) EnsureOrgInMint(ctx context.Context, url string
 
 func (t *trackingOrgProvisioner) DeletePerRepoWIF(ctx context.Context, repo string) error {
 	return t.inner.DeletePerRepoWIF(ctx, repo)
+}
+
+func (t *trackingOrgProvisioner) DeleteWIFProvider(_ context.Context, _ string) error {
+	return nil
 }

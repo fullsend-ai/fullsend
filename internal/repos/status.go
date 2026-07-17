@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"strings"
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -18,6 +17,42 @@ var workflowRefPattern = regexp.MustCompile(
 var workflowPaths = []string{
 	".github/workflows/fullsend.yml",
 	".github/workflows/fullsend.yaml",
+}
+
+// RepoState holds the installation state of a single repo as read
+// from GitHub variables and workflow files.
+type RepoState struct {
+	Installed       bool
+	MintURL         string
+	InferenceRegion string
+	FullsendRef     string
+}
+
+// ProbeRepoState reads a repo's current per-repo installation state
+// from GitHub variables and workflow files.
+func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo string) (RepoState, error) {
+	vars, err := client.ListRepoVariables(ctx, owner, repo)
+	if err != nil {
+		return RepoState{}, fmt.Errorf("listing variables for %s/%s: %w", owner, repo, err)
+	}
+
+	if vars[forge.PerRepoGuardVar] != "true" {
+		return RepoState{}, nil
+	}
+
+	state := RepoState{
+		Installed:       true,
+		MintURL:         vars["FULLSEND_MINT_URL"],
+		InferenceRegion: vars["FULLSEND_GCP_REGION"],
+	}
+
+	ref, err := readWorkflowRef(ctx, client, owner, repo)
+	if err != nil {
+		return state, fmt.Errorf("reading workflow for %s/%s: %w", owner, repo, err)
+	}
+	state.FullsendRef = ref
+
+	return state, nil
 }
 
 // Drift describes a single field that differs between the manifest's
@@ -72,7 +107,11 @@ func Status(ctx context.Context, manifest *Manifest, client forge.Client, maxCon
 	}
 
 	if len(repoFilter) > 0 {
-		resolved = filterRepos(resolved, repoFilter)
+		var filterErr error
+		resolved, filterErr = filterRepos(resolved, repoFilter)
+		if filterErr != nil {
+			return nil, filterErr
+		}
 	}
 
 	if maxConcurrency < 1 {
@@ -129,27 +168,22 @@ func checkRepoStatus(ctx context.Context, client forge.Client, owner, repo strin
 		ExpectedRegion:  cfg.InferenceRegion,
 	}
 
-	vars, err := client.ListRepoVariables(ctx, owner, repo)
+	state, err := ProbeRepoState(ctx, client, owner, repo)
 	if err != nil {
-		status.Error = fmt.Sprintf("listing variables: %v", err)
-		return status
+		status.Error = err.Error()
 	}
 
-	guard := vars[forge.PerRepoGuardVar]
-	if guard != "true" {
+	if !state.Installed {
 		return status
 	}
 	status.Installed = true
+	status.MintURL = state.MintURL
+	status.Region = state.InferenceRegion
+	status.CurrentRef = state.FullsendRef
 
-	status.MintURL = vars["FULLSEND_MINT_URL"]
-	status.Region = vars["FULLSEND_GCP_REGION"]
-
-	ref, err := readWorkflowRef(ctx, client, owner, repo)
 	if err != nil {
-		status.Error = fmt.Sprintf("reading workflow: %v", err)
 		return status
 	}
-	status.CurrentRef = ref
 
 	if cfg.MintURL != "" && status.MintURL != cfg.MintURL {
 		status.Drifts = append(status.Drifts, Drift{
@@ -201,17 +235,20 @@ func extractWorkflowRef(content []byte) string {
 	return string(m[1])
 }
 
-func filterRepos(repos []ResolvedRepo, filter []string) []ResolvedRepo {
-	allowed := make(map[string]bool, len(filter))
-	for _, f := range filter {
-		allowed[strings.ToLower(f)] = true
-	}
+func filterRepos(repos []ResolvedRepo, filter []string) ([]ResolvedRepo, error) {
 	var result []ResolvedRepo
 	for _, rr := range repos {
-		fullName := strings.ToLower(rr.Owner + "/" + rr.Repo)
-		if allowed[fullName] {
-			result = append(result, rr)
+		fullName := rr.Owner + "/" + rr.Repo
+		for _, pattern := range filter {
+			ok, err := matchesPattern(pattern, fullName)
+			if err != nil {
+				return nil, fmt.Errorf("invalid glob pattern %q: %w", pattern, err)
+			}
+			if ok {
+				result = append(result, rr)
+				break
+			}
 		}
 	}
-	return result
+	return result, nil
 }
