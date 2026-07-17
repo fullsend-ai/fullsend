@@ -28,6 +28,8 @@ func TestReposCommand_HasSubcommands(t *testing.T) {
 	assert.True(t, names["install"], "expected install subcommand")
 	assert.True(t, names["uninstall"], "expected uninstall subcommand")
 	assert.True(t, names["status"], "expected status subcommand")
+	assert.True(t, names["diff"], "expected diff subcommand")
+	assert.True(t, names["sync"], "expected sync subcommand")
 	assert.True(t, names["upgrade"], "expected upgrade subcommand")
 	assert.True(t, names["upgrade-mint"], "expected upgrade-mint subcommand")
 }
@@ -1505,4 +1507,170 @@ func TestRunReposUpgradeMint_Success(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Contains(t, prov.calls, "DiscoverMint")
+}
+
+const diffSyncManifestYAML = `version: 1
+mint:
+  url: https://mint.example.com
+  project: mint-proj
+  region: us-central1
+defaults:
+  inference_project: inf-proj
+  inference_region: us-central1
+  fullsend_ref: v1.0.0
+repos:
+  - repo: acme/api
+  - repo: acme/web
+`
+
+func TestRunReposDiff_NoDrift(t *testing.T) {
+	yaml := `version: 1
+mint:
+  url: https://mint.example.com
+  project: mint-proj
+  region: us-central1
+defaults:
+  inference_region: us-central1
+  fullsend_ref: v1.0.0
+repos:
+  - repo: acme/api
+`
+	manifestPath := writeTestManifest(t, yaml)
+	fc := newInstalledFakeClientCLI("acme/api")
+
+	err := runReposDiff(context.Background(), &reposDiffConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		testClient:  fc,
+	})
+	require.NoError(t, err)
+}
+
+func TestRunReposDiff_WithDrift(t *testing.T) {
+	manifestPath := writeTestManifest(t, diffSyncManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
+	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://old-mint.example.com"
+
+	err := runReposDiff(context.Background(), &reposDiffConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		testClient:  fc,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "changes needed to reconcile")
+}
+
+func TestRunReposDiff_InvalidManifest(t *testing.T) {
+	err := runReposDiff(context.Background(), &reposDiffConfig{
+		manifest:    "/nonexistent/repos.yaml",
+		concurrency: 4,
+		testClient:  forge.NewFakeClient(),
+	})
+	require.Error(t, err)
+}
+
+// --- repos sync ---
+
+func TestRunReposSync_Success(t *testing.T) {
+	manifestPath := writeTestManifest(t, diffSyncManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
+	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://old-mint.example.com"
+
+	err := runReposSync(context.Background(), &reposSyncConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		testClient:  fc,
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "https://mint.example.com", fc.VariableValues["acme/api/FULLSEND_MINT_URL"])
+}
+
+func TestRunReposSync_DryRun(t *testing.T) {
+	manifestPath := writeTestManifest(t, diffSyncManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api")
+	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://old-mint.example.com"
+
+	err := runReposSync(context.Background(), &reposSyncConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		dryRun:      true,
+		testClient:  fc,
+	})
+	require.Error(t, err, "dry-run should return error when drift exists")
+	assert.Contains(t, err.Error(), "changes needed to reconcile")
+	assert.Equal(t, "https://old-mint.example.com", fc.VariableValues["acme/api/FULLSEND_MINT_URL"],
+		"dry-run should not modify variables")
+}
+
+func TestRunReposSync_InvalidManifest(t *testing.T) {
+	err := runReposSync(context.Background(), &reposSyncConfig{
+		manifest:    "/nonexistent/repos.yaml",
+		concurrency: 4,
+		testClient:  forge.NewFakeClient(),
+	})
+	require.Error(t, err)
+}
+
+func TestRunReposDiff_JSON(t *testing.T) {
+	manifestPath := writeTestManifest(t, diffSyncManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
+	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://old-mint.example.com"
+
+	var buf bytes.Buffer
+	err := runReposDiff(context.Background(), &reposDiffConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		jsonOutput:  true,
+		testClient:  fc,
+		out:         &buf,
+	})
+	require.Error(t, err)
+
+	output := buf.String()
+	assert.True(t, strings.HasPrefix(strings.TrimSpace(output), "{"), "JSON output should start with {")
+	assert.Contains(t, output, `"changes"`)
+	assert.NotContains(t, output, "Checking token permissions", "preflight text should not appear in JSON output")
+}
+
+func TestRunReposSync_JSON(t *testing.T) {
+	manifestPath := writeTestManifest(t, diffSyncManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
+	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://old-mint.example.com"
+
+	var buf bytes.Buffer
+	err := runReposSync(context.Background(), &reposSyncConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		jsonOutput:  true,
+		testClient:  fc,
+		out:         &buf,
+	})
+	require.NoError(t, err)
+
+	output := buf.String()
+	assert.True(t, strings.HasPrefix(strings.TrimSpace(output), "{"), "JSON output should start with {")
+	assert.Contains(t, output, `"applied"`)
+	assert.NotContains(t, output, "Checking token permissions", "preflight text should not appear in JSON output")
+}
+
+func TestRunReposSync_DryRun_JSON(t *testing.T) {
+	manifestPath := writeTestManifest(t, diffSyncManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api")
+	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://old-mint.example.com"
+
+	var buf bytes.Buffer
+	err := runReposSync(context.Background(), &reposSyncConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		dryRun:      true,
+		jsonOutput:  true,
+		testClient:  fc,
+		out:         &buf,
+	})
+	require.Error(t, err)
+
+	output := buf.String()
+	assert.True(t, strings.HasPrefix(strings.TrimSpace(output), "{"), "JSON output should start with {")
+	assert.Contains(t, output, `"changes"`)
+	assert.NotContains(t, output, "Checking token permissions")
 }

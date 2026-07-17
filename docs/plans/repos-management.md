@@ -203,12 +203,12 @@ Reconciles configuration drift for installed repos.
 |----------|--------|
 | `FULLSEND_MINT_URL` variable | Upsert to match manifest `mint.url` |
 | `FULLSEND_GCP_REGION` variable | Upsert to match resolved `inference_region` |
-| `FULLSEND_PER_REPO_INSTALL` variable | Ensure set to `"true"` |
 | `FULLSEND_GCP_PROJECT_ID` secret | Upsert to match resolved `inference_project` |
 
-Sync does **not** touch scaffold shim version (managed by `upgrade`)
-or harness files (managed via ADR 0045's `base` composition). Warns
-about repos with `FULLSEND_PER_REPO_INSTALL=true` not in the manifest.
+Sync does **not** touch scaffold shim version (managed by `upgrade`),
+harness files (managed via ADR 0045's `base` composition), or the
+`FULLSEND_PER_REPO_INSTALL` guard variable (managed exclusively by
+`repos install` — sync skips repos where the guard is not `"true"`).
 
 #### `fullsend repos upgrade`
 
@@ -968,7 +968,7 @@ call ordering via recorded method calls.
 
 ---
 
-### PR 6: `fullsend repos sync` + `fullsend repos diff`
+### PR 6: `fullsend repos sync` + `fullsend repos diff` — PR #4079
 
 **Scope:** New CLI commands. Writes variables/secrets.
 

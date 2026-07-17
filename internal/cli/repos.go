@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -35,6 +36,8 @@ managing fullsend across many repositories and organizations.`,
 	cmd.AddCommand(newReposInstallCmd())
 	cmd.AddCommand(newReposUninstallCmd())
 	cmd.AddCommand(newReposStatusCmd())
+	cmd.AddCommand(newReposDiffCmd())
+	cmd.AddCommand(newReposSyncCmd())
 	cmd.AddCommand(newReposUpgradeCmd())
 	cmd.AddCommand(newReposUpgradeMintCmd())
 	return cmd
@@ -853,6 +856,10 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 		client = newGitHubLiveClient(token)
 	}
 
+	if err := checkPerRepoScopes(ctx, client, printer); err != nil {
+		return err
+	}
+
 	provFactory := buildProvisionerFactory(opts.testProvisioner, opts.skipWIFCleanup)
 
 	cfg := repos.UninstallConfig{
@@ -1009,6 +1016,210 @@ func (s *splitProjectAdapter) DeletePerRepoWIF(ctx context.Context, repo string)
 
 func (s *splitProjectAdapter) DeleteWIFProvider(ctx context.Context, repo string) error {
 	return s.inference.DeleteWIFProvider(ctx, repo)
+}
+
+type reposDiffConfig struct {
+	manifest    string
+	repoFilter  []string
+	jsonOutput  bool
+	concurrency int
+
+	testClient forge.Client
+	out        io.Writer
+}
+
+func newReposDiffCmd() *cobra.Command {
+	opts := &reposDiffConfig{}
+
+	cmd := &cobra.Command{
+		Use:   "diff",
+		Short: "Show configuration drift between manifest and actual state",
+		Long:  "Compare the repos.yaml manifest against actual forge state and display the changes needed to reconcile. Exit code 1 signals drift exists.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runReposDiff(cmd.Context(), opts)
+		},
+	}
+
+	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path or HTTPS URL to manifest file")
+	cmd.Flags().StringArrayVar(&opts.repoFilter, "repo", nil, "filter to specific repos (repeatable)")
+	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit JSON output instead of table")
+	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 8, "max parallel API calls")
+
+	return cmd
+}
+
+func runReposDiff(ctx context.Context, opts *reposDiffConfig) error {
+	out := opts.out
+	if out == nil {
+		out = os.Stdout
+	}
+	printerOut := out
+	if opts.jsonOutput {
+		printerOut = io.Discard
+	}
+	printer := ui.New(printerOut)
+
+	var client forge.Client
+	if opts.testClient != nil {
+		client = opts.testClient
+	} else {
+		token, err := resolveToken()
+		if err != nil {
+			return err
+		}
+		client = newGitHubLiveClient(token)
+	}
+
+	if err := checkPerRepoScopes(ctx, client, printer); err != nil {
+		return err
+	}
+
+	m, err := repos.LoadManifest(ctx, opts.manifest)
+	if err != nil {
+		return err
+	}
+	if err := m.Validate(); err != nil {
+		return fmt.Errorf("manifest validation failed: %w", err)
+	}
+
+	result, err := repos.Diff(ctx, m, client, opts.concurrency, opts.repoFilter)
+	if err != nil {
+		return err
+	}
+
+	if opts.jsonOutput {
+		b, marshalErr := json.MarshalIndent(result, "", "  ")
+		if marshalErr != nil {
+			return fmt.Errorf("marshalling JSON: %w", marshalErr)
+		}
+		fmt.Fprintln(out, string(b))
+	} else {
+		fmt.Fprint(out, repos.FormatDiffTable(result))
+	}
+
+	if len(result.Changes) > 0 {
+		return fmt.Errorf("%d changes needed to reconcile manifest", len(result.Changes))
+	}
+	return nil
+}
+
+type reposSyncConfig struct {
+	manifest    string
+	repoFilter  []string
+	dryRun      bool
+	jsonOutput  bool
+	concurrency int
+
+	testClient forge.Client
+	out        io.Writer
+}
+
+func newReposSyncCmd() *cobra.Command {
+	opts := &reposSyncConfig{}
+
+	cmd := &cobra.Command{
+		Use:   "sync",
+		Short: "Reconcile configuration drift for installed repos",
+		Long:  "Apply variable and secret changes to reconcile installed repos with the manifest. Use --dry-run to preview changes without applying them.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runReposSync(cmd.Context(), opts)
+		},
+	}
+
+	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path or HTTPS URL to manifest file")
+	cmd.Flags().StringArrayVar(&opts.repoFilter, "repo", nil, "filter to specific repos (repeatable)")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "preview changes without applying them")
+	cmd.Flags().BoolVar(&opts.jsonOutput, "json", false, "emit JSON output instead of table")
+	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 4, "max parallel operations (1-32)")
+
+	return cmd
+}
+
+func runReposSync(ctx context.Context, opts *reposSyncConfig) error {
+	out := opts.out
+	if out == nil {
+		out = os.Stdout
+	}
+	printerOut := out
+	if opts.jsonOutput {
+		printerOut = io.Discard
+	}
+	printer := ui.New(printerOut)
+
+	var client forge.Client
+	if opts.testClient != nil {
+		client = opts.testClient
+	} else {
+		token, err := resolveToken()
+		if err != nil {
+			return err
+		}
+		client = newGitHubLiveClient(token)
+	}
+
+	if err := checkPerRepoScopes(ctx, client, printer); err != nil {
+		return err
+	}
+
+	m, err := repos.LoadManifest(ctx, opts.manifest)
+	if err != nil {
+		return err
+	}
+	if err := m.Validate(); err != nil {
+		return fmt.Errorf("manifest validation failed: %w", err)
+	}
+
+	if opts.dryRun {
+		result, diffErr := repos.Diff(ctx, m, client, opts.concurrency, opts.repoFilter)
+		if diffErr != nil {
+			return diffErr
+		}
+
+		if opts.jsonOutput {
+			b, marshalErr := json.MarshalIndent(result, "", "  ")
+			if marshalErr != nil {
+				return fmt.Errorf("marshalling JSON: %w", marshalErr)
+			}
+			fmt.Fprintln(out, string(b))
+		} else {
+			fmt.Fprint(out, repos.FormatDiffTable(result))
+		}
+		if len(result.Changes) > 0 {
+			return fmt.Errorf("%d changes needed to reconcile manifest", len(result.Changes))
+		}
+		return nil
+	}
+
+	var progressFn repos.ProgressFunc
+	if !opts.jsonOutput {
+		progressFn = func(repo, phase, message string) {
+			printer.StepInfo(fmt.Sprintf("[%s] %s: %s", phase, repo, message))
+		}
+	}
+
+	result, err := repos.Sync(ctx, m, client, opts.concurrency, opts.repoFilter, progressFn)
+	if err != nil && result == nil {
+		return err
+	}
+
+	if opts.jsonOutput {
+		b, marshalErr := json.MarshalIndent(result, "", "  ")
+		if marshalErr != nil {
+			return fmt.Errorf("marshalling JSON: %w", marshalErr)
+		}
+		fmt.Fprintln(out, string(b))
+	} else {
+		if result.Failed > 0 {
+			fmt.Fprintf(out, "Applied %d changes, %d repos failed.\n", len(result.Applied), result.Failed)
+		} else {
+			fmt.Fprintf(out, "Applied %d changes.\n", len(result.Applied))
+		}
+		for _, w := range result.Warnings {
+			fmt.Fprintf(out, "WARNING: %s\n", w)
+		}
+	}
+
+	return err
 }
 
 // reposUpgradeConfig holds flag values and testing overrides for repos upgrade.

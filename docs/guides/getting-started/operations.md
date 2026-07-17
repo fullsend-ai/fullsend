@@ -83,6 +83,8 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | Fleet Admin | `fullsend repos remove <repos...>` | Remove repo entries from `repos.yaml` manifest (with optional `--uninstall`) |
 | Platform Admin | `fullsend repos uninstall <repos...>` | Tear down fullsend from repos (workflow, variables, secrets, WIF) without modifying manifest |
 | Fleet Admin | `fullsend repos status` | Compare `repos.yaml` manifest against actual per-repo state (drift detection) |
+| Fleet Admin | `fullsend repos diff` | Show configuration drift between manifest and actual forge state |
+| Platform Admin | `fullsend repos sync` | Reconcile configuration drift for installed repos (variables and secrets) |
 | Platform Admin | `fullsend repos upgrade [repos...]` | Upgrade scaffold shim ref across manifest repos |
 | Platform Admin | `fullsend repos upgrade-mint` | Verify the token mint deployment matches the manifest |
 

@@ -329,6 +329,9 @@ func discoverRepo(ctx context.Context, client forge.Client,
 	if err != nil && !state.Installed {
 		return DiscoveredRepo{}, err
 	}
+	if err != nil {
+		progress(fullName, "discover", fmt.Sprintf("warning: %v", err))
+	}
 
 	if state.Installed {
 		progress(fullName, "discover", "per-repo installation detected")
