@@ -18,10 +18,12 @@ Date: 2026-06-02
 
 Accepted
 
-<!-- Once this ADR is Accepted, its content is frozen. Do not edit the Context,
-     Decision, or Consequences sections. If circumstances change, write a new
-     ADR that supersedes this one. Only status changes and links to superseding
-     ADRs should be added after acceptance. -->
+<!-- ADRs are point-in-time records, but not fully frozen after acceptance.
+     Minor annotations are welcome: cross-references to related ADRs, short
+     notes linking to newer decisions, or clarifying remarks. However, do not
+     substantially rewrite the Context, Decision, or Consequences sections. If
+     the decision itself needs to change, write a new ADR that supersedes this
+     one. For evolving design narrative, use docs/architecture.md. -->
 
 ## Context
 
@@ -148,6 +150,15 @@ will be evaluated as an alternative when available.
 [NVIDIA/OpenShell#1633](https://github.com/NVIDIA/OpenShell/issues/1633)
 (supervisor-proxied host-local endpoints) would eliminate this requirement.
 
+> **Note (2026-07):** OpenShell PR
+> [#1560](https://github.com/NVIDIA/OpenShell/pull/1560) removed the
+> `allowed_ips` requirement for explicitly declared endpoints. The `0.0.0.0`
+> bind is still needed (rootless Podman cannot bind to the bridge gateway IP),
+> but `allowed_ips` templating is no longer part of the setup. Validated in
+> [fullsend-ai/experiments#42](https://github.com/fullsend-ai/experiments/pull/42).
+> [#1633](https://github.com/NVIDIA/OpenShell/issues/1633) remains relevant
+> for eliminating the `0.0.0.0` exposure itself.
+
 **Security hardening:** timing-safe token comparison, 1 MB request body limits,
 rate limiting on unauthenticated endpoints, credential scrubbing in error
 messages, bounded in-memory state.
@@ -166,6 +177,10 @@ messages, bounded in-memory state.
 - Servers must bind to `0.0.0.0` on shared hosts, widening the attack surface
   until [NVIDIA/OpenShell#1633](https://github.com/NVIDIA/OpenShell/issues/1633)
   ships.
+  > **Note (2026-07):** `allowed_ips` templating is no longer required
+  > (OpenShell PR [#1560](https://github.com/NVIDIA/OpenShell/pull/1560)).
+  > The `0.0.0.0` bind and its attack surface remain until
+  > [#1633](https://github.com/NVIDIA/OpenShell/issues/1633) ships.
 - API servers (credential delivery tier 3) are now clearly scoped to cases providers cannot
   handle: long-running operations, sandbox capability gaps, credentials in
   request bodies, response transformation, and multi-step atomic operations.
