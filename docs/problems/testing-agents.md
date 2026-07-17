@@ -355,7 +355,7 @@ An optional deeper layer could use an LLM to score each component against qualit
 Beyond testing individual instruction changes, there's a need for ongoing monitoring:
 
 - **Periodic re-evaluation** — run the golden set on a schedule, even without instruction changes, to catch drift from model updates
-- **Production outcome tracking** — when a human overrides an agent's decision, log it as a potential test case. If the agent approved something a human rejected, that's a signal.
+- **Production outcome tracking** — when a human overrides an agent's decision, log it as a potential test case. If the agent approved something a human rejected, that's a signal. Structured lesson extraction from retro and observe runs ([ADR 0055](../ADRs/0055-semantic-observability-and-improvement-loop.md)) provides a reviewed path from production signals to golden-set cases.
 - **Capability dashboards** — for each agent, track which capabilities are covered by tests and what their recent pass rates look like. Similar in spirit to the coverage dashboard referenced in [repo-readiness.md](repo-readiness.md).
 
 ## Relationship to other problem areas
@@ -370,7 +370,7 @@ Beyond testing individual instruction changes, there's a need for ongoing monito
 
 - What's the right statistical threshold for non-deterministic tests? How many runs constitute a reliable signal, and what pass rate is acceptable?
 - Can we use one LLM to test another's behavior reliably, or does LLM-as-judge just move the trust problem?
-- ~~How do we bootstrap the golden set? Do we start with synthetic examples, or do we capture real-world cases from early human-supervised agent operation?~~ Functional tests bootstrap with hand-crafted cases under `eval/`; see [ADR 0052](../ADRs/0052-functional-tests-for-agent-pipelines.md). Prompt-level evals and synthetic expansion remain open.
+- ~~How do we bootstrap the golden set? Do we start with synthetic examples, or do we capture real-world cases from early human-supervised agent operation?~~ Functional tests bootstrap with hand-crafted cases under `eval/`; see [ADR 0052](../ADRs/0052-functional-tests-for-agent-pipelines.md). Production-derived lessons from retro/observe runs provide an ongoing capture path; see [ADR 0055](../ADRs/0055-semantic-observability-and-improvement-loop.md). Prompt-level evals and synthetic expansion remain open.
 - Who maintains the test suite for each agent? Is it the agent's instruction author, a separate testing team, or the agent itself (self-testing)?
 - How do we handle model provider updates that change behavior without any instruction changes? Is periodic re-evaluation sufficient, or do we need real-time drift detection?
 - What's the cost budget for agent testing? Running hundreds of LLM evaluations per instruction change could be expensive — both in LLM API costs and in compute resources for running the evaluations in CI.

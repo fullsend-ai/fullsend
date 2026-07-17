@@ -163,3 +163,6 @@ it suppresses JSONL for nearly all useful runs on private repos.
   human debugging). Complementary structured extraction via OpenTelemetry
   could power aggregate analysis at scale (pattern detection across many
   runs) — subsequently decided in [ADR 0050](0050-distributed-tracing-instrumentation.md).
+  Semantic enrichment of those traces with fullsend-specific derived signals,
+  observer analysis, and lesson extraction is decided in
+  [ADR 0055](0055-semantic-observability-and-improvement-loop.md).
