@@ -734,7 +734,7 @@ func UploadFile(sandboxName, localPath, remotePath string) error {
 			return fmt.Errorf("checking for file: %s", wrongPath)
 		}
 
-		tmpPath := fmt.Sprintf("/tmp/%s", filepath.Base(remotePath))
+		tmpPath := fmt.Sprintf("/tmp/uploadfile-fix-%s", filepath.Base(remotePath))
 		stdout, stderr, exitCode, err := Exec(sandboxName, fmt.Sprintf("mv %s %s", shellQuote(wrongPath), shellQuote(tmpPath)), 1*time.Second)
 		if err != nil {
 			return err
