@@ -460,6 +460,32 @@ repos:
 	assert.NoError(t, m.Validate())
 }
 
+func TestValidate_InvalidDefaultFullsendRef(t *testing.T) {
+	m := Manifest{
+		Version:  1,
+		Mint:     MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Defaults: DefaultsConfig{FullsendRef: "v1.0.0; rm -rf /"},
+		Repos:    []RepoEntry{{Repo: "acme/repo"}},
+	}
+	err := m.Validate()
+	assert.ErrorContains(t, err, "defaults.fullsend_ref")
+	assert.ErrorContains(t, err, "invalid characters")
+}
+
+func TestValidate_InvalidPerRepoFullsendRef(t *testing.T) {
+	m := Manifest{
+		Version: 1,
+		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Repos: []RepoEntry{{
+			Repo:        "acme/repo",
+			FullsendRef: NullableString{Value: "v1.0.0$(evil)", Set: true},
+		}},
+	}
+	err := m.Validate()
+	assert.ErrorContains(t, err, "fullsend_ref")
+	assert.ErrorContains(t, err, "invalid characters")
+}
+
 func TestValidate_OwnerWildcard(t *testing.T) {
 	tests := []struct {
 		name string

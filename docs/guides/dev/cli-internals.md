@@ -75,7 +75,16 @@ fullsend
 │   │   ├── --yes                            #   Skip confirmation for glob patterns
 │   │   ├── --skip-wif-cleanup               #   Skip GCP WIF provider deletion
 │   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
-│   └── status                               # Compare manifest against actual repo state
+│   ├── status                               # Compare manifest against actual repo state
+│   ├── upgrade        [repos...]            # Upgrade scaffold shim ref across repos
+│   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
+│   │   ├── --ref <version>                  #   Override manifest fullsend_ref for all repos
+│   │   ├── --dry-run                        #   Preview without making changes
+│   │   ├── --force                          #   Upgrade even if current ref is newer
+│   │   ├── --direct                         #   Push directly to default branch (skip PR)
+│   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
+│   └── upgrade-mint                         # Verify token mint deployment matches manifest
+│       └── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 ├── agent                                    # Manage agent registrations in config
 │   ├── add          <url-or-path>            # Register an agent (URL auto-pinned)
 │   ├── list                                  # List registered agents
