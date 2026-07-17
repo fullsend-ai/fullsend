@@ -179,6 +179,13 @@ authorization rules (e.g., allowing `triage` or `read` permission), it
 should do so by extending the `has_write_permission` function's allowed
 permission list, not by bypassing the check.
 
+> **Note (2026-07-17, [#5223](https://github.com/fullsend-ai/fullsend/issues/5223)):**
+> Observation stages (triage, review) now accept the GitHub `triage`
+> role via a parameterized `has_repo_permission` helper (`min=triage`).
+> Mutation stages (code, fix, and other write-gated slash commands)
+> remain at `min=write`. This follows the extension path above rather
+> than bypassing the check.
+
 ## Consequences
 
 - All dispatch paths require write-level repository permission,

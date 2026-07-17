@@ -125,12 +125,12 @@ jobs:
           STAGE=""
           TRIGGER_SOURCE=""
 
-          # Helper: check actor has write+ permission on the repo.
-          # Uses the collaborator permission API which correctly resolves org
-          # membership regardless of visibility (private vs public).
-          # See: github/gh-aw-mcpg#2862
-          has_write_permission() {
+          # Collaborator role_name vs min level (write|triage). See #5223 / ADR 0054.
+          # write (default): admin|maintain|write; triage: also accepts triage.
+          # API resolves org membership regardless of visibility (gh-aw-mcpg#2862).
+          has_repo_permission() {
             local username="${1:-}"
+            local min="${2:-write}"
             if [[ -z "${username}" ]]; then
               return 1
             fi
@@ -148,18 +148,26 @@ jobs:
             rm -f "${api_err}"
             case "${role}" in
               admin|maintain|write) return 0 ;;
+              triage)
+                [[ "${min}" == "triage" ]] && return 0
+                return 1
+                ;;
               *) return 1 ;;
             esac
           }
 
-          # Slash command authorization (comment-triggered paths)
-          is_authorized() {
-            has_write_permission "${COMMENT_USER_LOGIN}"
+          has_write_permission() {
+            has_repo_permission "${1:-}" write
           }
 
-          # Event-level authorization (non-comment triggers)
+          # Slash-command auth; optional $1 min level (write|triage), default write.
+          is_authorized() {
+            has_repo_permission "${COMMENT_USER_LOGIN}" "${1:-write}"
+          }
+
+          # Event-actor auth; $1=user, optional $2 min level (write|triage).
           is_event_actor_authorized() {
-            has_write_permission "${1:-}"
+            has_repo_permission "${1:-}" "${2:-write}"
           }
 
           is_issue_author() {
@@ -185,7 +193,7 @@ jobs:
             issue_comment)
               case "${COMMAND}" in
                 /fs-triage)
-                  if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
+                  if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized triage; then
                     STAGE="triage"
                   fi
                   ;;
@@ -198,7 +206,7 @@ jobs:
                   ;;
                 /fs-review)
                   if [[ "${ISSUE_IS_PR}" == "true" ]]; then
-                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
+                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized triage; then
                       STAGE="review"
                     fi
                   fi
@@ -245,11 +253,11 @@ jobs:
 
             issues)
               if [[ "${EVENT_ACTION}" == "opened" ]]; then
-                if is_event_actor_authorized "${ISSUE_USER_LOGIN}"; then
+                if is_event_actor_authorized "${ISSUE_USER_LOGIN}" triage; then
                   STAGE="triage"
                 fi
               elif [[ "${EVENT_ACTION}" == "edited" ]]; then
-                if is_event_actor_authorized "${EVENT_SENDER_LOGIN}"; then
+                if is_event_actor_authorized "${EVENT_SENDER_LOGIN}" triage; then
                   STAGE="triage"
                 fi
               elif [[ "${EVENT_ACTION}" == "labeled" ]]; then
@@ -268,7 +276,7 @@ jobs:
             pull_request_target)
               case "${EVENT_ACTION}" in
                 opened|synchronize|ready_for_review)
-                  if is_event_actor_authorized "${PR_USER_LOGIN}"; then
+                  if is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
                     STAGE="review"
                   fi
                   ;;

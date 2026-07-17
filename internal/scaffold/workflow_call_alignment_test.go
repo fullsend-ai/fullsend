@@ -434,6 +434,51 @@ func TestReusableDispatchWorkflowContent(t *testing.T) {
 	assert.Regexp(t, `(?s)ready-for-review"\s*\]\];\s*then\s*\n\s+if \[\[ "\$\{ISSUE_IS_PR\}"`, s)
 }
 
+// TestDispatchPerStageAuthorization ensures triage-role users can trigger
+// observation stages (triage/review) but not mutation stages (code/fix).
+// See #5223 and ADR 0054.
+func TestDispatchPerStageAuthorization(t *testing.T) {
+	type workflowCase struct {
+		name    string
+		content func(t *testing.T) []byte
+	}
+
+	cases := []workflowCase{
+		{
+			"reusable-dispatch.yml",
+			loadRepoFile(".github/workflows/reusable-dispatch.yml"),
+		},
+		{
+			"scaffold/dispatch.yml",
+			loadScaffoldFile(".github/workflows/dispatch.yml"),
+		},
+	}
+
+	for _, wc := range cases {
+		t.Run(wc.name, func(t *testing.T) {
+			s := string(wc.content(t))
+
+			assert.Contains(t, s, "has_repo_permission",
+				"permission helper should be parameterized by min role")
+			assert.Contains(t, s, `[[ "${min}" == "triage" ]]`,
+				"triage min level must accept the triage role_name")
+
+			// Observation slash commands (triage min level)
+			assert.Regexp(t, `/fs-triage\)\s*\n\s+if \[\[ "\$\{COMMENT_USER_TYPE\}" != "Bot" \]\] && is_authorized triage;`, s)
+			assert.Regexp(t, `is_authorized triage; then\s*\n\s+STAGE="review"`, s)
+
+			// Mutation slash commands stay at write+ (default is_authorized)
+			assert.Regexp(t, `is_authorized; then\s*\n\s+STAGE="code"`, s)
+			assert.Regexp(t, `is_authorized; then\s*\n\s+STAGE="fix"`, s)
+
+			// Auto-triage and auto-review event paths accept triage
+			assert.Contains(t, s, `is_event_actor_authorized "${ISSUE_USER_LOGIN}" triage`)
+			assert.Contains(t, s, `is_event_actor_authorized "${EVENT_SENDER_LOGIN}" triage`)
+			assert.Contains(t, s, `is_event_actor_authorized "${PR_USER_LOGIN}" triage`)
+		})
+	}
+}
+
 // TestRoleCheckCaseBranches validates the role-check step's case mapping and
 // backward-compat logic in both dispatch workflows (#2298).
 func TestRoleCheckCaseBranches(t *testing.T) {
