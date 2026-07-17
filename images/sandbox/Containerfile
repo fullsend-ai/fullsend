@@ -39,8 +39,17 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # ---------------------------------------------------------------------------
-# Install Claude Code (official installer handles Node.js dependency).
-RUN curl -fsSL https://claude.ai/install.sh | bash
+# Install Claude Code — pinned version for supply chain safety.
+# The official curl|bash installer installs the latest version with no
+# pinning, so Docker layer caching silently locks in whatever version
+# was current at build time.  When the cache busts, the next build
+# picks up a new version with no review.  Using npm with an explicit
+# version makes upgrades visible in renovate PRs and CI.
+#
+# To update: bump CLAUDE_CODE_VERSION; renovate tracks this ARG via
+# a customManagers regex entry in renovate.json.
+ARG CLAUDE_CODE_VERSION=2.1.202
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # ---------------------------------------------------------------------------
 # ONNX Runtime + ProtectAI DeBERTa-v3 model for ML-based prompt injection

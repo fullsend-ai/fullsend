@@ -60,6 +60,16 @@
       ],
       "depNameTemplate": "wrangler",
       "datasourceTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "description": "Track Claude Code version pin in sandbox Containerfile",
+      "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
+      "matchStrings": [
+        "CLAUDE_CODE_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "@anthropic-ai/claude-code",
+      "datasourceTemplate": "npm"
     }
   ]
 }
