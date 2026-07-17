@@ -130,8 +130,7 @@ can also use `--keep-sandbox` to debug failures (but remember to remove them).
 
 **Tip**: `fullsend run` uses multiple tools on your system. Instead of
 installing them all, you can use a container image fullsend publishes —
-see [Run from a container](#run-from-a-container) below. On macOS, this
-requires a [gateway endpoint workaround](#macos-setup).
+see [Run from a container](#run-from-a-container) below.
 
 **Note**: to run custom agents set `--fullsend-dir` to the directory where your
 custom agent definitions exist.
@@ -284,11 +283,9 @@ You still need on the host: Podman, OpenShell (the gateway and sandboxes
 stay on the host; only the CLI moves into the container), GCP credentials,
 and a GitHub token.
 
-### Linux setup
-
 Mount your OpenShell client config and the same paths you would pass to a
 native `fullsend run`. `--network=host` lets the containerized CLI reach
-the gateway on `127.0.0.1`:
+the gateway:
 
 ```bash
 podman run --rm -it --network=host \
@@ -310,6 +307,16 @@ resolve against the mounted current directory. Run artifacts are written to
 `/tmp/fullsend/` — mount it (or pass `--output-dir` pointing at a mounted
 path) to keep them on the host.
 
+**macOS**: use `/private/tmp/...` for the `/tmp` mounts above (and
+`$(pwd -P)` instead of `$PWD`) — see "Container image mounts" in the
+[macOS platform notes](#macos). No other change is needed: fullsend
+detects when it's running inside a container whose loopback doesn't
+reach the gateway — the case on a macOS Podman machine, where
+`--network=host` shares the VM's network namespace, not the Mac's — and
+transparently points the OpenShell client at `host.containers.internal`
+instead. See "Container image" in the [macOS platform notes](#macos) if
+you need a manual override.
+
 When using `--keep-sandbox` the CLI within the container is not able to
 gather podman logs, because the `podman` binary is not installed within.
 Run `podman logs <sandbox-container>` manually on your machine.
@@ -317,73 +324,6 @@ Run `podman logs <sandbox-container>` manually on your machine.
 On SELinux-enforcing hosts (Fedora/RHEL), bind mounts may need the `:z`
 suffix. Prefer adding `:z` only to the `/tmp` and `$PWD` mounts —
 relabeling `~/.config/openshell` touches files the host gateway also reads.
-
-### macOS setup
-
-On macOS, Podman runs containers inside a Linux VM (the Podman machine).
-`--network=host` shares the VM's network namespace — not the Mac's — so
-`127.0.0.1` inside the container is the VM's own loopback, not the host
-where the gateway runs. The gateway is reachable via
-`host.containers.internal` instead — verified against a real gateway
-secured with mTLS (mutual TLS: both sides present a certificate): the
-request completes a full TLS handshake, including hostname verification
-against the gateway's certificate (OpenShell's default certificate
-template includes `host.containers.internal` and `host.docker.internal`
-in its Subject Alternative Names), and gets an authenticated HTTP
-response — where `127.0.0.1` fails outright. The OpenShell client config
-(`~/.config/openshell/gateways/openshell/metadata.json` — substitute your
-gateway's name if you registered it as something other than `openshell`;
-check with `openshell gateway list`) hardcodes `gateway_endpoint` to
-`https://127.0.0.1:17670`, though, so the containerized CLI never tries
-the address that actually works.
-
-If `host.containers.internal` doesn't resolve for you, set
-`host_containers_internal_ip` in `~/.config/containers/containers.conf`
-— see the [macOS platform notes](#macos) for details — and restart the
-Podman machine.
-
-To work around the hardcoded endpoint, rewrite it in a private copy of
-the config and run the container with that copy mounted instead of the
-original, which stays untouched — native, non-containerized runs keep
-using `127.0.0.1`. Run this as one block: `$OPENSHELL_CONFIG_COPY` needs
-to stay set for both the setup and the `podman run` below, and `trap`
-removes the copy of your mTLS client key even if `podman run` fails or
-you interrupt it:
-
-```bash
-OPENSHELL_CONFIG_COPY="$(mktemp -d)"
-trap 'rm -rf "$OPENSHELL_CONFIG_COPY"' EXIT
-cp -Rp "$HOME/.config/openshell/." "$OPENSHELL_CONFIG_COPY/"
-sed -i '' 's|https://127.0.0.1:|https://host.containers.internal:|g' \
-  "$OPENSHELL_CONFIG_COPY/gateways/openshell/metadata.json"
-
-podman run --rm -it --network=host \
-  -v "$OPENSHELL_CONFIG_COPY:/root/.config/openshell" \
-  -v /private/tmp/fullsend:/tmp/fullsend \
-  -v /private/tmp/fullsend-ai_fullsend:/tmp/fullsend-ai_fullsend \
-  -v /private/tmp/target-repo:/tmp/target-repo \
-  -v "$(pwd -P):/work" \
-  ghcr.io/fullsend-ai/fullsend-runner:latest \
-  run triage \
-    --fullsend-dir /tmp/fullsend-ai_fullsend/internal/scaffold/fullsend-repo/ \
-    --target-repo /tmp/target-repo/ \
-    --env-file fullsend-gcp.env \
-    --env-file fullsend-triage.env
-```
-
-Use `/private/tmp` paths for the other mounts (macOS `/tmp` is a symlink
-that Podman does not resolve) and `$(pwd -P)` instead of `$PWD`. If
-`mktemp -d` lands under a `$TMPDIR` that isn't virtiofs-shared (uncommon —
-the macOS default, under `/var/folders`, is shared), the config mount
-fails with the same `statfs` error described below; fix it the same way,
-prefixing `/private` onto whatever `mktemp -d` printed.
-
-This rewrites the client's view of the gateway rather than widening what
-the gateway accepts connections from. The Linux [Gateway connectivity](#linux)
-workaround, `OPENSHELL_BIND_ADDRESS=0.0.0.0`, is a different, broader
-fix — it makes the gateway itself listen on all interfaces, not just the
-one path this container needs — so it isn't recommended here unless the
-config rewrite above doesn't work for your setup.
 
 ## Simulating Fullsend's real customization layers
 
@@ -428,8 +368,8 @@ When you execute `fullsend run`, pass `--fullsend-dir` as `/tmp/agents/`.
 - **Podman machine**: ensure the Podman machine is running (`podman machine start`) before invoking fullsend. The CLI does not start it automatically.
 - **Podman host-gateway**: if sandbox creation fails with `unable to replace "host-gateway"`, set `host_containers_internal_ip = "192.168.127.254"` under `[containers]` in `~/.config/containers/containers.conf` and restart the Podman machine.
 - **Architecture mismatch**: if your sandbox image uses a different CPU architecture than the host (e.g. amd64 image on an arm64 Mac via QEMU emulation), set `FULLSEND_SANDBOX_ARCH=amd64` so the CLI downloads the correct binary. This is not needed in the typical setup where the Podman VM matches the host arch.
-- **Container image**: requires a gateway-endpoint workaround — see [macOS setup](#macos-setup) above for why and how.
-- **Container image mounts**: bind-mounting `/tmp/...` paths fails with `statfs: no such file or directory` on macOS — Podman Desktop's VM shares `/Users`, `/private`, and `/var/folders` via virtiofs, but not the literal `/tmp` path, and Podman does not resolve the `/tmp` → `/private/tmp` symlink before mounting. Use `/private/tmp/...` (and `$(pwd -P)` instead of `$PWD`). The macOS container example above already accounts for this.
+- **Container image**: `--network=host` shares the Podman VM's network namespace, not the Mac's, so a gateway configured at `127.0.0.1` is unreachable from inside the container. Fullsend detects this automatically and redirects the containerized CLI to whichever of `host.containers.internal` (Podman) or `host.docker.internal` (Docker) is actually reachable (fullsend-ai/fullsend#5261) — no manual steps needed. This depends on one of those names resolving inside the container; if neither does, see the **Podman host-gateway** note above. To override the detection yourself, set `OPENSHELL_GATEWAY_ENDPOINT` (e.g. `https://host.containers.internal:17670`) before running the container — an explicit value here is never overwritten. Always use `https://`: check `openshell gateway list`'s `AUTH` column, and if it says `mtls`, OpenShell will present your client certificate to whatever host this points at, so only point it at a gateway you trust.
+- **Container image mounts**: bind-mounting `/tmp/...` paths fails with `statfs: no such file or directory` on macOS — Podman Desktop's VM shares `/Users`, `/private`, and `/var/folders` via virtiofs, but not the literal `/tmp` path, and Podman does not resolve the `/tmp` → `/private/tmp` symlink before mounting. Use `/private/tmp/...` (and `$(pwd -P)` instead of `$PWD`). The [container example](#run-from-a-container) above already accounts for this.
 
 ### Linux
 
