@@ -16,6 +16,8 @@ Manage per-repo installations across multiple orgs via a declarative `repos.yaml
 | `fullsend repos remove <repos...>` | Remove repo entries from a repos.yaml manifest |
 | `fullsend repos uninstall <repos...>` | Tear down fullsend from specific repos |
 | `fullsend repos status` | Compare manifest against actual repo state |
+| `fullsend repos upgrade [repos...]` | Upgrade scaffold shim ref across repos |
+| `fullsend repos upgrade-mint` | Verify the token mint deployment matches the manifest |
 
 ## `repos init`
 
@@ -235,6 +237,54 @@ fullsend repos uninstall acme/old-api --dry-run
 | `--yes` | `false` | Skip confirmation prompt when multiple repos are targeted |
 | `--skip-wif-cleanup` | `false` | Skip GCP WIF provider deletion |
 | `--concurrency` | `4` | Max parallel operations (1-32) |
+
+## `repos upgrade`
+
+Upgrades the fullsend scaffold workflow ref for repos defined in a `repos.yaml` manifest. Reads each repo's current workflow file, compares against the manifest's `fullsend_ref` (or `--ref` override), and commits the updated workflow.
+
+Floating refs (`latest`, `main`, `v0`) are skipped. Downgrades are blocked unless `--force` is set.
+
+```bash
+fullsend repos upgrade -f repos.yaml
+fullsend repos upgrade --dry-run
+fullsend repos upgrade acme/api acme/web
+fullsend repos upgrade --ref v2.4.0
+```
+
+### Flags
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--manifest` | `-f` | `repos.yaml` | Path or HTTPS URL to manifest file |
+| `--ref` | | | Override manifest `fullsend_ref` for all repos |
+| `--dry-run` | | `false` | Preview what would be upgraded without making changes |
+| `--force` | | `false` | Upgrade even if current ref is newer than target |
+| `--concurrency` | | `4` | Max parallel operations (1-32) |
+| `--direct` | | `false` | Push scaffold directly to default branch (skip PR) |
+
+### Positional arguments
+
+When repos are specified as positional arguments, only those repos are upgraded. Supports exact `owner/repo` names and glob patterns (e.g. `acme/*`), matched via `filepath.Match` against manifest entries. When no repos are specified, all manifest repos are upgraded.
+
+### Limitations
+
+**Tag-only pinning.** `repos upgrade` writes the manifest's `fullsend_ref` tag directly into `uses:` lines. If a repo currently uses SHA pinning (e.g. `@abc123 # v1.9.0`), the upgrade replaces the SHA with the tag, losing the pin. To restore SHA pinning after upgrade, re-run a per-repo install or manually resolve the tag to a SHA. A future enhancement will resolve tags to SHAs via the forge API.
+
+## `repos upgrade-mint`
+
+Verifies the token mint Cloud Function matches the manifest configuration. Discovers the current mint deployment and checks that its URL matches the manifest's `mint.url`.
+
+Run this before `repos upgrade` to ensure mint compatibility.
+
+```bash
+fullsend repos upgrade-mint -f repos.yaml
+```
+
+### Flags
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--manifest` | `-f` | `repos.yaml` | Path or HTTPS URL to manifest file |
 
 ## See also
 

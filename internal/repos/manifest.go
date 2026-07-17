@@ -350,6 +350,10 @@ func (m *Manifest) Validate() error {
 		return fmt.Errorf("mint.region is required")
 	}
 
+	if m.Defaults.FullsendRef != "" && !IsValidRef(m.Defaults.FullsendRef) {
+		return fmt.Errorf("defaults.fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", m.Defaults.FullsendRef)
+	}
+
 	// Validate repo entries.
 	seen := make(map[string]bool, len(m.Repos))
 	for i, entry := range m.Repos {
@@ -372,6 +376,10 @@ func (m *Manifest) Validate() error {
 			if _, err := filepath.Match(parts[1], "test"); err != nil {
 				return fmt.Errorf("repos[%d]: invalid glob pattern %q: %w", i, entry.Repo, err)
 			}
+		}
+
+		if entry.FullsendRef.Set && !entry.FullsendRef.Null && entry.FullsendRef.Value != "" && !IsValidRef(entry.FullsendRef.Value) {
+			return fmt.Errorf("repos[%d]: fullsend_ref %q contains invalid characters; only alphanumeric, dot, underscore, and hyphen are allowed", i, entry.FullsendRef.Value)
 		}
 
 		// Check for duplicates.

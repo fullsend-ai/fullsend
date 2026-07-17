@@ -28,6 +28,8 @@ func TestReposCommand_HasSubcommands(t *testing.T) {
 	assert.True(t, names["install"], "expected install subcommand")
 	assert.True(t, names["uninstall"], "expected uninstall subcommand")
 	assert.True(t, names["status"], "expected status subcommand")
+	assert.True(t, names["upgrade"], "expected upgrade subcommand")
+	assert.True(t, names["upgrade-mint"], "expected upgrade-mint subcommand")
 }
 
 func TestReposCommand_RegisteredInRoot(t *testing.T) {
@@ -1236,4 +1238,271 @@ func TestBuildProvisionerFactory_WithTestProv(t *testing.T) {
 		InferenceRegion:  "us-central1",
 	})
 	assert.Equal(t, prov, result)
+}
+
+// --- repos upgrade ---
+
+func TestReposUpgradeCmd_Flags(t *testing.T) {
+	cmd := newReposUpgradeCmd()
+
+	manifestFlag := cmd.Flags().Lookup("manifest")
+	require.NotNil(t, manifestFlag, "expected --manifest flag")
+	assert.Equal(t, "repos.yaml", manifestFlag.DefValue)
+
+	refFlag := cmd.Flags().Lookup("ref")
+	require.NotNil(t, refFlag, "expected --ref flag")
+	assert.Equal(t, "", refFlag.DefValue)
+
+	dryRunFlag := cmd.Flags().Lookup("dry-run")
+	require.NotNil(t, dryRunFlag, "expected --dry-run flag")
+	assert.Equal(t, "false", dryRunFlag.DefValue)
+
+	forceFlag := cmd.Flags().Lookup("force")
+	require.NotNil(t, forceFlag, "expected --force flag")
+	assert.Equal(t, "false", forceFlag.DefValue)
+
+	concurrencyFlag := cmd.Flags().Lookup("concurrency")
+	require.NotNil(t, concurrencyFlag, "expected --concurrency flag")
+	assert.Equal(t, "4", concurrencyFlag.DefValue)
+
+	directFlag := cmd.Flags().Lookup("direct")
+	require.NotNil(t, directFlag, "expected --direct flag")
+	assert.Equal(t, "false", directFlag.DefValue)
+
+	repoFlag := cmd.Flags().Lookup("repo")
+	assert.Nil(t, repoFlag, "--repo flag should not exist, use positional args")
+}
+
+func TestReposUpgradeCmd_ManifestShortFlag(t *testing.T) {
+	cmd := newReposUpgradeCmd()
+	shorthand := cmd.Flags().ShorthandLookup("f")
+	require.NotNil(t, shorthand, "expected -f shorthand for --manifest")
+}
+
+func TestRunReposUpgrade_DryRun(t *testing.T) {
+	yaml := `version: 1
+mint:
+  url: https://mint.example.com
+  project: mint-proj
+  region: us-central1
+defaults:
+  inference_project: inf-proj
+  inference_region: us-central1
+  fullsend_ref: v2.0.0
+repos:
+  - repo: acme/api
+`
+	manifestPath := writeTestManifest(t, yaml)
+	fc := newInstallFakeClient("acme/api")
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
+	)
+
+	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
+		manifest:    manifestPath,
+		dryRun:      true,
+		concurrency: 4,
+		testClient:  fc,
+	}, nil)
+	require.NoError(t, err)
+}
+
+func TestRunReposUpgrade_InvalidManifest(t *testing.T) {
+	fc := newInstallFakeClient()
+
+	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
+		manifest:    "/nonexistent/repos.yaml",
+		concurrency: 4,
+		testClient:  fc,
+	}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading manifest")
+}
+
+func TestRunReposUpgrade_ConcurrencyValidation(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+
+	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
+		manifest:    manifestPath,
+		concurrency: 0,
+		testClient:  newInstallFakeClient(),
+	}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--concurrency must be between 1 and 32")
+}
+
+func TestRunReposUpgrade_WithFilter(t *testing.T) {
+	yaml := `version: 1
+mint:
+  url: https://mint.example.com
+  project: mint-proj
+  region: us-central1
+defaults:
+  inference_project: inf-proj
+  inference_region: us-central1
+  fullsend_ref: v2.0.0
+repos:
+  - repo: acme/api
+  - repo: acme/web
+`
+	manifestPath := writeTestManifest(t, yaml)
+	fc := newInstallFakeClient("acme/api", "acme/web")
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
+	)
+	fc.FileContents["acme/web/.github/workflows/fullsend.yml"] = []byte(
+		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
+	)
+
+	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
+		manifest:    manifestPath,
+		dryRun:      true,
+		concurrency: 4,
+		testClient:  fc,
+	}, []string{"acme/api"})
+	require.NoError(t, err)
+}
+
+func TestRunReposUpgrade_InvalidRefFormat(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+
+	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
+		manifest:    manifestPath,
+		refOverride: "v1.0.0$bad",
+		concurrency: 4,
+		testClient:  newInstallFakeClient(),
+	}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid characters")
+}
+
+func TestRunReposUpgrade_HighConcurrency(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+
+	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
+		manifest:    manifestPath,
+		concurrency: 33,
+		testClient:  newInstallFakeClient(),
+	}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--concurrency must be between 1 and 32")
+}
+
+func TestRunReposUpgrade_FullUpgrade(t *testing.T) {
+	yaml := `version: 1
+mint:
+  url: https://mint.example.com
+  project: mint-proj
+  region: us-central1
+defaults:
+  inference_project: inf-proj
+  inference_region: us-central1
+  fullsend_ref: v2.0.0
+repos:
+  - repo: acme/api
+`
+	manifestPath := writeTestManifest(t, yaml)
+	fc := newInstallFakeClient("acme/api")
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v1.0.0\n",
+	)
+
+	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		direct:      true,
+		testClient:  fc,
+	}, nil)
+	require.NoError(t, err)
+}
+
+func TestRunReposUpgrade_WithRefOverride(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstallFakeClient("acme/api")
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v0.9.0\n",
+	)
+
+	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
+		manifest:    manifestPath,
+		refOverride: "v2.0.0",
+		dryRun:      true,
+		concurrency: 4,
+		testClient:  fc,
+	}, nil)
+	require.NoError(t, err)
+}
+
+func TestRunReposUpgrade_ManifestValidationFailure(t *testing.T) {
+	badManifest := `version: 99
+mint:
+  url: https://mint.example.com
+  project: mint-proj
+  region: us-central1
+repos:
+  - repo: acme/api
+`
+	manifestPath := writeTestManifest(t, badManifest)
+
+	err := runReposUpgrade(context.Background(), &reposUpgradeConfig{
+		manifest:    manifestPath,
+		concurrency: 4,
+		testClient:  newInstallFakeClient(),
+	}, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "manifest validation failed")
+}
+
+// --- repos upgrade-mint ---
+
+func TestReposUpgradeMintCmd_Flags(t *testing.T) {
+	cmd := newReposUpgradeMintCmd()
+
+	manifestFlag := cmd.Flags().Lookup("manifest")
+	require.NotNil(t, manifestFlag, "expected --manifest flag")
+	assert.Equal(t, "repos.yaml", manifestFlag.DefValue)
+}
+
+func TestReposUpgradeMintCmd_ManifestShortFlag(t *testing.T) {
+	cmd := newReposUpgradeMintCmd()
+	shorthand := cmd.Flags().ShorthandLookup("f")
+	require.NotNil(t, shorthand, "expected -f shorthand for --manifest")
+}
+
+func TestRunReposUpgradeMint_InvalidManifest(t *testing.T) {
+	err := runReposUpgradeMint(context.Background(), &reposUpgradeMintConfig{
+		manifest: "/nonexistent/repos.yaml",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loading manifest")
+}
+
+func TestRunReposUpgradeMint_ManifestValidationFailure(t *testing.T) {
+	badManifest := `version: 99
+mint:
+  url: https://mint.example.com
+  project: mint-proj
+  region: us-central1
+repos:
+  - repo: acme/api
+`
+	manifestPath := writeTestManifest(t, badManifest)
+
+	err := runReposUpgradeMint(context.Background(), &reposUpgradeMintConfig{
+		manifest: manifestPath,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "manifest validation failed")
+}
+
+func TestRunReposUpgradeMint_Success(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	prov := &trackingProvisioner{label: "https://mint.example.com"}
+
+	err := runReposUpgradeMint(context.Background(), &reposUpgradeMintConfig{
+		manifest:        manifestPath,
+		testProvisioner: prov,
+	})
+	require.NoError(t, err)
+	assert.Contains(t, prov.calls, "DiscoverMint")
 }
