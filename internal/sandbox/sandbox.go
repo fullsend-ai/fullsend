@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math/rand"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -708,6 +709,18 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+// randStringBytes is a helper to generate random strings
+// for the temporal file created by UploadFile
+func randStringBytes(n int) string {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = letterBytes[rand.Intn(len(letterBytes))]
+	}
+	return string(b)
+}
+
 // UploadFile copies a single local file into a sandbox at a specific remote path.
 // It checks if the remotePath is a file and if it is not it tries to fix it. This is
 // because of `openshell sandbox upload` in a git environment. Check
@@ -734,7 +747,7 @@ func UploadFile(sandboxName, localPath, remotePath string) error {
 			return fmt.Errorf("checking for file: %s", wrongPath)
 		}
 
-		tmpPath := fmt.Sprintf("/tmp/uploadfile-fix-%s", filepath.Base(remotePath))
+		tmpPath := fmt.Sprintf("/tmp/fs-upload-%s", randStringBytes(10))
 		stdout, stderr, exitCode, err := Exec(sandboxName, fmt.Sprintf("mv %s %s", shellQuote(wrongPath), shellQuote(tmpPath)), 1*time.Second)
 		if err != nil {
 			return err
