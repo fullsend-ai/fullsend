@@ -48,14 +48,33 @@ fullsend
 │   │   ├── --inference-project <id>         #   Default GCP project for inference
 │   │   ├── --force                          #   Overwrite output file if it exists
 │   │   └── --concurrency <int>              #   Max parallel API calls (default: 8)
-│   ├── install                              # Install fullsend on uninstalled manifest repos
+│   ├── install      [repos...]              # Install fullsend on uninstalled manifest repos
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
-│   │   ├── --repo <owner/repo>              #   Install specific repos only (repeatable)
 │   │   ├── --skip-mint-check                #   Skip org registration in mint
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   │   ├── --roles <list>                   #   Agent roles (default: triage,coder,review,fix,retro,prioritize)
 │   │   └── --direct                         #   Push scaffold to default branch (skip PR)
+│   ├── add          <repos...>              # Add repo entries to manifest
+│   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
+│   │   ├── --dry-run                        #   Preview without making changes
+│   │   ├── --install                        #   Also install fullsend on the added repos
+│   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
+│   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
+│   │   └── --roles <list>                   #   Agent roles to install (used with --install)
+│   ├── remove       <repos...>              # Remove repo entries from manifest
+│   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
+│   │   ├── --dry-run                        #   Preview without making changes
+│   │   ├── --uninstall                      #   Tear down fullsend before removing
+│   │   ├── --yes                            #   Skip confirmation for glob patterns
+│   │   ├── --skip-wif-cleanup               #   Skip GCP WIF provider deletion
+│   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
+│   ├── uninstall    <repos...>              # Tear down fullsend from repos
+│   │   ├── -f, --manifest <path>            #   Path to repos.yaml (default: repos.yaml)
+│   │   ├── --dry-run                        #   Preview without making changes
+│   │   ├── --yes                            #   Skip confirmation for glob patterns
+│   │   ├── --skip-wif-cleanup               #   Skip GCP WIF provider deletion
+│   │   └── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   └── status                               # Compare manifest against actual repo state
 ├── agent                                    # Manage agent registrations in config
 │   ├── add          <url-or-path>            # Register an agent (URL auto-pinned)

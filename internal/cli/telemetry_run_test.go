@@ -1,43 +1,36 @@
 package cli
 
 import (
+	"context"
 	"fmt"
-	"regexp"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
+
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/security"
-	"github.com/fullsend-ai/fullsend/internal/telemetry"
 )
 
 func TestTelemetryExitCode(t *testing.T) {
 	err := fmt.Errorf("boom")
 	assert.Equal(t, 0, telemetryExitCode(0, nil), "clean run => 0")
 	assert.Equal(t, 3, telemetryExitCode(3, nil), "agent exit code preserved on success")
-	// A non-agent failure (e.g. a later step errors) can leave lastExitCode==0;
-	// never report that as success.
 	assert.Equal(t, 1, telemetryExitCode(0, err), "lastExitCode 0 + error => 1, never success")
-	// The real agent infra-failure path: rt.Run returns (-1, err), and runAgent
-	// now records that -1 instead of masking it as 1.
 	assert.Equal(t, -1, telemetryExitCode(-1, err), "infra failure (-1) preserved faithfully")
 }
 
-// TestTraceIDUnification pins the invariant runAgent relies on: the per-run
-// security trace id (a dashed UUID, injected into the sandbox as
-// FULLSEND_TRACE_ID) and the W3C telemetry trace id are the SAME underlying
-// value — the telemetry id is just the security id with dashes stripped. This
-// is what lets one id correlate security findings, telemetry, and child traces.
-func TestTraceIDUnification(t *testing.T) {
-	uuid := security.GenerateTraceID()
-	require.True(t, security.IsValidTraceID(uuid), "security id must stay a valid dashed UUID for the sandbox")
-
-	w := telemetry.TraceIDFromUUID(uuid)
-	assert.Equal(t, strings.ReplaceAll(uuid, "-", ""), w, "telemetry trace-id is the security id, dash-stripped")
-	assert.Regexp(t, regexp.MustCompile(`^[0-9a-f]{32}$`), w, "valid 32-hex W3C trace-id")
+// TestSecurityTraceID_ShellSafe pins the invariant that crypto/rand-generated
+// security trace IDs are shell-safe UUIDs.
+func TestSecurityTraceID_ShellSafe(t *testing.T) {
+	id := security.GenerateTraceID()
+	assert.True(t, security.IsShellSafeTraceID(id), "GenerateTraceID must produce a shell-safe UUID")
+	assert.True(t, security.IsValidTraceID(id), "GenerateTraceID must produce a valid UUID v4")
 }
 
 func TestResolveWorkItemID(t *testing.T) {
@@ -81,7 +74,6 @@ func TestResolveWorkItemID(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			// Set all four explicitly (empty == unset) to isolate from ambient env.
 			t.Setenv("ISSUE_KEY", tc.issueKey)
 			t.Setenv("REPO_FULL_NAME", tc.repoFull)
 			t.Setenv("ISSUE_NUMBER", tc.issueNumber)
@@ -122,9 +114,6 @@ func TestChildScriptEnv_EmptyTraceparentOmitted(t *testing.T) {
 }
 
 func TestChildScriptEnv_FiltersPreExistingTraceparent(t *testing.T) {
-	// A parent process may already export TRACEPARENT (issue #2779). Most
-	// runtimes resolve the FIRST match in the environment, so the stale value
-	// must be filtered out — exactly one TRACEPARENT entry, fullsend's own.
 	t.Setenv("TRACEPARENT", "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-bbbbbbbbbbbbbbbb-01")
 	const fullsendTP = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-01"
 
@@ -141,8 +130,6 @@ func TestChildScriptEnv_FiltersPreExistingTraceparent(t *testing.T) {
 }
 
 func TestChildScriptEnv_EmptyTraceparentFiltersExisting(t *testing.T) {
-	// Even with telemetry disabled (empty traceparent), a stale inherited
-	// TRACEPARENT must not leak through to child scripts.
 	t.Setenv("TRACEPARENT", "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-bbbbbbbbbbbbbbbb-01")
 
 	env := childScriptEnv(map[string]string{}, "")
@@ -152,11 +139,6 @@ func TestChildScriptEnv_EmptyTraceparentFiltersExisting(t *testing.T) {
 }
 
 func TestChildScriptEnv_FiltersRunnerEnvTraceparent(t *testing.T) {
-	// A harness-provided runner_env.TRACEPARENT would land before fullsend's
-	// appended value and win first-match resolution — same shadowing bug as
-	// the inherited process env, so it gets the same filter. fullsend's
-	// trace identity never derives from runner_env; honoring it would only
-	// desync child scripts from the recorded trace.
 	const fullsendTP = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-01"
 	runnerEnv := map[string]string{
 		"TRACEPARENT": "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-bbbbbbbbbbbbbbbb-01",
@@ -181,7 +163,6 @@ func TestChildScriptEnv_FiltersRunnerEnvTraceparent(t *testing.T) {
 }
 
 func TestChildScriptEnv_EmptyTraceparentFiltersRunnerEnv(t *testing.T) {
-	// Telemetry disabled: a runner_env TRACEPARENT must not leak either.
 	env := childScriptEnv(map[string]string{"TRACEPARENT": "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1-bbbbbbbbbbbbbbbb-01"}, "")
 	for _, e := range env {
 		assert.False(t, strings.HasPrefix(e, "TRACEPARENT="), "runner_env TRACEPARENT must be filtered when disabled")
@@ -189,8 +170,6 @@ func TestChildScriptEnv_EmptyTraceparentFiltersRunnerEnv(t *testing.T) {
 }
 
 func TestChildScriptEnv_PreservesTracestate(t *testing.T) {
-	// W3C tracestate carries vendor context alongside traceparent and must
-	// pass through to child scripts untouched.
 	t.Setenv("TRACESTATE", "vendor=abc123,other=def456")
 	const tp = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-01"
 
@@ -205,58 +184,12 @@ func TestChildScriptEnv_PreservesTracestate(t *testing.T) {
 	assert.True(t, found, "TRACESTATE must pass through to child scripts")
 }
 
-func TestResolveTraceIdentity(t *testing.T) {
-	const (
-		tid = "4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d"
-		sid = "a1b2c3d4e5f60718"
-	)
-	reSpanID := regexp.MustCompile(`^[0-9a-f]{16}$`)
-
-	t.Run("adopts valid inbound sampled traceparent", func(t *testing.T) {
-		securityID, tc := resolveTraceIdentity("00-" + tid + "-" + sid + "-01")
-
-		assert.Equal(t, tid, tc.TraceID, "inbound trace-id adopted")
-		assert.Equal(t, sid, tc.ParentSpanID, "inbound span-id becomes the root span's remote parent")
-		assert.Equal(t, "01", tc.Flags)
-		assert.Equal(t, "4f3a9c1b-2d8e-4a7c-9f0b-1e2d3c4a5b6d", securityID, "security id derived from inbound trace-id")
-		assert.Equal(t, tid, telemetry.TraceIDFromUUID(securityID), "security id must round-trip to the W3C id")
-		assert.True(t, security.IsShellSafeTraceID(securityID))
-
-		assert.Regexp(t, reSpanID, tc.RootSpanID, "fresh root span id")
-		assert.NotEqual(t, sid, tc.RootSpanID, "root span is a child, not the inbound span itself")
-	})
-
-	t.Run("preserves unsampled flag", func(t *testing.T) {
-		_, tc := resolveTraceIdentity("00-" + tid + "-" + sid + "-00")
-		assert.Equal(t, "00", tc.Flags, "upstream unsampled decision preserved")
-	})
-
-	t.Run("adopted non-v4 trace-id is shell-safe", func(t *testing.T) {
-		// version nibble 0, variant nibble 1 — valid W3C, not UUID v4.
-		securityID, _ := resolveTraceIdentity("00-4f3a9c1b2d8e0a7c1f0b1e2d3c4a5b6d-" + sid + "-01")
-		assert.Equal(t, "4f3a9c1b-2d8e-0a7c-1f0b-1e2d3c4a5b6d", securityID)
-		assert.True(t, security.IsShellSafeTraceID(securityID))
-		assert.False(t, security.IsValidTraceID(securityID), "adopted id is not v4 — needs the shell-safe validator")
-	})
-
-	for _, inbound := range []string{"", "not-a-traceparent", "00-" + tid + "-" + sid, "ff-" + tid + "-" + sid + "-01"} {
-		t.Run("falls back to fresh identity for "+fmt.Sprintf("%q", inbound), func(t *testing.T) {
-			securityID, tc := resolveTraceIdentity(inbound)
-
-			assert.True(t, security.IsValidTraceID(securityID), "fresh id is a v4 UUID")
-			assert.Equal(t, telemetry.TraceIDFromUUID(securityID), tc.TraceID, "unified trace id (Level 1 invariant)")
-			assert.Empty(t, tc.ParentSpanID, "local trace root has no remote parent")
-			assert.Equal(t, "01", tc.Flags, "fresh traces are sampled")
-			assert.Regexp(t, reSpanID, tc.RootSpanID)
-		})
-	}
-}
-
 func TestAgentSpanStartAttrs(t *testing.T) {
 	attrs := agentSpanStartAttrs(3, "code")
-	assert.Equal(t, 3, attrs["iteration"])
-	assert.Equal(t, "invoke_agent", attrs["gen_ai.operation.name"])
-	assert.Equal(t, "code", attrs["gen_ai.agent.name"])
+	require.Len(t, attrs, 3)
+	assert.Contains(t, attrs, attribute.Int("iteration", 3))
+	assert.Contains(t, attrs, attribute.String("gen_ai.operation.name", "invoke_agent"))
+	assert.Contains(t, attrs, attribute.String("gen_ai.agent.name", "code"))
 }
 
 func TestAgentSpanEndAttrs(t *testing.T) {
@@ -270,16 +203,16 @@ func TestAgentSpanEndAttrs(t *testing.T) {
 	m.ToolCalls.Store(11)
 
 	a := agentSpanEndAttrs(2, 0, "anthropic", &m)
-	assert.Equal(t, 2, a["iteration"])
-	assert.Equal(t, 0, a["exit_code"])
-	assert.Equal(t, "anthropic", a["gen_ai.system"], "gen_ai.system is sourced from the runtime, not hardcoded")
-	assert.Equal(t, "claude-opus-4-6", a["gen_ai.request.model"])
-	assert.Equal(t, 11, a["gen_ai.usage.input_tokens"])
-	assert.Equal(t, 1505, a["gen_ai.usage.output_tokens"])
-	assert.Equal(t, 38832, a["gen_ai.usage.cache_creation_input_tokens"])
-	assert.Equal(t, 109938, a["gen_ai.usage.cache_read_input_tokens"])
-	assert.Equal(t, 0.34, a["fullsend.cost_usd"], "cost rounded to cents")
-	assert.Equal(t, 11, a["fullsend.tool_calls"])
+	assert.Contains(t, a, attribute.Int("iteration", 2))
+	assert.Contains(t, a, attribute.Int("exit_code", 0))
+	assert.Contains(t, a, attribute.String("gen_ai.system", "anthropic"))
+	assert.Contains(t, a, attribute.String("gen_ai.request.model", "claude-opus-4-6"))
+	assert.Contains(t, a, attribute.Int("gen_ai.usage.input_tokens", 11))
+	assert.Contains(t, a, attribute.Int("gen_ai.usage.output_tokens", 1505))
+	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_creation_input_tokens", 38832))
+	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_read_input_tokens", 109938))
+	assert.Contains(t, a, attribute.Float64("fullsend.cost_usd", 0.34))
+	assert.Contains(t, a, attribute.Int("fullsend.tool_calls", 11))
 }
 
 func TestAggregateRunMetrics(t *testing.T) {
@@ -293,7 +226,7 @@ func TestAggregateRunMetrics(t *testing.T) {
 	m1.Model = "claude-opus-4-6"
 	aggregateRunMetrics(&agg, &m1, 1)
 
-	var m2 agentruntime.RunMetrics // second iteration, no model reported
+	var m2 agentruntime.RunMetrics
 	m2.NumTurns, m2.TotalCostUSD = 2, 0.05
 	m2.InputTokens, m2.OutputTokens = 4, 40
 	m2.CacheCreationInputTokens, m2.CacheReadInputTokens = 200, 900
@@ -311,23 +244,64 @@ func TestAggregateRunMetrics(t *testing.T) {
 	assert.Equal(t, "claude-opus-4-6", agg.Model, "last non-empty model is retained")
 }
 
-func TestToTelemetryMetrics(t *testing.T) {
-	var agg aggregateMetrics
-	agg.NumTurns = 7
-	agg.TotalCostUSD = 0.24261625
-	agg.TokenUsage.Input = 18432
-	agg.TokenUsage.Output = 2901
-	agg.TokenUsage.CacheCreation = 8000
-	agg.TokenUsage.CacheRead = 50000
-	agg.ToolCalls = 14
-	agg.Iterations = 3
+func testTracer() trace.Tracer {
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample()))
+	return tp.Tracer("test")
+}
 
-	m := toTelemetryMetrics(agg)
-	assert.Equal(t, 18432, m.InputTokens, "input must map from TokenUsage.Input")
-	assert.Equal(t, 2901, m.OutputTokens, "output must map from TokenUsage.Output")
-	assert.Equal(t, 8000, m.CacheCreationInputTokens, "cache_creation must map from TokenUsage.CacheCreation")
-	assert.Equal(t, 50000, m.CacheReadInputTokens, "cache_read must map from TokenUsage.CacheRead")
-	assert.InDelta(t, 0.24, m.TotalCostUSD, 1e-9, "cost rounded to 2 decimals")
-	assert.Equal(t, 7, m.NumTurns)
-	assert.Equal(t, 14, m.ToolCalls)
+func TestResolveTraceIdentity_AdoptsSampledParent(t *testing.T) {
+	const inbound = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-01"
+
+	tid := resolveTraceIdentity(context.Background(), testTracer(), inbound, "", nil)
+	defer tid.RootSpan.End()
+
+	sc := tid.RootSpan.SpanContext()
+	require.True(t, sc.IsValid(), "root span must be valid")
+	assert.Equal(t, "4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d", sc.TraceID().String(), "must adopt inbound trace ID")
+	assert.NotEqual(t, "a1b2c3d4e5f60718", sc.SpanID().String(), "must have a fresh span ID")
+	assert.Equal(t, trace.SpanKindConsumer, tid.SpanKind, "remote parent → Consumer kind")
+	assert.True(t, strings.HasSuffix(tid.Traceparent, "-01"), "sampled flag preserved")
+	assert.True(t, strings.HasPrefix(tid.Traceparent, "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-"), "trace ID in propagated traceparent")
+}
+
+func TestResolveTraceIdentity_PreservesUnsampledFlag(t *testing.T) {
+	const inbound = "00-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-00"
+
+	tid := resolveTraceIdentity(context.Background(), testTracer(), inbound, "", nil)
+	defer tid.RootSpan.End()
+
+	sc := tid.RootSpan.SpanContext()
+	assert.Equal(t, "4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d", sc.TraceID().String(), "must adopt inbound trace ID")
+	assert.True(t, sc.IsSampled(), "local span still sampled for file exporter")
+	assert.True(t, strings.HasSuffix(tid.Traceparent, "-00"), "propagated traceparent must preserve unsampled flag")
+	assert.Equal(t, trace.SpanKindConsumer, tid.SpanKind)
+}
+
+func TestResolveTraceIdentity_NoInbound(t *testing.T) {
+	tid := resolveTraceIdentity(context.Background(), testTracer(), "", "", nil)
+	defer tid.RootSpan.End()
+
+	sc := tid.RootSpan.SpanContext()
+	require.True(t, sc.IsValid(), "root span must be valid")
+	assert.True(t, strings.HasSuffix(tid.Traceparent, "-01"), "fresh trace is sampled")
+	assert.Equal(t, trace.SpanKindInternal, tid.SpanKind, "no remote parent → Internal kind")
+}
+
+func TestResolveTraceIdentity_MalformedInput(t *testing.T) {
+	cases := []string{
+		"not-a-traceparent",
+		"00-zzzz-zzzz-01",
+		"ff-4f3a9c1b2d8e4a7c9f0b1e2d3c4a5b6d-a1b2c3d4e5f60718-01",
+	}
+	for _, tp := range cases {
+		t.Run(tp, func(t *testing.T) {
+			tid := resolveTraceIdentity(context.Background(), testTracer(), tp, "", nil)
+			defer tid.RootSpan.End()
+
+			sc := tid.RootSpan.SpanContext()
+			require.True(t, sc.IsValid(), "must produce a valid span even with malformed input")
+			assert.Equal(t, trace.SpanKindInternal, tid.SpanKind, "malformed input → no remote parent → Internal")
+			assert.NotEmpty(t, tid.Traceparent, "must produce a traceparent")
+		})
+	}
 }

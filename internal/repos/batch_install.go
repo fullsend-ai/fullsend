@@ -78,7 +78,11 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 	}
 
 	if len(cfg.RepoFilter) > 0 {
-		repos = filterRepos(repos, cfg.RepoFilter)
+		var filterErr error
+		repos, filterErr = filterRepos(repos, cfg.RepoFilter)
+		if filterErr != nil {
+			return nil, filterErr
+		}
 	}
 	if len(repos) == 0 {
 		return &BatchInstallResult{}, nil

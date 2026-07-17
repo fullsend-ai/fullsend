@@ -1,0 +1,24 @@
+# Build context trim for images/runner/Containerfile (context = repo root).
+# Only the Go source, go.mod/go.sum, and .github/scripts/openshell-version.sh
+# are consumed by the build.
+.git
+bin/
+node_modules/
+**/node_modules/
+images/
+website/
+web/
+cloudflare_site/
+e2e/
+eval/
+experiments/
+docs/
+# Keep local credential artifacts out of the build context. They never
+# reach the final image (only /out/fullsend is copied forward), but they
+# should not enter intermediate build-stage layers either.
+.env*
+**/.env*
+*.pem
+**/*.pem
+**/*credentials*.json
+**/*serviceaccount*.json

@@ -11,7 +11,10 @@ Manage per-repo installations across multiple orgs via a declarative `repos.yaml
 | Command | Description |
 |---------|-------------|
 | `fullsend repos init <org\|owner/repo>` | Generate a repos.yaml manifest by discovering existing installations |
-| `fullsend repos install` | Install fullsend on uninstalled manifest repos |
+| `fullsend repos install [repos...]` | Install fullsend on uninstalled manifest repos |
+| `fullsend repos add <repos...>` | Add repo entries to a repos.yaml manifest |
+| `fullsend repos remove <repos...>` | Remove repo entries from a repos.yaml manifest |
+| `fullsend repos uninstall <repos...>` | Tear down fullsend from specific repos |
 | `fullsend repos status` | Compare manifest against actual repo state |
 
 ## `repos init`
@@ -73,9 +76,11 @@ Runs in three phases:
 ```bash
 fullsend repos install -f repos.yaml
 fullsend repos install --dry-run
-fullsend repos install --repo acme/api --repo acme/web
-fullsend repos install --direct --concurrency 8
+fullsend repos install acme/api acme/web
+fullsend repos install "acme/*" --direct --concurrency 8
 ```
+
+When repos are specified as positional arguments, only those repos are installed. Glob patterns (e.g. `acme/*`) are matched against manifest entries. When no repos are specified, all manifest repos are installed.
 
 ### Flags
 
@@ -83,7 +88,6 @@ fullsend repos install --direct --concurrency 8
 |------|---------|-------------|
 | `-f`, `--manifest` | `repos.yaml` | Path or URL to repos.yaml manifest |
 | `--dry-run` | `false` | Preview what would be installed without making changes |
-| `--repo` | (all) | Install specific repos only (repeatable) |
 | `--skip-mint-check` | `false` | Skip mint URL discovery and org registration (EnsureOrgInMint). Use when orgs are already registered in the mint. |
 | `--concurrency` | `4` | Max parallel operations (1-32) |
 | `--roles` | `triage,coder,review,fix,retro,prioritize` | Agent roles to install |
@@ -106,7 +110,7 @@ fullsend repos install -f repos.yaml --dry-run
 Install specific repos (orgs already registered):
 
 ```bash
-fullsend repos install --repo acme/api --repo acme/web --skip-mint-check
+fullsend repos install acme/api acme/web --skip-mint-check
 ```
 
 > **Note:** Without `--skip-mint-check`, `repos install` will register any new
@@ -121,8 +125,8 @@ Read-only comparison of the `repos.yaml` manifest against actual forge state. Re
 ```bash
 fullsend repos status
 fullsend repos status -f path/to/repos.yaml
-fullsend repos status --repo owner/repo1 --repo owner/repo2
-fullsend repos status --json
+fullsend repos status --repo acme/api --repo acme/web
+fullsend repos status --repo "acme/*" --json
 ```
 
 ### Flags
@@ -130,8 +134,8 @@ fullsend repos status --json
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--manifest` | `-f` | `repos.yaml` | Path or HTTPS URL to manifest file |
+| `--repo` | | | Filter to specific repos (repeatable, supports globs) |
 | `--json` | | `false` | Emit JSON output instead of table |
-| `--repo` | | | Filter to specific repos (repeatable) |
 | `--concurrency` | | `8` | Max parallel API calls |
 
 ### Output
@@ -152,6 +156,85 @@ The command returns a non-zero exit code when any repo has drift, is not install
 ### Authentication
 
 Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`.
+
+## `repos add`
+
+Add one or more repo entries to the `repos.yaml` manifest file, editing it in place. Use `--install` to also install fullsend on the added repos after updating the manifest.
+
+```bash
+fullsend repos add acme/new-api acme/new-web
+fullsend repos add acme/new-api --install --direct
+fullsend repos add acme/new-api --dry-run
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-f`, `--manifest` | `repos.yaml` | Path to repos.yaml manifest |
+| `--dry-run` | `false` | Preview what would be added without making changes |
+| `--install` | `false` | Also install fullsend on the added repos |
+| `--concurrency` | `4` | Max parallel operations (1-32, used with `--install`) |
+| `--direct` | `false` | Push scaffold directly to default branch (used with `--install`) |
+| `--roles` | default roles | Agent roles to install (used with `--install`) |
+
+Duplicate entries are silently skipped. Glob patterns (e.g. `acme/*`) are allowed as manifest entries.
+
+> **Note:** With `--install`, the manifest is updated before installation begins.
+> If installation fails for some repos, those entries remain in the manifest as
+> desired state. Run `fullsend repos status` to identify repos that need
+> re-installation, then `fullsend repos install <repo>` to retry.
+
+## `repos remove`
+
+Remove one or more repo entries from the `repos.yaml` manifest file, editing it in place. When multiple repos are targeted (via globs or explicit bulk lists), the command prompts for confirmation unless `--yes` is set.
+
+Use `--uninstall` to tear down fullsend from the repos before removing them from the manifest (deletes workflow, variables, secrets, and WIF).
+
+```bash
+fullsend repos remove acme/old-api
+fullsend repos remove "acme/*" --yes
+fullsend repos remove acme/old-api --uninstall
+fullsend repos remove acme/old-api --uninstall --skip-wif-cleanup
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-f`, `--manifest` | `repos.yaml` | Path to repos.yaml manifest |
+| `--dry-run` | `false` | Preview what would be removed without making changes |
+| `--uninstall` | `false` | Tear down fullsend from repos before removing from manifest |
+| `--yes` | `false` | Skip confirmation prompt when multiple repos are targeted |
+| `--skip-wif-cleanup` | `false` | Skip GCP WIF provider deletion (only with `--uninstall`) |
+| `--concurrency` | `4` | Max parallel operations (1-32, used with `--uninstall`) |
+
+## `repos uninstall`
+
+Tear down fullsend from the specified repos by deleting workflow files, variables, secrets, and WIF infrastructure. Does **not** modify `repos.yaml` — use `repos remove` for that.
+
+When multiple repos are targeted (via globs or explicit bulk lists), the command prompts for confirmation unless `--yes` is set.
+
+Runs in two phases:
+1. **Parallel per-repo cleanup** — delete workflow, variables, secrets (concurrent)
+2. **Sequential WIF deregistration** — deregister from mint and delete WIF provider
+
+```bash
+fullsend repos uninstall acme/old-api
+fullsend repos uninstall "acme/*" --yes
+fullsend repos uninstall acme/old-api --skip-wif-cleanup
+fullsend repos uninstall acme/old-api --dry-run
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-f`, `--manifest` | `repos.yaml` | Path to repos.yaml manifest |
+| `--dry-run` | `false` | Preview what would be uninstalled without making changes |
+| `--yes` | `false` | Skip confirmation prompt when multiple repos are targeted |
+| `--skip-wif-cleanup` | `false` | Skip GCP WIF provider deletion |
+| `--concurrency` | `4` | Max parallel operations (1-32) |
 
 ## See also
 

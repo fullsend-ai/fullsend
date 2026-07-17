@@ -141,3 +141,12 @@ decision:
   `fullsend.runtime` trace attribute for multi-runtime observability
 - [#2368](https://github.com/fullsend-ai/fullsend/issues/2368) — Add
   `fullsend.harness.content_sha` trace attribute for config change correlation
+
+## Annotations
+
+**2026-07-17 — OTel SDK migration (3dc2ca4c):** `run-summary.json` was removed.
+Its contents (cost, token counts, tool calls) are now attributes on the root
+and agent spans in `run-telemetry.jsonl`, which became the sole Level 1
+artifact. OTLP export also changed from post-hoc directory upload to live
+span export via the OTel SDK's batch processor. The core decision (three-level
+opt-in, OTel-native, W3C propagation) is unchanged.

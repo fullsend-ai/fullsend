@@ -13,25 +13,23 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-// TestScanOutputFilesSkipsTelemetryArtifacts pins that the host-side output
-// redaction scan does NOT rewrite the telemetry files. The NDJSON file is still
-// held open for append by the recorder during the scan, so an in-place rewrite
-// would truncate it out from under the open handle; and both files are
-// metadata-only by construction, so they don't need redaction. A normal output
-// file must still be sanitized.
+// TestScanOutputFiles_SkipsTelemetryArtifacts pins that the host-side output
+// redaction scan does NOT rewrite the telemetry JSONL file. It is still held
+// open for append during the scan, so an in-place rewrite would truncate it
+// under the open handle; and it is metadata-only by construction. A normal
+// output file must still be sanitized.
 func TestScanOutputFiles_SkipsTelemetryArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	const secret = "Token: ghp_FAKEtesttoken000000000000000000000000\n"
 
 	telem := filepath.Join(dir, telemetry.TelemetryFile)
-	summary := filepath.Join(dir, telemetry.SummaryFile)
 	normal := filepath.Join(dir, "output.txt")
 	// A sandbox agent could write a file that merely shares the telemetry name
 	// under its iteration output; that must still be sanitized (it is not the
 	// recorder's own artifact).
 	nested := filepath.Join(dir, "iteration-1", "output", telemetry.TelemetryFile)
 	require.NoError(t, os.MkdirAll(filepath.Dir(nested), 0o755))
-	for _, p := range []string{telem, summary, normal, nested} {
+	for _, p := range []string{telem, normal, nested} {
 		require.NoError(t, os.WriteFile(p, []byte(secret), 0o644))
 	}
 
@@ -41,10 +39,6 @@ func TestScanOutputFiles_SkipsTelemetryArtifacts(t *testing.T) {
 	got, err := os.ReadFile(telem)
 	require.NoError(t, err)
 	assert.Equal(t, secret, string(got), "the recorder's own run-telemetry.jsonl must be left untouched")
-
-	got, err = os.ReadFile(summary)
-	require.NoError(t, err)
-	assert.Equal(t, secret, string(got), "the recorder's own run-summary.json must be left untouched")
 
 	got, err = os.ReadFile(normal)
 	require.NoError(t, err)

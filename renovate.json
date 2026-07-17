@@ -53,6 +53,17 @@
     },
     {
       "customType": "regex",
+      "description": "Track the gcloud CLI version pin in the runner image. GCLOUD_SHA256_{AMD64,ARM64} must be refreshed manually from https://cloud.google.com/sdk/docs/install — the runner-image PR build fails on checksum mismatch until they are.",
+      "managerFilePatterns": ["/^images/runner/Containerfile$/"],
+      "matchStrings": [
+        "ARG GCLOUD_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "gcr.io/google.com/cloudsdktool/google-cloud-cli",
+      "datasourceTemplate": "docker",
+      "versioningTemplate": "semver"
+    },
+    {
+      "customType": "regex",
       "description": "Track wranglerVersion pins in site-deploy.yml so they bump with the cloudflare-workers group",
       "managerFilePatterns": ["/^\\.github/workflows/site-deploy\\.yml$/"],
       "matchStrings": [

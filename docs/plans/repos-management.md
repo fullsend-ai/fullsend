@@ -9,7 +9,7 @@ per-repo installations across multiple orgs.
 The work is structured as 8 PRs across two phases. Phase 1 (PRs 1–4)
 builds the foundation: extracting reusable install logic, the manifest
 parser, a new forge method, and read-only status. Phase 2 (PRs 5–8)
-adds write operations: bulk install, sync/diff, upgrade, and remove.
+adds write operations: bulk install, sync/diff, upgrade, add/remove/uninstall.
 
 ---
 
@@ -181,7 +181,7 @@ Installs fullsend on repos not yet installed. Three-phase execution:
 Concurrent `repos install` and `fullsend github setup` targeting the
 same repo are unsafe — no distributed lock is held.
 
-Supports `--dry-run`, `--repo` (filter), `--concurrency`.
+Supports `--dry-run`, positional args (filter, supports globs), `--concurrency`.
 
 #### `fullsend repos diff`
 
@@ -244,19 +244,40 @@ is behind the target fullsend ref. The `/health` endpoint must be
 extended to include a `version` field (currently only returns
 `{"status":"ok"}`).
 
+#### `fullsend repos add`
+
+Adds repo entries to the `repos.yaml` manifest. Supports glob patterns
+(e.g. `acme/*`) and validates repo name format (`owner/repo`). Skips
+duplicates. With `--install`, also installs fullsend on the added repos.
+
+Supports `--dry-run`, `--install`, `--concurrency`, `--direct`.
+
 #### `fullsend repos remove`
 
-Removes fullsend from specific repos. Requires explicit repo names —
-no glob expansion, to prevent accidental bulk deletion.
+Removes repo entries from the `repos.yaml` manifest. Glob patterns are
+matched against manifest entries and prompt for confirmation unless
+`--yes` is set.
+
+With `--uninstall`, tears down fullsend from the matched repos before
+removing them from the manifest (deletes workflow, variables, secrets,
+and WIF infrastructure).
+
+Supports `--dry-run`, `--uninstall`, `--yes`, `--skip-wif-cleanup`,
+`--concurrency`.
+
+#### `fullsend repos uninstall`
+
+Tears down fullsend from specific repos without modifying the manifest.
+Glob patterns are matched against manifest entries.
 
 For each repo: deletes workflow file, variables, secrets, deregisters
 from mint's `PER_REPO_WIF_REPOS` (sequential), deletes WIF provider.
 
-Does **not** remove repos from the manifest (operator edits manually).
-Does **not** remove `.fullsend/` — it contains user-authored config
-that may be version-controlled independently.
+Does **not** remove repos from the manifest — use `repos remove` for
+that. Does **not** remove `.fullsend/` — it contains user-authored
+config that may be version-controlled independently.
 
-Supports `--dry-run`, `--skip-wif-cleanup`, `--concurrency`.
+Supports `--dry-run`, `--yes`, `--skip-wif-cleanup`, `--concurrency`.
 
 ### Version management
 
@@ -314,7 +335,7 @@ should be proposed in its own ADR when pursued.
 PRs 1, 2, 3 ─────────> PR 5 (repos install)
 PRs 2, 3 ────> PR 4 (repos status) ──┬──> PR 6 (sync/diff)
                                       └──> PR 7 (upgrade)
-PRs 1, 3 ─────────> PR 8 (remove)
+PRs 1, 3 ─────────> PR 8 (add/remove/uninstall)
 ```
 
 PRs 1, 2, 3 are independent and can be developed in parallel.
@@ -326,7 +347,8 @@ PR 7 depends on PR 4 (reuses `extractWorkflowRef()` for reading
 current refs from workflow files).
 PR 8 depends on PRs 1 and 3 (reuses install types +
 `DeleteRepoVariable`/`DeleteRepoSecret`) and can be developed in
-parallel with PRs 4–7.
+parallel with PRs 4–7. Implements three commands: `repos add`,
+`repos remove`, and `repos uninstall`.
 
 The `repos init` command is covered by a
 [separate implementation plan](repos-init.md) and can be developed
@@ -845,7 +867,7 @@ Flags:
 
 - `--manifest` / `-f` (string, default `repos.yaml`): path or URL.
 - `--dry-run` (bool).
-- `--repo` (string, repeatable): install specific repos only.
+- Positional args: install specific repos only (supports globs).
 - `--skip-app-setup` (bool).
 - `--skip-mint-check` (bool).
 - `--concurrency` (int, default 4): max parallel scaffold writes.
@@ -1156,9 +1178,9 @@ tests. Mint compatibility tested with a fake HTTP server.
 
 ---
 
-### PR 8: `fullsend repos remove` (uninstall)
+### PR 8: repos management (add, remove, uninstall)
 
-**Scope:** New CLI command. Deletes infrastructure.
+**Scope:** Three new CLI commands for managing per-repo installations.
 
 **Depends on:** PR 1 (reuses types), PR 3 (`DeleteRepoVariable`,
 `DeleteRepoSecret`).
@@ -1167,20 +1189,32 @@ Can be developed in parallel with PRs 4–7.
 
 #### `internal/cli/repos.go` (modify)
 
-Add `newReposRemoveCmd()`.
+Add `newReposAddCmd()`, `newReposRemoveCmd()`, `newReposUninstallCmd()`.
 
-Flags:
-
-- `--manifest` / `-f`: used to resolve mint config for WIF cleanup.
-- `--repo` (repeatable, **required**): repos to remove.
+`repos add` — adds repo entries to the manifest:
+- Positional args: repos to add (supports globs).
+- `--manifest` / `-f`.
 - `--dry-run`.
+- `--install`: also install fullsend on added repos.
+- `--concurrency`, `--direct` (used with `--install`).
+
+`repos remove` — removes repo entries from the manifest:
+- Positional args: repos to remove (supports globs).
+- `--manifest` / `-f`.
+- `--dry-run`.
+- `--uninstall`: tear down fullsend before removing from manifest.
+- `--yes`: skip confirmation for glob patterns.
+- `--skip-wif-cleanup`, `--concurrency` (used with `--uninstall`).
+
+`repos uninstall` — tears down fullsend without modifying manifest:
+- Positional args: repos to uninstall (supports globs).
+- `--manifest` / `-f`: used to resolve mint config for WIF cleanup.
+- `--dry-run`.
+- `--yes`: skip confirmation for glob patterns.
 - `--skip-wif-cleanup`: skip GCP WIF provider deletion and mint
   deregistration.
 - `--concurrency` (int, default 4): max parallel Phase 1 cleanup
   operations.
-
-No glob expansion. `--repo` requires exact `owner/repo` values to
-prevent accidental bulk removal.
 
 #### `internal/repos/remove.go` (new)
 

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 func newReposCmd() *cobra.Command {
@@ -28,7 +30,10 @@ The repos subcommand group provides bulk operations for platform administrators
 managing fullsend across many repositories and organizations.`,
 	}
 	cmd.AddCommand(newReposInitCmd())
+	cmd.AddCommand(newReposAddCmd())
+	cmd.AddCommand(newReposRemoveCmd())
 	cmd.AddCommand(newReposInstallCmd())
+	cmd.AddCommand(newReposUninstallCmd())
 	cmd.AddCommand(newReposStatusCmd())
 	return cmd
 }
@@ -318,22 +323,27 @@ func newReposInstallCmd() *cobra.Command {
 	opts := &reposInstallConfig{}
 
 	cmd := &cobra.Command{
-		Use:   "install",
+		Use:   "install [repos...]",
 		Short: "Install fullsend on repos defined in a manifest",
 		Long: `Install fullsend on repos not yet installed, as defined in a repos.yaml manifest.
+
+When repos are specified as positional arguments, only those repos are installed.
+Glob patterns (e.g. "acme/*") are matched against manifest entries.
+When no repos are specified, all manifest repos are installed.
 
 Runs in three phases:
   1. Parallel discovery: check which repos are already installed
   2. Sequential WIF: provision WIF infrastructure per repo (not concurrent-safe)
   3. Parallel scaffold: commit scaffold files and write variables/secrets`,
+		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.repoFilter = args
 			return runReposInstall(cmd.Context(), opts)
 		},
 	}
 
 	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path or URL to repos.yaml manifest")
 	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "preview what would be installed without making changes")
-	cmd.Flags().StringArrayVar(&opts.repoFilter, "repo", nil, "install specific repos only (repeatable)")
 	cmd.Flags().BoolVar(&opts.skipMintCheck, "skip-mint-check", false, "skip mint URL discovery and org registration (EnsureOrgInMint)")
 	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 4, "max parallel operations (1-32)")
 	cmd.Flags().StringSliceVar(&opts.roles, "roles", config.PerRepoDefaultRoles(), "agent roles to install")
@@ -462,6 +472,505 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	return nil
 }
 
+// reposAddConfig holds flag values for repos add.
+type reposAddConfig struct {
+	manifest    string
+	dryRun      bool
+	install     bool
+	concurrency int
+	direct      bool
+	roles       []string
+
+	testClient      forge.Client
+	testProvisioner repos.WIFProvisioner
+}
+
+func newReposAddCmd() *cobra.Command {
+	opts := &reposAddConfig{}
+
+	cmd := &cobra.Command{
+		Use:   "add <repos...>",
+		Short: "Add repo entries to a repos.yaml manifest",
+		Long: `Add one or more repo entries to the repos.yaml manifest file, editing it
+in place.
+
+Use --install to also install fullsend on the added repos after updating
+the manifest.`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runReposAdd(cmd.Context(), opts, args)
+		},
+	}
+
+	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path to repos.yaml manifest")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "preview what would be added without making changes")
+	cmd.Flags().BoolVar(&opts.install, "install", false, "also install fullsend on the added repos")
+	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 4, "max parallel operations (1-32)")
+	cmd.Flags().BoolVar(&opts.direct, "direct", false, "push scaffold directly to default branch (skip PR)")
+	cmd.Flags().StringSliceVar(&opts.roles, "roles", config.PerRepoDefaultRoles(), "agent roles to install (used with --install)")
+
+	return cmd
+}
+
+func runReposAdd(ctx context.Context, opts *reposAddConfig, repoArgs []string) error {
+	if opts.install && (opts.concurrency < 1 || opts.concurrency > 32) {
+		return fmt.Errorf("--concurrency must be between 1 and 32, got %d", opts.concurrency)
+	}
+
+	printer := ui.New(os.Stdout)
+
+	printer.StepStart("Loading manifest")
+	manifest, err := repos.LoadManifest(ctx, opts.manifest)
+	if err != nil {
+		return fmt.Errorf("loading manifest: %w", err)
+	}
+	if err := manifest.Validate(); err != nil {
+		return fmt.Errorf("manifest validation failed: %w", err)
+	}
+	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", len(manifest.Repos)))
+
+	var client forge.Client
+	if opts.testClient != nil {
+		client = opts.testClient
+	} else {
+		token, tokenErr := resolveToken()
+		if tokenErr != nil {
+			return tokenErr
+		}
+		client = newGitHubLiveClient(token)
+	}
+
+	entries := make([]repos.RepoEntry, len(repoArgs))
+	for i, r := range repoArgs {
+		entries[i] = repos.RepoEntry{Repo: r}
+	}
+
+	progressFn := func(repo, phase, msg string) {
+		switch phase {
+		case "done", "manifest":
+			printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
+		default:
+			printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
+		}
+	}
+
+	result, _, err := repos.AddToManifest(ctx, repos.ManifestEditConfig{
+		Manifest:     manifest,
+		ManifestPath: opts.manifest,
+		DryRun:       opts.dryRun,
+	}, entries, client, progressFn)
+	if err != nil {
+		return err
+	}
+
+	printer.Blank()
+	printer.StepDone(fmt.Sprintf("Add complete: %d added, %d skipped", len(result.Added), len(result.Skipped)))
+
+	if opts.install && len(result.Added) > 0 && !opts.dryRun {
+		printer.Blank()
+		printer.StepStart("Installing fullsend on added repos")
+		installOpts := &reposInstallConfig{
+			manifest:        opts.manifest,
+			repoFilter:      result.Added,
+			concurrency:     opts.concurrency,
+			direct:          opts.direct,
+			roles:           opts.roles,
+			testClient:      opts.testClient,
+			testProvisioner: opts.testProvisioner,
+		}
+		if err := runReposInstall(ctx, installOpts); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// reposRemoveConfig holds flag values for repos remove.
+type reposRemoveConfig struct {
+	manifest       string
+	dryRun         bool
+	uninstall      bool
+	yes            bool
+	skipWIFCleanup bool
+	concurrency    int
+
+	testClient      forge.Client
+	testProvisioner repos.WIFProvisioner
+}
+
+func newReposRemoveCmd() *cobra.Command {
+	opts := &reposRemoveConfig{}
+
+	cmd := &cobra.Command{
+		Use:   "remove <repos...>",
+		Short: "Remove repo entries from a repos.yaml manifest",
+		Long: `Remove one or more repo entries from the repos.yaml manifest file,
+editing it in place.
+
+Glob patterns (e.g. "acme/*") are matched against manifest entries and
+prompt for confirmation unless --yes is set.
+
+Use --uninstall to tear down fullsend from the repos before removing them
+from the manifest (deletes workflow, variables, secrets, and WIF).`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runReposRemove(cmd.Context(), opts, args)
+		},
+	}
+
+	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path to repos.yaml manifest")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "preview what would be removed without making changes")
+	cmd.Flags().BoolVar(&opts.uninstall, "uninstall", false, "tear down fullsend from repos before removing from manifest")
+	cmd.Flags().BoolVar(&opts.yes, "yes", false, "skip confirmation prompt when multiple repos are targeted")
+	cmd.Flags().BoolVar(&opts.skipWIFCleanup, "skip-wif-cleanup", false, "skip GCP WIF provider deletion (only with --uninstall)")
+	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 4, "max parallel operations (1-32)")
+
+	return cmd
+}
+
+func runReposRemove(ctx context.Context, opts *reposRemoveConfig, repoArgs []string) error {
+	if opts.uninstall && (opts.concurrency < 1 || opts.concurrency > 32) {
+		return fmt.Errorf("--concurrency must be between 1 and 32, got %d", opts.concurrency)
+	}
+
+	printer := ui.New(os.Stdout)
+	var uninstallFailed int
+
+	printer.StepStart("Loading manifest")
+	manifest, err := repos.LoadManifest(ctx, opts.manifest)
+	if err != nil {
+		return fmt.Errorf("loading manifest: %w", err)
+	}
+	if err := manifest.Validate(); err != nil {
+		return fmt.Errorf("manifest validation failed: %w", err)
+	}
+	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", len(manifest.Repos)))
+
+	if !opts.yes && !opts.dryRun {
+		action := "remove"
+		if opts.uninstall {
+			action = "remove and uninstall"
+		}
+		if err := confirmBulkAction(printer, action, repoArgs, manifest, os.Stdin); err != nil {
+			return err
+		}
+	}
+
+	if opts.uninstall {
+		matched, matchErr := repos.MatchManifestRepos(manifest, repoArgs)
+		if matchErr != nil {
+			return matchErr
+		}
+		var concreteRepos []string
+		for _, r := range matched {
+			if strings.ContainsAny(r, "*?[") {
+				printer.StepInfo(fmt.Sprintf("[%s] Skipping glob manifest entry (use concrete repo names to uninstall)", r))
+				continue
+			}
+			concreteRepos = append(concreteRepos, r)
+		}
+		if len(concreteRepos) > 0 {
+			printer.Blank()
+			if opts.dryRun {
+				printer.StepStart("Previewing uninstall for repos")
+			} else {
+				printer.StepStart("Uninstalling fullsend from repos before removing from manifest")
+			}
+
+			var client forge.Client
+			if opts.testClient != nil {
+				client = opts.testClient
+			} else if !opts.dryRun {
+				token, tokenErr := resolveToken()
+				if tokenErr != nil {
+					return tokenErr
+				}
+				client = newGitHubLiveClient(token)
+			}
+
+			uninstallCfg := repos.UninstallConfig{
+				Manifest:       manifest,
+				Repos:          concreteRepos,
+				DryRun:         opts.dryRun,
+				SkipWIFCleanup: opts.skipWIFCleanup,
+				MaxConcurrency: opts.concurrency,
+			}
+			provFactory := buildProvisionerFactory(opts.testProvisioner, opts.skipWIFCleanup)
+			progressFn := func(repo, phase, msg string) {
+				switch phase {
+				case "done", "wif":
+					printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
+				default:
+					printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
+				}
+			}
+			results, uninstallErr := repos.Uninstall(ctx, uninstallCfg, client, provFactory, progressFn)
+			if uninstallErr != nil {
+				return uninstallErr
+			}
+			var succeededRepos []string
+			for _, r := range results {
+				if r.Success {
+					succeededRepos = append(succeededRepos, r.Owner+"/"+r.Repo)
+				} else {
+					uninstallFailed++
+					printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
+				}
+			}
+			if uninstallFailed > 0 {
+				if len(succeededRepos) > 0 {
+					repoArgs = succeededRepos
+				} else {
+					return fmt.Errorf("%d repos failed to uninstall, manifest unchanged", uninstallFailed)
+				}
+			}
+		}
+	}
+
+	progressFn := func(repo, phase, msg string) {
+		switch phase {
+		case "done", "manifest":
+			printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
+		default:
+			printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
+		}
+	}
+
+	result, _, err := repos.RemoveFromManifest(repos.ManifestEditConfig{
+		Manifest:     manifest,
+		ManifestPath: opts.manifest,
+		DryRun:       opts.dryRun,
+	}, repoArgs, progressFn)
+	if err != nil {
+		return err
+	}
+
+	printer.Blank()
+	printer.StepDone(fmt.Sprintf("Remove complete: %d removed, %d skipped", len(result.Removed), len(result.Skipped)))
+
+	if opts.uninstall && uninstallFailed > 0 {
+		return fmt.Errorf("%d repos failed to uninstall (successfully uninstalled repos were removed from manifest)", uninstallFailed)
+	}
+	return nil
+}
+
+// reposUninstallConfig holds flag values for repos uninstall.
+type reposUninstallConfig struct {
+	manifest       string
+	dryRun         bool
+	yes            bool
+	skipWIFCleanup bool
+	concurrency    int
+
+	testClient      forge.Client
+	testProvisioner repos.WIFProvisioner
+}
+
+func newReposUninstallCmd() *cobra.Command {
+	opts := &reposUninstallConfig{}
+
+	cmd := &cobra.Command{
+		Use:   "uninstall <repos...>",
+		Short: "Tear down fullsend from specific repos",
+		Long: `Tear down fullsend from the specified repos by deleting workflow files,
+variables, secrets, and WIF infrastructure.
+
+Does NOT modify repos.yaml — use "repos remove" for that.
+
+Glob patterns (e.g. "acme/*") are matched against manifest entries and
+prompt for confirmation unless --yes is set.`,
+		Args: cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runReposUninstall(cmd.Context(), opts, args)
+		},
+	}
+
+	cmd.Flags().StringVarP(&opts.manifest, "manifest", "f", "repos.yaml", "path or URL to repos.yaml manifest")
+	cmd.Flags().BoolVar(&opts.dryRun, "dry-run", false, "preview what would be uninstalled without making changes")
+	cmd.Flags().BoolVar(&opts.yes, "yes", false, "skip confirmation prompt when multiple repos are targeted")
+	cmd.Flags().BoolVar(&opts.skipWIFCleanup, "skip-wif-cleanup", false, "skip GCP WIF provider deletion and mint deregistration")
+	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 4, "max parallel operations (1-32)")
+
+	return cmd
+}
+
+func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs []string) error {
+	if opts.concurrency < 1 || opts.concurrency > 32 {
+		return fmt.Errorf("--concurrency must be between 1 and 32, got %d", opts.concurrency)
+	}
+
+	printer := ui.New(os.Stdout)
+
+	printer.StepStart("Loading manifest")
+	manifest, err := repos.LoadManifest(ctx, opts.manifest)
+	if err != nil {
+		return fmt.Errorf("loading manifest: %w", err)
+	}
+	if err := manifest.Validate(); err != nil {
+		return fmt.Errorf("manifest validation failed: %w", err)
+	}
+	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", len(manifest.Repos)))
+
+	matched, matchErr := repos.MatchManifestRepos(manifest, repoArgs)
+	if matchErr != nil {
+		return matchErr
+	}
+	if len(matched) == 0 {
+		printer.StepInfo("No manifest entries matched the given patterns")
+		return nil
+	}
+
+	var concreteRepos []string
+	for _, r := range matched {
+		if strings.ContainsAny(r, "*?[") {
+			printer.StepInfo(fmt.Sprintf("[%s] Skipping glob manifest entry (use concrete repo names to uninstall)", r))
+			continue
+		}
+		concreteRepos = append(concreteRepos, r)
+	}
+	if len(concreteRepos) == 0 {
+		printer.StepInfo("All matched entries are glob patterns — no concrete repos to uninstall")
+		return nil
+	}
+
+	if !opts.yes && !opts.dryRun {
+		if err := confirmBulkAction(printer, "uninstall", repoArgs, manifest, os.Stdin); err != nil {
+			return err
+		}
+	}
+
+	var client forge.Client
+	if opts.testClient != nil {
+		client = opts.testClient
+	} else {
+		token, tokenErr := resolveToken()
+		if tokenErr != nil {
+			return tokenErr
+		}
+		client = newGitHubLiveClient(token)
+	}
+
+	provFactory := buildProvisionerFactory(opts.testProvisioner, opts.skipWIFCleanup)
+
+	cfg := repos.UninstallConfig{
+		Manifest:       manifest,
+		Repos:          concreteRepos,
+		DryRun:         opts.dryRun,
+		SkipWIFCleanup: opts.skipWIFCleanup,
+		MaxConcurrency: opts.concurrency,
+	}
+
+	progressFn := func(repo, phase, msg string) {
+		switch phase {
+		case "done", "wif":
+			printer.StepDone(fmt.Sprintf("[%s] %s", repo, msg))
+		default:
+			printer.StepInfo(fmt.Sprintf("[%s] %s", repo, msg))
+		}
+	}
+
+	printer.Blank()
+	if opts.dryRun {
+		printer.StepStart("Dry-run: previewing uninstall")
+	} else {
+		printer.StepStart("Uninstalling fullsend from repos")
+	}
+
+	results, err := repos.Uninstall(ctx, cfg, client, provFactory, progressFn)
+	if err != nil {
+		return err
+	}
+
+	var succeeded, failed int
+	for _, r := range results {
+		if r.Success {
+			succeeded++
+		} else {
+			failed++
+		}
+	}
+
+	printer.Blank()
+	printer.StepDone(fmt.Sprintf("Uninstall complete: %d uninstalled, %d failed", succeeded, failed))
+
+	for _, r := range results {
+		if !r.Success {
+			printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
+		}
+	}
+
+	if failed > 0 {
+		return fmt.Errorf("%d repos failed to uninstall", failed)
+	}
+	return nil
+}
+
+// confirmBulkAction prompts for confirmation when a destructive action targets
+// multiple repos — either through glob expansion or an explicit bulk list.
+func confirmBulkAction(printer *ui.Printer, action string, patterns []string, manifest *repos.Manifest, stdin *os.File) error {
+	matched, err := repos.MatchManifestRepos(manifest, patterns)
+	if err != nil {
+		return err
+	}
+	if len(matched) <= 1 {
+		return nil
+	}
+
+	if !term.IsTerminal(int(stdin.Fd())) {
+		return fmt.Errorf("stdin is not a terminal; use --yes to skip confirmation")
+	}
+
+	printer.StepWarn(fmt.Sprintf("This will %s %d repos:", action, len(matched)))
+	for _, r := range matched {
+		printer.StepInfo("  " + r)
+	}
+	printer.StepInfo("Continue? [y/N]")
+
+	reader := bufio.NewReader(stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("reading confirmation: %w", err)
+	}
+	if strings.TrimSpace(strings.ToLower(line)) != "y" {
+		return fmt.Errorf("aborted")
+	}
+	return nil
+}
+
+// buildProvisionerFactory creates a ProvisionerFactory for uninstall operations.
+// When skipWIF is true or testProv is non-nil, shortcuts are used.
+func buildProvisionerFactory(testProv repos.WIFProvisioner, skipWIF bool) repos.ProvisionerFactory {
+	if skipWIF {
+		return nil
+	}
+	return func(resolved repos.ResolvedConfig) repos.WIFProvisioner {
+		if testProv != nil {
+			return testProv
+		}
+		mintProv := &gcfProvisionerAdapter{
+			provisioner: gcf.NewProvisioner(gcf.Config{
+				ProjectID:   resolved.MintProject,
+				Region:      resolved.MintRegion,
+				GitHubOrgs:  []string{resolved.Owner},
+				Repo:        resolved.Owner + "/" + resolved.Repo,
+				WIFPoolName: gcf.DefaultInferencePool,
+				MintURL:     resolved.MintURL,
+			}, gcf.NewLiveGCFClient(resolved.MintProject)),
+		}
+		wifProv := &gcfProvisionerAdapter{
+			provisioner: gcf.NewProvisioner(gcf.Config{
+				ProjectID:   resolved.InferenceProject,
+				Region:      resolved.InferenceRegion,
+				GitHubOrgs:  []string{resolved.Owner},
+				Repo:        resolved.Owner + "/" + resolved.Repo,
+				WIFPoolName: gcf.DefaultInferencePool,
+			}, gcf.NewLiveGCFClient(resolved.InferenceProject)),
+		}
+		return &splitProjectAdapter{mint: mintProv, inference: wifProv}
+	}
+}
+
 // splitProjectAdapter routes WIFProvisioner methods to the correct GCP project:
 // ProvisionWIF targets the inference project (IAM resources) while mint
 // operations target the mint project (Cloud Function env vars).
@@ -487,5 +996,15 @@ func (s *splitProjectAdapter) EnsureOrgInMint(ctx context.Context, expectedURL s
 }
 
 func (s *splitProjectAdapter) DeletePerRepoWIF(ctx context.Context, repo string) error {
-	return s.mint.DeletePerRepoWIF(ctx, repo)
+	if err := s.mint.DeletePerRepoWIF(ctx, repo); err != nil {
+		return fmt.Errorf("deregistering from mint: %w", err)
+	}
+	if err := s.inference.DeleteWIFProvider(ctx, repo); err != nil {
+		return fmt.Errorf("deleting WIF provider for %s (mint deregistration already succeeded — re-run is safe): %w", repo, err)
+	}
+	return nil
+}
+
+func (s *splitProjectAdapter) DeleteWIFProvider(ctx context.Context, repo string) error {
+	return s.inference.DeleteWIFProvider(ctx, repo)
 }
