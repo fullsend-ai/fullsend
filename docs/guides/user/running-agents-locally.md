@@ -284,8 +284,8 @@ You still need on the host: Podman, OpenShell (the gateway and sandboxes
 stay on the host; only the CLI moves into the container), GCP credentials,
 and a GitHub token.
 
-**macOS**: this path is untested — see the [macOS platform notes](#macos)
-before trying it.
+**macOS**: this path does not work — see the [macOS platform notes](#macos)
+for why.
 
 Mount your OpenShell client config and the same paths you would pass to a
 native `fullsend run`. On Linux, `--network=host` lets the containerized
@@ -362,7 +362,8 @@ When you execute `fullsend run`, pass `--fullsend-dir` as `/tmp/agents/`.
 - **Podman machine**: ensure the Podman machine is running (`podman machine start`) before invoking fullsend. The CLI does not start it automatically.
 - **Podman host-gateway**: if sandbox creation fails with `unable to replace "host-gateway"`, set `host_containers_internal_ip = "192.168.127.254"` under `[containers]` in `~/.config/containers/containers.conf` and restart the Podman machine.
 - **Architecture mismatch**: if your sandbox image uses a different CPU architecture than the host (e.g. amd64 image on an arm64 Mac via QEMU emulation), set `FULLSEND_SANDBOX_ARCH=amd64` so the CLI downloads the correct binary. This is not needed in the typical setup where the Podman VM matches the host arch.
-- **Container image**: the containerized CLI path is untested on macOS. `--network=host` reaches the Podman VM's loopback, not the macOS host where the gateway runs. Use the native darwin binary until this is verified — if you try the container path and it works, please open an issue or PR.
+- **Container image**: confirmed non-functional on macOS — sandbox creation fails with a connection-refused error. `--network=host` reaches the Podman VM's loopback, not the macOS host where the gateway runs, and `host.containers.internal` does not help either since the gateway binds to `127.0.0.1` only, not all interfaces. Use the native darwin binary.
+- **Container image mounts**: separately, bind-mounting `/tmp/...` paths (as shown in the container examples) fails with `statfs: no such file or directory` on macOS — Podman Desktop's VM shares `/Users`, `/private`, and `/var/folders` via virtiofs, but not the literal `/tmp` path, and Podman does not resolve the `/tmp` → `/private/tmp` symlink before mounting. Use `/private/tmp/...` (and `$(pwd -P)` instead of `$PWD`) if experimenting further.
 
 ### Linux
 
