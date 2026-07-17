@@ -51,122 +51,12 @@ to install it, here we use one similar to how we download it on Fullsend. Use th
 fullsend is pinned to — the source of truth is
 [`.github/scripts/openshell-version.sh`](https://github.com/fullsend-ai/fullsend/blob/main/.github/scripts/openshell-version.sh)
 in the fullsend repo at your release tag (also printed on Fullsend workflow runs).
-This pin is bumped automatically by Renovate when new OpenShell releases are
-tagged, so the version below is an example — always check the pin file for
-the current value.
 
 ```bash
 export OPENSHELL_VERSION=0.0.83  # check the pin file for the current version
 curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v${OPENSHELL_VERSION}/install.sh | OPENSHELL_VERSION=v${OPENSHELL_VERSION} sh
 openshell --version
 ```
-
-## Alternative: run the CLI from the container image
-
-Instead of downloading the fullsend binary and assembling its host-side
-dependencies yourself (gh, python3 + jsonschema, gitleaks, pre-commit, Go —
-tools the CI runners ship but your machine may not), you can run the CLI
-from the released runner image. It bundles the fullsend CLI and every
-host-side run dependency at the versions the release was tested with,
-including the pinned OpenShell CLI:
-
-```bash
-podman pull ghcr.io/fullsend-ai/fullsend-runner:latest
-```
-
-The image is published alongside each release starting with the first
-release cut after this feature landed. The example below reuses the env
-files and `/tmp` clones prepared in the sections that follow — read those
-first if you are setting up from scratch. The containerized path has been
-validated for the image build and its full tool surface; treat it as the
-newer alternative to the native binary, which remains the most-exercised
-setup.
-
-You still need on the host: Podman, the `openshell-gateway` service (see
-[Install OpenShell](#install-openshell) — the gateway and sandboxes stay on
-the host; only the CLI moves into the container), GCP credentials, and a
-GitHub token.
-
-Mount your OpenShell client config and the same paths you would pass to a
-native `fullsend run`, keeping identical paths inside the container so the
-flag values are unchanged. On Linux, `--network=host` lets the containerized
-CLI reach the gateway on `127.0.0.1` exactly like the native binary:
-
-```bash
-podman run --rm -it --network=host \
-  -v "$HOME/.config/openshell:/root/.config/openshell" \
-  -v /tmp/fullsend:/tmp/fullsend \
-  -v /tmp/fullsend-ai_fullsend:/tmp/fullsend-ai_fullsend \
-  -v /tmp/target-repo:/tmp/target-repo \
-  -v "$PWD:/work" \
-  ghcr.io/fullsend-ai/fullsend-runner:latest \
-  run triage \
-    --fullsend-dir /tmp/fullsend-ai_fullsend/internal/scaffold/fullsend-repo/ \
-    --target-repo /tmp/target-repo/ \
-    --env-file fullsend-gcp.env \
-    --env-file fullsend-triage.env
-```
-
-The `/tmp/fullsend` mount matters: without `--output-dir`, the CLI writes
-run artifacts (telemetry, `output.jsonl`, per-iteration transcripts,
-collected logs) under `/tmp/fullsend/` — unmounted, they vanish with the
-`--rm` container. Mount it (or pass `--output-dir` pointing at a mounted
-path) to keep them on the host.
-
-The image's working directory is `/work`, so relative paths in `--env-file`
-(and relative `GOOGLE_APPLICATION_CREDENTIALS` inside env files) resolve
-against the mounted current directory. Pin a version with
-`ghcr.io/fullsend-ai/fullsend-runner:{version}` — image tags match release
-versions.
-
-On SELinux-enforcing hosts (Fedora/RHEL), bind mounts may need the `:z`
-suffix (see the [Linux platform notes](#platform-notes) below). Prefer
-adding `:z` only to the `/tmp` and `$PWD` mounts — relabeling
-`~/.config/openshell` touches files the host gateway also reads.
-
-One diagnostic difference from the native binary: when a sandbox fails to
-become ready, the containerized CLI cannot collect container logs (podman
-stays on the host), so run `podman logs <sandbox-container>` on the host
-instead.
-
-The image also includes the `gcloud` CLI (pinned per release), which is useful
-for the [GCP credential setup](#get-google-cloud-platform-credentials) below.
-The agent run itself does not need `gcloud` auth — it only reads the generated
-service-account key file via `GOOGLE_APPLICATION_CREDENTIALS`.
-
-The simpler path is to run `gcloud` on the host (see below) and then mount the
-resulting key file into the container. If you need to run `gcloud` from inside
-the container, note:
-
-- **Auth persistence**: mount `~/.config/gcloud` so credentials survive the
-  `--rm` container:
-
-  ```bash
-  podman run --rm -it \
-    -v "$HOME/.config/gcloud:/root/.config/gcloud" \
-    -v "$PWD:/work" \
-    --entrypoint bash \
-    ghcr.io/fullsend-ai/fullsend-runner:latest
-  ```
-
-- **Browserless auth**: `gcloud auth login` inside the container starts the
-  **remote-bootstrap flow** — it prints a command of the form
-  `gcloud auth login --remote-bootstrap="..."` that you run on a host machine
-  that has a browser and gcloud ≥ 372.0.0 installed, then paste the output
-  back into the container. This is a two-machine flow, not a URL + code
-  exchange.
-
-  The easier alternative is to create the service account key on the host
-  (where gcloud has browser access) and copy the JSON key file into the
-  mounted working directory.
-
-**macOS**: the containerized path on macOS is untested. With a Podman machine,
-`--network=host` reaches the VM's loopback, not the macOS host where the
-gateway runs. Podman machines expose `host.containers.internal` as a host alias
-(via gvproxy), which may work if the gateway is bound to all interfaces; see
-also `OPENSHELL_BIND_ADDRESS` in the OpenShell docs. Until this is verified,
-use the native darwin binary for macOS. If you try this and it works, please
-open an issue or PR to document the approach.
 
 ## Get Google Cloud Platform credentials
 
@@ -201,6 +91,12 @@ CLOUD_ML_REGION=global
 GOOGLE_APPLICATION_CREDENTIALS=fullsend-local-credentials.json
 ```
 
+**Tip**: if you plan to run the CLI from the
+[container image](#alternative-run-the-cli-from-the-container-image) instead
+of the native binary, keep the key file and env file in your working
+directory — the container mounts it as `/work` and resolves
+`GOOGLE_APPLICATION_CREDENTIALS` relative to it.
+
 ## Get a GitHub token
 
 Create a [fine grained token](https://github.com/settings/personal-access-tokens) at GitHub. The
@@ -231,6 +127,11 @@ Check the variables they need in their environment files, referenced in their ha
 
 **Tip**: use `--no-post-script` in the `fullsend run` calls to avoid side-effects. You
 can also use `--keep-sandbox` to debug failures (but remember to remove them).
+
+**Tip**: `fullsend run` uses multiple tools on your system. Instead of
+installing them all, you can use a container image fullsend publishes — see
+[Alternative: run the CLI from the container image](#alternative-run-the-cli-from-the-container-image)
+below.
 
 **Note**: to run custom agents set `--fullsend-dir` to the directory where your
 custom agent definitions exist.
@@ -370,6 +271,54 @@ fullsend run triage \
 Status comment behavior is configured via `status_notifications` in
 `config.yaml`. See the [operations guide](../getting-started/operations.md#status-notifications).
 
+## Alternative: run the CLI from the container image
+
+Instead of downloading the fullsend binary and installing its host-side
+dependencies, you can run the CLI from the released runner image:
+
+```bash
+podman pull ghcr.io/fullsend-ai/fullsend-runner:latest
+```
+
+You still need on the host: Podman, OpenShell (the gateway and sandboxes
+stay on the host; only the CLI moves into the container), GCP credentials,
+and a GitHub token.
+
+**macOS**: this path is untested — see the [macOS platform notes](#macos)
+before trying it.
+
+Mount your OpenShell client config and the same paths you would pass to a
+native `fullsend run`. On Linux, `--network=host` lets the containerized
+CLI reach the gateway on `127.0.0.1`:
+
+```bash
+podman run --rm -it --network=host \
+  -v "$HOME/.config/openshell:/root/.config/openshell" \
+  -v /tmp/fullsend:/tmp/fullsend \
+  -v /tmp/fullsend-ai_fullsend:/tmp/fullsend-ai_fullsend \
+  -v /tmp/target-repo:/tmp/target-repo \
+  -v "$PWD:/work" \
+  ghcr.io/fullsend-ai/fullsend-runner:latest \
+  run triage \
+    --fullsend-dir /tmp/fullsend-ai_fullsend/internal/scaffold/fullsend-repo/ \
+    --target-repo /tmp/target-repo/ \
+    --env-file fullsend-gcp.env \
+    --env-file fullsend-triage.env
+```
+
+The image's working directory is `/work`, so relative paths in `--env-file`
+resolve against the mounted current directory. Run artifacts are written to
+`/tmp/fullsend/` — mount it (or pass `--output-dir` pointing at a mounted
+path) to keep them on the host.
+
+When using `--keep-sandbox` the CLI within the container is not able to
+gather podman logs, because the `podman` binary is not installed within.
+Run `podman logs <sandbox-container>` manually on your machine.
+
+On SELinux-enforcing hosts (Fedora/RHEL), bind mounts may need the `:z`
+suffix. Prefer adding `:z` only to the `/tmp` and `$PWD` mounts —
+relabeling `~/.config/openshell` touches files the host gateway also reads.
+
 ## Simulating Fullsend's real customization layers
 
 Fullsend automatically aggregates different layers of information before running `fullsend run`.
@@ -413,6 +362,7 @@ When you execute `fullsend run`, pass `--fullsend-dir` as `/tmp/agents/`.
 - **Podman machine**: ensure the Podman machine is running (`podman machine start`) before invoking fullsend. The CLI does not start it automatically.
 - **Podman host-gateway**: if sandbox creation fails with `unable to replace "host-gateway"`, set `host_containers_internal_ip = "192.168.127.254"` under `[containers]` in `~/.config/containers/containers.conf` and restart the Podman machine.
 - **Architecture mismatch**: if your sandbox image uses a different CPU architecture than the host (e.g. amd64 image on an arm64 Mac via QEMU emulation), set `FULLSEND_SANDBOX_ARCH=amd64` so the CLI downloads the correct binary. This is not needed in the typical setup where the Podman VM matches the host arch.
+- **Container image**: the containerized CLI path is untested on macOS. `--network=host` reaches the Podman VM's loopback, not the macOS host where the gateway runs. Use the native darwin binary until this is verified — if you try the container path and it works, please open an issue or PR.
 
 ### Linux
 
