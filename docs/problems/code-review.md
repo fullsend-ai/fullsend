@@ -197,7 +197,7 @@ Whether this belongs in the review system or is a separate workflow operating on
 
 ## Open questions
 
-- Can we quantify review quality? How do we know if an agent's review is as good as a human's?
+- Can we quantify review quality? How do we know if an agent's review is as good as a human's? [Review autonomy evidence](review-autonomy-evidence.md) tracks empirical observations from PRs where both agents and humans reviewed the same change.
 - How do we handle the case where an agent approves a PR that a human would have caught? (Learning from mistakes.)
 - Should review agents have access to the full repo context, or just the diff? Full context is more accurate but more expensive and more vulnerable to injection from existing code.
 - How do we prevent review agents from being "rubber stamps" — always approving because they're optimizing for throughput?
