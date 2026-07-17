@@ -92,9 +92,9 @@ GOOGLE_APPLICATION_CREDENTIALS=fullsend-local-credentials.json
 ```
 
 **Tip**: if you plan to run the CLI from the
-[container image](#alternative-run-the-cli-from-the-container-image) instead
-of the native binary, keep the key file and env file in your working
-directory — the container mounts it as `/work` and resolves
+[container image](#alternative-run-the-cli-from-the-container-image-linux-only)
+(Linux only) instead of the native binary, keep the key file and env file in
+your working directory — the container mounts it as `/work` and resolves
 `GOOGLE_APPLICATION_CREDENTIALS` relative to it.
 
 ## Get a GitHub token
@@ -128,10 +128,10 @@ Check the variables they need in their environment files, referenced in their ha
 **Tip**: use `--no-post-script` in the `fullsend run` calls to avoid side-effects. You
 can also use `--keep-sandbox` to debug failures (but remember to remove them).
 
-**Tip**: `fullsend run` uses multiple tools on your system. Instead of
-installing them all, you can use a container image fullsend publishes — see
-[Alternative: run the CLI from the container image](#alternative-run-the-cli-from-the-container-image)
-below.
+**Tip**: `fullsend run` uses multiple tools on your system. On Linux, instead
+of installing them all, you can use a container image fullsend publishes —
+see [Alternative: run the CLI from the container image](#alternative-run-the-cli-from-the-container-image-linux-only)
+below. This does not currently work on macOS.
 
 **Note**: to run custom agents set `--fullsend-dir` to the directory where your
 custom agent definitions exist.
@@ -271,7 +271,11 @@ fullsend run triage \
 Status comment behavior is configured via `status_notifications` in
 `config.yaml`. See the [operations guide](../getting-started/operations.md#status-notifications).
 
-## Alternative: run the CLI from the container image
+## Alternative: run the CLI from the container image (Linux only)
+
+**macOS**: skip this section — the containerized CLI cannot reach the host
+gateway from a Podman machine. See the [macOS platform notes](#macos) for
+why, and use the native darwin binary instead.
 
 Instead of downloading the fullsend binary and installing its host-side
 dependencies, you can run the CLI from the released runner image:
@@ -284,12 +288,9 @@ You still need on the host: Podman, OpenShell (the gateway and sandboxes
 stay on the host; only the CLI moves into the container), GCP credentials,
 and a GitHub token.
 
-**macOS**: this path does not work — see the [macOS platform notes](#macos)
-for why.
-
 Mount your OpenShell client config and the same paths you would pass to a
-native `fullsend run`. On Linux, `--network=host` lets the containerized
-CLI reach the gateway on `127.0.0.1`:
+native `fullsend run`. `--network=host` lets the containerized CLI reach
+the gateway on `127.0.0.1`:
 
 ```bash
 podman run --rm -it --network=host \
