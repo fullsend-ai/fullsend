@@ -92,9 +92,9 @@ GOOGLE_APPLICATION_CREDENTIALS=fullsend-local-credentials.json
 ```
 
 **Tip**: if you plan to run the CLI from the
-[container image](#run-from-a-container-linux)
-(Linux only) instead of the native binary, keep the key file and env file in
-your working directory — the container mounts it as `/work` and resolves
+[container image](#run-from-a-container)
+instead of the native binary, keep the key file and env file in your
+working directory — the container mounts it as `/work` and resolves
 `GOOGLE_APPLICATION_CREDENTIALS` relative to it.
 
 ## Get a GitHub token
@@ -128,10 +128,9 @@ Check the variables they need in their environment files, referenced in their ha
 **Tip**: use `--no-post-script` in the `fullsend run` calls to avoid side-effects. You
 can also use `--keep-sandbox` to debug failures (but remember to remove them).
 
-**Tip**: `fullsend run` uses multiple tools on your system. On Linux, instead
-of installing them all, you can use a container image fullsend publishes —
-see [Alternative: run the CLI from the container image](#run-from-a-container-linux)
-below. This does not currently work on macOS.
+**Tip**: `fullsend run` uses multiple tools on your system. Instead of
+installing them all, you can use a container image fullsend publishes —
+see [Run from a container](#run-from-a-container) below.
 
 **Note**: to run custom agents set `--fullsend-dir` to the directory where your
 custom agent definitions exist.
@@ -271,11 +270,7 @@ fullsend run triage \
 Status comment behavior is configured via `status_notifications` in
 `config.yaml`. See the [operations guide](../getting-started/operations.md#status-notifications).
 
-## Run from a container (Linux)
-
-**macOS**: skip this section — the containerized CLI cannot reach the host
-gateway from a Podman machine. See the [macOS platform notes](#macos) for
-why, and use the native darwin binary instead.
+## Run from a container
 
 Instead of downloading the fullsend binary and installing its host-side
 dependencies, you can run the CLI from the released runner image:
@@ -290,7 +285,7 @@ and a GitHub token.
 
 Mount your OpenShell client config and the same paths you would pass to a
 native `fullsend run`. `--network=host` lets the containerized CLI reach
-the gateway on `127.0.0.1`:
+the gateway:
 
 ```bash
 podman run --rm -it --network=host \
@@ -311,6 +306,16 @@ The image's working directory is `/work`, so relative paths in `--env-file`
 resolve against the mounted current directory. Run artifacts are written to
 `/tmp/fullsend/` — mount it (or pass `--output-dir` pointing at a mounted
 path) to keep them on the host.
+
+**macOS**: use `/private/tmp/...` for the `/tmp` mounts above (and
+`$(pwd -P)` instead of `$PWD`) — see "Container image mounts" in the
+[macOS platform notes](#macos). No other change is needed: fullsend
+detects when it's running inside a container whose loopback doesn't
+reach the gateway — the case on a macOS Podman machine, where
+`--network=host` shares the VM's network namespace, not the Mac's — and
+transparently points the OpenShell client at `host.containers.internal`
+instead. See "Container image" in the [macOS platform notes](#macos) if
+you need a manual override.
 
 When using `--keep-sandbox` the CLI within the container is not able to
 gather podman logs, because the `podman` binary is not installed within.
@@ -363,8 +368,8 @@ When you execute `fullsend run`, pass `--fullsend-dir` as `/tmp/agents/`.
 - **Podman machine**: ensure the Podman machine is running (`podman machine start`) before invoking fullsend. The CLI does not start it automatically.
 - **Podman host-gateway**: if sandbox creation fails with `unable to replace "host-gateway"`, set `host_containers_internal_ip = "192.168.127.254"` under `[containers]` in `~/.config/containers/containers.conf` and restart the Podman machine.
 - **Architecture mismatch**: if your sandbox image uses a different CPU architecture than the host (e.g. amd64 image on an arm64 Mac via QEMU emulation), set `FULLSEND_SANDBOX_ARCH=amd64` so the CLI downloads the correct binary. This is not needed in the typical setup where the Podman VM matches the host arch.
-- **Container image**: confirmed non-functional on macOS — sandbox creation fails with a connection-refused error. `--network=host` reaches the Podman VM's loopback, not the macOS host where the gateway runs, and `host.containers.internal` does not help either since the gateway binds to `127.0.0.1` only, not all interfaces. Use the native darwin binary.
-- **Container image mounts**: separately, bind-mounting `/tmp/...` paths (as shown in the container examples) fails with `statfs: no such file or directory` on macOS — Podman Desktop's VM shares `/Users`, `/private`, and `/var/folders` via virtiofs, but not the literal `/tmp` path, and Podman does not resolve the `/tmp` → `/private/tmp` symlink before mounting. Use `/private/tmp/...` (and `$(pwd -P)` instead of `$PWD`) if experimenting further.
+- **Container image**: `--network=host` shares the Podman VM's network namespace, not the Mac's, so a gateway configured at `127.0.0.1` is unreachable from inside the container. Fullsend detects this automatically and redirects the containerized CLI to whichever of `host.containers.internal` (Podman) or `host.docker.internal` (Docker) is actually reachable (fullsend-ai/fullsend#5261) — no manual steps needed. This depends on one of those names resolving inside the container; if neither does, see the **Podman host-gateway** note above. To override the detection yourself, set `OPENSHELL_GATEWAY_ENDPOINT` (e.g. `https://host.containers.internal:17670`) before running the container — an explicit value here is never overwritten. Always use `https://`: check `openshell gateway list`'s `AUTH` column, and if it says `mtls`, OpenShell will present your client certificate to whatever host this points at, so only point it at a gateway you trust.
+- **Container image mounts**: bind-mounting `/tmp/...` paths fails with `statfs: no such file or directory` on macOS — Podman Desktop's VM shares `/Users`, `/private`, and `/var/folders` via virtiofs, but not the literal `/tmp` path, and Podman does not resolve the `/tmp` → `/private/tmp` symlink before mounting. Use `/private/tmp/...` (and `$(pwd -P)` instead of `$PWD`). The [container example](#run-from-a-container) above already accounts for this.
 
 ### Linux
 

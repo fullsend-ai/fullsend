@@ -326,6 +326,17 @@ func EnsureAvailable() error {
 // The gateway must be started externally (e.g. in CI via the action.yml steps)
 // before invoking fullsend run.
 func CheckGateway() error {
+	// This runs before any other sandbox operation in the `fullsend run` flow
+	// (internal/cli/run.go calls EnsureAvailable then CheckGateway first), so
+	// applying the container gateway override here — before any openshell
+	// subprocess actually needs it — covers every later call in this process.
+	//
+	// NOTE: os.Setenv (inside ensureContainerGatewayOverride) is not
+	// goroutine-safe. This MUST complete before any goroutines that read env
+	// vars (sandbox streaming, post-script execution) are launched — true
+	// today since CheckGateway runs synchronously and first in run.go.
+	ensureContainerGatewayOverride(context.Background())
+
 	out, err := exec.Command("openshell", "gateway", "list").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("no openshell gateway running (openshell gateway list: %s) -- start openshell-gateway before running fullsend", strings.TrimSpace(string(out)))
