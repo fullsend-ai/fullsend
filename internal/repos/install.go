@@ -119,6 +119,10 @@ type WIFProvisioner interface {
 
 	// DeletePerRepoWIF removes a repo from per-repo WIF registration.
 	DeletePerRepoWIF(ctx context.Context, repo string) error
+
+	// DeleteWIFProvider deletes the WIF provider for a repo from the
+	// GCP project (used during uninstall to clean up IAM resources).
+	DeleteWIFProvider(ctx context.Context, repo string) error
 }
 
 // ErrMintNotFound indicates the mint function does not exist.

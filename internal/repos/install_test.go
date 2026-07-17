@@ -47,6 +47,10 @@ func (f *fakeWIFProvisioner) DeletePerRepoWIF(_ context.Context, _ string) error
 	return nil
 }
 
+func (f *fakeWIFProvisioner) DeleteWIFProvider(_ context.Context, _ string) error {
+	return nil
+}
+
 // noopProgress is a no-op progress callback for tests.
 func noopProgress(_, _, _ string) {}
 

@@ -190,6 +190,10 @@ type FakeClient struct {
 	// Key is "owner/repo", checked before the generic Errors map.
 	CreateBranchErrors map[string]error
 
+	// DeleteFilesErrors injects per-repo errors for DeleteFiles.
+	// Key is "owner/repo", checked before the generic Errors map.
+	DeleteFilesErrors map[string]error
+
 	// Issue comments for ListIssueComments / UpdateIssueComment.
 	IssueComments map[string][]IssueComment // key: "owner/repo/number"
 	OpenIssues    map[string][]Issue        // key: "owner/repo"
@@ -555,6 +559,9 @@ func (f *FakeClient) DeleteFiles(_ context.Context, owner, repo, message string,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	if e, ok := f.DeleteFilesErrors[owner+"/"+repo]; ok {
+		return 0, e
+	}
 	if e := f.err("DeleteFiles"); e != nil {
 		return 0, e
 	}

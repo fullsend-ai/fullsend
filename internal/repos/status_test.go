@@ -51,6 +51,58 @@ jobs:
 	fc.FileContents[owner+"/"+repo+"/.github/workflows/fullsend.yml"] = []byte(workflow)
 }
 
+func TestProbeRepoState_Installed(t *testing.T) {
+	fc := forge.NewFakeClient()
+	populateInstalledRepo(fc, "acme", "api", "v2.3.0", "https://mint.example.com", "us-east1")
+
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api")
+	if err != nil {
+		t.Fatalf("ProbeRepoState() error = %v", err)
+	}
+	if !state.Installed {
+		t.Fatal("Installed = false, want true")
+	}
+	if state.MintURL != "https://mint.example.com" {
+		t.Errorf("MintURL = %q, want https://mint.example.com", state.MintURL)
+	}
+	if state.InferenceRegion != "us-east1" {
+		t.Errorf("InferenceRegion = %q, want us-east1", state.InferenceRegion)
+	}
+	if state.FullsendRef != "v2.3.0" {
+		t.Errorf("FullsendRef = %q, want v2.3.0", state.FullsendRef)
+	}
+}
+
+func TestProbeRepoState_NotInstalled(t *testing.T) {
+	fc := forge.NewFakeClient()
+
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api")
+	if err != nil {
+		t.Fatalf("ProbeRepoState() error = %v", err)
+	}
+	if state.Installed {
+		t.Fatal("Installed = true, want false")
+	}
+}
+
+func TestProbeRepoState_WorkflowError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.VariableValues["acme/api/FULLSEND_PER_REPO_INSTALL"] = "true"
+	fc.VariableValues["acme/api/FULLSEND_GCP_REGION"] = "us-east1"
+	fc.Errors["GetFileContent"] = fmt.Errorf("server error")
+
+	state, err := ProbeRepoState(context.Background(), fc, "acme", "api")
+	if err == nil {
+		t.Fatal("expected error for workflow read failure")
+	}
+	if !state.Installed {
+		t.Fatal("Installed = false, want true even on workflow error")
+	}
+	if state.InferenceRegion != "us-east1" {
+		t.Errorf("InferenceRegion = %q, want us-east1", state.InferenceRegion)
+	}
+}
+
 func TestStatus_AllInstalled_NoDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
@@ -630,7 +682,10 @@ func TestFilterRepos(t *testing.T) {
 	}
 
 	t.Run("single filter", func(t *testing.T) {
-		result := filterRepos(repos, []string{"acme-corp/api-server"})
+		result, err := filterRepos(repos, []string{"acme-corp/api-server"})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(result) != 1 {
 			t.Fatalf("got %d results, want 1", len(result))
 		}
@@ -640,23 +695,82 @@ func TestFilterRepos(t *testing.T) {
 	})
 
 	t.Run("multiple filters", func(t *testing.T) {
-		result := filterRepos(repos, []string{"acme-corp/api-server", "other-org/tool"})
+		result, err := filterRepos(repos, []string{"acme-corp/api-server", "other-org/tool"})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(result) != 2 {
 			t.Fatalf("got %d results, want 2", len(result))
 		}
 	})
 
 	t.Run("no match", func(t *testing.T) {
-		result := filterRepos(repos, []string{"nonexistent/repo"})
+		result, err := filterRepos(repos, []string{"nonexistent/repo"})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(result) != 0 {
 			t.Fatalf("got %d results, want 0", len(result))
 		}
 	})
 
 	t.Run("case insensitive", func(t *testing.T) {
-		result := filterRepos(repos, []string{"ACME-CORP/API-SERVER"})
+		result, err := filterRepos(repos, []string{"ACME-CORP/API-SERVER"})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(result) != 1 {
 			t.Fatalf("got %d results, want 1", len(result))
+		}
+	})
+
+	t.Run("glob wildcard", func(t *testing.T) {
+		result, err := filterRepos(repos, []string{"acme-corp/*"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result) != 2 {
+			t.Fatalf("got %d results, want 2", len(result))
+		}
+	})
+
+	t.Run("glob question mark", func(t *testing.T) {
+		result, err := filterRepos(repos, []string{"other-org/too?"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result) != 1 {
+			t.Fatalf("got %d results, want 1", len(result))
+		}
+		if result[0].Repo != "tool" {
+			t.Errorf("repo = %q, want tool", result[0].Repo)
+		}
+	})
+
+	t.Run("glob no match", func(t *testing.T) {
+		result, err := filterRepos(repos, []string{"missing-org/*"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result) != 0 {
+			t.Fatalf("got %d results, want 0", len(result))
+		}
+	})
+
+	t.Run("glob case insensitive", func(t *testing.T) {
+		result, err := filterRepos(repos, []string{"ACME-CORP/*"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(result) != 2 {
+			t.Fatalf("got %d results, want 2", len(result))
+		}
+	})
+
+	t.Run("bad pattern", func(t *testing.T) {
+		_, err := filterRepos(repos, []string{"acme-corp/[invalid"})
+		if err == nil {
+			t.Error("expected error for malformed glob pattern")
 		}
 	})
 }

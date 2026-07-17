@@ -325,28 +325,23 @@ func discoverRepo(ctx context.Context, client forge.Client,
 	fullName := owner + "/" + repo
 	progress(fullName, "discover", "reading variables")
 
-	vars, err := client.ListRepoVariables(ctx, owner, repo)
-	if err != nil {
-		return DiscoveredRepo{}, fmt.Errorf("listing variables for %s: %w", fullName, err)
+	state, err := ProbeRepoState(ctx, client, owner, repo)
+	if err != nil && !state.Installed {
+		return DiscoveredRepo{}, err
 	}
 
-	// Check for per-repo installation.
-	if vars[forge.PerRepoGuardVar] == "true" {
+	if state.Installed {
 		progress(fullName, "discover", "per-repo installation detected")
-		ref, err := readWorkflowRef(ctx, client, owner, repo)
-		if err != nil {
-			return DiscoveredRepo{}, err
-		}
-		if ref != "" {
-			progress(fullName, "discover", fmt.Sprintf("ref: %s", ref))
+		if state.FullsendRef != "" {
+			progress(fullName, "discover", fmt.Sprintf("ref: %s", state.FullsendRef))
 		}
 		return DiscoveredRepo{
 			Owner:           owner,
 			Repo:            repo,
 			Source:          "per-repo",
-			MintURL:         vars["FULLSEND_MINT_URL"],
-			InferenceRegion: vars["FULLSEND_GCP_REGION"],
-			FullsendRef:     ref,
+			MintURL:         state.MintURL,
+			InferenceRegion: state.InferenceRegion,
+			FullsendRef:     state.FullsendRef,
 		}, nil
 	}
 
