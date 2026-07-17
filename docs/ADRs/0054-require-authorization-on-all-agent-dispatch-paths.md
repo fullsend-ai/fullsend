@@ -188,9 +188,11 @@ permission list, not by bypassing the check.
 
 ## Consequences
 
-- All dispatch paths require write-level repository permission,
-  closing the cost-exposure and abuse-surface gaps for both slash
-  commands and automatic triggers.
+- All dispatch paths require repository permission at a stage-appropriate
+  minimum (write+ for mutation stages; triage+ for observation stages —
+  see the [#5223](https://github.com/fullsend-ai/fullsend/issues/5223)
+  note above), closing the cost-exposure and abuse-surface gaps for both
+  slash commands and automatic triggers.
 - External users can no longer trigger agent runs by opening issues, PRs,
   or posting slash commands on public repos.
 - Maintainers retain full control: labels and slash commands let them

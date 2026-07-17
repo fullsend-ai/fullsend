@@ -475,6 +475,11 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 			assert.Contains(t, s, `is_event_actor_authorized "${ISSUE_USER_LOGIN}" triage`)
 			assert.Contains(t, s, `is_event_actor_authorized "${EVENT_SENDER_LOGIN}" triage`)
 			assert.Contains(t, s, `is_event_actor_authorized "${PR_USER_LOGIN}" triage`)
+
+			// Review-bot → fix must not escalate triage-authored human PRs (#5223 review)
+			assert.Contains(t, s, `has_repo_permission "${PR_USER_LOGIN}" write`,
+				"human PR auto-fix requires write+ on the PR author")
+			assert.Regexp(t, `(?s)PR_USER_LOGIN.*\[bot\].*STAGE="fix".*fullsend-fix.*has_repo_permission "\$\{PR_USER_LOGIN\}" write`, s)
 		})
 	}
 }

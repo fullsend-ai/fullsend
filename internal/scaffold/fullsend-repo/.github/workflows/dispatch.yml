@@ -1,5 +1,5 @@
 ---
-# lint-workflow-size: max-lines=490
+# lint-workflow-size: max-lines=475
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -53,16 +53,10 @@ jobs:
           STAGE=""
           TRIGGER_SOURCE=""
 
-          # Collaborator role_name vs min level (write|triage). See #5223 / ADR 0054.
-          # write (default): admin|maintain|write; triage: also accepts triage.
-          # API resolves org membership regardless of visibility (gh-aw-mcpg#2862).
+          # Collaborator role_name vs min (write|triage). #5223 / ADR 0054.
           has_repo_permission() {
-            local username="${1:-}"
-            local min="${2:-write}"
-            if [[ -z "${username}" ]]; then
-              return 1
-            fi
-            local role api_err
+            local username="${1:-}" min="${2:-write}" role api_err
+            [[ -z "${username}" ]] && return 1
             api_err=$(mktemp) || {
               echo "::warning::Failed to create temp file for permission check of ${username}" >&2
               return 1
@@ -76,24 +70,19 @@ jobs:
             rm -f "${api_err}"
             case "${role}" in
               admin|maintain|write) return 0 ;;
-              triage)
-                [[ "${min}" == "triage" ]] && return 0
-                return 1
-                ;;
+              triage) [[ "${min}" == "triage" ]] ;;
               *) return 1 ;;
             esac
           }
 
-          has_write_permission() {
-            has_repo_permission "${1:-}" write
-          }
+          has_write_permission() { has_repo_permission "${1:-}" write; }
 
-          # Slash-command auth; optional $1 min level (write|triage), default write.
+          # Slash-command auth; optional $1 = write|triage (default write).
           is_authorized() {
             has_repo_permission "${COMMENT_USER_LOGIN}" "${1:-write}"
           }
 
-          # Event-actor auth; $1=user, optional $2 min level (write|triage).
+          # Event-actor auth; $1=user, optional $2 = write|triage (default write).
           is_event_actor_authorized() {
             has_repo_permission "${1:-}" "${2:-write}"
           }
@@ -227,17 +216,15 @@ jobs:
               if [[ "${EVENT_ACTION}" == "submitted" && "${REVIEW_STATE}" == "changes_requested" ]]; then
                 REVIEW_BOT="${ORG_NAME}-review[bot]"
                 if [[ "${REVIEW_USER_LOGIN}" == "${REVIEW_BOT}" ]]; then
-                  # Block fork PRs — fail closed if we cannot determine
+                  # Block fork PRs — fail closed if we cannot determine.
+                  # Human PRs need fullsend-fix + write+ author (not triage-only).
                   if [[ -n "${PR_HEAD_REPO}" && -n "${PR_BASE_REPO}" ]]; then
                     if [[ "${PR_HEAD_REPO}" == "${PR_BASE_REPO}" ]]; then
-                      # Check no-fix label (use PR_LABELS — issue.labels is empty
-                      # on pull_request_review events)
                       if ! has_label "fullsend-no-fix" "${PR_LABELS}"; then
-                        # Human PRs require the fullsend-fix label to auto-trigger
-                        # the fix agent. The /fs-fix slash command intentionally
-                        # bypasses this gate — authorized users can always trigger
-                        # fix manually regardless of labels.
-                        if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]] || has_label "fullsend-fix" "${PR_LABELS}"; then
+                        if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]]; then
+                          STAGE="fix"
+                          TRIGGER_SOURCE="${REVIEW_USER_LOGIN}"
+                        elif has_label "fullsend-fix" "${PR_LABELS}" && has_repo_permission "${PR_USER_LOGIN}" write; then
                           STAGE="fix"
                           TRIGGER_SOURCE="${REVIEW_USER_LOGIN}"
                         fi
