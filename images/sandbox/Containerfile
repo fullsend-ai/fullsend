@@ -1,7 +1,7 @@
 # Containerfile — base sandbox image for fullsend agent execution.
 #
 # Pre-installs all runtime dependencies needed by any fullsend agent:
-#   - Claude Code (official installer)
+#   - Claude Code (npm, version-pinned via CLAUDE_CODE_VERSION ARG)
 #   - jq (JSON parsing in agent scripts and skills)
 #   - gitleaks (secret scanner, SHA256-verified)
 #   - acli (Atlassian CLI for Jira issue queries)
@@ -40,6 +40,7 @@ RUN apt-get update \
 
 # ---------------------------------------------------------------------------
 # Install Claude Code — pinned version for supply chain safety.
+# npm is provided by the OpenShell base image (Node.js pre-installed).
 # The official curl|bash installer installs the latest version with no
 # pinning, so Docker layer caching silently locks in whatever version
 # was current at build time.  When the cache busts, the next build
