@@ -947,6 +947,30 @@ exit 0
 	assert.NoError(t, err)
 }
 
+func TestImportProfile_UsesFileFlag(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args.log")
+
+	// Fake openshell that logs args on "import" invocations and exits 0.
+	script := `#!/bin/sh
+if [ "$3" = "import" ]; then
+  echo "$@" >> ` + argsFile + `
+fi
+exit 0
+`
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := ImportProfile(context.Background(), "my-profile", "/some/my-profile.yaml")
+	require.NoError(t, err)
+
+	logged, err := os.ReadFile(argsFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(logged), "--file /some/my-profile.yaml",
+		"ImportProfile must pass --file flag to openshell provider profile import")
+}
+
 func TestImportProfile_AlreadyExists(t *testing.T) {
 	dir := t.TempDir()
 

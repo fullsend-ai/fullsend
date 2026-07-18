@@ -121,7 +121,7 @@ func ImportProfile(ctx context.Context, id, profilePath string) error {
 
 	importCtx, importCancel := context.WithTimeout(ctx, providerTimeout)
 	defer importCancel()
-	cmd := exec.CommandContext(importCtx, "openshell", "provider", "profile", "import", profilePath)
+	cmd := exec.CommandContext(importCtx, "openshell", "provider", "profile", "import", "--file", profilePath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		outStr := strings.ToLower(string(out))
