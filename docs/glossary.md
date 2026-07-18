@@ -45,7 +45,7 @@ See [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
 ### Custom Agent
 
 An agent whose `base` chain does not trace back to a default agent harness in `fullsend-ai/fullsend`, or that has no `base` at all. A custom agent is built from scratch, even if it happens to resemble a default agent. Contrast with [derived agent](#derived-agent), which starts from a default.
-See [Default, derived, and custom agents](agents/topics/default-vs-custom.md) and [Building custom agents](guides/user/building-custom-agents.md).
+See [Default, derived, and custom agents](agents/topics/default-vs-custom.md) and [Bring Your Own Agent](guides/user/bring-your-own-agent.md).
 
 ## D
 

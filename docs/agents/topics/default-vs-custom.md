@@ -94,7 +94,7 @@ for a stated purpose, that override does not make the agent derived.
   — project-wide instructions for all agents
 - [Customizing with skills](../../guides/user/customizing-with-skills.md) —
   extending or replacing built-in skills
-- [Building custom agents](../../guides/user/building-custom-agents.md) —
-  creating a new agent from scratch
+- [Bring Your Own Agent](../../guides/user/bring-your-own-agent.md) —
+  building custom agents and configuring existing ones
 - [ADR 0045](../../ADRs/0045-forge-portable-harness-schema.md) — `base`
   composition and harness inheritance

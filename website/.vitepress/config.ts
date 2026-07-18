@@ -182,6 +182,7 @@ export default defineConfig({
           text: "CLI Reference",
           items: [
             { text: "Overview", link: "/cli/" },
+            { text: "fullsend agent", link: "/cli/agent" },
             { text: "fullsend github", link: "/cli/github" },
             { text: "fullsend inference", link: "/cli/inference" },
             { text: "fullsend mint", link: "/cli/mint" },
@@ -220,12 +221,13 @@ export default defineConfig({
           collapsed: true,
           link: "/guides/",
           items: [
+            { text: "Bring Your Own Agent", link: "/guides/user/bring-your-own-agent" },
             { text: "Bugfix Workflow", link: "/guides/user/bugfix-workflow" },
             { text: "Customizing Agents", link: "/guides/user/customizing-agents" },
             { text: "Customizing with AGENTS.md", link: "/guides/user/customizing-with-agents-md" },
             { text: "Customizing with Skills", link: "/guides/user/customizing-with-skills" },
             {
-              text: "Building custom agents from scratch",
+              text: "Building custom agents from scratch (deprecated)",
               link: "/guides/user/building-custom-agents",
             },
             { text: "Running Agents Locally", link: "/guides/user/running-agents-locally" },
