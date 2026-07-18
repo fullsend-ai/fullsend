@@ -112,12 +112,12 @@ First clone your target repository locally:
 git clone git@github:{org}/{target_repository} /tmp/target-repo
 ```
 
-Next clone the repository where the agent lives, in this guide case you need to
-clone Fullsend's repository. To learn more about custom agents visit
+Next clone the repository where the agent definitions live. The canonical
+source is `fullsend-ai/agents`. To learn more about custom agents visit
 [Configuring Agents](customizing-agents.md).
 
 ```bash
-git clone --depth 1 https://github.com/fullsend-ai/fullsend.git /tmp/fullsend-ai_fullsend/
+git clone --depth 1 https://github.com/fullsend-ai/agents.git /tmp/fullsend-agents/
 ```
 
 ## Run default agents
@@ -147,7 +147,7 @@ GITHUB_ISSUE_URL=https://github.com/{org}/{repo}/issues/{issue_num}
 
 ```bash
 fullsend run triage \
-  --fullsend-dir /tmp/fullsend-ai_fullsend/internal/scaffold/fullsend-repo/ \
+  --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env
@@ -169,7 +169,7 @@ REPO_FULL_NAME="{org}/{repo}"
 
 ```bash
 fullsend run review \
-  --fullsend-dir /tmp/fullsend-ai_fullsend/internal/scaffold/fullsend-repo/ \
+  --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-review.env
@@ -196,7 +196,7 @@ GITHUB_WORKSPACE=/tmp/
 
 ```bash
 fullsend run code \
-  --fullsend-dir /tmp/fullsend-ai_fullsend/internal/scaffold/fullsend-repo/ \
+  --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-code.env
@@ -258,7 +258,7 @@ Example:
 
 ```bash
 fullsend run triage \
-  --fullsend-dir /tmp/fullsend-ai_fullsend/internal/scaffold/fullsend-repo/ \
+  --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
@@ -291,12 +291,12 @@ the gateway:
 podman run --rm -it --network=host \
   -v "$HOME/.config/openshell:/root/.config/openshell" \
   -v /tmp/fullsend:/tmp/fullsend \
-  -v /tmp/fullsend-ai_fullsend:/tmp/fullsend-ai_fullsend \
+  -v /tmp/fullsend-agents:/tmp/fullsend-agents \
   -v /tmp/target-repo:/tmp/target-repo \
   -v "$PWD:/work" \
   ghcr.io/fullsend-ai/fullsend-runner:latest \
   run triage \
-    --fullsend-dir /tmp/fullsend-ai_fullsend/internal/scaffold/fullsend-repo/ \
+    --fullsend-dir /tmp/fullsend-agents/ \
     --target-repo /tmp/target-repo/ \
     --env-file fullsend-gcp.env \
     --env-file fullsend-triage.env
@@ -331,13 +331,10 @@ Fullsend automatically aggregates different layers of information before running
 In case you want to test how customizations impact default agents, or you custom agents, follow the
 next steps.
 
-Start by cloning `fullsend-ai/fullsend` and copying the scaffold over to a dedicated directory:
+Start by cloning `fullsend-ai/agents` to a dedicated directory:
 
 ```bash
-mkdir /tmp/agents
-
-git clone --depth 1 https://github.com/fullsend-ai/fullsend.git /tmp/fullsend-ai_fullsend/
-cp -r /tmp/fullsend-ai_fullsend/internal/scaffold/fullsend-repo/. /tmp/agents/
+git clone --depth 1 https://github.com/fullsend-ai/agents.git /tmp/agents/
 ```
 
 Then apply your organization customizations, if any:
