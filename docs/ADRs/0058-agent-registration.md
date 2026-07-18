@@ -88,4 +88,5 @@ phasing, schema details, CLI behavior, and migration mechanics.
 - [ADR 0038](0038-universal-harness-access.md) -- URL-based resource references and integrity hashes
 - [ADR 0045](0045-forge-portable-harness-schema.md) -- harness composition via `base:` URLs
 - [ADR 0057](0057-repos-management.md) -- repos management for per-repo installations
+- [Bring Your Own Agent](../guides/user/bring-your-own-agent.md) -- user-facing guide for agent registration
 - [Implementation plan](../plans/agent-registration.md)

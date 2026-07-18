@@ -37,7 +37,8 @@ Guides for developers working in repositories where fullsend is active.
 - [Customizing agents](user/customizing-agents.md) — Harness configurations and layered content resolution for your org and repos
 - [Customizing with AGENTS.md](user/customizing-with-agents-md.md) — Guide agents using your repo's AGENTS.md file
 - [Customizing with skills](user/customizing-with-skills.md) — Extend or replace built-in agent skills with custom skill documents
-- [Building custom agents from scratch](user/building-custom-agents.md) — Create a new agent from scratch on a per-repo fullsend installation
+- [Bring Your Own Agent](user/bring-your-own-agent.md) — Add a custom agent or configure an existing one, from harness file to CI
+- [Building custom agents from scratch](user/building-custom-agents.md) — _(deprecated — see [Bring Your Own Agent](user/bring-your-own-agent.md))_
 - [Default, derived, and custom agents](../agents/topics/default-vs-custom.md) — When configuration crosses into derived or custom agent territory
 
 ## Development

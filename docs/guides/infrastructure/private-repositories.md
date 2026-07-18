@@ -194,6 +194,6 @@ Not all private repos are equal. A repo containing open-source code that happens
 ## See also
 
 - [Getting Started](../getting-started/) — Initial fullsend setup
-- [Configuring agents](../user/customizing-agents.md) — Harness configuration and layered overrides
+- [Customizing agents](../user/customizing-agents.md) — Harness configuration and layered overrides
 - [Security threat model](../../problems/security-threat-model.md) — Threat priority and defense considerations
 - [#1189](https://github.com/fullsend-ai/fullsend/issues/1189) — Retro agent private content leak risk

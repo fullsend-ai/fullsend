@@ -34,4 +34,5 @@ your org-level or per-repo `config.yaml`. Each entry is either a local path
 (relative to the fullsend directory) or a pinned HTTPS URL with an integrity
 hash. Config-registered agents override scaffold defaults when names collide
 (case-insensitive). See [ADR 0058](../ADRs/0058-agent-registration.md) for
-details.
+details and [Bring Your Own Agent](../guides/user/bring-your-own-agent.md)
+for the complete guide to building and registering custom agents.
