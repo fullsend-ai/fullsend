@@ -18,7 +18,7 @@ import (
 
 func TestLockAll_MutuallyExclusiveWithPositionalArg(t *testing.T) {
 	cmd := newLockCmd()
-	cmd.SetArgs([]string{"--fullsend-dir", t.TempDir(), "--all", "code"})
+	cmd.SetArgs([]string{"--agent-dir", t.TempDir(), "--all", "code"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--all and a positional agent name are mutually exclusive")
@@ -26,7 +26,7 @@ func TestLockAll_MutuallyExclusiveWithPositionalArg(t *testing.T) {
 
 func TestLockAll_RequiresAllOrPositionalArg(t *testing.T) {
 	cmd := newLockCmd()
-	cmd.SetArgs([]string{"--fullsend-dir", t.TempDir()})
+	cmd.SetArgs([]string{"--agent-dir", t.TempDir()})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must specify an agent name or use --all flag")
@@ -486,7 +486,7 @@ func TestLockAll_CobraDispatch(t *testing.T) {
 	))
 
 	cmd := newLockCmd()
-	cmd.SetArgs([]string{"--fullsend-dir", dir, "--all"})
+	cmd.SetArgs([]string{"--agent-dir", dir, "--all"})
 	err := cmd.Execute()
 	require.NoError(t, err)
 }
@@ -502,7 +502,7 @@ func TestLockCmd_SingleAgentCobraDispatch(t *testing.T) {
 	))
 
 	cmd := newLockCmd()
-	cmd.SetArgs([]string{"--fullsend-dir", dir, "code"})
+	cmd.SetArgs([]string{"--agent-dir", dir, "code"})
 	err := cmd.Execute()
 	require.NoError(t, err)
 }

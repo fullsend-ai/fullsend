@@ -1492,7 +1492,7 @@ code:
         --event-type "${EVENT_TYPE}" \
         --event-payload-file "${EVENT_PAYLOAD_FILE}" \
         --forge gitlab \
-        --fullsend-dir .fullsend
+        --agent-dir .fullsend
   resource_group: "fullsend-code-${RESOURCE_KEY}"
   rules:
     - if: $STAGE == "code"

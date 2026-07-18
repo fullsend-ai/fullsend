@@ -135,10 +135,10 @@ Both also seed default `AllowedRemoteResources`:
 **File:** `internal/cli/agent.go` (new)
 
 ```
-fullsend agent add <url-or-path> [--name <name>]
-fullsend agent list [--fullsend-dir <path>]
-fullsend agent update <name> [<sha>] [--fullsend-dir <path>]
-fullsend agent remove <name> [--fullsend-dir <path>]
+fullsend agent add <url-or-path> [--name <name>] [--agent-dir <path>]
+fullsend agent list [--agent-dir <path>]
+fullsend agent update <name> [<sha>] [--agent-dir <path>]
+fullsend agent remove <name> [--agent-dir <path>]
 ```
 
 Register in `internal/cli/root.go`:

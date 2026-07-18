@@ -607,7 +607,7 @@ agents resolve correctly and show source as the agents repo URL
 instead of scaffold:
 
 ```bash
-fullsend agent list --fullsend-dir .
+fullsend agent list --agent-dir .
 ```
 
 Expected output: all 6 agents listed with their agents-repo URLs,

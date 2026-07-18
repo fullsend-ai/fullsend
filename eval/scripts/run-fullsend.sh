@@ -11,7 +11,7 @@
 #   $3 — output directory
 #
 # Required env (injected by harness from hook outputs + execution.env):
-#   FULLSEND_DIR    — path to the fullsend scaffold directory
+#   FULLSEND_DIR    — path to the agent definitions directory
 #   GH_TOKEN        — GitHub token
 #   FIXTURE_URL     — URL of the fixture (issue or PR)
 #   FIXTURE_TYPE    — "issue" or "pull_request"
@@ -68,7 +68,7 @@ mkdir -p "$OUTPUT_DIR"
 
 rc=0
 timeout "$EVAL_TIMEOUT" fullsend run "$AGENT" \
-  --fullsend-dir "${FULLSEND_DIR}" \
+  --agent-dir "${FULLSEND_DIR}" \
   --target-repo "$TARGET_DIR" \
   --env-file "$ENV_FILE" \
   --output-dir "$OUTPUT_DIR" \

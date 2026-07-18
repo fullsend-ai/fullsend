@@ -233,13 +233,16 @@ func newRunCmd() *cobra.Command {
 		Long:  "Execute an agent by name: read its harness YAML, set up the sandbox, and run the agent.",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := resolveAgentDirFlag(cmd, &fullsendDir); err != nil {
+				return err
+			}
 			agentName := args[0]
 			printer := ui.New(os.Stdout)
 			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, rFlags, sOpts, printer, keepSandbox)
 		},
 	}
 
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
+	registerAgentDirFlag(cmd, &fullsendDir)
 	cmd.Flags().StringVar(&outputBase, "output-dir", "", "base directory for run output (default: /tmp/fullsend)")
 	cmd.Flags().StringVar(&targetRepo, "target-repo", "", "path to the target repository")
 	cmd.Flags().StringVar(&fullsendBinary, "fullsend-binary", "", "path to a Linux fullsend binary to copy into the sandbox (default: current executable)")
@@ -256,7 +259,6 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&sOpts.statusRepo, "status-repo", "", "repository (owner/repo) for status comments")
 	cmd.Flags().IntVar(&sOpts.statusNum, "status-number", 0, "issue/PR number for status comments")
 	cmd.Flags().StringVar(&sOpts.mintURL, "mint-url", "", "mint service URL for on-demand status tokens (default: $FULLSEND_MINT_URL)")
-	_ = cmd.MarkFlagRequired("fullsend-dir")
 	_ = cmd.MarkFlagRequired("target-repo")
 
 	return cmd
@@ -424,7 +426,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				harnessHash := fetch.ComputeSHA256(harnessData)
 
 				if entry.IsStale(harnessHash) {
-					printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run 'fullsend lock %s --fullsend-dir %s' to update.", agentName, fullsendDir))
+					printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run 'fullsend lock %s --agent-dir %s' to update.", agentName, fullsendDir))
 				} else {
 					printer.StepStart("Using pinned dependencies from lock file")
 					lockResult, lockResolveErr := resolveFromLock(h, entry, absFullsendDir, printer)

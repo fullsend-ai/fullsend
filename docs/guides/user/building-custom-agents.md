@@ -482,7 +482,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/output"
           fullsend run my-agent \
-            --fullsend-dir "$GITHUB_WORKSPACE/.fullsend" \
+            --agent-dir "$GITHUB_WORKSPACE/.fullsend" \
             --target-repo "$GITHUB_WORKSPACE/target-repo" \
             --output-dir "$GITHUB_WORKSPACE/output"
 

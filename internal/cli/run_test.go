@@ -40,14 +40,19 @@ func TestRunCommand_RequiresAgentName(t *testing.T) {
 	assert.Contains(t, err.Error(), "accepts 1 arg(s)")
 }
 
-func TestRunCommand_HasFullsendDirFlag(t *testing.T) {
+func TestRunCommand_HasAgentDirFlag(t *testing.T) {
 	cmd := newRunCmd()
-	flag := cmd.Flags().Lookup("fullsend-dir")
+
+	// Primary flag --agent-dir
+	flag := cmd.Flags().Lookup("agent-dir")
 	require.NotNil(t, flag)
 	assert.Equal(t, "", flag.DefValue)
+	assert.Contains(t, flag.Usage, "agent definitions")
 
-	annotations := flag.Annotations
-	require.Contains(t, annotations, "cobra_annotation_bash_completion_one_required_flag")
+	// Deprecated alias --fullsend-dir (hidden)
+	legacy := cmd.Flags().Lookup("fullsend-dir")
+	require.NotNil(t, legacy)
+	assert.True(t, legacy.Hidden, "--fullsend-dir should be hidden")
 }
 
 func TestRunCommand_RegisteredOnRoot(t *testing.T) {
@@ -109,7 +114,7 @@ func TestRunCommand_HasMaxResourcesFlag(t *testing.T) {
 
 func TestRunCommand_AcceptsZeroMaxDepth(t *testing.T) {
 	cmd := newRunCmd()
-	cmd.SetArgs([]string{"test-agent", "--fullsend-dir", "/tmp", "--target-repo", "/tmp", "--max-depth", "0"})
+	cmd.SetArgs([]string{"test-agent", "--agent-dir", "/tmp", "--target-repo", "/tmp", "--max-depth", "0"})
 	err := cmd.Execute()
 	// --max-depth 0 is valid (disables transitive resolution); the error
 	// should come from the run flow, not flag validation.
@@ -120,7 +125,7 @@ func TestRunCommand_AcceptsZeroMaxDepth(t *testing.T) {
 
 func TestRunCommand_RejectsNegativeMaxDepth(t *testing.T) {
 	cmd := newRunCmd()
-	cmd.SetArgs([]string{"test-agent", "--fullsend-dir", "/tmp", "--target-repo", "/tmp", "--max-depth", "-1"})
+	cmd.SetArgs([]string{"test-agent", "--agent-dir", "/tmp", "--target-repo", "/tmp", "--max-depth", "-1"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--max-depth must be >= 0")
@@ -128,7 +133,7 @@ func TestRunCommand_RejectsNegativeMaxDepth(t *testing.T) {
 
 func TestRunCommand_RejectsZeroMaxResources(t *testing.T) {
 	cmd := newRunCmd()
-	cmd.SetArgs([]string{"test-agent", "--fullsend-dir", "/tmp", "--target-repo", "/tmp", "--max-resources", "0"})
+	cmd.SetArgs([]string{"test-agent", "--agent-dir", "/tmp", "--target-repo", "/tmp", "--max-resources", "0"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--max-resources must be >= 1")
@@ -136,7 +141,7 @@ func TestRunCommand_RejectsZeroMaxResources(t *testing.T) {
 
 func TestRunCommand_RejectsNegativeMaxResources(t *testing.T) {
 	cmd := newRunCmd()
-	cmd.SetArgs([]string{"test-agent", "--fullsend-dir", "/tmp", "--target-repo", "/tmp", "--max-resources", "-1"})
+	cmd.SetArgs([]string{"test-agent", "--agent-dir", "/tmp", "--target-repo", "/tmp", "--max-resources", "-1"})
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--max-resources must be >= 1")

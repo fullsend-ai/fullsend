@@ -457,7 +457,7 @@ func hashProfileDir(dir string) (string, error) {
 
 // profileCachePath returns a temp file path for caching the profile directory
 // hash. The path is keyed to the absolute directory path so that different
-// fullsend-dir values get separate caches.
+// agent-dir values get separate caches.
 func profileCachePath(dir string) string {
 	absDir, err := filepath.Abs(dir)
 	if err != nil {

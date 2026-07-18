@@ -45,6 +45,9 @@ The lock file should be committed to version control so all environments
 use the same pinned dependencies.`,
 		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := resolveAgentDirFlag(cmd, &fullsendDir); err != nil {
+				return err
+			}
 			if rFlags.maxDepth < 0 {
 				return fmt.Errorf("--max-depth must be >= 0, got %d", rFlags.maxDepth)
 			}
@@ -66,14 +69,13 @@ use the same pinned dependencies.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
+	registerAgentDirFlag(cmd, &fullsendDir)
 	cmd.Flags().BoolVar(&update, "update", false, "force re-resolve even if lock entry is current")
-	cmd.Flags().BoolVar(&lockAll, "all", false, "lock all harness files in the .fullsend/harness/ directory")
+	cmd.Flags().BoolVar(&lockAll, "all", false, "lock all harness files in the harness/ directory")
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform to lock (e.g. "github"); omit to lock all forge variants`)
 	cmd.Flags().BoolVar(&rFlags.offline, "offline", false, "reject network fetches; only use cached remote resources")
 	cmd.Flags().IntVar(&rFlags.maxDepth, "max-depth", resolve.DefaultMaxDepth, "maximum dependency depth for transitive resolution (0 disables)")
 	cmd.Flags().IntVar(&rFlags.maxResources, "max-resources", resolve.DefaultMaxResources, "maximum total remote resources per harness")
-	_ = cmd.MarkFlagRequired("fullsend-dir")
 
 	return cmd
 }

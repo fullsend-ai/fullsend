@@ -53,10 +53,13 @@ with an integrity hash. The URL prefix is added to allowed_remote_resources
 if not already present.
 
 Examples:
-  fullsend agent add https://github.com/my-org/agents/blob/main/harness/lint.yaml --fullsend-dir .fullsend
-  fullsend agent add harness/custom-review.yaml --name my-review --fullsend-dir .fullsend`,
+  fullsend agent add https://github.com/my-org/agents/blob/main/harness/lint.yaml --agent-dir .fullsend
+  fullsend agent add harness/custom-review.yaml --name my-review --agent-dir .fullsend`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := resolveAgentDirFlag(cmd, &fullsendDir); err != nil {
+				return err
+			}
 			printer := ui.New(os.Stdout)
 			var forgeClient forge.Client
 			if urlutil.IsURL(args[0]) {
@@ -69,9 +72,8 @@ Examples:
 			return runAgentAdd(cmd.Context(), args[0], name, fullsendDir, forgeClient, printer)
 		},
 	}
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
+	registerAgentDirFlag(cmd, &fullsendDir)
 	cmd.Flags().StringVar(&name, "name", "", "explicit agent name (default: derived from filename)")
-	_ = cmd.MarkFlagRequired("fullsend-dir")
 	return cmd
 }
 
@@ -83,12 +85,14 @@ func newAgentListCmd() *cobra.Command {
 		Short: "List registered agents",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := resolveAgentDirFlag(cmd, &fullsendDir); err != nil {
+				return err
+			}
 			printer := ui.New(os.Stdout)
 			return runAgentList(fullsendDir, printer)
 		},
 	}
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
-	_ = cmd.MarkFlagRequired("fullsend-dir")
+	registerAgentDirFlag(cmd, &fullsendDir)
 	return cmd
 }
 
@@ -104,6 +108,9 @@ integrity hash. If no SHA is provided, the default branch HEAD is used.
 Only URL agents can be updated — local path agents have nothing to pin.`,
 		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := resolveAgentDirFlag(cmd, &fullsendDir); err != nil {
+				return err
+			}
 			var sha string
 			if len(args) > 1 {
 				sha = args[1]
@@ -120,8 +127,7 @@ Only URL agents can be updated — local path agents have nothing to pin.`,
 			return runAgentUpdate(cmd.Context(), args[0], sha, fullsendDir, forgeClient, printer)
 		},
 	}
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
-	_ = cmd.MarkFlagRequired("fullsend-dir")
+	registerAgentDirFlag(cmd, &fullsendDir)
 	return cmd
 }
 
@@ -133,12 +139,14 @@ func newAgentRemoveCmd() *cobra.Command {
 		Short: "Remove an agent from config",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := resolveAgentDirFlag(cmd, &fullsendDir); err != nil {
+				return err
+			}
 			printer := ui.New(os.Stdout)
 			return runAgentRemove(fullsendDir, args[0], printer)
 		},
 	}
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
-	_ = cmd.MarkFlagRequired("fullsend-dir")
+	registerAgentDirFlag(cmd, &fullsendDir)
 	return cmd
 }
 

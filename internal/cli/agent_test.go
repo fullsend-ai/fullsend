@@ -1144,7 +1144,7 @@ func TestNewAgentListCmd_Execute(t *testing.T) {
   - harness/triage.yaml
 `)
 	cmd := newAgentListCmd()
-	cmd.SetArgs([]string{"--fullsend-dir", dir})
+	cmd.SetArgs([]string{"--agent-dir", dir})
 	err := cmd.Execute()
 	require.NoError(t, err)
 }
@@ -1155,7 +1155,7 @@ func TestNewAgentRemoveCmd_Execute(t *testing.T) {
   - harness/triage.yaml
 `)
 	cmd := newAgentRemoveCmd()
-	cmd.SetArgs([]string{"triage", "--fullsend-dir", dir})
+	cmd.SetArgs([]string{"triage", "--agent-dir", dir})
 	err := cmd.Execute()
 	require.NoError(t, err)
 }
@@ -1167,7 +1167,7 @@ func TestNewAgentAddCmd_LocalPath(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "lint.yaml"), []byte("role: coder\n"), 0o644))
 
 	cmd := newAgentAddCmd()
-	cmd.SetArgs([]string{"harness/lint.yaml", "--fullsend-dir", dir})
+	cmd.SetArgs([]string{"harness/lint.yaml", "--agent-dir", dir})
 	err := cmd.Execute()
 	require.NoError(t, err)
 }
@@ -1194,7 +1194,7 @@ allowed_remote_resources:
   - "`+srv.URL+`/org/agents/"
 `)
 	cmd := newAgentUpdateCmd()
-	cmd.SetArgs([]string{"triage", newSHA, "--fullsend-dir", dir})
+	cmd.SetArgs([]string{"triage", newSHA, "--agent-dir", dir})
 	err := cmd.Execute()
 	require.NoError(t, err)
 }

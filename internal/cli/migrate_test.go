@@ -288,7 +288,7 @@ func TestMigrateCustomizations_StandaloneFiles_DryRun(t *testing.T) {
 
 func TestMigrateCustomizations_PerRepoMode_DryRun(t *testing.T) {
 	dir := t.TempDir()
-	// Realistic per-repo layout: --fullsend-dir points to .fullsend/.
+	// Realistic per-repo layout: --agent-dir points to .fullsend/.
 	fullsendDir := filepath.Join(dir, ".fullsend")
 	require.NoError(t, os.MkdirAll(fullsendDir, 0o755))
 	writePerRepoConfig(t, fullsendDir, "")
@@ -312,7 +312,7 @@ func TestMigrateCustomizations_PerRepoMode_DryRun(t *testing.T) {
 
 func TestMigrateCustomizations_PerRepoMode_CreatesPR(t *testing.T) {
 	dir := t.TempDir()
-	// Realistic per-repo layout: --fullsend-dir points to .fullsend/.
+	// Realistic per-repo layout: --agent-dir points to .fullsend/.
 	fullsendDir := filepath.Join(dir, ".fullsend")
 	require.NoError(t, os.MkdirAll(fullsendDir, 0o755))
 	writePerRepoConfig(t, fullsendDir, "")

@@ -386,12 +386,12 @@ description: Org-specific linting rules and conventions.
 
 Test it locally first (see [Testing locally](#testing-locally) for all flags):
 ```bash
-fullsend run code --fullsend-dir .fullsend --target-repo ./my-repo --env-file .env.local
+fullsend run code --agent-dir .fullsend --target-repo ./my-repo --env-file .env.local
 ```
 
 Then register it:
 ```bash
-fullsend agent add harness/code.yaml --name code --fullsend-dir .fullsend
+fullsend agent add harness/code.yaml --name code --agent-dir .fullsend
 ```
 
 Because config-registered agents take precedence over built-in agents on name collision, your `code` agent replaces the default — with all of the base agent's scripts, policies, host_files, and plugins still inherited.
@@ -431,7 +431,7 @@ Before registering, verify your agent works locally. Most agents need additional
 
 ```bash
 fullsend run my-agent \
-  --fullsend-dir .fullsend \
+  --agent-dir .fullsend \
   --target-repo ./my-repo \
   --env-file .env.local
 ```
@@ -452,15 +452,15 @@ The examples above show customizing built-in agents via `base`. If you've built 
 # Add (auto-pins URL with SHA256):
 fullsend agent add \
   https://github.com/fullsend-ai/agents/blob/main/harness/triage.yaml \
-  --fullsend-dir .fullsend
+  --agent-dir .fullsend
 
 # Add local:
-fullsend agent add harness/my-agent.yaml --name my-agent --fullsend-dir .fullsend
+fullsend agent add harness/my-agent.yaml --name my-agent --agent-dir .fullsend
 
 # List / update / remove:
-fullsend agent list --fullsend-dir .fullsend
-fullsend agent update triage <sha> --fullsend-dir .fullsend
-fullsend agent remove triage --fullsend-dir .fullsend
+fullsend agent list --agent-dir .fullsend
+fullsend agent update triage <sha> --agent-dir .fullsend
+fullsend agent remove triage --agent-dir .fullsend
 ```
 
 ### Per-repo config (`.fullsend/config.yaml`)
@@ -513,12 +513,12 @@ If you have existing files in `customized/`, the `fullsend agent migrate-customi
 
 Preview what would change:
 ```bash
-fullsend agent migrate-customizations --fullsend-dir .fullsend --dry-run
+fullsend agent migrate-customizations --agent-dir .fullsend --dry-run
 ```
 
 Run the migration (creates a PR with the changes):
 ```bash
-fullsend agent migrate-customizations --fullsend-dir .fullsend --repo owner/repo
+fullsend agent migrate-customizations --agent-dir .fullsend --repo owner/repo
 ```
 
 The tool classifies each override and takes the appropriate action:

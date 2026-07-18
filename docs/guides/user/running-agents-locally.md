@@ -132,7 +132,7 @@ can also use `--keep-sandbox` to debug failures (but remember to remove them).
 installing them all, you can use a container image fullsend publishes —
 see [Run from a container](#run-from-a-container) below.
 
-**Note**: to run custom agents set `--fullsend-dir` to the directory where your
+**Note**: to run custom agents set `--agent-dir` to the directory where your
 custom agent definitions exist.
 
 ### Triage agent
@@ -147,7 +147,7 @@ GITHUB_ISSUE_URL=https://github.com/{org}/{repo}/issues/{issue_num}
 
 ```bash
 fullsend run triage \
-  --fullsend-dir /tmp/fullsend-agents/ \
+  --agent-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env
@@ -169,7 +169,7 @@ REPO_FULL_NAME="{org}/{repo}"
 
 ```bash
 fullsend run review \
-  --fullsend-dir /tmp/fullsend-agents/ \
+  --agent-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-review.env
@@ -196,7 +196,7 @@ GITHUB_WORKSPACE=/tmp/
 
 ```bash
 fullsend run code \
-  --fullsend-dir /tmp/fullsend-agents/ \
+  --agent-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-code.env
@@ -222,13 +222,13 @@ to skip re-resolution when the harness has not changed since the lock was
 generated. Generate or update a lock file with:
 
 ```bash
-fullsend lock code --fullsend-dir /path/to/.fullsend
+fullsend lock code --agent-dir /path/to/.fullsend
 ```
 
 To lock all harnesses in the directory at once:
 
 ```bash
-fullsend lock --all --fullsend-dir /path/to/.fullsend
+fullsend lock --all --agent-dir /path/to/.fullsend
 ```
 
 When `--forge` is specified, only that platform variant is locked. When omitted,
@@ -258,7 +258,7 @@ Example:
 
 ```bash
 fullsend run triage \
-  --fullsend-dir /tmp/fullsend-agents/ \
+  --agent-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
@@ -296,7 +296,7 @@ podman run --rm -it --network=host \
   -v "$PWD:/work" \
   ghcr.io/fullsend-ai/fullsend-runner:latest \
   run triage \
-    --fullsend-dir /tmp/fullsend-agents/ \
+    --agent-dir /tmp/fullsend-agents/ \
     --target-repo /tmp/target-repo/ \
     --env-file fullsend-gcp.env \
     --env-file fullsend-triage.env
@@ -356,7 +356,7 @@ git clone https://github.com/{org}/{target-repo} /tmp/target-repo
 cp -r /tmp/target-repo/.fullsend/customized/. /tmp/agents/
 ```
 
-When you execute `fullsend run`, pass `--fullsend-dir` as `/tmp/agents/`.
+When you execute `fullsend run`, pass `--agent-dir` as `/tmp/agents/`.
 
 ## Platform notes
 

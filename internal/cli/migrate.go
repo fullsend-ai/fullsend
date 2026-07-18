@@ -52,6 +52,9 @@ Changes are committed to a branch and delivered via pull request.
 Use --dry-run to preview changes without creating a PR.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := resolveAgentDirFlag(cmd, &fullsendDir); err != nil {
+				return err
+			}
 			printer := ui.New(os.Stdout)
 			forgeClient, forgeErr := defaultForgeClient()
 			if forgeErr != nil {
@@ -63,10 +66,9 @@ Use --dry-run to preview changes without creating a PR.`,
 			return runMigrateCustomizations(cmd.Context(), fullsendDir, repoFlag, dryRun, forgeClient, printer)
 		},
 	}
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
+	registerAgentDirFlag(cmd, &fullsendDir)
 	cmd.Flags().StringVar(&repoFlag, "repo", "", "target repository (owner/repo) for the migration PR")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would change without creating a PR")
-	_ = cmd.MarkFlagRequired("fullsend-dir")
 	return cmd
 }
 

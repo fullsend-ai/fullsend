@@ -271,7 +271,7 @@ Both the `.fullsend` repo and the target repo are checked out side-by-side:
     token: ${{ secrets.FULLSEND_DISPATCH_TOKEN }}
 ```
 
-The composite action then references `--fullsend-dir .fullsend --target-repo target-repo`.
+The composite action then references `--agent-dir .fullsend --target-repo target-repo`.
 
 ---
 

@@ -56,7 +56,7 @@ harnesses:
 
 ### CLI lock command (`internal/cli/lock.go`)
 
-- `fullsend lock <agent-name> --fullsend-dir <dir>` resolves all deps and writes lock file
+- `fullsend lock <agent-name> --agent-dir <dir>` resolves all deps and writes lock file
 - `--update` flag forces re-resolution even if entry is current
 - Supports `--offline`, `--max-depth`, `--max-resources` flags
 
@@ -78,7 +78,7 @@ harnesses:
 
 ## Verification
 
-1. `fullsend lock code --fullsend-dir .fullsend` generates lock file
+1. `fullsend lock code --agent-dir .fullsend` generates lock file
 2. `fullsend run code` uses lock file when available
 3. Modifying harness triggers stale warning
 4. Missing cache entries produce clear error messages

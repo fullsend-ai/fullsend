@@ -102,19 +102,19 @@ fullsend
 │   ├── update       <name> [sha]             # Re-pin URL agent to new commit SHA
 │   ├── remove       <name>                   # Unregister agent from config
 │   └── migrate-customizations               # Migrate customized/ → config agents
-│       ├── --fullsend-dir <dir>             #   Base directory with .fullsend layout
+│       ├── --agent-dir <dir>                #   Base directory containing agent definitions
 │       ├── --repo <owner/repo>              #   Target repo for migration PR
 │       └── --dry-run                        #   Preview changes without PR
 ├── lock             [agent-name]              # Pin remote deps to lock.yaml
 │   ├── --all                                #   Lock all harnesses in the harness directory
-│   ├── --fullsend-dir <path>                #   Base directory with .fullsend layout
+│   ├── --agent-dir <path>                   #   Base directory containing agent definitions
 │   ├── --forge <platform>                   #   Lock only this forge variant; omit for all
 │   ├── --update                             #   Force re-resolve even if current
 │   ├── --offline                            #   Reject network fetches
 │   ├── --max-depth <int>                    #   Max transitive dependency depth
 │   └── --max-resources <int>                #   Max total remote resources
 ├── run                                      # Execute an agent in a sandbox
-│   ├── --fullsend-dir <path>                #   Base directory with .fullsend layout
+│   ├── --agent-dir <path>                   #   Base directory containing agent definitions
 │   ├── --target-repo <path>                 #   Path to the target repository
 │   ├── --output-dir <path>                  #   Base directory for run output
 │   ├── --env-file <path>                    #   Load env vars from dotenv file (repeatable)
@@ -153,10 +153,10 @@ The `fullsend agent migrate-customizations` command converts `customized/` direc
 
 ```bash
 # Preview what would change (no PR created)
-fullsend agent migrate-customizations --fullsend-dir .fullsend --dry-run
+fullsend agent migrate-customizations --agent-dir .fullsend --dry-run
 
 # Create a migration PR
-fullsend agent migrate-customizations --fullsend-dir .fullsend --repo owner/repo
+fullsend agent migrate-customizations --agent-dir .fullsend --repo owner/repo
 ```
 
 Migration actions per agent:
