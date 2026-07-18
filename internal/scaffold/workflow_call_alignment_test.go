@@ -460,8 +460,8 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 
 			assert.Contains(t, s, "has_repo_permission",
 				"permission helper should be parameterized by min role")
-			assert.Contains(t, s, `[[ "${min}" == "triage" ]]`,
-				"triage min level must accept the triage role_name")
+			assert.Contains(t, s, `[[ "${min}" == "triage" ]] && return 0 || return 1`,
+				"triage arm must return explicitly (not rely on [[ ]] exit status)")
 
 			// Observation slash commands (triage min level)
 			assert.Regexp(t, `/fs-triage\)\s*\n\s+if \[\[ "\$\{COMMENT_USER_TYPE\}" != "Bot" \]\] && is_authorized triage;`, s)
