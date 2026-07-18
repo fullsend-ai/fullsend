@@ -15,7 +15,8 @@ harness and override only what differs — see
 [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)
 for the distinction and when each approach makes sense.
 
-For configuring existing agents (overriding harnesses, skills, or policies), see [Configuring agents](customizing-agents.md).
+For the config-driven approach to building or configuring agents, see
+[Bring Your Own Agent](bring-your-own-agent.md). For configuring existing agents (overriding harnesses, skills, or policies), see [Customizing agents](customizing-agents.md).
 
 ## Prerequisites
 
@@ -35,7 +36,7 @@ A custom agent is composed of six parts:
   skills/          # Knowledge documents mounted into the sandbox
 ```
 
-At build time, the workflow layers these customized files on top of the upstream fullsend defaults. Your files override the defaults — anything you don't customize uses the standard fullsend configuration. See [Configuring agents — Layered Configuration Resolution](customizing-agents.md#layered-configuration-resolution) for details on how the layering works.
+At build time, the workflow layers these customized files on top of the upstream fullsend defaults. Your files override the defaults — anything you don't customize uses the standard fullsend configuration. See [Customizing agents — Layered Configuration Resolution](customizing-agents.md#layered-configuration-resolution) for details on how the layering works.
 
 The key security invariant: agents run inside an untrusted [sandbox](../../glossary.md#sandbox) with no credentials. Pre-scripts fetch data *before* the sandbox starts; post-scripts act on agent output *after* the sandbox exits. Agents never have direct write access to external systems. See the [security threat model](../../problems/security-threat-model.md) for the full trust model.
 
@@ -183,7 +184,7 @@ timeout_minutes: 20
 # max_runtime_fetches: 10
 ```
 
-See [Configuring agents — Harness YAML Structure](customizing-agents.md#harness-yaml-structure) for the full field reference (including optional `security`, `providers`, `plugins`, and runtime fetch blocks).
+See [Customizing agents — Harness YAML Structure](customizing-agents.md#harness-yaml-structure) for the full field reference (including optional `security`, `providers`, `plugins`, and runtime fetch blocks).
 
 The key pattern to understand is how data flows into the sandbox through `host_files`:
 
@@ -375,7 +376,7 @@ The post-script runs on the trusted runner with full credentials, but reads outp
 
 ## Step 6: Create skills (optional)
 
-[Skills](../../glossary.md#skill) are Markdown documents mounted into the sandbox that provide domain knowledge the agent can reference. See [Configuring agents — Adding a Custom Skill](customizing-agents.md#adding-a-custom-skill) for how to create one.
+[Skills](../../glossary.md#skill) are Markdown documents mounted into the sandbox that provide domain knowledge the agent can reference. See [Customizing agents — Adding a Custom Skill](customizing-agents.md#adding-a-custom-skill) for how to create one.
 
 Place your skill at `.fullsend/customized/skills/my-skill/SKILL.md`, then reference it in both the agent frontmatter (`skills: [my-skill]`) and the harness (`skills: [customized/skills/my-skill]`).
 
@@ -626,7 +627,7 @@ When creating a new agent, you need these files:
 
 ## Reference
 
-- [Configuring agents](customizing-agents.md) — override existing agent harnesses, skills, and policies
+- [Customizing agents](customizing-agents.md) — override existing agent harnesses, skills, and policies
 - [Bugfix workflow](bugfix-workflow.md) — how the built-in agents work together end to end
 - [Getting Started](../getting-started/README.md) — prerequisite: admin setup guide
 - [Architecture overview](../../architecture.md) — component vocabulary and execution stack

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -120,7 +121,7 @@ func ImportProfile(ctx context.Context, id, profilePath string) error {
 
 	importCtx, importCancel := context.WithTimeout(ctx, providerTimeout)
 	defer importCancel()
-	cmd := exec.CommandContext(importCtx, "openshell", "provider", "profile", "import", profilePath)
+	cmd := exec.CommandContext(importCtx, "openshell", "provider", "profile", "import", "--file", profilePath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		outStr := strings.ToLower(string(out))
@@ -325,6 +326,17 @@ func EnsureAvailable() error {
 // The gateway must be started externally (e.g. in CI via the action.yml steps)
 // before invoking fullsend run.
 func CheckGateway() error {
+	// This runs before any other sandbox operation in the `fullsend run` flow
+	// (internal/cli/run.go calls EnsureAvailable then CheckGateway first), so
+	// applying the container gateway override here — before any openshell
+	// subprocess actually needs it — covers every later call in this process.
+	//
+	// NOTE: os.Setenv (inside ensureContainerGatewayOverride) is not
+	// goroutine-safe. This MUST complete before any goroutines that read env
+	// vars (sandbox streaming, post-script execution) are launched — true
+	// today since CheckGateway runs synchronously and first in run.go.
+	ensureContainerGatewayOverride(context.Background())
+
 	out, err := exec.Command("openshell", "gateway", "list").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("no openshell gateway running (openshell gateway list: %s) -- start openshell-gateway before running fullsend", strings.TrimSpace(string(out)))
@@ -771,6 +783,18 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+// randStringBytes is a helper to generate random strings
+// for the temporal file created by UploadFile
+func randStringBytes(n int) string {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = letterBytes[rand.IntN(len(letterBytes))]
+	}
+	return string(b)
+}
+
 // UploadFile copies a single local file into a sandbox at a specific remote path.
 // It checks if the remotePath is a file and if it is not it tries to fix it. This is
 // because of `openshell sandbox upload` in a git environment. Check
@@ -797,7 +821,7 @@ func UploadFile(sandboxName, localPath, remotePath string) error {
 			return fmt.Errorf("checking for file: %s", wrongPath)
 		}
 
-		tmpPath := fmt.Sprintf("/tmp/%s", filepath.Base(remotePath))
+		tmpPath := fmt.Sprintf("/tmp/fs-upload-%s", randStringBytes(10))
 		stdout, stderr, exitCode, err := Exec(sandboxName, fmt.Sprintf("mv %s %s", shellQuote(wrongPath), shellQuote(tmpPath)), 1*time.Second)
 		if err != nil {
 			return err
