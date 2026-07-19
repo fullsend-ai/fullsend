@@ -60,8 +60,16 @@ Required repository secrets:
 | `E2E_GCP_WIF_PROVIDER` | GCP WIF provider (inference / auxiliary GCP access) |
 | `E2E_GCP_SERVICE_ACCOUNT` | GCP service account for WIF |
 | `E2E_GCP_PROJECT_ID` | GCP project ID for inference secrets (`github setup --inference-project`) |
+| `TEST_CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID for CF mint behaviour-test deploys (mapped to env `CLOUDFLARE_ACCOUNT_ID` in the behaviour job) |
+| `TEST_CLOUDFLARE_API_TOKEN` | Test-only Cloudflare API token for Wrangler against Worker `mint-test` (mapped to env `CLOUDFLARE_API_TOKEN`; distinct from site-deploy `CLOUDFLARE_*`) |
 
 Mint URL uses the hosted public endpoint by default (same as `fullsend admin --mint-url`). Override with org/repo variable `FULLSEND_MINT_URL` if needed; no separate e2e secret.
+
+### Cloudflare Worker mint BT credentials
+
+The behaviour job wires `TEST_CLOUDFLARE_*` into Wrangler’s standard `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` env names so CF mint BT (#5109) can upload versions of Worker **`mint-test`**. These secrets must **not** reuse the production site-deploy `CLOUDFLARE_ACCOUNT_ID` / `CLOUDFLARE_API_TOKEN` used by `site-deploy.yml` (Worker `site`).
+
+Prefer **`wrangler versions upload --name=mint-test --preview-alias=…`** so runs use preview URLs (`<alias>-mint-test.<subdomain>.workers.dev`) rather than inventing new Worker names or relying on the production `mint-test.…workers.dev` route (which may stay disabled). Cloudflare Account API tokens cannot currently attach Workers Scripts permissions under a Specified-Workers-only policy; operators use a dedicated Workers Edit token (for example `fullsend-ai/fullsend-mint-test`) that is separate from site-deploy credentials and intended only for this test path.
 
 ### Behaviour tests and per-repo mint enrollment
 
@@ -222,6 +230,12 @@ registration setting.
 (`https://github.com/apps/<slug>/settings`), then update the corresponding
 `TEST_*_PEM` repository secret on `fullsend-ai/fullsend`. If the app is
 enrolled on a test mint, update the PEM secret there as well.
+
+**Cloudflare test token rotation:** Create a new Account API token with Workers
+Edit (or the Edit Cloudflare Workers template), store it as
+`TEST_CLOUDFLARE_API_TOKEN`, and keep `TEST_CLOUDFLARE_ACCOUNT_ID` aligned with
+the account that hosts Worker `mint-test`. Do not put the new value into
+site-deploy `CLOUDFLARE_API_TOKEN`.
 
 **Installing on a new pool org:** Install each app via its public install
 URL:
