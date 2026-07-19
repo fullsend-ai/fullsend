@@ -2139,6 +2139,7 @@ func (p *testWIFProvisioner) ProvisionWIF(_ context.Context) (string, error) {
 func (p *testWIFProvisioner) RegisterPerRepoWIF(_ context.Context, _ string) error { return nil }
 func (p *testWIFProvisioner) EnsureOrgInMint(_ context.Context, _, _ string) error { return nil }
 func (p *testWIFProvisioner) DeletePerRepoWIF(_ context.Context, _ string) error   { return nil }
+func (p *testWIFProvisioner) DeleteWIFProvider(_ context.Context, _ string) error  { return nil }
 
 func perRepoTestBase() perRepoInstallConfig {
 	return perRepoInstallConfig{
@@ -3216,6 +3217,27 @@ func TestGCFWIFAdapter_DeletePerRepoWIF_NilProvisioner(t *testing.T) {
 	err := adapter.DeletePerRepoWIF(context.Background(), "acme/widget")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not configured")
+}
+
+func TestGCFWIFAdapter_DeleteWIFProvider_NilProvisioner(t *testing.T) {
+	adapter := &gcfProvisionerAdapter{provisioner: nil}
+	err := adapter.DeleteWIFProvider(context.Background(), "acme/widget")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not configured")
+}
+
+func TestGCFWIFAdapter_DeleteWIFProvider_Success(t *testing.T) {
+	fakeClient := gcf.NewFakeGCFClient()
+	prov := gcf.NewProvisioner(gcf.Config{
+		ProjectID:   "test-project",
+		GitHubOrgs:  []string{"acme"},
+		Repo:        "acme/widget",
+		WIFPoolName: "fullsend-pool",
+	}, fakeClient)
+	adapter := &gcfProvisionerAdapter{provisioner: prov}
+
+	err := adapter.DeleteWIFProvider(context.Background(), "acme/widget")
+	require.NoError(t, err)
 }
 
 func TestGCFWIFAdapter_ProvisionWIF_Success(t *testing.T) {

@@ -1,8 +1,10 @@
-# Sandbox Images
+# Images
 
 Fullsend agents run inside sandboxed container images managed by
 [OpenShell](https://github.com/nvidia/openshell-community).  This directory
-contains the Containerfiles and supporting scripts for those images.
+contains the Containerfiles and supporting scripts for those images, plus
+the **runner image** — a host-side image bundling the fullsend CLI and its
+run dependencies (see [Runner image](#runner-image) below).
 
 ## Image hierarchy
 
@@ -18,6 +20,31 @@ ghcr.io/nvidia/openshell-community/sandboxes/base  (upstream, multi-arch)
 | `fullsend-code` | [`images/code/`](code/) | Extends `fullsend-sandbox` with Go toolchain and scan-secrets wrapper. Used by the code-implementation agent. |
 
 Both images are built for **linux/amd64** and **linux/arm64**.
+
+## Runner image
+
+`ghcr.io/fullsend-ai/fullsend-runner` ([`images/runner/`](runner/)) is **not
+a sandbox image** — agents never run inside it. It packages the host side of
+`fullsend run`: the fullsend CLI built from the tagged source, the pinned
+OpenShell CLI, and every binary the CLI's pre-scripts, validation loop, and
+post-scripts invoke on the machine running fullsend (`gh`, `gitleaks`,
+`pre-commit`, `gitlint`, `python3` + `jsonschema`, Go, `git`, `jq`, `tar`).
+It reproduces the environment the composite action assembles in CI so local
+runs behave identically (#5183). It also carries the `gcloud` CLI — not a
+fullsend dependency, but needed for the GCP credential bootstrap in the
+local-run guide.
+
+Podman, the `openshell-gateway` service, and the sandbox supervisor image
+stay on the host — the containerized CLI talks to the host gateway over the
+network, and sandboxes still spawn on the host. See
+[Running agents locally](../docs/guides/user/running-agents-locally.md) for
+usage.
+
+The runner image is built by `.github/workflows/runner-image.yml` on every
+version tag (published alongside the release tarballs, tagged with the same
+semver) and on changes to `images/runner/`. Unlike the sandbox images,
+pushes to `main` do not move a `latest` tag — `latest` always points at the
+newest release.
 
 ## Tags and versioning
 
@@ -109,6 +136,10 @@ Every binary downloaded during the build is **version-pinned** and
 | Claude Code | Official installer script | HTTPS only (no checksum, version floats) |
 | acli | `ACLI_VERSION` + `ACLI_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | pre-commit, gitlint | pip version pins | pip integrity check |
+| UBI 10 base + go-toolset builder (runner) | Manifest list digest (`@sha256:...`) | Immutable OCI content hash (anonymous pull, no subscription) |
+| OpenShell CLI (runner) | `.github/scripts/openshell-version.sh` | `sha256sum -c` against release checksums file (integrity only — the checksums file is downloaded from the same release; baked-SHA verification possible in future if added to `openshell-version.sh`) |
+| gh CLI (runner) | `GH_VERSION` + `GH_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
+| gcloud CLI (runner) | `GCLOUD_VERSION` + `GCLOUD_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 
 GitHub Actions are pinned to full commit SHAs (not floating tags).
 
@@ -133,6 +164,14 @@ podman build -t fullsend-sandbox:local \
 podman build -t fullsend-code:local \
   --build-arg BASE_IMAGE=fullsend-sandbox:local \
   -f images/code/Containerfile images/code/
+```
+
+The runner image builds from the repo root (it compiles the fullsend
+binary from source):
+
+```bash
+podman build -t fullsend-runner:local \
+  -f images/runner/Containerfile .
 ```
 
 Build for a specific platform (requires QEMU registration):

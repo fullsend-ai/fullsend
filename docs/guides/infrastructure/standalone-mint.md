@@ -353,5 +353,5 @@ gh api -X POST /orgs/myorg/actions/variables \
 ## See also
 
 - [Mint service administration](mint-administration.md) — Managing the hosted GCP mint
-- [Building custom agents](../user/building-custom-agents.md) — Creating new agents for your repos
+- [Bring Your Own Agent](../user/bring-your-own-agent.md) — Building custom agents and configuring existing ones
 - [Getting Started](../getting-started/) — End-user setup

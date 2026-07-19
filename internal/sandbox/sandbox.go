@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -120,7 +121,7 @@ func ImportProfile(ctx context.Context, id, profilePath string) error {
 
 	importCtx, importCancel := context.WithTimeout(ctx, providerTimeout)
 	defer importCancel()
-	cmd := exec.CommandContext(importCtx, "openshell", "provider", "profile", "import", profilePath)
+	cmd := exec.CommandContext(importCtx, "openshell", "provider", "profile", "import", "--file", profilePath)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		outStr := strings.ToLower(string(out))
@@ -325,6 +326,17 @@ func EnsureAvailable() error {
 // The gateway must be started externally (e.g. in CI via the action.yml steps)
 // before invoking fullsend run.
 func CheckGateway() error {
+	// This runs before any other sandbox operation in the `fullsend run` flow
+	// (internal/cli/run.go calls EnsureAvailable then CheckGateway first), so
+	// applying the container gateway override here — before any openshell
+	// subprocess actually needs it — covers every later call in this process.
+	//
+	// NOTE: os.Setenv (inside ensureContainerGatewayOverride) is not
+	// goroutine-safe. This MUST complete before any goroutines that read env
+	// vars (sandbox streaming, post-script execution) are launched — true
+	// today since CheckGateway runs synchronously and first in run.go.
+	ensureContainerGatewayOverride(context.Background())
+
 	out, err := exec.Command("openshell", "gateway", "list").CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("no openshell gateway running (openshell gateway list: %s) -- start openshell-gateway before running fullsend", strings.TrimSpace(string(out)))
@@ -682,14 +694,77 @@ func ExecStreamReader(ctx context.Context, sandboxName, command string, timeout 
 	return stdout, cmd, cancel, nil
 }
 
-// Upload copies a local file or directory into a sandbox.
+// isDirlikeSymlink reports whether info describes a symlink that should be
+// routed to the tar-based upload path: one that resolves to a directory, or
+// one that can't be resolved at all — missing target, a symlink loop, or a
+// permission error walking to it — so the failure surfaces loudly from
+// tar's -C rather than silently uploading a content-less symlink entry. A
+// symlink that resolves to a regular file returns false so it uploads like
+// any other file.
+func isDirlikeSymlink(info os.FileInfo, path string) bool {
+	if info.Mode()&os.ModeSymlink == 0 {
+		return false
+	}
+	target, err := os.Stat(path)
+	if err != nil {
+		return true // unresolvable: let UploadDir's tar -C surface a clear error
+	}
+	return target.IsDir()
+}
+
+// Upload copies a local file or directory into a sandbox. Directories, and
+// symlinks that resolve to a directory, are transferred via UploadDir's tar
+// archive so that directory contents — including symlinked sources such as
+// cache-resolved skill or plugin paths (see CacheNamedSymlink) — survive the
+// transfer. openshell's own "sandbox upload" archives only the symlink entry
+// when the source itself is a symlink, silently dropping the target's
+// content; delegating to the tar path here closes that gap for every caller
+// instead of relying on each one to remember to call UploadDir directly.
+// Regular files are uploaded directly, unchanged from before. A symlink that
+// resolves to a regular file is resolved to its real path before upload, so
+// correctness doesn't depend on whether openshell's own "sandbox upload"
+// dereferences a symlink argument. A symlink whose target is missing is
+// still routed to the tar path so it fails loudly (tar's -C can't chdir into
+// it) rather than silently uploading a content-less link.
 func Upload(sandboxName, localPath, remotePath string) error {
+	// "dir/." means "copy the contents of dir into remotePath" rather than
+	// wrapping them under a subdirectory named after dir's basename — always
+	// a directory operation, regardless of what dir itself resolves to.
+	if strings.HasSuffix(localPath, "/.") {
+		local := strings.TrimSuffix(localPath, "/.")
+		return UploadDir(sandboxName, local, strings.TrimSuffix(remotePath, "/"))
+	}
+
+	info, statErr := os.Lstat(localPath)
+	if statErr == nil && (info.IsDir() || isDirlikeSymlink(info, localPath)) {
+		dest := remotePath
+		if strings.HasSuffix(remotePath, "/") {
+			dest = strings.TrimSuffix(remotePath, "/") + "/" + filepath.Base(localPath)
+		}
+		return UploadDir(sandboxName, localPath, dest)
+	}
+
+	// Regular file, or a path that doesn't exist locally, in which case
+	// openshell's own error message is the more useful diagnostic.
+	uploadPath := localPath
+	if statErr == nil && info.Mode()&os.ModeSymlink != 0 {
+		// isDirlikeSymlink already established this resolves to a regular
+		// file. Resolve it ourselves and hand openshell the real path,
+		// rather than relying on its own (unverified) dereference behavior
+		// for a symlink argument.
+		resolved, err := filepath.EvalSymlinks(localPath)
+		if err != nil {
+			return fmt.Errorf("resolving symlink %q: %w", localPath, err)
+		}
+		uploadPath = resolved
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), transferTimeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, "openshell", "sandbox", "upload",
 		sandboxName,
-		localPath,
+		uploadPath,
 		remotePath,
 	)
 	out, err := cmd.CombinedOutput()
@@ -706,6 +781,18 @@ func Upload(sandboxName, localPath, remotePath string) error {
 // making it safe to interpolate into a sh -c command string.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+const letterBytes = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+// randStringBytes is a helper to generate random strings
+// for the temporal file created by UploadFile
+func randStringBytes(n int) string {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = letterBytes[rand.IntN(len(letterBytes))]
+	}
+	return string(b)
 }
 
 // UploadFile copies a single local file into a sandbox at a specific remote path.
@@ -734,7 +821,7 @@ func UploadFile(sandboxName, localPath, remotePath string) error {
 			return fmt.Errorf("checking for file: %s", wrongPath)
 		}
 
-		tmpPath := fmt.Sprintf("/tmp/%s", filepath.Base(remotePath))
+		tmpPath := fmt.Sprintf("/tmp/fs-upload-%s", randStringBytes(10))
 		stdout, stderr, exitCode, err := Exec(sandboxName, fmt.Sprintf("mv %s %s", shellQuote(wrongPath), shellQuote(tmpPath)), 1*time.Second)
 		if err != nil {
 			return err
@@ -762,9 +849,19 @@ func UploadFile(sandboxName, localPath, remotePath string) error {
 	return nil
 }
 
-// UploadDir uploads a local directory into a sandbox, preserving symlinks.
-// openshell sandbox upload dereferences symlinks; this builds a local tarball
-// with --no-dereference, uploads it, and extracts it in the sandbox.
+// UploadDir uploads the contents of a local directory into a sandbox,
+// preserving symlinks. It builds a local tar archive (tar preserves symlinks
+// by default), uploads it, and extracts it in the sandbox at remotePath.
+// localPath itself may be a symlink to a directory — tar's -C follows it via
+// chdir(2) before archiving. Upload delegates here automatically whenever its
+// source is a directory or a symlink; call this directly only when you
+// already know the exact destination directory you want.
+//
+// remotePath is fully owned and replaced by this call: any existing content
+// there is removed before extraction, so two uploads that resolve to the
+// same remotePath overwrite deterministically rather than merging files
+// from both. Do not point two different, unrelated sources at the same
+// remotePath expecting their content to coexist.
 func UploadDir(sandboxName, localPath, remotePath string) error {
 	tmp, err := os.CreateTemp("", "openshell-upload-*.tar.gz")
 	if err != nil {
@@ -784,12 +881,23 @@ func UploadDir(sandboxName, localPath, remotePath string) error {
 		return fmt.Errorf("creating tarball of %q: %s: %w", localPath, string(out), tarErr)
 	}
 
-	remoteTar := fmt.Sprintf("/tmp/fs-upload-%s.tar.gz", sandboxName)
+	// Include the local tarball's own random suffix (from os.CreateTemp) in
+	// the remote name, instead of a name keyed only on sandboxName, so
+	// concurrent or partially-failed UploadDir calls against the same
+	// sandbox are far less likely to collide on a fixed path. This is a
+	// collision-reduction measure, not a cryptographic uniqueness guarantee.
+	remoteTar := fmt.Sprintf("/tmp/fs-upload-%s-%s", sandboxName, filepath.Base(tmpPath))
 	if err := Upload(sandboxName, tmpPath, remoteTar); err != nil {
 		return err
 	}
 
-	extractCmd := fmt.Sprintf("mkdir -p %s && tar -xzf %s -C %s && rm %s", remotePath, remoteTar, remotePath, remoteTar)
+	// rm -rf the destination first so a basename collision between two
+	// uploads (e.g. two skills resolving to the same directory name)
+	// overwrites deterministically instead of merging files from both.
+	// remotePath and remoteTar are shell-quoted because remotePath's
+	// basename may originate from a fetched skill/plugin name.
+	extractCmd := fmt.Sprintf("rm -rf %s && mkdir -p %s && tar -xzf %s -C %s && rm %s",
+		shellQuote(remotePath), shellQuote(remotePath), shellQuote(remoteTar), shellQuote(remotePath), shellQuote(remoteTar))
 	_, stderr, exitCode, err := Exec(sandboxName, extractCmd, transferTimeout)
 	if err != nil {
 		return fmt.Errorf("extracting tarball in sandbox %q: %w", sandboxName, err)

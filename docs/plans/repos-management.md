@@ -9,7 +9,7 @@ per-repo installations across multiple orgs.
 The work is structured as 8 PRs across two phases. Phase 1 (PRs 1–4)
 builds the foundation: extracting reusable install logic, the manifest
 parser, a new forge method, and read-only status. Phase 2 (PRs 5–8)
-adds write operations: bulk install, sync/diff, upgrade, and remove.
+adds write operations: bulk install, sync/diff, upgrade, add/remove/uninstall.
 
 ---
 
@@ -181,7 +181,7 @@ Installs fullsend on repos not yet installed. Three-phase execution:
 Concurrent `repos install` and `fullsend github setup` targeting the
 same repo are unsafe — no distributed lock is held.
 
-Supports `--dry-run`, `--repo` (filter), `--concurrency`.
+Supports `--dry-run`, positional args (filter, supports globs), `--concurrency`.
 
 #### `fullsend repos diff`
 
@@ -203,60 +203,79 @@ Reconciles configuration drift for installed repos.
 |----------|--------|
 | `FULLSEND_MINT_URL` variable | Upsert to match manifest `mint.url` |
 | `FULLSEND_GCP_REGION` variable | Upsert to match resolved `inference_region` |
-| `FULLSEND_PER_REPO_INSTALL` variable | Ensure set to `"true"` |
 | `FULLSEND_GCP_PROJECT_ID` secret | Upsert to match resolved `inference_project` |
 
-Sync does **not** touch scaffold shim version (managed by `upgrade`)
-or harness files (managed via ADR 0045's `base` composition). Warns
-about repos with `FULLSEND_PER_REPO_INSTALL=true` not in the manifest.
+Sync does **not** touch scaffold shim version (managed by `upgrade`),
+harness files (managed via ADR 0045's `base` composition), or the
+`FULLSEND_PER_REPO_INSTALL` guard variable (managed exclusively by
+`repos install` — sync skips repos where the guard is not `"true"`).
 
 #### `fullsend repos upgrade`
 
-Upgrades scaffold shim ref. Uses
-[ADR 0048](../ADRs/0048-automatic-updates.md)'s `--upstream-ref` —
-regenerates the shim with the new `__FULLSEND_REF__` value.
+Upgrades scaffold shim ref across repos by replacing `@ref` in all
+`fullsend-ai/fullsend` `uses:` lines within workflow files.
 
 ```
 $ fullsend repos upgrade
-
-Checking mint compatibility...
-  Mint at https://fullsend-mint-abc123-uc.a.run.app: v2.3.0 ✓
 
 Upgrading repos:
   acme-corp/api-server       v2.1.0 → v2.3.0  ✓
   acme-corp/web-frontend     v2.1.0 → v2.3.0  ✓
   acme-corp/legacy-service   v2.1.0            (pinned, already current)
-  acme-corp/bleeding-edge    latest            (non-semver, skipped)
+  acme-corp/bleeding-edge    latest            (floating tag, skipped)
 
 2 upgraded, 1 current, 1 skipped
 ```
 
-Version safety: checks mint compatibility before upgrading, blocks
-downgrades by default (`--force` to override), respects per-repo
-pinned versions. The `--ref` flag overrides the manifest for one-off
-upgrades.
+Version safety: blocks downgrades by default (`--force` to override),
+skips floating refs (branch names, partial versions like `v0`, `v1.2`),
+respects per-repo pinned versions. The `--ref` flag overrides the
+manifest for one-off upgrades.
+
+**Known limitation:** writes tags directly into `uses:` lines — repos
+using SHA pinning lose their pin on upgrade.
 
 #### `fullsend repos upgrade-mint`
 
-Upgrades the token mint Cloud Function. Uses existing provisioner
-deploy logic. Must run before `repos upgrade` if the mint version
-is behind the target fullsend ref. The `/health` endpoint must be
-extended to include a `version` field (currently only returns
-`{"status":"ok"}`).
+Verifies the token mint deployment matches the manifest configuration.
+Discovers the current mint via `DiscoverMint` and checks that its URL
+matches `mint.url`. Run before `repos upgrade` to confirm the mint
+is reachable and correctly configured.
+
+#### `fullsend repos add`
+
+Adds repo entries to the `repos.yaml` manifest. Supports glob patterns
+(e.g. `acme/*`) and validates repo name format (`owner/repo`). Skips
+duplicates. With `--install`, also installs fullsend on the added repos.
+
+Supports `--dry-run`, `--install`, `--concurrency`, `--direct`.
 
 #### `fullsend repos remove`
 
-Removes fullsend from specific repos. Requires explicit repo names —
-no glob expansion, to prevent accidental bulk deletion.
+Removes repo entries from the `repos.yaml` manifest. Glob patterns are
+matched against manifest entries and prompt for confirmation unless
+`--yes` is set.
+
+With `--uninstall`, tears down fullsend from the matched repos before
+removing them from the manifest (deletes workflow, variables, secrets,
+and WIF infrastructure).
+
+Supports `--dry-run`, `--uninstall`, `--yes`, `--skip-wif-cleanup`,
+`--concurrency`.
+
+#### `fullsend repos uninstall`
+
+Tears down fullsend from specific repos without modifying the manifest.
+Glob patterns are matched against manifest entries.
 
 For each repo: deletes workflow file, variables, secrets, deregisters
 from mint's `PER_REPO_WIF_REPOS` (sequential), deletes WIF provider.
 
-Does **not** remove repos from the manifest (operator edits manually).
-Does **not** remove `.fullsend/` — it contains user-authored config
-that may be version-controlled independently.
+Does **not** remove repos from the manifest — use `repos remove` for
+that. Does **not** remove `.fullsend/` — it contains user-authored
+config that may be version-controlled independently.
 
-Supports `--dry-run`, `--skip-wif-cleanup`, `--concurrency`.
+Supports `--dry-run`, `--yes`, `--skip-wif-cleanup`, `--concurrency`.
 
 ### Version management
 
@@ -314,7 +333,7 @@ should be proposed in its own ADR when pursued.
 PRs 1, 2, 3 ─────────> PR 5 (repos install)
 PRs 2, 3 ────> PR 4 (repos status) ──┬──> PR 6 (sync/diff)
                                       └──> PR 7 (upgrade)
-PRs 1, 3 ─────────> PR 8 (remove)
+PRs 1, 3 ─────────> PR 8 (add/remove/uninstall)
 ```
 
 PRs 1, 2, 3 are independent and can be developed in parallel.
@@ -326,7 +345,8 @@ PR 7 depends on PR 4 (reuses `extractWorkflowRef()` for reading
 current refs from workflow files).
 PR 8 depends on PRs 1 and 3 (reuses install types +
 `DeleteRepoVariable`/`DeleteRepoSecret`) and can be developed in
-parallel with PRs 4–7.
+parallel with PRs 4–7. Implements three commands: `repos add`,
+`repos remove`, and `repos uninstall`.
 
 The `repos init` command is covered by a
 [separate implementation plan](repos-init.md) and can be developed
@@ -845,7 +865,7 @@ Flags:
 
 - `--manifest` / `-f` (string, default `repos.yaml`): path or URL.
 - `--dry-run` (bool).
-- `--repo` (string, repeatable): install specific repos only.
+- Positional args: install specific repos only (supports globs).
 - `--skip-app-setup` (bool).
 - `--skip-mint-check` (bool).
 - `--concurrency` (int, default 4): max parallel scaffold writes.
@@ -928,7 +948,7 @@ collected in `BatchInstallResult.Failed`.
 `ProvisionerFactory` creates a provisioner scoped to a specific repo:
 
 ```go
-type ProvisionerFactory func(cfg InstallConfig) WIFProvisioner
+type ProvisionerFactory func(cfg ResolvedConfig) WIFProvisioner
 ```
 
 #### `internal/repos/batch_install_test.go` (new)
@@ -948,7 +968,7 @@ call ordering via recorded method calls.
 
 ---
 
-### PR 6: `fullsend repos sync` + `fullsend repos diff`
+### PR 6: `fullsend repos sync` + `fullsend repos diff` — PR #4079
 
 **Scope:** New CLI commands. Writes variables/secrets.
 
@@ -1029,10 +1049,12 @@ Unit tests with `forge.FakeClient`.
 
 ---
 
-### PR 7: `fullsend repos upgrade` + `fullsend repos upgrade-mint`
+### PR 7: `fullsend repos upgrade` + `fullsend repos upgrade-mint` ✓
 
-**Scope:** New CLI commands. Writes workflow files, deploys Cloud
-Function.
+**Status:** Implemented in [#4080](https://github.com/fullsend-ai/fullsend/pull/4080).
+
+**Scope:** New CLI commands. Writes workflow files, verifies mint
+deployment.
 
 **Depends on:** PR 4 (reuses `extractWorkflowRef()` for reading
 current refs from workflow files).
@@ -1045,10 +1067,11 @@ Add `newReposUpgradeCmd()` and `newReposUpgradeMintCmd()`.
 
 - `--manifest` / `-f`.
 - `--ref` (string): override manifest `fullsend_ref`.
-- `--repo` (repeatable).
+- Positional args `[repos...]`: filter to specific repos (supports globs via `filepath.Match`).
 - `--dry-run`.
 - `--force`: upgrade even if current ref is newer.
 - `--concurrency` (int, default 4).
+- `--direct`: push scaffold directly to default branch (skip PR).
 
 `upgrade-mint` flags:
 
@@ -1092,49 +1115,43 @@ Upgrade logic per repo:
    `extractWorkflowRef()`.
 2. Determine target ref: `--ref` flag > per-repo `fullsend_ref` >
    `defaults.fullsend_ref`.
-3. Skip if target is a non-semver ref (e.g., `latest`, branch names).
-   Floating tags are not upgraded — they already track the newest
-   release. Log as "floating tag, skipped".
-4. Skip if current == target.
+3. Skip if target is a floating ref (`latest`, `main`, `master`,
+   or partial version tags like `v0`, `v1.2`).
+4. Skip if current ref is floating (same criteria as step 3).
 5. If both current and target are valid semver: skip if current >
    target unless `--force` is set (prevents accidental downgrade).
    If current is not valid semver (e.g., a branch name or SHA),
    proceed with the upgrade — the current ref cannot be compared.
-6. Regenerate scaffold shim with new ref using
-   `scaffold.PerRepoShimTemplate()`.
-7. Commit via `CommitFiles` (or `CommitFilesToBranch` + PR if branch
-   protection).
+6. Replace `@ref` in all `fullsend-ai/fullsend` `uses:` lines via
+   `replaceShimRef()` regex. Skip if no lines matched.
+7. Commit via `ScaffoldCommitFunc` (injected; the CLI layer wires it
+   to `CommitFilesToBranch` or direct push depending on `--direct`).
 
 Ref replacement in scaffold:
 
 ```go
-func replaceShimRef(content []byte, newRef string) ([]byte, error)
+func replaceShimRef(content []byte, newRef, newTag string) ([]byte, bool)
 ```
 
-Replaces all `@<oldRef>` occurrences in `uses:` lines referencing
-`fullsend-ai/fullsend`, and updates `fullsend_actions_ref` and
-`fullsend_cli_ref` input values — matching the `__FULLSEND_REF__`
-template from ADR 0048.
+Replaces all `@<oldRef>` occurrences (and optional trailing `# tag`
+comments) in `uses:` lines referencing `fullsend-ai/fullsend`. The
+regex uses `[ \t]*` (not `\s*`) for the comment group to avoid
+matching across newlines.
 
 In-place replacement is chosen over full scaffold regeneration to
-preserve any user customizations in the shim workflow. The tradeoff
-is fragility if ADR 0048's final field names differ from the regex
-targets — the implementation must align with ADR 0048's shipped
-template. If that dependency proves unstable, fall back to full
-regeneration via `scaffold.PerRepoShimTemplate()`.
+preserve any user customizations in the shim workflow.
 
-Mint compatibility check:
+**Limitation — tag-only pinning:** `replaceShimRef` writes the
+manifest tag directly into `uses:` lines. SHA-pinned repos
+(e.g., `@abc123 # v1.9.0`) lose their pin. A future enhancement
+will resolve tags to SHAs via the forge API.
 
-- Query mint `/health` endpoint for version.
-- Compare against target fullsend ref (semver).
-- Refuse if mint version < minimum required for target ref.
-- Direct operator to `repos upgrade-mint` first.
-
-`UpgradeMint`:
+`UpgradeMint` (verification only — full redeploy deferred until
+`/health` version endpoint is available):
 
 - Create provisioner from manifest's mint config.
-- Call provisioner deploy with force mode to redeploy the function.
-- Wait for health check to pass.
+- Discover the current mint deployment via `DiscoverMint`.
+- Verify discovered mint URL matches the manifest's `mint.url`.
 
 #### `internal/repos/upgrade_test.go` (new)
 
@@ -1143,22 +1160,24 @@ Mint compatibility check:
 - Mixed: some current, some behind, some ahead.
 - `--force` overrides "ahead" skip.
 - `--ref` overrides manifest ref.
-- `--repo` filter.
+- Positional args filter.
 - Dry-run → no writes.
-- Semver comparison: table-driven tests.
-- Branch protection → PR creation fallback.
-- Mint too old → error with upgrade-mint message.
+- Semver comparison: table-driven tests (including prerelease §11).
+- Floating ref detection (partial versions, branch names).
+- Standalone comment preservation across newlines.
+- `--direct` flag passed through to commit function.
+- Mint URL verification (match, mismatch, discover error, empty URL).
 
 #### Test strategy
 
-Unit tests with `forge.FakeClient`. Semver comparison as table-driven
-tests. Mint compatibility tested with a fake HTTP server.
+Unit tests with `forge.FakeClient` and fake `WIFProvisioner`.
+Semver comparison as table-driven tests.
 
 ---
 
-### PR 8: `fullsend repos remove` (uninstall)
+### PR 8: repos management (add, remove, uninstall)
 
-**Scope:** New CLI command. Deletes infrastructure.
+**Scope:** Three new CLI commands for managing per-repo installations.
 
 **Depends on:** PR 1 (reuses types), PR 3 (`DeleteRepoVariable`,
 `DeleteRepoSecret`).
@@ -1167,20 +1186,32 @@ Can be developed in parallel with PRs 4–7.
 
 #### `internal/cli/repos.go` (modify)
 
-Add `newReposRemoveCmd()`.
+Add `newReposAddCmd()`, `newReposRemoveCmd()`, `newReposUninstallCmd()`.
 
-Flags:
-
-- `--manifest` / `-f`: used to resolve mint config for WIF cleanup.
-- `--repo` (repeatable, **required**): repos to remove.
+`repos add` — adds repo entries to the manifest:
+- Positional args: repos to add (supports globs).
+- `--manifest` / `-f`.
 - `--dry-run`.
+- `--install`: also install fullsend on added repos.
+- `--concurrency`, `--direct` (used with `--install`).
+
+`repos remove` — removes repo entries from the manifest:
+- Positional args: repos to remove (supports globs).
+- `--manifest` / `-f`.
+- `--dry-run`.
+- `--uninstall`: tear down fullsend before removing from manifest.
+- `--yes`: skip confirmation for glob patterns.
+- `--skip-wif-cleanup`, `--concurrency` (used with `--uninstall`).
+
+`repos uninstall` — tears down fullsend without modifying manifest:
+- Positional args: repos to uninstall (supports globs).
+- `--manifest` / `-f`: used to resolve mint config for WIF cleanup.
+- `--dry-run`.
+- `--yes`: skip confirmation for glob patterns.
 - `--skip-wif-cleanup`: skip GCP WIF provider deletion and mint
   deregistration.
 - `--concurrency` (int, default 4): max parallel Phase 1 cleanup
   operations.
-
-No glob expansion. `--repo` requires exact `owner/repo` values to
-prevent accidental bulk removal.
 
 #### `internal/repos/remove.go` (new)
 

@@ -150,7 +150,7 @@ func runMigrateCustomizations(ctx context.Context, fullsendDir, repoFlag string,
 	// the destination prefix for moved files.
 	customizedPrefix := "customized/"
 	destPrefix := ""
-	if !cfg.isOrg {
+	if !cfg.IsOrgMode() {
 		customizedPrefix = ".fullsend/customized/"
 		destPrefix = ".fullsend/"
 	}
@@ -193,8 +193,8 @@ func runMigrateCustomizations(ctx context.Context, fullsendDir, repoFlag string,
 				})
 			}
 			entry := config.AgentEntry{Source: "harness/" + m.name + ".yaml"}
-			if _, found := findAgentByName(cfg.agents(), m.name); !found {
-				cfg.setAgents(append(cfg.agents(), entry))
+			if _, found := findAgentByName(cfg.AgentEntries(), m.name); !found {
+				cfg.SetAgents(append(cfg.AgentEntries(), entry))
 				configChanged = true
 			}
 			prBodyParts = append(prBodyParts, fmt.Sprintf("- Registered custom agent **%s**", m.name))
@@ -228,15 +228,15 @@ func runMigrateCustomizations(ctx context.Context, fullsendDir, repoFlag string,
 
 	// Add updated config.yaml if agents were registered.
 	if configChanged {
-		if err := cfg.validate(); err != nil {
+		if err := cfg.Validate(); err != nil {
 			return fmt.Errorf("config validation failed after migration: %w", err)
 		}
-		data, marshalErr := cfg.marshal()
+		data, marshalErr := cfg.Marshal()
 		if marshalErr != nil {
 			return fmt.Errorf("marshaling config: %w", marshalErr)
 		}
 		cfgPath := "config.yaml"
-		if !cfg.isOrg {
+		if !cfg.IsOrgMode() {
 			cfgPath = ".fullsend/config.yaml"
 		}
 		treeFiles = append(treeFiles, forge.TreeFile{
@@ -307,7 +307,7 @@ func walkCustomized(root string) ([]string, error) {
 
 // planMigrations groups customized files by agent name and determines the
 // migration action for each.
-func planMigrations(files []string, cfg *agentConfig, scaffoldSet map[string]bool) []agentMigration {
+func planMigrations(files []string, cfg config.ConfigWriter, scaffoldSet map[string]bool) []agentMigration {
 	// Group files by agent name (derived from harness filename).
 	harnessAgents := make(map[string][]string) // agent name → list of all related files
 	var harnessNames []string
@@ -367,7 +367,7 @@ func planMigrations(files []string, cfg *agentConfig, scaffoldSet map[string]boo
 			files: harnessAgents[name],
 		}
 
-		if _, found := findAgentByName(cfg.agents(), name); found {
+		if _, found := findAgentByName(cfg.AgentEntries(), name); found {
 			m.action = migrateDead
 		} else if scaffoldSet[name] {
 			m.action = migrateModified
@@ -426,17 +426,17 @@ func resolveBaseURL(agentName string) (string, error) {
 
 // registerMigratedAgent adds the agent to cfg and ensures
 // allowed_remote_resources covers the base URL prefix.
-func registerMigratedAgent(cfg *agentConfig, agentName, baseURL string) {
+func registerMigratedAgent(cfg config.ConfigWriter, agentName, baseURL string) {
 	entry := config.AgentEntry{Source: "harness/" + agentName + ".yaml"}
-	if _, found := findAgentByName(cfg.agents(), agentName); !found {
-		cfg.setAgents(append(cfg.agents(), entry))
+	if _, found := findAgentByName(cfg.AgentEntries(), agentName); !found {
+		cfg.SetAgents(append(cfg.AgentEntries(), entry))
 	}
 
 	prefix := allowlistPrefixForURL(baseURL)
 	if prefix != "" {
-		resources := cfg.allowedRemoteResources()
+		resources := cfg.AllowedResources()
 		if !hasAllowlistPrefix(resources, prefix) {
-			cfg.setAllowedRemoteResources(append(resources, prefix))
+			cfg.SetAllowedRemoteResources(append(resources, prefix))
 		}
 	}
 }
@@ -448,7 +448,7 @@ func registerMigratedAgent(cfg *agentConfig, agentName, baseURL string) {
 func buildModifiedAgentFiles(
 	customizedBase, customizedPrefix, destPrefix string,
 	m agentMigration,
-	cfg *agentConfig,
+	cfg config.ConfigWriter,
 	printer *ui.Printer,
 ) ([]forge.TreeFile, error) {
 	upstreamData, err := scaffold.HarnessContent(m.name)

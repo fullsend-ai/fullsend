@@ -42,6 +42,12 @@ type World struct {
 
 	DispatchAgent string
 	PRNumber      int
+
+	// Fork context — set by fork step definitions.
+	ForkOwner    string
+	ForkRepo     string
+	ForkPRNumber int
+	ForkPRBranch string
 }
 
 const BehaviourScriptRepoPath = "behaviour/current-scenario.yaml"

@@ -11,7 +11,7 @@ Linux are supported with Podman as the container runtime.
 | Requirement | macOS | Linux |
 |-------------|-------|-------|
 | Container runtime | Podman Desktop with a running machine | Podman |
-| [OpenShell](https://github.com/NVIDIA/OpenShell) | 0.0.72 | 0.0.72 |
+| [OpenShell](https://github.com/NVIDIA/OpenShell) | [Pinned per release](https://github.com/fullsend-ai/fullsend/blob/main/.github/scripts/openshell-version.sh) | Same |
 | GCP project | [Agent Platform API](https://console.cloud.google.com/apis/library/aiplatform.googleapis.com) enabled with [Claude models](https://console.cloud.google.com/vertex-ai/model-garden) enabled | Same |
 | GCP credentials | Service account key (see section below) | Same |
 | GitHub PAT | Classic PAT with `repo` scope (see section below) | Same |
@@ -47,11 +47,13 @@ fullsend --version
 ## Install OpenShell
 
 [OpenShell](https://github.com/NVIDIA/OpenShell) provides the sandbox runtime. There are multiple ways
-to install it, here we use one similar to how we download it on Fullsend. Use the same version
-printed on your Fullsend workflow for better reproducibility.
+to install it, here we use one similar to how we download it on Fullsend. Use the version
+fullsend is pinned to — the source of truth is
+[`.github/scripts/openshell-version.sh`](https://github.com/fullsend-ai/fullsend/blob/main/.github/scripts/openshell-version.sh)
+in the fullsend repo at your release tag (also printed on Fullsend workflow runs).
 
 ```bash
-export OPENSHELL_VERSION=0.0.72
+export OPENSHELL_VERSION=0.0.83  # check the pin file for the current version
 curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v${OPENSHELL_VERSION}/install.sh | OPENSHELL_VERSION=v${OPENSHELL_VERSION} sh
 openshell --version
 ```
@@ -89,6 +91,12 @@ CLOUD_ML_REGION=global
 GOOGLE_APPLICATION_CREDENTIALS=fullsend-local-credentials.json
 ```
 
+**Tip**: if you plan to run the CLI from the
+[container image](#run-from-a-container)
+instead of the native binary, keep the key file and env file in your
+working directory — the container mounts it as `/work` and resolves
+`GOOGLE_APPLICATION_CREDENTIALS` relative to it.
+
 ## Get a GitHub token
 
 Create a [fine grained token](https://github.com/settings/personal-access-tokens) at GitHub. The
@@ -104,12 +112,12 @@ First clone your target repository locally:
 git clone git@github:{org}/{target_repository} /tmp/target-repo
 ```
 
-Next clone the repository where the agent lives, in this guide case you need to
-clone Fullsend's repository. To learn more about custom agents visit
+Next clone the repository where the agent definitions live. The canonical
+source is `fullsend-ai/agents`. To learn more about custom agents visit
 [Configuring Agents](customizing-agents.md).
 
 ```bash
-git clone --depth 1 https://github.com/fullsend-ai/fullsend.git /tmp/fullsend-ai_fullsend/
+git clone --depth 1 https://github.com/fullsend-ai/agents.git /tmp/fullsend-agents/
 ```
 
 ## Run default agents
@@ -119,6 +127,10 @@ Check the variables they need in their environment files, referenced in their ha
 
 **Tip**: use `--no-post-script` in the `fullsend run` calls to avoid side-effects. You
 can also use `--keep-sandbox` to debug failures (but remember to remove them).
+
+**Tip**: `fullsend run` uses multiple tools on your system. Instead of
+installing them all, you can use a container image fullsend publishes —
+see [Run from a container](#run-from-a-container) below.
 
 **Note**: to run custom agents set `--fullsend-dir` to the directory where your
 custom agent definitions exist.
@@ -135,7 +147,7 @@ GITHUB_ISSUE_URL=https://github.com/{org}/{repo}/issues/{issue_num}
 
 ```bash
 fullsend run triage \
-  --fullsend-dir /tmp/fullsend-ai_fullsend/internal/scaffold/fullsend-repo/ \
+  --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env
@@ -157,7 +169,7 @@ REPO_FULL_NAME="{org}/{repo}"
 
 ```bash
 fullsend run review \
-  --fullsend-dir /tmp/fullsend-ai_fullsend/internal/scaffold/fullsend-repo/ \
+  --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-review.env
@@ -184,7 +196,7 @@ GITHUB_WORKSPACE=/tmp/
 
 ```bash
 fullsend run code \
-  --fullsend-dir /tmp/fullsend-ai_fullsend/internal/scaffold/fullsend-repo/ \
+  --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-code.env
@@ -246,7 +258,7 @@ Example:
 
 ```bash
 fullsend run triage \
-  --fullsend-dir /tmp/fullsend-ai_fullsend/internal/scaffold/fullsend-repo/ \
+  --fullsend-dir /tmp/fullsend-agents/ \
   --target-repo /tmp/target-repo/ \
   --env-file fullsend-gcp.env \
   --env-file fullsend-triage.env \
@@ -258,19 +270,71 @@ fullsend run triage \
 Status comment behavior is configured via `status_notifications` in
 `config.yaml`. See the [operations guide](../getting-started/operations.md#status-notifications).
 
+## Run from a container
+
+Instead of downloading the fullsend binary and installing its host-side
+dependencies, you can run the CLI from the released runner image:
+
+```bash
+podman pull ghcr.io/fullsend-ai/fullsend-runner:latest
+```
+
+You still need on the host: Podman, OpenShell (the gateway and sandboxes
+stay on the host; only the CLI moves into the container), GCP credentials,
+and a GitHub token.
+
+Mount your OpenShell client config and the same paths you would pass to a
+native `fullsend run`. `--network=host` lets the containerized CLI reach
+the gateway:
+
+```bash
+podman run --rm -it --network=host \
+  -v "$HOME/.config/openshell:/root/.config/openshell" \
+  -v /tmp/fullsend:/tmp/fullsend \
+  -v /tmp/fullsend-agents:/tmp/fullsend-agents \
+  -v /tmp/target-repo:/tmp/target-repo \
+  -v "$PWD:/work" \
+  ghcr.io/fullsend-ai/fullsend-runner:latest \
+  run triage \
+    --fullsend-dir /tmp/fullsend-agents/ \
+    --target-repo /tmp/target-repo/ \
+    --env-file fullsend-gcp.env \
+    --env-file fullsend-triage.env
+```
+
+The image's working directory is `/work`, so relative paths in `--env-file`
+resolve against the mounted current directory. Run artifacts are written to
+`/tmp/fullsend/` — mount it (or pass `--output-dir` pointing at a mounted
+path) to keep them on the host.
+
+**macOS**: use `/private/tmp/...` for the `/tmp` mounts above (and
+`$(pwd -P)` instead of `$PWD`) — see "Container image mounts" in the
+[macOS platform notes](#macos). No other change is needed: fullsend
+detects when it's running inside a container whose loopback doesn't
+reach the gateway — the case on a macOS Podman machine, where
+`--network=host` shares the VM's network namespace, not the Mac's — and
+transparently points the OpenShell client at `host.containers.internal`
+instead. See "Container image" in the [macOS platform notes](#macos) if
+you need a manual override.
+
+When using `--keep-sandbox` the CLI within the container is not able to
+gather podman logs, because the `podman` binary is not installed within.
+Run `podman logs <sandbox-container>` manually on your machine.
+
+On SELinux-enforcing hosts (Fedora/RHEL), bind mounts may need the `:z`
+suffix. Prefer adding `:z` only to the `/tmp` and `$PWD` mounts —
+relabeling `~/.config/openshell` touches files the host gateway also reads.
+
 ## Simulating Fullsend's real customization layers
 
 Fullsend automatically aggregates different layers of information before running `fullsend run`.
 In case you want to test how customizations impact default agents, or you custom agents, follow the
 next steps.
 
-Start by cloning `fullsend-ai/fullsend` and copying the scaffold over to a dedicated directory:
+Start by cloning `fullsend-ai/agents` to a dedicated directory:
 
 ```bash
-mkdir /tmp/agents
-
-git clone --depth 1 https://github.com/fullsend-ai/fullsend.git /tmp/fullsend-ai_fullsend/
-cp -r /tmp/fullsend-ai_fullsend/internal/scaffold/fullsend-repo/. /tmp/agents/
+git clone --depth 1 https://github.com/fullsend-ai/agents.git /tmp/agents/
 ```
 
 Then apply your organization customizations, if any:
@@ -301,6 +365,8 @@ When you execute `fullsend run`, pass `--fullsend-dir` as `/tmp/agents/`.
 - **Podman machine**: ensure the Podman machine is running (`podman machine start`) before invoking fullsend. The CLI does not start it automatically.
 - **Podman host-gateway**: if sandbox creation fails with `unable to replace "host-gateway"`, set `host_containers_internal_ip = "192.168.127.254"` under `[containers]` in `~/.config/containers/containers.conf` and restart the Podman machine.
 - **Architecture mismatch**: if your sandbox image uses a different CPU architecture than the host (e.g. amd64 image on an arm64 Mac via QEMU emulation), set `FULLSEND_SANDBOX_ARCH=amd64` so the CLI downloads the correct binary. This is not needed in the typical setup where the Podman VM matches the host arch.
+- **Container image**: `--network=host` shares the Podman VM's network namespace, not the Mac's, so a gateway configured at `127.0.0.1` is unreachable from inside the container. Fullsend detects this automatically and redirects the containerized CLI to whichever of `host.containers.internal` (Podman) or `host.docker.internal` (Docker) is actually reachable (fullsend-ai/fullsend#5261) — no manual steps needed. This depends on one of those names resolving inside the container; if neither does, see the **Podman host-gateway** note above. To override the detection yourself, set `OPENSHELL_GATEWAY_ENDPOINT` (e.g. `https://host.containers.internal:17670`) before running the container — an explicit value here is never overwritten. Always use `https://`: check `openshell gateway list`'s `AUTH` column, and if it says `mtls`, OpenShell will present your client certificate to whatever host this points at, so only point it at a gateway you trust.
+- **Container image mounts**: bind-mounting `/tmp/...` paths fails with `statfs: no such file or directory` on macOS — Podman Desktop's VM shares `/Users`, `/private`, and `/var/folders` via virtiofs, but not the literal `/tmp` path, and Podman does not resolve the `/tmp` → `/private/tmp` symlink before mounting. Use `/private/tmp/...` (and `$(pwd -P)` instead of `$PWD`). The [container example](#run-from-a-container) above already accounts for this.
 
 ### Linux
 

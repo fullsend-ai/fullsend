@@ -74,7 +74,7 @@ to Terraform vs cloud provider CLIs.
 | `repos install` | Provision fullsend on uninstalled manifest repos |
 | `repos sync` / `repos diff` | Reconcile configuration drift |
 | `repos upgrade` | Upgrade scaffold shim ref across repos |
-| `repos upgrade-mint` | Upgrade token mint Cloud Function |
+| `repos upgrade-mint` | Verify token mint deployment against manifest |
 | `repos remove` | Remove fullsend from specific repos |
 
 **Manifest:** a YAML file declaring desired state — mint config, default
@@ -126,7 +126,11 @@ and implementation details are in the
 
 ## Implementation status
 
-`repos install` (batch install with WIF serialization) is being implemented in PR #3033.
-Remaining subcommands (`repos init`, `repos status`, `repos sync`,
-`repos upgrade`, `repos upgrade-mint`, `repos remove`) are tracked in the
-[repos management plan](../plans/repos-management.md).
+Implemented subcommands:
+
+- `repos init` — PR #3033
+- `repos install` — PR #3033
+- `repos status` — PR #4079
+- `repos add`, `repos remove`, `repos uninstall` — PR #4081
+- `repos upgrade`, `repos upgrade-mint` — PR #4080
+- `repos diff`, `repos sync` — PR #4079

@@ -80,7 +80,7 @@ func TestLoadAgentConfig_OrgConfig(t *testing.T) {
 
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	assert.True(t, cfg.isOrg)
+	assert.True(t, cfg.IsOrgMode())
 }
 
 func TestLoadAgentConfig_PerRepoConfig(t *testing.T) {
@@ -89,7 +89,7 @@ func TestLoadAgentConfig_PerRepoConfig(t *testing.T) {
 
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	assert.False(t, cfg.isOrg)
+	assert.False(t, cfg.IsOrgMode())
 }
 
 func TestLoadAgentConfig_MissingFile(t *testing.T) {
@@ -117,7 +117,7 @@ func TestRunAgentAdd_LocalPath(t *testing.T) {
 
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	agents := cfg.agents()
+	agents := cfg.AgentEntries()
 	require.Len(t, agents, 1)
 	assert.Equal(t, "harness/lint.yaml", agents[0].Source)
 	assert.Equal(t, "", agents[0].Name)
@@ -141,7 +141,7 @@ func TestRunAgentAdd_LocalPathWithName(t *testing.T) {
 
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	agents := cfg.agents()
+	agents := cfg.AgentEntries()
 	require.Len(t, agents, 1)
 	assert.Equal(t, "my-linter", agents[0].Name)
 	assert.Equal(t, "my-linter", agents[0].DerivedName())
@@ -251,7 +251,7 @@ func TestRunAgentAdd_URLWithPinnedSHA(t *testing.T) {
 
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	agents := cfg.agents()
+	agents := cfg.AgentEntries()
 	require.Len(t, agents, 1)
 	assert.Equal(t, "triage", agents[0].DerivedName())
 	assert.Contains(t, agents[0].Source, "#sha256="+harnessHash)
@@ -304,7 +304,7 @@ func TestRunAgentAdd_URLAddsAllowlistPrefix(t *testing.T) {
 
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	resources := cfg.allowedRemoteResources()
+	resources := cfg.AllowedResources()
 	found := false
 	for _, r := range resources {
 		if strings.Contains(r, "/my-org/my-agents/") {
@@ -332,8 +332,8 @@ func TestRunAgentAdd_PerRepoConfig(t *testing.T) {
 
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	assert.False(t, cfg.isOrg)
-	agents := cfg.agents()
+	assert.False(t, cfg.IsOrgMode())
+	agents := cfg.AgentEntries()
 	require.Len(t, agents, 1)
 	assert.Equal(t, "lint", agents[0].DerivedName())
 }
@@ -422,7 +422,7 @@ allowed_remote_resources:
 
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	agents := cfg.agents()
+	agents := cfg.AgentEntries()
 	require.Len(t, agents, 1)
 	assert.Contains(t, agents[0].Source, newSHA)
 	assert.Contains(t, agents[0].Source, "#sha256="+newHash)
@@ -456,7 +456,7 @@ allowed_remote_resources:
 
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	agents := cfg.agents()
+	agents := cfg.AgentEntries()
 	require.Len(t, agents, 1)
 	assert.Contains(t, agents[0].Source, explicitSHA)
 	assert.Contains(t, agents[0].Source, "#sha256="+newHash)
@@ -514,7 +514,7 @@ func TestRunAgentRemove_Success(t *testing.T) {
 
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	agents := cfg.agents()
+	agents := cfg.AgentEntries()
 	require.Len(t, agents, 1)
 	assert.Equal(t, "review", agents[0].DerivedName())
 }
@@ -535,7 +535,7 @@ allowed_remote_resources:
 
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	resources := cfg.allowedRemoteResources()
+	resources := cfg.AllowedResources()
 	for _, r := range resources {
 		assert.NotContains(t, r, "/org/repo/", "should have removed the unused prefix")
 	}
@@ -560,7 +560,7 @@ allowed_remote_resources:
 
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	resources := cfg.allowedRemoteResources()
+	resources := cfg.AllowedResources()
 	assert.Contains(t, resources, "https://raw.githubusercontent.com/org/repo/")
 }
 
@@ -776,7 +776,7 @@ allowed_remote_resources:
 
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	agents := cfg.agents()
+	agents := cfg.AgentEntries()
 	require.Len(t, agents, 1)
 	assert.Contains(t, agents[0].Source, newSHA)
 	assert.Contains(t, agents[0].Source, "#sha256="+newHash)
@@ -843,7 +843,7 @@ func TestRunAgentAdd_URLWithBranchRef(t *testing.T) {
 
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	agents := cfg.agents()
+	agents := cfg.AgentEntries()
 	require.Len(t, agents, 1)
 	assert.Contains(t, agents[0].Source, resolvedSHA)
 	assert.Contains(t, agents[0].Source, "#sha256="+harnessHash)
@@ -904,8 +904,8 @@ func TestRunAgentAdd_PerRepoURLAddsAllowlist(t *testing.T) {
 
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	assert.False(t, cfg.isOrg)
-	resources := cfg.allowedRemoteResources()
+	assert.False(t, cfg.IsOrgMode())
+	resources := cfg.AllowedResources()
 	found := false
 	for _, r := range resources {
 		if strings.Contains(r, "/my-org/repo/") {
@@ -928,7 +928,7 @@ func TestRunAgentRemove_PerRepoConfig(t *testing.T) {
 
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	agents := cfg.agents()
+	agents := cfg.AgentEntries()
 	require.Len(t, agents, 1)
 	assert.Equal(t, "review", agents[0].DerivedName())
 }
@@ -1044,7 +1044,7 @@ func TestLoadAgentConfig_AmbiguousConfig(t *testing.T) {
 	require.NoError(t, err)
 	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.NoError(t, err)
-	assert.False(t, cfg.isOrg)
+	assert.False(t, cfg.IsOrgMode())
 }
 
 func TestParseGenericURL_NotURL(t *testing.T) {

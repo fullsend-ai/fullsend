@@ -159,7 +159,8 @@ automatically by `fullsend run`.
   policies continue to work, but the scaffold and guides recommend
   providers as the preferred approach.
 - The building-custom-agents guide is updated to show providers as
-  the recommended way to grant network access.
+  the recommended way to grant network access. (Note: this guide has
+  been superseded by [Bring Your Own Agent](../guides/user/bring-your-own-agent.md).)
 - Requires OpenShell >= v0.0.37 and the `providers_v2_enabled` gateway
   setting (set automatically).
 - GitHub access is split into read-write (`fullsend-github`) and
