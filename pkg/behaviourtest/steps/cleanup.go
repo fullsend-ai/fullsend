@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,8 +12,12 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
+const githubAPIBaseURL = "https://api.github.com"
+
 func CleanupScenario(w *world.World) {
 	ctx := context.Background()
+
+	// --- Issue / PR cleanup ---
 	if w.IssueNumber > 0 {
 		if err := w.SCM.CloseIssue(ctx, w.RepoOwner, w.RepoName, w.IssueNumber); err != nil {
 			worldLogf(w, "behaviour cleanup: close issue #%d: %v", w.IssueNumber, err)
@@ -24,19 +29,25 @@ func CleanupScenario(w *world.World) {
 			worldLogf(w, "behaviour cleanup: close fork PR #%d: %v", w.ForkPRNumber, err)
 		}
 	}
+
+	// --- Fork branch cleanup ---
 	if w.ForkPRBranch != "" && w.ForkOwner != "" && w.ForkRepo != "" && w.Token != "" {
 		// Delete the test branch on the fork repo. The fork repo itself is
 		// long-lived and must not be deleted per-scenario; only per-scenario
 		// branches are removed. forge.Client does not expose DeleteBranch,
 		// so we use the GitHub REST API directly (same pattern as
 		// pkg/e2etest/cleanup.go).
-		deleteForkBranch(ctx, w.Token, w.ForkOwner, w.ForkRepo, w.ForkPRBranch, w)
+		deleteForkBranch(ctx, githubAPIBaseURL, w.Token, w.ForkOwner, w.ForkRepo, w.ForkPRBranch, w)
 	}
+
+	// --- Artifact cleanup ---
 	if w.ArtifactDir != "" && shouldRemoveArtifactDir(w.ArtifactDir, os.Getenv("BEHAVIOUR_ARTIFACT_DIR")) {
 		if err := os.RemoveAll(w.ArtifactDir); err != nil {
 			worldLogf(w, "behaviour cleanup: remove artifact dir: %v", err)
 		}
 	}
+
+	// --- Dummy script cleanup ---
 	if len(w.DummyOps) > 0 {
 		empty := []byte("ops: []\n")
 		if err := w.SCM.CommitFile(ctx, w.Install.ConfigOwner(), w.Install.ConfigRepo(), w.BehaviourScriptPath(), "behaviour: clear dummy agent script", empty); err != nil {
@@ -47,10 +58,12 @@ func CleanupScenario(w *world.World) {
 
 // deleteForkBranch deletes a branch from a fork repo using the GitHub API
 // directly (forge.Client doesn't have DeleteBranch). Idempotent: 404 is
-// ignored. Errors are logged but do not fail the cleanup.
-func deleteForkBranch(ctx context.Context, token, owner, repo, branch string, w *world.World) {
+// ignored. Errors are logged but do not fail the cleanup. baseURL is the
+// GitHub API root (e.g. githubAPIBaseURL); it is a parameter so tests can
+// substitute an httptest server.
+func deleteForkBranch(ctx context.Context, baseURL, token, owner, repo, branch string, w *world.World) {
 	ref := fmt.Sprintf("heads/%s", branch)
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/git/refs/%s", owner, repo, ref)
+	url := fmt.Sprintf("%s/repos/%s/%s/git/refs/%s", baseURL, owner, repo, ref)
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 	if err != nil {
 		worldLogf(w, "behaviour cleanup: create branch delete request: %v", err)
@@ -64,7 +77,10 @@ func deleteForkBranch(ctx context.Context, token, owner, repo, branch string, w 
 		worldLogf(w, "behaviour cleanup: delete fork branch %s: %v", branch, err)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}()
 
 	switch resp.StatusCode {
 	case http.StatusNoContent:
