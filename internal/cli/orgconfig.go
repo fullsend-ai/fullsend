@@ -37,11 +37,11 @@ func tryLoadFullsendConfig(path string, printer *ui.Printer) *config.OrgConfig {
 	}
 	if dirCfg.IsOrg {
 		cfg := dirCfg.Org
-		cfg.AllowedRemoteResources = config.EnsureDefaultAllowedRemoteResources(cfg.AllowedRemoteResources)
+		cfg.SetAllowedRemoteResources(config.EnsureDefaultAllowedRemoteResources(cfg.AllowedResources()))
 		return cfg
 	}
 	orgCfg := config.OrgConfigFromPerRepo(dirCfg.PerRepo)
-	orgCfg.AllowedRemoteResources = config.EnsureDefaultAllowedRemoteResources(orgCfg.AllowedRemoteResources)
+	orgCfg.SetAllowedRemoteResources(config.EnsureDefaultAllowedRemoteResources(orgCfg.AllowedResources()))
 	return orgCfg
 }
 
@@ -62,11 +62,11 @@ func requireFullsendConfig(path string, printer *ui.Printer) (*config.OrgConfig,
 	}
 	if dirCfg.IsOrg {
 		cfg := dirCfg.Org
-		cfg.AllowedRemoteResources = config.EnsureDefaultAllowedRemoteResources(cfg.AllowedRemoteResources)
+		cfg.SetAllowedRemoteResources(config.EnsureDefaultAllowedRemoteResources(cfg.AllowedResources()))
 		return cfg, nil
 	}
 	orgCfg := config.OrgConfigFromPerRepo(dirCfg.PerRepo)
-	orgCfg.AllowedRemoteResources = config.EnsureDefaultAllowedRemoteResources(orgCfg.AllowedRemoteResources)
+	orgCfg.SetAllowedRemoteResources(config.EnsureDefaultAllowedRemoteResources(orgCfg.AllowedResources()))
 	return orgCfg, nil
 }
 

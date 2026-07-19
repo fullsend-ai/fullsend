@@ -309,7 +309,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// handles the omitted-field case when a config is present.
 	orgAllowlist := config.DefaultAllowedRemoteResources()
 	if orgCfg != nil {
-		orgAllowlist = orgCfg.AllowedRemoteResources
+		orgAllowlist = orgCfg.AllowedResources()
 	}
 
 	composeGitToken := rFlags.gitToken
@@ -361,7 +361,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if err != nil {
 				return err
 			}
-			composeOpts.OrgAllowlist = orgCfg.AllowedRemoteResources
+			composeOpts.OrgAllowlist = orgCfg.AllowedResources()
 		}
 	}
 
@@ -401,7 +401,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 
-		if err := h.ValidateAllowedRemoteResources(orgCfg.AllowedRemoteResources); err != nil {
+		if err := h.ValidateAllowedRemoteResources(orgCfg.AllowedResources()); err != nil {
 			printer.StepFail("Remote resource allowlist validation failed")
 			return fmt.Errorf("validating allowed remote resources: %w", err)
 		}
@@ -2659,8 +2659,8 @@ func setupStatusNotifier(fullsendDir string, role string, sOpts statusOpts, prin
 
 	var notifyCfg config.StatusNotificationConfig
 	orgConfigPath := filepath.Join(fullsendDir, "config.yaml")
-	if orgCfg := tryLoadFullsendConfig(orgConfigPath, printer); orgCfg != nil && orgCfg.Defaults.StatusNotifications != nil {
-		notifyCfg = *orgCfg.Defaults.StatusNotifications
+	if orgCfg := tryLoadFullsendConfig(orgConfigPath, printer); orgCfg != nil && orgCfg.StatusNotifications() != nil {
+		notifyCfg = *orgCfg.StatusNotifications()
 	}
 
 	sha := os.Getenv("GITHUB_SHA")
@@ -2903,7 +2903,7 @@ func validateRepoNames(repos []string) error {
 // Returns the local filesystem path to the harness (cached for URL sources)
 // and any fetch dependencies from URL-based agent resolution.
 func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forgeClient forge.Client, orgCfg *config.OrgConfig, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, error) {
-	if orgCfg == nil || len(orgCfg.Agents) == 0 {
+	if orgCfg == nil || len(orgCfg.AgentEntries()) == 0 {
 		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
 			return path, deps, nil
 		}
@@ -2911,7 +2911,7 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 		return path, nil, err
 	}
 
-	if err := config.ValidateAgentEntries(orgCfg.Agents, orgCfg.AllowedRemoteResources); err != nil {
+	if err := config.ValidateAgentEntries(orgCfg.AgentEntries(), orgCfg.AllowedResources()); err != nil {
 		return "", nil, fmt.Errorf("invalid agent config: %w", err)
 	}
 
@@ -2924,7 +2924,7 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 		return "", nil, fmt.Errorf("listing scaffold harnesses: %w", snErr)
 	}
 
-	merged, err := config.MergedAgents(scaffoldNames, sha, orgCfg.Agents, scaffold.HarnessBaseURLWithHash)
+	merged, err := config.MergedAgents(scaffoldNames, sha, orgCfg.AgentEntries(), scaffold.HarnessBaseURLWithHash)
 	if err != nil {
 		return "", nil, fmt.Errorf("building merged agent set: %w", err)
 	}
@@ -2938,7 +2938,7 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 		return path, nil, err
 	}
 
-	entry := findConfigAgentEntry(orgCfg.Agents, agent.Name)
+	entry := findConfigAgentEntry(orgCfg.AgentEntries(), agent.Name)
 	if entry == nil {
 		return "", nil, fmt.Errorf("config agent %s: entry not found", agent.Name)
 	}
@@ -2946,7 +2946,7 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 	if harness.IsURL(agent.Source) {
 		printer.StepStart(fmt.Sprintf("Fetching agent harness: %s", agent.Name))
 	}
-	resolved, err := harness.ResolveRegisteredPath(ctx, fullsendDir, *entry, orgCfg.AllowedRemoteResources, composeOpts)
+	resolved, err := harness.ResolveRegisteredPath(ctx, fullsendDir, *entry, orgCfg.AllowedResources(), composeOpts)
 	if err != nil {
 		if harness.IsURL(agent.Source) {
 			printer.StepFail("Failed to fetch agent harness")

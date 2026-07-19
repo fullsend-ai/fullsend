@@ -494,14 +494,11 @@ func TestBuildModifiedAgentFiles_DiffAbort(t *testing.T) {
 		0o644,
 	))
 
-	cfg := &agentConfig{
-		isOrg: true,
-		orgCfg: func() *config.OrgConfig {
-			data := []byte("version: \"1\"\ndispatch:\n  platform: github-actions\ndefaults:\n  roles: [fullsend]\nrepos: {}\n")
-			c, _ := config.ParseOrgConfig(data)
-			return c
-		}(),
-	}
+	cfg := func() config.ConfigWriter {
+		data := []byte("version: \"1\"\ndispatch:\n  platform: github-actions\ndefaults:\n  roles: [fullsend]\nrepos: {}\n")
+		c, _ := config.ParseOrgConfig(data)
+		return c
+	}()
 
 	m := agentMigration{
 		name:   "review",
@@ -529,14 +526,11 @@ func TestBuildModifiedAgentFiles_DevCommitSHAError(t *testing.T) {
 		0o644,
 	))
 
-	cfg := &agentConfig{
-		isOrg: true,
-		orgCfg: func() *config.OrgConfig {
-			data := []byte("version: \"1\"\ndispatch:\n  platform: github-actions\ndefaults:\n  roles: [fullsend]\nrepos: {}\n")
-			c, _ := config.ParseOrgConfig(data)
-			return c
-		}(),
-	}
+	cfg := func() config.ConfigWriter {
+		data := []byte("version: \"1\"\ndispatch:\n  platform: github-actions\ndefaults:\n  roles: [fullsend]\nrepos: {}\n")
+		c, _ := config.ParseOrgConfig(data)
+		return c
+	}()
 
 	m := agentMigration{
 		name:   "review",
@@ -636,20 +630,17 @@ func TestBuildModifiedAgentFiles_WithAssociatedFiles(t *testing.T) {
 		0o644,
 	))
 
-	cfg := &agentConfig{
-		isOrg: true,
-		orgCfg: func() *config.OrgConfig {
-			data := []byte(`version: "1"
+	cfg := func() config.ConfigWriter {
+		data := []byte(`version: "1"
 dispatch:
   platform: github-actions
 defaults:
   roles: [fullsend]
 repos: {}
 `)
-			c, _ := config.ParseOrgConfig(data)
-			return c
-		}(),
-	}
+		c, _ := config.ParseOrgConfig(data)
+		return c
+	}()
 
 	m := agentMigration{
 		name:   "review",
@@ -684,7 +675,7 @@ repos: {}
 
 	// Agent registered in config.
 	found := false
-	for _, a := range cfg.agents() {
+	for _, a := range cfg.AgentEntries() {
 		if a.Source == "harness/review.yaml" {
 			found = true
 		}
@@ -699,10 +690,8 @@ func TestPlanMigrations_Categories(t *testing.T) {
 		"harness/my-custom.yaml", // not in scaffold → custom
 	}
 
-	cfg := &agentConfig{
-		isOrg: true,
-		orgCfg: func() *config.OrgConfig {
-			data := []byte(`version: "1"
+	cfg := func() config.ConfigWriter {
+		data := []byte(`version: "1"
 dispatch:
   platform: github-actions
 defaults:
@@ -713,11 +702,10 @@ agents:
 allowed_remote_resources:
   - "https://example.com/"
 `)
-			c, err := config.ParseOrgConfig(data)
-			require.NoError(t, err)
-			return c
-		}(),
-	}
+		c, err := config.ParseOrgConfig(data)
+		require.NoError(t, err)
+		return c
+	}()
 
 	scaffoldSet := map[string]bool{
 		"triage":     true,
@@ -750,20 +738,17 @@ func TestPlanMigrations_AssociatesNonHarnessFiles(t *testing.T) {
 		"policies/review.yaml",
 	}
 
-	cfg := &agentConfig{
-		isOrg: true,
-		orgCfg: func() *config.OrgConfig {
-			data := []byte(`version: "1"
+	cfg := func() config.ConfigWriter {
+		data := []byte(`version: "1"
 dispatch:
   platform: github-actions
 defaults:
   roles: [fullsend]
 repos: {}
 `)
-			c, _ := config.ParseOrgConfig(data)
-			return c
-		}(),
-	}
+		c, _ := config.ParseOrgConfig(data)
+		return c
+	}()
 
 	scaffoldSet := map[string]bool{"review": true}
 	migrations := planMigrations(files, cfg, scaffoldSet)
@@ -791,14 +776,11 @@ func TestPlanMigrations_NonPerAgentDirBecomesStandalone(t *testing.T) {
 		"templates/review.yaml",
 	}
 
-	cfg := &agentConfig{
-		isOrg: true,
-		orgCfg: func() *config.OrgConfig {
-			data := []byte("version: \"1\"\ndispatch:\n  platform: github-actions\ndefaults:\n  roles: [fullsend]\nrepos: {}\n")
-			c, _ := config.ParseOrgConfig(data)
-			return c
-		}(),
-	}
+	cfg := func() config.ConfigWriter {
+		data := []byte("version: \"1\"\ndispatch:\n  platform: github-actions\ndefaults:\n  roles: [fullsend]\nrepos: {}\n")
+		c, _ := config.ParseOrgConfig(data)
+		return c
+	}()
 
 	scaffoldSet := map[string]bool{"review": true}
 	migrations := planMigrations(files, cfg, scaffoldSet)
@@ -877,15 +859,15 @@ func TestRegisterMigratedAgent_AddsEntryAndAllowlist(t *testing.T) {
 	data := []byte("version: \"1\"\ndispatch:\n  platform: github-actions\ndefaults:\n  roles: [fullsend]\nrepos: {}\n")
 	orgCfg, err := config.ParseOrgConfig(data)
 	require.NoError(t, err)
-	cfg := &agentConfig{isOrg: true, orgCfg: orgCfg}
+	var cfg config.ConfigWriter = orgCfg
 
 	baseURL := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/harness/triage.yaml"
 	registerMigratedAgent(cfg, "triage", baseURL)
 
-	_, found := findAgentByName(cfg.agents(), "triage")
+	_, found := findAgentByName(cfg.AgentEntries(), "triage")
 	assert.True(t, found, "agent should be registered")
 
-	resources := cfg.allowedRemoteResources()
+	resources := cfg.AllowedResources()
 	assert.NotEmpty(t, resources, "allowlist should have an entry")
 }
 
@@ -893,11 +875,11 @@ func TestRegisterMigratedAgent_NoDuplicate(t *testing.T) {
 	data := []byte("version: \"1\"\ndispatch:\n  platform: github-actions\ndefaults:\n  roles: [fullsend]\nrepos: {}\nagents:\n  - source: \"harness/review.yaml\"\n")
 	orgCfg, err := config.ParseOrgConfig(data)
 	require.NoError(t, err)
-	cfg := &agentConfig{isOrg: true, orgCfg: orgCfg}
+	var cfg config.ConfigWriter = orgCfg
 
-	before := len(cfg.agents())
+	before := len(cfg.AgentEntries())
 	registerMigratedAgent(cfg, "review", "https://example.com/review.yaml")
-	assert.Equal(t, before, len(cfg.agents()), "should not duplicate existing agent")
+	assert.Equal(t, before, len(cfg.AgentEntries()), "should not duplicate existing agent")
 }
 
 func TestMigrateCustomizations_DeadOverrideWithNonHarnessFiles(t *testing.T) {
