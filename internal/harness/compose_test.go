@@ -3950,3 +3950,188 @@ func TestIsTransientFetchError(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadWithBase_SourceURL_WithBase_ResolvesChildSkills(t *testing.T) {
+	// When a URL-sourced harness has a base: field, the child's own
+	// relative skills should be resolved against the SourceURL after
+	// base composition — not left as relative paths for local resolution.
+	// This is the fix for #5305: without it, skills/pr-review would
+	// resolve against the local workspace, missing companion files
+	// (sub-agents/, meta-prompt.md) that only exist at the source URL.
+
+	baseAgentContent := []byte("# base agent definition")
+
+	baseContent := []byte(`
+agent: agents/base.md
+role: review
+model: opus
+`)
+	baseHash := computeHash(baseContent)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	// Test server serves the base harness and its agent file.
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.Write(baseContent)
+		case "/agents/base.md":
+			w.Write(baseAgentContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	// The child harness: fetched from a URL, has a base field, and
+	// declares its own skills (relative paths to the source repo).
+	// It does NOT override agent — inherits from the base, which is
+	// already resolved to a cache path.
+	childHarness := fmt.Sprintf(`
+base: %s
+role: review
+skills:
+  - skills/pr-review
+`, baseURL)
+
+	path := writeTestHarness(t, dir, "review.yaml", childHarness)
+
+	// The source URL uses raw.githubusercontent.com format — this is
+	// what the agents repo fallback and config-registered agent paths
+	// produce. Skills are resolved relative to this URL's grandparent.
+	sourceURL := "https://raw.githubusercontent.com/org/agents/abc123/harness/review.yaml"
+
+	// TreeFetcher returns skill files including subdirectories —
+	// exactly what git sparse checkout would return for a real repo.
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"SKILL.md":                  []byte("# PR Review Skill"),
+		"meta-prompt.md":            []byte("meta prompt content"),
+		"sub-agents/correctness.md": []byte("# correctness sub-agent"),
+		"sub-agents/security.md":    []byte("# security sub-agent"),
+	})
+
+	allowlist := []string{
+		server.URL + "/",
+		"https://raw.githubusercontent.com/org/agents/",
+	}
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot:      cacheDir,
+		FetchPolicy:        policy,
+		OrgAllowlist:       allowlist,
+		SourceURL:          sourceURL,
+		TreeFetcher:        fetcher,
+		allowSelfAllowlist: true,
+	})
+	require.NoError(t, err)
+
+	// The merged harness should have the review role from the child.
+	assert.Equal(t, "review", h.Role)
+
+	// The child's skill should be resolved to a local cache path (not
+	// the relative "skills/pr-review" that would need local resolution).
+	require.Len(t, h.Skills, 1)
+	assert.True(t, filepath.IsAbs(h.Skills[0]),
+		"skill should be resolved to an absolute cache path, got %q", h.Skills[0])
+
+	// The cached skill directory should contain all files, including
+	// subdirectories (the fix for #5305).
+	skillDir := h.Skills[0]
+	assert.FileExists(t, filepath.Join(skillDir, "SKILL.md"))
+	assert.FileExists(t, filepath.Join(skillDir, "meta-prompt.md"))
+	assert.FileExists(t, filepath.Join(skillDir, "sub-agents", "correctness.md"))
+	assert.FileExists(t, filepath.Join(skillDir, "sub-agents", "security.md"))
+
+	// Verify the sub-agent content is correct.
+	correctnessContent, err := os.ReadFile(filepath.Join(skillDir, "sub-agents", "correctness.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "# correctness sub-agent", string(correctnessContent))
+
+	// Dependencies should include both the base fetch and the skill fetch.
+	assert.NotEmpty(t, deps)
+	fieldNames := map[string]bool{}
+	for _, d := range deps {
+		fieldNames[d.Field] = true
+	}
+	assert.True(t, fieldNames["base"], "should have base dep")
+	assert.True(t, fieldNames["skills[0]"], "should have skill dep")
+}
+
+func TestLoadWithBase_SourceURL_WithBase_AlreadyResolvedSkipped(t *testing.T) {
+	// After base composition, some resources (e.g., agent, policy,
+	// scripts) may already be resolved to absolute cache paths from the
+	// base. The post-composition SourceURL resolution should skip these
+	// — they must not be re-fetched or rejected by validateBaseRelPath.
+
+	agentContent := []byte("# base agent (will be resolved to cache path by base composition)")
+
+	baseContent := []byte(`
+agent: agents/base.md
+role: review
+model: opus
+pre_script: scripts/pre.sh
+`)
+	baseHash := computeHash(baseContent)
+	preScriptContent := []byte("#!/bin/bash\necho pre")
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.Write(baseContent)
+		case "/agents/base.md":
+			w.Write(agentContent)
+		case "/scripts/pre.sh":
+			w.Write(preScriptContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	// The child declares no resources of its own — everything comes
+	// from the base. After composition, agent and pre_script are absolute
+	// cache paths. The SourceURL resolution must skip them.
+	childHarness := fmt.Sprintf(`
+base: %s
+role: review
+`, baseURL)
+
+	path := writeTestHarness(t, dir, "review.yaml", childHarness)
+	sourceURL := server.URL + "/harness/review.yaml"
+	allowlist := []string{server.URL + "/"}
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot:      cacheDir,
+		FetchPolicy:        policy,
+		OrgAllowlist:       allowlist,
+		SourceURL:          sourceURL,
+		allowSelfAllowlist: true,
+	})
+	require.NoError(t, err)
+
+	// Agent and pre_script should be absolute cache paths from base resolution.
+	assert.True(t, filepath.IsAbs(h.Agent),
+		"agent should be an absolute cache path from base resolution, got %q", h.Agent)
+	assert.True(t, filepath.IsAbs(h.PreScript),
+		"pre_script should be an absolute cache path from base resolution, got %q", h.PreScript)
+}

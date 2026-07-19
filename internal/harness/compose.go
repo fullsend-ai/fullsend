@@ -89,10 +89,11 @@ type ComposeOpts struct {
 //
 // Pipeline:
 //  1. LoadRaw(path) — preserves forge map
-//  2. If base absent: ResolveForge → Validate → return
+//  2. If base absent: resolve URL-sourced resources → ResolveForge → Validate → return
 //  3. If base present: loadBaseChain recursively, then mergeBaseIntoChild
-//  4. ResolveForge once on final merged result
-//  5. Validate
+//  4. Resolve remaining URL-sourced resources (child's own relative paths)
+//  5. ResolveForge once on final merged result
+//  6. Validate
 //
 // When base is absent, this behaves identically to LoadWithOpts.
 func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness, []Dependency, error) {
@@ -170,6 +171,39 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 
 	// Clear the base field (consumed)
 	child.Base = ""
+
+	// When the harness was fetched from a URL, the child may still have
+	// relative resource paths (skills, agent, policy, host_files) that
+	// originated in the child harness — not the base. After merge, base
+	// resources are absolute cache paths but the child's own relative
+	// paths remain unresolved. Resolve them against the SourceURL now,
+	// the same way the no-base path does.
+	//
+	// Without this, relative skill paths like "skills/pr-review" would
+	// be resolved against the local workspace by ResolveRelativeTo,
+	// missing companion files (sub-agents/, meta-prompt.md) that only
+	// exist at the source URL. See #5305.
+	//
+	// resolveBaseResources and resolveBaseHostFiles already skip absolute
+	// paths and URLs, so they are safe to call on the merged harness.
+	// resolveBaseScripts rejects absolute paths as defense-in-depth for
+	// URL-sourced bases — we skip it here since scripts inherited from
+	// the base are already resolved to cache paths and would trigger
+	// that rejection. Scripts that the child overrides will be resolved
+	// later by ResolveRelativeTo (local paths are fine for scripts).
+	if opts.SourceURL != "" {
+		resourceDeps, err := resolveBaseResources(ctx, child, opts.SourceURL, opts.OrgAllowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving URL-sourced resources after base composition: %w", err)
+		}
+		deps = append(deps, resourceDeps...)
+
+		hostFileDeps, err := resolveBaseHostFiles(ctx, child, opts.SourceURL, opts.OrgAllowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving URL-sourced host_files after base composition: %w", err)
+		}
+		deps = append(deps, hostFileDeps...)
+	}
 
 	// ResolveForge once on the merged result
 	if err := child.validateForge(); err != nil {
