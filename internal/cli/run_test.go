@@ -2212,6 +2212,37 @@ func TestPRHeadSHAFromEventPath_MissingFile(t *testing.T) {
 	assert.Empty(t, got)
 }
 
+func TestPRHeadSHAFromEventPath_NullPullRequest(t *testing.T) {
+	// issue_comment events dispatch with "pull_request": null when the
+	// dispatch layer hasn't resolved the PR head. The function should
+	// return empty (not panic) so the caller can fall back.
+	eventJSON := `{
+		"inputs": {
+			"event_payload": "{\"issue\":{\"number\":4100},\"pull_request\":null,\"comment\":{\"body\":\"/fs-review\"}}"
+		}
+	}`
+	f := filepath.Join(t.TempDir(), "event.json")
+	require.NoError(t, os.WriteFile(f, []byte(eventJSON), 0o644))
+
+	got := prHeadSHAFromEventPath(f)
+	assert.Empty(t, got)
+}
+
+func TestPRHeadSHAFromEventPath_IssueCommentWithResolvedPR(t *testing.T) {
+	// After the dispatch fix, issue_comment events include a resolved
+	// pull_request object with the head SHA from the API.
+	eventJSON := `{
+		"inputs": {
+			"event_payload": "{\"issue\":{\"number\":4100},\"pull_request\":{\"number\":4100,\"head\":{\"ref\":\"pr-4099\",\"sha\":\"03e61fc492fa89592dc4cd0f429ee926154ee8e5\",\"repo\":{\"full_name\":\"org/repo\"}}},\"comment\":{\"body\":\"/fs-review\"}}"
+		}
+	}`
+	f := filepath.Join(t.TempDir(), "event.json")
+	require.NoError(t, os.WriteFile(f, []byte(eventJSON), 0o644))
+
+	got := prHeadSHAFromEventPath(f)
+	assert.Equal(t, "03e61fc492fa89592dc4cd0f429ee926154ee8e5", got)
+}
+
 func TestPRHeadSHAFromEventPath_NoInputs(t *testing.T) {
 	// Direct event (not workflow_dispatch) — no inputs field.
 	eventJSON := `{"action": "opened", "pull_request": {"number": 1}}`

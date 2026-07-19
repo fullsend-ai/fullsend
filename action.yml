@@ -42,6 +42,12 @@ inputs:
       status comment tokens and agent runtime tokens (GH_TOKEN,
       PUSH_TOKEN, REVIEW_TOKEN) minted by mintAgentToken().
     default: ""
+  pr-head-sha:
+    description: >-
+      PR head commit SHA, passed explicitly by per-repo (workflow_call)
+      callers where GITHUB_EVENT_PATH lacks the dispatched event_payload
+      wrapper. Takes precedence over GITHUB_EVENT_PATH extraction.
+    default: ""
 
 runs:
   using: composite
@@ -309,6 +315,7 @@ runs:
         STATUS_REPO: ${{ inputs.status-repo }}
         STATUS_NUMBER: ${{ inputs.status-number }}
         MINT_URL: ${{ inputs.mint-url }}
+        PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
       run: |
         set -euo pipefail
         FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
@@ -346,14 +353,38 @@ runs:
         STATUS_NUMBER: ${{ inputs.status-number }}
         RUN_ID: ${{ github.run_id }}
         RUN_URL: ${{ inputs.run-url }}
-        COMMIT_SHA: ${{ github.sha }}
         JOB_STATUS: ${{ job.status }}
+        PR_HEAD_SHA_INPUT: ${{ inputs.pr-head-sha }}
       run: |
         set -euo pipefail
         # When the fullsend process is hard-killed (SIGKILL, OOM, segfault),
         # the deferred PostCompletion call never runs and the status comment
         # remains in "Started" state. This step runs unconditionally (if:
         # always()) to detect and finalize orphaned comments. See #2149.
+
+        # Resolve the correct commit SHA. Priority order:
+        # 1. Explicit pr-head-sha input (per-repo workflow_call callers)
+        # 2. Extracted from .inputs.event_payload (per-org workflow_dispatch)
+        # 3. GITHUB_SHA fallback
+        COMMIT_SHA=""
+        if [[ -n "${PR_HEAD_SHA_INPUT}" ]]; then
+          COMMIT_SHA="${PR_HEAD_SHA_INPUT}"
+        elif [[ -f "${GITHUB_EVENT_PATH}" ]]; then
+          EVENT_PAYLOAD_RAW=$(jq -r '.inputs.event_payload // empty' "${GITHUB_EVENT_PATH}" 2>/dev/null) || true
+          if [[ -n "${EVENT_PAYLOAD_RAW}" ]]; then
+            HAS_PR=$(printf '%s' "${EVENT_PAYLOAD_RAW}" | jq -r '.pull_request // empty' 2>/dev/null) || true
+            if [[ -n "${HAS_PR}" && "${HAS_PR}" != "null" ]]; then
+              COMMIT_SHA=$(printf '%s' "${EVENT_PAYLOAD_RAW}" | jq -r '.pull_request.head.sha // empty' 2>/dev/null) || true
+              if [[ -z "${COMMIT_SHA}" ]]; then
+                echo "::warning::event_payload has pull_request but head.sha extraction failed"
+              fi
+            fi
+          fi
+        fi
+        if [[ -z "${COMMIT_SHA}" ]]; then
+          COMMIT_SHA="${GITHUB_SHA}"
+        fi
+
         RECONCILE_FLAGS=(--repo "${STATUS_REPO}" --number "${STATUS_NUMBER}" --run-id "${RUN_ID}")
         RECONCILE_FLAGS+=(--mint-url "${MINT_URL}" --role "${AGENT}")
         if [[ -n "${RUN_URL}" ]]; then

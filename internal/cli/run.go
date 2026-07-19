@@ -2664,10 +2664,12 @@ func setupStatusNotifier(fullsendDir string, role string, sOpts statusOpts, prin
 	}
 
 	sha := os.Getenv("GITHUB_SHA")
-	// In cross-repo workflow_dispatch mode, GITHUB_SHA is the dispatching
-	// repo's default branch HEAD — not the PR's head commit. Prefer the
-	// PR head SHA from the event payload when available. See #2045.
-	if prSHA := prHeadSHAFromEventPath(os.Getenv("GITHUB_EVENT_PATH")); prSHA != "" {
+	// Prefer explicit PR_HEAD_SHA (set by per-repo workflow_call callers
+	// where GITHUB_EVENT_PATH lacks the dispatched event_payload wrapper).
+	// Fall back to extracting from event payload (per-org workflow_dispatch).
+	if prSHA := os.Getenv("PR_HEAD_SHA"); prSHA != "" {
+		sha = prSHA
+	} else if prSHA := prHeadSHAFromEventPath(os.Getenv("GITHUB_EVENT_PATH")); prSHA != "" {
 		sha = prSHA
 	}
 	runID := os.Getenv("GITHUB_RUN_ID")
