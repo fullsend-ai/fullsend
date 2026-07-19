@@ -97,6 +97,39 @@ For the reusable test GitHub Apps (`fullsend-test-*`) used by temporary and test
 
 See [behaviour-drivers.md](behaviour-drivers.md) for driver configuration and [ADR 0066](../../ADRs/0066-behaviour-tests-with-gherkin-and-drivers.md) for the decision record.
 
+## Fork PR scenarios
+
+Fork dispatch scenarios test `pull_request_target` harness triggering from cross-fork pull requests.
+
+### Pool-org prerequisites
+
+Fork scenarios require the pool org to have:
+
+- **A long-lived fork repository** of the enrolled `test-repo`. The fork is created once (idempotently) via the `Given a fork` step and persists across test runs. Do not delete the fork repo between scenarios or CI runs.
+- **The same installation token** must have write access to both the base repo and the fork repo within the org, since the e2e bot commits to the fork and opens cross-fork PRs.
+
+### Fork lifecycle
+
+| Resource | Lifecycle | Cleanup |
+|----------|-----------|---------|
+| Fork repo | Long-lived (created once per pool org) | Never deleted |
+| Fork branches | Per-scenario | Deleted by `CleanupScenario` |
+| Fork PRs | Per-scenario | Closed by `CleanupScenario` |
+
+Fork PRs are opened against the base repo (not the fork). `CleanupScenario` closes them via `CloseIssue` on the base repo and deletes the head branch on the fork repo.
+
+### Background step usage
+
+Fork scenarios share a common `Background:` block that sets up the enrolled test repository and the fork:
+
+```gherkin
+Background:
+  Given the enrolled test repository
+  And a fork "test-repo-fork" of the enrolled test repository
+```
+
+The `Given a fork` step is idempotent: if the fork already exists, it reuses it without error. Each scenario then creates its own branch and PR within the fork.
+
 ## Version pinning for `fullsend-ai/agents`
 
 External behaviour runners import the shared libraries from this module:
