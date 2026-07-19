@@ -396,29 +396,47 @@ jobs:
             fi
           fi
 
-      - name: Block fork PRs for fix stage
-        if: steps.route.outputs.stage == 'fix' && steps.role-check.outputs.skipped != 'true' && github.event.issue.pull_request
+      - name: Resolve PR head for issue_comment events
+        id: pr-head
+        if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && github.event_name == 'issue_comment' && github.event.issue.pull_request
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.issue.number }}
+          STAGE: ${{ steps.route.outputs.stage }}
         run: |
           set -euo pipefail
-          REPOS=$(gh api "repos/$SOURCE_REPO/pulls/$PR_NUMBER" \
-            --jq '[.head.repo.full_name, .base.repo.full_name] | @tsv' 2>/dev/null) || {
-            echo "::error::Could not determine PR repos — blocking fix for safety"
-            exit 1
+          PR_JSON=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}" \
+            --jq '{number, html_url,
+              head: {ref: .head.ref, sha: .head.sha, repo: {full_name: .head.repo.full_name}},
+              base: {ref: .base.ref, repo: {full_name: .base.repo.full_name}}}') || {
+            if [[ "${STAGE}" =~ ^(fix|review)$ ]]; then
+              echo "::error::Failed to fetch PR #${PR_NUMBER} head info"
+              exit 1
+            fi
+            echo "::warning::Failed to fetch PR #${PR_NUMBER} head info — continuing without PR context"
+            exit 0
           }
-          HEAD_REPO=$(printf '%s' "$REPOS" | cut -f1)
-          BASE_REPO=$(printf '%s' "$REPOS" | cut -f2)
-          if [[ "$HEAD_REPO" != "$BASE_REPO" ]]; then
-            echo "::error::Fork PR detected (head=$HEAD_REPO, base=$BASE_REPO) — fix agent blocked"
-            exit 1
+          if [[ "${STAGE}" == "fix" ]]; then
+            HEAD_REPO=$(printf '%s' "${PR_JSON}" | jq -r '.head.repo.full_name')
+            BASE_REPO=$(printf '%s' "${PR_JSON}" | jq -r '.base.repo.full_name')
+            if [[ "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
+              echo "::error::Fork PR detected (head=${HEAD_REPO}, base=${BASE_REPO}) — fix agent blocked"
+              exit 1
+            fi
           fi
+          DELIM="PR_$(openssl rand -hex 8)"
+          {
+            echo "pr_json<<${DELIM}"
+            echo "${PR_JSON}"
+            echo "${DELIM}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Build event payload
         id: payload
         if: steps.route.outputs.stage != ''
+        env:
+          PR_HEAD_JSON: ${{ steps.pr-head.outputs.pr_json }}
         run: |
           set -euo pipefail
           EVENT_PAYLOAD=$(jq -c '{
@@ -431,6 +449,13 @@ jobs:
             echo "::error::Failed to extract event payload from GITHUB_EVENT_PATH"
             exit 1
           }
+
+          # For issue_comment events on PRs, the raw event has no top-level
+          # pull_request with head SHA. Merge the API-fetched PR info.
+          if [[ -n "${PR_HEAD_JSON}" ]]; then
+            EVENT_PAYLOAD=$(printf '%s' "${EVENT_PAYLOAD}" | jq -c --argjson pr "${PR_HEAD_JSON}" '.pull_request = $pr')
+          fi
+
           if [[ -z "${EVENT_PAYLOAD}" || "${EVENT_PAYLOAD}" == "null" ]]; then
             echo "::error::Event payload is empty after extraction"
             exit 1
@@ -533,6 +558,7 @@ jobs:
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
           mint-url: ${{ inputs.mint_url }}
+          pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
   code:
     name: Code
@@ -657,6 +683,7 @@ jobs:
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
           mint-url: ${{ inputs.mint_url }}
+          pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
   review:
     name: Review
@@ -765,6 +792,7 @@ jobs:
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
           mint-url: ${{ inputs.mint_url }}
+          pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
   fix:
     name: Fix
@@ -1054,6 +1082,7 @@ jobs:
           status-repo: ${{ github.repository }}
           status-number: ${{ steps.context.outputs.pr_number }}
           mint-url: ${{ inputs.mint_url }}
+          pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
   retro:
     name: Retro
@@ -1145,6 +1174,7 @@ jobs:
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
           mint-url: ${{ inputs.mint_url }}
+          pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
   prioritize:
     name: Prioritize
