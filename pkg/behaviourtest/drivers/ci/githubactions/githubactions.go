@@ -464,6 +464,28 @@ func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent str
 	return nil, fmt.Errorf("harness agent %q did not complete successfully", agent)
 }
 
+// CountHarnessDispatches returns the number of fullsend-{agent} artifacts
+// that appeared after the trigger time. Each harness dispatch produces one
+// artifact, so the count reflects how many times the harness was dispatched.
+func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent string, after time.Time) (int, error) {
+	artifactName := "fullsend-" + agent
+	arts, err := d.Client.ListRepositoryArtifacts(ctx, owner, repo, 100)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, a := range arts {
+		if a.Name != artifactName {
+			continue
+		}
+		created, parseErr := time.Parse(time.RFC3339, a.CreatedAt)
+		if parseErr == nil && !created.Before(after) {
+			count++
+		}
+	}
+	return count, nil
+}
+
 // AssertNoHarnessAgentArtifact ensures no fullsend-{agent} artifact appeared after trigger time.
 func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, agent string, after time.Time) error {
 	artifactName := "fullsend-" + agent
@@ -476,7 +498,7 @@ func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, 
 			continue
 		}
 		created, parseErr := time.Parse(time.RFC3339, a.CreatedAt)
-		if parseErr == nil && created.After(after) {
+		if parseErr == nil && !created.Before(after) {
 			return fmt.Errorf("expected harness %q not to run, but repository artifact %q appeared", agent, artifactName)
 		}
 	}
