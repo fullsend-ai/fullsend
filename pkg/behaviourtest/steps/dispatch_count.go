@@ -11,7 +11,7 @@ import (
 )
 
 func registerDispatchCountSteps(ctx *godog.ScenarioContext, w *world.World) {
-	ctx.Step(`^the harness "([^"]+)" was dispatched exactly (\d+) time\(s\)$`, func(agent string, expected int) error {
+	ctx.Step(`^the harness "([^"]+)" was dispatched exactly (\d+) times?$`, func(agent string, expected int) error {
 		return thenHarnessDispatchedExactly(w, agent, expected)
 	})
 }

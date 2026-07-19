@@ -498,7 +498,7 @@ func (d *Driver) AssertNoHarnessAgentArtifact(ctx context.Context, owner, repo, 
 			continue
 		}
 		created, parseErr := time.Parse(time.RFC3339, a.CreatedAt)
-		if parseErr == nil && created.After(after) {
+		if parseErr == nil && !created.Before(after) {
 			return fmt.Errorf("expected harness %q not to run, but repository artifact %q appeared", agent, artifactName)
 		}
 	}
