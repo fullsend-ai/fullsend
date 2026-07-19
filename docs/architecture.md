@@ -134,6 +134,11 @@ repo baseline and overrides)
   URL-resolved providers are validated against `allowed_remote_resources`
   and merged with local definitions at resolution time
   ([ADR 0070](ADRs/0070-portable-provider-profile-resolution.md)).
+- Phase-scoped privilege levels: a `privilege_levels` field in harness config
+  maps run phases (`pre_script`, `runtime`, `post_script`) to named mint
+  privilege levels. A `default` key covers unspecified phases. When omitted,
+  the harness defaults to `write` for all phases, preserving backward
+  compatibility ([ADR 0073](ADRs/0073-named-mint-privilege-levels.md)).
 
 **Open questions:**
 
@@ -176,6 +181,7 @@ Identity is not the same as trust. An agent's identity lets it authenticate to e
 - Cross-org mint authorization: workflows may request tokens for a different org via optional `target_org` when the target org installs the role App and sets `FULLSEND_FOREIGN_<role>_REPOS`. Empty `repos` yields installation-wide tokens on either path; cross-org adds FOREIGN gating, same-org relies on WIF/OIDC enrollment ([ADR 0060](ADRs/0060-cross-org-mint-authorization-via-org-variables.md)).
 - Standalone mint deployment: `cmd/mint/` provides a self-contained HTTP server that uses direct JWKS verification and filesystem PEM storage instead of GCP infrastructure. It shares the `internal/mintcore/` library with the GCF mint and adds support for custom role permissions and a fallback proxy to an upstream mint. Custom role permissions live in mintcore (not `cmd/mint/`) so that `RolePermissionsFor`, `HasRole`, and `CreateInstallationToken` return a unified view without callers needing to distinguish built-in from custom roles. The GCF mint never calls `RegisterCustomRolePermissions`, so the code is inert there. See the [standalone mint guide](guides/infrastructure/standalone-mint.md).
 - Hosted public community mint: steady-state deployment on Cloudflare Workers (JWKS + WAF + single ops console), with interim GCP Cloud Function acceptable until the Worker port is production-ready. Trust policy (`ALLOWED_ORGS=*`, upstream-only workflow provenance) is in [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); deployment, edge security, monitoring, and phasing are in [ADR 0068](ADRs/0068-public-community-mint-architecture.md). Enrollment is installing the shared Apps—no per-org mint env registration ([#1145](https://github.com/fullsend-ai/fullsend/issues/1145)).
+- Named privilege levels: each role defines ordered named levels (`read`, `write`), where each level's permissions are a superset of preceding levels. The mint API accepts an optional `level` field (default `read`). `write` is defined as the current max permission set for each built-in role. `CUSTOM_ROLE_PERMISSIONS` auto-detects a multi-level JSON shape alongside the existing flat format. The harness `privilege_levels` flag maps run phases to levels; omitting it defaults to `write` for backward compatibility ([ADR 0073](ADRs/0073-named-mint-privilege-levels.md)).
 
 One concrete implementation option is [`oidcx`](https://github.com/oxidecomputer/oidcx): a service that accepts OIDC identity tokens and exchanges them for short-lived access tokens. It can mint tokens scoped to selected GitHub repositories and permissions, or to selected Oxide silos and permissions, and it also ships with a GitHub Action wrapper. In a Fullsend deployment, this can be used by the sandbox entrypoint to narrow a broad GitHub App identity down to only the specific permissions an agent needs for the current run.
 
