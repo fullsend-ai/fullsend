@@ -39,6 +39,10 @@ func resetScenarioWorld(w *world.World) {
 	w.TriageTriggerEvent = ""
 	w.WorkflowRun = nil
 	w.ArtifactDir = ""
+	w.ForkOwner = ""
+	w.ForkRepo = ""
+	w.ForkPRNumber = 0
+	w.ForkPRBranch = ""
 }
 
 func tagNames(tags []*messages.PickleTag) []string {

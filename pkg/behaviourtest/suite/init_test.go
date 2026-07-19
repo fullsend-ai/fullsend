@@ -23,6 +23,10 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 		DispatchAgent: "dispatch",
 		IssueNumber:   1,
 		ArtifactDir:   "/tmp/x",
+		ForkOwner:     "org",
+		ForkRepo:      "repo-fork",
+		ForkPRNumber:  42,
+		ForkPRBranch:  "branch",
 	}
 	resetScenarioWorld(w)
 	assert.Equal(t, 0, w.PRNumber)
@@ -30,6 +34,10 @@ func TestResetScenarioWorld_ClearsSharedState(t *testing.T) {
 	assert.Equal(t, 0, w.IssueNumber)
 	assert.Equal(t, "", w.ArtifactDir)
 	assert.False(t, w.ScenarioStart.IsZero())
+	assert.Equal(t, "", w.ForkOwner)
+	assert.Equal(t, "", w.ForkRepo)
+	assert.Equal(t, 0, w.ForkPRNumber)
+	assert.Equal(t, "", w.ForkPRBranch)
 }
 
 func TestSkipErrorForTagNames(t *testing.T) {
