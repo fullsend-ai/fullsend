@@ -1,6 +1,6 @@
 # Fullsend
 
-Autonomous agentic software development for GitHub-hosted organizations.
+Autonomous agentic software development for Git-hosted organizations (GitHub, GitLab, Forgejo).
 
 Fullsend agents triage issues, implement solutions, review code, and merge to production autonomously — while being secure by design.
 

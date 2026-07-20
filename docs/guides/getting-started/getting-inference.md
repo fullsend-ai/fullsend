@@ -60,7 +60,7 @@ for, and `<gcp-project>` is your GCP project name. The output resembles:
 
 ```text
 ⚡ fullsend <version>
-  Autonomous agentic development for GitHub organizations
+  Autonomous agentic development for Git-hosted organizations
 
 → Provisioning WIF for repo-scoped inference: <org>/<repo>
 
