@@ -76,6 +76,16 @@ See [ADR 0002](ADRs/0002-initial-fullsend-design.md) building block 1 and [#101]
 Stopping automated processing and routing to a human. Escalation is triggered when agents cannot reach consensus (flapping), when trust violations are detected, when loop limits are exceeded, or when the work falls outside the authorized scope (e.g., a change that looks like a feature when only bug fixes are authorized). The escalation queue is the "dead letter queue" — the place humans monitor for items the system could not resolve autonomously.
 See [autonomy-spectrum.md](problems/autonomy-spectrum.md) and [agent-architecture.md](problems/agent-architecture.md).
 
+### Eval Measurement
+
+A score, judge, or metric applied to agent (or agent-chain) behavior — for example cost per run, whether the code agent later passes review, or whether a review agent recommends merge and a human still intervenes. Measurements are not the inputs under test; they are what you score. The same measurement can be applied to curated [eval scenarios](#eval-scenario) or to live ("wild") production traffic, at agent scope or across the platform chain. Prefer this term (or synonyms *eval score* / *eval judge*) over the bare word "evals," which is ambiguous with [eval scenarios](#eval-scenario).
+See [testing-agents.md](problems/testing-agents.md) and [Observability](#observability).
+
+### Eval Scenario
+
+A fixed, reproducible test case — a concrete input with an expected outcome that you re-run when an agent changes. Example: triage is presented with an issue asking to add a cheeseburger to the README and is expected to reject and close it. Scenarios are maintained like tests: if intentional agent behavior changes, update the scenario expectations. They answer "did this change make the agent better or worse on known cases?" and can later grow by promoting interesting production cases from telemetry into the curated set. Distinct from [eval measurements](#eval-measurement) (the scores/judges applied to a scenario or to wild traffic). Prefer this term over the bare word "evals."
+See [testing-agents.md](problems/testing-agents.md) (golden-set evaluation).
+
 ### Evergreen
 
 A workflow concept where a repository automatically stays up-to-date with dependency updates (e.g., Renovate PRs) by automerging changes that consist solely of known-safe dependency bumps. Named by analogy with evergreen browsers that silently self-update. Proposed as a stretch-goal supplementary workflow.
