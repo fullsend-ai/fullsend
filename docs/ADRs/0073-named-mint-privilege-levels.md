@@ -38,7 +38,7 @@ The mint maps each agent role to a single hardcoded permission set ([ADR 0007](0
 
 Each role defines an ordered set of **named privilege levels**. Each level's permissions are a superset of all preceding levels. The first level is always `read` — generally read-only — and is the default when no level is requested.
 
-The `read` level for each built-in role is derived by taking the role's current permission set and removing all `*:write` permissions. The `write` level is defined as the full permission set currently granted by each built-in role. For roles where `write` is not explicitly defined, requesting `write` falls back to `read` automatically.
+The `read` level for each built-in role is derived by taking the role's current permission set and downgrading all `*:write` permissions to their `read` counterparts (e.g., `contents: write` becomes `contents: read`). The `write` level is defined as the full permission set currently granted by each built-in role. For roles where `write` is not explicitly defined, requesting `write` falls back to `read` automatically.
 
 ### Mint API
 
@@ -58,7 +58,7 @@ When `level` is omitted, the mint defaults to `read`. The mint validates that th
 {"my-role": {"contents": "read", "issues": "write"}}
 ```
 
-An alternate shape specifies multiple named levels per role. The mint auto-detects the format per role by checking whether the role's value contains a `levels` key:
+An alternate shape specifies multiple named levels per role. The mint auto-detects the format per role by checking whether the role's value contains a `levels` key (reserved for format discrimination — role definitions must not use `levels` as a permission name):
 
 ```json
 {"my-role": {"levels": {"read": {"contents": "read"}, "write": {"contents": "read", "issues": "write"}}}}
@@ -85,7 +85,9 @@ privilege_levels:
   post_script: write
 ```
 
-A `default` key specifies the level for phases not explicitly listed. When `privilege_levels` is omitted entirely, the harness behaves as if:
+A `default` key specifies the level for phases not explicitly listed. Phases not shown above — such as `validation_loop` — inherit the `runtime` level, since they execute within the runtime phase and share its security context.
+
+When `privilege_levels` is omitted entirely, the harness behaves as if:
 
 ```yaml
 privilege_levels:
@@ -97,7 +99,7 @@ This preserves backward compatibility — existing harnesses continue to receive
 ## Consequences
 
 - Agents running in the LLM sandbox can receive read-only tokens, reducing blast radius if the sandbox is compromised.
-- The mint API defaults to `read` when `level` is omitted, producing narrower tokens than the current behavior. Direct API callers and mint clients that omit `level` will receive read-level tokens instead of write-level tokens.
+- The mint API defaults to `read` when `level` is omitted, producing narrower tokens than the current behavior. Non-harness callers that omit `level` — including `reconcileMintToken`, the `mint-token` CLI, and e2e test helpers — will receive read-level tokens instead of write-level tokens. Migration of these callers is coordinated in [#2823](https://github.com/fullsend-ai/fullsend/issues/2823) and [#2826](https://github.com/fullsend-ai/fullsend/issues/2826).
 - `CUSTOM_ROLE_PERMISSIONS` supports both the existing flat format and the new multi-level format — including mixed format within a single value — without a breaking change.
 - Harnesses that omit `privilege_levels` default to `write` for all phases, so existing harness configurations are unaffected — the harness requests `write` from the mint, preserving current token scope.
 - Implementation of role levels in the mint, clients, and harness is tracked in [#2823](https://github.com/fullsend-ai/fullsend/issues/2823) and [#2826](https://github.com/fullsend-ai/fullsend/issues/2826).
