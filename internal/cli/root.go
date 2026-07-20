@@ -53,6 +53,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newPostReviewCmd())
 	cmd.AddCommand(newPostCommentCmd())
 	cmd.AddCommand(newReconcileStatusCmd())
+	cmd.AddCommand(newPollCmd())
 	return cmd
 }
 
