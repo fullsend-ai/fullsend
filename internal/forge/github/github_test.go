@@ -708,6 +708,133 @@ func TestCreateCrossRepoChangeProposal(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "get repo node ID")
 	})
+
+	t.Run("head repo not found", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/") {
+				callCount++
+				if callCount == 1 {
+					// Base repo succeeds.
+					json.NewEncoder(w).Encode(map[string]any{
+						"node_id": "NODE_base",
+					})
+					return
+				}
+				// Head repo fails.
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "repo", "org", "missing-fork",
+			"title", "body", "branch", "main",
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "get repo node ID")
+	})
+
+	t.Run("empty node ID", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/") {
+				// Return valid JSON but with empty node_id.
+				json.NewEncoder(w).Encode(map[string]any{
+					"node_id": "",
+				})
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "repo", "org", "repo-fork",
+			"title", "body", "branch", "main",
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "empty node ID")
+	})
+
+	t.Run("graphql post error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/"):
+				json.NewEncoder(w).Encode(map[string]any{
+					"node_id": "NODE_test",
+				})
+			case r.Method == "POST" && r.URL.Path == "/graphql":
+				w.WriteHeader(http.StatusInternalServerError)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "repo", "org", "repo-fork",
+			"title", "body", "branch", "main",
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "cross-repo pull request via graphql")
+	})
+
+	t.Run("graphql decode error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/"):
+				json.NewEncoder(w).Encode(map[string]any{
+					"node_id": "NODE_test",
+				})
+			case r.Method == "POST" && r.URL.Path == "/graphql":
+				// Return invalid JSON body.
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte("not json"))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "repo", "org", "repo-fork",
+			"title", "body", "branch", "main",
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decode cross-repo pull request response")
+	})
+
+	t.Run("repo node ID decode error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/") {
+				// Return invalid JSON for repo lookup.
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte("not json"))
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "repo", "org", "repo-fork",
+			"title", "body", "branch", "main",
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decode repo node ID")
+	})
 }
 
 func TestAPIError_FieldCode(t *testing.T) {

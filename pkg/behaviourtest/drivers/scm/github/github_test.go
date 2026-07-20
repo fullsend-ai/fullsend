@@ -153,6 +153,35 @@ func TestCreateForkChangeProposal_SameOwner_Error(t *testing.T) {
 	}
 }
 
+func TestDeleteBranch(t *testing.T) {
+	fc := forge.NewFakeClient()
+	d := New(fc)
+
+	err := d.DeleteBranch(context.Background(), "owner", "repo", "feature-branch")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(fc.DeletedRefs) != 1 {
+		t.Fatalf("expected 1 deleted ref, got %d", len(fc.DeletedRefs))
+	}
+	// DeleteBranch should prepend "heads/" to the branch name.
+	if fc.DeletedRefs[0] != "owner/repo/heads/feature-branch" {
+		t.Errorf("expected ref %q, got %q", "owner/repo/heads/feature-branch", fc.DeletedRefs[0])
+	}
+}
+
+func TestDeleteBranch_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["DeleteRef"] = errors.New("ref delete failed")
+	d := New(fc)
+
+	err := d.DeleteBranch(context.Background(), "owner", "repo", "branch")
+	if err == nil || err.Error() != "ref delete failed" {
+		t.Fatalf("expected ref delete failed error, got %v", err)
+	}
+}
+
 func TestCreateFork_ExistingNonForkRepo(t *testing.T) {
 	fc := forge.NewFakeClient()
 	// Pre-populate with a non-fork repo that has the same name.
