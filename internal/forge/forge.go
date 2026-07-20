@@ -397,6 +397,10 @@ type Client interface {
 	// Returns forge.ErrNotFound if the branch does not exist.
 	GetBranchRef(ctx context.Context, owner, repo, branch string) (sha string, err error)
 	CreateBranch(ctx context.Context, owner, repo, branchName string) error
+
+	// DeleteRef deletes a git ref (e.g., "heads/my-branch", "tags/v1.0").
+	// Returns forge.ErrNotFound if the ref does not exist.
+	DeleteRef(ctx context.Context, owner, repo, refPath string) error
 	CreateFileOnBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
 	// CreateOrUpdateFileOnBranch creates or updates a file on a specific branch.
 	// Combines SHA-aware upsert with branch targeting.

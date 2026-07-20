@@ -3,8 +3,6 @@ package steps
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -81,108 +79,9 @@ func TestCleanupScenario_SkipsForkCleanupWhenNotSet(t *testing.T) {
 	assert.Empty(t, scmDriver.closedIssues)
 }
 
-func TestDeleteForkBranch_Success(t *testing.T) {
+func TestCleanupScenario_DeletesForkBranch(t *testing.T) {
 	t.Parallel()
 
-	var receivedPath, receivedAuth string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		receivedPath = r.URL.Path
-		receivedAuth = r.Header.Get("Authorization")
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer srv.Close()
-
-	var logged []string
-	w := &world.World{
-		Logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
-	}
-	deleteForkBranch(context.Background(), srv.URL, "test-token", "org", "fork-repo", "test-branch", w)
-
-	assert.Equal(t, "/repos/org/fork-repo/git/refs/heads/test-branch", receivedPath)
-	assert.Equal(t, "Bearer test-token", receivedAuth)
-	require.Len(t, logged, 1)
-	assert.Contains(t, logged[0], "deleted fork branch test-branch on org/fork-repo")
-}
-
-func TestDeleteForkBranch_NotFound(t *testing.T) {
-	t.Parallel()
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	defer srv.Close()
-
-	var logged []string
-	w := &world.World{
-		Logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
-	}
-	deleteForkBranch(context.Background(), srv.URL, "test-token", "org", "fork-repo", "gone-branch", w)
-
-	// 404 is silently ignored — no log output.
-	assert.Empty(t, logged)
-}
-
-func TestDeleteForkBranch_UnexpectedStatus(t *testing.T) {
-	t.Parallel()
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	var logged []string
-	w := &world.World{
-		Logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
-	}
-	deleteForkBranch(context.Background(), srv.URL, "test-token", "org", "fork-repo", "bad-branch", w)
-
-	require.Len(t, logged, 1)
-	assert.Contains(t, logged[0], "unexpected status 500")
-}
-
-func TestDeleteForkBranch_RequestCreationError(t *testing.T) {
-	t.Parallel()
-
-	var logged []string
-	w := &world.World{
-		Logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
-	}
-	// An unterminated IPv6 bracket in the URL causes http.NewRequestWithContext
-	// to fail during URL parsing.
-	deleteForkBranch(context.Background(), "http://[::1", "test-token", "org", "fork-repo", "branch", w)
-
-	require.Len(t, logged, 1)
-	assert.Contains(t, logged[0], "create branch delete request")
-}
-
-func TestDeleteForkBranch_HTTPClientError(t *testing.T) {
-	t.Parallel()
-
-	// Start and immediately close the server so the URL is valid but
-	// the connection is refused when deleteForkBranch tries to call it.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	closedURL := srv.URL
-	srv.Close()
-
-	var logged []string
-	w := &world.World{
-		Logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
-	}
-	deleteForkBranch(context.Background(), closedURL, "test-token", "org", "fork-repo", "branch", w)
-
-	require.Len(t, logged, 1)
-	assert.Contains(t, logged[0], "delete fork branch branch")
-}
-
-func TestCleanupScenario_CallsDeleteForkBranch_WhenAllFieldsPresent(t *testing.T) {
-	t.Parallel()
-
-	// Verify that CleanupScenario closes the fork PR via SCM when all
-	// fork fields are present. Branch deletion is tested separately
-	// (TestDeleteForkBranch_*) with httptest, so we omit Token here to
-	// skip the HTTP call and focus on the SCM path.
 	scmDriver := &fakeCleanupSCM{}
 	w := &world.World{
 		RepoOwner:    "org",
@@ -197,39 +96,110 @@ func TestCleanupScenario_CallsDeleteForkBranch_WhenAllFieldsPresent(t *testing.T
 
 	require.Len(t, scmDriver.closedIssues, 1)
 	assert.Equal(t, 10, scmDriver.closedIssues[0].number)
+
+	require.Len(t, scmDriver.deletedBranches, 1)
+	assert.Equal(t, "org", scmDriver.deletedBranches[0].owner)
+	assert.Equal(t, "fork-repo", scmDriver.deletedBranches[0].repo)
+	assert.Equal(t, "test-branch", scmDriver.deletedBranches[0].branch)
 }
 
-func TestCleanupScenario_SkipsBranchDelete_WhenTokenMissing(t *testing.T) {
+func TestCleanupScenario_DeleteBranchNotFound_SilentlyIgnored(t *testing.T) {
 	t.Parallel()
 
 	var logged []string
-	scmDriver := &fakeCleanupSCM{}
+	scmDriver := &fakeCleanupSCM{deleteBranchErr: fmt.Errorf("delete branch: %w", forge.ErrNotFound)}
 	w := &world.World{
 		RepoOwner:    "org",
 		RepoName:     "repo",
-		ForkPRNumber: 10,
 		ForkOwner:    "org",
 		ForkRepo:     "fork-repo",
-		ForkPRBranch: "test-branch",
-		Token:        "", // no token — branch deletion should be skipped
+		ForkPRBranch: "gone-branch",
 		SCM:          scmDriver,
 		Logf:         func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
 	}
 	CleanupScenario(w)
 
-	// Fork PR should still be closed.
-	require.Len(t, scmDriver.closedIssues, 1)
-
-	// No branch deletion log because token was empty.
+	// 404/ErrNotFound is silently ignored — no log output for branch deletion.
 	for _, msg := range logged {
-		assert.NotContains(t, msg, "fork branch", "branch deletion should not be attempted without a token")
+		assert.NotContains(t, msg, "fork branch", "ErrNotFound should be silently ignored")
+	}
+}
+
+func TestCleanupScenario_DeleteBranchError_Logged(t *testing.T) {
+	t.Parallel()
+
+	var logged []string
+	scmDriver := &fakeCleanupSCM{deleteBranchErr: fmt.Errorf("server error")}
+	w := &world.World{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		ForkOwner:    "org",
+		ForkRepo:     "fork-repo",
+		ForkPRBranch: "bad-branch",
+		SCM:          scmDriver,
+		Logf:         func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+	CleanupScenario(w)
+
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], "delete fork branch bad-branch")
+	assert.Contains(t, logged[0], "server error")
+}
+
+func TestCleanupScenario_SkipsBranchDelete_WhenFieldsMissing(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		world *world.World
+	}{
+		{
+			name: "missing ForkPRBranch",
+			world: &world.World{
+				RepoOwner: "org",
+				RepoName:  "repo",
+				ForkOwner: "org",
+				ForkRepo:  "fork-repo",
+				SCM:       &fakeCleanupSCM{},
+			},
+		},
+		{
+			name: "missing ForkOwner",
+			world: &world.World{
+				RepoOwner:    "org",
+				RepoName:     "repo",
+				ForkRepo:     "fork-repo",
+				ForkPRBranch: "branch",
+				SCM:          &fakeCleanupSCM{},
+			},
+		},
+		{
+			name: "missing ForkRepo",
+			world: &world.World{
+				RepoOwner:    "org",
+				RepoName:     "repo",
+				ForkOwner:    "org",
+				ForkPRBranch: "branch",
+				SCM:          &fakeCleanupSCM{},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			scm := tt.world.SCM.(*fakeCleanupSCM)
+			CleanupScenario(tt.world)
+			assert.Empty(t, scm.deletedBranches, "branch deletion should be skipped when fields are missing")
+		})
 	}
 }
 
 // fakeCleanupSCM implements scm.Driver for cleanup unit tests.
 type fakeCleanupSCM struct {
-	closedIssues  []closedIssueRecord
-	closeIssueErr error
+	closedIssues    []closedIssueRecord
+	closeIssueErr   error
+	deletedBranches []deletedBranchRecord
+	deleteBranchErr error
 }
 
 type closedIssueRecord struct {
@@ -238,11 +208,25 @@ type closedIssueRecord struct {
 	number int
 }
 
+type deletedBranchRecord struct {
+	owner  string
+	repo   string
+	branch string
+}
+
 func (f *fakeCleanupSCM) CloseIssue(_ context.Context, owner, repo string, number int) error {
 	if f.closeIssueErr != nil {
 		return f.closeIssueErr
 	}
 	f.closedIssues = append(f.closedIssues, closedIssueRecord{owner: owner, repo: repo, number: number})
+	return nil
+}
+
+func (f *fakeCleanupSCM) DeleteBranch(_ context.Context, owner, repo, branch string) error {
+	if f.deleteBranchErr != nil {
+		return f.deleteBranchErr
+	}
+	f.deletedBranches = append(f.deletedBranches, deletedBranchRecord{owner: owner, repo: repo, branch: branch})
 	return nil
 }
 

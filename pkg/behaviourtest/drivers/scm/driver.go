@@ -15,6 +15,9 @@ type Driver interface {
 	GetFileContent(ctx context.Context, owner, repo, path string) ([]byte, error)
 	CommitFile(ctx context.Context, owner, repo, path, message string, content []byte) error
 	CreateBranch(ctx context.Context, owner, repo, branch string) error
+	// DeleteBranch deletes a branch from a repository. Returns
+	// forge.ErrNotFound if the branch does not exist.
+	DeleteBranch(ctx context.Context, owner, repo, branch string) error
 	CommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error
 	CreateChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*forge.ChangeProposal, error)
 	SubmitPullRequestReview(ctx context.Context, owner, repo string, number int, event string) error

@@ -53,6 +53,10 @@ func (d *Driver) CreateBranch(ctx context.Context, owner, repo, branch string) e
 	return d.Client.CreateBranch(ctx, owner, repo, branch)
 }
 
+func (d *Driver) DeleteBranch(ctx context.Context, owner, repo, branch string) error {
+	return d.Client.DeleteRef(ctx, owner, repo, "heads/"+branch)
+}
+
 func (d *Driver) CommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error {
 	return d.Client.CreateOrUpdateFileOnBranch(ctx, owner, repo, branch, path, message, content)
 }

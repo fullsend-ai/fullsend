@@ -231,6 +231,7 @@ type FakeClient struct {
 	CreatedRepos           []Repository
 	CreatedFiles           []FileRecord
 	CreatedBranches        []string // "owner/repo/branch"
+	DeletedRefs            []string // "owner/repo/refPath"
 	CreatedProposals       []ChangeProposal
 	DeletedRepos           []string // "owner/repo"
 	DeletedFiles           []FileRecord
@@ -732,6 +733,18 @@ func (f *FakeClient) CreateBranch(_ context.Context, owner, repo, branchName str
 	}
 
 	f.CreatedBranches = append(f.CreatedBranches, owner+"/"+repo+"/"+branchName)
+	return nil
+}
+
+func (f *FakeClient) DeleteRef(_ context.Context, owner, repo, refPath string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DeleteRef"); e != nil {
+		return e
+	}
+
+	f.DeletedRefs = append(f.DeletedRefs, owner+"/"+repo+"/"+refPath)
 	return nil
 }
 

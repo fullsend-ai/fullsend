@@ -235,3 +235,7 @@ func (f *fakeForkSCM) SubmitPullRequestReview(context.Context, string, string, i
 func (f *fakeForkSCM) CloseIssue(context.Context, string, string, int) error {
 	return nil
 }
+
+func (f *fakeForkSCM) DeleteBranch(context.Context, string, string, string) error {
+	return nil
+}

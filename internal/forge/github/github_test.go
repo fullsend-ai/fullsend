@@ -103,6 +103,36 @@ func TestDeleteRepo(t *testing.T) {
 	assert.True(t, called)
 }
 
+func TestDeleteRef(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		called := false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			assert.Equal(t, "/repos/owner/repo/git/refs/heads/my-branch", r.URL.Path)
+			called = true
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteRef(context.Background(), "owner", "repo", "heads/my-branch")
+		require.NoError(t, err)
+		assert.True(t, called)
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteRef(context.Background(), "owner", "repo", "heads/gone")
+		require.Error(t, err)
+		assert.True(t, forge.IsNotFound(err))
+	})
+}
+
 func TestFindExistingFork(t *testing.T) {
 	t.Run("returns fork owner when fork exists", func(t *testing.T) {
 		callNum := 0

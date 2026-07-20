@@ -1577,6 +1577,15 @@ func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName s
 	return nil
 }
 
+// DeleteRef deletes a git ref (e.g., "heads/my-branch", "tags/v1.0").
+// Returns forge.ErrNotFound (wrapped) if the ref does not exist.
+func (c *LiveClient) DeleteRef(ctx context.Context, owner, repo, refPath string) error {
+	if err := c.delete_(ctx, fmt.Sprintf("/repos/%s/%s/git/refs/%s", owner, repo, refPath)); err != nil {
+		return fmt.Errorf("delete ref %s in %s/%s: %w", refPath, owner, repo, err)
+	}
+	return nil
+}
+
 // CreateChangeProposal creates a pull request.
 func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*forge.ChangeProposal, error) {
 	payload := map[string]string{
