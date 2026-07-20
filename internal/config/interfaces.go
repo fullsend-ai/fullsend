@@ -232,13 +232,35 @@ func (dc *DirConfig) IssueCreationConfig() *CreateIssuesConfig {
 	return nil
 }
 
-// --- LoadConfig factory ---
+// --- LoadConfig / LoadConfigWriter factories ---
 
 // LoadConfig reads and parses config.yaml from dir, returning a
 // ConfigReader. This is the preferred entry point for consumer packages
 // that only need read access. It wraps LoadFromDir and returns the
 // underlying OrgConfig or PerRepoConfig.
 func LoadConfig(dir string, opts LoadOpts) (ConfigReader, error) {
+	dc, err := LoadFromDir(dir, opts)
+	if err != nil {
+		return nil, err
+	}
+	if dc.IsOrg {
+		if dc.Org == nil {
+			return nil, fmt.Errorf("org config is nil despite IsOrg=true")
+		}
+		return dc.Org, nil
+	}
+	if dc.PerRepo == nil {
+		return nil, fmt.Errorf("per-repo config is nil despite IsOrg=false")
+	}
+	return dc.PerRepo, nil
+}
+
+// LoadConfigWriter reads and parses config.yaml from dir, returning a
+// ConfigWriter. This is the preferred entry point for consumer packages
+// that need read-write access (e.g. CLI commands that modify and
+// write-back config). It wraps LoadFromDir and returns the underlying
+// OrgConfig or PerRepoConfig.
+func LoadConfigWriter(dir string, opts LoadOpts) (ConfigWriter, error) {
 	dc, err := LoadFromDir(dir, opts)
 	if err != nil {
 		return nil, err

@@ -46,7 +46,7 @@ Use `forge.Client` for operations it already exposes; add REST helpers inside th
 
 ## Adding a CI driver
 
-1. Implement `ci.Driver` — `WaitForWorkflow`, `AssertNoWorkflow`, `GetRunLogs`, `DownloadArtifacts`.
+1. Implement `ci.Driver` — `WaitForWorkflow`, `FindCompletedWorkflowRun`, `AssertNoWorkflow`, `GetRunLogs`, `DownloadArtifacts`, `DownloadNamedArtifactFromRun`, `DownloadNamedArtifactAfter`, `WaitForHarnessAgent`, `AssertNoHarnessAgentArtifact`, `CountHarnessDispatches`.
 2. Map forge `WorkflowRun` types to portable polling logic; reuse patterns from `e2e/admin/admin_test.go`.
 3. Register in suite init for the matching `BEHAVIOUR_CI` value.
 
