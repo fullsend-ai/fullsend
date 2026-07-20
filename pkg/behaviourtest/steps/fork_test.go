@@ -199,7 +199,7 @@ func (f *fakeForkSCM) CommitFileToFork(_ context.Context, _, _, _, _, _ string, 
 	return nil
 }
 
-func (f *fakeForkSCM) CreateForkChangeProposal(_ context.Context, _, _, _, _, _, _, _ string) (*forge.ChangeProposal, error) {
+func (f *fakeForkSCM) CreateForkChangeProposal(_ context.Context, _, _, _, _, _, _, _, _ string) (*forge.ChangeProposal, error) {
 	f.createForkPRCalled = true
 	if f.createForkPRErr != nil {
 		return nil, f.createForkPRErr

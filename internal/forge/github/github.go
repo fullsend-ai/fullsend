@@ -70,6 +70,11 @@ func (e *APIError) Error() string {
 	for _, d := range e.Errors {
 		if d.Message != "" {
 			s += fmt.Sprintf(" (%s)", d.Message)
+		} else if d.Field != "" || d.Code != "" {
+			// Include field/code when the detail message is empty.
+			// GitHub 422 validation errors sometimes omit the message
+			// but still provide the field and error code.
+			s += fmt.Sprintf(" (field=%s, code=%s)", d.Field, d.Code)
 		}
 	}
 	return s
@@ -1611,6 +1616,98 @@ func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, titl
 
 	return &forge.ChangeProposal{
 		URL:    pr.HTMLURL,
+		Title:  pr.Title,
+		Number: pr.Number,
+	}, nil
+}
+
+// getRepoNodeID fetches the GraphQL node ID for a repository via the REST
+// API. The node ID is needed for GraphQL mutations such as createPullRequest.
+func (c *LiveClient) getRepoNodeID(ctx context.Context, owner, repo string) (string, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo))
+	if err != nil {
+		return "", fmt.Errorf("get repo node ID for %s/%s: %w", owner, repo, err)
+	}
+	var r struct {
+		NodeID string `json:"node_id"`
+	}
+	if err := decodeJSON(resp, &r); err != nil {
+		return "", fmt.Errorf("decode repo node ID for %s/%s: %w", owner, repo, err)
+	}
+	if r.NodeID == "" {
+		return "", fmt.Errorf("empty node ID for %s/%s", owner, repo)
+	}
+	return r.NodeID, nil
+}
+
+// CreateCrossRepoChangeProposal opens a pull request where the head branch
+// lives in a different repository than the base. It uses the GraphQL
+// createPullRequest mutation with explicit repositoryId and
+// headRepositoryId to avoid the ambiguity of the REST API's
+// "owner:branch" head format (which fails for same-owner forks).
+func (c *LiveClient) CreateCrossRepoChangeProposal(ctx context.Context, baseOwner, baseRepo, headOwner, headRepo, title, body, headBranch, baseBranch string) (*forge.ChangeProposal, error) {
+	baseNodeID, err := c.getRepoNodeID(ctx, baseOwner, baseRepo)
+	if err != nil {
+		return nil, fmt.Errorf("create cross-repo pull request: %w", err)
+	}
+	headNodeID, err := c.getRepoNodeID(ctx, headOwner, headRepo)
+	if err != nil {
+		return nil, fmt.Errorf("create cross-repo pull request: %w", err)
+	}
+
+	query := `mutation($input: CreatePullRequestInput!) {
+		createPullRequest(input: $input) {
+			pullRequest {
+				number
+				title
+				url
+			}
+		}
+	}`
+	variables := map[string]any{
+		"input": map[string]any{
+			"repositoryId":     baseNodeID,
+			"headRepositoryId": headNodeID,
+			"headRefName":      headBranch,
+			"baseRefName":      baseBranch,
+			"title":            title,
+			"body":             body,
+		},
+	}
+	gqlPayload := map[string]any{
+		"query":     query,
+		"variables": variables,
+	}
+
+	resp, err := c.post(ctx, "/graphql", gqlPayload)
+	if err != nil {
+		return nil, fmt.Errorf("create cross-repo pull request via graphql: %w", err)
+	}
+
+	var gqlResult struct {
+		Data struct {
+			CreatePullRequest struct {
+				PullRequest struct {
+					Number int    `json:"number"`
+					Title  string `json:"title"`
+					URL    string `json:"url"`
+				} `json:"pullRequest"`
+			} `json:"createPullRequest"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+	if err := decodeJSON(resp, &gqlResult); err != nil {
+		return nil, fmt.Errorf("decode cross-repo pull request response: %w", err)
+	}
+	if len(gqlResult.Errors) > 0 {
+		return nil, fmt.Errorf("create cross-repo pull request: graphql: %s", gqlResult.Errors[0].Message)
+	}
+
+	pr := gqlResult.Data.CreatePullRequest.PullRequest
+	return &forge.ChangeProposal{
+		URL:    pr.URL,
 		Title:  pr.Title,
 		Number: pr.Number,
 	}, nil

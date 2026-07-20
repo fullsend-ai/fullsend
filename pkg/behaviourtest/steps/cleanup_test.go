@@ -280,6 +280,6 @@ func (f *fakeCleanupSCM) CommitFileToFork(context.Context, string, string, strin
 	return nil
 }
 
-func (f *fakeCleanupSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
+func (f *fakeCleanupSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
 	return nil, nil
 }

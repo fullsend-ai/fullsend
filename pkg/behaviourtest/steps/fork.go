@@ -66,7 +66,7 @@ func whenForkPullRequestOpened(w *world.World) error {
 		return fmt.Errorf("committing to fork branch: %w", err)
 	}
 
-	pr, err := w.SCM.CreateForkChangeProposal(ctx, w.RepoOwner, w.RepoName, "Behaviour fork test PR", "behaviour fork", w.ForkOwner, branch, "main")
+	pr, err := w.SCM.CreateForkChangeProposal(ctx, w.RepoOwner, w.RepoName, "Behaviour fork test PR", "behaviour fork", w.ForkOwner, w.ForkRepo, branch, "main")
 	if err != nil {
 		return fmt.Errorf("creating fork pull request: %w", err)
 	}

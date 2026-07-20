@@ -408,6 +408,15 @@ type Client interface {
 
 	// Change proposals (PRs/MRs)
 	CreateChangeProposal(ctx context.Context, owner, repo, title, body, head, base string) (*ChangeProposal, error)
+
+	// CreateCrossRepoChangeProposal opens a pull request where the head
+	// branch lives in a different repository than the base. This is
+	// necessary for same-owner forks where the REST API's "owner:branch"
+	// head format is ambiguous. Implementations should use a mechanism
+	// that can explicitly identify the head repository (e.g., GraphQL
+	// createPullRequest with headRepositoryId on GitHub).
+	CreateCrossRepoChangeProposal(ctx context.Context, baseOwner, baseRepo, headOwner, headRepo, title, body, headBranch, baseBranch string) (*ChangeProposal, error)
+
 	ListRepoPullRequests(ctx context.Context, owner, repo string) ([]ChangeProposal, error)
 
 	// Organization metadata

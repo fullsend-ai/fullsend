@@ -35,6 +35,8 @@ type Driver interface {
 	CommitFileToFork(ctx context.Context, forkOwner, forkRepo, branch, path, message string, content []byte) error
 
 	// CreateForkChangeProposal opens a cross-fork pull request from
-	// forkOwner:headBranch into baseOwner/baseRepo's baseBranch.
-	CreateForkChangeProposal(ctx context.Context, baseOwner, baseRepo, title, body, forkOwner, headBranch, baseBranch string) (*forge.ChangeProposal, error)
+	// forkOwner/forkRepo:headBranch into baseOwner/baseRepo's baseBranch.
+	// The forkRepo parameter is required to disambiguate same-owner forks
+	// (where forkOwner == baseOwner) from branches on the base repo.
+	CreateForkChangeProposal(ctx context.Context, baseOwner, baseRepo, title, body, forkOwner, forkRepo, headBranch, baseBranch string) (*forge.ChangeProposal, error)
 }

@@ -811,6 +811,26 @@ func (f *FakeClient) CreateChangeProposal(_ context.Context, owner, repo, title,
 	return &cp, nil
 }
 
+func (f *FakeClient) CreateCrossRepoChangeProposal(_ context.Context, baseOwner, baseRepo, headOwner, headRepo, title, body, headBranch, baseBranch string) (*ChangeProposal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CreateCrossRepoChangeProposal"); e != nil {
+		return nil, e
+	}
+
+	f.proposalCounter++
+	cp := ChangeProposal{
+		URL:    fmt.Sprintf("https://forge.example.com/%s/%s/pull/%d", baseOwner, baseRepo, f.proposalCounter),
+		Title:  title,
+		Number: f.proposalCounter,
+		Head:   headOwner + ":" + headBranch,
+		Base:   baseBranch,
+	}
+	f.CreatedProposals = append(f.CreatedProposals, cp)
+	return &cp, nil
+}
+
 func (f *FakeClient) ListRepoPullRequests(_ context.Context, owner, repo string) ([]ChangeProposal, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
