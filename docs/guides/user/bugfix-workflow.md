@@ -65,10 +65,12 @@ You can control the pipeline from issue or PR comments:
 | `/fs-fix-stop` | PR comment | Disables bot-triggered fix runs for this PR (human `/fs-fix` still works) |
 | `/fs-retro` | Issue or PR comment | Triggers a retrospective analysis of the workflow |
 
-All slash commands require write-level repository permission (admin,
-maintain, or write), verified via the collaborator permission API.
-Bot-to-bot agent handoffs are not affected because they use label-based
-triggers, not slash commands.
+Authorization is verified via the collaborator permission API and is
+stage-dependent: `/fs-triage` and `/fs-review` accept triage-level
+permission or higher; `/fs-code`, `/fs-fix`, `/fs-retro`, and
+`/fs-fix-stop` require write-level permission or higher (admin,
+maintain, or write). Bot-to-bot agent handoffs are not affected because
+they use label-based triggers, not slash commands.
 
 ### What to expect from agent PRs
 
