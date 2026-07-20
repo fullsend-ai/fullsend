@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 )
 
@@ -40,15 +41,15 @@ func newPollCmd() *cobra.Command {
 
 			slashCommandsOnly := pollModeFlag == "fast" || os.Getenv("FULLSEND_POLL_MODE") == "fast"
 
-			// The GitLab client is not yet implemented (Phase 1).
-			// This command will be fully wired when the GitLab forge
-			// client provides a type satisfying poll.GitLabClient.
-			_ = forgeToken
-			_ = gitlabURL
+			glClient, err := gitlab.New(forgeToken, gitlab.WithBaseURL(gitlabURL))
+			if err != nil {
+				return fmt.Errorf("create GitLab client: %w", err)
+			}
+			pollClient := gitlab.NewPollClient(glClient)
 
 			var botUserID int
-			// botUserID will be resolved via client.GetAuthenticatedUser
-			// once the GitLab client is available.
+			// botUserID will be resolved via the authenticated user
+			// endpoint in a future change.
 
 			opts := poll.Options{
 				SlashCommandsOnly: slashCommandsOnly,
@@ -57,9 +58,9 @@ func newPollCmd() *cobra.Command {
 				GitLabURL:         gitlabURL,
 			}
 
-			// TODO(phase1): Replace nil client and router with real
-			// implementations once the GitLab forge client exists.
-			poller := poll.New(nil, nil, projectPath, opts)
+			// TODO: Replace nil router with a real implementation
+			// once event routing is wired.
+			poller := poll.New(pollClient, nil, projectPath, opts)
 			return poller.Run(cmd.Context())
 		},
 	}
