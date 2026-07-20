@@ -38,7 +38,7 @@ func (p *Printer) Banner(version string) {
 	brand := lipgloss.NewStyle().Bold(true).Foreground(ColorBrand).Render("fullsend")
 	ver := lipgloss.NewStyle().Foreground(ColorMuted).Render(version)
 	fmt.Fprintf(p.w, "\u26a1 %s %s\n", brand, ver)
-	tagline := lipgloss.NewStyle().Foreground(ColorMuted).Render("Autonomous agentic development for GitHub organizations")
+	tagline := lipgloss.NewStyle().Foreground(ColorMuted).Render("Autonomous agentic development for Git-hosted organizations")
 	fmt.Fprintf(p.w, "  %s\n", tagline)
 }
 

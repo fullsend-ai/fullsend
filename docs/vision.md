@@ -49,7 +49,7 @@ Modern coding agents have largely solved the code generation problem. Given a we
 - **Authority and governance** — who decides what agents can do?
 - **Security** — how do we prevent the autonomous system from being exploited?
 
-This project exists to explore these problems in a way that's applicable to any GitHub-hosted organization, though the patterns may need adaptation for specific organizational contexts. See [docs/problems/applied/](problems/applied/) for organization-specific considerations.
+This project exists to explore these problems in a way that's applicable to any Git-hosted organization, though the patterns may need adaptation for specific organizational contexts. See [docs/problems/applied/](problems/applied/) for organization-specific considerations.
 
 ## Principles
 
