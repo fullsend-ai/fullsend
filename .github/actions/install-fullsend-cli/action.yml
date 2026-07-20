@@ -23,7 +23,7 @@ inputs:
 outputs:
   fullsend-path:
     description: Absolute path to the installed fullsend binary.
-    value: ${{ steps.install-vendored.outputs.fullsend-path || steps.install-upstream.outputs.fullsend-path }}
+    value: ${{ steps.install-vendored.outputs.fullsend-path || steps.install-release.outputs.fullsend-path || steps.install-upstream.outputs.fullsend-path }}
 
 runs:
   using: composite
@@ -46,7 +46,8 @@ runs:
         echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
         echo "fullsend-path=${RUNNER_TEMP}/fullsend/fullsend" >> "${GITHUB_OUTPUT}"
 
-    - name: Clone fullsend at workflow SHA for source build
+    - name: Resolve SHA to release tag
+      id: resolve-tag
       if: inputs.mode == 'upstream'
       shell: bash
       env:
@@ -55,6 +56,94 @@ runs:
         GH_TOKEN: ${{ inputs.github_token }}
       run: |
         set -euo pipefail
+        retry() {
+          local attempt=1 max=3 delay=5
+          while true; do
+            if "$@"; then return 0; fi
+            if (( attempt >= max )); then return 1; fi
+            echo "::warning::Attempt ${attempt}/${max} failed, retrying in ${delay}s..."
+            sleep "${delay}"
+            (( attempt++ ))
+            (( delay *= 3 ))
+          done
+        }
+
+        TAG=""
+        if tags_json=$(retry gh api --paginate "repos/${WORKFLOW_REPOSITORY}/tags?per_page=100"); then
+          TAG=$(echo "${tags_json}" \
+            | jq -r --arg sha "${WORKFLOW_SHA}" '.[] | select(.commit.sha == $sha) | .name' \
+            | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1) || true
+        else
+          echo "::warning::Tag lookup API failed after retries; skipping SHA-to-tag resolution"
+        fi
+        echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+        if [[ -n "${TAG}" ]]; then
+          echo "SHA ${WORKFLOW_SHA} maps to release tag ${TAG}"
+        else
+          echo "No release tag for SHA ${WORKFLOW_SHA}, will build from source"
+        fi
+
+    - name: Download pre-built binary from release
+      id: install-release
+      if: inputs.mode == 'upstream' && steps.resolve-tag.outputs.tag != ''
+      continue-on-error: true
+      shell: bash
+      env:
+        WORKFLOW_REPOSITORY: ${{ inputs.workflow_repository }}
+        TAG: ${{ steps.resolve-tag.outputs.tag }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        RUNNER_OS: ${{ runner.os }}
+        RUNNER_ARCH: ${{ runner.arch }}
+      run: |
+        set -euo pipefail
+        retry() {
+          local attempt=1 max=3 delay=5
+          while true; do
+            if "$@"; then return 0; fi
+            if (( attempt >= max )); then return 1; fi
+            echo "::warning::Attempt ${attempt}/${max} failed, retrying in ${delay}s..."
+            sleep "${delay}"
+            (( attempt++ ))
+            (( delay *= 3 ))
+          done
+        }
+
+        VERSION="${TAG#v}"
+
+        os="$(echo "${RUNNER_OS}" | tr '[:upper:]' '[:lower:]')"
+        case "${os}" in
+          macos) os=darwin ;;
+        esac
+
+        arch="$(echo "${RUNNER_ARCH}" | tr '[:upper:]' '[:lower:]')"
+        case "${arch}" in
+          x64) arch=amd64 ;;
+          x86) arch=386 ;;
+          arm64|aarch64) arch=arm64 ;;
+        esac
+
+        ASSET="fullsend_${VERSION}_${os}_${arch}.tar.gz"
+        mkdir -p "${RUNNER_TEMP}/fullsend"
+        echo "Downloading ${ASSET} from release ${TAG}"
+        retry gh release download "${TAG}" -R "${WORKFLOW_REPOSITORY}" -p "${ASSET}" -D "${RUNNER_TEMP}/fullsend"
+        tar -xzf "${RUNNER_TEMP}/fullsend/${ASSET}" -C "${RUNNER_TEMP}/fullsend"
+        rm -f "${RUNNER_TEMP}/fullsend/${ASSET}"
+        chmod +x "${RUNNER_TEMP}/fullsend/fullsend"
+        echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
+        echo "fullsend-path=${RUNNER_TEMP}/fullsend/fullsend" >> "${GITHUB_OUTPUT}"
+
+    - name: Clone fullsend at workflow SHA for source build
+      if: inputs.mode == 'upstream' && (steps.resolve-tag.outputs.tag == '' || steps.install-release.outcome == 'failure')
+      shell: bash
+      env:
+        WORKFLOW_REPOSITORY: ${{ inputs.workflow_repository }}
+        WORKFLOW_SHA: ${{ inputs.workflow_sha }}
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        set -euo pipefail
+        if [[ "${{ steps.install-release.outcome }}" == "failure" ]]; then
+          echo "::warning::Release download failed; falling back to source build"
+        fi
         echo "::add-mask::${GH_TOKEN}"
         SRC="${RUNNER_TEMP}/fullsend-src"
         REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${WORKFLOW_REPOSITORY}.git"
@@ -71,7 +160,7 @@ runs:
         fi
 
     - name: Set up Go for source build
-      if: inputs.mode == 'upstream'
+      if: inputs.mode == 'upstream' && (steps.resolve-tag.outputs.tag == '' || steps.install-release.outcome == 'failure')
       uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
       with:
         go-version-file: ${{ runner.temp }}/fullsend-src/go.mod
@@ -79,7 +168,7 @@ runs:
 
     - name: Build fullsend from source
       id: install-upstream
-      if: inputs.mode == 'upstream'
+      if: inputs.mode == 'upstream' && (steps.resolve-tag.outputs.tag == '' || steps.install-release.outcome == 'failure')
       shell: bash
       run: |
         set -euo pipefail

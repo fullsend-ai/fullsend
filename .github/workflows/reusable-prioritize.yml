@@ -30,7 +30,7 @@ on:
       fullsend_version:
         required: false
         type: string
-        default: "latest"
+        default: ""
       install_mode:
         required: false
         type: string
@@ -163,6 +163,6 @@ jobs:
           REPO_FULL_NAME: ${{ inputs.source_repo }}
         with:
           agent: prioritize
-          version: ${{ inputs.fullsend_version }}
+          version: ${{ inputs.fullsend_version || job.workflow_sha }}
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           mint-url: ${{ inputs.mint_url }}
