@@ -140,6 +140,42 @@ func TestDeleteForkBranch_UnexpectedStatus(t *testing.T) {
 	assert.Contains(t, logged[0], "unexpected status 500")
 }
 
+func TestDeleteForkBranch_RequestCreationError(t *testing.T) {
+	t.Parallel()
+
+	var logged []string
+	w := &world.World{
+		Logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+	// An unterminated IPv6 bracket in the URL causes http.NewRequestWithContext
+	// to fail during URL parsing.
+	deleteForkBranch(context.Background(), "http://[::1", "test-token", "org", "fork-repo", "branch", w)
+
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], "create branch delete request")
+}
+
+func TestDeleteForkBranch_HTTPClientError(t *testing.T) {
+	t.Parallel()
+
+	// Start and immediately close the server so the URL is valid but
+	// the connection is refused when deleteForkBranch tries to call it.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	closedURL := srv.URL
+	srv.Close()
+
+	var logged []string
+	w := &world.World{
+		Logf: func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+	deleteForkBranch(context.Background(), closedURL, "test-token", "org", "fork-repo", "branch", w)
+
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], "delete fork branch branch")
+}
+
 func TestCleanupScenario_CallsDeleteForkBranch_WhenAllFieldsPresent(t *testing.T) {
 	t.Parallel()
 
