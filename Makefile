@@ -2,7 +2,8 @@
 .PHONY: help bootstrap ensure-hooks lint lint-all check fmt \
        mindmap go-build go-test go-lint go-fmt go-vet go-tidy \
        lint-md-links script-test test \
-       e2e-test behaviour-test lint-eval-cases functional-tests
+       e2e-test behaviour-test lint-eval-cases functional-tests \
+       wasm-build
 
 # Let Go automatically download the toolchain version required by go.mod.
 # This ensures local builds use the right version without manual intervention.
@@ -31,6 +32,7 @@ help:
 	@echo "  behaviour-test       - Run Gherkin behaviour tests (installs fullsend per-repo; CI: OIDC mint)"
 	@echo "  lint-eval-cases      - Lint eval case definitions (annotations.yaml completeness)"
 	@echo "  functional-tests     - Run functional agent tests (requires EVAL_ORG, FULLSEND_DIR, GH_TOKEN, GCP creds)"
+	@echo "  wasm-build           - Verify mintcore WASM build (GOOS=js GOARCH=wasm) and report gzip size"
 
 # Install all development tools needed for linting, formatting, and pre-commit hooks.
 # Prerequisites: uv (https://docs.astral.sh/uv/) and go (https://go.dev/)
@@ -117,6 +119,11 @@ go-vet:
 
 go-tidy:
 	go mod tidy
+
+wasm-build:
+	@echo "==> Verifying mintcore WASM build (GOOS=js GOARCH=wasm)..."
+	cd internal/mintcore && GOOS=js GOARCH=wasm go build ./...
+	@echo "==> WASM build OK"
 
 lint-md-links:
 	lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments '**/*.md'
