@@ -38,6 +38,29 @@ const (
 	retryMaxBackoff          = 15 * time.Second
 )
 
+// errSymlink is a structured error for symlink-related failures during
+// sanitizeDownload. It wraps the underlying OS error with the symlink path
+// and target so error messages are informative during cleanup reporting.
+// The Error() method is required by the error interface — without it,
+// fmt.Sprintf("%v", err) panics when the error reaches a deferred cleanup
+// handler that formats the error for logging. See #5393.
+type errSymlink struct {
+	Path   string // filesystem path of the symlink
+	Target string // symlink target (empty if unreadable)
+	Err    error  // underlying error (e.g., from os.Remove)
+}
+
+func (e *errSymlink) Error() string {
+	if e.Target != "" {
+		return fmt.Sprintf("symlink %s -> %s: %v", e.Path, e.Target, e.Err)
+	}
+	return fmt.Sprintf("symlink %s: %v", e.Path, e.Err)
+}
+
+func (e *errSymlink) Unwrap() error {
+	return e.Err
+}
+
 func sanitizeDownload(localDir string) error {
 	absLocal, err := filepath.Abs(localDir)
 	if err != nil {
@@ -55,11 +78,17 @@ func sanitizeDownload(localDir string) error {
 		if d.Type()&fs.ModeSymlink != 0 {
 			target, readErr := os.Readlink(path)
 			if readErr != nil {
-				return os.Remove(path)
+				if rmErr := os.Remove(path); rmErr != nil {
+					return &errSymlink{Path: path, Err: rmErr}
+				}
+				return nil
 			}
 			// Absolute targets always point outside the repo root.
 			if filepath.IsAbs(target) {
-				return os.Remove(path)
+				if rmErr := os.Remove(path); rmErr != nil {
+					return &errSymlink{Path: path, Target: target, Err: rmErr}
+				}
+				return nil
 			}
 			// Use EvalSymlinks, not filepath.Clean: Clean is textual and misses
 			// chains where an in-repo dir-symlink is used as a component
@@ -69,10 +98,16 @@ func sanitizeDownload(localDir string) error {
 			rawPath := filepath.Dir(path) + string(filepath.Separator) + target
 			resolved, evalErr := filepath.EvalSymlinks(rawPath)
 			if evalErr != nil {
-				return os.Remove(path)
+				if rmErr := os.Remove(path); rmErr != nil {
+					return &errSymlink{Path: path, Target: target, Err: rmErr}
+				}
+				return nil
 			}
 			if !strings.HasPrefix(resolved+string(filepath.Separator), absLocal+string(filepath.Separator)) {
-				return os.Remove(path)
+				if rmErr := os.Remove(path); rmErr != nil {
+					return &errSymlink{Path: path, Target: target, Err: rmErr}
+				}
+				return nil
 			}
 			return nil
 		}

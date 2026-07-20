@@ -1388,8 +1388,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		// 9d. Extract target repo back to host. SafeDownload removes dangerous
 		// symlinks (absolute or repo-escaping) and .git/hooks/ to prevent sandbox escape.
+		//
+		// When a validation loop is configured, extraction failures are
+		// non-fatal: the output files (extracted in 9b) are independent of
+		// the repo download, so validation can still pass. Making extraction
+		// fatal here would abort the retry loop and prevent subsequent
+		// iterations from producing valid output — the root cause of #5393.
 		if clearErr := forceRemoveAll(hostRepositoryDownloadDir); clearErr != nil {
-			return fmt.Errorf("clearing local repo %s before extraction: %w", hostRepositoryDownloadDir, clearErr)
+			if h.ValidationLoop != nil {
+				printer.StepWarn(fmt.Sprintf("Clearing local repo %s: %v", hostRepositoryDownloadDir, clearErr))
+			} else {
+				return fmt.Errorf("clearing local repo %s before extraction: %w", hostRepositoryDownloadDir, clearErr)
+			}
 		}
 
 		repoExtractStart := time.Now()
@@ -1398,9 +1408,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if es := tx.ParseTranscriptErrors(iterTranscriptDir); len(es) > 0 {
 				tx.EmitTranscriptErrors(os.Stderr, es)
 			}
-			return fmt.Errorf("extracting target repo (iteration %d): %w", iteration, err)
+			if h.ValidationLoop != nil {
+				printer.StepWarn(fmt.Sprintf("Extracting target repo: %v", err))
+			} else {
+				return fmt.Errorf("extracting target repo (iteration %d): %w", iteration, err)
+			}
+		} else {
+			printer.StepDone(fmt.Sprintf("Target repo extracted to %s (%.1fs)", hostRepositoryDownloadDir, time.Since(repoExtractStart).Seconds()))
 		}
-		printer.StepDone(fmt.Sprintf("Target repo extracted to %s (%.1fs)", hostRepositoryDownloadDir, time.Since(repoExtractStart).Seconds()))
 
 		// 9e. Run validation.
 		if h.ValidationLoop == nil {
@@ -1423,6 +1438,30 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail("Validation failed: " + validationFailMessage(valOut, valErr))
 		if iteration < maxIterations {
 			printer.StepInfo(fmt.Sprintf("Will retry (%d iterations remaining)", maxIterations-iteration))
+		}
+	}
+
+	// Post-loop validation sweep: if no iteration passed validation
+	// inline (e.g., because extraction failed on the iteration that
+	// produced valid output), check all completed iterations starting
+	// from the latest. This ensures a successful retry's output is
+	// found even when earlier steps in that iteration failed. See #5393.
+	if h.ValidationLoop != nil && !validationPassed {
+		for i := runCount; i >= 1; i-- {
+			iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", i))
+			valStart := time.Now()
+			printer.StepStart(fmt.Sprintf("Post-loop validation (iteration %d): %s", i, h.ValidationLoop.Script))
+			valCmd := exec.Command(h.ValidationLoop.Script)
+			valCmd.Dir = iterDir
+			valCmd.Env = append(os.Environ(), validationEnv(h, hostRepositoryDownloadDir, runDir)...)
+			valOut, valErr := valCmd.CombinedOutput()
+
+			if valErr == nil {
+				printer.StepDone(fmt.Sprintf("Validation passed (iteration %d): %s (%.1fs)", i, strings.TrimSpace(string(valOut)), time.Since(valStart).Seconds()))
+				validationPassed = true
+				break
+			}
+			printer.StepWarn(fmt.Sprintf("Post-loop validation failed (iteration %d): %s", i, validationFailMessage(valOut, valErr)))
 		}
 	}
 

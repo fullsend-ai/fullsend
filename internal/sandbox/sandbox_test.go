@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -476,6 +477,36 @@ func TestSanitizeDownload_EmptyDir(t *testing.T) {
 	dir := t.TempDir()
 	err := sanitizeDownload(dir)
 	assert.NoError(t, err)
+}
+
+func TestErrSymlink_ErrorMethod(t *testing.T) {
+	// Verify that errSymlink implements error and that fmt.Sprintf does not panic.
+	underlying := fmt.Errorf("permission denied")
+
+	t.Run("with target", func(t *testing.T) {
+		e := &errSymlink{Path: "/repo/bad-link", Target: "/etc/passwd", Err: underlying}
+		msg := e.Error()
+		assert.Contains(t, msg, "/repo/bad-link")
+		assert.Contains(t, msg, "/etc/passwd")
+		assert.Contains(t, msg, "permission denied")
+
+		// fmt.Sprintf must not panic (the original bug from #5393).
+		formatted := fmt.Sprintf("%v", e)
+		assert.NotEmpty(t, formatted)
+	})
+
+	t.Run("without target", func(t *testing.T) {
+		e := &errSymlink{Path: "/repo/unreadable", Err: underlying}
+		msg := e.Error()
+		assert.Contains(t, msg, "/repo/unreadable")
+		assert.Contains(t, msg, "permission denied")
+		assert.NotContains(t, msg, "->")
+	})
+
+	t.Run("unwrap", func(t *testing.T) {
+		e := &errSymlink{Path: "/repo/link", Target: "/tmp", Err: underlying}
+		assert.ErrorIs(t, e, underlying)
+	})
 }
 
 func TestEffectiveReadyTimeout_Default(t *testing.T) {
