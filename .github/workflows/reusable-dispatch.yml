@@ -71,6 +71,12 @@ on:
           secret). Optional — unset leaves export disabled unless the
           endpoint variable alone suffices.
         required: false
+      SSH_SIGNING_KEY:
+        description: >-
+          SSH private key for commit signing. Repos that opt into SSH
+          signing set this as a repo secret; the code agent's
+          gpg.ssh.program wrapper writes it to a temp file at sign time.
+        required: false
 
 jobs:
   route:
@@ -662,6 +668,7 @@ jobs:
           AGENT_PREFIX: CODE_
           CODE_TARGET_REPO_DIR: target-repo
           CODE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          CODE_SSH_SIGNING_KEY: ${{ secrets.SSH_SIGNING_KEY }}
           CODE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
           CODE_ISSUE_NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
         run: bash .github/scripts/setup-agent-env.sh
