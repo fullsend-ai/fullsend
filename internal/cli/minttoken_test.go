@@ -270,7 +270,7 @@ func TestMintTokenCmd_AcceptsJWTFormatToken(t *testing.T) {
 	}
 }
 
-func TestMintTokenPattern(t *testing.T) {
+func TestMintTokenCmd_TokenPatternValidation(t *testing.T) {
 	tests := []struct {
 		name  string
 		token string
