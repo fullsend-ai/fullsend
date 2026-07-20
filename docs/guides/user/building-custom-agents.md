@@ -10,8 +10,9 @@ This guide walks through creating a custom from-scratch agent on a per-repo
 fullsend installation.
 
 Before building from scratch, consider whether extending a default agent would
-meet your needs. You can use `base` inheritance to start from a default agent's
-harness and override only what differs — see
+meet your needs. Start with the
+[escalation ladder](../../agents/topics/escalation-ladder.md) to exhaust
+lighter options first, and see
 [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)
 for the distinction and when each approach makes sense.
 

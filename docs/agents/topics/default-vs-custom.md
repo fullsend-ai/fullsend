@@ -87,6 +87,8 @@ for a stated purpose, that override does not make the agent derived.
 
 ## See also
 
+- [Escalation ladder](escalation-ladder.md) — prove-it path before
+  deriving or replacing a core agent
 - [Agents reference](../) — default agent documentation and extension points
 - [Customizing agents](../../guides/user/customizing-agents.md) — harness
   configuration and layered content resolution

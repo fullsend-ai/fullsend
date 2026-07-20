@@ -566,4 +566,5 @@ When configured with `FALLBACK_MINT_URL`, the standalone mint serves custom role
 - [Customizing Agents with AGENTS.md](customizing-with-agents-md.md) — repo-level instructions for all agents
 - [Customizing agents](customizing-agents.md) — harness configurations and layered content resolution
 - [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md) — when configuration crosses into custom agent territory
+- [Escalation ladder](../../agents/topics/escalation-ladder.md) — prove-it path before deriving or replacing a core agent
 - [Standalone mint](../infrastructure/standalone-mint.md) — custom agent roles and identity
