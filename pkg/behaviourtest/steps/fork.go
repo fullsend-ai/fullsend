@@ -20,6 +20,9 @@ func registerForkSteps(ctx *godog.ScenarioContext, w *world.World) {
 	ctx.Step(`^a commit is pushed to the fork pull request$`, func() error {
 		return whenCommitPushedToForkPR(w)
 	})
+	ctx.Step(`^the fork pull request is labeled "([^"]+)"$`, func(label string) error {
+		return whenForkPullRequestLabeled(w, label)
+	})
 }
 
 // givenFork creates a fork of the enrolled test repository if absent, or
@@ -73,6 +76,17 @@ func whenForkPullRequestOpened(w *world.World) error {
 	w.ForkPRNumber = pr.Number
 	w.ForkPRBranch = branch
 	return nil
+}
+
+// whenForkPullRequestLabeled adds a label to a fork pull request. Fork PRs
+// are opened against the base repo, so the label is applied there.
+func whenForkPullRequestLabeled(w *world.World, label string) error {
+	if w.ForkPRNumber == 0 {
+		return fmt.Errorf("no fork pull request opened")
+	}
+	w.ScenarioStart = time.Now()
+	// Fork PRs are opened against the base repo, so label on the base repo.
+	return w.SCM.AddIssueLabels(context.Background(), w.RepoOwner, w.RepoName, w.ForkPRNumber, label)
 }
 
 // whenCommitPushedToForkPR pushes an additional commit to the head branch

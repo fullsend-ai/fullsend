@@ -118,6 +118,44 @@ func TestWhenCommitPushedToForkPR_CommitError(t *testing.T) {
 	assert.Contains(t, err.Error(), "pushing commit to fork PR")
 }
 
+func TestWhenForkPullRequestLabeled_Success(t *testing.T) {
+	scmDriver := &fakeForkSCM{}
+	w := &world.World{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		ForkPRNumber: 10,
+		SCM:          scmDriver,
+	}
+	err := whenForkPullRequestLabeled(w, "ready-for-fork-ping")
+	require.NoError(t, err)
+	assert.False(t, w.ScenarioStart.IsZero(), "ScenarioStart should be set")
+	require.Len(t, scmDriver.addedLabels, 1)
+	assert.Equal(t, "org", scmDriver.addedLabels[0].owner)
+	assert.Equal(t, "repo", scmDriver.addedLabels[0].repo)
+	assert.Equal(t, 10, scmDriver.addedLabels[0].number)
+	assert.Equal(t, "ready-for-fork-ping", scmDriver.addedLabels[0].label)
+}
+
+func TestWhenForkPullRequestLabeled_NoForkPR(t *testing.T) {
+	w := &world.World{}
+	err := whenForkPullRequestLabeled(w, "some-label")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no fork pull request opened")
+}
+
+func TestWhenForkPullRequestLabeled_Error(t *testing.T) {
+	scmDriver := &fakeForkSCM{addIssueLabelsErr: fmt.Errorf("label failed")}
+	w := &world.World{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		ForkPRNumber: 10,
+		SCM:          scmDriver,
+	}
+	err := whenForkPullRequestLabeled(w, "some-label")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "label failed")
+}
+
 // TestForkSteps_WorldStateTransitions verifies the full fork lifecycle:
 // fork created -> PR opened -> commit pushed, checking world state after each step.
 func TestForkSteps_WorldStateTransitions(t *testing.T) {
@@ -181,6 +219,15 @@ type fakeForkSCM struct {
 	createBranchErr    error
 	commitToForkErr    error
 	createForkPRErr    error
+	addedLabels        []addedLabelRecord
+	addIssueLabelsErr  error
+}
+
+type addedLabelRecord struct {
+	owner  string
+	repo   string
+	number int
+	label  string
 }
 
 func (f *fakeForkSCM) CreateFork(_ context.Context, _, _, _ string) (string, error) {
@@ -213,7 +260,13 @@ func (f *fakeForkSCM) CreateIssue(context.Context, string, string, string, strin
 	return nil, nil
 }
 
-func (f *fakeForkSCM) AddIssueLabels(context.Context, string, string, int, ...string) error {
+func (f *fakeForkSCM) AddIssueLabels(_ context.Context, owner, repo string, number int, labels ...string) error {
+	if f.addIssueLabelsErr != nil {
+		return f.addIssueLabelsErr
+	}
+	for _, l := range labels {
+		f.addedLabels = append(f.addedLabels, addedLabelRecord{owner: owner, repo: repo, number: number, label: l})
+	}
 	return nil
 }
 
