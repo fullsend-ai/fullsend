@@ -53,6 +53,14 @@ func whenForkPullRequestOpened(w *world.World) error {
 	branch := fmt.Sprintf("behaviour-fork-pr-%d", time.Now().UnixNano())
 
 	ctx := context.Background()
+
+	// Create the branch on the fork first — GitHub's Contents API
+	// (used by CommitFileToFork → CreateOrUpdateFileOnBranch) requires
+	// the target branch to already exist.
+	if err := w.SCM.CreateBranch(ctx, w.ForkOwner, w.ForkRepo, branch); err != nil {
+		return fmt.Errorf("creating fork branch: %w", err)
+	}
+
 	msg := fmt.Sprintf("behaviour fork pr %s", branch)
 	if err := w.SCM.CommitFileToFork(ctx, w.ForkOwner, w.ForkRepo, branch, "behaviour/fork-pr.txt", msg, []byte("behaviour fork test\n")); err != nil {
 		return fmt.Errorf("committing to fork branch: %w", err)

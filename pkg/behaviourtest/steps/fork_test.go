@@ -58,6 +58,20 @@ func TestWhenForkPullRequestOpened_RequiresFork(t *testing.T) {
 	assert.Contains(t, err.Error(), "no fork created")
 }
 
+func TestWhenForkPullRequestOpened_CreateBranchError(t *testing.T) {
+	w := &world.World{
+		ForkOwner: "org",
+		ForkRepo:  "repo-fork",
+		RepoOwner: "org",
+		RepoName:  "repo",
+		SCM:       &fakeForkSCM{createBranchErr: fmt.Errorf("branch creation failed")},
+	}
+	err := whenForkPullRequestOpened(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating fork branch")
+	assert.Contains(t, err.Error(), "branch creation failed")
+}
+
 func TestWhenForkPullRequestOpened_CommitError(t *testing.T) {
 	w := &world.World{
 		ForkOwner: "org",
@@ -129,6 +143,7 @@ func TestForkSteps_WorldStateTransitions(t *testing.T) {
 	assert.Equal(t, 42, w.ForkPRNumber)
 	assert.NotEmpty(t, w.ForkPRBranch)
 	assert.False(t, w.ScenarioStart.IsZero())
+	assert.True(t, scmDriver.createBranchCalled, "CreateBranch should have been called before committing")
 	assert.True(t, scmDriver.commitToForkCalled, "CommitFileToFork should have been called")
 	assert.True(t, scmDriver.createForkPRCalled, "CreateForkChangeProposal should have been called")
 
@@ -159,9 +174,11 @@ type fakeForkSCM struct {
 	forkRepo           string
 	prNumber           int
 	createForkCalled   bool
+	createBranchCalled bool
 	commitToForkCalled bool
 	createForkPRCalled bool
 	createForkErr      error
+	createBranchErr    error
 	commitToForkErr    error
 	createForkPRErr    error
 }
@@ -216,7 +233,11 @@ func (f *fakeForkSCM) CommitFile(context.Context, string, string, string, string
 	return nil
 }
 
-func (f *fakeForkSCM) CreateBranch(context.Context, string, string, string) error {
+func (f *fakeForkSCM) CreateBranch(_ context.Context, _, _, _ string) error {
+	f.createBranchCalled = true
+	if f.createBranchErr != nil {
+		return f.createBranchErr
+	}
 	return nil
 }
 
