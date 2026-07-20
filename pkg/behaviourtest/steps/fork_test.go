@@ -83,6 +83,9 @@ func TestWhenForkPullRequestOpened_CommitError(t *testing.T) {
 	err := whenForkPullRequestOpened(w)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "committing to fork branch")
+	// ForkPRBranch must be set even on commit failure so CleanupScenario
+	// can delete the already-created branch.
+	assert.NotEmpty(t, w.ForkPRBranch, "ForkPRBranch should be set after CreateBranch succeeds, even when CommitFileToFork fails")
 }
 
 func TestWhenForkPullRequestOpened_CreatePRError(t *testing.T) {
@@ -96,6 +99,9 @@ func TestWhenForkPullRequestOpened_CreatePRError(t *testing.T) {
 	err := whenForkPullRequestOpened(w)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating fork pull request")
+	// ForkPRBranch must be set even on PR creation failure so
+	// CleanupScenario can delete the already-created branch.
+	assert.NotEmpty(t, w.ForkPRBranch, "ForkPRBranch should be set after CreateBranch succeeds, even when CreateForkChangeProposal fails")
 }
 
 func TestWhenCommitPushedToForkPR_RequiresPR(t *testing.T) {

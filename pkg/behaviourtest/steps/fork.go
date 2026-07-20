@@ -63,6 +63,9 @@ func whenForkPullRequestOpened(w *world.World) error {
 	if err := w.SCM.CreateBranch(ctx, w.ForkOwner, w.ForkRepo, branch); err != nil {
 		return fmt.Errorf("creating fork branch: %w", err)
 	}
+	// Record the branch immediately so CleanupScenario can delete it
+	// even if CommitFileToFork or CreateForkChangeProposal fails below.
+	w.ForkPRBranch = branch
 
 	msg := fmt.Sprintf("behaviour fork pr %s", branch)
 	if err := w.SCM.CommitFileToFork(ctx, w.ForkOwner, w.ForkRepo, branch, "behaviour/fork-pr.txt", msg, []byte("behaviour fork test\n")); err != nil {
@@ -74,7 +77,6 @@ func whenForkPullRequestOpened(w *world.World) error {
 		return fmt.Errorf("creating fork pull request: %w", err)
 	}
 	w.ForkPRNumber = pr.Number
-	w.ForkPRBranch = branch
 	return nil
 }
 
