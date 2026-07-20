@@ -202,6 +202,69 @@ fullsend run code \
   --env-file fullsend-code.env
 ```
 
+### Fix agent
+
+Add to an env file:
+
+```bash
+# fullsend-fix.env
+# The fix agent operates in human-triggered mode when run locally.
+# Provide instructions describing what to fix.
+GH_TOKEN={github-pat}
+PUSH_TOKEN={github-pat}
+PUSH_TOKEN_SOURCE=pat
+PR_NUMBER={pr_number}
+REPO_FULL_NAME={org}/{repo}
+TRIGGER_SOURCE=human
+HUMAN_INSTRUCTION="Refactor NewClient to return an error instead of panicking"
+FIX_ITERATION=0
+```
+
+```bash
+fullsend run fix \
+  --fullsend-dir /tmp/fullsend-agents/ \
+  --target-repo /tmp/target-repo/ \
+  --env-file fullsend-gcp.env \
+  --env-file fullsend-fix.env
+```
+
+### Retro agent
+
+Add to an env file:
+
+```bash
+# fullsend-retro.env
+GH_TOKEN={github-pat}
+REPO_FULL_NAME={org}/{repo}
+ORIGINATING_URL=https://github.com/{org}/{repo}/pull/{pr_number}
+```
+
+```bash
+fullsend run retro \
+  --fullsend-dir /tmp/fullsend-agents/ \
+  --target-repo /tmp/target-repo/ \
+  --env-file fullsend-gcp.env \
+  --env-file fullsend-retro.env
+```
+
+### Prioritize agent
+
+Add to an env file:
+
+```bash
+# fullsend-prioritize.env
+GH_TOKEN={github-pat}
+GITHUB_ISSUE_URL=https://github.com/{org}/{repo}/issues/{issue_num}
+```
+
+```bash
+fullsend run prioritize \
+  --fullsend-dir /tmp/fullsend-agents/ \
+  --target-repo /tmp/target-repo/ \
+  --env-file fullsend-gcp.env \
+  --env-file fullsend-prioritize.env
+```
+
 ### Remote resource flags
 
 When your harness references URL-based skills with transitive dependencies
