@@ -8,6 +8,7 @@ How does an organization build confidence that its autonomous agents are safe to
 - [autonomy-spectrum.md](autonomy-spectrum.md) — autonomy tiers and the decision to auto-merge
 - [operational-observability.md](operational-observability.md) — understanding what agents are doing
 - [cross-run-memory.md](cross-run-memory.md) — learning from prior outcomes
+- [review-autonomy-evidence.md](review-autonomy-evidence.md) — empirical observations from agent vs human review on real PRs
 
 ## The problem
 
