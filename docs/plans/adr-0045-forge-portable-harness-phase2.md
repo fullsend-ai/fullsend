@@ -358,7 +358,7 @@ The `HarnessWrappersLayer` maintains this mapping. A helper function `harnessNam
      - `Agent`, `Model`, `Image`, `Policy` inherited from base
      - `PreScript`, `PostScript` populated (from `forge.github:` after merge)
      - `RunnerEnv` contains both top-level keys (e.g., `FULLSEND_OUTPUT_SCHEMA`) and GitHub keys (e.g., `GH_TOKEN`) after forge resolution
-     - `Skills` contains both base skills and forge skills (concatenated)
+     - `Skills` merged from base and forge with deduplication by basename
      - `Forge` is nil (consumed by ResolveForge)
      - `Base` is empty (consumed by LoadWithBase)
 

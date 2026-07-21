@@ -167,7 +167,7 @@ Migration actions per agent:
 | Custom | Not in upstream scaffold | Move files, register local path in config |
 | Modified | Standard scaffold agent, not in config | Compute `base:` composition harness via `DiffHarness`, register in config |
 
-The diff engine (`internal/harness/diff.go`) computes the minimal child harness that reproduces the customized version when composed with the upstream base. It mirrors `mergeBaseIntoChild` semantics: scalar overrides, slice concatenation extras, map merge deltas, and security fields always included.
+The diff engine (`internal/harness/diff.go`) computes the minimal child harness that reproduces the customized version when composed with the upstream base. It mirrors `mergeBaseIntoChild` semantics: scalar overrides, basename-aware skill overrides (matching `mergeSkills`), slice concatenation extras for plugins/providers, map merge deltas, and security fields always included.
 
 ### Command Decomposition
 

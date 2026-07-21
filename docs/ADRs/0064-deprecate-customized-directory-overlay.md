@@ -37,7 +37,9 @@ customization scenario the overlay handled, with better ergonomics:
 - [ADR 0045](0045-forge-portable-harness-schema.md) added `base:`
   composition for harness files. A thin wrapper inherits an upstream harness
   by URL and overrides only the fields that differ, with proper merge
-  semantics (scalars override, skills concatenate, runner_env merges).
+  semantics (scalars override, skills merge with deduplication by basename
+  per [#5408](https://github.com/fullsend-ai/fullsend/pull/5408), runner_env
+  merges).
 
 - [ADR 0038](0038-universal-harness-access.md) added URL-based references
   for declarative resources (agents, skills, policies, schemas). Resources
@@ -55,7 +57,7 @@ Together these make the `customized/` directory overlay redundant:
 | Override a harness | `base:` composition (ADR 0045) |
 | Override an agent definition | Harness `agent:` field with path or URL (ADR 0038) |
 | Add/remove agents | `agents:` list in config (ADR 0058) |
-| Add custom skills | Harness `skills:` list with paths or URLs (ADR 0038); concatenated via `base:` (ADR 0045) |
+| Add custom skills | Harness `skills:` list with paths or URLs (ADR 0038); merged with deduplication by basename via `base:` (ADR 0045, [#5408](https://github.com/fullsend-ai/fullsend/pull/5408)) |
 | Override policies/schemas | Harness fields with paths or URLs (ADR 0038) |
 | Custom scripts | `pre_script`/`post_script` in harness; inherited from `base:` (ADR 0045) |
 | Custom env vars | `env:` in harness; merged via `base:` (ADR 0045) |
