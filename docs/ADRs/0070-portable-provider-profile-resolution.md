@@ -88,7 +88,7 @@ When a harness declares `base:`, the base YAML is fetched and parsed. The
 - Base entries come first, child entries append
 - Deduplication by profile `id` (from profile YAML) / provider `name` (from provider YAML)
 - Child wins in dedup conflicts
-- Same merge pattern as `skills` in ADR 0045
+- Concatenation with last-writer-wins dedup (note: skills in ADR 0045 now use basename-aware dedup per [#5408](https://github.com/fullsend-ai/fullsend/pull/5408); profiles and providers use simpler id/name dedup at resolution time)
 
 **Phase 2 — Resource resolution (`resolve.go`)**
 

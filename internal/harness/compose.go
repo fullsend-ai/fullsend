@@ -1153,6 +1153,12 @@ func urlIndexPut(workspaceRoot, rawURL, hash string) error {
 // (filepath.Base). This mirrors mergeHostFiles' override-by-dest behavior
 // and allows a child harness to replace a built-in skill by declaring a
 // same-named skill via base: composition (see #5408).
+//
+// Known limitation: if the base slice itself contains two entries with the
+// same basename (e.g., /cache/a/skill-x and /cache/b/skill-x), the second
+// entry silently overwrites the first in baseIndex. In practice this is
+// benign because duplicateDestinationNameError at bootstrap time catches
+// duplicate basenames within a single harness.
 func mergeSkills(base, child []string) []string {
 	baseIndex := make(map[string]int, len(base))
 	result := make([]string, 0, len(base)+len(child))
