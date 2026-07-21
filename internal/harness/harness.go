@@ -413,8 +413,8 @@ func (h *Harness) Validate() error {
 		}
 	}
 	for i, p := range h.Providers {
-		if IsURL(p) {
-			continue // validated by ValidateResourceTypes below
+		if IsURL(p) || filepath.IsAbs(p) || strings.Contains(p, "/") {
+			continue // URL or path — validated by ValidateResourceTypes below
 		}
 		if !validProviderName.MatchString(p) {
 			return fmt.Errorf("providers[%d] name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", i, p)
@@ -836,11 +836,10 @@ func (h *Harness) ValidateResourceTypes() error {
 		}
 	}
 	for i, p := range h.OpenShellProfiles() {
-		if !IsURL(p) {
-			return fmt.Errorf("openshell.profiles[%d] must be a URL (local profiles are not supported)", i)
-		}
-		if _, _, hasHash := ParseIntegrityHash(p); !hasHash {
-			return fmt.Errorf("openshell.profiles[%d] URL must include #sha256=... integrity hash", i)
+		if IsURL(p) {
+			if _, _, hasHash := ParseIntegrityHash(p); !hasHash {
+				return fmt.Errorf("openshell.profiles[%d] URL must include #sha256=... integrity hash", i)
+			}
 		}
 	}
 	for i, p := range h.Providers {
@@ -888,8 +887,10 @@ func (h *Harness) HasURLReferences() bool {
 			return true
 		}
 	}
-	if len(h.OpenShellProfiles()) > 0 { // profiles are always URLs (enforced by ValidateResourceTypes)
-		return true
+	for _, profile := range h.OpenShellProfiles() {
+		if IsURL(profile) {
+			return true
+		}
 	}
 	for _, p := range h.Providers {
 		if IsURL(p) {

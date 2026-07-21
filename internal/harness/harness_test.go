@@ -1711,6 +1711,8 @@ env:
 }
 
 func TestValidateResourceTypes_ProfilesRequireURL(t *testing.T) {
+	// Profiles can now be local paths (resolved from base composition) or URLs with hashes.
+	// This test verifies that local profile paths are accepted.
 	h := &Harness{
 		Agent: "agents/test.md",
 		Role:  "test",
@@ -1719,8 +1721,7 @@ func TestValidateResourceTypes_ProfilesRequireURL(t *testing.T) {
 		},
 	}
 	err := h.ValidateResourceTypes()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "openshell.profiles[0] must be a URL")
+	require.NoError(t, err)
 }
 
 func TestValidateResourceTypes_ProfilesRequireIntegrityHash(t *testing.T) {
