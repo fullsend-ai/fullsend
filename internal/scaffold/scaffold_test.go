@@ -219,9 +219,23 @@ func TestDispatchWorkflowContent(t *testing.T) {
 	// Authorization checks (collaborator permission API using .role_name)
 	assert.Contains(t, s, "is_authorized")
 	assert.Contains(t, s, "has_repo_permission")
-	assert.Contains(t, s, "has_write_permission")
 	assert.Contains(t, s, ".role_name")
 	assert.Contains(t, s, "admin|maintain|write")
+	// Org bot actors bypass the collaborator permission check on both
+	// review dispatch (#5188) and triage dispatch (#2636). Anchored on
+	// the "||" operator (not just the is_org_bot substring) so flipping
+	// it to "&&" — which would silently require org bots to also pass
+	// the collaborator-permission check they're known to fail — fails
+	// these assertions instead of passing CI green.
+	assert.Contains(t, s, "is_org_bot")
+	assert.Regexp(t, `is_org_bot "\$\{ISSUE_USER_LOGIN\}" \|\| is_event_actor_authorized "\$\{ISSUE_USER_LOGIN\}" triage; then`, s)
+	assert.Regexp(t, `is_org_bot "\$\{EVENT_SENDER_LOGIN\}" \|\| is_event_actor_authorized "\$\{EVENT_SENDER_LOGIN\}" triage; then`, s)
+	assert.Regexp(t, `is_org_bot "\$\{PR_USER_LOGIN\}" \|\| is_event_actor_authorized "\$\{PR_USER_LOGIN\}" triage; then`, s)
+	// Third bypass site: pull_request_review -> fix auto-dispatch must
+	// require specifically the review bot, not any fullsend agent bot.
+	// Regression test for reverting to the old single-identity
+	// REVIEW_USER_LOGIN == "${ORG_NAME}-review[bot]" check.
+	assert.Regexp(t, `is_org_bot "\$\{REVIEW_USER_LOGIN\}" review; then`, s)
 	// Observation stages accept triage; mutation stages stay write+ (#5223)
 	assert.Contains(t, s, `is_authorized triage`)
 	assert.Regexp(t, `is_authorized; then\s*\n\s+STAGE="code"`, s)

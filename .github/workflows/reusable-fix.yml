@@ -349,9 +349,12 @@ jobs:
           ORG_NAME: ${{ github.repository_owner }}
         run: |
           REVIEW_FILE="${GITHUB_WORKSPACE}/review-body.txt"
-          REVIEW_BOT="${ORG_NAME}-review[bot]"
+          # Same two identities as is_org_bot (#5188, #2636, ADR 0054): the
+          # shared fullsend-ai-review[bot] App, or a self-managed org's own
+          # exact ${ORG_NAME}-review[bot]. jq can't call the bash helper, so
+          # both exact logins are inlined here directly.
           gh api "repos/${SOURCE_REPO}/pulls/${PR_NUM}/reviews" \
-            --jq "[.[] | select(.state == \"CHANGES_REQUESTED\" and .user.login == \"${REVIEW_BOT}\")] | last | .body // \"\"" \
+            --jq "[.[] | select(.state == \"CHANGES_REQUESTED\" and (.user.login == \"fullsend-ai-review[bot]\" or .user.login == \"${ORG_NAME}-review[bot]\"))] | last | .body // \"\"" \
             > "${REVIEW_FILE}" 2>/dev/null || echo "" > "${REVIEW_FILE}"
           BYTE_COUNT="$(wc -c < "${REVIEW_FILE}")"
           echo "Pre-fetched review body: ${BYTE_COUNT} bytes"

@@ -432,6 +432,141 @@ func TestReusableDispatchWorkflowContent(t *testing.T) {
 	s := string(content)
 	assert.Regexp(t, `(?s)/fs-review\)\s*\n\s+if \[\[ "\$\{ISSUE_IS_PR\}"`, s)
 	assert.Regexp(t, `(?s)ready-for-review"\s*\]\];\s*then\s*\n\s+if \[\[ "\$\{ISSUE_IS_PR\}"`, s)
+	// Org bot actors bypass the collaborator permission check (#5188, #2636).
+	// Anchored on the "||" operator (not just the is_org_bot substring) so
+	// flipping it to "&&" — which would silently require org bots to also
+	// pass the collaborator-permission check they're known to fail — fails
+	// these assertions instead of passing CI green.
+	assert.Contains(t, s, "is_org_bot")
+	assert.Regexp(t, `is_org_bot "\$\{ISSUE_USER_LOGIN\}" \|\| is_event_actor_authorized "\$\{ISSUE_USER_LOGIN\}" triage; then`, s)
+	assert.Regexp(t, `is_org_bot "\$\{EVENT_SENDER_LOGIN\}" \|\| is_event_actor_authorized "\$\{EVENT_SENDER_LOGIN\}" triage; then`, s)
+	assert.Regexp(t, `is_org_bot "\$\{PR_USER_LOGIN\}" \|\| is_event_actor_authorized "\$\{PR_USER_LOGIN\}" triage; then`, s)
+	// Third bypass site: pull_request_review -> fix auto-dispatch must
+	// require specifically the review bot, not any fullsend agent bot.
+	// Regression test for reverting to the old single-identity
+	// REVIEW_USER_LOGIN == "${ORG_NAME}-review[bot]" check.
+	assert.Regexp(t, `is_org_bot "\$\{REVIEW_USER_LOGIN\}" review; then`, s)
+	// The fix job's own "Pre-fetch review body" step (#5188, #2636) must
+	// also match both review-bot identities — see reviewBotJQFilter.
+	assert.Contains(t, s, reviewBotJQFilter)
+}
+
+// reviewBotJQFilter is the dual-identity jq select filter for the shared
+// vendor App and self-managed-org review bot, hand-duplicated in
+// reusable-fix.yml and reusable-dispatch.yml's "Pre-fetch review body"
+// steps because jq can't call the bash is_org_bot helper (#5188, #2636).
+const reviewBotJQFilter = `.user.login == \"fullsend-ai-review[bot]\" or .user.login == \"${ORG_NAME}-review[bot]\"`
+
+// TestReusableFixWorkflowContent validates the "Pre-fetch review body" step
+// in reusable-fix.yml checks both review-bot identities. This step had zero
+// dedicated test coverage before #5188/#2636 despite its near-identical
+// sibling in reusable-dispatch.yml being covered by
+// TestReusableDispatchWorkflowContent — a single-identity regression here
+// would silently make the fix agent treat every shared-App review as "no
+// prior review", with no test catching it.
+func TestReusableFixWorkflowContent(t *testing.T) {
+	content := loadRepoFile(".github/workflows/reusable-fix.yml")(t)
+	s := string(content)
+	assert.Contains(t, s, reviewBotJQFilter,
+		"reusable-fix.yml: Pre-fetch review body step must match both review-bot identities")
+}
+
+// TestIsOrgBotConstantsStayInSync guards against the three hand-copied
+// is_org_bot implementations (dispatch-route-helpers.sh, reusable-dispatch.yml,
+// and the scaffold dispatch.yml) silently drifting apart. Full byte-equality
+// isn't feasible — dispatch.yml intentionally uses a compressed single-line
+// style to stay under its workflow-size cap while the other two use an
+// expanded style — but the security-relevant constants (the role list and
+// the two identity match patterns) must be identical everywhere: a change
+// applied to only one or two copies would leave dispatch-route-helpers-test.sh
+// green while production silently diverges from what's tested.
+func TestIsOrgBotConstantsStayInSync(t *testing.T) {
+	referenceScript, err := FullsendRepoFile("scripts/dispatch-route-helpers.sh")
+	require.NoError(t, err)
+	scaffoldDispatch, err := FullsendRepoFile(".github/workflows/dispatch.yml")
+	require.NoError(t, err)
+	reusableDispatch := loadRepoFile(".github/workflows/reusable-dispatch.yml")(t)
+
+	sources := map[string]string{
+		"dispatch-route-helpers.sh": string(referenceScript),
+		"dispatch.yml":              string(scaffoldDispatch),
+		"reusable-dispatch.yml":     string(reusableDispatch),
+	}
+
+	const rolesConst = `FULLSEND_AGENT_ROLES="coder review triage retro prioritize"`
+	for name, content := range sources {
+		assert.Contains(t, content, rolesConst,
+			"%s: FULLSEND_AGENT_ROLES must match the other two copies exactly", name)
+	}
+
+	// Both identity match patterns must appear in all three copies, in
+	// whichever quoting style that source uses (compressed single-line
+	// forms use double-quoted brace expansion the same as the expanded
+	// forms, so a single pattern per identity covers both styles).
+	identityPatterns := []string{
+		`"fullsend-ai-${role}[bot]"`,
+		`"${ORG_NAME}-${role}[bot]"`,
+	}
+	for name, content := range sources {
+		for _, pattern := range identityPatterns {
+			assert.Contains(t, content, pattern,
+				"%s: missing is_org_bot identity pattern %q", name, pattern)
+		}
+	}
+
+	// The want_role guard must reject non-matching roles ("!=") — flipping
+	// it to "==" (an independent copy/paste slip that wouldn't touch the
+	// role list or identity patterns above) would make the optional
+	// role filter match every role EXCEPT the one requested, silently
+	// inverting `is_org_bot "${REVIEW_USER_LOGIN}" review`'s meaning at
+	// the pull_request_review -> fix gate.
+	const wantRoleGuard = `"${role}" != "${want_role}"`
+	for name, content := range sources {
+		assert.Contains(t, content, wantRoleGuard,
+			"%s: is_org_bot's want_role guard must reject non-matching roles, not accept them", name)
+	}
+}
+
+// TestReviewBotIdentitiesStayInSync guards against the two hand-duplicated
+// review-bot login literals (`fullsend-ai-review[bot]` and
+// `${ORG_NAME}-review[bot]`) drifting apart across the five places they're
+// checked: the three is_org_bot copies covered above (as an authorization
+// gate), plus the "Pre-fetch review body" jq filters in reusable-fix.yml
+// and reusable-dispatch.yml, plus pre-fetch-prior-review.sh — none of which
+// can call the shared is_org_bot helper because jq can't invoke bash
+// functions. A change to the vendor App slug or role name could update the
+// three is_org_bot copies (caught above) while silently leaving these two
+// jq-based lookups stale, reintroducing the single-identity bug fixed by
+// #5188/#2636 in exactly the places that fetch review context for the fix
+// agent's prompt rather than for dispatch authorization.
+func TestReviewBotIdentitiesStayInSync(t *testing.T) {
+	reusableFix := loadRepoFile(".github/workflows/reusable-fix.yml")(t)
+	reusableDispatch := loadRepoFile(".github/workflows/reusable-dispatch.yml")(t)
+	preFetchPriorReview, err := FullsendRepoFile("scripts/pre-fetch-prior-review.sh")
+	require.NoError(t, err)
+
+	sources := map[string]string{
+		"reusable-fix.yml":          string(reusableFix),
+		"reusable-dispatch.yml":     string(reusableDispatch),
+		"pre-fetch-prior-review.sh": string(preFetchPriorReview),
+	}
+	for name, content := range sources {
+		assert.Contains(t, content, "fullsend-ai-review[bot]",
+			"%s: missing shared vendor-App review bot identity", name)
+		assert.Contains(t, content, `${ORG_NAME}-review[bot]`,
+			"%s: missing self-managed-org review bot identity", name)
+	}
+
+	// Bare identity-literal presence isn't enough for pre-fetch-prior-review.sh:
+	// unlike the other two sources (guarded by the full "or"-joined
+	// reviewBotJQFilter literal in TestReusableFixWorkflowContent /
+	// TestReusableDispatchWorkflowContent), this file passes both identities
+	// to jq via separate --arg bindings, so the two Contains checks above
+	// would keep passing even if the filter's "or" were mutated to an
+	// impossible-to-satisfy "and". Anchor the actual boolean-joined
+	// comparison so that mutation is caught here too.
+	assert.Contains(t, string(preFetchPriorReview), `.user.login == $bot1 or .user.login == $bot2`,
+		"pre-fetch-prior-review.sh: must match either review-bot identity, not require both")
 }
 
 // TestDispatchPerStageAuthorization ensures triage-role users can trigger

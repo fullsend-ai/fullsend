@@ -128,7 +128,7 @@ jobs:
           # Collaborator role_name vs min (write|triage). See #5223 / ADR 0054.
           # API resolves org membership regardless of visibility (gh-aw-mcpg#2862).
           has_repo_permission() {
-            local username="${1:-}" min="${2:-write}" role api_err
+            local username="${1:-}" min="${2:-write}" role api_err sanitized_err
             [[ -z "${username}" ]] && return 1
             api_err=$(mktemp) || {
               echo "::warning::Failed to create temp file for permission check of ${username}" >&2
@@ -136,7 +136,8 @@ jobs:
             }
             role=$(gh api "repos/${GITHUB_REPOSITORY}/collaborators/${username}/permission" \
               --jq '.role_name' 2>"${api_err}") || {
-              echo "::warning::Permission API call failed for ${username}: $(cat "${api_err}")" >&2
+              sanitized_err=$(tr '\n' ' ' < "${api_err}" | sed 's/::/: /g')
+              echo "::warning::Permission API call failed for ${username}: ${sanitized_err}" >&2
               rm -f "${api_err}"
               return 1
             }
@@ -148,25 +149,44 @@ jobs:
             esac
           }
 
-          has_write_permission() { has_repo_permission "${1:-}" write; }
-
           # Slash-command auth; optional $1 = write|triage (default write).
-          is_authorized() {
-            has_repo_permission "${COMMENT_USER_LOGIN}" "${1:-write}"
-          }
+          is_authorized() { has_repo_permission "${COMMENT_USER_LOGIN:-}" "${1:-write}"; }
 
           # Event-actor auth; $1=user, optional $2 = write|triage (default write).
-          is_event_actor_authorized() {
-            has_repo_permission "${1:-}" "${2:-write}"
-          }
+          is_event_actor_authorized() { has_repo_permission "${1:-}" "${2:-write}"; }
 
-          is_issue_author() {
-            [[ "${COMMENT_USER_LOGIN}" == "${ISSUE_USER_LOGIN}" ]]
+          is_issue_author() { [[ "${COMMENT_USER_LOGIN:-}" == "${ISSUE_USER_LOGIN:-}" ]]; }
+
+          FULLSEND_AGENT_ROLES="coder review triage retro prioritize"
+
+          # fullsend's own agent bots bypass the collaborator permission API
+          # (#5188, #2636). Two exact-match trust paths, never a wildcard:
+          #   1. Shared, vendor-owned fullsend-ai-<role>[bot] Apps — the
+          #      default deployment model (ADR 0029/0059/0068); every
+          #      adopting org installs the same public Apps regardless of
+          #      its own org name.
+          #   2. A self-managed org's own exact ${ORG_NAME}-<role>[bot]
+          #      identity (ADR 0029/0033), for orgs running private
+          #      per-role Apps named after themselves.
+          is_org_bot() {
+            local username="${1:-}" want_role="${2:-}" role
+            [[ -z "${username}" ]] && return 1
+            for role in ${FULLSEND_AGENT_ROLES}; do
+              [[ -n "${want_role}" && "${role}" != "${want_role}" ]] && continue
+              [[ "${username}" == "fullsend-ai-${role}[bot]" ]] && return 0
+            done
+            if [[ -n "${ORG_NAME:-}" ]]; then
+              for role in ${FULLSEND_AGENT_ROLES}; do
+                [[ -n "${want_role}" && "${role}" != "${want_role}" ]] && continue
+                [[ "${username}" == "${ORG_NAME}-${role}[bot]" ]] && return 0
+              done
+            fi
+            return 1
           }
 
           has_label() {
             local needle="$1"
-            local csv="${2:-${ISSUE_LABELS}}"
+            local csv="${2:-${ISSUE_LABELS:-}}"
             IFS=',' read -ra labels <<< "${csv}"
             for l in "${labels[@]}"; do
               [[ "$l" == "$needle" ]] && return 0
@@ -243,11 +263,11 @@ jobs:
 
             issues)
               if [[ "${EVENT_ACTION}" == "opened" ]]; then
-                if is_event_actor_authorized "${ISSUE_USER_LOGIN}" triage; then
+                if is_org_bot "${ISSUE_USER_LOGIN}" || is_event_actor_authorized "${ISSUE_USER_LOGIN}" triage; then
                   STAGE="triage"
                 fi
               elif [[ "${EVENT_ACTION}" == "edited" ]]; then
-                if is_event_actor_authorized "${EVENT_SENDER_LOGIN}" triage; then
+                if is_org_bot "${EVENT_SENDER_LOGIN}" || is_event_actor_authorized "${EVENT_SENDER_LOGIN}" triage; then
                   STAGE="triage"
                 fi
               elif [[ "${EVENT_ACTION}" == "labeled" ]]; then
@@ -255,6 +275,9 @@ jobs:
                   STAGE="triage"
                 elif [[ "${TRIGGERING_LABEL}" == "ready-to-code" ]]; then
                   # Mutation stage: write+ labeler, or bots (agent handoff).
+                  # Broad [bot]$ here (not exact-match is_org_bot) because
+                  # labeling already requires write access — the request was
+                  # already authorized before this bot-to-bot continuation.
                   if [[ "${EVENT_SENDER_LOGIN}" =~ \[bot\]$ ]] || is_event_actor_authorized "${EVENT_SENDER_LOGIN}"; then
                     STAGE="code"
                   fi
@@ -269,7 +292,7 @@ jobs:
             pull_request_target)
               case "${EVENT_ACTION}" in
                 opened|synchronize|ready_for_review)
-                  if is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
+                  if is_org_bot "${PR_USER_LOGIN}" || is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
                     STAGE="review"
                   fi
                   ;;
@@ -288,8 +311,7 @@ jobs:
 
             pull_request_review)
               if [[ "${EVENT_ACTION}" == "submitted" && "${REVIEW_STATE}" == "changes_requested" ]]; then
-                REVIEW_BOT="${ORG_NAME}-review[bot]"
-                if [[ "${REVIEW_USER_LOGIN}" == "${REVIEW_BOT}" ]]; then
+                if is_org_bot "${REVIEW_USER_LOGIN}" review; then
                   # Human PRs need fullsend-fix + write+ author (not triage-only).
                   if [[ -n "${PR_HEAD_REPO}" && -n "${PR_BASE_REPO}" ]]; then
                     if [[ "${PR_HEAD_REPO}" == "${PR_BASE_REPO}" ]]; then
@@ -1085,9 +1107,12 @@ jobs:
           ORG_NAME: ${{ github.repository_owner }}
         run: |
           REVIEW_FILE="${GITHUB_WORKSPACE}/review-body.txt"
-          REVIEW_BOT="${ORG_NAME}-review[bot]"
+          # Same two identities as is_org_bot (#5188, #2636, ADR 0054): the
+          # shared fullsend-ai-review[bot] App, or a self-managed org's own
+          # exact ${ORG_NAME}-review[bot]. jq can't call the bash helper, so
+          # both exact logins are inlined here directly.
           gh api "repos/${SOURCE_REPO}/pulls/${PR_NUM}/reviews" \
-            --jq "[.[] | select(.state == \"CHANGES_REQUESTED\" and .user.login == \"${REVIEW_BOT}\")] | last | .body // \"\"" \
+            --jq "[.[] | select(.state == \"CHANGES_REQUESTED\" and (.user.login == \"fullsend-ai-review[bot]\" or .user.login == \"${ORG_NAME}-review[bot]\"))] | last | .body // \"\"" \
             > "${REVIEW_FILE}" 2>/dev/null || echo "" > "${REVIEW_FILE}"
           BYTE_COUNT="$(wc -c < "${REVIEW_FILE}")"
           echo "Pre-fetched review body: ${BYTE_COUNT} bytes"

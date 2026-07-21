@@ -51,16 +51,19 @@ MOCKEOF
 }
 
 # make_comment_json builds the JSON that gh api would return after
-# jq filtering. The body field is set to $1.
+# jq filtering. The body field is set to $1; the comment author login
+# defaults to the self-managed org identity but can be overridden by $2
+# (e.g. to test the shared fullsend-ai-review[bot] identity).
 make_comment_json() {
   local body="$1"
+  local login="${2:-test-org-review[bot]}"
   # Escape the body for JSON embedding.
   local escaped_body
   escaped_body="$(printf '%s' "${body}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
   cat <<ENDJSON
 {
   "id": 12345,
-  "user": {"login": "test-org-review[bot]"},
+  "user": {"login": "${login}"},
   "body": ${escaped_body},
   "performed_via_github_app": {"client_id": "Iv1.abc123"}
 }
@@ -137,6 +140,21 @@ Some review content here."
 run_test "body-with-valid-sha" \
   "$(make_comment_json "${BODY_WITH_SHA}")" \
   "abc1234" \
+  0
+
+# 2b. Prior review authored by the shared fullsend-ai-review[bot] App
+#    (default deployment model) rather than the self-managed
+#    ${ORG_NAME}-review[bot] identity — regression test for #5188/#2636's
+#    root cause recurring here: the bot-login filter must match both.
+run_test "body-from-shared-app-bot-matches" \
+  "$(make_comment_json "${BODY_WITH_SHA}" "fullsend-ai-review[bot]")" \
+  "abc1234" \
+  0
+
+# 2c. A comment from an unrelated bot must NOT match either identity.
+run_test "body-from-unrelated-bot-ignored" \
+  "$(make_comment_json "${BODY_WITH_SHA}" "other-org-review[bot]")" \
+  "" \
   0
 
 # 3. Prior review body WITHOUT Head SHA line — the bug this fixes.

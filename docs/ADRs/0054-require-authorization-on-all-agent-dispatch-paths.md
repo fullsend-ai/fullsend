@@ -70,9 +70,10 @@ The check applies universally — to slash commands and to automatic
 event triggers where the acting user may be external.
 
 Both `is_authorized` (slash commands) and `is_event_actor_authorized`
-(event triggers) delegate to a shared `has_write_permission` helper that
-calls the collaborator permission API. This ensures consistent behavior
-across all paths.
+(event triggers) delegate to a shared `has_write_permission` helper
+(renamed `has_repo_permission` — see note below) that calls the
+collaborator permission API. This ensures consistent behavior across
+all paths.
 
 ### Slash commands
 
@@ -102,6 +103,7 @@ regardless of membership visibility.
 The implementation uses a three-function layering:
 
 - `has_write_permission(username)` — calls the API, checks `.role_name`
+  (renamed `has_repo_permission` — see note below)
 - `is_authorized()` — delegates to `has_write_permission` for the comment author
 - `is_event_actor_authorized(username)` — delegates for event actors
 
@@ -176,8 +178,9 @@ unauthorized users.
 
 If a future per-repo configuration system needs to customize
 authorization rules (e.g., allowing `triage` or `read` permission), it
-should do so by extending the `has_write_permission` function's allowed
-permission list, not by bypassing the check.
+should do so by extending the `has_write_permission` function's
+(renamed `has_repo_permission` — see note below) allowed permission
+list, not by bypassing the check.
 
 > **Note (2026-07-17, [#5223](https://github.com/fullsend-ai/fullsend/issues/5223)):**
 > Observation stages (triage, review) now accept the GitHub `triage`
@@ -188,6 +191,101 @@ permission list, not by bypassing the check.
 > `pull_request_target.closed` → retro stays intentionally ungated so
 > any closer can trigger read-only lifecycle accounting. This follows
 > the extension path above rather than bypassing the check.
+
+> **Note (2026-07-21, [#5188](https://github.com/fullsend-ai/fullsend/issues/5188), [#2636](https://github.com/fullsend-ai/fullsend/issues/2636)):**
+> `has_write_permission` referenced above was folded into the
+> parameterized `has_repo_permission` helper introduced by #5223 and no
+> longer exists as a separate function.
+>
+> GitHub App bot accounts (e.g. the org's own code, review, triage, and
+> retro agents) are not resolvable via the collaborator permission API —
+> `role_name` comes back empty even though the bot has legitimate
+> push/comment access via its app installation grant. This silently
+> broke two independent paths: `pull_request_target.opened/synchronize/
+> ready_for_review` (PRs authored by the org's own agents never received
+> automatic review, including after every fix-agent iteration — #5188),
+> and `issues.opened/edited` (issues filed or edited by the org's own
+> agents, e.g. the retro agent's proposal issues, never received
+> automatic triage — #2636, previously worked around by having the
+> filer also apply a routing label rather than fixing the actor check).
+>
+> Both paths now also accept a recognized fullsend agent bot actor
+> (`is_org_bot`) as authorized, bypassing the collaborator permission API
+> check. This follows the extension path above rather than bypassing the
+> check, via two exact-match trust paths — never a prefix/suffix
+> wildcard:
+>
+> 1. `fullsend-ai-<role>[bot]` (coder, review, triage, retro,
+>    prioritize), unconditionally, regardless of the installing repo's
+>    own org name. fullsend's default deployment model is a shared,
+>    vendor-owned App per role (ADR 0029/0059/0068) — every adopting org
+>    installs the *same* public Apps, so the bot identity is fixed and
+>    does not vary with `ORG_NAME` (`github.repository_owner`). An
+>    earlier version of this check instead matched `${ORG_NAME}-*[bot]`,
+>    which only worked by coincidence on fullsend-ai/fullsend itself
+>    (where org name and vendor-App prefix happen to collide) and was a
+>    no-op for every other adopting org.
+> 2. `${ORG_NAME}-<role>[bot]`, for self-managed orgs that run their own
+>    private per-role Apps named after themselves (ADR 0029/0033) instead
+>    of the shared vendor Apps.
+>
+> Both paths match one of a fixed, known set of role suffixes — never a
+> bare prefix wildcard — so a third party can't forge the bypass by
+> registering a GitHub App named `${ORG_NAME}-<anything>[bot]` or
+> `fullsend-ai-<anything>[bot]`. `is_org_bot` also takes an optional
+> second argument to restrict the match to one specific role (e.g.
+> `is_org_bot "${REVIEW_USER_LOGIN}" review`) — used by the
+> `pull_request_review` → fix auto-dispatch gate, which previously
+> checked `REVIEW_USER_LOGIN == "${ORG_NAME}-review[bot]"` directly and
+> had the identical ORG_NAME-vs-shared-App bug as #5188/#2636 (also only
+> "worked" by coincidence on fullsend-ai/fullsend itself). The same
+> single-identity `REVIEW_BOT="${ORG_NAME}-review[bot]"` mistake also
+> existed in three more places that fetch a prior review comment/review
+> by login for context rather than for dispatch authorization — the
+> `reusable-dispatch.yml` and `reusable-fix.yml` "Pre-fetch review body"
+> steps, and `pre-fetch-prior-review.sh` — all now check both identities
+> (`fullsend-ai-review[bot]` and `${ORG_NAME}-review[bot]`) directly,
+> since `jq` can't call the bash `is_org_bot` helper. The
+> separate `PR_USER_LOGIN =~ \[bot\]$` check further down that same gate
+> is untouched — it decides whether to auto-fix without requiring an
+> explicit `fullsend-fix` label, and stays intentionally broad. The
+> `issues.labeled` `ready-to-code` path is also unaffected by this note
+> — it already allows a generic `[bot]$` actor for agent handoff, per
+> the table above, which is a deliberate, broader trust decision for
+> that specific bot-to-bot continuation path (see #2679): a request
+> already reached that point via an authorized trigger, so trusting any
+> bot to continue the chain doesn't extend trust to a new actor.
+>
+> This is a platform-constraint exception, not a relaxation of this
+> ADR's core principle: authorization here still derives from
+> repository permissions (either fullsend's own vendor-App identity or
+> the installing org's own exact identity), not an arbitrary identity
+> claim. The `pull_request_target`/`issues.opened`/`issues.edited` uses
+> reach only read-only observation stages (triage, review); the
+> `pull_request_review` use reaches the mutation `fix` stage, but only as
+> a continuation of a request already authorized earlier in the same
+> chain — a genuine `changes_requested` verdict from fullsend's own
+> review bot — not a fresh grant of trust to a new actor, consistent
+> with the `ready-to-code` reasoning above.
+>
+> **Note (2026-07-22):** the "not a fresh grant of trust" framing above
+> assumes the `changes_requested` review genuinely came from fullsend's
+> own review bot. That assumption is qualitatively weaker on the
+> self-managed path than on the shared-vendor-App path: if a third party
+> squats `${ORG_NAME}-review[bot]` at a self-managed org (the residual
+> risk this ADR already accepts elsewhere), `is_org_bot` still passes —
+> by design, since the identity itself is what's untrustworthy in that
+> scenario — and the same login match is what the "Pre-fetch review
+> body" steps in `reusable-fix.yml`/`reusable-dispatch.yml` use to pull
+> that review's body text into the autonomous fix agent's prompt. Unlike
+> the `ready-to-code` bot-to-bot continuation (which only ever advances
+> a *stage*, not attacker-controlled *content*), this path feeds
+> attacker-authored text into a privileged, auto-pushing agent — a
+> prompt-injection channel, not benign observation. Pinning this
+> specific check to `performed_via_github_app.id` (the numeric,
+> non-reusable app ID) instead of login string would close this gap, but
+> is out of scope for #5188/#2636 — tracked as
+> [#5463](https://github.com/fullsend-ai/fullsend/issues/5463).
 
 ## Consequences
 
