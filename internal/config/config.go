@@ -147,8 +147,10 @@ type CreateIssuesConfig struct {
 	AllowTargets AllowTargets `yaml:"allow_targets"`
 }
 
-// OrgConfig is the top-level configuration for a fullsend organization.
-type OrgConfig struct {
+// orgConfig is the top-level configuration for a fullsend organization.
+// Consumer packages should use the OrgConfigReader or OrgConfigWriter
+// interfaces rather than referencing this type directly.
+type orgConfig struct {
 	Version                string                `yaml:"version"`
 	KillSwitch             bool                  `yaml:"kill_switch,omitempty"`
 	Dispatch               DispatchConfig        `yaml:"dispatch"`
@@ -251,8 +253,9 @@ func DefaultAgentEntries(harnessNames []string, commitSHA string, builder AgentE
 	return entries, nil
 }
 
-// NewOrgConfig creates a new OrgConfig with sensible defaults.
-func NewOrgConfig(allRepos, enabledRepos, roles []string, inferenceProvider, org string) *OrgConfig {
+// NewOrgConfig creates a new orgConfig with sensible defaults.
+// The returned OrgConfigWriter provides full read-write access.
+func NewOrgConfig(allRepos, enabledRepos, roles []string, inferenceProvider, org string) OrgConfigWriter {
 	repos := make(map[string]RepoConfig, len(allRepos))
 	for _, r := range allRepos {
 		repos[r] = RepoConfig{
@@ -260,7 +263,7 @@ func NewOrgConfig(allRepos, enabledRepos, roles []string, inferenceProvider, org
 		}
 	}
 
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version: "1",
 		Dispatch: DispatchConfig{
 			Platform: "github-actions",
@@ -288,9 +291,19 @@ func NewOrgConfig(allRepos, enabledRepos, roles []string, inferenceProvider, org
 	return cfg
 }
 
-// ParseOrgConfig parses YAML bytes into an OrgConfig.
-func ParseOrgConfig(data []byte) (*OrgConfig, error) {
-	var cfg OrgConfig
+// ParseOrgConfig parses YAML bytes into an OrgConfigReader.
+func ParseOrgConfig(data []byte) (OrgConfigReader, error) {
+	var cfg orgConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing org config: %w", err)
+	}
+	return &cfg, nil
+}
+
+// ParseOrgConfigWriter parses YAML bytes into an OrgConfigWriter
+// for callers that need to modify the config after parsing.
+func ParseOrgConfigWriter(data []byte) (OrgConfigWriter, error) {
+	var cfg orgConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing org config: %w", err)
 	}
@@ -303,8 +316,8 @@ const configHeader = `# fullsend organization configuration
 # This file is managed by fullsend. Manual edits may be overwritten.
 `
 
-// Marshal serializes the OrgConfig to YAML with a descriptive header comment.
-func (c *OrgConfig) Marshal() ([]byte, error) {
+// Marshal serializes the orgConfig to YAML with a descriptive header comment.
+func (c *orgConfig) Marshal() ([]byte, error) {
 	body, err := yaml.Marshal(c)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling org config: %w", err)
@@ -312,8 +325,8 @@ func (c *OrgConfig) Marshal() ([]byte, error) {
 	return []byte(configHeader + string(body)), nil
 }
 
-// Validate checks the OrgConfig for structural correctness.
-func (c *OrgConfig) Validate() error {
+// Validate checks the orgConfig for structural correctness.
+func (c *orgConfig) Validate() error {
 	if c.Version != "1" {
 		return fmt.Errorf("unsupported version %q: must be \"1\"", c.Version)
 	}
@@ -473,7 +486,7 @@ func validateStatusNotifications(cfg *StatusNotificationConfig) error {
 }
 
 // EnabledRepos returns a sorted list of repo names where Enabled is true.
-func (c *OrgConfig) EnabledRepos() []string {
+func (c *orgConfig) EnabledRepos() []string {
 	var enabled []string
 	for name, rc := range c.Repos {
 		if rc.Enabled {
@@ -485,7 +498,7 @@ func (c *OrgConfig) EnabledRepos() []string {
 }
 
 // DisabledRepos returns a sorted list of repo names where Enabled is false.
-func (c *OrgConfig) DisabledRepos() []string {
+func (c *orgConfig) DisabledRepos() []string {
 	var disabled []string
 	for name, rc := range c.Repos {
 		if !rc.Enabled {
@@ -497,13 +510,15 @@ func (c *OrgConfig) DisabledRepos() []string {
 }
 
 // DefaultRoles returns the default roles configured for the organization.
-func (c *OrgConfig) DefaultRoles() []string {
+func (c *orgConfig) DefaultRoles() []string {
 	return c.Defaults.Roles
 }
 
-// PerRepoConfig holds configuration for per-repo installation mode.
+// perRepoConfig holds configuration for per-repo installation mode.
 // Stored in .fullsend/config.yaml within the target repository.
-type PerRepoConfig struct {
+// Consumer packages should use the PerRepoConfigReader or ConfigWriter
+// interfaces rather than referencing this type directly.
+type perRepoConfig struct {
 	Version                string              `yaml:"version"`
 	KillSwitch             bool                `yaml:"kill_switch,omitempty"`
 	Runtime                string              `yaml:"runtime,omitempty"`
@@ -520,12 +535,15 @@ const perRepoConfigHeader = `# fullsend per-repo configuration
 # See ADR 0033 for details.
 `
 
-// NewPerRepoConfig creates a new PerRepoConfig with the given roles.
-func NewPerRepoConfig(roles []string, targetRepo string) *PerRepoConfig {
+// NewPerRepoConfig creates a new perRepoConfig with the given roles.
+// The returned ConfigWriter provides read-write access to shared config
+// fields; use PerRepoConfigReader type assertion for per-repo-specific
+// methods.
+func NewPerRepoConfig(roles []string, targetRepo string) PerRepoConfigWriter {
 	if roles == nil {
 		roles = DefaultAgentRoles()
 	}
-	cfg := &PerRepoConfig{
+	cfg := &perRepoConfig{
 		Version:                "1",
 		Roles:                  roles,
 		AllowedRemoteResources: DefaultAllowedRemoteResources(),
@@ -540,24 +558,19 @@ func NewPerRepoConfig(roles []string, targetRepo string) *PerRepoConfig {
 	return cfg
 }
 
-// OrgConfigFromPerRepo adapts a PerRepoConfig into an OrgConfig so callers
-// that expect OrgConfig can work uniformly with both config formats. Shared
-// fields and Roles (mapped to Defaults.Roles) are copied; OrgConfig-specific
-// fields (Dispatch, Inference, Repos) remain zero-valued.
-func OrgConfigFromPerRepo(pr *PerRepoConfig) *OrgConfig {
-	return &OrgConfig{
-		Version:                pr.Version,
-		KillSwitch:             pr.KillSwitch,
-		Defaults:               RepoDefaults{Roles: pr.Roles, Runtime: pr.Runtime},
-		Agents:                 pr.Agents,
-		AllowedRemoteResources: pr.AllowedRemoteResources,
-		CreateIssues:           pr.CreateIssues,
+// ParsePerRepoConfig parses YAML bytes into a PerRepoConfigReader.
+func ParsePerRepoConfig(data []byte) (PerRepoConfigReader, error) {
+	var cfg perRepoConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing per-repo config: %w", err)
 	}
+	return &cfg, nil
 }
 
-// ParsePerRepoConfig parses YAML bytes into a PerRepoConfig.
-func ParsePerRepoConfig(data []byte) (*PerRepoConfig, error) {
-	var cfg PerRepoConfig
+// ParsePerRepoConfigWriter parses YAML bytes into a ConfigWriter for
+// callers that need to modify the config after parsing.
+func ParsePerRepoConfigWriter(data []byte) (ConfigWriter, error) {
+	var cfg perRepoConfig
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing per-repo config: %w", err)
 	}
@@ -565,7 +578,7 @@ func ParsePerRepoConfig(data []byte) (*PerRepoConfig, error) {
 }
 
 // Marshal serializes the PerRepoConfig to YAML with a descriptive header.
-func (c *PerRepoConfig) Marshal() ([]byte, error) {
+func (c *perRepoConfig) Marshal() ([]byte, error) {
 	body, err := yaml.Marshal(c)
 	if err != nil {
 		return nil, fmt.Errorf("marshaling per-repo config: %w", err)
@@ -574,7 +587,7 @@ func (c *PerRepoConfig) Marshal() ([]byte, error) {
 }
 
 // Validate checks the PerRepoConfig for structural correctness.
-func (c *PerRepoConfig) Validate() error {
+func (c *perRepoConfig) Validate() error {
 	if c.Version != "1" {
 		return fmt.Errorf("unsupported version %q: must be \"1\"", c.Version)
 	}

@@ -496,7 +496,7 @@ func TestBuildModifiedAgentFiles_DiffAbort(t *testing.T) {
 
 	cfg := func() config.ConfigWriter {
 		data := []byte("version: \"1\"\ndispatch:\n  platform: github-actions\ndefaults:\n  roles: [fullsend]\nrepos: {}\n")
-		c, _ := config.ParseOrgConfig(data)
+		c, _ := config.ParseOrgConfigWriter(data)
 		return c
 	}()
 
@@ -528,7 +528,7 @@ func TestBuildModifiedAgentFiles_DevCommitSHAError(t *testing.T) {
 
 	cfg := func() config.ConfigWriter {
 		data := []byte("version: \"1\"\ndispatch:\n  platform: github-actions\ndefaults:\n  roles: [fullsend]\nrepos: {}\n")
-		c, _ := config.ParseOrgConfig(data)
+		c, _ := config.ParseOrgConfigWriter(data)
 		return c
 	}()
 
@@ -638,7 +638,7 @@ defaults:
   roles: [fullsend]
 repos: {}
 `)
-		c, _ := config.ParseOrgConfig(data)
+		c, _ := config.ParseOrgConfigWriter(data)
 		return c
 	}()
 
@@ -702,7 +702,7 @@ agents:
 allowed_remote_resources:
   - "https://example.com/"
 `)
-		c, err := config.ParseOrgConfig(data)
+		c, err := config.ParseOrgConfigWriter(data)
 		require.NoError(t, err)
 		return c
 	}()
@@ -746,7 +746,7 @@ defaults:
   roles: [fullsend]
 repos: {}
 `)
-		c, _ := config.ParseOrgConfig(data)
+		c, _ := config.ParseOrgConfigWriter(data)
 		return c
 	}()
 
@@ -778,7 +778,7 @@ func TestPlanMigrations_NonPerAgentDirBecomesStandalone(t *testing.T) {
 
 	cfg := func() config.ConfigWriter {
 		data := []byte("version: \"1\"\ndispatch:\n  platform: github-actions\ndefaults:\n  roles: [fullsend]\nrepos: {}\n")
-		c, _ := config.ParseOrgConfig(data)
+		c, _ := config.ParseOrgConfigWriter(data)
 		return c
 	}()
 
@@ -857,7 +857,7 @@ func TestResolveBaseURL_ValidCommitSHA(t *testing.T) {
 
 func TestRegisterMigratedAgent_AddsEntryAndAllowlist(t *testing.T) {
 	data := []byte("version: \"1\"\ndispatch:\n  platform: github-actions\ndefaults:\n  roles: [fullsend]\nrepos: {}\n")
-	orgCfg, err := config.ParseOrgConfig(data)
+	orgCfg, err := config.ParseOrgConfigWriter(data)
 	require.NoError(t, err)
 	var cfg config.ConfigWriter = orgCfg
 
@@ -873,7 +873,7 @@ func TestRegisterMigratedAgent_AddsEntryAndAllowlist(t *testing.T) {
 
 func TestRegisterMigratedAgent_NoDuplicate(t *testing.T) {
 	data := []byte("version: \"1\"\ndispatch:\n  platform: github-actions\ndefaults:\n  roles: [fullsend]\nrepos: {}\nagents:\n  - source: \"harness/review.yaml\"\n")
-	orgCfg, err := config.ParseOrgConfig(data)
+	orgCfg, err := config.ParseOrgConfigWriter(data)
 	require.NoError(t, err)
 	var cfg config.ConfigWriter = orgCfg
 

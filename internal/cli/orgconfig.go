@@ -21,28 +21,22 @@ func configAgentNames(agents []config.AgentEntry) []string {
 
 // tryLoadFullsendConfig attempts to load an org or per-repo config.yaml
 // from the given path. Returns nil without error when the file is absent
-// (best-effort). Per-repo config is adapted to OrgConfig via
-// OrgConfigFromPerRepo so callers see a unified type.
-func tryLoadFullsendConfig(path string, printer *ui.Printer) *config.OrgConfig {
+// (best-effort). The returned ConfigWriter provides a unified view of
+// both org and per-repo configs with ensured defaults.
+func tryLoadFullsendConfig(path string, printer *ui.Printer) config.ConfigWriter {
 	if _, err := os.Stat(path); err != nil {
 		if !os.IsNotExist(err) {
 			printer.StepWarn("Fullsend config unreadable (remote resource allowlist unavailable): " + err.Error())
 		}
 		return nil
 	}
-	dirCfg, err := config.LoadFromDir(filepath.Dir(path), config.LoadOpts{MissingOK: false})
+	writer, err := config.LoadConfigWriter(filepath.Dir(path), config.LoadOpts{MissingOK: false})
 	if err != nil {
 		printer.StepWarn("Config malformed (remote resource allowlist unavailable): " + err.Error())
 		return nil
 	}
-	if dirCfg.IsOrg {
-		cfg := dirCfg.Org
-		cfg.SetAllowedRemoteResources(config.EnsureDefaultAllowedRemoteResources(cfg.AllowedResources()))
-		return cfg
-	}
-	orgCfg := config.OrgConfigFromPerRepo(dirCfg.PerRepo)
-	orgCfg.SetAllowedRemoteResources(config.EnsureDefaultAllowedRemoteResources(orgCfg.AllowedResources()))
-	return orgCfg
+	writer.SetAllowedRemoteResources(config.EnsureDefaultAllowedRemoteResources(writer.AllowedResources()))
+	return writer
 }
 
 // tryLoadOrgConfig loads an org or per-repo config.yaml (best-effort).
@@ -51,8 +45,8 @@ var tryLoadOrgConfig = tryLoadFullsendConfig
 // requireFullsendConfig loads an org or per-repo config.yaml from the
 // given path with strict error handling. Returns differentiated errors
 // for missing files, unreadable files, and parse failures.
-func requireFullsendConfig(path string, printer *ui.Printer) (*config.OrgConfig, error) {
-	dirCfg, err := config.LoadFromDir(filepath.Dir(path), config.LoadOpts{MissingOK: false})
+func requireFullsendConfig(path string, printer *ui.Printer) (config.ConfigWriter, error) {
+	writer, err := config.LoadConfigWriter(filepath.Dir(path), config.LoadOpts{MissingOK: false})
 	if err != nil {
 		printer.StepFail("Failed to load fullsend config")
 		if errors.Is(err, os.ErrNotExist) {
@@ -60,14 +54,8 @@ func requireFullsendConfig(path string, printer *ui.Printer) (*config.OrgConfig,
 		}
 		return nil, fmt.Errorf("reading fullsend config for remote resource validation: %w", err)
 	}
-	if dirCfg.IsOrg {
-		cfg := dirCfg.Org
-		cfg.SetAllowedRemoteResources(config.EnsureDefaultAllowedRemoteResources(cfg.AllowedResources()))
-		return cfg, nil
-	}
-	orgCfg := config.OrgConfigFromPerRepo(dirCfg.PerRepo)
-	orgCfg.SetAllowedRemoteResources(config.EnsureDefaultAllowedRemoteResources(orgCfg.AllowedResources()))
-	return orgCfg, nil
+	writer.SetAllowedRemoteResources(config.EnsureDefaultAllowedRemoteResources(writer.AllowedResources()))
+	return writer, nil
 }
 
 // requireOrgConfig loads an org or per-repo config.yaml (strict).

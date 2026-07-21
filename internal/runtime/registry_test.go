@@ -30,7 +30,15 @@ func TestResolveFromConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "claude", defaultBackend.Runtime.Name())
 
-	cfg := &config.OrgConfig{Defaults: config.RepoDefaults{Runtime: "dummy"}}
+	cfg, parseErr := config.ParseOrgConfig([]byte(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage]
+  runtime: dummy
+repos: {}
+`))
+	require.NoError(t, parseErr)
 	dummyBackend, err := ResolveFromConfig(cfg)
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", dummyBackend.Runtime.Name())
@@ -43,11 +51,14 @@ func TestResolveFromPerRepoConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "claude", defaultBackend.Runtime.Name())
 
-	cfg := &config.PerRepoConfig{Version: "1", Runtime: "dummy"}
+	cfg := config.NewPerRepoConfig(nil, "")
+	cfg.SetRuntime("dummy")
 	dummyBackend, err := ResolveFromPerRepoConfig(cfg)
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", dummyBackend.Runtime.Name())
 
-	_, err = ResolveFromPerRepoConfig(&config.PerRepoConfig{Version: "1", Runtime: "invalid"})
+	invalidCfg := config.NewPerRepoConfig(nil, "")
+	invalidCfg.SetRuntime("invalid")
+	_, err = ResolveFromPerRepoConfig(invalidCfg)
 	require.Error(t, err)
 }

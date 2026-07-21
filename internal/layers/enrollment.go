@@ -353,15 +353,15 @@ func (l *EnrollmentLayer) Uninstall(ctx context.Context) error {
 		return nil
 	}
 
-	cfg, err := config.ParseOrgConfig(cfgData)
+	cfg, err := config.ParseOrgConfigWriter(cfgData)
 	if err != nil {
 		l.ui.StepWarn(fmt.Sprintf("could not parse config for unenrollment: %v", err))
 		return nil
 	}
 
-	for name, rc := range cfg.Repos {
+	for name, rc := range cfg.RepoMap() {
 		rc.Enabled = false
-		cfg.Repos[name] = rc
+		cfg.RepoMap()[name] = rc
 	}
 
 	data, err := cfg.Marshal()

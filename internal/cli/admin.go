@@ -1370,8 +1370,11 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 	}
 
 	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
-	cfg.Defaults.Runtime = runtimeName
-	cfg.Dispatch.Mode = "oidc-mint"
+	{
+		d := cfg.DispatchSettings()
+		d.Mode = "oidc-mint"
+		cfg.SetDispatch(d)
+	}
 
 	user, err := client.GetAuthenticatedUser(ctx)
 	if err != nil {
@@ -1681,8 +1684,11 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	enrolledRepoIDs := collectEnrolledRepoIDs(allRepos, enabledRepos)
 
 	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
-	cfg.Defaults.Runtime = runtimeName
-	cfg.Dispatch.Mode = "oidc-mint"
+	{
+		d := cfg.DispatchSettings()
+		d.Mode = "oidc-mint"
+		cfg.SetDispatch(d)
+	}
 
 	user, err := client.GetAuthenticatedUser(ctx)
 	if err != nil {
@@ -1768,7 +1774,7 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 	cfgData, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
 	if err == nil {
 		if parsed, parseErr := config.ParseOrgConfig(cfgData); parseErr == nil {
-			configMode = parsed.Dispatch.Mode
+			configMode = parsed.DispatchSettings().Mode
 			enrolledRepos = parsed.EnabledRepos()
 		} else {
 			printer.StepWarn(fmt.Sprintf("Could not parse existing config: %v; using defaults", parseErr))
@@ -2009,7 +2015,7 @@ func buildLayerStack(
 	ctx context.Context,
 	org string,
 	client forge.Client,
-	cfg *config.OrgConfig,
+	cfg config.OrgConfigWriter,
 	printer *ui.Printer,
 	user string,
 	privateRepo bool,
@@ -2040,7 +2046,7 @@ func buildLayerStack(
 	return layers.NewStack(
 		layers.NewConfigRepoLayer(org, client, cfg, printer, privateRepo),
 		workflowsLayer(ctx, org, client, printer, user, version, vendor, vendorCollect, direct),
-		layers.NewHarnessWrappersLayer(org, client, printer, agentCreds, commitSHA, configAgentNames(cfg.Agents)),
+		layers.NewHarnessWrappersLayer(org, client, printer, agentCreds, commitSHA, configAgentNames(cfg.AgentEntries())),
 		vendorLayer(org, client, printer, vendor, vendorFn, vendorCollect, analyzeFullsendSource),
 		layers.NewSecretsLayer(org, client, agentCreds, printer).WithOIDCMode(),
 		layers.NewInferenceLayer(org, client, inferenceProvider, printer),
@@ -2195,7 +2201,7 @@ func loadExistingRuntime(ctx context.Context, client forge.Client, org string) s
 	if err != nil {
 		return ""
 	}
-	return cfg.Defaults.Runtime
+	return cfg.OrgRepoDefaults().Runtime
 }
 
 // loadExistingInferenceProvider reads the inference provider name from
@@ -2210,7 +2216,7 @@ func loadExistingInferenceProvider(ctx context.Context, client forge.Client, org
 	if err != nil {
 		return ""
 	}
-	return cfg.Inference.Provider
+	return cfg.InferenceSettings().Provider
 }
 
 // loadExistingEnabledRepos reads the enabled repos list from an existing
@@ -2460,7 +2466,7 @@ func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printe
 	var allOrgRepos []forge.Repository
 	if all {
 		// Get all org repos by calling ListOrgRepos.
-		// Note: disable --all iterates cfg.Repos instead of calling ListOrgRepos.
+		// Note: disable --all iterates cfg.RepoMap() instead of calling ListOrgRepos.
 		// This asymmetry is intentional: enable --all discovers all current org repos,
 		// while disable --all operates on previously configured repos (which may have
 		// been deleted from the org but still need unenrollment PRs for cleanup).
@@ -2521,15 +2527,15 @@ func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printe
 	printer.StepStart("Updating config.yaml")
 	changed := 0
 	for _, repo := range reposToEnable {
-		rc, exists := cfg.Repos[repo]
+		rc, exists := cfg.RepoMap()[repo]
 		if !exists {
 			// Add new repo entry.
-			cfg.Repos[repo] = config.RepoConfig{Enabled: true}
+			cfg.RepoMap()[repo] = config.RepoConfig{Enabled: true}
 			changed++
 		} else if !rc.Enabled {
 			// Update existing entry.
 			rc.Enabled = true
-			cfg.Repos[repo] = rc
+			cfg.RepoMap()[repo] = rc
 			changed++
 		}
 	}
@@ -2554,7 +2560,7 @@ func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printe
 	// variables like FULLSEND_MINT_URL. Runs even when changed == 0 to
 	// reconcile a previously failed best-effort sync on re-run.
 	// Skipped in PR mode — repo-maintenance reconciles on merge.
-	if cfg.Dispatch.Mode == "oidc-mint" && !pr {
+	if cfg.DispatchSettings().Mode == "oidc-mint" && !pr {
 		syncOrgVariableVisibility(ctx, client, printer, org, cfg, allOrgRepos)
 	}
 
@@ -2584,7 +2590,7 @@ var dispatchOrgVariableNames = gcf.NewProvisioner(gcf.Config{}, nil).OrgVariable
 // repo) can read them. This is best-effort: failures are logged as warnings
 // but do not fail the enable command, because the repo-maintenance workflow
 // can reconcile this later.
-func syncOrgVariableVisibility(ctx context.Context, client forge.Client, printer *ui.Printer, org string, cfg *config.OrgConfig, allOrgRepos []forge.Repository) {
+func syncOrgVariableVisibility(ctx context.Context, client forge.Client, printer *ui.Printer, org string, cfg config.OrgConfigReader, allOrgRepos []forge.Repository) {
 	// Collect IDs for all enabled repos.
 	enrolledRepoIDs := collectEnrolledRepoIDs(allOrgRepos, cfg.EnabledRepos())
 
@@ -2639,7 +2645,7 @@ func runDisableRepos(ctx context.Context, client forge.Client, printer *ui.Print
 	if all {
 		// Disable all repos currently in config.
 		printer.StepStart("Collecting all configured repositories")
-		for repo := range cfg.Repos {
+		for repo := range cfg.RepoMap() {
 			reposToDisable = append(reposToDisable, repo)
 		}
 		sort.Strings(reposToDisable)
@@ -2675,7 +2681,7 @@ func runDisableRepos(ctx context.Context, client forge.Client, printer *ui.Print
 				return fmt.Errorf("cannot disable .fullsend repository itself")
 			}
 			// Check if repo exists in config (don't require GitHub existence for cleanup).
-			if _, exists := cfg.Repos[repo]; !exists {
+			if _, exists := cfg.RepoMap()[repo]; !exists {
 				printer.StepWarn(fmt.Sprintf("Repository %s not in config (skipping)", repo))
 				continue
 			}
@@ -2693,11 +2699,11 @@ func runDisableRepos(ctx context.Context, client forge.Client, printer *ui.Print
 	printer.StepStart("Updating config.yaml")
 	changed := 0
 	for _, repo := range reposToDisable {
-		rc, exists := cfg.Repos[repo]
+		rc, exists := cfg.RepoMap()[repo]
 		if exists && rc.Enabled {
 			// Update existing entry to disabled.
 			rc.Enabled = false
-			cfg.Repos[repo] = rc
+			cfg.RepoMap()[repo] = rc
 			changed++
 		}
 	}
@@ -2717,7 +2723,7 @@ func runDisableRepos(ctx context.Context, client forge.Client, printer *ui.Print
 
 	// Sync org variable visibility to revoke access for disabled repos.
 	// Skipped in PR mode — repo-maintenance reconciles on merge.
-	if cfg.Dispatch.Mode == "oidc-mint" && !pr {
+	if cfg.DispatchSettings().Mode == "oidc-mint" && !pr {
 		allOrgRepos, listErr := client.ListOrgRepos(ctx, org, false)
 		if listErr != nil {
 			printer.StepWarn(fmt.Sprintf("could not list org repos for variable sync: %v", listErr))
@@ -2747,7 +2753,7 @@ func runDisableRepos(ctx context.Context, client forge.Client, printer *ui.Print
 // acceptable for an admin CLI where concurrent usage is rare, and the state
 // is recoverable (just re-run the command). Production systems would use
 // conditional writes (e.g., if-match headers with ETags).
-func loadRepoConfig(ctx context.Context, client forge.Client, printer *ui.Printer, org string) (*config.OrgConfig, error) {
+func loadRepoConfig(ctx context.Context, client forge.Client, printer *ui.Printer, org string) (config.OrgConfigWriter, error) {
 	// Verify .fullsend repository exists.
 	printer.StepStart("Checking .fullsend repository")
 	_, err := client.GetRepo(ctx, org, forge.ConfigRepoName)
@@ -2771,7 +2777,7 @@ func loadRepoConfig(ctx context.Context, client forge.Client, printer *ui.Printe
 		return nil, fmt.Errorf("reading config.yaml: %w", err)
 	}
 
-	cfg, err := config.ParseOrgConfig(configData)
+	cfg, err := config.ParseOrgConfigWriter(configData)
 	if err != nil {
 		printer.StepFail("Failed to parse config.yaml")
 		return nil, fmt.Errorf("parsing config.yaml: %w", err)
@@ -2788,7 +2794,7 @@ func loadRepoConfig(ctx context.Context, client forge.Client, printer *ui.Printe
 // When pr is true, config.yaml is delivered via a pull request instead of
 // being pushed directly to the default branch. The repo-maintenance
 // workflow is not dispatched in PR mode — it will run when the PR is merged.
-func saveRepoConfig(ctx context.Context, client forge.Client, printer *ui.Printer, org string, cfg *config.OrgConfig, commitMsg string, pr bool) (time.Time, error) {
+func saveRepoConfig(ctx context.Context, client forge.Client, printer *ui.Printer, org string, cfg config.OrgConfigWriter, commitMsg string, pr bool) (time.Time, error) {
 	// Marshal updated config.
 	updatedConfigData, err := cfg.Marshal()
 	if err != nil {

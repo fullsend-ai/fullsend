@@ -16,7 +16,7 @@ func TestValidatePerRepoPostInstall_OK(t *testing.T) {
 	client := forge.NewFakeClient()
 	org, repo := "acme", "test-repo"
 	perRepoCfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), org+"/"+repo)
-	perRepoCfg.Runtime = "dummy"
+	perRepoCfg.SetRuntime("dummy")
 	cfg, err := perRepoCfg.Marshal()
 	require.NoError(t, err)
 

@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
-	"gopkg.in/yaml.v3"
-
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -56,24 +54,26 @@ func givenDisabledCustomHarness(w *world.World, name, doc string) error {
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
 	}
-	cfg, err := config.ParsePerRepoConfig(cfgData)
+	cfg, err := config.ParsePerRepoConfigWriter(cfgData)
 	if err != nil {
 		return fmt.Errorf("parsing config: %w", err)
 	}
 	disabled := false
 	entry := config.AgentEntry{Name: name, Source: "harness/" + name + ".yaml", Enabled: &disabled}
+	agents := cfg.AgentEntries()
 	found := false
-	for i, a := range cfg.Agents {
+	for i, a := range agents {
 		if strings.EqualFold(a.DerivedName(), name) {
-			cfg.Agents[i] = entry
+			agents[i] = entry
 			found = true
 			break
 		}
 	}
 	if !found {
-		cfg.Agents = append(cfg.Agents, entry)
+		agents = append(agents, entry)
 	}
-	merged, err := yaml.Marshal(cfg)
+	cfg.SetAgents(agents)
+	merged, err := cfg.Marshal()
 	if err != nil {
 		return err
 	}
@@ -101,23 +101,25 @@ func givenCustomHarness(w *world.World, name, doc string) error {
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
 	}
-	cfg, err := config.ParsePerRepoConfig(cfgData)
+	cfgW, err := config.ParsePerRepoConfigWriter(cfgData)
 	if err != nil {
 		return fmt.Errorf("parsing config: %w", err)
 	}
 	entry := config.AgentEntry{Name: name, Source: "harness/" + name + ".yaml"}
+	agents := cfgW.AgentEntries()
 	found := false
-	for i, a := range cfg.Agents {
+	for i, a := range agents {
 		if strings.EqualFold(a.DerivedName(), name) {
-			cfg.Agents[i] = entry
+			agents[i] = entry
 			found = true
 			break
 		}
 	}
 	if !found {
-		cfg.Agents = append(cfg.Agents, entry)
+		agents = append(agents, entry)
 	}
-	merged, err := yaml.Marshal(cfg)
+	cfgW.SetAgents(agents)
+	merged, err := cfgW.Marshal()
 	if err != nil {
 		return err
 	}

@@ -30,12 +30,12 @@ model: opus
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 `)
 	cfg := config.NewPerRepoConfig(nil, "o/r")
-	cfg.Agents = []config.AgentEntry{{Name: "issue-ping", Source: "harness/issue-ping.yaml"}}
+	cfg.SetAgents([]config.AgentEntry{{Name: "issue-ping", Source: "harness/issue-ping.yaml"}})
 	data, err := yaml.Marshal(cfg)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
 
-	dirCfg, err := config.LoadFromDir(dir, config.LoadOpts{MissingOK: false})
+	dirCfg, err := config.LoadConfig(dir, config.LoadOpts{MissingOK: false})
 	require.NoError(t, err)
 
 	out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg)
@@ -46,15 +46,15 @@ image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 func TestListTriggeredHarnesses_DuplicateName(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.NewPerRepoConfig(nil, "o/r")
-	cfg.Agents = []config.AgentEntry{
+	cfg.SetAgents([]config.AgentEntry{
 		{Name: "Ping", Source: "harness/a.yaml"},
 		{Name: "ping", Source: "harness/b.yaml"},
-	}
+	})
 	data, err := yaml.Marshal(cfg)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
 
-	dirCfg, err := config.LoadFromDir(dir, config.LoadOpts{MissingOK: false})
+	dirCfg, err := config.LoadConfig(dir, config.LoadOpts{MissingOK: false})
 	require.NoError(t, err)
 
 	_, err = ListTriggeredHarnesses(context.Background(), dir, dirCfg)
@@ -74,15 +74,15 @@ image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 trigger: event.entity.kind == "work_item"
 `), 0o644))
 	cfg := config.NewPerRepoConfig(nil, "o/r")
-	cfg.Agents = []config.AgentEntry{
+	cfg.SetAgents([]config.AgentEntry{
 		{Name: "good", Source: "harness/good.yaml"},
 		{Name: "missing", Source: "harness/missing.yaml"},
-	}
+	})
 	data, err := yaml.Marshal(cfg)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
 
-	dirCfg, err := config.LoadFromDir(dir, config.LoadOpts{MissingOK: false})
+	dirCfg, err := config.LoadConfig(dir, config.LoadOpts{MissingOK: false})
 	require.NoError(t, err)
 
 	out, err := ListTriggeredHarnesses(context.Background(), dir, dirCfg)
@@ -128,7 +128,7 @@ trigger: |
 `
 	require.NoError(t, os.WriteFile(filepath.Join(harnessDir, "pr-ping.yaml"), []byte(prYAML), 0o644))
 	cfg := config.NewPerRepoConfig(nil, "o/r")
-	cfg.Agents = []config.AgentEntry{{Name: "pr-ping", Source: "harness/pr-ping.yaml"}}
+	cfg.SetAgents([]config.AgentEntry{{Name: "pr-ping", Source: "harness/pr-ping.yaml"}})
 	data, err := yaml.Marshal(cfg)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))

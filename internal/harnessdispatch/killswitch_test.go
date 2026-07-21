@@ -21,7 +21,7 @@ func TestKillSwitchActive_MissingConfig(t *testing.T) {
 func TestKillSwitchActive_PerRepo(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.NewPerRepoConfig(nil, "o/r")
-	cfg.KillSwitch = true
+	cfg.SetKillSwitch(true)
 	data, err := yaml.Marshal(cfg)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
@@ -34,7 +34,7 @@ func TestKillSwitchActive_PerRepo(t *testing.T) {
 func TestKillSwitchActive_OrgConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.NewOrgConfig(nil, nil, nil, "", "o")
-	cfg.KillSwitch = true
+	cfg.SetKillSwitch(true)
 	data, err := yaml.Marshal(cfg)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))

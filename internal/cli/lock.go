@@ -179,7 +179,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 	// handles the omitted-field case when a config is present.
 	orgAllowlist := config.DefaultAllowedRemoteResources()
 	if orgCfg != nil {
-		orgAllowlist = orgCfg.AllowedRemoteResources
+		orgAllowlist = orgCfg.AllowedResources()
 	}
 
 	policy := fetch.DefaultPolicy
@@ -191,7 +191,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			if err != nil {
 				return nil, err
 			}
-			orgAllowlist = orgCfg.AllowedRemoteResources
+			orgAllowlist = orgCfg.AllowedResources()
 		}
 	}
 
@@ -286,9 +286,9 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			if err != nil {
 				return nil, err
 			}
-			orgAllowlist = orgCfg.AllowedRemoteResources
+			orgAllowlist = orgCfg.AllowedResources()
 		}
-		if err := h.ValidateAllowedRemoteResources(orgCfg.AllowedRemoteResources); err != nil {
+		if err := h.ValidateAllowedRemoteResources(orgCfg.AllowedResources()); err != nil {
 			printer.StepFail("Remote resource allowlist validation failed")
 			return nil, fmt.Errorf("validating allowed remote resources: %w", err)
 		}

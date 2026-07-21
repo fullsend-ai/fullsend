@@ -17,7 +17,7 @@ const configFilePath = "config.yaml"
 type ConfigRepoLayer struct {
 	org        string
 	client     forge.Client
-	config     *config.OrgConfig
+	config     config.OrgConfigWriter
 	ui         *ui.Printer
 	hasPrivate bool // whether org plan supports private workflow_call repos
 }
@@ -29,7 +29,7 @@ var _ Layer = (*ConfigRepoLayer)(nil)
 // Set hasPrivate to true if the org's GitHub plan (team/enterprise) supports
 // workflow_call from private repos. GitHub free tier cannot use workflow_call
 // with private repos, so the config repo must be public on free orgs.
-func NewConfigRepoLayer(org string, client forge.Client, cfg *config.OrgConfig, printer *ui.Printer, hasPrivate bool) *ConfigRepoLayer {
+func NewConfigRepoLayer(org string, client forge.Client, cfg config.OrgConfigWriter, printer *ui.Printer, hasPrivate bool) *ConfigRepoLayer {
 	return &ConfigRepoLayer{
 		org:        org,
 		client:     client,
@@ -177,7 +177,7 @@ func (l *ConfigRepoLayer) Analyze(ctx context.Context) (*LayerReport, error) {
 	}
 
 	// File exists — validate it
-	parsed, parseErr := config.ParseOrgConfig(content)
+	parsed, parseErr := config.ParseOrgConfigWriter(content)
 	if parseErr != nil {
 		report.Status = StatusDegraded
 		report.Details = []string{configFilePath + " exists but is invalid: " + parseErr.Error()}
