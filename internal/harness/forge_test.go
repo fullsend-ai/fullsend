@@ -57,6 +57,24 @@ func TestResolveForge_SkillsConcat(t *testing.T) {
 	assert.Equal(t, []string{"skills/common-a", "skills/common-b", "skills/gh-specific"}, h.Skills)
 }
 
+// TestResolveForge_SkillsOverrideByBasename verifies that a forge skill
+// whose basename matches a top-level skill replaces it instead of producing
+// a duplicate (see #5408).
+func TestResolveForge_SkillsOverrideByBasename(t *testing.T) {
+	h := &Harness{
+		Agent:  "agents/test.md",
+		Skills: []string{"/cache/code-implementation", "skills/common-b"},
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Skills: []string{"skills/code-implementation"},
+			},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	assert.Equal(t, []string{"skills/code-implementation", "skills/common-b"}, h.Skills)
+}
+
 func TestResolveForge_NilSkillsInherits(t *testing.T) {
 	h := &Harness{
 		Agent:  "agents/test.md",

@@ -50,6 +50,22 @@ func TestDiffHarness_SliceAddition(t *testing.T) {
 	assert.Empty(t, result.Warnings)
 }
 
+// TestDiffHarness_SkillOverrideByBasename verifies that when a child skill
+// overrides a base skill by basename (different full path, same basename),
+// diffSkills treats this as an override (extra) rather than a removal+addition.
+func TestDiffHarness_SkillOverrideByBasename(t *testing.T) {
+	base := &Harness{
+		Skills: []string{"/cache/sha256/abc/code-implementation", "skills/pr-review"},
+	}
+	child := &Harness{
+		Skills: []string{"skills/code-implementation", "skills/pr-review"},
+	}
+	result := DiffHarness(base, child, nil)
+	require.NotNil(t, result.Child, "basename override should not abort diff")
+	assert.Equal(t, []string{"skills/code-implementation"}, result.Child.Skills)
+	assert.Empty(t, result.Warnings)
+}
+
 func TestDiffHarness_SliceRemoval(t *testing.T) {
 	base := &Harness{
 		Skills: []string{"skills/a", "skills/b", "skills/c"},
@@ -600,6 +616,31 @@ func TestDiffHarness_ForgeSkillsRemoval(t *testing.T) {
 	assert.Nil(t, result.Child, "forge skill removal should abort diff")
 	assert.Len(t, result.Warnings, 1)
 	assert.Contains(t, result.Warnings[0], "forge[github].skills")
+}
+
+// TestDiffHarness_ForgeSkillsOverrideByBasename verifies that forge skill
+// overrides by basename are treated as extras, not removals.
+func TestDiffHarness_ForgeSkillsOverrideByBasename(t *testing.T) {
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Skills: []string{"/cache/code-review", "skill/common"},
+			},
+		},
+	}
+	child := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Skills: []string{"skills/code-review", "skill/common"},
+			},
+		},
+	}
+	result := DiffHarness(base, child, nil)
+	require.NotNil(t, result.Child, "forge basename override should not abort diff")
+	require.NotNil(t, result.Child.Forge)
+	require.NotNil(t, result.Child.Forge["github"])
+	assert.Equal(t, []string{"skills/code-review"}, result.Child.Forge["github"].Skills)
+	assert.Empty(t, result.Warnings)
 }
 
 func TestDiffHarness_ForgePlatformRemoval(t *testing.T) {

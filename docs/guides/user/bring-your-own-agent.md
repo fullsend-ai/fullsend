@@ -275,7 +275,8 @@ security:
 | Field type | Behavior |
 |-----------|----------|
 | Scalars (`model`, `pre_script`, `image`, etc.) | Child wins if non-empty |
-| `skills`, `plugins`, `providers`, `api_servers`, `openshell.profiles` | Concatenated (base + child) |
+| `skills` | Merged with deduplication by basename (child overrides base) |
+| `plugins`, `providers`, `api_servers`, `openshell.profiles` | Concatenated (base + child) |
 | `host_files` | Concatenated; child overrides by `dest` |
 | `env`, `runner_env` | Merged; child keys win |
 | `validation_loop`, `security` | Child replaces entirely |
@@ -366,7 +367,7 @@ Create a thin harness that inherits from the upstream code agent and adds your s
 base: https://raw.githubusercontent.com/fullsend-ai/fullsend/<sha>/internal/scaffold/fullsend-repo/harness/code.yaml#sha256=abc...
 
 skills:
-  - skills/my-custom-linting        # Concatenated with base skills
+  - skills/my-custom-linting        # Merged with base skills (child overrides by basename)
 
 timeout_minutes: 45                 # Override timeout (scalar → child wins)
 ```
@@ -420,7 +421,7 @@ env:
 Any harness field can be overridden. The [field merge rules](#field-merge-rules-for-base-and-forge) determine how your overrides combine with the base:
 
 - **Change model, timeout, image, scripts** — scalars replace the base value.
-- **Add skills, plugins, or host_files** — your entries are concatenated with the base's.
+- **Add skills** — your entries are merged with the base's by basename; same-named skills override the base entry. **Add plugins or host_files** — your entries are concatenated with the base's.
 - **Add or override env vars** — maps are merged; your keys win on collision.
 - **Replace validation or security config** — child replaces the entire block.
 

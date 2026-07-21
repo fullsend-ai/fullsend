@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"path/filepath"
 	"reflect"
 )
 
@@ -99,10 +100,10 @@ func DiffHarness(base, child *Harness, customizedFiles map[string]bool) *DiffRes
 		hasAny = true
 	}
 
-	// String slices (concatenated by mergeBaseIntoChild) — keep only extras.
-	// Pass nil for customizedFiles: file-path override semantics only apply
-	// to scalar fields, not concatenated slices (would cause duplication).
-	if extras, removed := diffStringSlice(base.Skills, child.Skills, nil); len(extras) > 0 || removed {
+	// Skills use basename-aware diffing to match mergeSkills' override-by-
+	// basename semantics. A child skill that replaces a base skill (same
+	// basename, different path) is an override, not a removal + addition.
+	if extras, removed := diffSkills(base.Skills, child.Skills); len(extras) > 0 || removed {
 		if removed {
 			result.Warnings = append(result.Warnings, "skills: child removes items from base; cannot express with base: composition")
 			result.Child = nil
@@ -250,6 +251,43 @@ func diffStringSlice(base, child []string, customizedFiles map[string]bool) (ext
 			extras = append(extras, s)
 		}
 	}
+	return extras, removed
+}
+
+// diffSkills returns skill entries in child that override base entries (by
+// filepath.Base basename) or are entirely new, and reports whether any base
+// entries were removed. Unlike diffStringSlice which compares exact paths,
+// diffSkills compares by basename to match mergeSkills' override-by-basename
+// semantics (see #5408).
+func diffSkills(base, child []string) (extras []string, removed bool) {
+	baseByName := make(map[string]string, len(base))
+	for _, s := range base {
+		baseByName[filepath.Base(s)] = s
+	}
+
+	childByName := make(map[string]bool, len(child))
+	for _, s := range child {
+		childByName[filepath.Base(s)] = true
+	}
+
+	// Check for base entries removed in child (no basename match)
+	for _, s := range base {
+		if !childByName[filepath.Base(s)] {
+			removed = true
+			break
+		}
+	}
+
+	// Extras: child entries that are new or override a base entry
+	// (same basename but different full path)
+	for _, s := range child {
+		name := filepath.Base(s)
+		basePath, inBase := baseByName[name]
+		if !inBase || basePath != s {
+			extras = append(extras, s)
+		}
+	}
+
 	return extras, removed
 }
 
@@ -422,7 +460,7 @@ func diffForgeConfig(base, child *ForgeConfig, platform string) (*ForgeConfig, [
 		fc.PostScript = child.PostScript
 		hasAny = true
 	}
-	if extras, removed := diffStringSlice(base.Skills, child.Skills, nil); len(extras) > 0 || removed {
+	if extras, removed := diffSkills(base.Skills, child.Skills); len(extras) > 0 || removed {
 		if removed {
 			return nil, []string{"forge[" + platform + "].skills: child removes items from base; cannot express with base: composition"}
 		}

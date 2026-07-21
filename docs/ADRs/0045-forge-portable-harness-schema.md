@@ -187,7 +187,7 @@ resolved as follows:
 | Field type       | Merge behavior                                       | Nil vs empty                                          |
 |------------------|------------------------------------------------------|-------------------------------------------------------|
 | Scalar fields    | Forge value overrides top-level value                | Absent = inherit from top level                       |
-| `skills`         | Top-level list + forge-specific list (concatenated)  | Absent (nil) = inherit; `skills: []` = no forge-specific additions (top-level skills still apply) |
+| `skills`         | Merged with deduplication by basename (forge overrides top-level) | Absent (nil) = inherit; `skills: []` = no forge-specific additions (top-level skills still apply) |
 | `runner_env`     | Top-level map merged with forge map; forge keys win  | Absent (nil) = inherit; `runner_env: {}` = no forge-specific keys (top-level env still inherited) |
 | `validation_loop`| Forge value replaces top-level value entirely        | Absent (nil) = inherit from top level; explicit empty struct = intended to mean "no validation" but requires implementation changes (see note¹) |
 
@@ -359,7 +359,7 @@ itself is consumed during loading and is not present on the merged harness.
 The same inheritance table applies to base→child merging:
 
 - **Scalar fields** (agent, model, image, pre_script, etc.): child overrides base
-- **`skills`**: base list + child list (concatenated)
+- **`skills`**: merged with deduplication by basename (child overrides base)
 - **`runner_env`**: base map merged with child map; child keys win
 - **`validation_loop`**: child replaces base entirely (if non-nil)
 - **`host_files`**: concatenated (base + child); if both declare the same
@@ -609,7 +609,7 @@ forge-specific artifact. The harness and agent definition are portable.
   both are written atomically during `fullsend install`.
 
 - **Merge semantics add complexity.** The inheritance rules (scalars
-  override, skills concatenate, runner_env merges, validation_loop replaces)
+  override, skills merge with deduplication by basename, runner_env merges, validation_loop replaces)
   must be well-documented and tested. Edge cases — such as a forge block
   wanting to *remove* an inherited skill or runner_env key — are not
   supported by this design. If needed, a future extension could add explicit
@@ -657,7 +657,7 @@ forge-specific artifact. The harness and agent definition are portable.
   field type, matching the inheritance rules in the table above:
   - `skills`: nil = inherit top-level list; `skills: []` = no
     forge-specific additions (top-level skills still apply, since skills
-    uses concatenation semantics).
+    uses merge-with-deduplication-by-basename semantics).
   - `runner_env`: nil = inherit top-level map; `runner_env: {}` = no
     forge-specific keys (top-level env still inherited, since runner_env
     uses merge semantics).

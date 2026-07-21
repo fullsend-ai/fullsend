@@ -106,8 +106,132 @@ skills:
 	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
 	require.NoError(t, err)
 
-	// Skills concatenated: base + child
+	// Skills concatenated: base + child (no name collision)
 	assert.Equal(t, []string{"skill-a", "skill-b", "skill-c"}, h.Skills)
+}
+
+// TestLoadWithBase_ChildSkillOverridesBaseByBasename verifies that a child
+// skill whose directory basename matches a base skill replaces the base entry
+// instead of producing a duplicate that trips duplicateDestinationNameError
+// at bootstrap time (see #5408).
+func TestLoadWithBase_ChildSkillOverridesBaseByBasename(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+skills:
+  - /cache/sha256/abc123/code-implementation
+  - /cache/sha256/def456/pr-review
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+skills:
+  - skills/code-implementation
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	// Child's code-implementation replaces base's, pr-review stays
+	require.Len(t, h.Skills, 2)
+	assert.Equal(t, "skills/code-implementation", h.Skills[0])
+	assert.Equal(t, "/cache/sha256/def456/pr-review", h.Skills[1])
+}
+
+// TestLoadWithBase_ChildSkillOverride_PreservesOrder verifies that when a
+// child overrides multiple base skills, the merged list preserves base
+// ordering for non-overridden entries and replaces overridden entries
+// in-place.
+func TestLoadWithBase_ChildSkillOverride_PreservesOrder(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+skills:
+  - /cache/skill-a
+  - /cache/skill-b
+  - /cache/skill-c
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+skills:
+  - local/skill-b
+  - local/skill-d
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	// skill-b replaced in-place, skill-d appended
+	assert.Equal(t, []string{
+		"/cache/skill-a",
+		"local/skill-b",
+		"/cache/skill-c",
+		"local/skill-d",
+	}, h.Skills)
+}
+
+// TestMergeSkills verifies the mergeSkills helper directly.
+func TestMergeSkills(t *testing.T) {
+	tests := []struct {
+		name  string
+		base  []string
+		child []string
+		want  []string
+	}{
+		{
+			name:  "no overlap appends",
+			base:  []string{"/base/skill-a"},
+			child: []string{"/child/skill-b"},
+			want:  []string{"/base/skill-a", "/child/skill-b"},
+		},
+		{
+			name:  "child overrides base by basename",
+			base:  []string{"/base/skill-a", "/base/skill-b"},
+			child: []string{"/child/skill-a"},
+			want:  []string{"/child/skill-a", "/base/skill-b"},
+		},
+		{
+			name:  "nil base",
+			base:  nil,
+			child: []string{"/child/skill-a"},
+			want:  []string{"/child/skill-a"},
+		},
+		{
+			name:  "nil child",
+			base:  []string{"/base/skill-a"},
+			child: nil,
+			want:  []string{"/base/skill-a"},
+		},
+		{
+			name:  "both nil",
+			base:  nil,
+			child: nil,
+			want:  []string{},
+		},
+		{
+			name:  "full override",
+			base:  []string{"/cache/sha256/abc/code-implementation"},
+			child: []string{"skills/code-implementation"},
+			want:  []string{"skills/code-implementation"},
+		},
+		{
+			name:  "duplicate child basename deduplicates",
+			base:  []string{"/base/skill-a"},
+			child: []string{"/child1/skill-b", "/child2/skill-b"},
+			want:  []string{"/base/skill-a", "/child2/skill-b"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := mergeSkills(tt.base, tt.child)
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
 func TestLoadWithBase_LocalBase_RunnerEnvMerge(t *testing.T) {
