@@ -301,6 +301,7 @@ esac
 # --- Process label_actions (applies to all actions) ---
 
 HAS_LABEL_ACTIONS=$(jq 'has("label_actions")' "${RESULT_FILE}")
+GOOD_FIRST_ISSUE_APPLIED=false
 if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
   LABEL_REASON=$(jq -r '.label_actions.reason' "${RESULT_FILE}")
   LABEL_COUNT=$(jq '.label_actions.actions | length' "${RESULT_FILE}")
@@ -343,6 +344,9 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
         echo "Adding label '${LA_LABEL}'..."
         add_label "${LA_LABEL}"
         LABELS_APPLIED=$((LABELS_APPLIED + 1))
+        if [[ "${LA_LABEL}" == "good first issue" ]]; then
+          GOOD_FIRST_ISSUE_APPLIED=true
+        fi
         ;;
       remove)
         echo "Removing label '${LA_LABEL}'..."
@@ -365,6 +369,16 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
 fi
 
 # --- Apply deferred label (must be last label mutation) ---
+
+# "good first issue" is a social contract: it reserves the issue for community
+# contributors. Applying ready-to-code simultaneously would dispatch the code
+# agent, racing against (and usually beating) human contributors (#2311).
+# Downgrade to "triaged" so a maintainer can manually add ready-to-code later
+# if no contributor picks up the issue.
+if [[ "${GOOD_FIRST_ISSUE_APPLIED}" == "true" ]] && [[ "${DEFERRED_LABEL}" == "ready-to-code" ]]; then
+  echo "Suppressing ready-to-code — 'good first issue' applied, using 'triaged' instead..."
+  DEFERRED_LABEL="triaged"
+fi
 
 if [[ -n "${DEFERRED_LABEL}" ]]; then
   echo "Applying deferred label '${DEFERRED_LABEL}'..."

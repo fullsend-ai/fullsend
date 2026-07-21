@@ -24,7 +24,7 @@ cat > "${MOCK_BIN}/gh" <<MOCKEOF
 # the label-existence guard in post-triage.sh allows them through.
 if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
   # Return labels used by the test fixtures, one per line (--jq '.[].name').
-  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser"
+  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser" "good first issue"
   exit 0
 fi
 # For issue create, return a fake URL on stdout so callers can capture it.
@@ -443,6 +443,28 @@ run_test_label_order "ready-to-code-applied-after-label-actions" \
 # Verify ready-to-code is still applied when there are no label_actions.
 run_test "ready-to-code-applied-without-label-actions" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
+
+# --- good first issue suppresses ready-to-code (#2311) ---
+
+# When label_actions includes "good first issue", the deferred ready-to-code
+# label should be replaced with "triaged" so the code agent is not dispatched.
+run_test "good-first-issue-suppresses-ready-to-code" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix typo in README","severity":"low","category":"bug","problem":"Typo","root_cause_hypothesis":"Typo","reproduction_steps":["step 1"],"environment":"Linux","impact":"Readers","recommended_fix":"Fix typo","proposed_test_case":"test_typo"},"comment":"## Triage Summary\n\nThis is a good first issue.","label_actions":{"reason":"Good first issue for newcomers.","actions":[{"action":"add","label":"good first issue"}]}}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+
+run_test_no_pattern "good-first-issue-no-ready-to-code" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix typo in README","severity":"low","category":"bug","problem":"Typo","root_cause_hypothesis":"Typo","reproduction_steps":["step 1"],"environment":"Linux","impact":"Readers","recommended_fix":"Fix typo","proposed_test_case":"test_typo"},"comment":"## Triage Summary\n\nThis is a good first issue.","label_actions":{"reason":"Good first issue for newcomers.","actions":[{"action":"add","label":"good first issue"}]}}' \
+  "labels[]=ready-to-code"
+
+run_test_stdout "good-first-issue-suppression-logged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix typo in README","severity":"low","category":"bug","problem":"Typo","root_cause_hypothesis":"Typo","reproduction_steps":["step 1"],"environment":"Linux","impact":"Readers","recommended_fix":"Fix typo","proposed_test_case":"test_typo"},"comment":"## Triage Summary\n\nThis is a good first issue.","label_actions":{"reason":"Good first issue for newcomers.","actions":[{"action":"add","label":"good first issue"}]}}' \
+  "Suppressing ready-to-code"
+
+# Verify the baseline: a bug without good-first-issue still gets ready-to-code.
+# (already covered by existing tests, but this confirms it with label_actions present)
+run_test "bug-without-good-first-issue-gets-ready-to-code" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"API area.","actions":[{"action":"add","label":"area/api"}]}}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
 
 # --- Summary ---
