@@ -33,9 +33,29 @@ type UpgradeResult struct {
 	Error      error
 }
 
+// shimOwner and shimRepo identify the fullsend-ai/fullsend repo whose
+// tags are resolved when preserving SHA pinning during upgrade.
+const (
+	shimOwner = "fullsend-ai"
+	shimRepo  = "fullsend"
+)
+
 // safeRefPattern validates that a ref contains only characters safe for
 // GitHub Actions uses: lines.
 var safeRefPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+// shaRefPattern matches git commit SHAs (7–40 hex characters, case-insensitive).
+// Used to detect whether a workflow ref is SHA-pinned vs. tag-pinned.
+// Note: tag names that happen to be 7–40 hex characters (e.g. "deadbeef")
+// would be treated as SHA-pinned. This is extremely unlikely since version
+// tags follow the vX.Y.Z convention.
+var shaRefPattern = regexp.MustCompile(`(?i)^[0-9a-f]{7,40}$`)
+
+// isSHARef reports whether ref looks like a git commit SHA
+// (7–40 hex characters, case-insensitive).
+func isSHARef(ref string) bool {
+	return shaRefPattern.MatchString(ref)
+}
 
 // IsValidRef reports whether ref contains only characters safe for use in
 // GitHub Actions workflow uses: lines.
@@ -46,7 +66,7 @@ func IsValidRef(ref string) bool {
 // shimRefPattern matches all @ref occurrences in fullsend-ai/fullsend workflow uses: lines.
 // The trailing comment group uses [ \t]* (not \s*) to avoid matching across newlines.
 var shimRefPattern = regexp.MustCompile(
-	`(uses:\s+fullsend-ai/fullsend/[^@]+@)\S+([ \t]*#.*)?`,
+	`(uses:\s+` + shimOwner + `/` + shimRepo + `/[^@]+@)\S+([ \t]*#.*)?`,
 )
 
 // replaceShimRef replaces the @ref (and optional trailing # tag comment) in all
@@ -180,19 +200,42 @@ func upgradeRepo(ctx context.Context, client forge.Client,
 		}
 	}
 
-	// The target ref for the uses: line is expected to be a SHA when ADR 0048's
-	// --upstream-ref is used, but the manifest's fullsend_ref is a version tag.
-	// We use the tag as both the ref and the comment since we don't have the SHA.
-	newContent, changed := replaceShimRef(content, targetRef, "")
-	if !changed {
-		result.Skipped = true
-		result.SkipReason = "no uses: lines matched for replacement"
+	if cfg.DryRun {
+		// Check if any uses: lines would change without resolving the SHA,
+		// so DryRun never makes API calls that could fail.
+		_, changed := replaceShimRef(content, targetRef, "")
+		if !changed {
+			result.Skipped = true
+			result.SkipReason = "no uses: lines matched for replacement"
+			return result
+		}
+		result.Upgraded = true
+		msg := fmt.Sprintf("Would upgrade %s → %s", currentRef, targetRef)
+		if isSHARef(currentRef) {
+			msg += " (SHA will be resolved at upgrade time)"
+		}
+		progress(repoFullName, "dry-run", msg)
 		return result
 	}
 
-	if cfg.DryRun {
-		result.Upgraded = true
-		progress(repoFullName, "dry-run", fmt.Sprintf("Would upgrade %s → %s", currentRef, targetRef))
+	// Preserve SHA pinning: if the current ref is a SHA, resolve the target
+	// tag to its commit SHA and write @<sha> # <tag>. If the current ref is
+	// a tag, keep tag-only format (@<tag>).
+	var newContent []byte
+	var changed bool
+	if isSHARef(currentRef) {
+		sha, err := client.GetRef(ctx, shimOwner, shimRepo, "tags/"+targetRef)
+		if err != nil {
+			result.Error = fmt.Errorf("resolving tag %s to SHA: %w", targetRef, err)
+			return result
+		}
+		newContent, changed = replaceShimRef(content, sha, targetRef)
+	} else {
+		newContent, changed = replaceShimRef(content, targetRef, "")
+	}
+	if !changed {
+		result.Skipped = true
+		result.SkipReason = "no uses: lines matched for replacement"
 		return result
 	}
 
