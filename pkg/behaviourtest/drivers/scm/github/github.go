@@ -73,6 +73,18 @@ func (d *Driver) SubmitPullRequestReview(ctx context.Context, owner, repo string
 	return d.Client.CreatePullRequestReview(ctx, owner, repo, number, event, "behaviour test review", sha, nil)
 }
 
+func (d *Driver) CreateRepo(ctx context.Context, org, name, description string) error {
+	_, err := d.Client.CreateRepo(ctx, org, name, description, false)
+	if err != nil && forge.IsAlreadyExists(err) {
+		return nil
+	}
+	return err
+}
+
+func (d *Driver) DeleteRepo(ctx context.Context, owner, repo string) error {
+	return d.Client.DeleteRepo(ctx, owner, repo)
+}
+
 func (d *Driver) CreateFork(ctx context.Context, owner, repo, forkName string) (string, error) {
 	return d.Client.CreateForkInOrg(ctx, owner, repo, owner, forkName)
 }

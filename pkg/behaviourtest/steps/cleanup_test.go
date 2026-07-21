@@ -272,6 +272,14 @@ func (f *fakeCleanupSCM) SubmitPullRequestReview(context.Context, string, string
 	return nil
 }
 
+func (f *fakeCleanupSCM) CreateRepo(context.Context, string, string, string) error {
+	return nil
+}
+
+func (f *fakeCleanupSCM) DeleteRepo(context.Context, string, string) error {
+	return nil
+}
+
 func (f *fakeCleanupSCM) CreateFork(context.Context, string, string, string) (string, error) {
 	return "", nil
 }

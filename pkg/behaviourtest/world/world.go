@@ -48,6 +48,10 @@ type World struct {
 	ForkRepo     string
 	ForkPRNumber int
 	ForkPRBranch string
+
+	// URL harness repo — set by URL dispatch step definitions.
+	URLHarnessRepoOwner string
+	URLHarnessRepoName  string
 }
 
 const BehaviourScriptRepoPath = "behaviour/current-scenario.yaml"

@@ -14,16 +14,48 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
+func TestGivenHarnessHostingRepo_Validation(t *testing.T) {
+	w := &world.World{}
+	require.Error(t, givenHarnessHostingRepo(w, ""))
+	require.Error(t, givenHarnessHostingRepo(w, "repo"), "should fail when org is not set")
+}
+
+func TestGivenHarnessHostingRepo_SetsWorldFields(t *testing.T) {
+	w := &world.World{
+		Org: "test-org",
+		SCM: &fakeURLSCM{files: map[string][]byte{}, repos: map[string]bool{}},
+	}
+	err := givenHarnessHostingRepo(w, "my-host-repo")
+	require.NoError(t, err)
+	assert.Equal(t, "test-org", w.URLHarnessRepoOwner)
+	assert.Equal(t, "my-host-repo", w.URLHarnessRepoName)
+}
+
 func TestGivenURLSourcedCustomHarness_Validation(t *testing.T) {
 	w := &world.World{}
 	require.Error(t, givenURLSourcedCustomHarness(w, "", "doc", urlHarnessOpts{}))
 	require.Error(t, givenURLSourcedCustomHarness(w, "agent", "", urlHarnessOpts{}))
 }
 
-func TestGivenURLSourcedCustomHarness_SetsDispatchAgent(t *testing.T) {
+func TestGivenURLSourcedCustomHarness_RequiresHostingRepo(t *testing.T) {
 	w := &world.World{
 		Install: &fakeURLInstall{owner: "test-org", repo: "test-repo"},
-		SCM:     &fakeURLSCM{files: map[string][]byte{".fullsend/config.yaml": []byte("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n")}},
+		SCM:     &fakeURLSCM{files: map[string][]byte{}},
+	}
+	err := givenURLSourcedCustomHarness(w, "url-test", "agent: agents/triage.md", urlHarnessOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "harness-hosting repo must be created first")
+}
+
+func TestGivenURLSourcedCustomHarness_SetsDispatchAgent(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{
+		".fullsend/config.yaml": []byte("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n"),
+	}}
+	w := &world.World{
+		Install:             &fakeURLInstall{owner: "test-org", repo: "test-repo"},
+		SCM:                 scm,
+		URLHarnessRepoOwner: "test-org",
+		URLHarnessRepoName:  "harness-host",
 	}
 	err := givenURLSourcedCustomHarness(w, "url-test", "agent: agents/triage.md\nrole: triage\nslug: url-test", urlHarnessOpts{})
 	require.NoError(t, err)
@@ -38,20 +70,28 @@ func TestGivenURLSourcedCustomHarness_URLFormat(t *testing.T) {
 		".fullsend/config.yaml": []byte("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n"),
 	}}
 	w := &world.World{
-		Install: &fakeURLInstall{owner: "my-org", repo: "my-repo"},
-		SCM:     scm,
+		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		SCM:                 scm,
+		URLHarnessRepoOwner: "my-org",
+		URLHarnessRepoName:  "harness-host",
 	}
 
 	err := givenURLSourcedCustomHarness(w, "url-test", content, urlHarnessOpts{})
 	require.NoError(t, err)
 
-	// Verify the config was updated with the correct URL source.
+	// Verify the harness was committed to the hosting repo, not the config repo.
+	harnessData := scm.files["harness/url-test.yaml"]
+	require.NotNil(t, harnessData, "harness should be committed to hosting repo")
+	assert.Equal(t, content, string(harnessData))
+
+	// Verify the config was updated with the correct URL source pointing
+	// to the hosting repo.
 	cfgData := scm.files[".fullsend/config.yaml"]
-	expectedURL := fmt.Sprintf("https://raw.githubusercontent.com/my-org/my-repo/main/.fullsend/harness/url-test.yaml#sha256=%s", expectedHash)
+	expectedURL := fmt.Sprintf("https://raw.githubusercontent.com/my-org/harness-host/main/harness/url-test.yaml#sha256=%s", expectedHash)
 	assert.Contains(t, string(cfgData), expectedURL)
 
-	// Verify the allowlist was updated.
-	assert.Contains(t, string(cfgData), "https://raw.githubusercontent.com/my-org/my-repo/")
+	// Verify the allowlist was updated with the hosting repo prefix.
+	assert.Contains(t, string(cfgData), "https://raw.githubusercontent.com/my-org/harness-host/")
 }
 
 func TestGivenURLSourcedCustomHarness_BadHash(t *testing.T) {
@@ -59,8 +99,10 @@ func TestGivenURLSourcedCustomHarness_BadHash(t *testing.T) {
 		".fullsend/config.yaml": []byte("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n"),
 	}}
 	w := &world.World{
-		Install: &fakeURLInstall{owner: "my-org", repo: "my-repo"},
-		SCM:     scm,
+		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		SCM:                 scm,
+		URLHarnessRepoOwner: "my-org",
+		URLHarnessRepoName:  "harness-host",
 	}
 
 	err := givenURLSourcedCustomHarness(w, "bad-hash", "agent: agents/triage.md\nrole: triage\nslug: bad", urlHarnessOpts{badHash: true})
@@ -76,8 +118,10 @@ func TestGivenURLSourcedCustomHarness_SkipAllowlist(t *testing.T) {
 		".fullsend/config.yaml": []byte("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n"),
 	}}
 	w := &world.World{
-		Install: &fakeURLInstall{owner: "my-org", repo: "my-repo"},
-		SCM:     scm,
+		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		SCM:                 scm,
+		URLHarnessRepoOwner: "my-org",
+		URLHarnessRepoName:  "harness-host",
 	}
 
 	err := givenURLSourcedCustomHarness(w, "no-allow", "agent: agents/triage.md\nrole: triage\nslug: no-allow", urlHarnessOpts{skipAllowlist: true})
@@ -88,21 +132,14 @@ func TestGivenURLSourcedCustomHarness_SkipAllowlist(t *testing.T) {
 	cfg, parseErr := config.ParsePerRepoConfig(cfgData)
 	require.NoError(t, parseErr)
 
-	// The pool org URL prefix should NOT be in the allowlist.
-	poolPrefix := "https://raw.githubusercontent.com/my-org/my-repo/"
-	assert.NotContains(t, cfg.AllowedRemoteResources, poolPrefix)
+	// The hosting repo URL prefix should NOT be in the allowlist.
+	hostPrefix := "https://raw.githubusercontent.com/my-org/harness-host/"
+	assert.NotContains(t, cfg.AllowedRemoteResources, hostPrefix)
 	// The default fullsend-ai prefix should still be there.
 	assert.Contains(t, cfg.AllowedRemoteResources, "https://raw.githubusercontent.com/fullsend-ai/fullsend/")
 	// But the URL source should still be registered in agents.
 	require.Len(t, cfg.Agents, 1)
-	assert.Contains(t, cfg.Agents[0].Source, poolPrefix)
-}
-
-func TestContainsPrefix(t *testing.T) {
-	list := []string{"https://example.com/a/", "https://example.com/b/"}
-	assert.True(t, containsPrefix(list, "https://example.com/a/"))
-	assert.False(t, containsPrefix(list, "https://example.com/c/"))
-	assert.False(t, containsPrefix(nil, "https://example.com/"))
+	assert.Contains(t, cfg.Agents[0].Source, hostPrefix)
 }
 
 // --- fakes ---
@@ -124,6 +161,7 @@ func (f *fakeURLInstall) AgentArtifactName() string  { return "fullsend-triage" 
 
 type fakeURLSCM struct {
 	files map[string][]byte
+	repos map[string]bool
 }
 
 func (f *fakeURLSCM) CommitFile(_ context.Context, _, _, path, _ string, content []byte) error {
@@ -137,6 +175,19 @@ func (f *fakeURLSCM) GetFileContent(_ context.Context, _, _, path string) ([]byt
 		return nil, fmt.Errorf("file not found: %s", path)
 	}
 	return data, nil
+}
+
+func (f *fakeURLSCM) CreateRepo(_ context.Context, _, name, _ string) error {
+	if f.repos == nil {
+		f.repos = map[string]bool{}
+	}
+	f.repos[name] = true
+	return nil
+}
+
+func (f *fakeURLSCM) DeleteRepo(_ context.Context, _, repo string) error {
+	delete(f.repos, repo)
+	return nil
 }
 
 // Unused SCM methods — satisfy the interface.

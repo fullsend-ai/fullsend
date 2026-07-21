@@ -38,6 +38,13 @@ func CleanupScenario(w *world.World) {
 		}
 	}
 
+	// --- URL harness repo cleanup ---
+	if w.URLHarnessRepoName != "" {
+		if err := w.SCM.DeleteRepo(ctx, w.URLHarnessRepoOwner, w.URLHarnessRepoName); err != nil {
+			worldLogf(w, "behaviour cleanup: delete URL harness repo %s/%s: %v", w.URLHarnessRepoOwner, w.URLHarnessRepoName, err)
+		}
+	}
+
 	// --- Artifact cleanup ---
 	if w.ArtifactDir != "" && shouldRemoveArtifactDir(w.ArtifactDir, os.Getenv("BEHAVIOUR_ARTIFACT_DIR")) {
 		if err := os.RemoveAll(w.ArtifactDir); err != nil {

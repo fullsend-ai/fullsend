@@ -2,6 +2,7 @@ Feature: URL-sourced harness dispatch
 
   Background:
     Given the enrolled test repository
+    And a harness-hosting repository "url-harness-host"
 
   Scenario: URL-sourced harness with CEL trigger dispatches agent
     Given a URL-sourced custom harness "url-ping" with:
@@ -91,3 +92,37 @@ Feature: URL-sourced harness dispatch
     Then the harness "good-local" workflow completes successfully
     And the agent will succeed to Prove fallback execution
     And the harness "bad-hash" agent did not run
+
+  Scenario: URL source not in allowlist is skipped and dispatch continues
+    Given a custom harness "good-allowed" with:
+      """
+      agent: agents/triage.md
+      role: triage
+      slug: fullsend-ai-good-allowed
+      model: opus
+      image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      trigger: |
+        event.entity.kind == "work_item"
+        && event.transition.kind == "label_changed"
+        && event.transition.label.name == "ready-for-allowlist-test"
+      """
+    And a URL-sourced custom harness "no-allow" not in allowlist with:
+      """
+      agent: agents/triage.md
+      role: triage
+      slug: fullsend-ai-no-allow
+      model: opus
+      image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      trigger: |
+        event.entity.kind == "work_item"
+        && event.transition.kind == "label_changed"
+        && event.transition.label.name == "ready-for-allowlist-test"
+      """
+    And a dummy agent that would:
+      | description                | op           | args                                                    |
+      | Prove allowlist fallback   | write_fixture| output/dispatch-allowlist-ok.json, fixtures/dispatch/ok.json |
+    And an issue
+    When the issue is labeled "ready-for-allowlist-test"
+    Then the harness "good-allowed" workflow completes successfully
+    And the agent will succeed to Prove allowlist fallback
+    And the harness "no-allow" agent did not run

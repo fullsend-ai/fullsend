@@ -316,6 +316,14 @@ func (f *fakeForkSCM) CloseIssue(context.Context, string, string, int) error {
 	return nil
 }
 
+func (f *fakeForkSCM) CreateRepo(context.Context, string, string, string) error {
+	return nil
+}
+
+func (f *fakeForkSCM) DeleteRepo(context.Context, string, string) error {
+	return nil
+}
+
 func (f *fakeForkSCM) DeleteBranch(context.Context, string, string, string) error {
 	return nil
 }
