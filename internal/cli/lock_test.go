@@ -1309,6 +1309,64 @@ func TestResolveFromLock_ProfileReconstruction(t *testing.T) {
 	require.Len(t, lockResult.Profiles, 1)
 	assert.Equal(t, "anthropic", lockResult.Profiles[0].ID)
 	assert.True(t, lockResult.Deps[0].CacheHit)
+	assert.True(t, strings.HasSuffix(lockResult.Profiles[0].LocalPath, ".yaml"),
+		"profile LocalPath should end with .yaml for openshell compatibility, got %s",
+		lockResult.Profiles[0].LocalPath)
+	assert.Equal(t, "anthropic.yaml", filepath.Base(lockResult.Profiles[0].LocalPath),
+		"profile LocalPath basename should be <id>.yaml")
+	assert.Equal(t, lockResult.Profiles[0].LocalPath, lockResult.Deps[0].LocalPath,
+		"Dependency.LocalPath should match the renamed profile path, not the pre-rename cache path")
+
+	// The named path must be a symlink (not a copy) so its relative "content"
+	// target keeps resolving after the cache dir is bind-mounted into the sandbox.
+	info, err := os.Lstat(lockResult.Profiles[0].LocalPath)
+	require.NoError(t, err)
+	assert.True(t, info.Mode()&os.ModeSymlink != 0,
+		"profile LocalPath should be a symlink, got mode %s", info.Mode())
+
+	// Verify the symlink target is readable and contains the profile content.
+	got, err := os.ReadFile(lockResult.Profiles[0].LocalPath)
+	require.NoError(t, err)
+	assert.Equal(t, profileContent, got)
+}
+
+// TestResolveFromLock_ProfileSymlinkError covers the error branch in
+// resolveFromLock when CacheNamedSymlink fails: the cache is populated but its
+// directory is made unwritable, so naming the cached profile returns a wrapped
+// error rather than a bare path.
+func TestResolveFromLock_ProfileSymlinkError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses directory permission checks")
+	}
+	profileContent := []byte("id: anthropic\nname: Anthropic\n")
+	profileHash := fetch.ComputeSHA256(profileContent)
+
+	root := t.TempDir()
+	url := "https://example.com/profiles/anthropic.yaml"
+	require.NoError(t, fetch.CachePut(root, url, profileContent))
+
+	cacheDir, err := fetch.CachePath(root, profileHash)
+	require.NoError(t, err)
+	require.NoError(t, os.Chmod(cacheDir, 0o500)) // read+execute, no write
+	t.Cleanup(func() { _ = os.Chmod(cacheDir, 0o700) })
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{Field: "openshell.profiles[0]", URL: url, SHA256: profileHash},
+		},
+	}
+	h := &harness.Harness{
+		Agent: "agents/code.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{url + "#sha256=" + profileHash},
+		},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	_, err = resolveFromLock(h, entry, root, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "naming cached profile")
 }
 
 func TestResolveFromLock_ProfileEmptyID(t *testing.T) {

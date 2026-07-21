@@ -1313,8 +1313,113 @@ credentials:
 	require.Len(t, result.Profiles, 1)
 	assert.Equal(t, "claude-code", result.Profiles[0].ID)
 	assert.FileExists(t, result.Profiles[0].LocalPath)
+	assert.True(t, strings.HasSuffix(result.Profiles[0].LocalPath, ".yaml"),
+		"profile LocalPath should end with .yaml for openshell compatibility, got %s",
+		result.Profiles[0].LocalPath)
+	assert.Equal(t, "claude-code.yaml", filepath.Base(result.Profiles[0].LocalPath),
+		"profile LocalPath basename should be <id>.yaml")
+
+	// The named path must be a symlink (not a copy) so its relative "content"
+	// target keeps resolving after the cache dir is bind-mounted into the sandbox.
+	info, err := os.Lstat(result.Profiles[0].LocalPath)
+	require.NoError(t, err)
+	assert.True(t, info.Mode()&os.ModeSymlink != 0,
+		"profile LocalPath should be a symlink, got mode %s", info.Mode())
+
+	// Verify the symlink target is readable and contains the profile content.
+	got, err := os.ReadFile(result.Profiles[0].LocalPath)
+	require.NoError(t, err)
+	assert.Equal(t, profileContent, got)
+
 	require.Len(t, result.Deps, 1)
 	assert.Equal(t, "file", result.Deps[0].Type)
+	assert.Equal(t, result.Profiles[0].LocalPath, result.Deps[0].LocalPath,
+		"Dependency.LocalPath should match the renamed profile path, not the pre-rename cache path")
+}
+
+// TestResolveHarness_ProfileURL_DuplicateReference pins the state.resolved sync
+// (resolve.go): when the same profile URL is referenced twice in one harness,
+// the fetch-dedup fast path must return the renamed .yaml path both times, not
+// the pre-rename extensionless "content" path.
+func TestResolveHarness_ProfileURL_DuplicateReference(t *testing.T) {
+	profileContent := []byte("id: claude-code\ncategory: llm\n")
+	profileHash := fetch.ComputeSHA256(profileContent)
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(profileContent)
+	}))
+
+	root := t.TempDir()
+	profileURL := fmt.Sprintf("%s/profiles/claude-code.yaml#sha256=%s", srv.URL, profileHash)
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{profileURL, profileURL}, // referenced twice
+		},
+		AllowedRemoteResources: []string{srv.URL + "/"},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		FetchPolicy:   policy,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Profiles, 2)
+	for i, p := range result.Profiles {
+		assert.True(t, strings.HasSuffix(p.LocalPath, ".yaml"),
+			"profile[%d] LocalPath should end with .yaml, got %s", i, p.LocalPath)
+	}
+	assert.Equal(t, result.Profiles[0].LocalPath, result.Profiles[1].LocalPath,
+		"both references to the same profile URL should resolve to the same .yaml path")
+}
+
+// TestResolveHarness_ProfileURL_SymlinkError exercises the error path when
+// CacheNamedSymlink fails (resolve.go): the cache is populated, its directory
+// is made read-only, and a re-resolve must surface the wrapped naming error.
+func TestResolveHarness_ProfileURL_SymlinkError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses directory permission checks")
+	}
+	profileContent := []byte("id: claude-code\ncategory: llm\n")
+	profileHash := fetch.ComputeSHA256(profileContent)
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(profileContent)
+	}))
+
+	root := t.TempDir()
+	profileURL := fmt.Sprintf("%s/profiles/claude-code.yaml#sha256=%s", srv.URL, profileHash)
+	// ResolveHarness mutates its harness in place, so use a fresh harness for
+	// each resolve. Both share the same workspace root, so the second resolve
+	// is a cache hit off disk.
+	newHarness := func() *harness.Harness {
+		return &harness.Harness{
+			Agent: "agents/test.md",
+			Role:  "test",
+			OpenShell: &harness.OpenShellConfig{
+				Profiles: []string{profileURL},
+			},
+			AllowedRemoteResources: []string{srv.URL + "/"},
+		}
+	}
+	opts := ResolveOpts{WorkspaceRoot: root, FetchPolicy: policy}
+
+	// First resolve populates the cache and creates the .yaml symlink.
+	result, err := ResolveHarness(context.Background(), newHarness(), opts)
+	require.NoError(t, err)
+	require.Len(t, result.Profiles, 1)
+
+	// Drop the symlink and make its cache directory unwritable so the second
+	// resolve (a cache hit) fails inside CacheNamedSymlink.
+	cacheDir := filepath.Dir(result.Profiles[0].LocalPath)
+	require.NoError(t, os.Remove(result.Profiles[0].LocalPath))
+	require.NoError(t, os.Chmod(cacheDir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(cacheDir, 0o700) })
+
+	_, err = ResolveHarness(context.Background(), newHarness(), opts)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "naming cached profile")
 }
 
 func TestResolveHarness_ProfileMissingID(t *testing.T) {

@@ -430,4 +430,130 @@ func TestCacheNamedSymlink(t *testing.T) {
 			assert.NoError(t, err, "goroutine %d", i)
 		}
 	})
+
+	t.Run("creates symlink for content file", func(t *testing.T) {
+		dir := t.TempDir()
+		contentPath := filepath.Join(dir, "content")
+		require.NoError(t, os.WriteFile(contentPath, []byte("id: my-profile\n"), 0o600))
+
+		got, err := CacheNamedSymlink(contentPath, "my-profile.yaml")
+		require.NoError(t, err)
+		assert.Equal(t, filepath.Join(dir, "my-profile.yaml"), got)
+
+		// Verify the symlink target is readable.
+		data, err := os.ReadFile(got)
+		require.NoError(t, err)
+		assert.Equal(t, "id: my-profile\n", string(data))
+	})
+
+	t.Run("reserved names fall back to content for content paths", func(t *testing.T) {
+		for _, name := range []string{"", ".", "..", "metadata.json"} {
+			dir := t.TempDir()
+			contentPath := filepath.Join(dir, "content")
+			require.NoError(t, os.WriteFile(contentPath, []byte("data"), 0o600))
+
+			got, err := CacheNamedSymlink(contentPath, name)
+			require.NoError(t, err)
+			assert.Equal(t, contentPath, got,
+				"reserved name %q with content path should return contentPath unchanged", name)
+		}
+	})
+
+	t.Run("recreates a symlink pointing at the wrong target", func(t *testing.T) {
+		dir := t.TempDir()
+		contentPath := filepath.Join(dir, "content")
+		require.NoError(t, os.WriteFile(contentPath, []byte("id: my-profile\n"), 0o600))
+
+		namedPath := filepath.Join(dir, "my-profile.yaml")
+		require.NoError(t, os.Symlink("some-other-file", namedPath))
+
+		got, err := CacheNamedSymlink(contentPath, "my-profile.yaml")
+		require.NoError(t, err)
+		assert.Equal(t, namedPath, got)
+
+		target, err := os.Readlink(namedPath)
+		require.NoError(t, err)
+		assert.Equal(t, "content", target, "stale symlink should be recreated to point at content")
+
+		data, err := os.ReadFile(got)
+		require.NoError(t, err)
+		assert.Equal(t, "id: my-profile\n", string(data))
+	})
+
+	t.Run("concurrent replacement of a stale symlink converges without error", func(t *testing.T) {
+		dir := t.TempDir()
+		contentPath := filepath.Join(dir, "content")
+		require.NoError(t, os.WriteFile(contentPath, []byte("id: my-profile\n"), 0o600))
+
+		namedPath := filepath.Join(dir, "my-profile.yaml")
+		require.NoError(t, os.Symlink("some-other-file", namedPath))
+
+		var wg sync.WaitGroup
+		errs := make([]error, 30)
+		for i := range errs {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				_, errs[idx] = CacheNamedSymlink(contentPath, "my-profile.yaml")
+			}(i)
+		}
+		wg.Wait()
+		for i, err := range errs {
+			assert.NoError(t, err, "goroutine %d", i)
+		}
+
+		target, err := os.Readlink(namedPath)
+		require.NoError(t, err)
+		assert.Equal(t, "content", target)
+	})
+
+	t.Run("recreates when a non-symlink file occupies the named path", func(t *testing.T) {
+		dir := t.TempDir()
+		contentPath := filepath.Join(dir, "content")
+		require.NoError(t, os.WriteFile(contentPath, []byte("id: my-profile\n"), 0o600))
+
+		namedPath := filepath.Join(dir, "my-profile.yaml")
+		require.NoError(t, os.WriteFile(namedPath, []byte("stale regular file, not a symlink"), 0o600))
+
+		got, err := CacheNamedSymlink(contentPath, "my-profile.yaml")
+		require.NoError(t, err)
+		assert.Equal(t, namedPath, got)
+
+		info, err := os.Lstat(namedPath)
+		require.NoError(t, err)
+		assert.True(t, info.Mode()&os.ModeSymlink != 0, "foreign regular file should be replaced with a symlink")
+
+		data, err := os.ReadFile(got)
+		require.NoError(t, err)
+		assert.Equal(t, "id: my-profile\n", string(data))
+	})
+
+	t.Run("returns an error when the cache directory is not writable", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("running as root bypasses directory permission checks")
+		}
+		dir := t.TempDir()
+		contentPath := filepath.Join(dir, "content")
+		require.NoError(t, os.WriteFile(contentPath, []byte("data"), 0o600))
+		require.NoError(t, os.Chmod(dir, 0o500)) // read+execute, no write
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+		_, err := CacheNamedSymlink(contentPath, "my-profile.yaml")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "named symlink")
+	})
+
+	t.Run("rejects link names containing a path separator", func(t *testing.T) {
+		dir := t.TempDir()
+		contentPath := filepath.Join(dir, "content")
+		require.NoError(t, os.WriteFile(contentPath, []byte("data"), 0o600))
+
+		_, err := CacheNamedSymlink(contentPath, filepath.Join("sub", "evil.yaml"))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "single path segment")
+
+		// No entry should have been created for the rejected name.
+		_, statErr := os.Lstat(filepath.Join(dir, "sub"))
+		assert.True(t, os.IsNotExist(statErr))
+	})
 }

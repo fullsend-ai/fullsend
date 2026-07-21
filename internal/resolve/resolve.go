@@ -260,6 +260,19 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 		if err != nil {
 			return ResolveResult{}, fmt.Errorf("openshell.profiles[%d]: %w (from %s)", i, err, dep.URL)
 		}
+
+		// Create a named symlink so openshell sees a .yaml extension
+		// instead of the extensionless cache-internal "content" filename.
+		localPath, err = fetch.CacheNamedSymlink(localPath, id+".yaml")
+		if err != nil {
+			return ResolveResult{}, fmt.Errorf("naming cached profile for openshell.profiles[%d]: %w", i, err)
+		}
+		dep.LocalPath = localPath
+		// Keep the fetch-dedup cache in sync with the renamed path, so a
+		// second reference to the same profile URL (elsewhere in the same
+		// harness) doesn't resolve to the pre-rename cache path.
+		state.resolved[dep.URL] = dep
+
 		state.appendDependency(dep)
 		profiles = append(profiles, ResolvedProfile{ID: id, LocalPath: localPath})
 	}
