@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
@@ -602,4 +604,170 @@ func TestHandleFetch_AuditLogWriteFailure(t *testing.T) {
 	if resp.LocalPath == "" {
 		t.Fatal("expected non-empty LocalPath")
 	}
+}
+
+// threadSafeUploader is a concurrency-safe variant of stubUploader.
+type threadSafeUploader struct {
+	mu    sync.Mutex
+	calls []uploadCall
+	count atomic.Int32
+}
+
+func (u *threadSafeUploader) UploadSkillDir(sandboxName, localPath, remotePath string) error {
+	u.count.Add(1)
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.calls = append(u.calls, uploadCall{sandboxName, localPath, remotePath})
+	return nil
+}
+
+func TestHandleFetch_DuplicateSkipsUpload(t *testing.T) {
+	tmpDir := t.TempDir()
+	files := fakeSkillFiles()
+	hash := fakeSkillHash()
+
+	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+
+	uploader := &stubUploader{}
+	svc := New(ServiceConfig{
+		Harness:       testHarness("https://github.com/org/repo/"),
+		WorkspaceRoot: tmpDir,
+		MaxFetches:    10,
+		Uploader:      uploader,
+		SandboxName:   "sandbox-1",
+		SkillDestDir:  "/sandbox/skills",
+	})
+
+	url := "https://github.com/org/repo/tree/abc123/skills/test-skill#sha256=" + hash
+
+	// First fetch — should upload.
+	resp1, err := svc.HandleFetch(context.Background(), FetchRequest{URL: url})
+	if err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	if len(uploader.calls) != 1 {
+		t.Fatalf("after first fetch: expected 1 upload, got %d", len(uploader.calls))
+	}
+
+	// Second fetch (same URL) — should skip upload.
+	resp2, err := svc.HandleFetch(context.Background(), FetchRequest{URL: url})
+	if err != nil {
+		t.Fatalf("second fetch: %v", err)
+	}
+	if len(uploader.calls) != 1 {
+		t.Fatalf("after second fetch: expected still 1 upload, got %d", len(uploader.calls))
+	}
+	if resp2.LocalPath != resp1.LocalPath {
+		t.Fatalf("LocalPath mismatch: %q vs %q", resp2.LocalPath, resp1.LocalPath)
+	}
+
+	// Third fetch — still only 1 upload.
+	_, err = svc.HandleFetch(context.Background(), FetchRequest{URL: url})
+	if err != nil {
+		t.Fatalf("third fetch: %v", err)
+	}
+	if len(uploader.calls) != 1 {
+		t.Fatalf("after third fetch: expected still 1 upload, got %d", len(uploader.calls))
+	}
+}
+
+func TestHandleFetch_ConcurrentSameURLUploadsOnce(t *testing.T) {
+	tmpDir := t.TempDir()
+	files := fakeSkillFiles()
+	hash := fakeSkillHash()
+
+	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+
+	uploader := &threadSafeUploader{}
+	svc := New(ServiceConfig{
+		Harness:       testHarness("https://github.com/org/repo/"),
+		WorkspaceRoot: tmpDir,
+		MaxFetches:    20,
+		Uploader:      uploader,
+		SandboxName:   "sandbox-1",
+		SkillDestDir:  "/sandbox/skills",
+	})
+
+	url := "https://github.com/org/repo/tree/abc123/skills/test-skill#sha256=" + hash
+	const goroutines = 10
+
+	var wg sync.WaitGroup
+	errs := make([]error, goroutines)
+	for i := range goroutines {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			_, errs[idx] = svc.HandleFetch(context.Background(), FetchRequest{URL: url})
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d: %v", i, err)
+		}
+	}
+
+	uploadCount := int(uploader.count.Load())
+	if uploadCount != 1 {
+		t.Fatalf("expected exactly 1 upload across %d concurrent fetches, got %d", goroutines, uploadCount)
+	}
+}
+
+func TestHandleFetch_UploadFailureAllowsRetry(t *testing.T) {
+	tmpDir := t.TempDir()
+	files := fakeSkillFiles()
+	hash := fakeSkillHash()
+
+	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+
+	callCount := 0
+	failingUploader := &callbackUploader{
+		fn: func(_, _, _ string) error {
+			callCount++
+			if callCount == 1 {
+				return fmt.Errorf("transient upload failure")
+			}
+			return nil
+		},
+	}
+
+	svc := New(ServiceConfig{
+		Harness:       testHarness("https://github.com/org/repo/"),
+		WorkspaceRoot: tmpDir,
+		MaxFetches:    10,
+		Uploader:      failingUploader,
+		SandboxName:   "sandbox-1",
+		SkillDestDir:  "/sandbox/skills",
+	})
+
+	url := "https://github.com/org/repo/tree/abc123/skills/test-skill#sha256=" + hash
+
+	// First attempt — upload fails.
+	_, err := svc.HandleFetch(context.Background(), FetchRequest{URL: url})
+	if err == nil {
+		t.Fatal("expected error on first attempt")
+	}
+
+	// Second attempt — upload succeeds; path should not be stuck as
+	// "already uploaded" from the failed first attempt.
+	resp, err := svc.HandleFetch(context.Background(), FetchRequest{URL: url})
+	if err != nil {
+		t.Fatalf("second attempt should succeed: %v", err)
+	}
+	if resp.LocalPath == "" {
+		t.Fatal("expected non-empty LocalPath")
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 upload attempts, got %d", callCount)
+	}
+}
+
+// callbackUploader delegates UploadSkillDir to a user-supplied function.
+type callbackUploader struct {
+	fn func(sandboxName, localPath, remotePath string) error
+}
+
+func (u *callbackUploader) UploadSkillDir(sandboxName, localPath, remotePath string) error {
+	return u.fn(sandboxName, localPath, remotePath)
 }

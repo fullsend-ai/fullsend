@@ -11,7 +11,10 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -74,6 +77,16 @@ type Service struct {
 	uploader      Uploader
 	skillDestDir  string
 	limiter       *RateLimiter
+
+	// uploaded tracks remotePaths that have been successfully uploaded to
+	// the sandbox during this service's lifetime. A second HandleFetch for
+	// the same URL (same remotePath) skips the upload, avoiding the
+	// rm-rf → mkdir → extract window where the destination is absent.
+	uploaded sync.Map // remotePath → struct{}
+
+	// uploadGroup coalesces concurrent uploads to the same remotePath so
+	// only one UploadSkillDir call runs at a time per destination.
+	uploadGroup singleflight.Group
 }
 
 // New creates a runtime fetch service.
@@ -206,8 +219,17 @@ func (s *Service) HandleFetch(ctx context.Context, req FetchRequest) (FetchRespo
 	remotePath := filepath.Join(s.skillDestDir, hashPrefix+"-"+basename)
 
 	if s.uploader != nil {
-		if err := s.uploader.UploadSkillDir(s.sandboxName, treePath, remotePath); err != nil {
-			return FetchResponse{}, &fetchError{"failed to upload skill to sandbox", http.StatusInternalServerError}
+		if _, ok := s.uploaded.Load(remotePath); !ok {
+			_, err, _ := s.uploadGroup.Do(remotePath, func() (any, error) {
+				if uploadErr := s.uploader.UploadSkillDir(s.sandboxName, treePath, remotePath); uploadErr != nil {
+					return nil, uploadErr
+				}
+				s.uploaded.Store(remotePath, struct{}{})
+				return nil, nil
+			})
+			if err != nil {
+				return FetchResponse{}, &fetchError{"failed to upload skill to sandbox", http.StatusInternalServerError}
+			}
 		}
 	}
 
