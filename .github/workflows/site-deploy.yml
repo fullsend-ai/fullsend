@@ -138,7 +138,7 @@ jobs:
         if: github.event.workflow_run.event == 'push'
         uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
         with:
-          wranglerVersion: "4.110.0"
+          wranglerVersion: "4.112.0"
           workingDirectory: cloudflare_site
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -166,7 +166,7 @@ jobs:
         if: github.event.workflow_run.event == 'pull_request'
         uses: cloudflare/wrangler-action@9acf94ace14e7dc412b076f2c5c20b8ce93c79cd # v3.15.0
         with:
-          wranglerVersion: "4.110.0"
+          wranglerVersion: "4.112.0"
           workingDirectory: cloudflare_site
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

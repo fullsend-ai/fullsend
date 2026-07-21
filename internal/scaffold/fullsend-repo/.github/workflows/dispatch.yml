@@ -1,5 +1,5 @@
 ---
-# lint-workflow-size: max-lines=475
+# lint-workflow-size: max-lines=500
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -53,16 +53,11 @@ jobs:
           STAGE=""
           TRIGGER_SOURCE=""
 
-          # Helper: check actor has write+ permission on the repo.
-          # Uses the collaborator permission API which correctly resolves org
-          # membership regardless of visibility (private vs public).
-          # See: github/gh-aw-mcpg#2862
-          has_write_permission() {
-            local username="${1:-}"
-            if [[ -z "${username}" ]]; then
-              return 1
-            fi
-            local role api_err
+          # Collaborator role_name vs min (write|triage). See #5223 / ADR 0054.
+          # API resolves org membership regardless of visibility (gh-aw-mcpg#2862).
+          has_repo_permission() {
+            local username="${1:-}" min="${2:-write}" role api_err
+            [[ -z "${username}" ]] && return 1
             api_err=$(mktemp) || {
               echo "::warning::Failed to create temp file for permission check of ${username}" >&2
               return 1
@@ -76,18 +71,21 @@ jobs:
             rm -f "${api_err}"
             case "${role}" in
               admin|maintain|write) return 0 ;;
+              triage) [[ "${min}" == "triage" ]] && return 0 || return 1 ;;
               *) return 1 ;;
             esac
           }
 
-          # Slash command authorization (comment-triggered paths)
+          has_write_permission() { has_repo_permission "${1:-}" write; }
+
+          # Slash-command auth; optional $1 = write|triage (default write).
           is_authorized() {
-            has_write_permission "${COMMENT_USER_LOGIN}"
+            has_repo_permission "${COMMENT_USER_LOGIN}" "${1:-write}"
           }
 
-          # Event-level authorization (non-comment triggers)
+          # Event-actor auth; $1=user, optional $2 = write|triage (default write).
           is_event_actor_authorized() {
-            has_write_permission "${1:-}"
+            has_repo_permission "${1:-}" "${2:-write}"
           }
 
           # Helper: check if user is the PR/issue author
@@ -117,7 +115,7 @@ jobs:
             issue_comment)
               case "${COMMAND}" in
                 /fs-triage)
-                  if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
+                  if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized triage; then
                     STAGE="triage"
                   fi
                   ;;
@@ -130,7 +128,7 @@ jobs:
                   ;;
                 /fs-review)
                   if [[ "${ISSUE_HAS_PR}" == "true" ]]; then
-                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
+                    if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized triage; then
                       STAGE="review"
                     fi
                   fi
@@ -177,18 +175,21 @@ jobs:
 
             issues)
               if [[ "${EVENT_ACTION}" == "opened" ]]; then
-                if is_event_actor_authorized "${ISSUE_USER_LOGIN}"; then
+                if is_event_actor_authorized "${ISSUE_USER_LOGIN}" triage; then
                   STAGE="triage"
                 fi
               elif [[ "${EVENT_ACTION}" == "edited" ]]; then
-                if is_event_actor_authorized "${EVENT_SENDER_LOGIN}"; then
+                if is_event_actor_authorized "${EVENT_SENDER_LOGIN}" triage; then
                   STAGE="triage"
                 fi
               elif [[ "${EVENT_ACTION}" == "labeled" ]]; then
                 if [[ "${TRIGGERING_LABEL}" == "ready-for-triage" ]]; then
                   STAGE="triage"
                 elif [[ "${TRIGGERING_LABEL}" == "ready-to-code" ]]; then
-                  STAGE="code"
+                  # Mutation stage: write+ labeler, or bots (agent handoff).
+                  if [[ "${EVENT_SENDER_LOGIN}" =~ \[bot\]$ ]] || is_event_actor_authorized "${EVENT_SENDER_LOGIN}"; then
+                    STAGE="code"
+                  fi
                 elif [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
                   if [[ "${ISSUE_HAS_PR}" == "true" ]]; then
                     STAGE="review"
@@ -200,7 +201,7 @@ jobs:
             pull_request_target)
               case "${EVENT_ACTION}" in
                 opened|synchronize|ready_for_review)
-                  if is_event_actor_authorized "${PR_USER_LOGIN}"; then
+                  if is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
                     STAGE="review"
                   fi
                   ;;
@@ -210,6 +211,8 @@ jobs:
                   fi
                   ;;
                 closed)
+                  # Intentional ungated: any closer may trigger read-only retro
+                  # (lifecycle accounting). See ADR 0054 #5223 note.
                   STAGE="retro"
                   ;;
               esac
@@ -219,17 +222,15 @@ jobs:
               if [[ "${EVENT_ACTION}" == "submitted" && "${REVIEW_STATE}" == "changes_requested" ]]; then
                 REVIEW_BOT="${ORG_NAME}-review[bot]"
                 if [[ "${REVIEW_USER_LOGIN}" == "${REVIEW_BOT}" ]]; then
-                  # Block fork PRs — fail closed if we cannot determine
+                  # Block fork PRs — fail closed if we cannot determine.
+                  # Human PRs need fullsend-fix + write+ author (not triage-only).
                   if [[ -n "${PR_HEAD_REPO}" && -n "${PR_BASE_REPO}" ]]; then
                     if [[ "${PR_HEAD_REPO}" == "${PR_BASE_REPO}" ]]; then
-                      # Check no-fix label (use PR_LABELS — issue.labels is empty
-                      # on pull_request_review events)
                       if ! has_label "fullsend-no-fix" "${PR_LABELS}"; then
-                        # Human PRs require the fullsend-fix label to auto-trigger
-                        # the fix agent. The /fs-fix slash command intentionally
-                        # bypasses this gate — authorized users can always trigger
-                        # fix manually regardless of labels.
-                        if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]] || has_label "fullsend-fix" "${PR_LABELS}"; then
+                        if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]]; then
+                          STAGE="fix"
+                          TRIGGER_SOURCE="${REVIEW_USER_LOGIN}"
+                        elif has_label "fullsend-fix" "${PR_LABELS}" && has_repo_permission "${PR_USER_LOGIN}" write; then
                           STAGE="fix"
                           TRIGGER_SOURCE="${REVIEW_USER_LOGIN}"
                         fi
@@ -366,25 +367,41 @@ jobs:
             fi
           fi
 
-      - name: Block fork PRs for fix stage
-        if: steps.route.outputs.stage == 'fix' && steps.role-check.outputs.skipped != 'true' && github.event.issue.pull_request
+      - name: Resolve PR head for issue_comment events
+        id: pr-head
+        if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && github.event_name == 'issue_comment' && github.event.issue.pull_request
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.issue.number }}
+          STAGE: ${{ steps.route.outputs.stage }}
         run: |
           set -euo pipefail
-          REPOS=$(gh api "repos/$SOURCE_REPO/pulls/$PR_NUMBER" \
-            --jq '[.head.repo.full_name, .base.repo.full_name] | @tsv' 2>/dev/null) || {
-            echo "::error::Could not determine PR repos — blocking fix for safety"
-            exit 1
+          PR_JSON=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}" \
+            --jq '{number, html_url,
+              head: {ref: .head.ref, sha: .head.sha, repo: {full_name: .head.repo.full_name}},
+              base: {ref: .base.ref, repo: {full_name: .base.repo.full_name}}}') || {
+            if [[ "${STAGE}" =~ ^(fix|review)$ ]]; then
+              echo "::error::Failed to fetch PR #${PR_NUMBER} head info"
+              exit 1
+            fi
+            echo "::warning::Failed to fetch PR #${PR_NUMBER} head info — continuing without PR context"
+            exit 0
           }
-          HEAD_REPO=$(printf '%s' "$REPOS" | cut -f1)
-          BASE_REPO=$(printf '%s' "$REPOS" | cut -f2)
-          if [[ "$HEAD_REPO" != "$BASE_REPO" ]]; then
-            echo "::error::Fork PR detected (head=$HEAD_REPO, base=$BASE_REPO) — fix agent blocked"
-            exit 1
+          if [[ "${STAGE}" == "fix" ]]; then
+            HEAD_REPO=$(printf '%s' "${PR_JSON}" | jq -r '.head.repo.full_name')
+            BASE_REPO=$(printf '%s' "${PR_JSON}" | jq -r '.base.repo.full_name')
+            if [[ "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
+              echo "::error::Fork PR detected (head=${HEAD_REPO}, base=${BASE_REPO}) — fix agent blocked"
+              exit 1
+            fi
           fi
+          DELIM="PR_$(openssl rand -hex 8)"
+          {
+            echo "pr_json<<${DELIM}"
+            echo "${PR_JSON}"
+            echo "${DELIM}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Find and trigger agent workflows for stage
         if: steps.route.outputs.stage != '' && steps.role-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true'
@@ -395,6 +412,7 @@ jobs:
           SOURCE_REPO: ${{ github.repository }}
           TRIGGER_SOURCE: ${{ steps.route.outputs.trigger_source }}
           DISPATCH_REPO: ${{ job.workflow_repository }}
+          PR_HEAD_JSON: ${{ steps.pr-head.outputs.pr_json }}
         run: |
           set -euo pipefail
 
@@ -408,6 +426,12 @@ jobs:
               base: {ref: .base.ref, repo: {full_name: .base.repo.full_name}}} else null end),
             comment: (.comment // null | if . then {body: .body[:4096]} else null end)
           }' "$GITHUB_EVENT_PATH")
+
+          # For issue_comment events on PRs, the raw event has no top-level
+          # pull_request with head SHA. Merge the API-fetched PR info.
+          if [[ -n "${PR_HEAD_JSON}" ]]; then
+            EVENT_PAYLOAD=$(printf '%s' "${EVENT_PAYLOAD}" | jq -c --argjson pr "${PR_HEAD_JSON}" '.pull_request = $pr')
+          fi
 
           echo "Scanning for workflows with stage: $STAGE"
 

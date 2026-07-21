@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Fullsend is a platform for fully autonomous agentic development for GitHub-hosted organizations. It contains design documents organized by problem domain (`docs/`) and a Go CLI (`cmd/fullsend/`) that manages GitHub App setup and org configuration. See [fullsend.sh](https://fullsend.sh) for the full documentation site.
+Fullsend is a platform for fully autonomous agentic development for Git-hosted organizations (GitHub, GitLab, Forgejo). It contains design documents organized by problem domain (`docs/`) and a Go CLI (`cmd/fullsend/`) that manages forge setup and org configuration. See [fullsend.sh](https://fullsend.sh) for the full documentation site.
 
 ## How to work in this repo
 

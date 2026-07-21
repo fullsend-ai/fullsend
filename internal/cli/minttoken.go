@@ -12,7 +12,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 )
 
-var mintTokenPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+var mintTokenPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
 func newMintTokenCmd() *cobra.Command {
 	var (

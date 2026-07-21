@@ -52,7 +52,7 @@ Use `forge.Client` for operations it already exposes; add REST helpers inside th
 
 ## Step definitions
 
-Steps must **not** import `internal/forge/github` directly — only drivers. This keeps scenarios vendor-agnostic.
+Steps must **not** import forge-specific packages (`internal/forge/github`, `internal/forge/gitlab`) directly — only drivers. This keeps scenarios vendor-agnostic.
 
 Steps use `world.Install` for config repo paths (`ConfigOwner`, `ConfigRepo`, `ConfigPathPrefix`) instead of hardcoding the per-org `.fullsend` config repo.
 

@@ -33,8 +33,8 @@ func resolveUpstreamRef() (ref, tag string) {
 func newRootCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "fullsend",
-		Short:         "Autonomous agentic development for GitHub organizations",
-		Long:          "fullsend automates the setup and management of agentic development pipelines for GitHub organizations.",
+		Short:         "Autonomous agentic development for Git-hosted organizations",
+		Long:          "fullsend automates the setup and management of agentic development pipelines for Git-hosted organizations.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version,
@@ -53,6 +53,7 @@ func newRootCmd() *cobra.Command {
 	cmd.AddCommand(newPostReviewCmd())
 	cmd.AddCommand(newPostCommentCmd())
 	cmd.AddCommand(newReconcileStatusCmd())
+	cmd.AddCommand(newPollCmd())
 	return cmd
 }
 

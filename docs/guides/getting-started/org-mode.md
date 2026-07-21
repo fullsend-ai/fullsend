@@ -33,7 +33,7 @@ Where `<org>` is the GitHub organization and `<gcp-project>` is your GCP project
 
 ```text
 ⚡ fullsend <version>
-  Autonomous agentic development for GitHub organizations
+  Autonomous agentic development for Git-hosted organizations
 
 → Provisioning WIF for org-scoped inference: <org>
 
