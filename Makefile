@@ -32,7 +32,7 @@ help:
 	@echo "  behaviour-test       - Run Gherkin behaviour tests (installs fullsend per-repo; CI: OIDC mint)"
 	@echo "  lint-eval-cases      - Lint eval case definitions (annotations.yaml completeness)"
 	@echo "  functional-tests     - Run functional agent tests (requires EVAL_ORG, FULLSEND_DIR, GH_TOKEN, GCP creds)"
-	@echo "  wasm-build           - Verify mintcore WASM build (GOOS=js GOARCH=wasm) and report gzip size"
+	@echo "  wasm-build           - Verify mintcore WASM build (GOOS=js GOARCH=wasm)"
 
 # Install all development tools needed for linting, formatting, and pre-commit hooks.
 # Prerequisites: uv (https://docs.astral.sh/uv/) and go (https://go.dev/)

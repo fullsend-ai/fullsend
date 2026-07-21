@@ -40,7 +40,7 @@ func ValidateRoleName(role string) error {
 	return nil
 }
 
-// PemSecretRole returns the Secret Manager role key for a mint request role.
+// PemSecretRole returns the PEM secret role key for a mint request role.
 // The fix stage uses the coder PEM.
 func PemSecretRole(role string) string {
 	if role == "fix" {
