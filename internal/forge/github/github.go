@@ -253,6 +253,14 @@ func isRetryable(resp *http.Response) (bool, []byte) {
 // typically require waiting at least 60 seconds.
 var secondaryRateLimitBackoff = 60 * time.Second
 
+// mergeRetryPollInterval is the interval for polling head SHA after an
+// update-branch call to confirm the branch actually advanced. Overridable in tests.
+var mergeRetryPollInterval = 200 * time.Millisecond
+
+// mergeRetryPollTimeout is the maximum time to wait for the head SHA to
+// change after an update-branch call. Overridable in tests.
+var mergeRetryPollTimeout = 10 * time.Second
+
 // retryDelay calculates how long to wait before retrying.
 // It uses the Retry-After header if present, otherwise exponential backoff
 // with jitter to prevent thundering-herd effects.
@@ -2855,13 +2863,45 @@ func (c *LiveClient) DismissPullRequestReview(ctx context.Context, owner, repo s
 }
 
 // MergeChangeProposal squash-merges a pull request by number.
+// If the merge fails with a 409 (head branch out of date), it updates the PR
+// branch and retries up to 3 times with a short delay between attempts.
 func (c *LiveClient) MergeChangeProposal(ctx context.Context, owner, repo string, number int) error {
-	resp, err := c.put(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, number), map[string]string{"merge_method": "squash"})
-	if err != nil {
-		return fmt.Errorf("merge pull request #%d: %w", number, err)
+	const maxAttempts = 3
+	mergePath := fmt.Sprintf("/repos/%s/%s/pulls/%d/merge", owner, repo, number)
+
+	var lastMergeErr error
+	for attempt := range maxAttempts {
+		resp, err := c.put(ctx, mergePath, map[string]string{"merge_method": "squash"})
+		if err == nil {
+			resp.Body.Close()
+			return nil
+		}
+
+		var apiErr *APIError
+		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusConflict {
+			return fmt.Errorf("merge pull request #%d: %w", number, err)
+		}
+		lastMergeErr = err
+
+		if attempt < maxAttempts-1 {
+			headSHA, shaErr := c.GetPullRequestHeadSHA(ctx, owner, repo, number)
+			if shaErr != nil {
+				return fmt.Errorf("merge pull request #%d: get head SHA: %w", number, shaErr)
+			}
+
+			if err := c.UpdatePullRequestBranch(ctx, owner, repo, number); err != nil {
+				return fmt.Errorf("merge pull request #%d: update branch failed: %w", number, err)
+			}
+
+			// Poll until the head SHA advances, confirming the async
+			// update-branch actually landed before we retry the merge.
+			if err := c.awaitBranchUpdate(ctx, owner, repo, number, headSHA); err != nil {
+				return fmt.Errorf("merge pull request #%d: %w", number, err)
+			}
+		}
 	}
-	resp.Body.Close()
-	return nil
+
+	return fmt.Errorf("merge pull request #%d: branch remained out of date after %d update-and-retry attempts: %w", number, maxAttempts, lastMergeErr)
 }
 
 // UpdatePullRequestBranch updates a PR's head branch by merging the base
@@ -2877,6 +2917,31 @@ func (c *LiveClient) UpdatePullRequestBranch(ctx context.Context, owner, repo st
 	}
 	resp.Body.Close()
 	return nil
+}
+
+// awaitBranchUpdate polls the PR's head SHA until it differs from oldSHA,
+// confirming that an async update-branch call has landed. It polls at
+// mergeRetryPollInterval and gives up after mergeRetryPollTimeout, falling
+// through so the caller can retry the merge (which will get another 409 if
+// the update still hasn't landed).
+func (c *LiveClient) awaitBranchUpdate(ctx context.Context, owner, repo string, number int, oldSHA string) error {
+	deadline := time.After(mergeRetryPollTimeout)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline:
+			return nil // timed out; let the caller retry the merge
+		case <-time.After(mergeRetryPollInterval):
+			newSHA, err := c.GetPullRequestHeadSHA(ctx, owner, repo, number)
+			if err != nil {
+				continue // transient error; keep polling
+			}
+			if newSHA != oldSHA {
+				return nil
+			}
+		}
+	}
 }
 
 // ListWorkflowRuns returns recent workflow runs for a workflow file.
