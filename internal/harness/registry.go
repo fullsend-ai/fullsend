@@ -42,6 +42,9 @@ func RegisteredAgents(cfg config.ConfigReader) ([]RegisteredAgent, error) {
 	}
 	out := make([]RegisteredAgent, 0, len(agents))
 	for _, entry := range agents {
+		if !entry.IsEnabled() {
+			continue
+		}
 		out = append(out, RegisteredAgent{
 			Entry:  entry,
 			Name:   entry.DerivedName(),

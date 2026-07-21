@@ -592,6 +592,14 @@ agents:
     - source: https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/prioritize.yaml#sha256=<hash>
 ```
 
+To selectively disable an agent, add an `enabled: false` entry:
+
+```yaml
+agents:
+    - name: retro
+      enabled: false
+```
+
 #### 6b. Verify agent resolution
 
 Run `fullsend agent list` from the `.fullsend` checkout to verify all

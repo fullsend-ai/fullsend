@@ -1327,7 +1327,7 @@ func TestValidateAgentEntries_EmptySource(t *testing.T) {
 	}
 	err := cfg.Validate()
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "source must not be empty")
+	assert.Contains(t, err.Error(), "enabled agent entry must have a source")
 }
 
 func TestValidateAgentEntries_LocalPathAcceptedWithoutHash(t *testing.T) {
@@ -1465,6 +1465,257 @@ func TestValidateAgentEntries_DegenerateName_Rejected(t *testing.T) {
 	err := cfg.Validate()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "is invalid")
+}
+
+func TestValidateAgentEntries_SuppressionOnlyEntry_Valid(t *testing.T) {
+	f := false
+	agents := []AgentEntry{
+		{Name: "retro", Enabled: &f},
+	}
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
+		Agents:   agents,
+	}
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestValidateAgentEntries_SuppressionWithoutName_Invalid(t *testing.T) {
+	f := false
+	agents := []AgentEntry{
+		{Enabled: &f},
+	}
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
+		Agents:   agents,
+	}
+	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "disabled agent entry with no source must have an explicit name")
+}
+
+func TestValidateAgentEntries_SuppressionInvalidName_Rejected(t *testing.T) {
+	f := false
+	agents := []AgentEntry{
+		{Name: "-bad", Enabled: &f},
+	}
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
+		Agents:   agents,
+	}
+	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "name is invalid")
+}
+
+func TestValidateAgentEntries_DuplicateSuppression_Rejected(t *testing.T) {
+	f := false
+	agents := []AgentEntry{
+		{Name: "retro", Enabled: &f},
+		{Name: "retro", Enabled: &f},
+	}
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
+		Agents:   agents,
+	}
+	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate agent name")
+}
+
+func TestValidateAgentEntries_DisableThenEnable_Accepted(t *testing.T) {
+	f := false
+	tr := true
+	agents := []AgentEntry{
+		{Name: "retro", Enabled: &f},
+		{Name: "retro", Source: "harness/retro-custom.yaml", Enabled: &tr},
+	}
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
+		Agents:   agents,
+	}
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestValidateAgentEntries_EnableThenDisable_Accepted(t *testing.T) {
+	f := false
+	tr := true
+	agents := []AgentEntry{
+		{Name: "retro", Source: "harness/retro-custom.yaml", Enabled: &tr},
+		{Name: "retro", Enabled: &f},
+	}
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
+		Agents:   agents,
+	}
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestValidateAgentEntries_DisabledWithSourceNoName_Rejected(t *testing.T) {
+	f := false
+	agents := []AgentEntry{
+		{Source: "harness/retro.yaml", Enabled: &f},
+	}
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
+		Agents:   agents,
+	}
+	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "disabled agent entry must have an explicit name")
+}
+
+func TestValidateAgentEntries_DisabledWithSourceAndName_Valid(t *testing.T) {
+	f := false
+	agents := []AgentEntry{
+		{Name: "retro", Source: "harness/retro.yaml", Enabled: &f},
+	}
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
+		Agents:   agents,
+	}
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestValidateAgentEntries_EnabledWithSource_Valid(t *testing.T) {
+	tr := true
+	agents := []AgentEntry{
+		{Source: "harness/my-agent.yaml", Enabled: &tr},
+	}
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
+		Agents:   agents,
+	}
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestValidateAgentEntries_EnabledOmittedWithSource_Valid(t *testing.T) {
+	agents := []AgentEntry{
+		{Source: "harness/my-agent.yaml"},
+	}
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
+		Agents:   agents,
+	}
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestValidateAgentEntries_ThreeEntryChain_Rejected(t *testing.T) {
+	f := false
+	tr := true
+	agents := []AgentEntry{
+		{Name: "retro", Source: "harness/retro-v1.yaml", Enabled: &tr},
+		{Name: "retro", Enabled: &f},
+		{Name: "retro", Source: "harness/retro-v2.yaml", Enabled: &tr},
+	}
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
+		Agents:   agents,
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate agent name")
+}
+
+func TestValidateAgentEntries_ThreeEntryDisableChain_Rejected(t *testing.T) {
+	f := false
+	tr := true
+	agents := []AgentEntry{
+		{Name: "retro", Enabled: &f},
+		{Name: "retro", Source: "harness/retro-custom.yaml", Enabled: &tr},
+		{Name: "retro", Enabled: &f},
+	}
+	cfg := &OrgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
+		Agents:   agents,
+	}
+	err := cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate agent name")
+}
+
+func TestAgentEntry_IsEnabled(t *testing.T) {
+	t.Run("nil defaults to true", func(t *testing.T) {
+		e := AgentEntry{Source: "harness/test.yaml"}
+		assert.True(t, e.IsEnabled())
+	})
+	t.Run("explicit true", func(t *testing.T) {
+		tr := true
+		e := AgentEntry{Source: "harness/test.yaml", Enabled: &tr}
+		assert.True(t, e.IsEnabled())
+	})
+	t.Run("explicit false", func(t *testing.T) {
+		f := false
+		e := AgentEntry{Source: "harness/test.yaml", Enabled: &f}
+		assert.False(t, e.IsEnabled())
+	})
+}
+
+func TestOrgConfig_ParseYAML_WithDisabledAgent(t *testing.T) {
+	yamlData := `
+version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles:
+    - fullsend
+  max_implementation_retries: 2
+agents:
+  - name: retro
+    enabled: false
+  - name: lint
+    source: harness/my-linter.yaml
+repos: {}
+`
+	cfg, err := ParseOrgConfig([]byte(yamlData))
+	require.NoError(t, err)
+	require.Len(t, cfg.Agents, 2)
+	assert.Equal(t, "retro", cfg.Agents[0].Name)
+	assert.NotNil(t, cfg.Agents[0].Enabled)
+	assert.False(t, *cfg.Agents[0].Enabled)
+	assert.Empty(t, cfg.Agents[0].Source)
+	assert.Nil(t, cfg.Agents[1].Enabled)
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestPerRepoConfig_ParseYAML_WithDisabledAgent(t *testing.T) {
+	yamlData := `
+version: "1"
+roles:
+  - fullsend
+agents:
+  - name: retro
+    enabled: false
+`
+	cfg, err := ParsePerRepoConfig([]byte(yamlData))
+	require.NoError(t, err)
+	require.Len(t, cfg.Agents, 1)
+	assert.Equal(t, "retro", cfg.Agents[0].Name)
+	assert.False(t, *cfg.Agents[0].Enabled)
+	assert.NoError(t, cfg.Validate())
 }
 
 // --- OrgConfig agents field tests ---

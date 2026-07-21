@@ -19,6 +19,9 @@ func registerDispatchSteps(ctx *godog.ScenarioContext, w *world.World) {
 	ctx.Step(`^a custom harness "([^"]+)" with:$`, func(name, doc string) error {
 		return givenCustomHarness(w, name, doc)
 	})
+	ctx.Step(`^a disabled custom harness "([^"]+)" with:$`, func(name, doc string) error {
+		return givenDisabledCustomHarness(w, name, doc)
+	})
 	ctx.Step(`^the harness "([^"]+)" workflow completes successfully$`, func(agent string) error {
 		return thenHarnessWorkflowCompletes(w, agent)
 	})
@@ -34,6 +37,50 @@ func registerDispatchSteps(ctx *godog.ScenarioContext, w *world.World) {
 	ctx.Step(`^a review comment is submitted on the pull request$`, func() error {
 		return whenPullRequestReviewComment(w)
 	})
+}
+
+func givenDisabledCustomHarness(w *world.World, name, doc string) error {
+	name = strings.TrimSpace(name)
+	doc = strings.TrimSpace(doc)
+	if name == "" || doc == "" {
+		return fmt.Errorf("harness name and contents are required")
+	}
+
+	harnessPath := filepath.Join(".fullsend", "harness", name+".yaml")
+	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), harnessPath, fmt.Sprintf("behaviour: add harness %s", name), []byte(doc)); err != nil {
+		return fmt.Errorf("committing harness: %w", err)
+	}
+
+	cfgPath := filepath.Join(".fullsend", "config.yaml")
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath)
+	if err != nil {
+		return fmt.Errorf("reading config: %w", err)
+	}
+	cfg, err := config.ParsePerRepoConfig(cfgData)
+	if err != nil {
+		return fmt.Errorf("parsing config: %w", err)
+	}
+	disabled := false
+	entry := config.AgentEntry{Name: name, Source: "harness/" + name + ".yaml", Enabled: &disabled}
+	found := false
+	for i, a := range cfg.Agents {
+		if strings.EqualFold(a.DerivedName(), name) {
+			cfg.Agents[i] = entry
+			found = true
+			break
+		}
+	}
+	if !found {
+		cfg.Agents = append(cfg.Agents, entry)
+	}
+	merged, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath, fmt.Sprintf("behaviour: register disabled harness %s", name), merged); err != nil {
+		return fmt.Errorf("updating config: %w", err)
+	}
+	return nil
 }
 
 func givenCustomHarness(w *world.World, name, doc string) error {

@@ -50,7 +50,7 @@ fullsend agent list --fullsend-dir .fullsend
 |------|---------|-------------|
 | `--fullsend-dir` | | Base directory containing the `.fullsend` layout (required) |
 
-Read-only. Displays a table with `NAME` and `SOURCE` columns. For URL agents, the `#sha256=...` integrity hash suffix is stripped from the displayed source for readability.
+Read-only. Displays a table with `NAME` and `SOURCE` columns. For URL agents, the `#sha256=...` integrity hash suffix is stripped from the displayed source for readability. Disabled agents (`enabled: false`) are included in the listing.
 
 Example output:
 ```

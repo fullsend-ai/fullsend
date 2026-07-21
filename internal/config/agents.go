@@ -42,11 +42,25 @@ func MergedAgents(scaffoldNames []string, commitSHA string, configAgents []Agent
 		}
 	}
 
+	inOrder := make(map[string]bool, len(order))
+	for _, key := range order {
+		inOrder[key] = true
+	}
+
 	for _, entry := range configAgents {
 		name := entry.DerivedName()
 		lower := strings.ToLower(name)
-		if _, exists := byName[lower]; !exists {
+
+		// A disabled entry suppresses the agent from the merged set.
+		// If it overrides a scaffold entry, that scaffold entry is removed.
+		if !entry.IsEnabled() {
+			delete(byName, lower)
+			continue
+		}
+
+		if !inOrder[lower] {
 			order = append(order, lower)
+			inOrder[lower] = true
 		}
 		byName[lower] = &MergedAgent{
 			Name:     name,
@@ -57,13 +71,28 @@ func MergedAgents(scaffoldNames []string, commitSHA string, configAgents []Agent
 
 	result := make([]MergedAgent, 0, len(byName))
 	for _, key := range order {
-		result = append(result, *byName[key])
+		if agent, ok := byName[key]; ok {
+			result = append(result, *agent)
+		}
 	}
 	sort.Slice(result, func(i, j int) bool {
 		return strings.ToLower(result[i].Name) < strings.ToLower(result[j].Name)
 	})
 
 	return result, nil
+}
+
+// IsAgentExplicitlyDisabled returns true if the last config entry matching
+// name has Enabled explicitly set to false. Iterates in reverse to respect
+// last-writer-wins ordering (matching MergedAgents semantics).
+func IsAgentExplicitlyDisabled(agents []AgentEntry, name string) bool {
+	lower := strings.ToLower(name)
+	for i := len(agents) - 1; i >= 0; i-- {
+		if strings.ToLower(agents[i].DerivedName()) == lower {
+			return !agents[i].IsEnabled()
+		}
+	}
+	return false
 }
 
 // LookupMergedAgent finds an agent by name (case-insensitive) in the merged set.

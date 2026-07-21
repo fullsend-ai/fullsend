@@ -134,6 +134,190 @@ func TestMergedAgents_BuilderError(t *testing.T) {
 	assert.Contains(t, err.Error(), "build failed for code")
 }
 
+func TestMergedAgents_DisabledScaffoldAgent(t *testing.T) {
+	f := false
+	agents := []AgentEntry{{Name: "triage", Enabled: &f}}
+	result, err := MergedAgents(
+		[]string{"code", "triage", "retro"},
+		"abc123def456abc123def456abc123def456abc1",
+		agents, fakeBuilder,
+	)
+	require.NoError(t, err)
+	require.Len(t, result, 2)
+	assert.Equal(t, "code", result[0].Name)
+	assert.Equal(t, "retro", result[1].Name)
+}
+
+func TestMergedAgents_EnabledDefaultTrue(t *testing.T) {
+	// Entry with nil Enabled (omitted) should be included — backward compatible.
+	agents := []AgentEntry{{Source: "harness/custom.yaml"}}
+	result, err := MergedAgents(nil, "", agents, nil)
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	assert.Equal(t, "custom", result[0].Name)
+	assert.True(t, result[0].IsConfig)
+}
+
+func TestMergedAgents_EnabledExplicitTrue(t *testing.T) {
+	tr := true
+	agents := []AgentEntry{{Source: "harness/custom.yaml", Enabled: &tr}}
+	result, err := MergedAgents(nil, "", agents, nil)
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	assert.Equal(t, "custom", result[0].Name)
+	assert.True(t, result[0].IsConfig)
+}
+
+func TestMergedAgents_DisabledCustomAgent(t *testing.T) {
+	f := false
+	agents := []AgentEntry{
+		{Name: "my-linter", Source: "harness/lint.yaml", Enabled: &f},
+	}
+	result, err := MergedAgents(nil, "", agents, nil)
+	require.NoError(t, err)
+	assert.Empty(t, result)
+}
+
+func TestMergedAgents_SuppressionOnlyEntry(t *testing.T) {
+	// Entry with enabled=false and no source suppresses scaffold default.
+	f := false
+	agents := []AgentEntry{{Name: "retro", Enabled: &f}}
+	result, err := MergedAgents(
+		[]string{"code", "retro", "triage"},
+		"abc123def456abc123def456abc123def456abc1",
+		agents, fakeBuilder,
+	)
+	require.NoError(t, err)
+	require.Len(t, result, 2)
+	assert.Equal(t, "code", result[0].Name)
+	assert.Equal(t, "triage", result[1].Name)
+}
+
+func TestMergedAgents_DisabledDoesNotAffectOthers(t *testing.T) {
+	f := false
+	tr := true
+	agents := []AgentEntry{
+		{Name: "retro", Enabled: &f},
+		{Name: "custom", Source: "harness/custom.yaml", Enabled: &tr},
+	}
+	result, err := MergedAgents(
+		[]string{"code", "retro"},
+		"abc123def456abc123def456abc123def456abc1",
+		agents, fakeBuilder,
+	)
+	require.NoError(t, err)
+	require.Len(t, result, 2)
+	assert.Equal(t, "code", result[0].Name)
+	assert.False(t, result[0].IsConfig)
+	assert.Equal(t, "custom", result[1].Name)
+	assert.True(t, result[1].IsConfig)
+}
+
+func TestMergedAgents_DisableThenEnableSameName(t *testing.T) {
+	f := false
+	tr := true
+	agents := []AgentEntry{
+		{Name: "retro", Enabled: &f},
+		{Name: "retro", Source: "harness/retro-custom.yaml", Enabled: &tr},
+	}
+	result, err := MergedAgents(
+		[]string{"code", "retro"},
+		"abc123def456abc123def456abc123def456abc1",
+		agents, fakeBuilder,
+	)
+	require.NoError(t, err)
+	require.Len(t, result, 2)
+	names := make(map[string]int)
+	sources := make(map[string]string)
+	for _, a := range result {
+		names[a.Name]++
+		sources[a.Name] = a.Source
+	}
+	assert.Equal(t, 1, names["code"])
+	assert.Equal(t, 1, names["retro"])
+	assert.Equal(t, "harness/retro-custom.yaml", sources["retro"])
+}
+
+func TestMergedAgents_EnableThenDisableSameName(t *testing.T) {
+	f := false
+	tr := true
+	agents := []AgentEntry{
+		{Name: "retro", Source: "harness/retro-custom.yaml", Enabled: &tr},
+		{Name: "retro", Enabled: &f},
+	}
+	result, err := MergedAgents(
+		[]string{"code", "retro"},
+		"abc123def456abc123def456abc123def456abc1",
+		agents, fakeBuilder,
+	)
+	require.NoError(t, err)
+	require.Len(t, result, 1)
+	assert.Equal(t, "code", result[0].Name)
+}
+
+func TestIsAgentExplicitlyDisabled_True(t *testing.T) {
+	f := false
+	agents := []AgentEntry{
+		{Name: "retro", Enabled: &f},
+		{Source: "harness/code.yaml"},
+	}
+	assert.True(t, IsAgentExplicitlyDisabled(agents, "retro"))
+}
+
+func TestIsAgentExplicitlyDisabled_CaseInsensitive(t *testing.T) {
+	f := false
+	agents := []AgentEntry{{Name: "Retro", Enabled: &f}}
+	assert.True(t, IsAgentExplicitlyDisabled(agents, "retro"))
+	assert.True(t, IsAgentExplicitlyDisabled(agents, "RETRO"))
+}
+
+func TestIsAgentExplicitlyDisabled_EnabledAgent(t *testing.T) {
+	tr := true
+	agents := []AgentEntry{{Name: "retro", Source: "harness/retro.yaml", Enabled: &tr}}
+	assert.False(t, IsAgentExplicitlyDisabled(agents, "retro"))
+}
+
+func TestIsAgentExplicitlyDisabled_NilEnabled(t *testing.T) {
+	agents := []AgentEntry{{Name: "retro", Source: "harness/retro.yaml"}}
+	assert.False(t, IsAgentExplicitlyDisabled(agents, "retro"))
+}
+
+func TestIsAgentExplicitlyDisabled_NotInConfig(t *testing.T) {
+	f := false
+	agents := []AgentEntry{{Name: "retro", Enabled: &f}}
+	assert.False(t, IsAgentExplicitlyDisabled(agents, "triage"))
+}
+
+func TestIsAgentExplicitlyDisabled_EmptyConfig(t *testing.T) {
+	assert.False(t, IsAgentExplicitlyDisabled(nil, "retro"))
+}
+
+func TestIsAgentExplicitlyDisabled_DerivedName(t *testing.T) {
+	f := false
+	agents := []AgentEntry{{Source: "harness/retro.yaml", Enabled: &f}}
+	assert.True(t, IsAgentExplicitlyDisabled(agents, "retro"))
+}
+
+func TestIsAgentExplicitlyDisabled_DisableThenEnable(t *testing.T) {
+	f := false
+	tr := true
+	agents := []AgentEntry{
+		{Name: "retro", Enabled: &f},
+		{Name: "retro", Source: "harness/custom-retro.yaml", Enabled: &tr},
+	}
+	assert.False(t, IsAgentExplicitlyDisabled(agents, "retro"))
+}
+
+func TestIsAgentExplicitlyDisabled_EnableThenDisable(t *testing.T) {
+	f := false
+	tr := true
+	agents := []AgentEntry{
+		{Name: "retro", Source: "harness/custom-retro.yaml", Enabled: &tr},
+		{Name: "retro", Enabled: &f},
+	}
+	assert.True(t, IsAgentExplicitlyDisabled(agents, "retro"))
+}
+
 func TestLookupMergedAgent_Found(t *testing.T) {
 	agents := []MergedAgent{
 		{Name: "code", Source: "url1"},

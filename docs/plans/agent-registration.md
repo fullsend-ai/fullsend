@@ -17,10 +17,15 @@ object form via a custom YAML unmarshaler:
 
 ```go
 type AgentEntry struct {
-    Name   string `yaml:"name,omitempty"`
-    Source string `yaml:"source"`
+    Name    string `yaml:"name,omitempty"`
+    Source  string `yaml:"source"`
+    Enabled *bool  `yaml:"enabled,omitempty"`
 }
 ```
+
+When `Enabled` is nil (omitted), the entry defaults to enabled.
+Setting `enabled: false` suppresses the agent from the merged set
+and blocks resolution. Disabled entries must have an explicit `Name`.
 
 `AgentEntry` implements `yaml.Unmarshaler`: if the YAML node is a
 scalar string, it populates `Source` and leaves `Name` empty (derived
