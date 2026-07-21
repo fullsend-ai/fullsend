@@ -111,13 +111,11 @@ org portion and filtering by the glob pattern. Expansion happens at
 command execution time. Glob-expanded repos inherit defaults (no
 per-repo overrides). Explicit entries take precedence over globs.
 
-> **Limitation: glob patterns exclude private, archived, and forked
-> repos.** The current `ListOrgRepos` excludes all three categories
-> (designed for per-org mode). In per-repo mode, private repos are
-> valid targets. The implementation must extend `ListOrgRepos` with a
-> new method signature to include private repos without regressing
-> per-org callers. Until then, private repos must be listed explicitly.
-> Archived and forked repos remain excluded by default.
+> **Note:** `ListOrgRepos` accepts an `includePrivate` parameter.
+> `ExpandGlobs` passes `includePrivate=true` because repos.yaml
+> manifests operate in per-repo mode where private repos are valid
+> targets. Per-org callers pass `false` to preserve the original
+> exclusion. Archived and forked repos remain excluded by default.
 
 #### Multi-org support
 
@@ -587,15 +585,12 @@ the URL fetching logic from the harness resource loader.
 `ExpandGlobs()`:
 
 - For entries containing `*`, extract the org prefix.
-- Call `ListOrgRepos(ctx, org)` to list eligible repos. Note: the
-  current `ListOrgRepos` implementation excludes private, archived,
-  and forked repos (`internal/forge/github/github.go:343`) — it was
-  designed for per-org mode where agents run on a public `.fullsend`
-  config repo. For per-repo mode, private repos are valid targets
-  since agents run on the target repo itself. The implementation must
-  extend `ListOrgRepos` (or add a variant) to include private repos
-  when called from glob expansion. Archived and forked repos remain
-  excluded by default.
+- Call `ListOrgRepos(ctx, org, true)` to list eligible repos.
+  `ExpandGlobs` passes `includePrivate=true` because repos.yaml
+  manifests operate in per-repo mode where private repos are valid
+  targets. Per-org callers pass `false` to preserve the original
+  exclusion. Archived and forked repos remain excluded regardless of
+  the flag.
 - Filter by glob pattern using `filepath.Match`.
 - Merge with explicit entries (explicit wins over glob).
 - Return `[]ResolvedRepo` with resolved configuration per repo.
@@ -694,13 +689,10 @@ DeleteRepoSecret(ctx context.Context, owner, repo, name string) error
 `DeleteRepoVariable` and `DeleteRepoSecret` are needed by `repos remove`
 (PR 8) and are cheaper to add here alongside `ListRepoVariables`.
 
-Also add a `ListOrgReposIncludePrivate(ctx, org)` method (or an
-`includePrivate bool` parameter on `ListOrgRepos`) so that glob
-expansion in per-repo mode includes private repos. The current
-`ListOrgRepos` excludes them because per-org mode runs agents on a
-public `.fullsend` config repo, but per-repo mode runs agents on the
-target repo itself, making private repos valid targets. The new
-signature avoids regressing existing per-org callers.
+`ListOrgRepos` now accepts an `includePrivate bool` parameter so that
+glob expansion in per-repo mode includes private repos. Per-org callers
+pass `false` to preserve the original exclusion. Archived and forked
+repos remain excluded regardless of the flag.
 
 #### `internal/forge/github/github.go` (modify)
 

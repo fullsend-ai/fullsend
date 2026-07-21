@@ -397,9 +397,9 @@ func (m *Manifest) Validate() error {
 // win over glob-matched entries. The returned list is deduplicated and
 // sorted.
 //
-// ListOrgRepos excludes private, archived, and forked repositories.
-// Private repos must be listed as explicit entries in the manifest
-// until the forge interface is extended (see implementation plan).
+// ListOrgRepos is called with includePrivate=true because repos.yaml
+// manifests are used in per-repo mode, where agents run on the target
+// repo itself. Archived and forked repos remain excluded.
 func (m *Manifest) ExpandGlobs(ctx context.Context, client forge.Client) ([]ResolvedRepo, error) {
 	// First pass: separate explicit entries from glob patterns.
 	explicit := make(map[string]RepoEntry)
@@ -441,7 +441,7 @@ func (m *Manifest) ExpandGlobs(ctx context.Context, client forge.Client) ([]Reso
 		repos, ok := orgRepoCache[g.org]
 		if !ok {
 			var err error
-			repos, err = client.ListOrgRepos(ctx, g.org)
+			repos, err = client.ListOrgRepos(ctx, g.org, true)
 			if err != nil {
 				return nil, fmt.Errorf("expanding glob %q: listing repos for org %q: %w", g.org+"/"+g.pattern, g.org, err)
 			}

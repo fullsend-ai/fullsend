@@ -370,18 +370,22 @@ func decodeJSON(resp *http.Response, v any) error {
 	return json.NewDecoder(resp.Body).Decode(v)
 }
 
-// ListOrgRepos returns public, non-archived, non-fork repositories for an org.
+// ListOrgRepos returns non-archived, non-fork repositories for an org.
 //
-// Private repos are excluded because the default .fullsend config repo is
-// public and agent workflow logs are visible to anyone. Enrolling a private
-// repo would expose its code in those public logs.
+// When includePrivate is false, private repos are also excluded. This
+// is the appropriate setting for per-org mode because the .fullsend
+// config repo is public and agent workflow logs are visible to anyone.
+//
+// When includePrivate is true, private repos are included. This is
+// appropriate for per-repo mode where agents run on the target repo
+// itself and logs are not publicly exposed.
 //
 // Forks are excluded because fullsend's trust model assumes org-owned repos
 // where CODEOWNERS governance and org-level permissions control agent
 // autonomy. Fork repos may have different ownership and CODEOWNERS configs,
 // which could bypass human-approval gates. Archived repos are excluded
 // because they represent inactive targets where agent work would be wasted.
-func (c *LiveClient) ListOrgRepos(ctx context.Context, org string) ([]forge.Repository, error) {
+func (c *LiveClient) ListOrgRepos(ctx context.Context, org string, includePrivate bool) ([]forge.Repository, error) {
 	var result []forge.Repository
 
 	for page := 1; page <= 100; page++ {
@@ -405,7 +409,10 @@ func (c *LiveClient) ListOrgRepos(ctx context.Context, org string) ([]forge.Repo
 		}
 
 		for _, r := range repos {
-			if r.Archived || r.Fork || r.Private {
+			if r.Archived || r.Fork {
+				continue
+			}
+			if r.Private && !includePrivate {
 				continue
 			}
 			result = append(result, forge.Repository{

@@ -148,7 +148,7 @@ func initOrg(ctx context.Context, cfg InitConfig, client forge.Client,
 	org string, selectRepos RepoSelectFunc, progress ProgressFunc) (*InitResult, error) {
 
 	progress(org, "discover", "listing org repos")
-	allOrgRepos, err := client.ListOrgRepos(ctx, org)
+	allOrgRepos, err := client.ListOrgRepos(ctx, org, false)
 	if err != nil {
 		return nil, fmt.Errorf("listing repos for org %s: %w", org, err)
 	}

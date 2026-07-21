@@ -148,7 +148,7 @@ func (l *DispatchTokenLayer) installOIDC(ctx context.Context) error {
 // dot-prefixed names cannot read GitHub org variables due to a platform
 // bug, so callers use this to set repo-level fallback variables.
 func (l *DispatchTokenLayer) dotPrefixedRepos(ctx context.Context, repoIDs []int64) []forge.Repository {
-	allRepos, err := l.client.ListOrgRepos(ctx, l.org)
+	allRepos, err := l.client.ListOrgRepos(ctx, l.org, false)
 	if err != nil {
 		l.ui.StepWarn("could not list org repos to detect dot-prefixed names: " + err.Error())
 		return nil

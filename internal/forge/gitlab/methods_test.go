@@ -1800,7 +1800,7 @@ func TestListOrgRepos_ExcludesInternal(t *testing.T) {
 		})
 	})
 
-	repos, err := client.ListOrgRepos(ctx, "myorg")
+	repos, err := client.ListOrgRepos(ctx, "myorg", false)
 	require.NoError(t, err)
 	require.Len(t, repos, 1)
 	assert.Equal(t, "myorg/public-proj", repos[0].FullName)
@@ -1820,7 +1820,7 @@ func TestListOrgRepos_IncludesSubgroups(t *testing.T) {
 		})
 	})
 
-	repos, err := client.ListOrgRepos(ctx, "myorg")
+	repos, err := client.ListOrgRepos(ctx, "myorg", false)
 	require.NoError(t, err)
 	require.Len(t, repos, 1)
 	assert.Equal(t, "myorg/sub/sub-project", repos[0].FullName)

@@ -49,12 +49,40 @@ func TestListOrgRepos(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
-	repos, err := client.ListOrgRepos(context.Background(), "org")
+	repos, err := client.ListOrgRepos(context.Background(), "org", false)
 	require.NoError(t, err)
 	require.Len(t, repos, 1)
 	assert.Equal(t, "repo1", repos[0].Name)
 	assert.Equal(t, "org/repo1", repos[0].FullName)
 	assert.Equal(t, "main", repos[0].DefaultBranch)
+}
+
+func TestListOrgRepos_IncludePrivate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"name": "public-repo", "full_name": "org/public-repo", "default_branch": "main", "private": false, "archived": false, "fork": false},
+			{"name": "private-repo", "full_name": "org/private-repo", "default_branch": "main", "private": true, "archived": false, "fork": false},
+			{"name": "archived-repo", "full_name": "org/archived-repo", "default_branch": "main", "private": false, "archived": true, "fork": false},
+			{"name": "forked-repo", "full_name": "org/forked-repo", "default_branch": "main", "private": false, "archived": false, "fork": true},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+
+	// includePrivate=false excludes private repos.
+	repos, err := client.ListOrgRepos(context.Background(), "org", false)
+	require.NoError(t, err)
+	require.Len(t, repos, 1)
+	assert.Equal(t, "public-repo", repos[0].Name)
+
+	// includePrivate=true includes private repos but still excludes archived/fork.
+	repos, err = client.ListOrgRepos(context.Background(), "org", true)
+	require.NoError(t, err)
+	require.Len(t, repos, 2)
+	assert.Equal(t, "public-repo", repos[0].Name)
+	assert.Equal(t, "private-repo", repos[1].Name)
+	assert.True(t, repos[1].Private)
 }
 
 func TestCreateRepo(t *testing.T) {
@@ -2266,7 +2294,7 @@ func TestListOrgRepos_Pagination(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
-	repos, err := client.ListOrgRepos(context.Background(), "org")
+	repos, err := client.ListOrgRepos(context.Background(), "org", false)
 	require.NoError(t, err)
 	assert.Len(t, repos, 101)
 	assert.Equal(t, 2, page) // Should have made exactly 2 requests

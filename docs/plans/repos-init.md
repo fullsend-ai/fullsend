@@ -145,7 +145,7 @@ manifest contains one entry.
 
 **Org-level** (target has no `/`):
 
-1. Call `ListOrgRepos(ctx, org)` to enumerate eligible repos.
+1. Call `ListOrgRepos(ctx, org, false)` to enumerate eligible repos (the `includePrivate` parameter is `false` for per-org mode).
 2. Check for per-org config repo (`{org}/.fullsend`):
    - Read `config.yaml` via `GetFileContent`
      (`internal/forge/forge.go:199`).

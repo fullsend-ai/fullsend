@@ -363,7 +363,7 @@ func TestListOrgRepos(t *testing.T) {
 		}
 	})
 
-	repos, err := client.ListOrgRepos(context.Background(), "myorg")
+	repos, err := client.ListOrgRepos(context.Background(), "myorg", false)
 	require.NoError(t, err)
 	// Only public-repo passes the filter (not archived, not forked, not private)
 	require.Len(t, repos, 1)
