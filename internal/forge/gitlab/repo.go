@@ -80,7 +80,7 @@ func (c *LiveClient) getTreeMap(ctx context.Context, owner, repo, ref string) (m
 	return result, nil
 }
 
-func (c *LiveClient) ListOrgRepos(ctx context.Context, org string) ([]forge.Repository, error) {
+func (c *LiveClient) ListOrgRepos(ctx context.Context, org string, includePrivate bool) ([]forge.Repository, error) {
 	var result []forge.Repository
 
 	for page := 1; page <= 100; page++ {
@@ -105,7 +105,11 @@ func (c *LiveClient) ListOrgRepos(ctx context.Context, org string) ([]forge.Repo
 		}
 
 		for _, p := range projects {
-			if p.Archived || p.ForkedFromProject != nil || p.Visibility != "public" {
+			if p.Archived || p.ForkedFromProject != nil {
+				continue
+			}
+			private := p.Visibility != "public"
+			if private && !includePrivate {
 				continue
 			}
 			result = append(result, forge.Repository{
@@ -113,7 +117,7 @@ func (c *LiveClient) ListOrgRepos(ctx context.Context, org string) ([]forge.Repo
 				Name:          p.Name,
 				FullName:      p.PathWithNamespace,
 				DefaultBranch: p.DefaultBranch,
-				Private:       false,
+				Private:       private,
 				Archived:      false,
 				Fork:          false,
 			})

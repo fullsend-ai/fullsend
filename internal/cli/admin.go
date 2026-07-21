@@ -454,7 +454,7 @@ Inference authentication:
 			}
 
 			// Discover all org repos upfront to avoid redundant API calls in runDryRun/runInstall.
-			allRepos, err := client.ListOrgRepos(ctx, org)
+			allRepos, err := client.ListOrgRepos(ctx, org, false)
 			if err != nil {
 				return fmt.Errorf("listing org repos: %w", err)
 			}
@@ -1343,7 +1343,7 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 		allRepos = discoveredRepos
 		printer.StepDone(fmt.Sprintf("Using %d discovered repositories", len(allRepos)))
 	} else {
-		allRepos, err = client.ListOrgRepos(ctx, org)
+		allRepos, err = client.ListOrgRepos(ctx, org, false)
 		if err != nil {
 			return fmt.Errorf("listing org repos: %w", err)
 		}
@@ -1652,7 +1652,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 		printer.StepDone(fmt.Sprintf("Found %d repositories", len(allRepos)))
 	} else {
 		printer.Header("Discovering repositories")
-		allRepos, err = client.ListOrgRepos(ctx, org)
+		allRepos, err = client.ListOrgRepos(ctx, org, false)
 		if err != nil {
 			return fmt.Errorf("listing org repos: %w", err)
 		}
@@ -1953,7 +1953,7 @@ func runUninstall(ctx context.Context, client forge.Client, printer *ui.Printer,
 
 // runAnalyze assesses the current installation state.
 func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, org, analyzeFullsendSource string) error {
-	allRepos, err := client.ListOrgRepos(ctx, org)
+	allRepos, err := client.ListOrgRepos(ctx, org, false)
 	if err != nil {
 		return fmt.Errorf("listing org repos: %w", err)
 	}
@@ -2465,7 +2465,7 @@ func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printe
 		// while disable --all operates on previously configured repos (which may have
 		// been deleted from the org but still need unenrollment PRs for cleanup).
 		printer.StepStart("Discovering all organization repositories")
-		allOrgRepos, err = client.ListOrgRepos(ctx, org)
+		allOrgRepos, err = client.ListOrgRepos(ctx, org, false)
 		if err != nil {
 			printer.StepFail("Failed to list organization repositories")
 			printer.StepInfo("Hint: verify your token has 'repo' scope with: gh auth refresh -s repo")
@@ -2484,7 +2484,7 @@ func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printe
 		// one API call per repo (O(n) → O(1) API calls).
 		printer.StepStart("Validating repository names")
 
-		allOrgRepos, err = client.ListOrgRepos(ctx, org)
+		allOrgRepos, err = client.ListOrgRepos(ctx, org, false)
 		if err != nil {
 			printer.StepFail("Failed to list organization repositories")
 			printer.StepInfo("Hint: verify your token has 'repo' scope with: gh auth refresh -s repo")
@@ -2718,7 +2718,7 @@ func runDisableRepos(ctx context.Context, client forge.Client, printer *ui.Print
 	// Sync org variable visibility to revoke access for disabled repos.
 	// Skipped in PR mode — repo-maintenance reconciles on merge.
 	if cfg.Dispatch.Mode == "oidc-mint" && !pr {
-		allOrgRepos, listErr := client.ListOrgRepos(ctx, org)
+		allOrgRepos, listErr := client.ListOrgRepos(ctx, org, false)
 		if listErr != nil {
 			printer.StepWarn(fmt.Sprintf("could not list org repos for variable sync: %v", listErr))
 		} else {

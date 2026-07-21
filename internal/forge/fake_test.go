@@ -22,11 +22,37 @@ func TestFakeClient_ListOrgRepos(t *testing.T) {
 		},
 	}
 
-	repos, err := fc.ListOrgRepos(ctx, "org")
+	repos, err := fc.ListOrgRepos(ctx, "org", false)
 	require.NoError(t, err)
 	assert.Len(t, repos, 2)
 	assert.Equal(t, "active", repos[0].Name)
 	assert.Equal(t, "also-active", repos[1].Name)
+}
+
+func TestFakeClient_ListOrgRepos_IncludePrivate(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{
+		Repos: []Repository{
+			{Name: "public", FullName: "org/public"},
+			{Name: "private", FullName: "org/private", Private: true},
+			{Name: "archived", FullName: "org/archived", Archived: true},
+			{Name: "forked", FullName: "org/forked", Fork: true},
+		},
+	}
+
+	// includePrivate=false excludes private repos.
+	repos, err := fc.ListOrgRepos(ctx, "org", false)
+	require.NoError(t, err)
+	require.Len(t, repos, 1)
+	assert.Equal(t, "public", repos[0].Name)
+
+	// includePrivate=true includes private repos but still excludes archived/fork.
+	repos, err = fc.ListOrgRepos(ctx, "org", true)
+	require.NoError(t, err)
+	require.Len(t, repos, 2)
+	assert.Equal(t, "public", repos[0].Name)
+	assert.Equal(t, "private", repos[1].Name)
+	assert.True(t, repos[1].Private)
 }
 
 func TestFakeClient_CreateRepo(t *testing.T) {
@@ -648,7 +674,7 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		name string
 		call func(fc *FakeClient) error
 	}{
-		{"ListOrgRepos", func(fc *FakeClient) error { _, err := fc.ListOrgRepos(ctx, "org"); return err }},
+		{"ListOrgRepos", func(fc *FakeClient) error { _, err := fc.ListOrgRepos(ctx, "org", false); return err }},
 		{"CreateRepo", func(fc *FakeClient) error { _, err := fc.CreateRepo(ctx, "o", "r", "d", false); return err }},
 		{"DeleteRepo", func(fc *FakeClient) error { return fc.DeleteRepo(ctx, "o", "r") }},
 		{"CreateFile", func(fc *FakeClient) error { return fc.CreateFile(ctx, "o", "r", "p", "m", nil) }},
@@ -786,7 +812,7 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
-			_, _ = fc.ListOrgRepos(ctx, "org")
+			_, _ = fc.ListOrgRepos(ctx, "org", false)
 			_, _ = fc.CreateRepo(ctx, "org", "r", "d", false)
 			_ = fc.DeleteRepo(ctx, "o", "r")
 			_ = fc.CreateFile(ctx, "o", "r", "p", "m", []byte("data"))

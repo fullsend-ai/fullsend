@@ -266,14 +266,18 @@ type DirectoryEntry struct {
 type Client interface {
 	// Repository operations
 	// ListOrgRepos returns repositories eligible for fullsend enrollment.
-	// It excludes archived repos (no active development), forks, and
-	// private repos.
+	// It excludes archived repos (no active development) and forks.
 	//
-	// Private repos are excluded because the default .fullsend config repo
-	// is public, and agent workflows dispatched to it run with public logs.
-	// Enrolling a private repo would expose its code in those logs when
-	// agents check out and process the repo content. Private repo support
-	// requires per-repo .fullsend mode where agents run on the target repo.
+	// When includePrivate is false, private repos are also excluded.
+	// This is the appropriate setting for per-org mode because the
+	// default .fullsend config repo is public and agent workflows
+	// dispatched to it run with public logs. Enrolling a private repo
+	// would expose its code in those logs when agents check out and
+	// process the repo content.
+	//
+	// When includePrivate is true, private repos are included in the
+	// result. This is appropriate for per-repo mode where agents run
+	// on the target repo itself, so public log exposure does not apply.
 	//
 	// Forks are excluded because fullsend's trust model is org-centric:
 	// trust derives from org repository permissions and CODEOWNERS
@@ -281,7 +285,7 @@ type Client interface {
 	// or lack the same CODEOWNERS configuration, which could bypass
 	// human-approval gates. Installing on both a fork and its upstream
 	// also risks duplicate agent PRs and conflicting changes.
-	ListOrgRepos(ctx context.Context, org string) ([]Repository, error)
+	ListOrgRepos(ctx context.Context, org string, includePrivate bool) ([]Repository, error)
 	GetRepo(ctx context.Context, owner, repo string) (*Repository, error)
 	CreateRepo(ctx context.Context, org, name, description string, private bool) (*Repository, error)
 	DeleteRepo(ctx context.Context, owner, repo string) error

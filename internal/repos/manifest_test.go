@@ -535,18 +535,21 @@ repos:
 		{Name: "service-api", FullName: "acme/service-api"},
 		{Name: "service-web", FullName: "acme/service-web"},
 		{Name: "lib-utils", FullName: "acme/lib-utils"},
-		// Archived/private/fork repos should be filtered by FakeClient.
+		// Archived and fork repos are always excluded.
 		{Name: "service-old", FullName: "acme/service-old", Archived: true},
-		{Name: "service-priv", FullName: "acme/service-priv", Private: true},
 		{Name: "service-fork", FullName: "acme/service-fork", Fork: true},
+		// Private repos are included because ExpandGlobs passes
+		// includePrivate=true (repos.yaml is per-repo mode).
+		{Name: "service-priv", FullName: "acme/service-priv", Private: true},
 	}
 
 	ctx := context.Background()
 	resolved, err := m.ExpandGlobs(ctx, fc)
 	require.NoError(t, err)
 
-	// Should have: explicit-repo, service-api, service-web (not lib-utils, not archived/private/fork)
-	require.Len(t, resolved, 3)
+	// Should have: explicit-repo, service-api, service-priv, service-web
+	// (not lib-utils which doesn't match the glob, not archived/fork).
+	require.Len(t, resolved, 4)
 
 	// Sorted alphabetically.
 	assert.Equal(t, "acme", resolved[0].Owner)
@@ -558,7 +561,50 @@ repos:
 	assert.Equal(t, "glob-proj", resolved[1].Entry.InferenceProject.Value)
 
 	assert.Equal(t, "acme", resolved[2].Owner)
-	assert.Equal(t, "service-web", resolved[2].Repo)
+	assert.Equal(t, "service-priv", resolved[2].Repo)
+	assert.True(t, resolved[2].Entry.InferenceProject.Set)
+
+	assert.Equal(t, "acme", resolved[3].Owner)
+	assert.Equal(t, "service-web", resolved[3].Repo)
+}
+
+func TestExpandGlobs_IncludesPrivateRepos(t *testing.T) {
+	input := `
+version: 1
+mint:
+  url: https://mint.example.com
+  project: p
+  region: r
+repos:
+  - acme/*
+`
+	var m Manifest
+	require.NoError(t, yaml.Unmarshal([]byte(input), &m))
+
+	fc := forge.NewFakeClient()
+	fc.Repos = []forge.Repository{
+		{Name: "public-repo", FullName: "acme/public-repo"},
+		{Name: "private-repo", FullName: "acme/private-repo", Private: true},
+		{Name: "archived-repo", FullName: "acme/archived-repo", Archived: true},
+		{Name: "forked-repo", FullName: "acme/forked-repo", Fork: true},
+	}
+
+	ctx := context.Background()
+	resolved, err := m.ExpandGlobs(ctx, fc)
+	require.NoError(t, err)
+
+	// Private repos should be included (per-repo mode), but archived
+	// and forked repos remain excluded.
+	require.Len(t, resolved, 2)
+
+	repoNames := make(map[string]bool)
+	for _, rr := range resolved {
+		repoNames[rr.Repo] = true
+	}
+	assert.True(t, repoNames["public-repo"], "public repo should be included")
+	assert.True(t, repoNames["private-repo"], "private repo should be included in per-repo mode")
+	assert.False(t, repoNames["archived-repo"], "archived repo should be excluded")
+	assert.False(t, repoNames["forked-repo"], "forked repo should be excluded")
 }
 
 func TestExpandGlobs_ExplicitWinsOverGlob(t *testing.T) {

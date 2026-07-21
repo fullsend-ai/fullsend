@@ -277,7 +277,7 @@ func (f *FakeClient) err(method string) error {
 	return f.Errors[method]
 }
 
-func (f *FakeClient) ListOrgRepos(_ context.Context, org string) ([]Repository, error) {
+func (f *FakeClient) ListOrgRepos(_ context.Context, org string, includePrivate bool) ([]Repository, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -292,7 +292,10 @@ func (f *FakeClient) ListOrgRepos(_ context.Context, org string) ([]Repository, 
 
 	var result []Repository
 	for _, r := range source {
-		if r.Archived || r.Fork || r.Private {
+		if r.Archived || r.Fork {
+			continue
+		}
+		if r.Private && !includePrivate {
 			continue
 		}
 		result = append(result, r)

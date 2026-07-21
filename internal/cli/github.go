@@ -359,7 +359,7 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 		}
 	}
 
-	allRepos, err := client.ListOrgRepos(ctx, org)
+	allRepos, err := client.ListOrgRepos(ctx, org, false)
 	if err != nil {
 		return fmt.Errorf("listing org repos: %w", err)
 	}
