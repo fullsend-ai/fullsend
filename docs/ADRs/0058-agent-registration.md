@@ -41,13 +41,17 @@ list to both `OrgConfig` and `PerRepoConfig`. (Note: ADR 0045 Phase 4
 previously removed the `agents` block from `OrgConfig`; this re-adds
 a field with the same YAML key but different semantics — harness
 source URLs rather than role/name/slug identity tuples.) Each entry
-is a URL or local path, with an optional name override:
+is a URL or local path, with an optional name override. Entries may
+also set `enabled: false` to disable an agent (including scaffold
+defaults) without removing it from configuration:
 
 ```yaml
 agents:
   - https://raw.githubusercontent.com/fullsend-ai/agents/<sha>/harness/triage.yaml#sha256=<hash>
   - name: lint
     source: harness/my-linter.yaml
+  - name: retro
+    enabled: false   # suppression-only — disables scaffold default
 ```
 
 `fullsend run <name>` resolves agents from config at runtime, loading

@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -142,6 +144,95 @@ func TestRunDispatch_GHAEventMissingEventPath(t *testing.T) {
 		inputDriver: "gha-event",
 	})
 	require.Error(t, err)
+}
+
+func TestRunDispatch_DisabledAgentExcluded(t *testing.T) {
+	dir := t.TempDir()
+	harnessDir := filepath.Join(dir, "harness")
+	require.NoError(t, os.MkdirAll(harnessDir, 0o755))
+	harnessYAML := `agent: agents/triage.md
+role: triage
+slug: fullsend-ai-issue-ping
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+trigger: |
+  event.entity.kind == "work_item"
+  && event.transition.kind == "label_changed"
+  && event.transition.label.name == "ready-for-ping"
+`
+	require.NoError(t, os.WriteFile(filepath.Join(harnessDir, "issue-ping.yaml"), []byte(harnessYAML), 0o644))
+	f := false
+	cfg := config.NewPerRepoConfig(nil, "fullsend-ai/demo")
+	cfg.Agents = []config.AgentEntry{
+		{Name: "issue-ping", Source: "harness/issue-ping.yaml", Enabled: &f},
+	}
+	data, err := yaml.Marshal(cfg)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
+
+	eventPath := filepath.Join(t.TempDir(), "event.json")
+	eventJSON := []byte(`{
+  "repo": "fullsend-ai/demo",
+  "entity": {"kind": "work_item", "id": 42, "url": "https://github.com/fullsend-ai/demo/issues/42"},
+  "transition": {"kind": "label_changed", "label": {"name": "ready-for-ping", "action": "added"}},
+  "actor": {"id": "alice", "kind": "human", "role": "write", "is_entity_author": false},
+  "state": {"labels": ["ready-for-ping"]},
+  "source": {"system": "github", "raw_type": "issues", "raw_action": "labeled"}
+}`)
+	require.NoError(t, os.WriteFile(eventPath, eventJSON, 0o644))
+
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = w
+
+	errCh := make(chan error, 1)
+	go func() {
+		defer w.Close()
+		errCh <- runDispatch(context.Background(), dispatchOpts{
+			inputDriver:  "json",
+			outputDriver: "json",
+			inputFile:    eventPath,
+			configDir:    dir,
+		})
+	}()
+
+	var buf bytes.Buffer
+	_, _ = buf.ReadFrom(r)
+	os.Stdout = old
+
+	require.NoError(t, <-errCh)
+	output := strings.TrimSpace(buf.String())
+	if output == "" {
+		return
+	}
+	var refs []map[string]interface{}
+	require.NoError(t, json.Unmarshal([]byte(output), &refs), "output should be valid JSON: %s", output)
+	for _, ref := range refs {
+		assert.NotEqual(t, "issue-ping", ref["agent"], "disabled agent should not appear in dispatch output")
+	}
+}
+
+func TestFindConfigAgentEntry_ReturnsLastEnabled(t *testing.T) {
+	tr := true
+	f := false
+	agents := []config.AgentEntry{
+		{Name: "retro", Source: "harness/retro-v1.yaml", Enabled: &tr},
+		{Name: "retro", Enabled: &f},
+		{Name: "retro", Source: "harness/retro-v2.yaml", Enabled: &tr},
+	}
+	entry := findConfigAgentEntry(agents, "retro")
+	require.NotNil(t, entry)
+	assert.Equal(t, "harness/retro-v2.yaml", entry.Source)
+}
+
+func TestFindConfigAgentEntry_SkipsDisabled(t *testing.T) {
+	f := false
+	agents := []config.AgentEntry{
+		{Name: "retro", Source: "harness/retro.yaml", Enabled: &f},
+	}
+	entry := findConfigAgentEntry(agents, "retro")
+	assert.Nil(t, entry)
 }
 
 func writeDispatchFixture(t *testing.T, dir string) {

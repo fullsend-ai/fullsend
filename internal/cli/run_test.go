@@ -1140,6 +1140,98 @@ func TestResolveAgentSource_AgentsRepoFallback_DiskFallback(t *testing.T) {
 	assert.Empty(t, deps)
 }
 
+func TestResolveAgentSource_DisabledAgentBlocksFallback(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	// Place a triage harness on disk to prove fallback is NOT used.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "triage.yaml"),
+		[]byte("agent: agents/triage.md\nrole: test\n"),
+		0o644,
+	))
+
+	f := false
+	orgCfg := &config.OrgConfig{
+		Agents: []config.AgentEntry{
+			{Name: "triage", Enabled: &f},
+		},
+	}
+
+	printer := ui.New(io.Discard)
+	_, _, err := resolveAgentSource(context.Background(), dir, "triage", nil, orgCfg, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "explicitly disabled")
+}
+
+func TestResolveAgentSource_DisabledFirstPartyAgentBlocksFallback(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	// Place a retro harness on disk so it would resolve if fallback were allowed.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "retro.yaml"),
+		[]byte("agent: agents/retro.md\nrole: test\n"),
+		0o644,
+	))
+
+	f := false
+	orgCfg := &config.OrgConfig{
+		Agents: []config.AgentEntry{
+			{Name: "retro", Enabled: &f},
+		},
+	}
+
+	fakeClient := forge.NewFakeClient()
+	printer := ui.New(io.Discard)
+	_, _, err := resolveAgentSource(context.Background(), dir, "retro", fakeClient, orgCfg, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "explicitly disabled")
+}
+
+func TestResolveAgentSource_SuppressionOnlyEntryBlocksFallback(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "retro.yaml"),
+		[]byte("agent: agents/retro.md\nrole: test\n"),
+		0o644,
+	))
+
+	// Suppression-only entry: enabled=false, no source.
+	f := false
+	orgCfg := &config.OrgConfig{
+		Agents: []config.AgentEntry{
+			{Name: "retro", Enabled: &f},
+		},
+	}
+
+	printer := ui.New(io.Discard)
+	_, _, err := resolveAgentSource(context.Background(), dir, "retro", nil, orgCfg, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "explicitly disabled")
+}
+
+func TestResolveAgentSource_EnabledAgentStillResolves(t *testing.T) {
+	dir := canonTempDir(t)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "custom.yaml"),
+		[]byte("agent: agents/custom.md\nrole: test\n"),
+		0o644,
+	))
+
+	tr := true
+	orgCfg := &config.OrgConfig{
+		Agents: []config.AgentEntry{
+			{Name: "custom", Source: "harness/custom.yaml", Enabled: &tr},
+		},
+	}
+
+	printer := ui.New(io.Discard)
+	path, _, err := resolveAgentSource(context.Background(), dir, "custom", nil, orgCfg, harness.ComposeOpts{}, printer)
+	require.NoError(t, err)
+	assert.Contains(t, path, "custom.yaml")
+}
+
 func TestTryAgentsRepoFallback_UnknownAgent(t *testing.T) {
 	fakeClient := forge.NewFakeClient()
 	printer := ui.New(io.Discard)

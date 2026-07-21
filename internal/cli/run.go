@@ -2933,6 +2933,13 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 
 	agent := config.LookupMergedAgent(merged, agentName)
 	if agent == nil || !agent.IsConfig {
+		// An explicitly disabled agent must not fall through to the
+		// agents-repo fallback or disk lookup — that would silently
+		// re-enable it. Return a clear error instead.
+		if config.IsAgentExplicitlyDisabled(orgCfg.Agents, agentName) {
+			printer.StepFail(fmt.Sprintf("Agent %s is disabled in config", agentName))
+			return "", nil, fmt.Errorf("agent %q is explicitly disabled in config", agentName)
+		}
 		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
 			return path, deps, nil
 		}
@@ -2965,8 +2972,8 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 
 func findConfigAgentEntry(agents []config.AgentEntry, name string) *config.AgentEntry {
 	lower := strings.ToLower(name)
-	for i := range agents {
-		if strings.ToLower(agents[i].DerivedName()) == lower {
+	for i := len(agents) - 1; i >= 0; i-- {
+		if strings.ToLower(agents[i].DerivedName()) == lower && agents[i].IsEnabled() {
 			return &agents[i]
 		}
 	}

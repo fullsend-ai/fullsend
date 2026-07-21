@@ -84,6 +84,41 @@ Feature: Harness CEL dispatch
     Then the harness "pr-ping" workflow completes successfully
     And the agent will succeed to Prove PR execution
 
+  Scenario: Disabled harness is not dispatched while enabled one triggers
+    Given a custom harness "enabled-ping" with:
+      """
+      agent: agents/triage.md
+      role: triage
+      slug: fullsend-ai-enabled-ping
+      model: opus
+      image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      trigger: |
+        event.entity.kind == "work_item"
+        && event.transition.kind == "label_changed"
+        && event.transition.label.name == "ready-for-enabled-test"
+      """
+    And a disabled custom harness "disabled-ping" with:
+      """
+      agent: agents/triage.md
+      role: triage
+      slug: fullsend-ai-disabled-ping
+      model: opus
+      image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+      trigger: |
+        event.entity.kind == "work_item"
+        && event.transition.kind == "label_changed"
+        && event.transition.label.name == "ready-for-enabled-test"
+      """
+    And a dummy agent that would:
+      | description         | op           | args                                                         |
+      | Prove execution     | write_fixture| output/dispatch-enabled-ok.json, fixtures/dispatch/ok.json   |
+    And an issue
+    When the issue is labeled "ready-for-enabled-test"
+    Then the harness "enabled-ping" workflow completes successfully
+    And the agent will succeed to Prove execution
+    And the harness "enabled-ping" was dispatched exactly 1 time
+    And the harness "disabled-ping" agent did not run
+
   Scenario: PR review dispatches review-only harness
     Given a custom harness "review-ping" with:
       """

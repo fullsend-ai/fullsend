@@ -20,9 +20,16 @@ var validConfigAgentName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 // AgentEntry represents a registered agent source in config.
 // It supports both string shorthand (just the source URL/path) and
 // object form (with an explicit name override).
+//
+// Enabled controls whether the agent participates in the merged agent
+// set. When nil (omitted) the agent defaults to enabled. When
+// explicitly set to false the agent is suppressed — this allows
+// disabling built-in scaffold agents without removing their role.
+// A suppression-only entry (Enabled=false, no Source) is valid.
 type AgentEntry struct {
-	Name   string `yaml:"name,omitempty"`
-	Source string `yaml:"source"`
+	Name    string `yaml:"name,omitempty"`
+	Source  string `yaml:"source"`
+	Enabled *bool  `yaml:"enabled,omitempty"`
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler so that a plain string
@@ -54,6 +61,12 @@ func (a *AgentEntry) UnmarshalYAML(value *yaml.Node) error {
 		return value.Decode((*plain)(a))
 	}
 	return fmt.Errorf("agents entry must be a string or mapping, got %v", value.Kind)
+}
+
+// IsEnabled returns whether the agent entry is enabled.
+// A nil Enabled pointer (field omitted) defaults to true.
+func (a AgentEntry) IsEnabled() bool {
+	return a.Enabled == nil || *a.Enabled
 }
 
 // DerivedName returns the explicit Name if set, otherwise derives one
@@ -354,10 +367,43 @@ func (c *OrgConfig) Validate() error {
 // resolution (case-insensitive scheme, percent-decoding, dot-segment
 // cleaning).
 func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
-	seen := make(map[string]bool, len(agents))
+	// seen tracks agent names for duplicate detection. Each state
+	// (enabled/disabled) is tracked independently so that exactly one
+	// disable-then-enable or enable-then-disable pair is accepted while
+	// three-or-more entries with the same name are rejected.
+	type seenState struct {
+		seenEnabled  bool
+		seenDisabled bool
+	}
+	seen := make(map[string]seenState, len(agents))
 	for i, entry := range agents {
+		// A suppression-only entry (enabled: false, no source) is valid —
+		// it exists solely to disable a scaffold default by name.
+		if entry.Source == "" && !entry.IsEnabled() {
+			if entry.Name == "" {
+				return fmt.Errorf("agents[%d]: disabled agent entry with no source must have an explicit name", i)
+			}
+			if !validConfigAgentName.MatchString(entry.Name) {
+				return fmt.Errorf("agents[%d] (%s): name is invalid, must start with alphanumeric and contain only [a-zA-Z0-9_-]", i, entry.Name)
+			}
+			lowerName := strings.ToLower(entry.Name)
+			if prev, exists := seen[lowerName]; exists {
+				if prev.seenDisabled {
+					return fmt.Errorf("agents[%d] (%s): duplicate agent name (case-insensitive)", i, entry.Name)
+				}
+			}
+			prev := seen[lowerName]
+			prev.seenDisabled = true
+			seen[lowerName] = prev
+			continue
+		}
+		// Disabled entries with a source must also have an explicit name so
+		// dispatch workflows can match by name via yq without deriving it.
+		if !entry.IsEnabled() && entry.Name == "" {
+			return fmt.Errorf("agents[%d]: disabled agent entry must have an explicit name", i)
+		}
 		if entry.Source == "" {
-			return fmt.Errorf("agents[%d]: source must not be empty", i)
+			return fmt.Errorf("agents[%d]: enabled agent entry must have a source", i)
 		}
 
 		name := entry.DerivedName()
@@ -365,10 +411,22 @@ func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 			return fmt.Errorf("agents[%d] (%s): derived name is invalid, must start with alphanumeric and contain only [a-zA-Z0-9_-] (source: %q)", i, name, entry.Source)
 		}
 		lowerName := strings.ToLower(name)
-		if seen[lowerName] {
-			return fmt.Errorf("agents[%d] (%s): duplicate agent name (case-insensitive)", i, name)
+		currentDisabled := !entry.IsEnabled()
+		if prev, exists := seen[lowerName]; exists {
+			if currentDisabled && prev.seenDisabled {
+				return fmt.Errorf("agents[%d] (%s): duplicate agent name (case-insensitive)", i, name)
+			}
+			if !currentDisabled && prev.seenEnabled {
+				return fmt.Errorf("agents[%d] (%s): duplicate agent name (case-insensitive)", i, name)
+			}
 		}
-		seen[lowerName] = true
+		prev := seen[lowerName]
+		if currentDisabled {
+			prev.seenDisabled = true
+		} else {
+			prev.seenEnabled = true
+		}
+		seen[lowerName] = prev
 
 		if urlutil.IsURL(entry.Source) {
 			cleanURL, _, hasHash := urlutil.ParseIntegrityHash(entry.Source)

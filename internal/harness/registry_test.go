@@ -56,6 +56,37 @@ func TestRegisteredAgents_TypedNilConfig(t *testing.T) {
 	assert.Contains(t, err.Error(), "config is required")
 }
 
+func TestRegisteredAgents_SkipsDisabled(t *testing.T) {
+	f := false
+	cfg := &config.DirConfig{
+		Agents: []config.AgentEntry{
+			{Source: "harness/triage.yaml"},
+			{Name: "review", Source: "harness/review.yaml", Enabled: &f},
+		},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+	agents, err := RegisteredAgents(cfg)
+	require.NoError(t, err)
+	require.Len(t, agents, 1)
+	assert.Equal(t, "triage", agents[0].Name)
+}
+
+func TestRegisteredAgents_RejectsThreeEntryChain(t *testing.T) {
+	f := false
+	tr := true
+	cfg := &config.DirConfig{
+		Agents: []config.AgentEntry{
+			{Name: "retro", Source: "harness/retro-v1.yaml", Enabled: &tr},
+			{Name: "retro", Enabled: &f},
+			{Name: "retro", Source: "harness/retro-v2.yaml", Enabled: &tr},
+		},
+		AllowedRemoteResources: []string{"https://example.com/"},
+	}
+	_, err := RegisteredAgents(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate agent name")
+}
+
 func TestRegisteredAgents_DuplicateName(t *testing.T) {
 	cfg := &config.DirConfig{
 		Agents: []config.AgentEntry{

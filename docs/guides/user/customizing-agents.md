@@ -495,6 +495,40 @@ my-repo/
 │       └── harness/code.yaml      # Repo-specific harness config
 ```
 
+## Disabling Agents
+
+To disable an agent (including built-in scaffold agents) without removing
+its role, add an entry with `enabled: false` in your config:
+
+```yaml
+agents:
+  - name: retro
+    enabled: false
+```
+
+This prevents the agent from dispatching and from resolving via
+`fullsend run`. The role can stay in `defaults.roles` — only the agent
+is suppressed. Omitting `enabled` (or setting it to `true`) keeps the
+agent active (backward compatible).
+
+When multiple entries share a name, the last writer wins. This allows a
+disable-then-enable pattern to replace a default agent with a custom one:
+
+```yaml
+agents:
+  - name: retro
+    enabled: false
+  - name: retro
+    source: harness/custom-retro.yaml
+    enabled: true
+```
+
+**Important:** The `name` must match the **agent/harness name**, not the
+role name. The built-in agent names are: `code`, `triage`, `review`,
+`fix`, `retro`, `prioritize`. Note that the role `coder` maps to the
+agent named `code` — writing `name: coder` passes validation but
+disables nothing because no agent has that harness name.
+
 ## See Also
 
 - [Bring Your Own Agent](bring-your-own-agent.md) - Building and registering custom agents from scratch
