@@ -575,6 +575,21 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 			}
 		}
 	}
+	if h.OpenShell != nil {
+		for i := range h.OpenShell.Profiles {
+			if h.OpenShell.Profiles[i], err = resolve(fmt.Sprintf("openshell.profiles[%d]", i), h.OpenShell.Profiles[i]); err != nil {
+				return err
+			}
+		}
+	}
+	for i := range h.Providers {
+		p := h.Providers[i]
+		if strings.Contains(p, "/") || strings.HasSuffix(p, ".yaml") || strings.HasSuffix(p, ".yml") {
+			if h.Providers[i], err = resolve(fmt.Sprintf("providers[%d]", i), p); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

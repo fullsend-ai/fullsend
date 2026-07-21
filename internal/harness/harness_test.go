@@ -831,6 +831,88 @@ func TestResolveRelativeTo_URLsUnchanged(t *testing.T) {
 	assert.Equal(t, "/base/dir/skills/local-skill", h.Skills[0])
 }
 
+func TestResolveRelativeTo_Profiles(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"profiles/network.yaml"},
+		},
+	}
+
+	require.NoError(t, h.ResolveRelativeTo("/base/dir"))
+
+	assert.Equal(t, "/base/dir/profiles/network.yaml", h.OpenShellProfiles()[0])
+}
+
+func TestResolveRelativeTo_ProfilesAbsoluteUnchanged(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"/abs/cache/profiles/network.yaml"},
+		},
+	}
+
+	require.NoError(t, h.ResolveRelativeTo("/base/dir"))
+
+	assert.Equal(t, "/abs/cache/profiles/network.yaml", h.OpenShellProfiles()[0])
+}
+
+func TestResolveRelativeTo_ProfilesURLUnchanged(t *testing.T) {
+	profileURL := "https://example.com/profiles/net.yaml#sha256=abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	h := &Harness{
+		Agent: "agents/test.md",
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{profileURL},
+		},
+	}
+
+	require.NoError(t, h.ResolveRelativeTo("/base/dir"))
+
+	assert.True(t, IsURL(h.OpenShellProfiles()[0]))
+	assert.Equal(t, profileURL, h.OpenShellProfiles()[0])
+}
+
+func TestResolveRelativeTo_ProfileTraversalRejected(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"../escape/profiles/net.yaml"},
+		},
+	}
+
+	err := h.ResolveRelativeTo("/base/dir")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolves outside")
+}
+
+func TestResolveRelativeTo_Providers(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Providers: []string{
+			"providers/custom.yaml",
+			"fullsend-github",
+		},
+	}
+
+	require.NoError(t, h.ResolveRelativeTo("/base/dir"))
+
+	// File path gets resolved
+	assert.Equal(t, "/base/dir/providers/custom.yaml", h.Providers[0])
+	// Bare provider name stays unchanged
+	assert.Equal(t, "fullsend-github", h.Providers[1])
+}
+
+func TestResolveRelativeTo_ProviderTraversalRejected(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Providers: []string{"../escape/providers/evil.yaml"},
+	}
+
+	err := h.ResolveRelativeTo("/base/dir")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolves outside")
+}
+
 func TestValidateFilesExist_MissingPlugin(t *testing.T) {
 	dir := t.TempDir()
 	agentFile := filepath.Join(dir, "agent.md")
