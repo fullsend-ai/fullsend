@@ -472,13 +472,12 @@ func mergeBaseIntoChild(base, child *Harness) {
 		child.SandboxTimeoutSeconds = base.SandboxTimeoutSeconds
 	}
 
-	// Concatenated slices: base + child.
-	// Pre-allocate new slices to avoid mutating base's backing array.
-	if base.Skills != nil {
-		merged := make([]string, 0, len(base.Skills)+len(child.Skills))
-		merged = append(merged, base.Skills...)
-		merged = append(merged, child.Skills...)
-		child.Skills = merged
+	// Skills: base + child with child-overrides-base-by-basename.
+	// A child skill whose directory basename matches a base skill replaces
+	// the base entry (same as host_files' override-by-dest). This allows
+	// child harnesses to override built-in skills via base: composition.
+	if base.Skills != nil || child.Skills != nil {
+		child.Skills = mergeSkills(base.Skills, child.Skills)
 	}
 	if base.Plugins != nil {
 		merged := make([]string, 0, len(base.Plugins)+len(child.Plugins))
@@ -1149,6 +1148,35 @@ func urlIndexPut(workspaceRoot, rawURL, hash string) error {
 	return os.WriteFile(idxPath, out, 0o600)
 }
 
+// mergeSkills concatenates base and child skill paths, with child entries
+// overriding base entries that resolve to the same sandbox directory name
+// (filepath.Base). This mirrors mergeHostFiles' override-by-dest behavior
+// and allows a child harness to replace a built-in skill by declaring a
+// same-named skill via base: composition (see #5408).
+func mergeSkills(base, child []string) []string {
+	baseIndex := make(map[string]int, len(base))
+	result := make([]string, 0, len(base)+len(child))
+
+	// Add base entries
+	for _, s := range base {
+		name := filepath.Base(s)
+		baseIndex[name] = len(result)
+		result = append(result, s)
+	}
+
+	// Add/override with child entries
+	for _, s := range child {
+		name := filepath.Base(s)
+		if idx, exists := baseIndex[name]; exists {
+			result[idx] = s // child overrides base
+		} else {
+			result = append(result, s)
+		}
+	}
+
+	return result
+}
+
 // mergeHostFiles concatenates base and child host files, with child entries
 // overriding base entries that have the same Dest path.
 func mergeHostFiles(base, child []HostFile) []HostFile {
@@ -1212,12 +1240,9 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 		child.PostScript = base.PostScript
 	}
 
-	// Skills: concatenate (pre-allocate to avoid mutating base's backing array)
-	if base.Skills != nil {
-		merged := make([]string, 0, len(base.Skills)+len(child.Skills))
-		merged = append(merged, base.Skills...)
-		merged = append(merged, child.Skills...)
-		child.Skills = merged
+	// Skills: base + child with child-overrides-base-by-basename
+	if base.Skills != nil || child.Skills != nil {
+		child.Skills = mergeSkills(base.Skills, child.Skills)
 	}
 
 	// RunnerEnv: merge, child keys win

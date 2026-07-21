@@ -122,7 +122,7 @@ func mergeForgeConfig(h *Harness, fc *ForgeConfig) {
 	}
 
 	if fc.Skills != nil {
-		h.Skills = append(h.Skills, fc.Skills...)
+		h.Skills = mergeSkills(h.Skills, fc.Skills)
 	}
 
 	if fc.RunnerEnv != nil {
