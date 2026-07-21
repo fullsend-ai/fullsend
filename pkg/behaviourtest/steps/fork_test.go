@@ -58,6 +58,20 @@ func TestWhenForkPullRequestOpened_RequiresFork(t *testing.T) {
 	assert.Contains(t, err.Error(), "no fork created")
 }
 
+func TestWhenForkPullRequestOpened_CreateBranchError(t *testing.T) {
+	w := &world.World{
+		ForkOwner: "org",
+		ForkRepo:  "repo-fork",
+		RepoOwner: "org",
+		RepoName:  "repo",
+		SCM:       &fakeForkSCM{createBranchErr: fmt.Errorf("branch creation failed")},
+	}
+	err := whenForkPullRequestOpened(w)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating fork branch")
+	assert.Contains(t, err.Error(), "branch creation failed")
+}
+
 func TestWhenForkPullRequestOpened_CommitError(t *testing.T) {
 	w := &world.World{
 		ForkOwner: "org",
@@ -69,6 +83,9 @@ func TestWhenForkPullRequestOpened_CommitError(t *testing.T) {
 	err := whenForkPullRequestOpened(w)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "committing to fork branch")
+	// ForkPRBranch must be set even on commit failure so CleanupScenario
+	// can delete the already-created branch.
+	assert.NotEmpty(t, w.ForkPRBranch, "ForkPRBranch should be set after CreateBranch succeeds, even when CommitFileToFork fails")
 }
 
 func TestWhenForkPullRequestOpened_CreatePRError(t *testing.T) {
@@ -82,6 +99,9 @@ func TestWhenForkPullRequestOpened_CreatePRError(t *testing.T) {
 	err := whenForkPullRequestOpened(w)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating fork pull request")
+	// ForkPRBranch must be set even on PR creation failure so
+	// CleanupScenario can delete the already-created branch.
+	assert.NotEmpty(t, w.ForkPRBranch, "ForkPRBranch should be set after CreateBranch succeeds, even when CreateForkChangeProposal fails")
 }
 
 func TestWhenCommitPushedToForkPR_RequiresPR(t *testing.T) {
@@ -102,6 +122,44 @@ func TestWhenCommitPushedToForkPR_CommitError(t *testing.T) {
 	err := whenCommitPushedToForkPR(w)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "pushing commit to fork PR")
+}
+
+func TestWhenForkPullRequestLabeled_Success(t *testing.T) {
+	scmDriver := &fakeForkSCM{}
+	w := &world.World{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		ForkPRNumber: 10,
+		SCM:          scmDriver,
+	}
+	err := whenForkPullRequestLabeled(w, "ready-for-fork-ping")
+	require.NoError(t, err)
+	assert.False(t, w.ScenarioStart.IsZero(), "ScenarioStart should be set")
+	require.Len(t, scmDriver.addedLabels, 1)
+	assert.Equal(t, "org", scmDriver.addedLabels[0].owner)
+	assert.Equal(t, "repo", scmDriver.addedLabels[0].repo)
+	assert.Equal(t, 10, scmDriver.addedLabels[0].number)
+	assert.Equal(t, "ready-for-fork-ping", scmDriver.addedLabels[0].label)
+}
+
+func TestWhenForkPullRequestLabeled_NoForkPR(t *testing.T) {
+	w := &world.World{}
+	err := whenForkPullRequestLabeled(w, "some-label")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no fork pull request opened")
+}
+
+func TestWhenForkPullRequestLabeled_Error(t *testing.T) {
+	scmDriver := &fakeForkSCM{addIssueLabelsErr: fmt.Errorf("label failed")}
+	w := &world.World{
+		RepoOwner:    "org",
+		RepoName:     "repo",
+		ForkPRNumber: 10,
+		SCM:          scmDriver,
+	}
+	err := whenForkPullRequestLabeled(w, "some-label")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "label failed")
 }
 
 // TestForkSteps_WorldStateTransitions verifies the full fork lifecycle:
@@ -129,6 +187,7 @@ func TestForkSteps_WorldStateTransitions(t *testing.T) {
 	assert.Equal(t, 42, w.ForkPRNumber)
 	assert.NotEmpty(t, w.ForkPRBranch)
 	assert.False(t, w.ScenarioStart.IsZero())
+	assert.True(t, scmDriver.createBranchCalled, "CreateBranch should have been called before committing")
 	assert.True(t, scmDriver.commitToForkCalled, "CommitFileToFork should have been called")
 	assert.True(t, scmDriver.createForkPRCalled, "CreateForkChangeProposal should have been called")
 
@@ -159,11 +218,22 @@ type fakeForkSCM struct {
 	forkRepo           string
 	prNumber           int
 	createForkCalled   bool
+	createBranchCalled bool
 	commitToForkCalled bool
 	createForkPRCalled bool
 	createForkErr      error
+	createBranchErr    error
 	commitToForkErr    error
 	createForkPRErr    error
+	addedLabels        []addedLabelRecord
+	addIssueLabelsErr  error
+}
+
+type addedLabelRecord struct {
+	owner  string
+	repo   string
+	number int
+	label  string
 }
 
 func (f *fakeForkSCM) CreateFork(_ context.Context, _, _, _ string) (string, error) {
@@ -182,7 +252,7 @@ func (f *fakeForkSCM) CommitFileToFork(_ context.Context, _, _, _, _, _ string, 
 	return nil
 }
 
-func (f *fakeForkSCM) CreateForkChangeProposal(_ context.Context, _, _, _, _, _, _, _ string) (*forge.ChangeProposal, error) {
+func (f *fakeForkSCM) CreateForkChangeProposal(_ context.Context, _, _, _, _, _, _, _, _ string) (*forge.ChangeProposal, error) {
 	f.createForkPRCalled = true
 	if f.createForkPRErr != nil {
 		return nil, f.createForkPRErr
@@ -196,7 +266,13 @@ func (f *fakeForkSCM) CreateIssue(context.Context, string, string, string, strin
 	return nil, nil
 }
 
-func (f *fakeForkSCM) AddIssueLabels(context.Context, string, string, int, ...string) error {
+func (f *fakeForkSCM) AddIssueLabels(_ context.Context, owner, repo string, number int, labels ...string) error {
+	if f.addIssueLabelsErr != nil {
+		return f.addIssueLabelsErr
+	}
+	for _, l := range labels {
+		f.addedLabels = append(f.addedLabels, addedLabelRecord{owner: owner, repo: repo, number: number, label: l})
+	}
 	return nil
 }
 
@@ -216,7 +292,11 @@ func (f *fakeForkSCM) CommitFile(context.Context, string, string, string, string
 	return nil
 }
 
-func (f *fakeForkSCM) CreateBranch(context.Context, string, string, string) error {
+func (f *fakeForkSCM) CreateBranch(_ context.Context, _, _, _ string) error {
+	f.createBranchCalled = true
+	if f.createBranchErr != nil {
+		return f.createBranchErr
+	}
 	return nil
 }
 
@@ -233,5 +313,9 @@ func (f *fakeForkSCM) SubmitPullRequestReview(context.Context, string, string, i
 }
 
 func (f *fakeForkSCM) CloseIssue(context.Context, string, string, int) error {
+	return nil
+}
+
+func (f *fakeForkSCM) DeleteBranch(context.Context, string, string, string) error {
 	return nil
 }

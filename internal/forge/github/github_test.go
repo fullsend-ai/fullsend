@@ -103,6 +103,36 @@ func TestDeleteRepo(t *testing.T) {
 	assert.True(t, called)
 }
 
+func TestDeleteRef(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		called := false
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, "DELETE", r.Method)
+			assert.Equal(t, "/repos/owner/repo/git/refs/heads/my-branch", r.URL.Path)
+			called = true
+			w.WriteHeader(http.StatusNoContent)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteRef(context.Background(), "owner", "repo", "heads/my-branch")
+		require.NoError(t, err)
+		assert.True(t, called)
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		err := client.DeleteRef(context.Background(), "owner", "repo", "heads/gone")
+		require.Error(t, err)
+		assert.True(t, forge.IsNotFound(err))
+	})
+}
+
 func TestFindExistingFork(t *testing.T) {
 	t.Run("returns fork owner when fork exists", func(t *testing.T) {
 		callNum := 0
@@ -575,6 +605,261 @@ func TestCreateChangeProposal(t *testing.T) {
 	assert.Equal(t, 42, cp.Number)
 	assert.Equal(t, "Fix bug", cp.Title)
 	assert.Equal(t, "https://github.com/owner/repo/pull/42", cp.URL)
+}
+
+func TestCreateCrossRepoChangeProposal(t *testing.T) {
+	t.Run("same-org fork uses GraphQL", func(t *testing.T) {
+		var getRepoCalls []string
+		var graphqlCalled bool
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/"):
+				getRepoCalls = append(getRepoCalls, r.URL.Path)
+				// Return node_id for the repo.
+				repoName := strings.TrimPrefix(r.URL.Path, "/repos/")
+				json.NewEncoder(w).Encode(map[string]any{
+					"node_id":   "NODE_" + strings.ReplaceAll(repoName, "/", "_"),
+					"full_name": repoName,
+				})
+			case r.Method == "POST" && r.URL.Path == "/graphql":
+				graphqlCalled = true
+				var body map[string]any
+				json.NewDecoder(r.Body).Decode(&body)
+
+				vars, _ := body["variables"].(map[string]any)
+				input, _ := vars["input"].(map[string]any)
+				assert.Equal(t, "NODE_org_repo", input["repositoryId"])
+				assert.Equal(t, "NODE_org_repo-fork", input["headRepositoryId"])
+				assert.Equal(t, "feature-branch", input["headRefName"])
+				assert.Equal(t, "main", input["baseRefName"])
+				assert.Equal(t, "PR title", input["title"])
+
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(map[string]any{
+					"data": map[string]any{
+						"createPullRequest": map[string]any{
+							"pullRequest": map[string]any{
+								"number": 99,
+								"title":  "PR title",
+								"url":    "https://github.com/org/repo/pull/99",
+							},
+						},
+					},
+				})
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		cp, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "repo", "org", "repo-fork",
+			"PR title", "PR body", "feature-branch", "main",
+		)
+		require.NoError(t, err)
+		assert.True(t, graphqlCalled, "should use GraphQL createPullRequest")
+		require.Len(t, getRepoCalls, 2, "should fetch node IDs for both repos")
+		assert.Equal(t, 99, cp.Number)
+		assert.Equal(t, "PR title", cp.Title)
+		assert.Equal(t, "https://github.com/org/repo/pull/99", cp.URL)
+	})
+
+	t.Run("graphql error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/"):
+				json.NewEncoder(w).Encode(map[string]any{
+					"node_id": "NODE_test",
+				})
+			case r.Method == "POST" && r.URL.Path == "/graphql":
+				json.NewEncoder(w).Encode(map[string]any{
+					"errors": []map[string]any{
+						{"message": "head ref must be a branch in the head repository"},
+					},
+				})
+			}
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "repo", "org", "repo-fork",
+			"title", "body", "branch", "main",
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "head ref must be a branch")
+	})
+
+	t.Run("base repo not found", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "missing", "org", "repo-fork",
+			"title", "body", "branch", "main",
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "get repo node ID")
+	})
+
+	t.Run("head repo not found", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/") {
+				callCount++
+				if callCount == 1 {
+					// Base repo succeeds.
+					json.NewEncoder(w).Encode(map[string]any{
+						"node_id": "NODE_base",
+					})
+					return
+				}
+				// Head repo fails.
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "repo", "org", "missing-fork",
+			"title", "body", "branch", "main",
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "get repo node ID")
+	})
+
+	t.Run("empty node ID", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/") {
+				// Return valid JSON but with empty node_id.
+				json.NewEncoder(w).Encode(map[string]any{
+					"node_id": "",
+				})
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "repo", "org", "repo-fork",
+			"title", "body", "branch", "main",
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "empty node ID")
+	})
+
+	t.Run("graphql post error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/"):
+				json.NewEncoder(w).Encode(map[string]any{
+					"node_id": "NODE_test",
+				})
+			case r.Method == "POST" && r.URL.Path == "/graphql":
+				w.WriteHeader(http.StatusInternalServerError)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "repo", "org", "repo-fork",
+			"title", "body", "branch", "main",
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "cross-repo pull request via graphql")
+	})
+
+	t.Run("graphql decode error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/"):
+				json.NewEncoder(w).Encode(map[string]any{
+					"node_id": "NODE_test",
+				})
+			case r.Method == "POST" && r.URL.Path == "/graphql":
+				// Return invalid JSON body.
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte("not json"))
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "repo", "org", "repo-fork",
+			"title", "body", "branch", "main",
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decode cross-repo pull request response")
+	})
+
+	t.Run("repo node ID decode error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/repos/") {
+				// Return invalid JSON for repo lookup.
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte("not json"))
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		client := newTestClient(t, srv)
+		_, err := client.CreateCrossRepoChangeProposal(
+			context.Background(),
+			"org", "repo", "org", "repo-fork",
+			"title", "body", "branch", "main",
+		)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "decode repo node ID")
+	})
+}
+
+func TestAPIError_FieldCode(t *testing.T) {
+	// When a GitHub 422 has empty detail messages but provides field/code,
+	// the error string should include them for debuggability.
+	err := &APIError{
+		StatusCode: 422,
+		Message:    "Validation Failed",
+		Errors: []APIErrorDetail{
+			{Field: "head", Code: "invalid"},
+		},
+	}
+	assert.Contains(t, err.Error(), "field=head")
+	assert.Contains(t, err.Error(), "code=invalid")
+
+	// When the detail message is present, it should still use that.
+	err2 := &APIError{
+		StatusCode: 422,
+		Message:    "Validation Failed",
+		Errors: []APIErrorDetail{
+			{Message: "Branch not found", Field: "head", Code: "invalid"},
+		},
+	}
+	assert.Contains(t, err2.Error(), "Branch not found")
+	assert.NotContains(t, err2.Error(), "field=head")
 }
 
 func TestListRepoPullRequests(t *testing.T) {

@@ -364,6 +364,24 @@ func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName s
 	return nil
 }
 
+// DeleteRef deletes a git ref via the GitLab Branches or Tags API.
+// refPath must be in the form "heads/<branch>" or "tags/<tag>".
+// Returns forge.ErrNotFound (wrapped) if the ref does not exist.
+func (c *LiveClient) DeleteRef(ctx context.Context, owner, repo, refPath string) error {
+	proj := projectPath(owner, repo)
+
+	if after, ok := strings.CutPrefix(refPath, "heads/"); ok {
+		apiPath := fmt.Sprintf("/projects/%s/repository/branches/%s", proj, url.PathEscape(after))
+		return c.delete_(ctx, apiPath)
+	}
+	if after, ok := strings.CutPrefix(refPath, "tags/"); ok {
+		apiPath := fmt.Sprintf("/projects/%s/repository/tags/%s", proj, url.PathEscape(after))
+		return c.delete_(ctx, apiPath)
+	}
+
+	return fmt.Errorf("delete ref %s in %s/%s: unsupported ref path format (expected heads/ or tags/ prefix)", refPath, owner, repo)
+}
+
 // GetRef maps forge-style ref paths ("heads/main", "tags/v1") to GitLab
 // commit lookups. GitLab's commits endpoint accepts branch names, tag
 // names, and SHAs directly.

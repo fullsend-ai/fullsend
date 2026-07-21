@@ -170,6 +170,45 @@ func TestFakeClient_CreateBranch(t *testing.T) {
 	assert.Equal(t, []string{"owner/repo/feature-branch"}, fc.CreatedBranches)
 }
 
+func TestFakeClient_DeleteRef(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{}
+
+	err := fc.DeleteRef(ctx, "owner", "repo", "heads/my-branch")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"owner/repo/heads/my-branch"}, fc.DeletedRefs)
+
+	// Append a second ref.
+	err = fc.DeleteRef(ctx, "owner", "repo", "tags/v1.0")
+	require.NoError(t, err)
+	assert.Len(t, fc.DeletedRefs, 2)
+}
+
+func TestFakeClient_CreateCrossRepoChangeProposal(t *testing.T) {
+	ctx := context.Background()
+	fc := &FakeClient{}
+
+	cp, err := fc.CreateCrossRepoChangeProposal(ctx,
+		"base-owner", "base-repo", "head-owner", "head-repo",
+		"PR title", "PR body", "feature-branch", "main",
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 1, cp.Number)
+	assert.Equal(t, "PR title", cp.Title)
+	assert.Equal(t, "head-owner:feature-branch", cp.Head)
+	assert.Equal(t, "main", cp.Base)
+	assert.Contains(t, cp.URL, "base-owner/base-repo/pull/1")
+
+	// Second proposal gets incremented number.
+	cp2, err := fc.CreateCrossRepoChangeProposal(ctx,
+		"base-owner", "base-repo", "head-owner", "head-repo",
+		"title2", "body2", "branch2", "main",
+	)
+	require.NoError(t, err)
+	assert.Equal(t, 2, cp2.Number)
+	assert.Len(t, fc.CreatedProposals, 2)
+}
+
 func TestFakeClient_CreateChangeProposal(t *testing.T) {
 	ctx := context.Background()
 	fc := &FakeClient{}
@@ -616,9 +655,14 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 		{"CreateOrUpdateFile", func(fc *FakeClient) error { return fc.CreateOrUpdateFile(ctx, "o", "r", "p", "m", nil) }},
 		{"GetFileContent", func(fc *FakeClient) error { _, err := fc.GetFileContent(ctx, "o", "r", "p"); return err }},
 		{"CreateBranch", func(fc *FakeClient) error { return fc.CreateBranch(ctx, "o", "r", "b") }},
+		{"DeleteRef", func(fc *FakeClient) error { return fc.DeleteRef(ctx, "o", "r", "heads/b") }},
 		{"CreateFileOnBranch", func(fc *FakeClient) error { return fc.CreateFileOnBranch(ctx, "o", "r", "b", "p", "m", nil) }},
 		{"CreateChangeProposal", func(fc *FakeClient) error {
 			_, err := fc.CreateChangeProposal(ctx, "o", "r", "t", "b", "h", "base")
+			return err
+		}},
+		{"CreateCrossRepoChangeProposal", func(fc *FakeClient) error {
+			_, err := fc.CreateCrossRepoChangeProposal(ctx, "o", "r", "ho", "hr", "t", "b", "h", "base")
 			return err
 		}},
 		{"ListRepoPullRequests", func(fc *FakeClient) error { _, err := fc.ListRepoPullRequests(ctx, "o", "r"); return err }},
@@ -749,8 +793,10 @@ func TestFakeClient_ThreadSafety(t *testing.T) {
 			_ = fc.CreateOrUpdateFile(ctx, "o", "r", "p", "m", []byte("data"))
 			_, _ = fc.GetFileContent(ctx, "o", "r", "file.txt")
 			_ = fc.CreateBranch(ctx, "o", "r", "b")
+			_ = fc.DeleteRef(ctx, "o", "r", "heads/b")
 			_ = fc.CreateFileOnBranch(ctx, "o", "r", "b", "p", "m", []byte("data"))
 			_, _ = fc.CreateChangeProposal(ctx, "o", "r", "t", "b", "h", "base")
+			_, _ = fc.CreateCrossRepoChangeProposal(ctx, "o", "r", "ho", "hr", "t", "b", "h", "base")
 			_, _ = fc.ListRepoPullRequests(ctx, "o", "r")
 			_, _ = fc.GetAuthenticatedUser(ctx)
 			_, _ = fc.GetAuthenticatedUserIdentity(ctx)

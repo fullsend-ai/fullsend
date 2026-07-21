@@ -55,6 +55,14 @@ func (c *LiveClient) CreateChangeProposal(ctx context.Context, owner, repo, titl
 	}, nil
 }
 
+// CreateCrossRepoChangeProposal is not supported on GitLab. GitLab merge
+// requests between forks use the same source_branch / target_branch API as
+// same-repo MRs (the fork relationship is implicit in the project), so the
+// cross-repo variant is unnecessary. Returns forge.ErrNotSupported.
+func (c *LiveClient) CreateCrossRepoChangeProposal(_ context.Context, _, _, _, _, _, _, _, _ string) (*forge.ChangeProposal, error) {
+	return nil, fmt.Errorf("create cross-repo change proposal: %w", forge.ErrNotSupported)
+}
+
 // ListRepoPullRequests lists open merge requests for a project with pagination.
 func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo string) ([]forge.ChangeProposal, error) {
 	var result []forge.ChangeProposal

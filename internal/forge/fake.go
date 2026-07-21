@@ -237,6 +237,7 @@ type FakeClient struct {
 	CreatedRepos           []Repository
 	CreatedFiles           []FileRecord
 	CreatedBranches        []string // "owner/repo/branch"
+	DeletedRefs            []string // "owner/repo/refPath"
 	CreatedProposals       []ChangeProposal
 	DeletedRepos           []string // "owner/repo"
 	DeletedFiles           []FileRecord
@@ -741,6 +742,18 @@ func (f *FakeClient) CreateBranch(_ context.Context, owner, repo, branchName str
 	return nil
 }
 
+func (f *FakeClient) DeleteRef(_ context.Context, owner, repo, refPath string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("DeleteRef"); e != nil {
+		return e
+	}
+
+	f.DeletedRefs = append(f.DeletedRefs, owner+"/"+repo+"/"+refPath)
+	return nil
+}
+
 func (f *FakeClient) CreateFileOnBranch(_ context.Context, owner, repo, branch, path, message string, content []byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -799,6 +812,26 @@ func (f *FakeClient) CreateChangeProposal(_ context.Context, owner, repo, title,
 		Number: f.proposalCounter,
 		Head:   head,
 		Base:   base,
+	}
+	f.CreatedProposals = append(f.CreatedProposals, cp)
+	return &cp, nil
+}
+
+func (f *FakeClient) CreateCrossRepoChangeProposal(_ context.Context, baseOwner, baseRepo, headOwner, headRepo, title, body, headBranch, baseBranch string) (*ChangeProposal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CreateCrossRepoChangeProposal"); e != nil {
+		return nil, e
+	}
+
+	f.proposalCounter++
+	cp := ChangeProposal{
+		URL:    fmt.Sprintf("https://forge.example.com/%s/%s/pull/%d", baseOwner, baseRepo, f.proposalCounter),
+		Title:  title,
+		Number: f.proposalCounter,
+		Head:   headOwner + ":" + headBranch,
+		Base:   baseBranch,
 	}
 	f.CreatedProposals = append(f.CreatedProposals, cp)
 	return &cp, nil

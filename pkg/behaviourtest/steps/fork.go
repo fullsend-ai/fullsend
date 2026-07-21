@@ -20,6 +20,9 @@ func registerForkSteps(ctx *godog.ScenarioContext, w *world.World) {
 	ctx.Step(`^a commit is pushed to the fork pull request$`, func() error {
 		return whenCommitPushedToForkPR(w)
 	})
+	ctx.Step(`^the fork pull request is labeled "([^"]+)"$`, func(label string) error {
+		return whenForkPullRequestLabeled(w, label)
+	})
 }
 
 // givenFork creates a fork of the enrolled test repository if absent, or
@@ -53,18 +56,39 @@ func whenForkPullRequestOpened(w *world.World) error {
 	branch := fmt.Sprintf("behaviour-fork-pr-%d", time.Now().UnixNano())
 
 	ctx := context.Background()
+
+	// Create the branch on the fork first — GitHub's Contents API
+	// (used by CommitFileToFork → CreateOrUpdateFileOnBranch) requires
+	// the target branch to already exist.
+	if err := w.SCM.CreateBranch(ctx, w.ForkOwner, w.ForkRepo, branch); err != nil {
+		return fmt.Errorf("creating fork branch: %w", err)
+	}
+	// Record the branch immediately so CleanupScenario can delete it
+	// even if CommitFileToFork or CreateForkChangeProposal fails below.
+	w.ForkPRBranch = branch
+
 	msg := fmt.Sprintf("behaviour fork pr %s", branch)
 	if err := w.SCM.CommitFileToFork(ctx, w.ForkOwner, w.ForkRepo, branch, "behaviour/fork-pr.txt", msg, []byte("behaviour fork test\n")); err != nil {
 		return fmt.Errorf("committing to fork branch: %w", err)
 	}
 
-	pr, err := w.SCM.CreateForkChangeProposal(ctx, w.RepoOwner, w.RepoName, "Behaviour fork test PR", "behaviour fork", w.ForkOwner, branch, "main")
+	pr, err := w.SCM.CreateForkChangeProposal(ctx, w.RepoOwner, w.RepoName, "Behaviour fork test PR", "behaviour fork", w.ForkOwner, w.ForkRepo, branch, "main")
 	if err != nil {
 		return fmt.Errorf("creating fork pull request: %w", err)
 	}
 	w.ForkPRNumber = pr.Number
-	w.ForkPRBranch = branch
 	return nil
+}
+
+// whenForkPullRequestLabeled adds a label to a fork pull request. Fork PRs
+// are opened against the base repo, so the label is applied there.
+func whenForkPullRequestLabeled(w *world.World, label string) error {
+	if w.ForkPRNumber == 0 {
+		return fmt.Errorf("no fork pull request opened")
+	}
+	w.ScenarioStart = time.Now()
+	// Fork PRs are opened against the base repo, so label on the base repo.
+	return w.SCM.AddIssueLabels(context.Background(), w.RepoOwner, w.RepoName, w.ForkPRNumber, label)
 }
 
 // whenCommitPushedToForkPR pushes an additional commit to the head branch

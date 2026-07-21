@@ -53,6 +53,10 @@ func (d *Driver) CreateBranch(ctx context.Context, owner, repo, branch string) e
 	return d.Client.CreateBranch(ctx, owner, repo, branch)
 }
 
+func (d *Driver) DeleteBranch(ctx context.Context, owner, repo, branch string) error {
+	return d.Client.DeleteRef(ctx, owner, repo, "heads/"+branch)
+}
+
 func (d *Driver) CommitFileToBranch(ctx context.Context, owner, repo, branch, path, message string, content []byte) error {
 	return d.Client.CreateOrUpdateFileOnBranch(ctx, owner, repo, branch, path, message, content)
 }
@@ -77,9 +81,16 @@ func (d *Driver) CommitFileToFork(ctx context.Context, forkOwner, forkRepo, bran
 	return d.Client.CreateOrUpdateFileOnBranch(ctx, forkOwner, forkRepo, branch, path, message, content)
 }
 
-func (d *Driver) CreateForkChangeProposal(ctx context.Context, baseOwner, baseRepo, title, body, forkOwner, headBranch, baseBranch string) (*forge.ChangeProposal, error) {
-	head := forkOwner + ":" + headBranch
-	return d.Client.CreateChangeProposal(ctx, baseOwner, baseRepo, title, body, head, baseBranch)
+func (d *Driver) CreateForkChangeProposal(ctx context.Context, baseOwner, baseRepo, title, body, forkOwner, forkRepo, head, base string) (*forge.ChangeProposal, error) {
+	if forkOwner == baseOwner {
+		// Same-owner fork: the REST API's "owner:branch" head format is
+		// ambiguous because the owner is the same for both repos. Use the
+		// cross-repo method which explicitly identifies the head repository.
+		return d.Client.CreateCrossRepoChangeProposal(ctx, baseOwner, baseRepo, forkOwner, forkRepo, title, body, head, base)
+	}
+	// Cross-owner fork: the standard "forkOwner:branch" format works.
+	headRef := forkOwner + ":" + head
+	return d.Client.CreateChangeProposal(ctx, baseOwner, baseRepo, title, body, headRef, base)
 }
 
 // ParseRepo splits "owner/repo" into owner and repo name.

@@ -76,11 +76,12 @@ func TestCommitFileToFork_Error(t *testing.T) {
 	}
 }
 
-func TestCreateForkChangeProposal(t *testing.T) {
+func TestCreateForkChangeProposal_CrossOwner(t *testing.T) {
 	fc := forge.NewFakeClient()
 	d := New(fc)
 
-	cp, err := d.CreateForkChangeProposal(context.Background(), "upstream", "repo", "PR title", "PR body", "fork-user", "feature-branch", "main")
+	// Cross-owner: forkOwner != baseOwner → uses REST CreateChangeProposal.
+	cp, err := d.CreateForkChangeProposal(context.Background(), "upstream", "repo", "PR title", "PR body", "fork-user", "fork-repo", "feature-branch", "main")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -103,14 +104,81 @@ func TestCreateForkChangeProposal(t *testing.T) {
 	}
 }
 
-func TestCreateForkChangeProposal_Error(t *testing.T) {
+func TestCreateForkChangeProposal_SameOwner(t *testing.T) {
+	fc := forge.NewFakeClient()
+	d := New(fc)
+
+	// Same-owner: forkOwner == baseOwner → uses CreateCrossRepoChangeProposal
+	// to disambiguate via explicit head repository.
+	cp, err := d.CreateForkChangeProposal(context.Background(), "org", "repo", "PR title", "PR body", "org", "repo-fork", "feature-branch", "main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cp == nil {
+		t.Fatal("expected non-nil ChangeProposal")
+	}
+	if cp.Title != "PR title" {
+		t.Errorf("expected title %q, got %q", "PR title", cp.Title)
+	}
+
+	// Verify it went through CreateCrossRepoChangeProposal (not CreateChangeProposal).
+	if len(fc.CreatedProposals) != 1 {
+		t.Fatalf("expected 1 proposal, got %d", len(fc.CreatedProposals))
+	}
+	// The fake's CreateCrossRepoChangeProposal sets head as "owner:branch".
+	if fc.CreatedProposals[0].Head != "org:feature-branch" {
+		t.Errorf("expected head %q, got %q", "org:feature-branch", fc.CreatedProposals[0].Head)
+	}
+}
+
+func TestCreateForkChangeProposal_CrossOwner_Error(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.Errors["CreateChangeProposal"] = errors.New("pr failed")
 	d := New(fc)
 
-	_, err := d.CreateForkChangeProposal(context.Background(), "upstream", "repo", "title", "body", "fork-user", "branch", "main")
+	_, err := d.CreateForkChangeProposal(context.Background(), "upstream", "repo", "title", "body", "fork-user", "fork-repo", "branch", "main")
 	if err == nil || err.Error() != "pr failed" {
 		t.Fatalf("expected pr failed error, got %v", err)
+	}
+}
+
+func TestCreateForkChangeProposal_SameOwner_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["CreateCrossRepoChangeProposal"] = errors.New("graphql failed")
+	d := New(fc)
+
+	_, err := d.CreateForkChangeProposal(context.Background(), "org", "repo", "title", "body", "org", "repo-fork", "branch", "main")
+	if err == nil || err.Error() != "graphql failed" {
+		t.Fatalf("expected graphql failed error, got %v", err)
+	}
+}
+
+func TestDeleteBranch(t *testing.T) {
+	fc := forge.NewFakeClient()
+	d := New(fc)
+
+	err := d.DeleteBranch(context.Background(), "owner", "repo", "feature-branch")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(fc.DeletedRefs) != 1 {
+		t.Fatalf("expected 1 deleted ref, got %d", len(fc.DeletedRefs))
+	}
+	// DeleteBranch should prepend "heads/" to the branch name.
+	if fc.DeletedRefs[0] != "owner/repo/heads/feature-branch" {
+		t.Errorf("expected ref %q, got %q", "owner/repo/heads/feature-branch", fc.DeletedRefs[0])
+	}
+}
+
+func TestDeleteBranch_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["DeleteRef"] = errors.New("ref delete failed")
+	d := New(fc)
+
+	err := d.DeleteBranch(context.Background(), "owner", "repo", "branch")
+	if err == nil || err.Error() != "ref delete failed" {
+		t.Fatalf("expected ref delete failed error, got %v", err)
 	}
 }
 
