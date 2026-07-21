@@ -92,7 +92,7 @@ Custom roles can be registered via the standalone mint's `CUSTOM_ROLE_PERMISSION
 
 ### Mint Security Controls
 
-Mode is inferred from `ALLOWED_ORGS` — there is no separate trust-mode flag. See [ADR 0059](../../ADRs/0059-public-mint-mode-with-wildcard-allowlists.md) for the full decision.
+Mode is inferred from `ALLOWED_ORGS` — there is no separate trust-mode flag.
 
 **Tight mint** (default): explicit comma-separated org list (no `*`).
 

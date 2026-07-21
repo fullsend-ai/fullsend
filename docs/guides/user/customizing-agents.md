@@ -129,17 +129,16 @@ When using `base:` composition, the base harness can declare its own providers a
 - **Profiles:** base + child lists are concatenated; deduplicated by profile `id` (child wins)
 - **Providers:** base + child lists are concatenated; local names shadow URL-resolved names of the same `name`
 
-Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_remote_resources` prefix. See [ADR 0070](../../ADRs/0070-portable-provider-profile-resolution.md) for full details.
+Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_remote_resources` prefix in the same config. The integrity hash ensures the content hasn't been tampered with since it was pinned — `fullsend agent add` computes it automatically for URL-based agents.
 
 ## Layered Configuration Resolution
 
 > **Deprecated:** The `customized/` directory overlay mechanism described
-> below is deprecated per [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
-> Use `base:` composition instead: register agents in `config.yaml` with a
-> `base:` URL pointing to the upstream harness, and override only the fields
-> that differ. See [ADR-0045](../../ADRs/0045-forge-portable-harness-schema.md)
-> for the composition model and [ADR-0058](../../ADRs/0058-agent-registration.md)
-> for config-driven registration.
+> below is deprecated. Use `base:` composition instead: register agents in
+> `config.yaml` with a `base:` URL pointing to the upstream harness, and
+> override only the fields that differ. See
+> [Bring Your Own Agent](bring-your-own-agent.md) for the composition model
+> and config-driven registration.
 > Run `fullsend agent migrate-customizations --dry-run` to preview the
 > migration, then `fullsend agent migrate-customizations --repo owner/repo`
 > to apply it.
@@ -148,7 +147,7 @@ Fullsend uses a three-tier configuration inheritance model for all configuration
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│    Configuration Layering (ADR 0035, deprecated by ADR 0064) │
+│    Configuration Layering (deprecated — use base: composition) │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
 │  Priority (highest wins):                                    │
@@ -319,8 +318,6 @@ upstream defaults (fullsend-ai/fullsend)
 #### Security
 
 Per-repo registries are read from the **base branch**, not from the PR's working tree. This means changes to `.pre-commit-tools.yaml` in a PR do not take effect until the PR is merged. This is intentional — the tool installation pipeline runs outside the sandbox with elevated permissions, and PR content is untrusted.
-
-See [ADR 0056](../../ADRs/0056-per-repo-precommit-tools-registry.md) for the full security rationale.
 
 ## Agent Roles
 
@@ -502,4 +499,3 @@ my-repo/
 - [Getting Started](../getting-started/) - Initial setup
 - [Bugfix Workflow](bugfix-workflow.md) - How agents work together
 - [Standalone Mint](../infrastructure/standalone-mint.md) - Running your own mint with custom agent roles
-- [ADR 0035: Layered Content Resolution](../../ADRs/0035-layered-content-resolution.md)

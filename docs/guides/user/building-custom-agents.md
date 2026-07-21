@@ -1,10 +1,11 @@
 # Building custom agents from scratch
 
 > **Deprecated:** This guide uses the `customized/` directory overlay, which is
-> deprecated per [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
-> For new custom agents, register them in `config.yaml` with a local `source:`
-> path instead. Run `fullsend agent migrate-customizations --dry-run` to
-> preview migrating existing customizations.
+> deprecated. For new custom agents, register them in `config.yaml` with a
+> local `source:` path instead. See
+> [Bring Your Own Agent](bring-your-own-agent.md) for the recommended approach.
+> Run `fullsend agent migrate-customizations --dry-run` to preview migrating
+> existing customizations.
 
 This guide walks through creating a custom from-scratch agent on a per-repo
 fullsend installation.
@@ -177,7 +178,7 @@ env:
 
 timeout_minutes: 20
 
-# Optional: enable runtime skill fetching (ADR-0038 Phase 4)
+# Optional: enable runtime skill fetching
 # allowed_remote_resources:
 #   - https://github.com/org/skills/
 # allow_runtime_fetch: true
@@ -632,4 +633,3 @@ When creating a new agent, you need these files:
 - [Getting Started](../getting-started/README.md) — prerequisite: admin setup guide
 - [Architecture overview](../../architecture.md) — component vocabulary and execution stack
 - [Security threat model](../../problems/security-threat-model.md) — how fullsend thinks about security
-- [ADR 0035: Layered Content Resolution](../../ADRs/0035-layered-content-resolution.md) — how customized files override upstream defaults
