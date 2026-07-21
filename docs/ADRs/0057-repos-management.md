@@ -130,7 +130,7 @@ Implemented subcommands:
 
 - `repos init` — PR #3033
 - `repos install` — PR #3033
-- `repos status` — PR #4079
+- `repos status` — PR #3031
 - `repos add`, `repos remove`, `repos uninstall` — PR #4081
 - `repos upgrade`, `repos upgrade-mint` — PR #4080
 - `repos diff`, `repos sync` — PR #4079

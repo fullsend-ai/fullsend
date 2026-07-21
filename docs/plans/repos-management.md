@@ -466,7 +466,9 @@ Unit tests with fakes. Run `make go-test` to verify no regressions in
 
 ---
 
-### PR 2: Repos manifest parser and validation
+### PR 2: Repos manifest parser and validation ✓
+
+**Status:** Implemented in [#3002](https://github.com/fullsend-ai/fullsend/pull/3002).
 
 **Scope:** New package code. No CLI wiring yet.
 
@@ -672,7 +674,9 @@ with repo lists. URL loading tested with `httptest`.
 
 ---
 
-### PR 3: Add `ListRepoVariables`, `DeleteRepoVariable`, `DeleteRepoSecret` to forge
+### PR 3: Add `ListRepoVariables`, `DeleteRepoVariable`, `DeleteRepoSecret` to forge ✓
+
+**Status:** Implemented in [#3001](https://github.com/fullsend-ai/fullsend/pull/3001).
 
 **Scope:** Interface addition. No CLI changes.
 
@@ -750,7 +754,9 @@ tested via consumers in later PRs.
 
 ---
 
-### PR 4: `fullsend repos status` (read-only discovery)
+### PR 4: `fullsend repos status` (read-only discovery) ✓
+
+**Status:** Implemented in [#3031](https://github.com/fullsend-ai/fullsend/pull/3031).
 
 **Scope:** New CLI command. Read-only.
 
@@ -851,7 +857,9 @@ variable values to simulate installed/non-installed repos.
 
 ## Phase 2: Write Operations
 
-### PR 5: `fullsend repos install` (bulk install with WIF serialization) — **In Review**
+### PR 5: `fullsend repos install` (bulk install with WIF serialization) ✓
+
+**Status:** Implemented in [#3033](https://github.com/fullsend-ai/fullsend/pull/3033).
 
 **Scope:** New CLI command. Creates infrastructure.
 
@@ -968,7 +976,9 @@ call ordering via recorded method calls.
 
 ---
 
-### PR 6: `fullsend repos sync` + `fullsend repos diff` — PR #4079
+### PR 6: `fullsend repos sync` + `fullsend repos diff` ✓
+
+**Status:** Implemented in [#4079](https://github.com/fullsend-ai/fullsend/pull/4079).
 
 **Scope:** New CLI commands. Writes variables/secrets.
 
@@ -1175,7 +1185,9 @@ Semver comparison as table-driven tests.
 
 ---
 
-### PR 8: repos management (add, remove, uninstall)
+### PR 8: repos management (add, remove, uninstall) ✓
+
+**Status:** Implemented in [#4081](https://github.com/fullsend-ai/fullsend/pull/4081).
 
 **Scope:** Three new CLI commands for managing per-repo installations.
 
