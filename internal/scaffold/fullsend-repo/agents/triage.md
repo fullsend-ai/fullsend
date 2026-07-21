@@ -130,6 +130,12 @@ Before forming any clarifying question, classify it:
 - Can you form a plausible root cause hypothesis from the available information?
 - Could a developer start investigating without contacting the reporter?
 - **Is progress blocked on other work?** Consider whether the fix depends on an unresolved issue or unmerged PR — in this repo or another. If a developer cannot meaningfully start work until some other issue is resolved, this issue has prerequisites regardless of how clear the problem description is. If the blocking work has no tracking issue yet, you can recommend creating one via the `prerequisites` action's `create` array.
+- **Does this issue require workflow file changes?** The code agent cannot modify GitHub Actions workflow files — pushes are blocked by missing `workflows` permission on the installation token. Scan the issue for signals that resolution would require changing files under `.github/workflows/`, `.fullsend/.github/workflows/`, or enrolled-repo shim workflows. Deterministic signals to check:
+  - File paths referenced in the issue body (e.g., `.github/workflows/ci.yml`)
+  - Labels like `ci`, `chore(ci)`, or workflow-scoped labels
+  - Issue title or body mentioning "workflow", "CI pipeline", "GitHub Actions", or "GHA" in context of modifying pipeline behavior (not just "CI is failing" which could be a code bug)
+  - References to reusable workflows, dispatch workflows, or workflow permissions
+  If detected, set `requires_workflow_changes: true` in `triage_summary` and include a note in the triage comment explaining that the code agent cannot modify workflow files under current permissions. Issues that only mention CI failures caused by code bugs (not workflow file changes) should NOT be flagged.
 
 ### Clarity scoring
 
@@ -265,7 +271,8 @@ Information is sufficient for a developer to investigate and fix.
     "environment": "Relevant environment details",
     "impact": "Who is affected and how",
     "recommended_fix": "What a developer should investigate.",
-    "proposed_test_case": "Conceptual description of a test that would verify the fix — what to test, expected vs actual behavior, and edge cases to cover. Do not assume a specific test framework or file layout."
+    "proposed_test_case": "Conceptual description of a test that would verify the fix — what to test, expected vs actual behavior, and edge cases to cover. Do not assume a specific test framework or file layout.",
+    "requires_workflow_changes": false
   },
   "comment": "A triage summary comment formatted in markdown, presenting the assessment to the maintainers. Include the proposed test case as a fenced code block.",
   "label_actions": {

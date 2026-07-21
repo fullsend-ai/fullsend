@@ -445,6 +445,42 @@ run_test "ready-to-code-applied-without-label-actions" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
 
+# --- Workflow change detection tests (#1888) ---
+
+# Bug issue with requires_workflow_changes=true should get triaged, not ready-to-code.
+run_test "workflow-changes-bug-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI caching step","severity":"medium","category":"bug","problem":"CI cache misses","root_cause_hypothesis":"Wrong cache key","reproduction_steps":["step 1"],"environment":"GHA","impact":"Slow CI","recommended_fix":"Update workflow cache key","proposed_test_case":"test_cache","requires_workflow_changes":true},"comment":"## Triage Summary\n\nReady."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+
+# Bug issue with requires_workflow_changes=true should NOT get ready-to-code.
+run_test_no_pattern "workflow-changes-bug-no-ready-to-code" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI caching step","severity":"medium","category":"bug","problem":"CI cache misses","root_cause_hypothesis":"Wrong cache key","reproduction_steps":["step 1"],"environment":"GHA","impact":"Slow CI","recommended_fix":"Update workflow cache key","proposed_test_case":"test_cache","requires_workflow_changes":true},"comment":"## Triage Summary\n\nReady."}' \
+  "labels[]=ready-to-code"
+
+# Bug with requires_workflow_changes=true should append workflow warning to comment.
+run_test "workflow-changes-warning-in-comment" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI caching step","severity":"medium","category":"bug","problem":"CI cache misses","root_cause_hypothesis":"Wrong cache key","reproduction_steps":["step 1"],"environment":"GHA","impact":"Slow CI","recommended_fix":"Update workflow cache key","proposed_test_case":"test_cache","requires_workflow_changes":true},"comment":"## Triage Summary\n\nReady."}' \
+  "code agent cannot modify workflow files"
+
+# Performance issue with requires_workflow_changes=true should get triaged, not ready-to-code.
+run_test "workflow-changes-perf-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Speed up CI","severity":"medium","category":"performance","problem":"Slow CI","root_cause_hypothesis":"No parallelism","reproduction_steps":["step 1"],"environment":"GHA","impact":"Slow feedback","recommended_fix":"Parallelize jobs","proposed_test_case":"test_ci_speed","requires_workflow_changes":true},"comment":"## Triage Summary\n\nReady."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+
+# Bug with requires_workflow_changes=false should still get ready-to-code.
+run_test "workflow-changes-false-bug-gets-ready-to-code" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","requires_workflow_changes":false},"comment":"## Triage Summary\n\nReady."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
+
+# Bug without requires_workflow_changes field should still get ready-to-code (backward compat).
+run_test "workflow-changes-absent-bug-gets-ready-to-code" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
+
+run_test_stdout "workflow-changes-skips-auto-dispatch-log" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI caching step","severity":"medium","category":"bug","problem":"CI cache misses","root_cause_hypothesis":"Wrong cache key","reproduction_steps":["step 1"],"environment":"GHA","impact":"Slow CI","recommended_fix":"Update workflow cache key","proposed_test_case":"test_cache","requires_workflow_changes":true},"comment":"## Triage Summary\n\nReady."}' \
+  "Issue requires workflow changes"
+
 # --- Summary ---
 
 echo ""

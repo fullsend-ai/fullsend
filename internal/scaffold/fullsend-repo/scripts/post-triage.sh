@@ -259,27 +259,46 @@ ${FAILED_CREATES}"
     remove_label "blocked"
     remove_label "needs-info"
 
+    # Check if the issue requires workflow file changes. The code agent cannot
+    # modify .github/workflows/ or .fullsend/.github/workflows/ — pushes are
+    # blocked by missing workflows permission on the installation token (#788,
+    # #470). Skip auto-dispatch for these issues (#1888).
+    REQUIRES_WORKFLOW=$(jq -r '.triage_summary.requires_workflow_changes // false' "${RESULT_FILE}")
+
     # Low-risk categories (bug, documentation, performance) auto-promote to
     # ready-to-code, which triggers the code agent. Feature work and anything
     # else receives the triaged label and waits for human prioritization
     # (per #561, only feature issues should require human review before coding).
+    #
+    # When requires_workflow_changes is true, skip ready-to-code regardless of
+    # category — the code agent cannot modify workflow files (#1888).
     CATEGORY=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
     echo "Category: ${CATEGORY}"
-    case "${CATEGORY}" in
-      bug|documentation|performance)
-        echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
-        DEFERRED_LABEL="ready-to-code"
-        ;;
-      feature)
-        echo "Applying feature + triaged labels..."
-        add_label "feature"
-        add_label "triaged"
-        ;;
-      *)
-        echo "Applying triaged label (${CATEGORY})..."
-        add_label "triaged"
-        ;;
-    esac
+
+    if [[ "${REQUIRES_WORKFLOW}" == "true" ]]; then
+      echo "Issue requires workflow changes — skipping code agent auto-dispatch (#1888)..."
+      add_label "triaged"
+      COMMENT="${COMMENT}
+
+---
+> **Note:** This issue likely requires changes to GitHub Actions workflow files. The code agent cannot modify workflow files under current permissions (see #788, #470). A human must make these changes manually, or wait for a secure workflow-editing capability (#2822)."
+    else
+      case "${CATEGORY}" in
+        bug|documentation|performance)
+          echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
+          DEFERRED_LABEL="ready-to-code"
+          ;;
+        feature)
+          echo "Applying feature + triaged labels..."
+          add_label "feature"
+          add_label "triaged"
+          ;;
+        *)
+          echo "Applying triaged label (${CATEGORY})..."
+          add_label "triaged"
+          ;;
+      esac
+    fi
     ;;
 
   question)

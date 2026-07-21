@@ -132,7 +132,11 @@
         "environment": { "type": "string" },
         "impact": { "type": "string", "minLength": 1 },
         "recommended_fix": { "type": "string", "minLength": 1 },
-        "proposed_test_case": { "type": "string", "minLength": 1 }
+        "proposed_test_case": { "type": "string", "minLength": 1 },
+        "requires_workflow_changes": {
+          "type": "boolean",
+          "description": "True when the issue likely requires modifying GitHub Actions workflow files (.github/workflows/, .fullsend/.github/workflows/, or shim workflows). The code agent cannot modify these paths; issues flagged here skip automatic code agent dispatch."
+        }
       },
       "additionalProperties": false
     },
