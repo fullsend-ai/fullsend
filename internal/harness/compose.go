@@ -1170,6 +1170,7 @@ func mergeSkills(base, child []string) []string {
 		if idx, exists := baseIndex[name]; exists {
 			result[idx] = s // child overrides base
 		} else {
+			baseIndex[name] = len(result)
 			result = append(result, s)
 		}
 	}
