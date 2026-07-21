@@ -642,6 +642,12 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		if depType == "" {
 			depType = "file"
 		}
+		// For openshell.profiles[...] this captures the pre-rename "content"
+		// path (the .yaml rename happens below), but that is safe: the profile
+		// mutation case is a deliberate no-op — profiles are consumed via the
+		// ResolvedProfile list, not by mutating a harness field. Keep it a
+		// no-op if that switch ever grows a profile case, or move this append
+		// after the rename.
 		mutations = append(mutations, mutation{field: lockDep.Field, localPath: localPath})
 		dep := resolve.Dependency{
 			Field:     lockDep.Field,
@@ -665,6 +671,14 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			if err != nil {
 				return resolve.ResolveResult{}, fmt.Errorf("cached profile %s: %w", lockDep.Field, err)
 			}
+			// Create a named symlink so openshell sees a .yaml extension
+			// instead of the extensionless cache-internal "content" filename.
+			namedPath, symlinkErr := fetch.CacheNamedSymlink(localPath, id+".yaml")
+			if symlinkErr != nil {
+				return resolve.ResolveResult{}, fmt.Errorf("naming cached profile %s: %w", lockDep.Field, symlinkErr)
+			}
+			localPath = namedPath
+			dep.LocalPath = namedPath
 			profiles = append(profiles, resolve.ResolvedProfile{ID: id, LocalPath: localPath})
 		} else if strings.HasPrefix(lockDep.Field, "providers[") {
 			var def harness.ProviderDef

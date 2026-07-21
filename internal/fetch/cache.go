@@ -340,26 +340,66 @@ func CacheGetDir(workspaceRoot, hash string) (string, *DirCacheEntry, error) {
 	return treeDir, &entry, nil
 }
 
-// CacheNamedSymlink creates a symlink in a cache directory so that the
-// directory can be referenced by a human-readable skill name instead of the
-// cache-internal "tree" directory name. It sanitizes the skill name, handles
-// race conditions (concurrent symlink creation), and returns the symlinked
-// path. If the skill name is invalid or matches a reserved cache file, the
-// original treePath is returned unchanged.
-func CacheNamedSymlink(treePath, skillName string) (string, error) {
-	if skillName == "" || skillName == "." || skillName == ".." || skillName == "metadata.json" {
-		skillName = "tree"
+// CacheNamedSymlink creates a symlink in a cache directory so that a
+// cached resource can be referenced by a human-readable name instead of
+// the cache-internal filename. For directory caches the internal name is
+// "tree"; for single-file caches it is "content". The target is derived
+// automatically from filepath.Base(cachePath), so the same function works
+// for both layouts.
+//
+// linkName must be a single path segment. If it is empty or matches a
+// reserved cache file (".", "..", "metadata.json") it falls back to the
+// cache-internal name, which yields a no-op (the original cachePath is
+// returned unchanged). A linkName containing a path separator is rejected
+// so the link can never escape the cache directory — the safety property
+// then holds regardless of caller discipline.
+//
+// The link is (re)created atomically: it is built at a unique temporary
+// name in the same directory and renamed into place. rename(2) atomically
+// swaps the entry, so a concurrent reader never observes a missing path,
+// a stale or foreign entry is replaced without a read-modify-write race,
+// and concurrent writers converge (each installs the same target). The
+// function is idempotent: if a correct symlink already exists it returns
+// immediately. Callers must not place a real subdirectory at the named
+// path — renaming over a non-empty directory fails, surfacing a clear
+// error rather than silent corruption.
+func CacheNamedSymlink(cachePath, linkName string) (string, error) {
+	target := filepath.Base(cachePath) // "tree" or "content"
+	if linkName == "" || linkName == "." || linkName == ".." || linkName == "metadata.json" {
+		linkName = target
 	}
-	namedPath := filepath.Join(filepath.Dir(treePath), skillName)
-	if namedPath == treePath {
-		return treePath, nil
+	if strings.ContainsRune(linkName, filepath.Separator) || strings.ContainsRune(linkName, '/') {
+		return "", fmt.Errorf("cache link name %q must be a single path segment", linkName)
 	}
-	if _, err := os.Lstat(namedPath); os.IsNotExist(err) {
-		if err := os.Symlink("tree", namedPath); err != nil && !os.IsExist(err) {
-			return "", fmt.Errorf("creating named symlink: %w", err)
-		}
-	} else if err != nil {
-		return "", fmt.Errorf("checking named symlink: %w", err)
+	namedPath := filepath.Join(filepath.Dir(cachePath), linkName)
+	if namedPath == cachePath {
+		return cachePath, nil
+	}
+	// Idempotent fast path: a correct symlink already points at the target.
+	if got, err := os.Readlink(namedPath); err == nil && got == target {
+		return namedPath, nil
+	}
+	// Otherwise create it, or replace a stale/foreign entry, atomically:
+	// build the symlink at a unique temp name in the same directory, then
+	// rename it into place. The temp name is unique per call (os.CreateTemp),
+	// so concurrent callers never collide on it, and the final rename is what
+	// makes the swap observably atomic.
+	dir := filepath.Dir(namedPath)
+	tmp, err := os.CreateTemp(dir, ".named-*")
+	if err != nil {
+		return "", fmt.Errorf("creating named symlink: %w", err)
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	if err := os.Remove(tmpPath); err != nil {
+		return "", fmt.Errorf("creating named symlink: %w", err)
+	}
+	if err := os.Symlink(target, tmpPath); err != nil {
+		return "", fmt.Errorf("creating named symlink: %w", err)
+	}
+	if err := os.Rename(tmpPath, namedPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("installing named symlink: %w", err)
 	}
 	return namedPath, nil
 }
