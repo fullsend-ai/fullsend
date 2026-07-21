@@ -230,8 +230,12 @@ skips floating refs (branch names, partial versions like `v0`, `v1.2`),
 respects per-repo pinned versions. The `--ref` flag overrides the
 manifest for one-off upgrades.
 
-**Known limitation:** writes tags directly into `uses:` lines — repos
-using SHA pinning lose their pin on upgrade.
+**SHA pinning:** When a workflow's current ref is a SHA, `repos
+upgrade` resolves the target tag to its commit SHA via the forge API
+and writes `@<sha> # <tag>`, preserving the SHA-pinning convention.
+Tag-only repos remain tag-only. If tag-to-SHA resolution fails
+(tag does not exist, API error), the upgrade fails for that repo
+rather than falling back to tag-only format.
 
 #### `fullsend repos upgrade-mint`
 
@@ -1143,10 +1147,12 @@ matching across newlines.
 In-place replacement is chosen over full scaffold regeneration to
 preserve any user customizations in the shim workflow.
 
-**Limitation — tag-only pinning:** `replaceShimRef` writes the
-manifest tag directly into `uses:` lines. SHA-pinned repos
-(e.g., `@abc123 # v1.9.0`) lose their pin. A future enhancement
-will resolve tags to SHAs via the forge API.
+**SHA-pinning preservation:** When the current ref is a SHA,
+`upgradeRepo` resolves the target tag to its commit SHA via
+`GetRef` and calls `replaceShimRef(content, sha, tag)` to
+produce `@<sha> # <tag>`. Tag-only repos keep tag-only format.
+If `GetRef` fails, the upgrade returns an error for that repo
+rather than falling back to tag-only format.
 
 `UpgradeMint` (verification only — full redeploy deferred until
 `/health` version endpoint is available):

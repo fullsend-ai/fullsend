@@ -347,9 +347,11 @@ fullsend repos upgrade --ref v2.4.0
 
 When repos are specified as positional arguments, only those repos are upgraded. Supports exact `owner/repo` names and glob patterns (e.g. `acme/*`), matched via `filepath.Match` against manifest entries. When no repos are specified, all manifest repos are upgraded.
 
-### Limitations
+### SHA pinning
 
-**Tag-only pinning.** `repos upgrade` writes the manifest's `fullsend_ref` tag directly into `uses:` lines. If a repo currently uses SHA pinning (e.g. `@abc123 # v1.9.0`), the upgrade replaces the SHA with the tag, losing the pin. To restore SHA pinning after upgrade, re-run a per-repo install or manually resolve the tag to a SHA. A future enhancement will resolve tags to SHAs via the forge API.
+When a repo's workflow currently uses SHA pinning (e.g. `@abc123 # v1.9.0`), `repos upgrade` resolves the target tag to its commit SHA via the forge API and writes `@<sha> # <tag>`, preserving the SHA-pinning convention. Tag-only repos remain tag-only (`@<tag>`).
+
+If tag-to-SHA resolution fails (e.g. the tag does not exist or the API is unreachable), the upgrade fails for that repo rather than falling back to tag-only format.
 
 ## `repos upgrade-mint`
 

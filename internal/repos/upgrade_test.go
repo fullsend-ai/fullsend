@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -526,7 +527,10 @@ func TestUpgrade_NoTargetRef(t *testing.T) {
 func TestUpgrade_NonSemverCurrentRef(t *testing.T) {
 	fc := forge.NewFakeClient()
 	// SHA ref that isn't semver — should proceed with upgrade (can't compare).
+	// Since the current ref looks like a SHA, GetRef is called to resolve
+	// the target tag; pre-populate the ref so resolution succeeds.
 	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("abc123def")
+	fc.Refs["fullsend-ai/fullsend/tags/v2.3.0"] = "def456abc789012345678901234567890abcd1234"
 
 	m := &Manifest{
 		Version: 1,
@@ -544,8 +548,8 @@ func TestUpgrade_NonSemverCurrentRef(t *testing.T) {
 	}
 
 	if !results[0].Upgraded {
-		t.Errorf("expected upgrade for non-semver current ref, got Skipped=%v, reason=%q",
-			results[0].Skipped, results[0].SkipReason)
+		t.Errorf("expected upgrade for non-semver current ref, got Skipped=%v, reason=%q, err=%v",
+			results[0].Skipped, results[0].SkipReason, results[0].Error)
 	}
 }
 
@@ -1308,6 +1312,281 @@ func TestReplaceShimRef_StandaloneCommentPreserved(t *testing.T) {
 	}
 	if !strings.Contains(content, "@v2.3.0") {
 		t.Errorf("ref should be updated to v2.3.0; got:\n%s", content)
+	}
+}
+
+func TestIsSHARef(t *testing.T) {
+	tests := []struct {
+		ref  string
+		want bool
+	}{
+		{"abc123def456789012345678901234567890abcd", true}, // full 40-char SHA
+		{"abc123d", true},  // 7-char short SHA
+		{"deadbeef", true}, // 8-char hex
+		{"0123456789abcdef0123456789abcdef01234567", true}, // all hex chars
+		{"v2.3.0", false},       // semver tag
+		{"v0", false},           // partial version
+		{"main", false},         // branch name (non-hex 'm')
+		{"latest", false},       // non-hex chars
+		{"", false},             // empty
+		{"abcde", false},        // too short (5 chars)
+		{"abcdef", false},       // too short (6 chars)
+		{"ABCDEF1234567", true}, // uppercase hex (case-insensitive match)
+		{"abc12g", false},       // non-hex char 'g'
+		{"v1.0.0-rc1", false},   // prerelease tag
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.ref, func(t *testing.T) {
+			got := isSHARef(tt.ref)
+			if got != tt.want {
+				t.Errorf("isSHARef(%q) = %v, want %v", tt.ref, got, tt.want)
+			}
+		})
+	}
+}
+
+func makeWorkflowSHAPinned(sha, tag string) []byte {
+	return []byte(fmt.Sprintf(`name: fullsend
+on:
+  workflow_dispatch:
+jobs:
+  dispatch:
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@%s # %s
+    with:
+      install_mode: per-repo
+`, sha, tag))
+}
+
+func TestUpgrade_SHAPinnedRepoPreservesPin(t *testing.T) {
+	oldSHA := "abc123def456789012345678901234567890abcd"
+	newSHA := "def456abc789012345678901234567890abcd1234"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(oldSHA, "v2.1.0")
+	fc.Refs["fullsend-ai/fullsend/tags/v2.3.0"] = newSHA
+
+	var committedFiles []forge.TreeFile
+	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+
+	m := &Manifest{
+		Version: 1,
+		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Defaults: DefaultsConfig{
+			FullsendRef: "v2.3.0",
+		},
+		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, fc, recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(results) != 1 || !results[0].Upgraded {
+		t.Fatalf("expected one upgraded result, got %+v", results)
+	}
+
+	if len(committedFiles) != 1 {
+		t.Fatalf("expected 1 committed file, got %d", len(committedFiles))
+	}
+
+	content := string(committedFiles[0].Content)
+	// Should contain the new SHA
+	if !strings.Contains(content, "@"+newSHA) {
+		t.Errorf("expected @%s in content, got:\n%s", newSHA, content)
+	}
+	// Should contain the tag as a trailing comment
+	if !strings.Contains(content, "# v2.3.0") {
+		t.Errorf("expected '# v2.3.0' comment in content, got:\n%s", content)
+	}
+	// Should NOT contain the old SHA
+	if strings.Contains(content, oldSHA) {
+		t.Errorf("content should not contain old SHA %s, got:\n%s", oldSHA, content)
+	}
+}
+
+func TestUpgrade_TagOnlyRepoStaysTagOnly(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
+	// Pre-populate ref — should NOT be consulted for tag-only repos.
+	fc.Refs["fullsend-ai/fullsend/tags/v2.3.0"] = "def456abc789012345678901234567890abcd1234"
+
+	var committedFiles []forge.TreeFile
+	recordingCommitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+
+	m := &Manifest{
+		Version: 1,
+		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Defaults: DefaultsConfig{
+			FullsendRef: "v2.3.0",
+		},
+		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, fc, recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !results[0].Upgraded {
+		t.Fatal("expected Upgraded=true")
+	}
+
+	content := string(committedFiles[0].Content)
+	// Should contain the tag directly — no SHA, no trailing comment.
+	if !strings.Contains(content, "@v2.3.0") {
+		t.Errorf("expected @v2.3.0 in content, got:\n%s", content)
+	}
+	if strings.Contains(content, "# v2.3.0") {
+		t.Errorf("tag-only repo should not have trailing comment, got:\n%s", content)
+	}
+}
+
+func TestUpgrade_SHAPinnedTagResolutionError(t *testing.T) {
+	oldSHA := "abc123def456789012345678901234567890abcd"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(oldSHA, "v2.1.0")
+	// Do NOT set fc.Refs — GetRef will return ErrNotFound.
+
+	m := &Manifest{
+		Version: 1,
+		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Defaults: DefaultsConfig{
+			FullsendRef: "v2.3.0",
+		},
+		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, fc, noopCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if results[0].Error == nil {
+		t.Fatal("expected error when tag resolution fails for SHA-pinned repo")
+	}
+	if !strings.Contains(results[0].Error.Error(), "resolving tag") {
+		t.Errorf("error should mention 'resolving tag', got: %v", results[0].Error)
+	}
+	if results[0].Upgraded {
+		t.Error("should not be marked upgraded when tag resolution fails")
+	}
+}
+
+func TestUpgrade_MixedPinningStyles(t *testing.T) {
+	sha := "abc123def456789012345678901234567890abcd"
+	newSHA := "def456abc789012345678901234567890abcd1234"
+
+	fc := forge.NewFakeClient()
+	// One repo is SHA-pinned, the other is tag-only.
+	fc.FileContents["acme-corp/sha-pinned/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(sha, "v2.1.0")
+	fc.FileContents["acme-corp/tag-only/.github/workflows/fullsend.yml"] = makeWorkflow("v2.1.0")
+	fc.Refs["fullsend-ai/fullsend/tags/v2.3.0"] = newSHA
+
+	var mu sync.Mutex
+	committedContent := make(map[string]string)
+	recordingCommitFn := func(_ context.Context, owner, repo string, files []forge.TreeFile, _ bool) error {
+		if len(files) > 0 {
+			mu.Lock()
+			committedContent[owner+"/"+repo] = string(files[0].Content)
+			mu.Unlock()
+		}
+		return nil
+	}
+
+	m := &Manifest{
+		Version:  1,
+		Mint:     MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Defaults: DefaultsConfig{FullsendRef: "v2.3.0"},
+		Repos: []RepoEntry{
+			{Repo: "acme-corp/sha-pinned"},
+			{Repo: "acme-corp/tag-only"},
+		},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, MaxConcurrency: 2}
+	results, err := Upgrade(context.Background(), cfg, fc, recordingCommitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, r := range results {
+		if !r.Upgraded {
+			t.Errorf("%s/%s: expected Upgraded=true, got err=%v skip=%q",
+				r.Owner, r.Repo, r.Error, r.SkipReason)
+		}
+	}
+
+	// SHA-pinned repo should have @<newSHA> # v2.3.0
+	shaContent := committedContent["acme-corp/sha-pinned"]
+	if !strings.Contains(shaContent, "@"+newSHA) {
+		t.Errorf("SHA-pinned repo should contain @%s, got:\n%s", newSHA, shaContent)
+	}
+	if !strings.Contains(shaContent, "# v2.3.0") {
+		t.Errorf("SHA-pinned repo should contain '# v2.3.0', got:\n%s", shaContent)
+	}
+
+	// Tag-only repo should have @v2.3.0 without SHA
+	tagContent := committedContent["acme-corp/tag-only"]
+	if !strings.Contains(tagContent, "@v2.3.0") {
+		t.Errorf("tag-only repo should contain @v2.3.0, got:\n%s", tagContent)
+	}
+	if strings.Contains(tagContent, newSHA) {
+		t.Errorf("tag-only repo should not contain SHA, got:\n%s", tagContent)
+	}
+}
+
+func TestUpgrade_DryRunSHAPinnedSkipsGetRef(t *testing.T) {
+	oldSHA := "abc123def456789012345678901234567890abcd"
+
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme-corp/api-server/.github/workflows/fullsend.yml"] = makeWorkflowSHAPinned(oldSHA, "v2.1.0")
+	// Do NOT set fc.Refs — GetRef would return ErrNotFound if called.
+
+	commitCalled := false
+	commitFn := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool) error {
+		commitCalled = true
+		return nil
+	}
+
+	m := &Manifest{
+		Version: 1,
+		Mint:    MintConfig{URL: "https://mint.example.com", Project: "p", Region: "r"},
+		Defaults: DefaultsConfig{
+			FullsendRef: "v2.3.0",
+		},
+		Repos: []RepoEntry{{Repo: "acme-corp/api-server"}},
+	}
+
+	cfg := UpgradeConfig{Manifest: m, DryRun: true, MaxConcurrency: 1}
+	results, err := Upgrade(context.Background(), cfg, fc, commitFn, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if commitCalled {
+		t.Error("commit function should not be called during dry-run")
+	}
+	if len(results) != 1 {
+		t.Fatalf("got %d results, want 1", len(results))
+	}
+	if !results[0].Upgraded {
+		t.Errorf("expected Upgraded=true in dry-run for SHA-pinned repo, got err=%v skip=%q",
+			results[0].Error, results[0].SkipReason)
+	}
+	if results[0].Error != nil {
+		t.Errorf("DryRun should not error when tag cannot be resolved, got: %v", results[0].Error)
 	}
 }
 
