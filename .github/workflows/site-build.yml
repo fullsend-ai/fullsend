@@ -51,6 +51,7 @@ jobs:
           cp -a web/dist/admin/. _bundle/public/admin/
           mkdir -p _bundle/public/docs
           cp -a website/dist/. _bundle/public/docs/
+          cp -a cloudflare_site/public/. _bundle/public/
           mkdir -p _bundle/worker
           cp -a cloudflare_site/worker/. _bundle/worker/
 
