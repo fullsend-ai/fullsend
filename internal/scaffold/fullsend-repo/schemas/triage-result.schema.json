@@ -9,7 +9,7 @@
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["insufficient", "duplicate", "sufficient", "prerequisites", "question"]
+      "enum": ["insufficient", "duplicate", "sufficient", "prerequisites", "question", "in-progress"]
     },
     "reasoning": {
       "type": "string",
@@ -73,6 +73,21 @@
       },
       "additionalProperties": false
     },
+    "pull_requests": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+          "url": {
+            "type": "string",
+            "pattern": "^https://github\\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/pull/[0-9]+$"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "label_actions": {
       "$ref": "#/$defs/label_actions"
     }
@@ -103,6 +118,10 @@
           }
         }
       }
+    },
+    {
+      "if": { "properties": { "action": { "const": "in-progress" } }, "required": ["action"] },
+      "then": { "required": ["pull_requests"] }
     }
   ],
   "$defs": {

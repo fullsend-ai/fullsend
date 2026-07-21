@@ -52,10 +52,14 @@ Also look for **blocking relationships** — open issues or PRs that must be res
 - The issue describes a feature that depends on infrastructure or API changes tracked in another issue
 - The issue references an upstream library, service, or repository that has a known open bug
 - A PR is already in flight that would conflict with or must land before work on this issue
-- An open PR already addresses this issue, even partially — the work is already in progress
 - The issue's fix requires a design decision that is being discussed in another issue
 
-**Existing PR gate (HARD CONSTRAINT):** If an open PR already addresses this issue — even partially — treat it as a prerequisite. Use `action: "prerequisites"` with the PR URL in the `existing` array. Do not emit `action: "sufficient"` when an open PR covers the reported problem; dispatching a second implementation would create duplicates. Only skip this rule if the PR is closed without merging (the work was abandoned) or if the PR is clearly unrelated despite mentioning the issue number.
+**Existing PR gate (HARD CONSTRAINT):** If an open PR already addresses this issue, do not emit `action: "sufficient"` — dispatching a second implementation would create duplicates. Instead, distinguish between two cases:
+
+1. **PR fixes this issue** — the PR directly resolves the reported problem. Use `action: "in-progress"` with the PR URL in the `pull_requests` array. This signals that work is already underway, not that the issue is blocked.
+2. **PR is a true prerequisite** — the PR does not fix this issue but must land before work on this issue can start (e.g., infrastructure changes, API additions, dependency upgrades). Use `action: "prerequisites"` with the PR URL in the `existing` array.
+
+Only skip this rule if the PR is closed without merging (the work was abandoned) or if the PR is clearly unrelated despite mentioning the issue number.
 
 If the issue mentions other repositories, libraries, or upstream projects, search those too:
 
@@ -235,6 +239,23 @@ At least one of the two arrays must have entries.
     ]
   },
   "comment": "A professional comment explaining the blocking dependencies. Link to existing blockers and describe what new issues need to be created upstream. Be specific about why each dependency must be resolved before this issue can proceed."
+}
+```
+
+### Action: `in-progress`
+
+An open pull request already addresses this issue — the work is underway. Use this action when a PR directly fixes or resolves the reported problem. This is distinct from `prerequisites`, which is for PRs that must land *before* work on this issue can start.
+
+**HARD CONSTRAINT:** Never emit `sufficient` when an open PR already fixes this issue. Use `in-progress` instead — dispatching a second implementation would create duplicates.
+
+```json
+{
+  "action": "in-progress",
+  "reasoning": "Brief explanation of how the PR addresses this issue",
+  "pull_requests": [
+    { "url": "https://github.com/org/repo/pull/123" }
+  ],
+  "comment": "A professional comment explaining that this issue is already being addressed by an existing PR. Link to the PR(s) and briefly describe how they resolve the reported problem. Use 'addressed by' or 'fixed by' framing — not 'blocked by'."
 }
 ```
 

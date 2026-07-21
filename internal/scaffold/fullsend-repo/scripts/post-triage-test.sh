@@ -33,6 +33,12 @@ if [[ "\$1" == "issue" ]] && [[ "\$2" == "create" ]]; then
   echo "https://github.com/mock-org/mock-repo/issues/999"
   exit 0
 fi
+# Capture body content piped via --body-file - so tests can verify comment bodies.
+if [[ "\$1" == "issue" ]] && [[ "\$2" == "comment" ]] && [[ "\$*" == *"--body-file -"* ]]; then
+  BODY=\$(cat)
+  echo "gh \$* <<BODY:\${BODY}:BODY>>" >> "${GH_LOG}"
+  exit 0
+fi
 echo "gh \$*" >> "${GH_LOG}"
 MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
@@ -444,6 +450,39 @@ run_test_label_order "ready-to-code-applied-after-label-actions" \
 run_test "ready-to-code-applied-without-label-actions" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
+
+run_test "in-progress-posts-comment" \
+  '{"action":"in-progress","reasoning":"PR fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/100"}],"comment":"This issue is already being addressed by an existing pull request."}' \
+  "gh issue comment 42 --repo test-org/test-repo --body-file -"
+
+run_test "in-progress-applies-pr-open-label" \
+  '{"action":"in-progress","reasoning":"PR fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/100"}],"comment":"This issue is already being addressed by an existing pull request."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=pr-open --silent"
+
+run_test "in-progress-removes-blocked-label" \
+  '{"action":"in-progress","reasoning":"PR fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/100"}],"comment":"This issue is already being addressed by an existing pull request."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
+
+run_test "in-progress-removes-ready-to-code-label" \
+  '{"action":"in-progress","reasoning":"PR fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/100"}],"comment":"This issue is already being addressed by an existing pull request."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/ready-to-code -X DELETE --silent"
+
+run_test "in-progress-removes-needs-info-label" \
+  '{"action":"in-progress","reasoning":"PR fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/100"}],"comment":"This issue is already being addressed by an existing pull request."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/needs-info -X DELETE --silent"
+
+run_test "in-progress-missing-comment-fails" \
+  '{"action":"in-progress","reasoning":"PR fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/100"}]}' \
+  "" \
+  "true"
+
+run_test "in-progress-appends-addressed-by" \
+  '{"action":"in-progress","reasoning":"PR fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/100"}],"comment":"This issue is already being addressed."}' \
+  "Addressed by:"
+
+run_test_stdout "in-progress-control-label-refused" \
+  '{"action":"in-progress","reasoning":"PR fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/100"}],"comment":"This issue is addressed.","label_actions":{"reason":"Tried to set pr-open label.","actions":[{"action":"add","label":"pr-open"}]}}' \
+  "::warning::Refused to add control label 'pr-open' -- control labels are managed by the triage pipeline"
 
 # --- Summary ---
 

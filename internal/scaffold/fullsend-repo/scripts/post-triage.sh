@@ -79,7 +79,7 @@ remove_label() {
 # add or remove these via label_actions. This list covers labels that the
 # pipeline itself applies (pre-triage.sh resets the first five; the action
 # handlers apply blocked/triaged/feature).
-CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question")
+CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "pr-open")
 
 is_control_label() {
   local label="$1"
@@ -120,6 +120,38 @@ case "${ACTION}" in
     fi
     remove_label "blocked"
     add_label "duplicate"
+    ;;
+
+  in-progress)
+    if [[ -z "${COMMENT}" ]]; then
+      echo "ERROR: action is 'in-progress' but no comment provided" >&2
+      exit 1
+    fi
+
+    # Collect PR URLs from the pull_requests array.
+    PR_COUNT=$(jq '.pull_requests // [] | length' "${RESULT_FILE}")
+    PR_URLS=""
+    for i in $(seq 0 $((PR_COUNT - 1))); do
+      URL=$(jq -r ".pull_requests[${i}].url" "${RESULT_FILE}")
+      PR_URLS="${PR_URLS} ${URL}"
+    done
+    PR_URLS=$(echo "${PR_URLS}" | xargs)  # trim whitespace
+
+    if [[ -n "${PR_URLS}" ]]; then
+      PR_LIST=""
+      for url in ${PR_URLS}; do
+        PR_LIST="${PR_LIST}
+- ${url}"
+      done
+      COMMENT="${COMMENT}
+
+**Addressed by:**${PR_LIST}"
+    fi
+
+    remove_label "ready-to-code"
+    remove_label "needs-info"
+    remove_label "blocked"
+    add_label "pr-open"
     ;;
 
   prerequisites)
