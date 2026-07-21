@@ -3,7 +3,9 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"regexp"
 	"strconv"
@@ -368,6 +370,20 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 		printer.StepInfo(fmt.Sprintf("Attaching %d inline comment(s)", len(inlineComments)))
 	}
 	if err := client.CreatePullRequestReview(ctx, owner, repo, pr, event, reviewBody, commitSHA, inlineComments); err != nil {
+		// 422 fallback: when inline comments cause validation failures
+		// (e.g. lines outside the diff that passed our hunk filter),
+		// retry without them by embedding the findings in the body.
+		if len(inlineComments) > 0 && is422Error(err) {
+			printer.StepWarn(fmt.Sprintf("Review submission failed with 422 (%d inline comment(s)), retrying without inline comments", len(inlineComments)))
+			logRejectedComments(inlineComments, err, printer)
+
+			fallbackBody := buildFallbackReviewBody(reviewBody, inlineComments)
+			if retryErr := client.CreatePullRequestReview(ctx, owner, repo, pr, event, fallbackBody, commitSHA, nil); retryErr != nil {
+				return fmt.Errorf("submitting review (fallback without inline comments also failed): %w", retryErr)
+			}
+			printer.StepDone("Review submitted (inline comments omitted due to 422)")
+			return nil
+		}
 		return fmt.Errorf("submitting review: %w", err)
 	}
 	printer.StepDone("Review submitted")
@@ -437,6 +453,60 @@ func formatFindingComment(f ReviewFinding) string {
 	if f.Remediation != "" {
 		b.WriteString("\n\n**Suggested fix:** ")
 		b.WriteString(strings.TrimSpace(f.Remediation))
+	}
+	return b.String()
+}
+
+// is422Error reports whether err wraps a GitHub 422 Unprocessable Entity
+// API error. Used to detect inline comment validation failures.
+func is422Error(err error) bool {
+	var apiErr *gh.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.StatusCode == http.StatusUnprocessableEntity
+	}
+	return false
+}
+
+// logRejectedComments logs structured details about inline comments that
+// triggered a 422 response, including GitHub's error details when available.
+// This captures which specific comment caused the failure to aid debugging.
+func logRejectedComments(comments []forge.ReviewComment, err error, printer *ui.Printer) {
+	var apiErr *gh.APIError
+	if errors.As(err, &apiErr) {
+		for _, d := range apiErr.Errors {
+			printer.StepInfo(fmt.Sprintf("  API error detail: resource=%s field=%s code=%s message=%s", d.Resource, d.Field, d.Code, d.Message))
+		}
+	}
+	for _, c := range comments {
+		if c.Line > 0 {
+			printer.StepInfo(fmt.Sprintf("  Rejected comment: %s:%d", c.Path, c.Line))
+		} else {
+			printer.StepInfo(fmt.Sprintf("  Rejected comment: %s (file-level)", c.Path))
+		}
+	}
+}
+
+// buildFallbackReviewBody constructs a review body that embeds inline
+// comment content as markdown, used when GitHub rejects inline comments
+// with a 422 error. The original review body (if any) is preserved as
+// a prefix.
+func buildFallbackReviewBody(originalBody string, comments []forge.ReviewComment) string {
+	var b strings.Builder
+	if originalBody != "" {
+		b.WriteString(originalBody)
+	}
+	if len(comments) > 0 {
+		if b.Len() > 0 {
+			b.WriteString("\n\n---\n\n")
+		}
+		b.WriteString("**Note:** The following inline comments could not be posted on the diff (GitHub returned 422) and are included here instead:\n\n")
+		for _, c := range comments {
+			if c.Line > 0 {
+				fmt.Fprintf(&b, "- **`%s:%d`**: %s\n", c.Path, c.Line, c.Body)
+			} else {
+				fmt.Fprintf(&b, "- **`%s`** (file-level): %s\n", c.Path, c.Body)
+			}
+		}
 	}
 	return b.String()
 }

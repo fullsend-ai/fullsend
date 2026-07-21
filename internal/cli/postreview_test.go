@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"io"
+	"net/http"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/sticky"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -1175,4 +1178,267 @@ func TestPostApprovedFollowUpIssues_DisabledIsNoop(t *testing.T) {
 
 	err := postApprovedFollowUpIssues(context.Background(), "acme", "repo", 9, parsed, printer)
 	require.NoError(t, err)
+}
+
+func TestSubmitFormalReview_422FallbackRetriesWithoutInlineComments(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			{Path: "internal/service.go", Patch: "@@ -30,20 +30,25 @@ func main() {"},
+		},
+	}
+	// First call fails with 422, second (fallback) succeeds.
+	fc.CreateReviewErrSeq = []error{
+		&gh.APIError{
+			StatusCode: http.StatusUnprocessableEntity,
+			Message:    "Validation Failed",
+			Errors: []gh.APIErrorDetail{
+				{Resource: "PullRequestReviewComment", Field: "line", Code: "invalid", Message: "line must be part of the diff"},
+			},
+		},
+		nil,
+	}
+
+	var out bytes.Buffer
+	printer := ui.New(&out)
+
+	findings := []ReviewFinding{
+		{
+			Severity:    "high",
+			Category:    "bug",
+			File:        "internal/service.go",
+			Line:        42,
+			Description: "Nil pointer dereference.",
+			Remediation: "Add nil check.",
+		},
+	}
+
+	commentURL := "https://github.com/acme/repo/pull/1#issuecomment-42"
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "request-changes", "abc123", commentURL, findings, false, printer)
+	require.NoError(t, err)
+
+	// Only the successful fallback retry should be recorded.
+	require.Len(t, fc.CreatedReviews, 1)
+	review := fc.CreatedReviews[0]
+	assert.Equal(t, "REQUEST_CHANGES", review.Event)
+	assert.Empty(t, review.Comments, "fallback retry should have no inline comments")
+	assert.Contains(t, review.Body, "inline comments could not be posted")
+	assert.Contains(t, review.Body, "internal/service.go:42")
+	assert.Contains(t, review.Body, "Nil pointer dereference")
+
+	output := out.String()
+	assert.Contains(t, output, "422")
+	assert.Contains(t, output, "inline comments omitted due to 422")
+}
+
+func TestSubmitFormalReview_422FallbackRetryAlsoFails(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			{Path: "internal/service.go", Patch: "@@ -30,20 +30,25 @@ func main() {"},
+		},
+	}
+	// Both calls fail.
+	fc.CreateReviewErrSeq = []error{
+		&gh.APIError{StatusCode: http.StatusUnprocessableEntity, Message: "Validation Failed"},
+		fmt.Errorf("network error on retry"),
+	}
+
+	printer := ui.New(io.Discard)
+
+	findings := []ReviewFinding{
+		{Severity: "high", Category: "bug", File: "internal/service.go", Line: 42, Description: "Bug."},
+	}
+
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "request-changes", "", "", findings, false, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fallback without inline comments also failed")
+}
+
+func TestSubmitFormalReview_422WithoutInlineCommentsIsFatal(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.Errors = map[string]error{
+		"CreatePullRequestReview": &gh.APIError{
+			StatusCode: http.StatusUnprocessableEntity,
+			Message:    "Validation Failed",
+		},
+	}
+	printer := ui.New(io.Discard)
+
+	// No findings → no inline comments → 422 should not trigger fallback.
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "approve", "", "", nil, false, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "submitting review:")
+	assert.NotContains(t, err.Error(), "fallback")
+}
+
+func TestSubmitFormalReview_Non422ErrorIsNotRetried(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			{Path: "internal/service.go", Patch: "@@ -30,20 +30,25 @@ func main() {"},
+		},
+	}
+	fc.Errors = map[string]error{
+		"CreatePullRequestReview": fmt.Errorf("server error"),
+	}
+	printer := ui.New(io.Discard)
+
+	findings := []ReviewFinding{
+		{Severity: "high", Category: "bug", File: "internal/service.go", Line: 42, Description: "Bug."},
+	}
+
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "request-changes", "", "", findings, false, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "submitting review:")
+	assert.NotContains(t, err.Error(), "fallback")
+}
+
+func TestSubmitFormalReview_422FallbackLogsAPIErrorDetails(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			{Path: "internal/service.go", Patch: "@@ -30,20 +30,25 @@ func main() {"},
+			{Path: "internal/handler.go", Patch: "@@ -1,15 +1,20 @@ package handler"},
+		},
+	}
+	fc.CreateReviewErrSeq = []error{
+		&gh.APIError{
+			StatusCode: http.StatusUnprocessableEntity,
+			Message:    "Validation Failed",
+			Errors: []gh.APIErrorDetail{
+				{Resource: "PullRequestReviewComment", Field: "line", Code: "invalid", Message: "line must be part of the diff"},
+			},
+		},
+		nil,
+	}
+
+	var out bytes.Buffer
+	printer := ui.New(&out)
+
+	findings := []ReviewFinding{
+		{Severity: "high", Category: "bug", File: "internal/service.go", Line: 42, Description: "Bug."},
+		{Severity: "low", Category: "style", File: "internal/handler.go", Line: 10, Description: "Style issue."},
+	}
+
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "request-changes", "", "", findings, false, printer)
+	require.NoError(t, err)
+
+	output := out.String()
+	// Structured error logging should include GitHub API error details.
+	assert.Contains(t, output, "API error detail")
+	assert.Contains(t, output, "PullRequestReviewComment")
+	assert.Contains(t, output, "line must be part of the diff")
+	// Should log which comments were rejected.
+	assert.Contains(t, output, "Rejected comment: internal/service.go:42")
+	assert.Contains(t, output, "Rejected comment: internal/handler.go:10")
+}
+
+func TestIs422Error(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "422 API error",
+			err:  &gh.APIError{StatusCode: http.StatusUnprocessableEntity, Message: "Validation Failed"},
+			want: true,
+		},
+		{
+			name: "wrapped 422 API error",
+			err:  fmt.Errorf("create review: %w", &gh.APIError{StatusCode: http.StatusUnprocessableEntity}),
+			want: true,
+		},
+		{
+			name: "non-422 API error",
+			err:  &gh.APIError{StatusCode: http.StatusInternalServerError, Message: "Internal Server Error"},
+			want: false,
+		},
+		{
+			name: "plain error",
+			err:  fmt.Errorf("network error"),
+			want: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, is422Error(tt.err))
+		})
+	}
+}
+
+func TestSubmitFormalReview_422FallbackWithFileLevelComment(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			// Hunk covers lines 30-54 only.
+			{Path: "internal/service.go", Patch: "@@ -30,20 +30,25 @@ func main() {"},
+		},
+	}
+	fc.CreateReviewErrSeq = []error{
+		&gh.APIError{StatusCode: http.StatusUnprocessableEntity, Message: "Validation Failed"},
+		nil,
+	}
+
+	var out bytes.Buffer
+	printer := ui.New(&out)
+
+	findings := []ReviewFinding{
+		// Line 999 is outside hunk → becomes file-level comment (Line=0).
+		{Severity: "high", Category: "bug", File: "internal/service.go", Line: 999, Description: "Out of hunk."},
+	}
+
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "request-changes", "abc123", "", findings, false, printer)
+	require.NoError(t, err)
+
+	output := out.String()
+	assert.Contains(t, output, "file-level", "logRejectedComments should log file-level comment")
+	assert.Contains(t, output, "inline comments omitted due to 422")
+
+	require.Len(t, fc.CreatedReviews, 1)
+	assert.Contains(t, fc.CreatedReviews[0].Body, "internal/service.go")
+}
+
+func TestBuildFallbackReviewBody(t *testing.T) {
+	t.Run("with original body and comments", func(t *testing.T) {
+		comments := []forge.ReviewComment{
+			{Path: "a.go", Line: 10, Body: "Bug here"},
+			{Path: "b.go", Line: 0, Body: "File-level issue"},
+		}
+		body := buildFallbackReviewBody("See review.", comments)
+		assert.Contains(t, body, "See review.")
+		assert.Contains(t, body, "---")
+		assert.Contains(t, body, "inline comments could not be posted")
+		assert.Contains(t, body, "`a.go:10`")
+		assert.Contains(t, body, "Bug here")
+		assert.Contains(t, body, "`b.go`")
+		assert.Contains(t, body, "file-level")
+	})
+
+	t.Run("empty original body", func(t *testing.T) {
+		comments := []forge.ReviewComment{
+			{Path: "a.go", Line: 5, Body: "Issue"},
+		}
+		body := buildFallbackReviewBody("", comments)
+		assert.NotContains(t, body, "---", "no separator when original body is empty")
+		assert.Contains(t, body, "inline comments could not be posted")
+		assert.Contains(t, body, "`a.go:5`")
+	})
+
+	t.Run("no comments", func(t *testing.T) {
+		body := buildFallbackReviewBody("Original body", nil)
+		assert.Equal(t, "Original body", body)
+	})
+
+	t.Run("empty body and no comments", func(t *testing.T) {
+		body := buildFallbackReviewBody("", nil)
+		assert.Equal(t, "", body)
+	})
 }
