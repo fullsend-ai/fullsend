@@ -1994,3 +1994,75 @@ func TestListOpenIssues_LabelEncoding(t *testing.T) {
 	_, err := client.ListOpenIssues(ctx, "owner", "repo", "bug fix", "feature&request")
 	require.NoError(t, err)
 }
+
+// ---------------------------------------------------------------------------
+// DeleteRef tests
+// ---------------------------------------------------------------------------
+
+func TestDeleteRef_Branch(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	called := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/repository/branches/feature-branch", func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		assert.Equal(t, http.MethodDelete, r.Method)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	err := client.DeleteRef(ctx, "myorg", "myrepo", "heads/feature-branch")
+	require.NoError(t, err)
+	assert.True(t, called)
+}
+
+func TestDeleteRef_Tag(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	called := false
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/repository/tags/v1.0", func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		assert.Equal(t, http.MethodDelete, r.Method)
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	err := client.DeleteRef(ctx, "myorg", "myrepo", "tags/v1.0")
+	require.NoError(t, err)
+	assert.True(t, called)
+}
+
+func TestDeleteRef_NotFound(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/repository/branches/gone", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	err := client.DeleteRef(ctx, "myorg", "myrepo", "heads/gone")
+	require.Error(t, err)
+	assert.True(t, forge.IsNotFound(err))
+}
+
+func TestDeleteRef_UnsupportedPrefix(t *testing.T) {
+	client, _ := setupTest(t)
+	ctx := context.Background()
+
+	err := client.DeleteRef(ctx, "myorg", "myrepo", "pull/123/head")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported ref path format")
+}
+
+// ---------------------------------------------------------------------------
+// CreateCrossRepoChangeProposal tests
+// ---------------------------------------------------------------------------
+
+func TestCreateCrossRepoChangeProposal_NotSupported(t *testing.T) {
+	client, _ := setupTest(t)
+	ctx := context.Background()
+
+	cp, err := client.CreateCrossRepoChangeProposal(ctx, "base-owner", "base-repo", "head-owner", "head-repo", "title", "body", "feature", "main")
+	require.Error(t, err)
+	assert.Nil(t, cp)
+	assert.ErrorIs(t, err, forge.ErrNotSupported)
+}
