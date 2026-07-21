@@ -28,6 +28,11 @@
       "description": "Group Cloudflare Worker packages to prevent broken lockfile-only PRs from peer dependency conflicts",
       "matchPackageNames": ["/^@cloudflare\\//", "wrangler", "miniflare"],
       "groupName": "cloudflare-workers"
+    },
+    {
+      "description": "Disable automerge for tirith — Renovate bumps the version but SHA256 checksums need manual refresh, so the PR always needs human intervention",
+      "matchPackageNames": ["sheeki03/tirith"],
+      "automerge": false
     }
   ],
   "postUpdateOptions": ["gomodTidy"],
@@ -81,6 +86,17 @@
       ],
       "depNameTemplate": "@anthropic-ai/claude-code",
       "datasourceTemplate": "npm"
+    },
+    {
+      "customType": "regex",
+      "description": "Track tirith CLI version pin in the sandbox image. TIRITH_SHA256_{AMD64,ARM64} must be refreshed manually from the release checksums.txt at https://github.com/sheeki03/tirith/releases — the image build fails on checksum mismatch until they are.",
+      "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
+      "matchStrings": [
+        "ARG TIRITH_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "sheeki03/tirith",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
     }
   ]
 }
