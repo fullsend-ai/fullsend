@@ -209,8 +209,8 @@ func TestAgentSpanEndAttrs(t *testing.T) {
 	assert.Contains(t, a, attribute.String("gen_ai.request.model", "claude-opus-4-6"))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.input_tokens", 11))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.output_tokens", 1505))
-	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_creation_input_tokens", 38832))
-	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_read_input_tokens", 109938))
+	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_creation.input_tokens", 38832))
+	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_read.input_tokens", 109938))
 	assert.Contains(t, a, attribute.Float64("fullsend.cost_usd", 0.34))
 	assert.Contains(t, a, attribute.Int("fullsend.tool_calls", 11))
 }
