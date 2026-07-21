@@ -63,7 +63,7 @@ These problems exist regardless of whether the system is native or external. The
 
 ### Autonomous merge judgment
 
-gh-aw explicitly keeps humans in the loop. Its safe-outputs model produces artifacts that a gated write job applies, but merge is never one of the permitted operations. GitHub's own [position paper](https://github.blog/ai-and-ml/generative-ai/code-review-in-the-age-of-ai-why-developers-will-always-own-the-merge-button/) argues developers will always own the merge button. Fullsend's thesis is that for routine changes with sufficient verification, the merge decision can be automated. This is a judgment problem that no amount of platform nativeness resolves — it requires intent verification, confidence scoring, and a governance model for when to override.
+gh-aw defaults to keeping humans in the loop. Its safe-outputs model produces artifacts that a gated write job applies, but merge is not currently one of the permitted operations. This is however a default design choice, not a platform limitation — credentials injected into an agentic workflow can allow merging a PR. A [GitHub blog post](https://github.blog/ai-and-ml/generative-ai/code-review-in-the-age-of-ai-why-developers-will-always-own-the-merge-button/) argues developers will always own the merge button, but that's one team's editorial position, not a constraint GitHub's platform enforces. Fullsend's thesis is that for routine changes with sufficient verification, the merge decision can be automated, but such a system could be implemented directly with GitHub Agentic Workflows as well.
 
 ### Intent verification
 
@@ -121,7 +121,7 @@ GitHub Actions runners have a 6-hour job timeout, limited compute options (unles
 
 ### Product dependency
 
-gh-aw is in early development and may change significantly. Building on it means depending on GitHub's product decisions, deprecation timeline, and willingness to support autonomous use cases. GitHub has explicitly stated that humans should own the merge button — a position that directly conflicts with fullsend's thesis. An external system can build merge authority independently of the platform's product philosophy.
+gh-aw is in early development and may change significantly. Building on it means depending on GitHub's product decisions, deprecation timeline, and willingness to support autonomous use cases. gh-aw's maintainers have publicly favored keeping humans on the merge button — an editorial stance rather than a platform-enforced restriction, but one that shapes what gh-aw is likely to build next. An external system can build merge authority independently of that stance.
 
 ### Isolation model
 
@@ -133,7 +133,7 @@ gh-aw's container isolation is strong for its use case, but the isolation bounda
 
 - **Is the forge abstraction worth the cost at this stage?** Fullsend's only concrete implementation is GitHub. If forge-neutrality is deferred to the [Infrastructure](../roadmap.md#infrastructure) and [Cross-forge orchestration](../roadmap.md#cross-forge-orchestration) work in the [roadmap](../roadmap.md), the current implementation could use GitHub-native primitives directly, simplifying the stack substantially.
 
-- **Can gh-aw's safe-outputs model be extended for autonomous merge?** If a safe-output type of "merge this PR" were added (gated by all required checks passing and a confidence threshold), gh-aw's architecture could support tiered autonomy without fullsend's external plumbing. This depends on GitHub's willingness to add such a capability — which their current position suggests is unlikely.
+- **Can gh-aw's safe-outputs model be extended for autonomous merge?** Nothing technical blocks this today — a plain workflow job triggered on `pull_request_review` (approved) or a passing check suite can call the merge REST endpoint or the merge-queue GraphQL mutation with a token that has write access, entirely outside gh-aw's safe-outputs system. The open question is whether gh-aw's maintainers formalize this as an official safe-output type (gated by required checks and a confidence threshold), which would make it a first-class, auditable primitive instead of something every adopter bolts on themselves. Given their stated editorial position, that seems unlikely to come from upstream — but it doesn't stop fullsend or anyone else from building it as an unofficial follow-up job today.
 
 - **Where is the boundary between containment and judgment?** gh-aw solves containment well. Fullsend's unique value is judgment. Should fullsend's implementation focus exclusively on the judgment layer and delegate containment to native platform features wherever possible?
 
@@ -147,6 +147,6 @@ However, this approach carries real tensions that should be weighed:
 
 - **ADR 0005 conflict:** The accepted [forge abstraction layer](../ADRs/0005-forge-abstraction-layer.md) decision assumes fullsend remains portable across GitHub, GitLab, and Forgejo. Adopting gh-aw as the containment layer would lock fullsend at the runtime and security architecture level — deeper than what the forge abstraction was designed to abstract over. A POC should be evaluated against whether it invalidates, defers, or supersedes ADR 0005.
 - **Pre-GA platform risk:** gh-aw is in technical preview (~68 releases in 8 months), Linux-only, and may change significantly before GA. Building on it means depending on GitHub's product decisions, deprecation timeline, and feature stability.
-- **Philosophical opposition:** GitHub has [explicitly positioned](https://github.blog/ai-and-ml/generative-ai/code-review-in-the-age-of-ai-why-developers-will-always-own-the-merge-button/) against autonomous merge — fullsend's core thesis. Using gh-aw as the containment layer while building merge authority on top of it means depending on a platform whose maintainers oppose the end goal.
+- **Philosophical opposition:** gh-aw's maintainers have [publicly favored](https://github.blog/ai-and-ml/generative-ai/code-review-in-the-age-of-ai-why-developers-will-always-own-the-merge-button/) keeping humans on the merge button — fullsend's core thesis is that this decision should be automatable for routine changes. That stance doesn't block fullsend from adding a merge job on top of gh-aw's containment (nothing in GitHub's API prevents it), but it does mean gh-aw itself is unlikely to ever formalize merge as an official safe-output, so fullsend would own that layer entirely rather than building on upstream support for it.
 
 If pursued, the POC would inform whether fullsend's implementation effort should shift from building containment infrastructure to building judgment-layer capabilities on top of gh-aw — but it should be treated as an experiment, not a commitment.

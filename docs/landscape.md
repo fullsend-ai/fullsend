@@ -6,7 +6,7 @@ A survey of AI-driven code review systems and **adjacent agent infrastructure** 
 
 ## The industry consensus
 
-The entire industry is solving "AI as first-pass reviewer that helps humans review faster." Nobody is seriously tackling the full autonomous merge problem. GitHub has published an [explicit position paper](https://github.blog/ai-and-ml/generative-ai/code-review-in-the-age-of-ai-why-developers-will-always-own-the-merge-button/) arguing that developers will always own the merge button. This is the question we're asking differently.
+There isn't one. Projects range from entirely banning AI to having AI agents doing work with little structure or oversight.
 
 ## Major tools
 
@@ -77,13 +77,11 @@ Uses "a series of AI code reviewers, each with different specialties" — e.g., 
 
 **Relevance to fullsend:** Sourcery's candor about their limitations is informative. Their specialized-reviewer approach validates our sub-agent decomposition, but their inability to reason about the broader codebase illustrates why context management per sub-agent matters. A correctness sub-agent needs repo context; a security sub-agent needs raw PR content; an intent & coherence sub-agent needs the intent repo. Different sub-agents, different context.
 
-### GitHub Copilot Code Review
+### GitHub Copilot
 
-[Blog post](https://github.blog/ai-and-ml/generative-ai/code-review-in-the-age-of-ai-why-developers-will-always-own-the-merge-button/)
+[Website](https://github.com/features/copilot)
 
-GA since April 2025. 1 million users in one month. Assign Copilot as a reviewer like any teammate. October 2025 update added context gathering — reads source files, explores directory structure, integrates CodeQL and ESLint.
-
-**Relevance to fullsend:** GitHub's explicit "humans own the merge button" position means we cannot rely on GitHub's native tooling for autonomous merging. We'll need to build merge authority outside of (or on top of) GitHub's review/approval system.
+Very relevant to fullsend: has code review and also supports having background agents steered interactively. Backend infrastructure here is reused by GitHub Agentic Workflows (see below).
 
 ### GitLab AI Merge Agent
 
@@ -305,8 +303,6 @@ Repository automation from GitHub Next and Microsoft Research, running coding ag
 
 Its integrity filtering system is particularly interesting — it implements a form of input trust tiering (`merged > approved > unapproved > none`) that addresses a subset of what fullsend explores in [autonomy-spectrum.md](problems/autonomy-spectrum.md), though applied to content visibility rather than merge authority. The content sanitization pipeline is a concrete implementation of pre-LLM injection defense, complementing the post-LLM threat detection scan. The orchestration pattern (`dispatch-workflow` / `call-workflow`) provides native multi-workflow coordination that fullsend builds custom infrastructure for.
 
-However, gh-aw explicitly stops at human-in-the-loop automation. It does not address autonomous merge judgment, intent verification, inter-agent trust, or agent governance. Its orchestration is workflow fan-out, not the specialized sub-agent composition with zero-trust review that fullsend envisions. And it inherits GitHub's product constraints — including the position that [developers will always own the merge button](https://github.blog/ai-and-ml/generative-ai/code-review-in-the-age-of-ai-why-developers-will-always-own-the-merge-button/).
-
 The comparison raises a structural question for fullsend: which problems in our implementation are inherent to the goal of autonomous development, and which are artifacts of building externally to the platform we're automating? See [platform-nativeness.md](problems/platform-nativeness.md) for the full analysis.
 
 ## Architectural patterns in the field
@@ -331,7 +327,7 @@ Structure the workflow as a pipeline where deterministic steps (context prefetch
 
 ### 5. GitHub Actions as agent runtime (Collo.dev, gh-aw)
 
-Use GitHub's native workflow engine as both the orchestration layer and the compute runtime. Agents are invoked by workflow triggers (label changes, issue comments, schedules), run in ephemeral Actions runners, and coordinate through issues and labels. Zero infrastructure beyond a GitHub repo and an API key. gh-aw adds significant depth to this pattern with containerized execution, network firewalling, artifact-based safe outputs, and AI-powered threat detection — demonstrating that Actions-native agents can have strong guardrails without external infrastructure. The trade-off: tightly coupled to GitHub's event model, limited to Actions runner capabilities and timeouts, and (in the case of gh-aw) constrained by GitHub's product position against autonomous merging.
+Use GitHub's native workflow engine as both the orchestration layer and the compute runtime. Agents are invoked by workflow triggers (label changes, issue comments, schedules), run in ephemeral Actions runners, and coordinate through issues and labels. Zero infrastructure beyond a GitHub repo and an API key. gh-aw adds significant depth to this pattern with containerized execution, network firewalling, artifact-based safe outputs, and AI-powered threat detection — demonstrating that Actions-native agents can have strong guardrails without external infrastructure. The trade-off: tightly coupled to GitHub's event model, limited to Actions runner capabilities and timeouts.
 
 These are complementary, not competing. A system could use stacked PRs (Graphite's insight) reviewed by specialized sub-agents (CodeRabbit's insight) with deep codebase context where needed (Greptile's insight), all orchestrated through a deterministic pipeline with agentic steps (Stripe's insight), running on GitHub Actions (Collo.dev's insight for teams that want zero infrastructure overhead).
 
