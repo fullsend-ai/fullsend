@@ -11,7 +11,7 @@
 #   $3 — output directory
 #
 # Required env (injected by harness from hook outputs + execution.env):
-#   FULLSEND_DIR    — path to the fullsend scaffold directory
+#   FULLSEND_DIR    — path to the .fullsend configuration directory
 #   GH_TOKEN        — GitHub token
 #   FIXTURE_URL     — URL of the fixture (issue or PR)
 #   FIXTURE_TYPE    — "issue" or "pull_request"

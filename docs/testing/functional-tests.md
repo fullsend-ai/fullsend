@@ -63,7 +63,7 @@ one. Results are printed to stdout with pass/fail per judge and threshold.
 | `ANTHROPIC_VERTEX_PROJECT_ID` | Yes | GCP project with Vertex AI access |
 | `GOOGLE_CLOUD_PROJECT` | Yes | GCP project ID |
 | `CLOUD_ML_REGION` | Yes | GCP region for Vertex AI (e.g. `us-central1`) |
-| `FULLSEND_DIR` | No | Path to fullsend scaffold directory (default: `internal/scaffold/fullsend-repo`) |
+| `FULLSEND_DIR` | No | Path to the .fullsend configuration directory (default: `internal/scaffold/fullsend-repo`) |
 | `EVALS_HOST_CREDENTIALS` | No | Path to host GCP credentials for scoring (CI only — overrides sandbox-rewritten creds) |
 
 ## Directory layout

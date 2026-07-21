@@ -63,7 +63,7 @@ Use --dry-run to preview changes without creating a PR.`,
 			return runMigrateCustomizations(cmd.Context(), fullsendDir, repoFlag, dryRun, forgeClient, printer)
 		},
 	}
-	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
 	cmd.Flags().StringVar(&repoFlag, "repo", "", "target repository (owner/repo) for the migration PR")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show what would change without creating a PR")
 	_ = cmd.MarkFlagRequired("fullsend-dir")

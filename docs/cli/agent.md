@@ -31,7 +31,7 @@ fullsend agent add harness/custom-review.yaml --name my-review --fullsend-dir .f
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--fullsend-dir` | | Base directory containing the `.fullsend` layout (required) |
+| `--fullsend-dir` | | Path to the `.fullsend` configuration directory (required) |
 | `--name` | derived from filename | Explicit agent name |
 
 GitHub blob URLs are resolved to pinned `raw.githubusercontent.com` URLs. Non-GitHub URLs must already contain a commit SHA in the path. Local paths must be relative, must not contain path traversal (`..`), and the file must exist. If an agent with the same name already exists, the command fails.
@@ -48,7 +48,7 @@ fullsend agent list --fullsend-dir .fullsend
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--fullsend-dir` | | Base directory containing the `.fullsend` layout (required) |
+| `--fullsend-dir` | | Path to the `.fullsend` configuration directory (required) |
 
 Read-only. Displays a table with `NAME` and `SOURCE` columns. For URL agents, the `#sha256=...` integrity hash suffix is stripped from the displayed source for readability. Disabled agents (`enabled: false`) are included in the listing.
 
@@ -72,7 +72,7 @@ fullsend agent update triage a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2 --fullsend
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--fullsend-dir` | | Base directory containing the `.fullsend` layout (required) |
+| `--fullsend-dir` | | Path to the `.fullsend` configuration directory (required) |
 
 Only URL agents can be updated — local path agents have nothing to pin. Non-GitHub URL agents require an explicit SHA argument. The integrity hash is recomputed by fetching the content at the new SHA.
 
@@ -88,7 +88,7 @@ fullsend agent remove triage --fullsend-dir .fullsend
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--fullsend-dir` | | Base directory containing the `.fullsend` layout (required) |
+| `--fullsend-dir` | | Path to the `.fullsend` configuration directory (required) |
 
 ## `agent migrate-customizations`
 
@@ -103,7 +103,7 @@ fullsend agent migrate-customizations --fullsend-dir .fullsend --repo owner/repo
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--fullsend-dir` | | Base directory containing the `.fullsend` layout (required) |
+| `--fullsend-dir` | | Path to the `.fullsend` configuration directory (required) |
 | `--repo` | | Target repository (`owner/repo`) for the migration PR (required unless `--dry-run`) |
 | `--dry-run` | `false` | Show what would change without creating a PR |
 
