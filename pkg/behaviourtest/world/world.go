@@ -48,6 +48,29 @@ type World struct {
 	ForkRepo     string
 	ForkPRNumber int
 	ForkPRBranch string
+
+	// LeasedRepoName is the logical test-repo name acquired from a RepoPool
+	// for this scenario's duration. Empty when no pool is configured.
+	LeasedRepoName string
+}
+
+// Clone creates a shallow copy of w that shares driver references (Config,
+// SCM, CI, Install) but has independent scenario-level fields (zeroed).
+// Use Clone in the Before hook to give each scenario its own World.
+func (w *World) Clone() *World {
+	return &World{
+		Config:       w.Config,
+		SCM:          w.SCM,
+		CI:           w.CI,
+		Install:      w.Install,
+		Org:          w.Org,
+		RepoFull:     w.RepoFull,
+		RepoOwner:    w.RepoOwner,
+		RepoName:     w.RepoName,
+		Token:        w.Token,
+		Logf:         w.Logf,
+		FixturesRoot: w.FixturesRoot,
+	}
 }
 
 const BehaviourScriptRepoPath = "behaviour/current-scenario.yaml"

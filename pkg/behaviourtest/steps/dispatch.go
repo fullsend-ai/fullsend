@@ -15,27 +15,27 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
-func registerDispatchSteps(ctx *godog.ScenarioContext, w *world.World) {
-	ctx.Step(`^a custom harness "([^"]+)" with:$`, func(name, doc string) error {
-		return givenCustomHarness(w, name, doc)
+func registerDispatchSteps(sc *godog.ScenarioContext) {
+	sc.Step(`^a custom harness "([^"]+)" with:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
+		return ctx, givenCustomHarness(world.FromContext(ctx), name, doc)
 	})
-	ctx.Step(`^a disabled custom harness "([^"]+)" with:$`, func(name, doc string) error {
-		return givenDisabledCustomHarness(w, name, doc)
+	sc.Step(`^a disabled custom harness "([^"]+)" with:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
+		return ctx, givenDisabledCustomHarness(world.FromContext(ctx), name, doc)
 	})
-	ctx.Step(`^the harness "([^"]+)" workflow completes successfully$`, func(agent string) error {
-		return thenHarnessWorkflowCompletes(w, agent)
+	sc.Step(`^the harness "([^"]+)" workflow completes successfully$`, func(ctx context.Context, agent string) (context.Context, error) {
+		return ctx, thenHarnessWorkflowCompletes(world.FromContext(ctx), agent)
 	})
-	ctx.Step(`^the harness "([^"]+)" agent did not run$`, func(agent string) error {
-		return thenHarnessAgentDidNotRun(w, agent)
+	sc.Step(`^the harness "([^"]+)" agent did not run$`, func(ctx context.Context, agent string) (context.Context, error) {
+		return ctx, thenHarnessAgentDidNotRun(world.FromContext(ctx), agent)
 	})
-	ctx.Step(`^a pull request is opened$`, func() error {
-		return whenPullRequestOpened(w)
+	sc.Step(`^a pull request is opened$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, whenPullRequestOpened(world.FromContext(ctx))
 	})
-	ctx.Step(`^the pull request is labeled "([^"]+)"$`, func(label string) error {
-		return whenPullRequestLabeled(w, label)
+	sc.Step(`^the pull request is labeled "([^"]+)"$`, func(ctx context.Context, label string) (context.Context, error) {
+		return ctx, whenPullRequestLabeled(world.FromContext(ctx), label)
 	})
-	ctx.Step(`^a review comment is submitted on the pull request$`, func() error {
-		return whenPullRequestReviewComment(w)
+	sc.Step(`^a review comment is submitted on the pull request$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, whenPullRequestReviewComment(world.FromContext(ctx))
 	})
 }
 

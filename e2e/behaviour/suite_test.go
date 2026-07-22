@@ -65,8 +65,13 @@ func TestBehaviourSuite(t *testing.T) {
 		}
 	})
 
+	pool, err := world.NewRepoPool(12)
+	if err != nil {
+		t.Fatalf("creating repo pool: %v", err)
+	}
+
 	testRepo := installState.TestRepo()
-	w := &world.World{
+	template := &world.World{
 		Config:       cfg,
 		SCM:          scmgh.New(client),
 		CI:           gaci.New(client, token),
@@ -82,7 +87,7 @@ func TestBehaviourSuite(t *testing.T) {
 
 	suiteRunner := godog.TestSuite{
 		Name:                "behaviour",
-		ScenarioInitializer: func(sc *godog.ScenarioContext) { suite.InitScenario(sc, w) },
+		ScenarioInitializer: func(sc *godog.ScenarioContext) { suite.InitScenario(sc, template, pool) },
 		Options: &godog.Options{
 			Format:      "pretty",
 			Paths:       []string{"features"},

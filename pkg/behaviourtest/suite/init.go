@@ -2,6 +2,7 @@ package suite
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -13,19 +14,39 @@ import (
 )
 
 // InitScenario registers tag-based skips, Before/After hooks, and shared steps.
-func InitScenario(sc *godog.ScenarioContext, w *world.World) {
-	sc.Before(func(ctx context.Context, sc *godog.Scenario) (context.Context, error) {
-		if err := SkipErrorForTagNames(tagNames(sc.Tags), w); err != nil {
+// Each scenario receives its own World cloned from template. If pool is non-nil,
+// a repo name is leased from it for the scenario's duration.
+func InitScenario(sc *godog.ScenarioContext, template *world.World, pool *world.RepoPool) {
+	sc.Before(func(ctx context.Context, scenario *godog.Scenario) (context.Context, error) {
+		if err := SkipErrorForTagNames(tagNames(scenario.Tags), template); err != nil {
 			return ctx, err
 		}
+		w := template.Clone()
 		resetScenarioWorld(w)
+
+		if pool != nil {
+			name, err := pool.Acquire(ctx)
+			if err != nil {
+				return ctx, fmt.Errorf("acquiring pool repo name: %w", err)
+			}
+			w.LeasedRepoName = name
+		}
+
+		ctx = world.WithWorld(ctx, w)
 		return ctx, nil
 	})
-	sc.After(func(ctx context.Context, sc *godog.Scenario, err error) (context.Context, error) {
+	sc.After(func(ctx context.Context, scenario *godog.Scenario, err error) (context.Context, error) {
+		w := world.FromContext(ctx)
+		if w == nil {
+			return ctx, err
+		}
 		steps.CleanupScenario(w)
+		if pool != nil && w.LeasedRepoName != "" {
+			pool.Release(w.LeasedRepoName)
+		}
 		return ctx, err
 	})
-	steps.Register(sc, w)
+	steps.Register(sc)
 }
 
 func resetScenarioWorld(w *world.World) {
