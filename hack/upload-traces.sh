@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG="${SCRIPT_DIR}/upload-traces-otelcol-config.yaml"
+
 die() { echo "error: $*" >&2; exit 1; }
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") <file-or-dir-or-glob> --endpoint <otlp-http-url> [--header key=value]...
+Usage: $(basename "$0") <file-or-dir-or-glob> --endpoint <otlp-http-url>
 
 Replay OTLP JSON traces into an OTLP HTTP endpoint.
 
@@ -15,15 +18,19 @@ pushes them to any OTLP-speaking backend via otelcol-contrib.
 Arguments:
   <file-or-dir-or-glob>  A .jsonl file, directory, or glob pattern
   --endpoint             OTLP HTTP endpoint (e.g. http://localhost:4318)
-  --header key=value     Header to send with OTLP requests (repeatable)
 
-Headers are injected into the Collector's otlphttp exporter config.
-Any key=value pairs already set in the OTEL_EXPORTER_OTLP_HEADERS env
-var are also included and merged with --header flags.
+To send headers (auth tokens, experiment IDs, etc.), edit the config file
+directly — otelcol-contrib reads headers from its YAML config, not from
+env vars or CLI flags:
+
+  $CONFIG
+
+If yq is installed and no headers are configured, the script prompts for
+confirmation before sending traces without authentication.
 
 Examples:
   $(basename "$0") run/agent-run-123/run-telemetry.jsonl --endpoint http://localhost:4318
-  $(basename "$0") run/ --endpoint http://localhost:4318 --header x-mlflow-experiment-id=42
+  $(basename "$0") run/ --endpoint http://localhost:4318
   $(basename "$0") 'run/*/run-telemetry.jsonl' --endpoint http://localhost:4318
 
 The collector runs continuously and watches for new data. This is useful
@@ -40,18 +47,12 @@ EOF
 # --- parse args ---
 SOURCE=""
 ENDPOINT=""
-HEADERS=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --endpoint)
       [[ $# -ge 2 ]] || die "--endpoint requires a value"
       ENDPOINT="$2"; shift 2 ;;
-    --header)
-      [[ $# -ge 2 ]] || die "--header requires a key=value"
-      [[ "$2" == *=* ]] || die "--header value must be key=value, got: $2"
-      if [[ -n "$HEADERS" ]]; then HEADERS="${HEADERS},$2"; else HEADERS="$2"; fi
-      shift 2 ;;
     --help|-h)
       usage ;;
     -*)
@@ -69,13 +70,15 @@ done
 command -v otelcol-contrib >/dev/null 2>&1 \
   || die "otelcol-contrib not found. Install: https://github.com/open-telemetry/opentelemetry-collector-releases/releases"
 
+[[ -f "$CONFIG" ]] \
+  || die "config not found: $CONFIG"
+
 # --- resolve to absolute include pattern ---
 if [[ -d "$SOURCE" ]]; then
   INCLUDE="$(cd "$SOURCE" && pwd)/**/*.jsonl"
 elif [[ -f "$SOURCE" ]]; then
   INCLUDE="$(cd "$(dirname "$SOURCE")" && pwd)/$(basename "$SOURCE")"
 else
-  # Treat as a glob pattern — make it absolute relative to cwd
   if [[ "$SOURCE" == /* ]]; then
     INCLUDE="$SOURCE"
   else
@@ -84,72 +87,26 @@ else
 fi
 echo "include: $INCLUDE"
 
-# --- merge headers ---
-# Combine --header flags with any pre-existing OTEL_EXPORTER_OTLP_HEADERS
-# into a single comma-separated string for config generation.
-MERGED_HEADERS="${OTEL_EXPORTER_OTLP_HEADERS:-}"
-if [[ -n "$HEADERS" ]]; then
-  if [[ -n "$MERGED_HEADERS" ]]; then
-    MERGED_HEADERS="${MERGED_HEADERS},${HEADERS}"
-  else
-    MERGED_HEADERS="$HEADERS"
+# --- run collector ---
+# confmap recursively expands ${scheme:...} tokens in resolved values.
+# Escape literal $ as $$ so paths/URLs can't pivot into env var lookups.
+escape_confmap() { printf '%s' "${1//\$/\$\$}"; }
+
+REPLAY_INCLUDE="$(escape_confmap "$INCLUDE")"
+export REPLAY_INCLUDE
+REPLAY_ENDPOINT="$(escape_confmap "$ENDPOINT")"
+export REPLAY_ENDPOINT
+
+if command -v yq >/dev/null 2>&1; then
+  header_count="$(yq '.exporters.otlphttp.headers | length' "$CONFIG" 2>/dev/null || echo 0)"
+  if [[ "$header_count" -eq 0 ]]; then
+    echo "warning: no headers configured in $CONFIG"
+    echo "traces will be sent without authentication headers."
+    read -rp "Continue? [y/N] " answer
+    [[ "$answer" =~ ^[Yy]$ ]] || exit 0
   fi
 fi
 
-# --- generate runtime config ---
-# The otelcol-contrib Collector reads headers from its YAML config
-# (exporters.otlphttp.headers), not from OTEL_EXPORTER_OTLP_HEADERS.
-# Generate a runtime config that injects any headers into the YAML.
-export REPLAY_INCLUDE="$INCLUDE"
-export REPLAY_ENDPOINT="$ENDPOINT"
-
-RUNTIME_CONFIG=$(mktemp "${TMPDIR:-/tmp}/otelcol-config-XXXXXX.yaml")
-cleanup() { rm -f "$RUNTIME_CONFIG"; }
-trap cleanup EXIT
-
-cat > "$RUNTIME_CONFIG" <<'YAML'
-receivers:
-  otlpjsonfile:
-    include:
-      - "${env:REPLAY_INCLUDE}"
-    start_at: beginning
-
-exporters:
-  otlphttp:
-    endpoint: "${env:REPLAY_ENDPOINT}"
-YAML
-
-if [[ -n "$MERGED_HEADERS" ]]; then
-  echo "    headers:" >> "$RUNTIME_CONFIG"
-  IFS=',' read -ra HEADER_ARRAY <<< "$MERGED_HEADERS"
-  for h in "${HEADER_ARRAY[@]}"; do
-    key="${h%%=*}"
-    value="${h#*=}"
-    [[ "$key" =~ ^[a-zA-Z0-9_-]+$ ]] \
-      || die "invalid header key (must match [a-zA-Z0-9_-]+): $key"
-    value="${value//$'\n'/}"
-    value="${value//$'\r'/}"
-    value="${value//\$/\$\$}"
-    value="${value//\'/\'\'}"
-    printf "      %s: '%s'\n" "$key" "$value" >> "$RUNTIME_CONFIG"
-  done
-fi
-
-cat >> "$RUNTIME_CONFIG" <<'YAML'
-
-service:
-  pipelines:
-    traces:
-      receivers: [otlpjsonfile]
-      exporters: [otlphttp]
-YAML
-
 echo "endpoint: $ENDPOINT"
-if [[ -n "$MERGED_HEADERS" ]]; then
-  IFS=',' read -ra _hdr_arr <<< "$MERGED_HEADERS"
-  header_count=${#_hdr_arr[@]}
-  echo "headers: ${header_count} configured (values redacted)"
-fi
-
 echo "starting otelcol-contrib (runs continuously, watching for new data; press Ctrl+C to stop)..."
-otelcol-contrib --config "$RUNTIME_CONFIG"
+otelcol-contrib --config "$CONFIG"
