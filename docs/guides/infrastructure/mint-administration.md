@@ -72,7 +72,7 @@ Pass this URL as `--mint-url` when running `fullsend github setup`, or set the `
 
   `roles/owner` covers all of the above for users with broad access.
 
-  **Behaviour / e2e pool orgs:** Per-repo behaviour tests need `halfsend-NN/test-repo` enrolled on the hosted mint (`PER_REPO_WIF_REPOS`). Run `fullsend mint enroll owner/repo` once per pool org — not from CI. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
+  **Behaviour / e2e pool orgs:** Enroll `halfsend-NN/test-repo` (admin e2e; also what the behaviour install driver uses today) and `halfsend-NN/test-repo-01` … `test-repo-12` (pre-provisioned for planned behaviour parallelization in [#3454](https://github.com/fullsend-ai/fullsend/issues/3454) / [#5439](https://github.com/fullsend-ai/fullsend/issues/5439)) on the hosted mint (`PER_REPO_WIF_REPOS`). Run `fullsend mint enroll owner/repo` once per name — not from CI; do not enroll `*-fork` names. See [e2e-testing.md](../dev/e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
   An administrator can grant all required roles with a single script:
 

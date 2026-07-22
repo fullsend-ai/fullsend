@@ -73,7 +73,9 @@ Prefer **`wrangler versions upload --name=mint-test --preview-alias=…`** so ru
 
 ### Behaviour tests and per-repo mint enrollment
 
-Behaviour tests install fullsend in **per-repo** mode (`fullsend github setup`). Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; that requires per-repo mint enrollment (`PER_REPO_WIF_REPOS`). The install driver does **not** run `mint enroll` — pool org `test-repo` repos must be enrolled once by a GCP admin on the hosted mint project.
+Behaviour tests install fullsend in **per-repo** mode (`fullsend github setup`). Triage workflows mint same-org `triage` tokens from vendored reusable workflows; that requires per-repo mint enrollment (`PER_REPO_WIF_REPOS`). The install driver does **not** run `mint enroll` — pool org behaviour repos must be enrolled once by a GCP admin on the hosted mint project.
+
+Admin e2e uses the singular `halfsend-NN/test-repo` name. Behaviour parallelization is planned to lease `halfsend-NN/test-repo-01` … `test-repo-12` once [#3454](https://github.com/fullsend-ai/fullsend/issues/3454) / [#5439](https://github.com/fullsend-ai/fullsend/issues/5439) land; mint enrollment for those names is pre-provisioned now so it is not on the critical path later. Today the install driver still uses the singular `test-repo` regardless of concurrency. Enroll base names only — do **not** enroll `*-fork` names (forks are ephemeral PR sources and mint against the enrolled base repo). GitHub repositories need not exist yet — enroll is a mint allowlist / WIF-provider update only.
 
 Inference (`E2E_GCP_PROJECT_ID`) and mint (`it-gcp-konflux-dev-fullsend` for the hosted mint) may be different GCP projects. The behaviour install driver runs `fullsend inference provision <org>/test-repo` using CI credentials on the inference project (same access model as admin e2e), then passes the repo-scoped WIF provider to `github setup`. `E2E_GCP_WIF_PROVIDER` authenticates the CI job itself; it is not written to pool org repos.
 
@@ -84,12 +86,17 @@ The CI service account needs inference-provision IAM on `E2E_GCP_PROJECT_ID`:
 | `roles/iam.workloadIdentityPoolAdmin` | Create/update repo-scoped inference WIF providers |
 | `roles/resourcemanager.projectIamAdmin` | Grant `roles/aiplatform.user` to repo WIF principals |
 
-One-time enrollment for all pool orgs (idempotent):
+One-time enrollment for all pool orgs (idempotent). Enroll the singular admin `test-repo` (used by the driver today) and the behaviour pool `test-repo-01` … `test-repo-12` (pre-provisioned for planned parallelization):
 
 ```bash
 export GCP_PROJECT=it-gcp-konflux-dev-fullsend
 for i in $(seq -w 1 12); do
-  fullsend mint enroll "halfsend-${i}/test-repo" --project="$GCP_PROJECT" --region=us-central1
+  fullsend mint enroll "halfsend-${i}/test-repo" \
+    --project="$GCP_PROJECT" --region=us-central1
+  for j in $(seq -w 1 12); do
+    fullsend mint enroll "halfsend-${i}/test-repo-${j}" \
+      --project="$GCP_PROJECT" --region=us-central1
+  done
 done
 ```
 
@@ -157,11 +164,25 @@ the frozen PR `updated_at` from the workflow event (`PR_UPDATED_AT`); the live
 API fallback may over-reject when non-push activity bumped `updated_at`.
 Applying the label triggers immediate authorization on `labeled` events.
 
+Other labels (for example `ready-for-review`, `requires-manual-review`, or
+`component/*`) do **not** authorize e2e and do **not** cancel an in-progress
+e2e or functional-test run for that PR. Only `opened` / `synchronize` /
+`reopened`, and `labeled` when the label is `ok-to-test`, cancel in-progress
+work in the per-PR concurrency group. GitHub still starts a workflow run for
+every `labeled` event (labels cannot be filtered at `on:`). For non-actionable
+labels the gate job is skipped entirely and no sticky `<!-- e2e-gate -->`
+comment is posted. If an actionable run is already in progress, that new run
+sits **pending** until the active run finishes (it does not skip immediately).
+If several non-actionable labels land in a burst, GitHub cancels earlier
+pending runs in the concurrency group; only the last dequeued run executes and
+skips. Either way the original in-progress run is left alone.
+
 ### Blocked runs
 
-When e2e does not run, a sticky PR comment (marker `<!-- e2e-gate -->`) explains
-why and what to do. Re-run the workflow or add/re-apply `ok-to-test` as
-appropriate.
+When the gate **runs** and denies authorization, a sticky PR comment (marker
+`<!-- e2e-gate -->`) explains why and what to do. That is distinct from a
+non-actionable label event, where the gate never runs and no comment appears.
+Re-run the workflow or add/re-apply `ok-to-test` as appropriate.
 
 ## CI architecture
 
