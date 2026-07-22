@@ -29,6 +29,11 @@ When changing `internal/mint/main.go`, always copy it to `internal/dispatch/gcf/
 
 The `internal/mintcore/` module is shared between the mint and devmint. Its files are also embedded for Cloud Function deployment at `internal/dispatch/gcf/mintsrc/mintcore/*.embed`. When changing any file in `internal/mintcore/`, sync it to the corresponding `.embed` file under `mintsrc/mintcore/`. Note: the mint's `go.mod.embed` uses `replace mintcore => ./mintcore` (not `../mintcore`), because `provisioner.go` rewrites the replace directive at bundle time to match the deployed directory layout.
 
+When **adding a new file** to `internal/mintcore/`:
+1. Create the `.embed` copy in `internal/dispatch/gcf/mintsrc/mintcore/` (required for all files — `lint-mint-embed-sync` enforces this).
+2. If the file has **no platform-specific build tag** (e.g., `config.go`): register it in `embeddedMintFiles` in `internal/dispatch/gcf/provisioner.go` and add it to the `go:embed` directive.
+3. If the file has a **platform-specific build tag** (e.g., `//go:build js` for Worker-only files, or `//go:build !js` for GCF-only files that are already handled): do NOT register it in `embeddedMintFiles`. Instead, add it to the `gcfSkip` map in `TestEmbeddedMintSource_MatchesOriginal` in `provisioner_test.go`. See `file_pem.go` / `pem_js.go` for examples.
+
 **Dispatch workflows:** The scaffold `dispatch.yml` (at `internal/scaffold/fullsend-repo/.github/workflows/dispatch.yml`) and the repo's `reusable-dispatch.yml` (at `.github/workflows/reusable-dispatch.yml`) share identical routing logic for different installation modes (per-org vs per-repo). When changing the jq payload construction, stage routing, or input/secret threading in one, apply the same change to the other.
 
 When making changes to Go code under `cmd/` or `internal/`:
