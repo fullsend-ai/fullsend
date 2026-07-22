@@ -15,6 +15,12 @@ configuration required:
 This file is written on every run. It contains metadata only — no prompts,
 completions, or source code content.
 
+> **Planned:** `harness-snapshot.json` (run-start harness fingerprint and
+> forge/CI pointers, mirrored on the root span) is decided in
+> [ADR 0071](../../ADRs/0071-forge-pointer-correlation-for-agent-traces.md).
+> Implementation follows ADR acceptance; until then only `run-telemetry.jsonl`
+> is guaranteed on disk.
+
 ## Prerequisites
 
 Level 1 requires nothing. To enable OTLP export (Level 2 and Level 3) you need:
