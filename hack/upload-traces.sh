@@ -125,14 +125,11 @@ if [[ -n "$MERGED_HEADERS" ]]; then
   for h in "${HEADER_ARRAY[@]}"; do
     key="${h%%=*}"
     value="${h#*=}"
-    # Validate key contains only safe characters
     [[ "$key" =~ ^[a-zA-Z0-9_-]+$ ]] \
       || die "invalid header key (must match [a-zA-Z0-9_-]+): $key"
-    # Strip newlines/carriage returns to prevent YAML injection
     value="${value//$'\n'/}"
     value="${value//$'\r'/}"
-    # Use single-quoted YAML scalar (no escape sequences interpreted);
-    # the only special case is a literal single quote, represented as ''.
+    value="${value//\$/\$\$}"
     value="${value//\'/\'\'}"
     printf "      %s: '%s'\n" "$key" "$value" >> "$RUNTIME_CONFIG"
   done
@@ -149,15 +146,10 @@ YAML
 
 echo "endpoint: $ENDPOINT"
 if [[ -n "$MERGED_HEADERS" ]]; then
-  echo "headers: $MERGED_HEADERS"
+  IFS=',' read -ra _hdr_arr <<< "$MERGED_HEADERS"
+  header_count=${#_hdr_arr[@]}
+  echo "headers: ${header_count} configured (values redacted)"
 fi
-
-echo ""
-echo "Temporal configuration file: $RUNTIME_CONFIG"
-echo "---"
-cat "$RUNTIME_CONFIG"
-echo "---"
-echo ""
 
 echo "starting otelcol-contrib (runs continuously, watching for new data; press Ctrl+C to stop)..."
 otelcol-contrib --config "$RUNTIME_CONFIG"
