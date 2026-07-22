@@ -194,12 +194,65 @@ func TestCleanupScenario_SkipsBranchDelete_WhenFieldsMissing(t *testing.T) {
 	}
 }
 
+func TestCleanupScenario_DeletesURLHarnessRepo(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{}
+	w := &world.World{
+		RepoOwner:           "org",
+		RepoName:            "repo",
+		URLHarnessRepoOwner: "org",
+		URLHarnessRepoName:  "url-harness-host",
+		SCM:                 scmDriver,
+	}
+	CleanupScenario(w)
+
+	require.Len(t, scmDriver.deletedRepos, 1)
+	assert.Equal(t, "org", scmDriver.deletedRepos[0].owner)
+	assert.Equal(t, "url-harness-host", scmDriver.deletedRepos[0].repo)
+}
+
+func TestCleanupScenario_SkipsURLHarnessRepoDelete_WhenNotSet(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{}
+	w := &world.World{
+		RepoOwner: "org",
+		RepoName:  "repo",
+		SCM:       scmDriver,
+	}
+	CleanupScenario(w)
+	assert.Empty(t, scmDriver.deletedRepos)
+}
+
+func TestCleanupScenario_URLHarnessRepoDeleteError_Logged(t *testing.T) {
+	t.Parallel()
+
+	var logged []string
+	scmDriver := &fakeCleanupSCM{deleteRepoErr: fmt.Errorf("delete repo failed")}
+	w := &world.World{
+		RepoOwner:           "org",
+		RepoName:            "repo",
+		URLHarnessRepoOwner: "org",
+		URLHarnessRepoName:  "bad-repo",
+		SCM:                 scmDriver,
+		Logf:                func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+	CleanupScenario(w)
+
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], "delete URL harness repo org/bad-repo")
+	assert.Contains(t, logged[0], "delete repo failed")
+}
+
 // fakeCleanupSCM implements scm.Driver for cleanup unit tests.
 type fakeCleanupSCM struct {
 	closedIssues    []closedIssueRecord
 	closeIssueErr   error
 	deletedBranches []deletedBranchRecord
 	deleteBranchErr error
+	deletedRepos    []deletedRepoRecord
+	deleteRepoErr   error
 }
 
 type closedIssueRecord struct {
@@ -212,6 +265,11 @@ type deletedBranchRecord struct {
 	owner  string
 	repo   string
 	branch string
+}
+
+type deletedRepoRecord struct {
+	owner string
+	repo  string
 }
 
 func (f *fakeCleanupSCM) CloseIssue(_ context.Context, owner, repo string, number int) error {
@@ -276,7 +334,11 @@ func (f *fakeCleanupSCM) CreateRepo(context.Context, string, string, string) err
 	return nil
 }
 
-func (f *fakeCleanupSCM) DeleteRepo(context.Context, string, string) error {
+func (f *fakeCleanupSCM) DeleteRepo(_ context.Context, owner, repo string) error {
+	if f.deleteRepoErr != nil {
+		return f.deleteRepoErr
+	}
+	f.deletedRepos = append(f.deletedRepos, deletedRepoRecord{owner: owner, repo: repo})
 	return nil
 }
 

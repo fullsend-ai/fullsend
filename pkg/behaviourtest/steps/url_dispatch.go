@@ -133,7 +133,7 @@ func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarn
 
 	merged, err := yaml.Marshal(cfg)
 	if err != nil {
-		return fmt.Errorf("marshalling config: %w", err)
+		return fmt.Errorf("marshaling config: %w", err)
 	}
 	if err := w.SCM.CommitFile(context.Background(), cfgOwner, cfgRepo, cfgPath, fmt.Sprintf("behaviour: register URL harness %s", name), merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)

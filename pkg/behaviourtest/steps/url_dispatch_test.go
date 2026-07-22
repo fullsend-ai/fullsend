@@ -142,6 +142,108 @@ func TestGivenURLSourcedCustomHarness_SkipAllowlist(t *testing.T) {
 	assert.Contains(t, cfg.Agents[0].Source, hostPrefix)
 }
 
+func TestGivenURLSourcedCustomHarness_UpdatesExistingAgent(t *testing.T) {
+	// When an agent with the same name already exists in config, the entry
+	// should be updated in-place rather than appended as a duplicate.
+	scm := &fakeURLSCM{files: map[string][]byte{
+		".fullsend/config.yaml": []byte("version: \"1\"\nagents:\n  - name: url-test\n    source: harness/url-test.yaml\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n"),
+	}}
+	w := &world.World{
+		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		SCM:                 scm,
+		URLHarnessRepoOwner: "my-org",
+		URLHarnessRepoName:  "harness-host",
+	}
+
+	err := givenURLSourcedCustomHarness(w, "url-test", "agent: agents/triage.md\nrole: triage\nslug: url-test", urlHarnessOpts{})
+	require.NoError(t, err)
+
+	cfgData := scm.files[".fullsend/config.yaml"]
+	cfg, parseErr := config.ParsePerRepoConfig(cfgData)
+	require.NoError(t, parseErr)
+
+	// Should have exactly one agent (updated, not duplicated).
+	require.Len(t, cfg.Agents, 1)
+	assert.Contains(t, cfg.Agents[0].Source, "https://raw.githubusercontent.com/")
+}
+
+func TestGivenURLSourcedCustomHarness_AllowlistDedup(t *testing.T) {
+	// When the hosting repo URL prefix is already in the allowlist,
+	// it should not be added again.
+	hostPrefix := "https://raw.githubusercontent.com/my-org/harness-host/"
+	scm := &fakeURLSCM{files: map[string][]byte{
+		".fullsend/config.yaml": []byte(fmt.Sprintf("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n  - %q\n", hostPrefix)),
+	}}
+	w := &world.World{
+		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		SCM:                 scm,
+		URLHarnessRepoOwner: "my-org",
+		URLHarnessRepoName:  "harness-host",
+	}
+
+	err := givenURLSourcedCustomHarness(w, "agent1", "agent: agents/triage.md\nrole: triage\nslug: agent1", urlHarnessOpts{})
+	require.NoError(t, err)
+
+	cfgData := scm.files[".fullsend/config.yaml"]
+	cfg, parseErr := config.ParsePerRepoConfig(cfgData)
+	require.NoError(t, parseErr)
+
+	// Count occurrences of the host prefix — should appear exactly once.
+	count := 0
+	for _, res := range cfg.AllowedRemoteResources {
+		if res == hostPrefix {
+			count++
+		}
+	}
+	assert.Equal(t, 1, count, "allowlist prefix should not be duplicated")
+}
+
+func TestGivenHarnessHostingRepo_CreateRepoError(t *testing.T) {
+	scm := &fakeURLSCM{
+		files:         map[string][]byte{},
+		repos:         map[string]bool{},
+		createRepoErr: fmt.Errorf("permission denied"),
+	}
+	w := &world.World{
+		Org: "test-org",
+		SCM: scm,
+	}
+	err := givenHarnessHostingRepo(w, "my-host-repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating harness-hosting repo")
+	assert.Contains(t, err.Error(), "permission denied")
+}
+
+func TestGivenURLSourcedCustomHarness_CommitHarnessError(t *testing.T) {
+	scm := &fakeURLSCM{
+		files:          map[string][]byte{".fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n")},
+		commitFileErr:  fmt.Errorf("commit failed"),
+		commitFileRepo: "harness-host", // only fail for hosting repo commits
+	}
+	w := &world.World{
+		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		SCM:                 scm,
+		URLHarnessRepoOwner: "my-org",
+		URLHarnessRepoName:  "harness-host",
+	}
+	err := givenURLSourcedCustomHarness(w, "agent1", "content", urlHarnessOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "committing harness to hosting repo")
+}
+
+func TestGivenURLSourcedCustomHarness_GetConfigError(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}} // no config file
+	w := &world.World{
+		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		SCM:                 scm,
+		URLHarnessRepoOwner: "my-org",
+		URLHarnessRepoName:  "harness-host",
+	}
+	err := givenURLSourcedCustomHarness(w, "agent1", "content", urlHarnessOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading config")
+}
+
 // --- fakes ---
 
 type fakeURLInstall struct {
@@ -160,11 +262,17 @@ func (f *fakeURLInstall) AgentWorkflowFile() string  { return "reusable-triage.y
 func (f *fakeURLInstall) AgentArtifactName() string  { return "fullsend-triage" }
 
 type fakeURLSCM struct {
-	files map[string][]byte
-	repos map[string]bool
+	files          map[string][]byte
+	repos          map[string]bool
+	createRepoErr  error
+	commitFileErr  error
+	commitFileRepo string // only return commitFileErr when repo matches
 }
 
-func (f *fakeURLSCM) CommitFile(_ context.Context, _, _, path, _ string, content []byte) error {
+func (f *fakeURLSCM) CommitFile(_ context.Context, _, repo, path, _ string, content []byte) error {
+	if f.commitFileErr != nil && (f.commitFileRepo == "" || f.commitFileRepo == repo) {
+		return f.commitFileErr
+	}
 	f.files[path] = content
 	return nil
 }
@@ -178,6 +286,9 @@ func (f *fakeURLSCM) GetFileContent(_ context.Context, _, _, path string) ([]byt
 }
 
 func (f *fakeURLSCM) CreateRepo(_ context.Context, _, name, _ string) error {
+	if f.createRepoErr != nil {
+		return f.createRepoErr
+	}
 	if f.repos == nil {
 		f.repos = map[string]bool{}
 	}

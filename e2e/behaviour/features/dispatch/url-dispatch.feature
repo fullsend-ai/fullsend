@@ -93,7 +93,11 @@ Feature: URL-sourced harness dispatch
     And the agent will succeed to Prove fallback execution
     And the harness "bad-hash" agent did not run
 
-  Scenario: URL source not in allowlist is skipped and dispatch continues
+  Scenario: URL source not in allowlist fails config validation
+    # Production ValidateAgentEntries hard-fails the entire config when any
+    # URL agent is outside allowed_remote_resources. No agents dispatch —
+    # including the valid local harness — because config validation fails
+    # before agent resolution begins.
     Given a custom harness "good-allowed" with:
       """
       agent: agents/triage.md
@@ -118,11 +122,7 @@ Feature: URL-sourced harness dispatch
         && event.transition.kind == "label_changed"
         && event.transition.label.name == "ready-for-allowlist-test"
       """
-    And a dummy agent that would:
-      | description                | op           | args                                                    |
-      | Prove allowlist fallback   | write_fixture| output/dispatch-allowlist-ok.json, fixtures/dispatch/ok.json |
     And an issue
     When the issue is labeled "ready-for-allowlist-test"
-    Then the harness "good-allowed" workflow completes successfully
-    And the agent will succeed to Prove allowlist fallback
+    Then the harness "good-allowed" agent did not run
     And the harness "no-allow" agent did not run
