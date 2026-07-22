@@ -171,7 +171,7 @@ e2e-test:
 	go test -tags e2e -v -count=1 -timeout 30m ./e2e/admin/
 
 behaviour-test:
-	go test -tags behaviour -v -count=1 -timeout 30m ./e2e/behaviour/
+	go test -tags behaviour -v -count=1 -timeout 45m ./e2e/behaviour/
 
 # Functional agent evals — run agents against ephemeral GitHub repos and judge results.
 # Required env: EVAL_ORG (GitHub org for ephemeral repos), plus GCP creds for Vertex AI.
