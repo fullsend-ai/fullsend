@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_TEMPLATE="${SCRIPT_DIR}/upload-traces-otelcol-config.yaml"
-
 die() { echo "error: $*" >&2; exit 1; }
 
 usage() {
@@ -72,9 +69,6 @@ done
 command -v otelcol-contrib >/dev/null 2>&1 \
   || die "otelcol-contrib not found. Install: https://github.com/open-telemetry/opentelemetry-collector-releases/releases"
 
-[[ -f "$CONFIG_TEMPLATE" ]] \
-  || die "config template not found: $CONFIG_TEMPLATE"
-
 # --- resolve to absolute include pattern ---
 if [[ -d "$SOURCE" ]]; then
   INCLUDE="$(cd "$SOURCE" && pwd)/**/*.jsonl"
@@ -131,9 +125,16 @@ if [[ -n "$MERGED_HEADERS" ]]; then
   for h in "${HEADER_ARRAY[@]}"; do
     key="${h%%=*}"
     value="${h#*=}"
-    # Escape double quotes for YAML safety
-    value="${value//\"/\\\"}"
-    printf '      %s: "%s"\n' "$key" "$value" >> "$RUNTIME_CONFIG"
+    # Validate key contains only safe characters
+    [[ "$key" =~ ^[a-zA-Z0-9_-]+$ ]] \
+      || die "invalid header key (must match [a-zA-Z0-9_-]+): $key"
+    # Strip newlines/carriage returns to prevent YAML injection
+    value="${value//$'\n'/}"
+    value="${value//$'\r'/}"
+    # Use single-quoted YAML scalar (no escape sequences interpreted);
+    # the only special case is a literal single quote, represented as ''.
+    value="${value//\'/\'\'}"
+    printf "      %s: '%s'\n" "$key" "$value" >> "$RUNTIME_CONFIG"
   done
 fi
 
