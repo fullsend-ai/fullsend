@@ -37,8 +37,14 @@ func (p *RepoPool) Acquire(ctx context.Context) (string, error) {
 }
 
 // Release returns a previously acquired name to the pool.
+// It panics if the pool buffer is full, which indicates a double-release
+// programming error.
 func (p *RepoPool) Release(name string) {
-	p.names <- name
+	select {
+	case p.names <- name:
+	default:
+		panic(fmt.Sprintf("RepoPool: double-release or over-release of %q (buffer full)", name))
+	}
 }
 
 // Size returns the total capacity of the pool.

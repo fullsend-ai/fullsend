@@ -144,4 +144,26 @@ require github.com/fullsend-ai/fullsend v0.x.y // released tag, not @main
 - Build the fullsend CLI with `e2etest.BuildModuleBinary(t, "github.com/fullsend-ai/fullsend")` — not `BuildCLIBinary`, which resolves the **current** module root.
 - Run with `-tags behaviour` and the same env vars as CI (see above).
 
+### API changes
+
+**`suite.InitScenario` signature change (v0.22+):** The function signature changed from `InitScenario(sc, w)` to `InitScenario(sc, template, pool)`. Instead of passing a single `*world.World`, callers now pass a template `*world.World` (cloned per scenario) and a `*world.RepoPool` (used to lease unique repo names). Update your `suite_test.go` accordingly:
+
+```go
+pool, err := world.NewRepoPool(12)
+if err != nil {
+    t.Fatalf("creating repo pool: %v", err)
+}
+
+template := &world.World{ /* ... driver fields ... */ }
+
+suiteRunner := godog.TestSuite{
+    ScenarioInitializer: func(sc *godog.ScenarioContext) {
+        suite.InitScenario(sc, template, pool)
+    },
+    // ...
+}
+```
+
+Step definitions no longer receive `*world.World` as a parameter. Instead, they accept `context.Context` and extract the per-scenario World via `world.FromContext(ctx)`.
+
 Bump the pinned version when behaviour step vocabulary or `pkg/e2etest` / `pkg/behaviourtest` APIs change.

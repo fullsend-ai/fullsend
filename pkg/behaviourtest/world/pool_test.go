@@ -109,6 +109,7 @@ func TestRepoPool_ConcurrentAcquireRelease(t *testing.T) {
 		wg.Go(func() {
 			name, err := pool.Acquire(ctx)
 			if err != nil {
+				t.Errorf("Acquire failed: %v", err)
 				return
 			}
 			mu.Lock()
@@ -121,6 +122,20 @@ func TestRepoPool_ConcurrentAcquireRelease(t *testing.T) {
 	}
 	wg.Wait()
 	assert.Len(t, acquired, 10)
+}
+
+func TestRepoPool_DoubleReleasePanics(t *testing.T) {
+	pool, err := NewRepoPool(1)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	name, err := pool.Acquire(ctx)
+	require.NoError(t, err)
+
+	pool.Release(name)
+
+	// Double-release should panic because the buffer is already full.
+	assert.Panics(t, func() { pool.Release(name) })
 }
 
 func TestRepoPool_Size(t *testing.T) {
