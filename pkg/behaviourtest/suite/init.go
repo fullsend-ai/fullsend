@@ -59,7 +59,9 @@ func afterScenario(ctx context.Context, pool *world.RepoPool, err error) (contex
 	steps.CleanupScenario(w)
 	if pool != nil && w.LeasedRepoName != "" {
 		if releaseErr := pool.Release(w.LeasedRepoName); releaseErr != nil {
-			// Surface as a test error rather than panicking the runner.
+			if w.Logf != nil {
+				w.Logf("releasing pool repo name: %v", releaseErr)
+			}
 			if err == nil {
 				err = fmt.Errorf("releasing pool repo name: %w", releaseErr)
 			}

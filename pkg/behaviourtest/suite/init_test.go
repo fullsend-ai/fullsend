@@ -199,7 +199,7 @@ func TestAfterScenario_PreservesOriginalError(t *testing.T) {
 
 	origErr := assert.AnError
 	_, err = afterScenario(ctx, pool, origErr)
-	// Original error is preserved; release error is swallowed when
-	// there is already an error from the scenario.
+	// Original error is preserved; release error is logged but not
+	// returned when there is already an error from the scenario.
 	assert.Equal(t, origErr, err)
 }
