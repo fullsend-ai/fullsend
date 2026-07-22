@@ -3,8 +3,6 @@
 Fullsend produces structured telemetry for every agent run. This guide covers
 how to configure, consume, and extend the tracing system.
 
-Decided in [ADR 0050](../../ADRs/0050-distributed-tracing-instrumentation.md).
-
 ## Zero-configuration baseline (Level 1)
 
 Every `fullsend run` produces one file in the run output directory with no
@@ -110,8 +108,7 @@ export OTEL_EXPORTER_OTLP_TRACES_HEADERS="authorization=Basic%20${CREDS_B64},x-m
 ## Enabling content capture (Level 3)
 
 > **Planned:** Level 3 content capture is not yet implemented. This section
-> documents the contract decided in
-> [ADR 0050](../../ADRs/0050-distributed-tracing-instrumentation.md).
+> documents the planned contract.
 
 By default, spans contain metadata only (timing, token counts, tool names,
 errors). To include full prompt/completion content in spans:

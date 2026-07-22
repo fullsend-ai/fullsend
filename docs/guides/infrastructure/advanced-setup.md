@@ -27,7 +27,7 @@ If the platform operator also provides a pre-existing WIF provider, skip `infere
 
 If you have IAM access to the platform operator's GCP project, pass `--mint-project` and `--mint-region` to `github setup` to enable auto-discovery of shared app IDs and automatic validation of mint configuration. This requires `roles/cloudfunctions.developer` on the platform mint project.
 
-> This section documents the **SaaS installation profile** defined in [ADR 0033 §6](../../ADRs/0033-per-repo-installation-mode.md#6-credential-models). See the [CLI reference](../../cli/github.md#flags) for the full flag list.
+> This section documents the **SaaS installation profile**. See the [CLI reference](../../cli/github.md#flags) for the full flag list.
 
 ## OAuth scope reference
 

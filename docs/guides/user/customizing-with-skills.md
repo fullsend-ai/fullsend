@@ -116,14 +116,13 @@ when available.
 
 ## Overriding built-in skills
 
-> **Deprecated:** The `customized/` overlay described below is deprecated per
-> [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
-> Use `base:` composition and config-driven agent registration instead.
+> **Deprecated:** The `customized/` overlay described below is deprecated.
+> Use `base:` composition and config-driven agent registration instead —
+> see [Bring Your Own Agent](bring-your-own-agent.md).
 
 To intentionally **replace** a built-in skill with your own version, use the
-`customized/` overlay ([ADR 0035](../../ADRs/0035-layered-content-resolution.md)).
-This replaces the skill at the config layer before the agent starts — the
-built-in version is never uploaded to the sandbox.
+`customized/` overlay. This replaces the skill at the config layer before the
+agent starts — the built-in version is never uploaded to the sandbox.
 
 Create the override in your `.fullsend` config repo (per-org mode) or in
 `.fullsend/customized/` in the target repo (per-repo mode). The directory
@@ -139,7 +138,7 @@ engine, not through project-level skill discovery.
 ### Built-in skills
 
 These skills ship with fullsend and can be overridden via `customized/skills/`
-(deprecated per ADR-0064 — use config-driven agent registration instead):
+(deprecated — use config-driven agent registration instead):
 
 | Agent | Skill | Purpose |
 |-------|-------|---------|

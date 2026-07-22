@@ -120,7 +120,7 @@ The standalone mint is configured entirely through environment variables:
 
 ### Public mint mode
 
-Set `ALLOWED_ORGS=*` to enable public mint mode ([ADR 0059](../../ADRs/0059-public-mint-mode-with-wildcard-allowlists.md)):
+Set `ALLOWED_ORGS=*` to enable public mint mode:
 
 - Any org may request tokens (installation lookup still scopes tokens to the requesting org)
 - `job_workflow_ref` must reference `fullsend-ai/fullsend/.github/workflows/` only

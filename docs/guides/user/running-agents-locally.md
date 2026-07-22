@@ -204,9 +204,8 @@ fullsend run code \
 
 ### Remote resource flags
 
-When your harness references URL-based skills with transitive dependencies
-(see [ADR-0038](../../ADRs/0038-universal-harness-access.md)), you can tune
-resolution limits:
+When your harness references URL-based skills with transitive dependencies,
+you can tune resolution limits:
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -339,10 +338,11 @@ git clone --depth 1 https://github.com/fullsend-ai/agents.git /tmp/agents/
 
 Then apply your organization customizations, if any:
 
-> **Note:** The `customized/` overlay mechanism is deprecated per
-> [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
-> Orgs that have migrated to config-driven agents should skip these
+> **Note:** The `customized/` overlay mechanism is deprecated. Orgs that
+> have migrated to config-driven agents should skip these
 > `cp -r customized/` steps and use the registered harness paths directly.
+> See [Bring Your Own Agent](bring-your-own-agent.md) for the recommended
+> approach.
 
 ```bash
 git clone --depth 1 https://github.com/{org}/.fullsend.git /tmp/org-fullsend/
