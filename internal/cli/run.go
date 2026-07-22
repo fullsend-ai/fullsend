@@ -3205,17 +3205,22 @@ func sandboxProviderNames(harnessProviders []string, resolved []resolve.Resolved
 func forceRemoveAll(path string) error {
 	// Best-effort permission restore; if WalkDir itself fails on a
 	// directory it cannot read, we fix the parent and continue.
-	// Errors are intentionally ignored — os.RemoveAll will report any
-	// remaining issues.
+	// Chmod errors are logged for operator visibility — if chmod fails
+	// for an unexpected reason (e.g. TOCTOU race), the subsequent
+	// os.RemoveAll error alone may not indicate the root cause.
 	filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error { //nolint:errcheck
 		if err != nil {
 			// Can't stat p — likely the parent directory lacks +rx.
 			// Restore the parent so the next iteration can proceed.
-			os.Chmod(filepath.Dir(p), 0o755) //nolint:errcheck
+			if chmodErr := os.Chmod(filepath.Dir(p), 0o755); chmodErr != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: forceRemoveAll: chmod parent %s: %v\n", filepath.Dir(p), chmodErr)
+			}
 			return nil
 		}
 		if d.IsDir() {
-			os.Chmod(p, 0o755) //nolint:errcheck
+			if chmodErr := os.Chmod(p, 0o755); chmodErr != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: forceRemoveAll: chmod %s: %v\n", p, chmodErr)
+			}
 		}
 		return nil
 	})
