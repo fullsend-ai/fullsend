@@ -138,7 +138,7 @@ least-frequently-run agents.
 
 ## Bot identities
 
-Fullsend agents authenticate as GitHub Apps. Multiple agent roles may share a single app identity. The GitHub App login is derived from the `slug` field in each harness file (`internal/scaffold/fullsend-repo/harness/*.yaml`).
+Fullsend agents authenticate as GitHub Apps; the table below also includes non-agent bots that appear in trusted-actor lists. Multiple agent roles may share a single app identity. The GitHub App login is derived from the `slug` field in each harness file (`internal/scaffold/fullsend-repo/harness/*.yaml`).
 
 | Agent role | GitHub App login | Notes |
 |---|---|---|
