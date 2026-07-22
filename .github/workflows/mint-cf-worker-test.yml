@@ -10,17 +10,20 @@ name: Mint CF Worker Test
 on:
   push:
     branches: [main]
+    # SYNC-WITH: grep in "Check for mint-cf-worker-relevant changes" step
     paths:
       - "internal/dispatch/cf/**"
       - "cmd/mint-wasm/**"
       - "Makefile"
       - ".github/workflows/mint-cf-worker-test.yml"
   pull_request:
+    # SYNC-WITH: grep in "Check for mint-cf-worker-relevant changes" step
     paths:
       - "internal/dispatch/cf/**"
       - "cmd/mint-wasm/**"
       - "Makefile"
       - ".github/workflows/mint-cf-worker-test.yml"
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -34,7 +37,38 @@ jobs:
   mint-cf-worker-test:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # merge_group cannot use on.paths; skip early when unrelated files changed.
+      - name: Check for mint-cf-worker-relevant changes
+        id: changes
+        if: github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
+        # SYNC-WITH: push.paths / pull_request.paths filters above
+        run: |
+          FILES=$(gh api "repos/${REPO}/compare/${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}" --jq '.files[].filename') || {
+            echo "::warning::Failed to fetch merge group files — running mint-cf-worker-test as a precaution"
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          FILE_COUNT=$(echo "$FILES" | wc -l)
+          if [ "$FILE_COUNT" -ge 300 ]; then
+            echo "::warning::Compare API returned $FILE_COUNT files (possible truncation at 300) — running mint-cf-worker-test as a precaution"
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if echo "$FILES" | grep -qE '^internal/dispatch/cf/|^cmd/mint-wasm/|^Makefile$|^\.github/workflows/mint-cf-worker-test\.yml$'; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No mint-cf-worker-relevant files changed — skipping"
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.changes.outputs.relevant != 'false'
 
       - name: Run CF mint Worker bridge smoke tests
+        if: steps.changes.outputs.relevant != 'false'
         run: make mint-cf-worker-test
