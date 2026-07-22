@@ -64,10 +64,31 @@ func ParseWorkerConfig(cfg WorkerConfig, pemAccessor PEMAccessor, oidcVerifier O
 	return NewHandlerFromConfig(cfg.RoleAppIDs, cfg.AllowedRoles, pemAccessor, oidcVerifier, httpClient)
 }
 
+// SplitCSV splits a comma-separated string into trimmed, non-empty entries.
+// Shared by cmd/mint and cmd/mint-wasm for parsing config fields like
+// AllowedOrgs and AllowedWorkflowFiles.
+func SplitCSV(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var result []string
+	for _, entry := range strings.Split(s, ",") {
+		if trimmed := strings.TrimSpace(entry); trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
+}
+
 // NewHandlerFromConfig creates a Handler from explicit configuration values
 // instead of reading from environment variables. The roleAppIDsJSON parameter
 // is the JSON-encoded ROLE_APP_IDS mapping; allowedRolesCSV is the
 // comma-separated ALLOWED_ROLES list (empty means all roles from roleAppIDs).
+//
+// The caller is responsible for configuring the OIDCVerifier with the
+// appropriate AllowedOrgs, AllowedWorkflowFiles, and PerRepoWIFRepos
+// before passing it here. ParseWorkerConfig handles this automatically;
+// direct callers must do it themselves.
 func NewHandlerFromConfig(roleAppIDsJSON, allowedRolesCSV string, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, httpClient HTTPDoer) (*Handler, error) {
 	h := &Handler{
 		httpClient:      httpClient,

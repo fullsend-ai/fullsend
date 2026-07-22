@@ -3,6 +3,7 @@
 package mintcore
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -43,6 +44,11 @@ func (h *HostFetchDoer) Do(req *http.Request) (*http.Response, error) {
 		headerMap[k] = strings.Join(v, ", ")
 	}
 
+	headersJSON, err := json.Marshal(headerMap)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling request headers: %w", err)
+	}
+
 	var bodyStr string
 	if req.Body != nil {
 		bodyBytes, err := io.ReadAll(req.Body)
@@ -57,7 +63,7 @@ func (h *HostFetchDoer) Do(req *http.Request) (*http.Response, error) {
 	result, err := awaitPromise(h.fetchFn.Invoke(
 		req.Method,
 		req.URL.String(),
-		marshalJSHeaders(headerMap),
+		string(headersJSON),
 		bodyStr,
 	))
 	if err != nil {
@@ -70,13 +76,21 @@ func (h *HostFetchDoer) Do(req *http.Request) (*http.Response, error) {
 
 	resp := &http.Response{
 		StatusCode: status,
-		Status:     http.StatusText(status),
+		Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
 		Header:     make(http.Header),
 		Body:       io.NopCloser(strings.NewReader(respBody)),
 	}
 
 	// Parse response headers.
-	parseJSHeaders(respHeadersJSON, resp.Header)
+	if respHeadersJSON != "" && respHeadersJSON != "{}" {
+		var parsed map[string]string
+		if err := json.Unmarshal([]byte(respHeadersJSON), &parsed); err != nil {
+			return nil, fmt.Errorf("parsing response headers: %w", err)
+		}
+		for k, v := range parsed {
+			resp.Header.Set(k, v)
+		}
+	}
 
 	return resp, nil
 }
@@ -106,115 +120,4 @@ func awaitPromise(promise js.Value) (js.Value, error) {
 	case err := <-errCh:
 		return js.Value{}, err
 	}
-}
-
-// marshalJSHeaders converts a Go header map to a JSON string for JS.
-func marshalJSHeaders(headers map[string]string) string {
-	if len(headers) == 0 {
-		return "{}"
-	}
-	var b strings.Builder
-	b.WriteByte('{')
-	first := true
-	for k, v := range headers {
-		if !first {
-			b.WriteByte(',')
-		}
-		first = false
-		b.WriteByte('"')
-		b.WriteString(escapeJSON(k))
-		b.WriteString(`":"`)
-		b.WriteString(escapeJSON(v))
-		b.WriteByte('"')
-	}
-	b.WriteByte('}')
-	return b.String()
-}
-
-// parseJSHeaders parses a JSON header string into an http.Header.
-func parseJSHeaders(headersJSON string, dst http.Header) {
-	// Simple JSON object parser for {"key":"value",...} format.
-	headersJSON = strings.TrimSpace(headersJSON)
-	if headersJSON == "" || headersJSON == "{}" {
-		return
-	}
-	// Strip outer braces.
-	inner := headersJSON[1 : len(headersJSON)-1]
-	// Split on commas between key-value pairs (simple approach).
-	for _, pair := range splitJSONPairs(inner) {
-		pair = strings.TrimSpace(pair)
-		colonIdx := strings.Index(pair, ":")
-		if colonIdx < 0 {
-			continue
-		}
-		key := unquoteJSON(strings.TrimSpace(pair[:colonIdx]))
-		val := unquoteJSON(strings.TrimSpace(pair[colonIdx+1:]))
-		dst.Set(key, val)
-	}
-}
-
-// splitJSONPairs splits a JSON object's inner content on commas,
-// respecting quoted strings.
-func splitJSONPairs(s string) []string {
-	var pairs []string
-	var current strings.Builder
-	inQuote := false
-	escaped := false
-	for _, r := range s {
-		if escaped {
-			current.WriteRune(r)
-			escaped = false
-			continue
-		}
-		if r == '\\' {
-			current.WriteRune(r)
-			escaped = true
-			continue
-		}
-		if r == '"' {
-			inQuote = !inQuote
-			current.WriteRune(r)
-			continue
-		}
-		if r == ',' && !inQuote {
-			pairs = append(pairs, current.String())
-			current.Reset()
-			continue
-		}
-		current.WriteRune(r)
-	}
-	if current.Len() > 0 {
-		pairs = append(pairs, current.String())
-	}
-	return pairs
-}
-
-// unquoteJSON removes surrounding quotes from a JSON string value.
-func unquoteJSON(s string) string {
-	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
-		return s[1 : len(s)-1]
-	}
-	return s
-}
-
-// escapeJSON escapes special characters in a string for JSON encoding.
-func escapeJSON(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		switch r {
-		case '"':
-			b.WriteString(`\"`)
-		case '\\':
-			b.WriteString(`\\`)
-		case '\n':
-			b.WriteString(`\n`)
-		case '\r':
-			b.WriteString(`\r`)
-		case '\t':
-			b.WriteString(`\t`)
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
 }

@@ -4,10 +4,10 @@
 //   - mintcoreInitMint(configJSON, fetchCallback, pemCallback) — initializes
 //     the mint handler from explicit Worker binding config (not os.Getenv).
 //
-//   - mintcoreHandleFetch(method, url, headersJSON, body, authHeader) — maps
-//     a Fetch API request into an http.Request, calls Handler.ServeHTTP with a
-//     buffered ResponseWriter, and returns {status, headers, body} for the
-//     Worker to convert back into a Response.
+//   - mintcoreHandleFetch(method, url, headersJSON, body) — maps a Fetch API
+//     request into an http.Request, calls Handler.ServeHTTP with a buffered
+//     ResponseWriter, and returns {status, headers, body} for the Worker to
+//     convert back into a Response.
 //
 // The Worker JS side acts as the listener/host; mintcore keeps using
 // Handler.ServeHTTP as the request path, the same contract used by GCF
@@ -63,11 +63,11 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 		return fmt.Sprintf("invalid PEM callback: %v", err)
 	}
 
-	allowedOrgs := splitCSV(cfg.AllowedOrgs)
-	allowedWorkflows := splitCSV(cfg.AllowedWorkflowFiles)
+	allowedOrgs := mintcore.SplitCSV(cfg.AllowedOrgs)
+	allowedWorkflows := mintcore.SplitCSV(cfg.AllowedWorkflowFiles)
 
 	perRepoWIFRepos := make(map[string]bool)
-	for _, entry := range splitCSV(cfg.PerRepoWIFRepos) {
+	for _, entry := range mintcore.SplitCSV(cfg.PerRepoWIFRepos) {
 		perRepoWIFRepos[strings.ToLower(entry)] = true
 	}
 
@@ -90,8 +90,9 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 }
 
 // handleFetch processes a Worker Fetch request through ServeHTTP.
-// JS signature: mintcoreHandleFetch(method, url, headersJSON, body, authHeader) => Promise<{status, headers, body}>
+// JS signature: mintcoreHandleFetch(method, url, headersJSON, body) => Promise<{status, headers, body}>
 //
+// headersJSON must include Authorization when authentication is required.
 // The Worker JS side converts Fetch Request → these arguments, and converts
 // the returned {status, headers, body} back into a Response.
 func handleFetch(_ js.Value, args []js.Value) interface{} {
@@ -123,10 +124,11 @@ func handleFetch(_ js.Value, args []js.Value) interface{} {
 	// Parse request headers.
 	if headersJSON != "" && headersJSON != "{}" {
 		var headers map[string]string
-		if err := json.Unmarshal([]byte(headersJSON), &headers); err == nil {
-			for k, v := range headers {
-				req.Header.Set(k, v)
-			}
+		if err := json.Unmarshal([]byte(headersJSON), &headers); err != nil {
+			return newPromiseReject(fmt.Sprintf("failed to parse headersJSON: %v", err))
+		}
+		for k, v := range headers {
+			req.Header.Set(k, v)
 		}
 	}
 
@@ -168,17 +170,4 @@ func mapToJSObject(m map[string]interface{}) js.Value {
 		obj.Set(k, v)
 	}
 	return obj
-}
-
-func splitCSV(s string) []string {
-	if s == "" {
-		return nil
-	}
-	var result []string
-	for _, entry := range strings.Split(s, ",") {
-		if trimmed := strings.TrimSpace(entry); trimmed != "" {
-			result = append(result, trimmed)
-		}
-	}
-	return result
 }
