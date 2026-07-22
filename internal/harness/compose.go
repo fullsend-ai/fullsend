@@ -555,10 +555,13 @@ func mergeBaseIntoChild(base, child *Harness) {
 
 // resolveBaseScripts fetches script fields from a URL-referenced base harness.
 // For each script field (pre_script, post_script, validation_loop.script) that
-// is a non-empty relative path, the script is fetched from the base URL's
-// directory, cached content-addressed, and the field is rewritten to the local
-// cache path. Forge-level scripts are also resolved. agent_input is excluded
-// because runtime treats it as a directory (uploaded recursively).
+// is a non-empty relative path, the script's containing directory is fetched
+// (via git sparse checkout) so that companion files are co-located at the
+// BASH_SOURCE-relative path. When the URL cannot be parsed for directory-level
+// fetching (e.g., non-raw.githubusercontent.com URLs), the script is fetched
+// as a single file via fetchBaseFile as a fallback.
+// Forge-level scripts are also resolved. agent_input is excluded because
+// runtime treats it as a directory (uploaded recursively).
 // Returns additional dependencies for the fetched scripts.
 func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
 	// Script paths in harness YAMLs are relative to the scaffold root (the
@@ -589,7 +592,7 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 		if err := validateBaseRelPath(f.name, *f.ptr); err != nil {
 			return nil, err
 		}
-		dep, cachePath, err := fetchBaseFile(ctx, f.name, baseURLDir, *f.ptr, allowlist, opts, "script", true)
+		dep, cachePath, err := fetchBaseScriptOrDir(ctx, f.name, baseURLDir, *f.ptr, allowlist, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -601,7 +604,7 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 		if err := validateBaseRelPath("validation_loop.script", base.ValidationLoop.Script); err != nil {
 			return nil, err
 		}
-		dep, cachePath, err := fetchBaseFile(ctx, "validation_loop.script", baseURLDir, base.ValidationLoop.Script, allowlist, opts, "script", true)
+		dep, cachePath, err := fetchBaseScriptOrDir(ctx, "validation_loop.script", baseURLDir, base.ValidationLoop.Script, allowlist, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -638,7 +641,7 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 			if err := validateBaseRelPath(f.name, *f.ptr); err != nil {
 				return nil, err
 			}
-			dep, cachePath, err := fetchBaseFile(ctx, f.name, baseURLDir, *f.ptr, allowlist, opts, "script", true)
+			dep, cachePath, err := fetchBaseScriptOrDir(ctx, f.name, baseURLDir, *f.ptr, allowlist, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -650,7 +653,7 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 			if err := validateBaseRelPath(fieldName, fc.ValidationLoop.Script); err != nil {
 				return nil, err
 			}
-			dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, fc.ValidationLoop.Script, allowlist, opts, "script", true)
+			dep, cachePath, err := fetchBaseScriptOrDir(ctx, fieldName, baseURLDir, fc.ValidationLoop.Script, allowlist, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -886,6 +889,158 @@ func fetchBaseFile(ctx context.Context, field, baseURLDir, relPath string, allow
 		FetchedAt: fetchedAt,
 		CacheHit:  false,
 		Type:      depType,
+	}, contentPath, nil
+}
+
+// fetchBaseScriptOrDir attempts directory-level fetching for a script from a
+// URL base so that companion files (helper scripts, Python tools, etc.) are
+// co-located at the BASH_SOURCE-relative path. When the URL is a
+// raw.githubusercontent.com URL, the script's containing directory is fetched
+// via git sparse checkout. When the URL cannot be parsed for tree-level
+// fetching, the function falls back to single-file fetching via fetchBaseFile.
+func fetchBaseScriptOrDir(ctx context.Context, field, baseURLDir, relPath string, allowlist []string, opts ComposeOpts) (Dependency, string, error) {
+	fileURL := baseURLDir + relPath
+	scriptDir := path.Dir(relPath)
+	scriptName := path.Base(relPath)
+
+	// Only attempt directory-level fetch when the script has a directory
+	// component (e.g., "scripts/pre-code.sh", not just "pre-code.sh").
+	if scriptDir != "." && scriptDir != "" {
+		scriptDirURL := baseURLDir + scriptDir
+
+		// Check directory cache first — a previous call for a sibling script
+		// in the same directory may have already cached the tree.
+		treeHash, indexHit := urlIndexLookup(opts.WorkspaceRoot, "scriptdir:"+scriptDirURL)
+		if indexHit {
+			treePath, entry, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
+			if err == nil && treePath != "" {
+				treePath, err = fetch.CacheNamedSymlink(treePath, filepath.Base(scriptDir))
+				if err != nil {
+					return Dependency{}, "", fmt.Errorf("base %s: %w", field, err)
+				}
+				contentPath := filepath.Join(treePath, scriptName)
+				if _, statErr := os.Stat(contentPath); statErr == nil {
+					_ = os.Chmod(contentPath, 0o755)
+					allowedBy := matchingAllowedPrefix(fileURL, allowlist)
+					if aErr := auditBaseFetch(opts, fileURL, treeHash, allowedBy, true, entry.FetchTime, "script"); aErr != nil {
+						return Dependency{}, "", aErr
+					}
+					return Dependency{
+						Field:     field,
+						URL:       fileURL,
+						LocalPath: contentPath,
+						SHA256:    treeHash,
+						FetchedAt: entry.FetchTime,
+						CacheHit:  true,
+						Type:      "directory",
+					}, contentPath, nil
+				}
+			}
+		}
+
+		if !opts.FetchPolicy.Offline {
+			// Probe whether the URL is parseable for directory-level fetching.
+			if _, parseErr := forge.ParseRawContentURL(scriptDirURL); parseErr == nil {
+				allowedBy := matchingAllowedPrefix(fileURL, allowlist)
+				if allowedBy == "" {
+					return Dependency{}, "", fmt.Errorf("base %s: URL %q is not in allowed_remote_resources", field, fileURL)
+				}
+				dep, contentPath, err := fetchBaseScriptDirTree(ctx, field, scriptDirURL, fileURL, scriptName, allowedBy, allowlist, opts)
+				if err != nil {
+					return Dependency{}, "", err
+				}
+				return dep, contentPath, nil
+			}
+			// ParseRawContentURL failed — not a raw.githubusercontent.com URL.
+			// Fall through to single-file fetch.
+		}
+	}
+
+	// Fall back to single-file fetch for scripts without a directory
+	// component, for non-raw.githubusercontent.com URLs, and for offline
+	// mode when the directory cache missed.
+	return fetchBaseFile(ctx, field, baseURLDir, relPath, allowlist, opts, "script", true)
+}
+
+// fetchBaseScriptDirTree fetches the full directory containing a script via git
+// sparse checkout, analogous to fetchBaseSkillDir for skills. All files in the
+// directory are cached together so that companion files (helper scripts, Python
+// tools, etc.) are available at the BASH_SOURCE-relative path. Script files are
+// made executable (chmod 0o755).
+func fetchBaseScriptDirTree(ctx context.Context, field, scriptDirURL, scriptFileURL, scriptName, allowedBy string, allowlist []string, opts ComposeOpts) (Dependency, string, error) {
+	dirPrefix := scriptDirURL + "/"
+	if ab := matchingAllowedPrefix(dirPrefix, allowlist); ab == "" {
+		return Dependency{}, "", fmt.Errorf("base %s: script directory URL %q is not in allowed_remote_resources", field, dirPrefix)
+	}
+
+	forgeInfo, err := forge.ParseRawContentURL(scriptDirURL)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for script directory fetch: %w", field, err)
+	}
+
+	fetcher := opts.TreeFetcher
+	if fetcher == nil {
+		fetcher = gitfetch.FetchTree
+	}
+
+	files, err := fetcher(ctx, forgeInfo.CloneURL(), forgeInfo.Path, forgeInfo.Ref, opts.GitToken)
+	if err != nil {
+		if opts.GitToken == "" {
+			return Dependency{}, "", fmt.Errorf("base %s: fetching script directory: %w (hint: set GH_TOKEN or GITHUB_TOKEN for private repos)", field, err)
+		}
+		return Dependency{}, "", fmt.Errorf("base %s: fetching script directory: %w", field, err)
+	}
+
+	if _, ok := files[scriptName]; !ok {
+		return Dependency{}, "", fmt.Errorf("base %s: script %s not found in directory %s", field, scriptName, forgeInfo.Path)
+	}
+
+	treeHash, err := fetch.CachePutDir(opts.WorkspaceRoot, scriptFileURL, files, fetch.DirCachePutOpts{FullListing: true})
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: caching script directory: %w", field, err)
+	}
+
+	treePath, _, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: reading cached script directory: %w", field, err)
+	}
+
+	// Create a symlink named after the script directory so downstream
+	// consumers see the real directory name instead of "tree".
+	treePath, err = fetch.CacheNamedSymlink(treePath, filepath.Base(forgeInfo.Path))
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: %w", field, err)
+	}
+
+	// Make all files executable so companion scripts and tools can be
+	// invoked from the main script via BASH_SOURCE-relative paths.
+	for filename := range files {
+		_ = os.Chmod(filepath.Join(treePath, filename), 0o755)
+	}
+
+	// Update URL index: both per-file and per-directory keys.
+	if iErr := urlIndexPut(opts.WorkspaceRoot, scriptFileURL, treeHash); iErr != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: updating URL index: %w", field, iErr)
+	}
+	if iErr := urlIndexPut(opts.WorkspaceRoot, "scriptdir:"+scriptDirURL, treeHash); iErr != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: updating URL index for script dir: %w", field, iErr)
+	}
+
+	fetchedAt := time.Now().UTC()
+	if aErr := auditBaseFetch(opts, scriptFileURL, treeHash, allowedBy, false, fetchedAt, "script"); aErr != nil {
+		return Dependency{}, "", aErr
+	}
+
+	contentPath := filepath.Join(treePath, scriptName)
+
+	return Dependency{
+		Field:     field,
+		URL:       scriptFileURL,
+		LocalPath: contentPath,
+		SHA256:    treeHash,
+		FetchedAt: fetchedAt,
+		CacheHit:  false,
+		Type:      "directory",
 	}, contentPath, nil
 }
 

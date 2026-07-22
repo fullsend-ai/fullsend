@@ -3950,3 +3950,466 @@ func TestIsTransientFetchError(t *testing.T) {
 		})
 	}
 }
+
+// TestFetchBaseScriptOrDir_DirFetch verifies that fetchBaseScriptOrDir uses
+// directory-level fetching via TreeFetcher when the URL is a
+// raw.githubusercontent.com URL, making companion files available alongside
+// the main script.
+func TestFetchBaseScriptOrDir_DirFetch(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	preScript := []byte("#!/bin/bash\necho pre")
+	helper := []byte("#!/bin/bash\necho helper")
+	pyTool := []byte("#!/usr/bin/env python3\nprint('tool')")
+
+	treeFetcher := fakeTreeFetcher(map[string][]byte{
+		"pre-code.sh":          preScript,
+		"install-precommit.sh": helper,
+		"resolve-precommit.py": pyTool,
+	})
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/abc123/"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	dep, contentPath, err := fetchBaseScriptOrDir(
+		context.Background(), "pre_script", baseURLDir, "scripts/pre-code.sh",
+		allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   treeFetcher,
+		},
+	)
+	require.NoError(t, err)
+
+	// The returned path should point to the script within a cached directory.
+	assert.True(t, filepath.IsAbs(contentPath))
+	assert.Equal(t, "pre-code.sh", filepath.Base(contentPath))
+
+	// Verify the main script content.
+	content, err := os.ReadFile(contentPath)
+	require.NoError(t, err)
+	assert.Equal(t, preScript, content)
+
+	// Verify companion files are co-located in the same directory.
+	scriptDir := filepath.Dir(contentPath)
+	helperContent, err := os.ReadFile(filepath.Join(scriptDir, "install-precommit.sh"))
+	require.NoError(t, err)
+	assert.Equal(t, helper, helperContent)
+
+	pyContent, err := os.ReadFile(filepath.Join(scriptDir, "resolve-precommit.py"))
+	require.NoError(t, err)
+	assert.Equal(t, pyTool, pyContent)
+
+	// Verify all files are executable.
+	for _, name := range []string{"pre-code.sh", "install-precommit.sh", "resolve-precommit.py"} {
+		info, statErr := os.Stat(filepath.Join(scriptDir, name))
+		require.NoError(t, statErr)
+		assert.True(t, info.Mode()&0o111 != 0, "%s should be executable", name)
+	}
+
+	// Dependency should be directory type.
+	assert.Equal(t, "directory", dep.Type)
+	assert.Equal(t, "pre_script", dep.Field)
+	assert.False(t, dep.CacheHit)
+}
+
+// TestFetchBaseScriptOrDir_CacheHitForSiblingScript verifies that when two
+// scripts in the same directory are resolved, the second one hits the
+// directory cache populated by the first.
+func TestFetchBaseScriptOrDir_CacheHitForSiblingScript(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	fetchCount := 0
+	treeFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		fetchCount++
+		return map[string][]byte{
+			"pre-code.sh":  []byte("#!/bin/bash\necho pre"),
+			"post-code.sh": []byte("#!/bin/bash\necho post"),
+			"helper.py":    []byte("print('help')"),
+		}, nil
+	}
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/abc123/"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+	opts := ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		TreeFetcher:   gitfetch.TreeFetchFunc(treeFetcher),
+	}
+
+	// First script: fetches the directory.
+	dep1, path1, err := fetchBaseScriptOrDir(
+		context.Background(), "pre_script", baseURLDir, "scripts/pre-code.sh",
+		allowlist, opts,
+	)
+	require.NoError(t, err)
+	assert.False(t, dep1.CacheHit)
+	assert.Equal(t, 1, fetchCount, "first call should fetch")
+
+	// Second script in the same directory: should hit the cache.
+	dep2, path2, err := fetchBaseScriptOrDir(
+		context.Background(), "post_script", baseURLDir, "scripts/post-code.sh",
+		allowlist, opts,
+	)
+	require.NoError(t, err)
+	assert.True(t, dep2.CacheHit, "second script should be a cache hit")
+	assert.Equal(t, 1, fetchCount, "second call should NOT re-fetch")
+
+	// Both scripts should be in the same directory.
+	assert.Equal(t, filepath.Dir(path1), filepath.Dir(path2))
+
+	// Verify contents.
+	c1, err := os.ReadFile(path1)
+	require.NoError(t, err)
+	assert.Contains(t, string(c1), "echo pre")
+
+	c2, err := os.ReadFile(path2)
+	require.NoError(t, err)
+	assert.Contains(t, string(c2), "echo post")
+}
+
+// TestFetchBaseScriptOrDir_FallbackToSingleFile verifies that when the URL
+// is not a raw.githubusercontent.com URL (e.g., a test server URL),
+// fetchBaseScriptOrDir falls back to single-file fetching.
+func TestFetchBaseScriptOrDir_FallbackToSingleFile(t *testing.T) {
+	scriptContent := []byte("#!/bin/bash\necho fallback")
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/scripts/pre.sh" {
+			w.WriteHeader(http.StatusOK)
+			w.Write(scriptContent)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	// Use a non-raw.githubusercontent.com URL as the base directory.
+	baseURLDir := server.URL + "/"
+	allowlist := []string{server.URL + "/"}
+
+	dep, contentPath, err := fetchBaseScriptOrDir(
+		context.Background(), "pre_script", baseURLDir, "scripts/pre.sh",
+		allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   policy,
+		},
+	)
+	require.NoError(t, err)
+
+	// Should fall back to single-file fetch (not directory).
+	assert.Equal(t, "script", dep.Type, "should fall back to single-file fetch")
+	assert.True(t, filepath.IsAbs(contentPath))
+
+	content, err := os.ReadFile(contentPath)
+	require.NoError(t, err)
+	assert.Equal(t, scriptContent, content)
+}
+
+// TestFetchBaseScriptOrDir_NoDirComponent verifies that scripts without a
+// directory component (e.g., "pre.sh" instead of "scripts/pre.sh") use
+// single-file fetching.
+func TestFetchBaseScriptOrDir_NoDirComponent(t *testing.T) {
+	scriptContent := []byte("#!/bin/bash\necho no-dir")
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/pre.sh" {
+			w.WriteHeader(http.StatusOK)
+			w.Write(scriptContent)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURLDir := server.URL + "/"
+	allowlist := []string{server.URL + "/"}
+
+	dep, contentPath, err := fetchBaseScriptOrDir(
+		context.Background(), "pre_script", baseURLDir, "pre.sh",
+		allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   policy,
+		},
+	)
+	require.NoError(t, err)
+
+	// Should use single-file fetch (no directory component to tree-fetch).
+	assert.Equal(t, "script", dep.Type)
+	content, err := os.ReadFile(contentPath)
+	require.NoError(t, err)
+	assert.Equal(t, scriptContent, content)
+}
+
+// TestFetchBaseScriptOrDir_OfflineCacheHit verifies that directory cache hits
+// work in offline mode.
+func TestFetchBaseScriptOrDir_OfflineCacheHit(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	preScript := []byte("#!/bin/bash\necho cached-pre")
+	companion := []byte("#!/bin/bash\necho companion")
+	files := map[string][]byte{
+		"pre-code.sh": preScript,
+		"helper.sh":   companion,
+	}
+
+	scriptDirURL := "https://raw.githubusercontent.com/org/repo/abc123/scripts"
+	scriptFileURL := scriptDirURL + "/pre-code.sh"
+
+	// Pre-populate the directory cache.
+	treeHash, err := fetch.CachePutDir(cacheDir, scriptFileURL, files, fetch.DirCachePutOpts{FullListing: true})
+	require.NoError(t, err)
+	require.NoError(t, urlIndexPut(cacheDir, "scriptdir:"+scriptDirURL, treeHash))
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/abc123/"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	dep, contentPath, err := fetchBaseScriptOrDir(
+		context.Background(), "pre_script", baseURLDir, "scripts/pre-code.sh",
+		allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		},
+	)
+	require.NoError(t, err)
+
+	assert.True(t, dep.CacheHit, "should be a directory cache hit")
+	assert.Equal(t, "directory", dep.Type)
+
+	content, err := os.ReadFile(contentPath)
+	require.NoError(t, err)
+	assert.Equal(t, preScript, content)
+
+	// Companion should be available.
+	companionPath := filepath.Join(filepath.Dir(contentPath), "helper.sh")
+	cc, err := os.ReadFile(companionPath)
+	require.NoError(t, err)
+	assert.Equal(t, companion, cc)
+}
+
+// TestFetchBaseScriptOrDir_OfflineFallbackToSingleFile verifies that offline
+// mode with no directory cache falls back to single-file cache lookup.
+func TestFetchBaseScriptOrDir_OfflineFallbackToSingleFile(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	preScript := []byte("#!/bin/bash\necho cached-single")
+
+	// Pre-populate only the single-file cache (no directory cache).
+	scriptURL := "https://raw.githubusercontent.com/org/repo/abc123/scripts/pre.sh"
+	require.NoError(t, fetch.CachePut(cacheDir, scriptURL, preScript))
+	scriptHash := fetch.ComputeSHA256(preScript)
+	require.NoError(t, urlIndexPut(cacheDir, scriptURL, scriptHash))
+
+	baseURLDir := "https://raw.githubusercontent.com/org/repo/abc123/"
+	allowlist := []string{"https://raw.githubusercontent.com/org/repo/"}
+
+	dep, contentPath, err := fetchBaseScriptOrDir(
+		context.Background(), "pre_script", baseURLDir, "scripts/pre.sh",
+		allowlist, ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			FetchPolicy:   fetch.FetchPolicy{Offline: true},
+		},
+	)
+	require.NoError(t, err)
+
+	// Should fall back to single-file cache hit.
+	assert.Equal(t, "script", dep.Type)
+	assert.True(t, dep.CacheHit)
+
+	content, err := os.ReadFile(contentPath)
+	require.NoError(t, err)
+	assert.Equal(t, preScript, content)
+}
+
+// TestFetchBaseScriptDirTree_ScriptNotFound verifies that fetchBaseScriptDirTree
+// returns an error when the target script is not in the fetched directory tree.
+func TestFetchBaseScriptDirTree_ScriptNotFound(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	treeFetcher := fakeTreeFetcher(map[string][]byte{
+		"other-script.sh": []byte("#!/bin/bash"),
+	})
+
+	_, _, err := fetchBaseScriptDirTree(
+		context.Background(), "pre_script",
+		"https://raw.githubusercontent.com/org/repo/ref/scripts",
+		"https://raw.githubusercontent.com/org/repo/ref/scripts/missing.sh",
+		"missing.sh", "https://raw.githubusercontent.com/org/repo/",
+		[]string{"https://raw.githubusercontent.com/org/repo/"},
+		ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   treeFetcher,
+		},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "script missing.sh not found in directory")
+}
+
+// TestFetchBaseScriptDirTree_NoTokenHint verifies that the error message
+// includes a hint about setting GH_TOKEN when no token is provided.
+func TestFetchBaseScriptDirTree_NoTokenHint(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("authentication failed: 401 Unauthorized")
+	}
+
+	_, _, err := fetchBaseScriptDirTree(
+		context.Background(), "pre_script",
+		"https://raw.githubusercontent.com/org/repo/ref/scripts",
+		"https://raw.githubusercontent.com/org/repo/ref/scripts/pre.sh",
+		"pre.sh", "https://raw.githubusercontent.com/org/repo/",
+		[]string{"https://raw.githubusercontent.com/org/repo/"},
+		ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   gitfetch.TreeFetchFunc(failFetcher),
+		},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "hint:")
+}
+
+// TestFetchBaseScriptDirTree_WithTokenNoHint verifies that the error message
+// does NOT include the GH_TOKEN hint when a token is provided.
+func TestFetchBaseScriptDirTree_WithTokenNoHint(t *testing.T) {
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	failFetcher := func(_ context.Context, _, _, _, _ string) (map[string][]byte, error) {
+		return nil, fmt.Errorf("git fetch failed")
+	}
+
+	_, _, err := fetchBaseScriptDirTree(
+		context.Background(), "pre_script",
+		"https://raw.githubusercontent.com/org/repo/ref/scripts",
+		"https://raw.githubusercontent.com/org/repo/ref/scripts/pre.sh",
+		"pre.sh", "https://raw.githubusercontent.com/org/repo/",
+		[]string{"https://raw.githubusercontent.com/org/repo/"},
+		ComposeOpts{
+			WorkspaceRoot: cacheDir,
+			TreeFetcher:   gitfetch.TreeFetchFunc(failFetcher),
+			GitToken:      "ghp_test123",
+		},
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetching script directory")
+	assert.NotContains(t, err.Error(), "hint:")
+}
+
+// TestFetchBaseScriptOrDir_IntegrationWithLoadWithBase verifies that
+// directory-level script fetching works end-to-end through LoadWithBase
+// with a TreeFetcher that returns companion files.
+func TestFetchBaseScriptOrDir_IntegrationWithLoadWithBase(t *testing.T) {
+	preScript := []byte("#!/bin/bash\nsource \"$(dirname \"$BASH_SOURCE\")/helper.sh\"")
+	postScript := []byte("#!/bin/bash\necho post")
+	helper := []byte("#!/bin/bash\necho helper")
+	pyTool := []byte("#!/usr/bin/env python3\nprint('resolve')")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+pre_script: scripts/pre-code.sh
+post_script: scripts/post-code.sh
+`)
+	hash := computeHash(baseContent)
+
+	// Use a raw.githubusercontent.com-style URL so ParseRawContentURL succeeds.
+	baseURL := "https://raw.githubusercontent.com/org/repo/" + hash + "/harness/triage.yaml"
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	// Pre-populate the base harness in cache.
+	require.NoError(t, fetch.CachePut(cacheDir, baseURL, baseContent))
+
+	// Pre-populate agent resource.
+	agentContent := []byte("# triage agent")
+	agentURL := "https://raw.githubusercontent.com/org/repo/" + hash + "/agents/triage.md"
+	require.NoError(t, fetch.CachePut(cacheDir, agentURL, agentContent))
+	require.NoError(t, urlIndexPut(cacheDir, agentURL, fetch.ComputeSHA256(agentContent)))
+
+	// TreeFetcher returns scripts + companion files.
+	treeFetcher := fakeTreeFetcher(map[string][]byte{
+		"pre-code.sh":  preScript,
+		"post-code.sh": postScript,
+		"helper.sh":    helper,
+		"resolve.py":   pyTool,
+	})
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+"#sha256="+hash+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   fetch.FetchPolicy{Offline: false},
+		OrgAllowlist:  []string{"https://raw.githubusercontent.com/org/repo/"},
+		TreeFetcher:   treeFetcher,
+	})
+	require.NoError(t, err)
+
+	// Child overrides agent.
+	assert.Equal(t, "agents/child.md", h.Agent)
+
+	// Scripts resolved to local cache paths.
+	assert.True(t, filepath.IsAbs(h.PreScript))
+	assert.True(t, filepath.IsAbs(h.PostScript))
+
+	// Both scripts should be in the same cached directory.
+	assert.Equal(t, filepath.Dir(h.PreScript), filepath.Dir(h.PostScript),
+		"pre_script and post_script should share the same directory")
+
+	// Verify main scripts.
+	preContent, err := os.ReadFile(h.PreScript)
+	require.NoError(t, err)
+	assert.Equal(t, preScript, preContent)
+
+	postContent, err := os.ReadFile(h.PostScript)
+	require.NoError(t, err)
+	assert.Equal(t, postScript, postContent)
+
+	// Verify companion files are co-located.
+	scriptDir := filepath.Dir(h.PreScript)
+	helperContent, err := os.ReadFile(filepath.Join(scriptDir, "helper.sh"))
+	require.NoError(t, err)
+	assert.Equal(t, helper, helperContent)
+
+	pyContent, err := os.ReadFile(filepath.Join(scriptDir, "resolve.py"))
+	require.NoError(t, err)
+	assert.Equal(t, pyTool, pyContent)
+
+	// Check dependencies: 1 base + 2 scripts (directory type) + 1 agent.
+	require.True(t, len(deps) >= 3, "expected at least 3 deps, got %d", len(deps))
+	assert.Equal(t, "base", deps[0].Field)
+
+	scriptDeps := 0
+	for _, d := range deps {
+		if d.Type == "directory" && (d.Field == "pre_script" || d.Field == "post_script") {
+			scriptDeps++
+		}
+	}
+	assert.Equal(t, 2, scriptDeps, "should have 2 directory-type script deps")
+}
