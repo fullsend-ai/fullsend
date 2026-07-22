@@ -1,5 +1,5 @@
 ---
-# lint-workflow-size: max-lines=560
+# lint-workflow-size: max-lines=575
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -499,6 +499,7 @@ jobs:
           dispatched_workflows=()
           scanned=0
           skipped=0
+          disabled_skipped=0
 
           for workflow in .github/workflows/*.yml .github/workflows/*.yaml; do
             [[ -f "$workflow" ]] || continue
@@ -540,19 +541,32 @@ jobs:
             fi
 
             if ! output=$(gh workflow run "$workflow_name" "${DISPATCH_ARGS[@]}" 2>&1); then
-              echo "::error::Failed to dispatch $workflow_name: $output"
-              exit 1
+              if echo "$output" | grep -qi 'disabled workflow'; then
+                echo "::warning::Skipping $workflow_name: workflow is disabled in $DISPATCH_REPO"
+                disabled_skipped=$((disabled_skipped + 1))
+                continue
+              else
+                echo "::error::Failed to dispatch $workflow_name: $output"
+                exit 1
+              fi
             fi
             echo "::notice::Dispatched ${workflow_name} → ${output}"
             dispatched=$((dispatched + 1))
             dispatched_workflows+=("$workflow_name")
           done
 
-          echo "Scanned $scanned workflow(s), skipped $skipped, dispatched $dispatched"
+          echo "Scanned $scanned workflow(s), skipped $skipped, disabled $disabled_skipped, dispatched $dispatched"
 
           if [[ $dispatched -eq 0 ]]; then
-            echo "::error::No workflows found for stage: $STAGE"
-            exit 1
+            if [[ $disabled_skipped -gt 0 ]]; then
+              echo "::warning::All $disabled_skipped workflow(s) for stage $STAGE are disabled — skipping dispatch"
+              echo "dispatched_count=0" >> "${GITHUB_OUTPUT}"
+              exit 0
+            else
+              echo "::error::No workflows found for stage: $STAGE"
+              exit 1
+            fi
           fi
 
+          echo "dispatched_count=$dispatched" >> "${GITHUB_OUTPUT}"
           echo "Successfully dispatched $dispatched workflow(s) for stage $STAGE: ${dispatched_workflows[*]}"
