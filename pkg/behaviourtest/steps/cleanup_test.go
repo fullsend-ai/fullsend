@@ -338,6 +338,10 @@ func (f *fakeCleanupSCM) EnsureRepoPublic(context.Context, string, string) error
 	return nil
 }
 
+func (f *fakeCleanupSCM) GetDefaultBranch(context.Context, string, string) (string, error) {
+	return "main", nil
+}
+
 func (f *fakeCleanupSCM) DeleteRepo(_ context.Context, owner, repo string) error {
 	if f.deleteRepoErr != nil {
 		return f.deleteRepoErr

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,6 +14,58 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
+
+// roundTripperFunc is an adapter to use a function as http.RoundTripper.
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// speedUpRetries sets retry delays to zero for fast tests.
+func speedUpRetries(t *testing.T) {
+	t.Helper()
+	origRaw := rawURLRetryDelay
+	origFile := fileAccessRetryDelay
+	rawURLRetryDelay = 0
+	fileAccessRetryDelay = 0
+	t.Cleanup(func() {
+		rawURLRetryDelay = origRaw
+		fileAccessRetryDelay = origFile
+	})
+}
+
+// stubRawHTTPClient replaces rawHTTPClient with a mock that returns 200
+// for all requests, simulating a publicly accessible raw URL.
+func stubRawHTTPClient(t *testing.T) {
+	t.Helper()
+	speedUpRetries(t)
+	orig := rawHTTPClient
+	rawHTTPClient = &http.Client{
+		Transport: roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       http.NoBody,
+			}, nil
+		}),
+	}
+	t.Cleanup(func() { rawHTTPClient = orig })
+}
+
+// stubRawHTTPClientStatus replaces rawHTTPClient with a mock that returns
+// the specified status code for all requests.
+func stubRawHTTPClientStatus(t *testing.T, status int) {
+	t.Helper()
+	speedUpRetries(t)
+	orig := rawHTTPClient
+	rawHTTPClient = &http.Client{
+		Transport: roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: status,
+				Body:       http.NoBody,
+			}, nil
+		}),
+	}
+	t.Cleanup(func() { rawHTTPClient = orig })
+}
 
 func TestGivenHarnessHostingRepo_Validation(t *testing.T) {
 	w := &world.World{}
@@ -66,6 +119,7 @@ func TestGivenURLSourcedCustomHarness_RequiresHostingRepo(t *testing.T) {
 }
 
 func TestGivenURLSourcedCustomHarness_SetsDispatchAgent(t *testing.T) {
+	stubRawHTTPClient(t)
 	scm := &fakeURLSCM{files: map[string][]byte{
 		".fullsend/config.yaml": []byte("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n"),
 	}}
@@ -81,6 +135,7 @@ func TestGivenURLSourcedCustomHarness_SetsDispatchAgent(t *testing.T) {
 }
 
 func TestGivenURLSourcedCustomHarness_URLFormat(t *testing.T) {
+	stubRawHTTPClient(t)
 	content := "agent: agents/triage.md\nrole: triage\nslug: url-test"
 	expectedHash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
 
@@ -113,6 +168,7 @@ func TestGivenURLSourcedCustomHarness_URLFormat(t *testing.T) {
 }
 
 func TestGivenURLSourcedCustomHarness_BadHash(t *testing.T) {
+	stubRawHTTPClient(t)
 	scm := &fakeURLSCM{files: map[string][]byte{
 		".fullsend/config.yaml": []byte("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n"),
 	}}
@@ -132,6 +188,7 @@ func TestGivenURLSourcedCustomHarness_BadHash(t *testing.T) {
 }
 
 func TestGivenURLSourcedCustomHarness_SkipAllowlist(t *testing.T) {
+	stubRawHTTPClient(t)
 	scm := &fakeURLSCM{files: map[string][]byte{
 		".fullsend/config.yaml": []byte("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n"),
 	}}
@@ -161,6 +218,7 @@ func TestGivenURLSourcedCustomHarness_SkipAllowlist(t *testing.T) {
 }
 
 func TestGivenURLSourcedCustomHarness_UpdatesExistingAgent(t *testing.T) {
+	stubRawHTTPClient(t)
 	// When an agent with the same name already exists in config, the entry
 	// should be updated in-place rather than appended as a duplicate.
 	scm := &fakeURLSCM{files: map[string][]byte{
@@ -186,6 +244,7 @@ func TestGivenURLSourcedCustomHarness_UpdatesExistingAgent(t *testing.T) {
 }
 
 func TestGivenURLSourcedCustomHarness_AllowlistDedup(t *testing.T) {
+	stubRawHTTPClient(t)
 	// When the hosting repo URL prefix is already in the allowlist,
 	// it should not be added again.
 	hostPrefix := "https://raw.githubusercontent.com/my-org/harness-host/"
@@ -250,6 +309,7 @@ func TestGivenURLSourcedCustomHarness_CommitHarnessError(t *testing.T) {
 }
 
 func TestGivenURLSourcedCustomHarness_GetConfigError(t *testing.T) {
+	stubRawHTTPClient(t)
 	scm := &fakeURLSCM{files: map[string][]byte{}} // no config file
 	w := &world.World{
 		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
@@ -260,6 +320,135 @@ func TestGivenURLSourcedCustomHarness_GetConfigError(t *testing.T) {
 	err := givenURLSourcedCustomHarness(w, "agent1", "content", urlHarnessOpts{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading config")
+}
+
+func TestGivenURLSourcedCustomHarness_NonMainDefaultBranch(t *testing.T) {
+	stubRawHTTPClient(t)
+	content := "agent: agents/triage.md\nrole: triage\nslug: url-test"
+	expectedHash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
+
+	scm := &fakeURLSCM{
+		files: map[string][]byte{
+			".fullsend/config.yaml": []byte("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n"),
+		},
+		defaultBranch: "master",
+	}
+	w := &world.World{
+		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		SCM:                 scm,
+		URLHarnessRepoOwner: "my-org",
+		URLHarnessRepoName:  "harness-host",
+	}
+
+	err := givenURLSourcedCustomHarness(w, "url-test", content, urlHarnessOpts{})
+	require.NoError(t, err)
+
+	cfgData := scm.files[".fullsend/config.yaml"]
+	// The URL must use "master" (the actual default branch), not "main".
+	expectedURL := fmt.Sprintf("https://raw.githubusercontent.com/my-org/harness-host/master/harness/url-test.yaml#sha256=%s", expectedHash)
+	assert.Contains(t, string(cfgData), expectedURL)
+	assert.NotContains(t, string(cfgData), "/main/harness/")
+}
+
+func TestGivenURLSourcedCustomHarness_GetDefaultBranchError(t *testing.T) {
+	stubRawHTTPClient(t)
+	scm := &fakeURLSCM{
+		files: map[string][]byte{
+			".fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
+		},
+		defaultBranchErr: fmt.Errorf("API rate limited"),
+	}
+	w := &world.World{
+		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		SCM:                 scm,
+		URLHarnessRepoOwner: "my-org",
+		URLHarnessRepoName:  "harness-host",
+	}
+
+	err := givenURLSourcedCustomHarness(w, "url-test", "content", urlHarnessOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "getting default branch")
+	assert.Contains(t, err.Error(), "API rate limited")
+}
+
+func TestGivenURLSourcedCustomHarness_RawURLNotAccessible(t *testing.T) {
+	// Simulate raw URL returning 404 (e.g., repo is private despite
+	// Contents API succeeding with an auth token).
+	stubRawHTTPClientStatus(t, http.StatusNotFound)
+	scm := &fakeURLSCM{files: map[string][]byte{
+		".fullsend/config.yaml": []byte("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n"),
+	}}
+	w := &world.World{
+		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		SCM:                 scm,
+		URLHarnessRepoOwner: "my-org",
+		URLHarnessRepoName:  "harness-host",
+	}
+
+	err := givenURLSourcedCustomHarness(w, "url-test", "content", urlHarnessOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "raw URL not accessible")
+}
+
+func TestVerifyRawURLAccessible_Success(t *testing.T) {
+	stubRawHTTPClient(t)
+	err := verifyRawURLAccessible("https://raw.githubusercontent.com/org/repo/main/file.yaml#sha256=abc123")
+	require.NoError(t, err)
+}
+
+func TestVerifyRawURLAccessible_NotFound(t *testing.T) {
+	stubRawHTTPClientStatus(t, http.StatusNotFound)
+	err := verifyRawURLAccessible("https://raw.githubusercontent.com/org/repo/main/file.yaml#sha256=abc123")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not accessible after")
+	assert.Contains(t, err.Error(), "status 404")
+}
+
+func TestVerifyRawURLAccessible_Forbidden(t *testing.T) {
+	stubRawHTTPClientStatus(t, http.StatusForbidden)
+	err := verifyRawURLAccessible("https://raw.githubusercontent.com/org/repo/main/file.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "status 403")
+}
+
+func TestVerifyRawURLAccessible_StripsFragment(t *testing.T) {
+	// Verify the fragment is stripped before the request.
+	var capturedURL string
+	orig := rawHTTPClient
+	rawHTTPClient = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			capturedURL = r.URL.String()
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       http.NoBody,
+			}, nil
+		}),
+	}
+	t.Cleanup(func() { rawHTTPClient = orig })
+
+	err := verifyRawURLAccessible("https://raw.githubusercontent.com/org/repo/main/file.yaml#sha256=abc")
+	require.NoError(t, err)
+	assert.NotContains(t, capturedURL, "#sha256=")
+	assert.Contains(t, capturedURL, "file.yaml")
+}
+
+func TestWaitForFileAccessible_ImmediateSuccess(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"harness/test.yaml": []byte("content"),
+	}}
+	w := &world.World{SCM: scm}
+	err := waitForFileAccessible(context.Background(), w, "org", "repo", "harness/test.yaml")
+	require.NoError(t, err)
+}
+
+func TestWaitForFileAccessible_FileNotFound(t *testing.T) {
+	speedUpRetries(t)
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{SCM: scm}
+	err := waitForFileAccessible(context.Background(), w, "org", "repo", "harness/missing.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not accessible after")
+	assert.Contains(t, err.Error(), "5 attempts")
 }
 
 // --- fakes ---
@@ -287,6 +476,8 @@ type fakeURLSCM struct {
 	commitFileRepo     string // only return commitFileErr when repo matches
 	ensurePublicErr    error
 	ensurePublicCalled bool
+	defaultBranch      string // returned by GetDefaultBranch; defaults to "main"
+	defaultBranchErr   error
 }
 
 func (f *fakeURLSCM) CommitFile(_ context.Context, _, repo, path, _ string, content []byte) error {
@@ -319,6 +510,16 @@ func (f *fakeURLSCM) CreateRepo(_ context.Context, _, name, _ string) error {
 func (f *fakeURLSCM) EnsureRepoPublic(_ context.Context, _, _ string) error {
 	f.ensurePublicCalled = true
 	return f.ensurePublicErr
+}
+
+func (f *fakeURLSCM) GetDefaultBranch(_ context.Context, _, _ string) (string, error) {
+	if f.defaultBranchErr != nil {
+		return "", f.defaultBranchErr
+	}
+	if f.defaultBranch != "" {
+		return f.defaultBranch, nil
+	}
+	return "main", nil
 }
 
 func (f *fakeURLSCM) DeleteRepo(_ context.Context, _, repo string) error {

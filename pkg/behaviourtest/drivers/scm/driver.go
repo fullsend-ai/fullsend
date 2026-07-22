@@ -31,6 +31,8 @@ type Driver interface {
 	// attempts to update its visibility if the org forced it private.
 	// Returns an error if the repo cannot be made public.
 	EnsureRepoPublic(ctx context.Context, owner, repo string) error
+	// GetDefaultBranch returns the name of a repository's default branch.
+	GetDefaultBranch(ctx context.Context, owner, repo string) (string, error)
 	// DeleteRepo deletes a repository. Returns forge.ErrNotFound
 	// if the repository does not exist.
 	DeleteRepo(ctx context.Context, owner, repo string) error

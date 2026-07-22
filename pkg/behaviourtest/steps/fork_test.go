@@ -324,6 +324,10 @@ func (f *fakeForkSCM) EnsureRepoPublic(context.Context, string, string) error {
 	return nil
 }
 
+func (f *fakeForkSCM) GetDefaultBranch(context.Context, string, string) (string, error) {
+	return "main", nil
+}
+
 func (f *fakeForkSCM) DeleteRepo(context.Context, string, string) error {
 	return nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -103,6 +104,14 @@ func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarn
 		return fmt.Errorf("harness file not accessible after commit (raw URL will fail): %w", err)
 	}
 
+	// Use the actual default branch instead of hardcoding "main".
+	// Orgs may use "master" or custom defaults; Contents API succeeds
+	// on any default branch, but the raw URL must match exactly.
+	defaultBranch, err := w.SCM.GetDefaultBranch(ctx, hostOwner, hostRepo)
+	if err != nil {
+		return fmt.Errorf("getting default branch for %s/%s: %w", hostOwner, hostRepo, err)
+	}
+
 	// Compute the SHA256 of the content for the integrity hash.
 	hash := fmt.Sprintf("%x", sha256.Sum256(content))
 	if opts.badHash {
@@ -111,7 +120,21 @@ func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarn
 	}
 
 	// Build the raw.githubusercontent.com URL with integrity hash.
-	rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/main/%s#sha256=%s", hostOwner, hostRepo, harnessPath, hash)
+	rawURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s#sha256=%s", hostOwner, hostRepo, defaultBranch, harnessPath, hash)
+
+	// Verify the raw URL is accessible without authentication.
+	// The Contents API uses an authenticated token, but production
+	// FetchAgentHarness fetches the raw URL unauthenticated. If the
+	// repo is not truly public or CDN hasn't propagated, this catches
+	// the mismatch early instead of hanging for 12+ minutes.
+	if err := verifyRawURLAccessible(rawURL); err != nil {
+		return fmt.Errorf("raw URL not accessible (repo may not be public or CDN not propagated): %w", err)
+	}
+
+	// Log the constructed URL for diagnostics if the scenario fails later.
+	if w.Logf != nil {
+		w.Logf("URL-sourced harness %q: rawURL=%s defaultBranch=%s", name, rawURL, defaultBranch)
+	}
 
 	// Build the URL prefix for the allowlist.
 	urlPrefix := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/", hostOwner, hostRepo)
@@ -166,10 +189,7 @@ func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarn
 // scenario from hanging silently when the raw URL returns 404 due to
 // eventual consistency.
 func waitForFileAccessible(ctx context.Context, w *world.World, owner, repo, path string) error {
-	const (
-		maxAttempts = 5
-		retryDelay  = 2 * time.Second
-	)
+	const maxAttempts = 5
 	var lastErr error
 	for i := range maxAttempts {
 		_, err := w.SCM.GetFileContent(ctx, owner, repo, path)
@@ -178,9 +198,59 @@ func waitForFileAccessible(ctx context.Context, w *world.World, owner, repo, pat
 		}
 		lastErr = err
 		if i < maxAttempts-1 {
-			time.Sleep(retryDelay)
+			time.Sleep(fileAccessRetryDelay)
 		}
 	}
 	return fmt.Errorf("file %s in %s/%s not accessible after %d attempts: %w",
 		path, owner, repo, maxAttempts, lastErr)
+}
+
+// rawHTTPClient is the HTTP client used for unauthenticated raw URL
+// verification. It can be overridden in tests to avoid real HTTP calls.
+var rawHTTPClient = http.DefaultClient
+
+// rawURLRetryDelay is the delay between retries for raw URL verification.
+// Overridden in tests to avoid slow retry loops.
+var rawURLRetryDelay = 2 * time.Second
+
+// fileAccessRetryDelay is the delay between retries for Contents API checks.
+// Overridden in tests to avoid slow retry loops.
+var fileAccessRetryDelay = 2 * time.Second
+
+// verifyRawURLAccessible performs an unauthenticated HTTP GET of the raw
+// URL (stripping the fragment) to verify the file is publicly accessible.
+// This catches mismatches between the authenticated Contents API (which
+// succeeds with a token even on private repos) and the unauthenticated
+// raw.githubusercontent.com URL that production FetchAgentHarness uses.
+func verifyRawURLAccessible(rawURL string) error {
+	// Strip the #sha256=... fragment — HTTP clients ignore fragments,
+	// but be explicit.
+	fetchURL := rawURL
+	if idx := strings.Index(fetchURL, "#"); idx >= 0 {
+		fetchURL = fetchURL[:idx]
+	}
+
+	const maxAttempts = 5
+
+	var lastErr error
+	for i := range maxAttempts {
+		resp, err := rawHTTPClient.Get(fetchURL) //nolint:gosec // URL is constructed, not user input
+		if err != nil {
+			lastErr = fmt.Errorf("HTTP GET failed: %w", err)
+			if i < maxAttempts-1 {
+				time.Sleep(rawURLRetryDelay)
+			}
+			continue
+		}
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return nil
+		}
+		lastErr = fmt.Errorf("HTTP GET %s returned status %d", fetchURL, resp.StatusCode)
+		if i < maxAttempts-1 {
+			time.Sleep(rawURLRetryDelay)
+		}
+	}
+	return fmt.Errorf("raw URL %s not accessible after %d attempts: %w",
+		fetchURL, maxAttempts, lastErr)
 }

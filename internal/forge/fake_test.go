@@ -1340,6 +1340,47 @@ func TestFakeClient_GetRepo(t *testing.T) {
 	require.ErrorIs(t, err, ErrNotFound)
 }
 
+func TestFakeClient_UpdateRepoVisibility(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("makes repo public", func(t *testing.T) {
+		fc := &FakeClient{
+			Repos: []Repository{{Name: "repo", FullName: "org/repo", Private: true}},
+		}
+		err := fc.UpdateRepoVisibility(ctx, "org", "repo", false)
+		require.NoError(t, err)
+		repo, _ := fc.GetRepo(ctx, "org", "repo")
+		assert.False(t, repo.Private)
+	})
+
+	t.Run("makes repo private", func(t *testing.T) {
+		fc := &FakeClient{
+			Repos: []Repository{{Name: "repo", FullName: "org/repo", Private: false}},
+		}
+		err := fc.UpdateRepoVisibility(ctx, "org", "repo", true)
+		require.NoError(t, err)
+		repo, _ := fc.GetRepo(ctx, "org", "repo")
+		assert.True(t, repo.Private)
+	})
+
+	t.Run("updates created repos", func(t *testing.T) {
+		fc := &FakeClient{}
+		_, err := fc.CreateRepo(ctx, "org", "new-repo", "desc", true)
+		require.NoError(t, err)
+		err = fc.UpdateRepoVisibility(ctx, "org", "new-repo", false)
+		require.NoError(t, err)
+		repo, _ := fc.GetRepo(ctx, "org", "new-repo")
+		assert.False(t, repo.Private)
+	})
+
+	t.Run("returns not found for missing repo", func(t *testing.T) {
+		fc := &FakeClient{}
+		err := fc.UpdateRepoVisibility(ctx, "org", "missing", false)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrNotFound)
+	})
+}
+
 func TestFakeClient_GetOrgPlan(t *testing.T) {
 	ctx := context.Background()
 	fc := &FakeClient{}

@@ -82,6 +82,14 @@ func (d *Driver) CreateRepo(ctx context.Context, org, name, description string) 
 	return err
 }
 
+func (d *Driver) GetDefaultBranch(ctx context.Context, owner, repo string) (string, error) {
+	r, err := d.Client.GetRepo(ctx, owner, repo)
+	if err != nil {
+		return "", fmt.Errorf("getting default branch: %w", err)
+	}
+	return r.DefaultBranch, nil
+}
+
 func (d *Driver) EnsureRepoPublic(ctx context.Context, owner, repo string) error {
 	r, err := d.Client.GetRepo(ctx, owner, repo)
 	if err != nil {
