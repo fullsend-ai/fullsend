@@ -212,6 +212,21 @@ func (c *LiveClient) CreateRepo(ctx context.Context, org, name, description stri
 	}, nil
 }
 
+// UpdateRepoVisibility sets a project's visibility via PUT /projects/:id.
+func (c *LiveClient) UpdateRepoVisibility(ctx context.Context, owner, repo string, private bool) error {
+	visibility := "public"
+	if private {
+		visibility = "private"
+	}
+	proj := projectPath(owner, repo)
+	resp, err := c.put(ctx, fmt.Sprintf("/projects/%s", proj), map[string]any{"visibility": visibility})
+	if err != nil {
+		return fmt.Errorf("update repo visibility %s/%s: %w", owner, repo, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
 func (c *LiveClient) DeleteRepo(ctx context.Context, owner, repo string) error {
 	return c.delete_(ctx, fmt.Sprintf("/projects/%s", projectPath(owner, repo)))
 }

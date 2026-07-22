@@ -219,6 +219,139 @@ func TestCreateFork_ExistingForkOfDifferentSource(t *testing.T) {
 	}
 }
 
+func TestGetDefaultBranch(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Repos = []forge.Repository{
+		{Name: "repo", FullName: "org/repo", DefaultBranch: "develop"},
+	}
+	d := New(fc)
+
+	branch, err := d.GetDefaultBranch(context.Background(), "org", "repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if branch != "develop" {
+		t.Errorf("expected default branch %q, got %q", "develop", branch)
+	}
+}
+
+func TestGetDefaultBranch_Error(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["GetRepo"] = errors.New("not found")
+	d := New(fc)
+
+	_, err := d.GetDefaultBranch(context.Background(), "org", "missing")
+	if err == nil {
+		t.Fatal("expected error for missing repo")
+	}
+}
+
+func TestEnsureRepoPublic_AlreadyPublic(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Repos = []forge.Repository{
+		{Name: "repo", FullName: "org/repo", Private: false},
+	}
+	d := New(fc)
+
+	err := d.EnsureRepoPublic(context.Background(), "org", "repo")
+	if err != nil {
+		t.Fatalf("unexpected error for already-public repo: %v", err)
+	}
+}
+
+func TestEnsureRepoPublic_MakesPrivatePublic(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Repos = []forge.Repository{
+		{Name: "repo", FullName: "org/repo", Private: true},
+	}
+	d := New(fc)
+
+	err := d.EnsureRepoPublic(context.Background(), "org", "repo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Verify the repo is now public.
+	r, _ := fc.GetRepo(context.Background(), "org", "repo")
+	if r.Private {
+		t.Error("repo should be public after EnsureRepoPublic")
+	}
+}
+
+func TestEnsureRepoPublic_GetRepoError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["GetRepo"] = errors.New("api error")
+	d := New(fc)
+
+	err := d.EnsureRepoPublic(context.Background(), "org", "repo")
+	if err == nil {
+		t.Fatal("expected error when GetRepo fails")
+	}
+}
+
+func TestEnsureRepoPublic_UpdateVisibilityError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Repos = []forge.Repository{
+		{Name: "repo", FullName: "org/repo", Private: true},
+	}
+	fc.Errors["UpdateRepoVisibility"] = errors.New("org policy prevents public repos")
+	d := New(fc)
+
+	err := d.EnsureRepoPublic(context.Background(), "org", "repo")
+	if err == nil {
+		t.Fatal("expected error when UpdateRepoVisibility fails")
+	}
+}
+
+func TestEnsureRepoPublic_StillPrivateAfterUpdate(t *testing.T) {
+	// Simulate the case where UpdateRepoVisibility succeeds but the repo
+	// remains private (e.g., org enforces private repos and silently ignores
+	// the visibility update request).
+	fc := forge.NewFakeClient()
+	fc.Repos = []forge.Repository{
+		{Name: "repo", FullName: "org/repo", Private: true},
+	}
+	// Override UpdateRepoVisibility to succeed without actually changing visibility.
+	// The FakeClient's UpdateRepoVisibility modifies the repo, so we inject an
+	// error on the second GetRepo call to simulate re-verification returning private.
+	// Instead, we use a workaround: set up the repo as private, let
+	// UpdateRepoVisibility succeed (it flips to public), then verify the happy
+	// path works. For the "still private" path, we need the GetRepo after update
+	// to still show private. Since FakeClient's UpdateRepoVisibility correctly
+	// updates state, we test the error message format by using a fresh fake that
+	// returns the repo as private even after update.
+	d := &Driver{Client: &stillPrivateFake{}}
+
+	err := d.EnsureRepoPublic(context.Background(), "org", "repo")
+	if err == nil {
+		t.Fatal("expected error when repo remains private after update")
+	}
+	if !errors.Is(err, nil) {
+		// Just check the error message content.
+		if got := err.Error(); got == "" {
+			t.Fatal("expected non-empty error message")
+		}
+	}
+}
+
+// stillPrivateFake is a forge.Client that always reports the repo as private,
+// even after UpdateRepoVisibility is called. This exercises the "still private
+// after update" error path in EnsureRepoPublic.
+type stillPrivateFake struct {
+	forge.FakeClient
+}
+
+func (f *stillPrivateFake) GetRepo(_ context.Context, owner, repo string) (*forge.Repository, error) {
+	return &forge.Repository{
+		Name:     repo,
+		FullName: owner + "/" + repo,
+		Private:  true,
+	}, nil
+}
+
+func (f *stillPrivateFake) UpdateRepoVisibility(_ context.Context, _, _ string, _ bool) error {
+	return nil // Succeeds but doesn't actually change visibility.
+}
+
 func TestCreateFork_ExistingForkOfSameSource(t *testing.T) {
 	fc := forge.NewFakeClient()
 	// Pre-populate with a fork of the same source repo (idempotent case).

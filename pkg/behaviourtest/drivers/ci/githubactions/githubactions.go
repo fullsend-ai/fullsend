@@ -435,6 +435,8 @@ func readLimited(r io.Reader, limit int64) ([]byte, error) {
 func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent string, after time.Time) (*forge.WorkflowRun, error) {
 	artifactName := "fullsend-" + agent
 	deadline := time.Now().Add(dispatchWait)
+	var lastArtifactCount int
+	var lastRunCount int
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
@@ -445,6 +447,7 @@ func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent str
 		if err != nil {
 			continue
 		}
+		lastArtifactCount = len(arts)
 		art := selectRepositoryArtifactAfter(arts, artifactName, after)
 		if art == nil {
 			continue
@@ -457,11 +460,48 @@ func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent str
 			continue
 		}
 		if run.Conclusion != "success" {
-			return nil, fmt.Errorf("harness run for %q concluded with %q", agent, run.Conclusion)
+			return nil, fmt.Errorf("harness run for %q concluded with %q (run %d: %s)",
+				agent, run.Conclusion, run.ID, run.HTMLURL)
 		}
 		return run, nil
 	}
-	return nil, fmt.Errorf("harness agent %q did not complete successfully", agent)
+
+	// Gather diagnostic info for the timeout error.
+	diag := fmt.Sprintf("harness agent %q did not complete successfully", agent)
+
+	// Check for any recent workflow runs to help debug dispatch issues.
+	runs, runsErr := d.Client.ListRecentWorkflowRuns(ctx, owner, repo, 10)
+	if runsErr == nil {
+		lastRunCount = len(runs)
+		var dispatchRuns []string
+		for _, r := range runs {
+			runTime, parseErr := time.Parse(time.RFC3339, r.CreatedAt)
+			if parseErr != nil || runTime.Before(after) {
+				continue
+			}
+			dispatchRuns = append(dispatchRuns, fmt.Sprintf("run %d (%s, %s/%s)",
+				r.ID, r.Name, r.Status, r.Conclusion))
+		}
+		if len(dispatchRuns) > 0 {
+			diag += fmt.Sprintf("; recent workflow runs after trigger: %s", strings.Join(dispatchRuns, ", "))
+		}
+	}
+
+	// Check if the artifact exists at all (even from before trigger time).
+	arts, artsErr := d.Client.ListRepositoryArtifacts(ctx, owner, repo, 100)
+	if artsErr == nil {
+		var matchingArts int
+		for _, a := range arts {
+			if a.Name == artifactName {
+				matchingArts++
+			}
+		}
+		diag += fmt.Sprintf("; %s artifacts total: %d, matching %q: %d",
+			repo, lastArtifactCount, artifactName, matchingArts)
+	}
+	diag += fmt.Sprintf("; recent runs seen: %d", lastRunCount)
+
+	return nil, fmt.Errorf("%s", diag)
 }
 
 // CountHarnessDispatches returns the number of fullsend-{agent} artifacts

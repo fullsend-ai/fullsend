@@ -23,6 +23,20 @@ type Driver interface {
 	SubmitPullRequestReview(ctx context.Context, owner, repo string, number int, event string) error
 	CloseIssue(ctx context.Context, owner, repo string, number int) error
 
+	// CreateRepo creates a new repository in the given org. It is
+	// idempotent — if a repo with the given name already exists,
+	// it returns without error.
+	CreateRepo(ctx context.Context, org, name, description string) error
+	// EnsureRepoPublic verifies that a repository is public and
+	// attempts to update its visibility if the org forced it private.
+	// Returns an error if the repo cannot be made public.
+	EnsureRepoPublic(ctx context.Context, owner, repo string) error
+	// GetDefaultBranch returns the name of a repository's default branch.
+	GetDefaultBranch(ctx context.Context, owner, repo string) (string, error)
+	// DeleteRepo deletes a repository. Returns forge.ErrNotFound
+	// if the repository does not exist.
+	DeleteRepo(ctx context.Context, owner, repo string) error
+
 	// CreateFork creates a fork of owner/repo within the same
 	// organization as the source repository, using the given
 	// forkName. It returns the actual repo name of the created

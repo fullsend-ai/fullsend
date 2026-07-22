@@ -43,6 +43,8 @@ func resetScenarioWorld(w *world.World) {
 	w.ForkRepo = ""
 	w.ForkPRNumber = 0
 	w.ForkPRBranch = ""
+	w.URLHarnessRepoOwner = ""
+	w.URLHarnessRepoName = ""
 }
 
 func tagNames(tags []*messages.PickleTag) []string {
