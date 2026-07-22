@@ -86,7 +86,7 @@ The review agent caught legitimate code-level bugs in early rounds: glob config 
 - Persistent low-severity vigilance across iterations
 
 **Root cause analysis (human advantage):**
-1. **Spec cross-referencing** -- the human compared the implementation against the plan document to verify all requirements were met. The agent never consulted the plan spec, missing the `FULLSEND_PER_REPO_INSTALL` reconciliation requirement entirely.
+1. **Spec cross-referencing** -- the human compared the implementation against the plan document to verify all requirements were met. In the 9 runs before the human's review, the agent never consulted the plan spec, missing the `FULLSEND_PER_REPO_INSTALL` reconciliation requirement entirely. A later run (after the fix had already landed) did surface a related plan/code mismatch at LOW severity, recommending the spec be updated rather than recognizing the gap had already been resolved -- itself a data point about miscalibrated severity and direction.
 2. **Fix regression detection** -- the human evaluated whether the fix for the CRITICAL finding introduced new problems. The agent's reviews around the fix never flagged the regression, despite multiple runs after the fix landed.
 3. **Output contract analysis** -- the human identified that `checkPerRepoScopes` wrote to stdout, polluting the `--json` output. This requires understanding the implicit contract that JSON-mode commands must not emit non-JSON to stdout.
 4. **Test adequacy assessment** -- the human identified that the `--json` code path had zero test coverage. The agent never flagged the absence of tests for newly added features.
@@ -94,7 +94,7 @@ The review agent caught legitimate code-level bugs in early rounds: glob config 
 
 **Implication:** For feature PRs implementing a plan or spec with multiple requirements, the review agent cannot yet replace human review for: spec-compliance validation, fix regression detection, API contract consistency, and test-adequacy assessment for new features. The agent's code-level correctness capabilities (wrong function call, duplicate API call, misleading output) remain valuable as a first-pass filter.
 
-**Confidence:** High for the observation; low-to-medium for generalization given N=1. The agent had 16 runs (9 before the human review) and never approached any of the 6 tabulated findings. This is consistent with prior counter-evidence ([#5266](https://github.com/fullsend-ai/fullsend/issues/5266), [#5251](https://github.com/fullsend-ai/fullsend/issues/5251)).
+**Confidence:** High for the observation; low-to-medium for generalization given N=1. In the 9 runs before the human review, the agent never approached any of the 6 tabulated findings; a later run did surface a related plan/code mismatch (finding #1's subject matter) at LOW severity, but recommended the spec be changed rather than recognizing the issue was already resolved by the fix. This is consistent with prior counter-evidence ([#5266](https://github.com/fullsend-ai/fullsend/issues/5266), [#5251](https://github.com/fullsend-ai/fullsend/issues/5251)).
 
 **Companion improvement proposals:**
 - [agents#269](https://github.com/fullsend-ai/agents/issues/269) -- Review agent should read plan/spec docs linked from PR descriptions
@@ -114,7 +114,7 @@ See issue for detailed analysis.
 The following PRs provide positive evidence that the review agent can match or exceed human review for certain change types:
 
 - **[#4852](https://github.com/fullsend-ai/fullsend/issues/4852)** (PR #4102) -- dependency-bump + CI-workflow PR (+3 agent findings: 1 High protected-path, 2 Low consistency; human reviewer approved with zero additional findings). Agent fully covered human assessment.
-- **[#4532](https://github.com/fullsend-ai/fullsend/issues/4532)** (PR #2986) -- test-only PR (+1 Medium scope-creep, 1 Low comment accuracy from agent; human approved 10 days later with zero findings). Agent was strictly more thorough; human review added zero incremental quality signal.
+- **[#4532](https://github.com/fullsend-ai/fullsend/issues/4532)** (PR #2986) -- test-only PR (+1 Medium scope-creep, 1 Medium implementation-coherence (informational), 1 Low comment accuracy from agent; human approved 10 days later with zero findings). Agent was strictly more thorough; human review added zero incremental quality signal.
 - **[#4995](https://github.com/fullsend-ai/fullsend/issues/4995)** -- cross-repo data point (`konflux-ci/architecture#368`); the review agent outperformed three human reviewers on mechanical-consistency checks
 
 These PRs demonstrate that for simpler, more mechanical changes the review agent's findings align well with -- and in some cases exceed -- human review.
