@@ -150,5 +150,13 @@ echo "endpoint: $ENDPOINT"
 if [[ -n "$MERGED_HEADERS" ]]; then
   echo "headers: $MERGED_HEADERS"
 fi
+
+echo ""
+echo "Temporal configuration file: $RUNTIME_CONFIG"
+echo "---"
+cat "$RUNTIME_CONFIG"
+echo "---"
+echo ""
+
 echo "starting otelcol-contrib (runs continuously, watching for new data; press Ctrl+C to stop)..."
 otelcol-contrib --config "$RUNTIME_CONFIG"
