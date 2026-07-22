@@ -73,7 +73,9 @@ Prefer **`wrangler versions upload --name=mint-test --preview-alias=…`** so ru
 
 ### Behaviour tests and per-repo mint enrollment
 
-Behaviour tests install fullsend in **per-repo** mode (`fullsend github setup`). Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; that requires per-repo mint enrollment (`PER_REPO_WIF_REPOS`). The install driver does **not** run `mint enroll` — pool org `test-repo` repos must be enrolled once by a GCP admin on the hosted mint project.
+Behaviour tests install fullsend in **per-repo** mode (`fullsend github setup`). Triage workflows mint same-org `triage` tokens from vendored reusable workflows; that requires per-repo mint enrollment (`PER_REPO_WIF_REPOS`). The install driver does **not** run `mint enroll` — pool org behaviour repos must be enrolled once by a GCP admin on the hosted mint project.
+
+Admin e2e uses the singular `halfsend-NN/test-repo` name. Behaviour parallelization leases `halfsend-NN/test-repo-01` … `test-repo-12` (base names only — do **not** enroll `*-fork` names; forks are ephemeral PR sources and mint against the enrolled base repo). GitHub repositories need not exist yet — enroll is a mint allowlist / WIF-provider update only.
 
 Inference (`E2E_GCP_PROJECT_ID`) and mint (`it-gcp-konflux-dev-fullsend` for the hosted mint) may be different GCP projects. The behaviour install driver runs `fullsend inference provision <org>/test-repo` using CI credentials on the inference project (same access model as admin e2e), then passes the repo-scoped WIF provider to `github setup`. `E2E_GCP_WIF_PROVIDER` authenticates the CI job itself; it is not written to pool org repos.
 
@@ -84,12 +86,17 @@ The CI service account needs inference-provision IAM on `E2E_GCP_PROJECT_ID`:
 | `roles/iam.workloadIdentityPoolAdmin` | Create/update repo-scoped inference WIF providers |
 | `roles/resourcemanager.projectIamAdmin` | Grant `roles/aiplatform.user` to repo WIF principals |
 
-One-time enrollment for all pool orgs (idempotent):
+One-time enrollment for all pool orgs (idempotent). Enroll the singular admin `test-repo` and the behaviour pool `test-repo-01` … `test-repo-12`:
 
 ```bash
 export GCP_PROJECT=it-gcp-konflux-dev-fullsend
 for i in $(seq -w 1 12); do
-  fullsend mint enroll "halfsend-${i}/test-repo" --project="$GCP_PROJECT" --region=us-central1
+  fullsend mint enroll "halfsend-${i}/test-repo" \
+    --project="$GCP_PROJECT" --region=us-central1
+  for j in $(seq -w 1 12); do
+    fullsend mint enroll "halfsend-${i}/test-repo-${j}" \
+      --project="$GCP_PROJECT" --region=us-central1
+  done
 done
 ```
 
