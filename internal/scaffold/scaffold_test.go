@@ -156,6 +156,201 @@ func TestShimPerRepoTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "per-role cancel-in-progress groups live in reusable-dispatch.yml")
 }
 
+// TestShimStopFixAuthorization verifies the stop-fix job authorizes the
+// /fs-fix-stop command via the collaborator permission API (ADR 0054) rather
+// than author_association. See issue #5421: author_association grants
+// CONTRIBUTOR to anyone with a single merged PR, which let an unauthorized
+// external contributor disable the fix agent on another user's PR.
+func TestShimStopFixAuthorization(t *testing.T) {
+	for _, tmpl := range []string{
+		"templates/shim-workflow-call.yaml",
+		"templates/shim-per-repo.yaml",
+	} {
+		t.Run(tmpl, func(t *testing.T) {
+			content, err := FullsendRepoFile(tmpl)
+			require.NoError(t, err)
+			s := string(content)
+
+			// CONTRIBUTOR must not gate any command — it is granted to anyone
+			// with a single merged PR (the DoS vector from #5421).
+			assert.NotContains(t, s, "CONTRIBUTOR",
+				"stop-fix must not authorize based on the CONTRIBUTOR association")
+
+			// The label step must call the collaborator permission API and
+			// require an admin|maintain|write role (ADR 0054).
+			assert.Contains(t, s, "collaborators/$COMMENT_USER_LOGIN/permission",
+				"stop-fix must check permission via the collaborator API")
+			assert.Contains(t, s, "admin|maintain|write",
+				"stop-fix must require admin/maintain/write access")
+
+			// The PR author retains an escape hatch on their own PR regardless
+			// of their permission level.
+			assert.Contains(t, s, `"$COMMENT_USER_LOGIN" == "$ISSUE_USER_LOGIN"`,
+				"stop-fix must allow the PR author")
+
+			// Unauthorized callers exit before the label is applied.
+			assert.Contains(t, s, `if [[ "$authorized" != "true" ]]; then`,
+				"stop-fix must gate labeling on the authorization result")
+
+			// The authorization gate must precede the label mutation, not just
+			// coexist with it — moving the gate below the label would fail open.
+			gateIdx := strings.Index(s, `if [[ "$authorized" != "true" ]]; then`)
+			labelIdx := strings.Index(s, "gh label create")
+			require.GreaterOrEqual(t, gateIdx, 0)
+			require.GreaterOrEqual(t, labelIdx, 0)
+			assert.Less(t, gateIdx, labelIdx,
+				"the authorization exit gate must come before the label mutation")
+
+			// The coarse job-level if: must not resurrect author_association
+			// gating (the false-negative ADR 0054 exists to avoid).
+			assert.NotContains(t, s, "author_association ==",
+				"stop-fix job if: must not gate on author_association")
+		})
+	}
+}
+
+// TestShimStopFixAuthorizationRuntime executes the stop-fix job's embedded
+// bash against a stubbed `gh` binary to verify the authorization logic at
+// runtime (not just by static string matching): the PR-author escape hatch,
+// approval for write+ collaborators, denial for read-only collaborators, and
+// fail-closed behavior when the permission API errors.
+func TestShimStopFixAuthorizationRuntime(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available")
+	}
+
+	extractRun := func(t *testing.T, tmpl string) string {
+		t.Helper()
+		content, err := FullsendRepoFile(tmpl)
+		require.NoError(t, err)
+		var doc struct {
+			Jobs struct {
+				StopFix struct {
+					Steps []struct {
+						Run string `yaml:"run"`
+					} `yaml:"steps"`
+				} `yaml:"stop-fix"`
+			} `yaml:"jobs"`
+		}
+		require.NoError(t, yaml.Unmarshal(content, &doc))
+		require.NotEmpty(t, doc.Jobs.StopFix.Steps, "stop-fix must have a step")
+		run := doc.Jobs.StopFix.Steps[0].Run
+		require.NotEmpty(t, run, "stop-fix step must have a run script")
+		return run
+	}
+
+	// runScenario runs the script with a stub gh that logs its invocations and
+	// returns the given role (or fails when role == "FAIL"). It returns the
+	// combined output and whether the label mutation (`gh pr edit`) ran.
+	runScenario := func(t *testing.T, script, commentUser, issueUser, role string) (string, bool) {
+		t.Helper()
+		dir := t.TempDir()
+		logPath := filepath.Join(dir, "gh.log")
+		stub := "#!/usr/bin/env bash\n" +
+			"echo \"$@\" >> \"$GH_STUB_LOG\"\n" +
+			"if [[ \"$1\" == \"api\" ]]; then\n" +
+			"  if [[ \"$GH_STUB_ROLE\" == \"FAIL\" ]]; then echo 'simulated api failure' >&2; exit 1; fi\n" +
+			"  echo \"$GH_STUB_ROLE\"; exit 0\n" +
+			"fi\n" +
+			"exit 0\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), []byte(stub), 0o755))
+		scriptPath := filepath.Join(dir, "stop-fix.sh")
+		require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o644))
+
+		cmd := exec.Command("bash", scriptPath)
+		cmd.Env = append(os.Environ(),
+			"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+			"GH_STUB_LOG="+logPath,
+			"GH_STUB_ROLE="+role,
+			"COMMENT_USER_LOGIN="+commentUser,
+			"ISSUE_USER_LOGIN="+issueUser,
+			"REPO=octo/repo",
+			"PR_NUMBER=1",
+			"GH_TOKEN=stub",
+		)
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "script must exit 0 (fail-closed, not error): %s", out)
+
+		logBytes, _ := os.ReadFile(logPath)
+		labeled := strings.Contains(string(logBytes), "pr edit")
+		return string(out) + string(logBytes), labeled
+	}
+
+	for _, tmpl := range []string{
+		"templates/shim-workflow-call.yaml",
+		"templates/shim-per-repo.yaml",
+	} {
+		t.Run(tmpl, func(t *testing.T) {
+			script := extractRun(t, tmpl)
+
+			t.Run("pr author escape hatch", func(t *testing.T) {
+				// Author with only read access can still stop on their own PR,
+				// and the permission API is never consulted.
+				out, labeled := runScenario(t, script, "alice", "alice", "read")
+				assert.True(t, labeled, "PR author must be able to stop the fix agent")
+				assert.NotContains(t, out, "api repos/", "author hatch must skip the permission API")
+			})
+
+			t.Run("write collaborator authorized", func(t *testing.T) {
+				_, labeled := runScenario(t, script, "bob", "alice", "write")
+				assert.True(t, labeled, "write-access collaborator must be authorized")
+			})
+
+			t.Run("read collaborator denied", func(t *testing.T) {
+				out, labeled := runScenario(t, script, "bob", "alice", "read")
+				assert.False(t, labeled, "read-only collaborator must be denied")
+				assert.Contains(t, out, "not authorized")
+			})
+
+			t.Run("api failure fails closed", func(t *testing.T) {
+				out, labeled := runScenario(t, script, "bob", "alice", "FAIL")
+				assert.False(t, labeled, "API failure must fail closed (deny)")
+				assert.Contains(t, out, "Permission API call failed",
+					"API failure must emit a diagnostic warning")
+			})
+		})
+	}
+}
+
+// TestManagedShimStopFixNotStale guards against drift between the shim
+// template and this repo's own rendered managed workflow
+// (.github/workflows/fullsend.yaml). That file is generated from
+// shim-workflow-call.yaml at deploy time; if a template security fix lands
+// without regenerating it, the repo keeps running the vulnerable logic. See
+// issue #5421.
+func TestManagedShimStopFixNotStale(t *testing.T) {
+	// Walk up from the package dir to the repo root that holds the managed file.
+	dir, err := os.Getwd()
+	require.NoError(t, err)
+	var managedPath string
+	for i := 0; i < 6; i++ {
+		candidate := filepath.Join(dir, ".github", "workflows", "fullsend.yaml")
+		if _, statErr := os.Stat(candidate); statErr == nil {
+			managedPath = candidate
+			break
+		}
+		dir = filepath.Dir(dir)
+	}
+	if managedPath == "" {
+		t.Skip("managed .github/workflows/fullsend.yaml not found from test dir")
+	}
+
+	content, err := os.ReadFile(managedPath)
+	require.NoError(t, err)
+	s := string(content)
+
+	assert.NotContains(t, s, "CONTRIBUTOR",
+		"managed shim must not authorize based on the CONTRIBUTOR association")
+	assert.NotContains(t, s, "author_association ==",
+		"managed shim job if: must not gate on author_association")
+	assert.Contains(t, s, "collaborators/$COMMENT_USER_LOGIN/permission",
+		"managed shim must check permission via the collaborator API")
+	assert.Contains(t, s, "admin|maintain|write",
+		"managed shim must require admin/maintain/write access")
+	assert.Contains(t, s, `"$COMMENT_USER_LOGIN" == "$ISSUE_USER_LOGIN"`,
+		"managed shim must preserve the PR-author escape hatch")
+}
+
 func TestShimTriggerParity(t *testing.T) {
 	// Both shim templates must declare the same event trigger types so that
 	// per-repo and workflow-call installation modes have identical behavior.
