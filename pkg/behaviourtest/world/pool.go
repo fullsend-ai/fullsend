@@ -53,11 +53,12 @@ func (p *RepoPool) Acquire(ctx context.Context) (string, error) {
 // error rather than allowing a panic to crash the test runner.
 func (p *RepoPool) Release(name string) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if _, ok := p.outstanding[name]; !ok {
+		p.mu.Unlock()
 		return fmt.Errorf("RepoPool: releasing %q which is not an outstanding lease (possible double-release)", name)
 	}
 	delete(p.outstanding, name)
+	p.mu.Unlock()
 	p.names <- name
 	return nil
 }
