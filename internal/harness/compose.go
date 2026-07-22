@@ -423,7 +423,7 @@ func matchingAllowedPrefix(rawURL string, allowlist []string) string {
 
 // mergeValidationLoop merges two ValidationLoop pointers field by field.
 // Child non-zero values win; base fills gaps. Returns the merged result.
-// If both are nil, returns nil. If only one is non-nil, returns a copy of it.
+// If both are nil, returns nil. If only one is non-nil, returns it as-is.
 func mergeValidationLoop(base, child *ValidationLoop) *ValidationLoop {
 	if base == nil && child == nil {
 		return nil
