@@ -460,20 +460,41 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │ Extract output    │ SafeDownload() with sanitization:        │
 │  │                   │ - Remove dangerous symlinks (sandbox escape) │
 │  │                   │ - Remove .git/hooks/ (hook injection)    │
+│  │                   │                                          │
+│  │                   │ With validation_loop: SafeDownload       │
+│  │                   │ failure is non-fatal — clean up repo dir │
+│  │                   │ and continue to next iteration. Output   │
+│  │                   │ files (extracted separately) are kept.   │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────────────────────────────┐                   │
 │  │ Validation loop (if configured)          │                   │
 │  │                                          │                   │
-│  │ for i := 0; i < max_iterations; i++ {    │                   │
+│  │ Phase 1 — inline validation:             │                   │
+│  │ for i := 1; i <= max_iterations; i++ {   │                   │
+│  │   run agent → extract output             │                   │
+│  │   SafeDownload repo (non-fatal on fail)  │                   │
 │  │   run validation script                  │                   │
-│  │   if pass → break                        │                   │
-│  │   feed feedback → re-run agent           │                   │
+│  │   if pass → break (early exit)           │                   │
+│  │   feed feedback → next iteration         │                   │
 │  │ }                                        │                   │
+│  │                                          │                   │
+│  │ Phase 2 — post-loop sweep (#5393):       │                   │
+│  │ if no inline pass:                       │                   │
+│  │   for i := latest..1 {                   │                   │
+│  │     run validation on iteration-i dir    │                   │
+│  │     TARGET_REPO_DIR="" (repo dir is      │                   │
+│  │       unreliable across iterations)      │                   │
+│  │     if pass → use this iteration; break  │                   │
+│  │   }                                      │                   │
 │  └──────────┬───────────────────────────────┘                   │
 │             ▼                                                   │
 │  ┌──────────────────┐                                           │
 │  │ Post-script       │ Run harness.post_script (host-side)      │
+│  │                   │ REPO_DIR set only when last SafeDownload │
+│  │                   │ succeeded and validated iteration is the  │
+│  │                   │ latest; empty otherwise (post-scripts     │
+│  │                   │ must fail closed on empty REPO_DIR)       │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │

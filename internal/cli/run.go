@@ -959,9 +959,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// Pass REPO_DIR only when the last repo extraction succeeded.
 			// If SafeDownload failed, hostRepositoryDownloadDir was cleaned
 			// up and may not exist — passing it would expose the post-script
-			// to unsanitized or missing content. Post-scripts must handle
-			// empty REPO_DIR gracefully (the same as TARGET_REPO_DIR="" in
-			// the validation sweep).
+			// to unsanitized or missing content. Post-scripts must fail
+			// closed on empty REPO_DIR (the scaffolded post-code.sh and
+			// post-fix.sh already do via ${REPO_DIR:-repo} + directory
+			// existence check).
 			postRepoDir := ""
 			if repoExtractedOK {
 				postRepoDir = hostRepositoryDownloadDir
@@ -1250,6 +1251,27 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		maxIterations = h.ValidationLoop.MaxIterations
 	}
 
+	// Dual-phase validation design (#5393):
+	//
+	// Phase 1 — inline validation (step 9e): runs after each iteration.
+	// If the iteration passes, we break immediately without waiting for
+	// remaining iterations. This is an early-exit optimization that
+	// avoids burning agent compute when a good result is already in hand.
+	//
+	// Phase 2 — post-loop sweep (postLoopValidationSweep): runs only when
+	// no iteration passed inline. This is the #5393 fix: it catches the
+	// case where an iteration produced valid output but its inline
+	// validation was skipped because SafeDownload failed on that same
+	// iteration (extraction failure triggers `continue`, bypassing 9e).
+	// The sweep re-validates all completed iteration directories, latest
+	// first, using only the output files (TARGET_REPO_DIR is empty because
+	// hostRepositoryDownloadDir may not correspond to the validated
+	// iteration).
+	//
+	// Both phases are necessary: removing inline validation would force
+	// every run to exhaust all maxIterations even when iteration 1 passes,
+	// while removing the sweep would regress #5393.
+
 	oidcCtx, oidcCancel := context.WithCancel(context.Background())
 	var oidcWg sync.WaitGroup
 	if oidcURL := os.Getenv("FULLSEND_GCP_OIDC_URL"); oidcURL != "" {
@@ -1459,14 +1481,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepStart("Running validation: " + h.ValidationLoop.Script)
 		valCmd := exec.Command(h.ValidationLoop.Script)
 		valCmd.Dir = iterDir
-		// Pass TARGET_REPO_DIR only when repo extraction succeeded;
-		// otherwise pass empty to prevent validation scripts from using
-		// unsanitized or stale repo content.
-		valRepoDir := ""
-		if repoExtractedOK {
-			valRepoDir = hostRepositoryDownloadDir
-		}
-		valCmd.Env = append(os.Environ(), validationEnv(h, valRepoDir, runDir)...)
+		// At this point repoExtractedOK is always true: SafeDownload
+		// failure sets it to false and continues (skipping step 9e),
+		// while success sets it to true immediately above. Pass the
+		// repo dir directly.
+		valCmd.Env = append(os.Environ(), validationEnv(h, hostRepositoryDownloadDir, runDir)...)
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
