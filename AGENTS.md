@@ -29,7 +29,16 @@ When changing `internal/mint/main.go`, always copy it to `internal/dispatch/gcf/
 
 The `internal/mintcore/` module is shared between the mint and devmint. Its files are also embedded for Cloud Function deployment at `internal/dispatch/gcf/mintsrc/mintcore/*.embed`. When changing any file in `internal/mintcore/`, sync it to the corresponding `.embed` file under `mintsrc/mintcore/`. Note: the mint's `go.mod.embed` uses `replace mintcore => ./mintcore` (not `../mintcore`), because `provisioner.go` rewrites the replace directive at bundle time to match the deployed directory layout.
 
-**Dispatch workflows:** The scaffold `dispatch.yml` (at `internal/scaffold/fullsend-repo/.github/workflows/dispatch.yml`) and the repo's `reusable-dispatch.yml` (at `.github/workflows/reusable-dispatch.yml`) share identical routing logic for different installation modes (per-org vs per-repo). When changing the jq payload construction, stage routing, or input/secret threading in one, apply the same change to the other.
+**Workflow contracts:** The scaffold `dispatch.yml` (at `internal/scaffold/fullsend-repo/.github/workflows/dispatch.yml`) and the repo's `reusable-dispatch.yml` (at `.github/workflows/reusable-dispatch.yml`) share identical routing logic for different installation modes (per-org vs per-repo). When changing the jq payload construction, stage routing, or input/secret threading in one, apply the same change to the other.
+
+More broadly, GHA reusable workflows do not inherit secrets or variables — they must be explicitly forwarded by every caller. When any reusable workflow (`.github/workflows/reusable-*.yml`) adds a new `secrets:` or `inputs:` entry, trace both installation-mode chains and ensure every hop forwards the new entry:
+
+- **Per-org chain:** scaffold thin callers (`internal/scaffold/fullsend-repo/.github/workflows/<agent>.yml`) → reusable workflow (`.github/workflows/reusable-<agent>.yml`)
+- **Per-repo chain:** shim template → `reusable-dispatch.yml` → `reusable-<agent>.yml` ([ADR 62](docs/ADRs/0062-dispatch-version-skew.md) will inline stages into `reusable-dispatch.yml`, collapsing this to a single hop; new secrets must then be threaded to the inlined stage jobs directly)
+
+Omitted optional secrets arrive as empty strings at runtime, which silently breaks authenticated backends instead of failing loudly. Treat a missing forwarding hop the same as a missing sync — it is a correctness bug, not a cosmetic issue.
+
+**When reviewing PRs:** If a diff adds or renames a `secrets:` or `inputs:` entry in a reusable workflow, check that all callers in both chains have been updated. Flag a missing forwarding hop as a medium-severity or higher finding.
 
 When making changes to Go code under `cmd/` or `internal/`:
 
