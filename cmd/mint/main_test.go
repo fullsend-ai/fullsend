@@ -63,30 +63,30 @@ func TestCheckRequired(t *testing.T) {
 	})
 }
 
-func TestSplitCSV(t *testing.T) {
+func TestSplitCSV_ViaExported(t *testing.T) {
 	t.Run("empty", func(t *testing.T) {
-		result := splitCSV("")
+		result := mintcore.SplitCSV("")
 		if result != nil {
 			t.Fatalf("expected nil, got %v", result)
 		}
 	})
 
 	t.Run("single value", func(t *testing.T) {
-		result := splitCSV("foo")
+		result := mintcore.SplitCSV("foo")
 		if len(result) != 1 || result[0] != "foo" {
 			t.Fatalf("expected [foo], got %v", result)
 		}
 	})
 
 	t.Run("multiple values with spaces", func(t *testing.T) {
-		result := splitCSV("foo, bar , baz")
+		result := mintcore.SplitCSV("foo, bar , baz")
 		if len(result) != 3 || result[0] != "foo" || result[1] != "bar" || result[2] != "baz" {
 			t.Fatalf("expected [foo bar baz], got %v", result)
 		}
 	})
 
 	t.Run("trailing comma", func(t *testing.T) {
-		result := splitCSV("foo,bar,")
+		result := mintcore.SplitCSV("foo,bar,")
 		if len(result) != 2 {
 			t.Fatalf("expected 2 items, got %v", result)
 		}

@@ -21,11 +21,11 @@ import (
 
 // buildHandler creates the HTTP handler chain from environment variables.
 func buildHandler() (http.Handler, error) {
-	allowedOrgs := splitCSV(os.Getenv("ALLOWED_ORGS"))
-	allowedWorkflows := splitCSV(os.Getenv("ALLOWED_WORKFLOW_FILES"))
+	allowedOrgs := mintcore.SplitCSV(os.Getenv("ALLOWED_ORGS"))
+	allowedWorkflows := mintcore.SplitCSV(os.Getenv("ALLOWED_WORKFLOW_FILES"))
 
 	perRepoWIFRepos := make(map[string]bool)
-	for _, entry := range splitCSV(os.Getenv("PER_REPO_WIF_REPOS")) {
+	for _, entry := range mintcore.SplitCSV(os.Getenv("PER_REPO_WIF_REPOS")) {
 		perRepoWIFRepos[strings.ToLower(entry)] = true
 	}
 
@@ -129,19 +129,6 @@ func checkRequired(names ...string) []string {
 		}
 	}
 	return missing
-}
-
-func splitCSV(s string) []string {
-	if s == "" {
-		return nil
-	}
-	var result []string
-	for _, entry := range strings.Split(s, ",") {
-		if trimmed := strings.TrimSpace(entry); trimmed != "" {
-			result = append(result, trimmed)
-		}
-	}
-	return result
 }
 
 func parseLocalRoles(raw string) (map[string]bool, error) {
