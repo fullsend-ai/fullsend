@@ -75,9 +75,9 @@ The review agent caught legitimate code-level bugs in early rounds: glob config 
 | 1 | Guard variable `FULLSEND_PER_REPO_INSTALL` not reconciled per the plan spec | Critical | Spec compliance | Missed in runs 1-9 (fixed after the human's review) |
 | 2 | The fix for finding #1 introduced a regression that would brick future `repos install` | High | Fix regression | Approved the broken fix |
 | 3 | `checkPerRepoScopes` reintroduced `--json` output pollution | High | Output correctness | Missed in runs 1-9 (the function was introduced during early iterations) |
-| 4 | Missing test coverage for the `--json` purity fix | Medium | Test adequacy | Missed in all 16 runs |
+| 4 | Missing test coverage for the `--json` purity fix | Medium | Test adequacy | Missed until addressed mid-sequence (after the human's review) |
 | 5 | Schema inconsistency between `--dry-run` and normal JSON output (`DiffResult` vs `SyncResult`) | Medium | API contract | Missed in all 16 runs |
-| 6 | Stale PR description coverage claims citing nonexistent functions | Medium | Documentation | Missed in all 16 runs |
+| 6 | Stale PR description coverage claims citing nonexistent functions | Medium | Documentation | Missed until addressed mid-sequence (after the human's review) |
 
 **Agent performance (where it succeeded):**
 - Found glob config resolution bug (`ResolveConfig()` vs `ResolveConfigForEntry()`) -- HIGH
@@ -87,7 +87,7 @@ The review agent caught legitimate code-level bugs in early rounds: glob config 
 
 **Root cause analysis (human advantage):**
 1. **Spec cross-referencing** -- the human compared the implementation against the plan document to verify all requirements were met. The agent never consulted the plan spec, missing the `FULLSEND_PER_REPO_INSTALL` reconciliation requirement entirely.
-2. **Fix regression detection** -- the human evaluated whether the fix for the CRITICAL finding introduced new problems. The agent approved the broken fix immediately (run at 02:28 UTC, Jul 17) without analyzing second-order effects.
+2. **Fix regression detection** -- the human evaluated whether the fix for the CRITICAL finding introduced new problems. The agent's reviews around the fix never flagged the regression, despite multiple runs after the fix landed.
 3. **Output contract analysis** -- the human identified that `checkPerRepoScopes` wrote to stdout, polluting the `--json` output. This requires understanding the implicit contract that JSON-mode commands must not emit non-JSON to stdout.
 4. **Test adequacy assessment** -- the human identified that the `--json` code path had zero test coverage. The agent never flagged the absence of tests for newly added features.
 5. **API schema consistency** -- the human noticed that `--dry-run` returned a `DiffResult` while normal mode returned a `SyncResult`, creating an inconsistent API for consumers of the same `--json` flag.
@@ -113,8 +113,8 @@ See issue for detailed analysis.
 
 The following PRs provide positive evidence that the review agent can match or exceed human review for certain change types:
 
-- **[#4852](https://github.com/fullsend-ai/fullsend/issues/4852)** -- positive evidence on simpler changes
-- **[#4532](https://github.com/fullsend-ai/fullsend/issues/4532)** -- positive evidence on simpler changes
+- **[#4852](https://github.com/fullsend-ai/fullsend/issues/4852)** (PR #4102) -- dependency-bump + CI-workflow PR (+3 agent findings: 1 High protected-path, 2 Low consistency; human reviewer approved with zero additional findings). Agent fully covered human assessment.
+- **[#4532](https://github.com/fullsend-ai/fullsend/issues/4532)** (PR #2986) -- test-only PR (+1 Medium scope-creep, 1 Low comment accuracy from agent; human approved 10 days later with zero findings). Agent was strictly more thorough; human review added zero incremental quality signal.
 - **[#4995](https://github.com/fullsend-ai/fullsend/issues/4995)** -- cross-repo data point (`konflux-ci/architecture#368`); the review agent outperformed three human reviewers on mechanical-consistency checks
 
 These PRs demonstrate that for simpler, more mechanical changes the review agent's findings align well with -- and in some cases exceed -- human review.
@@ -130,8 +130,9 @@ Based on the counter-evidence, the review agent struggles with:
 3. **API contract consistency** -- identifying schema inconsistencies, output pollution, and contract violations that require understanding implicit API guarantees.
 4. **Test-adequacy assessment** -- recognizing when newly added features lack test coverage. The agent checks existing tests but does not flag the absence of tests for new code paths.
 5. **Regex and string-processing logic** -- agents detect patterns but fail to reason about concrete impact (e.g., what inputs cause data loss).
-6. **Cross-document consistency** -- verifying that ADRs, design docs, plan specs, and implementation agree requires holistic project understanding.
-7. **Security-relevant operational reasoning** -- understanding how a code change interacts with deployment constraints (SHA pinning, Actions enforcement) is beyond current agent capabilities.
+6. **Semver and version comparison** -- domain-specific edge cases (partial version refs, prerelease ordering) require specialized knowledge the agent does not reliably apply.
+7. **Cross-document consistency** -- verifying that ADRs, design docs, plan specs, and implementation agree requires holistic project understanding.
+8. **Security-relevant operational reasoning** -- understanding how a code change interacts with deployment constraints (SHA pinning, Actions enforcement) is beyond current agent capabilities.
 
 ### Change types where agents perform well
 
@@ -142,13 +143,13 @@ Based on the positive evidence and the successful findings within counter-eviden
 3. **Low-severity edge case identification** -- exhaustive enumeration of minor edge cases that humans may overlook
 4. **Security surface analysis** -- identifying potential attack vectors and security-relevant code paths
 5. **Convention adherence** -- verifying code follows established repo patterns
-6. **Persistent vigilance** -- maintaining attention across many iterations, catching regressions introduced by fixes (when the regression is at the code level)
+6. **Persistent vigilance** -- maintaining attention across many iterations with sustained low-severity identification
 
 ### Emerging pattern: surface vs. depth
 
 A consistent pattern across all three counter-evidence PRs (#4079, #4080, #4510): the agent excels at surface-level code correctness (wrong function call, duplicate operation, naming error) but is blind to depth-level correctness (does this fulfill the spec? does this fix break something else? is this API contract consistent?). The human reviewer's advantage is cross-referencing the implementation against external context -- plan documents, API contracts, test coverage expectations, and second-order effects of changes.
 
-This pattern is consistent across different change types (new CLI features, complex regex/semver logic, large refactors). Note: all three counter-evidence observations come from the same human reviewer using a multi-model review squad (Claude x2 + Grok with manual verification), so the comparison is between a single automated review pipeline and a human-curated multi-model process rather than agent vs. unaided human review. The consistency across change types increases confidence in a genuine capability gap, but the reviewer-specific-variation confound cannot be ruled out until observations from additional reviewers are added.
+This pattern is consistent across different change types (new CLI features, complex regex/semver logic, large refactors). Note: all three counter-evidence observations come from the same human reviewer using a multi-model review squad (varying model combinations across rounds -- e.g., Claude x2 + Gemini for some rounds, Claude x2 + Grok for others) with manual verification, so the comparison is between a single automated review pipeline and a human-curated multi-model process rather than agent vs. unaided human review. The consistency across change types increases confidence in a genuine capability gap, but the reviewer-specific-variation confound cannot be ruled out until observations from additional reviewers are added.
 
 ## Relationship to the protected-path mechanism
 
