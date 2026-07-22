@@ -64,7 +64,7 @@ func TestRepoPool_AcquireBlocksWhenExhausted(t *testing.T) {
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 
 	// Release and acquire should succeed.
-	pool.Release(name)
+	require.NoError(t, pool.Release(name))
 	got, err := pool.Acquire(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, name, got)
@@ -80,8 +80,8 @@ func TestRepoPool_ReleaseMakesNameAvailable(t *testing.T) {
 	n2, err := pool.Acquire(ctx)
 	require.NoError(t, err)
 
-	pool.Release(n1)
-	pool.Release(n2)
+	require.NoError(t, pool.Release(n1))
+	require.NoError(t, pool.Release(n2))
 
 	// Both names should be available again.
 	got1, err := pool.Acquire(ctx)
@@ -117,14 +117,16 @@ func TestRepoPool_ConcurrentAcquireRelease(t *testing.T) {
 			mu.Unlock()
 			// Simulate work.
 			time.Sleep(5 * time.Millisecond)
-			pool.Release(name)
+			if err := pool.Release(name); err != nil {
+				t.Errorf("Release failed: %v", err)
+			}
 		})
 	}
 	wg.Wait()
 	assert.Len(t, acquired, 10)
 }
 
-func TestRepoPool_DoubleReleasePanics(t *testing.T) {
+func TestRepoPool_DoubleReleaseReturnsError(t *testing.T) {
 	pool, err := NewRepoPool(1)
 	require.NoError(t, err)
 
@@ -132,10 +134,41 @@ func TestRepoPool_DoubleReleasePanics(t *testing.T) {
 	name, err := pool.Acquire(ctx)
 	require.NoError(t, err)
 
-	pool.Release(name)
+	require.NoError(t, pool.Release(name))
 
-	// Double-release should panic because the buffer is already full.
-	assert.Panics(t, func() { pool.Release(name) })
+	// Double-release returns an error (buffer full, name not outstanding).
+	err = pool.Release(name)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not an outstanding lease")
+}
+
+func TestRepoPool_DoubleReleaseWithSpareCapacity(t *testing.T) {
+	// Pool of 3 with only 1 acquired — spare buffer capacity exists.
+	// A naïve channel-only implementation would not detect the double-release
+	// because the channel has room. The outstanding-lease map catches it.
+	pool, err := NewRepoPool(3)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	name, err := pool.Acquire(ctx)
+	require.NoError(t, err)
+
+	require.NoError(t, pool.Release(name))
+
+	// Double-release with spare buffer capacity — must still error.
+	err = pool.Release(name)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not an outstanding lease")
+}
+
+func TestRepoPool_ReleaseUnknownNameReturnsError(t *testing.T) {
+	pool, err := NewRepoPool(2)
+	require.NoError(t, err)
+
+	// Releasing a name that was never acquired should return an error.
+	err = pool.Release("never-acquired")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not an outstanding lease")
 }
 
 func TestRepoPool_Size(t *testing.T) {

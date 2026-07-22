@@ -18,35 +18,54 @@ import (
 // a repo name is leased from it for the scenario's duration.
 func InitScenario(sc *godog.ScenarioContext, template *world.World, pool *world.RepoPool) {
 	sc.Before(func(ctx context.Context, scenario *godog.Scenario) (context.Context, error) {
-		if err := SkipErrorForTagNames(tagNames(scenario.Tags), template); err != nil {
-			return ctx, err
-		}
-		w := template.Clone()
-		resetScenarioWorld(w)
-
-		if pool != nil {
-			name, err := pool.Acquire(ctx)
-			if err != nil {
-				return ctx, fmt.Errorf("acquiring pool repo name: %w", err)
-			}
-			w.LeasedRepoName = name
-		}
-
-		ctx = world.WithWorld(ctx, w)
-		return ctx, nil
+		return beforeScenario(ctx, tagNames(scenario.Tags), template, pool)
 	})
 	sc.After(func(ctx context.Context, scenario *godog.Scenario, err error) (context.Context, error) {
-		w := world.FromContext(ctx)
-		if w == nil {
-			return ctx, err
-		}
-		steps.CleanupScenario(w)
-		if pool != nil && w.LeasedRepoName != "" {
-			pool.Release(w.LeasedRepoName)
-		}
-		return ctx, err
+		return afterScenario(ctx, pool, err)
 	})
 	steps.Register(sc)
+}
+
+// beforeScenario clones the template World, resets scenario fields, and
+// optionally acquires a pool lease. Extracted for unit testing without
+// live godog infrastructure.
+func beforeScenario(ctx context.Context, tags []string, template *world.World, pool *world.RepoPool) (context.Context, error) {
+	if err := SkipErrorForTagNames(tags, template); err != nil {
+		return ctx, err
+	}
+	w := template.Clone()
+	resetScenarioWorld(w)
+
+	if pool != nil {
+		name, err := pool.Acquire(ctx)
+		if err != nil {
+			return ctx, fmt.Errorf("acquiring pool repo name: %w", err)
+		}
+		w.LeasedRepoName = name
+	}
+
+	ctx = world.WithWorld(ctx, w)
+	return ctx, nil
+}
+
+// afterScenario runs scenario cleanup and releases the pool lease.
+// Extracted for unit testing. Release errors are surfaced as test
+// failures rather than panicking the godog runner.
+func afterScenario(ctx context.Context, pool *world.RepoPool, err error) (context.Context, error) {
+	w := world.FromContext(ctx)
+	if w == nil {
+		return ctx, err
+	}
+	steps.CleanupScenario(w)
+	if pool != nil && w.LeasedRepoName != "" {
+		if releaseErr := pool.Release(w.LeasedRepoName); releaseErr != nil {
+			// Surface as a test error rather than panicking the runner.
+			if err == nil {
+				err = fmt.Errorf("releasing pool repo name: %w", releaseErr)
+			}
+		}
+	}
+	return ctx, err
 }
 
 func resetScenarioWorld(w *world.World) {

@@ -3,6 +3,7 @@ package world
 import (
 	"context"
 	"fmt"
+	"sync"
 )
 
 // RepoPool is an in-process lease pool for logical test-repo names.
@@ -11,6 +12,9 @@ import (
 type RepoPool struct {
 	names chan string
 	size  int
+
+	mu          sync.Mutex
+	outstanding map[string]struct{} // names currently leased
 }
 
 // NewRepoPool creates a pool pre-filled with size names in the form
@@ -23,13 +27,20 @@ func NewRepoPool(size int) (*RepoPool, error) {
 	for i := 1; i <= size; i++ {
 		ch <- fmt.Sprintf("test-repo-%02d", i)
 	}
-	return &RepoPool{names: ch, size: size}, nil
+	return &RepoPool{
+		names:       ch,
+		size:        size,
+		outstanding: make(map[string]struct{}),
+	}, nil
 }
 
 // Acquire blocks until a repo name is available or ctx is cancelled.
 func (p *RepoPool) Acquire(ctx context.Context) (string, error) {
 	select {
 	case name := <-p.names:
+		p.mu.Lock()
+		p.outstanding[name] = struct{}{}
+		p.mu.Unlock()
 		return name, nil
 	case <-ctx.Done():
 		return "", fmt.Errorf("acquiring repo name: %w", ctx.Err())
@@ -37,14 +48,18 @@ func (p *RepoPool) Acquire(ctx context.Context) (string, error) {
 }
 
 // Release returns a previously acquired name to the pool.
-// It panics if the pool buffer is full, which indicates a double-release
-// programming error.
-func (p *RepoPool) Release(name string) {
-	select {
-	case p.names <- name:
-	default:
-		panic(fmt.Sprintf("RepoPool: double-release or over-release of %q (buffer full)", name))
+// It returns an error if the name is not an outstanding lease (e.g.
+// double-release). Callers in godog After hooks should surface the
+// error rather than allowing a panic to crash the test runner.
+func (p *RepoPool) Release(name string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if _, ok := p.outstanding[name]; !ok {
+		return fmt.Errorf("RepoPool: releasing %q which is not an outstanding lease (possible double-release)", name)
 	}
+	delete(p.outstanding, name)
+	p.names <- name
+	return nil
 }
 
 // Size returns the total capacity of the pool.

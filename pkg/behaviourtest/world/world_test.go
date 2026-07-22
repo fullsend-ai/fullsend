@@ -21,30 +21,15 @@ func (f *fakeInstallState) TriageWorkflowFile() string { return "" }
 func (f *fakeInstallState) AgentWorkflowFile() string  { return "" }
 func (f *fakeInstallState) AgentArtifactName() string  { return "" }
 
-func TestClone_CopiesDriverFields(t *testing.T) {
-	original := &World{
-		Org:          "test-org",
-		RepoFull:     "test-org/test-repo",
-		RepoOwner:    "test-org",
-		RepoName:     "test-repo",
-		Token:        "tok",
-		FixturesRoot: "e2e/behaviour",
-		Install:      &fakeInstallState{prefix: ".fullsend"},
-	}
-	clone := original.Clone()
-
-	assert.Equal(t, original.Org, clone.Org)
-	assert.Equal(t, original.RepoFull, clone.RepoFull)
-	assert.Equal(t, original.RepoOwner, clone.RepoOwner)
-	assert.Equal(t, original.RepoName, clone.RepoName)
-	assert.Equal(t, original.Token, clone.Token)
-	assert.Equal(t, original.FixturesRoot, clone.FixturesRoot)
-	assert.Same(t, original.Install, clone.Install)
-}
-
-func TestClone_ZerosScenarioFields(t *testing.T) {
+func TestClone_CopiesAllFields(t *testing.T) {
 	original := &World{
 		Org:            "test-org",
+		RepoFull:       "test-org/test-repo",
+		RepoOwner:      "test-org",
+		RepoName:       "test-repo",
+		Token:          "tok",
+		FixturesRoot:   "e2e/behaviour",
+		Install:        &fakeInstallState{prefix: ".fullsend"},
 		IssueNumber:    42,
 		PRNumber:       7,
 		DispatchAgent:  "triage",
@@ -57,15 +42,21 @@ func TestClone_ZerosScenarioFields(t *testing.T) {
 	}
 	clone := original.Clone()
 
-	assert.Equal(t, 0, clone.IssueNumber)
-	assert.Equal(t, 0, clone.PRNumber)
-	assert.Equal(t, "", clone.DispatchAgent)
-	assert.Equal(t, "", clone.ArtifactDir)
-	assert.Equal(t, "", clone.ForkOwner)
-	assert.Equal(t, "", clone.ForkRepo)
-	assert.Equal(t, 0, clone.ForkPRNumber)
-	assert.Equal(t, "", clone.ForkPRBranch)
-	assert.Equal(t, "", clone.LeasedRepoName)
+	// Template / driver fields are copied.
+	assert.Equal(t, original.Org, clone.Org)
+	assert.Equal(t, original.RepoFull, clone.RepoFull)
+	assert.Equal(t, original.RepoOwner, clone.RepoOwner)
+	assert.Equal(t, original.RepoName, clone.RepoName)
+	assert.Equal(t, original.Token, clone.Token)
+	assert.Equal(t, original.FixturesRoot, clone.FixturesRoot)
+	assert.Same(t, original.Install, clone.Install)
+
+	// Scenario fields are also copied (value copy). The caller is
+	// responsible for zeroing them via resetScenarioWorld.
+	assert.Equal(t, 42, clone.IssueNumber)
+	assert.Equal(t, 7, clone.PRNumber)
+	assert.Equal(t, "triage", clone.DispatchAgent)
+	assert.Equal(t, "test-repo-03", clone.LeasedRepoName)
 }
 
 func TestClone_IndependentMutation(t *testing.T) {
@@ -76,6 +67,16 @@ func TestClone_IndependentMutation(t *testing.T) {
 	clone.RepoName = "test-repo-01"
 	assert.Equal(t, 0, original.IssueNumber)
 	assert.Equal(t, "test-repo", original.RepoName)
+}
+
+func TestClone_SharesDriversByReference(t *testing.T) {
+	inst := &fakeInstallState{prefix: ".fullsend"}
+	original := &World{Install: inst}
+	clone := original.Clone()
+
+	// Drivers are shared by reference (safe because they hold no
+	// mutable state today — see #5441 for concurrency work).
+	assert.Same(t, original.Install, clone.Install)
 }
 
 func TestBehaviourScriptPath_NilInstall(t *testing.T) {

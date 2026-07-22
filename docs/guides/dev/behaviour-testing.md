@@ -146,7 +146,7 @@ require github.com/fullsend-ai/fullsend v0.x.y // released tag, not @main
 
 ### API changes
 
-**`suite.InitScenario` signature change (v0.22+):** The function signature changed from `InitScenario(sc, w)` to `InitScenario(sc, template, pool)`. Instead of passing a single `*world.World`, callers now pass a template `*world.World` (cloned per scenario) and a `*world.RepoPool` (used to lease unique repo names). Update your `suite_test.go` accordingly:
+**`suite.InitScenario` signature change:** The function signature changed from `InitScenario(sc, w)` to `InitScenario(sc, template, pool)` starting in the release that includes this change. Instead of passing a single `*world.World`, callers now pass a template `*world.World` (cloned per scenario) and a `*world.RepoPool` (used to lease unique repo names). Update your `suite_test.go` accordingly:
 
 ```go
 pool, err := world.NewRepoPool(12)
@@ -164,6 +164,6 @@ suiteRunner := godog.TestSuite{
 }
 ```
 
-**`steps.Register` signature change (v0.22+):** The function signature changed from `Register(ctx, w)` (where `ctx` was a `*godog.ScenarioContext` and `w` was a `*world.World`) to `Register(sc)`. Step definitions no longer receive `*world.World` as a parameter. Instead, they accept `context.Context` and extract the per-scenario World via `world.FromContext(ctx)`.
+**`steps.Register` signature change:** The function signature changed from `Register(ctx, w)` (where `ctx` was a `*godog.ScenarioContext` and `w` was a `*world.World`) to `Register(sc)` starting in the same release. Step definitions no longer receive `*world.World` as a parameter. Instead, they accept `context.Context` and extract the per-scenario World via `world.FromContext(ctx)`.
 
 Bump the pinned version when behaviour step vocabulary or `pkg/e2etest` / `pkg/behaviourtest` APIs change.

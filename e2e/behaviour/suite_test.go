@@ -24,7 +24,7 @@ func TestBehaviourSuite(t *testing.T) {
 		t.Skip("skipping behaviour tests in short mode")
 	}
 	if c := os.Getenv("GODOG_CONCURRENCY"); c != "" && c != "1" {
-		t.Fatalf("behaviour suite does not support GODOG_CONCURRENCY=%q (shared World); use serial runs until parallel support lands", c)
+		t.Fatalf("behaviour suite does not support GODOG_CONCURRENCY=%q: per-scenario World isolation is in place but drivers (SCM, CI, Install) are shared by reference and have not been validated under -race with concurrent scenarios yet; see #5441 for parallel support", c)
 	}
 
 	cfg := env.LoadRunnerConfig()
