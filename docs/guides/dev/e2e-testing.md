@@ -164,11 +164,25 @@ the frozen PR `updated_at` from the workflow event (`PR_UPDATED_AT`); the live
 API fallback may over-reject when non-push activity bumped `updated_at`.
 Applying the label triggers immediate authorization on `labeled` events.
 
+Other labels (for example `ready-for-review`, `requires-manual-review`, or
+`component/*`) do **not** authorize e2e and do **not** cancel an in-progress
+e2e or functional-test run for that PR. Only `opened` / `synchronize` /
+`reopened`, and `labeled` when the label is `ok-to-test`, cancel in-progress
+work in the per-PR concurrency group. GitHub still starts a workflow run for
+every `labeled` event (labels cannot be filtered at `on:`). For non-actionable
+labels the gate job is skipped entirely and no sticky `<!-- e2e-gate -->`
+comment is posted. If an actionable run is already in progress, that new run
+sits **pending** until the active run finishes (it does not skip immediately).
+If several non-actionable labels land in a burst, GitHub cancels earlier
+pending runs in the concurrency group; only the last dequeued run executes and
+skips. Either way the original in-progress run is left alone.
+
 ### Blocked runs
 
-When e2e does not run, a sticky PR comment (marker `<!-- e2e-gate -->`) explains
-why and what to do. Re-run the workflow or add/re-apply `ok-to-test` as
-appropriate.
+When the gate **runs** and denies authorization, a sticky PR comment (marker
+`<!-- e2e-gate -->`) explains why and what to do. That is distinct from a
+non-actionable label event, where the gate never runs and no comment appears.
+Re-run the workflow or add/re-apply `ok-to-test` as appropriate.
 
 ## CI architecture
 
