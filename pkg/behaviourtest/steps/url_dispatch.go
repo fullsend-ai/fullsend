@@ -96,6 +96,15 @@ func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarn
 		return fmt.Errorf("committing harness to hosting repo: %w", err)
 	}
 
+	// ADR-0045: when the runtime loads a URL-sourced harness, it resolves
+	// relative resource paths (agent, policy, skills) against the hosting
+	// repo URL directory. Commit any relative resources so the runtime can
+	// fetch them. Without this, LoadWithBase fails because the agent file
+	// does not exist at the resolved URL.
+	if err := commitRelativeResources(ctx, w, hostOwner, hostRepo, name, doc); err != nil {
+		return fmt.Errorf("committing relative resources to hosting repo: %w", err)
+	}
+
 	// Verify the committed file is accessible via the Contents API.
 	// GitHub's auto_init and CDN propagation can cause transient 404s
 	// after a commit; retry briefly rather than letting the scenario
@@ -181,6 +190,48 @@ func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarn
 	if err := w.SCM.CommitFile(ctx, cfgOwner, cfgRepo, cfgPath, fmt.Sprintf("behaviour: register URL harness %s", name), merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
+	return nil
+}
+
+// minimalAgentContent is a stub agent definition committed to the hosting
+// repo so that URL-sourced harness resource resolution succeeds at runtime.
+// The behaviour tests override the agent with a dummy script, so the content
+// only needs to be fetchable — not a complete agent specification.
+const minimalAgentContent = "# URL Test Agent\n\nMinimal agent fixture for URL-sourced harness behaviour tests.\n"
+
+// commitRelativeResources parses the harness YAML doc and commits any
+// relative resource files (agent, policy) to the hosting repo. This is
+// required by ADR-0045: when SourceURL is set, resolveBaseResources
+// fetches relative paths from the hosting repo URL directory.
+func commitRelativeResources(ctx context.Context, w *world.World, owner, repo, harnessName, doc string) error {
+	// Parse just the resource fields we need from the harness YAML.
+	var h struct {
+		Agent  string `yaml:"agent"`
+		Policy string `yaml:"policy"`
+	}
+	if err := yaml.Unmarshal([]byte(doc), &h); err != nil {
+		return fmt.Errorf("parsing harness YAML for resource paths: %w", err)
+	}
+
+	// Commit relative agent file if specified.
+	if h.Agent != "" && !strings.HasPrefix(h.Agent, "/") && !strings.HasPrefix(h.Agent, "https://") {
+		if err := w.SCM.CommitFile(ctx, owner, repo, h.Agent,
+			fmt.Sprintf("behaviour: add agent resource for %s", harnessName),
+			[]byte(minimalAgentContent)); err != nil {
+			return fmt.Errorf("committing agent resource %s: %w", h.Agent, err)
+		}
+	}
+
+	// Commit relative policy file if specified.
+	if h.Policy != "" && !strings.HasPrefix(h.Policy, "/") && !strings.HasPrefix(h.Policy, "https://") {
+		minimalPolicy := fmt.Sprintf("# Minimal policy for %s\n", harnessName)
+		if err := w.SCM.CommitFile(ctx, owner, repo, h.Policy,
+			fmt.Sprintf("behaviour: add policy resource for %s", harnessName),
+			[]byte(minimalPolicy)); err != nil {
+			return fmt.Errorf("committing policy resource %s: %w", h.Policy, err)
+		}
+	}
+
 	return nil
 }
 

@@ -157,6 +157,12 @@ func TestGivenURLSourcedCustomHarness_URLFormat(t *testing.T) {
 	require.NotNil(t, harnessData, "harness should be committed to hosting repo")
 	assert.Equal(t, content, string(harnessData))
 
+	// ADR-0045: the relative agent resource must also be committed to the
+	// hosting repo so runtime URL resolution can fetch it.
+	agentData := scm.files["agents/triage.md"]
+	require.NotNil(t, agentData, "agent resource should be committed to hosting repo")
+	assert.Equal(t, minimalAgentContent, string(agentData))
+
 	// Verify the config was updated with the correct URL source pointing
 	// to the hosting repo.
 	cfgData := scm.files[".fullsend/config.yaml"]
@@ -317,7 +323,7 @@ func TestGivenURLSourcedCustomHarness_GetConfigError(t *testing.T) {
 		URLHarnessRepoOwner: "my-org",
 		URLHarnessRepoName:  "harness-host",
 	}
-	err := givenURLSourcedCustomHarness(w, "agent1", "content", urlHarnessOpts{})
+	err := givenURLSourcedCustomHarness(w, "agent1", "agent: agents/triage.md\nrole: triage", urlHarnessOpts{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading config")
 }
@@ -365,7 +371,7 @@ func TestGivenURLSourcedCustomHarness_GetDefaultBranchError(t *testing.T) {
 		URLHarnessRepoName:  "harness-host",
 	}
 
-	err := givenURLSourcedCustomHarness(w, "url-test", "content", urlHarnessOpts{})
+	err := givenURLSourcedCustomHarness(w, "url-test", "agent: agents/triage.md\nrole: triage", urlHarnessOpts{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "getting default branch")
 	assert.Contains(t, err.Error(), "API rate limited")
@@ -385,7 +391,7 @@ func TestGivenURLSourcedCustomHarness_RawURLNotAccessible(t *testing.T) {
 		URLHarnessRepoName:  "harness-host",
 	}
 
-	err := givenURLSourcedCustomHarness(w, "url-test", "content", urlHarnessOpts{})
+	err := givenURLSourcedCustomHarness(w, "url-test", "agent: agents/triage.md\nrole: triage", urlHarnessOpts{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "raw URL not accessible")
 }
@@ -430,6 +436,106 @@ func TestVerifyRawURLAccessible_StripsFragment(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, capturedURL, "#sha256=")
 	assert.Contains(t, capturedURL, "file.yaml")
+}
+
+func TestGivenURLSourcedCustomHarness_CommitsAgentResource(t *testing.T) {
+	stubRawHTTPClient(t)
+	scm := &fakeURLSCM{files: map[string][]byte{
+		".fullsend/config.yaml": []byte("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n"),
+	}}
+	w := &world.World{
+		Install:             &fakeURLInstall{owner: "test-org", repo: "test-repo"},
+		SCM:                 scm,
+		URLHarnessRepoOwner: "test-org",
+		URLHarnessRepoName:  "harness-host",
+	}
+	err := givenURLSourcedCustomHarness(w, "url-test", "agent: agents/triage.md\nrole: triage\nslug: url-test", urlHarnessOpts{})
+	require.NoError(t, err)
+
+	// The agent resource must be committed to the hosting repo so
+	// runtime ADR-0045 URL resolution can fetch it.
+	agentData := scm.files["agents/triage.md"]
+	require.NotNil(t, agentData, "agent resource should be committed to hosting repo")
+	assert.Equal(t, minimalAgentContent, string(agentData))
+}
+
+func TestCommitRelativeResources_CommitsAgentFile(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{SCM: scm}
+	err := commitRelativeResources(context.Background(), w, "org", "repo", "test",
+		"agent: agents/triage.md\nrole: triage")
+	require.NoError(t, err)
+	assert.Equal(t, minimalAgentContent, string(scm.files["agents/triage.md"]))
+}
+
+func TestCommitRelativeResources_SkipsAbsoluteAgentPath(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{SCM: scm}
+	err := commitRelativeResources(context.Background(), w, "org", "repo", "test",
+		"agent: /absolute/agents/triage.md\nrole: triage")
+	require.NoError(t, err)
+	assert.Empty(t, scm.files, "absolute paths should not be committed")
+}
+
+func TestCommitRelativeResources_SkipsURLAgentPath(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{SCM: scm}
+	err := commitRelativeResources(context.Background(), w, "org", "repo", "test",
+		"agent: https://example.com/agents/triage.md\nrole: triage")
+	require.NoError(t, err)
+	assert.Empty(t, scm.files, "URL paths should not be committed")
+}
+
+func TestCommitRelativeResources_NoAgentField(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{SCM: scm}
+	err := commitRelativeResources(context.Background(), w, "org", "repo", "test",
+		"role: triage\nslug: test")
+	require.NoError(t, err)
+	assert.Empty(t, scm.files, "no files should be committed without agent field")
+}
+
+func TestCommitRelativeResources_CommitsPolicyFile(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{SCM: scm}
+	err := commitRelativeResources(context.Background(), w, "org", "repo", "test",
+		"agent: agents/triage.md\npolicy: policies/base.yaml\nrole: triage")
+	require.NoError(t, err)
+	assert.Equal(t, minimalAgentContent, string(scm.files["agents/triage.md"]))
+	assert.Contains(t, string(scm.files["policies/base.yaml"]), "Minimal policy")
+}
+
+func TestCommitRelativeResources_AgentCommitError(t *testing.T) {
+	scm := &fakeURLSCM{
+		files:          map[string][]byte{},
+		commitFileErr:  fmt.Errorf("commit failed"),
+		commitFileRepo: "repo",
+	}
+	w := &world.World{SCM: scm}
+	err := commitRelativeResources(context.Background(), w, "org", "repo", "test",
+		"agent: agents/triage.md\nrole: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "committing agent resource")
+}
+
+func TestCommitRelativeResources_PolicyCommitError(t *testing.T) {
+	// policyFailSCM fails on the second CommitFile call (the policy commit),
+	// allowing the first call (agent commit) to succeed.
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{SCM: &policyFailSCM{fakeURLSCM: scm}}
+	err := commitRelativeResources(context.Background(), w, "org", "repo", "test",
+		"agent: agents/triage.md\npolicy: policies/base.yaml\nrole: triage")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "committing policy resource")
+}
+
+func TestCommitRelativeResources_InvalidYAML(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{SCM: scm}
+	err := commitRelativeResources(context.Background(), w, "org", "repo", "test",
+		"invalid: [yaml: content")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing harness YAML")
 }
 
 func TestWaitForFileAccessible_ImmediateSuccess(t *testing.T) {
@@ -525,6 +631,21 @@ func (f *fakeURLSCM) GetDefaultBranch(_ context.Context, _, _ string) (string, e
 func (f *fakeURLSCM) DeleteRepo(_ context.Context, _, repo string) error {
 	delete(f.repos, repo)
 	return nil
+}
+
+// policyFailSCM wraps fakeURLSCM but fails on the second CommitFile call
+// (the policy commit), allowing the first call (agent commit) to succeed.
+type policyFailSCM struct {
+	*fakeURLSCM
+	commitCount int
+}
+
+func (p *policyFailSCM) CommitFile(ctx context.Context, owner, repo, path, msg string, content []byte) error {
+	p.commitCount++
+	if p.commitCount >= 2 {
+		return fmt.Errorf("policy commit failed")
+	}
+	return p.fakeURLSCM.CommitFile(ctx, owner, repo, path, msg, content)
 }
 
 // Unused SCM methods — satisfy the interface.
