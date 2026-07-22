@@ -85,7 +85,7 @@ jobs:
       event_payload: ${{ steps.payload.outputs.event_payload }}
     steps:
       - name: Checkout caller repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # checkout@v7 blocks fork PR checkouts on pull_request_target by
           # default. Safe here: only .fullsend/ config is read, no fork code
@@ -552,7 +552,7 @@ jobs:
 
     steps:
       - name: Checkout config repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
@@ -560,7 +560,7 @@ jobs:
 
       - name: Checkout upstream defaults
         if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
@@ -588,7 +588,7 @@ jobs:
           mint_url: ${{ inputs.mint_url }}
 
       - name: Checkout target repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ github.repository }}
           token: ${{ steps.app-token.outputs.token }}
@@ -647,7 +647,7 @@ jobs:
 
     steps:
       - name: Checkout config repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
@@ -655,7 +655,7 @@ jobs:
 
       - name: Checkout upstream defaults
         if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
@@ -683,7 +683,7 @@ jobs:
           mint_url: ${{ inputs.mint_url }}
 
       - name: Checkout target repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ github.repository }}
           token: ${{ steps.app-token.outputs.token }}
@@ -771,7 +771,7 @@ jobs:
 
     steps:
       - name: Checkout config repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
@@ -779,7 +779,7 @@ jobs:
 
       - name: Checkout upstream defaults
         if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
@@ -807,7 +807,7 @@ jobs:
           mint_url: ${{ inputs.mint_url }}
 
       - name: Checkout target repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ github.repository }}
           token: ${{ steps.app-token.outputs.token }}
@@ -881,7 +881,7 @@ jobs:
 
     steps:
       - name: Checkout config repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
@@ -889,7 +889,7 @@ jobs:
 
       - name: Checkout upstream defaults
         if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
@@ -1058,7 +1058,7 @@ jobs:
           fi
 
       - name: Checkout target repository at PR HEAD
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ github.repository }}
           token: ${{ steps.app-token.outputs.token }}
@@ -1169,7 +1169,7 @@ jobs:
 
     steps:
       - name: Checkout config repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
@@ -1177,7 +1177,7 @@ jobs:
 
       - name: Checkout upstream defaults
         if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
@@ -1205,7 +1205,7 @@ jobs:
           mint_url: ${{ inputs.mint_url }}
 
       - name: Checkout target repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ github.repository }}
           token: ${{ steps.app-token.outputs.token }}
@@ -1261,7 +1261,7 @@ jobs:
 
     steps:
       - name: Checkout config repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
@@ -1269,7 +1269,7 @@ jobs:
 
       - name: Checkout upstream defaults
         if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
@@ -1328,7 +1328,7 @@ jobs:
       matrix: ${{ steps.dispatch.outputs.matrix }}
     steps:
       - name: Checkout caller repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
@@ -1399,7 +1399,7 @@ jobs:
 
       - name: Checkout upstream install action
         if: steps.triggers.outputs.has_triggers == 'true' && steps.mode.outputs.mode == 'upstream' && steps.cli-cache.outputs.cache-hit != 'true'
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
@@ -1488,7 +1488,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Checkout config repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
@@ -1496,7 +1496,7 @@ jobs:
 
       - name: Checkout upstream defaults
         if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ job.workflow_repository }}
           ref: ${{ job.workflow_sha }}
@@ -1561,7 +1561,7 @@ jobs:
           mint_url: ${{ inputs.mint_url }}
 
       - name: Checkout target repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ matrix.source_repo }}
           token: ${{ steps.app-token.outputs.token }}
