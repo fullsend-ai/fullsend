@@ -481,11 +481,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// When profiles or providers use local paths (from ResolveRelativeTo or
 	// base composition), ResolveHarness must still run to parse them into
 	// ResolvedProfile/ResolvedProvider — even without URL references.
-	// Merge into any existing result to avoid discarding deps/providers
-	// already resolved by the lock-file or URL-resolution path.
-	if len(result.Profiles) == 0 && (len(h.OpenShellProfiles()) > 0 || hasLocalProviders(h)) {
-		prevDeps := result.Deps
-		prevProviders := result.Providers
+	// This runs independently of whether the lock-file or URL-resolution
+	// path already produced results; the outputs are merged afterward.
+	if len(h.OpenShellProfiles()) > 0 || hasLocalProviders(h) {
+		prev := result
 		var resolveErr error
 		result, resolveErr = resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
 			WorkspaceRoot: absFullsendDir,
@@ -493,8 +492,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if resolveErr != nil {
 			return fmt.Errorf("resolving local profiles/providers: %w", resolveErr)
 		}
-		result.Deps = append(prevDeps, result.Deps...)
-		result.Providers = append(prevProviders, result.Providers...)
+		result.Deps = append(prev.Deps, result.Deps...)
+		result.Profiles = append(prev.Profiles, result.Profiles...)
+		result.Providers = append(prev.Providers, result.Providers...)
+		result.Warnings = append(prev.Warnings, result.Warnings...)
 	}
 	for _, w := range result.Warnings {
 		printer.StepWarn(w)
