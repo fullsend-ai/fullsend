@@ -19,6 +19,12 @@ Level 3 adds prompt/completion content to spans.
 
 ## Environment variables
 
+> **Planned:** `harness-snapshot.json` (run-start harness fingerprint and
+> forge/CI pointers, mirrored on the root span) is decided in
+> [ADR 0075](../../ADRs/0075-forge-pointer-correlation-for-agent-traces.md).
+> Implementation follows ADR acceptance; until then only `run-telemetry.jsonl`
+> is guaranteed on disk.
+
 ### Endpoint configuration
 
 | Variable | Purpose | Notes |
