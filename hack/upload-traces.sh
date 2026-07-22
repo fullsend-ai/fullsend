@@ -20,8 +20,9 @@ Arguments:
   --endpoint             OTLP HTTP endpoint (e.g. http://localhost:4318)
   --header key=value     Header to send with OTLP requests (repeatable)
 
-Headers are passed via the OTEL_EXPORTER_OTLP_HEADERS env var. Any value
-already set in the environment is preserved and appended to.
+Headers are injected into the Collector's otlphttp exporter config.
+Any key=value pairs already set in the OTEL_EXPORTER_OTLP_HEADERS env
+var are also included and merged with --header flags.
 
 Examples:
   $(basename "$0") run/agent-run-123/run-telemetry.jsonl --endpoint http://localhost:4318
@@ -89,19 +90,65 @@ else
 fi
 echo "include: $INCLUDE"
 
-# --- run collector ---
-export REPLAY_INCLUDE="$INCLUDE"
-export REPLAY_ENDPOINT="$ENDPOINT"
-
-# Merge --header flags with any existing OTEL_EXPORTER_OTLP_HEADERS.
+# --- merge headers ---
+# Combine --header flags with any pre-existing OTEL_EXPORTER_OTLP_HEADERS
+# into a single comma-separated string for config generation.
+MERGED_HEADERS="${OTEL_EXPORTER_OTLP_HEADERS:-}"
 if [[ -n "$HEADERS" ]]; then
-  if [[ -n "${OTEL_EXPORTER_OTLP_HEADERS:-}" ]]; then
-    export OTEL_EXPORTER_OTLP_HEADERS="${OTEL_EXPORTER_OTLP_HEADERS},${HEADERS}"
+  if [[ -n "$MERGED_HEADERS" ]]; then
+    MERGED_HEADERS="${MERGED_HEADERS},${HEADERS}"
   else
-    export OTEL_EXPORTER_OTLP_HEADERS="$HEADERS"
+    MERGED_HEADERS="$HEADERS"
   fi
 fi
 
+# --- generate runtime config ---
+# The otelcol-contrib Collector reads headers from its YAML config
+# (exporters.otlphttp.headers), not from OTEL_EXPORTER_OTLP_HEADERS.
+# Generate a runtime config that injects any headers into the YAML.
+export REPLAY_INCLUDE="$INCLUDE"
+export REPLAY_ENDPOINT="$ENDPOINT"
+
+RUNTIME_CONFIG=$(mktemp "${TMPDIR:-/tmp}/otelcol-config-XXXXXX.yaml")
+cleanup() { rm -f "$RUNTIME_CONFIG"; }
+trap cleanup EXIT
+
+cat > "$RUNTIME_CONFIG" <<'YAML'
+receivers:
+  otlpjsonfile:
+    include:
+      - "${env:REPLAY_INCLUDE}"
+    start_at: beginning
+
+exporters:
+  otlphttp:
+    endpoint: "${env:REPLAY_ENDPOINT}"
+YAML
+
+if [[ -n "$MERGED_HEADERS" ]]; then
+  echo "    headers:" >> "$RUNTIME_CONFIG"
+  IFS=',' read -ra HEADER_ARRAY <<< "$MERGED_HEADERS"
+  for h in "${HEADER_ARRAY[@]}"; do
+    key="${h%%=*}"
+    value="${h#*=}"
+    # Escape double quotes for YAML safety
+    value="${value//\"/\\\"}"
+    printf '      %s: "%s"\n' "$key" "$value" >> "$RUNTIME_CONFIG"
+  done
+fi
+
+cat >> "$RUNTIME_CONFIG" <<'YAML'
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlpjsonfile]
+      exporters: [otlphttp]
+YAML
+
 echo "endpoint: $ENDPOINT"
+if [[ -n "$MERGED_HEADERS" ]]; then
+  echo "headers: $MERGED_HEADERS"
+fi
 echo "starting otelcol-contrib (runs continuously, watching for new data; press Ctrl+C to stop)..."
-otelcol-contrib --config "$CONFIG_TEMPLATE"
+otelcol-contrib --config "$RUNTIME_CONFIG"
