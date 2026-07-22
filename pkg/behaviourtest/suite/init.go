@@ -51,23 +51,31 @@ func beforeScenario(ctx context.Context, tags []string, template *world.World, p
 // afterScenario runs scenario cleanup and releases the pool lease.
 // Extracted for unit testing. Release errors are surfaced as test
 // failures rather than panicking the godog runner.
-func afterScenario(ctx context.Context, pool *world.RepoPool, err error) (context.Context, error) {
+//
+// pool.Release is deferred so the lease is returned even if
+// CleanupScenario panics. Named return values allow the deferred
+// closure to surface a release error when no scenario error exists.
+func afterScenario(ctx context.Context, pool *world.RepoPool, scenarioErr error) (_ context.Context, retErr error) {
+	retErr = scenarioErr
 	w := world.FromContext(ctx)
 	if w == nil {
-		return ctx, err
+		return ctx, retErr
+	}
+	if pool != nil && w.LeasedRepoName != "" {
+		name := w.LeasedRepoName
+		defer func() {
+			if releaseErr := pool.Release(name); releaseErr != nil {
+				if w.Logf != nil {
+					w.Logf("releasing pool repo name: %v", releaseErr)
+				}
+				if retErr == nil {
+					retErr = fmt.Errorf("releasing pool repo name: %w", releaseErr)
+				}
+			}
+		}()
 	}
 	steps.CleanupScenario(w)
-	if pool != nil && w.LeasedRepoName != "" {
-		if releaseErr := pool.Release(w.LeasedRepoName); releaseErr != nil {
-			if w.Logf != nil {
-				w.Logf("releasing pool repo name: %v", releaseErr)
-			}
-			if err == nil {
-				err = fmt.Errorf("releasing pool repo name: %w", releaseErr)
-			}
-		}
-	}
-	return ctx, err
+	return ctx, retErr
 }
 
 func resetScenarioWorld(w *world.World) {
