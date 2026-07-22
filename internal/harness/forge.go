@@ -112,7 +112,7 @@ func (h *Harness) ResolveForge(platform string) error {
 //   - Scalars: forge overrides if non-empty
 //   - Skills: top-level + forge (concatenated)
 //   - RunnerEnv: top-level merged with forge; forge keys win
-//   - ValidationLoop: forge replaces entirely if non-nil
+//   - ValidationLoop: field-level merge; forge non-zero fields win
 func mergeForgeConfig(h *Harness, fc *ForgeConfig) {
 	if fc.PreScript != "" {
 		h.PreScript = fc.PreScript
@@ -134,9 +134,8 @@ func mergeForgeConfig(h *Harness, fc *ForgeConfig) {
 		}
 	}
 
-	if fc.ValidationLoop != nil {
-		h.ValidationLoop = fc.ValidationLoop
-	}
+	// ValidationLoop: field-level merge; forge non-zero fields win
+	h.ValidationLoop = mergeValidationLoop(h.ValidationLoop, fc.ValidationLoop)
 
 	// Env: merge sub-maps independently; forge keys win (ADR 0055)
 	if fc.Env != nil {

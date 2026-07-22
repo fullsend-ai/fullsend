@@ -180,6 +180,32 @@ func TestResolveForge_ValidationLoopReplace(t *testing.T) {
 	assert.Equal(t, 1, h.ValidationLoop.MaxIterations)
 }
 
+func TestResolveForge_ValidationLoopFieldLevelMerge(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		ValidationLoop: &ValidationLoop{
+			Script:        "scripts/validate-common.sh",
+			MaxIterations: 3,
+			FeedbackMode:  "append",
+			Schema:        "common-schema.json",
+		},
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				ValidationLoop: &ValidationLoop{
+					Schema: "gh-schema.json",
+				},
+			},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "scripts/validate-common.sh", h.ValidationLoop.Script)
+	assert.Equal(t, 3, h.ValidationLoop.MaxIterations)
+	assert.Equal(t, "append", h.ValidationLoop.FeedbackMode)
+	assert.Equal(t, "gh-schema.json", h.ValidationLoop.Schema)
+}
+
 func TestResolveForge_ValidationLoopNilInherits(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",

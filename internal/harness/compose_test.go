@@ -298,7 +298,7 @@ host_files:
 	assert.Equal(t, "/dest3", h.HostFiles[2].Dest)
 }
 
-func TestLoadWithBase_LocalBase_ValidationLoopReplace(t *testing.T) {
+func TestLoadWithBase_LocalBase_ValidationLoopAllFieldsOverride(t *testing.T) {
 	dir := t.TempDir()
 
 	writeTestHarness(t, dir, "base.yaml", `
@@ -319,10 +319,70 @@ validation_loop:
 	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
 	require.NoError(t, err)
 
-	// ValidationLoop: child replaces entirely
+	// ValidationLoop: child fields win when all set
 	require.NotNil(t, h.ValidationLoop)
 	assert.Equal(t, "child-script.sh", h.ValidationLoop.Script)
 	assert.Equal(t, 3, h.ValidationLoop.MaxIterations)
+}
+
+func TestLoadWithBase_LocalBase_ValidationLoopFieldLevelMerge(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: base-script.sh
+  max_iterations: 5
+  feedback_mode: append
+  schema: base-schema.json
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+validation_loop:
+  schema: child-schema.json
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	// ValidationLoop: child schema wins, base fills gaps
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "base-script.sh", h.ValidationLoop.Script)
+	assert.Equal(t, 5, h.ValidationLoop.MaxIterations)
+	assert.Equal(t, "append", h.ValidationLoop.FeedbackMode)
+	assert.Equal(t, "child-schema.json", h.ValidationLoop.Schema)
+}
+
+func TestLoadWithBase_LocalBase_ValidationLoopPartialScriptOverride(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: base-script.sh
+  max_iterations: 5
+  feedback_mode: append
+  schema: base-schema.json
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+validation_loop:
+  script: child-script.sh
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	// Child sets only script; base schema/iterations/feedback carry through
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "child-script.sh", h.ValidationLoop.Script)
+	assert.Equal(t, 5, h.ValidationLoop.MaxIterations)
+	assert.Equal(t, "append", h.ValidationLoop.FeedbackMode)
+	assert.Equal(t, "base-schema.json", h.ValidationLoop.Schema)
 }
 
 func TestLoadWithBase_LocalBase_ValidationLoopInherit(t *testing.T) {
@@ -348,6 +408,100 @@ model: opus
 	require.NotNil(t, h.ValidationLoop)
 	assert.Equal(t, "base-script.sh", h.ValidationLoop.Script)
 	assert.Equal(t, 5, h.ValidationLoop.MaxIterations)
+}
+
+func TestMergeValidationLoop(t *testing.T) {
+	tests := []struct {
+		name     string
+		base     *ValidationLoop
+		child    *ValidationLoop
+		expected *ValidationLoop
+	}{
+		{
+			name:     "both nil",
+			base:     nil,
+			child:    nil,
+			expected: nil,
+		},
+		{
+			name: "base nil",
+			base: nil,
+			child: &ValidationLoop{
+				Script:        "child.sh",
+				MaxIterations: 3,
+			},
+			expected: &ValidationLoop{
+				Script:        "child.sh",
+				MaxIterations: 3,
+			},
+		},
+		{
+			name: "child nil",
+			base: &ValidationLoop{
+				Script:        "base.sh",
+				MaxIterations: 5,
+			},
+			child: nil,
+			expected: &ValidationLoop{
+				Script:        "base.sh",
+				MaxIterations: 5,
+			},
+		},
+		{
+			name: "child partial override - schema only",
+			base: &ValidationLoop{
+				Script:        "base.sh",
+				Schema:        "base-schema.json",
+				MaxIterations: 5,
+				FeedbackMode:  "append",
+			},
+			child: &ValidationLoop{
+				Schema: "child-schema.json",
+			},
+			expected: &ValidationLoop{
+				Script:        "base.sh",
+				Schema:        "child-schema.json",
+				MaxIterations: 5,
+				FeedbackMode:  "append",
+			},
+		},
+		{
+			name: "child full override",
+			base: &ValidationLoop{
+				Script:        "base.sh",
+				Schema:        "base-schema.json",
+				MaxIterations: 5,
+				FeedbackMode:  "append",
+			},
+			child: &ValidationLoop{
+				Script:        "child.sh",
+				Schema:        "child-schema.json",
+				MaxIterations: 3,
+				FeedbackMode:  "replace",
+			},
+			expected: &ValidationLoop{
+				Script:        "child.sh",
+				Schema:        "child-schema.json",
+				MaxIterations: 3,
+				FeedbackMode:  "replace",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := mergeValidationLoop(tt.base, tt.child)
+			if tt.expected == nil {
+				assert.Nil(t, result)
+			} else {
+				require.NotNil(t, result)
+				assert.Equal(t, tt.expected.Script, result.Script)
+				assert.Equal(t, tt.expected.Schema, result.Schema)
+				assert.Equal(t, tt.expected.MaxIterations, result.MaxIterations)
+				assert.Equal(t, tt.expected.FeedbackMode, result.FeedbackMode)
+			}
+		})
+	}
 }
 
 func TestLoadWithBase_ChainedBases(t *testing.T) {
@@ -1036,6 +1190,30 @@ func TestMergeForgeConfigInto_ValidationLoop(t *testing.T) {
 	require.NotNil(t, child.ValidationLoop)
 	assert.Equal(t, "base-validate.sh", child.ValidationLoop.Script)
 	assert.Equal(t, 5, child.ValidationLoop.MaxIterations)
+}
+
+func TestMergeForgeConfigInto_ValidationLoopFieldLevelMerge(t *testing.T) {
+	base := &ForgeConfig{
+		ValidationLoop: &ValidationLoop{
+			Script:        "base-validate.sh",
+			MaxIterations: 5,
+			FeedbackMode:  "append",
+			Schema:        "base-schema.json",
+		},
+	}
+	child := &ForgeConfig{
+		ValidationLoop: &ValidationLoop{
+			Schema: "child-schema.json",
+		},
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	require.NotNil(t, child.ValidationLoop)
+	assert.Equal(t, "base-validate.sh", child.ValidationLoop.Script)
+	assert.Equal(t, 5, child.ValidationLoop.MaxIterations)
+	assert.Equal(t, "append", child.ValidationLoop.FeedbackMode)
+	assert.Equal(t, "child-schema.json", child.ValidationLoop.Schema)
 }
 
 func TestLoadWithBase_InvalidForgeAfterMerge(t *testing.T) {

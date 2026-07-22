@@ -421,12 +421,43 @@ func matchingAllowedPrefix(rawURL string, allowlist []string) string {
 	return MatchingAllowedPrefixInList(rawURL, allowlist)
 }
 
+// mergeValidationLoop merges two ValidationLoop pointers field by field.
+// Child non-zero values win; base fills gaps. Returns the merged result.
+// If both are nil, returns nil. If only one is non-nil, returns a copy of it.
+func mergeValidationLoop(base, child *ValidationLoop) *ValidationLoop {
+	if base == nil && child == nil {
+		return nil
+	}
+	if base == nil {
+		return child
+	}
+	if child == nil {
+		return base
+	}
+
+	merged := *child // start with child values
+	if merged.Script == "" {
+		merged.Script = base.Script
+	}
+	if merged.Schema == "" {
+		merged.Schema = base.Schema
+	}
+	if merged.MaxIterations == 0 {
+		merged.MaxIterations = base.MaxIterations
+	}
+	if merged.FeedbackMode == "" {
+		merged.FeedbackMode = base.FeedbackMode
+	}
+	return &merged
+}
+
 // mergeBaseIntoChild merges base harness fields into child harness.
 // Child values override base values following ADR-0045 merge rules:
 //   - Scalars: child overrides if non-zero
 //   - Slices (skills, plugins, providers, api_servers): base + child (concatenated)
 //   - Maps (runner_env): base merged with child; child keys win
-//   - Pointer structs (validation_loop, security): child replaces if non-nil
+//   - Pointer structs (validation_loop): field-level merge; child non-zero fields win
+//   - Pointer structs (security): child replaces if non-nil
 //   - host_files: concatenated with last-writer-wins dedup by Dest
 //   - forge: key-by-key merge; per-platform uses same rules
 //   - allowed_remote_resources: NOT merged (security; child must declare its own)
@@ -536,10 +567,8 @@ func mergeBaseIntoChild(base, child *Harness) {
 		child.Env.mergeEnvFrom(base.Env, false)
 	}
 
-	// Pointer structs: child replaces if non-nil
-	if child.ValidationLoop == nil {
-		child.ValidationLoop = base.ValidationLoop
-	}
+	// ValidationLoop: field-level merge; child non-zero fields win
+	child.ValidationLoop = mergeValidationLoop(base.ValidationLoop, child.ValidationLoop)
 	// Security: child inherits base's config if nil. Note that a base harness
 	// (even integrity-pinned) could set fail_mode: open. Child authors must
 	// explicitly set their own security block to prevent inheriting a weaker posture.
@@ -1272,10 +1301,8 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 		child.Env.mergeEnvFrom(base.Env, false)
 	}
 
-	// ValidationLoop: child replaces if non-nil
-	if child.ValidationLoop == nil {
-		child.ValidationLoop = base.ValidationLoop
-	}
+	// ValidationLoop: field-level merge; child non-zero fields win
+	child.ValidationLoop = mergeValidationLoop(base.ValidationLoop, child.ValidationLoop)
 }
 
 // FetchAgentHarness fetches a URL-sourced agent harness using the same
