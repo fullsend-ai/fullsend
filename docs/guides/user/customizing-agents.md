@@ -59,8 +59,9 @@ providers:                       # Inference providers (local names or URLs)
   - vertex                       # Local name: references providers/vertex.yaml
   - "https://github.com/org/repo/tree/main/providers/claude.yaml#sha256=abc..."  # Remote URL
 
-openshell:                       # Openshell provider profiles (URL-only, with integrity hash)
+openshell:                       # Openshell provider profiles (local paths or URLs)
   profiles:
+    - profiles/claude-code.yaml    # Local path: resolved relative to harness
     - "https://github.com/org/profiles/tree/main/claude-code.yaml#sha256=def..."
 
 validation_loop:                     # script is required; these sub-fields are optional
@@ -116,11 +117,12 @@ providers:
   - "https://github.com/org/repo/tree/main/providers/claude.yaml#sha256=abc..."  # Remote
 ```
 
-**`openshell.profiles`** accepts only HTTPS URLs (profiles are always remote):
+**`openshell.profiles`** accepts local paths and HTTPS URLs:
 
 ```yaml
 openshell:
   profiles:
+    - profiles/claude-code.yaml    # Local path (resolved relative to harness)
     - "https://github.com/org/profiles/tree/main/claude-code.yaml#sha256=abc..."
 ```
 
