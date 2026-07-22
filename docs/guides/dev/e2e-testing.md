@@ -162,9 +162,13 @@ Other labels (for example `ready-for-review`, `requires-manual-review`, or
 e2e or functional-test run for that PR. Only `opened` / `synchronize` /
 `reopened`, and `labeled` when the label is `ok-to-test`, cancel in-progress
 work in the per-PR concurrency group. GitHub still starts a workflow run for
-every `labeled` event (labels cannot be filtered at `on:`); for non-actionable
-labels the gate job is skipped entirely, so the run finishes quickly as skipped
-and no sticky `<!-- e2e-gate -->` comment is posted.
+every `labeled` event (labels cannot be filtered at `on:`). For non-actionable
+labels the gate job is skipped entirely and no sticky `<!-- e2e-gate -->`
+comment is posted. If an actionable run is already in progress, that new run
+sits **pending** until the active run finishes (it does not skip immediately).
+If several non-actionable labels land in a burst, GitHub cancels earlier
+pending runs in the concurrency group; only the last dequeued run executes and
+skips. Either way the original in-progress run is left alone.
 
 ### Blocked runs
 
