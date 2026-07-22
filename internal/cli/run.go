@@ -481,8 +481,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// When profiles or providers use local paths (from ResolveRelativeTo or
 	// base composition), ResolveHarness must still run to parse them into
 	// ResolvedProfile/ResolvedProvider — even without URL references.
-	// This runs independently of whether the lock-file or URL-resolution
-	// path already produced results; the outputs are merged afterward.
+	// The lock-file and URL-resolution paths strip entries they consume;
+	// this pass handles whatever remains. Outputs are merged and deduped.
 	if len(h.OpenShellProfiles()) > 0 || hasLocalProviders(h) {
 		prev := result
 		var resolveErr error
@@ -3199,7 +3199,7 @@ func mergeProviderDefs(localDefs []harness.ProviderDef, urlProviders []resolve.R
 
 func hasLocalProviders(h *harness.Harness) bool {
 	for _, p := range h.Providers {
-		if filepath.IsAbs(p) {
+		if !harness.IsURL(p) && harness.IsProviderPath(p) {
 			return true
 		}
 	}

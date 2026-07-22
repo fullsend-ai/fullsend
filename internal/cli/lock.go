@@ -790,13 +790,14 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		}
 	}
 	h.Providers = remainingProviders
-	// Strip URL profiles — they are in the ResolvedProfile list from lock
-	// deps. Keep local-path profiles so the local-only ResolveHarness pass
-	// can parse them into ResolvedProfile entries.
+	// Strip URL and absolute-path profiles — URL-resolved profiles are in
+	// the ResolvedProfile list from lock deps, and absolute-path entries
+	// (from base composition cache) are reconstructed from lock deps too.
+	// Keep only relative-path profiles for the local-only ResolveHarness pass.
 	if h.OpenShell != nil {
 		remaining := h.OpenShell.Profiles[:0]
 		for _, p := range h.OpenShell.Profiles {
-			if !harness.IsURL(p) {
+			if !harness.IsURL(p) && !filepath.IsAbs(p) {
 				remaining = append(remaining, p)
 			}
 		}

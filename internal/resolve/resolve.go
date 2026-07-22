@@ -277,11 +277,11 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 
 			content, err := os.ReadFile(localPath)
 			if err != nil {
-				return ResolveResult{}, fmt.Errorf("reading profile %s: %w", localPath, err)
+				return ResolveResult{}, fmt.Errorf("reading profile %s: %w", p, err)
 			}
 			id, err := ParseProfileID(content)
 			if err != nil {
-				return ResolveResult{}, fmt.Errorf("openshell.profiles[%d]: %w (from %s)", i, err, localPath)
+				return ResolveResult{}, fmt.Errorf("openshell.profiles[%d]: %w (from %s)", i, err, p)
 			}
 
 			// Create a named symlink so openshell sees a .yaml extension
