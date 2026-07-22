@@ -51,5 +51,7 @@ binaries:
   - "**/python"
   - "**/python3"
   - "**/python3.*"
+  - "**/uv"
+  - "**/uvx"
   - "**/go"
   - "**/pre-commit"
