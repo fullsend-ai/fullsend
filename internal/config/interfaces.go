@@ -270,11 +270,9 @@ func LoadConfigWriter(dir string, opts LoadOpts) (ConfigWriter, error) {
 }
 
 // parseConfigReader parses raw config YAML into a ConfigReader.
+// IsPerRepoYAML performs its own yaml.Unmarshal; for malformed YAML it
+// returns false, so ParseOrgConfig surfaces the parse error.
 func parseConfigReader(data []byte) (ConfigReader, error) {
-	var probe interface{}
-	if err := yaml.Unmarshal(data, &probe); err != nil {
-		return nil, fmt.Errorf("parsing config: %w", err)
-	}
 	if IsPerRepoYAML(data) {
 		return ParsePerRepoConfig(data)
 	}
@@ -282,11 +280,9 @@ func parseConfigReader(data []byte) (ConfigReader, error) {
 }
 
 // parseConfigWriter parses raw config YAML into a ConfigWriter.
+// IsPerRepoYAML performs its own yaml.Unmarshal; for malformed YAML it
+// returns false, so ParseOrgConfigWriter surfaces the parse error.
 func parseConfigWriter(data []byte) (ConfigWriter, error) {
-	var probe interface{}
-	if err := yaml.Unmarshal(data, &probe); err != nil {
-		return nil, fmt.Errorf("parsing config: %w", err)
-	}
 	if IsPerRepoYAML(data) {
 		return ParsePerRepoConfigWriter(data)
 	}

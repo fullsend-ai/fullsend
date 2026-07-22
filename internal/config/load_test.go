@@ -75,7 +75,9 @@ func TestLoadConfig_MalformedYAML(t *testing.T) {
 
 	_, err := LoadConfig(dir, LoadOpts{MissingOK: false})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing config")
+	// Malformed YAML falls through IsPerRepoYAML (returns false) and
+	// surfaces as a ParseOrgConfig error.
+	assert.Contains(t, err.Error(), "parsing org config")
 }
 
 func TestLoadConfig_SharedFieldsDefaultPerRepo(t *testing.T) {
