@@ -1,0 +1,40 @@
+name: Mint CF Worker Test
+
+# Path-filtered CI entry point for the CF mint Worker JS↔WASM bridge smoke
+# tests. Calls `make mint-cf-worker-test` (qualified name — not bare
+# `worker-test`) so other Workers in this repo do not collide.
+#
+# The Make target starts as a stub (#5481); #5427 / follow-up fills it with
+# wasm-stage + workersrc install/test without renaming the CI contract.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "internal/dispatch/cf/**"
+      - "cmd/mint-wasm/**"
+      - "Makefile"
+      - ".github/workflows/mint-cf-worker-test.yml"
+  pull_request:
+    paths:
+      - "internal/dispatch/cf/**"
+      - "cmd/mint-wasm/**"
+      - "Makefile"
+      - ".github/workflows/mint-cf-worker-test.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mint-cf-worker-test-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mint-cf-worker-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Run CF mint Worker bridge smoke tests
+        run: make mint-cf-worker-test
