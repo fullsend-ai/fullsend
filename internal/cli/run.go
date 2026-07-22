@@ -907,7 +907,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if keepSandbox {
 			return
 		}
-		if err := os.RemoveAll(hostRepositoryDownloadDir); err != nil {
+		if err := forceRemoveAll(hostRepositoryDownloadDir); err != nil {
 			printer.StepWarn("Failed to remove download dir: " + err.Error())
 		} else {
 			printer.StepDone(fmt.Sprintf("Download directory removed: %s", hostRepositoryDownloadDir))
@@ -1388,7 +1388,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		// 9d. Extract target repo back to host. SafeDownload removes dangerous
 		// symlinks (absolute or repo-escaping) and .git/hooks/ to prevent sandbox escape.
-		if clearErr := os.RemoveAll(hostRepositoryDownloadDir); clearErr != nil {
+		if clearErr := forceRemoveAll(hostRepositoryDownloadDir); clearErr != nil {
 			return fmt.Errorf("clearing local repo %s before extraction: %w", hostRepositoryDownloadDir, clearErr)
 		}
 
@@ -3195,6 +3195,31 @@ func sandboxProviderNames(harnessProviders []string, resolved []resolve.Resolved
 		}
 	}
 	return names
+}
+
+// forceRemoveAll restores owner-write permission on all directories under
+// path, then removes the entire tree. This handles directories left read-only
+// by the readonly_repo sandbox enforcement — os.RemoveAll alone fails with
+// EACCES when parent directories lack write permission (the unlinkat syscall
+// requires write permission on the containing directory).
+func forceRemoveAll(path string) error {
+	// Best-effort permission restore; if WalkDir itself fails on a
+	// directory it cannot read, we fix the parent and continue.
+	// Errors are intentionally ignored — os.RemoveAll will report any
+	// remaining issues.
+	filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error { //nolint:errcheck
+		if err != nil {
+			// Can't stat p — likely the parent directory lacks +rx.
+			// Restore the parent so the next iteration can proceed.
+			os.Chmod(filepath.Dir(p), 0o755) //nolint:errcheck
+			return nil
+		}
+		if d.IsDir() {
+			os.Chmod(p, 0o755) //nolint:errcheck
+		}
+		return nil
+	})
+	return os.RemoveAll(path)
 }
 
 // checkProviderProfileIntegrity validates that every URL-resolved provider
