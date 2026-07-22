@@ -7,16 +7,20 @@ Decided in [ADR 0050](../../ADRs/0050-distributed-tracing-instrumentation.md).
 
 ## Zero-configuration baseline (Level 1)
 
-Every `fullsend run` produces one file in the run output directory with no
-configuration required:
+Every `fullsend run` produces Level 1 artifacts in the run output directory with
+no configuration required:
 
 - **`run-telemetry.jsonl`** — OTLP JSON spans covering the run lifecycle
   (sandbox creation, agent iterations, validation) with timestamps, durations,
   trace IDs, and token/cost attributes.
+- **`harness-snapshot.json`** — proposed in
+  [ADR 0071](../../ADRs/0071-forge-pointer-correlation-for-agent-traces.md)
+  (run-start harness fingerprint and forge/CI pointers). Implementation follows
+  ADR acceptance; until then only `run-telemetry.jsonl` is guaranteed on disk.
 
-This file is written on every run unless `OTEL_SDK_DISABLED=true`, which
-suppresses all telemetry output including the local file. It contains
-metadata only — no prompts, completions, or source code content.
+`run-telemetry.jsonl` is written on every run unless `OTEL_SDK_DISABLED=true`,
+which suppresses span export (local file and OTLP). It contains metadata only —
+no prompts, completions, or source code content.
 
 ## Prerequisites
 
