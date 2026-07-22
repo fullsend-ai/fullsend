@@ -10,9 +10,57 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
+
+// panickingSCM is a fake scm.Driver whose CloseIssue panics.
+// Used to verify that afterScenario's deferred pool.Release runs
+// even when steps.CleanupScenario panics during issue cleanup.
+type panickingSCM struct{}
+
+func (p *panickingSCM) CreateIssue(context.Context, string, string, string, string, ...string) (*forge.Issue, error) {
+	return nil, nil
+}
+func (p *panickingSCM) AddIssueLabels(context.Context, string, string, int, ...string) error {
+	return nil
+}
+func (p *panickingSCM) AddComment(context.Context, string, string, int, string) (*forge.IssueComment, error) {
+	return nil, nil
+}
+func (p *panickingSCM) GetIssue(context.Context, string, string, int) (*forge.Issue, error) {
+	return nil, nil
+}
+func (p *panickingSCM) GetFileContent(context.Context, string, string, string) ([]byte, error) {
+	return nil, nil
+}
+func (p *panickingSCM) CommitFile(context.Context, string, string, string, string, []byte) error {
+	return nil
+}
+func (p *panickingSCM) CreateBranch(context.Context, string, string, string) error { return nil }
+func (p *panickingSCM) DeleteBranch(context.Context, string, string, string) error { return nil }
+func (p *panickingSCM) CommitFileToBranch(context.Context, string, string, string, string, string, []byte) error {
+	return nil
+}
+func (p *panickingSCM) CreateChangeProposal(context.Context, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
+	return nil, nil
+}
+func (p *panickingSCM) SubmitPullRequestReview(context.Context, string, string, int, string) error {
+	return nil
+}
+func (p *panickingSCM) CloseIssue(context.Context, string, string, int) error {
+	panic("simulated cleanup panic in CloseIssue")
+}
+func (p *panickingSCM) CreateFork(context.Context, string, string, string) (string, error) {
+	return "", nil
+}
+func (p *panickingSCM) CommitFileToFork(context.Context, string, string, string, string, string, []byte) error {
+	return nil
+}
+func (p *panickingSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
+	return nil, nil
+}
 
 func TestTagNames(t *testing.T) {
 	names := tagNames([]*messages.PickleTag{{Name: "@foo"}, {Name: "@bar"}})
@@ -202,4 +250,34 @@ func TestAfterScenario_PreservesOriginalError(t *testing.T) {
 	// Original error is preserved; release error is logged but not
 	// returned when there is already an error from the scenario.
 	assert.Equal(t, origErr, err)
+}
+
+func TestAfterScenario_ReleasesLeaseOnCleanupPanic(t *testing.T) {
+	pool, err := world.NewRepoPool(1)
+	require.NoError(t, err)
+
+	name, err := pool.Acquire(context.Background())
+	require.NoError(t, err)
+
+	// Build a World whose cleanup will panic: panickingSCM.CloseIssue
+	// panics, and IssueNumber > 0 triggers that code path in
+	// steps.CleanupScenario.
+	w := &world.World{
+		SCM:            &panickingSCM{},
+		IssueNumber:    1,
+		LeasedRepoName: name,
+	}
+	ctx := world.WithWorld(context.Background(), w)
+
+	// afterScenario should panic (from CleanupScenario), but the
+	// deferred pool.Release must still run during stack unwinding.
+	assert.Panics(t, func() {
+		afterScenario(ctx, pool, nil) //nolint:errcheck // panic prevents return
+	})
+
+	// The deferred Release ran: the leased name is back in the pool
+	// and can be re-acquired.
+	got, err := pool.Acquire(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, name, got, "deferred Release should have returned the name to the pool")
 }
