@@ -260,3 +260,346 @@ func TestWaitForHarnessAgent_FromRepositoryArtifact(t *testing.T) {
 	require.NotNil(t, run)
 	assert.Equal(t, 99, run.ID)
 }
+
+func TestWaitForHarnessAgent_NonSuccessConclusion(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			{
+				ID:            10,
+				Name:          "fullsend-triage",
+				CreatedAt:     "2026-01-02T00:00:00Z",
+				WorkflowRunID: 99,
+			},
+		},
+	}
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID: 99, Status: "completed", Conclusion: "failure",
+			CreatedAt: "2026-01-02T00:00:00Z", HTMLURL: "https://github.com/org/repo/actions/runs/99",
+		},
+	}
+
+	d := &Driver{Client: client}
+	_, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "concluded with \"failure\"")
+	assert.Contains(t, err.Error(), "run 99")
+}
+
+func TestWaitForHarnessAgent_ContextCancelled(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+
+	d := &Driver{Client: client}
+	_, err := d.WaitForHarnessAgent(ctx, "org", "repo", "triage", after)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestAssertNoWorkflow_NoRuns(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+
+	d := &Driver{Client: client}
+	err := d.AssertNoWorkflow(context.Background(), "org", "repo", "dispatch.yml", after)
+	require.NoError(t, err)
+}
+
+func TestAssertNoWorkflow_UnexpectedRun(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/dispatch.yml": {
+			ID: 10, Status: "completed", Conclusion: "success",
+			CreatedAt: "2026-01-02T00:00:00Z",
+		},
+	}
+
+	d := &Driver{Client: client}
+	err := d.AssertNoWorkflow(context.Background(), "org", "repo", "dispatch.yml", after)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unexpected workflow run")
+}
+
+func TestAssertNoWorkflow_RunBeforeTrigger(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/dispatch.yml": {
+			ID: 10, Status: "completed", Conclusion: "success",
+			CreatedAt: "2026-01-01T00:00:00Z", // before trigger
+		},
+	}
+
+	d := &Driver{Client: client}
+	err := d.AssertNoWorkflow(context.Background(), "org", "repo", "dispatch.yml", after)
+	require.NoError(t, err)
+}
+
+func TestAssertNoHarnessAgentArtifact_NoMatch(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			{ID: 1, Name: "fullsend-other", CreatedAt: "2026-01-02T00:00:00Z"},
+		},
+	}
+
+	d := &Driver{Client: client}
+	err := d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "triage", after)
+	require.NoError(t, err)
+}
+
+func TestAssertNoHarnessAgentArtifact_FoundMatch(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			{ID: 1, Name: "fullsend-triage", CreatedAt: "2026-01-02T00:00:00Z"},
+		},
+	}
+
+	d := &Driver{Client: client}
+	err := d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "triage", after)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expected harness \"triage\" not to run")
+	assert.Contains(t, err.Error(), "fullsend-triage")
+}
+
+func TestAssertNoHarnessAgentArtifact_ArtifactBeforeAfterTime(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			// Artifact created before the trigger time — should be ignored.
+			{ID: 1, Name: "fullsend-triage", CreatedAt: "2026-01-02T00:00:00Z"},
+		},
+	}
+
+	d := &Driver{Client: client}
+	err := d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "triage", after)
+	require.NoError(t, err)
+}
+
+func TestAssertNoHarnessAgentArtifact_APIError(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.Errors["ListRepositoryArtifacts"] = fmt.Errorf("API unavailable")
+
+	d := &Driver{Client: client}
+	err := d.AssertNoHarnessAgentArtifact(context.Background(), "org", "repo", "triage", after)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "API unavailable")
+}
+
+func TestSelectCompletedSuccessRun(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	t.Run("selects successful run", func(t *testing.T) {
+		runs := []forge.WorkflowRun{
+			{ID: 1, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:00Z"},
+		}
+		got := selectCompletedSuccessRun(runs, after)
+		require.NotNil(t, got)
+		assert.Equal(t, 1, got.ID)
+	})
+
+	t.Run("skips failed runs", func(t *testing.T) {
+		runs := []forge.WorkflowRun{
+			{ID: 1, Status: "completed", Conclusion: "failure", CreatedAt: "2026-01-02T00:00:00Z"},
+		}
+		got := selectCompletedSuccessRun(runs, after)
+		assert.Nil(t, got)
+	})
+
+	t.Run("skips in-progress runs", func(t *testing.T) {
+		runs := []forge.WorkflowRun{
+			{ID: 1, Status: "in_progress", Conclusion: "", CreatedAt: "2026-01-02T00:00:00Z"},
+		}
+		got := selectCompletedSuccessRun(runs, after)
+		assert.Nil(t, got)
+	})
+
+	t.Run("skips runs before trigger time", func(t *testing.T) {
+		runs := []forge.WorkflowRun{
+			{ID: 1, Status: "completed", Conclusion: "success", CreatedAt: "2025-12-01T00:00:00Z"},
+		}
+		got := selectCompletedSuccessRun(runs, after)
+		assert.Nil(t, got)
+	})
+
+	t.Run("picks newest run", func(t *testing.T) {
+		runs := []forge.WorkflowRun{
+			{ID: 1, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:00Z"},
+			{ID: 5, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-03T00:00:00Z"},
+		}
+		got := selectCompletedSuccessRun(runs, after)
+		require.NotNil(t, got)
+		assert.Equal(t, 5, got.ID)
+	})
+}
+
+func TestSelectCompletedSuccessRunByName(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	t.Run("selects matching name", func(t *testing.T) {
+		runs := []forge.WorkflowRun{
+			{ID: 1, Name: "Triage Agent", Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:00Z"},
+			{ID: 2, Name: "Other Workflow", Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:00Z"},
+		}
+		got := selectCompletedSuccessRunByName(runs, after, "Triage Agent")
+		require.NotNil(t, got)
+		assert.Equal(t, 1, got.ID)
+	})
+
+	t.Run("returns nil when name not found", func(t *testing.T) {
+		runs := []forge.WorkflowRun{
+			{ID: 1, Name: "Other Workflow", Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:00Z"},
+		}
+		got := selectCompletedSuccessRunByName(runs, after, "Triage Agent")
+		assert.Nil(t, got)
+	})
+
+	t.Run("skips non-success", func(t *testing.T) {
+		runs := []forge.WorkflowRun{
+			{ID: 1, Name: "Triage Agent", Status: "completed", Conclusion: "failure", CreatedAt: "2026-01-02T00:00:00Z"},
+		}
+		got := selectCompletedSuccessRunByName(runs, after, "Triage Agent")
+		assert.Nil(t, got)
+	})
+}
+
+func TestWorkflowRunMatches(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	t.Run("matches when after and event match", func(t *testing.T) {
+		run := forge.WorkflowRun{CreatedAt: "2026-01-02T00:00:00Z", Event: "issues"}
+		assert.True(t, workflowRunMatches(run, after, "issues"))
+	})
+
+	t.Run("matches when no event filter", func(t *testing.T) {
+		run := forge.WorkflowRun{CreatedAt: "2026-01-02T00:00:00Z", Event: "push"}
+		assert.True(t, workflowRunMatches(run, after, ""))
+	})
+
+	t.Run("rejects before trigger time", func(t *testing.T) {
+		run := forge.WorkflowRun{CreatedAt: "2025-12-01T00:00:00Z", Event: "issues"}
+		assert.False(t, workflowRunMatches(run, after, "issues"))
+	})
+
+	t.Run("rejects wrong event", func(t *testing.T) {
+		run := forge.WorkflowRun{CreatedAt: "2026-01-02T00:00:00Z", Event: "push"}
+		assert.False(t, workflowRunMatches(run, after, "issues"))
+	})
+
+	t.Run("rejects bad timestamp", func(t *testing.T) {
+		run := forge.WorkflowRun{CreatedAt: "not-a-date", Event: "issues"}
+		assert.False(t, workflowRunMatches(run, after, "issues"))
+	})
+}
+
+func TestSelectRepositoryArtifactAfter(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	t.Run("selects matching artifact", func(t *testing.T) {
+		arts := []forge.RepositoryArtifact{
+			{ID: 1, Name: "fullsend-triage", CreatedAt: "2026-01-02T00:00:00Z"},
+		}
+		got := selectRepositoryArtifactAfter(arts, "fullsend-triage", after)
+		require.NotNil(t, got)
+		assert.Equal(t, 1, got.ID)
+	})
+
+	t.Run("skips wrong name", func(t *testing.T) {
+		arts := []forge.RepositoryArtifact{
+			{ID: 1, Name: "fullsend-other", CreatedAt: "2026-01-02T00:00:00Z"},
+		}
+		got := selectRepositoryArtifactAfter(arts, "fullsend-triage", after)
+		assert.Nil(t, got)
+	})
+
+	t.Run("skips before trigger time", func(t *testing.T) {
+		arts := []forge.RepositoryArtifact{
+			{ID: 1, Name: "fullsend-triage", CreatedAt: "2025-12-01T00:00:00Z"},
+		}
+		got := selectRepositoryArtifactAfter(arts, "fullsend-triage", after)
+		assert.Nil(t, got)
+	})
+
+	t.Run("picks newest artifact", func(t *testing.T) {
+		arts := []forge.RepositoryArtifact{
+			{ID: 1, Name: "fullsend-triage", CreatedAt: "2026-01-02T00:00:00Z"},
+			{ID: 5, Name: "fullsend-triage", CreatedAt: "2026-01-03T00:00:00Z"},
+		}
+		got := selectRepositoryArtifactAfter(arts, "fullsend-triage", after)
+		require.NotNil(t, got)
+		assert.Equal(t, 5, got.ID)
+	})
+}
+
+func TestExtractArtifactZip_CreatesSubdirectories(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.Create("subdir/file.txt")
+	require.NoError(t, err)
+	_, err = w.Write([]byte("nested content"))
+	require.NoError(t, err)
+	require.NoError(t, zw.Close())
+
+	dest := t.TempDir()
+	require.NoError(t, extractArtifactZip("test-art", buf.Bytes(), dest))
+	data, err := os.ReadFile(filepath.Join(dest, "test-art", "subdir", "file.txt"))
+	require.NoError(t, err)
+	assert.Equal(t, "nested content", string(data))
+}
+
+func TestReadLimited_ExceedsLimit(t *testing.T) {
+	t.Parallel()
+
+	r := bytes.NewReader(bytes.Repeat([]byte("x"), 100))
+	_, err := readLimited(r, 50)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds")
+}
+
+func TestReadLimited_WithinLimit(t *testing.T) {
+	t.Parallel()
+
+	r := bytes.NewReader([]byte("hello"))
+	data, err := readLimited(r, 100)
+	require.NoError(t, err)
+	assert.Equal(t, "hello", string(data))
+}

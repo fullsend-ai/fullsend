@@ -314,6 +314,63 @@ func TestGivenURLSourcedCustomHarness_CommitHarnessError(t *testing.T) {
 	assert.Contains(t, err.Error(), "committing harness to hosting repo")
 }
 
+func TestGivenURLSourcedCustomHarness_LogsDiagnostics(t *testing.T) {
+	stubRawHTTPClient(t)
+	scm := &fakeURLSCM{files: map[string][]byte{
+		".fullsend/config.yaml": []byte("version: \"1\"\nagents: []\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/fullsend-ai/fullsend/\"\n"),
+	}}
+	var logged []string
+	w := &world.World{
+		Install:             &fakeURLInstall{owner: "test-org", repo: "test-repo"},
+		SCM:                 scm,
+		URLHarnessRepoOwner: "test-org",
+		URLHarnessRepoName:  "harness-host",
+		Logf:                func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+	err := givenURLSourcedCustomHarness(w, "url-test", "agent: agents/triage.md\nrole: triage\nslug: url-test", urlHarnessOpts{})
+	require.NoError(t, err)
+
+	// The Logf callback should receive diagnostic output with the raw URL.
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], "url-test")
+	assert.Contains(t, logged[0], "rawURL=")
+	assert.Contains(t, logged[0], "defaultBranch=")
+}
+
+func TestGivenURLSourcedCustomHarness_InvalidConfigYAML(t *testing.T) {
+	stubRawHTTPClient(t)
+	scm := &fakeURLSCM{files: map[string][]byte{
+		".fullsend/config.yaml": []byte("invalid: [yaml: content"),
+	}}
+	w := &world.World{
+		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		SCM:                 scm,
+		URLHarnessRepoOwner: "my-org",
+		URLHarnessRepoName:  "harness-host",
+	}
+	err := givenURLSourcedCustomHarness(w, "agent1", "agent: agents/triage.md\nrole: triage", urlHarnessOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing config")
+}
+
+func TestGivenURLSourcedCustomHarness_FileNotAccessibleAfterCommit(t *testing.T) {
+	speedUpRetries(t)
+	// Use a fake that never returns the file as accessible after commit.
+	scm := &fakeURLSCM{
+		files:                map[string][]byte{},
+		getFileContentAlways: fmt.Errorf("file not found"),
+	}
+	w := &world.World{
+		Install:             &fakeURLInstall{owner: "my-org", repo: "my-repo"},
+		SCM:                 scm,
+		URLHarnessRepoOwner: "my-org",
+		URLHarnessRepoName:  "harness-host",
+	}
+	err := givenURLSourcedCustomHarness(w, "agent1", "agent: agents/triage.md\nrole: triage", urlHarnessOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "harness file not accessible after commit")
+}
+
 func TestGivenURLSourcedCustomHarness_GetConfigError(t *testing.T) {
 	stubRawHTTPClient(t)
 	scm := &fakeURLSCM{files: map[string][]byte{}} // no config file
@@ -415,6 +472,22 @@ func TestVerifyRawURLAccessible_Forbidden(t *testing.T) {
 	err := verifyRawURLAccessible("https://raw.githubusercontent.com/org/repo/main/file.yaml")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "status 403")
+}
+
+func TestVerifyRawURLAccessible_HTTPError(t *testing.T) {
+	speedUpRetries(t)
+	orig := rawHTTPClient
+	rawHTTPClient = &http.Client{
+		Transport: roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("connection refused")
+		}),
+	}
+	t.Cleanup(func() { rawHTTPClient = orig })
+
+	err := verifyRawURLAccessible("https://raw.githubusercontent.com/org/repo/main/file.yaml#sha256=abc")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not accessible after")
+	assert.Contains(t, err.Error(), "connection refused")
 }
 
 func TestVerifyRawURLAccessible_StripsFragment(t *testing.T) {
@@ -575,15 +648,16 @@ func (f *fakeURLInstall) AgentWorkflowFile() string  { return "reusable-triage.y
 func (f *fakeURLInstall) AgentArtifactName() string  { return "fullsend-triage" }
 
 type fakeURLSCM struct {
-	files              map[string][]byte
-	repos              map[string]bool
-	createRepoErr      error
-	commitFileErr      error
-	commitFileRepo     string // only return commitFileErr when repo matches
-	ensurePublicErr    error
-	ensurePublicCalled bool
-	defaultBranch      string // returned by GetDefaultBranch; defaults to "main"
-	defaultBranchErr   error
+	files                map[string][]byte
+	repos                map[string]bool
+	createRepoErr        error
+	commitFileErr        error
+	commitFileRepo       string // only return commitFileErr when repo matches
+	ensurePublicErr      error
+	ensurePublicCalled   bool
+	defaultBranch        string // returned by GetDefaultBranch; defaults to "main"
+	defaultBranchErr     error
+	getFileContentAlways error // if set, GetFileContent always returns this error
 }
 
 func (f *fakeURLSCM) CommitFile(_ context.Context, _, repo, path, _ string, content []byte) error {
@@ -595,6 +669,9 @@ func (f *fakeURLSCM) CommitFile(_ context.Context, _, repo, path, _ string, cont
 }
 
 func (f *fakeURLSCM) GetFileContent(_ context.Context, _, _, path string) ([]byte, error) {
+	if f.getFileContentAlways != nil {
+		return nil, f.getFileContentAlways
+	}
 	data, ok := f.files[path]
 	if !ok {
 		return nil, fmt.Errorf("file not found: %s", path)
