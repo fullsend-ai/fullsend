@@ -1818,3 +1818,85 @@ func TestResolveHarness_LocalAbsProvider(t *testing.T) {
 	require.Len(t, h.Providers, 1)
 	assert.Equal(t, "bare-provider-name", h.Providers[0])
 }
+
+func TestParseProviderDef(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		wantErr string
+	}{
+		{
+			"valid",
+			"name: my-provider\ntype: custom\n",
+			"",
+		},
+		{
+			"missing name",
+			"type: custom\n",
+			"provider name is required",
+		},
+		{
+			"missing type",
+			"name: my-provider\n",
+			"provider type is required",
+		},
+		{
+			"invalid name chars",
+			"name: my.provider\ntype: custom\n",
+			"invalid characters",
+		},
+		{
+			"invalid type chars",
+			"name: my-provider\ntype: my.type\n",
+			"invalid characters",
+		},
+		{
+			"invalid yaml",
+			":::not yaml",
+			"parsing provider",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			def, _, err := parseProviderDef([]byte(tt.content), 0, "test-source")
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, "my-provider", def.Name)
+				assert.Equal(t, "custom", def.Type)
+			}
+		})
+	}
+}
+
+func TestParseProviderDef_CredentialWarning(t *testing.T) {
+	content := []byte("name: my-provider\ntype: custom\ncredentials:\n  API_KEY: hardcoded-secret\n")
+	_, w, err := parseProviderDef(content, 0, "test-source")
+	require.NoError(t, err)
+	assert.Contains(t, w, "API_KEY")
+	assert.Contains(t, w, "do not look like ${VAR} references")
+}
+
+func TestResolveHarness_LocalProviderWarnings(t *testing.T) {
+	root := t.TempDir()
+
+	providerContent := []byte("name: leaky\ntype: custom\ncredentials:\n  SECRET: hardcoded-value\n")
+	providerPath := filepath.Join(root, "providers", "leaky.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(providerPath), 0755))
+	require.NoError(t, os.WriteFile(providerPath, providerContent, 0644))
+
+	h := &harness.Harness{
+		Agent:     "/abs/agents/test.md",
+		Providers: []string{providerPath},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Providers, 1)
+	require.Len(t, result.Warnings, 1)
+	assert.Contains(t, result.Warnings[0], "SECRET")
+}

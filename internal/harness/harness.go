@@ -413,7 +413,7 @@ func (h *Harness) Validate() error {
 		}
 	}
 	for i, p := range h.Providers {
-		if IsURL(p) || filepath.IsAbs(p) || strings.Contains(p, "/") {
+		if IsURL(p) || filepath.IsAbs(p) || IsProviderPath(p) {
 			continue // URL or path — validated by ValidateResourceTypes below
 		}
 		if !validProviderName.MatchString(p) {
@@ -584,7 +584,7 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 	}
 	for i := range h.Providers {
 		p := h.Providers[i]
-		if strings.Contains(p, "/") || strings.HasSuffix(p, ".yaml") || strings.HasSuffix(p, ".yml") {
+		if IsProviderPath(p) {
 			if h.Providers[i], err = resolve(fmt.Sprintf("providers[%d]", i), p); err != nil {
 				return err
 			}
@@ -700,6 +700,18 @@ func (h *Harness) ValidateFilesExist() error {
 		}
 		if err := check(fmt.Sprintf("host_files[%d].src", i), hf.Src); err != nil {
 			return err
+		}
+	}
+	for i, p := range h.OpenShellProfiles() {
+		if err := check(fmt.Sprintf("openshell.profiles[%d]", i), p); err != nil {
+			return err
+		}
+	}
+	for i, p := range h.Providers {
+		if IsProviderPath(p) {
+			if err := check(fmt.Sprintf("providers[%d]", i), p); err != nil {
+				return err
+			}
 		}
 	}
 	if h.ValidationLoop != nil {

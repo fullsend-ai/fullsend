@@ -77,6 +77,29 @@ func TestIsRelPath(t *testing.T) {
 	}
 }
 
+func TestIsProviderPath(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"bare name", "fullsend-github", false},
+		{"bare name with underscore", "my_provider", false},
+		{"relative path with slash", "providers/custom.yaml", true},
+		{"yaml extension no slash", "custom.yaml", true},
+		{"yml extension no slash", "custom.yml", true},
+		{"absolute path", "/cache/providers/custom.yaml", true},
+		{"nested path", "org/repo/providers/custom.yaml", true},
+		{"dot prefix", "./providers/custom.yaml", true},
+		{"empty string", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, IsProviderPath(tt.input))
+		})
+	}
+}
+
 func TestParseIntegrityHash(t *testing.T) {
 	validHash := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
 

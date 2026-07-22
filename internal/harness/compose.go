@@ -856,6 +856,9 @@ func resolveBaseProviders(ctx context.Context, base *Harness, baseURL string, al
 		if p == "" || IsURL(p) || filepath.IsAbs(p) {
 			continue
 		}
+		if !IsProviderPath(p) {
+			continue
+		}
 		fieldName := fmt.Sprintf("providers[%d]", i)
 		if err := validateBaseRelPath(fieldName, p); err != nil {
 			return nil, err

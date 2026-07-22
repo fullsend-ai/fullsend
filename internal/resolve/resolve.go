@@ -54,6 +54,7 @@ type ResolveResult struct {
 	Deps      []Dependency
 	Profiles  []ResolvedProfile
 	Providers []ResolvedProvider
+	Warnings  []string
 }
 
 // ProfileYAML is the subset of an openshell profile definition needed
@@ -112,6 +113,27 @@ func WarnLiteralCredentials(providerName string, creds map[string]string) string
 		providerName, strings.Join(bad, ", "))
 }
 
+func parseProviderDef(content []byte, index int, source string) (harness.ProviderDef, string, error) {
+	var def harness.ProviderDef
+	if err := yaml.Unmarshal(content, &def); err != nil {
+		return harness.ProviderDef{}, "", fmt.Errorf("parsing provider from %s: %w", source, err)
+	}
+	if def.Name == "" {
+		return harness.ProviderDef{}, "", fmt.Errorf("providers[%d]: provider name is required in %s", index, source)
+	}
+	if !validIdentifier.MatchString(def.Name) {
+		return harness.ProviderDef{}, "", fmt.Errorf("providers[%d]: provider name %q contains invalid characters (must match [a-zA-Z0-9][a-zA-Z0-9_-]*) in %s", index, def.Name, source)
+	}
+	if def.Type == "" {
+		return harness.ProviderDef{}, "", fmt.Errorf("providers[%d]: provider type is required in %s", index, source)
+	}
+	if !validIdentifier.MatchString(def.Type) {
+		return harness.ProviderDef{}, "", fmt.Errorf("providers[%d]: provider type %q contains invalid characters (must match [a-zA-Z0-9][a-zA-Z0-9_-]*) in %s", index, def.Type, source)
+	}
+	w := WarnLiteralCredentials(def.Name, def.Credentials)
+	return def, w, nil
+}
+
 // ResolveOpts controls how URL-referenced resources are resolved.
 type ResolveOpts struct {
 	WorkspaceRoot string
@@ -145,6 +167,7 @@ type resolveState struct {
 	inDeps        map[string]bool
 	resourceCount int
 	deps          []Dependency
+	warnings      []string
 	maxDepth      int
 	maxResources  int
 }
@@ -302,24 +325,12 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 				if err != nil {
 					return ResolveResult{}, fmt.Errorf("reading provider %s: %w", p, err)
 				}
-				var def harness.ProviderDef
-				if err := yaml.Unmarshal(content, &def); err != nil {
-					return ResolveResult{}, fmt.Errorf("parsing provider from %s: %w", p, err)
+				def, w, err := parseProviderDef(content, i, p)
+				if err != nil {
+					return ResolveResult{}, err
 				}
-				if def.Name == "" {
-					return ResolveResult{}, fmt.Errorf("providers[%d]: provider name is required in %s", i, p)
-				}
-				if !validIdentifier.MatchString(def.Name) {
-					return ResolveResult{}, fmt.Errorf("providers[%d]: provider name %q contains invalid characters (must match [a-zA-Z0-9][a-zA-Z0-9_-]*) in %s", i, def.Name, p)
-				}
-				if def.Type == "" {
-					return ResolveResult{}, fmt.Errorf("providers[%d]: provider type is required in %s", i, p)
-				}
-				if !validIdentifier.MatchString(def.Type) {
-					return ResolveResult{}, fmt.Errorf("providers[%d]: provider type %q contains invalid characters (must match [a-zA-Z0-9][a-zA-Z0-9_-]*) in %s", i, def.Type, p)
-				}
-				if w := WarnLiteralCredentials(def.Name, def.Credentials); w != "" {
-					// No dep to attach warning to for local providers — log or skip
+				if w != "" {
+					state.warnings = append(state.warnings, w)
 				}
 				resolvedProviders = append(resolvedProviders, ResolvedProvider{Def: def, LocalPath: p})
 				continue
@@ -336,24 +347,11 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 		if err != nil {
 			return ResolveResult{}, fmt.Errorf("reading resolved provider %s: %w", localPath, err)
 		}
-		var def harness.ProviderDef
-		if err := yaml.Unmarshal(content, &def); err != nil {
-			return ResolveResult{}, fmt.Errorf("parsing provider from %s: %w", dep.URL, err)
+		def, w, err := parseProviderDef(content, i, dep.URL)
+		if err != nil {
+			return ResolveResult{}, err
 		}
-		if def.Name == "" {
-			return ResolveResult{}, fmt.Errorf("providers[%d]: provider name is required in %s", i, dep.URL)
-		}
-		if !validIdentifier.MatchString(def.Name) {
-			return ResolveResult{}, fmt.Errorf("providers[%d]: provider name %q contains invalid characters (must match [a-zA-Z0-9][a-zA-Z0-9_-]*) in %s", i, def.Name, dep.URL)
-		}
-		if def.Type == "" {
-			return ResolveResult{}, fmt.Errorf("providers[%d]: provider type is required in %s", i, dep.URL)
-		}
-		if !validIdentifier.MatchString(def.Type) {
-			return ResolveResult{}, fmt.Errorf("providers[%d]: provider type %q contains invalid characters (must match [a-zA-Z0-9][a-zA-Z0-9_-]*) in %s", i, def.Type, dep.URL)
-		}
-
-		if w := WarnLiteralCredentials(def.Name, def.Credentials); w != "" {
+		if w != "" {
 			dep.Warning = w
 		}
 		state.appendDependency(dep)
@@ -368,6 +366,7 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 		Deps:      state.deps,
 		Profiles:  profiles,
 		Providers: resolvedProviders,
+		Warnings:  state.warnings,
 	}, nil
 }
 
