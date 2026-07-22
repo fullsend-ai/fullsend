@@ -5,7 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net/http"
-	"path/filepath"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -89,7 +89,7 @@ func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarn
 	hostRepo := w.URLHarnessRepoName
 
 	// Commit the harness YAML to the hosting repo at a known path.
-	harnessPath := filepath.Join("harness", name+".yaml")
+	harnessPath := path.Join("harness", name+".yaml")
 	content := []byte(doc)
 	ctx := context.Background()
 	if err := w.SCM.CommitFile(ctx, hostOwner, hostRepo, harnessPath, fmt.Sprintf("behaviour: add URL harness %s", name), content); err != nil {
@@ -152,7 +152,7 @@ func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarn
 	// source and update allowlist.
 	cfgOwner := w.Install.ConfigOwner()
 	cfgRepo := w.Install.ConfigRepo()
-	cfgPath := filepath.Join(".fullsend", "config.yaml")
+	cfgPath := path.Join(".fullsend", "config.yaml")
 	cfgData, err := w.SCM.GetFileContent(ctx, cfgOwner, cfgRepo, cfgPath)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)

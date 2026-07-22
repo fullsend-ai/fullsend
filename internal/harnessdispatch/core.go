@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
@@ -12,6 +13,11 @@ import (
 type Options struct {
 	ConfigDir string
 	Event     *normevent.Event
+
+	// FetchPolicy controls SSRF protection for URL-sourced agent harnesses.
+	// When nil, fetch.DefaultPolicy is used (allows github.com and
+	// raw.githubusercontent.com). Set this in tests to allow httptest domains.
+	FetchPolicy *fetch.FetchPolicy
 }
 
 // Dispatch evaluates authorization, kill switch, harness triggers, and returns execution refs.
@@ -36,7 +42,7 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 		return nil, nil
 	}
 
-	candidates, err := ListTriggeredHarnesses(ctx, opts.ConfigDir, dirCfg)
+	candidates, err := ListTriggeredHarnesses(ctx, opts.ConfigDir, dirCfg, opts.FetchPolicy)
 	if err != nil {
 		return nil, err
 	}

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
@@ -19,7 +20,10 @@ type TriggeredHarness struct {
 }
 
 // ListTriggeredHarnesses returns config-registered agents whose harness has a non-empty trigger.
-func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg *config.DirConfig) ([]TriggeredHarness, error) {
+// fetchPolicy controls SSRF protection for URL-sourced agents. When nil,
+// fetch.DefaultPolicy is used. Callers that need custom domain lists (e.g.
+// tests using httptest) can pass a policy with the test server's domain.
+func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg *config.DirConfig, fetchPolicy *fetch.FetchPolicy) ([]TriggeredHarness, error) {
 	registered, err := harness.RegisteredAgents(cfg)
 	if err != nil {
 		return nil, err
@@ -33,11 +37,17 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg *config.D
 		allowlist = config.DefaultAllowedRemoteResources()
 	}
 
+	policy := fetch.DefaultPolicy
+	if fetchPolicy != nil {
+		policy = *fetchPolicy
+	}
+
 	var out []TriggeredHarness
 	for _, agent := range registered {
 		resolved, err := harness.ResolveRegisteredPath(ctx, configDir, agent.Entry, allowlist, harness.ComposeOpts{
 			WorkspaceRoot: filepath.Dir(configDir),
 			OrgAllowlist:  allowlist,
+			FetchPolicy:   policy,
 		})
 		if err != nil {
 			log.Printf("harness dispatch: skipping agent %s: resolve failed: %v", agent.Name, err)
