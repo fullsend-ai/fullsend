@@ -2277,11 +2277,56 @@ base: `+baseURL+`
 }
 
 func TestResolveBaseScripts_RejectsAbsolutePath(t *testing.T) {
+	// Absolute paths that aren't already inside fullsend's own cache are
+	// untrusted content and must be rejected — pre_script/post_script run
+	// directly on the host via exec.Command, so this is the only guard
+	// preventing a URL/base-sourced harness from pointing at an arbitrary
+	// host path.
 	base := &Harness{PreScript: "/etc/passwd"}
 	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must be a relative path, not an absolute path")
-	assert.Contains(t, err.Error(), "pre_script")
+}
+
+func TestResolveBaseScripts_SkipsCacheAbsolutePath(t *testing.T) {
+	// Absolute paths already inside fullsend's own content-addressed cache
+	// (as left behind by an earlier resolve step, e.g. base resolution
+	// before this function runs again on the merged child) are left
+	// unchanged rather than re-fetched or rejected.
+	workspaceRoot := t.TempDir()
+	cachePath, err := fetch.CachePath(workspaceRoot, strings.Repeat("a", 64))
+	require.NoError(t, err)
+
+	base := &Harness{PreScript: cachePath}
+	_, err = resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
+	require.NoError(t, err)
+	assert.Equal(t, cachePath, base.PreScript, "already-cached absolute path should be left unchanged")
+}
+
+func TestIsFullsendCachePath(t *testing.T) {
+	workspaceRoot := filepath.Join(string(filepath.Separator), "workspace", "repo")
+	cachePath, err := fetch.CachePath(workspaceRoot, strings.Repeat("a", 64))
+	require.NoError(t, err)
+
+	tests := []struct {
+		name          string
+		path          string
+		workspaceRoot string
+		want          bool
+	}{
+		{"cache path under workspace root", cachePath, workspaceRoot, true},
+		{"relative path", "scripts/pre.sh", workspaceRoot, false},
+		{"empty path", "", workspaceRoot, false},
+		{"empty workspace root", cachePath, "", false},
+		{"absolute path outside cache root", filepath.Join(string(filepath.Separator), "etc", "passwd"), workspaceRoot, false},
+		{"absolute path under an unrelated sibling directory", filepath.Join(workspaceRoot, "other", ".fullsend-cache", "x"), workspaceRoot, false},
+		{"absolute path with cache dir name as a prefix, not a parent", filepath.Join(workspaceRoot, ".fullsend-cache-evil", "x"), workspaceRoot, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isFullsendCachePath(tt.path, tt.workspaceRoot))
+		})
+	}
 }
 
 func TestResolveBaseScripts_RejectsPathTraversal(t *testing.T) {
@@ -2292,11 +2337,14 @@ func TestResolveBaseScripts_RejectsPathTraversal(t *testing.T) {
 	assert.Contains(t, err.Error(), "post_script")
 }
 
-func TestResolveBaseScripts_RejectsURLInScriptField(t *testing.T) {
+func TestResolveBaseScripts_SkipsURLInScriptField(t *testing.T) {
+	// URL-valued script fields are skipped, matching resolveBaseResources
+	// behavior. Standalone script URLs remain rejected by ADR-0038 via
+	// ValidateResourceTypes; this function only handles base composition.
 	base := &Harness{PreScript: "https://evil.com/malware.sh"}
 	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "must be a relative path, not a URL")
+	require.NoError(t, err)
+	assert.Equal(t, "https://evil.com/malware.sh", base.PreScript, "URL should be left unchanged")
 }
 
 func TestResolveBaseScripts_RejectsAbsoluteValidationLoopScript(t *testing.T) {
@@ -2306,7 +2354,19 @@ func TestResolveBaseScripts_RejectsAbsoluteValidationLoopScript(t *testing.T) {
 	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must be a relative path, not an absolute path")
-	assert.Contains(t, err.Error(), "validation_loop.script")
+}
+
+func TestResolveBaseScripts_SkipsURLValidationLoopScript(t *testing.T) {
+	// URL-valued ValidationLoop.Script fields are skipped, matching the
+	// URL skip behavior for top-level script fields. This exercises the
+	// !IsURL() branch of the compound guard on the ValidationLoop.Script
+	// condition.
+	base := &Harness{
+		ValidationLoop: &ValidationLoop{Script: "https://example.com/loop.sh"},
+	}
+	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Equal(t, "https://example.com/loop.sh", base.ValidationLoop.Script, "URL should be left unchanged")
 }
 
 func TestResolveBaseScripts_RejectsAbsoluteForgeScript(t *testing.T) {
@@ -2318,7 +2378,6 @@ func TestResolveBaseScripts_RejectsAbsoluteForgeScript(t *testing.T) {
 	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must be a relative path, not an absolute path")
-	assert.Contains(t, err.Error(), "forge.github.pre_script")
 }
 
 func TestResolveBaseScripts_RejectsTraversalInForgeScript(t *testing.T) {
@@ -2344,7 +2403,6 @@ func TestResolveBaseScripts_RejectsAbsoluteForgeValidationLoop(t *testing.T) {
 	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must be a relative path, not an absolute path")
-	assert.Contains(t, err.Error(), "forge.gitlab.validation_loop.script")
 }
 
 func TestResolveBaseScripts_RejectsTraversalInValidationLoopSchema(t *testing.T) {
@@ -2384,7 +2442,6 @@ func TestResolveBaseScripts_RejectsAbsoluteValidationLoopSchema(t *testing.T) {
 	_, err := resolveBaseScripts(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "must be a relative path, not an absolute path")
-	assert.Contains(t, err.Error(), "validation_loop.schema")
 }
 
 func TestResolveBaseScripts_RejectsNullBytes(t *testing.T) {
@@ -2763,28 +2820,53 @@ base: `+baseURL+`
 	assert.Contains(t, err.Error(), "skills[0]")
 }
 
-func TestResolveBaseResources_SkipsURLAndAbsFields(t *testing.T) {
+func TestResolveBaseResources_SkipsURLFields(t *testing.T) {
 	base := &Harness{
 		Agent:  "https://example.com/agents/remote.md",
-		Policy: "/absolute/path/policy.yaml",
+		Policy: "https://example.com/policies/remote.yaml",
 		Skills: []string{"https://example.com/skills/foo"},
 	}
 	deps, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
 	require.NoError(t, err)
 
-	// URL and absolute path fields are skipped — no deps, no modification
+	// URL fields are skipped — no deps, no modification.
 	assert.Empty(t, deps)
 	assert.Equal(t, "https://example.com/agents/remote.md", base.Agent)
-	assert.Equal(t, "/absolute/path/policy.yaml", base.Policy)
+	assert.Equal(t, "https://example.com/policies/remote.yaml", base.Policy)
 	assert.Equal(t, "https://example.com/skills/foo", base.Skills[0])
 }
 
 func TestResolveBaseResources_RejectsAbsolutePath(t *testing.T) {
+	// Absolute paths that aren't already inside fullsend's own cache are
+	// untrusted content and must be rejected — agent/policy content is read
+	// on the host and used as the literal agent definition / sandbox
+	// policy, so an arbitrary host path here is a disclosure risk.
 	base := &Harness{Agent: "/etc/passwd"}
 	_, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a relative path, not an absolute path")
+}
+
+func TestResolveBaseResources_RejectsAbsoluteSkillPath(t *testing.T) {
+	base := &Harness{Skills: []string{"/etc/passwd"}}
+	_, err := resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a relative path, not an absolute path")
+}
+
+func TestResolveBaseResources_SkipsCacheAbsolutePath(t *testing.T) {
+	// Absolute paths already inside fullsend's own cache (left behind by an
+	// earlier resolve step, e.g. base resolution before this function runs
+	// again on the merged child) are left unchanged rather than re-fetched
+	// or rejected.
+	workspaceRoot := t.TempDir()
+	cachePath, err := fetch.CachePath(workspaceRoot, strings.Repeat("b", 64))
 	require.NoError(t, err)
-	// Absolute paths are skipped (not an error — they may be set by earlier resolution)
-	assert.Equal(t, "/etc/passwd", base.Agent)
+
+	base := &Harness{Agent: cachePath}
+	_, err = resolveBaseResources(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
+	require.NoError(t, err)
+	assert.Equal(t, cachePath, base.Agent, "already-cached absolute path should be left unchanged")
 }
 
 func TestResolveBaseResources_RejectsPathTraversal(t *testing.T) {
@@ -3487,16 +3569,37 @@ func TestResolveBaseHostFiles_SkipsEnvVarPaths(t *testing.T) {
 	assert.Equal(t, "${HOME}/file.txt", base.HostFiles[0].Src)
 }
 
-func TestResolveBaseHostFiles_SkipsAbsolutePaths(t *testing.T) {
+func TestResolveBaseHostFiles_RejectsAbsolutePath(t *testing.T) {
+	// Absolute paths that aren't already inside fullsend's own cache are
+	// untrusted content and must be rejected — host_files are read on the
+	// host and uploaded into the sandbox, so an arbitrary host path here is
+	// a disclosure risk.
 	base := &Harness{
 		HostFiles: []HostFile{
-			{Src: "/absolute/path/file.txt", Dest: "/sandbox/file.txt"},
+			{Src: "/etc/passwd", Dest: "/sandbox/file.txt"},
 		},
 	}
-	deps, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	_, err := resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be a relative path, not an absolute path")
+}
+
+func TestResolveBaseHostFiles_SkipsCacheAbsolutePath(t *testing.T) {
+	// Absolute paths already inside fullsend's own cache (left behind by an
+	// earlier resolve step) are left unchanged rather than re-fetched or
+	// rejected.
+	workspaceRoot := t.TempDir()
+	cachePath, err := fetch.CachePath(workspaceRoot, strings.Repeat("c", 64))
 	require.NoError(t, err)
-	assert.Empty(t, deps)
-	assert.Equal(t, "/absolute/path/file.txt", base.HostFiles[0].Src)
+
+	base := &Harness{
+		HostFiles: []HostFile{
+			{Src: cachePath, Dest: "/sandbox/file.txt"},
+		},
+	}
+	_, err = resolveBaseHostFiles(context.Background(), base, "https://example.com/harness/triage.yaml#sha256=abc", nil, ComposeOpts{WorkspaceRoot: workspaceRoot})
+	require.NoError(t, err)
+	assert.Equal(t, cachePath, base.HostFiles[0].Src, "already-cached absolute path should be left unchanged")
 }
 
 func TestResolveBaseHostFiles_SkipsEmptySrc(t *testing.T) {
@@ -3648,17 +3751,26 @@ post_script: scripts/post-triage.sh
 
 func TestLoadWithBase_SourceURL_NoRelativePaths(t *testing.T) {
 	// A URL-sourced harness with no relative paths should be a no-op.
-	harnessContent := []byte(`
+	// The agent field must be a genuine cache path (not an arbitrary
+	// absolute one) for isFullsendCachePath to treat it as already
+	// resolved rather than untrusted.
+	dir := t.TempDir()
+	agentPath, err := fetch.CachePath(dir, strings.Repeat("f", 64))
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(agentPath), 0o755))
+	require.NoError(t, os.WriteFile(agentPath, []byte("# agent"), 0o644))
+
+	harnessContent := fmt.Sprintf(`
 role: test
 slug: test-agent
-agent: /absolute/path/agent.md
-`)
+agent: %s
+`, agentPath)
 
-	dir := t.TempDir()
-	path := writeTestHarness(t, dir, "test.yaml", string(harnessContent))
+	path := writeTestHarness(t, dir, "test.yaml", harnessContent)
 
 	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
-		SourceURL: "https://example.com/harness/test.yaml",
+		WorkspaceRoot: dir,
+		SourceURL:     "https://example.com/harness/test.yaml",
 	})
 	require.NoError(t, err)
 	assert.Empty(t, deps)
@@ -3712,7 +3824,19 @@ func TestLoadWithBase_SourceURL_HostFiles(t *testing.T) {
 
 	agentContent := []byte("# triage agent definition")
 
-	harnessContent := []byte(`
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	// A host_files src already inside fullsend's own cache (simulating a
+	// prior resolve step) is left unchanged; isFullsendCachePath rejects
+	// any other absolute path as untrusted, so this must be a genuine
+	// cache path rather than an arbitrary absolute one.
+	absHostFileSrc, err := fetch.CachePath(cacheDir, strings.Repeat("a", 64))
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(absHostFileSrc), 0o755))
+	require.NoError(t, os.WriteFile(absHostFileSrc, []byte("cached content"), 0o644))
+
+	harnessContent := []byte(fmt.Sprintf(`
 role: triage
 slug: triage
 agent: agents/triage.md
@@ -3721,9 +3845,9 @@ host_files:
     dest: /sandbox/.env
   - src: ${HOME}/.config/app.env
     dest: /sandbox/app.env
-  - src: /absolute/path/file.env
+  - src: %s
     dest: /sandbox/abs.env
-`)
+`, absHostFileSrc))
 
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -3744,9 +3868,6 @@ host_files:
 		[]string{"127.0.0.1"},
 		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
 	)
-
-	dir := t.TempDir()
-	cacheDir := filepath.Join(dir, "cache")
 
 	path := writeTestHarness(t, dir, "triage.yaml", string(harnessContent))
 
@@ -3773,9 +3894,9 @@ host_files:
 	assert.Equal(t, "${HOME}/.config/app.env", h.HostFiles[1].Src,
 		"host_files with ${VAR} should be left unchanged")
 
-	// Absolute paths should be left unchanged
-	assert.Equal(t, "/absolute/path/file.env", h.HostFiles[2].Src,
-		"host_files with absolute paths should be left unchanged")
+	// Already-cached absolute paths should be left unchanged
+	assert.Equal(t, absHostFileSrc, h.HostFiles[2].Src,
+		"host_files already inside fullsend's cache should be left unchanged")
 
 	// Dependencies should include the host file
 	fieldNames := map[string]bool{}
@@ -4134,4 +4255,591 @@ role: review
 		"agent should be an absolute cache path from base resolution, got %q", h.Agent)
 	assert.True(t, filepath.IsAbs(h.PreScript),
 		"pre_script should be an absolute cache path from base resolution, got %q", h.PreScript)
+}
+
+func TestLoadWithBase_SourceURL_WithBase_ResolvesChildScripts(t *testing.T) {
+	// When a URL-sourced harness has a base: field and the child declares
+	// its own pre_script, that script should be resolved against the
+	// SourceURL after base composition — not left as a relative path for
+	// local resolution. This is the same bug class as #5305, but for
+	// scripts instead of skills.
+
+	baseAgentContent := []byte("# base agent definition")
+
+	baseContent := []byte(`
+agent: agents/base.md
+role: review
+model: opus
+`)
+	baseHash := computeHash(baseContent)
+
+	childPreScriptContent := []byte("#!/bin/bash\necho child-pre")
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.Write(baseContent)
+		case "/agents/base.md":
+			w.Write(baseAgentContent)
+		case "/scripts/child-pre.sh":
+			w.Write(childPreScriptContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	// The child declares its own pre_script (relative to the source repo).
+	// After base composition, the child's pre_script must be resolved
+	// against the SourceURL, not left relative.
+	childHarness := fmt.Sprintf(`
+base: %s
+role: review
+pre_script: scripts/child-pre.sh
+`, baseURL)
+
+	path := writeTestHarness(t, dir, "review.yaml", childHarness)
+	sourceURL := server.URL + "/harness/review.yaml"
+	allowlist := []string{server.URL + "/"}
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot:      cacheDir,
+		FetchPolicy:        policy,
+		OrgAllowlist:       allowlist,
+		SourceURL:          sourceURL,
+		allowSelfAllowlist: true,
+	})
+	require.NoError(t, err)
+
+	// The child's pre_script should be resolved to an absolute cache path.
+	assert.True(t, filepath.IsAbs(h.PreScript),
+		"pre_script should be resolved to an absolute cache path, got %q", h.PreScript)
+
+	// Verify the cached script content is correct.
+	scriptContent, err := os.ReadFile(h.PreScript)
+	require.NoError(t, err)
+	assert.Equal(t, "#!/bin/bash\necho child-pre", string(scriptContent))
+
+	// Dependencies should include both the base fetch and the script fetch.
+	assert.NotEmpty(t, deps)
+	fieldNames := map[string]bool{}
+	for _, d := range deps {
+		fieldNames[d.Field] = true
+	}
+	assert.True(t, fieldNames["base"], "should have base dep")
+	assert.True(t, fieldNames["pre_script"], "should have pre_script dep")
+}
+
+func TestLoadWithBase_SourceURL_WithBase_ResolvesChildHostFiles(t *testing.T) {
+	// When a URL-sourced harness has a base: field and the child declares
+	// its own host_files entry with a relative src, that file should be
+	// resolved against the SourceURL after base composition.
+
+	baseAgentContent := []byte("# base agent definition")
+
+	baseContent := []byte(`
+agent: agents/base.md
+role: review
+model: opus
+`)
+	baseHash := computeHash(baseContent)
+
+	hostFileContent := []byte("host file content from source repo")
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.Write(baseContent)
+		case "/agents/base.md":
+			w.Write(baseAgentContent)
+		case "/configs/settings.json":
+			w.Write(hostFileContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	// The child declares its own host_files entry (relative to the source repo).
+	childHarness := fmt.Sprintf(`
+base: %s
+role: review
+host_files:
+  - src: configs/settings.json
+    dest: /sandbox/.config/settings.json
+`, baseURL)
+
+	path := writeTestHarness(t, dir, "review.yaml", childHarness)
+	sourceURL := server.URL + "/harness/review.yaml"
+	allowlist := []string{server.URL + "/"}
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot:      cacheDir,
+		FetchPolicy:        policy,
+		OrgAllowlist:       allowlist,
+		SourceURL:          sourceURL,
+		allowSelfAllowlist: true,
+	})
+	require.NoError(t, err)
+
+	// The child's host_files entry should have its src resolved to a cache path.
+	require.Len(t, h.HostFiles, 1)
+	assert.True(t, filepath.IsAbs(h.HostFiles[0].Src),
+		"host_files[0].src should be resolved to an absolute cache path, got %q", h.HostFiles[0].Src)
+	assert.Equal(t, "/sandbox/.config/settings.json", h.HostFiles[0].Dest)
+
+	// Verify the cached file content is correct.
+	cachedContent, err := os.ReadFile(h.HostFiles[0].Src)
+	require.NoError(t, err)
+	assert.Equal(t, "host file content from source repo", string(cachedContent))
+
+	// Dependencies should include the host_files fetch.
+	fieldNames := map[string]bool{}
+	for _, d := range deps {
+		fieldNames[d.Field] = true
+	}
+	assert.True(t, fieldNames["host_files[0].src"], "should have host_files dep")
+}
+
+func TestLoadWithBase_SourceURL_WithBase_MixedBaseChildSkills(t *testing.T) {
+	// After base composition, the merged Skills slice can contain both
+	// already-resolved absolute cache paths (from the base's URL
+	// resolution) and still-relative child entries. The post-merge
+	// SourceURL resolution must resolve the relative entries without
+	// disturbing the already-resolved absolute entries.
+	//
+	// This test simulates the merged state by having the base contribute
+	// a pre-resolved absolute skill path (via a base that declares a
+	// skill with an absolute path) and the child contribute a relative
+	// skill path that must be resolved via SourceURL.
+
+	baseAgentContent := []byte("# base agent definition")
+
+	// Create a pre-existing skill directory, anchored under the workspace's
+	// own cache root, to act as the base's already-resolved skill
+	// (simulating what loadBaseChain produces for a URL base's skills). It
+	// must be a genuine cache path — isFullsendCachePath rejects any other
+	// absolute path as untrusted, so a plain temp-dir path here would now
+	// be (correctly) rejected instead of treated as pre-resolved.
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseSkillDir, err := fetch.CachePath(cacheDir, strings.Repeat("d", 64))
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(baseSkillDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(baseSkillDir, "SKILL.md"),
+		[]byte("# Base Skill"), 0o644))
+
+	// The base harness contributes the pre-resolved skill as an absolute path.
+	// In production, this is the result of resolveBaseResources during
+	// loadBaseChain for a URL base. Here we shortcut by putting the
+	// absolute path directly in the base YAML.
+	baseContent := []byte(fmt.Sprintf(`
+agent: agents/base.md
+role: review
+model: opus
+skills:
+  - %s
+`, baseSkillDir))
+	baseHash := computeHash(baseContent)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.Write(baseContent)
+		case "/agents/base.md":
+			w.Write(baseAgentContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	// The child adds its own relative skill alongside the base's skill.
+	childHarness := fmt.Sprintf(`
+base: %s
+role: review
+skills:
+  - skills/child-skill
+`, baseURL)
+
+	path := writeTestHarness(t, dir, "review.yaml", childHarness)
+	sourceURL := "https://raw.githubusercontent.com/org/agents/abc123/harness/review.yaml"
+
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"SKILL.md":       []byte("# Child Skill"),
+		"meta-prompt.md": []byte("child meta prompt"),
+	})
+
+	allowlist := []string{
+		server.URL + "/",
+		"https://raw.githubusercontent.com/org/agents/",
+	}
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot:      cacheDir,
+		FetchPolicy:        policy,
+		OrgAllowlist:       allowlist,
+		SourceURL:          sourceURL,
+		TreeFetcher:        fetcher,
+		allowSelfAllowlist: true,
+	})
+	require.NoError(t, err)
+
+	// Merged Skills slice should have 2 entries: base skill + child skill.
+	// After mergeBaseIntoChild: [baseSkillDir, "skills/child-skill"]
+	// After post-merge resolveBaseResources: [baseSkillDir, <cache path>]
+	require.Len(t, h.Skills, 2, "should have base skill + child skill")
+
+	// Both should be absolute paths.
+	for i, skill := range h.Skills {
+		assert.True(t, filepath.IsAbs(skill),
+			"skills[%d] should be an absolute path, got %q", i, skill)
+	}
+
+	// The base skill (index 0) should be the pre-resolved path, untouched.
+	assert.Equal(t, baseSkillDir, h.Skills[0],
+		"base skill should remain at its pre-resolved absolute path")
+	assert.FileExists(t, filepath.Join(h.Skills[0], "SKILL.md"))
+	baseSkillContent, err := os.ReadFile(filepath.Join(h.Skills[0], "SKILL.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "# Base Skill", string(baseSkillContent))
+
+	// The child skill (index 1) should be resolved to a cache path.
+	assert.NotEqual(t, "skills/child-skill", h.Skills[1],
+		"child skill should be resolved, not remain relative")
+	assert.FileExists(t, filepath.Join(h.Skills[1], "SKILL.md"))
+	childSkillContent, err := os.ReadFile(filepath.Join(h.Skills[1], "SKILL.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "# Child Skill", string(childSkillContent))
+	assert.FileExists(t, filepath.Join(h.Skills[1], "meta-prompt.md"))
+
+	// Dependencies should include the child skill fetch (but not the
+	// base skill, which was already an absolute path).
+	skillDeps := 0
+	for _, d := range deps {
+		if strings.HasPrefix(d.Field, "skills[") {
+			skillDeps++
+		}
+	}
+	assert.Equal(t, 1, skillDeps, "should have 1 skill dependency (child only; base was pre-resolved)")
+}
+
+func TestLoadWithBase_SourceURL_WithBase_SkillOverrideByBasename(t *testing.T) {
+	// mergeSkills (#5408) makes a child skill override a base skill in
+	// place when their basenames match, rather than appending it
+	// alongside. This locks in that this PR's post-merge SourceURL
+	// resolution composes correctly with that override: the surviving
+	// entry must resolve to the child's content from SourceURL, and
+	// there must be exactly one resulting skill, not two.
+
+	baseAgentContent := []byte("# base agent definition")
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	// The base's skill directory shares a basename ("pr-review") with the
+	// child's skill declaration below, so mergeSkills overrides it in
+	// place. It must also be a genuine cache path — isFullsendCachePath
+	// rejects any other absolute path as untrusted — so it's nested under
+	// a cache-hash directory rather than a plain temp-dir path, with
+	// "pr-review" as its basename (mirroring how fetchBaseSkill names the
+	// resolved directory after the skill's own basename).
+	cacheHashDir, err := fetch.CachePath(cacheDir, strings.Repeat("e", 64))
+	require.NoError(t, err)
+	baseSkillDir := filepath.Join(cacheHashDir, "pr-review")
+	require.NoError(t, os.MkdirAll(baseSkillDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(baseSkillDir, "SKILL.md"),
+		[]byte("# Base Skill"), 0o644))
+
+	baseContent := []byte(fmt.Sprintf(`
+agent: agents/base.md
+role: review
+model: opus
+skills:
+  - %s
+`, baseSkillDir))
+	baseHash := computeHash(baseContent)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.Write(baseContent)
+		case "/agents/base.md":
+			w.Write(baseAgentContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	// The child declares its own skill with the SAME basename as the
+	// base's, so mergeSkills replaces the base's entry instead of
+	// appending alongside it.
+	childHarness := fmt.Sprintf(`
+base: %s
+role: review
+skills:
+  - skills/pr-review
+`, baseURL)
+
+	path := writeTestHarness(t, dir, "review.yaml", childHarness)
+	sourceURL := "https://raw.githubusercontent.com/org/agents/abc123/harness/review.yaml"
+
+	fetcher := fakeTreeFetcher(map[string][]byte{
+		"SKILL.md":       []byte("# Child Skill"),
+		"meta-prompt.md": []byte("child meta prompt"),
+	})
+
+	allowlist := []string{
+		server.URL + "/",
+		"https://raw.githubusercontent.com/org/agents/",
+	}
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot:      cacheDir,
+		FetchPolicy:        policy,
+		OrgAllowlist:       allowlist,
+		SourceURL:          sourceURL,
+		TreeFetcher:        fetcher,
+		allowSelfAllowlist: true,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, h.Skills, 1, "child's same-basename skill should override the base's, not sit alongside it")
+	assert.True(t, filepath.IsAbs(h.Skills[0]), "overriding skill should be resolved to an absolute path, got %q", h.Skills[0])
+	assert.NotEqual(t, baseSkillDir, h.Skills[0], "should not resolve to the base's skill directory")
+
+	content, err := os.ReadFile(filepath.Join(h.Skills[0], "SKILL.md"))
+	require.NoError(t, err)
+	assert.Equal(t, "# Child Skill", string(content), "overriding skill should fetch the child's content, not the base's")
+	assert.FileExists(t, filepath.Join(h.Skills[0], "meta-prompt.md"))
+}
+
+func TestLoadWithBase_SourceURL_WithBase_ScriptResolutionError(t *testing.T) {
+	// When a URL-sourced harness has a base: field and the child declares
+	// its own pre_script, the post-composition resolveBaseScripts call
+	// must propagate errors (e.g., SourceURL not in allowlist).
+	// This exercises the error path at the first resolve call in the
+	// post-merge SourceURL resolution block.
+
+	baseAgentContent := []byte("# base agent definition")
+
+	baseContent := []byte(`
+agent: agents/base.md
+role: review
+model: opus
+`)
+	baseHash := computeHash(baseContent)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.Write(baseContent)
+		case "/agents/base.md":
+			w.Write(baseAgentContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	// The child declares its own pre_script. After base composition,
+	// this remains a relative path and must be resolved against the
+	// SourceURL. The SourceURL is NOT in the allowlist, so resolution
+	// fails.
+	childHarness := fmt.Sprintf(`
+base: %s
+role: review
+pre_script: scripts/pre.sh
+`, baseURL)
+
+	path := writeTestHarness(t, dir, "review.yaml", childHarness)
+
+	// SourceURL is NOT in the allowlist — only the base server URL is.
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot:      cacheDir,
+		FetchPolicy:        policy,
+		OrgAllowlist:       []string{server.URL + "/"},
+		SourceURL:          "https://not-allowed.example.com/harness/review.yaml",
+		allowSelfAllowlist: true,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving URL-sourced scripts after base composition")
+}
+
+func TestLoadWithBase_SourceURL_WithBase_ResourceResolutionError(t *testing.T) {
+	// When a URL-sourced harness has a base: field and the child declares
+	// its own skills, the post-composition resolveBaseResources call must
+	// propagate errors. The child declares no scripts (so resolveBaseScripts
+	// succeeds on the merged harness), but the child's skill path cannot be
+	// resolved because the SourceURL is not in the allowlist.
+
+	baseAgentContent := []byte("# base agent definition")
+
+	baseContent := []byte(`
+agent: agents/base.md
+role: review
+model: opus
+`)
+	baseHash := computeHash(baseContent)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.Write(baseContent)
+		case "/agents/base.md":
+			w.Write(baseAgentContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	// The child declares its own skills (no scripts). After base
+	// composition, the agent is an absolute cache path (from the base),
+	// but the child's skill path remains relative.
+	childHarness := fmt.Sprintf(`
+base: %s
+role: review
+skills:
+  - skills/my-skill
+`, baseURL)
+
+	path := writeTestHarness(t, dir, "review.yaml", childHarness)
+
+	// SourceURL is NOT in the allowlist.
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot:      cacheDir,
+		FetchPolicy:        policy,
+		OrgAllowlist:       []string{server.URL + "/"},
+		SourceURL:          "https://not-allowed.example.com/harness/review.yaml",
+		allowSelfAllowlist: true,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving URL-sourced resources after base composition")
+}
+
+func TestLoadWithBase_SourceURL_WithBase_HostFilesResolutionError(t *testing.T) {
+	// When a URL-sourced harness has a base: field and the child declares
+	// its own host_files, the post-composition resolveBaseHostFiles call
+	// must propagate errors. The child declares no scripts or resources
+	// (so the first two resolve calls succeed on the merged harness),
+	// but the child's host_files src cannot be resolved because the
+	// SourceURL is not in the allowlist.
+
+	baseAgentContent := []byte("# base agent definition")
+
+	baseContent := []byte(`
+agent: agents/base.md
+role: review
+model: opus
+`)
+	baseHash := computeHash(baseContent)
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.Write(baseContent)
+		case "/agents/base.md":
+			w.Write(baseAgentContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	// The child declares its own host_files (no scripts, no skills/agent).
+	// After base composition, the agent is an absolute cache path (from
+	// the base) but the child's host_files src remains relative.
+	childHarness := fmt.Sprintf(`
+base: %s
+role: review
+host_files:
+  - src: configs/settings.json
+    dest: /sandbox/.config/settings.json
+`, baseURL)
+
+	path := writeTestHarness(t, dir, "review.yaml", childHarness)
+
+	// SourceURL is NOT in the allowlist.
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot:      cacheDir,
+		FetchPolicy:        policy,
+		OrgAllowlist:       []string{server.URL + "/"},
+		SourceURL:          "https://not-allowed.example.com/harness/review.yaml",
+		allowSelfAllowlist: true,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving URL-sourced host_files after base composition")
 }
