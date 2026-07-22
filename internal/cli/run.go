@@ -900,6 +900,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// ADR 0022's zero-trust model.
 	var validationPassed bool
 
+	// repoExtractedOK tracks whether the last SafeDownload call succeeded.
+	// When false, hostRepositoryDownloadDir may not exist or may contain
+	// unsanitized content — callers (validation, post-script) must not use it.
+	var repoExtractedOK bool
+
 	// Download-dir cleanup is registered first so LIFO runs it last —
 	// after the post-script defer has finished using it.
 	hostRepositoryDownloadDir := filepath.Join(os.TempDir(), sandboxName)
@@ -947,7 +952,18 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// location, but sandbox output is now extracted to a temp dir. exec uses
 			// last-value-wins so this append takes precedence. TODO(fullsend-ai/agents#191):
 			// remove REPO_DIR from RunnerEnv entirely once harnesses no longer set it.
-			postCmd.Env = append(postCmd.Env, fmt.Sprintf("REPO_DIR=%s", hostRepositoryDownloadDir))
+			//
+			// Pass REPO_DIR only when the last repo extraction succeeded.
+			// If SafeDownload failed, hostRepositoryDownloadDir was cleaned
+			// up and may not exist — passing it would expose the post-script
+			// to unsanitized or missing content. Post-scripts must handle
+			// empty REPO_DIR gracefully (the same as TARGET_REPO_DIR="" in
+			// the validation sweep).
+			postRepoDir := ""
+			if repoExtractedOK {
+				postRepoDir = hostRepositoryDownloadDir
+			}
+			postCmd.Env = append(postCmd.Env, fmt.Sprintf("REPO_DIR=%s", postRepoDir))
 			postCmd.Stdout = os.Stdout
 			postCmd.Stderr = os.Stderr
 			if err := postCmd.Run(); err != nil {
@@ -1389,14 +1405,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// 9d. Extract target repo back to host. SafeDownload removes dangerous
 		// symlinks (absolute or repo-escaping) and .git/hooks/ to prevent sandbox escape.
 		//
-		// When a validation loop is configured, extraction failures are
-		// non-fatal so the retry loop can continue to subsequent iterations
-		// (the root cause of #5393). This is safe only because all shipped
-		// validation scripts (validate-output-schema.sh) inspect output
-		// files (extracted in 9b) and never read TARGET_REPO_DIR. Custom
-		// validation scripts that depend on repo state will get stale data
-		// on iterations where extraction fails — document this constraint
-		// if adding new validation scripts.
+		// SafeDownload is a security boundary: it combines Download with
+		// sanitizeDownload, which strips dangerous symlinks. If either step
+		// fails, the on-disk content may contain unsanitized symlinks that
+		// could reach the post-script. SafeDownload failures are therefore
+		// always treated as fatal for the current iteration's repo state —
+		// we clean up the directory and skip to the next iteration.
+		//
+		// The forceRemoveAll pre-clear is a narrower staleness concern and
+		// remains non-fatal with a validation loop.
 		if clearErr := forceRemoveAll(hostRepositoryDownloadDir); clearErr != nil {
 			if h.ValidationLoop != nil {
 				printer.StepWarn(fmt.Sprintf("Failed to clear local repo %s: %v", hostRepositoryDownloadDir, clearErr))
@@ -1412,13 +1429,23 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				tx.EmitTranscriptErrors(os.Stderr, es)
 			}
 			if h.ValidationLoop != nil {
-				printer.StepWarn(fmt.Sprintf("Failed to extract target repo: %v", err))
-			} else {
-				return fmt.Errorf("extracting target repo (iteration %d): %w", iteration, err)
+				// SafeDownload failed — the repo directory may contain
+				// unsanitized content (sanitizeDownload aborts on first
+				// error, leaving subsequent dangerous symlinks intact).
+				// Clean up to prevent unsanitized content from reaching
+				// validation or the post-script, then continue the retry
+				// loop. Output files (extracted in 9b) are unaffected.
+				printer.StepWarn(fmt.Sprintf("Failed to extract target repo (cleaning up): %v", err))
+				if rmErr := forceRemoveAll(hostRepositoryDownloadDir); rmErr != nil {
+					printer.StepWarn(fmt.Sprintf("Failed to clean up repo dir after extraction failure: %v", rmErr))
+				}
+				repoExtractedOK = false
+				continue
 			}
-		} else {
-			printer.StepDone(fmt.Sprintf("Target repo extracted to %s (%.1fs)", hostRepositoryDownloadDir, time.Since(repoExtractStart).Seconds()))
+			return fmt.Errorf("extracting target repo (iteration %d): %w", iteration, err)
 		}
+		repoExtractedOK = true
+		printer.StepDone(fmt.Sprintf("Target repo extracted to %s (%.1fs)", hostRepositoryDownloadDir, time.Since(repoExtractStart).Seconds()))
 
 		// 9e. Run validation.
 		if h.ValidationLoop == nil {
@@ -1429,7 +1456,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepStart("Running validation: " + h.ValidationLoop.Script)
 		valCmd := exec.Command(h.ValidationLoop.Script)
 		valCmd.Dir = iterDir
-		valCmd.Env = append(os.Environ(), validationEnv(h, hostRepositoryDownloadDir, runDir)...)
+		// Pass TARGET_REPO_DIR only when repo extraction succeeded;
+		// otherwise pass empty to prevent validation scripts from using
+		// unsanitized or stale repo content.
+		valRepoDir := ""
+		if repoExtractedOK {
+			valRepoDir = hostRepositoryDownloadDir
+		}
+		valCmd.Env = append(os.Environ(), validationEnv(h, valRepoDir, runDir)...)
 		valOut, valErr := valCmd.CombinedOutput()
 
 		if valErr == nil {
@@ -1450,13 +1484,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// from the latest. This ensures a successful retry's output is
 	// found even when earlier steps in that iteration failed. See #5393.
 	//
-	// TARGET_REPO_DIR is deliberately cleared in the sweep env because
-	// hostRepositoryDownloadDir is a shared path overwritten each
-	// iteration — it reflects only the last iteration's extraction
-	// attempt (which may have failed). Validation scripts run during
-	// the sweep must not depend on repo state. The post-script's
-	// REPO_DIR (line 950) has the same limitation; a future change
-	// should persist per-iteration repo checkouts to close this gap.
+	// TARGET_REPO_DIR is cleared because hostRepositoryDownloadDir is
+	// a shared path reflecting only the last iteration's extraction
+	// state (which may have failed and been cleaned up). Validation
+	// scripts must not depend on repo state. The post-script's REPO_DIR
+	// is similarly guarded by repoExtractedOK — when the last extraction
+	// failed, REPO_DIR is empty. A future change should persist
+	// per-iteration repo checkouts to provide repo state for non-last
+	// iterations.
 	if h.ValidationLoop != nil && !validationPassed {
 		for i := runCount; i >= 1; i-- {
 			iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", i))
