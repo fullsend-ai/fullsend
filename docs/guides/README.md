@@ -9,7 +9,7 @@ Guides for onboarding organizations and configuring GitHub — the first thing m
 - [Mint enrollment](getting-started/README.md) — Enroll your org or repo in a token mint before configuring anything else
 - [Getting Inference](getting-started/getting-inference.md) — Provision GCP inference access for your org or repo
 - [Configuring GitHub](getting-started/configuring-github.md) — Install GitHub Apps and run the setup CLI
-- [Organization Mode](getting-started/org-mode.md) — Org-wide setup with a shared `.fullsend` config repo
+- [Organization Mode](getting-started/org-mode.md) — _(deprecated — see [per-repo Getting Started](getting-started/configuring-github.md))_ Org-wide setup with a shared `.fullsend` config repo
 
 ## Operations & Advanced Setup
 

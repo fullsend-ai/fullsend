@@ -120,7 +120,9 @@ takes precedence.
   cannot write files regardless of what AGENTS.md says)
 - Remove or replace built-in skills — use
   [`customized/skills/`](customizing-with-skills.md#overriding-built-in-skills)
-  for that (deprecated per ADR-0064; use config-driven agent registration instead)
+  for that (deprecated per
+  [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md);
+  use config-driven agent registration instead)
 - Change the agent's model or execution parameters
 
 ### Injection handling
