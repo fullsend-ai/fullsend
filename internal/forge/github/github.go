@@ -457,6 +457,17 @@ func (c *LiveClient) CreateRepo(ctx context.Context, org, name, description stri
 	}, nil
 }
 
+// UpdateRepoVisibility sets a repository's visibility to public or private
+// via PATCH /repos/{owner}/{repo}.
+func (c *LiveClient) UpdateRepoVisibility(ctx context.Context, owner, repo string, private bool) error {
+	resp, err := c.patch(ctx, fmt.Sprintf("/repos/%s/%s", owner, repo), map[string]any{"private": private})
+	if err != nil {
+		return fmt.Errorf("update repo visibility %s/%s: %w", owner, repo, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // GetRepo retrieves a single repository by owner and name.
 // Returns forge.ErrNotFound (wrapped) if the repo does not exist.
 func (c *LiveClient) GetRepo(ctx context.Context, owner, repo string) (*forge.Repository, error) {

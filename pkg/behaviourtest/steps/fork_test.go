@@ -320,6 +320,10 @@ func (f *fakeForkSCM) CreateRepo(context.Context, string, string, string) error 
 	return nil
 }
 
+func (f *fakeForkSCM) EnsureRepoPublic(context.Context, string, string) error {
+	return nil
+}
+
 func (f *fakeForkSCM) DeleteRepo(context.Context, string, string) error {
 	return nil
 }

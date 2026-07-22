@@ -27,6 +27,10 @@ type Driver interface {
 	// idempotent — if a repo with the given name already exists,
 	// it returns without error.
 	CreateRepo(ctx context.Context, org, name, description string) error
+	// EnsureRepoPublic verifies that a repository is public and
+	// attempts to update its visibility if the org forced it private.
+	// Returns an error if the repo cannot be made public.
+	EnsureRepoPublic(ctx context.Context, owner, repo string) error
 	// DeleteRepo deletes a repository. Returns forge.ErrNotFound
 	// if the repository does not exist.
 	DeleteRepo(ctx context.Context, owner, repo string) error

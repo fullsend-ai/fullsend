@@ -650,6 +650,10 @@ func TestFakeClient_ErrorInjection(t *testing.T) {
 	}{
 		{"ListOrgRepos", func(fc *FakeClient) error { _, err := fc.ListOrgRepos(ctx, "org"); return err }},
 		{"CreateRepo", func(fc *FakeClient) error { _, err := fc.CreateRepo(ctx, "o", "r", "d", false); return err }},
+		{"UpdateRepoVisibility", func(fc *FakeClient) error {
+			fc.CreatedRepos = append(fc.CreatedRepos, Repository{FullName: "o/r"})
+			return fc.UpdateRepoVisibility(ctx, "o", "r", false)
+		}},
 		{"DeleteRepo", func(fc *FakeClient) error { return fc.DeleteRepo(ctx, "o", "r") }},
 		{"CreateFile", func(fc *FakeClient) error { return fc.CreateFile(ctx, "o", "r", "p", "m", nil) }},
 		{"CreateOrUpdateFile", func(fc *FakeClient) error { return fc.CreateOrUpdateFile(ctx, "o", "r", "p", "m", nil) }},

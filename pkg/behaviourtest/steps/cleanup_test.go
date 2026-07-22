@@ -334,6 +334,10 @@ func (f *fakeCleanupSCM) CreateRepo(context.Context, string, string, string) err
 	return nil
 }
 
+func (f *fakeCleanupSCM) EnsureRepoPublic(context.Context, string, string) error {
+	return nil
+}
+
 func (f *fakeCleanupSCM) DeleteRepo(_ context.Context, owner, repo string) error {
 	if f.deleteRepoErr != nil {
 		return f.deleteRepoErr

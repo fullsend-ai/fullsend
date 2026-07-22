@@ -355,6 +355,30 @@ func (f *FakeClient) GetRepo(_ context.Context, owner, repo string) (*Repository
 	return nil, fmt.Errorf("%w: %s/%s", ErrNotFound, owner, repo)
 }
 
+func (f *FakeClient) UpdateRepoVisibility(_ context.Context, owner, repo string, private bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("UpdateRepoVisibility"); e != nil {
+		return e
+	}
+
+	fullName := owner + "/" + repo
+	for i := range f.Repos {
+		if f.Repos[i].FullName == fullName {
+			f.Repos[i].Private = private
+			return nil
+		}
+	}
+	for i := range f.CreatedRepos {
+		if f.CreatedRepos[i].FullName == fullName {
+			f.CreatedRepos[i].Private = private
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: %s/%s", ErrNotFound, owner, repo)
+}
+
 func (f *FakeClient) DeleteRepo(_ context.Context, owner, repo string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

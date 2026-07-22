@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/cucumber/godog"
 	"gopkg.in/yaml.v3"
@@ -50,9 +51,19 @@ func givenHarnessHostingRepo(w *world.World, name string) error {
 		return fmt.Errorf("org must be set before creating harness-hosting repo")
 	}
 
-	if err := w.SCM.CreateRepo(context.Background(), org, name, "behaviour test: URL harness host"); err != nil {
+	ctx := context.Background()
+	if err := w.SCM.CreateRepo(ctx, org, name, "behaviour test: URL harness host"); err != nil {
 		return fmt.Errorf("creating harness-hosting repo: %w", err)
 	}
+
+	// The repo must be public so raw.githubusercontent.com URLs are accessible
+	// without authentication. Orgs may force repos private despite the
+	// CreateRepo(private=false) request; detect and fix that immediately rather
+	// than letting the scenario hang later when the URL fetch fails silently.
+	if err := w.SCM.EnsureRepoPublic(ctx, org, name); err != nil {
+		return fmt.Errorf("harness-hosting repo %s/%s must be public for URL-sourced dispatch: %w", org, name, err)
+	}
+
 	w.URLHarnessRepoOwner = org
 	w.URLHarnessRepoName = name
 	return nil
@@ -79,8 +90,17 @@ func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarn
 	// Commit the harness YAML to the hosting repo at a known path.
 	harnessPath := filepath.Join("harness", name+".yaml")
 	content := []byte(doc)
-	if err := w.SCM.CommitFile(context.Background(), hostOwner, hostRepo, harnessPath, fmt.Sprintf("behaviour: add URL harness %s", name), content); err != nil {
+	ctx := context.Background()
+	if err := w.SCM.CommitFile(ctx, hostOwner, hostRepo, harnessPath, fmt.Sprintf("behaviour: add URL harness %s", name), content); err != nil {
 		return fmt.Errorf("committing harness to hosting repo: %w", err)
+	}
+
+	// Verify the committed file is accessible via the Contents API.
+	// GitHub's auto_init and CDN propagation can cause transient 404s
+	// after a commit; retry briefly rather than letting the scenario
+	// hang for the full 30m job timeout.
+	if err := waitForFileAccessible(ctx, w, hostOwner, hostRepo, harnessPath); err != nil {
+		return fmt.Errorf("harness file not accessible after commit (raw URL will fail): %w", err)
 	}
 
 	// Compute the SHA256 of the content for the integrity hash.
@@ -101,7 +121,7 @@ func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarn
 	cfgOwner := w.Install.ConfigOwner()
 	cfgRepo := w.Install.ConfigRepo()
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
-	cfgData, err := w.SCM.GetFileContent(context.Background(), cfgOwner, cfgRepo, cfgPath)
+	cfgData, err := w.SCM.GetFileContent(ctx, cfgOwner, cfgRepo, cfgPath)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
 	}
@@ -133,10 +153,34 @@ func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarn
 
 	merged, err := yaml.Marshal(cfg)
 	if err != nil {
-		return fmt.Errorf("marshaling config: %w", err)
+		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), cfgOwner, cfgRepo, cfgPath, fmt.Sprintf("behaviour: register URL harness %s", name), merged); err != nil {
+	if err := w.SCM.CommitFile(ctx, cfgOwner, cfgRepo, cfgPath, fmt.Sprintf("behaviour: register URL harness %s", name), merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
+}
+
+// waitForFileAccessible polls the Contents API until the file is readable,
+// retrying briefly for CDN / commit propagation delays. This prevents the
+// scenario from hanging silently when the raw URL returns 404 due to
+// eventual consistency.
+func waitForFileAccessible(ctx context.Context, w *world.World, owner, repo, path string) error {
+	const (
+		maxAttempts = 5
+		retryDelay  = 2 * time.Second
+	)
+	var lastErr error
+	for i := range maxAttempts {
+		_, err := w.SCM.GetFileContent(ctx, owner, repo, path)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if i < maxAttempts-1 {
+			time.Sleep(retryDelay)
+		}
+	}
+	return fmt.Errorf("file %s in %s/%s not accessible after %d attempts: %w",
+		path, owner, repo, maxAttempts, lastErr)
 }

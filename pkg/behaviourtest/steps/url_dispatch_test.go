@@ -21,14 +21,32 @@ func TestGivenHarnessHostingRepo_Validation(t *testing.T) {
 }
 
 func TestGivenHarnessHostingRepo_SetsWorldFields(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}, repos: map[string]bool{}}
 	w := &world.World{
 		Org: "test-org",
-		SCM: &fakeURLSCM{files: map[string][]byte{}, repos: map[string]bool{}},
+		SCM: scm,
 	}
 	err := givenHarnessHostingRepo(w, "my-host-repo")
 	require.NoError(t, err)
 	assert.Equal(t, "test-org", w.URLHarnessRepoOwner)
 	assert.Equal(t, "my-host-repo", w.URLHarnessRepoName)
+	assert.True(t, scm.ensurePublicCalled, "EnsureRepoPublic should be called after CreateRepo")
+}
+
+func TestGivenHarnessHostingRepo_FailsWhenNotPublic(t *testing.T) {
+	scm := &fakeURLSCM{
+		files:           map[string][]byte{},
+		repos:           map[string]bool{},
+		ensurePublicErr: fmt.Errorf("org enforces private repos"),
+	}
+	w := &world.World{
+		Org: "test-org",
+		SCM: scm,
+	}
+	err := givenHarnessHostingRepo(w, "my-host-repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be public")
+	assert.Contains(t, err.Error(), "org enforces private repos")
 }
 
 func TestGivenURLSourcedCustomHarness_Validation(t *testing.T) {
@@ -262,11 +280,13 @@ func (f *fakeURLInstall) AgentWorkflowFile() string  { return "reusable-triage.y
 func (f *fakeURLInstall) AgentArtifactName() string  { return "fullsend-triage" }
 
 type fakeURLSCM struct {
-	files          map[string][]byte
-	repos          map[string]bool
-	createRepoErr  error
-	commitFileErr  error
-	commitFileRepo string // only return commitFileErr when repo matches
+	files              map[string][]byte
+	repos              map[string]bool
+	createRepoErr      error
+	commitFileErr      error
+	commitFileRepo     string // only return commitFileErr when repo matches
+	ensurePublicErr    error
+	ensurePublicCalled bool
 }
 
 func (f *fakeURLSCM) CommitFile(_ context.Context, _, repo, path, _ string, content []byte) error {
@@ -294,6 +314,11 @@ func (f *fakeURLSCM) CreateRepo(_ context.Context, _, name, _ string) error {
 	}
 	f.repos[name] = true
 	return nil
+}
+
+func (f *fakeURLSCM) EnsureRepoPublic(_ context.Context, _, _ string) error {
+	f.ensurePublicCalled = true
+	return f.ensurePublicErr
 }
 
 func (f *fakeURLSCM) DeleteRepo(_ context.Context, _, repo string) error {
