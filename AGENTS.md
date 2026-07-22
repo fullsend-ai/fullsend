@@ -34,7 +34,7 @@ The `internal/mintcore/` module is shared between the mint and devmint. Its file
 More broadly, GHA reusable workflows do not inherit secrets or variables — they must be explicitly forwarded by every caller. When any reusable workflow (`.github/workflows/reusable-*.yml`) adds a new `secrets:` or `inputs:` entry, trace both installation-mode chains and ensure every hop forwards the new entry:
 
 - **Per-org chain:** scaffold thin callers (`internal/scaffold/fullsend-repo/.github/workflows/<agent>.yml`) → reusable workflow (`.github/workflows/reusable-<agent>.yml`)
-- **Per-repo chain:** shim template → `reusable-dispatch.yml` → reusable workflow (`.github/workflows/reusable-<agent>.yml`)
+- **Per-repo chain:** shim template → `reusable-dispatch.yml` → `reusable-<agent>.yml` ([ADR 62](docs/ADRs/0062-dispatch-version-skew.md) will inline stages into `reusable-dispatch.yml`, collapsing this to a single hop; new secrets must then be threaded to the inlined stage jobs directly)
 
 Omitted optional secrets arrive as empty strings at runtime, which silently breaks authenticated backends instead of failing loudly. Treat a missing forwarding hop the same as a missing sync — it is a correctness bug, not a cosmetic issue.
 
