@@ -54,9 +54,12 @@ concurrency:
     ${{ github.event_name == 'pull_request_target'
         && format('e2e-{0}', github.event.pull_request.number)
         || format('{0}-{1}', github.workflow, github.ref) }}
+  # Explicit outer parens: (A && B) || (C && D). Relies on && binding tighter
+  # than ||; keep the grouping obvious so a future || clause cannot silently
+  # disable cancel for non-pull_request_target triggers.
   cancel-in-progress: >-
-    ${{ github.event_name == 'pull_request_target'
-        && (github.event.action != 'labeled' || github.event.label.name == 'ok-to-test')
+    ${{ (github.event_name == 'pull_request_target'
+        && (github.event.action != 'labeled' || github.event.label.name == 'ok-to-test'))
         || (github.event_name != 'pull_request_target' && github.ref != 'refs/heads/main') }}
 
 jobs:
