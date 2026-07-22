@@ -2660,6 +2660,11 @@ func setupStatusNotifier(fullsendDir string, role string, sOpts statusOpts, prin
 	var notifyCfg config.StatusNotificationConfig
 	orgConfigPath := filepath.Join(fullsendDir, "config.yaml")
 	if orgCfg := tryLoadFullsendConfig(orgConfigPath, printer); orgCfg != nil {
+		// tryLoadFullsendConfig returns a ConfigWriter which may wrap either
+		// orgConfig or perRepoConfig. Only orgConfig implements OrgConfigReader
+		// (and carries StatusNotifications). When the loaded config is per-repo,
+		// this assertion intentionally falls through, leaving notifyCfg at its
+		// zero value — per-repo configs do not support status notifications.
 		if ocr, ok := orgCfg.(config.OrgConfigReader); ok && ocr.StatusNotifications() != nil {
 			notifyCfg = *ocr.StatusNotifications()
 		}

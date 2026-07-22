@@ -1370,6 +1370,7 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 	}
 
 	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
+	cfg.SetDefaultRuntime(runtimeName)
 	{
 		d := cfg.DispatchSettings()
 		d.Mode = "oidc-mint"
@@ -1684,6 +1685,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	enrolledRepoIDs := collectEnrolledRepoIDs(allRepos, enabledRepos)
 
 	cfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
+	cfg.SetDefaultRuntime(runtimeName)
 	{
 		d := cfg.DispatchSettings()
 		d.Mode = "oidc-mint"
@@ -2530,12 +2532,12 @@ func runEnableRepos(ctx context.Context, client forge.Client, printer *ui.Printe
 		rc, exists := cfg.RepoMap()[repo]
 		if !exists {
 			// Add new repo entry.
-			cfg.RepoMap()[repo] = config.RepoConfig{Enabled: true}
+			cfg.SetRepo(repo, config.RepoConfig{Enabled: true})
 			changed++
 		} else if !rc.Enabled {
 			// Update existing entry.
 			rc.Enabled = true
-			cfg.RepoMap()[repo] = rc
+			cfg.SetRepo(repo, rc)
 			changed++
 		}
 	}
@@ -2703,7 +2705,7 @@ func runDisableRepos(ctx context.Context, client forge.Client, printer *ui.Print
 		if exists && rc.Enabled {
 			// Update existing entry to disabled.
 			rc.Enabled = false
-			cfg.RepoMap()[repo] = rc
+			cfg.SetRepo(repo, rc)
 			changed++
 		}
 	}

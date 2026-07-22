@@ -382,3 +382,43 @@ func TestOrgConfigWriter_RoundTrip(t *testing.T) {
 	w.SetInference(i)
 	assert.Equal(t, i, w.InferenceSettings())
 }
+
+func TestOrgConfig_SetDefaultRuntime(t *testing.T) {
+	cfg := &orgConfig{Defaults: RepoDefaults{Runtime: "claude"}}
+	cfg.SetDefaultRuntime("dummy")
+	assert.Equal(t, "dummy", cfg.OrgRepoDefaults().Runtime)
+}
+
+func TestOrgConfig_SetRepo(t *testing.T) {
+	cfg := &orgConfig{Repos: map[string]RepoConfig{
+		"existing": {Enabled: true},
+	}}
+	// Update existing entry.
+	cfg.SetRepo("existing", RepoConfig{Enabled: false})
+	assert.False(t, cfg.RepoMap()["existing"].Enabled)
+	// Add new entry.
+	cfg.SetRepo("new-repo", RepoConfig{Enabled: true})
+	assert.True(t, cfg.RepoMap()["new-repo"].Enabled)
+}
+
+func TestOrgConfig_SetRepo_NilMap(t *testing.T) {
+	cfg := &orgConfig{}
+	cfg.SetRepo("repo-a", RepoConfig{Enabled: true})
+	assert.True(t, cfg.RepoMap()["repo-a"].Enabled)
+}
+
+func TestOrgConfigWriter_SetDefaultRuntime_RoundTrip(t *testing.T) {
+	var w OrgConfigWriter = NewOrgConfig(nil, nil, nil, "", "")
+	assert.Equal(t, "claude", w.OrgRepoDefaults().Runtime)
+	w.SetDefaultRuntime("dummy")
+	assert.Equal(t, "dummy", w.OrgRepoDefaults().Runtime)
+}
+
+func TestOrgConfigWriter_SetRepo_RoundTrip(t *testing.T) {
+	var w OrgConfigWriter = NewOrgConfig(
+		[]string{"repo-a"}, []string{"repo-a"}, nil, "", "",
+	)
+	assert.True(t, w.RepoMap()["repo-a"].Enabled)
+	w.SetRepo("repo-a", RepoConfig{Enabled: false})
+	assert.False(t, w.RepoMap()["repo-a"].Enabled)
+}

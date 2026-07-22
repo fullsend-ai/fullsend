@@ -89,6 +89,8 @@ type OrgConfigWriter interface {
 	ConfigWriter
 	SetDispatch(DispatchConfig)
 	SetInference(InferenceConfig)
+	SetDefaultRuntime(string)
+	SetRepo(name string, rc RepoConfig)
 }
 
 // PerRepoConfigWriter extends PerRepoConfigReader and ConfigWriter with
@@ -169,6 +171,19 @@ func (c *orgConfig) SetDispatch(d DispatchConfig) { c.Dispatch = d }
 
 // SetInference replaces the inference provider configuration.
 func (c *orgConfig) SetInference(i InferenceConfig) { c.Inference = i }
+
+// SetDefaultRuntime replaces the default agent runtime.
+func (c *orgConfig) SetDefaultRuntime(rt string) { c.Defaults.Runtime = rt }
+
+// SetRepo adds or replaces a per-repo configuration entry.
+// Callers should use this method instead of mutating the map returned
+// by RepoMap() to keep mutations on the writer interface.
+func (c *orgConfig) SetRepo(name string, rc RepoConfig) {
+	if c.Repos == nil {
+		c.Repos = make(map[string]RepoConfig)
+	}
+	c.Repos[name] = rc
+}
 
 // --- perRepoConfig getter methods ---
 

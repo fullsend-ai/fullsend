@@ -361,7 +361,7 @@ func (l *EnrollmentLayer) Uninstall(ctx context.Context) error {
 
 	for name, rc := range cfg.RepoMap() {
 		rc.Enabled = false
-		cfg.RepoMap()[name] = rc
+		cfg.SetRepo(name, rc)
 	}
 
 	data, err := cfg.Marshal()

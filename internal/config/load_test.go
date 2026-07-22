@@ -103,7 +103,7 @@ repos: not-a-map
 
 	_, err := LoadConfig(dir, LoadOpts{MissingOK: false})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing")
+	assert.Contains(t, err.Error(), "parsing org config")
 }
 
 func TestIsPerRepoYAML(t *testing.T) {
