@@ -32,7 +32,7 @@ PR_NUMBER="${1:?PR number required}"
 REPOSITORY="${2:?repository (owner/repo) required}"
 
 TRUSTED_ASSOCIATIONS="OWNER MEMBER COLLABORATOR"
-TRUSTED_BOT_LOGINS="renovate-fullsend[bot]"
+TRUSTED_BOT_LOGINS="renovate-fullsend[bot] fullsend-ai-coder[bot]"
 OK_TO_TEST_LABEL="ok-to-test"
 
 write_error_output() {
