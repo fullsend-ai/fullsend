@@ -1761,3 +1761,60 @@ func TestParseProfileID(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveHarness_LocalProfile(t *testing.T) {
+	root := t.TempDir()
+
+	profileContent := []byte("id: test-profile\nnetwork:\n  egress:\n    - host: example.com\n")
+	profilePath := filepath.Join(root, "profiles", "test-profile.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(profilePath), 0755))
+	require.NoError(t, os.WriteFile(profilePath, profileContent, 0644))
+
+	h := &harness.Harness{
+		Agent: "/abs/path/agents/test.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{profilePath},
+		},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.NoError(t, err)
+
+	require.Len(t, result.Profiles, 1)
+	assert.Equal(t, "test-profile", result.Profiles[0].ID)
+	assert.Equal(t, profilePath, result.Profiles[0].LocalPath)
+
+	// Profiles slice should be cleared after resolution
+	assert.Nil(t, h.OpenShell.Profiles)
+}
+
+func TestResolveHarness_LocalAbsProvider(t *testing.T) {
+	root := t.TempDir()
+
+	providerContent := []byte("name: test-provider\ntype: custom\ncredentials:\n  TEST_KEY: \"\"\n")
+	providerPath := filepath.Join(root, "providers", "test-provider.yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(providerPath), 0755))
+	require.NoError(t, os.WriteFile(providerPath, providerContent, 0644))
+
+	h := &harness.Harness{
+		Agent:     "/abs/path/agents/test.md",
+		Providers: []string{providerPath, "bare-provider-name"},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+	})
+	require.NoError(t, err)
+
+	// Absolute path provider resolved
+	require.Len(t, result.Providers, 1)
+	assert.Equal(t, "test-provider", result.Providers[0].Def.Name)
+	assert.Equal(t, "custom", result.Providers[0].Def.Type)
+	assert.Equal(t, providerPath, result.Providers[0].LocalPath)
+
+	// Bare provider name kept in h.Providers
+	require.Len(t, h.Providers, 1)
+	assert.Equal(t, "bare-provider-name", h.Providers[0])
+}
