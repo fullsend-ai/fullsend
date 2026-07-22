@@ -21,6 +21,9 @@ on:
   merge_group:
   workflow_dispatch:
 
+# Non-ok-to-test labeled events still start a workflow run (GitHub cannot filter
+# by label name at on:), but must not cancel an in-progress opened/synchronize
+# run — same actionable filter as the gate job if: below.
 concurrency:
   group: >-
     ${{ github.event_name == 'pull_request_target'
@@ -28,7 +31,8 @@ concurrency:
         || format('{0}-{1}', github.workflow, github.ref) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request_target'
-        || github.ref != 'refs/heads/main' }}
+        && (github.event.action != 'labeled' || github.event.label.name == 'ok-to-test')
+        || (github.event_name != 'pull_request_target' && github.ref != 'refs/heads/main') }}
 
 jobs:
   gate:

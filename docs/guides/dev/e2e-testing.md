@@ -157,6 +157,12 @@ the frozen PR `updated_at` from the workflow event (`PR_UPDATED_AT`); the live
 API fallback may over-reject when non-push activity bumped `updated_at`.
 Applying the label triggers immediate authorization on `labeled` events.
 
+Other labels (for example `ready-for-review`, `requires-manual-review`, or
+`component/*`) do **not** authorize e2e and do **not** cancel an in-progress
+e2e or functional-test run for that PR. Only `opened` / `synchronize` /
+`reopened`, and `labeled` when the label is `ok-to-test`, cancel in-progress
+work in the per-PR concurrency group.
+
 ### Blocked runs
 
 When e2e does not run, a sticky PR comment (marker `<!-- e2e-gate -->`) explains
