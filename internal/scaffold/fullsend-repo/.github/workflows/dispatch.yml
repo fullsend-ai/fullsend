@@ -1,5 +1,5 @@
 ---
-# lint-workflow-size: max-lines=560
+# lint-workflow-size: max-lines=575
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -560,10 +560,13 @@ jobs:
           if [[ $dispatched -eq 0 ]]; then
             if [[ $disabled_skipped -gt 0 ]]; then
               echo "::warning::All $disabled_skipped workflow(s) for stage $STAGE are disabled — skipping dispatch"
+              echo "dispatched_count=0" >> "${GITHUB_OUTPUT}"
+              exit 0
             else
               echo "::error::No workflows found for stage: $STAGE"
               exit 1
             fi
           fi
 
+          echo "dispatched_count=$dispatched" >> "${GITHUB_OUTPUT}"
           echo "Successfully dispatched $dispatched workflow(s) for stage $STAGE: ${dispatched_workflows[*]}"
