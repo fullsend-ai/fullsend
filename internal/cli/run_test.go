@@ -376,7 +376,7 @@ func TestRequireFullsendConfig_MalformedYAML(t *testing.T) {
 	cfg, err := requireFullsendConfig(path, printer)
 	assert.Nil(t, cfg)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing config")
+	assert.Contains(t, err.Error(), "parsing org config")
 }
 
 func TestRequireFullsendConfig_PerRepoFallback(t *testing.T) {
@@ -578,7 +578,7 @@ func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing config")
+	assert.Contains(t, err.Error(), "parsing org config")
 }
 
 func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
@@ -760,7 +760,7 @@ func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing config")
+	assert.Contains(t, err.Error(), "parsing org config")
 }
 
 func TestBuildScanContextCommand_SourcesEnv(t *testing.T) {

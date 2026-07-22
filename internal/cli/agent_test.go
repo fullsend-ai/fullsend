@@ -1034,7 +1034,7 @@ func TestLoadAgentConfig_InvalidYAML(t *testing.T) {
 	require.NoError(t, err)
 	_, err = loadAgentConfig(filepath.Join(dir, "config.yaml"))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing config")
+	assert.Contains(t, err.Error(), "parsing org config")
 }
 
 func TestLoadAgentConfig_AmbiguousConfig(t *testing.T) {
