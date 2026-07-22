@@ -38,12 +38,10 @@ const (
 	retryMaxBackoff          = 15 * time.Second
 )
 
-// errSymlink is a structured error for symlink-related failures during
-// sanitizeDownload. It wraps the underlying OS error with the symlink path
-// and target so error messages are informative during cleanup reporting.
-// The Error() method is required by the error interface — without it,
-// fmt.Sprintf("%v", err) panics when the error reaches a deferred cleanup
-// handler that formats the error for logging. See #5393.
+// errSymlink wraps symlink-related os.Remove failures during
+// sanitizeDownload with the symlink path and target, so error messages
+// in cleanup reporting carry enough context to diagnose which symlink
+// failed and why.
 type errSymlink struct {
 	Path   string // filesystem path of the symlink
 	Target string // symlink target (empty if unreadable)

@@ -1390,13 +1390,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// symlinks (absolute or repo-escaping) and .git/hooks/ to prevent sandbox escape.
 		//
 		// When a validation loop is configured, extraction failures are
-		// non-fatal: the output files (extracted in 9b) are independent of
-		// the repo download, so validation can still pass. Making extraction
-		// fatal here would abort the retry loop and prevent subsequent
-		// iterations from producing valid output — the root cause of #5393.
+		// non-fatal so the retry loop can continue to subsequent iterations
+		// (the root cause of #5393). This is safe only because all shipped
+		// validation scripts (validate-output-schema.sh) inspect output
+		// files (extracted in 9b) and never read TARGET_REPO_DIR. Custom
+		// validation scripts that depend on repo state will get stale data
+		// on iterations where extraction fails — document this constraint
+		// if adding new validation scripts.
 		if clearErr := forceRemoveAll(hostRepositoryDownloadDir); clearErr != nil {
 			if h.ValidationLoop != nil {
-				printer.StepWarn(fmt.Sprintf("Clearing local repo %s: %v", hostRepositoryDownloadDir, clearErr))
+				printer.StepWarn(fmt.Sprintf("Failed to clear local repo %s: %v", hostRepositoryDownloadDir, clearErr))
 			} else {
 				return fmt.Errorf("clearing local repo %s before extraction: %w", hostRepositoryDownloadDir, clearErr)
 			}
@@ -1409,7 +1412,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				tx.EmitTranscriptErrors(os.Stderr, es)
 			}
 			if h.ValidationLoop != nil {
-				printer.StepWarn(fmt.Sprintf("Extracting target repo: %v", err))
+				printer.StepWarn(fmt.Sprintf("Failed to extract target repo: %v", err))
 			} else {
 				return fmt.Errorf("extracting target repo (iteration %d): %w", iteration, err)
 			}
@@ -1446,6 +1449,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// produced valid output), check all completed iterations starting
 	// from the latest. This ensures a successful retry's output is
 	// found even when earlier steps in that iteration failed. See #5393.
+	//
+	// TARGET_REPO_DIR is deliberately cleared in the sweep env because
+	// hostRepositoryDownloadDir is a shared path overwritten each
+	// iteration — it reflects only the last iteration's extraction
+	// attempt (which may have failed). Validation scripts run during
+	// the sweep must not depend on repo state. The post-script's
+	// REPO_DIR (line 950) has the same limitation; a future change
+	// should persist per-iteration repo checkouts to close this gap.
 	if h.ValidationLoop != nil && !validationPassed {
 		for i := runCount; i >= 1; i-- {
 			iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", i))
@@ -1453,7 +1464,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			printer.StepStart(fmt.Sprintf("Post-loop validation (iteration %d): %s", i, h.ValidationLoop.Script))
 			valCmd := exec.Command(h.ValidationLoop.Script)
 			valCmd.Dir = iterDir
-			valCmd.Env = append(os.Environ(), validationEnv(h, hostRepositoryDownloadDir, runDir)...)
+			valCmd.Env = append(os.Environ(), validationEnv(h, "", runDir)...)
 			valOut, valErr := valCmd.CombinedOutput()
 
 			if valErr == nil {

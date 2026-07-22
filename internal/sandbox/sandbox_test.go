@@ -2,10 +2,12 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -490,7 +492,7 @@ func TestErrSymlink_ErrorMethod(t *testing.T) {
 		assert.Contains(t, msg, "/etc/passwd")
 		assert.Contains(t, msg, "permission denied")
 
-		// fmt.Sprintf must not panic (the original bug from #5393).
+		// Verify fmt.Sprintf does not panic on errSymlink.
 		formatted := fmt.Sprintf("%v", e)
 		assert.NotEmpty(t, formatted)
 	})
@@ -507,6 +509,44 @@ func TestErrSymlink_ErrorMethod(t *testing.T) {
 		e := &errSymlink{Path: "/repo/link", Target: "/tmp", Err: underlying}
 		assert.ErrorIs(t, e, underlying)
 	})
+}
+
+func TestSanitizeDownload_RemoveFailureReturnsErrSymlink(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("read-only directory trick is Linux-specific")
+	}
+	if os.Getuid() == 0 {
+		t.Skip("root bypasses permission checks")
+	}
+
+	// Create a directory with a dangerous absolute symlink, then make the
+	// parent directory read-only so os.Remove fails inside sanitizeDownload.
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+	require.NoError(t, os.Symlink("/etc/passwd", filepath.Join(sub, "bad-link")))
+
+	// A second dangerous symlink later in the walk — it should remain
+	// unremoved because WalkDir aborts after the first error.
+	require.NoError(t, os.Symlink("/etc/shadow", filepath.Join(sub, "second-link")))
+
+	// Make sub read-only so os.Remove fails.
+	require.NoError(t, os.Chmod(sub, 0o555))
+	t.Cleanup(func() {
+		os.Chmod(sub, 0o755) // restore for TempDir cleanup
+	})
+
+	err := sanitizeDownload(dir)
+	require.Error(t, err)
+
+	var symErr *errSymlink
+	require.True(t, errors.As(err, &symErr), "expected *errSymlink, got %T: %v", err, err)
+	assert.Contains(t, symErr.Path, "bad-link")
+	assert.NotNil(t, symErr.Err)
+
+	// The second symlink should still exist because the walk aborted.
+	_, statErr := os.Lstat(filepath.Join(sub, "second-link"))
+	assert.NoError(t, statErr, "second symlink should remain after walk aborted on first error")
 }
 
 func TestEffectiveReadyTimeout_Default(t *testing.T) {
