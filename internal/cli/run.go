@@ -900,9 +900,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// ADR 0022's zero-trust model.
 	var validationPassed bool
 
-	// repoExtractedOK tracks whether the last SafeDownload call succeeded.
-	// When false, hostRepositoryDownloadDir may not exist or may contain
-	// unsanitized content — callers (validation, post-script) must not use it.
+	// repoExtractedOK tracks whether hostRepositoryDownloadDir is safe
+	// and corresponds to the validated iteration. It is false when:
+	//   - the last SafeDownload call failed (dir may be missing/unsanitized), or
+	//   - the post-loop sweep validated an earlier iteration (dir holds a
+	//     different iteration's checkout than what was validated).
+	// Callers (validation, post-script) must not use the dir when false.
 	var repoExtractedOK bool
 
 	// Download-dir cleanup is registered first so LIFO runs it last —
@@ -1483,32 +1486,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// produced valid output), check all completed iterations starting
 	// from the latest. This ensures a successful retry's output is
 	// found even when earlier steps in that iteration failed. See #5393.
-	//
-	// TARGET_REPO_DIR is cleared because hostRepositoryDownloadDir is
-	// a shared path reflecting only the last iteration's extraction
-	// state (which may have failed and been cleaned up). Validation
-	// scripts must not depend on repo state. The post-script's REPO_DIR
-	// is similarly guarded by repoExtractedOK — when the last extraction
-	// failed, REPO_DIR is empty. A future change should persist
-	// per-iteration repo checkouts to provide repo state for non-last
-	// iterations.
 	if h.ValidationLoop != nil && !validationPassed {
-		for i := runCount; i >= 1; i-- {
-			iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", i))
-			valStart := time.Now()
-			printer.StepStart(fmt.Sprintf("Post-loop validation (iteration %d): %s", i, h.ValidationLoop.Script))
-			valCmd := exec.Command(h.ValidationLoop.Script)
-			valCmd.Dir = iterDir
-			valCmd.Env = append(os.Environ(), validationEnv(h, "", runDir)...)
-			valOut, valErr := valCmd.CombinedOutput()
-
-			if valErr == nil {
-				printer.StepDone(fmt.Sprintf("Validation passed (iteration %d): %s (%.1fs)", i, strings.TrimSpace(string(valOut)), time.Since(valStart).Seconds()))
-				validationPassed = true
-				break
-			}
-			printer.StepWarn(fmt.Sprintf("Post-loop validation failed (iteration %d): %s", i, validationFailMessage(valOut, valErr)))
-		}
+		sweep := postLoopValidationSweep(h, runDir, runCount, repoExtractedOK, printer)
+		validationPassed = sweep.passed
+		repoExtractedOK = sweep.repoExtractedOK
 	}
 
 	// Write aggregated behavioral metrics.
@@ -1982,6 +1963,42 @@ func validationFailMessage(output []byte, execErr error) string {
 		return msg
 	}
 	return execErr.Error()
+}
+
+// sweepResult holds the outcome of a post-loop validation sweep.
+type sweepResult struct {
+	passed          bool // true if any iteration's validation passed
+	validatedIter   int  // which iteration passed (0 if none)
+	repoExtractedOK bool // false when the validated iteration != runCount
+}
+
+// postLoopValidationSweep runs the validation script against each completed
+// iteration directory, starting from the latest (runCount) and working
+// backwards. It returns the first iteration that passes, or signals that
+// none passed. When the passing iteration is not runCount, repoExtractedOK
+// is set to false because hostRepositoryDownloadDir holds a different
+// iteration's repo checkout — the post-script must not use it.
+func postLoopValidationSweep(h *harness.Harness, runDir string, runCount int, currentRepoExtractedOK bool, printer *ui.Printer) sweepResult {
+	for i := runCount; i >= 1; i-- {
+		iterDir := filepath.Join(runDir, fmt.Sprintf("iteration-%d", i))
+		valStart := time.Now()
+		printer.StepStart(fmt.Sprintf("Post-loop validation (iteration %d): %s", i, h.ValidationLoop.Script))
+		valCmd := exec.Command(h.ValidationLoop.Script)
+		valCmd.Dir = iterDir
+		valCmd.Env = append(os.Environ(), validationEnv(h, "", runDir)...)
+		valOut, valErr := valCmd.CombinedOutput()
+
+		if valErr == nil {
+			printer.StepDone(fmt.Sprintf("Validation passed (iteration %d): %s (%.1fs)", i, strings.TrimSpace(string(valOut)), time.Since(valStart).Seconds()))
+			repoOK := currentRepoExtractedOK
+			if i != runCount {
+				repoOK = false
+			}
+			return sweepResult{passed: true, validatedIter: i, repoExtractedOK: repoOK}
+		}
+		printer.StepWarn(fmt.Sprintf("Post-loop validation failed (iteration %d): %s", i, validationFailMessage(valOut, valErr)))
+	}
+	return sweepResult{passed: false, repoExtractedOK: currentRepoExtractedOK}
 }
 
 // envToList converts a map of env vars to a sorted list of KEY=VALUE strings.
