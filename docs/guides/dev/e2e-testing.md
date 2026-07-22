@@ -75,7 +75,7 @@ Prefer **`wrangler versions upload --name=mint-test --preview-alias=…`** so ru
 
 Behaviour tests install fullsend in **per-repo** mode (`fullsend github setup`). Triage workflows mint same-org `triage` tokens from vendored reusable workflows; that requires per-repo mint enrollment (`PER_REPO_WIF_REPOS`). The install driver does **not** run `mint enroll` — pool org behaviour repos must be enrolled once by a GCP admin on the hosted mint project.
 
-Admin e2e uses the singular `halfsend-NN/test-repo` name. Behaviour parallelization leases `halfsend-NN/test-repo-01` … `test-repo-12` (base names only — do **not** enroll `*-fork` names; forks are ephemeral PR sources and mint against the enrolled base repo). GitHub repositories need not exist yet — enroll is a mint allowlist / WIF-provider update only.
+Admin e2e uses the singular `halfsend-NN/test-repo` name. Behaviour parallelization is planned to lease `halfsend-NN/test-repo-01` … `test-repo-12` once [#3454](https://github.com/fullsend-ai/fullsend/issues/3454) / [#5439](https://github.com/fullsend-ai/fullsend/issues/5439) land; mint enrollment for those names is pre-provisioned now so it is not on the critical path later. Today the install driver still uses the singular `test-repo` regardless of concurrency. Enroll base names only — do **not** enroll `*-fork` names (forks are ephemeral PR sources and mint against the enrolled base repo). GitHub repositories need not exist yet — enroll is a mint allowlist / WIF-provider update only.
 
 Inference (`E2E_GCP_PROJECT_ID`) and mint (`it-gcp-konflux-dev-fullsend` for the hosted mint) may be different GCP projects. The behaviour install driver runs `fullsend inference provision <org>/test-repo` using CI credentials on the inference project (same access model as admin e2e), then passes the repo-scoped WIF provider to `github setup`. `E2E_GCP_WIF_PROVIDER` authenticates the CI job itself; it is not written to pool org repos.
 
@@ -86,7 +86,7 @@ The CI service account needs inference-provision IAM on `E2E_GCP_PROJECT_ID`:
 | `roles/iam.workloadIdentityPoolAdmin` | Create/update repo-scoped inference WIF providers |
 | `roles/resourcemanager.projectIamAdmin` | Grant `roles/aiplatform.user` to repo WIF principals |
 
-One-time enrollment for all pool orgs (idempotent). Enroll the singular admin `test-repo` and the behaviour pool `test-repo-01` … `test-repo-12`:
+One-time enrollment for all pool orgs (idempotent). Enroll the singular admin `test-repo` (used by the driver today) and the behaviour pool `test-repo-01` … `test-repo-12` (pre-provisioned for planned parallelization):
 
 ```bash
 export GCP_PROJECT=it-gcp-konflux-dev-fullsend
