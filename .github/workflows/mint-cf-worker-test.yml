@@ -30,12 +30,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: mint-cf-worker-test-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   mint-cf-worker-test:
     runs-on: ubuntu-24.04
+    # Stub is near-instant; headroom for the real wasm-stage + npm smoke (#5427).
+    timeout-minutes: 15
     steps:
       # merge_group cannot use on.paths; skip early when unrelated files changed.
       - name: Check for mint-cf-worker-relevant changes
