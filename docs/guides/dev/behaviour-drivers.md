@@ -10,6 +10,7 @@ Behaviour tests isolate forge-specific code behind drivers so Gherkin scenarios 
 | `ci.Driver` | `pkg/behaviourtest/drivers/ci` | Workflow polling, logs, artifact download |
 | `install.Driver` | `pkg/behaviourtest/drivers/install` | Provision and tear down fullsend in the acquired pool org |
 | `install.State` | `pkg/behaviourtest/drivers/install` | Post-install config paths (script commits, workflow polling) |
+| `install.RepoEnsurer` | `pkg/behaviourtest/drivers/install` | Lazily create and install numbered pool repos on demand; caches by org/repo key; concurrent-safe via singleflight |
 
 v1 reference implementations:
 

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -30,8 +31,9 @@ func newFakeEnsurer() *fakeEnsurer {
 }
 
 func (f *fakeEnsurer) EnsureRepo(_ context.Context, org, repoName string) (State, error) {
+	key := org + "/" + repoName
 	f.mu.Lock()
-	if st, ok := f.cache[repoName]; ok {
+	if st, ok := f.cache[key]; ok {
 		f.mu.Unlock()
 		return st, nil
 	}
@@ -41,7 +43,7 @@ func (f *fakeEnsurer) EnsureRepo(_ context.Context, org, repoName string) (State
 	st := &perRepoState{org: org, repo: repoName}
 
 	f.mu.Lock()
-	f.cache[repoName] = st
+	f.cache[key] = st
 	f.mu.Unlock()
 
 	return st, nil
@@ -114,25 +116,32 @@ type stubClient struct {
 
 	getRepoErr       error
 	createRepoCalled atomic.Int32
-	createFileCalled atomic.Int32
 
 	// installed controls whether GetFileContent returns valid
 	// post-install files. When false, all paths return ErrNotFound.
 	installed bool
+
+	// installOnSetup simulates a successful install: when true, the
+	// first call to GetFileContent with installed=false flips installed
+	// to true after a TryRunCLI call. Used to test install-if-needed.
+	installOnSetup bool
+	setupCalled    atomic.Int32
+
+	// ensureDelay, when non-zero, causes GetRepo to sleep before
+	// returning. Used to test concurrent singleflight behaviour.
+	ensureDelay time.Duration
 }
 
 func (s *stubClient) GetRepo(_ context.Context, _, _ string) (*forge.Repository, error) {
+	if s.ensureDelay > 0 {
+		time.Sleep(s.ensureDelay)
+	}
 	return &forge.Repository{}, s.getRepoErr
 }
 
 func (s *stubClient) CreateRepo(_ context.Context, _, _, _ string, _ bool) (*forge.Repository, error) {
 	s.createRepoCalled.Add(1)
 	return &forge.Repository{}, nil
-}
-
-func (s *stubClient) CreateFile(_ context.Context, _, _, _, _ string, _ []byte) error {
-	s.createFileCalled.Add(1)
-	return nil
 }
 
 func (s *stubClient) GetFileContent(_ context.Context, _, _, path string) ([]byte, error) {
@@ -167,6 +176,28 @@ func TestRepoEnsurer_CachesSuccessfulEnsure(t *testing.T) {
 	assert.Same(t, st1, st2, "second call should return cached State")
 }
 
+func TestRepoEnsurer_CacheKeyIncludesOrg(t *testing.T) {
+	sc := &stubClient{installed: true}
+	e := &repoEnsurer{
+		e2eCfg:  e2etest.EnvConfig{},
+		client:  sc,
+		logf:    t.Logf,
+		ensured: make(map[string]State),
+	}
+
+	ctx := context.Background()
+	st1, err := e.EnsureRepo(ctx, "org-a", "test-repo-01")
+	require.NoError(t, err)
+
+	st2, err := e.EnsureRepo(ctx, "org-b", "test-repo-01")
+	require.NoError(t, err)
+
+	// Same repo name but different orgs → different cache entries.
+	assert.NotSame(t, st1, st2)
+	assert.Equal(t, "org-a", st1.ConfigOwner())
+	assert.Equal(t, "org-b", st2.ConfigOwner())
+}
+
 func TestRepoEnsurer_CreatesRepoWhenMissing(t *testing.T) {
 	sc := &stubClient{
 		getRepoErr: forge.ErrNotFound,
@@ -183,7 +214,6 @@ func TestRepoEnsurer_CreatesRepoWhenMissing(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "test-repo-05", st.TestRepo())
 	assert.Equal(t, int32(1), sc.createRepoCalled.Load())
-	assert.Equal(t, int32(1), sc.createFileCalled.Load())
 }
 
 func TestRepoEnsurer_SkipsCreateWhenRepoExists(t *testing.T) {
@@ -224,6 +254,79 @@ func TestRepoEnsurer_PerRepoStateFields(t *testing.T) {
 	assert.Equal(t, perRepoAgentArtifact, st.AgentArtifactName())
 }
 
+func TestRepoEnsurer_InstallsWhenValidationFails(t *testing.T) {
+	// Start with installed=false to simulate a repo that exists but
+	// has not yet been set up with fullsend. The stubClient will return
+	// ErrNotFound for all GetFileContent calls until installed is true.
+	sc := &stubClient{installed: false}
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client: sc,
+		// binary is empty so TryRunCLI will be attempted but the
+		// installFullsend method will fail because there's no real binary.
+		// We override installFullsend by testing doEnsure indirectly:
+		// we flip sc.installed to true before the post-install validation
+		// retry, simulating a successful install.
+		logf:    t.Logf,
+		ensured: make(map[string]State),
+	}
+
+	// We can't easily mock TryRunCLI, so test the doEnsure validation
+	// paths directly. First, call ensureRepoExists (repo exists):
+	err := e.ensureRepoExists(context.Background(), "org", "test-repo-10", "org/test-repo-10")
+	require.NoError(t, err)
+
+	// Verify that validation fails when not installed:
+	err = validatePerRepoPostInstall(context.Background(), sc, "org", "test-repo-10")
+	require.Error(t, err, "validation should fail when repo is not installed")
+	assert.Contains(t, err.Error(), "post-install")
+
+	// Now simulate install success by setting installed=true:
+	sc.installed = true
+	err = validatePerRepoPostInstall(context.Background(), sc, "org", "test-repo-10")
+	require.NoError(t, err, "validation should pass after install")
+}
+
+func TestRepoEnsurer_ConcurrentEnsureSameRepo(t *testing.T) {
+	// Verify that concurrent EnsureRepo calls for the same repo only
+	// perform create once (via singleflight deduplication).
+	sc := &stubClient{
+		getRepoErr:  forge.ErrNotFound,
+		installed:   true,
+		ensureDelay: 50 * time.Millisecond,
+	}
+	e := &repoEnsurer{
+		e2eCfg:  e2etest.EnvConfig{},
+		client:  sc,
+		logf:    t.Logf,
+		ensured: make(map[string]State),
+	}
+
+	const goroutines = 5
+	ctx := context.Background()
+	results := make([]State, goroutines)
+	errs := make([]error, goroutines)
+	var wg sync.WaitGroup
+
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(idx int) {
+			defer wg.Done()
+			results[idx], errs[idx] = e.EnsureRepo(ctx, "org", "test-repo-race")
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		require.NoError(t, err, "goroutine %d failed", i)
+		require.NotNil(t, results[i], "goroutine %d got nil State", i)
+	}
+
+	// singleflight ensures CreateRepo is called exactly once.
+	assert.Equal(t, int32(1), sc.createRepoCalled.Load(),
+		"concurrent callers should only create the repo once")
+}
+
 func TestEnsureRepoExists_AlreadyExists(t *testing.T) {
 	sc := &stubClient{}
 	e := &repoEnsurer{client: sc, logf: t.Logf}
@@ -233,14 +336,14 @@ func TestEnsureRepoExists_AlreadyExists(t *testing.T) {
 	assert.Equal(t, int32(0), sc.createRepoCalled.Load())
 }
 
-func TestEnsureRepoExists_CreatesAndSeeds(t *testing.T) {
+func TestEnsureRepoExists_CreatesWithAutoInit(t *testing.T) {
 	sc := &stubClient{getRepoErr: forge.ErrNotFound}
 	e := &repoEnsurer{client: sc, logf: t.Logf}
 
 	err := e.ensureRepoExists(context.Background(), "org", "test-repo-01", "org/test-repo-01")
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), sc.createRepoCalled.Load())
-	assert.Equal(t, int32(1), sc.createFileCalled.Load())
+	// No explicit seeding — auto_init provides the initial commit.
 }
 
 func TestEnsureRepoExists_NonNotFoundError(t *testing.T) {

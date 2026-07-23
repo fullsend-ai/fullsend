@@ -6,23 +6,26 @@ import (
 	"strings"
 	"sync"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
 // RepoEnsurer lazily creates and installs repos on demand for behaviour
-// scenarios. Results are cached by repo name so that a second scenario
+// scenarios. Results are cached by org/repo key so that a second scenario
 // leasing the same name within a suite run skips redundant work.
 //
-// Thread safety: EnsureRepo is safe for concurrent callers. The cache
-// is guarded by a mutex; the underlying create+install operations are
-// idempotent, so concurrent first-calls for the same repo may both run
-// the install but both succeed.
+// Thread safety: EnsureRepo is safe for concurrent callers.
+// A singleflight.Group serializes in-flight ensures per key so that
+// concurrent first-calls for the same repo only perform create+install
+// once; other callers wait and share the result.
 type RepoEnsurer interface {
 	// EnsureRepo guarantees org/repoName exists and has fullsend installed.
-	// If the repo does not exist it is created and seeded with an initial
-	// commit. If fullsend is not installed (per post-install validation)
-	// it runs the per-repo install flow (inference provision + github setup).
+	// If the repo does not exist it is created (the forge's auto_init
+	// provides the initial commit). If fullsend is not installed (per
+	// post-install validation) it runs the per-repo install flow
+	// (inference provision + github setup).
 	EnsureRepo(ctx context.Context, org, repoName string) (State, error)
 }
 
@@ -33,8 +36,9 @@ type repoEnsurer struct {
 	binary string
 	logf   func(string, ...any)
 
-	mu      sync.Mutex
-	ensured map[string]State // keyed by repo name; only successful results cached
+	mu       sync.Mutex
+	ensured  map[string]State // keyed by org/repo; only successful results cached
+	inflight singleflight.Group
 }
 
 // NewRepoEnsurer returns a RepoEnsurer backed by the given forge client
@@ -57,30 +61,44 @@ func NewRepoEnsurer(
 }
 
 func (e *repoEnsurer) EnsureRepo(ctx context.Context, org, repoName string) (State, error) {
+	key := org + "/" + repoName
+
 	e.mu.Lock()
-	if st, ok := e.ensured[repoName]; ok {
+	if st, ok := e.ensured[key]; ok {
 		e.mu.Unlock()
-		e.logf("[ensure] %s/%s already ensured this run, skipping", org, repoName)
+		e.logf("[ensure] %s already ensured this run, skipping", key)
 		return st, nil
 	}
 	e.mu.Unlock()
 
-	st, err := e.doEnsure(ctx, org, repoName)
+	// singleflight deduplicates concurrent callers for the same key so
+	// only one goroutine runs doEnsure; others wait and share the result.
+	v, err, _ := e.inflight.Do(key, func() (any, error) {
+		// Re-check the cache inside the flight — a prior flight may
+		// have populated it before this one started.
+		e.mu.Lock()
+		if st, ok := e.ensured[key]; ok {
+			e.mu.Unlock()
+			return st, nil
+		}
+		e.mu.Unlock()
+
+		st, err := e.doEnsure(ctx, org, repoName)
+		if err != nil {
+			return nil, err
+		}
+
+		e.mu.Lock()
+		e.ensured[key] = st
+		e.mu.Unlock()
+
+		return st, nil
+	})
 	if err != nil {
 		return nil, err
 	}
 
-	e.mu.Lock()
-	// Another goroutine may have raced and cached a result; prefer the
-	// first successful result but either is correct.
-	if existing, ok := e.ensured[repoName]; ok {
-		e.mu.Unlock()
-		return existing, nil
-	}
-	e.ensured[repoName] = st
-	e.mu.Unlock()
-
-	return st, nil
+	return v.(State), nil
 }
 
 // doEnsure performs the actual create-if-missing + install-if-needed work.
@@ -108,9 +126,10 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) (State
 	return &perRepoState{org: org, repo: repoName}, nil
 }
 
-// ensureRepoExists creates the repo and seeds an initial commit if it
-// does not already exist. Idempotent: a repo that already exists is
-// left untouched.
+// ensureRepoExists creates the repo if it does not already exist.
+// The forge's CreateRepo uses auto_init, so GitHub creates an initial
+// commit with a README — no explicit seeding is needed.
+// Idempotent: a repo that already exists is left untouched.
 func (e *repoEnsurer) ensureRepoExists(ctx context.Context, org, repoName, target string) error {
 	_, err := e.client.GetRepo(ctx, org, repoName)
 	if err == nil {
@@ -120,17 +139,11 @@ func (e *repoEnsurer) ensureRepoExists(ctx context.Context, org, repoName, targe
 		return fmt.Errorf("checking repo %s: %w", target, err)
 	}
 
-	e.logf("[ensure] creating %s", target)
+	e.logf("[ensure] creating %s (auto_init provides initial commit)", target)
 	if _, createErr := e.client.CreateRepo(ctx, org, repoName, "Behaviour test repo", false); createErr != nil {
 		return fmt.Errorf("creating repo %s: %w", target, createErr)
 	}
 
-	e.logf("[ensure] seeding %s with initial commit", target)
-	readme := fmt.Appendf(nil, "# %s\n\nBehaviour test repository.\n", repoName)
-	if seedErr := e.client.CreateFile(ctx, org, repoName, "README.md",
-		"chore: initialize repo for behaviour testing", readme); seedErr != nil {
-		return fmt.Errorf("seeding repo %s: %w", target, seedErr)
-	}
 	return nil
 }
 
