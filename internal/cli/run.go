@@ -908,6 +908,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// Callers (validation, post-script) must not use the dir when false.
 	var repoExtractedOK bool
 
+	// validatedIterNum records which iteration passed validation (1-based),
+	// or 0 if none. Set by inline validation (step 9e break) or the
+	// post-loop sweep. The post-script defer uses it to communicate
+	// FULLSEND_VALIDATED_ITERATION_DIR to the post-script so it selects
+	// the correct iteration's output rather than blindly taking the last.
+	var validatedIterNum int
+
 	// Download-dir cleanup is registered first so LIFO runs it last —
 	// after the post-script defer has finished using it.
 	hostRepositoryDownloadDir := filepath.Join(os.TempDir(), sandboxName)
@@ -968,6 +975,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				postRepoDir = hostRepositoryDownloadDir
 			}
 			postCmd.Env = append(postCmd.Env, fmt.Sprintf("REPO_DIR=%s", postRepoDir))
+			// FULLSEND_VALIDATED_ITERATION_DIR tells the post-script which
+			// iteration's output was validated. Without this, post-scripts
+			// that scan for the last iteration-*/output would pick up
+			// unvalidated output when the sweep validated an earlier
+			// iteration. Empty when no validation loop is configured or
+			// when no iteration passed validation (the post-script is
+			// skipped in the latter case, so this is defensive).
+			if h.ValidationLoop != nil && validatedIterNum > 0 {
+				postCmd.Env = append(postCmd.Env, fmt.Sprintf("FULLSEND_VALIDATED_ITERATION_DIR=%s",
+					filepath.Join(runDir, fmt.Sprintf("iteration-%d/output", validatedIterNum))))
+			}
 			postCmd.Stdout = os.Stdout
 			postCmd.Stderr = os.Stderr
 			if err := postCmd.Run(); err != nil {
@@ -1491,6 +1509,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if valErr == nil {
 			printer.StepDone(fmt.Sprintf("Validation passed: %s (%.1fs)", strings.TrimSpace(string(valOut)), time.Since(valStart).Seconds()))
 			validationPassed = true
+			validatedIterNum = iteration
 			break
 		}
 
@@ -1509,6 +1528,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		sweep := postLoopValidationSweep(h, runDir, runCount, repoExtractedOK, printer)
 		validationPassed = sweep.passed
 		repoExtractedOK = sweep.repoExtractedOK
+		validatedIterNum = sweep.validatedIter
 	}
 
 	// Write aggregated behavioral metrics.

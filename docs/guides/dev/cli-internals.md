@@ -495,6 +495,12 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │                   │ succeeded and validated iteration is the  │
 │  │                   │ latest; empty otherwise (post-scripts     │
 │  │                   │ must fail closed on empty REPO_DIR)       │
+│  │                   │                                          │
+│  │                   │ FULLSEND_VALIDATED_ITERATION_DIR points   │
+│  │                   │ to the validated iteration's output dir.  │
+│  │                   │ Post-scripts must use this (when set) to  │
+│  │                   │ select the result file instead of blindly │
+│  │                   │ taking the last iteration.                │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │

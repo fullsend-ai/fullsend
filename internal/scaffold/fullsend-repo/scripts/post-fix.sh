@@ -359,12 +359,20 @@ fi
 # iteration-<N>/output/fix-result.json within runDir. Uses glob order
 # (naturally ascending iteration numbers) to find the last iteration,
 # matching the pattern in post-triage.sh.
-RESULT_FILE=""
-for dir in "${RUN_DIR}"/iteration-*/output; do
-  if [ -f "${dir}/fix-result.json" ]; then
-    RESULT_FILE="${dir}/fix-result.json"
-  fi
-done
+# Prefer the validated iteration directory set by the harness
+# (FULLSEND_VALIDATED_ITERATION_DIR) — without it, the last iteration's output
+# may be schema-invalid content that failed validation. Fall back to scanning
+# for the last iteration for backward compatibility.
+if [ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ] && [ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/fix-result.json" ]; then
+  RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/fix-result.json"
+else
+  RESULT_FILE=""
+  for dir in "${RUN_DIR}"/iteration-*/output; do
+    if [ -f "${dir}/fix-result.json" ]; then
+      RESULT_FILE="${dir}/fix-result.json"
+    fi
+  done
+fi
 
 if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
   echo "::warning::No fix-result.json found — skipping summary comment"

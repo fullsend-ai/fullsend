@@ -56,8 +56,15 @@ The \`/fs-review\` command only reviews open pull requests.
   exit 0
 fi
 
-# Find the agent result from the last iteration
-RESULT_FILE=$(find .  -maxdepth 4 -path '*/iteration-*/output/agent-result.json' | sort -V | tail -1)
+# Find the agent result. Prefer the validated iteration directory set by the
+# harness (FULLSEND_VALIDATED_ITERATION_DIR) — without it, the last iteration's
+# output may be schema-invalid content that failed validation. Fall back to the
+# last iteration for backward compatibility with older fullsend versions.
+if [ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ] && [ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json" ]; then
+  RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
+else
+  RESULT_FILE=$(find .  -maxdepth 4 -path '*/iteration-*/output/agent-result.json' | sort -V | tail -1)
+fi
 
 if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
   echo "::error::No agent-result.json found — posting failure notice"

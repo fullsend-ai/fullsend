@@ -339,13 +339,20 @@ if [[ ! "${GITHUB_ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9
   exit 1
 fi
 
-# Find the result JSON from the last iteration.
-RESULT_FILE=""
-for dir in iteration-*/output; do
-  if [[ -f "${dir}/agent-result.json" ]]; then
-    RESULT_FILE="${dir}/agent-result.json"
-  fi
-done
+# Find the result JSON. Prefer the validated iteration directory set by the
+# harness (FULLSEND_VALIDATED_ITERATION_DIR) — without it, the last iteration's
+# output may be schema-invalid content that failed validation. Fall back to
+# scanning for the last iteration for backward compatibility.
+if [[ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]] && [[ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json" ]]; then
+  RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
+else
+  RESULT_FILE=""
+  for dir in iteration-*/output; do
+    if [[ -f "${dir}/agent-result.json" ]]; then
+      RESULT_FILE="${dir}/agent-result.json"
+    fi
+  done
+fi
 
 if [[ -z "${RESULT_FILE}" ]]; then
   echo "ERROR: agent-result.json not found in any iteration output directory" >&2
