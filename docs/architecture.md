@@ -204,6 +204,10 @@ The existing design principle is that [the repo is the coordinator](problems/age
   via source-native write-then-verify locks, and feeds the same dispatch pipeline
   as webhooks ([ADR 0063](ADRs/0063-polling-based-work-discovery.md)). Initial
   scope is per-repo mode only.
+- Poll input drivers apply a **privacy allowlist** to fields before constructing
+  `NormalizedEvent`, since `jira-poll` is the first driver where the event
+  source and the dispatch target do not share a trust boundary
+  ([ADR 0068](ADRs/0068-privacy-allowlist-for-poll-input-drivers.md)).
 - GitLab dispatch uses cron-polled scheduled pipelines for issue/comment/label events and native `merge_request_event` for MR events. No webhook bridge required (see [ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
 
 **Open questions:**
