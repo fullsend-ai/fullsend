@@ -24,12 +24,11 @@ func canonTempDir(t *testing.T) string {
 }
 
 func TestRegisteredAgents_Valid(t *testing.T) {
-	cfg := &config.DirConfig{
-		Agents: []config.AgentEntry{
-			{Source: "harness/triage.yaml"},
-		},
-		AllowedRemoteResources: []string{"https://example.com/"},
-	}
+	cfg := config.NewPerRepoConfig(nil, "")
+	cfg.SetAgents([]config.AgentEntry{
+		{Source: "harness/triage.yaml"},
+	})
+	cfg.SetAllowedRemoteResources([]string{"https://example.com/"})
 	agents, err := RegisteredAgents(cfg)
 	require.NoError(t, err)
 	require.Len(t, agents, 1)
@@ -37,7 +36,7 @@ func TestRegisteredAgents_Valid(t *testing.T) {
 }
 
 func TestRegisteredAgents_Empty(t *testing.T) {
-	agents, err := RegisteredAgents(&config.DirConfig{})
+	agents, err := RegisteredAgents(config.NewPerRepoConfig(nil, ""))
 	require.NoError(t, err)
 	assert.Nil(t, agents)
 }
@@ -50,7 +49,7 @@ func TestRegisteredAgents_NilConfig(t *testing.T) {
 func TestRegisteredAgents_TypedNilConfig(t *testing.T) {
 	// A typed nil (e.g. (*DirConfig)(nil) passed as ConfigReader) should
 	// be caught by the nil guard, not cause a panic on first method call.
-	var cfg config.ConfigReader = (*config.DirConfig)(nil)
+	var cfg config.ConfigReader = nil
 	_, err := RegisteredAgents(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "config is required")
@@ -58,13 +57,12 @@ func TestRegisteredAgents_TypedNilConfig(t *testing.T) {
 
 func TestRegisteredAgents_SkipsDisabled(t *testing.T) {
 	f := false
-	cfg := &config.DirConfig{
-		Agents: []config.AgentEntry{
-			{Source: "harness/triage.yaml"},
-			{Name: "review", Source: "harness/review.yaml", Enabled: &f},
-		},
-		AllowedRemoteResources: []string{"https://example.com/"},
-	}
+	cfg := config.NewPerRepoConfig(nil, "")
+	cfg.SetAgents([]config.AgentEntry{
+		{Source: "harness/triage.yaml"},
+		{Name: "review", Source: "harness/review.yaml", Enabled: &f},
+	})
+	cfg.SetAllowedRemoteResources([]string{"https://example.com/"})
 	agents, err := RegisteredAgents(cfg)
 	require.NoError(t, err)
 	require.Len(t, agents, 1)
@@ -74,27 +72,25 @@ func TestRegisteredAgents_SkipsDisabled(t *testing.T) {
 func TestRegisteredAgents_RejectsThreeEntryChain(t *testing.T) {
 	f := false
 	tr := true
-	cfg := &config.DirConfig{
-		Agents: []config.AgentEntry{
-			{Name: "retro", Source: "harness/retro-v1.yaml", Enabled: &tr},
-			{Name: "retro", Enabled: &f},
-			{Name: "retro", Source: "harness/retro-v2.yaml", Enabled: &tr},
-		},
-		AllowedRemoteResources: []string{"https://example.com/"},
-	}
+	cfg := config.NewPerRepoConfig(nil, "")
+	cfg.SetAgents([]config.AgentEntry{
+		{Name: "retro", Source: "harness/retro-v1.yaml", Enabled: &tr},
+		{Name: "retro", Enabled: &f},
+		{Name: "retro", Source: "harness/retro-v2.yaml", Enabled: &tr},
+	})
+	cfg.SetAllowedRemoteResources([]string{"https://example.com/"})
 	_, err := RegisteredAgents(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "duplicate agent name")
 }
 
 func TestRegisteredAgents_DuplicateName(t *testing.T) {
-	cfg := &config.DirConfig{
-		Agents: []config.AgentEntry{
-			{Name: "Ping", Source: "harness/a.yaml"},
-			{Name: "ping", Source: "harness/b.yaml"},
-		},
-		AllowedRemoteResources: []string{"https://example.com/"},
-	}
+	cfg := config.NewPerRepoConfig(nil, "")
+	cfg.SetAgents([]config.AgentEntry{
+		{Name: "Ping", Source: "harness/a.yaml"},
+		{Name: "ping", Source: "harness/b.yaml"},
+	})
+	cfg.SetAllowedRemoteResources([]string{"https://example.com/"})
 	_, err := RegisteredAgents(cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "duplicate agent name")

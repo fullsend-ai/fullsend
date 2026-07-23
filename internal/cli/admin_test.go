@@ -547,8 +547,8 @@ func TestReposEnableCmd_AllIgnoresPositionalArgs(t *testing.T) {
 	require.Len(t, client.CreatedFiles, 1)
 	updatedCfg, err := config.ParseOrgConfig(client.CreatedFiles[0].Content)
 	require.NoError(t, err)
-	assert.True(t, updatedCfg.Repos["web-app"].Enabled)
-	assert.True(t, updatedCfg.Repos["api"].Enabled)
+	assert.True(t, updatedCfg.RepoMap()["web-app"].Enabled)
+	assert.True(t, updatedCfg.RepoMap()["api"].Enabled)
 }
 
 func TestReposDisableCmd_AllIgnoresPositionalArgs(t *testing.T) {
@@ -568,13 +568,13 @@ func TestReposDisableCmd_AllIgnoresPositionalArgs(t *testing.T) {
 	require.Len(t, client.CreatedFiles, 1)
 	updatedCfg, err := config.ParseOrgConfig(client.CreatedFiles[0].Content)
 	require.NoError(t, err)
-	assert.False(t, updatedCfg.Repos["web-app"].Enabled)
-	assert.False(t, updatedCfg.Repos["api"].Enabled)
+	assert.False(t, updatedCfg.RepoMap()["web-app"].Enabled)
+	assert.False(t, updatedCfg.RepoMap()["api"].Enabled)
 }
 
 // Test helpers
 
-func setupTestConfig(repos map[string]bool) *config.OrgConfig {
+func setupTestConfig(repos map[string]bool) config.OrgConfigWriter {
 	repoNames := make([]string, 0, len(repos))
 	enabledRepos := make([]string, 0)
 	for name, enabled := range repos {
@@ -589,7 +589,7 @@ func setupTestConfig(repos map[string]bool) *config.OrgConfig {
 	return config.NewOrgConfig(repoNames, enabledRepos, []string{"triage"}, "", "")
 }
 
-func setupTestClient(org string, cfg *config.OrgConfig, orgRepos []string) *forge.FakeClient {
+func setupTestClient(org string, cfg config.OrgConfigWriter, orgRepos []string) *forge.FakeClient {
 	client := forge.NewFakeClient()
 	client.Repos = []forge.Repository{
 		{Name: ".fullsend", FullName: org + "/.fullsend"},
@@ -627,8 +627,8 @@ func TestRunEnableRepos_EnableSingleRepo(t *testing.T) {
 	require.Len(t, client.CreatedFiles, 1)
 	updatedCfg, err := config.ParseOrgConfig(client.CreatedFiles[0].Content)
 	require.NoError(t, err)
-	assert.True(t, updatedCfg.Repos["web-app"].Enabled)
-	assert.False(t, updatedCfg.Repos["api"].Enabled)
+	assert.True(t, updatedCfg.RepoMap()["web-app"].Enabled)
+	assert.False(t, updatedCfg.RepoMap()["api"].Enabled)
 }
 
 func TestRunEnableRepos_EnableMultipleRepos(t *testing.T) {
@@ -647,9 +647,9 @@ func TestRunEnableRepos_EnableMultipleRepos(t *testing.T) {
 	require.Len(t, client.CreatedFiles, 1)
 	updatedCfg, err := config.ParseOrgConfig(client.CreatedFiles[0].Content)
 	require.NoError(t, err)
-	assert.True(t, updatedCfg.Repos["web-app"].Enabled)
-	assert.True(t, updatedCfg.Repos["docs"].Enabled)
-	assert.False(t, updatedCfg.Repos["api"].Enabled)
+	assert.True(t, updatedCfg.RepoMap()["web-app"].Enabled)
+	assert.True(t, updatedCfg.RepoMap()["docs"].Enabled)
+	assert.False(t, updatedCfg.RepoMap()["api"].Enabled)
 }
 
 func TestRunEnableRepos_EnableAllRepos(t *testing.T) {
@@ -667,11 +667,11 @@ func TestRunEnableRepos_EnableAllRepos(t *testing.T) {
 	require.Len(t, client.CreatedFiles, 1)
 	updatedCfg, err := config.ParseOrgConfig(client.CreatedFiles[0].Content)
 	require.NoError(t, err)
-	assert.True(t, updatedCfg.Repos["web-app"].Enabled)
-	assert.True(t, updatedCfg.Repos["api"].Enabled)
-	assert.True(t, updatedCfg.Repos["new-repo"].Enabled)
+	assert.True(t, updatedCfg.RepoMap()["web-app"].Enabled)
+	assert.True(t, updatedCfg.RepoMap()["api"].Enabled)
+	assert.True(t, updatedCfg.RepoMap()["new-repo"].Enabled)
 	// .fullsend should not be in repos map.
-	_, hasFullsend := updatedCfg.Repos[".fullsend"]
+	_, hasFullsend := updatedCfg.RepoMap()[".fullsend"]
 	assert.False(t, hasFullsend)
 }
 
@@ -753,7 +753,11 @@ func TestRunEnableRepos_UpdatesOrgVariableVisibility(t *testing.T) {
 		"web-app": true,
 		"api":     false,
 	})
-	cfg.Dispatch.Mode = "oidc-mint"
+	{
+		d := cfg.DispatchSettings()
+		d.Mode = "oidc-mint"
+		cfg.SetDispatch(d)
+	}
 
 	client := setupTestClient("testorg", cfg, []string{"web-app", "api"})
 	// Assign repo IDs so we can verify they appear in the variable visibility.
@@ -811,7 +815,11 @@ func TestRunEnableRepos_VariableSyncErrorDoesNotBlockEnable(t *testing.T) {
 	cfg := setupTestConfig(map[string]bool{
 		"web-app": false,
 	})
-	cfg.Dispatch.Mode = "oidc-mint"
+	{
+		d := cfg.DispatchSettings()
+		d.Mode = "oidc-mint"
+		cfg.SetDispatch(d)
+	}
 
 	client := setupTestClient("testorg", cfg, []string{"web-app"})
 	for i := range client.Repos {
@@ -837,7 +845,11 @@ func TestRunEnableRepos_SkipsVariableSyncWhenVariableNotExists(t *testing.T) {
 	cfg := setupTestConfig(map[string]bool{
 		"web-app": false,
 	})
-	cfg.Dispatch.Mode = "oidc-mint"
+	{
+		d := cfg.DispatchSettings()
+		d.Mode = "oidc-mint"
+		cfg.SetDispatch(d)
+	}
 
 	client := setupTestClient("testorg", cfg, []string{"web-app"})
 	// No OrgVariables set — FULLSEND_MINT_URL doesn't exist.
@@ -868,8 +880,8 @@ func TestRunDisableRepos_DisableSingleRepo(t *testing.T) {
 	require.Len(t, client.CreatedFiles, 1)
 	updatedCfg, err := config.ParseOrgConfig(client.CreatedFiles[0].Content)
 	require.NoError(t, err)
-	assert.False(t, updatedCfg.Repos["web-app"].Enabled)
-	assert.True(t, updatedCfg.Repos["api"].Enabled)
+	assert.False(t, updatedCfg.RepoMap()["web-app"].Enabled)
+	assert.True(t, updatedCfg.RepoMap()["api"].Enabled)
 }
 
 func TestRunDisableRepos_DisableMultipleRepos(t *testing.T) {
@@ -888,9 +900,9 @@ func TestRunDisableRepos_DisableMultipleRepos(t *testing.T) {
 	require.Len(t, client.CreatedFiles, 1)
 	updatedCfg, err := config.ParseOrgConfig(client.CreatedFiles[0].Content)
 	require.NoError(t, err)
-	assert.False(t, updatedCfg.Repos["web-app"].Enabled)
-	assert.False(t, updatedCfg.Repos["docs"].Enabled)
-	assert.True(t, updatedCfg.Repos["api"].Enabled)
+	assert.False(t, updatedCfg.RepoMap()["web-app"].Enabled)
+	assert.False(t, updatedCfg.RepoMap()["docs"].Enabled)
+	assert.True(t, updatedCfg.RepoMap()["api"].Enabled)
 }
 
 func TestRunDisableRepos_DisableAllRepos(t *testing.T) {
@@ -908,8 +920,8 @@ func TestRunDisableRepos_DisableAllRepos(t *testing.T) {
 	require.Len(t, client.CreatedFiles, 1)
 	updatedCfg, err := config.ParseOrgConfig(client.CreatedFiles[0].Content)
 	require.NoError(t, err)
-	assert.False(t, updatedCfg.Repos["web-app"].Enabled)
-	assert.False(t, updatedCfg.Repos["api"].Enabled)
+	assert.False(t, updatedCfg.RepoMap()["web-app"].Enabled)
+	assert.False(t, updatedCfg.RepoMap()["api"].Enabled)
 }
 
 func TestRunDisableRepos_NoOpWhenAlreadyDisabled(t *testing.T) {
@@ -1291,7 +1303,7 @@ func TestCheckInstallScopes_GetTokenScopesError(t *testing.T) {
 }
 
 func TestCheckInstallScopes_SyncWithLayers(t *testing.T) {
-	emptyCfg := &config.OrgConfig{}
+	emptyCfg := config.NewOrgConfig(nil, nil, nil, "", "")
 	stack := layers.NewStack(
 		layers.NewConfigRepoLayer("test-org", nil, emptyCfg, ui.New(&discardWriter{}), false),
 		layers.NewWorkflowsLayer("test-org", nil, ui.New(&discardWriter{}), "", "test-version", false),
@@ -1914,8 +1926,17 @@ func TestLoadExistingRuntime(t *testing.T) {
 	client := forge.NewFakeClient()
 	assert.Equal(t, "", loadExistingRuntime(ctx, client, "acme"))
 
-	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, config.DefaultAgentRoles(), "", "acme")
-	cfg.Defaults.Runtime = "dummy"
+	cfg, parseErr := config.ParseOrgConfigWriter([]byte(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage]
+  runtime: dummy
+repos:
+  widget:
+    enabled: true
+`))
+	require.NoError(t, parseErr)
 	data, err := cfg.Marshal()
 	require.NoError(t, err)
 	client.FileContents = map[string][]byte{

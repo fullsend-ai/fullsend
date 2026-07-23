@@ -978,14 +978,17 @@ func TestDiscoverRepo_PerOrg(t *testing.T) {
 	setWorkflowFile(fc, "acme", "api",
 		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
 
-	orgCfg := &config.OrgConfig{
-		Dispatch: config.DispatchConfig{
-			MintURL: "https://mint-org.example.com",
-		},
-		Repos: map[string]config.RepoConfig{
-			"api": {Enabled: true},
-		},
-	}
+	orgCfg, parseErr := config.ParseOrgConfig([]byte(`version: "1"
+dispatch:
+  platform: github-actions
+  mint_url: https://mint-org.example.com
+defaults:
+  roles: [triage]
+repos:
+  api:
+    enabled: true
+`))
+	require.NoError(t, parseErr)
 
 	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, nopProgress)
 	require.NoError(t, err)
@@ -997,11 +1000,16 @@ func TestDiscoverRepo_PerOrg(t *testing.T) {
 func TestDiscoverRepo_PerOrgDisabled(t *testing.T) {
 	fc := forge.NewFakeClient()
 
-	orgCfg := &config.OrgConfig{
-		Repos: map[string]config.RepoConfig{
-			"api": {Enabled: false},
-		},
-	}
+	orgCfg, parseErr := config.ParseOrgConfig([]byte(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage]
+repos:
+  api:
+    enabled: false
+`))
+	require.NoError(t, parseErr)
 
 	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, nopProgress)
 	require.NoError(t, err)

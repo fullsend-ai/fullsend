@@ -1,6 +1,12 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"gopkg.in/yaml.v3"
+)
 
 // --- Sub-interfaces for common behaviors ---
 
@@ -29,7 +35,7 @@ type CreateIssuesReader interface {
 // --- Composite read interface ---
 
 // ConfigReader is the common read interface for fields shared by both
-// OrgConfig and PerRepoConfig. Consumer packages should depend on this
+// orgConfig and perRepoConfig. Consumer packages should depend on this
 // interface rather than accessing struct fields directly.
 type ConfigReader interface {
 	AgentLister
@@ -50,6 +56,7 @@ type OrgConfigReader interface {
 	OrgRepoDefaults() RepoDefaults
 	RepoMap() map[string]RepoConfig
 	EnabledRepos() []string
+	DisabledRepos() []string
 	StatusNotifications() *StatusNotificationConfig
 }
 
@@ -82,197 +89,221 @@ type OrgConfigWriter interface {
 	ConfigWriter
 	SetDispatch(DispatchConfig)
 	SetInference(InferenceConfig)
+	SetDefaultRuntime(string)
+	SetRepo(name string, rc RepoConfig)
+}
+
+// PerRepoConfigWriter extends PerRepoConfigReader and ConfigWriter with
+// per-repo-specific mutation methods.
+type PerRepoConfigWriter interface {
+	PerRepoConfigReader
+	ConfigWriter
+	SetRoles([]string)
+	SetRuntime(string)
 }
 
 // --- Compile-time assertions ---
 
 var (
-	_ ConfigReader        = (*OrgConfig)(nil)
-	_ ConfigReader        = (*PerRepoConfig)(nil)
-	_ ConfigReader        = (*DirConfig)(nil)
-	_ OrgConfigReader     = (*OrgConfig)(nil)
-	_ PerRepoConfigReader = (*PerRepoConfig)(nil)
-	_ ConfigWriter        = (*OrgConfig)(nil)
-	_ ConfigWriter        = (*PerRepoConfig)(nil)
-	_ OrgConfigWriter     = (*OrgConfig)(nil)
+	_ ConfigReader        = (*orgConfig)(nil)
+	_ ConfigReader        = (*perRepoConfig)(nil)
+	_ OrgConfigReader     = (*orgConfig)(nil)
+	_ PerRepoConfigReader = (*perRepoConfig)(nil)
+	_ ConfigWriter        = (*orgConfig)(nil)
+	_ ConfigWriter        = (*perRepoConfig)(nil)
+	_ OrgConfigWriter     = (*orgConfig)(nil)
+	_ PerRepoConfigWriter = (*perRepoConfig)(nil)
 )
 
-// --- OrgConfig getter methods ---
+// --- orgConfig getter methods ---
 
 // AgentEntries returns the registered agent entries.
-func (c *OrgConfig) AgentEntries() []AgentEntry { return c.Agents }
+func (c *orgConfig) AgentEntries() []AgentEntry { return c.Agents }
 
 // IsKillSwitchActive reports whether the kill switch is engaged.
-func (c *OrgConfig) IsKillSwitchActive() bool { return c.KillSwitch }
+func (c *orgConfig) IsKillSwitchActive() bool { return c.KillSwitch }
 
 // AllowedResources returns the allowed remote resource prefixes.
-func (c *OrgConfig) AllowedResources() []string { return c.AllowedRemoteResources }
+func (c *orgConfig) AllowedResources() []string { return c.AllowedRemoteResources }
 
 // IssueCreationConfig returns the cross-repo issue creation config.
-func (c *OrgConfig) IssueCreationConfig() *CreateIssuesConfig { return c.CreateIssues }
+func (c *orgConfig) IssueCreationConfig() *CreateIssuesConfig { return c.CreateIssues }
 
 // ConfigVersion returns the config schema version.
-func (c *OrgConfig) ConfigVersion() string { return c.Version }
+func (c *orgConfig) ConfigVersion() string { return c.Version }
 
 // IsOrgMode reports that this is an org-mode configuration.
-func (c *OrgConfig) IsOrgMode() bool { return true }
+func (c *orgConfig) IsOrgMode() bool { return true }
 
 // DispatchSettings returns the dispatch configuration.
-func (c *OrgConfig) DispatchSettings() DispatchConfig { return c.Dispatch }
+func (c *orgConfig) DispatchSettings() DispatchConfig { return c.Dispatch }
 
 // InferenceSettings returns the inference provider configuration.
-func (c *OrgConfig) InferenceSettings() InferenceConfig { return c.Inference }
+func (c *orgConfig) InferenceSettings() InferenceConfig { return c.Inference }
 
 // OrgRepoDefaults returns the default settings applied to all repos.
-func (c *OrgConfig) OrgRepoDefaults() RepoDefaults { return c.Defaults }
+func (c *orgConfig) OrgRepoDefaults() RepoDefaults { return c.Defaults }
 
 // RepoMap returns the per-repo configuration map.
-func (c *OrgConfig) RepoMap() map[string]RepoConfig { return c.Repos }
+func (c *orgConfig) RepoMap() map[string]RepoConfig { return c.Repos }
 
 // StatusNotifications returns the status notification configuration.
-func (c *OrgConfig) StatusNotifications() *StatusNotificationConfig {
+func (c *orgConfig) StatusNotifications() *StatusNotificationConfig {
 	return c.Defaults.StatusNotifications
 }
 
-// --- OrgConfig setter methods ---
+// --- orgConfig setter methods ---
 
 // SetKillSwitch sets the kill switch state.
-func (c *OrgConfig) SetKillSwitch(v bool) { c.KillSwitch = v }
+func (c *orgConfig) SetKillSwitch(v bool) { c.KillSwitch = v }
 
 // SetAgents replaces the registered agent entries.
-func (c *OrgConfig) SetAgents(agents []AgentEntry) { c.Agents = agents }
+func (c *orgConfig) SetAgents(agents []AgentEntry) { c.Agents = agents }
 
 // SetAllowedRemoteResources replaces the allowed remote resource
 // prefixes.
-func (c *OrgConfig) SetAllowedRemoteResources(resources []string) {
+func (c *orgConfig) SetAllowedRemoteResources(resources []string) {
 	c.AllowedRemoteResources = resources
 }
 
 // SetDispatch replaces the dispatch configuration.
-func (c *OrgConfig) SetDispatch(d DispatchConfig) { c.Dispatch = d }
+func (c *orgConfig) SetDispatch(d DispatchConfig) { c.Dispatch = d }
 
 // SetInference replaces the inference provider configuration.
-func (c *OrgConfig) SetInference(i InferenceConfig) { c.Inference = i }
+func (c *orgConfig) SetInference(i InferenceConfig) { c.Inference = i }
 
-// --- PerRepoConfig getter methods ---
+// SetDefaultRuntime replaces the default agent runtime.
+func (c *orgConfig) SetDefaultRuntime(rt string) { c.Defaults.Runtime = rt }
+
+// SetRepo adds or replaces a per-repo configuration entry.
+// Callers should use this method instead of mutating the map returned
+// by RepoMap() to keep mutations on the writer interface.
+func (c *orgConfig) SetRepo(name string, rc RepoConfig) {
+	if c.Repos == nil {
+		c.Repos = make(map[string]RepoConfig)
+	}
+	c.Repos[name] = rc
+}
+
+// --- perRepoConfig getter methods ---
 
 // AgentEntries returns the registered agent entries.
-func (c *PerRepoConfig) AgentEntries() []AgentEntry { return c.Agents }
+func (c *perRepoConfig) AgentEntries() []AgentEntry { return c.Agents }
 
 // IsKillSwitchActive reports whether the kill switch is engaged.
-func (c *PerRepoConfig) IsKillSwitchActive() bool { return c.KillSwitch }
+func (c *perRepoConfig) IsKillSwitchActive() bool { return c.KillSwitch }
 
 // AllowedResources returns the allowed remote resource prefixes.
-func (c *PerRepoConfig) AllowedResources() []string { return c.AllowedRemoteResources }
+func (c *perRepoConfig) AllowedResources() []string { return c.AllowedRemoteResources }
 
 // IssueCreationConfig returns the cross-repo issue creation config.
-func (c *PerRepoConfig) IssueCreationConfig() *CreateIssuesConfig { return c.CreateIssues }
+func (c *perRepoConfig) IssueCreationConfig() *CreateIssuesConfig { return c.CreateIssues }
 
 // ConfigVersion returns the config schema version.
-func (c *PerRepoConfig) ConfigVersion() string { return c.Version }
+func (c *perRepoConfig) ConfigVersion() string { return c.Version }
 
 // IsOrgMode reports that this is a per-repo configuration.
-func (c *PerRepoConfig) IsOrgMode() bool { return false }
+func (c *perRepoConfig) IsOrgMode() bool { return false }
 
 // ConfigRoles returns the configured agent roles.
-func (c *PerRepoConfig) ConfigRoles() []string { return c.Roles }
+func (c *perRepoConfig) ConfigRoles() []string { return c.Roles }
 
 // ConfigRuntime returns the configured agent runtime.
-func (c *PerRepoConfig) ConfigRuntime() string { return c.Runtime }
+func (c *perRepoConfig) ConfigRuntime() string { return c.Runtime }
 
-// --- PerRepoConfig setter methods ---
+// --- perRepoConfig setter methods ---
 
 // SetKillSwitch sets the kill switch state.
-func (c *PerRepoConfig) SetKillSwitch(v bool) { c.KillSwitch = v }
+func (c *perRepoConfig) SetKillSwitch(v bool) { c.KillSwitch = v }
 
 // SetAgents replaces the registered agent entries.
-func (c *PerRepoConfig) SetAgents(agents []AgentEntry) { c.Agents = agents }
+func (c *perRepoConfig) SetAgents(agents []AgentEntry) { c.Agents = agents }
 
 // SetAllowedRemoteResources replaces the allowed remote resource
 // prefixes.
-func (c *PerRepoConfig) SetAllowedRemoteResources(resources []string) {
+func (c *perRepoConfig) SetAllowedRemoteResources(resources []string) {
 	c.AllowedRemoteResources = resources
 }
 
-// --- DirConfig getter methods (ConfigReader) ---
+// SetRoles replaces the configured agent roles.
+func (c *perRepoConfig) SetRoles(roles []string) { c.Roles = roles }
 
-// AgentEntries returns the registered agent entries.
-func (dc *DirConfig) AgentEntries() []AgentEntry { return dc.Agents }
-
-// IsKillSwitchActive reports whether the kill switch is engaged.
-func (dc *DirConfig) IsKillSwitchActive() bool { return dc.KillSwitch }
-
-// AllowedResources returns the allowed remote resource prefixes.
-func (dc *DirConfig) AllowedResources() []string { return dc.AllowedRemoteResources }
-
-// IsOrgMode reports whether this is an org-mode configuration.
-func (dc *DirConfig) IsOrgMode() bool { return dc.IsOrg }
-
-// ConfigVersion returns the config schema version by delegating to the
-// underlying OrgConfig or PerRepoConfig.
-func (dc *DirConfig) ConfigVersion() string {
-	if dc.Org != nil {
-		return dc.Org.Version
-	}
-	if dc.PerRepo != nil {
-		return dc.PerRepo.Version
-	}
-	return ""
-}
-
-// IssueCreationConfig returns the cross-repo issue creation config by
-// delegating to the underlying OrgConfig or PerRepoConfig.
-func (dc *DirConfig) IssueCreationConfig() *CreateIssuesConfig {
-	if dc.Org != nil {
-		return dc.Org.CreateIssues
-	}
-	if dc.PerRepo != nil {
-		return dc.PerRepo.CreateIssues
-	}
-	return nil
-}
+// SetRuntime replaces the configured agent runtime.
+func (c *perRepoConfig) SetRuntime(runtime string) { c.Runtime = runtime }
 
 // --- LoadConfig / LoadConfigWriter factories ---
 
+// LoadOpts controls how LoadConfig handles a missing config.yaml.
+type LoadOpts struct {
+	// MissingOK returns a default config when config.yaml is absent.
+	MissingOK bool
+}
+
 // LoadConfig reads and parses config.yaml from dir, returning a
 // ConfigReader. This is the preferred entry point for consumer packages
-// that only need read access. It wraps LoadFromDir and returns the
-// underlying OrgConfig or PerRepoConfig.
+// that only need read access.
 func LoadConfig(dir string, opts LoadOpts) (ConfigReader, error) {
-	dc, err := LoadFromDir(dir, opts)
+	data, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
-		return nil, err
-	}
-	if dc.IsOrg {
-		if dc.Org == nil {
-			return nil, fmt.Errorf("org config is nil despite IsOrg=true")
+		if os.IsNotExist(err) && opts.MissingOK {
+			return NewPerRepoConfig(nil, ""), nil
 		}
-		return dc.Org, nil
+		return nil, fmt.Errorf("reading config: %w", err)
 	}
-	if dc.PerRepo == nil {
-		return nil, fmt.Errorf("per-repo config is nil despite IsOrg=false")
-	}
-	return dc.PerRepo, nil
+	return parseConfigReader(data)
 }
 
 // LoadConfigWriter reads and parses config.yaml from dir, returning a
 // ConfigWriter. This is the preferred entry point for consumer packages
 // that need read-write access (e.g. CLI commands that modify and
-// write-back config). It wraps LoadFromDir and returns the underlying
-// OrgConfig or PerRepoConfig.
+// write-back config). It wraps parseConfigData and returns the
+// underlying orgConfig or perRepoConfig.
 func LoadConfigWriter(dir string, opts LoadOpts) (ConfigWriter, error) {
-	dc, err := LoadFromDir(dir, opts)
+	data, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
 	if err != nil {
-		return nil, err
-	}
-	if dc.IsOrg {
-		if dc.Org == nil {
-			return nil, fmt.Errorf("org config is nil despite IsOrg=true")
+		if os.IsNotExist(err) && opts.MissingOK {
+			return NewPerRepoConfig(nil, ""), nil
 		}
-		return dc.Org, nil
+		return nil, fmt.Errorf("reading config: %w", err)
 	}
-	if dc.PerRepo == nil {
-		return nil, fmt.Errorf("per-repo config is nil despite IsOrg=false")
+	return parseConfigWriter(data)
+}
+
+// parseConfigReader parses raw config YAML into a ConfigReader.
+// IsPerRepoYAML performs its own yaml.Unmarshal; for malformed YAML it
+// returns false, so ParseOrgConfig surfaces the parse error.
+func parseConfigReader(data []byte) (ConfigReader, error) {
+	if IsPerRepoYAML(data) {
+		return ParsePerRepoConfig(data)
 	}
-	return dc.PerRepo, nil
+	return ParseOrgConfig(data)
+}
+
+// parseConfigWriter parses raw config YAML into a ConfigWriter.
+// IsPerRepoYAML performs its own yaml.Unmarshal; for malformed YAML it
+// returns false, so ParseOrgConfigWriter surfaces the parse error.
+func parseConfigWriter(data []byte) (ConfigWriter, error) {
+	if IsPerRepoYAML(data) {
+		return ParsePerRepoConfigWriter(data)
+	}
+	return ParseOrgConfigWriter(data)
+}
+
+// IsPerRepoYAML probes raw YAML for structural markers that distinguish
+// perRepoConfig from orgConfig. orgConfig has org-only top-level keys
+// (dispatch, repos, inference, defaults); perRepoConfig never does. When
+// no org-only key is present we default to per-repo: the shared fields
+// parse identically under either parser, and this avoids silently
+// dropping the per-repo Roles field on configs that omit it.
+func IsPerRepoYAML(data []byte) bool {
+	var probe map[string]interface{}
+	if err := yaml.Unmarshal(data, &probe); err != nil {
+		return false
+	}
+	for _, key := range []string{"dispatch", "repos", "inference", "defaults"} {
+		if _, ok := probe[key]; ok {
+			return false
+		}
+	}
+	return true
 }

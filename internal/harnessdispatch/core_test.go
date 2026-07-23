@@ -17,7 +17,7 @@ import (
 func TestDispatch_KillSwitch(t *testing.T) {
 	dir := t.TempDir()
 	cfg := config.NewPerRepoConfig(nil, "o/r")
-	cfg.KillSwitch = true
+	cfg.SetKillSwitch(true)
 	data, err := yaml.Marshal(cfg)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
@@ -118,7 +118,7 @@ func writeHarnessConfig(t *testing.T, dir, harnessYAML string) {
 	require.NoError(t, os.MkdirAll(harnessDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(harnessDir, "issue-ping.yaml"), []byte(harnessYAML), 0o644))
 	cfg := config.NewPerRepoConfig(nil, "fullsend-ai/demo")
-	cfg.Agents = []config.AgentEntry{{Name: "issue-ping", Source: "harness/issue-ping.yaml"}}
+	cfg.SetAgents([]config.AgentEntry{{Name: "issue-ping", Source: "harness/issue-ping.yaml"}})
 	data, err := yaml.Marshal(cfg)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))

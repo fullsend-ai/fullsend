@@ -85,11 +85,42 @@ func createIssue(w *world.World, title, body string) error {
 	w.IssueTitle = title
 	// fullsend.yaml triggers on issues opened and labeled. Drain the issue-open
 	// run before applying ready-for-triage so the labeled dispatch is not skipped.
-	ctx := context.Background()
-	if _, err := w.CI.WaitForWorkflow(ctx, w.Org, w.Install.TriageWorkflowRepo(), w.Install.TriageWorkflowFile(), trigger, issueOpenEvent); err != nil {
-		return fmt.Errorf("waiting for issue-open workflow: %w", err)
+	if err := drainIssueOpenWorkflow(w, trigger); err != nil {
+		return err
 	}
 	return nil
+}
+
+// issueOpenDrainSkewBuffer is subtracted from the trigger timestamp on
+// retry to compensate for clock drift between the test runner and GitHub.
+// 30 s covers typical NTP drift without matching stale runs from prior
+// scenarios (pool repos are org-isolated).
+const issueOpenDrainSkewBuffer = 30 * time.Second
+
+// drainIssueOpenWorkflow waits for the fullsend.yaml workflow to process
+// the issues.opened event. If the first attempt fails (typically due to
+// GitHub Actions webhook delivery lag or clock skew between the runner
+// and GitHub), it retries once with a relaxed trigger timestamp.
+func drainIssueOpenWorkflow(w *world.World, trigger time.Time) error {
+	ctx := context.Background()
+	repo := w.Install.TriageWorkflowRepo()
+	file := w.Install.TriageWorkflowFile()
+
+	_, err := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, trigger, issueOpenEvent)
+	if err == nil {
+		return nil
+	}
+
+	// Retry with a clock-skew buffer. When the test runner's clock is
+	// slightly ahead of GitHub's, the workflow run's CreatedAt falls
+	// before our trigger timestamp and the first poll window misses it.
+	worldLogf(w, "issue-open drain: retrying with skew buffer: %v", err)
+	buffered := trigger.Add(-issueOpenDrainSkewBuffer)
+	if _, retryErr := w.CI.WaitForWorkflow(ctx, w.Org, repo, file, buffered, issueOpenEvent); retryErr == nil {
+		return nil
+	}
+
+	return fmt.Errorf("waiting for issue-open workflow: %w", err)
 }
 
 func whenIssueLabeled(w *world.World, label string) error {

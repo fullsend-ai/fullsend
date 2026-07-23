@@ -156,15 +156,16 @@ func validatePerRepoPostInstall(ctx context.Context, client forge.Client, org, r
 	if err != nil {
 		return fmt.Errorf("post-install: reading %s: %w", cfgPath, err)
 	}
-	cfg, err := config.ParsePerRepoConfig(cfgData)
+	cfgW, err := config.ParsePerRepoConfigWriter(cfgData)
 	if err != nil {
 		return fmt.Errorf("post-install: parsing %s: %w", cfgPath, err)
 	}
-	if err := cfg.Validate(); err != nil {
+	if err := cfgW.Validate(); err != nil {
 		return fmt.Errorf("post-install: invalid %s: %w", cfgPath, err)
 	}
-	if cfg.Runtime != "dummy" {
-		return fmt.Errorf("post-install: %s runtime is %q, want dummy", cfgPath, cfg.Runtime)
+	cfg := cfgW.(config.PerRepoConfigReader)
+	if cfg.ConfigRuntime() != "dummy" {
+		return fmt.Errorf("post-install: %s runtime is %q, want dummy", cfgPath, cfg.ConfigRuntime())
 	}
 
 	markerPath := scaffold.VendoredMarkerPath()

@@ -19,7 +19,7 @@ type TriggeredHarness struct {
 }
 
 // ListTriggeredHarnesses returns config-registered agents whose harness has a non-empty trigger.
-func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg *config.DirConfig) ([]TriggeredHarness, error) {
+func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.ConfigReader) ([]TriggeredHarness, error) {
 	registered, err := harness.RegisteredAgents(cfg)
 	if err != nil {
 		return nil, err
@@ -28,7 +28,7 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg *config.D
 		return nil, nil
 	}
 
-	allowlist := cfg.AllowedRemoteResources
+	allowlist := cfg.AllowedResources()
 	if allowlist == nil {
 		allowlist = config.DefaultAllowedRemoteResources()
 	}
@@ -78,9 +78,9 @@ func MatchHarnesses(candidates []TriggeredHarness, event *normevent.Event) ([]Tr
 
 // MergedConfigAgents loads agent entries from per-repo config directory.
 func MergedConfigAgents(configDir string) ([]config.AgentEntry, error) {
-	cfg, err := config.LoadFromDir(configDir, config.LoadOpts{MissingOK: true})
+	cfg, err := config.LoadConfig(configDir, config.LoadOpts{MissingOK: true})
 	if err != nil {
 		return nil, err
 	}
-	return cfg.Agents, nil
+	return cfg.AgentEntries(), nil
 }

@@ -134,7 +134,7 @@ func TestAdminInstallUninstall(t *testing.T) {
 	require.NoError(t, err, "config.yaml should exist")
 	parsedCfg, err := config.ParseOrgConfig(cfgData)
 	require.NoError(t, err, "config.yaml should parse")
-	require.Len(t, parsedCfg.Defaults.Roles, len(defaultRoles), "should have %d roles", len(defaultRoles))
+	require.Len(t, parsedCfg.OrgRepoDefaults().Roles, len(defaultRoles), "should have %d roles", len(defaultRoles))
 	_, err = env.client.GetFileContent(ctx, env.org, forge.ConfigRepoName, ".defaults/action.yml")
 	require.NoError(t, err, "vendored marker .defaults/action.yml should exist")
 	_, err = env.client.GetFileContent(ctx, env.org, forge.ConfigRepoName, layers.VendoredBinaryPath)
