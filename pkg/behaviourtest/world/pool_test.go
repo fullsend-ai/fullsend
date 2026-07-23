@@ -126,6 +126,62 @@ func TestRepoPool_ConcurrentAcquireRelease(t *testing.T) {
 	assert.Len(t, acquired, 10)
 }
 
+func TestRepoPool_ConcurrentAcquireRelease_PoolIntegrity(t *testing.T) {
+	const poolSize = 4
+	const workers = 20
+
+	pool, err := NewRepoPool(poolSize)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	var wg sync.WaitGroup
+
+	// Run many workers that each acquire, hold briefly, and release.
+	// Interleaved acquire/release under contention is the scenario
+	// where the inconsistency window could lose names.
+	for range workers {
+		wg.Go(func() {
+			name, err := pool.Acquire(ctx)
+			if err != nil {
+				t.Errorf("Acquire failed: %v", err)
+				return
+			}
+			time.Sleep(time.Millisecond) // simulate work
+			if err := pool.Release(name); err != nil {
+				t.Errorf("Release failed: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+
+	// After all workers finish, every name must be back in the pool.
+	// Drain the channel to verify no names were lost and none duplicated.
+	seen := make(map[string]bool)
+	for range poolSize {
+		select {
+		case name := <-pool.names:
+			assert.False(t, seen[name], "duplicate name in pool: %s", name)
+			seen[name] = true
+		default:
+			t.Fatal("pool channel has fewer names than expected")
+		}
+	}
+	assert.Len(t, seen, poolSize, "expected all %d names back in pool", poolSize)
+
+	// Channel should now be empty — no extra names.
+	select {
+	case extra := <-pool.names:
+		t.Fatalf("unexpected extra name in pool: %s", extra)
+	default:
+		// expected
+	}
+
+	// Outstanding map must be empty.
+	pool.mu.Lock()
+	assert.Empty(t, pool.outstanding, "outstanding map should be empty after all releases")
+	pool.mu.Unlock()
+}
+
 func TestRepoPool_DoubleReleaseReturnsError(t *testing.T) {
 	pool, err := NewRepoPool(1)
 	require.NoError(t, err)
