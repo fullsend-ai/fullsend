@@ -181,6 +181,9 @@ func TestResolveForge_ValidationLoopReplace(t *testing.T) {
 }
 
 func TestResolveForge_ValidationLoopFieldLevelMerge(t *testing.T) {
+	// Tests mergeForgeConfig directly (bypasses validateForge). See
+	// TestLoadWithOpts_ForgePartialValidationLoopInheritsScript for the
+	// end-to-end path through validateForge → ResolveForge → Validate.
 	h := &Harness{
 		Agent: "agents/test.md",
 		ValidationLoop: &ValidationLoop{

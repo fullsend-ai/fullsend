@@ -424,6 +424,11 @@ func matchingAllowedPrefix(rawURL string, allowlist []string) string {
 // mergeValidationLoop merges two ValidationLoop pointers field by field.
 // Child non-zero values win; base fills gaps. Returns the merged result.
 // If both are nil, returns nil. If only one is non-nil, returns it as-is.
+// If child is non-nil but all fields are zero-valued (e.g., from an explicit
+// `validation_loop: {}` in YAML), it is returned as-is so that downstream
+// validation (Validate's "script is required" check) can reject it. This
+// preserves pre-field-merge behavior where an empty block was a load error
+// rather than silent full inheritance.
 func mergeValidationLoop(base, child *ValidationLoop) *ValidationLoop {
 	if base == nil && child == nil {
 		return nil
@@ -433,6 +438,12 @@ func mergeValidationLoop(base, child *ValidationLoop) *ValidationLoop {
 	}
 	if child == nil {
 		return base
+	}
+
+	// Non-nil but all-zero child = explicit empty override (e.g., `validation_loop: {}`).
+	// Return as-is to preserve the pre-field-merge rejection behavior.
+	if *child == (ValidationLoop{}) {
+		return child
 	}
 
 	merged := *child // start with child values

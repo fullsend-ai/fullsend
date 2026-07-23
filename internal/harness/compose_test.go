@@ -504,6 +504,26 @@ func TestMergeValidationLoop(t *testing.T) {
 	}
 }
 
+func TestMergeValidationLoop_AllZeroChild(t *testing.T) {
+	// An explicit `validation_loop: {}` should NOT inherit from base.
+	// The all-zero child is returned as-is so Validate() can reject it
+	// (script is required), matching pre-field-merge behavior.
+	base := &ValidationLoop{
+		Script:        "base.sh",
+		Schema:        "base-schema.json",
+		MaxIterations: 5,
+		FeedbackMode:  "append",
+	}
+	child := &ValidationLoop{} // all zero — explicit empty override
+
+	result := mergeValidationLoop(base, child)
+	require.NotNil(t, result)
+	assert.Equal(t, "", result.Script, "all-zero child should not inherit base script")
+	assert.Equal(t, "", result.Schema, "all-zero child should not inherit base schema")
+	assert.Equal(t, 0, result.MaxIterations, "all-zero child should not inherit base max_iterations")
+	assert.Equal(t, "", result.FeedbackMode, "all-zero child should not inherit base feedback_mode")
+}
+
 func TestLoadWithBase_ChainedBases(t *testing.T) {
 	dir := t.TempDir()
 

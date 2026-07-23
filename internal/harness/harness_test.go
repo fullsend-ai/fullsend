@@ -1507,6 +1507,59 @@ forge:
 	assert.Equal(t, "scripts/validate-gh.sh", h.ValidationLoop.Script)
 }
 
+func TestLoadWithOpts_ForgePartialValidationLoopInheritsScript(t *testing.T) {
+	// Forge sets only schema; script is inherited from the top-level
+	// validation_loop via field-level merge. This proves the real loading
+	// path (validateForge → ResolveForge → Validate) works end-to-end.
+	content := `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: scripts/validate-common.sh
+  max_iterations: 3
+  feedback_mode: append
+forge:
+  github:
+    validation_loop:
+      schema: gh-schema.json
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{ForgePlatform: "github"})
+	require.NoError(t, err)
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "scripts/validate-common.sh", h.ValidationLoop.Script,
+		"script should be inherited from top-level")
+	assert.Equal(t, "gh-schema.json", h.ValidationLoop.Schema,
+		"forge schema should override top-level")
+	assert.Equal(t, 3, h.ValidationLoop.MaxIterations,
+		"max_iterations should be inherited from top-level")
+	assert.Equal(t, "append", h.ValidationLoop.FeedbackMode,
+		"feedback_mode should be inherited from top-level")
+}
+
+func TestLoadWithOpts_ForgeEmptyValidationLoopNoTopLevelScript(t *testing.T) {
+	// Forge validation_loop without script and no top-level script should
+	// still be rejected by validateForge.
+	content := `
+agent: agents/test.md
+role: test
+forge:
+  github:
+    validation_loop:
+      schema: gh-schema.json
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	_, err := LoadWithOpts(path, LoadOpts{ForgePlatform: "github"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validation_loop.script is required")
+}
+
 func TestLoadWithOpts_PlatformNotConfigured(t *testing.T) {
 	content := `
 agent: agents/test.md
