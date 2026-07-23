@@ -1,6 +1,6 @@
-# Applied: Agent Setup Evaluation Tools
+# Agent-Driven Evaluation Tools
 
-How fullsend's problem areas manifest in tools that evaluate agent configurations.
+How fullsend's own problem areas appear in agent-driven tools that evaluate agent configurations (or "who watches the watchmen").
 
 ## Context
 

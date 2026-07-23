@@ -112,8 +112,6 @@ Examples of work that could move this forward:
 - E2e test improvements — bot authorization fixes, auth alignment ([#2641](https://github.com/fullsend-ai/fullsend/issues/2641), [#2772](https://github.com/fullsend-ai/fullsend/issues/2772), [#2489](https://github.com/fullsend-ai/fullsend/issues/2489))
 - Trustworthiness evidence — rework rate tracking, review outcome analysis ([#295](https://github.com/fullsend-ai/fullsend/issues/295))
 
-Related problem docs: [testing-agents](problems/testing-agents.md), [trustworthiness-evidence](problems/trustworthiness-evidence.md), [flapping-convergence](problems/flapping-convergence.md)
-
 ### External Partnerships
 
 Making fullsend visible, understandable, and usable by teams outside the core group. This category combines documentation improvements with active partnership engagement — recognizing that docs quality and external adoption are tightly linked.
@@ -200,8 +198,6 @@ Ongoing work informed by the [security threat model](problems/security-threat-mo
 - Agent authority modeling ([#877](https://github.com/fullsend-ai/fullsend/issues/877))
 - Separate permission profiles per run phase ([#2826](https://github.com/fullsend-ai/fullsend/issues/2826))
 - Privileged operations only in deterministic automation ([#2828](https://github.com/fullsend-ai/fullsend/issues/2828))
-
-Related problem docs: [audit-log-integrity](problems/security-threat-model.md#cross-cutting-concern-audit-log-integrity), [MCP config drift](problems/mcp-config-drift.md), [tool call risk assessment](problems/tool-call-risk-assessment.md)
 
 ### Human factors and governance
 
