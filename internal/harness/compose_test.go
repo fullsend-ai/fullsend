@@ -350,6 +350,68 @@ model: opus
 	assert.Equal(t, 5, h.ValidationLoop.MaxIterations)
 }
 
+func TestLoadWithBase_LocalBase_PreflightCheckCarryForward(t *testing.T) {
+	// When a child overrides validation_loop (e.g. to change max_iterations)
+	// but does not set preflight_check, the base's preflight_check should be
+	// carried forward. See #5074.
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: base-script.sh
+  preflight_check: "python3 -c 'import jsonschema'"
+  max_iterations: 5
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+validation_loop:
+  script: child-script.sh
+  max_iterations: 3
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "child-script.sh", h.ValidationLoop.Script)
+	assert.Equal(t, 3, h.ValidationLoop.MaxIterations)
+	assert.Equal(t, "python3 -c 'import jsonschema'", h.ValidationLoop.PreflightCheck,
+		"PreflightCheck should be carried forward from base when child overrides validation_loop without setting preflight_check")
+}
+
+func TestLoadWithBase_LocalBase_PreflightCheckChildOverrides(t *testing.T) {
+	// When a child explicitly sets its own preflight_check, it should take
+	// precedence over the base's value.
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: base-script.sh
+  preflight_check: "python3 -c 'import jsonschema'"
+  max_iterations: 5
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+validation_loop:
+  script: child-script.sh
+  preflight_check: "which jq"
+  max_iterations: 3
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "which jq", h.ValidationLoop.PreflightCheck,
+		"Child's own preflight_check should override base's")
+}
+
 func TestLoadWithBase_ChainedBases(t *testing.T) {
 	dir := t.TempDir()
 
@@ -1036,6 +1098,32 @@ func TestMergeForgeConfigInto_ValidationLoop(t *testing.T) {
 	require.NotNil(t, child.ValidationLoop)
 	assert.Equal(t, "base-validate.sh", child.ValidationLoop.Script)
 	assert.Equal(t, 5, child.ValidationLoop.MaxIterations)
+}
+
+func TestMergeForgeConfigInto_PreflightCheckCarryForward(t *testing.T) {
+	// When a child ForgeConfig overrides validation_loop without setting
+	// preflight_check, the base's preflight_check should be carried forward.
+	base := &ForgeConfig{
+		ValidationLoop: &ValidationLoop{
+			Script:         "base-validate.sh",
+			PreflightCheck: "python3 -c 'import jsonschema'",
+			MaxIterations:  5,
+		},
+	}
+	child := &ForgeConfig{
+		ValidationLoop: &ValidationLoop{
+			Script:        "child-validate.sh",
+			MaxIterations: 3,
+		},
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	require.NotNil(t, child.ValidationLoop)
+	assert.Equal(t, "child-validate.sh", child.ValidationLoop.Script)
+	assert.Equal(t, 3, child.ValidationLoop.MaxIterations)
+	assert.Equal(t, "python3 -c 'import jsonschema'", child.ValidationLoop.PreflightCheck,
+		"PreflightCheck should be carried forward from base in forge merge")
 }
 
 func TestLoadWithBase_InvalidForgeAfterMerge(t *testing.T) {

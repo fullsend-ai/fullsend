@@ -2739,58 +2739,121 @@ func TestExpandValidationLoopSchema(t *testing.T) {
 	require.NoError(t, err, "expanded schema path should exist")
 }
 
-func TestPreflightCheck_PassingCommand(t *testing.T) {
-	// Simulate what run.go does for a passing preflight check.
-	h := &harness.Harness{
-		ValidationLoop: &harness.ValidationLoop{
-			Script:         "scripts/validate.sh",
-			PreflightCheck: "true",
-			MaxIterations:  2,
-		},
-	}
+// preflightTestSetup creates a temporary fullsend directory with the required
+// agent and harness files for preflight check tests. When harnessYAML contains
+// a validation_loop.script reference, the script file is created as a no-op
+// stub so ValidateFilesExist passes.
+func preflightTestSetup(t *testing.T, harnessYAML string) string {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "scripts"), 0o755))
 
-	cmd := exec.Command("sh", "-c", h.ValidationLoop.PreflightCheck)
-	cmd.Env = os.Environ()
-	_, err := cmd.CombinedOutput()
-	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "scripts", "validate.sh"),
+		[]byte("#!/bin/sh\nexit 0\n"),
+		0o755,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte(harnessYAML),
+		0o644,
+	))
+	return dir
 }
 
-func TestPreflightCheck_FailingCommand(t *testing.T) {
-	// Simulate what run.go does for a failing preflight check.
-	h := &harness.Harness{
-		ValidationLoop: &harness.ValidationLoop{
-			Script:         "scripts/validate.sh",
-			PreflightCheck: "false",
-			MaxIterations:  2,
-		},
-	}
+func TestRunAgent_PreflightCheck_Passing(t *testing.T) {
+	// A passing preflight_check should not block the run — runAgent
+	// proceeds past the guard and fails later at openshell CheckGateway.
+	useFakeOpenshell(t)
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"true\"\n  max_iterations: 2\n")
 
-	cmd := exec.Command("sh", "-c", h.ValidationLoop.PreflightCheck)
-	cmd.Env = os.Environ()
-	_, err := cmd.CombinedOutput()
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
+	// Must pass the preflight guard and reach the openshell check.
+	assert.Contains(t, err.Error(), "openshell")
 }
 
-func TestPreflightCheck_NoCheckConfigured(t *testing.T) {
-	// When no preflight_check is set, the check should be skipped.
-	h := &harness.Harness{
-		ValidationLoop: &harness.ValidationLoop{
-			Script:        "scripts/validate.sh",
-			MaxIterations: 2,
-		},
-	}
+func TestRunAgent_PreflightCheck_Failing(t *testing.T) {
+	// A failing preflight_check should abort runAgent with a descriptive
+	// error, exercising the StepFail + error-wrapping logic.
+	useFakeOpenshell(t)
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"exit 1\"\n  max_iterations: 2\n")
 
-	assert.Empty(t, h.ValidationLoop.PreflightCheck)
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preflight_check failed")
 }
 
-func TestPreflightCheck_NilValidationLoop(t *testing.T) {
-	// When no validation_loop is set, no check should run.
-	h := &harness.Harness{
-		Agent: "agents/test.md",
-		Role:  "test",
-	}
+func TestRunAgent_PreflightCheck_NoCheckConfigured(t *testing.T) {
+	// When no preflight_check is set, runAgent should skip the guard
+	// and proceed to the openshell check.
+	useFakeOpenshell(t)
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nvalidation_loop:\n  script: scripts/validate.sh\n  max_iterations: 2\n")
 
-	assert.Nil(t, h.ValidationLoop)
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_PreflightCheck_NilValidationLoop(t *testing.T) {
+	// When no validation_loop is set at all, runAgent should skip the
+	// preflight guard and proceed to the openshell check.
+	useFakeOpenshell(t)
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
+
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "agents", "code.md"),
+		[]byte("You are a coding agent."),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "harness", "code.yaml"),
+		[]byte("agent: agents/code.md\nrole: test\n"),
+		0o644,
+	))
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_PreflightCheck_Timeout(t *testing.T) {
+	// A preflight_check that exceeds the context deadline should abort
+	// with a "timed out" error, not hang indefinitely.
+	useFakeOpenshell(t)
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"sleep 60\"\n  max_iterations: 2\n")
+
+	// Use an already-cancelled context to trigger immediate timeout.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(ctx, "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preflight_check")
 }
 
 func TestBuildSandboxEnvLines_FromEnvSandbox(t *testing.T) {

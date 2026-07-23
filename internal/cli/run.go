@@ -64,6 +64,11 @@ const (
 	// harness dynamically.
 	defaultAgentsRepoOwner = "fullsend-ai"
 	defaultAgentsRepoName  = "agents"
+
+	// preflightCheckTimeout bounds the execution time for a validation_loop
+	// preflight_check command. Mirrors the preflightGitHubTimeout pattern —
+	// these are fast host-side dependency checks that should never hang.
+	preflightCheckTimeout = 30 * time.Second
 )
 
 // defaultAgentsRepoURLPrefix is the base URL for fetching agent harnesses
@@ -674,11 +679,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// sandbox creation — not after the agent has already finished. See #5074.
 	if h.ValidationLoop != nil && h.ValidationLoop.PreflightCheck != "" {
 		printer.StepStart("Preflight: checking validation_loop dependencies")
-		preflightCmd := exec.Command("sh", "-c", h.ValidationLoop.PreflightCheck)
+		preflightCtx, preflightCancel := context.WithTimeout(ctx, preflightCheckTimeout)
+		defer preflightCancel()
+		preflightCmd := exec.CommandContext(preflightCtx, "sh", "-c", h.ValidationLoop.PreflightCheck)
 		preflightCmd.Env = os.Environ()
 		preflightOut, preflightErr := preflightCmd.CombinedOutput()
 		if preflightErr != nil {
 			printer.StepFail("Preflight dependency check failed")
+			if preflightCtx.Err() == context.DeadlineExceeded {
+				return fmt.Errorf("validation_loop.preflight_check timed out after %s: %s", preflightCheckTimeout, h.ValidationLoop.PreflightCheck)
+			}
 			detail := strings.TrimSpace(string(preflightOut))
 			if detail != "" {
 				return fmt.Errorf("validation_loop.preflight_check failed: %s\n%s\nInstall the missing dependency before running this agent", h.ValidationLoop.PreflightCheck, detail)
