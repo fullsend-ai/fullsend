@@ -1,3 +1,3 @@
 # CLAUDE.md
 
-Project rules and instructions live in [AGENTS.md](AGENTS.md). Read that file now — it is the single source of truth for all agent-facing guidance in this repo.
+Project rules and general instructions live in [AGENTS.md](AGENTS.md). Read that file now — it contains repo-wide conventions and an index of topic-specific guidance under [`docs/contributing/`](docs/contributing/).

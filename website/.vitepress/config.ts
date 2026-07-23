@@ -273,6 +273,11 @@ export default defineConfig({
                 { text: "Testing Workflows", link: "/guides/dev/testing-workflows" },
               ],
             },
+            {
+              text: "Contributor Guidelines",
+              collapsed: true,
+              items: getMarkdownFiles("contributing", "contributing"),
+            },
             { text: "Roadmap", link: "/roadmap" },
             { text: "Landscape", link: "/landscape" },
             {
