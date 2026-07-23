@@ -53,12 +53,15 @@ func (p *RepoPool) Acquire(ctx context.Context) (string, error) {
 // error rather than allowing a panic to crash the test runner.
 func (p *RepoPool) Release(name string) error {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	if _, ok := p.outstanding[name]; !ok {
-		p.mu.Unlock()
 		return fmt.Errorf("RepoPool: releasing %q which is not an outstanding lease (possible double-release)", name)
 	}
 	delete(p.outstanding, name)
-	p.mu.Unlock()
+	// Send inside the lock: the channel buffer equals pool size and this
+	// name was removed during Acquire, so the send is guaranteed
+	// non-blocking. Holding the lock ensures the name transitions
+	// atomically from outstanding to available with no gap.
 	p.names <- name
 	return nil
 }
