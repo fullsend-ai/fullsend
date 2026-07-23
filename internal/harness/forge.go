@@ -64,7 +64,10 @@ func (h *Harness) validateForge() error {
 			}
 		}
 		if fc.ValidationLoop != nil {
-			if fc.ValidationLoop.Script == "" {
+			// Allow empty forge script when the top-level harness has a script
+			// that will be inherited via field-level merge in ResolveForge.
+			topHasScript := h.ValidationLoop != nil && h.ValidationLoop.Script != ""
+			if fc.ValidationLoop.Script == "" && !topHasScript {
 				return fmt.Errorf("forge.%s.validation_loop.script is required when validation_loop is set", key)
 			}
 			if IsURL(fc.ValidationLoop.Script) {

@@ -222,6 +222,54 @@ func TestDiffHarness_ValidationLoopDifference(t *testing.T) {
 	require.NotNil(t, result.Child)
 	require.NotNil(t, result.Child.ValidationLoop)
 	assert.Equal(t, 5, result.Child.ValidationLoop.MaxIterations)
+	// Field-level diff: unchanged Script should not appear in diff
+	assert.Equal(t, "", result.Child.ValidationLoop.Script,
+		"unchanged Script should not be in diff")
+}
+
+func TestDiffHarness_ValidationLoopFieldLevelRoundTrip(t *testing.T) {
+	// Verify that diff→mergeBaseIntoChild round-trips correctly when only
+	// some ValidationLoop fields differ. This is the scenario from the HIGH
+	// review finding: child overrides Script but keeps base Schema/FeedbackMode.
+	base := &Harness{
+		Agent: "agents/test.md",
+		ValidationLoop: &ValidationLoop{
+			Script:        "base-validate.sh",
+			Schema:        "base-schema.json",
+			MaxIterations: 5,
+			FeedbackMode:  "append",
+		},
+	}
+	child := &Harness{
+		Agent: "agents/test.md",
+		ValidationLoop: &ValidationLoop{
+			Script:        "child-validate.sh",
+			Schema:        "base-schema.json",
+			MaxIterations: 5,
+			FeedbackMode:  "append",
+		},
+	}
+
+	result := DiffHarness(base, child, nil)
+	require.NotNil(t, result.Child, "diff should be non-nil")
+	require.Empty(t, result.Warnings)
+	require.NotNil(t, result.Child.ValidationLoop)
+
+	// Only Script differs — other fields should be zero (not included in diff)
+	assert.Equal(t, "child-validate.sh", result.Child.ValidationLoop.Script)
+	assert.Equal(t, "", result.Child.ValidationLoop.Schema,
+		"matching Schema should not be in diff")
+	assert.Equal(t, 0, result.Child.ValidationLoop.MaxIterations,
+		"matching MaxIterations should not be in diff")
+	assert.Equal(t, "", result.Child.ValidationLoop.FeedbackMode,
+		"matching FeedbackMode should not be in diff")
+
+	// Round-trip: compose the diff child with base
+	mergeBaseIntoChild(base, result.Child)
+	assert.Equal(t, child.ValidationLoop.Script, result.Child.ValidationLoop.Script)
+	assert.Equal(t, child.ValidationLoop.Schema, result.Child.ValidationLoop.Schema)
+	assert.Equal(t, child.ValidationLoop.MaxIterations, result.Child.ValidationLoop.MaxIterations)
+	assert.Equal(t, child.ValidationLoop.FeedbackMode, result.Child.ValidationLoop.FeedbackMode)
 }
 
 func TestDiffHarness_NewForgePlatform(t *testing.T) {
@@ -524,7 +572,49 @@ func TestDiffForgeConfig_AllFields(t *testing.T) {
 	assert.Equal(t, []string{"skill/b"}, fc.Skills)
 	assert.Equal(t, map[string]string{"K2": "v2"}, fc.RunnerEnv)
 	assert.Equal(t, map[string]string{"R2": "2"}, fc.Env.Runner)
-	assert.NotNil(t, fc.ValidationLoop)
+	// Field-level diff: only differing VL fields are included
+	require.NotNil(t, fc.ValidationLoop)
+	assert.Equal(t, "validate-v2.sh", fc.ValidationLoop.Script)
+	assert.Equal(t, 5, fc.ValidationLoop.MaxIterations)
+}
+
+func TestDiffForgeConfig_ValidationLoopFieldLevel(t *testing.T) {
+	// Forge-level field diff: only the differing field (MaxIterations) should
+	// appear; Script should not be in the diff since it matches.
+	base := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				ValidationLoop: &ValidationLoop{
+					Script:        "validate.sh",
+					Schema:        "schema.json",
+					MaxIterations: 3,
+					FeedbackMode:  "append",
+				},
+			},
+		},
+	}
+	child := &Harness{
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				ValidationLoop: &ValidationLoop{
+					Script:        "validate.sh",
+					Schema:        "schema.json",
+					MaxIterations: 5,
+					FeedbackMode:  "append",
+				},
+			},
+		},
+	}
+	result := DiffHarness(base, child, nil)
+	require.NotNil(t, result.Child)
+	fc := result.Child.Forge["github"]
+	require.NotNil(t, fc)
+	require.NotNil(t, fc.ValidationLoop)
+	assert.Equal(t, 5, fc.ValidationLoop.MaxIterations)
+	assert.Equal(t, "", fc.ValidationLoop.Script,
+		"unchanged Script should not be in forge diff")
+	assert.Equal(t, "", fc.ValidationLoop.Schema,
+		"unchanged Schema should not be in forge diff")
 }
 
 func TestDiffHarness_PluginsAddition(t *testing.T) {
