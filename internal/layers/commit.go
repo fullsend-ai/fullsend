@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 	"time"
 
@@ -26,6 +27,8 @@ import (
 func CommitScaffoldFiles(ctx context.Context, client forge.Client, printer *ui.Printer,
 	owner, repo, defaultBranch, commitMsg, prTitle, prBody string,
 	files []forge.TreeFile, direct bool, in io.Reader) (bool, error) {
+
+	commitMsg = adaptCommitMsg(ctx, client, printer, owner, repo, commitMsg)
 
 	if direct {
 		return commitScaffoldDirect(ctx, client, printer,
@@ -61,6 +64,15 @@ func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.P
 
 	// Owner pushes directly to the repo — no fork needed.
 	if strings.EqualFold(user, owner) {
+		return commitBranchAndPR(ctx, client, printer,
+			owner, repo, owner, repo, defaultScaffoldBranch, defaultBranch,
+			commitMsg, prTitle, prBody, files)
+	}
+
+	// Non-owner with write access can push directly — avoids fork trust
+	// gates (/ok-to-test) that block CI on cross-fork PRs.
+	if hasWriteAccess(ctx, client, owner, repo, user) {
+		printer.StepInfo(fmt.Sprintf("User %s has write access — pushing directly to %s/%s", user, owner, repo))
 		return commitBranchAndPR(ctx, client, printer,
 			owner, repo, owner, repo, defaultScaffoldBranch, defaultBranch,
 			commitMsg, prTitle, prBody, files)
@@ -420,4 +432,96 @@ func commitScaffoldDirect(ctx context.Context, client forge.Client, printer *ui.
 	}
 
 	return committed, nil
+}
+
+// adaptCommitMsg checks the target repo for a .gitlint title-match-regex. If
+// the current commit message doesn't match, it tries common conventional-commit
+// alternatives (chore:, ci:, build:, bare description). Falls back to warning when no
+// alternative matches — we can't fabricate a valid message for an arbitrary regex.
+func adaptCommitMsg(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo, commitMsg string) string {
+	re := gitlintTitleRegex(ctx, client, owner, repo)
+	if re == nil {
+		return commitMsg
+	}
+	title := strings.SplitN(commitMsg, "\n", 2)[0]
+	if re.MatchString(title) {
+		return commitMsg
+	}
+
+	desc := title
+	if idx := strings.Index(title, ": "); idx >= 0 {
+		desc = title[idx+2:]
+	}
+	alternatives := []string{
+		"chore: " + desc,
+		"ci: " + desc,
+		"build: " + desc,
+		desc,
+	}
+	var body string
+	if parts := strings.SplitN(commitMsg, "\n", 2); len(parts) == 2 {
+		body = parts[1]
+	}
+	for _, alt := range alternatives {
+		if alt == title {
+			continue
+		}
+		if re.MatchString(alt) {
+			adapted := alt
+			if body != "" {
+				adapted += "\n" + body
+			}
+			printer.StepInfo(fmt.Sprintf("Adapted scaffold commit message to match .gitlint: %q", alt))
+			return adapted
+		}
+	}
+
+	printer.StepWarn(fmt.Sprintf("Scaffold commit message %q does not match this repo's .gitlint title-match-regex (%s) — commit-lint CI may fail",
+		title, re.String()))
+	return commitMsg
+}
+
+// gitlintTitleRegex reads .gitlint from the target repo and extracts the
+// title-match-regex value. Returns nil if the file doesn't exist or has no
+// title-match-regex rule.
+func gitlintTitleRegex(ctx context.Context, client forge.Client, owner, repo string) *regexp.Regexp {
+	content, err := client.GetFileContent(ctx, owner, repo, ".gitlint")
+	if err != nil {
+		return nil
+	}
+	inSection := false
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "[") {
+			inSection = strings.EqualFold(line, "[title-match-regex]")
+			continue
+		}
+		if !inSection {
+			continue
+		}
+		if parts := strings.SplitN(line, "=", 2); len(parts) == 2 && strings.TrimSpace(parts[0]) == "regex" {
+			val := strings.TrimSpace(parts[1])
+			re, err := regexp.Compile(val)
+			if err != nil {
+				return nil
+			}
+			return re
+		}
+	}
+	return nil
+}
+
+// hasWriteAccess checks whether the user has write or admin permission on the
+// repo. Returns false on any error (or non-GitHub forges) so the caller falls
+// through to the fork path.
+func hasWriteAccess(ctx context.Context, client forge.Client, owner, repo, user string) bool {
+	ghExt, ok := client.(forge.GitHubExtensions)
+	if !ok {
+		return false
+	}
+	role, err := ghExt.GetCollaboratorPermission(ctx, owner, repo, user)
+	if err != nil {
+		return false
+	}
+	return role == "write" || role == "maintain" || role == "admin"
 }

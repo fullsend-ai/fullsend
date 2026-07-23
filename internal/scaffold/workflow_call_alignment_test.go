@@ -505,6 +505,26 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 	}
 }
 
+// TestShimScaffoldBranchFilter validates that both shim templates skip dispatch
+// for PRs from the fullsend/scaffold branch. Without this filter, the shim
+// fires pull_request_target on the scaffold PR, causing dispatch noise (#5470).
+func TestShimScaffoldBranchFilter(t *testing.T) {
+	cases := []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"shim-workflow-call", loadScaffoldFile("templates/shim-workflow-call.yaml")},
+		{"shim-per-repo", loadScaffoldFile("templates/shim-per-repo.yaml")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := string(tc.content(t))
+			assert.Contains(t, s, "github.event.pull_request.head.ref != 'fullsend/scaffold-install'",
+				"%s dispatch job must filter scaffold branch PRs to prevent self-dispatch noise", tc.name)
+		})
+	}
+}
+
 // TestDispatchPRHeadResolution validates that both dispatch workflows contain
 // the "Resolve PR head for issue_comment events" step and the pull_request
 // merge into event_payload, ensuring issue_comment-triggered agents receive
