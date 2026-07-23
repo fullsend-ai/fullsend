@@ -359,29 +359,12 @@ fi
 # iteration-<N>/output/fix-result.json within runDir. Uses glob order
 # (naturally ascending iteration numbers) to find the last iteration,
 # matching the pattern in post-triage.sh.
-# Prefer the validated iteration directory set by the harness
-# (FULLSEND_VALIDATED_ITERATION_DIR) — without it, the last iteration's output
-# may be schema-invalid content that failed validation. Fall back to scanning
-# for the last iteration for backward compatibility.
-if [ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]; then
-  RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/fix-result.json"
-  if [ ! -f "${RESULT_FILE}" ]; then
-    # Agents sometimes write "result.json" instead of the harness-configured
-    # "fix-result.json"; validate-output-schema.sh accepts that filename as
-    # a fallback without renaming it. Check the same variant here rather
-    # than falling through to the rescan below, which could silently pick
-    # up a different (and possibly schema-invalid) iteration's output.
-    fallback_result="${FULLSEND_VALIDATED_ITERATION_DIR}/result.json"
-    [ -f "${fallback_result}" ] && RESULT_FILE="${fallback_result}"
+RESULT_FILE=""
+for dir in "${RUN_DIR}"/iteration-*/output; do
+  if [ -f "${dir}/fix-result.json" ]; then
+    RESULT_FILE="${dir}/fix-result.json"
   fi
-else
-  RESULT_FILE=""
-  for dir in "${RUN_DIR}"/iteration-*/output; do
-    if [ -f "${dir}/fix-result.json" ]; then
-      RESULT_FILE="${dir}/fix-result.json"
-    fi
-  done
-fi
+done
 
 if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
   echo "::warning::No fix-result.json found — skipping summary comment"
