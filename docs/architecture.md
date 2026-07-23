@@ -134,6 +134,12 @@ repo baseline and overrides)
   URL-resolved providers are validated against `allowed_remote_resources`
   and merged with local definitions at resolution time
   ([ADR 0070](ADRs/0070-portable-provider-profile-resolution.md)).
+- Pre-script skip-flag convention: when a pre-script must run both inline
+  (to gate expensive workflow setup on a fast check) and as the harness
+  `pre_script`, the redundant invocation skips its expensive/side-effecting
+  logic via an `{AGENT}_SKIP_{THING}` env var rather than the inline call
+  being deleted outright
+  ([ADR 0072](ADRs/0072-pre-script-skip-flag-convention.md)).
 
 **Open questions:**
 
