@@ -777,6 +777,32 @@ challenger-adjudicated finding set and evaluate:
   Use `reject` only when no amount of code-level iteration will make
   the PR mergeable.
 
+#### 6g. Determine confidence level
+
+After the verdict is set, derive a confidence level based on the signals
+available from the sub-agent and challenger passes. Confidence does not
+change the verdict or any routing behavior. It is an informational
+annotation for humans reviewing the agent's output.
+
+**Confidence levels:**
+
+- **high:** all sub-agents agreed on severity for every finding, the
+  challenger removed zero or one findings, and the verdict was not close
+  to a threshold boundary (e.g., no medium findings when the verdict is
+  approve)
+- **medium:** the challenger removed more than one finding (initial
+  disagreement that was resolved), OR sub-agents flagged the same code
+  with different severities, OR the verdict is one finding away from
+  flipping (e.g., one medium finding on an approve verdict)
+- **low:** significant sub-agent disagreement (same code flagged at
+  severities two or more levels apart), OR the challenger failed and
+  the pre-challenger set was used, OR the change scope is ambiguous
+  (e.g., large refactoring PR where correctness is hard to verify)
+
+Include the confidence level in the review result JSON as a top-level
+`confidence` field. This field is optional in the schema; omitting it
+is acceptable if you cannot determine it.
+
 ### 7. Produce the review result
 
 Compose the review comment using this structure:

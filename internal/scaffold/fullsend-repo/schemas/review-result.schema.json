@@ -26,6 +26,11 @@
     },
     "label_actions": {
       "$ref": "#/$defs/label_actions"
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["high", "medium", "low"],
+      "description": "How confident the review agent is in its verdict. Derived from sub-agent agreement, challenger removals, and verdict threshold proximity."
     }
   },
   "allOf": [
