@@ -16,5 +16,11 @@ on:
 jobs:
   run:
     if: github.event.label.name == 'ok-to-test'
+    # Caller permissions are a ceiling for the reusable workflow — must grant
+    # the union of job perms in functional-tests.yml (gate / functional-tests).
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
     uses: ./.github/workflows/functional-tests.yml
     secrets: inherit
