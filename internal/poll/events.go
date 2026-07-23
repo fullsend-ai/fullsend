@@ -150,14 +150,17 @@ func (p *Poller) discoverAllEvents(ctx context.Context, owner, repo string, sinc
 }
 
 // discoverSlashCommands finds notes containing /fs-* commands using the
-// lightweight Events API (fast-poll mode).
-func (p *Poller) discoverSlashCommands(ctx context.Context, owner, repo string, since time.Time) ([]RoutableEvent, error) {
+// lightweight Events API (fast-poll mode). Returns events, the earliest
+// skipped event timestamp (for watermark holdback on per-item failures),
+// and error.
+func (p *Poller) discoverSlashCommands(ctx context.Context, owner, repo string, since time.Time) ([]RoutableEvent, time.Time, error) {
 	projectEvents, err := p.client.ListProjectEvents(ctx, owner, repo, "note", since)
 	if err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 
 	var events []RoutableEvent
+	var minSkippedAt time.Time
 	for _, evt := range projectEvents {
 		if evt.CreatedAt.Before(since) {
 			continue
@@ -174,7 +177,7 @@ func (p *Poller) discoverSlashCommands(ctx context.Context, owner, repo string, 
 		default:
 			continue
 		}
-		events = append(events, RoutableEvent{
+		re := RoutableEvent{
 			Type:            eventType,
 			IID:             evt.Note.NoteableIID,
 			UpdatedAt:       evt.CreatedAt,
@@ -184,9 +187,29 @@ func (p *Poller) discoverSlashCommands(ctx context.Context, owner, repo string, 
 			NoteAuthorLogin: evt.Author.Username,
 			IsBot:           evt.Author.Bot || isProjectAccessTokenBot(evt.Author.Username) || (p.botUserID != 0 && evt.Author.ID == p.botUserID),
 			Labels:          []string{},
-		})
+		}
+
+		if eventType == "mr_note" {
+			mr, err := p.client.GetMergeRequest(ctx, owner, repo, evt.Note.NoteableIID)
+			if err != nil {
+				log.Printf("WARNING: get MR !%d for slash command: %v (skipping)", evt.Note.NoteableIID, err)
+				if minSkippedAt.IsZero() || evt.CreatedAt.Before(minSkippedAt) {
+					minSkippedAt = evt.CreatedAt
+				}
+				continue
+			}
+			re.MRSource = mr.SourceProjectID
+			re.MRTarget = mr.TargetProjectID
+			re.SourceBranch = mr.SourceBranch
+			re.TargetBranch = mr.TargetBranch
+			re.MRAuthorID = mr.Author.ID
+			re.MRAuthorLogin = mr.Author.Username
+			re.Labels = mr.Labels
+		}
+
+		events = append(events, re)
 	}
-	return events, nil
+	return events, minSkippedAt, nil
 }
 
 // mergedByUser returns the user who merged the MR, preferring the

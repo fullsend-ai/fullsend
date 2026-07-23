@@ -45,6 +45,8 @@ type mockClient struct {
 
 	issue    map[int]*Issue // keyed by IID
 	issueErr map[int]error
+	mr       map[int]*MergeRequest // keyed by IID
+	mrErr    map[int]error
 
 	memberLevel map[int]int   // keyed by userID
 	memberErr   map[int]error // keyed by userID
@@ -70,6 +72,8 @@ func newMockClient() *mockClient {
 		updatedVars:    make(map[string]string),
 		issue:          make(map[int]*Issue),
 		issueErr:       make(map[int]error),
+		mr:             make(map[int]*MergeRequest),
+		mrErr:          make(map[int]error),
 		memberLevel:    make(map[int]int),
 		memberErr:      make(map[int]error),
 		projectPaths:   make(map[int]string),
@@ -131,6 +135,10 @@ func (m *mockClient) GetAuthenticatedUser(_ context.Context) (string, error) {
 	return m.authenticatedUser, m.authErr
 }
 
+func (m *mockClient) GetAuthenticatedUserID(_ context.Context) (int, error) {
+	return 0, m.authErr
+}
+
 func (m *mockClient) CreateNoteAwardEmoji(_ context.Context, _, _, _ string, noteableIID, noteID int, emoji string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -151,6 +159,17 @@ func (m *mockClient) GetIssue(_ context.Context, _, _ string, issueIID int) (*Is
 		return nil, forge.ErrNotFound
 	}
 	return iss, nil
+}
+
+func (m *mockClient) GetMergeRequest(_ context.Context, _, _ string, mrIID int) (*MergeRequest, error) {
+	if err, ok := m.mrErr[mrIID]; ok && err != nil {
+		return nil, err
+	}
+	mrObj, ok := m.mr[mrIID]
+	if !ok {
+		return nil, forge.ErrNotFound
+	}
+	return mrObj, nil
 }
 
 func (m *mockClient) GetMemberAccessLevel(_ context.Context, _, _ string, userID int) (int, error) {

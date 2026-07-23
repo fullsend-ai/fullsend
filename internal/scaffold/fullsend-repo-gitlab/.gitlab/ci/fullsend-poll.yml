@@ -65,6 +65,7 @@ poll-events:
         --forge gitlab \
         --project "${CI_PROJECT_PATH}" \
         --gitlab-url "${FULLSEND_GITLAB_URL:-${CI_SERVER_URL}}" \
+        --fullsend-dir .fullsend \
         --output dispatches.json
   artifacts:
     paths:

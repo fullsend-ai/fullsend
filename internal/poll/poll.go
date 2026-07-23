@@ -61,7 +61,7 @@ func (p *Poller) Run(ctx context.Context) error {
 	var labelState LabelState
 	var minSkippedAt time.Time
 	if p.opts.SlashCommandsOnly {
-		events, err = p.discoverSlashCommands(ctx, p.owner, p.repo, lastPollAt)
+		events, minSkippedAt, err = p.discoverSlashCommands(ctx, p.owner, p.repo, lastPollAt)
 	} else {
 		events, labelState, minSkippedAt, err = p.discoverAllEvents(ctx, p.owner, p.repo, lastPollAt)
 	}

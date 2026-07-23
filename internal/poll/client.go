@@ -38,10 +38,12 @@ type GitLabClient interface {
 	// variable values are capped at 10,000 characters.
 	UpdateCIVariable(ctx context.Context, owner, repo, name, value string, protected bool) error
 	GetAuthenticatedUser(ctx context.Context) (string, error)
+	GetAuthenticatedUserID(ctx context.Context) (int, error)
 	// CreateNoteAwardEmoji adds an emoji reaction. noteableType must be
 	// "Issue" or "MergeRequest" to select the correct API endpoint.
 	CreateNoteAwardEmoji(ctx context.Context, owner, repo string, noteableType string, noteableIID, noteID int, emoji string) error
 	GetIssue(ctx context.Context, owner, repo string, issueIID int) (*Issue, error)
+	GetMergeRequest(ctx context.Context, owner, repo string, mrIID int) (*MergeRequest, error)
 	// GetMemberAccessLevel returns the access level for a project member.
 	// Implementations MUST use the /members/all/:user_id endpoint to
 	// include inherited (group-level) membership, not /members/:user_id

@@ -436,6 +436,53 @@ func TestPollGetIssue_NotFound(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// GetMergeRequest
+// ---------------------------------------------------------------------------
+
+func TestPollGetMergeRequest(t *testing.T) {
+	pc, mux := setupPollTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/10", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"iid":               10,
+			"title":             "Add feature",
+			"state":             "opened",
+			"labels":            []string{"review"},
+			"source_project_id": 100,
+			"target_project_id": 100,
+			"source_branch":     "feature",
+			"target_branch":     "main",
+			"author":            map[string]any{"id": 55, "username": "bob", "bot": false},
+			"updated_at":        "2024-06-01T12:00:00Z",
+		})
+	})
+
+	mr, err := pc.GetMergeRequest(ctx, "myorg", "myrepo", 10)
+	require.NoError(t, err)
+	assert.Equal(t, 10, mr.IID)
+	assert.Equal(t, "Add feature", mr.Title)
+	assert.Equal(t, 100, mr.SourceProjectID)
+	assert.Equal(t, 100, mr.TargetProjectID)
+	assert.Equal(t, "feature", mr.SourceBranch)
+	assert.Equal(t, "main", mr.TargetBranch)
+	assert.Equal(t, "bob", mr.Author.Username)
+}
+
+func TestPollGetMergeRequest_NotFound(t *testing.T) {
+	pc, mux := setupPollTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/999", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusNotFound, map[string]string{"message": "404 Not Found"})
+	})
+
+	_, err := pc.GetMergeRequest(ctx, "myorg", "myrepo", 999)
+	require.Error(t, err)
+}
+
+// ---------------------------------------------------------------------------
 // GetMemberAccessLevel
 // ---------------------------------------------------------------------------
 
@@ -852,4 +899,17 @@ func TestPollClient_GetAuthenticatedUser(t *testing.T) {
 	username, err := pc.GetAuthenticatedUser(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, "pollbot", username)
+}
+
+func TestPollClient_GetAuthenticatedUserID(t *testing.T) {
+	pc, mux := setupPollTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/user", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]int{"id": 42})
+	})
+
+	id, err := pc.GetAuthenticatedUserID(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 42, id)
 }

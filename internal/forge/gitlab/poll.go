@@ -335,3 +335,40 @@ func (pc *PollClient) GetProjectPath(ctx context.Context, projectID int) (string
 	}
 	return project.PathWithNamespace, nil
 }
+
+// GetMergeRequest returns a single merge request by its project-scoped IID.
+func (pc *PollClient) GetMergeRequest(ctx context.Context, owner, repo string, mrIID int) (*poll.MergeRequest, error) {
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d",
+		projectPath(owner, repo), mrIID)
+
+	resp, err := pc.get(ctx, path)
+	if err != nil {
+		return nil, fmt.Errorf("get merge request !%d: %w", mrIID, err)
+	}
+
+	var mr poll.MergeRequest
+	if err := decodeJSON(resp, &mr); err != nil {
+		return nil, fmt.Errorf("decode merge request !%d: %w", mrIID, err)
+	}
+	return &mr, nil
+}
+
+// GetAuthenticatedUserID returns the numeric user ID of the
+// authenticated GitLab user. Used by the CLI to set the bot user ID
+// for event filtering.
+func (pc *PollClient) GetAuthenticatedUserID(ctx context.Context) (int, error) {
+	resp, err := pc.get(ctx, "/user")
+	if err != nil {
+		return 0, fmt.Errorf("get authenticated user ID: %w", err)
+	}
+	var user struct {
+		ID int `json:"id"`
+	}
+	if err := decodeJSON(resp, &user); err != nil {
+		return 0, fmt.Errorf("decode user ID: %w", err)
+	}
+	if user.ID == 0 {
+		return 0, fmt.Errorf("get authenticated user ID: API returned zero ID")
+	}
+	return user.ID, nil
+}
