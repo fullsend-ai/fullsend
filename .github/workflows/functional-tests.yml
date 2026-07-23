@@ -15,26 +15,25 @@ on:
       - 'internal/scaffold/**'
       - 'internal/cli/run.go'
       - '.github/workflows/functional-tests.yml'
+      - '.github/workflows/functional-ok-to-test.yml'
       - '.github/scripts/**'
   pull_request_target:
-    types: [opened, synchronize, reopened, labeled]
+    # labeled / ok-to-test is handled by functional-ok-to-test.yml via workflow_call.
+    types: [opened, synchronize, reopened]
   merge_group:
   workflow_dispatch:
+  workflow_call:
 
-# Non-ok-to-test labeled events still start a workflow run (GitHub cannot filter
-# by label name at on:), but must not cancel an in-progress opened/synchronize
-# run — same actionable filter as the gate job if: below.
 concurrency:
   group: >-
     ${{ github.event_name == 'pull_request_target'
         && format('functional-{0}', github.event.pull_request.number)
         || format('{0}-{1}', github.workflow, github.ref) }}
-  # Explicit outer parens: (A && B) || (C && D). Relies on && binding tighter
-  # than ||; keep the grouping obvious so a future || clause cannot silently
-  # disable cancel for non-pull_request_target triggers. Keep in sync with e2e.yml.
+  # Label events are auth, not a code change — never cancel an in-progress run.
+  # Keep in sync with e2e.yml. Explicit outer parens: (A && B) || (C && D).
   cancel-in-progress: >-
     ${{ (github.event_name == 'pull_request_target'
-        && (github.event.action != 'labeled' || github.event.label.name == 'ok-to-test'))
+        && github.event.action != 'labeled')
         || (github.event_name != 'pull_request_target' && github.ref != 'refs/heads/main') }}
 
 jobs:
@@ -42,9 +41,8 @@ jobs:
     # Separate job so pull-requests: write stays out of the job that checks
     # out fork head and runs tests with secrets.
     # Never checkout github.event.pull_request.head.sha here.
-    if: >-
-      github.event_name == 'pull_request_target' &&
-      (github.event.action != 'labeled' || github.event.label.name == 'ok-to-test')
+    # workflow_call from functional-ok-to-test.yml still has event_name pull_request_target.
+    if: github.event_name == 'pull_request_target'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -70,7 +68,6 @@ jobs:
 
   functional-tests:
     # For pull_request_target, runs only when gate sets authorized=true.
-    # Do not treat a skipped gate as authorized.
     # This job checks out untrusted PR head code — no pull-requests: write here.
     needs: gate
     if: >-
@@ -113,7 +110,7 @@ jobs:
               exit 0
             }
           fi
-          if echo "$FILES" | grep -qE '^eval/|^internal/scaffold/|^internal/cli/run\.go$|^\.github/workflows/functional-tests\.yml$|^\.github/scripts/'; then
+          if echo "$FILES" | grep -qE '^eval/|^internal/scaffold/|^internal/cli/run\.go$|^\.github/workflows/functional-tests\.yml$|^\.github/workflows/functional-ok-to-test\.yml$|^\.github/scripts/'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No functional-test-relevant files changed — skipping tests"

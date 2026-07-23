@@ -1,0 +1,26 @@
+name: E2E ok-to-test
+
+# Thin labeled-only entry point for fork / ok-to-test authorization.
+# Calls E2E Tests via workflow_call so non-ok-to-test labels (e.g. ready-for-review)
+# do not start skipped runs under the "E2E Tests" workflow name.
+#
+# No caller-level concurrency on the e2e-{n} group — sharing that group between
+# this caller and the reusable e2e.yml deadlocks.
+
+permissions: {}
+
+on:
+  pull_request_target:
+    types: [labeled]
+
+jobs:
+  run:
+    if: github.event.label.name == 'ok-to-test'
+    # Caller permissions are a ceiling for the reusable workflow — must grant
+    # the union of job perms in e2e.yml (gate / e2e / behaviour).
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    uses: ./.github/workflows/e2e.yml
+    secrets: inherit
