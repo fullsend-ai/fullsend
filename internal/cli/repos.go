@@ -421,8 +421,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		}
 		commitMsg := "chore: initialize fullsend per-repo installation"
 		prTitle := "chore: initialize fullsend per-repo installation"
-		prBody := "This PR adds the fullsend scaffold files for per-repo installation.\n\n" +
-			"Merge this PR to activate fullsend workflows."
+		prBody := defaultScaffoldPRBody
 		_, commitErr := layers.CommitScaffoldFiles(ctx, client, printer, owner, repo,
 			targetRepo.DefaultBranch, commitMsg, prTitle, prBody, files, direct, nil)
 		return commitErr

@@ -78,6 +78,101 @@ func TestCommitScaffoldViaPR_ExistingForkReused(t *testing.T) {
 	require.Len(t, client.CreatedProposals, 1)
 }
 
+func TestCommitScaffoldViaPR_WriteAccessPushesDirect(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.CollaboratorPermissions = map[string]string{
+		"acme/widget/contributor": "write",
+	}
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	assert.Contains(t, buf.String(), "has write access")
+	assert.Empty(t, client.CreatedForks, "should not fork when user has write access")
+	require.Len(t, client.CreatedBranches, 1)
+	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0])
+}
+
+func TestCommitScaffoldViaPR_AdminAccessPushesDirect(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.CollaboratorPermissions = map[string]string{
+		"acme/widget/contributor": "admin",
+	}
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	assert.Empty(t, client.CreatedForks)
+	require.Len(t, client.CreatedBranches, 1)
+	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0])
+}
+
+func TestCommitScaffoldViaPR_MaintainAccessPushesDirect(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.CollaboratorPermissions = map[string]string{
+		"acme/widget/contributor": "maintain",
+	}
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	assert.Contains(t, buf.String(), "has write access")
+	assert.Empty(t, client.CreatedForks)
+	require.Len(t, client.CreatedBranches, 1)
+	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0])
+}
+
+func TestCommitScaffoldViaPR_WriteAccessTakesPrecedenceOverFork(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.CollaboratorPermissions = map[string]string{
+		"acme/widget/contributor": "write",
+	}
+	client.ExistingForks = map[string]string{
+		"acme/widget": "contributor",
+	}
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	assert.Contains(t, buf.String(), "has write access")
+	assert.NotContains(t, buf.String(), "Using existing fork")
+	assert.Empty(t, client.CreatedForks)
+	require.Len(t, client.CreatedBranches, 1)
+	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0],
+		"write access should push to upstream, not the fork")
+}
+
+func TestCommitScaffoldViaPR_ReadAccessFallsThrough(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.TokenScopes = []string{"repo", "workflow"}
+	client.CollaboratorPermissions = map[string]string{
+		"acme/widget/contributor": "read",
+	}
+	client.Repos = append(client.Repos, forge.Repository{
+		FullName: "contributor/widget", DefaultBranch: "main",
+	})
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	require.Len(t, client.CreatedForks, 1, "read-only user should fork")
+}
+
 func TestCommitScaffoldViaPR_NonInteractiveForksByDefault(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "contributor"
@@ -439,4 +534,144 @@ func TestPromptForkChoice_MaxRetries(t *testing.T) {
 	_, err := promptForkChoice(printer, in)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "too many invalid attempts")
+}
+
+func TestGitlintTitleRegex(t *testing.T) {
+	t.Run("no gitlint file", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		re := gitlintTitleRegex(context.Background(), client, "acme", "widget")
+		assert.Nil(t, re)
+	})
+
+	t.Run("gitlint with title-match-regex", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[general]\nignore=body-is-missing\n\n[title-match-regex]\nregex=^(feat|fix|chore)(\\(.+\\))?: .+\n")
+		re := gitlintTitleRegex(context.Background(), client, "acme", "widget")
+		require.NotNil(t, re)
+		assert.True(t, re.MatchString("chore: initialize fullsend per-repo installation"))
+		assert.False(t, re.MatchString("PROJ-123: add stuff"))
+	})
+
+	t.Run("gitlint with custom regex requiring ticket prefix", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex=^PROJ-\\d+: .+\n")
+		re := gitlintTitleRegex(context.Background(), client, "acme", "widget")
+		require.NotNil(t, re)
+		assert.False(t, re.MatchString("chore: initialize fullsend per-repo installation"),
+			"conventional commit should not match a ticket-prefix regex")
+	})
+
+	t.Run("gitlint without title-match-regex section", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[general]\nignore=body-is-missing\n\n[title-max-length]\nline-length=72\n")
+		re := gitlintTitleRegex(context.Background(), client, "acme", "widget")
+		assert.Nil(t, re)
+	})
+
+	t.Run("gitlint with spaces around equals", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex = ^fix: .+\n")
+		re := gitlintTitleRegex(context.Background(), client, "acme", "widget")
+		require.NotNil(t, re)
+		assert.True(t, re.MatchString("fix: something"))
+	})
+
+	t.Run("gitlint with tabs and extra spaces around equals", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex\t=  ^fix: .+\n")
+		re := gitlintTitleRegex(context.Background(), client, "acme", "widget")
+		require.NotNil(t, re)
+		assert.True(t, re.MatchString("fix: something"))
+	})
+
+	t.Run("invalid regex is ignored", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex=[invalid((\n")
+		re := gitlintTitleRegex(context.Background(), client, "acme", "widget")
+		assert.Nil(t, re)
+	})
+}
+
+func TestAdaptCommitMsg(t *testing.T) {
+	t.Run("no gitlint warns nothing", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		printer, buf := newTestPrinter()
+		msg := adaptCommitMsg(context.Background(), client, printer, "acme", "widget",
+			"chore: initialize fullsend per-repo installation")
+		assert.Equal(t, "chore: initialize fullsend per-repo installation", msg)
+		assert.NotContains(t, buf.String(), "gitlint")
+	})
+
+	t.Run("matching regex warns nothing", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex=^(feat|fix|chore): .+\n")
+		printer, buf := newTestPrinter()
+		msg := adaptCommitMsg(context.Background(), client, printer, "acme", "widget",
+			"chore: initialize fullsend per-repo installation")
+		assert.Equal(t, "chore: initialize fullsend per-repo installation", msg)
+		assert.NotContains(t, buf.String(), "gitlint")
+	})
+
+	t.Run("adapts to ci prefix when chore does not match", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex=^(ci|build): .+\n")
+		printer, buf := newTestPrinter()
+		msg := adaptCommitMsg(context.Background(), client, printer, "acme", "widget",
+			"chore: initialize fullsend per-repo installation")
+		assert.Equal(t, "ci: initialize fullsend per-repo installation", msg)
+		assert.Contains(t, buf.String(), "Adapted scaffold commit message")
+		assert.NotContains(t, buf.String(), "CI may fail")
+	})
+
+	t.Run("adapts to bare description when no prefix matches", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex=^[a-z]+ .+\n")
+		printer, buf := newTestPrinter()
+		msg := adaptCommitMsg(context.Background(), client, printer, "acme", "widget",
+			"chore: initialize fullsend per-repo installation")
+		assert.Equal(t, "initialize fullsend per-repo installation", msg)
+		assert.Contains(t, buf.String(), "Adapted scaffold commit message")
+	})
+
+	t.Run("warns when no alternative matches", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex=^PROJ-\\d+: .+\n")
+		printer, buf := newTestPrinter()
+		msg := adaptCommitMsg(context.Background(), client, printer, "acme", "widget",
+			"chore: initialize fullsend per-repo installation")
+		assert.Equal(t, "chore: initialize fullsend per-repo installation", msg)
+		assert.Contains(t, buf.String(), "title-match-regex")
+		assert.Contains(t, buf.String(), "commit-lint CI may fail")
+	})
+
+	t.Run("adapts non-scaffold commit message", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex=^(ci|build): .+\n")
+		printer, buf := newTestPrinter()
+		msg := adaptCommitMsg(context.Background(), client, printer, "acme", "widget",
+			"chore: upgrade fullsend config")
+		assert.Equal(t, "ci: upgrade fullsend config", msg)
+		assert.Contains(t, buf.String(), "Adapted scaffold commit message")
+	})
+
+	t.Run("preserves body when adapting", func(t *testing.T) {
+		client := forge.NewFakeClient()
+		client.FileContents["acme/widget/.gitlint"] = []byte(
+			"[title-match-regex]\nregex=^(ci|build): .+\n")
+		printer, _ := newTestPrinter()
+		msg := adaptCommitMsg(context.Background(), client, printer, "acme", "widget",
+			"chore: initialize fullsend per-repo installation\n\nSigned-off-by: bot")
+		assert.Equal(t, "ci: initialize fullsend per-repo installation\n\nSigned-off-by: bot", msg)
+	})
 }

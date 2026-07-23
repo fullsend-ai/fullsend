@@ -38,8 +38,10 @@ on:
 jobs:
   dispatch:
     if: >-
-      github.event_name != 'issue_comment'
-      || github.event.comment.user.type != 'Bot'
+      (github.event_name != 'pull_request_target' && github.event_name != 'pull_request_review'
+       || github.event.pull_request.head.ref != 'fullsend/scaffold-install')
+      && (github.event_name != 'issue_comment'
+       || github.event.comment.user.type != 'Bot')
     uses: __REUSABLE_DISPATCH__
     with:
       event_action: ${{ github.event.action }}

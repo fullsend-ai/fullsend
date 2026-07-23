@@ -40,6 +40,9 @@ import (
 // the --mint-url flag.
 const DefaultMintURL = "https://fullsend-mint-gljhbkcloq-uc.a.run.app"
 
+const defaultScaffoldPRBody = "This PR adds the fullsend scaffold files for per-repo installation.\n\n" +
+	"Merge this PR to activate fullsend workflows."
+
 func newAdminCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "admin",
@@ -1014,10 +1017,9 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			}
 			return fmt.Errorf("getting repo info: %w", repoErr)
 		}
-		commitMsg := fmt.Sprintf("chore: initialize fullsend-%s per-repo installation", version)
+		commitMsg := "chore: initialize fullsend per-repo installation"
 		prTitle := "chore: initialize fullsend per-repo installation"
-		prBody := "This PR adds the fullsend scaffold files for per-repo installation.\n\n" +
-			"Merge this PR to activate fullsend workflows."
+		prBody := defaultScaffoldPRBody
 		if direct {
 			printer.StepStart(fmt.Sprintf("Committing scaffold files to %s/%s (%s branch)",
 				owner, repo, targetRepo.DefaultBranch))
@@ -1200,7 +1202,7 @@ func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.
 		}
 		return fmt.Errorf("getting repo info: %w", err)
 	}
-	commitMsg := fmt.Sprintf("chore: initialize fullsend-%s per-repo installation", version)
+	commitMsg := "chore: initialize fullsend per-repo installation"
 	if direct {
 		printer.StepStart(fmt.Sprintf("Committing scaffold files to %s/%s (%s branch)",
 			owner, repo, targetRepo.DefaultBranch))
@@ -1208,11 +1210,9 @@ func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.
 		printer.StepStart(fmt.Sprintf("Creating scaffold PR for %s/%s (target: %s)",
 			owner, repo, targetRepo.DefaultBranch))
 	}
-	prBody := "This PR adds the fullsend scaffold files for per-repo installation.\n\n" +
-		"Merge this PR to activate fullsend workflows."
 	if _, err := layers.CommitScaffoldFiles(ctx, client, printer,
 		owner, repo, targetRepo.DefaultBranch,
-		commitMsg, "chore: initialize fullsend per-repo installation", prBody, files, direct, os.Stdin); err != nil {
+		commitMsg, "chore: initialize fullsend per-repo installation", defaultScaffoldPRBody, files, direct, os.Stdin); err != nil {
 		return err
 	}
 
