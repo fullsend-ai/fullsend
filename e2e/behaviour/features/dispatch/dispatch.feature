@@ -25,26 +25,12 @@ Feature: Harness CEL dispatch
       | Payload has issue number | assert_json  | .fullsend/dispatch/event-payload.json,issue.number |
       | Prove execution          | write_fixture| output/dispatch-ok.json, fixtures/dispatch/ok.json |
     And an issue
+    When the issue is labeled "wrong-label"
+    Then the harness "issue-ping" agent did not run
     When the issue is labeled "ready-for-ping"
     Then the harness "issue-ping" workflow completes successfully
     And the agent will succeed to Prove execution
-
-  Scenario: Wrong label does not trigger issue harness
-    Given a custom harness "issue-ping" with:
-      """
-      agent: agents/triage.md
-      role: triage
-      slug: fullsend-ai-issue-ping
-      model: opus
-      image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
-      trigger: |
-        event.entity.kind == "work_item"
-        && event.transition.kind == "label_changed"
-        && event.transition.label.name == "ready-for-ping"
-      """
-    And an issue
-    When the issue is labeled "wrong-label"
-    Then the harness "issue-ping" agent did not run
+    And the harness "issue-ping" was dispatched exactly 1 time
 
   Scenario: PR does not trigger issue-only harness
     Given a custom harness "issue-ping" with:
