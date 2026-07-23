@@ -118,6 +118,13 @@ repos:
         files: ^(internal/mint/|internal/mintcore/|internal/dispatch/gcf/mintsrc/)
         pass_filenames: false
 
+      - id: lint-interface-doc-sync
+        name: lint interface doc sync
+        entry: ./hack/lint-interface-doc-sync
+        language: script
+        files: ^(pkg/behaviourtest/drivers/ci/driver\.go|docs/guides/dev/behaviour-drivers\.md)$
+        pass_filenames: false
+
       - id: lint-adr-status
         name: lint ADR statuses
         entry: ./hack/lint-adr-status

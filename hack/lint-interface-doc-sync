@@ -1,0 +1,98 @@
+#!/bin/bash
+
+# lint-interface-doc-sync — Verify that Go driver interface method lists
+# in docs/guides/dev/ match the actual interface definitions.
+# See docs/contributing/go-code.md for details on the interface documentation
+# sync requirement.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+rc=0
+
+# ---- ci.Driver ----
+# Source: pkg/behaviourtest/drivers/ci/driver.go
+# Doc:    docs/guides/dev/behaviour-drivers.md ("Adding a CI driver" section)
+
+CI_IFACE="$REPO_ROOT/pkg/behaviourtest/drivers/ci/driver.go"
+CI_DOC="$REPO_ROOT/docs/guides/dev/behaviour-drivers.md"
+
+if [[ ! -f "$CI_IFACE" || ! -f "$CI_DOC" ]]; then
+    echo "ERROR: ci.Driver source or doc not found (expected $CI_IFACE and $CI_DOC)" >&2
+    exit 1
+fi
+
+# Extract exported method names from the Driver interface block only.
+# First isolate the 'type Driver interface { ... }' block, then match
+# exported method signatures within it.
+iface_block=$(sed -n '/^type Driver interface {/,/^}/p' "$CI_IFACE" || true)
+
+if [[ -z "$iface_block" ]]; then
+    echo "ERROR: could not find 'type Driver interface {' block in $CI_IFACE" >&2
+    exit 1
+fi
+
+go_methods=$(echo "$iface_block" \
+    | grep -E '^[[:space:]]+[A-Z][a-zA-Z0-9_]*\(' \
+    | sed 's/^[[:space:]]*//' \
+    | sed 's/(.*//' \
+    | sort || true)
+
+if [[ -z "$go_methods" ]]; then
+    echo "ERROR: no exported methods found in Driver interface block of $CI_IFACE" >&2
+    exit 1
+fi
+
+# Extract method names listed in the doc's "Implement `ci.Driver`" line.
+# Anchor to the numbered list item pattern: "N. Implement `ci.Driver`".
+# The full method list must live on a single line — the enumeration is matched
+# as one line and its backtick-quoted method names are compared to the interface.
+doc_line=$(grep -E '^[0-9]+\.[[:space:]]+Implement[[:space:]]+`ci\.Driver`' "$CI_DOC" || true)
+
+if [[ -z "$doc_line" ]]; then
+    echo "ERROR: no 'N. Implement \`ci.Driver\`' enumeration found in $CI_DOC" >&2
+    exit 1
+fi
+
+# Require exactly one enumeration line. If a second line elsewhere in the doc
+# also matches the anchor, the method sets would be unioned and a real desync on
+# the authoritative line could be masked (silent false pass). Fail closed.
+if [[ "$(printf '%s\n' "$doc_line" | wc -l | tr -d '[:space:]')" -gt 1 ]]; then
+    echo "ERROR: found multiple 'N. Implement \`ci.Driver\`' enumeration lines in $CI_DOC; expected exactly one so drift detection is unambiguous" >&2
+    exit 1
+fi
+
+doc_methods=$(echo "$doc_line" \
+    | grep -oE '`[A-Z][a-zA-Z0-9_]*`' \
+    | tr -d '`' \
+    | sort || true)
+
+if [[ -z "$doc_methods" ]]; then
+    echo "ERROR: no backtick-quoted method names found on the ci.Driver enumeration line in $CI_DOC" >&2
+    exit 1
+fi
+
+# Compare the two sorted lists.
+missing_from_doc=$(comm -23 <(echo "$go_methods") <(echo "$doc_methods"))
+extra_in_doc=$(comm -13 <(echo "$go_methods") <(echo "$doc_methods"))
+
+if [[ -n "$missing_from_doc" ]]; then
+    echo "DESYNC: ci.Driver methods in Go interface but missing from docs/guides/dev/behaviour-drivers.md:" >&2
+    echo "$missing_from_doc" | sed 's/^/  /' >&2
+    rc=1
+fi
+
+if [[ -n "$extra_in_doc" ]]; then
+    echo "DESYNC: ci.Driver methods in docs/guides/dev/behaviour-drivers.md but not in Go interface:" >&2
+    echo "$extra_in_doc" | sed 's/^/  /' >&2
+    rc=1
+fi
+
+# Add more interface checks here as new driver docs enumerate methods.
+
+if [[ $rc -eq 0 ]]; then
+    echo "OK: interface documentation in sync"
+fi
+exit $rc
