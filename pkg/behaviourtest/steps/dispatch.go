@@ -141,16 +141,48 @@ func thenHarnessWorkflowCompletes(w *world.World, agent string) error {
 	return ensureHarnessArtifacts(w, agent)
 }
 
+// defaultSettleDuration is the maximum time to wait for the dispatch
+// pipeline to settle before asserting artifact absence.
+const defaultSettleDuration = 90 * time.Second
+
+// negativeSettleDuration returns how long to wait before a negative
+// (did-not-run) assertion.  When the scenario already completed a
+// positive harness wait (WorkflowRun is set), or enough wall time has
+// elapsed since ScenarioStart, the settle is unnecessary.
+func negativeSettleDuration(w *world.World, now time.Time) time.Duration {
+	// A completed positive wait means the dispatch pipeline already
+	// ran to completion — no additional settle needed.
+	if w.WorkflowRun != nil {
+		return 0
+	}
+
+	// Safety: if ScenarioStart was never recorded, use the full settle.
+	if w.ScenarioStart.IsZero() {
+		return defaultSettleDuration
+	}
+
+	elapsed := now.Sub(w.ScenarioStart)
+	if elapsed >= defaultSettleDuration {
+		return 0
+	}
+	return defaultSettleDuration - elapsed
+}
+
 func thenHarnessAgentDidNotRun(w *world.World, agent string) error {
 	if w.ScenarioStart.IsZero() {
 		return fmt.Errorf("no workflow trigger time recorded")
 	}
 	ctx := context.Background()
+
 	// Allow dispatch pipeline time to settle before asserting absence.
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(90 * time.Second):
+	// Skip or shorten the wait when a positive harness wait already
+	// elapsed in this scenario (piggyback pattern).
+	if d := negativeSettleDuration(w, time.Now()); d > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(d):
+		}
 	}
 	return w.CI.AssertNoHarnessAgentArtifact(ctx, w.Org, w.Install.TriageWorkflowRepo(), agent, w.ScenarioStart)
 }
