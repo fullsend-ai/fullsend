@@ -22,9 +22,10 @@
 #   2. Auto-install pre-commit tool deps (from .pre-commit-tools.yaml)
 #   3. Authoritative pre-commit check
 #   4. Push branch
-#   5. Process structured output
-#   6. Iteration-cap warning label
-#   7. Summary
+#   5. Re-trigger review via ready-for-review label
+#   6. Process structured output
+#   7. Iteration-cap warning label
+#   8. Summary
 #
 # After pushing, this script processes fix-result.json to:
 #   - Post a summary comment on the PR documenting fixes and disagreements
@@ -335,10 +336,65 @@ if [ "${NO_PUSH}" = "false" ]; then
   echo "Branch ${BRANCH} pushed successfully"
 fi
 
-# ---------------------------------------------------------------------------
-# 5. Process structured output (fix-result.json)
-# ---------------------------------------------------------------------------
+# GH_TOKEN must be set before any `gh` call in this script — including the
+# relabel step below, not just the fix-result processing that historically
+# needed it. PUSH_TOKEN is a GitHub App installation token (PUSH_TOKEN_SOURCE
+# is "github-app"), not the runner's default GITHUB_TOKEN, so it is exempt
+# from Actions' loop-prevention restriction on triggering new workflow runs.
 export GH_TOKEN="${PUSH_TOKEN}"
+
+# ---------------------------------------------------------------------------
+# 5. Re-trigger review via ready-for-review label (only if we pushed)
+#
+# pull_request_target.synchronize also fires on this push, but its
+# actor-identity check is gated on PR_USER_LOGIN — the PR's original author,
+# which is the code agent's bot account regardless of who triggered this fix
+# run — and GitHub App bots have no collaborator role, so that check always
+# fails closed (#5188). Re-triggering via the label path sidesteps the
+# identity question entirely: label application itself requires write
+# access, so the labeled-event dispatch has no separate actor-authorization
+# gate (see post-code.sh's identical rationale for the PR-open case).
+#
+# GitHub does not fire a new `labeled` webhook event when a label already
+# present is re-added — only a genuine absent-to-present transition fires
+# one — so the label must be removed first to force that transition. This
+# specific remove-then-add sequence (as opposed to post-code.sh's simpler
+# add-when-absent case, which never needed to force a transition) has not
+# been empirically confirmed against a live fix-agent run; watch for the
+# review agent actually re-dispatching after the first production use of
+# this path before considering the fix fully verified.
+#
+# Concurrency note: reusable-fix.yml's fix-agent concurrency group uses
+# cancel-in-progress: true. If a second fix run is dispatched for the same
+# PR while this block is between the remove and add calls, cancellation
+# could leave the label removed with nothing to re-add it. No unlabeled
+# handler exists to recover automatically; the next successful fix push
+# re-adds the label and self-heals. This is a narrow, accepted window, not
+# engineered around here.
+# ---------------------------------------------------------------------------
+if [ "${NO_PUSH}" = "false" ]; then
+  REMOVE_LABEL_ERR="$(mktemp)"
+  if ! gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+       --remove-label "ready-for-review" 2>"${REMOVE_LABEL_ERR}"; then
+    # Expected when the label wasn't present (e.g. a human-authored PR that
+    # never went through post-code.sh); still worth a breadcrumb since an
+    # unexpected API/permission failure looks identical from here.
+    SANITIZED_ERR="$(tr -d '\r' < "${REMOVE_LABEL_ERR}" | tr '\n' ' ' | sed 's/::/: /g')"
+    SANITIZED_ERR="${SANITIZED_ERR//%0A/ }"
+    SANITIZED_ERR="${SANITIZED_ERR//%0a/ }"
+    SANITIZED_ERR="${SANITIZED_ERR//%0D/ }"
+    SANITIZED_ERR="${SANITIZED_ERR//%0d/ }"
+    echo "::notice::Could not remove ready-for-review label from PR #${PR_NUMBER} (may not have been present): ${SANITIZED_ERR}"
+  fi
+  rm -f "${REMOVE_LABEL_ERR}"
+  gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+    --add-label "ready-for-review" 2>/dev/null || \
+    echo "::warning::Failed to re-apply ready-for-review label to PR #${PR_NUMBER} — review will not be re-dispatched"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Process structured output (fix-result.json)
+# ---------------------------------------------------------------------------
 
 # Locate process-fix-result.py relative to this script, with workspace fallback.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -398,7 +454,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Iteration-cap warning label
+# 7. Iteration-cap warning label
 # ---------------------------------------------------------------------------
 ITERATION="${FIX_ITERATION:-1}"
 BOT_CAP="${ITERATION_CAP:-5}"
@@ -417,7 +473,7 @@ if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"
 fi
 
 # ---------------------------------------------------------------------------
-# 7. Summary
+# 8. Summary
 # ---------------------------------------------------------------------------
 echo ""
 echo "Fix post-script complete:"
