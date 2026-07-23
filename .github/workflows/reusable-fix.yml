@@ -58,6 +58,8 @@ on:
         required: true
       FULLSEND_GCP_PROJECT_ID:
         required: true
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS:
+        required: false
 
 concurrency:
   group: >-
@@ -407,6 +409,9 @@ jobs:
           FIX_ITERATION: ${{ steps.context.outputs.iteration }}
           REVIEW_BODY_FILE: ${{ steps.review-body.outputs.review_file }}
           PRE_AGENT_HEAD: ${{ steps.pre-agent.outputs.head }}
+          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
+          OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
+          OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
         with:
           agent: fix
           version: ${{ inputs.fullsend_version }}

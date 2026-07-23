@@ -274,6 +274,7 @@ func TestReusableWorkflowsShareCommonInputs(t *testing.T) {
 	commonSecrets := []string{
 		"FULLSEND_GCP_WIF_PROVIDER",
 		"FULLSEND_GCP_PROJECT_ID",
+		"OTEL_EXPORTER_OTLP_TRACES_HEADERS",
 	}
 
 	stages := []string{"triage", "code", "review", "fix", "retro", "prioritize"}
@@ -320,10 +321,10 @@ func TestReusableDispatchProjectNumberInput(t *testing.T) {
 }
 
 // TestOTELHeadersSecretThreading validates that the optional OTLP headers
-// secret (#2862) is forwarded along both installation-mode chains to
-// reusable-triage.yml. TestWorkflowCallInputAlignment only enforces required
-// secrets — an omitted optional forward silently arrives empty, which turns
-// into a 401 at authenticated backends instead of failing loudly.
+// secret (#2862) is forwarded along both installation-mode chains to every
+// reusable stage workflow. TestWorkflowCallInputAlignment only enforces
+// required secrets; an omitted optional forward silently arrives empty,
+// which turns into a 401 at authenticated backends instead of failing loudly.
 func TestOTELHeadersSecretThreading(t *testing.T) {
 	const forward = "OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}"
 
@@ -331,13 +332,22 @@ func TestOTELHeadersSecretThreading(t *testing.T) {
 		name    string
 		content func(t *testing.T) []byte
 	}{
-		// consumer: env injection on the agent step
-		{"reusable-triage.yml", loadRepoFile(".github/workflows/reusable-triage.yml")},
-		// per-repo chain: shim → reusable-dispatch → reusable-triage
+		// per-repo chain: shim → reusable-dispatch (covers all inlined stages)
 		{"scaffold/templates/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml")},
 		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
-		// per-org chain: thin caller → reusable-triage
+		// per-org chain: thin caller → reusable-{stage}
+		{"reusable-triage.yml", loadRepoFile(".github/workflows/reusable-triage.yml")},
 		{"scaffold/triage.yml", loadScaffoldFile(".github/workflows/triage.yml")},
+		{"reusable-code.yml", loadRepoFile(".github/workflows/reusable-code.yml")},
+		{"scaffold/code.yml", loadScaffoldFile(".github/workflows/code.yml")},
+		{"reusable-review.yml", loadRepoFile(".github/workflows/reusable-review.yml")},
+		{"scaffold/review.yml", loadScaffoldFile(".github/workflows/review.yml")},
+		{"reusable-fix.yml", loadRepoFile(".github/workflows/reusable-fix.yml")},
+		{"scaffold/fix.yml", loadScaffoldFile(".github/workflows/fix.yml")},
+		{"reusable-retro.yml", loadRepoFile(".github/workflows/reusable-retro.yml")},
+		{"scaffold/retro.yml", loadScaffoldFile(".github/workflows/retro.yml")},
+		{"reusable-prioritize.yml", loadRepoFile(".github/workflows/reusable-prioritize.yml")},
+		{"scaffold/prioritize.yml", loadScaffoldFile(".github/workflows/prioritize.yml")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -66,9 +66,9 @@ on:
         required: true
       OTEL_EXPORTER_OTLP_TRACES_HEADERS:
         description: >-
-          OTLP headers for ADR 0050 Level 2 trace export, forwarded to the
-          triage stage (baggage-style k=v,k=v; may carry auth, hence a
-          secret). Optional — unset leaves export disabled unless the
+          OTLP headers for ADR 0050 Level 2 trace export, forwarded to all
+          agent stages (baggage-style k=v,k=v; may carry auth, hence a
+          secret). Optional; unset leaves export disabled unless the
           endpoint variable alone suffices.
         required: false
 
@@ -744,6 +744,9 @@ jobs:
           REPO_FULL_NAME: ${{ github.repository }}
           CODE_ALLOWED_TARGET_BRANCHES: ''
           TARGET_BRANCH: main
+          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
+          OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
+          OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
         with:
           agent: code
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -853,6 +856,9 @@ jobs:
           PRIOR_REVIEW_SHA: ${{ steps.prior-review.outputs.prior_sha }}
           PRIOR_REVIEW_FILE: ${{ steps.prior-review.outputs.prior_review_file }}
           PRIOR_REVIEW_PROVENANCE: ${{ steps.prior-review.outputs.prior_review_provenance }}
+          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
+          OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
+          OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
         with:
           agent: review
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -1143,6 +1149,9 @@ jobs:
           FIX_ITERATION: ${{ steps.context.outputs.iteration }}
           REVIEW_BODY_FILE: ${{ steps.review-body.outputs.review_file }}
           PRE_AGENT_HEAD: ${{ steps.pre-agent.outputs.head }}
+          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
+          OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
+          OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
         with:
           agent: fix
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -1235,6 +1244,9 @@ jobs:
           RETRO_COMMENT: ${{ fromJSON(needs.route.outputs.event_payload).comment.body || '' }}
           REPO_FULL_NAME: ${{ github.repository }}
           MINT_REPOS: ${{ steps.workspace.outputs.repo_name != '' && (inputs.install_mode == 'per-repo' && steps.workspace.outputs.repo_name || format('{0},.fullsend', steps.workspace.outputs.repo_name)) || '' }}
+          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
+          OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
+          OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
         with:
           agent: retro
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -1312,6 +1324,9 @@ jobs:
         env:
           GITHUB_ISSUE_URL: ${{ fromJSON(needs.route.outputs.event_payload).issue.html_url }}
           REPO_FULL_NAME: ${{ github.repository }}
+          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
+          OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
+          OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
         with:
           agent: prioritize
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -1616,6 +1631,9 @@ jobs:
         env:
           GITHUB_ISSUE_URL: ${{ steps.dispatch-env.outputs.issue_url }}
           REPO_FULL_NAME: ${{ matrix.source_repo }}
+          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
+          OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
+          OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
         with:
           agent: ${{ matrix.agent }}
           version: ${{ inputs.fullsend_version }}
