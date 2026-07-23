@@ -373,6 +373,7 @@ jobs:
           TRIGGER_SOURCE: ${{ inputs.trigger_source }}
           FIX_ITERATION: ${{ steps.context.outputs.iteration }}
           HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
+          FIX_SKIP_TOOL_INSTALL: "true"
           FULLSEND_DIR: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
         run: bash "${FULLSEND_DIR:+$FULLSEND_DIR/}scripts/pre-fix.sh"
 
