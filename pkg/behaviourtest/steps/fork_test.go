@@ -198,6 +198,61 @@ func TestForkSteps_WorldStateTransitions(t *testing.T) {
 	assert.True(t, scmDriver.commitToForkCalled, "CommitFileToFork should have been called again")
 }
 
+// --- resolveForkName unit tests ---
+
+func TestResolveForkName_NoLease(t *testing.T) {
+	w := &world.World{RepoName: "test-repo"}
+	got := resolveForkName(w, "test-repo-fork")
+	assert.Equal(t, "test-repo-fork", got, "without lease, logical name is unchanged")
+}
+
+func TestResolveForkName_LeasedRepoMaps(t *testing.T) {
+	w := &world.World{
+		LeasedRepoName: "test-repo-07",
+		RepoName:       "test-repo-07",
+	}
+	got := resolveForkName(w, "test-repo-fork")
+	assert.Equal(t, "test-repo-07-fork", got,
+		"leased repo should remap test-repo-fork to test-repo-07-fork")
+}
+
+func TestResolveForkName_CustomNameUnchanged(t *testing.T) {
+	w := &world.World{
+		LeasedRepoName: "test-repo-07",
+		RepoName:       "test-repo-07",
+	}
+	got := resolveForkName(w, "custom-fork")
+	assert.Equal(t, "custom-fork", got,
+		"non-prefixed name should be unchanged even with a lease")
+}
+
+func TestResolveForkName_DifferentSuffix(t *testing.T) {
+	w := &world.World{
+		LeasedRepoName: "test-repo-03",
+		RepoName:       "test-repo-03",
+	}
+	got := resolveForkName(w, "test-repo-secondary")
+	assert.Equal(t, "test-repo-03-secondary", got,
+		"should preserve arbitrary suffix after test-repo prefix")
+}
+
+func TestGivenFork_LeasedRepoResolvesForkName(t *testing.T) {
+	scmDriver := &fakeForkSCM{}
+	w := &world.World{
+		Org:            "org",
+		RepoOwner:      "org",
+		RepoName:       "test-repo-07",
+		RepoFull:       "org/test-repo-07",
+		LeasedRepoName: "test-repo-07",
+		SCM:            scmDriver,
+	}
+	err := givenFork(w, "test-repo-fork")
+	require.NoError(t, err)
+	assert.Equal(t, "test-repo-07-fork", scmDriver.createForkName,
+		"CreateFork should receive the resolved fork name")
+	assert.Equal(t, "test-repo-07-fork", w.ForkRepo)
+}
+
 // fakeInstallState implements install.State for fork step unit tests.
 type fakeInstallState struct {
 	testRepo string
@@ -218,6 +273,7 @@ type fakeForkSCM struct {
 	forkRepo           string
 	prNumber           int
 	createForkCalled   bool
+	createForkName     string // records the forkName arg passed to CreateFork
 	createBranchCalled bool
 	commitToForkCalled bool
 	createForkPRCalled bool
@@ -236,12 +292,16 @@ type addedLabelRecord struct {
 	label  string
 }
 
-func (f *fakeForkSCM) CreateFork(_ context.Context, _, _, _ string) (string, error) {
+func (f *fakeForkSCM) CreateFork(_ context.Context, _, _, forkName string) (string, error) {
 	f.createForkCalled = true
+	f.createForkName = forkName
 	if f.createForkErr != nil {
 		return "", f.createForkErr
 	}
-	return f.forkRepo, nil
+	if f.forkRepo != "" {
+		return f.forkRepo, nil
+	}
+	return forkName, nil
 }
 
 func (f *fakeForkSCM) CommitFileToFork(_ context.Context, _, _, _, _, _ string, _ []byte) error {

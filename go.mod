@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/cucumber/godog v0.14.1
+	github.com/cucumber/messages/go/v21 v21.0.1
 	github.com/google/cel-go v0.29.2
 	github.com/google/uuid v1.6.0
 	github.com/knights-analytics/hugot v0.7.5
@@ -27,7 +28,6 @@ require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cucumber/gherkin/go/v26 v26.2.0 // indirect
-	github.com/cucumber/messages/go/v21 v21.0.1 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gofrs/uuid v4.4.0+incompatible // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
@@ -82,7 +82,7 @@ require (
 	github.com/yalue/onnxruntime_go v1.31.0 // indirect
 	golang.org/x/exp v0.0.0-20260603202125-055de637280b // indirect
 	golang.org/x/image v0.41.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
+	golang.org/x/sync v0.20.0
 	golang.org/x/sys v0.45.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect

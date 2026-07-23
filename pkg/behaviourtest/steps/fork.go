@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/cucumber/godog"
@@ -28,6 +29,12 @@ func registerForkSteps(sc *godog.ScenarioContext) {
 // givenFork creates a fork of the enrolled test repository if absent, or
 // reuses it if it already exists. The fork is created within the same
 // organization as the source repository.
+//
+// When the world uses a leased repo (w.LeasedRepoName is set), the
+// logical fork name from the Gherkin feature file is mapped to
+// {RepoName}-suffix so the fork targets the correct parent. For example,
+// Gherkin "test-repo-fork" with leased "test-repo-07" resolves to
+// "test-repo-07-fork". See resolveForkName.
 func givenFork(w *world.World, forkName string) error {
 	if w.RepoOwner == "" || w.RepoName == "" {
 		w.RepoOwner = w.Org
@@ -35,14 +42,39 @@ func givenFork(w *world.World, forkName string) error {
 		w.RepoFull = w.Org + "/" + w.RepoName
 	}
 
+	resolved := resolveForkName(w, forkName)
+
 	ctx := context.Background()
-	forkRepo, err := w.SCM.CreateFork(ctx, w.RepoOwner, w.RepoName, forkName)
+	forkRepo, err := w.SCM.CreateFork(ctx, w.RepoOwner, w.RepoName, resolved)
 	if err != nil {
-		return fmt.Errorf("creating fork %q: %w", forkName, err)
+		return fmt.Errorf("creating fork %q: %w", resolved, err)
 	}
 	w.ForkOwner = w.RepoOwner
 	w.ForkRepo = forkRepo
 	return nil
+}
+
+// resolveForkName maps a logical fork name from a Gherkin feature file to
+// the actual GitHub repository name. When a leased repo is in use
+// (w.LeasedRepoName is set), the logical name's suffix (relative to the
+// default "test-repo" base) is appended to the leased repo name.
+//
+// Examples:
+//
+//	"test-repo-fork" + leased "test-repo-07" → "test-repo-07-fork"
+//	"test-repo-fork" + no lease             → "test-repo-fork" (unchanged)
+//	"custom-fork"    + leased "test-repo-07" → "custom-fork"   (no match)
+func resolveForkName(w *world.World, logicalName string) string {
+	if w.LeasedRepoName == "" {
+		return logicalName
+	}
+	const defaultTestRepo = "test-repo"
+	suffix := strings.TrimPrefix(logicalName, defaultTestRepo)
+	if suffix == logicalName {
+		// Logical name doesn't start with the default base — use as-is.
+		return logicalName
+	}
+	return w.RepoName + suffix
 }
 
 // whenForkPullRequestOpened commits a file to a new branch on the fork

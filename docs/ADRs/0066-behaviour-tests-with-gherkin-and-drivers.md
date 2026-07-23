@@ -36,6 +36,7 @@ Runtime selection is shared with production via `defaults.runtime` in org `confi
 
 - Behaviour tests can pass while prompt quality regresses; LLM evals remain necessary for instruction coverage.
 - Behaviour orgs are provisioned at suite start with `--runtime dummy`; production orgs must not use dummy unintentionally.
+- **Note (2026-07, #5439 / PR #5489):** Numbered behaviour pool repos (`test-repo-NN`) are lazily created and installed on first scenario use via `RepoEnsurer`; suite-start provisioning still applies to the shared admin/`test-repo` install path where used.
 - Adding GitLab or Tekton requires new drivers and runner env values, not feature file rewrites.
 - Dummy runtime op vocabulary stays minimal; new ops require runtime + docs updates when scenarios need them.
 - Behaviour tests depend on live external infrastructure: GitHub API, GitHub Actions runners, GCP WIF/mint, and the shared halfsend org pool. Transient outages, API rate limits, or pool org state corruption can fail the suite; CI distinguishes infrastructure failures from regressions via workflow logs and artifact inspection, but there is no offline fallback.
