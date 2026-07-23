@@ -150,6 +150,10 @@ echo "" >"${COLLAB_ROLE}"
 write_pr "NONE" '[]'
 run_case "renovate bot authorized as trusted bot" "true" "trusted_bot" "false"
 
+export PR_AUTHOR_LOGIN="fullsend-ai-coder[bot]"
+write_pr "NONE" '[]'
+run_case "fullsend-ai-coder bot authorized as trusted bot" "true" "trusted_bot" "false"
+
 export PR_AUTHOR_LOGIN="some-other-bot[bot]"
 write_pr "NONE" '[]'
 run_case "unknown bot not authorized" "false" "unauthorized" "false"

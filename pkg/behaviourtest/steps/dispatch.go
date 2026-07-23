@@ -13,27 +13,27 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
-func registerDispatchSteps(ctx *godog.ScenarioContext, w *world.World) {
-	ctx.Step(`^a custom harness "([^"]+)" with:$`, func(name, doc string) error {
-		return givenCustomHarness(w, name, doc)
+func registerDispatchSteps(sc *godog.ScenarioContext) {
+	sc.Step(`^a custom harness "([^"]+)" with:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
+		return ctx, givenCustomHarness(world.FromContext(ctx), name, doc)
 	})
-	ctx.Step(`^a disabled custom harness "([^"]+)" with:$`, func(name, doc string) error {
-		return givenDisabledCustomHarness(w, name, doc)
+	sc.Step(`^a disabled custom harness "([^"]+)" with:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
+		return ctx, givenDisabledCustomHarness(world.FromContext(ctx), name, doc)
 	})
-	ctx.Step(`^the harness "([^"]+)" workflow completes successfully$`, func(agent string) error {
-		return thenHarnessWorkflowCompletes(w, agent)
+	sc.Step(`^the harness "([^"]+)" workflow completes successfully$`, func(ctx context.Context, agent string) (context.Context, error) {
+		return ctx, thenHarnessWorkflowCompletes(world.FromContext(ctx), agent)
 	})
-	ctx.Step(`^the harness "([^"]+)" agent did not run$`, func(agent string) error {
-		return thenHarnessAgentDidNotRun(w, agent)
+	sc.Step(`^the harness "([^"]+)" agent did not run$`, func(ctx context.Context, agent string) (context.Context, error) {
+		return ctx, thenHarnessAgentDidNotRun(world.FromContext(ctx), agent)
 	})
-	ctx.Step(`^a pull request is opened$`, func() error {
-		return whenPullRequestOpened(w)
+	sc.Step(`^a pull request is opened$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, whenPullRequestOpened(world.FromContext(ctx))
 	})
-	ctx.Step(`^the pull request is labeled "([^"]+)"$`, func(label string) error {
-		return whenPullRequestLabeled(w, label)
+	sc.Step(`^the pull request is labeled "([^"]+)"$`, func(ctx context.Context, label string) (context.Context, error) {
+		return ctx, whenPullRequestLabeled(world.FromContext(ctx), label)
 	})
-	ctx.Step(`^a review comment is submitted on the pull request$`, func() error {
-		return whenPullRequestReviewComment(w)
+	sc.Step(`^a review comment is submitted on the pull request$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, whenPullRequestReviewComment(world.FromContext(ctx))
 	})
 }
 
@@ -143,16 +143,48 @@ func thenHarnessWorkflowCompletes(w *world.World, agent string) error {
 	return ensureHarnessArtifacts(w, agent)
 }
 
+// defaultSettleDuration is the maximum time to wait for the dispatch
+// pipeline to settle before asserting artifact absence.
+const defaultSettleDuration = 90 * time.Second
+
+// negativeSettleDuration returns how long to wait before a negative
+// (did-not-run) assertion.  When the scenario already completed a
+// positive harness wait (WorkflowRun is set), or enough wall time has
+// elapsed since ScenarioStart, the settle is unnecessary.
+func negativeSettleDuration(w *world.World, now time.Time) time.Duration {
+	// A completed positive wait means the dispatch pipeline already
+	// ran to completion — no additional settle needed.
+	if w.WorkflowRun != nil {
+		return 0
+	}
+
+	// Safety: if ScenarioStart was never recorded, use the full settle.
+	if w.ScenarioStart.IsZero() {
+		return defaultSettleDuration
+	}
+
+	elapsed := now.Sub(w.ScenarioStart)
+	if elapsed >= defaultSettleDuration {
+		return 0
+	}
+	return defaultSettleDuration - elapsed
+}
+
 func thenHarnessAgentDidNotRun(w *world.World, agent string) error {
 	if w.ScenarioStart.IsZero() {
 		return fmt.Errorf("no workflow trigger time recorded")
 	}
 	ctx := context.Background()
+
 	// Allow dispatch pipeline time to settle before asserting absence.
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(90 * time.Second):
+	// Skip or shorten the wait when a positive harness wait already
+	// elapsed in this scenario (piggyback pattern).
+	if d := negativeSettleDuration(w, time.Now()); d > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(d):
+		}
 	}
 	return w.CI.AssertNoHarnessAgentArtifact(ctx, w.Org, w.Install.TriageWorkflowRepo(), agent, w.ScenarioStart)
 }

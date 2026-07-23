@@ -46,14 +46,21 @@ on:
   merge_group:
   workflow_dispatch:
 
+# Non-ok-to-test labeled events still start a workflow run (GitHub cannot filter
+# by label name at on:), but must not cancel an in-progress opened/synchronize
+# run — same actionable filter as the gate job if: below.
 concurrency:
   group: >-
     ${{ github.event_name == 'pull_request_target'
         && format('e2e-{0}', github.event.pull_request.number)
         || format('{0}-{1}', github.workflow, github.ref) }}
+  # Explicit outer parens: (A && B) || (C && D). Relies on && binding tighter
+  # than ||; keep the grouping obvious so a future || clause cannot silently
+  # disable cancel for non-pull_request_target triggers.
   cancel-in-progress: >-
-    ${{ github.event_name == 'pull_request_target'
-        || github.ref != 'refs/heads/main' }}
+    ${{ (github.event_name == 'pull_request_target'
+        && (github.event.action != 'labeled' || github.event.label.name == 'ok-to-test'))
+        || (github.event_name != 'pull_request_target' && github.ref != 'refs/heads/main') }}
 
 jobs:
   gate:
@@ -71,7 +78,7 @@ jobs:
     outputs:
       authorized: ${{ steps.auth.outputs.authorized }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}  # Base branch only — never checkout PR head in gate
 
@@ -138,7 +145,7 @@ jobs:
             echo "relevant=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.changes.outputs.relevant != 'false'
         with:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
@@ -226,7 +233,7 @@ jobs:
             echo "relevant=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.changes.outputs.relevant != 'false'
         with:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}

@@ -1082,6 +1082,21 @@ func TestInit_CLIVersionFallback(t *testing.T) {
 	assert.Equal(t, "v3.0.0", result.Manifest.Defaults.FullsendRef)
 }
 
+func TestInit_CLIVersionWithVPrefix_NoDoubleV(t *testing.T) {
+	fc := forge.NewFakeClient()
+
+	result, err := Init(context.Background(), InitConfig{
+		Target:           "acme/api",
+		MintProject:      "proj",
+		MintRegion:       "us-central1",
+		InferenceProject: "inf",
+		CLIVersion:       "v0.32.0-82-gcb2bcd9f",
+	}, fc, nil, nopProgress)
+
+	require.NoError(t, err)
+	assert.Equal(t, "v0.32.0-82-gcb2bcd9f", result.Manifest.Defaults.FullsendRef)
+}
+
 func TestInit_CLIVersionDev_FallsBackToDefault(t *testing.T) {
 	fc := forge.NewFakeClient()
 

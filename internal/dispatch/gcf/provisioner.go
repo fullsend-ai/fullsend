@@ -43,7 +43,7 @@ const (
 // ErrFunctionNotFound is returned when the mint function does not exist.
 var ErrFunctionNotFound = errors.New("mint function not found")
 
-//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed mintsrc/mintcore/go.mod.embed mintsrc/mintcore/go.sum.embed mintsrc/mintcore/gcp_pem.go.embed mintsrc/mintcore/github.go.embed mintsrc/mintcore/handler.go.embed mintsrc/mintcore/foreign.go.embed mintsrc/mintcore/interfaces.go.embed mintsrc/mintcore/jwks_verifier.go.embed mintsrc/mintcore/claims.go.embed mintsrc/mintcore/patterns.go.embed mintsrc/mintcore/sts_verifier.go.embed mintsrc/mintcore/version.go.embed mintsrc/mintcore/wif.go.embed
+//go:embed mintsrc/go.mod.embed mintsrc/go.sum.embed mintsrc/main.go.embed mintsrc/mintcore/go.mod.embed mintsrc/mintcore/go.sum.embed mintsrc/mintcore/claims.go.embed mintsrc/mintcore/config.go.embed mintsrc/mintcore/foreign.go.embed mintsrc/mintcore/gcp_pem.go.embed mintsrc/mintcore/github.go.embed mintsrc/mintcore/handler.go.embed mintsrc/mintcore/interfaces.go.embed mintsrc/mintcore/jwks_verifier.go.embed mintsrc/mintcore/patterns.go.embed mintsrc/mintcore/sts_verifier.go.embed mintsrc/mintcore/version.go.embed mintsrc/mintcore/wif.go.embed
 var embeddedMintSource embed.FS
 
 // embeddedMintFiles maps embedded filenames (.embed suffix avoids
@@ -55,13 +55,14 @@ var embeddedMintFiles = map[string]string{
 	"main.go.embed":                   "main.go",
 	"mintcore/go.mod.embed":           "mintcore/go.mod",
 	"mintcore/go.sum.embed":           "mintcore/go.sum",
+	"mintcore/claims.go.embed":        "mintcore/claims.go",
+	"mintcore/config.go.embed":        "mintcore/config.go",
+	"mintcore/foreign.go.embed":       "mintcore/foreign.go",
 	"mintcore/gcp_pem.go.embed":       "mintcore/gcp_pem.go",
 	"mintcore/github.go.embed":        "mintcore/github.go",
 	"mintcore/handler.go.embed":       "mintcore/handler.go",
-	"mintcore/foreign.go.embed":       "mintcore/foreign.go",
 	"mintcore/interfaces.go.embed":    "mintcore/interfaces.go",
 	"mintcore/jwks_verifier.go.embed": "mintcore/jwks_verifier.go",
-	"mintcore/claims.go.embed":        "mintcore/claims.go",
 	"mintcore/patterns.go.embed":      "mintcore/patterns.go",
 	"mintcore/sts_verifier.go.embed":  "mintcore/sts_verifier.go",
 	"mintcore/version.go.embed":       "mintcore/version.go",

@@ -29,6 +29,11 @@ When changing `internal/mint/main.go`, always copy it to `internal/dispatch/gcf/
 
 The `internal/mintcore/` module is shared between the mint and devmint. Its files are also embedded for Cloud Function deployment at `internal/dispatch/gcf/mintsrc/mintcore/*.embed`. When changing any file in `internal/mintcore/`, sync it to the corresponding `.embed` file under `mintsrc/mintcore/`. Note: the mint's `go.mod.embed` uses `replace mintcore => ./mintcore` (not `../mintcore`), because `provisioner.go` rewrites the replace directive at bundle time to match the deployed directory layout.
 
+**When adding a new file to `internal/mintcore/`:**
+1. **Create the `.embed` copy:** Place it in `internal/dispatch/gcf/mintsrc/mintcore/` (required for all files — `lint-mint-embed-sync` enforces this).
+2. **Register in `embeddedMintFiles`:** If the file will be included in the GCF bundle — either no build tag (e.g., `config.go`) or `//go:build !js` (e.g., `sts_verifier.go`, `gcp_pem.go`, `wif.go`) — add it to `embeddedMintFiles` in `internal/dispatch/gcf/provisioner.go` and to the `go:embed` directive.
+3. **Add to `gcfSkip`:** If the file should NOT be in the GCF bundle — Worker-only files (`//go:build js`) or standalone-mint-only files — add it to the `gcfSkip` map in `TestEmbeddedMintSource_MatchesOriginal` in `provisioner_test.go` instead of `embeddedMintFiles`. The three current entries are `fetch_js.go` and `pem_js.go` (Worker-only, `//go:build js`) and `file_pem.go` (standalone-mint-only, `//go:build !js`).
+
 **Dispatch workflows:** The scaffold `dispatch.yml` (at `internal/scaffold/fullsend-repo/.github/workflows/dispatch.yml`) and the repo's `reusable-dispatch.yml` (at `.github/workflows/reusable-dispatch.yml`) share identical routing logic for different installation modes (per-org vs per-repo). When changing the jq payload construction, stage routing, or input/secret threading in one, apply the same change to the other.
 
 When making changes to Go code under `cmd/` or `internal/`:
@@ -135,6 +140,22 @@ affected. Changes that only benefit `fullsend-code` have a smaller blast
 radius (fewer agent runs) than changes to `fullsend-sandbox`. A cache or
 pull optimization may not be worth the complexity if it only helps the
 least-frequently-run agents.
+
+## Bot identities
+
+Fullsend agents authenticate as GitHub Apps; the table below also includes non-agent bots that appear in trusted-actor lists. Multiple agent roles may share a single app identity. The GitHub App login is derived from the `slug` field in each harness file (`internal/scaffold/fullsend-repo/harness/*.yaml`).
+
+| Agent role | GitHub App login | Notes |
+|---|---|---|
+| code | `fullsend-ai-coder[bot]` | Opens PRs from issues |
+| fix | `fullsend-ai-coder[bot]` | Shares the coder app; pushes to existing PR branches |
+| review | `fullsend-ai-review[bot]` | Posts review comments |
+| triage | `fullsend-ai-triage[bot]` | Posts triage summaries on issues |
+| retro | `fullsend-ai-retro[bot]` | Files retro issues, posts PR comments |
+| prioritize | `fullsend-ai-prioritize[bot]` | Prioritizes issues |
+| renovate | `renovate-fullsend[bot]` | Dependency updates (not a fullsend agent) |
+
+When referencing bot identities in code (e.g., trusted actor lists, dispatch filters), always verify the login name against this table. Do not assume each agent role has a unique app identity — the fix agent reuses `fullsend-ai-coder[bot]`, not a separate `fullsend-ai-fix[bot]`.
 
 ## Key design decisions made
 

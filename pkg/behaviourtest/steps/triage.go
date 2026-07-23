@@ -11,23 +11,27 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
-func registerTriageSteps(ctx *godog.ScenarioContext, w *world.World) {
-	ctx.Step(`^the enrolled test repository$`, func() error { return givenEnrolledTestRepository(w) })
-	ctx.Step(`^an enrolled repository "([^"]+)"$`, func(fullName string) error {
-		return givenEnrolledRepository(w, fullName)
+func registerTriageSteps(sc *godog.ScenarioContext) {
+	sc.Step(`^the enrolled test repository$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, givenEnrolledTestRepository(world.FromContext(ctx))
 	})
-	ctx.Step(`^an issue with title "([^"]+)" and body containing "([^"]+)"$`, func(title, bodyContains string) error {
-		return givenIssueWithTitleAndBody(w, title, bodyContains)
+	sc.Step(`^an enrolled repository "([^"]+)"$`, func(ctx context.Context, fullName string) (context.Context, error) {
+		return ctx, givenEnrolledRepository(world.FromContext(ctx), fullName)
 	})
-	ctx.Step(`^an issue$`, func() error { return givenIssue(w) })
-	ctx.Step(`^the issue is labeled "([^"]+)"$`, func(label string) error {
-		return whenIssueLabeled(w, label)
+	sc.Step(`^an issue with title "([^"]+)" and body containing "([^"]+)"$`, func(ctx context.Context, title, bodyContains string) (context.Context, error) {
+		return ctx, givenIssueWithTitleAndBody(world.FromContext(ctx), title, bodyContains)
 	})
-	ctx.Step(`^the triage workflow completes successfully$`, func() error {
-		return thenTriageWorkflowCompletes(w)
+	sc.Step(`^an issue$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, givenIssue(world.FromContext(ctx))
 	})
-	ctx.Step(`^the issue has label "([^"]+)"$`, func(label string) error {
-		return thenIssueHasLabel(w, label)
+	sc.Step(`^the issue is labeled "([^"]+)"$`, func(ctx context.Context, label string) (context.Context, error) {
+		return ctx, whenIssueLabeled(world.FromContext(ctx), label)
+	})
+	sc.Step(`^the triage workflow completes successfully$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, thenTriageWorkflowCompletes(world.FromContext(ctx))
+	})
+	sc.Step(`^the issue has label "([^"]+)"$`, func(ctx context.Context, label string) (context.Context, error) {
+		return ctx, thenIssueHasLabel(world.FromContext(ctx), label)
 	})
 }
 

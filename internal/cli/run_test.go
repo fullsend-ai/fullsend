@@ -4360,3 +4360,58 @@ func TestDedupResolvedProviders_ComposeScenario(t *testing.T) {
 	assert.Equal(t, "claude-code-v2", got[0].Def.Type)
 	assert.Equal(t, "/cache/child/my-claude.yaml", got[0].LocalPath)
 }
+
+func TestForceRemoveAll_ReadOnlyTree(t *testing.T) {
+	// Simulate the readonly_repo enforcement: create a directory tree
+	// with files and directories that have had write permission removed.
+	// forceRemoveAll must restore permissions and successfully delete.
+	root := t.TempDir()
+	nested := filepath.Join(root, "target", ".claude", "commands")
+	require.NoError(t, os.MkdirAll(nested, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(nested, "enable-arm64-builds.md"), []byte("content"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "target", "README.md"), []byte("readme"), 0o644))
+
+	target := filepath.Join(root, "target")
+
+	// Remove write permissions recursively, mirroring the sandbox chmod.
+	err := filepath.WalkDir(target, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		return os.Chmod(p, info.Mode()&^0o222) // a-w
+	})
+	require.NoError(t, err)
+
+	// Verify that plain os.RemoveAll fails.
+	err = os.RemoveAll(target)
+	require.Error(t, err, "os.RemoveAll should fail on read-only tree")
+
+	// forceRemoveAll must succeed.
+	require.NoError(t, forceRemoveAll(target))
+
+	// Verify complete removal.
+	_, err = os.Stat(target)
+	assert.True(t, os.IsNotExist(err), "directory should be fully removed")
+}
+
+func TestForceRemoveAll_AlreadyWritable(t *testing.T) {
+	// Normal (writable) directories should be removed without issues.
+	root := t.TempDir()
+	target := filepath.Join(root, "writable")
+	require.NoError(t, os.MkdirAll(filepath.Join(target, "sub"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "sub", "file.txt"), []byte("data"), 0o644))
+
+	require.NoError(t, forceRemoveAll(target))
+
+	_, err := os.Stat(target)
+	assert.True(t, os.IsNotExist(err))
+}
+
+func TestForceRemoveAll_NonExistent(t *testing.T) {
+	// Removing a path that does not exist should succeed (same as os.RemoveAll).
+	require.NoError(t, forceRemoveAll(filepath.Join(t.TempDir(), "does-not-exist")))
+}

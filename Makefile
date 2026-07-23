@@ -32,7 +32,7 @@ help:
 	@echo "  behaviour-test       - Run Gherkin behaviour tests (installs fullsend per-repo; CI: OIDC mint)"
 	@echo "  lint-eval-cases      - Lint eval case definitions (annotations.yaml completeness)"
 	@echo "  functional-tests     - Run functional agent tests (requires EVAL_ORG, FULLSEND_DIR, GH_TOKEN, GCP creds)"
-	@echo "  wasm-build           - Verify mintcore WASM build (GOOS=js GOARCH=wasm)"
+	@echo "  wasm-build           - Build mintcore WASM binary and report gzip size vs Workers limits"
 
 # Install all development tools needed for linting, formatting, and pre-commit hooks.
 # Prerequisites: uv (https://docs.astral.sh/uv/) and go (https://go.dev/)
@@ -121,8 +121,23 @@ go-tidy:
 	go mod tidy
 
 wasm-build:
-	@echo "==> Verifying mintcore WASM build (GOOS=js GOARCH=wasm)..."
-	cd internal/mintcore && GOOS=js GOARCH=wasm go build ./...
+	@echo "==> Building mintcore WASM binary (GOOS=js GOARCH=wasm)..."
+	cd cmd/mint-wasm && GOOS=js GOARCH=wasm go build -o mint.wasm .
+	@raw_size=$$(wc -c < cmd/mint-wasm/mint.wasm); \
+	gz_size=$$(gzip -c cmd/mint-wasm/mint.wasm | wc -c); \
+	raw_mb=$$(echo "scale=2; $$raw_size / 1048576" | bc); \
+	gz_mb=$$(echo "scale=2; $$gz_size / 1048576" | bc); \
+	echo "==> WASM artifact: cmd/mint-wasm/mint.wasm"; \
+	echo "    Raw size: $$raw_mb MB ($$raw_size bytes)"; \
+	echo "    Gzip size: $$gz_mb MB ($$gz_size bytes)"; \
+	if [ "$$gz_size" -le 3145728 ]; then \
+		echo "    ✓ Within Workers Free tier limit (3 MB gzip)"; \
+	elif [ "$$gz_size" -le 10485760 ]; then \
+		echo "    ⚠ Exceeds Free tier (3 MB); within Workers Paid tier limit (10 MB gzip)"; \
+	else \
+		echo "    ✗ Exceeds Workers Paid tier limit (10 MB gzip)"; \
+		exit 1; \
+	fi
 	@echo "==> WASM build OK"
 
 lint-md-links:

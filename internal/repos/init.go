@@ -409,7 +409,7 @@ func buildManifest(repos []DiscoveredRepo, cfg InitConfig) (*Manifest, []string)
 	defaultRef := computeMode(repos, func(d DiscoveredRepo) string { return d.FullsendRef })
 	if defaultRef == "" {
 		if cfg.CLIVersion != "" && cfg.CLIVersion != "dev" {
-			defaultRef = "v" + cfg.CLIVersion
+			defaultRef = "v" + strings.TrimPrefix(cfg.CLIVersion, "v")
 		} else {
 			defaultRef = config.DefaultUpstreamRef
 		}

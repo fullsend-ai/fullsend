@@ -907,7 +907,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if keepSandbox {
 			return
 		}
-		if err := os.RemoveAll(hostRepositoryDownloadDir); err != nil {
+		if err := forceRemoveAll(hostRepositoryDownloadDir); err != nil {
 			printer.StepWarn("Failed to remove download dir: " + err.Error())
 		} else {
 			printer.StepDone(fmt.Sprintf("Download directory removed: %s", hostRepositoryDownloadDir))
@@ -1388,7 +1388,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		// 9d. Extract target repo back to host. SafeDownload removes dangerous
 		// symlinks (absolute or repo-escaping) and .git/hooks/ to prevent sandbox escape.
-		if clearErr := os.RemoveAll(hostRepositoryDownloadDir); clearErr != nil {
+		if clearErr := forceRemoveAll(hostRepositoryDownloadDir); clearErr != nil {
 			return fmt.Errorf("clearing local repo %s before extraction: %w", hostRepositoryDownloadDir, clearErr)
 		}
 
@@ -3202,6 +3202,49 @@ func sandboxProviderNames(harnessProviders []string, resolved []resolve.Resolved
 		}
 	}
 	return names
+}
+
+// forceRemoveAll restores owner-write permission on all directories under
+// path, then removes the entire tree. This handles directories left read-only
+// by the readonly_repo sandbox enforcement — os.RemoveAll alone fails with
+// EACCES when parent directories lack write permission (the unlinkat syscall
+// requires write permission on the containing directory).
+//
+// Assumption: the readonly_repo enforcement only strips write permission
+// (chmod a-w), preserving read and execute bits. WalkDir performs a
+// single-pass traversal and cannot retry children after fixing a parent, so
+// if a directory also lacked read+execute permissions its children would be
+// silently skipped. This is currently unreachable, but callers should be
+// aware of the limitation if the permission model changes.
+func forceRemoveAll(path string) error {
+	// Best-effort permission restore; if WalkDir itself fails on a
+	// directory it cannot read, we fix the parent and continue.
+	// Chmod errors are logged for operator visibility — if chmod fails
+	// for an unexpected reason (e.g. TOCTOU race), the subsequent
+	// os.RemoveAll error alone may not indicate the root cause.
+	filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error { //nolint:errcheck // best-effort walk; errors are logged individually and the final os.RemoveAll is the authoritative result
+		if err != nil {
+			// Can't stat p — likely the parent directory lacks +rx.
+			// Restore the parent so the next iteration can proceed.
+			// Lstat guard: verify the parent is a real directory before
+			// chmod to avoid following symlinks (defense-in-depth;
+			// SafeDownload already strips dangerous symlinks).
+			parent := filepath.Dir(p)
+			if fi, lstatErr := os.Lstat(parent); lstatErr == nil && fi.IsDir() {
+				if chmodErr := os.Chmod(parent, 0o755); chmodErr != nil {
+					fmt.Fprintf(os.Stderr, "WARNING: forceRemoveAll: chmod parent %s: %v\n", parent, chmodErr)
+				}
+			}
+			return nil
+		}
+		if d.IsDir() {
+			if chmodErr := os.Chmod(p, 0o755); chmodErr != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: forceRemoveAll: chmod %s: %v\n", p, chmodErr)
+			}
+		}
+		return nil
+	})
+	return os.RemoveAll(path)
 }
 
 // checkProviderProfileIntegrity validates that every URL-resolved provider

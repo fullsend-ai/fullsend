@@ -17,18 +17,18 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
-func registerDummyAgentSteps(ctx *godog.ScenarioContext, w *world.World) {
-	ctx.Step(`^a dummy agent that would:$`, func(table *godog.Table) error {
-		return parseDummyAgentTable(w, table)
+func registerDummyAgentSteps(sc *godog.ScenarioContext) {
+	sc.Step(`^a dummy agent that would:$`, func(ctx context.Context, table *godog.Table) (context.Context, error) {
+		return ctx, parseDummyAgentTable(world.FromContext(ctx), table)
 	})
-	ctx.Step(`^the agent will succeed to (.+)$`, func(description string) error {
-		return assertAgentSucceeds(w, description)
+	sc.Step(`^the agent will succeed to (.+)$`, func(ctx context.Context, description string) (context.Context, error) {
+		return ctx, assertAgentSucceeds(world.FromContext(ctx), description)
 	})
-	ctx.Step(`^the agent will fail to (.+)$`, func(description string) error {
-		return assertAgentFails(w, description)
+	sc.Step(`^the agent will fail to (.+)$`, func(ctx context.Context, description string) (context.Context, error) {
+		return ctx, assertAgentFails(world.FromContext(ctx), description)
 	})
-	ctx.Step(`^the agent will output ([^\s]+) with:$`, func(fileName, doc string) error {
-		return assertAgentOutput(w, fileName, doc)
+	sc.Step(`^the agent will output ([^\s]+) with:$`, func(ctx context.Context, fileName, doc string) (context.Context, error) {
+		return ctx, assertAgentOutput(world.FromContext(ctx), fileName, doc)
 	})
 }
 

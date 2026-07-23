@@ -10,18 +10,18 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
-func registerForkSteps(ctx *godog.ScenarioContext, w *world.World) {
-	ctx.Step(`^a fork "([^"]+)" of the enrolled test repository$`, func(forkName string) error {
-		return givenFork(w, forkName)
+func registerForkSteps(sc *godog.ScenarioContext) {
+	sc.Step(`^a fork "([^"]+)" of the enrolled test repository$`, func(ctx context.Context, forkName string) (context.Context, error) {
+		return ctx, givenFork(world.FromContext(ctx), forkName)
 	})
-	ctx.Step(`^a fork pull request is opened$`, func() error {
-		return whenForkPullRequestOpened(w)
+	sc.Step(`^a fork pull request is opened$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, whenForkPullRequestOpened(world.FromContext(ctx))
 	})
-	ctx.Step(`^a commit is pushed to the fork pull request$`, func() error {
-		return whenCommitPushedToForkPR(w)
+	sc.Step(`^a commit is pushed to the fork pull request$`, func(ctx context.Context) (context.Context, error) {
+		return ctx, whenCommitPushedToForkPR(world.FromContext(ctx))
 	})
-	ctx.Step(`^the fork pull request is labeled "([^"]+)"$`, func(label string) error {
-		return whenForkPullRequestLabeled(w, label)
+	sc.Step(`^the fork pull request is labeled "([^"]+)"$`, func(ctx context.Context, label string) (context.Context, error) {
+		return ctx, whenForkPullRequestLabeled(world.FromContext(ctx), label)
 	})
 }
 

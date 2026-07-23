@@ -24,7 +24,7 @@ func TestBehaviourSuite(t *testing.T) {
 		t.Skip("skipping behaviour tests in short mode")
 	}
 	if c := os.Getenv("GODOG_CONCURRENCY"); c != "" && c != "1" {
-		t.Fatalf("behaviour suite does not support GODOG_CONCURRENCY=%q (shared World); use serial runs until parallel support lands", c)
+		t.Fatalf("behaviour suite does not support GODOG_CONCURRENCY=%q: per-scenario World isolation is in place but drivers (SCM, CI, Install) are shared by reference and have not been validated under -race with concurrent scenarios yet; see #5441 for parallel support", c)
 	}
 
 	cfg := env.LoadRunnerConfig()
@@ -65,8 +65,13 @@ func TestBehaviourSuite(t *testing.T) {
 		}
 	})
 
+	pool, err := world.NewRepoPool(12)
+	if err != nil {
+		t.Fatalf("creating repo pool: %v", err)
+	}
+
 	testRepo := installState.TestRepo()
-	w := &world.World{
+	template := &world.World{
 		Config:       cfg,
 		SCM:          scmgh.New(client),
 		CI:           gaci.New(client, token),
@@ -82,7 +87,7 @@ func TestBehaviourSuite(t *testing.T) {
 
 	suiteRunner := godog.TestSuite{
 		Name:                "behaviour",
-		ScenarioInitializer: func(sc *godog.ScenarioContext) { suite.InitScenario(sc, w) },
+		ScenarioInitializer: func(sc *godog.ScenarioContext) { suite.InitScenario(sc, template, pool) },
 		Options: &godog.Options{
 			Format:      "pretty",
 			Paths:       []string{"features"},
