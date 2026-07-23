@@ -2350,6 +2350,63 @@ func TestSweepResult_RepoExtractedOK_PreservesWhenRunCount(t *testing.T) {
 		"repoExtractedOK should remain true when input was true and i == runCount")
 }
 
+func TestPostScriptRepoEnv(t *testing.T) {
+	runDir := "/run"
+	hostRepoDir := "/host/repo"
+	withLoop := &harness.Harness{ValidationLoop: &harness.ValidationLoop{Script: "validate.sh"}}
+	noLoop := &harness.Harness{}
+
+	tests := []struct {
+		name             string
+		h                *harness.Harness
+		repoExtractedOK  bool
+		validatedIterNum int
+		wantRepoDir      string
+		wantIterDir      string
+	}{
+		{
+			name:             "extraction succeeded and validated iteration is latest",
+			h:                withLoop,
+			repoExtractedOK:  true,
+			validatedIterNum: 2,
+			wantRepoDir:      hostRepoDir,
+			wantIterDir:      filepath.Join(runDir, "iteration-2/output"),
+		},
+		{
+			name:             "extraction failed: REPO_DIR empty regardless of validated iteration",
+			h:                withLoop,
+			repoExtractedOK:  false,
+			validatedIterNum: 0,
+			wantRepoDir:      "",
+			wantIterDir:      "",
+		},
+		{
+			name:             "sweep validated an earlier iteration: REPO_DIR empty, iteration dir still set",
+			h:                withLoop,
+			repoExtractedOK:  false,
+			validatedIterNum: 1,
+			wantRepoDir:      "",
+			wantIterDir:      filepath.Join(runDir, "iteration-1/output"),
+		},
+		{
+			name:             "no validation loop: iteration dir never set even if validatedIterNum leaked",
+			h:                noLoop,
+			repoExtractedOK:  true,
+			validatedIterNum: 3,
+			wantRepoDir:      hostRepoDir,
+			wantIterDir:      "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repoDir, iterDir := postScriptRepoEnv(tt.h, runDir, hostRepoDir, tt.repoExtractedOK, tt.validatedIterNum)
+			assert.Equal(t, tt.wantRepoDir, repoDir, "REPO_DIR")
+			assert.Equal(t, tt.wantIterDir, iterDir, "FULLSEND_VALIDATED_ITERATION_DIR")
+		})
+	}
+}
+
 func TestOpenTeeReader_EmptyPath(t *testing.T) {
 	src := strings.NewReader("hello")
 	printer := ui.New(io.Discard)

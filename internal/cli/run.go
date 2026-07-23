@@ -987,10 +987,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// validation_loop) cannot recover a sweep-validated non-final
 			// iteration's repo state — it fails closed with "Extracted repo
 			// not found" instead of pushing. See #5393 follow-up.
-			postRepoDir := ""
-			if repoExtractedOK {
-				postRepoDir = hostRepositoryDownloadDir
-			}
+			postRepoDir, postValidatedIterDir := postScriptRepoEnv(h, runDir, hostRepositoryDownloadDir, repoExtractedOK, validatedIterNum)
 			postCmd.Env = append(postCmd.Env, fmt.Sprintf("REPO_DIR=%s", postRepoDir))
 			// FULLSEND_VALIDATED_ITERATION_DIR tells the post-script which
 			// iteration's output was validated. Without this, post-scripts
@@ -999,9 +996,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// iteration. Empty when no validation loop is configured or
 			// when no iteration passed validation (the post-script is
 			// skipped in the latter case, so this is defensive).
-			if h.ValidationLoop != nil && validatedIterNum > 0 {
-				postCmd.Env = append(postCmd.Env, fmt.Sprintf("FULLSEND_VALIDATED_ITERATION_DIR=%s",
-					filepath.Join(runDir, fmt.Sprintf("iteration-%d/output", validatedIterNum))))
+			if postValidatedIterDir != "" {
+				postCmd.Env = append(postCmd.Env, fmt.Sprintf("FULLSEND_VALIDATED_ITERATION_DIR=%s", postValidatedIterDir))
 			}
 			postCmd.Stdout = os.Stdout
 			postCmd.Stderr = os.Stderr
@@ -2026,6 +2022,27 @@ func validationFailMessage(output []byte, execErr error) string {
 		return msg
 	}
 	return execErr.Error()
+}
+
+// postScriptRepoEnv computes the REPO_DIR and FULLSEND_VALIDATED_ITERATION_DIR
+// values for the post-script's environment. Extracted from the post-script
+// defer closure for testability.
+//
+// repoDir is hostRepositoryDownloadDir when repoExtractedOK is true, empty
+// otherwise — see the call site's doc comment for why repoExtractedOK can be
+// false. validatedIterDir points at the validated iteration's output
+// directory when a validation loop is configured and an iteration passed;
+// it is empty when there's no validation loop (the post-script's own
+// last-iteration scan is used instead) or when no iteration passed (the
+// post-script is skipped entirely in that case, so this is defensive).
+func postScriptRepoEnv(h *harness.Harness, runDir, hostRepositoryDownloadDir string, repoExtractedOK bool, validatedIterNum int) (repoDir, validatedIterDir string) {
+	if repoExtractedOK {
+		repoDir = hostRepositoryDownloadDir
+	}
+	if h.ValidationLoop != nil && validatedIterNum > 0 {
+		validatedIterDir = filepath.Join(runDir, fmt.Sprintf("iteration-%d/output", validatedIterNum))
+	}
+	return repoDir, validatedIterDir
 }
 
 // sweepResult holds the outcome of a post-loop validation sweep.

@@ -157,6 +157,108 @@ run_precommit_retry_test "precommit-passes-with-unstaged" \
 run_precommit_retry_test "precommit-retry-passes-but-left-unstaged" \
   "1" "yes" "0" "blocked:retry-left-unstaged" "yes"
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the RESULT_FILE selection logic from post-fix.sh
+# (the FULLSEND_VALIDATED_ITERATION_DIR / fix-result.json / result.json
+# fallback / rescan block) so we can test it without git, gitleaks, or a
+# real PR. Verifies the fix for a fail-open regression (#5395 follow-up):
+# the prefer-validated-dir logic must not silently fall back to rescanning
+# RUN_DIR/iteration-*/output for fix-result.json when
+# FULLSEND_VALIDATED_ITERATION_DIR is set but the expected filename is
+# missing there (e.g. the agent wrote "result.json", which
+# validate-output-schema.sh accepts as a fallback without renaming). Falling
+# back to a rescan would let a later, unvalidated iteration's output win —
+# exactly the bug #5393/#5395 fixed.
+# ---------------------------------------------------------------------------
+select_fix_result_file() {
+  local run_dir="$1"
+  local validated_dir="${2:-}"
+
+  local result_file
+  if [ -n "${validated_dir}" ]; then
+    result_file="${validated_dir}/fix-result.json"
+    if [ ! -f "${result_file}" ]; then
+      local fallback_result="${validated_dir}/result.json"
+      [ -f "${fallback_result}" ] && result_file="${fallback_result}"
+    fi
+  else
+    result_file=""
+    for dir in "${run_dir}"/iteration-*/output; do
+      if [ -f "${dir}/fix-result.json" ]; then
+        result_file="${dir}/fix-result.json"
+      fi
+    done
+  fi
+  echo "${result_file}"
+}
+
+run_select_fix_result_test() {
+  local test_name="$1"
+  local validated_filename="$2" # "" to leave the validated dir empty
+  local expect_wrong_iteration="$3" # "true" if a wrong-iteration fallback is acceptable (no FULLSEND_VALIDATED_ITERATION_DIR)
+
+  local run_dir
+  run_dir="$(mktemp -d)"
+  mkdir -p "${run_dir}/iteration-1/output"
+  if [ -n "${validated_filename}" ]; then
+    echo '{"marker":"validated"}' > "${run_dir}/iteration-1/output/${validated_filename}"
+  fi
+  # A later iteration — must never be selected when FULLSEND_VALIDATED_ITERATION_DIR
+  # is set, whether or not the validated dir's file is found.
+  mkdir -p "${run_dir}/iteration-2/output"
+  echo '{"marker":"wrong-iteration"}' > "${run_dir}/iteration-2/output/fix-result.json"
+
+  local result_file
+  result_file="$(select_fix_result_file "${run_dir}" "${run_dir}/iteration-1/output")"
+
+  rm -rf "${run_dir}"
+
+  if [ "${expect_wrong_iteration}" = "true" ]; then
+    if [ "${result_file}" != "${run_dir}/iteration-1/output/${validated_filename}" ]; then
+      echo "FAIL: ${test_name} — expected '${run_dir}/iteration-1/output/${validated_filename}', got '${result_file}'"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name}"
+    return
+  fi
+
+  # Missing-file case: must fail closed (empty result), never silently
+  # resolve to iteration-2's fix-result.json.
+  if [ "${result_file}" = "${run_dir}/iteration-2/output/fix-result.json" ]; then
+    echo "FAIL: ${test_name} — silently fell back to iteration-2 instead of failing closed"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name} (result_file='${result_file}', did not use wrong iteration)"
+}
+
+run_select_fix_result_test "validated-dir-fix-result-json-used" "fix-result.json" "true"
+run_select_fix_result_test "validated-dir-result-json-fallback-used" "result.json" "true"
+run_select_fix_result_test "validated-dir-missing-file-fails-closed" "" "false"
+
+# Sanity check: with no FULLSEND_VALIDATED_ITERATION_DIR (legacy behavior),
+# the rescan picks the last iteration by glob order.
+run_test_rescan_last_iteration() {
+  local run_dir
+  run_dir="$(mktemp -d)"
+  mkdir -p "${run_dir}/iteration-1/output" "${run_dir}/iteration-2/output"
+  echo '{"marker":"iter1"}' > "${run_dir}/iteration-1/output/fix-result.json"
+  echo '{"marker":"iter2"}' > "${run_dir}/iteration-2/output/fix-result.json"
+
+  local result_file
+  result_file="$(select_fix_result_file "${run_dir}" "")"
+  rm -rf "${run_dir}"
+
+  if [ "${result_file}" != "${run_dir}/iteration-2/output/fix-result.json" ]; then
+    echo "FAIL: rescan-picks-last-iteration — expected iteration-2, got '${result_file}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: rescan-picks-last-iteration"
+}
+run_test_rescan_last_iteration
+
 # --- Summary ---
 
 echo ""

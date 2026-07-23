@@ -445,6 +445,75 @@ run_test "ready-to-code-applied-without-label-actions" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
 
+# --- FULLSEND_VALIDATED_ITERATION_DIR selection tests (#5395 follow-up) ---
+#
+# These verify the fix for a fail-open regression: the prefer-validated-dir
+# logic must not silently fall back to rescanning iteration-*/output for
+# agent-result.json when FULLSEND_VALIDATED_ITERATION_DIR is set but the
+# expected filename is missing there (e.g. the agent wrote "result.json",
+# which validate-output-schema.sh accepts as a fallback without renaming).
+# Falling back to a rescan would let a later, unvalidated iteration's output
+# win — exactly the bug #5393/#5395 fixed.
+
+INSUFFICIENT_JSON='{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}'
+WRONG_ITERATION_JSON='{"action":"insufficient","reasoning":"should not be used","clarity_scores":{"symptom":0,"cause":0,"reproduction":0,"impact":0,"overall":0},"comment":"WRONG_ITERATION_MARKER"}'
+
+run_validated_iter_test() {
+  local test_name="$1"
+  local validated_filename="$2" # "" to leave the validated dir empty
+  local expect_success="$3"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  if [[ -n "${validated_filename}" ]]; then
+    echo "${INSUFFICIENT_JSON}" > "${run_dir}/iteration-1/output/${validated_filename}"
+  fi
+  # A later iteration with different, distinguishable content — must never
+  # be used when FULLSEND_VALIDATED_ITERATION_DIR is set, whether or not
+  # the validated dir's file is found.
+  mkdir -p "${run_dir}/iteration-2/output"
+  echo "${WRONG_ITERATION_JSON}" > "${run_dir}/iteration-2/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export FULLSEND_VALIDATED_ITERATION_DIR="${run_dir}/iteration-1/output"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_success}" == "true" ]]; then
+    if [[ ${exit_code} -ne 0 ]]; then
+      echo "FAIL: ${test_name} — exit code ${exit_code}"
+      cat "${TMPDIR}/stdout.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    if grep -qF "WRONG_ITERATION_MARKER" "${GH_LOG}"; then
+      echo "FAIL: ${test_name} — used iteration-2's output instead of the validated iteration"
+      cat "${GH_LOG}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name}"
+    return
+  fi
+
+  # expect_success == false: must fail closed, and must NOT have silently
+  # fallen back to iteration-2's output.
+  if [[ ${exit_code} -eq 0 ]] && grep -qF "WRONG_ITERATION_MARKER" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — silently fell back to iteration-2 instead of failing closed"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name} (exit code ${exit_code}, did not use wrong iteration)"
+}
+
+run_validated_iter_test "validated-dir-agent-result-json-used" "agent-result.json" "true"
+run_validated_iter_test "validated-dir-result-json-fallback-used" "result.json" "true"
+run_validated_iter_test "validated-dir-missing-file-fails-closed" "" "false"
+
 # --- Summary ---
 
 echo ""
