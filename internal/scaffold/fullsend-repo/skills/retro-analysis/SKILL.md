@@ -113,15 +113,21 @@ Then check for these patterns:
 3. **Cycle count:** more than 2 review-fix cycles on the same PR without convergence (the review keeps requesting changes on the same findings).
 
 ```bash
-# Compare diffs between consecutive code/fix runs
+# Get the last two code/fix run SHAs for this PR
+COMMITS=$(gh api "repos/$REPO_FULL_NAME/pulls/$PR_NUMBER/commits" \
+  --paginate --jq '.[].sha')
+CURRENT_SHA=$(echo "$COMMITS" | tail -1)
+PREVIOUS_SHA=$(echo "$COMMITS" | tail -2 | head -1)
+
+# Compare files changed in each run
+gh api "repos/$REPO_FULL_NAME/compare/${PREVIOUS_SHA}...${CURRENT_SHA}" \
+  --jq '.files[].filename' | sort > /tmp/current_files.txt
+
 gh api "repos/$REPO_FULL_NAME/pulls/$PR_NUMBER/files" \
-  --jq '.[].filename' | sort > /tmp/current_files.txt
+  --paginate --jq '.[].filename' | sort > /tmp/all_pr_files.txt
 
-# Get previous run's changed files from the commit before
-git diff --name-only HEAD~1 HEAD | sort > /tmp/prev_files.txt
-
-# Files changed in both runs (potential oscillation)
-comm -12 /tmp/prev_files.txt /tmp/current_files.txt
+# Files changed in both the latest push and the overall PR (potential oscillation)
+comm -12 /tmp/current_files.txt /tmp/all_pr_files.txt
 ```
 
 ### When flapping is detected
