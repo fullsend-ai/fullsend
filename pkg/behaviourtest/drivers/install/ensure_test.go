@@ -2,6 +2,7 @@ package install
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -256,35 +257,169 @@ func TestRepoEnsurer_PerRepoStateFields(t *testing.T) {
 
 func TestRepoEnsurer_InstallsWhenValidationFails(t *testing.T) {
 	// Start with installed=false to simulate a repo that exists but
-	// has not yet been set up with fullsend. The stubClient will return
-	// ErrNotFound for all GetFileContent calls until installed is true.
+	// has not yet been set up with fullsend. The mock CLI runner flips
+	// sc.installed to true when "github setup" is invoked, simulating
+	// a successful install.
 	sc := &stubClient{installed: false}
+	var cliCalls [][]string
 	e := &repoEnsurer{
 		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
 		client: sc,
-		// binary is empty so TryRunCLI will be attempted but the
-		// installFullsend method will fail because there's no real binary.
-		// We override installFullsend by testing doEnsure indirectly:
-		// we flip sc.installed to true before the post-install validation
-		// retry, simulating a successful install.
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(binary, token string, args ...string) (string, error) {
+			cliCalls = append(cliCalls, args)
+			// Simulate install success: flip the stub to "installed".
+			if len(args) > 0 && args[0] == "github" && args[1] == "setup" {
+				sc.installed = true
+			}
+			return "", nil
+		},
 		logf:    t.Logf,
 		ensured: make(map[string]State),
 	}
 
-	// We can't easily mock TryRunCLI, so test the doEnsure validation
-	// paths directly. First, call ensureRepoExists (repo exists):
-	err := e.ensureRepoExists(context.Background(), "org", "test-repo-10", "org/test-repo-10")
+	st, err := e.EnsureRepo(context.Background(), "org", "test-repo-10")
 	require.NoError(t, err)
+	require.NotNil(t, st)
+	assert.Equal(t, "test-repo-10", st.TestRepo())
+	assert.Equal(t, "org", st.ConfigOwner())
 
-	// Verify that validation fails when not installed:
-	err = validatePerRepoPostInstall(context.Background(), sc, "org", "test-repo-10")
-	require.Error(t, err, "validation should fail when repo is not installed")
-	assert.Contains(t, err.Error(), "post-install")
+	// CLI should have been called for "github setup".
+	require.Len(t, cliCalls, 1, "expected exactly one CLI call (github setup)")
+	assert.Equal(t, "github", cliCalls[0][0])
+	assert.Equal(t, "setup", cliCalls[0][1])
+	assert.Contains(t, cliCalls[0], "--mint-url")
+}
 
-	// Now simulate install success by setting installed=true:
-	sc.installed = true
-	err = validatePerRepoPostInstall(context.Background(), sc, "org", "test-repo-10")
-	require.NoError(t, err, "validation should pass after install")
+func TestRepoEnsurer_DoEnsure_RepoMissing_ThenInstalled(t *testing.T) {
+	// Full flow: repo missing → created, validation fails → CLI invoked,
+	// re-validation passes → State cached.
+	sc := &stubClient{
+		getRepoErr: forge.ErrNotFound,
+		installed:  false,
+	}
+	var cliCalls [][]string
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(binary, token string, args ...string) (string, error) {
+			cliCalls = append(cliCalls, args)
+			if len(args) >= 2 && args[0] == "github" && args[1] == "setup" {
+				sc.installed = true
+			}
+			return "", nil
+		},
+		logf:    t.Logf,
+		ensured: make(map[string]State),
+	}
+
+	ctx := context.Background()
+	st, err := e.EnsureRepo(ctx, "org", "test-repo-new")
+	require.NoError(t, err)
+	require.NotNil(t, st)
+	assert.Equal(t, "test-repo-new", st.TestRepo())
+	assert.Equal(t, int32(1), sc.createRepoCalled.Load(), "repo should be created")
+	require.Len(t, cliCalls, 1)
+	assert.Equal(t, "github", cliCalls[0][0])
+
+	// Second call should hit cache — no additional CLI calls.
+	st2, err := e.EnsureRepo(ctx, "org", "test-repo-new")
+	require.NoError(t, err)
+	assert.Same(t, st, st2, "second call should return cached State")
+	assert.Len(t, cliCalls, 1, "cached call should not invoke CLI again")
+}
+
+func TestRepoEnsurer_DoEnsure_WithGCPProject(t *testing.T) {
+	// When GCPProjectID is set, provisionInference should be called
+	// before github setup.
+	sc := &stubClient{installed: false}
+	var cliCalls [][]string
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{
+			MintURL:      "https://mint.test",
+			GCPProjectID: "test-project",
+		},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(binary, token string, args ...string) (string, error) {
+			cliCalls = append(cliCalls, args)
+			if len(args) >= 2 && args[0] == "github" && args[1] == "setup" {
+				sc.installed = true
+			}
+			if len(args) >= 2 && args[0] == "inference" && args[1] == "status" {
+				return `{"status":"healthy","FULLSEND_GCP_WIF_PROVIDER":"projects/p/locations/l/providers/wif"}`, nil
+			}
+			return "", nil
+		},
+		logf:    t.Logf,
+		ensured: make(map[string]State),
+	}
+
+	st, err := e.EnsureRepo(context.Background(), "org", "test-repo-gcp")
+	require.NoError(t, err)
+	require.NotNil(t, st)
+
+	// Expect: inference provision, inference status, github setup (3 calls).
+	require.Len(t, cliCalls, 3, "expected 3 CLI calls (provision, status, setup)")
+	assert.Equal(t, "inference", cliCalls[0][0])
+	assert.Equal(t, "provision", cliCalls[0][1])
+	assert.Equal(t, "inference", cliCalls[1][0])
+	assert.Equal(t, "status", cliCalls[1][1])
+	assert.Equal(t, "github", cliCalls[2][0])
+	assert.Equal(t, "setup", cliCalls[2][1])
+	// Verify inference flags were threaded to github setup.
+	assert.Contains(t, cliCalls[2], "--inference-project")
+	assert.Contains(t, cliCalls[2], "--inference-wif-provider")
+}
+
+func TestRepoEnsurer_InstallCLIError_Propagated(t *testing.T) {
+	sc := &stubClient{installed: false}
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(binary, token string, args ...string) (string, error) {
+			return "", fmt.Errorf("cli exploded")
+		},
+		logf:    t.Logf,
+		ensured: make(map[string]State),
+	}
+
+	_, err := e.EnsureRepo(context.Background(), "org", "test-repo-err")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "github setup")
+	assert.Contains(t, err.Error(), "cli exploded")
+}
+
+func TestRepoEnsurer_ProvisionInferenceError_Propagated(t *testing.T) {
+	sc := &stubClient{installed: false}
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{
+			MintURL:      "https://mint.test",
+			GCPProjectID: "test-project",
+		},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(binary, token string, args ...string) (string, error) {
+			if len(args) >= 2 && args[0] == "inference" && args[1] == "provision" {
+				return "", fmt.Errorf("provision boom")
+			}
+			return "", nil
+		},
+		logf:    t.Logf,
+		ensured: make(map[string]State),
+	}
+
+	_, err := e.EnsureRepo(context.Background(), "org", "test-repo-prov-err")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "inference provision")
+	assert.Contains(t, err.Error(), "provision boom")
 }
 
 func TestRepoEnsurer_ConcurrentEnsureSameRepo(t *testing.T) {

@@ -29,12 +29,18 @@ type RepoEnsurer interface {
 	EnsureRepo(ctx context.Context, org, repoName string) (State, error)
 }
 
+// CLIRunnerFunc is the signature for running a fullsend CLI command.
+// The default implementation is e2etest.TryRunCLI. Inject a custom
+// function in tests to avoid shelling out.
+type CLIRunnerFunc func(binary, token string, args ...string) (string, error)
+
 type repoEnsurer struct {
 	e2eCfg e2etest.EnvConfig
 	client forge.Client
 	token  string
 	binary string
 	logf   func(string, ...any)
+	runCLI CLIRunnerFunc // injectable; defaults to e2etest.TryRunCLI
 
 	mu       sync.Mutex
 	ensured  map[string]State // keyed by org/repo; only successful results cached
@@ -56,6 +62,7 @@ func NewRepoEnsurer(
 		token:   token,
 		binary:  binary,
 		logf:    logf,
+		runCLI:  e2etest.TryRunCLI,
 		ensured: make(map[string]State),
 	}
 }
@@ -168,7 +175,7 @@ func (e *repoEnsurer) installFullsend(_ context.Context, _, _, target string) er
 	}
 
 	e.logf("[ensure] running fullsend %s", strings.Join(args, " "))
-	if _, err := e2etest.TryRunCLI(e.binary, e.token, args...); err != nil {
+	if _, err := e.runCLI(e.binary, e.token, args...); err != nil {
 		return fmt.Errorf("github setup %s: %w", target, err)
 	}
 	return nil
@@ -180,13 +187,13 @@ func (e *repoEnsurer) installFullsend(_ context.Context, _, _, target string) er
 func (e *repoEnsurer) provisionInference(target, project string) (string, error) {
 	provisionArgs := []string{"inference", "provision", target, "--project", project}
 	e.logf("[ensure] running fullsend %s", strings.Join(provisionArgs, " "))
-	if _, err := e2etest.TryRunCLI(e.binary, e.token, provisionArgs...); err != nil {
+	if _, err := e.runCLI(e.binary, e.token, provisionArgs...); err != nil {
 		return "", fmt.Errorf("inference provision %s: %w", target, err)
 	}
 
 	statusArgs := []string{"inference", "status", target, "--project", project, "--format", "json"}
 	e.logf("[ensure] running fullsend %s", strings.Join(statusArgs, " "))
-	out, err := e2etest.TryRunCLI(e.binary, e.token, statusArgs...)
+	out, err := e.runCLI(e.binary, e.token, statusArgs...)
 	if err != nil {
 		return "", fmt.Errorf("inference status %s: %w", target, err)
 	}
