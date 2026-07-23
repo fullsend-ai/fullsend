@@ -91,6 +91,8 @@ The `Given the enrolled test repository` step lazily creates and installs number
 
 Concurrent callers for the same repo are serialized via `singleflight.Group` — only one goroutine runs the create+install flow while others wait. This removes the requirement for numbered `test-repo-NN` repos to be pre-provisioned in the pool org.
 
+**Suite duration:** Because each leased `test-repo-NN` pays create + inference provision + `github setup` on first use in a run, serial godog suites take longer than the old shared-`test-repo` model. CI budgets **60 minutes** for the behaviour job (`timeout-minutes` and `go test -timeout`) to match.
+
 Runner env (defaults shown):
 
 ```
@@ -111,18 +113,22 @@ See [behaviour-drivers.md](behaviour-drivers.md) for driver configuration and [A
 
 Fork dispatch scenarios test `pull_request_target` harness triggering from cross-fork pull requests.
 
+### Logical fork name → leased base
+
+Gherkin keeps a stable logical name (for example `"test-repo-fork"`). At runtime, `Given a fork` remaps that name to **`{World.RepoName}-fork`** when the scenario has leased a numbered base (for example leased `test-repo-07` → actual fork repo `test-repo-07-fork`). Feature files should keep using `"test-repo-fork"`; do not hard-code `test-repo-NN-fork` in Gherkin. Full ephemeral fork deletion remains tracked in #5440.
+
 ### Pool-org prerequisites
 
 Fork scenarios require the pool org to have:
 
-- **A long-lived fork repository** of the enrolled `test-repo`. The fork is created once (idempotently) via the `Given a fork` step and persists across test runs. Do not delete the fork repo between scenarios or CI runs.
+- **Permission to create forks** of the leased enrolled base (`test-repo-NN`) under the same org. The `Given a fork` step creates `{leased}-fork` idempotently when missing.
 - **The same installation token** must have write access to both the base repo and the fork repo within the org, since the e2e bot commits to the fork and opens cross-fork PRs.
 
 ### Fork lifecycle
 
 | Resource | Lifecycle | Cleanup |
 |----------|-----------|---------|
-| Fork repo | Long-lived (created once per pool org) | Never deleted |
+| Fork repo | Per leased base (`{RepoName}-fork`); created on demand | Not deleted yet (#5440) |
 | Fork branches | Per-scenario | Deleted by `CleanupScenario` |
 | Fork PRs | Per-scenario | Closed by `CleanupScenario` |
 
@@ -138,7 +144,7 @@ Background:
   And a fork "test-repo-fork" of the enrolled test repository
 ```
 
-The `Given a fork` step is idempotent: if the fork already exists, it reuses it without error. Each scenario then creates its own branch and PR within the fork.
+The `Given a fork` step remaps the logical name as above and is idempotent for that actual fork repo. Each scenario then creates its own branch and PR within the fork.
 
 ## Version pinning for `fullsend-ai/agents`
 
