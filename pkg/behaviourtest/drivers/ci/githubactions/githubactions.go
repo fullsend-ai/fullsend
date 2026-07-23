@@ -18,7 +18,7 @@ const (
 	pollInterval   = 15 * time.Second
 	dispatchWait   = 12 * time.Minute
 	dispatchPoll   = 5 * time.Second
-	dispatchMaxTry = 24
+	dispatchMaxTry = 48
 
 	artifactRunPoll = 5 * time.Second
 	artifactRunWait = 5 * time.Minute
