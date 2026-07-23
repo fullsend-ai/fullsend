@@ -1,0 +1,49 @@
+# Wrangler configuration for the fullsend mint Cloudflare Worker.
+#
+# This config targets the mint-test Worker deployment. Production
+# deploys will use the CLI embed path once fullsend mint deploy
+# supports --mode cf (#5345).
+#
+# The Worker name follows the convention:
+#   <org>-mint-test.fullsend-ai.workers.dev
+# Set the name at deploy time via --name or WRANGLER_NAME env var.
+
+name = "fullsend-mint-test"
+main = "src/index.ts"
+compatibility_date = "2026-04-09"
+
+# Workers Free plan: 3 MB compressed limit.
+# Workers Paid plan: 10 MB compressed limit.
+# The mintcore WASM binary must fit within these limits.
+
+[observability]
+enabled = true
+
+# Environment variables set at deploy time by the CLI provisioner.
+# Listed here for documentation; actual values come from Worker secrets
+# and environment variable bindings configured during deployment.
+#
+# [vars]
+# ROLE_APP_IDS = ""          # JSON map: role → GitHub App ID
+# ALLOWED_ORGS = ""          # Comma-separated org names
+# OIDC_AUDIENCE = ""         # Expected OIDC audience claim
+# ALLOWED_ROLES = ""         # Comma-separated role names
+# ALLOWED_WORKFLOW_FILES = "" # Comma-separated workflow file patterns
+
+# Role PEM keys are stored as Worker secrets (encrypted at rest).
+# Secret names follow the convention: <ROLE>_APP_PEM
+# e.g. CODER_APP_PEM, TRIAGE_APP_PEM, REVIEW_APP_PEM
+#
+# CF secret names must be valid JS identifiers (no hyphens). Roles
+# with hyphens in Go (e.g. "my-role") map to underscore-based
+# secret names (MY_ROLE_APP_PEM). See createPemCallback in index.ts.
+#
+# Set via: wrangler secret put <ROLE>_APP_PEM
+
+# The mintcore WASM binary is imported directly as an ES module in
+# src/index.ts (not via [wasm_modules], which is incompatible with ES
+# module format). The binary is compiled from cmd/mint-wasm with
+# GOOS=js GOARCH=wasm and staged into this directory by `make wasm-stage`.
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]

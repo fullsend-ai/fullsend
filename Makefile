@@ -3,7 +3,7 @@
        mindmap go-build go-test go-lint go-fmt go-vet go-tidy \
        lint-md-links script-test test \
        e2e-test behaviour-test lint-eval-cases functional-tests \
-       wasm-build mint-cf-worker-test
+       wasm-build wasm-stage mint-cf-worker-test
 
 # Let Go automatically download the toolchain version required by go.mod.
 # This ensures local builds use the right version without manual intervention.
@@ -33,7 +33,8 @@ help:
 	@echo "  lint-eval-cases      - Lint eval case definitions (annotations.yaml completeness)"
 	@echo "  functional-tests     - Run functional agent tests (requires EVAL_ORG, FULLSEND_DIR, GH_TOKEN, GCP creds)"
 	@echo "  wasm-build           - Build mintcore WASM binary and report gzip size vs Workers limits"
-	@echo "  mint-cf-worker-test  - Run CF mint Worker bridge smoke tests (stub until workersrc lands)"
+	@echo "  wasm-stage           - Build and stage WASM + wasm_exec.js into CF Worker source tree"
+	@echo "  mint-cf-worker-test  - Build WASM, install deps, and run CF Worker bridge smoke tests"
 
 # Install all development tools needed for linting, formatting, and pre-commit hooks.
 # Prerequisites: uv (https://docs.astral.sh/uv/) and go (https://go.dev/)
@@ -141,12 +142,27 @@ wasm-build:
 	fi
 	@echo "==> WASM build OK"
 
-# Stub CI contract for CF mint Worker bridge smoke tests (#5481).
-# Populated by #5427 / follow-up with wasm-stage + workersrc npm test.
+# Stage WASM binary and wasm_exec.js into the CF Worker source tree.
+# Run after wasm-build to prepare for `wrangler dev` or `wrangler deploy`.
+WORKERSRC_DIR := internal/dispatch/cf/workersrc
+wasm-stage: wasm-build
+	@echo "==> Staging WASM artifacts into $(WORKERSRC_DIR)..."
+	cp cmd/mint-wasm/mint.wasm $(WORKERSRC_DIR)/mintcore.wasm
+	cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" $(WORKERSRC_DIR)/wasm_exec.js
+	@echo "==> Staged: $(WORKERSRC_DIR)/mintcore.wasm, $(WORKERSRC_DIR)/wasm_exec.js"
+
+# Run CF Worker bridge smoke tests.
+# Works on a clean checkout: stages WASM, installs npm deps, runs vitest.
+# Uses `npm install` (not `npm ci`) because the workersrc lockfile is not
+# committed — the dep tree is small enough that install-time resolution is
+# acceptable. Switch to `npm ci` if a lockfile is added later.
 # Do not rename: .github/workflows/mint-cf-worker-test.yml calls this target.
-mint-cf-worker-test:
-	@echo "==> mint-cf-worker-test: stub (no CF Worker bridge tests yet)"
-	@echo "    Replace this stub when internal/dispatch/cf/workersrc lands (#5427)."
+mint-cf-worker-test: wasm-stage
+	@echo "==> Installing CF Worker npm dependencies..."
+	cd $(WORKERSRC_DIR) && npm install --no-audit --no-fund
+	@echo "==> Running CF Worker bridge smoke tests..."
+	cd $(WORKERSRC_DIR) && npm test
+	@echo "==> Worker smoke tests passed"
 
 lint-md-links:
 	lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments '**/*.md'
@@ -179,7 +195,7 @@ e2e-test:
 	go test -tags e2e -v -count=1 -timeout 30m ./e2e/admin/
 
 behaviour-test:
-	go test -tags behaviour -v -count=1 -timeout 45m ./e2e/behaviour/
+	go test -tags behaviour -v -count=1 -timeout 30m ./e2e/behaviour/
 
 # Functional agent evals — run agents against ephemeral GitHub repos and judge results.
 # Required env: EVAL_ORG (GitHub org for ephemeral repos), plus GCP creds for Vertex AI.

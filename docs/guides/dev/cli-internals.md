@@ -649,6 +649,7 @@ var executableFiles = map[string]struct{}{
 | `cmd/mint/` | ~285 | Standalone mint server (no GCP dependency) |
 | `internal/mintcore/` | ~1425 | Shared mint library (handler, OIDC verifiers, GitHub API) |
 | `internal/dispatch/gcf/provisioner.go` | ~1959 | GCP infrastructure provisioner |
+| `internal/dispatch/cf/workersrc/` | ~350 | CF Worker adapter for mint (WASM bridge, I/O only) |
 | `internal/sandbox/sandbox.go` | ~459 | OpenShell sandbox operations |
 | `internal/harness/harness.go` | ~486 | Harness YAML parsing |
 | `internal/layers/layers.go` | ~159 | Layer interface and stack |
