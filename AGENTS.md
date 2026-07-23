@@ -31,3 +31,4 @@ Detailed guidance lives in `docs/contributing/`. Read only the file relevant to 
 | [Design Decisions](docs/contributing/design-decisions.md) | Understanding architectural principles and key decisions |
 | [Vouch System](docs/contributing/vouch-system.md) | Working with the contributor vouch gate or PR workflows |
 | [Tier Conventions](docs/contributing/tier-conventions.md) | Using the term "tier" in code or docs — covers the three distinct tier contexts |
+| [CI Workflows](docs/contributing/ci-workflows.md) | Adding or modifying GitHub Actions workflows under `.github/workflows/` |
