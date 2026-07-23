@@ -314,9 +314,12 @@ func TestDiscoverSlashCommands_IssueCommands(t *testing.T) {
 	}
 
 	p := newEventsPoller(mc)
-	events, err := p.discoverSlashCommands(context.Background(), "group", "project", since)
+	events, minSkipped, err := p.discoverSlashCommands(context.Background(), "group", "project", since)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if !minSkipped.IsZero() {
+		t.Errorf("expected zero minSkippedAt for successful discovery, got %v", minSkipped)
 	}
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
@@ -353,11 +356,23 @@ func TestDiscoverSlashCommands_MRCommands(t *testing.T) {
 			},
 		},
 	}
+	mc.mr[10] = &MergeRequest{
+		IID:             10,
+		SourceProjectID: 100,
+		TargetProjectID: 100,
+		SourceBranch:    "feature",
+		TargetBranch:    "main",
+		Author:          UserRef{ID: 55, Username: "bob"},
+		Labels:          []string{"review"},
+	}
 
 	p := newEventsPoller(mc)
-	events, err := p.discoverSlashCommands(context.Background(), "group", "project", since)
+	events, minSkipped, err := p.discoverSlashCommands(context.Background(), "group", "project", since)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if !minSkipped.IsZero() {
+		t.Errorf("expected zero minSkippedAt for successful discovery, got %v", minSkipped)
 	}
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
@@ -368,6 +383,47 @@ func TestDiscoverSlashCommands_MRCommands(t *testing.T) {
 	}
 	if got.IID != 10 {
 		t.Errorf("IID = %d, want 10", got.IID)
+	}
+	if got.MRSource != 100 || got.MRTarget != 100 {
+		t.Errorf("MRSource=%d, MRTarget=%d, want 100, 100", got.MRSource, got.MRTarget)
+	}
+	if got.SourceBranch != "feature" {
+		t.Errorf("SourceBranch = %q, want %q", got.SourceBranch, "feature")
+	}
+}
+
+func TestDiscoverSlashCommands_MRFetchError(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-time.Minute)
+	mc := newMockClient()
+	mc.events = []ProjectEvent{
+		{
+			ID:        5,
+			Author:    UserRef{ID: 55, Username: "bob"},
+			CreatedAt: now,
+			Note: EventNote{
+				ID:           500,
+				NoteableType: "MergeRequest",
+				NoteableIID:  99,
+				Body:         "/fs-code",
+			},
+		},
+	}
+	mc.mrErr[99] = fmt.Errorf("API error")
+
+	p := newEventsPoller(mc)
+	events, minSkipped, err := p.discoverSlashCommands(context.Background(), "group", "project", since)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events when MR fetch fails, got %d", len(events))
+	}
+	if minSkipped.IsZero() {
+		t.Fatal("expected minSkippedAt to be set when MR fetch fails")
+	}
+	if !minSkipped.Equal(now) {
+		t.Errorf("minSkippedAt = %v, want %v", minSkipped, now)
 	}
 }
 
@@ -401,7 +457,7 @@ func TestDiscoverSlashCommands_SkipsNonSlashCommands(t *testing.T) {
 	}
 
 	p := newEventsPoller(mc)
-	events, err := p.discoverSlashCommands(context.Background(), "group", "project", since)
+	events, _, err := p.discoverSlashCommands(context.Background(), "group", "project", since)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

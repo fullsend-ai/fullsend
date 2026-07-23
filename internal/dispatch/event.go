@@ -64,6 +64,37 @@ type Actor struct {
 	IsEntityAuthor bool   `json:"is_entity_author"`
 }
 
+// RoleLevel returns the numeric level for a normalized role string.
+// The hierarchy is: none(0) < read(1) < triage(2) < write(3) < maintain(4) < admin(5).
+// Unknown roles return 0.
+func RoleLevel(role string) int {
+	switch role {
+	case "read":
+		return 1
+	case "triage":
+		return 2
+	case "write":
+		return 3
+	case "maintain":
+		return 4
+	case "admin":
+		return 5
+	default:
+		return 0
+	}
+}
+
+// HasRole reports whether actorRole meets or exceeds the required role level.
+// Returns false if required is not a recognized role string, so a typo
+// in the required parameter fails closed rather than silently passing.
+func HasRole(actorRole, required string) bool {
+	reqLevel := RoleLevel(required)
+	if reqLevel == 0 {
+		return false
+	}
+	return RoleLevel(actorRole) >= reqLevel
+}
+
 // State captures the entity's state at event time.
 // ChangeProposal is nil when MR metadata is unavailable (e.g.,
 // fast-poll mode or failed project-path resolution). Routers MUST
