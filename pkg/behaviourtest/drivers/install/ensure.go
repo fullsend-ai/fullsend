@@ -5,11 +5,21 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/singleflight"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/pkg/e2etest"
+)
+
+const (
+	// settleMaxAttempts is how many times awaitWorkflowReady polls
+	// GetWorkflow before giving up.
+	settleMaxAttempts = 30
+
+	// settlePoll is the delay between GetWorkflow polls.
+	settlePoll = 5 * time.Second
 )
 
 // RepoEnsurer lazily creates and installs repos on demand for behaviour
@@ -34,6 +44,11 @@ type RepoEnsurer interface {
 // function in tests to avoid shelling out.
 type CLIRunnerFunc func(binary, token string, args ...string) (string, error)
 
+// SettleFunc is called after a repo is freshly created or installed to
+// wait until GitHub Actions recognises the workflow file. The default
+// implementation polls GetWorkflow; tests inject a no-op.
+type SettleFunc func(ctx context.Context, client forge.Client, org, repo, workflowFile string, logf func(string, ...any)) error
+
 type repoEnsurer struct {
 	e2eCfg e2etest.EnvConfig
 	client forge.Client
@@ -41,6 +56,7 @@ type repoEnsurer struct {
 	binary string
 	logf   func(string, ...any)
 	runCLI CLIRunnerFunc // injectable; defaults to e2etest.TryRunCLI
+	settle SettleFunc    // injectable; defaults to awaitWorkflowReady
 
 	mu       sync.Mutex
 	ensured  map[string]State // keyed by org/repo; only successful results cached
@@ -63,6 +79,7 @@ func NewRepoEnsurer(
 		binary:  binary,
 		logf:    logf,
 		runCLI:  e2etest.TryRunCLI,
+		settle:  awaitWorkflowReady,
 		ensured: make(map[string]State),
 	}
 }
@@ -118,6 +135,7 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) (State
 	}
 
 	// Step 2: install fullsend if post-install validation fails.
+	needsSettle := false
 	if installErr := validatePerRepoPostInstall(ctx, e.client, org, repoName); installErr != nil {
 		e.logf("[ensure] %s needs install (validation: %v)", target, installErr)
 		if err := e.installFullsend(ctx, org, repoName, target); err != nil {
@@ -126,8 +144,19 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) (State
 		if err := validatePerRepoPostInstall(ctx, e.client, org, repoName); err != nil {
 			return nil, fmt.Errorf("post-install validation for %s: %w", target, err)
 		}
+		needsSettle = true
 	} else {
 		e.logf("[ensure] %s already installed, skipping", target)
+	}
+
+	// Step 3: wait for Actions to recognise the workflow file.
+	// On freshly created/installed repos, GitHub Actions needs time to
+	// index the workflow before it can dispatch events (e.g. issues).
+	// For already-installed repos the first poll succeeds immediately.
+	if needsSettle && e.settle != nil {
+		if err := e.settle(ctx, e.client, org, repoName, perRepoTriageWorkflow, e.logf); err != nil {
+			return nil, fmt.Errorf("waiting for Actions readiness on %s: %w", target, err)
+		}
 	}
 
 	return &perRepoState{org: org, repo: repoName}, nil
@@ -179,6 +208,34 @@ func (e *repoEnsurer) installFullsend(_ context.Context, _, _, target string) er
 		return fmt.Errorf("github setup %s: %w", target, err)
 	}
 	return nil
+}
+
+// awaitWorkflowReady polls the forge's GetWorkflow API until the given
+// workflow file is visible and in "active" state, or until the attempt
+// limit is exhausted. On newly created repos, GitHub Actions takes a
+// variable amount of time to index committed workflow files; events
+// dispatched before the workflow is indexed are silently dropped.
+func awaitWorkflowReady(ctx context.Context, client forge.Client, org, repo, workflowFile string, logf func(string, ...any)) error {
+	target := org + "/" + repo
+	logf("[ensure] waiting for Actions to recognise %s on %s", workflowFile, target)
+
+	for attempt := 1; attempt <= settleMaxAttempts; attempt++ {
+		wf, err := client.GetWorkflow(ctx, org, repo, workflowFile)
+		if err == nil && wf != nil {
+			logf("[ensure] %s visible on %s after %d attempt(s) (state=%s)", workflowFile, target, attempt, wf.State)
+			return nil
+		}
+
+		if attempt < settleMaxAttempts {
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled while waiting for %s on %s: %w", workflowFile, target, ctx.Err())
+			case <-time.After(settlePoll):
+			}
+		}
+	}
+
+	return fmt.Errorf("workflow %s not visible on %s after %d attempts", workflowFile, target, settleMaxAttempts)
 }
 
 // provisionInference creates repo-scoped inference WIF for target and

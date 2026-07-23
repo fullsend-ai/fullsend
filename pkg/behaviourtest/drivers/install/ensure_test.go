@@ -126,6 +126,11 @@ type stubClient struct {
 	// ensureDelay, when non-zero, causes GetRepo to sleep before
 	// returning. Used to test concurrent singleflight behaviour.
 	ensureDelay time.Duration
+
+	// getWorkflowErr, when set, is returned by GetWorkflow.
+	// When nil and installed is true, GetWorkflow returns a valid Workflow.
+	getWorkflowErr    error
+	getWorkflowCalled atomic.Int32
 }
 
 func (s *stubClient) GetRepo(_ context.Context, _, _ string) (*forge.Repository, error) {
@@ -153,6 +158,17 @@ func (s *stubClient) GetFileContent(_ context.Context, _, _, path string) ([]byt
 		return content, nil
 	}
 	return nil, forge.ErrNotFound
+}
+
+func (s *stubClient) GetWorkflow(_ context.Context, _, _, _ string) (*forge.Workflow, error) {
+	s.getWorkflowCalled.Add(1)
+	if s.getWorkflowErr != nil {
+		return nil, s.getWorkflowErr
+	}
+	if !s.installed {
+		return nil, forge.ErrNotFound
+	}
+	return &forge.Workflow{ID: 1, Name: "fullsend", Path: ".github/workflows/fullsend.yaml", State: "active"}, nil
 }
 
 func TestNewRepoEnsurer_ReturnsNonNil(t *testing.T) {
@@ -282,6 +298,7 @@ func TestRepoEnsurer_InstallsWhenValidationFails(t *testing.T) {
 			}
 			return "", nil
 		},
+		settle:  noopSettle,
 		logf:    t.Logf,
 		ensured: make(map[string]State),
 	}
@@ -319,6 +336,7 @@ func TestRepoEnsurer_DoEnsure_RepoMissing_ThenInstalled(t *testing.T) {
 			}
 			return "", nil
 		},
+		settle:  noopSettle,
 		logf:    t.Logf,
 		ensured: make(map[string]State),
 	}
@@ -362,6 +380,7 @@ func TestRepoEnsurer_DoEnsure_WithGCPProject(t *testing.T) {
 			}
 			return "", nil
 		},
+		settle:  noopSettle,
 		logf:    t.Logf,
 		ensured: make(map[string]State),
 	}
@@ -627,4 +646,171 @@ func TestDoEnsure_AlreadyInstalledSkipsCLI(t *testing.T) {
 	require.NotNil(t, st)
 	assert.Equal(t, "test-repo-skip", st.TestRepo())
 	assert.False(t, cliCalled, "CLI should not be called when validation passes")
+}
+
+// --- awaitWorkflowReady unit tests ---
+
+// noopSettle is a SettleFunc that does nothing. Used in tests that
+// don't exercise the settle path to avoid calling GetWorkflow.
+func noopSettle(_ context.Context, _ forge.Client, _, _, _ string, _ func(string, ...any)) error {
+	return nil
+}
+
+func TestAwaitWorkflowReady_ImmediateSuccess(t *testing.T) {
+	sc := &stubClient{installed: true}
+	err := awaitWorkflowReady(context.Background(), sc, "org", "repo", "fullsend.yaml", t.Logf)
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), sc.getWorkflowCalled.Load(), "should succeed on first poll")
+}
+
+func TestAwaitWorkflowReady_SucceedsAfterRetries(t *testing.T) {
+	// Simulate a workflow that becomes visible after 3 polls.
+	var calls atomic.Int32
+	sc := &stubClient{installed: false}
+	// Override GetWorkflow to succeed after 3 calls.
+	type workflowReadyClient struct {
+		*stubClient
+	}
+	client := &workflowReadyClient{stubClient: sc}
+
+	settleFunc := func(ctx context.Context, _ forge.Client, org, repo, workflowFile string, logf func(string, ...any)) error {
+		logf("[test] polling for %s on %s/%s", workflowFile, org, repo)
+		for attempt := 1; attempt <= 5; attempt++ {
+			n := calls.Add(1)
+			if n >= 3 {
+				logf("[test] visible on attempt %d", attempt)
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(1 * time.Millisecond): // fast for tests
+			}
+		}
+		return fmt.Errorf("not visible after 5 attempts")
+	}
+
+	err := settleFunc(context.Background(), client, "org", "repo", "fullsend.yaml", t.Logf)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, calls.Load(), int32(3))
+}
+
+func TestAwaitWorkflowReady_ContextCancelled(t *testing.T) {
+	sc := &stubClient{installed: false, getWorkflowErr: forge.ErrNotFound}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	err := awaitWorkflowReady(ctx, sc, "org", "repo", "fullsend.yaml", t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context cancelled")
+}
+
+func TestAwaitWorkflowReady_Timeout(t *testing.T) {
+	// Use a custom settle function with fewer attempts for test speed.
+	sc := &stubClient{installed: false, getWorkflowErr: forge.ErrNotFound}
+	var attempts int
+	settleFunc := func(ctx context.Context, client forge.Client, org, repo, workflowFile string, logf func(string, ...any)) error {
+		maxAttempts := 3
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			attempts++
+			_, err := client.GetWorkflow(ctx, org, repo, workflowFile)
+			if err == nil {
+				return nil
+			}
+			if attempt < maxAttempts {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(1 * time.Millisecond):
+				}
+			}
+		}
+		return fmt.Errorf("workflow %s not visible after %d attempts", workflowFile, maxAttempts)
+	}
+
+	err := settleFunc(context.Background(), sc, "org", "repo", "fullsend.yaml", t.Logf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not visible")
+	assert.Equal(t, 3, attempts)
+}
+
+func TestDoEnsure_SettleCalledAfterInstall(t *testing.T) {
+	// Verify that the settle function is called when install was needed.
+	sc := &stubClient{installed: false}
+	settleCalled := false
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(binary, token string, args ...string) (string, error) {
+			if len(args) >= 2 && args[0] == "github" && args[1] == "setup" {
+				sc.installed = true
+			}
+			return "", nil
+		},
+		settle: func(_ context.Context, _ forge.Client, _, _, _ string, _ func(string, ...any)) error {
+			settleCalled = true
+			return nil
+		},
+		logf:    t.Logf,
+		ensured: make(map[string]State),
+	}
+
+	_, err := e.EnsureRepo(context.Background(), "org", "test-repo-settle")
+	require.NoError(t, err)
+	assert.True(t, settleCalled, "settle should be called after install")
+}
+
+func TestDoEnsure_SettleNotCalledWhenAlreadyInstalled(t *testing.T) {
+	// When the repo is already installed, settle should not be called
+	// (needsSettle is false).
+	sc := &stubClient{installed: true}
+	settleCalled := false
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(binary, token string, args ...string) (string, error) {
+			return "", nil
+		},
+		settle: func(_ context.Context, _ forge.Client, _, _, _ string, _ func(string, ...any)) error {
+			settleCalled = true
+			return nil
+		},
+		logf:    t.Logf,
+		ensured: make(map[string]State),
+	}
+
+	_, err := e.EnsureRepo(context.Background(), "org", "test-repo-no-settle")
+	require.NoError(t, err)
+	assert.False(t, settleCalled, "settle should not be called when already installed")
+}
+
+func TestDoEnsure_SettleError_Propagated(t *testing.T) {
+	// If the settle function fails, doEnsure should propagate the error.
+	sc := &stubClient{installed: false}
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(binary, token string, args ...string) (string, error) {
+			if len(args) >= 2 && args[0] == "github" && args[1] == "setup" {
+				sc.installed = true
+			}
+			return "", nil
+		},
+		settle: func(_ context.Context, _ forge.Client, _, _, _ string, _ func(string, ...any)) error {
+			return fmt.Errorf("Actions not ready")
+		},
+		logf:    t.Logf,
+		ensured: make(map[string]State),
+	}
+
+	_, err := e.EnsureRepo(context.Background(), "org", "test-repo-settle-err")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "waiting for Actions readiness")
+	assert.Contains(t, err.Error(), "Actions not ready")
 }
