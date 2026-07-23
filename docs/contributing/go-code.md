@@ -30,6 +30,53 @@ When making changes to Go code under `cmd/` or `internal/`:
 3. **Vet:** Run `make go-vet` to catch common issues.
 4. **E2E tests:** Run `make e2e-test` if your changes touch `internal/appsetup/`, `internal/forge/`, `internal/cli/`, or `internal/layers/`. These tests exercise the full admin install/uninstall flow against live GitHub pool orgs using mint/OIDC authentication.
 
+## Concurrency testing (race detection)
+
+`make go-test` runs all tests with `-race`. Every test must pass under the race detector.
+
+### When to write a race test
+
+When a type is shared across goroutines — for example, via `World.Clone` in the behaviourtest framework — write a dedicated `race_test.go` in the type's own package to verify thread-safety. The race detector can only catch bugs if the test exercises real concurrent access on mutable state.
+
+### Pattern: real types with `forge.NewFakeClient()`
+
+Construct the **real driver type** backed by `forge.NewFakeClient()`, not a synthetic stub. Seed the `FakeClient` so all methods return immediately (no network, no polling). Then launch concurrent goroutines exercising representative methods and rely on `-race` to detect unsynchronized access.
+
+```go
+func TestConcurrentAccess(t *testing.T) {
+    t.Parallel()
+
+    fc := forge.NewFakeClient()
+    // Seed FakeClient so methods return without errors.
+    fc.FileContents = map[string][]byte{
+        "org/repo/dummy.yaml": []byte("content"),
+    }
+
+    d := New(fc) // construct the real driver type
+    ctx := context.Background()
+
+    const goroutines = 12
+
+    var wg sync.WaitGroup
+    for range goroutines {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            // Exercise representative methods concurrently.
+            _, _ = d.GetFileContent(ctx, "org", "repo", "dummy.yaml")
+            _ = d.CommitFile(ctx, "org", "repo", "path.txt", "msg", []byte("data"))
+        }()
+    }
+    wg.Wait()
+}
+```
+
+Convention: use 12 goroutines. This is high enough to trigger races reliably but low enough to avoid resource exhaustion in CI. See [`pkg/behaviourtest/drivers/scm/github/race_test.go`](../../pkg/behaviourtest/drivers/scm/github/race_test.go) for the canonical example.
+
+### Why synthetic stubs don't work
+
+Stubs that implement an interface with no-ops or stateless pass-throughs hold no mutable state, so the race detector has nothing to detect. Even stubs that use `atomic.Int64` counters are invisible to `-race` because atomics are correctly synchronized by definition. The point of a race test is to exercise the **real type's fields** — only a real constructor backed by a thread-safe fake can trigger the detector on unsynchronized production code.
+
 ## Running e2e tests
 
 The e2e tests mint short-lived GitHub App installation tokens via the central token mint. Pool-org admin operations use mint/OIDC in CI and do not require a dedicated mint URL secret.
