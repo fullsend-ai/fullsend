@@ -10,9 +10,9 @@ import (
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
-func registerDispatchCountSteps(ctx *godog.ScenarioContext, w *world.World) {
-	ctx.Step(`^the harness "([^"]+)" was dispatched exactly (\d+) times?$`, func(agent string, expected int) error {
-		return thenHarnessDispatchedExactly(w, agent, expected)
+func registerDispatchCountSteps(sc *godog.ScenarioContext) {
+	sc.Step(`^the harness "([^"]+)" was dispatched exactly (\d+) times?$`, func(ctx context.Context, agent string, expected int) (context.Context, error) {
+		return ctx, thenHarnessDispatchedExactly(world.FromContext(ctx), agent, expected)
 	})
 }
 
