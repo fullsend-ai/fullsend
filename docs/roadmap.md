@@ -201,7 +201,7 @@ Ongoing work informed by the [security threat model](problems/security-threat-mo
 - Separate permission profiles per run phase ([#2826](https://github.com/fullsend-ai/fullsend/issues/2826))
 - Privileged operations only in deterministic automation ([#2828](https://github.com/fullsend-ai/fullsend/issues/2828))
 
-Related problem docs: [audit-log-integrity](problems/security-threat-model.md), [MCP config drift](problems/mcp-config-drift.md), [tool call risk assessment](problems/tool-call-risk-assessment.md)
+Related problem docs: [audit-log-integrity](problems/security-threat-model.md#cross-cutting-concern-audit-log-integrity), [MCP config drift](problems/mcp-config-drift.md), [tool call risk assessment](problems/tool-call-risk-assessment.md)
 
 ### Human factors and governance
 
