@@ -91,7 +91,7 @@ The `Given the enrolled test repository` step lazily creates and installs number
 
 Concurrent callers for the same repo are serialized via `singleflight.Group` — only one goroutine runs the create+install flow while others wait. This removes the requirement for numbered `test-repo-NN` repos to be pre-provisioned in the pool org.
 
-**Suite duration:** Because each leased `test-repo-NN` pays create + inference provision + `github setup` on first use in a run, serial godog suites take longer than the old shared-`test-repo` model. CI budgets **60 minutes** for the behaviour job (`timeout-minutes` and `go test -timeout`) to match.
+**Suite duration:** Because each leased `test-repo-NN` pays create + inference provision + `github setup` on first use in a run, serial godog suites take longer than the old shared-`test-repo` model. CI budgets **45 minutes** for the behaviour job (`timeout-minutes` and `go test -timeout`) to match.
 
 Runner env (defaults shown):
 
