@@ -70,12 +70,15 @@ func TestBehaviourSuite(t *testing.T) {
 		t.Fatalf("creating repo pool: %v", err)
 	}
 
+	ensurer := install.NewRepoEnsurer(e2eCfg, client, token, binary, t.Logf)
+
 	testRepo := installState.TestRepo()
 	template := &world.World{
 		Config:       cfg,
 		SCM:          scmgh.New(client),
 		CI:           gaci.New(client, token),
 		Install:      installState,
+		Ensurer:      ensurer,
 		Org:          org,
 		Token:        token,
 		Logf:         t.Logf,

@@ -13,7 +13,7 @@ import (
 
 func registerTriageSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the enrolled test repository$`, func(ctx context.Context) (context.Context, error) {
-		return ctx, givenEnrolledTestRepository(world.FromContext(ctx))
+		return ctx, givenEnrolledTestRepository(ctx, world.FromContext(ctx))
 	})
 	sc.Step(`^an enrolled repository "([^"]+)"$`, func(ctx context.Context, fullName string) (context.Context, error) {
 		return ctx, givenEnrolledRepository(world.FromContext(ctx), fullName)
@@ -35,7 +35,23 @@ func registerTriageSteps(sc *godog.ScenarioContext) {
 	})
 }
 
-func givenEnrolledTestRepository(w *world.World) error {
+func givenEnrolledTestRepository(ctx context.Context, w *world.World) error {
+	// When a leased repo name is available (from the pool) and an ensurer
+	// is configured, lazily create and install the leased repo. This
+	// removes the requirement for pre-existing repos in the pool org.
+	if w.LeasedRepoName != "" && w.Ensurer != nil {
+		st, err := w.Ensurer.EnsureRepo(ctx, w.Org, w.LeasedRepoName)
+		if err != nil {
+			return fmt.Errorf("ensuring leased repo %s/%s: %w", w.Org, w.LeasedRepoName, err)
+		}
+		w.Install = st
+		w.RepoOwner = w.Org
+		w.RepoName = w.LeasedRepoName
+		w.RepoFull = w.Org + "/" + w.LeasedRepoName
+		return nil
+	}
+
+	// Fallback: use the suite-level install state (backward compat).
 	w.RepoOwner = w.Org
 	w.RepoName = w.Install.TestRepo()
 	w.RepoFull = w.Org + "/" + w.RepoName

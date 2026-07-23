@@ -52,6 +52,11 @@ type World struct {
 	// LeasedRepoName is the logical test-repo name acquired from a RepoPool
 	// for this scenario's duration. Empty when no pool is configured.
 	LeasedRepoName string
+
+	// Ensurer lazily creates and installs repos on demand. Shared across
+	// scenarios (like other driver fields) and safe for concurrent use.
+	// Nil when lazy ensure is not configured.
+	Ensurer install.RepoEnsurer
 }
 
 // Clone creates a shallow copy of w. Driver fields (Config, SCM, CI,
