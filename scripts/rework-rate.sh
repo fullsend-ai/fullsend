@@ -15,7 +15,7 @@ REPO="${1:-fullsend-ai/fullsend}"
 DAYS="${2:-30}"
 FOLLOWUP_DAYS="${3:-7}"
 
-SINCE=$(date -d "-${DAYS} days" +%Y-%m-%dT00:00:00Z 2>/dev/null || date -v-${DAYS}d +%Y-%m-%dT00:00:00Z)
+SINCE=$(date -d "-${DAYS} days" +%Y-%m-%dT00:00:00Z 2>/dev/null || date -v-"${DAYS}"d +%Y-%m-%dT00:00:00Z)
 
 echo "Rework Rate Report"
 echo "Repository: ${REPO}"
@@ -56,17 +56,20 @@ while IFS= read -r pr_json; do
   echo "  Checking PR ${TOTAL}/${PR_COUNT} (#${PR_NUM})..."
 
   # Get files changed in this PR (paginated)
-  PR_FILES=$(gh api "repos/${REPO}/pulls/${PR_NUM}/files" --paginate \
-    --jq '.[].filename' 2>&1)
-  if [ $? -ne 0 ] || [ -z "$PR_FILES" ]; then
+  if ! PR_FILES=$(gh api "repos/${REPO}/pulls/${PR_NUM}/files" --paginate \
+    --jq '.[].filename' 2>&1); then
     echo "    WARNING: could not fetch files for #${PR_NUM}, skipping"
     SKIPPED=$((SKIPPED + 1))
     continue
   fi
 
+  if [ -z "$PR_FILES" ]; then
+    continue
+  fi
+
   # Check for human commits touching the same files after merge
   FOLLOWUP_UNTIL=$(date -d "${MERGED_AT} +${FOLLOWUP_DAYS} days" +%Y-%m-%dT23:59:59Z 2>/dev/null \
-    || date -j -f "%Y-%m-%dT%H:%M:%SZ" "${MERGED_AT}" -v+${FOLLOWUP_DAYS}d +%Y-%m-%dT23:59:59Z 2>/dev/null \
+    || date -j -f "%Y-%m-%dT%H:%M:%SZ" "${MERGED_AT}" -v+"${FOLLOWUP_DAYS}"d +%Y-%m-%dT23:59:59Z 2>/dev/null \
     || echo "")
 
   if [ -z "$FOLLOWUP_UNTIL" ]; then
@@ -75,9 +78,8 @@ while IFS= read -r pr_json; do
   fi
 
   # Get commits after merge by non-bot authors
-  FOLLOWUP_COMMITS=$(gh api "repos/${REPO}/commits?since=${MERGED_AT}&until=${FOLLOWUP_UNTIL}&per_page=100" \
-    --jq '[.[] | select(.author.type != "Bot" and .author.login != "fullsend-ai-coder[bot]" and .author.login != "fullsend-ai-fullsend[bot]") | {sha: .sha, author: .author.login, message: .commit.message}]' 2>&1)
-  if [ $? -ne 0 ]; then
+  if ! FOLLOWUP_COMMITS=$(gh api "repos/${REPO}/commits?since=${MERGED_AT}&until=${FOLLOWUP_UNTIL}&per_page=100" \
+    --jq '[.[] | select(.author.type != "Bot" and .author.login != "fullsend-ai-coder[bot]" and .author.login != "fullsend-ai-fullsend[bot]") | {sha: .sha, author: .author.login, message: .commit.message}]' 2>&1); then
     echo "    WARNING: could not fetch follow-up commits for #${PR_NUM}, skipping"
     SKIPPED=$((SKIPPED + 1))
     continue
@@ -93,9 +95,8 @@ while IFS= read -r pr_json; do
     COMMIT_SHA=$(echo "$commit_json" | jq -r '.sha')
     COMMIT_AUTHOR=$(echo "$commit_json" | jq -r '.author')
 
-    COMMIT_FILES=$(gh api "repos/${REPO}/commits/${COMMIT_SHA}" \
-      --jq '.files[].filename' 2>&1)
-    if [ $? -ne 0 ]; then
+    if ! COMMIT_FILES=$(gh api "repos/${REPO}/commits/${COMMIT_SHA}" \
+      --jq '.files[].filename' 2>&1); then
       continue
     fi
 
