@@ -3174,6 +3174,15 @@ func TestWriteMetricsJSON(t *testing.T) {
 
 // --- mintAgentToken tests ---
 
+// useZeroMintTokenBackoff overrides mintTokenBackoff to skip real sleeps so
+// tests exercising mint retries run fast, restoring the original on cleanup.
+func useZeroMintTokenBackoff(t *testing.T) {
+	t.Helper()
+	orig := mintTokenBackoff
+	mintTokenBackoff = func(int) time.Duration { return 0 }
+	t.Cleanup(func() { mintTokenBackoff = orig })
+}
+
 func TestMintAgentToken_SkipsWhenNoMintURL(t *testing.T) {
 	printer := ui.New(io.Discard)
 	minted, _, err := mintAgentToken(context.Background(), "coder", "", printer)
@@ -3325,7 +3334,9 @@ func TestMintAgentToken_MintError(t *testing.T) {
 	origMint := statusMintToken
 	defer func() { statusMintToken = origMint }()
 
+	var calls int
 	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
 		return nil, fmt.Errorf("OIDC exchange failed")
 	}
 
@@ -3335,6 +3346,7 @@ func TestMintAgentToken_MintError(t *testing.T) {
 	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "minting agent token for role coder")
+	assert.Equal(t, 1, calls, "a request error should fail immediately — statusMintToken already retries transient failures and fails fast on permanent ones internally")
 }
 
 func TestMintAgentToken_RepoResolutionError(t *testing.T) {
@@ -3353,6 +3365,7 @@ func TestMintAgentToken_RepoResolutionError(t *testing.T) {
 func TestMintAgentToken_RejectsMalformedToken(t *testing.T) {
 	origMint := statusMintToken
 	defer func() { statusMintToken = origMint }()
+	useZeroMintTokenBackoff(t)
 
 	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
 		return &mintclient.MintResult{Token: "bad token with spaces!", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
@@ -3364,6 +3377,96 @@ func TestMintAgentToken_RejectsMalformedToken(t *testing.T) {
 	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unexpected characters")
+}
+
+func TestMintAgentToken_RetriesMalformedTokenThenSucceeds(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+	useZeroMintTokenBackoff(t)
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		if calls == 1 {
+			return &mintclient.MintResult{Token: "bad token with spaces!", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+		}
+		return &mintclient.MintResult{Token: "test-recovered-token", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+	t.Setenv("GH_TOKEN", "")
+
+	var buf bytes.Buffer
+	printer := ui.New(&buf)
+	minted, cleanup, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	require.NoError(t, err)
+	defer cleanup()
+	assert.True(t, minted)
+	assert.Equal(t, 2, calls, "a malformed token should be retried, not treated as fatal")
+	assert.Equal(t, "test-recovered-token", os.Getenv("GH_TOKEN"))
+
+	output := buf.String()
+	assert.Contains(t, output, "attempt 1/4")
+	assert.Contains(t, output, "retrying in")
+}
+
+func TestMintAgentToken_ExhaustsAllRetriesBeforeFailing(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+	useZeroMintTokenBackoff(t)
+
+	var calls int
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		return &mintclient.MintResult{Token: "still bad!", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+
+	printer := ui.New(io.Discard)
+	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
+	require.Error(t, err)
+	assert.Equal(t, mintTokenMaxAttempts, calls, "should attempt exactly mintTokenMaxAttempts times before giving up")
+	assert.Contains(t, err.Error(), fmt.Sprintf("failed after %d attempts", mintTokenMaxAttempts), "final error should surface the total attempt count")
+}
+
+func TestMintAgentToken_RetryAbortsOnContextCancellation(t *testing.T) {
+	origMint := statusMintToken
+	defer func() { statusMintToken = origMint }()
+
+	// Deliberately not using useZeroMintTokenBackoff: cancel() fires from
+	// inside the mock before mintAgentTokenWithRetry reaches its select, so
+	// ctx.Done() always wins over the real backoff timer regardless of its
+	// duration — this stays fast without needing the zero-backoff seam.
+	var calls int
+	ctx, cancel := context.WithCancel(context.Background())
+	statusMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		calls++
+		cancel()
+		return &mintclient.MintResult{Token: "still bad!", ExpiresAt: "2026-06-15T12:00:00Z"}, nil
+	}
+
+	t.Setenv("REPO_FULL_NAME", "org/my-repo")
+
+	printer := ui.New(io.Discard)
+	_, _, err := mintAgentToken(ctx, "coder", "https://mint.example.com", printer)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, calls, "should stop retrying once the context is cancelled during backoff")
+}
+
+func TestMintTokenBackoff_Doubles(t *testing.T) {
+	assert.Equal(t, 2*time.Second, mintTokenBackoff(1))
+	assert.Equal(t, 4*time.Second, mintTokenBackoff(2))
+	assert.Equal(t, 8*time.Second, mintTokenBackoff(3))
+}
+
+func TestMintTokenBackoff_CapsAtMax(t *testing.T) {
+	// attempt 4 exercises the value clamp alone (shift=3 needs no shift-guard,
+	// but 2s*2^3=16s exceeds mintTokenMaxBackoff); attempt 20 additionally
+	// exercises the shift guard (shift would otherwise be 19).
+	assert.Equal(t, mintTokenMaxBackoff, mintTokenBackoff(4))
+	assert.Equal(t, mintTokenMaxBackoff, mintTokenBackoff(20))
 }
 
 func TestMintAgentToken_MasksTokenInGitHubActions(t *testing.T) {

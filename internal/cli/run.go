@@ -2802,17 +2802,9 @@ func mintAgentToken(ctx context.Context, role, mintURL string, printer *ui.Print
 	}
 	printer.StepStart("Minting agent token (role: " + role + ")")
 
-	result, err := statusMintToken(ctx, mintclient.MintRequest{
-		MintURL: mintURL,
-		Role:    role,
-		Repos:   repos,
-	})
+	result, err := mintAgentTokenWithRetry(ctx, role, mintURL, repos, printer)
 	if err != nil {
-		return false, nil, fmt.Errorf("minting agent token for role %s: %w", role, err)
-	}
-
-	if !mintTokenPattern.MatchString(result.Token) {
-		return false, nil, fmt.Errorf("minted agent token contains unexpected characters for role %s", role)
+		return false, nil, err
 	}
 
 	// TODO(ADR-0045 R22): use forge platform context instead of raw env check.
@@ -2860,6 +2852,73 @@ func mintAgentToken(ctx context.Context, role, mintURL string, printer *ui.Print
 	}, result.ExpiresAt)
 	printer.StepDone("Agent token minted (expires " + expiresAt + ")")
 	return true, cleanup, nil
+}
+
+// mintTokenMaxAttempts is the total number of minting attempts — the initial
+// attempt plus mintTokenMaxAttempts-1 retries — before mintAgentTokenWithRetry
+// gives up.
+const mintTokenMaxAttempts = 4
+
+// mintTokenMaxBackoff caps the delay mintTokenBackoff can return, guarding
+// against overflow or runaway waits if mintTokenMaxAttempts ever grows.
+const mintTokenMaxBackoff = 8 * time.Second
+
+// mintTokenBackoff computes the delay before the retry that follows the
+// given failed attempt (1-indexed), doubling each time: 2s, 4s, 8s for the
+// default mintTokenMaxAttempts of 4. It is a package variable so tests can
+// shorten it and avoid real sleeps.
+var mintTokenBackoff = func(attempt int) time.Duration {
+	shift := attempt - 1
+	if shift > 10 {
+		shift = 10
+	}
+	backoff := 2 * time.Second * time.Duration(uint64(1)<<uint(shift))
+	if backoff > mintTokenMaxBackoff {
+		backoff = mintTokenMaxBackoff
+	}
+	return backoff
+}
+
+// mintAgentTokenWithRetry retries only the token-shape validation performed
+// on top of statusMintToken's response — a malformed token on an otherwise
+// successful mint call, the exact failure reported in issue #5377 ("minted
+// agent token contains unexpected characters"). Issue #5377 suspects, but
+// never confirms, that this is a transient response glitch; retrying it
+// tests that suspicion without re-litigating it. statusMintToken
+// (mintclient.MintToken) already retries transient request failures (5xx,
+// network errors) internally and fails fast on permanent ones (4xx), so its
+// errors are returned as-is rather than retried a second time here — doing
+// so would retry permanent failures pointlessly and compound latency on
+// persistent transient ones.
+func mintAgentTokenWithRetry(ctx context.Context, role, mintURL string, repos []string, printer *ui.Printer) (*mintclient.MintResult, error) {
+	var lastErr error
+	for attempt := 1; attempt <= mintTokenMaxAttempts; attempt++ {
+		result, err := statusMintToken(ctx, mintclient.MintRequest{
+			MintURL: mintURL,
+			Role:    role,
+			Repos:   repos,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("minting agent token for role %s: %w", role, err)
+		}
+		if mintTokenPattern.MatchString(result.Token) {
+			return result, nil
+		}
+		lastErr = fmt.Errorf("minted agent token contains unexpected characters")
+
+		if attempt < mintTokenMaxAttempts {
+			backoff := mintTokenBackoff(attempt)
+			printer.StepWarn(fmt.Sprintf("Minting agent token failed (attempt %d/%d): %v — retrying in %s", attempt, mintTokenMaxAttempts, lastErr, backoff))
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	return nil, fmt.Errorf("minting agent token for role %s failed after %d attempts: %w", role, mintTokenMaxAttempts, lastErr)
 }
 
 // resolveMintRepos determines which repos to request token access for.
