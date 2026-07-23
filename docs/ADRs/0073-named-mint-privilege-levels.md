@@ -28,7 +28,7 @@ Accepted
 
 ## Context
 
-The mint maps each agent role to a single hardcoded permission set ([ADR 0007](0007-per-role-github-apps.md)). Every token minted for a role gets the same ceiling. The threat model establishes least privilege as a cross-cutting principle (see [security-threat-model.md](../problems/security-threat-model.md)), but the current model cannot differentiate between a phase that only needs read access and one that needs write — both receive write-level tokens.
+The mint maps each agent role to a single hardcoded permission set ([ADR 0007](0007-per-role-github-apps.md)). Every token minted for a role gets the same ceiling. The threat model establishes least privilege as a cross-cutting principle (see [security-threat-model.md](../problems/security-threat-model.md)), but the current model cannot differentiate between a run-stage that only needs read access and one that needs write — both receive write-level tokens.
 
 [#2821](https://github.com/fullsend-ai/fullsend/issues/2821) (human-gated permission adjustments) and the least-privilege topic ([#5312](https://github.com/fullsend-ai/fullsend/issues/5312)) depend on a general mechanism for minting tokens at differentiated privilege levels within a role. Without this mechanism, downstream work risks encoding use-case-specific designs instead of a reusable model.
 
@@ -68,15 +68,15 @@ Mixed format is allowed within a single `CUSTOM_ROLE_PERMISSIONS` value — some
 
 ### Clients
 
-`mintclient` and CLI paths that mint tokens accept an optional `level` parameter, defaulting to `read` when unset. The harness passes the level derived from the `privilege_levels` configuration (see below) to the mint client for each phase.
+`mintclient` and CLI paths that mint tokens accept an optional `level` parameter, defaulting to `read` when unset. The harness passes the level derived from the `privilege_levels` configuration (see below) to the mint client for each run-stage.
 
 ### Acquisition semantics
 
-The harness is the sole caller that selects privilege levels. It determines the level for each run phase from the `privilege_levels` configuration and requests the corresponding token from the mint before that phase begins. Agents and scripts within a phase do not choose or escalate their own level — they receive the token the harness minted for their phase.
+The harness is the sole caller that selects privilege levels. It determines the level for each run-stage from the `privilege_levels` configuration and requests the corresponding token from the mint before that run-stage begins. Agents and scripts within a run-stage do not choose or escalate their own level — they receive the token the harness minted for their run-stage.
 
 ### Harness `privilege_levels` flag
 
-Harness YAML supports a `privilege_levels` field mapping run phases to levels:
+Harness YAML supports a `privilege_levels` field mapping run-stages to levels:
 
 ```yaml
 privilege_levels:
@@ -85,7 +85,7 @@ privilege_levels:
   post_script: write
 ```
 
-A `default` key specifies the level for phases not explicitly listed. Phases not shown above — such as `validation_loop` — inherit the `runtime` level, since they execute within the runtime phase and share its security context.
+A `default` key specifies the level for run-stages not explicitly listed. Run-stages not shown above — such as `validation_loop` — inherit the `runtime` level, since they execute within the runtime run-stage and share its security context.
 
 When `privilege_levels` is omitted entirely, the harness behaves as if:
 
@@ -94,13 +94,14 @@ privilege_levels:
   default: write
 ```
 
-This preserves backward compatibility — existing harnesses continue to receive write-level tokens for all phases.
+This preserves backward compatibility — existing harnesses continue to receive write-level tokens for all run-stages.
 
 ## Consequences
 
 - Agents running in the LLM sandbox can receive read-only tokens, reducing blast radius if the sandbox is compromised.
 - The mint API defaults to `read` when `level` is omitted, producing narrower tokens than the current behavior. Non-harness callers that omit `level` — including `reconcileMintToken`, the `mint-token` CLI, and e2e test helpers — will receive read-level tokens instead of write-level tokens. Migration of these callers is coordinated in [#2823](https://github.com/fullsend-ai/fullsend/issues/2823) and [#2826](https://github.com/fullsend-ai/fullsend/issues/2826).
 - `CUSTOM_ROLE_PERMISSIONS` supports both the existing flat format and the new multi-level format — including mixed format within a single value — without a breaking change.
-- Harnesses that omit `privilege_levels` default to `write` for all phases, so existing harness configurations are unaffected — the harness requests `write` from the mint, preserving current token scope.
+- Harnesses that omit `privilege_levels` default to `write` for all run-stages, so existing harness configurations are unaffected — the harness requests `write` from the mint, preserving current token scope.
+- `privilege_levels` must coordinate token acquisition with credential expansion for both sandbox delivery paths. Provider credentials (e.g., `${GH_TOKEN}` expanded at provider resolution time) and host files with `expand: true` both require the correct-level token to be in the process environment before expansion runs. For the `runtime` run-stage, the `read`-level token must be set before provider resolution and host file expansion; `pre_script` and `post_script` run-stages receive the `write`-level token via the host environment.
 - Implementation of role levels in the mint, clients, and harness is tracked in [#2823](https://github.com/fullsend-ai/fullsend/issues/2823) and [#2826](https://github.com/fullsend-ai/fullsend/issues/2826).
 - [#2821](https://github.com/fullsend-ai/fullsend/issues/2821) (human-gated permission adjustments) is unblocked and can build on this mechanism.
