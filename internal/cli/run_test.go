@@ -3342,6 +3342,8 @@ func TestMintAgentToken_RepoResolutionError(t *testing.T) {
 	defer func() { statusMintToken = origMint }()
 
 	// No REPO_FULL_NAME and no MINT_REPOS set
+	t.Setenv("REPO_FULL_NAME", "")
+	t.Setenv("MINT_REPOS", "")
 	printer := ui.New(io.Discard)
 	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
 	require.Error(t, err)
@@ -3429,6 +3431,8 @@ func TestResolveMintRepos_MINT_REPOS_TakesPrecedence(t *testing.T) {
 }
 
 func TestResolveMintRepos_NeitherSet(t *testing.T) {
+	t.Setenv("REPO_FULL_NAME", "")
+	t.Setenv("MINT_REPOS", "")
 	_, err := resolveMintRepos()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "MINT_REPOS or REPO_FULL_NAME must be set")
