@@ -975,9 +975,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// directory existence check) — both need actual repo content to
 			// push. The other validation_loop post-scripts (post-review.sh,
 			// post-triage.sh, post-retro.sh, post-prioritize.sh) don't
-			// reference REPO_DIR at all; they rely on
-			// FULLSEND_VALIDATED_ITERATION_DIR (set below) to select the
-			// correct iteration's output. code.yaml has no validation_loop,
+			// reference REPO_DIR at all. code.yaml has no validation_loop,
 			// so post-code.sh cannot currently observe an empty REPO_DIR in
 			// practice — a SafeDownload failure is fatal for it and this
 			// defer never runs — but the check in its script is real, not a
@@ -987,6 +985,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// validation_loop) cannot recover a sweep-validated non-final
 			// iteration's repo state — it fails closed with "Extracted repo
 			// not found" instead of pushing. See #5393 follow-up.
+			//
+			// FULLSEND_VALIDATED_ITERATION_DIR (set below) is set for
+			// forward compatibility, but the scaffold-embedded post-scripts
+			// don't consume it yet — that port is tracked separately in
+			// fullsend-ai/agents#411, since agent scripts now live in that
+			// repo, not internal/scaffold/fullsend-repo/. Until that lands,
+			// post-review.sh/post-triage.sh/post-retro.sh/post-prioritize.sh
+			// still scan for the last iteration-*/output blindly.
 			postRepoDir, postValidatedIterDir := postScriptRepoEnv(h, runDir, hostRepositoryDownloadDir, repoExtractedOK, validatedIterNum)
 			postCmd.Env = append(postCmd.Env, fmt.Sprintf("REPO_DIR=%s", postRepoDir))
 			// FULLSEND_VALIDATED_ITERATION_DIR tells the post-script which

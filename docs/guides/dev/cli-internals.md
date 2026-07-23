@@ -508,10 +508,12 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │                   │ see #5393).                              │
 │  │                   │                                          │
 │  │                   │ FULLSEND_VALIDATED_ITERATION_DIR points  │
-│  │                   │ to the validated iteration's output dir. │
-│  │                   │ Post-scripts must use this (when set) to │
-│  │                   │ select the result file instead of        │
-│  │                   │ blindly taking the last iteration.       │
+│  │                   │ to the validated iteration's output dir, │
+│  │                   │ for forward compatibility. The scaffold- │
+│  │                   │ embedded post-scripts don't consume it   │
+│  │                   │ yet (tracked in fullsend-ai/agents#411)  │
+│  │                   │ — they still scan for the last iteration │
+│  │                   │ blindly.                                 │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
