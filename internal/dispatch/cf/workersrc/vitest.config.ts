@@ -13,10 +13,15 @@ export default defineWorkersConfig({
           // to fail because HasRole() rejects unknown roles, and the
           // ConfigError is cached permanently.
           // PEM secrets are not needed for the /health and routing tests.
+          //
+          // ALLOWED_WORKFLOW_FILES is set explicitly here (not via a
+          // production default). Production code defaults to "" (fail-
+          // closed) when the env var is absent — matching cmd/mint.
           bindings: {
             ROLE_APP_IDS: '{"coder":"12345"}',
             ALLOWED_ORGS: "test-org",
             OIDC_AUDIENCE: "test-aud",
+            ALLOWED_WORKFLOW_FILES: "*",
           },
         },
       },

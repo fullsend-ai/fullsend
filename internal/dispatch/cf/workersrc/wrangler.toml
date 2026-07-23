@@ -28,7 +28,7 @@ enabled = true
 # ALLOWED_ORGS = ""          # Comma-separated org names
 # OIDC_AUDIENCE = ""         # Expected OIDC audience claim
 # ALLOWED_ROLES = ""         # Comma-separated role names
-# ALLOWED_WORKFLOW_FILES = "" # Comma-separated workflow file patterns
+# ALLOWED_WORKFLOW_FILES = "" # Comma-separated workflow file patterns (unset = fail-closed)
 
 # Role PEM keys are stored as Worker secrets (encrypted at rest).
 # Secret names follow the convention: <ROLE>_APP_PEM

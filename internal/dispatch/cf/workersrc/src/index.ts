@@ -51,7 +51,7 @@ export interface Env {
   OIDC_AUDIENCE: string;
   /** Comma-separated list of allowed roles (derived from ROLE_APP_IDS if unset). */
   ALLOWED_ROLES?: string;
-  /** Comma-separated workflow file patterns ("*" = any). */
+  /** Comma-separated workflow file patterns (empty = reject all; "*" = any). */
   ALLOWED_WORKFLOW_FILES?: string;
   /** Comma-separated repos using per-repo WIF providers. */
   PER_REPO_WIF_REPOS?: string;
@@ -143,6 +143,11 @@ function detectRoleSecretCollisions(roleAppIDs: Record<string, string>): void {
  * Returns a JSON string matching the mintcore.WorkerConfig struct.
  * Field names use PascalCase to match Go's default JSON encoding
  * (the struct has no json tags).
+ *
+ * AllowedWorkflowFiles defaults to "" (empty) when the env var is
+ * absent or blank.  Go's SplitCSV("") produces an empty allowlist,
+ * which is fail-closed — matching the standalone mint (cmd/mint).
+ * Operators must set the env var explicitly to allow workflow files.
  */
 function buildWasmConfig(env: Env): string {
   return JSON.stringify({
@@ -150,7 +155,7 @@ function buildWasmConfig(env: Env): string {
     AllowedOrgs: env.ALLOWED_ORGS,
     OIDCAudience: env.OIDC_AUDIENCE,
     AllowedRoles: env.ALLOWED_ROLES ?? "",
-    AllowedWorkflowFiles: env.ALLOWED_WORKFLOW_FILES ?? "*",
+    AllowedWorkflowFiles: env.ALLOWED_WORKFLOW_FILES ?? "",
     PerRepoWIFRepos: env.PER_REPO_WIF_REPOS ?? "",
     CustomRolePermissions: env.CUSTOM_ROLE_PERMISSIONS ?? "",
   });
@@ -498,8 +503,11 @@ class GoWasm {
     }
 
     const result = mintcoreHandleFetch(method, url, headersJSON, body);
+    // clearTimeout on settle prevents a leaked timer from firing a
+    // spurious unhandled rejection after the request completes.
+    let timeoutId!: ReturnType<typeof setTimeout>;
     const timeout = new Promise<never>((_resolve, reject) => {
-      setTimeout(() => {
+      timeoutId = setTimeout(() => {
         reject(
           new Error(
             `mintcoreHandleFetch timed out after ${HANDLE_FETCH_TIMEOUT_MS}ms`,
@@ -507,7 +515,9 @@ class GoWasm {
         );
       }, HANDLE_FETCH_TIMEOUT_MS);
     });
-    return Promise.race([result, timeout]);
+    return Promise.race([result, timeout]).finally(() =>
+      clearTimeout(timeoutId),
+    );
   }
 }
 
