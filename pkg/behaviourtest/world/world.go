@@ -48,6 +48,22 @@ type World struct {
 	ForkRepo     string
 	ForkPRNumber int
 	ForkPRBranch string
+
+	// LeasedRepoName is the logical test-repo name acquired from a RepoPool
+	// for this scenario's duration. Empty when no pool is configured.
+	LeasedRepoName string
+}
+
+// Clone creates a shallow copy of w. Driver fields (Config, SCM, CI,
+// Install) are shared by reference — this is safe today because drivers
+// hold no mutable state. If drivers acquire mutable state in the future,
+// Clone must deep-copy them or guard with synchronisation (see #5441).
+//
+// Scenario-level fields are copied verbatim; callers should call
+// resetScenarioWorld (in package suite) to zero them for each new scenario.
+func (w *World) Clone() *World {
+	clone := *w
+	return &clone
 }
 
 const BehaviourScriptRepoPath = "behaviour/current-scenario.yaml"

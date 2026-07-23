@@ -27,7 +27,7 @@ BEHAVIOUR_CI=githubactions        # future: tekton, gitlabci
 BEHAVIOUR_INSTALL_MODE=per-repo   # v1 default and only supported value
 ```
 
-The suite in `e2e/behaviour/suite_test.go` (or an external runner) acquires a pool org via `pkg/e2etest`, runs pre-install cleanup, calls `install.Driver.Install`, constructs SCM and CI drivers, then runs godog with `pkg/behaviourtest/suite.InitScenario`. Unsupported `BEHAVIOUR_INSTALL_MODE` values fail at suite startup.
+The suite in `e2e/behaviour/suite_test.go` (or an external runner) acquires a pool org via `pkg/e2etest`, runs pre-install cleanup, calls `install.Driver.Install`, constructs SCM and CI drivers, creates a `world.RepoPool` (a buffered-channel lease pool of logical repo names), then runs godog with `pkg/behaviourtest/suite.InitScenario`. `InitScenario` clones a template `*world.World` per scenario and leases a unique repo name from the pool for the scenario's duration. Unsupported `BEHAVIOUR_INSTALL_MODE` values fail at suite startup.
 
 ### Install driver (v1 per-repo)
 

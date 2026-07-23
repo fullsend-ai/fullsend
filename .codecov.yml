@@ -23,6 +23,11 @@ ignore:
   - "e2e/behaviour/fixtures/**"
   # Integration-only; covered by behaviour/e2e CI jobs (not unit coverage upload).
   - "pkg/behaviourtest/steps/dispatch.go"
+  - "pkg/behaviourtest/steps/dispatch_count.go"
+  - "pkg/behaviourtest/steps/dummy_agent.go"
+  - "pkg/behaviourtest/steps/fork.go"
+  - "pkg/behaviourtest/steps/registry.go"
+  - "pkg/behaviourtest/steps/triage.go"
   - "pkg/behaviourtest/suite/init.go"
   - "pkg/behaviourtest/drivers/install/perrepo_github.go"
   - "pkg/e2etest/cleanup.go"
