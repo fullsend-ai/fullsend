@@ -1147,7 +1147,7 @@ func TestRunLock_MalformedOrgConfigWithURLRefs(t *testing.T) {
 	printer := ui.New(os.Stdout)
 	err := runLock(context.Background(), "badcfg", dir, "", false, resolveFlags{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing config")
+	assert.Contains(t, err.Error(), "parsing org config")
 }
 
 func TestRunLock_NoOrgConfigNoURLRefs(t *testing.T) {
@@ -1213,7 +1213,7 @@ func TestRunLock_OrgAllowlistSyncedAfterReAttempt(t *testing.T) {
 	printer := ui.New(os.Stdout)
 	err := runLock(context.Background(), "urlrefs", dir, "", false, resolveFlags{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing config")
+	assert.Contains(t, err.Error(), "parsing org config")
 }
 
 func TestRunLock_URLBaseAndURLRefsNoOrgConfig(t *testing.T) {

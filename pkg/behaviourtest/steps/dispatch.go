@@ -9,8 +9,6 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
-	"gopkg.in/yaml.v3"
-
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -56,24 +54,26 @@ func givenDisabledCustomHarness(w *world.World, name, doc string) error {
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
 	}
-	cfg, err := config.ParsePerRepoConfig(cfgData)
+	cfg, err := config.ParsePerRepoConfigWriter(cfgData)
 	if err != nil {
 		return fmt.Errorf("parsing config: %w", err)
 	}
 	disabled := false
 	entry := config.AgentEntry{Name: name, Source: "harness/" + name + ".yaml", Enabled: &disabled}
+	agents := cfg.AgentEntries()
 	found := false
-	for i, a := range cfg.Agents {
+	for i, a := range agents {
 		if strings.EqualFold(a.DerivedName(), name) {
-			cfg.Agents[i] = entry
+			agents[i] = entry
 			found = true
 			break
 		}
 	}
 	if !found {
-		cfg.Agents = append(cfg.Agents, entry)
+		agents = append(agents, entry)
 	}
-	merged, err := yaml.Marshal(cfg)
+	cfg.SetAgents(agents)
+	merged, err := cfg.Marshal()
 	if err != nil {
 		return err
 	}
@@ -101,23 +101,25 @@ func givenCustomHarness(w *world.World, name, doc string) error {
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
 	}
-	cfg, err := config.ParsePerRepoConfig(cfgData)
+	cfgW, err := config.ParsePerRepoConfigWriter(cfgData)
 	if err != nil {
 		return fmt.Errorf("parsing config: %w", err)
 	}
 	entry := config.AgentEntry{Name: name, Source: "harness/" + name + ".yaml"}
+	agents := cfgW.AgentEntries()
 	found := false
-	for i, a := range cfg.Agents {
+	for i, a := range agents {
 		if strings.EqualFold(a.DerivedName(), name) {
-			cfg.Agents[i] = entry
+			agents[i] = entry
 			found = true
 			break
 		}
 	}
 	if !found {
-		cfg.Agents = append(cfg.Agents, entry)
+		agents = append(agents, entry)
 	}
-	merged, err := yaml.Marshal(cfg)
+	cfgW.SetAgents(agents)
+	merged, err := cfgW.Marshal()
 	if err != nil {
 		return err
 	}
@@ -141,16 +143,48 @@ func thenHarnessWorkflowCompletes(w *world.World, agent string) error {
 	return ensureHarnessArtifacts(w, agent)
 }
 
+// defaultSettleDuration is the maximum time to wait for the dispatch
+// pipeline to settle before asserting artifact absence.
+const defaultSettleDuration = 90 * time.Second
+
+// negativeSettleDuration returns how long to wait before a negative
+// (did-not-run) assertion.  When the scenario already completed a
+// positive harness wait (WorkflowRun is set), or enough wall time has
+// elapsed since ScenarioStart, the settle is unnecessary.
+func negativeSettleDuration(w *world.World, now time.Time) time.Duration {
+	// A completed positive wait means the dispatch pipeline already
+	// ran to completion — no additional settle needed.
+	if w.WorkflowRun != nil {
+		return 0
+	}
+
+	// Safety: if ScenarioStart was never recorded, use the full settle.
+	if w.ScenarioStart.IsZero() {
+		return defaultSettleDuration
+	}
+
+	elapsed := now.Sub(w.ScenarioStart)
+	if elapsed >= defaultSettleDuration {
+		return 0
+	}
+	return defaultSettleDuration - elapsed
+}
+
 func thenHarnessAgentDidNotRun(w *world.World, agent string) error {
 	if w.ScenarioStart.IsZero() {
 		return fmt.Errorf("no workflow trigger time recorded")
 	}
 	ctx := context.Background()
+
 	// Allow dispatch pipeline time to settle before asserting absence.
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(90 * time.Second):
+	// Skip or shorten the wait when a positive harness wait already
+	// elapsed in this scenario (piggyback pattern).
+	if d := negativeSettleDuration(w, time.Now()); d > 0 {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(d):
+		}
 	}
 	return w.CI.AssertNoHarnessAgentArtifact(ctx, w.Org, w.Install.TriageWorkflowRepo(), agent, w.ScenarioStart)
 }

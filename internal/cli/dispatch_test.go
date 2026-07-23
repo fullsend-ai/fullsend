@@ -163,9 +163,9 @@ trigger: |
 	require.NoError(t, os.WriteFile(filepath.Join(harnessDir, "issue-ping.yaml"), []byte(harnessYAML), 0o644))
 	f := false
 	cfg := config.NewPerRepoConfig(nil, "fullsend-ai/demo")
-	cfg.Agents = []config.AgentEntry{
+	cfg.SetAgents([]config.AgentEntry{
 		{Name: "issue-ping", Source: "harness/issue-ping.yaml", Enabled: &f},
-	}
+	})
 	data, err := yaml.Marshal(cfg)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))
@@ -251,7 +251,7 @@ trigger: |
 `
 	require.NoError(t, os.WriteFile(filepath.Join(harnessDir, "issue-ping.yaml"), []byte(harnessYAML), 0o644))
 	cfg := config.NewPerRepoConfig(nil, "fullsend-ai/demo")
-	cfg.Agents = []config.AgentEntry{{Name: "issue-ping", Source: "harness/issue-ping.yaml"}}
+	cfg.SetAgents([]config.AgentEntry{{Name: "issue-ping", Source: "harness/issue-ping.yaml"}})
 	data, err := yaml.Marshal(cfg)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644))

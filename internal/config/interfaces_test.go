@@ -14,12 +14,12 @@ import (
 
 func TestOrgConfig_AgentEntries(t *testing.T) {
 	agents := []AgentEntry{{Source: "harness/triage.yaml"}}
-	cfg := &OrgConfig{Agents: agents}
+	cfg := &orgConfig{Agents: agents}
 	assert.Equal(t, agents, cfg.AgentEntries())
 }
 
 func TestOrgConfig_IsKillSwitchActive(t *testing.T) {
-	cfg := &OrgConfig{KillSwitch: true}
+	cfg := &orgConfig{KillSwitch: true}
 	assert.True(t, cfg.IsKillSwitchActive())
 	cfg.KillSwitch = false
 	assert.False(t, cfg.IsKillSwitchActive())
@@ -27,46 +27,46 @@ func TestOrgConfig_IsKillSwitchActive(t *testing.T) {
 
 func TestOrgConfig_AllowedResources(t *testing.T) {
 	resources := []string{"https://example.com/"}
-	cfg := &OrgConfig{AllowedRemoteResources: resources}
+	cfg := &orgConfig{AllowedRemoteResources: resources}
 	assert.Equal(t, resources, cfg.AllowedResources())
 }
 
 func TestOrgConfig_IssueCreationConfig(t *testing.T) {
 	ci := &CreateIssuesConfig{AllowTargets: AllowTargets{Orgs: []string{"my-org"}}}
-	cfg := &OrgConfig{CreateIssues: ci}
+	cfg := &orgConfig{CreateIssues: ci}
 	assert.Equal(t, ci, cfg.IssueCreationConfig())
 }
 
 func TestOrgConfig_IssueCreationConfig_Nil(t *testing.T) {
-	cfg := &OrgConfig{}
+	cfg := &orgConfig{}
 	assert.Nil(t, cfg.IssueCreationConfig())
 }
 
 func TestOrgConfig_ConfigVersion(t *testing.T) {
-	cfg := &OrgConfig{Version: "1"}
+	cfg := &orgConfig{Version: "1"}
 	assert.Equal(t, "1", cfg.ConfigVersion())
 }
 
 func TestOrgConfig_IsOrgMode(t *testing.T) {
-	cfg := &OrgConfig{}
+	cfg := &orgConfig{}
 	assert.True(t, cfg.IsOrgMode())
 }
 
 func TestOrgConfig_DispatchSettings(t *testing.T) {
 	dispatch := DispatchConfig{Platform: "github-actions", MintURL: "https://mint.example.com"}
-	cfg := &OrgConfig{Dispatch: dispatch}
+	cfg := &orgConfig{Dispatch: dispatch}
 	assert.Equal(t, dispatch, cfg.DispatchSettings())
 }
 
 func TestOrgConfig_InferenceSettings(t *testing.T) {
 	inference := InferenceConfig{Provider: "vertex"}
-	cfg := &OrgConfig{Inference: inference}
+	cfg := &orgConfig{Inference: inference}
 	assert.Equal(t, inference, cfg.InferenceSettings())
 }
 
 func TestOrgConfig_OrgRepoDefaults(t *testing.T) {
 	defaults := RepoDefaults{Roles: []string{"triage"}, Runtime: "claude"}
-	cfg := &OrgConfig{Defaults: defaults}
+	cfg := &orgConfig{Defaults: defaults}
 	assert.Equal(t, defaults, cfg.OrgRepoDefaults())
 }
 
@@ -75,25 +75,25 @@ func TestOrgConfig_RepoMap(t *testing.T) {
 		"repo-a": {Enabled: true},
 		"repo-b": {Enabled: false},
 	}
-	cfg := &OrgConfig{Repos: repos}
+	cfg := &orgConfig{Repos: repos}
 	assert.Equal(t, repos, cfg.RepoMap())
 }
 
 func TestOrgConfig_StatusNotifications(t *testing.T) {
 	sn := &StatusNotificationConfig{Comment: CommentNotificationConfig{Start: "enabled"}}
-	cfg := &OrgConfig{Defaults: RepoDefaults{StatusNotifications: sn}}
+	cfg := &orgConfig{Defaults: RepoDefaults{StatusNotifications: sn}}
 	assert.Equal(t, sn, cfg.StatusNotifications())
 }
 
 func TestOrgConfig_StatusNotifications_Nil(t *testing.T) {
-	cfg := &OrgConfig{}
+	cfg := &orgConfig{}
 	assert.Nil(t, cfg.StatusNotifications())
 }
 
 // --- OrgConfig setter tests ---
 
 func TestOrgConfig_SetKillSwitch(t *testing.T) {
-	cfg := &OrgConfig{}
+	cfg := &orgConfig{}
 	cfg.SetKillSwitch(true)
 	assert.True(t, cfg.KillSwitch)
 	cfg.SetKillSwitch(false)
@@ -101,28 +101,28 @@ func TestOrgConfig_SetKillSwitch(t *testing.T) {
 }
 
 func TestOrgConfig_SetAgents(t *testing.T) {
-	cfg := &OrgConfig{}
+	cfg := &orgConfig{}
 	agents := []AgentEntry{{Source: "harness/code.yaml"}}
 	cfg.SetAgents(agents)
 	assert.Equal(t, agents, cfg.Agents)
 }
 
 func TestOrgConfig_SetAllowedRemoteResources(t *testing.T) {
-	cfg := &OrgConfig{}
+	cfg := &orgConfig{}
 	resources := []string{"https://example.com/"}
 	cfg.SetAllowedRemoteResources(resources)
 	assert.Equal(t, resources, cfg.AllowedRemoteResources)
 }
 
 func TestOrgConfig_SetDispatch(t *testing.T) {
-	cfg := &OrgConfig{}
+	cfg := &orgConfig{}
 	d := DispatchConfig{Platform: "github-actions", MintURL: "https://mint.example.com"}
 	cfg.SetDispatch(d)
 	assert.Equal(t, d, cfg.Dispatch)
 }
 
 func TestOrgConfig_SetInference(t *testing.T) {
-	cfg := &OrgConfig{}
+	cfg := &orgConfig{}
 	i := InferenceConfig{Provider: "vertex"}
 	cfg.SetInference(i)
 	assert.Equal(t, i, cfg.Inference)
@@ -132,12 +132,12 @@ func TestOrgConfig_SetInference(t *testing.T) {
 
 func TestPerRepoConfig_AgentEntries(t *testing.T) {
 	agents := []AgentEntry{{Source: "harness/triage.yaml"}}
-	cfg := &PerRepoConfig{Agents: agents}
+	cfg := &perRepoConfig{Agents: agents}
 	assert.Equal(t, agents, cfg.AgentEntries())
 }
 
 func TestPerRepoConfig_IsKillSwitchActive(t *testing.T) {
-	cfg := &PerRepoConfig{KillSwitch: true}
+	cfg := &perRepoConfig{KillSwitch: true}
 	assert.True(t, cfg.IsKillSwitchActive())
 	cfg.KillSwitch = false
 	assert.False(t, cfg.IsKillSwitchActive())
@@ -145,46 +145,46 @@ func TestPerRepoConfig_IsKillSwitchActive(t *testing.T) {
 
 func TestPerRepoConfig_AllowedResources(t *testing.T) {
 	resources := []string{"https://example.com/"}
-	cfg := &PerRepoConfig{AllowedRemoteResources: resources}
+	cfg := &perRepoConfig{AllowedRemoteResources: resources}
 	assert.Equal(t, resources, cfg.AllowedResources())
 }
 
 func TestPerRepoConfig_IssueCreationConfig(t *testing.T) {
 	ci := &CreateIssuesConfig{AllowTargets: AllowTargets{Repos: []string{"org/repo"}}}
-	cfg := &PerRepoConfig{CreateIssues: ci}
+	cfg := &perRepoConfig{CreateIssues: ci}
 	assert.Equal(t, ci, cfg.IssueCreationConfig())
 }
 
 func TestPerRepoConfig_IssueCreationConfig_Nil(t *testing.T) {
-	cfg := &PerRepoConfig{}
+	cfg := &perRepoConfig{}
 	assert.Nil(t, cfg.IssueCreationConfig())
 }
 
 func TestPerRepoConfig_ConfigVersion(t *testing.T) {
-	cfg := &PerRepoConfig{Version: "1"}
+	cfg := &perRepoConfig{Version: "1"}
 	assert.Equal(t, "1", cfg.ConfigVersion())
 }
 
 func TestPerRepoConfig_IsOrgMode(t *testing.T) {
-	cfg := &PerRepoConfig{}
+	cfg := &perRepoConfig{}
 	assert.False(t, cfg.IsOrgMode())
 }
 
 func TestPerRepoConfig_ConfigRoles(t *testing.T) {
 	roles := []string{"triage", "coder"}
-	cfg := &PerRepoConfig{Roles: roles}
+	cfg := &perRepoConfig{Roles: roles}
 	assert.Equal(t, roles, cfg.ConfigRoles())
 }
 
 func TestPerRepoConfig_ConfigRuntime(t *testing.T) {
-	cfg := &PerRepoConfig{Runtime: "claude"}
+	cfg := &perRepoConfig{Runtime: "claude"}
 	assert.Equal(t, "claude", cfg.ConfigRuntime())
 }
 
 // --- PerRepoConfig setter tests ---
 
 func TestPerRepoConfig_SetKillSwitch(t *testing.T) {
-	cfg := &PerRepoConfig{}
+	cfg := &perRepoConfig{}
 	cfg.SetKillSwitch(true)
 	assert.True(t, cfg.KillSwitch)
 	cfg.SetKillSwitch(false)
@@ -192,77 +192,17 @@ func TestPerRepoConfig_SetKillSwitch(t *testing.T) {
 }
 
 func TestPerRepoConfig_SetAgents(t *testing.T) {
-	cfg := &PerRepoConfig{}
+	cfg := &perRepoConfig{}
 	agents := []AgentEntry{{Source: "harness/code.yaml"}}
 	cfg.SetAgents(agents)
 	assert.Equal(t, agents, cfg.Agents)
 }
 
 func TestPerRepoConfig_SetAllowedRemoteResources(t *testing.T) {
-	cfg := &PerRepoConfig{}
+	cfg := &perRepoConfig{}
 	resources := []string{"https://example.com/"}
 	cfg.SetAllowedRemoteResources(resources)
 	assert.Equal(t, resources, cfg.AllowedRemoteResources)
-}
-
-// --- DirConfig getter tests ---
-
-func TestDirConfig_AgentEntries(t *testing.T) {
-	agents := []AgentEntry{{Source: "harness/triage.yaml"}}
-	dc := &DirConfig{Agents: agents}
-	assert.Equal(t, agents, dc.AgentEntries())
-}
-
-func TestDirConfig_IsKillSwitchActive(t *testing.T) {
-	dc := &DirConfig{KillSwitch: true}
-	assert.True(t, dc.IsKillSwitchActive())
-	dc.KillSwitch = false
-	assert.False(t, dc.IsKillSwitchActive())
-}
-
-func TestDirConfig_AllowedResources(t *testing.T) {
-	resources := []string{"https://example.com/"}
-	dc := &DirConfig{AllowedRemoteResources: resources}
-	assert.Equal(t, resources, dc.AllowedResources())
-}
-
-func TestDirConfig_IsOrgMode(t *testing.T) {
-	dc := &DirConfig{IsOrg: true}
-	assert.True(t, dc.IsOrgMode())
-	dc.IsOrg = false
-	assert.False(t, dc.IsOrgMode())
-}
-
-func TestDirConfig_ConfigVersion_Org(t *testing.T) {
-	dc := &DirConfig{Org: &OrgConfig{Version: "1"}}
-	assert.Equal(t, "1", dc.ConfigVersion())
-}
-
-func TestDirConfig_ConfigVersion_PerRepo(t *testing.T) {
-	dc := &DirConfig{PerRepo: &PerRepoConfig{Version: "1"}}
-	assert.Equal(t, "1", dc.ConfigVersion())
-}
-
-func TestDirConfig_ConfigVersion_BothNil(t *testing.T) {
-	dc := &DirConfig{}
-	assert.Equal(t, "", dc.ConfigVersion())
-}
-
-func TestDirConfig_IssueCreationConfig_Org(t *testing.T) {
-	ci := &CreateIssuesConfig{AllowTargets: AllowTargets{Orgs: []string{"my-org"}}}
-	dc := &DirConfig{Org: &OrgConfig{CreateIssues: ci}}
-	assert.Equal(t, ci, dc.IssueCreationConfig())
-}
-
-func TestDirConfig_IssueCreationConfig_PerRepo(t *testing.T) {
-	ci := &CreateIssuesConfig{AllowTargets: AllowTargets{Repos: []string{"org/repo"}}}
-	dc := &DirConfig{PerRepo: &PerRepoConfig{CreateIssues: ci}}
-	assert.Equal(t, ci, dc.IssueCreationConfig())
-}
-
-func TestDirConfig_IssueCreationConfig_BothNil(t *testing.T) {
-	dc := &DirConfig{}
-	assert.Nil(t, dc.IssueCreationConfig())
 }
 
 // --- LoadConfig factory tests ---
@@ -371,35 +311,31 @@ func TestLoadConfigWriter_Mutate(t *testing.T) {
 // --- Interface satisfaction tests ---
 
 func TestOrgConfig_SatisfiesConfigReader(t *testing.T) {
-	var _ ConfigReader = (*OrgConfig)(nil)
+	var _ ConfigReader = (*orgConfig)(nil)
 }
 
 func TestPerRepoConfig_SatisfiesConfigReader(t *testing.T) {
-	var _ ConfigReader = (*PerRepoConfig)(nil)
-}
-
-func TestDirConfig_SatisfiesConfigReader(t *testing.T) {
-	var _ ConfigReader = (*DirConfig)(nil)
+	var _ ConfigReader = (*perRepoConfig)(nil)
 }
 
 func TestOrgConfig_SatisfiesOrgConfigReader(t *testing.T) {
-	var _ OrgConfigReader = (*OrgConfig)(nil)
+	var _ OrgConfigReader = (*orgConfig)(nil)
 }
 
 func TestPerRepoConfig_SatisfiesPerRepoConfigReader(t *testing.T) {
-	var _ PerRepoConfigReader = (*PerRepoConfig)(nil)
+	var _ PerRepoConfigReader = (*perRepoConfig)(nil)
 }
 
 func TestOrgConfig_SatisfiesConfigWriter(t *testing.T) {
-	var _ ConfigWriter = (*OrgConfig)(nil)
+	var _ ConfigWriter = (*orgConfig)(nil)
 }
 
 func TestPerRepoConfig_SatisfiesConfigWriter(t *testing.T) {
-	var _ ConfigWriter = (*PerRepoConfig)(nil)
+	var _ ConfigWriter = (*perRepoConfig)(nil)
 }
 
 func TestOrgConfig_SatisfiesOrgConfigWriter(t *testing.T) {
-	var _ OrgConfigWriter = (*OrgConfig)(nil)
+	var _ OrgConfigWriter = (*orgConfig)(nil)
 }
 
 // --- ConfigWriter integration tests ---
@@ -445,4 +381,44 @@ func TestOrgConfigWriter_RoundTrip(t *testing.T) {
 	i := InferenceConfig{Provider: "vertex"}
 	w.SetInference(i)
 	assert.Equal(t, i, w.InferenceSettings())
+}
+
+func TestOrgConfig_SetDefaultRuntime(t *testing.T) {
+	cfg := &orgConfig{Defaults: RepoDefaults{Runtime: "claude"}}
+	cfg.SetDefaultRuntime("dummy")
+	assert.Equal(t, "dummy", cfg.OrgRepoDefaults().Runtime)
+}
+
+func TestOrgConfig_SetRepo(t *testing.T) {
+	cfg := &orgConfig{Repos: map[string]RepoConfig{
+		"existing": {Enabled: true},
+	}}
+	// Update existing entry.
+	cfg.SetRepo("existing", RepoConfig{Enabled: false})
+	assert.False(t, cfg.RepoMap()["existing"].Enabled)
+	// Add new entry.
+	cfg.SetRepo("new-repo", RepoConfig{Enabled: true})
+	assert.True(t, cfg.RepoMap()["new-repo"].Enabled)
+}
+
+func TestOrgConfig_SetRepo_NilMap(t *testing.T) {
+	cfg := &orgConfig{}
+	cfg.SetRepo("repo-a", RepoConfig{Enabled: true})
+	assert.True(t, cfg.RepoMap()["repo-a"].Enabled)
+}
+
+func TestOrgConfigWriter_SetDefaultRuntime_RoundTrip(t *testing.T) {
+	var w OrgConfigWriter = NewOrgConfig(nil, nil, nil, "", "")
+	assert.Equal(t, "claude", w.OrgRepoDefaults().Runtime)
+	w.SetDefaultRuntime("dummy")
+	assert.Equal(t, "dummy", w.OrgRepoDefaults().Runtime)
+}
+
+func TestOrgConfigWriter_SetRepo_RoundTrip(t *testing.T) {
+	var w OrgConfigWriter = NewOrgConfig(
+		[]string{"repo-a"}, []string{"repo-a"}, nil, "", "",
+	)
+	assert.True(t, w.RepoMap()["repo-a"].Enabled)
+	w.SetRepo("repo-a", RepoConfig{Enabled: false})
+	assert.False(t, w.RepoMap()["repo-a"].Enabled)
 }

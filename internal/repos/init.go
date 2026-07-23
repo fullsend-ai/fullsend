@@ -116,7 +116,7 @@ func initSingleRepo(ctx context.Context, cfg InitConfig, client forge.Client,
 	progress(owner+"/"+repo, "discover", "checking installation status")
 
 	// Check for per-org config if the repo isn't per-repo installed.
-	var orgCfg *config.OrgConfig
+	var orgCfg config.OrgConfigReader
 	progress(owner, "discover", "checking for per-org config")
 	configData, err := client.GetFileContent(ctx, owner, forge.ConfigRepoName, "config.yaml")
 	if err == nil {
@@ -162,7 +162,7 @@ func initOrg(ctx context.Context, cfg InitConfig, client forge.Client,
 	}
 
 	// Read per-org config if it exists.
-	var orgCfg *config.OrgConfig
+	var orgCfg config.OrgConfigReader
 	progress(org, "discover", "checking for per-org config")
 	configData, err := client.GetFileContent(ctx, org, forge.ConfigRepoName, "config.yaml")
 	if err == nil {
@@ -262,7 +262,7 @@ type discoveryResult struct {
 }
 
 func discoverReposParallel(ctx context.Context, client forge.Client,
-	org string, repos []forge.Repository, orgCfg *config.OrgConfig,
+	org string, repos []forge.Repository, orgCfg config.OrgConfigReader,
 	maxConcurrency int, progress ProgressFunc) discoveryResult {
 
 	type indexedRepo struct {
@@ -320,7 +320,7 @@ func discoverReposParallel(ctx context.Context, client forge.Client,
 
 // discoverRepo checks the installation status of a single repository.
 func discoverRepo(ctx context.Context, client forge.Client,
-	owner, repo string, orgCfg *config.OrgConfig, progress ProgressFunc) (DiscoveredRepo, error) {
+	owner, repo string, orgCfg config.OrgConfigReader, progress ProgressFunc) (DiscoveredRepo, error) {
 
 	fullName := owner + "/" + repo
 	progress(fullName, "discover", "reading variables")

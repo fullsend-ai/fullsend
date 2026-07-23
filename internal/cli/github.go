@@ -216,7 +216,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 
 	perRepoCfg := config.NewPerRepoConfig(roles, cfg.target)
 	if cfg.runtime != "" {
-		perRepoCfg.Runtime = cfg.runtime
+		perRepoCfg.SetRuntime(cfg.runtime)
 	}
 	if err := perRepoCfg.Validate(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
@@ -441,7 +441,11 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 	}
 
 	orgCfg := config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
-	orgCfg.Dispatch.Mode = "oidc-mint"
+	{
+		d := orgCfg.DispatchSettings()
+		d.Mode = "oidc-mint"
+		orgCfg.SetDispatch(d)
+	}
 
 	user, err := client.GetAuthenticatedUser(ctx)
 	if err != nil {
@@ -487,7 +491,11 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 		// Rebuild with real credentials.
 		agentCreds = creds
 		orgCfg = config.NewOrgConfig(repoNames, enabledRepos, roles, inferenceProviderName, org)
-		orgCfg.Dispatch.Mode = "oidc-mint"
+		{
+			d := orgCfg.DispatchSettings()
+			d.Mode = "oidc-mint"
+			orgCfg.SetDispatch(d)
+		}
 
 		stack = buildLayerStack(ctx, org, client, orgCfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, cfg.vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA, cfg.direct)
 	}

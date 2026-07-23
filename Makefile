@@ -3,7 +3,7 @@
        mindmap go-build go-test go-lint go-fmt go-vet go-tidy \
        lint-md-links script-test test \
        e2e-test behaviour-test lint-eval-cases functional-tests \
-       wasm-build
+       wasm-build mint-cf-worker-test
 
 # Let Go automatically download the toolchain version required by go.mod.
 # This ensures local builds use the right version without manual intervention.
@@ -33,6 +33,7 @@ help:
 	@echo "  lint-eval-cases      - Lint eval case definitions (annotations.yaml completeness)"
 	@echo "  functional-tests     - Run functional agent tests (requires EVAL_ORG, FULLSEND_DIR, GH_TOKEN, GCP creds)"
 	@echo "  wasm-build           - Build mintcore WASM binary and report gzip size vs Workers limits"
+	@echo "  mint-cf-worker-test  - Run CF mint Worker bridge smoke tests (stub until workersrc lands)"
 
 # Install all development tools needed for linting, formatting, and pre-commit hooks.
 # Prerequisites: uv (https://docs.astral.sh/uv/) and go (https://go.dev/)
@@ -139,6 +140,13 @@ wasm-build:
 		exit 1; \
 	fi
 	@echo "==> WASM build OK"
+
+# Stub CI contract for CF mint Worker bridge smoke tests (#5481).
+# Populated by #5427 / follow-up with wasm-stage + workersrc npm test.
+# Do not rename: .github/workflows/mint-cf-worker-test.yml calls this target.
+mint-cf-worker-test:
+	@echo "==> mint-cf-worker-test: stub (no CF Worker bridge tests yet)"
+	@echo "    Replace this stub when internal/dispatch/cf/workersrc lands (#5427)."
 
 lint-md-links:
 	lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments '**/*.md'

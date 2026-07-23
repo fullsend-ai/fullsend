@@ -14,7 +14,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-func newTestConfig(t *testing.T) *config.OrgConfig {
+func newTestConfig(t *testing.T) config.OrgConfigWriter {
 	t.Helper()
 	return config.NewOrgConfig(
 		[]string{"repo-a", "repo-b"},

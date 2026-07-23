@@ -23,19 +23,19 @@ func Resolve(name string) (Backend, error) {
 }
 
 // ResolveFromConfig selects the runtime backend from org config defaults.
-func ResolveFromConfig(cfg *config.OrgConfig) (Backend, error) {
+func ResolveFromConfig(cfg config.OrgConfigReader) (Backend, error) {
 	rt := "claude"
-	if cfg != nil && cfg.Defaults.Runtime != "" {
-		rt = cfg.Defaults.Runtime
+	if cfg != nil && cfg.OrgRepoDefaults().Runtime != "" {
+		rt = cfg.OrgRepoDefaults().Runtime
 	}
 	return Resolve(rt)
 }
 
 // ResolveFromPerRepoConfig selects the runtime backend from per-repo config.
-func ResolveFromPerRepoConfig(cfg *config.PerRepoConfig) (Backend, error) {
+func ResolveFromPerRepoConfig(cfg config.PerRepoConfigReader) (Backend, error) {
 	rt := "claude"
-	if cfg != nil && cfg.Runtime != "" {
-		rt = cfg.Runtime
+	if cfg != nil && cfg.ConfigRuntime() != "" {
+		rt = cfg.ConfigRuntime()
 	}
 	return Resolve(rt)
 }

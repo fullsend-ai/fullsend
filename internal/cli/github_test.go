@@ -243,8 +243,8 @@ func TestGitHubEnrollCmd_DelegatesCorrectly(t *testing.T) {
 	require.Len(t, client.CreatedFiles, 1)
 	updatedCfg, err := config.ParseOrgConfig(client.CreatedFiles[0].Content)
 	require.NoError(t, err)
-	assert.True(t, updatedCfg.Repos["web-app"].Enabled)
-	assert.False(t, updatedCfg.Repos["api"].Enabled)
+	assert.True(t, updatedCfg.RepoMap()["web-app"].Enabled)
+	assert.False(t, updatedCfg.RepoMap()["api"].Enabled)
 }
 
 // --- Unenroll command tests ---
@@ -991,7 +991,7 @@ func TestRunGitHubSetupPerRepo_RuntimeInConfig(t *testing.T) {
 	require.NotEmpty(t, cfgContent, "expected .fullsend/config.yaml in committed files")
 	cfg, err := config.ParsePerRepoConfig(cfgContent)
 	require.NoError(t, err)
-	assert.Equal(t, "dummy", cfg.Runtime)
+	assert.Equal(t, "dummy", cfg.ConfigRuntime())
 }
 
 func TestRunGitHubSetupPerRepo_InvalidRuntime(t *testing.T) {

@@ -16,6 +16,17 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
+func TestDispatchDetectionWindow_AtLeast4Minutes(t *testing.T) {
+	t.Parallel()
+
+	// The dispatch detection window is dispatchMaxTry × dispatchPoll.
+	// It must be at least 4 minutes to tolerate slow GitHub webhook
+	// delivery. See issue #5503.
+	window := time.Duration(dispatchMaxTry) * dispatchPoll
+	assert.GreaterOrEqual(t, window, 4*time.Minute,
+		"dispatch detection window (%v) should be at least 4 minutes", window)
+}
+
 func TestSelectWorkflowRun_ReturnsFailedRun(t *testing.T) {
 	t.Parallel()
 

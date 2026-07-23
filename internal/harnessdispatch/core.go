@@ -24,11 +24,11 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 		return nil, fmt.Errorf("config dir is required")
 	}
 
-	dirCfg, err := config.LoadFromDir(opts.ConfigDir, config.LoadOpts{MissingOK: true})
+	dirCfg, err := config.LoadConfig(opts.ConfigDir, config.LoadOpts{MissingOK: true})
 	if err != nil {
 		return nil, err
 	}
-	if dirCfg.KillSwitch {
+	if dirCfg.IsKillSwitchActive() {
 		return nil, nil
 	}
 

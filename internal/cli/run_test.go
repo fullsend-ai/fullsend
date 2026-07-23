@@ -307,10 +307,14 @@ func TestTryLoadFullsendConfig_PerRepoFallback(t *testing.T) {
 		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
 		"https://raw.githubusercontent.com/fullsend-ai/agents/",
 	}
-	assert.Equal(t, expected, cfg.AllowedRemoteResources)
-	require.Len(t, cfg.Agents, 1)
-	assert.Equal(t, "lint", cfg.Agents[0].Name)
-	assert.Equal(t, []string{"triage"}, cfg.Defaults.Roles)
+	assert.Equal(t, expected, cfg.AllowedResources())
+	require.Len(t, cfg.AgentEntries(), 1)
+	assert.Equal(t, "lint", cfg.AgentEntries()[0].Name)
+	if prc, ok := cfg.(config.PerRepoConfigReader); ok {
+		assert.Equal(t, []string{"triage"}, prc.ConfigRoles())
+	} else {
+		assert.Equal(t, []string{"triage"}, cfg.(config.OrgConfigReader).OrgRepoDefaults().Roles)
+	}
 }
 
 func TestTryLoadFullsendConfig_MissingFile(t *testing.T) {
@@ -372,7 +376,7 @@ func TestRequireFullsendConfig_MalformedYAML(t *testing.T) {
 	cfg, err := requireFullsendConfig(path, printer)
 	assert.Nil(t, cfg)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing config")
+	assert.Contains(t, err.Error(), "parsing org config")
 }
 
 func TestRequireFullsendConfig_PerRepoFallback(t *testing.T) {
@@ -391,8 +395,12 @@ func TestRequireFullsendConfig_PerRepoFallback(t *testing.T) {
 		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
 		"https://raw.githubusercontent.com/fullsend-ai/agents/",
 	}
-	assert.Equal(t, expected, cfg.AllowedRemoteResources)
-	assert.Equal(t, []string{"triage"}, cfg.Defaults.Roles)
+	assert.Equal(t, expected, cfg.AllowedResources())
+	if prc, ok := cfg.(config.PerRepoConfigReader); ok {
+		assert.Equal(t, []string{"triage"}, prc.ConfigRoles())
+	} else {
+		assert.Equal(t, []string{"triage"}, cfg.(config.OrgConfigReader).OrgRepoDefaults().Roles)
+	}
 }
 
 func TestIsPerRepoYAML(t *testing.T) {
@@ -438,13 +446,13 @@ func TestTryLoadFullsendConfig_OrgConfig(t *testing.T) {
 	printer := ui.New(io.Discard)
 	cfg := tryLoadFullsendConfig(path, printer)
 	require.NotNil(t, cfg)
-	assert.Equal(t, "github", cfg.Dispatch.Platform)
+	assert.Equal(t, "github", cfg.(config.OrgConfigReader).DispatchSettings().Platform)
 	expected := []string{
 		"https://example.com/",
 		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
 		"https://raw.githubusercontent.com/fullsend-ai/agents/",
 	}
-	assert.Equal(t, expected, cfg.AllowedRemoteResources)
+	assert.Equal(t, expected, cfg.AllowedResources())
 }
 
 func TestTryLoadFullsendConfig_ExplicitEmptyAllowlist(t *testing.T) {
@@ -457,7 +465,7 @@ func TestTryLoadFullsendConfig_ExplicitEmptyAllowlist(t *testing.T) {
 	printer := ui.New(io.Discard)
 	cfg := tryLoadFullsendConfig(path, printer)
 	require.NotNil(t, cfg)
-	assert.Empty(t, cfg.AllowedRemoteResources, "explicit empty [] must preserve deny-all")
+	assert.Empty(t, cfg.AllowedResources(), "explicit empty [] must preserve deny-all")
 }
 
 func TestTryLoadFullsendConfig_OmittedAllowlist(t *testing.T) {
@@ -470,7 +478,7 @@ func TestTryLoadFullsendConfig_OmittedAllowlist(t *testing.T) {
 	printer := ui.New(io.Discard)
 	cfg := tryLoadFullsendConfig(path, printer)
 	require.NotNil(t, cfg)
-	assert.Equal(t, config.DefaultAllowedRemoteResources(), cfg.AllowedRemoteResources,
+	assert.Equal(t, config.DefaultAllowedRemoteResources(), cfg.AllowedResources(),
 		"omitted field must get defaults")
 }
 
@@ -485,7 +493,7 @@ func TestRequireFullsendConfig_OrgGetsDefaultAllowlist(t *testing.T) {
 	cfg, err := requireFullsendConfig(path, printer)
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
-	assert.Equal(t, config.DefaultAllowedRemoteResources(), cfg.AllowedRemoteResources)
+	assert.Equal(t, config.DefaultAllowedRemoteResources(), cfg.AllowedResources())
 }
 
 func TestRequireFullsendConfig_ExplicitEmptyAllowlist(t *testing.T) {
@@ -499,7 +507,7 @@ func TestRequireFullsendConfig_ExplicitEmptyAllowlist(t *testing.T) {
 	cfg, err := requireFullsendConfig(path, printer)
 	require.NoError(t, err)
 	require.NotNil(t, cfg)
-	assert.Empty(t, cfg.AllowedRemoteResources, "explicit empty [] must preserve deny-all")
+	assert.Empty(t, cfg.AllowedResources(), "explicit empty [] must preserve deny-all")
 }
 
 func TestRequireFullsendConfig_PerRepoMalformed(t *testing.T) {
@@ -570,7 +578,7 @@ func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing config")
+	assert.Contains(t, err.Error(), "parsing org config")
 }
 
 func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
@@ -752,7 +760,7 @@ func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing config")
+	assert.Contains(t, err.Error(), "parsing org config")
 }
 
 func TestBuildScanContextCommand_SourcesEnv(t *testing.T) {
@@ -1026,12 +1034,11 @@ func TestResolveAgentSource_ConfigLocalPath(t *testing.T) {
 		0o644,
 	))
 
-	orgCfg := &config.OrgConfig{
-		Agents: []config.AgentEntry{
-			{Source: "harness/custom.yaml"},
-		},
-		AllowedRemoteResources: []string{"https://example.com/"},
-	}
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	orgCfg.SetAgents([]config.AgentEntry{
+		{Source: "harness/custom.yaml"},
+	})
+	orgCfg.SetAllowedRemoteResources([]string{"https://example.com/"})
 
 	printer := ui.New(io.Discard)
 	path, deps, err := resolveAgentSource(context.Background(), dir, "custom", nil, orgCfg, harness.ComposeOpts{}, printer)
@@ -1044,12 +1051,11 @@ func TestResolveAgentSource_ConfigLocalPathNotFound(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
-	orgCfg := &config.OrgConfig{
-		Agents: []config.AgentEntry{
-			{Source: "harness/missing.yaml"},
-		},
-		AllowedRemoteResources: []string{"https://example.com/"},
-	}
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	orgCfg.SetAgents([]config.AgentEntry{
+		{Source: "harness/missing.yaml"},
+	})
+	orgCfg.SetAllowedRemoteResources([]string{"https://example.com/"})
 
 	printer := ui.New(io.Discard)
 	_, _, err := resolveAgentSource(context.Background(), dir, "missing", nil, orgCfg, harness.ComposeOpts{}, printer)
@@ -1060,12 +1066,11 @@ func TestResolveAgentSource_ConfigLocalPathNotFound(t *testing.T) {
 func TestResolveAgentSource_ConfigLocalPathAbsoluteRejected(t *testing.T) {
 	dir := t.TempDir()
 
-	orgCfg := &config.OrgConfig{
-		Agents: []config.AgentEntry{
-			{Source: "/etc/evil.yaml"},
-		},
-		AllowedRemoteResources: []string{"https://example.com/"},
-	}
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	orgCfg.SetAgents([]config.AgentEntry{
+		{Source: "/etc/evil.yaml"},
+	})
+	orgCfg.SetAllowedRemoteResources([]string{"https://example.com/"})
 
 	printer := ui.New(io.Discard)
 	_, _, err := resolveAgentSource(context.Background(), dir, "evil", nil, orgCfg, harness.ComposeOpts{}, printer)
@@ -1076,12 +1081,11 @@ func TestResolveAgentSource_ConfigLocalPathAbsoluteRejected(t *testing.T) {
 func TestResolveAgentSource_ConfigLocalPathTraversalRejected(t *testing.T) {
 	dir := t.TempDir()
 
-	orgCfg := &config.OrgConfig{
-		Agents: []config.AgentEntry{
-			{Source: "harness/../../etc/passwd"},
-		},
-		AllowedRemoteResources: []string{"https://example.com/"},
-	}
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	orgCfg.SetAgents([]config.AgentEntry{
+		{Source: "harness/../../etc/passwd"},
+	})
+	orgCfg.SetAllowedRemoteResources([]string{"https://example.com/"})
 
 	printer := ui.New(io.Discard)
 	_, _, err := resolveAgentSource(context.Background(), dir, "passwd", nil, orgCfg, harness.ComposeOpts{}, printer)
@@ -1151,11 +1155,10 @@ func TestResolveAgentSource_DisabledAgentBlocksFallback(t *testing.T) {
 	))
 
 	f := false
-	orgCfg := &config.OrgConfig{
-		Agents: []config.AgentEntry{
-			{Name: "triage", Enabled: &f},
-		},
-	}
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	orgCfg.SetAgents([]config.AgentEntry{
+		{Name: "triage", Enabled: &f},
+	})
 
 	printer := ui.New(io.Discard)
 	_, _, err := resolveAgentSource(context.Background(), dir, "triage", nil, orgCfg, harness.ComposeOpts{}, printer)
@@ -1174,11 +1177,10 @@ func TestResolveAgentSource_DisabledFirstPartyAgentBlocksFallback(t *testing.T) 
 	))
 
 	f := false
-	orgCfg := &config.OrgConfig{
-		Agents: []config.AgentEntry{
-			{Name: "retro", Enabled: &f},
-		},
-	}
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	orgCfg.SetAgents([]config.AgentEntry{
+		{Name: "retro", Enabled: &f},
+	})
 
 	fakeClient := forge.NewFakeClient()
 	printer := ui.New(io.Discard)
@@ -1198,11 +1200,10 @@ func TestResolveAgentSource_SuppressionOnlyEntryBlocksFallback(t *testing.T) {
 
 	// Suppression-only entry: enabled=false, no source.
 	f := false
-	orgCfg := &config.OrgConfig{
-		Agents: []config.AgentEntry{
-			{Name: "retro", Enabled: &f},
-		},
-	}
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	orgCfg.SetAgents([]config.AgentEntry{
+		{Name: "retro", Enabled: &f},
+	})
 
 	printer := ui.New(io.Discard)
 	_, _, err := resolveAgentSource(context.Background(), dir, "retro", nil, orgCfg, harness.ComposeOpts{}, printer)
@@ -1220,11 +1221,10 @@ func TestResolveAgentSource_EnabledAgentStillResolves(t *testing.T) {
 	))
 
 	tr := true
-	orgCfg := &config.OrgConfig{
-		Agents: []config.AgentEntry{
-			{Name: "custom", Source: "harness/custom.yaml", Enabled: &tr},
-		},
-	}
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	orgCfg.SetAgents([]config.AgentEntry{
+		{Name: "custom", Source: "harness/custom.yaml", Enabled: &tr},
+	})
 
 	printer := ui.New(io.Discard)
 	path, _, err := resolveAgentSource(context.Background(), dir, "custom", nil, orgCfg, harness.ComposeOpts{}, printer)
@@ -3342,6 +3342,8 @@ func TestMintAgentToken_RepoResolutionError(t *testing.T) {
 	defer func() { statusMintToken = origMint }()
 
 	// No REPO_FULL_NAME and no MINT_REPOS set
+	t.Setenv("REPO_FULL_NAME", "")
+	t.Setenv("MINT_REPOS", "")
 	printer := ui.New(io.Discard)
 	_, _, err := mintAgentToken(context.Background(), "coder", "https://mint.example.com", printer)
 	require.Error(t, err)
@@ -3429,6 +3431,8 @@ func TestResolveMintRepos_MINT_REPOS_TakesPrecedence(t *testing.T) {
 }
 
 func TestResolveMintRepos_NeitherSet(t *testing.T) {
+	t.Setenv("REPO_FULL_NAME", "")
+	t.Setenv("MINT_REPOS", "")
 	_, err := resolveMintRepos()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "MINT_REPOS or REPO_FULL_NAME must be set")
@@ -3753,11 +3757,16 @@ func TestRunAgent_StatusNotifierSetup(t *testing.T) {
 func TestResolveBackendFromConfigData_OrgConfig(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, config.DefaultAgentRoles(), "", "acme")
-	cfg.Defaults.Runtime = "dummy"
-	data, err := cfg.Marshal()
-	require.NoError(t, err)
-
+	data := []byte(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage]
+  runtime: dummy
+repos:
+  widget:
+    enabled: true
+`)
 	backend, err := resolveBackendFromConfigData(data)
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", backend.Runtime.Name())
@@ -3767,7 +3776,7 @@ func TestResolveBackendFromConfigData_PerRepoConfig(t *testing.T) {
 	t.Parallel()
 
 	cfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), "acme/test-repo")
-	cfg.Runtime = "dummy"
+	cfg.SetRuntime("dummy")
 	data, err := cfg.Marshal()
 	require.NoError(t, err)
 
@@ -3787,12 +3796,17 @@ func TestResolveBackendFromConfigData_Invalid(t *testing.T) {
 func TestResolveBackendFromConfigData_UnknownRuntime(t *testing.T) {
 	t.Parallel()
 
-	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, config.DefaultAgentRoles(), "", "acme")
-	cfg.Defaults.Runtime = "nonexistent"
-	data, err := cfg.Marshal()
-	require.NoError(t, err)
-
-	_, err = resolveBackendFromConfigData(data)
+	data := []byte(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage]
+  runtime: nonexistent
+repos:
+  widget:
+    enabled: true
+`)
+	_, err := resolveBackendFromConfigData(data)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolving runtime")
 }
@@ -3825,7 +3839,7 @@ func TestBackendFromConfigFile_PerRepoConfig(t *testing.T) {
 
 	dir := t.TempDir()
 	cfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), "acme/test-repo")
-	cfg.Runtime = "dummy"
+	cfg.SetRuntime("dummy")
 	data, err := cfg.Marshal()
 	require.NoError(t, err)
 	path := filepath.Join(dir, "config.yaml")
@@ -3841,7 +3855,7 @@ func TestBackendFromConfigFile_PerRepoNestedConfig(t *testing.T) {
 
 	dir := t.TempDir()
 	cfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), "acme/test-repo")
-	cfg.Runtime = "dummy"
+	cfg.SetRuntime("dummy")
 	data, err := cfg.Marshal()
 	require.NoError(t, err)
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".fullsend"), 0o755))
@@ -3871,14 +3885,20 @@ func TestBackendFromConfigFile_ResolveError(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	cfg := config.NewOrgConfig([]string{"widget"}, []string{"widget"}, config.DefaultAgentRoles(), "", "acme")
-	cfg.Defaults.Runtime = "nonexistent"
-	data, err := cfg.Marshal()
-	require.NoError(t, err)
+	data := []byte(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage]
+  runtime: nonexistent
+repos:
+  widget:
+    enabled: true
+`)
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, data, 0o644))
 
-	_, _, err = backendFromConfigFile(path)
+	_, _, err := backendFromConfigFile(path)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolving runtime")
 }

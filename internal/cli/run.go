@@ -2659,8 +2659,15 @@ func setupStatusNotifier(fullsendDir string, role string, sOpts statusOpts, prin
 
 	var notifyCfg config.StatusNotificationConfig
 	orgConfigPath := filepath.Join(fullsendDir, "config.yaml")
-	if orgCfg := tryLoadFullsendConfig(orgConfigPath, printer); orgCfg != nil && orgCfg.StatusNotifications() != nil {
-		notifyCfg = *orgCfg.StatusNotifications()
+	if orgCfg := tryLoadFullsendConfig(orgConfigPath, printer); orgCfg != nil {
+		// tryLoadFullsendConfig returns a ConfigWriter which may wrap either
+		// orgConfig or perRepoConfig. Only orgConfig implements OrgConfigReader
+		// (and carries StatusNotifications). When the loaded config is per-repo,
+		// this assertion intentionally falls through, leaving notifyCfg at its
+		// zero value — per-repo configs do not support status notifications.
+		if ocr, ok := orgCfg.(config.OrgConfigReader); ok && ocr.StatusNotifications() != nil {
+			notifyCfg = *ocr.StatusNotifications()
+		}
 	}
 
 	sha := os.Getenv("GITHUB_SHA")
@@ -2904,7 +2911,7 @@ func validateRepoNames(repos []string) error {
 // (fullsend-ai/agents), then to disk-based lookup.
 // Returns the local filesystem path to the harness (cached for URL sources)
 // and any fetch dependencies from URL-based agent resolution.
-func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forgeClient forge.Client, orgCfg *config.OrgConfig, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, error) {
+func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forgeClient forge.Client, orgCfg config.ConfigReader, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, error) {
 	if orgCfg == nil || len(orgCfg.AgentEntries()) == 0 {
 		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
 			return path, deps, nil
@@ -2936,7 +2943,7 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 		// An explicitly disabled agent must not fall through to the
 		// agents-repo fallback or disk lookup — that would silently
 		// re-enable it. Return a clear error instead.
-		if config.IsAgentExplicitlyDisabled(orgCfg.Agents, agentName) {
+		if config.IsAgentExplicitlyDisabled(orgCfg.AgentEntries(), agentName) {
 			printer.StepFail(fmt.Sprintf("Agent %s is disabled in config", agentName))
 			return "", nil, fmt.Errorf("agent %q is explicitly disabled in config", agentName)
 		}

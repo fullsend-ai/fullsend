@@ -52,24 +52,24 @@ func TestNewOrgConfig(t *testing.T) {
 
 	cfg := NewOrgConfig(allRepos, enabledRepos, roles, "", "")
 
-	assert.Equal(t, "1", cfg.Version)
-	assert.Equal(t, "github-actions", cfg.Dispatch.Platform)
-	assert.Equal(t, 2, cfg.Defaults.MaxImplementationRetries)
-	assert.False(t, cfg.Defaults.AutoMerge)
-	assert.Equal(t, roles, cfg.Defaults.Roles)
+	assert.Equal(t, "1", cfg.ConfigVersion())
+	assert.Equal(t, "github-actions", cfg.DispatchSettings().Platform)
+	assert.Equal(t, 2, cfg.OrgRepoDefaults().MaxImplementationRetries)
+	assert.False(t, cfg.OrgRepoDefaults().AutoMerge)
+	assert.Equal(t, roles, cfg.OrgRepoDefaults().Roles)
 
-	assert.True(t, cfg.Repos["repo-a"].Enabled)
-	assert.False(t, cfg.Repos["repo-b"].Enabled)
-	assert.True(t, cfg.Repos["repo-c"].Enabled)
+	assert.True(t, cfg.RepoMap()["repo-a"].Enabled)
+	assert.False(t, cfg.RepoMap()["repo-b"].Enabled)
+	assert.True(t, cfg.RepoMap()["repo-c"].Enabled)
 
 	assert.Equal(t, []string{
 		"https://raw.githubusercontent.com/fullsend-ai/fullsend/",
 		"https://raw.githubusercontent.com/fullsend-ai/agents/",
-	}, cfg.AllowedRemoteResources)
+	}, cfg.AllowedResources())
 }
 
 func TestOrgConfigMarshal(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version: "1",
 		Dispatch: DispatchConfig{
 			Platform: "github-actions",
@@ -98,7 +98,7 @@ func TestOrgConfigMarshal(t *testing.T) {
 }
 
 func TestOrgConfigValidate_Valid(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version: "1",
 		Dispatch: DispatchConfig{
 			Platform: "github-actions",
@@ -114,7 +114,7 @@ func TestOrgConfigValidate_Valid(t *testing.T) {
 }
 
 func TestOrgConfigValidate_BadVersion(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version: "2",
 		Dispatch: DispatchConfig{
 			Platform: "github-actions",
@@ -131,7 +131,7 @@ func TestOrgConfigValidate_BadVersion(t *testing.T) {
 }
 
 func TestOrgConfigValidate_BadPlatform(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version: "1",
 		Dispatch: DispatchConfig{
 			Platform: "jenkins",
@@ -148,7 +148,7 @@ func TestOrgConfigValidate_BadPlatform(t *testing.T) {
 }
 
 func TestOrgConfigValidate_NegativeRetries(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version: "1",
 		Dispatch: DispatchConfig{
 			Platform: "github-actions",
@@ -165,7 +165,7 @@ func TestOrgConfigValidate_NegativeRetries(t *testing.T) {
 }
 
 func TestOrgConfigValidate_InvalidRole(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version: "1",
 		Dispatch: DispatchConfig{
 			Platform: "github-actions",
@@ -182,7 +182,7 @@ func TestOrgConfigValidate_InvalidRole(t *testing.T) {
 }
 
 func TestOrgConfigValidate_DuplicateRole(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version: "1",
 		Dispatch: DispatchConfig{
 			Platform: "github-actions",
@@ -199,7 +199,7 @@ func TestOrgConfigValidate_DuplicateRole(t *testing.T) {
 }
 
 func TestOrgConfigEnabledRepos(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Repos: map[string]RepoConfig{
 			"zoo":   {Enabled: true},
 			"alpha": {Enabled: false},
@@ -212,7 +212,7 @@ func TestOrgConfigEnabledRepos(t *testing.T) {
 }
 
 func TestOrgConfigDisabledRepos(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Repos: map[string]RepoConfig{
 			"zoo":   {Enabled: true},
 			"alpha": {Enabled: false},
@@ -226,7 +226,7 @@ func TestOrgConfigDisabledRepos(t *testing.T) {
 }
 
 func TestOrgConfigDefaultRoles(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Defaults: RepoDefaults{
 			Roles: []string{"triage", "review"},
 		},
@@ -257,13 +257,13 @@ repos:
 	cfg, err := ParseOrgConfig([]byte(yamlData))
 	require.NoError(t, err)
 
-	assert.Equal(t, "1", cfg.Version)
-	assert.Equal(t, "github-actions", cfg.Dispatch.Platform)
-	assert.Equal(t, 3, cfg.Defaults.MaxImplementationRetries)
-	assert.True(t, cfg.Defaults.AutoMerge)
-	assert.Equal(t, []string{"fullsend", "coder"}, cfg.Defaults.Roles)
-	assert.True(t, cfg.Repos["repo-x"].Enabled)
-	assert.False(t, cfg.Repos["repo-y"].Enabled)
+	assert.Equal(t, "1", cfg.ConfigVersion())
+	assert.Equal(t, "github-actions", cfg.DispatchSettings().Platform)
+	assert.Equal(t, 3, cfg.OrgRepoDefaults().MaxImplementationRetries)
+	assert.True(t, cfg.OrgRepoDefaults().AutoMerge)
+	assert.Equal(t, []string{"fullsend", "coder"}, cfg.OrgRepoDefaults().Roles)
+	assert.True(t, cfg.RepoMap()["repo-x"].Enabled)
+	assert.False(t, cfg.RepoMap()["repo-y"].Enabled)
 }
 
 func TestParseOrgConfig_RejectsLegacyAgentsBlock(t *testing.T) {
@@ -288,16 +288,16 @@ repos: {}
 
 func TestNewOrgConfig_WithInferenceProvider(t *testing.T) {
 	cfg := NewOrgConfig(nil, nil, nil, "vertex", "")
-	assert.Equal(t, "vertex", cfg.Inference.Provider)
+	assert.Equal(t, "vertex", cfg.InferenceSettings().Provider)
 }
 
 func TestNewOrgConfig_WithoutInferenceProvider(t *testing.T) {
 	cfg := NewOrgConfig(nil, nil, nil, "", "")
-	assert.Empty(t, cfg.Inference.Provider)
+	assert.Empty(t, cfg.InferenceSettings().Provider)
 }
 
 func TestOrgConfigValidate_ValidInferenceProvider(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:   "1",
 		Dispatch:  DispatchConfig{Platform: "github-actions"},
 		Inference: InferenceConfig{Provider: "vertex"},
@@ -311,7 +311,7 @@ func TestOrgConfigValidate_ValidInferenceProvider(t *testing.T) {
 }
 
 func TestOrgConfigValidate_InvalidInferenceProvider(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:   "1",
 		Dispatch:  DispatchConfig{Platform: "github-actions"},
 		Inference: InferenceConfig{Provider: "openai"},
@@ -326,7 +326,7 @@ func TestOrgConfigValidate_InvalidInferenceProvider(t *testing.T) {
 }
 
 func TestOrgConfigValidate_EmptyInferenceProvider(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{
@@ -355,11 +355,11 @@ repos: {}
 `
 	cfg, err := ParseOrgConfig([]byte(yamlData))
 	require.NoError(t, err)
-	assert.Equal(t, "vertex", cfg.Inference.Provider)
+	assert.Equal(t, "vertex", cfg.InferenceSettings().Provider)
 }
 
 func TestOrgConfigMarshal_WithInference(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:   "1",
 		Dispatch:  DispatchConfig{Platform: "github-actions"},
 		Inference: InferenceConfig{Provider: "vertex"},
@@ -388,7 +388,7 @@ func TestValidRuntimes(t *testing.T) {
 }
 
 func TestOrgConfigValidateRuntime(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{
@@ -417,7 +417,7 @@ repos: {}
 `
 	cfg, err := ParseOrgConfig([]byte(yamlData))
 	require.NoError(t, err)
-	assert.True(t, cfg.KillSwitch)
+	assert.True(t, cfg.IsKillSwitchActive())
 }
 
 func TestParseOrgConfig_KillSwitchDefault(t *testing.T) {
@@ -434,11 +434,11 @@ repos: {}
 `
 	cfg, err := ParseOrgConfig([]byte(yamlData))
 	require.NoError(t, err)
-	assert.False(t, cfg.KillSwitch)
+	assert.False(t, cfg.IsKillSwitchActive())
 }
 
 func TestOrgConfigMarshal_KillSwitch(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:    "1",
 		KillSwitch: true,
 		Dispatch:   DispatchConfig{Platform: "github-actions"},
@@ -455,7 +455,7 @@ func TestOrgConfigMarshal_KillSwitch(t *testing.T) {
 }
 
 func TestOrgConfigValidate_FixRole(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{
@@ -469,11 +469,11 @@ func TestOrgConfigValidate_FixRole(t *testing.T) {
 
 func TestNewOrgConfig_KillSwitchDefaultFalse(t *testing.T) {
 	cfg := NewOrgConfig(nil, nil, []string{"fullsend"}, "", "")
-	assert.False(t, cfg.KillSwitch)
+	assert.False(t, cfg.IsKillSwitchActive())
 }
 
 func TestOrgConfigMarshal_KillSwitchOmitEmpty(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{
@@ -489,7 +489,7 @@ func TestOrgConfigMarshal_KillSwitchOmitEmpty(t *testing.T) {
 }
 
 func TestOrgConfigValidate_DispatchModeEmpty(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{
@@ -502,7 +502,7 @@ func TestOrgConfigValidate_DispatchModeEmpty(t *testing.T) {
 }
 
 func TestOrgConfigValidate_DispatchModePAT_Rejected(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions", Mode: "pat"},
 		Defaults: RepoDefaults{
@@ -516,7 +516,7 @@ func TestOrgConfigValidate_DispatchModePAT_Rejected(t *testing.T) {
 }
 
 func TestOrgConfigValidate_DispatchModeOIDCMint(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions", Mode: "oidc-mint"},
 		Defaults: RepoDefaults{
@@ -529,7 +529,7 @@ func TestOrgConfigValidate_DispatchModeOIDCMint(t *testing.T) {
 }
 
 func TestOrgConfigValidate_InvalidDispatchMode(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions", Mode: "invalid"},
 		Defaults: RepoDefaults{
@@ -560,12 +560,12 @@ repos: {}
 `
 	cfg, err := ParseOrgConfig([]byte(yamlData))
 	require.NoError(t, err)
-	assert.Equal(t, "oidc-mint", cfg.Dispatch.Mode)
-	assert.Equal(t, "https://fullsend-mint.run.app", cfg.Dispatch.MintURL)
+	assert.Equal(t, "oidc-mint", cfg.DispatchSettings().Mode)
+	assert.Equal(t, "https://fullsend-mint.run.app", cfg.DispatchSettings().MintURL)
 }
 
 func TestOrgConfigMarshal_WithDispatchMode(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions", Mode: "oidc-mint", MintURL: "https://fullsend-mint.run.app"},
 		Defaults: RepoDefaults{
@@ -583,18 +583,18 @@ func TestOrgConfigMarshal_WithDispatchMode(t *testing.T) {
 
 func TestNewPerRepoConfig_DefaultRoles(t *testing.T) {
 	cfg := NewPerRepoConfig(nil, "")
-	assert.Equal(t, "1", cfg.Version)
-	assert.Equal(t, DefaultAgentRoles(), cfg.Roles)
-	assert.False(t, cfg.KillSwitch)
+	assert.Equal(t, "1", cfg.ConfigVersion())
+	assert.Equal(t, DefaultAgentRoles(), cfg.(*perRepoConfig).Roles)
+	assert.False(t, cfg.IsKillSwitchActive())
 }
 
 func TestNewPerRepoConfig_CustomRoles(t *testing.T) {
 	cfg := NewPerRepoConfig([]string{"triage", "review"}, "")
-	assert.Equal(t, []string{"triage", "review"}, cfg.Roles)
+	assert.Equal(t, []string{"triage", "review"}, cfg.(*perRepoConfig).Roles)
 }
 
 func TestPerRepoConfigValidate_Valid(t *testing.T) {
-	cfg := &PerRepoConfig{
+	cfg := &perRepoConfig{
 		Version: "1",
 		Roles:   []string{"fullsend", "triage", "coder"},
 	}
@@ -602,7 +602,7 @@ func TestPerRepoConfigValidate_Valid(t *testing.T) {
 }
 
 func TestPerRepoConfigValidate_InvalidVersion(t *testing.T) {
-	cfg := &PerRepoConfig{
+	cfg := &perRepoConfig{
 		Version: "2",
 		Roles:   []string{"fullsend"},
 	}
@@ -612,7 +612,7 @@ func TestPerRepoConfigValidate_InvalidVersion(t *testing.T) {
 }
 
 func TestPerRepoConfigValidate_InvalidRole(t *testing.T) {
-	cfg := &PerRepoConfig{
+	cfg := &perRepoConfig{
 		Version: "1",
 		Roles:   []string{"fullsend", "invalid-role"},
 	}
@@ -622,7 +622,7 @@ func TestPerRepoConfigValidate_InvalidRole(t *testing.T) {
 }
 
 func TestPerRepoConfigValidate_DuplicateRole(t *testing.T) {
-	cfg := &PerRepoConfig{
+	cfg := &perRepoConfig{
 		Version: "1",
 		Roles:   []string{"fullsend", "triage", "fullsend"},
 	}
@@ -632,7 +632,7 @@ func TestPerRepoConfigValidate_DuplicateRole(t *testing.T) {
 }
 
 func TestPerRepoConfigValidate_EmptyRoles(t *testing.T) {
-	cfg := &PerRepoConfig{
+	cfg := &perRepoConfig{
 		Version: "1",
 		Roles:   []string{},
 	}
@@ -640,7 +640,7 @@ func TestPerRepoConfigValidate_EmptyRoles(t *testing.T) {
 }
 
 func TestPerRepoConfigValidate_Runtime(t *testing.T) {
-	cfg := &PerRepoConfig{
+	cfg := &perRepoConfig{
 		Version: "1",
 		Roles:   []string{"triage"},
 		Runtime: "dummy",
@@ -664,9 +664,9 @@ roles:
 `
 	cfg, err := ParsePerRepoConfig([]byte(yamlData))
 	require.NoError(t, err)
-	assert.Equal(t, "1", cfg.Version)
-	assert.True(t, cfg.KillSwitch)
-	assert.Equal(t, []string{"fullsend", "triage", "review"}, cfg.Roles)
+	assert.Equal(t, "1", cfg.ConfigVersion())
+	assert.True(t, cfg.IsKillSwitchActive())
+	assert.Equal(t, []string{"fullsend", "triage", "review"}, cfg.ConfigRoles())
 }
 
 func TestParsePerRepoConfig_Invalid(t *testing.T) {
@@ -676,7 +676,7 @@ func TestParsePerRepoConfig_Invalid(t *testing.T) {
 }
 
 func TestPerRepoConfigMarshal(t *testing.T) {
-	cfg := &PerRepoConfig{
+	cfg := &perRepoConfig{
 		Version: "1",
 		Roles:   []string{"fullsend", "triage"},
 	}
@@ -689,7 +689,7 @@ func TestPerRepoConfigMarshal(t *testing.T) {
 }
 
 func TestPerRepoConfigMarshal_KillSwitchOmitted(t *testing.T) {
-	cfg := &PerRepoConfig{
+	cfg := &perRepoConfig{
 		Version: "1",
 		Roles:   []string{"fullsend"},
 	}
@@ -708,9 +708,9 @@ func TestPerRepoConfig_RoundTrip(t *testing.T) {
 
 	parsed, err := ParsePerRepoConfig(data[headerEnd:])
 	require.NoError(t, err)
-	assert.Equal(t, original.Version, parsed.Version)
-	assert.Equal(t, original.Roles, parsed.Roles)
-	assert.Equal(t, original.KillSwitch, parsed.KillSwitch)
+	assert.Equal(t, original.ConfigVersion(), parsed.ConfigVersion())
+	assert.Equal(t, original.(*perRepoConfig).Roles, parsed.(*perRepoConfig).Roles)
+	assert.Equal(t, original.IsKillSwitchActive(), parsed.IsKillSwitchActive())
 }
 
 // --- AllowedRemoteResources tests ---
@@ -733,7 +733,7 @@ allowed_remote_resources:
 `
 		cfg, err := ParseOrgConfig([]byte(yamlData))
 		require.NoError(t, err)
-		assert.Equal(t, []string{"https://example.com/skills/", "https://cdn.example.com/policies/"}, cfg.AllowedRemoteResources)
+		assert.Equal(t, []string{"https://example.com/skills/", "https://cdn.example.com/policies/"}, cfg.AllowedResources())
 	})
 
 	t.Run("parse YAML without allowed_remote_resources", func(t *testing.T) {
@@ -750,11 +750,11 @@ repos: {}
 `
 		cfg, err := ParseOrgConfig([]byte(yamlData))
 		require.NoError(t, err)
-		assert.Empty(t, cfg.AllowedRemoteResources)
+		assert.Empty(t, cfg.AllowedResources())
 	})
 
 	t.Run("marshal with field", func(t *testing.T) {
-		cfg := &OrgConfig{
+		cfg := &orgConfig{
 			Version:  "1",
 			Dispatch: DispatchConfig{Platform: "github-actions"},
 			Defaults: RepoDefaults{
@@ -771,7 +771,7 @@ repos: {}
 	})
 
 	t.Run("marshal without field omits key", func(t *testing.T) {
-		cfg := &OrgConfig{
+		cfg := &orgConfig{
 			Version:  "1",
 			Dispatch: DispatchConfig{Platform: "github-actions"},
 			Defaults: RepoDefaults{
@@ -806,9 +806,9 @@ repos: {}
 `
 	cfg, err := ParseOrgConfig([]byte(yamlData))
 	require.NoError(t, err)
-	require.NotNil(t, cfg.Defaults.StatusNotifications)
-	assert.Equal(t, "enabled", cfg.Defaults.StatusNotifications.Comment.Start)
-	assert.Equal(t, "disabled", cfg.Defaults.StatusNotifications.Comment.Completion)
+	require.NotNil(t, cfg.StatusNotifications())
+	assert.Equal(t, "enabled", cfg.StatusNotifications().Comment.Start)
+	assert.Equal(t, "disabled", cfg.StatusNotifications().Comment.Completion)
 }
 
 func TestParseOrgConfig_WithoutStatusNotifications(t *testing.T) {
@@ -825,11 +825,11 @@ repos: {}
 `
 	cfg, err := ParseOrgConfig([]byte(yamlData))
 	require.NoError(t, err)
-	assert.Nil(t, cfg.Defaults.StatusNotifications)
+	assert.Nil(t, cfg.StatusNotifications())
 }
 
 func TestOrgConfigValidate_ValidStatusNotifications(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{
@@ -844,7 +844,7 @@ func TestOrgConfigValidate_ValidStatusNotifications(t *testing.T) {
 }
 
 func TestOrgConfigValidate_InvalidCommentStart(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{
@@ -861,7 +861,7 @@ func TestOrgConfigValidate_InvalidCommentStart(t *testing.T) {
 }
 
 func TestOrgConfigValidate_InvalidCommentCompletion(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{
@@ -878,7 +878,7 @@ func TestOrgConfigValidate_InvalidCommentCompletion(t *testing.T) {
 }
 
 func TestOrgConfigMarshal_WithStatusNotifications(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{
@@ -897,7 +897,7 @@ func TestOrgConfigMarshal_WithStatusNotifications(t *testing.T) {
 }
 
 func TestOrgConfigMarshal_WithoutStatusNotifications(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{
@@ -934,13 +934,13 @@ create_issues:
 `
 	cfg, err := ParseOrgConfig([]byte(yamlData))
 	require.NoError(t, err)
-	require.NotNil(t, cfg.CreateIssues)
-	assert.Equal(t, []string{"my-org", "other-org"}, cfg.CreateIssues.AllowTargets.Orgs)
-	assert.Equal(t, []string{"external-org/some-repo"}, cfg.CreateIssues.AllowTargets.Repos)
+	require.NotNil(t, cfg.IssueCreationConfig())
+	assert.Equal(t, []string{"my-org", "other-org"}, cfg.IssueCreationConfig().AllowTargets.Orgs)
+	assert.Equal(t, []string{"external-org/some-repo"}, cfg.IssueCreationConfig().AllowTargets.Repos)
 }
 
 func TestOrgConfig_CreateIssues_OmittedWhenEmpty(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{
@@ -955,7 +955,7 @@ func TestOrgConfig_CreateIssues_OmittedWhenEmpty(t *testing.T) {
 }
 
 func TestOrgConfig_CreateIssues_Marshal(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{
@@ -979,7 +979,7 @@ func TestOrgConfig_CreateIssues_Marshal(t *testing.T) {
 }
 
 func TestOrgConfigValidate_CreateIssues_InvalidRepoFormat(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{
@@ -1000,7 +1000,7 @@ func TestOrgConfigValidate_CreateIssues_InvalidRepoFormat(t *testing.T) {
 func TestOrgConfigValidate_CreateIssues_MalformedRepoFormat(t *testing.T) {
 	malformed := []string{"/", "/repo", "owner/", "//"}
 	for _, repo := range malformed {
-		cfg := &OrgConfig{
+		cfg := &orgConfig{
 			Version:  "1",
 			Dispatch: DispatchConfig{Platform: "github-actions"},
 			Defaults: RepoDefaults{
@@ -1020,7 +1020,7 @@ func TestOrgConfigValidate_CreateIssues_MalformedRepoFormat(t *testing.T) {
 }
 
 func TestOrgConfigValidate_CreateIssues_EmptyOrg(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{
@@ -1039,7 +1039,7 @@ func TestOrgConfigValidate_CreateIssues_EmptyOrg(t *testing.T) {
 }
 
 func TestOrgConfigValidate_CreateIssues_Valid(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{
@@ -1058,7 +1058,7 @@ func TestOrgConfigValidate_CreateIssues_Valid(t *testing.T) {
 }
 
 func TestOrgConfigValidate_CreateIssues_Nil(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{
@@ -1072,9 +1072,9 @@ func TestOrgConfigValidate_CreateIssues_Nil(t *testing.T) {
 
 func TestNewOrgConfig_CreateIssuesDefaults(t *testing.T) {
 	cfg := NewOrgConfig(nil, nil, []string{"fullsend"}, "", "my-org")
-	require.NotNil(t, cfg.CreateIssues)
-	assert.Equal(t, []string{"my-org"}, cfg.CreateIssues.AllowTargets.Orgs)
-	assert.Equal(t, []string{"fullsend-ai/fullsend"}, cfg.CreateIssues.AllowTargets.Repos)
+	require.NotNil(t, cfg.IssueCreationConfig())
+	assert.Equal(t, []string{"my-org"}, cfg.IssueCreationConfig().AllowTargets.Orgs)
+	assert.Equal(t, []string{"fullsend-ai/fullsend"}, cfg.IssueCreationConfig().AllowTargets.Repos)
 }
 
 func TestPerRepoConfig_CreateIssues_ParseYAML(t *testing.T) {
@@ -1091,14 +1091,14 @@ create_issues:
 `
 	cfg, err := ParsePerRepoConfig([]byte(yamlData))
 	require.NoError(t, err)
-	require.NotNil(t, cfg.CreateIssues)
-	assert.Equal(t, []string{"my-org/my-repo", "fullsend-ai/fullsend"}, cfg.CreateIssues.AllowTargets.Repos)
+	require.NotNil(t, cfg.IssueCreationConfig())
+	assert.Equal(t, []string{"my-org/my-repo", "fullsend-ai/fullsend"}, cfg.IssueCreationConfig().AllowTargets.Repos)
 }
 
 func TestNewPerRepoConfig_CreateIssuesDefaults(t *testing.T) {
 	cfg := NewPerRepoConfig(nil, "my-org/my-repo")
-	require.NotNil(t, cfg.CreateIssues)
-	assert.Equal(t, []string{"my-org/my-repo", "fullsend-ai/fullsend"}, cfg.CreateIssues.AllowTargets.Repos)
+	require.NotNil(t, cfg.IssueCreationConfig())
+	assert.Equal(t, []string{"my-org/my-repo", "fullsend-ai/fullsend"}, cfg.IssueCreationConfig().AllowTargets.Repos)
 }
 
 // --- AgentEntry tests ---
@@ -1209,7 +1209,7 @@ func TestValidateAgentEntries_Valid(t *testing.T) {
 		{Source: "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/harness/triage.yaml#sha256=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"},
 		{Name: "lint", Source: "harness/my-linter.yaml"},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:                "1",
 		Dispatch:               DispatchConfig{Platform: "github-actions"},
 		Defaults:               RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1224,7 +1224,7 @@ func TestValidateAgentEntries_DuplicateName(t *testing.T) {
 		{Source: "harness/triage.yaml"},
 		{Source: "other/triage.yaml"},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1240,7 +1240,7 @@ func TestValidateAgentEntries_DuplicateNameCaseInsensitive(t *testing.T) {
 		{Name: "Triage", Source: "harness/a.yaml"},
 		{Name: "triage", Source: "harness/b.yaml"},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1256,7 +1256,7 @@ func TestValidateAgentEntries_MissingHash(t *testing.T) {
 	agents := []AgentEntry{
 		{Source: "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/harness/triage.yaml"},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:                "1",
 		Dispatch:               DispatchConfig{Platform: "github-actions"},
 		Defaults:               RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1272,7 +1272,7 @@ func TestValidateAgentEntries_NonHTTPS(t *testing.T) {
 	agents := []AgentEntry{
 		{Source: "http://example.com/harness/triage.yaml#sha256=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1288,7 +1288,7 @@ func TestValidateAgentEntries_URLNotInAllowlist(t *testing.T) {
 	agents := []AgentEntry{
 		{Source: "https://raw.githubusercontent.com/other-org/repo/abc123/harness/triage.yaml#sha256=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:                "1",
 		Dispatch:               DispatchConfig{Platform: "github-actions"},
 		Defaults:               RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1304,7 +1304,7 @@ func TestValidateAgentEntries_PathTraversal(t *testing.T) {
 	agents := []AgentEntry{
 		{Source: "../../../etc/passwd"},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1319,7 +1319,7 @@ func TestValidateAgentEntries_EmptySource(t *testing.T) {
 	agents := []AgentEntry{
 		{Name: "empty"},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1334,7 +1334,7 @@ func TestValidateAgentEntries_LocalPathAcceptedWithoutHash(t *testing.T) {
 	agents := []AgentEntry{
 		{Source: "harness/my-agent.yaml"},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1348,7 +1348,7 @@ func TestValidateAgentEntries_InvalidHashLength(t *testing.T) {
 	agents := []AgentEntry{
 		{Source: "https://raw.githubusercontent.com/fullsend-ai/agents/abc/harness/triage.yaml#sha256=tooshort"},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:                "1",
 		Dispatch:               DispatchConfig{Platform: "github-actions"},
 		Defaults:               RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1365,7 +1365,7 @@ func TestValidateAgentEntries_InvalidHashChars(t *testing.T) {
 	agents := []AgentEntry{
 		{Source: "https://raw.githubusercontent.com/fullsend-ai/agents/abc/harness/triage.yaml#sha256=zzzzzz1234567890abcdef1234567890abcdef1234567890abcdef1234567890"},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:                "1",
 		Dispatch:               DispatchConfig{Platform: "github-actions"},
 		Defaults:               RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1381,7 +1381,7 @@ func TestValidateAgentEntries_EmptyDerivedName(t *testing.T) {
 	agents := []AgentEntry{
 		{Source: ".yaml"},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1396,7 +1396,7 @@ func TestValidateAgentEntries_MixedCaseHTTP_Rejected(t *testing.T) {
 	agents := []AgentEntry{
 		{Source: "HTTP://example.com/harness/triage.yaml"},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1411,7 +1411,7 @@ func TestValidateAgentEntries_UnsupportedScheme_Rejected(t *testing.T) {
 	agents := []AgentEntry{
 		{Source: "ftp://example.com/harness/triage.yaml"},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1426,7 +1426,7 @@ func TestValidateAgentEntries_BackslashPath_Rejected(t *testing.T) {
 	agents := []AgentEntry{
 		{Name: "triage", Source: "harness\\triage.yaml"},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1441,7 +1441,7 @@ func TestValidateAgentEntries_AbsolutePath_Rejected(t *testing.T) {
 	agents := []AgentEntry{
 		{Source: "/etc/agents/triage.yaml"},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1456,7 +1456,7 @@ func TestValidateAgentEntries_DegenerateName_Rejected(t *testing.T) {
 	agents := []AgentEntry{
 		{Source: "#sha256=abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1472,7 +1472,7 @@ func TestValidateAgentEntries_SuppressionOnlyEntry_Valid(t *testing.T) {
 	agents := []AgentEntry{
 		{Name: "retro", Enabled: &f},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1486,7 +1486,7 @@ func TestValidateAgentEntries_SuppressionWithoutName_Invalid(t *testing.T) {
 	agents := []AgentEntry{
 		{Enabled: &f},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1502,7 +1502,7 @@ func TestValidateAgentEntries_SuppressionInvalidName_Rejected(t *testing.T) {
 	agents := []AgentEntry{
 		{Name: "-bad", Enabled: &f},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1519,7 +1519,7 @@ func TestValidateAgentEntries_DuplicateSuppression_Rejected(t *testing.T) {
 		{Name: "retro", Enabled: &f},
 		{Name: "retro", Enabled: &f},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1537,7 +1537,7 @@ func TestValidateAgentEntries_DisableThenEnable_Accepted(t *testing.T) {
 		{Name: "retro", Enabled: &f},
 		{Name: "retro", Source: "harness/retro-custom.yaml", Enabled: &tr},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1553,7 +1553,7 @@ func TestValidateAgentEntries_EnableThenDisable_Accepted(t *testing.T) {
 		{Name: "retro", Source: "harness/retro-custom.yaml", Enabled: &tr},
 		{Name: "retro", Enabled: &f},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1567,7 +1567,7 @@ func TestValidateAgentEntries_DisabledWithSourceNoName_Rejected(t *testing.T) {
 	agents := []AgentEntry{
 		{Source: "harness/retro.yaml", Enabled: &f},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1583,7 +1583,7 @@ func TestValidateAgentEntries_DisabledWithSourceAndName_Valid(t *testing.T) {
 	agents := []AgentEntry{
 		{Name: "retro", Source: "harness/retro.yaml", Enabled: &f},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1597,7 +1597,7 @@ func TestValidateAgentEntries_EnabledWithSource_Valid(t *testing.T) {
 	agents := []AgentEntry{
 		{Source: "harness/my-agent.yaml", Enabled: &tr},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1610,7 +1610,7 @@ func TestValidateAgentEntries_EnabledOmittedWithSource_Valid(t *testing.T) {
 	agents := []AgentEntry{
 		{Source: "harness/my-agent.yaml"},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1627,7 +1627,7 @@ func TestValidateAgentEntries_ThreeEntryChain_Rejected(t *testing.T) {
 		{Name: "retro", Enabled: &f},
 		{Name: "retro", Source: "harness/retro-v2.yaml", Enabled: &tr},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1646,7 +1646,7 @@ func TestValidateAgentEntries_ThreeEntryDisableChain_Rejected(t *testing.T) {
 		{Name: "retro", Source: "harness/retro-custom.yaml", Enabled: &tr},
 		{Name: "retro", Enabled: &f},
 	}
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1692,13 +1692,13 @@ repos: {}
 `
 	cfg, err := ParseOrgConfig([]byte(yamlData))
 	require.NoError(t, err)
-	require.Len(t, cfg.Agents, 2)
-	assert.Equal(t, "retro", cfg.Agents[0].Name)
-	assert.NotNil(t, cfg.Agents[0].Enabled)
-	assert.False(t, *cfg.Agents[0].Enabled)
-	assert.Empty(t, cfg.Agents[0].Source)
-	assert.Nil(t, cfg.Agents[1].Enabled)
-	assert.NoError(t, cfg.Validate())
+	require.Len(t, cfg.AgentEntries(), 2)
+	assert.Equal(t, "retro", cfg.AgentEntries()[0].Name)
+	assert.NotNil(t, cfg.AgentEntries()[0].Enabled)
+	assert.False(t, *cfg.AgentEntries()[0].Enabled)
+	assert.Empty(t, cfg.AgentEntries()[0].Source)
+	assert.Nil(t, cfg.AgentEntries()[1].Enabled)
+	assert.NoError(t, cfg.(*orgConfig).Validate())
 }
 
 func TestPerRepoConfig_ParseYAML_WithDisabledAgent(t *testing.T) {
@@ -1712,10 +1712,10 @@ agents:
 `
 	cfg, err := ParsePerRepoConfig([]byte(yamlData))
 	require.NoError(t, err)
-	require.Len(t, cfg.Agents, 1)
-	assert.Equal(t, "retro", cfg.Agents[0].Name)
-	assert.False(t, *cfg.Agents[0].Enabled)
-	assert.NoError(t, cfg.Validate())
+	require.Len(t, cfg.AgentEntries(), 1)
+	assert.Equal(t, "retro", cfg.AgentEntries()[0].Name)
+	assert.False(t, *cfg.AgentEntries()[0].Enabled)
+	assert.NoError(t, cfg.(*perRepoConfig).Validate())
 }
 
 // --- OrgConfig agents field tests ---
@@ -1739,10 +1739,10 @@ allowed_remote_resources:
 `
 	cfg, err := ParseOrgConfig([]byte(yamlData))
 	require.NoError(t, err)
-	require.Len(t, cfg.Agents, 2)
-	assert.Contains(t, cfg.Agents[0].Source, "triage.yaml")
-	assert.Equal(t, "lint", cfg.Agents[1].Name)
-	assert.Equal(t, "harness/my-linter.yaml", cfg.Agents[1].Source)
+	require.Len(t, cfg.AgentEntries(), 2)
+	assert.Contains(t, cfg.AgentEntries()[0].Source, "triage.yaml")
+	assert.Equal(t, "lint", cfg.AgentEntries()[1].Name)
+	assert.Equal(t, "harness/my-linter.yaml", cfg.AgentEntries()[1].Source)
 }
 
 func TestOrgConfig_ParseYAML_WithoutAgents(t *testing.T) {
@@ -1758,11 +1758,11 @@ repos: {}
 `
 	cfg, err := ParseOrgConfig([]byte(yamlData))
 	require.NoError(t, err)
-	assert.Empty(t, cfg.Agents)
+	assert.Empty(t, cfg.AgentEntries())
 }
 
 func TestOrgConfig_Marshal_WithAgents(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1780,7 +1780,7 @@ func TestOrgConfig_Marshal_WithAgents(t *testing.T) {
 }
 
 func TestOrgConfig_Marshal_WithoutAgents_OmitsKey(t *testing.T) {
-	cfg := &OrgConfig{
+	cfg := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1808,14 +1808,14 @@ allowed_remote_resources:
 `
 	cfg, err := ParsePerRepoConfig([]byte(yamlData))
 	require.NoError(t, err)
-	require.Len(t, cfg.Agents, 2)
-	assert.Contains(t, cfg.Agents[0].Source, "triage.yaml")
-	assert.Equal(t, "lint", cfg.Agents[1].Name)
-	assert.Equal(t, []string{"https://raw.githubusercontent.com/fullsend-ai/agents/"}, cfg.AllowedRemoteResources)
+	require.Len(t, cfg.AgentEntries(), 2)
+	assert.Contains(t, cfg.AgentEntries()[0].Source, "triage.yaml")
+	assert.Equal(t, "lint", cfg.AgentEntries()[1].Name)
+	assert.Equal(t, []string{"https://raw.githubusercontent.com/fullsend-ai/agents/"}, cfg.AllowedResources())
 }
 
 func TestPerRepoConfig_Validate_WithAgents(t *testing.T) {
-	cfg := &PerRepoConfig{
+	cfg := &perRepoConfig{
 		Version: "1",
 		Roles:   []string{"fullsend"},
 		Agents: []AgentEntry{
@@ -1826,7 +1826,7 @@ func TestPerRepoConfig_Validate_WithAgents(t *testing.T) {
 }
 
 func TestPerRepoConfig_Validate_AgentDuplicate(t *testing.T) {
-	cfg := &PerRepoConfig{
+	cfg := &perRepoConfig{
 		Version: "1",
 		Roles:   []string{"fullsend"},
 		Agents: []AgentEntry{
@@ -1841,11 +1841,11 @@ func TestPerRepoConfig_Validate_AgentDuplicate(t *testing.T) {
 
 func TestNewPerRepoConfig_AllowedRemoteResources(t *testing.T) {
 	cfg := NewPerRepoConfig(nil, "")
-	assert.Equal(t, DefaultAllowedRemoteResources(), cfg.AllowedRemoteResources)
+	assert.Equal(t, DefaultAllowedRemoteResources(), cfg.AllowedResources())
 }
 
 func TestPerRepoConfig_Marshal_WithAgents(t *testing.T) {
-	cfg := &PerRepoConfig{
+	cfg := &perRepoConfig{
 		Version: "1",
 		Roles:   []string{"fullsend"},
 		Agents: []AgentEntry{
@@ -1910,11 +1910,11 @@ func TestDefaultAllowedRemoteResources(t *testing.T) {
 
 func TestNewOrgConfig_UsesDefaultAllowedRemoteResources(t *testing.T) {
 	cfg := NewOrgConfig(nil, nil, nil, "", "")
-	assert.Equal(t, DefaultAllowedRemoteResources(), cfg.AllowedRemoteResources)
+	assert.Equal(t, DefaultAllowedRemoteResources(), cfg.AllowedResources())
 }
 
 func TestPerRepoConfig_RoundTrip_WithAgents(t *testing.T) {
-	original := &PerRepoConfig{
+	original := &perRepoConfig{
 		Version: "1",
 		Roles:   []string{"fullsend", "triage"},
 		Agents: []AgentEntry{
@@ -1931,14 +1931,14 @@ func TestPerRepoConfig_RoundTrip_WithAgents(t *testing.T) {
 
 	parsed, err := ParsePerRepoConfig(data[headerEnd:])
 	require.NoError(t, err)
-	require.Len(t, parsed.Agents, 2)
-	assert.Equal(t, original.Agents[0].Source, parsed.Agents[0].Source)
-	assert.Equal(t, original.Agents[1].Name, parsed.Agents[1].Name)
-	assert.Equal(t, original.AllowedRemoteResources, parsed.AllowedRemoteResources)
+	require.Len(t, parsed.AgentEntries(), 2)
+	assert.Equal(t, original.Agents[0].Source, parsed.AgentEntries()[0].Source)
+	assert.Equal(t, original.Agents[1].Name, parsed.AgentEntries()[1].Name)
+	assert.Equal(t, original.AllowedRemoteResources, parsed.AllowedResources())
 }
 
 func TestOrgConfig_RoundTrip_WithAgents(t *testing.T) {
-	original := &OrgConfig{
+	original := &orgConfig{
 		Version:  "1",
 		Dispatch: DispatchConfig{Platform: "github-actions"},
 		Defaults: RepoDefaults{Roles: []string{"fullsend"}, MaxImplementationRetries: 2},
@@ -1957,40 +1957,10 @@ func TestOrgConfig_RoundTrip_WithAgents(t *testing.T) {
 
 	parsed, err := ParseOrgConfig(data[headerEnd:])
 	require.NoError(t, err)
-	require.Len(t, parsed.Agents, 2)
-	assert.Equal(t, original.Agents[0].Source, parsed.Agents[0].Source)
-	assert.Equal(t, original.Agents[1].Name, parsed.Agents[1].Name)
-	assert.Equal(t, original.AllowedRemoteResources, parsed.AllowedRemoteResources)
-}
-
-func TestOrgConfigFromPerRepo(t *testing.T) {
-	pr := &PerRepoConfig{
-		Version:    "1",
-		KillSwitch: true,
-		Roles:      []string{"triage", "coder"},
-		Runtime:    "dummy",
-		Agents: []AgentEntry{
-			{Name: "lint", Source: "harness/lint.yaml"},
-		},
-		AllowedRemoteResources: []string{"https://example.com/"},
-		CreateIssues: &CreateIssuesConfig{
-			AllowTargets: AllowTargets{Repos: []string{"org/repo"}},
-		},
-	}
-
-	org := OrgConfigFromPerRepo(pr)
-
-	assert.Equal(t, "1", org.Version)
-	assert.True(t, org.KillSwitch)
-	require.Len(t, org.Agents, 1)
-	assert.Equal(t, "lint", org.Agents[0].Name)
-	assert.Equal(t, []string{"https://example.com/"}, org.AllowedRemoteResources)
-	require.NotNil(t, org.CreateIssues)
-	assert.Equal(t, []string{"org/repo"}, org.CreateIssues.AllowTargets.Repos)
-	assert.Equal(t, []string{"triage", "coder"}, org.Defaults.Roles)
-	assert.Equal(t, "dummy", org.Defaults.Runtime)
-	assert.Nil(t, org.Repos)
-	assert.Empty(t, org.Dispatch.Platform)
+	require.Len(t, parsed.AgentEntries(), 2)
+	assert.Equal(t, original.Agents[0].Source, parsed.AgentEntries()[0].Source)
+	assert.Equal(t, original.Agents[1].Name, parsed.AgentEntries()[1].Name)
+	assert.Equal(t, original.AllowedRemoteResources, parsed.AllowedResources())
 }
 
 func TestEnsureDefaultAllowedRemoteResources(t *testing.T) {

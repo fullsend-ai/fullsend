@@ -212,7 +212,7 @@ func runAgentList(fullsendDir string, printer *ui.Printer) error {
 		return fmt.Errorf("resolving fullsend dir: %w", err)
 	}
 
-	dirCfg, err := config.LoadFromDir(absDir, config.LoadOpts{MissingOK: false})
+	dirCfg, err := config.LoadConfig(absDir, config.LoadOpts{MissingOK: false})
 	if err != nil {
 		return err
 	}
