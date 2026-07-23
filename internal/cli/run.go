@@ -970,18 +970,23 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// Passing a stale or missing dir would expose the post-script
 			// to unsanitized or wrong-iteration content.
 			//
-			// Only post-fix.sh's scaffolded post-script fails closed on an
-			// empty REPO_DIR (via ${REPO_DIR:-repo} + directory existence
-			// check) — it needs actual repo content to push. The other
-			// validation_loop post-scripts (post-review.sh, post-triage.sh,
-			// post-retro.sh, post-prioritize.sh) don't reference REPO_DIR at
-			// all; they rely on FULLSEND_VALIDATED_ITERATION_DIR (set below)
-			// to select the correct iteration's output. post-code.sh is
-			// unaffected because code.yaml has no validation_loop. Because
-			// there is no per-iteration repo checkout, post-fix.sh cannot
-			// recover a sweep-validated non-final iteration's repo state —
-			// it fails closed with "Extracted repo not found" instead of
-			// pushing. See #5393 follow-up.
+			// post-fix.sh and post-code.sh both fail closed on an empty
+			// REPO_DIR in their own script logic (via ${REPO_DIR:-repo} +
+			// directory existence check) — both need actual repo content to
+			// push. The other validation_loop post-scripts (post-review.sh,
+			// post-triage.sh, post-retro.sh, post-prioritize.sh) don't
+			// reference REPO_DIR at all; they rely on
+			// FULLSEND_VALIDATED_ITERATION_DIR (set below) to select the
+			// correct iteration's output. code.yaml has no validation_loop,
+			// so post-code.sh cannot currently observe an empty REPO_DIR in
+			// practice — a SafeDownload failure is fatal for it and this
+			// defer never runs — but the check in its script is real, not a
+			// dead branch, and would activate the moment code.yaml gained a
+			// validation_loop. Because there is no per-iteration repo
+			// checkout, post-fix.sh (and post-code.sh, were it to gain a
+			// validation_loop) cannot recover a sweep-validated non-final
+			// iteration's repo state — it fails closed with "Extracted repo
+			// not found" instead of pushing. See #5393 follow-up.
 			postRepoDir := ""
 			if repoExtractedOK {
 				postRepoDir = hostRepositoryDownloadDir
@@ -1467,14 +1472,21 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// always treated as fatal for the current iteration's repo state —
 		// we clean up the directory and skip to the next iteration.
 		//
-		// The forceRemoveAll pre-clear is a narrower staleness concern and
-		// remains non-fatal with a validation loop.
+		// The forceRemoveAll pre-clear guards against a stale destination:
+		// whether "openshell sandbox download" fully replaces a non-empty
+		// destination directory or merges onto it is not verified anywhere
+		// in this codebase (it's an external binary). Rather than assume
+		// replace semantics, a failed pre-clear is treated the same as a
+		// SafeDownload failure with a validation loop: skip this
+		// iteration's repo state instead of extracting into a directory of
+		// unknown provenance.
 		if clearErr := forceRemoveAll(hostRepositoryDownloadDir); clearErr != nil {
 			if h.ValidationLoop != nil {
-				printer.StepWarn(fmt.Sprintf("Failed to clear local repo %s: %v", hostRepositoryDownloadDir, clearErr))
-			} else {
-				return fmt.Errorf("clearing local repo %s before extraction: %w", hostRepositoryDownloadDir, clearErr)
+				printer.StepWarn(fmt.Sprintf("Failed to clear local repo %s (skipping repo extraction this iteration): %v", hostRepositoryDownloadDir, clearErr))
+				repoExtractedOK = false
+				continue
 			}
+			return fmt.Errorf("clearing local repo %s before extraction: %w", hostRepositoryDownloadDir, clearErr)
 		}
 
 		repoExtractStart := time.Now()
