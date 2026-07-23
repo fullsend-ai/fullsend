@@ -102,19 +102,19 @@ fullsend
 │   ├── update       <name> [sha]             # Re-pin URL agent to new commit SHA
 │   ├── remove       <name>                   # Unregister agent from config
 │   └── migrate-customizations               # Migrate customized/ → config agents
-│       ├── --fullsend-dir <dir>             #   Base directory with .fullsend layout
+│       ├── --fullsend-dir <dir>             #   .fullsend configuration directory
 │       ├── --repo <owner/repo>              #   Target repo for migration PR
 │       └── --dry-run                        #   Preview changes without PR
 ├── lock             [agent-name]              # Pin remote deps to lock.yaml
 │   ├── --all                                #   Lock all harnesses in the harness directory
-│   ├── --fullsend-dir <path>                #   Base directory with .fullsend layout
+│   ├── --fullsend-dir <path>                #   .fullsend configuration directory
 │   ├── --forge <platform>                   #   Lock only this forge variant; omit for all
 │   ├── --update                             #   Force re-resolve even if current
 │   ├── --offline                            #   Reject network fetches
 │   ├── --max-depth <int>                    #   Max transitive dependency depth
 │   └── --max-resources <int>                #   Max total remote resources
 ├── run                                      # Execute an agent in a sandbox
-│   ├── --fullsend-dir <path>                #   Base directory with .fullsend layout
+│   ├── --fullsend-dir <path>                #   .fullsend configuration directory
 │   ├── --target-repo <path>                 #   Path to the target repository
 │   ├── --output-dir <path>                  #   Base directory for run output
 │   ├── --env-file <path>                    #   Load env vars from dotenv file (repeatable)
