@@ -140,7 +140,8 @@ ENROLLED PROJECT                           GCP (optional, WIF mode only)
 .gitlab-ci.yml (root pipeline)             WIF pool/provider (validates GitLab OIDC)
 .gitlab/ci/fullsend-dispatch.yml (MR routing)  Service Account (impersonated by jobs)
 .gitlab/ci/fullsend-poll.yml (cron-poller)     Secret Manager:
-.gitlab/ci/fullsend-triage.yml … retro.yml       - bot PAT per enrolled project
+.gitlab/ci/fullsend-agent.yml (generic stage)      - bot PAT per enrolled project
+  (replaces per-stage templates — see PR #3193)
 .fullsend/ (config workspace)
 
 MR events (native CI):
@@ -319,7 +320,7 @@ runs inline in the root scheduled pipeline (no child pipeline). Level 1:
 the root pipeline triggers a dynamically generated dispatch child pipeline
 (via `trigger: include: artifact:`). Level 2: the dispatch child pipeline
 triggers per-stage child pipelines (via
-`trigger: include: .gitlab/ci/fullsend-{stage}.yml`). This is at the
+`trigger: include: .gitlab/ci/fullsend-agent.yml`). This is at the
 nesting ceiling — no additional `trigger: include:` levels can be added
 without restructuring. See
 [GitLab CI/CD pipeline nesting](https://docs.gitlab.com/ee/ci/pipelines/downstream_pipelines.html#nesting).

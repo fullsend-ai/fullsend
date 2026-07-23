@@ -1,0 +1,4 @@
+---
+# Fullsend configuration — see documentation for options.
+# https://fullsend.dev/docs/configuration
+forge: gitlab

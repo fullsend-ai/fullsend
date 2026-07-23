@@ -1141,7 +1141,7 @@ func (p *Poller) generateChildPipelineYAML(dispatches []Dispatch) string {
     for i, d := range dispatches {
         fmt.Fprintf(&buf, "agent-%d:\n", i)
         fmt.Fprintf(&buf, "  trigger:\n")
-        fmt.Fprintf(&buf, "    include: .gitlab/ci/fullsend-%s.yml\n", d.Stage)
+        fmt.Fprintf(&buf, "    include: .gitlab/ci/fullsend-agent.yml\n")
         fmt.Fprintf(&buf, "    strategy: depend\n")
         fmt.Fprintf(&buf, "  variables:\n")
         fmt.Fprintf(&buf, "    STAGE: %q\n", d.Stage)
@@ -1180,12 +1180,7 @@ internal/scaffold/fullsend-repo-gitlab/
 │   └── ci/
 │       ├── fullsend-dispatch.yml   ← MR event routing (native CI path)
 │       ├── fullsend-poll.yml      ← cron-poller (scheduled pipeline)
-│       ├── fullsend-triage.yml
-│       ├── fullsend-code.yml
-│       ├── fullsend-review.yml
-│       ├── fullsend-fix.yml
-│       ├── fullsend-retro.yml
-│       └── fullsend-prioritize.yml
+│       └── fullsend-agent.yml     ← generic agent stage (parameterized by $STAGE)
 └── .fullsend/
     ├── config.yaml
     └── customized/
@@ -1206,11 +1201,11 @@ include:
   - local: '.gitlab/ci/fullsend-poll.yml'
     rules:
       - if: $CI_PIPELINE_SOURCE == "schedule"
-  # Stage templates (fullsend-{triage,code,review,fix,retro,prioritize}.yml)
-  # are NOT included here — they are included by the dynamically generated
-  # child pipeline YAML from both the MR dispatch path (mr-dispatch-pipeline.yml)
-  # and the cron-poller path (child-pipeline.yml). Including them in the root
-  # pipeline would add jobs that never match (STAGE is unset in root context).
+  # The generic agent template (fullsend-agent.yml) is NOT included here —
+  # it is included by the dynamically generated child pipeline YAML from
+  # both the MR dispatch path (mr-dispatch-pipeline.yml) and the cron-poller
+  # path (child-pipeline.yml). Including it in the root pipeline would add
+  # a job that never matches (STAGE is unset in root context).
 
 stages:
   - dispatch
@@ -1224,8 +1219,10 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     # Scheduled polling (triage, code, slash commands)
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
-    # Child pipelines dispatched by the poller
-    - if: $CI_PIPELINE_SOURCE == "parent_pipeline"
+    # Push-triggered pipelines are intentionally excluded — fullsend
+    # agents respond to MR and schedule events only. Child pipelines
+    # created via trigger: include: get their configuration from the
+    # referenced artifact/file and do not re-read workflow:rules.
 ```
 
 ### MR dispatch (`.gitlab/ci/fullsend-dispatch.yml`)
@@ -1239,7 +1236,7 @@ Handles native MR events — routes `merge_request_event` pipelines to the revie
 
 dispatch:
   stage: dispatch
-  image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+  image: ghcr.io/fullsend-ai/fullsend-runner:latest
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   script:
@@ -1294,7 +1291,7 @@ variables:
   EVENT_TYPE: "merge_request_event"
 
 include:
-  - local: .gitlab/ci/fullsend-${STAGE}.yml
+  - local: .gitlab/ci/fullsend-agent.yml
 YAML
   artifacts:
     paths:
@@ -1322,7 +1319,7 @@ dispatch-mr-agents:
 
 poll-events:
   stage: poll
-  image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+  image: ghcr.io/fullsend-ai/fullsend-runner:latest
   resource_group: fullsend-poll
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
@@ -1373,7 +1370,7 @@ poll-events:
       fullsend poll \
         --forge gitlab \
         --project "${CI_PROJECT_PATH}" \
-        --gitlab-url "${FULLSEND_GITLAB_URL:-https://gitlab.com}" \
+        --gitlab-url "${FULLSEND_GITLAB_URL:-${CI_SERVER_URL}}" \
         --output dispatches.json
   artifacts:
     paths:
@@ -1383,7 +1380,7 @@ poll-events:
 # Generate dynamic child pipeline YAML from poll results
 generate-child-pipelines:
   stage: generate
-  image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+  image: ghcr.io/fullsend-ai/fullsend-runner:latest
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
   needs:
@@ -1426,16 +1423,14 @@ dispatch-agents:
     strategy: depend
 ```
 
-### Stage pipeline template (`.gitlab/ci/fullsend-code.yml`)
+### Generic agent template (`.gitlab/ci/fullsend-agent.yml`)
 
-All stages use the same credential retrieval flow (WIF or variable mode). Events arrive via parent pipeline variables (from the poller's child pipeline) or via native MR event dispatch.
+A single generic template handles all agent stages, parameterized by the `$STAGE` pipeline variable. All stages share the same credential retrieval flow (WIF or variable mode), authorization gate, and `fullsend run` invocation. Events arrive via parent pipeline variables (from the poller's child pipeline) or via native MR event dispatch.
 
 ```yaml
-# fullsend-stage: code
-
-code:
+agent:
   stage: agent
-  image: ghcr.io/fullsend-ai/fullsend-code:latest
+  image: ghcr.io/fullsend-ai/fullsend-runner:latest
   id_tokens:
     FULLSEND_ID_TOKEN:
       aud: "fullsend"
@@ -1446,115 +1441,57 @@ code:
       set -euo pipefail
 
       # CI_DEBUG_TRACE guard
-      if [[ "${CI_DEBUG_TRACE:-}" == "true" ]]; then
+      if [ "${CI_DEBUG_TRACE:-}" = "true" ]; then
         echo "ERROR: CI_DEBUG_TRACE enabled — aborting to protect secrets"
         exit 1
       fi
 
       # Credential retrieval — mode selected at install time
-      if [ "${FULLSEND_CREDENTIAL_MODE}" = "wif" ]; then
-        # Write OIDC token to temp file — id_tokens: provides the token
-        # value in FULLSEND_ID_TOKEN, not a file path.
-        OIDC_TOKEN_FILE=$(mktemp)
-        echo "${FULLSEND_ID_TOKEN}" > "${OIDC_TOKEN_FILE}"
-        gcloud auth login --cred-file=<(cat <<CRED
-      {
-        "type": "external_account",
-        "audience": "//iam.googleapis.com/${FULLSEND_WIF_PROVIDER}",
-        "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
-        "token_url": "https://sts.googleapis.com/v1/token",
-        "credential_source": { "file": "${OIDC_TOKEN_FILE}" },
-        "service_account_impersonation_url": "https://iam.googleapis.com/v1/projects/-/serviceAccounts/${FULLSEND_SA}:generateAccessToken"
-      }
-      CRED
-        )
-        rm -f "${OIDC_TOKEN_FILE}"
-        export FULLSEND_FORGE_TOKEN=$(gcloud secrets versions access latest \
-          --secret="${FULLSEND_BOT_TOKEN_SECRET}" \
-          --project="${FULLSEND_GCP_PROJECT_ID}")
+      # ... (WIF or variable mode — see actual template for full boilerplate)
+
+      # Fork MR protection — code/fix stages only
+      if [ "${STAGE}" = "code" ] || [ "${STAGE}" = "fix" ]; then
+        if [ "${IS_FORK:-true}" = "true" ]; then
+          echo "Fork MR detected — skipping ${STAGE} stage"
+          exit 0
+        fi
       fi
-      # In variable mode, FULLSEND_FORGE_TOKEN is already available.
 
-      # Decode event payload
-      EVENT_PAYLOAD_FILE=$(mktemp)
-      trap 'rm -f "${EVENT_PAYLOAD_FILE}"' EXIT
-      echo "${EVENT_PAYLOAD_B64}" | base64 -d > "${EVENT_PAYLOAD_FILE}"
-
-      # Prepare workspace (layered content resolution)
-      fullsend workspace prepare \
+      # Run the agent — fullsend run resolves the harness file, reads
+      # the image field, and creates the sandbox container via Podman.
+      fullsend run "${STAGE}" \
+        --fullsend-dir .fullsend \
+        --target-repo . \
+        --output-dir /tmp/fullsend-output \
         --forge gitlab \
-        --root .fullsend
-
-      # Run the agent
-      fullsend run \
-        --stage code \
-        --source-project "${CI_PROJECT_PATH}" \
-        --event-type "${EVENT_TYPE}" \
-        --event-payload-file "${EVENT_PAYLOAD_FILE}" \
-        --forge gitlab \
-        --fullsend-dir .fullsend
-  resource_group: "fullsend-code-${RESOURCE_KEY}"
+        --run-url "${CI_PIPELINE_URL}" \
+        --status-repo "${CI_PROJECT_PATH}" \
+        --status-number "${CI_MERGE_REQUEST_IID:-0}"
+  resource_group: "fullsend-${STAGE}-${RESOURCE_KEY}"
   rules:
-    - if: $STAGE == "code"
+    - if: $STAGE != ""
 ```
 
-### Stage-specific notes
-
-**fix**: Adds fork MR protection:
-```yaml
-    - |
-      # Fork MR protection
-      SOURCE_PROJECT=$(echo "${EVENT_PAYLOAD_B64}" | base64 -d | jq -r '.mr_source_project_id // empty')
-      TARGET_PROJECT=$(echo "${EVENT_PAYLOAD_B64}" | base64 -d | jq -r '.mr_target_project_id // empty')
-      if [ -n "${SOURCE_PROJECT}" ] && [ -n "${TARGET_PROJECT}" ] && [ "${SOURCE_PROJECT}" != "${TARGET_PROJECT}" ]; then
-        echo "Fork MR detected — skipping fix stage"
-        exit 0
-      fi
-```
-
-**review** (via native MR event): When triggered by `merge_request_event`, `CI_MERGE_REQUEST_IID` and other MR variables are available directly from GitLab — no event payload decoding needed. The stage template detects the source and adapts:
-```yaml
-    - |
-      if [ "${CI_PIPELINE_SOURCE}" = "merge_request_event" ]; then
-        # Native MR event — build payload from CI variables
-        # Query MR state — CI_MERGE_REQUEST_EVENT_TYPE is pipeline execution
-        # mode (detached/merged_result/merge_train), not lifecycle action
-        MR_STATE=$(curl -sf "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}" \
-          -H "JOB-TOKEN: ${CI_JOB_TOKEN}" | jq -r '.state')
-        EVENT_PAYLOAD_FILE=$(mktemp)
-        trap 'rm -f "${EVENT_PAYLOAD_FILE}"' EXIT
-        jq -n \
-          --arg iid "${CI_MERGE_REQUEST_IID}" \
-          --arg state "${MR_STATE}" \
-          --arg source "${CI_MERGE_REQUEST_SOURCE_BRANCH_NAME}" \
-          --arg target "${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}" \
-          '{iid: ($iid|tonumber), state: $state, source_branch: $source, target_branch: $target}' \
-          > "${EVENT_PAYLOAD_FILE}"
-        EVENT_TYPE="merge_request"
-      else
-        # Polled event — decode from base64 variable
-        EVENT_PAYLOAD_FILE=$(mktemp)
-        trap 'rm -f "${EVENT_PAYLOAD_FILE}"' EXIT
-        echo "${EVENT_PAYLOAD_B64}" | base64 -d > "${EVENT_PAYLOAD_FILE}"
-      fi
-```
+This mirrors how GitHub's `reusable-dispatch.yml` consolidates all stage logic into one file. The dispatch and poll templates set `STAGE` as a pipeline variable; the child pipeline `include: local: .gitlab/ci/fullsend-agent.yml` selects this template. When CEL triggers land (#2896-2901), the routing layer changes but the agent template is unaffected — it only needs `$STAGE`.
 
 ### Files
 
 | Action | Path |
 |--------|------|
 | Create | `internal/scaffold/fullsend-repo-gitlab/` (entire tree) |
-| Modify | `internal/scaffold/scaffold.go` — add `GitLabPerRepoScaffold()` function |
+| Modify | `internal/scaffold/scaffold.go` — add `GitLabPerRepoFile()` and `WalkGitLabPerRepo()` functions |
 
 ## Phase 4: CLI Changes
 
 **Goal**: `fullsend admin install group/project --forge gitlab` works end-to-end.
 
+**Follow-up**: Consolidate kill switch and role enablement checks into `fullsend run` so both forges get them from Go code instead of duplicated shell scripts (#5416). Currently checked in GitHub's `reusable-dispatch.yml` and GitLab's `fullsend-agent.yml` (added in Phase 3, PR #3193).
+
 ### New flags
 
 On `fullsend admin install`:
 - `--forge {github|gitlab}` — auto-detected from remote URL, overridable
-- `--gitlab-url` — GitLab instance URL (default: `https://gitlab.com`)
+- `--gitlab-url` — GitLab instance URL (default: `${CI_SERVER_URL}`)
 - `--poll-interval` — cron schedule for polling (default: auto-detect from tier)
 - `--skip-schedule-create` — skip pipeline schedule creation (for externally managed schedules)
 
@@ -1668,7 +1605,15 @@ func runGitLabPerRepoInstall(ctx context.Context, target string, opts installOpt
     }
 
     // 11. Commit CI/CD template files
-    scaffoldFiles := scaffold.GitLabPerRepoScaffold()
+    var scaffoldFiles []gitlab.CommitActionOptions
+    scaffold.WalkGitLabPerRepo(func(path string, content []byte) error {
+        scaffoldFiles = append(scaffoldFiles, gitlab.CommitActionOptions{
+            Action:   gitlab.FileCreate,
+            FilePath: path,
+            Content:  string(content),
+        })
+        return nil
+    })
     client.CommitFilesToBranch(ctx, owner, repo, project.DefaultBranch,
         "chore: add fullsend CI/CD pipeline", scaffoldFiles)
 
@@ -1853,7 +1798,7 @@ Every stage pipeline must exit early if debug tracing is detected. This prevents
 
 ### 4. Fork MR blocking
 
-**File**: `internal/poll/events.go` (poller routing), `.gitlab/ci/fullsend-fix.yml` (pipeline template)
+**File**: `internal/poll/events.go` (poller routing), `.gitlab/ci/fullsend-agent.yml` (pipeline template)
 
 Fork MR protection in three places:
 - `isForkMR` helper denies when `source_project_id != target_project_id`

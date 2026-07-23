@@ -1,0 +1,243 @@
+---
+# fullsend-stage: dispatch (MR events only)
+#
+# Routing uses NormalizedEvent v1 (ADR 0061) as the routing data model.
+# The event is used for local routing only — it is not passed to stage
+# templates. Each routing check is annotated with the equivalent CEL
+# trigger expression so the shell routing can be replaced by
+# `fullsend dispatch --input-driver json` once built-in harness triggers
+# land (fullsend-ai/fullsend#2896-2901).
+
+dispatch:
+  stage: dispatch
+  image:
+    name: ghcr.io/fullsend-ai/fullsend-runner:latest
+    entrypoint: [""]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - |
+      set -euo pipefail
+
+      # CI_DEBUG_TRACE guard
+      if [ "${CI_DEBUG_TRACE:-}" = "true" ]; then
+        echo "ERROR: CI_DEBUG_TRACE enabled — aborting to protect secrets"
+        exit 1
+      fi
+
+      # --- Detect fork before API call ---
+      # Fork status is derivable from predefined CI variables without any
+      # API call. Computing it early lets us route fork MR API failures
+      # (job-token scope) to a no-op instead of a hard failure.
+      IS_FORK="false"
+      HEAD_REPO="${CI_MERGE_REQUEST_SOURCE_PROJECT_PATH}"
+      BASE_REPO="${CI_MERGE_REQUEST_PROJECT_PATH}"
+      if [ -z "${HEAD_REPO}" ]; then
+        HEAD_REPO="${BASE_REPO}"
+        IS_FORK="true"
+      elif [ "${HEAD_REPO}" != "${BASE_REPO}" ]; then
+        IS_FORK="true"
+      fi
+
+      # --- Gather MR metadata ---
+      # GitLab has no predefined variable for the MR lifecycle action
+      # (created, updated, merged, closed). CI_MERGE_REQUEST_EVENT_TYPE
+      # indicates the pipeline execution mode (detached, merged_result,
+      # merge_train), not the triggering action. Query state via the API.
+      # Use CI_MERGE_REQUEST_PROJECT_ID (target project) — in fork MR
+      # pipelines, CI_PROJECT_ID refers to the fork, not the target.
+      # Requires job-token MR API access on the target project. On
+      # self-managed GitLab, add the source project to the target's
+      # CI/CD job token allowlist (Settings → CI/CD → Job token
+      # permissions).
+      if ! MR_HTTP_CODE=$(curl -s -o /tmp/mr-response.json -w '%{http_code}' \
+        --retry 3 --retry-delay 2 --retry-all-errors \
+        "${CI_API_V4_URL}/projects/${CI_MERGE_REQUEST_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}" \
+        -H "JOB-TOKEN: ${CI_JOB_TOKEN}"); then
+        echo "WARNING: MR API unreachable (connection/timeout) — writing no-op pipeline"
+        echo 'no-op: { script: ["echo MR API unavailable"], rules: [{ when: always }] }' > mr-dispatch-pipeline.yml
+        exit 0
+      fi
+      if [ "${MR_HTTP_CODE}" -ge 400 ]; then
+        if [ "${IS_FORK}" = "true" ]; then
+          echo "WARNING: MR API returned ${MR_HTTP_CODE} for fork MR (expected: job-token scope) — writing no-op pipeline"
+          echo 'no-op: { script: ["echo MR API unavailable for fork"], rules: [{ when: always }] }' > mr-dispatch-pipeline.yml
+          exit 0
+        fi
+        if [ "${MR_HTTP_CODE}" -eq 401 ] || [ "${MR_HTTP_CODE}" -eq 403 ] || [ "${MR_HTTP_CODE}" -eq 404 ]; then
+          echo "ERROR: MR API returned ${MR_HTTP_CODE} — check CI/CD job token permissions (source project must be in target's allowlist)"
+          exit 1
+        fi
+        echo "WARNING: MR API returned ${MR_HTTP_CODE} (transient) — writing no-op pipeline"
+        echo 'no-op: { script: ["echo MR API unavailable"], rules: [{ when: always }] }' > mr-dispatch-pipeline.yml
+        exit 0
+      fi
+      MR_RESPONSE=$(cat /tmp/mr-response.json)
+      MR_STATE=$(echo "${MR_RESPONSE}" | jq -r '.state')
+      MR_AUTHOR_ID=$(echo "${MR_RESPONSE}" | jq -r '.author.id')
+      MR_AUTHOR_USERNAME=$(echo "${MR_RESPONSE}" | jq -r '.author.username')
+      MR_LABELS=$(echo "${MR_RESPONSE}" | jq -c '[.labels[]?]')
+
+      # --- Actor role for NormalizedEvent ---
+      # The Members API is not accessible via CI_JOB_TOKEN (not in the
+      # job token allowlist), so actor.role cannot be resolved here.
+      # Authorization is enforced in stage templates after credential
+      # retrieval (they hold the bot PAT and can call the Members API).
+      # Set role to "none" — conforms to the v1 schema enum and is
+      # fail-closed for authorization (IsWriteAuthorized returns false).
+      ACTOR_ROLE="none"
+
+      # --- Map MR state to NormalizedEvent transition.kind ---
+      # GitLab returns "opened" for both new and reopened MRs — there is
+      # no separate "reopened" state in the MR API response.
+      # LIMITATION: GitLab fires merge_request_event on every push to an
+      # open MR and state stays "opened", so every push emits
+      # transition.kind="opened" instead of "synchronized". GitLab CI
+      # pipelines do not expose the webhook action (open vs update) and
+      # distinguishing via timestamps or pipeline history is fragile.
+      # Routing is unaffected (both map to the review stage), but CEL
+      # triggers keyed on transition.kind=="opened" will need to account
+      # for this when fullsend dispatch --input-driver json lands.
+      case "${MR_STATE}" in
+        opened) TRANSITION_KIND="opened" ;;
+        merged) TRANSITION_KIND="merged" ;;
+        closed) TRANSITION_KIND="closed" ;;
+        *)
+          echo "Unknown MR state '${MR_STATE}' — no dispatch"
+          echo 'no-op: { script: ["echo Unknown MR state"], rules: [{ when: always }] }' > mr-dispatch-pipeline.yml
+          exit 0
+          ;;
+      esac
+
+      # --- Construct NormalizedEvent v1 ---
+      # Schema: docs/normative/normalized-event/v1/normalized-event.schema.json
+      # IS_FORK, HEAD_REPO, BASE_REPO computed above (before API call).
+      # In merged-results pipelines, CI_COMMIT_SHA is the ephemeral merge
+      # commit — use CI_MERGE_REQUEST_SOURCE_BRANCH_SHA for the real head.
+      HEAD_SHA="${CI_MERGE_REQUEST_SOURCE_BRANCH_SHA:-${CI_COMMIT_SHA}}"
+      EVENT_JSON=$(jq -n \
+        --arg repo "${BASE_REPO}" \
+        --argjson entity_id "${CI_MERGE_REQUEST_IID}" \
+        --arg entity_url "${CI_SERVER_URL}/${CI_MERGE_REQUEST_PROJECT_PATH}/-/merge_requests/${CI_MERGE_REQUEST_IID}" \
+        --arg transition_kind "${TRANSITION_KIND}" \
+        --arg actor_id "${MR_AUTHOR_USERNAME}" \
+        --arg actor_role "${ACTOR_ROLE}" \
+        --arg head_repo "${HEAD_REPO}" \
+        --arg base_repo "${BASE_REPO}" \
+        --arg head_ref "${CI_MERGE_REQUEST_SOURCE_BRANCH_NAME}" \
+        --arg base_ref "${CI_MERGE_REQUEST_TARGET_BRANCH_NAME}" \
+        --arg head_sha "${HEAD_SHA}" \
+        --argjson is_fork "${IS_FORK}" \
+        --argjson labels "${MR_LABELS}" \
+        '{
+          repo: $repo,
+          entity: {
+            kind: "change_proposal",
+            id: $entity_id,
+            url: $entity_url
+          },
+          transition: { kind: $transition_kind },
+          actor: {
+            id: $actor_id,
+            kind: (if ($actor_id | test("\\[bot\\]$|_bot_[a-zA-Z0-9]+$")) then "bot" else "human" end),
+            role: $actor_role,
+            is_entity_author: true
+          },
+          state: {
+            labels: $labels,
+            change_proposal: {
+              id: $entity_id,
+              head_repo: $head_repo,
+              base_repo: $base_repo,
+              head_ref: $head_ref,
+              base_ref: $base_ref,
+              head_sha: $head_sha,
+              author_id: $actor_id,
+              is_fork: $is_fork
+            }
+          },
+          source: {
+            system: "gitlab",
+            raw_type: "merge_request",
+            raw_action: $transition_kind
+          }
+        }')
+
+      # --- Stage routing (CEL trigger equivalents) ---
+      # When built-in harness triggers land (fullsend-ai/fullsend#2896-2901),
+      # replace this block with:
+      #   echo "${EVENT_JSON}" > /tmp/event.json
+      #   fullsend dispatch --input-driver json --input-file /tmp/event.json \
+      #     --output-driver json --config-dir .fullsend
+      STAGE=""
+      RESOURCE_KEY="mr-${CI_MERGE_REQUEST_IID}"
+
+      ENTITY_KIND=$(echo "${EVENT_JSON}" | jq -r '.entity.kind')
+      TRANSITION=$(echo "${EVENT_JSON}" | jq -r '.transition.kind')
+
+      # CEL: event.entity.kind == "change_proposal" && event.transition.kind == "opened"
+      if [ "${ENTITY_KIND}" = "change_proposal" ] && [ "${TRANSITION}" = "opened" ]; then
+        STAGE="review"
+      fi
+
+      # CEL: event.transition.kind == "merged"
+      if [ "${TRANSITION}" = "merged" ]; then
+        echo "MR already merged — retro handled by cron-poller"
+        echo 'no-op: { script: ["echo MR merged — retro via cron-poller"], rules: [{ when: always }] }' > mr-dispatch-pipeline.yml
+        exit 0
+      fi
+
+      # CEL: event.transition.kind == "closed"
+      # Any closer may trigger read-only retro (lifecycle accounting).
+      # Best-effort on GitLab: merge_request_event pipelines are not
+      # reliably created on close — this fires only in a push-then-close
+      # race. Closed-unmerged retro is not yet covered by the cron-poller.
+      if [ "${TRANSITION}" = "closed" ]; then
+        STAGE="retro"
+      fi
+
+      if [ -z "${STAGE}" ]; then
+        echo "No stage matched for transition=${TRANSITION}"
+        echo 'no-op: { script: ["echo No matching stage"], rules: [{ when: always }] }' > mr-dispatch-pipeline.yml
+        exit 0
+      fi
+
+      # --- Build child pipeline ---
+      # SECURITY: Allowlist gate — only known stages may be interpolated into
+      # the heredoc below. RESOURCE_KEY is CI_MERGE_REQUEST_IID (integer).
+      # MR_AUTHOR_ID is an integer from the MR API response.
+      case "${STAGE}" in
+        review|retro) ;; # allowed
+        *) echo "BUG: unexpected STAGE=${STAGE}"; exit 1 ;;
+      esac
+      cat > mr-dispatch-pipeline.yml <<YAML
+      stages:
+        - agent
+
+      variables:
+        STAGE: "${STAGE}"
+        RESOURCE_KEY: "${RESOURCE_KEY}"
+        IS_FORK: "${IS_FORK}"
+        MR_AUTHOR_ID: "${MR_AUTHOR_ID}"
+        STATUS_IID: "${CI_MERGE_REQUEST_IID}"
+
+      include:
+        - local: .gitlab/ci/fullsend-agent.yml
+      YAML
+  artifacts:
+    paths:
+      - mr-dispatch-pipeline.yml
+    expire_in: 1 hour
+
+dispatch-mr-agents:
+  stage: agent
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  needs:
+    - job: dispatch
+      artifacts: true
+  trigger:
+    include:
+      - artifact: mr-dispatch-pipeline.yml
+        job: dispatch
+    strategy: depend
