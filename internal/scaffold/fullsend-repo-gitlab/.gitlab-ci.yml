@@ -1,0 +1,37 @@
+---
+include:
+  - local: '.gitlab/ci/fullsend-dispatch.yml'
+    rules:
+      - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  - local: '.gitlab/ci/fullsend-poll.yml'
+    rules:
+      - if: $CI_PIPELINE_SOURCE == "schedule"
+  # The generic agent template (fullsend-agent.yml) is NOT included here —
+  # it is included by the dynamically generated child pipeline YAML from
+  # both the MR dispatch path (mr-dispatch-pipeline.yml) and the cron-poller
+  # path (child-pipeline.yml). Including it in the root pipeline would add
+  # a job that never matches (STAGE is unset in root context).
+
+stages:
+  - dispatch
+  - poll
+  - generate
+  - agent
+
+workflow:
+  rules:
+    # Native MR events (review only — retro uses cron-poller)
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    # Scheduled polling (triage, code, slash commands)
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    # NOTE: Push-triggered pipelines are intentionally excluded — this
+    # scaffold handles only fullsend agent dispatch. If the adopting
+    # repo has existing push-triggered CI jobs (build, test, lint),
+    # add a push rule to this workflow:rules block. workflow:rules
+    # gates the entire pipeline regardless of which included file
+    # defines a job — moving jobs to a separate include does NOT
+    # exempt them. To define entirely separate workflow behavior,
+    # replace this workflow: block (GitLab does not merge multiple
+    # workflow: definitions) and re-add these rules alongside yours.
+    # Child pipelines (from trigger:include:) are not affected —
+    # they get their own configuration and are not gated here.

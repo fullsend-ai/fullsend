@@ -161,6 +161,9 @@ func TestDispatch_BuildsPayloadAndAppends(t *testing.T) {
 	if d.ResourceKey != "issue-42" {
 		t.Errorf("resource_key: got %q, want issue-42", d.ResourceKey)
 	}
+	if d.IID != 42 {
+		t.Errorf("IID: got %d, want 42", d.IID)
+	}
 
 	// Verify the payload is valid base64-encoded JSON.
 	decoded, err := base64.StdEncoding.DecodeString(d.EventPayloadB64)
@@ -176,6 +179,55 @@ func TestDispatch_BuildsPayloadAndAppends(t *testing.T) {
 	}
 	if int(payload["iid"].(float64)) != 42 {
 		t.Errorf("payload iid: got %v, want 42", payload["iid"])
+	}
+}
+
+func TestDispatch_PropagatesMRAuthorAndFork(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:       "mr_event",
+		IID:        10,
+		UpdatedAt:  time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		MRAuthorID: 99,
+		MRSource:   100,
+		MRTarget:   200,
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	d := p.dispatches[0]
+	if d.MRAuthorID != 99 {
+		t.Errorf("MRAuthorID: got %d, want 99", d.MRAuthorID)
+	}
+	if !d.IsFork {
+		t.Error("IsFork: got false, want true (source != target)")
+	}
+}
+
+func TestDispatch_SameProjectIsNotFork(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:      "mr_event",
+		IID:       10,
+		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		MRSource:  100,
+		MRTarget:  100,
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if p.dispatches[0].IsFork {
+		t.Error("IsFork: got true, want false (same project)")
 	}
 }
 
@@ -293,7 +345,7 @@ func TestGenerateChildPipelineYAML_SingleDispatch(t *testing.T) {
 	expected := []string{
 		"agent-0:",
 		"trigger:",
-		".gitlab/ci/fullsend-triage.yml",
+		".gitlab/ci/fullsend-agent.yml",
 		"strategy: depend",
 		`STAGE: "triage"`,
 		`EVENT_TYPE: "issue_comment"`,
@@ -306,6 +358,75 @@ func TestGenerateChildPipelineYAML_SingleDispatch(t *testing.T) {
 		if !strings.Contains(yaml, substr) {
 			t.Errorf("missing %q in output:\n%s", substr, yaml)
 		}
+	}
+	if strings.Contains(yaml, "MR_AUTHOR_ID") {
+		t.Error("MR_AUTHOR_ID should be omitted when zero")
+	}
+	if strings.Contains(yaml, "STATUS_IID") {
+		t.Error("STATUS_IID should be omitted when zero")
+	}
+}
+
+func TestDispatch_UnknownProjectIDsAreForkFailClosed(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:      "mr_event",
+		IID:       10,
+		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		// MRSource and MRTarget both zero (unknown)
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !p.dispatches[0].IsFork {
+		t.Error("IsFork: got false, want true (unknown project IDs should fail-closed)")
+	}
+}
+
+func TestDispatch_IssueEventIsNotFork(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:      "issue_label",
+		IID:       42,
+		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "code", event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if p.dispatches[0].IsFork {
+		t.Error("IsFork: got true, want false (issue events have no fork context)")
+	}
+}
+
+func TestDispatch_MREventOneZeroProjectIDIsFork(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:      "mr_event",
+		IID:       10,
+		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		MRSource:  100,
+		MRTarget:  0,
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !p.dispatches[0].IsFork {
+		t.Error("IsFork: got false, want true (one zero project ID should fail-closed)")
 	}
 }
 
@@ -328,14 +449,11 @@ func TestGenerateChildPipelineYAML_MultipleDispatches(t *testing.T) {
 		}
 	}
 
-	if !strings.Contains(yaml, "fullsend-triage.yml") {
-		t.Error("missing triage stage include")
+	if !strings.Contains(yaml, "fullsend-agent.yml") {
+		t.Error("missing agent template include")
 	}
-	if !strings.Contains(yaml, "fullsend-code.yml") {
-		t.Error("missing code stage include")
-	}
-	if !strings.Contains(yaml, "fullsend-review.yml") {
-		t.Error("missing review stage include")
+	if strings.Contains(yaml, "fullsend-triage.yml") || strings.Contains(yaml, "fullsend-code.yml") || strings.Contains(yaml, "fullsend-review.yml") {
+		t.Error("should use generic fullsend-agent.yml, not per-stage templates")
 	}
 }
 
@@ -354,6 +472,37 @@ func TestGenerateChildPipelineYAML_EmptyDispatches(t *testing.T) {
 	}
 	if yaml != "" {
 		t.Errorf("expected empty string for empty slice, got %q", yaml)
+	}
+}
+
+func TestGenerateChildPipelineYAML_MRDispatchIncludesAuthorAndFork(t *testing.T) {
+	dispatches := []Dispatch{
+		{
+			Stage:           "review",
+			EventType:       "mr_event",
+			EventPayloadB64: "cGF5bG9hZA==",
+			ResourceKey:     "mr-42",
+			MRAuthorID:      12345,
+			IsFork:          true,
+			IID:             42,
+		},
+	}
+
+	yaml, err := generateChildPipelineYAML(dispatches)
+	if err != nil {
+		t.Fatalf("generateChildPipelineYAML: %v", err)
+	}
+
+	expected := []string{
+		`MR_AUTHOR_ID: "12345"`,
+		`IS_FORK: "true"`,
+		`STATUS_IID: "42"`,
+		".gitlab/ci/fullsend-agent.yml",
+	}
+	for _, substr := range expected {
+		if !strings.Contains(yaml, substr) {
+			t.Errorf("missing %q in output:\n%s", substr, yaml)
+		}
 	}
 }
 
@@ -433,11 +582,11 @@ func TestGenerateChildPipelineFromFile_ReadsAndWrites(t *testing.T) {
 	if !strings.Contains(yamlStr, "agent-1:") {
 		t.Error("missing agent-1 in output")
 	}
-	if !strings.Contains(yamlStr, "fullsend-triage.yml") {
-		t.Error("missing triage include")
+	if !strings.Contains(yamlStr, "fullsend-agent.yml") {
+		t.Error("missing agent template include")
 	}
-	if !strings.Contains(yamlStr, "fullsend-code.yml") {
-		t.Error("missing code include")
+	if strings.Contains(yamlStr, "fullsend-triage.yml") || strings.Contains(yamlStr, "fullsend-code.yml") {
+		t.Error("should use generic fullsend-agent.yml, not per-stage templates")
 	}
 }
 

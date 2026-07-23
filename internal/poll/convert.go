@@ -290,7 +290,7 @@ func (p *Poller) buildChangeProposalState(ctx context.Context, event RoutableEve
 		HeadRef:  event.SourceBranch,
 		BaseRef:  event.TargetBranch,
 		AuthorID: event.MRAuthorLogin,
-		IsFork:   event.MRSource != event.MRTarget,
+		IsFork:   event.MRSource == 0 || event.MRTarget == 0 || event.MRSource != event.MRTarget,
 	}, nil
 }
 

@@ -11,6 +11,9 @@ import (
 //go:embed all:fullsend-repo
 var content embed.FS
 
+//go:embed all:fullsend-repo-gitlab
+var gitlabContent embed.FS
+
 // FullsendRepoFile returns the content of a file from the fullsend-repo scaffold.
 // The path is relative to the fullsend-repo root (e.g., ".github/workflows/triage.yml").
 func FullsendRepoFile(path string) ([]byte, error) {
@@ -219,22 +222,45 @@ func PrependManagedHeader(path string, content []byte) []byte {
 	return []byte(header + s)
 }
 
-func walkFullsendRepo(fn func(path string, content []byte) error, filter bool) error {
-	return fs.WalkDir(content, "fullsend-repo", func(path string, d fs.DirEntry, err error) error {
+func walkEmbedFS(fsys embed.FS, root string, fn func(path string, content []byte) error, skip func(string) bool) error {
+	return fs.WalkDir(fsys, root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
 			return nil
 		}
-		relPath := path[len("fullsend-repo/"):]
-		if filter && isSkippedDir(relPath) {
+		relPath := path[len(root)+1:]
+		if skip != nil && skip(relPath) {
 			return nil
 		}
-		data, readErr := content.ReadFile(path)
+		data, readErr := fsys.ReadFile(path)
 		if readErr != nil {
 			return fmt.Errorf("reading %s: %w", path, readErr)
 		}
 		return fn(relPath, data)
 	})
+}
+
+func walkFullsendRepo(fn func(path string, content []byte) error, filter bool) error {
+	var skip func(string) bool
+	if filter {
+		skip = isSkippedDir
+	}
+	return walkEmbedFS(content, "fullsend-repo", fn, skip)
+}
+
+// GitLabPerRepoFile returns the content of a file from the GitLab per-repo scaffold.
+// The path is relative to the fullsend-repo-gitlab root (e.g., ".gitlab-ci.yml").
+func GitLabPerRepoFile(path string) ([]byte, error) {
+	return gitlabContent.ReadFile("fullsend-repo-gitlab/" + path)
+}
+
+// WalkGitLabPerRepo calls fn for each file in the GitLab per-repo scaffold.
+// Unlike WalkFullsendRepo, this does not filter layered directories because
+// the GitLab scaffold contains only CI pipeline YAML and .fullsend/config.yaml
+// — it has no layered content (harness, agents, policies) to filter. Harness
+// resolution at runtime is handled by fullsend run's config-driven lookup.
+func WalkGitLabPerRepo(fn func(path string, content []byte) error) error {
+	return walkEmbedFS(gitlabContent, "fullsend-repo-gitlab", fn, nil)
 }

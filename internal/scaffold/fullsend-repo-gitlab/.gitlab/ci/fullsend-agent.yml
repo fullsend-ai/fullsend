@@ -1,0 +1,160 @@
+---
+# Generic agent stage template — parameterized by $STAGE.
+# A single template handles all agent stages (triage, code, review, fix,
+# retro, prioritize). The dispatch and poll pipelines set STAGE as a
+# pipeline variable; this template reads it to select the agent.
+
+stages:
+  - agent
+
+agent:
+  stage: agent
+  image:
+    name: ghcr.io/fullsend-ai/fullsend-runner:latest
+    entrypoint: [""]
+  id_tokens:
+    FULLSEND_ID_TOKEN:
+      aud: "fullsend"
+  variables:
+    FULLSEND_FORGE: "gitlab"
+  script:
+    - |
+      set -euo pipefail
+
+      # CI_DEBUG_TRACE guard
+      if [ "${CI_DEBUG_TRACE:-}" = "true" ]; then
+        echo "ERROR: CI_DEBUG_TRACE enabled — aborting to protect secrets"
+        exit 1
+      fi
+
+      # Credential retrieval — mode selected at install time
+      if [ "${FULLSEND_CREDENTIAL_MODE:-}" = "wif" ]; then
+        OIDC_TOKEN_FILE=$(mktemp)
+        trap 'rm -f "${OIDC_TOKEN_FILE}"' EXIT
+        echo "${FULLSEND_ID_TOKEN}" > "${OIDC_TOKEN_FILE}"
+        gcloud auth login --cred-file=<(cat <<CRED
+      {
+        "type": "external_account",
+        "audience": "//iam.googleapis.com/${FULLSEND_WIF_PROVIDER}",
+        "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+        "token_url": "https://sts.googleapis.com/v1/token",
+        "credential_source": { "file": "${OIDC_TOKEN_FILE}" },
+        "service_account_impersonation_url": "https://iam.googleapis.com/v1/projects/-/serviceAccounts/${FULLSEND_SA}:generateAccessToken"
+      }
+      CRED
+        )
+        export FULLSEND_FORGE_TOKEN=$(gcloud secrets versions access latest \
+          --secret="${FULLSEND_BOT_TOKEN_SECRET}" \
+          --project="${FULLSEND_GCP_PROJECT_ID}")
+      elif [ "${FULLSEND_CREDENTIAL_MODE:-}" != "variable" ]; then
+        echo "ERROR: FULLSEND_CREDENTIAL_MODE must be 'wif' or 'variable', got '${FULLSEND_CREDENTIAL_MODE:-}'"
+        exit 1
+      fi
+
+      if [ -z "${FULLSEND_FORGE_TOKEN:-}" ]; then
+        echo "ERROR: FULLSEND_FORGE_TOKEN is not set after credential retrieval"
+        exit 1
+      fi
+
+      # Read config from default branch (trusted), not MR source branch.
+      # GitHub reads config from pull_request.base.sha; this is the GitLab
+      # equivalent. git fetch is needed because CI shallow clones only
+      # include the pipeline commit.
+      CONFIG_YAML=""
+      if [ -n "${CI_DEFAULT_BRANCH:-}" ]; then
+        if ! git fetch origin "${CI_DEFAULT_BRANCH}" --depth=1; then
+          echo "ERROR: cannot fetch default branch — refusing to run without trusted config"
+          exit 1
+        fi
+        CONFIG_YAML=$(git show "FETCH_HEAD:.fullsend/config.yaml" 2>/dev/null || echo "")
+      fi
+
+      # Kill switch — halt all agent dispatch when active
+      if [ -n "${CONFIG_YAML}" ]; then
+        if ! KILL_SWITCH=$(echo "${CONFIG_YAML}" | python3 -c "import sys,yaml; print('true' if str((yaml.safe_load(sys.stdin) or {}).get('kill_switch', False)).lower() in ('true','yes','1','on') else 'false')"); then
+          echo "WARNING: invalid .fullsend/config.yaml — treating as unconfigured (no kill-switch)"
+          KILL_SWITCH="false"
+        fi
+        if [ "${KILL_SWITCH}" = "true" ]; then
+          echo "ERROR: Kill switch is active — all agent dispatch halted"
+          echo "Set kill_switch: false in .fullsend/config.yaml to resume"
+          exit 1
+        fi
+      fi
+
+      # Role enablement — skip stage if its role is not in configured roles
+      if [ -n "${CONFIG_YAML}" ]; then
+        STAGE_ROLE="${STAGE}"
+        case "${STAGE}" in
+          code|fix) STAGE_ROLE="coder" ;;
+        esac
+        if ! ROLES=$(echo "${CONFIG_YAML}" | python3 -c "import sys,yaml; v=(yaml.safe_load(sys.stdin) or {}); roles=v.get('roles') or []; roles=roles if isinstance(roles,list) else [roles]; print('\n'.join(str(r) for r in roles)) if roles else None"); then
+          echo "WARNING: invalid .fullsend/config.yaml — treating as unconfigured (no role restriction)"
+          ROLES=""
+        fi
+        if [ -n "${ROLES}" ] && ! echo "${ROLES}" | grep -Fqx "${STAGE_ROLE}"; then
+          # Backward compat: "fullsend" in roles implies retro + prioritize
+          if echo "${STAGE}" | grep -Eq '^(retro|prioritize)$' && echo "${ROLES}" | grep -Fqx "fullsend"; then
+            echo "Stage '${STAGE}' allowed via 'fullsend' role — if customizing roles, add '${STAGE}' explicitly"
+          else
+            echo "Stage '${STAGE}' skipped — role '${STAGE_ROLE}' not in configured roles"
+            exit 0
+          fi
+        fi
+      fi
+
+      # Authorization gate (ADR 0054) — check MR author has Developer
+      # access. Read-only stages (retro, prioritize) are exempt to match
+      # GitHub behavior where any closer may trigger retro.
+      # Runs here (not in dispatch) because the Members API requires the
+      # bot PAT, which is only available after credential retrieval.
+      # Fail-closed: API failure → access_level 0 → reject.
+      # LIMITATION: This gate uses MR_AUTHOR_ID, which is only populated
+      # for MR events. Issue events and fast-poll slash commands do not
+      # set MR_AUTHOR_ID and will hit the fail-closed skip below.
+      # Generalizing to an ACTOR_ID/ACTOR_ROLE variable (covering issue
+      # authors and note authors) is needed before non-MR event routing
+      # is enabled (see poller's resolveActorRole in convert.go).
+      if [ "${STAGE}" != "retro" ] && [ "${STAGE}" != "prioritize" ]; then
+        if [ -z "${MR_AUTHOR_ID:-}" ]; then
+          echo "WARNING: MR_AUTHOR_ID not set — skipping stage (fail-closed)"
+          exit 0
+        fi
+        AUTHOR_ACCESS=0
+        if MEMBER_RESPONSE=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
+          "${CI_API_V4_URL}/projects/${CI_MERGE_REQUEST_PROJECT_ID:-${CI_PROJECT_ID}}/members/all/${MR_AUTHOR_ID}" \
+          -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}"); then
+          AUTHOR_ACCESS=$(echo "${MEMBER_RESPONSE}" | jq -r '.access_level // 0')
+        else
+          echo "WARNING: Members API call failed for user ${MR_AUTHOR_ID} — defaulting to access_level=0 (fail-closed)"
+        fi
+        case "${AUTHOR_ACCESS}" in ''|*[!0-9]*|??????????*) AUTHOR_ACCESS=0 ;; esac
+        if [ "${AUTHOR_ACCESS}" -lt 30 ]; then
+          echo "MR author does not have Developer access (access_level=${AUTHOR_ACCESS}) — skipping"
+          exit 0
+        fi
+      fi
+
+      # Fork MR protection — skip code/fix stages for fork MRs to prevent
+      # pushing commits to the target project from untrusted sources.
+      # CEL equivalent: !event.state.change_proposal.is_fork
+      if [ "${STAGE}" = "code" ] || [ "${STAGE}" = "fix" ]; then
+        if [ "${IS_FORK:-true}" = "true" ]; then
+          echo "ERROR: Fork MR detected — refusing to run ${STAGE} stage"
+          exit 1
+        fi
+      fi
+
+      # Run the agent — fullsend run resolves the harness file, reads
+      # the image field, and creates the sandbox container via Podman.
+      fullsend run "${STAGE}" \
+        --fullsend-dir .fullsend \
+        --target-repo . \
+        --output-dir /tmp/fullsend-output \
+        --forge gitlab \
+        --run-url "${CI_PIPELINE_URL}" \
+        --status-repo "${CI_PROJECT_PATH}" \
+        --status-number "${CI_MERGE_REQUEST_IID:-${STATUS_IID:-0}}"
+  resource_group: "fullsend-${STAGE}-${RESOURCE_KEY}"
+  rules:
+    - if: $STAGE != ""

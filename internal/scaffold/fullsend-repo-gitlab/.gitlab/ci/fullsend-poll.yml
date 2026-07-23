@@ -1,0 +1,119 @@
+---
+# fullsend-stage: poll
+
+poll-events:
+  stage: poll
+  image:
+    name: ghcr.io/fullsend-ai/fullsend-runner:latest
+    entrypoint: [""]
+  resource_group: fullsend-poll
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+  id_tokens:
+    FULLSEND_ID_TOKEN:
+      aud: "fullsend"
+  variables:
+    FULLSEND_FORGE: "gitlab"
+  script:
+    - |
+      set -euo pipefail
+
+      # CI_DEBUG_TRACE guard — critical in variable mode (sole defense
+      # against PAT exposure at job init), defense-in-depth in WIF mode.
+      if [ "${CI_DEBUG_TRACE:-}" = "true" ]; then
+        echo "ERROR: CI_DEBUG_TRACE enabled — aborting to protect secrets"
+        exit 1
+      fi
+
+      # Credential retrieval — mode selected at install time
+      if [ "${FULLSEND_CREDENTIAL_MODE:-}" = "wif" ]; then
+        # WIF mode: exchange OIDC token for GCP credentials, then
+        # retrieve bot PAT from Secret Manager.
+        # id_tokens: declares FULLSEND_ID_TOKEN (token value as string),
+        # not a _FILE variant — write to temp file for credential_source.
+        OIDC_TOKEN_FILE=$(mktemp)
+        trap 'rm -f "${OIDC_TOKEN_FILE}"' EXIT
+        echo "${FULLSEND_ID_TOKEN}" > "${OIDC_TOKEN_FILE}"
+        gcloud auth login --cred-file=<(cat <<CRED
+      {
+        "type": "external_account",
+        "audience": "//iam.googleapis.com/${FULLSEND_WIF_PROVIDER}",
+        "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
+        "token_url": "https://sts.googleapis.com/v1/token",
+        "credential_source": { "file": "${OIDC_TOKEN_FILE}" },
+        "service_account_impersonation_url": "https://iam.googleapis.com/v1/projects/-/serviceAccounts/${FULLSEND_SA}:generateAccessToken"
+      }
+      CRED
+        )
+        export FULLSEND_FORGE_TOKEN=$(gcloud secrets versions access latest \
+          --secret="${FULLSEND_BOT_TOKEN_SECRET}" \
+          --project="${FULLSEND_GCP_PROJECT_ID}")
+      elif [ "${FULLSEND_CREDENTIAL_MODE:-}" != "variable" ]; then
+        echo "ERROR: FULLSEND_CREDENTIAL_MODE must be 'wif' or 'variable', got '${FULLSEND_CREDENTIAL_MODE:-}'"
+        exit 1
+      fi
+      # In variable mode, FULLSEND_FORGE_TOKEN is already set from the
+      # protected CI/CD variable — no retrieval step needed.
+
+      if [ -z "${FULLSEND_FORGE_TOKEN:-}" ]; then
+        echo "ERROR: FULLSEND_FORGE_TOKEN is not set after credential retrieval"
+        exit 1
+      fi
+
+      # Run the poller — outputs dispatches.json
+      fullsend poll \
+        --forge gitlab \
+        --project "${CI_PROJECT_PATH}" \
+        --gitlab-url "${FULLSEND_GITLAB_URL:-${CI_SERVER_URL}}" \
+        --output dispatches.json
+  artifacts:
+    paths:
+      - dispatches.json
+    expire_in: 1 hour
+
+# Generate dynamic child pipeline YAML from poll results
+generate-child-pipelines:
+  stage: generate
+  image:
+    name: ghcr.io/fullsend-ai/fullsend-runner:latest
+    entrypoint: [""]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+  needs:
+    - job: poll-events
+      artifacts: true
+  script:
+    - |
+      set -euo pipefail
+
+      # dispatches.json is a JSON array (not NDJSON) — the poller
+      # writes all dispatches as a single array on completion.
+      if [ ! -s dispatches.json ] || [ "$(jq 'length' dispatches.json)" = "0" ]; then
+        echo "No events to dispatch"
+        # Write a no-op child pipeline
+        echo 'no-op: { script: ["echo No events"], rules: [{ when: always }] }' > child-pipeline.yml
+        exit 0
+      fi
+
+      # Generate child pipeline YAML from dispatches
+      fullsend poll generate-child-pipeline \
+        --dispatches dispatches.json \
+        --output child-pipeline.yml
+  artifacts:
+    paths:
+      - child-pipeline.yml
+    expire_in: 1 hour
+
+# Trigger child pipelines for each dispatched event
+dispatch-agents:
+  stage: agent
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+  needs:
+    - job: generate-child-pipelines
+      artifacts: true
+  trigger:
+    include:
+      - artifact: child-pipeline.yml
+        job: generate-child-pipelines
+    strategy: depend

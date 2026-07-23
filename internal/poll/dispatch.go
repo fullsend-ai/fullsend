@@ -56,11 +56,25 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 		return fmt.Errorf("build event payload: %w", err)
 	}
 	encoded := base64.StdEncoding.EncodeToString(payload)
+	// Fork detection applies only to MR events. Issue events never
+	// populate MRSource/MRTarget — they are "not applicable", not
+	// "unknown". For MR events, fail-closed: unknown project IDs
+	// default to fork so IS_FORK:-true is not overridden to "false".
+	var isFork bool
+	if strings.HasPrefix(event.Type, "mr_") {
+		isFork = true
+		if event.MRSource != 0 && event.MRTarget != 0 {
+			isFork = event.MRSource != event.MRTarget
+		}
+	}
 	return p.appendDispatch(Dispatch{
 		Stage:           stage,
 		EventType:       event.Type,
 		EventPayloadB64: encoded,
 		ResourceKey:     resourceKey(event),
+		MRAuthorID:      event.MRAuthorID,
+		IsFork:          isFork,
+		IID:             event.IID,
 	})
 }
 
@@ -122,13 +136,20 @@ func generateChildPipelineYAML(dispatches []Dispatch) (string, error) {
 		}
 		fmt.Fprintf(&buf, "agent-%d:\n", i)
 		fmt.Fprintf(&buf, "  trigger:\n")
-		fmt.Fprintf(&buf, "    include: .gitlab/ci/fullsend-%s.yml\n", d.Stage)
+		fmt.Fprintf(&buf, "    include: .gitlab/ci/fullsend-agent.yml\n")
 		fmt.Fprintf(&buf, "    strategy: depend\n")
 		fmt.Fprintf(&buf, "  variables:\n")
 		fmt.Fprintf(&buf, "    STAGE: %q\n", d.Stage)
 		fmt.Fprintf(&buf, "    EVENT_TYPE: %q\n", d.EventType)
 		fmt.Fprintf(&buf, "    EVENT_PAYLOAD_B64: %q\n", d.EventPayloadB64)
 		fmt.Fprintf(&buf, "    RESOURCE_KEY: %q\n", d.ResourceKey)
+		if d.MRAuthorID != 0 {
+			fmt.Fprintf(&buf, "    MR_AUTHOR_ID: \"%d\"\n", d.MRAuthorID)
+		}
+		fmt.Fprintf(&buf, "    IS_FORK: \"%t\"\n", d.IsFork)
+		if d.IID != 0 {
+			fmt.Fprintf(&buf, "    STATUS_IID: \"%d\"\n", d.IID)
+		}
 		fmt.Fprintf(&buf, "  rules:\n")
 		fmt.Fprintf(&buf, "    - when: always\n")
 	}

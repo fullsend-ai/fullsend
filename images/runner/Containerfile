@@ -236,10 +236,14 @@ RUN case "$TARGETARCH" in \
 ARG PRECOMMIT_VERSION=4.5.1
 ARG GITLINT_VERSION=0.19.1
 ARG JSONSCHEMA_VERSION=4.23.0
+# PyYAML is pinned explicitly because the GitLab scaffold templates use
+# python3 -c "import yaml" for config parsing (kill switch, roles).
+ARG PYYAML_VERSION=6.0.2
 RUN pip install --no-cache-dir --break-system-packages \
       "pre-commit==${PRECOMMIT_VERSION}" \
       "gitlint-core==${GITLINT_VERSION}" \
-      "jsonschema==${JSONSCHEMA_VERSION}"
+      "jsonschema==${JSONSCHEMA_VERSION}" \
+      "pyyaml==${PYYAML_VERSION}"
 
 # ---------------------------------------------------------------------------
 # fullsend CLI, built in the build stage from this repo's source.
