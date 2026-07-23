@@ -19,6 +19,8 @@ The `internal/mintcore/` module is shared between the mint and devmint. Its file
 
 **Dispatch workflows:** The scaffold `dispatch.yml` (at `internal/scaffold/fullsend-repo/.github/workflows/dispatch.yml`) and the repo's `reusable-dispatch.yml` (at `.github/workflows/reusable-dispatch.yml`) share identical routing logic for different installation modes (per-org vs per-repo). When changing the jq payload construction, stage routing, or input/secret threading in one, apply the same change to the other. The GitLab scaffold has its own dispatch template at `internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-dispatch.yml` — it follows the same two-path model (native MR events + cron-polled events) but constructs a NormalizedEvent v1 payload (ADR 0061) from GitLab CI variables. Stage routing uses shell checks annotated with equivalent CEL trigger expressions; when built-in harness triggers land (#2896-2901), the routing can be replaced by `fullsend dispatch --input-driver json`.
 
+**Interface documentation:** When extending a Go interface with new methods (e.g., adding methods to `ci.Driver` in `pkg/behaviourtest/drivers/ci/driver.go`), check `docs/guides/dev/` for documentation that lists or enumerates the interface's methods (e.g., `behaviour-drivers.md`). If found, update the method list to include all current methods, not just the newly added one. The `lint-interface-doc-sync` pre-commit hook enforces this for `ci.Driver`.
+
 When making changes to Go code under `cmd/` or `internal/`:
 
 1. **Unit tests:** Run `make go-test` (or `go test ./...`) and fix any failures before committing.
