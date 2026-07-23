@@ -116,17 +116,12 @@ type stubClient struct {
 	forge.Client // embed to satisfy interface; panics on uncovered methods
 
 	getRepoErr       error
+	createRepoErr    error
 	createRepoCalled atomic.Int32
 
 	// installed controls whether GetFileContent returns valid
 	// post-install files. When false, all paths return ErrNotFound.
 	installed bool
-
-	// installOnSetup simulates a successful install: when true, the
-	// first call to GetFileContent with installed=false flips installed
-	// to true after a TryRunCLI call. Used to test install-if-needed.
-	installOnSetup bool
-	setupCalled    atomic.Int32
 
 	// ensureDelay, when non-zero, causes GetRepo to sleep before
 	// returning. Used to test concurrent singleflight behaviour.
@@ -142,6 +137,9 @@ func (s *stubClient) GetRepo(_ context.Context, _, _ string) (*forge.Repository,
 
 func (s *stubClient) CreateRepo(_ context.Context, _, _, _ string, _ bool) (*forge.Repository, error) {
 	s.createRepoCalled.Add(1)
+	if s.createRepoErr != nil {
+		return nil, s.createRepoErr
+	}
 	return &forge.Repository{}, nil
 }
 
@@ -155,6 +153,15 @@ func (s *stubClient) GetFileContent(_ context.Context, _, _, path string) ([]byt
 		return content, nil
 	}
 	return nil, forge.ErrNotFound
+}
+
+func TestNewRepoEnsurer_ReturnsNonNil(t *testing.T) {
+	sc := &stubClient{}
+	e := NewRepoEnsurer(e2etest.EnvConfig{}, sc, "tok", "/bin/true", t.Logf)
+	require.NotNil(t, e, "NewRepoEnsurer should return a non-nil RepoEnsurer")
+
+	// Verify the returned value implements the interface.
+	var _ RepoEnsurer = e
 }
 
 func TestRepoEnsurer_CachesSuccessfulEnsure(t *testing.T) {
@@ -488,4 +495,136 @@ func TestEnsureRepoExists_NonNotFoundError(t *testing.T) {
 	err := e.ensureRepoExists(context.Background(), "org", "repo", "org/repo")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "checking repo")
+}
+
+func TestEnsureRepoExists_CreateRepoError(t *testing.T) {
+	sc := &stubClient{
+		getRepoErr:    forge.ErrNotFound,
+		createRepoErr: fmt.Errorf("permission denied"),
+	}
+	e := &repoEnsurer{client: sc, logf: t.Logf}
+
+	err := e.ensureRepoExists(context.Background(), "org", "repo", "org/repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating repo")
+	assert.Contains(t, err.Error(), "permission denied")
+	assert.Equal(t, int32(1), sc.createRepoCalled.Load())
+}
+
+func TestDoEnsure_PostInstallStillFailsAfterInstall(t *testing.T) {
+	// Simulates: repo exists, validation fails, CLI install runs
+	// successfully, but re-validation still fails (installed stays false).
+	sc := &stubClient{installed: false}
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(binary, token string, args ...string) (string, error) {
+			// CLI succeeds but does NOT flip sc.installed — simulating
+			// a case where setup ran but files are still missing.
+			return "", nil
+		},
+		logf:    t.Logf,
+		ensured: make(map[string]State),
+	}
+
+	_, err := e.EnsureRepo(context.Background(), "org", "test-repo-broken")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "post-install validation")
+}
+
+func TestProvisionInference_StatusCLIError(t *testing.T) {
+	sc := &stubClient{installed: false}
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{
+			MintURL:      "https://mint.test",
+			GCPProjectID: "test-project",
+		},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(binary, token string, args ...string) (string, error) {
+			if len(args) >= 2 && args[0] == "inference" && args[1] == "status" {
+				return "", fmt.Errorf("status unreachable")
+			}
+			return "", nil
+		},
+		logf:    t.Logf,
+		ensured: make(map[string]State),
+	}
+
+	_, err := e.EnsureRepo(context.Background(), "org", "test-repo-status-err")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "inference status")
+	assert.Contains(t, err.Error(), "status unreachable")
+}
+
+func TestProvisionInference_ParseWIFProviderError(t *testing.T) {
+	sc := &stubClient{installed: false}
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{
+			MintURL:      "https://mint.test",
+			GCPProjectID: "test-project",
+		},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(binary, token string, args ...string) (string, error) {
+			if len(args) >= 2 && args[0] == "inference" && args[1] == "status" {
+				// Return valid JSON but missing the WIF provider field.
+				return `{"status":"healthy"}`, nil
+			}
+			return "", nil
+		},
+		logf:    t.Logf,
+		ensured: make(map[string]State),
+	}
+
+	_, err := e.EnsureRepo(context.Background(), "org", "test-repo-parse-err")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "inference status")
+}
+
+func TestDoEnsure_EnsureRepoExistsError_Propagated(t *testing.T) {
+	// When ensureRepoExists returns an error (non-NotFound from GetRepo),
+	// doEnsure should propagate it without attempting install.
+	sc := &stubClient{getRepoErr: fmt.Errorf("network timeout")}
+	e := &repoEnsurer{
+		e2eCfg:  e2etest.EnvConfig{},
+		client:  sc,
+		logf:    t.Logf,
+		ensured: make(map[string]State),
+	}
+
+	_, err := e.EnsureRepo(context.Background(), "org", "test-repo-net-err")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking repo")
+	assert.Contains(t, err.Error(), "network timeout")
+}
+
+func TestDoEnsure_AlreadyInstalledSkipsCLI(t *testing.T) {
+	// Exercises the doEnsure "already installed, skipping" path where
+	// validation passes on the first check and installFullsend is never
+	// invoked.
+	sc := &stubClient{installed: true}
+	cliCalled := false
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(binary, token string, args ...string) (string, error) {
+			cliCalled = true
+			return "", nil
+		},
+		logf:    t.Logf,
+		ensured: make(map[string]State),
+	}
+
+	st, err := e.EnsureRepo(context.Background(), "org", "test-repo-skip")
+	require.NoError(t, err)
+	require.NotNil(t, st)
+	assert.Equal(t, "test-repo-skip", st.TestRepo())
+	assert.False(t, cliCalled, "CLI should not be called when validation passes")
 }
