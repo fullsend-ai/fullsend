@@ -1,0 +1,6 @@
+# Build artifacts staged by `make wasm-stage` (not committed).
+mintcore.wasm
+wasm_exec.js
+
+# npm install output.
+node_modules/
