@@ -160,6 +160,8 @@ wasm-stage: wasm-build
 mint-cf-worker-test: wasm-stage
 	@echo "==> Installing CF Worker npm dependencies..."
 	cd $(WORKERSRC_DIR) && npm install --no-audit --no-fund
+	@echo "==> Type-checking CF Worker source (production + test files)..."
+	cd $(WORKERSRC_DIR) && npm run typecheck && npm run typecheck:tests
 	@echo "==> Running CF Worker bridge smoke tests..."
 	cd $(WORKERSRC_DIR) && npm test
 	@echo "==> Worker smoke tests passed"

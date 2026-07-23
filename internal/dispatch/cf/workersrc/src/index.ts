@@ -256,9 +256,14 @@ function createFetchCallback(): (
  * exclude time spent in `await`), so it is not derived from the
  * platform CPU cap.
  *
- * On timeout the module-scope GoWasm singleton is discarded and
- * recreated (see fetch handler) so the next request gets a fresh
- * Go runtime instead of reusing a potentially corrupted instance.
+ * On timeout the GoWasm singleton is marked poisoned (see fetch
+ * handler). All subsequent requests receive 503 until the Workers
+ * runtime recycles the isolate and boots a fresh instance. We do
+ * NOT recreate the GoWasm wrapper because (a) the old Go runtime
+ * cannot be terminated and would leak, and (b) `mintcoreInitMint`
+ * / `mintcoreHandleFetch` are registered on isolate-wide
+ * `globalThis`, so a late finish from the timed-out instance could
+ * overwrite the new exports and corrupt state.
  */
 const HANDLE_FETCH_TIMEOUT_MS = 25_000;
 
@@ -273,12 +278,22 @@ const HANDLE_FETCH_TIMEOUT_MS = 25_000;
  * isolate. Concurrent requests (possible during `await` points)
  * share the cooperative `GOOS=js` scheduler within that instance.
  * Idle isolates may be evicted or have their timers throttled by
- * the Workers runtime. If the Go scheduler stalls or a request
- * times out (HANDLE_FETCH_TIMEOUT_MS), the module-scope GoWasm
- * singleton is discarded and recreated so the next request boots
- * a fresh Go runtime. The timeout alone does not heal isolate
- * state — the singleton reset is required to avoid reusing a
- * potentially corrupted WASM instance.
+ * the Workers runtime.
+ *
+ * Recovery strategy — poison-on-timeout:
+ * If the Go scheduler stalls or a request times out
+ * (HANDLE_FETCH_TIMEOUT_MS), the GoWasm instance is marked
+ * poisoned. All subsequent requests receive 503 until the
+ * Workers runtime recycles the isolate and boots a fresh
+ * instance. Recreating the GoWasm wrapper is unsafe because:
+ *   (a) The old Go runtime cannot be terminated — it would
+ *       leak a blocked goroutine and its memory.
+ *   (b) `mintcoreInitMint` / `mintcoreHandleFetch` are
+ *       registered on isolate-wide `globalThis` via
+ *       `syscall/js`. A late finish from the timed-out Go
+ *       instance could overwrite the new instance's exports.
+ * The module-scope `goWasm` is declared `const` to enforce
+ * this — no code path may replace the singleton.
  *
  * The standard Go WASM target (GOOS=js GOARCH=wasm) requires the
  * wasm_exec.js support code to bootstrap the Go runtime. The Go class
@@ -292,6 +307,27 @@ const HANDLE_FETCH_TIMEOUT_MS = 25_000;
  */
 class GoWasm {
   private initPromise: Promise<void> | null = null;
+  private _poisoned = false;
+
+  /**
+   * Whether this instance has been poisoned after a timeout. Once
+   * poisoned, all calls to init() and handleFetch() throw immediately.
+   * The Workers runtime must recycle the isolate to recover.
+   */
+  get poisoned(): boolean {
+    return this._poisoned;
+  }
+
+  /**
+   * Mark this instance as poisoned. Called when handleFetch times out
+   * to prevent reuse of a potentially corrupted Go runtime. Clears the
+   * cached initPromise so we don't hold references to the old WASM
+   * instance's closure chain.
+   */
+  markPoisoned(): void {
+    this._poisoned = true;
+    this.initPromise = null;
+  }
 
   /**
    * Initialize the Go WASM runtime with the given module and env.
@@ -306,6 +342,11 @@ class GoWasm {
    * cached promise so a subsequent request can retry.
    */
   async init(wasmModule: WebAssembly.Module, env: Env): Promise<void> {
+    if (this._poisoned) {
+      throw new Error(
+        "GoWasm instance poisoned after timeout — isolate must be recycled",
+      );
+    }
     if (!this.initPromise) {
       this.initPromise = this.doInit(wasmModule, env).catch((err) => {
         // Only allow retry for non-config errors. Config errors are
@@ -332,11 +373,22 @@ class GoWasm {
     // message instead of burning cycles on instantiate + go.run.
     validateEnv(env);
 
-    // Detect role names that would collide after hyphen→underscore
-    // normalization (e.g. "my-role" and "my_role" → same CF secret).
-    // Must happen before WASM init so operators get a clear error.
+    // Validate ROLE_APP_IDS is a non-null JSON object before passing
+    // to Go. Detect role names that would collide after
+    // hyphen→underscore normalization (e.g. "my-role" and "my_role"
+    // → same CF secret). Must happen before WASM init so operators
+    // get a clear error.
     try {
-      const roleAppIDs: Record<string, string> = JSON.parse(env.ROLE_APP_IDS);
+      const parsed: unknown = JSON.parse(env.ROLE_APP_IDS);
+      // JSON.parse("null") returns null, JSON.parse("[]") returns
+      // an array — both pass typeof === "object" but are not valid
+      // role-app-ID maps. Reject anything that isn't a plain object.
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new ConfigError(
+          `ROLE_APP_IDS must be a JSON object (got ${parsed === null ? "null" : Array.isArray(parsed) ? "array" : typeof parsed})`,
+        );
+      }
+      const roleAppIDs = parsed as Record<string, string>;
       detectRoleSecretCollisions(roleAppIDs);
     } catch (err) {
       if (err instanceof ConfigError) {
@@ -422,6 +474,12 @@ class GoWasm {
     headersJSON: string,
     body: string,
   ): Promise<{ status: number; headers: string; body: string }> {
+    if (this._poisoned) {
+      throw new Error(
+        "GoWasm instance poisoned after timeout — isolate must be recycled",
+      );
+    }
+
     const mintcoreHandleFetch = (globalThis as Record<string, unknown>)[
       "mintcoreHandleFetch"
     ] as
@@ -455,9 +513,10 @@ class GoWasm {
 
 // Module-scoped singleton: one Go WASM instance per warm Worker isolate.
 // See GoWasm class comment for the architectural rationale.
-// Uses `let` so the fetch handler can discard and recreate the instance
-// after a timeout (a timed-out Go runtime may be wedged).
-let goWasm = new GoWasm();
+// Declared `const`: the singleton is never replaced. On timeout, the
+// instance is poisoned in place — see markPoisoned() and the recovery
+// strategy comment on the GoWasm class.
+const goWasm = new GoWasm();
 
 /**
  * Return a JSON error response.
@@ -478,6 +537,16 @@ export default {
     env: Env,
     _ctx: ExecutionContext,
   ): Promise<Response> {
+    // Poisoned after a prior timeout — the Go runtime may be wedged and
+    // cannot be terminated. Refuse all requests until the Workers
+    // runtime recycles the isolate and boots a fresh instance.
+    if (goWasm.poisoned) {
+      return errorResponse(
+        503,
+        "mint instance poisoned after timeout — awaiting isolate recycle",
+      );
+    }
+
     try {
       await goWasm.init(mintcoreWasm, env);
     } catch (err) {
@@ -532,12 +601,19 @@ export default {
       console.error("Request handling failed:", msg);
 
       // If the handler timed out, the Go WASM runtime may be wedged
-      // (stalled scheduler, hung I/O). Discard the singleton so the
-      // next request boots a fresh Go runtime instead of reusing the
-      // potentially corrupted instance.
+      // (stalled scheduler, hung I/O). Poison the singleton so all
+      // subsequent requests receive 503 until the Workers runtime
+      // recycles the isolate. We do NOT recreate GoWasm because:
+      //   (a) The old Go runtime cannot be terminated — it leaks.
+      //   (b) globalThis-registered exports (mintcoreInitMint,
+      //       mintcoreHandleFetch) could be overwritten by a late
+      //       finish from the timed-out instance.
       if (msg.includes("timed out")) {
-        console.error("Discarding wedged GoWasm instance after timeout");
-        goWasm = new GoWasm();
+        console.error(
+          "Poisoning GoWasm instance after timeout — " +
+            "isolate must be recycled to recover",
+        );
+        goWasm.markPoisoned();
       }
 
       return errorResponse(500, "internal error");

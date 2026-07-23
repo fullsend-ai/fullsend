@@ -12,6 +12,7 @@
     "predeploy": "npm run stage",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc --noEmit --project tsconfig.test.json",
     "test": "vitest run"
   },
   "devDependencies": {
