@@ -84,4 +84,8 @@ The e2e tests mint short-lived GitHub App installation tokens via the central to
 - **CI (mint):** Uses the hosted public mint (same default as `fullsend admin --mint-url`) with the workflow's OIDC identity. The e2e workflow exchanges the OIDC JWT for an `e2e`-role installation token on the pool org. Override with `FULLSEND_MINT_URL` if needed.
 - **Local:** Run `gh auth login` (or set `GH_TOKEN` / `GITHUB_TOKEN` with pool-org admin access). Mint uses `FULLSEND_MINT_URL` or the hosted default.
 
+**Do not** increase e2e or behaviour **suite** timeouts without **explicit human authorization** in the current session (or an issue/PR comment that clearly authorizes that bump). Suite ceilings are job `timeout-minutes` in `.github/workflows/e2e.yml` for the `e2e` / `behaviour` jobs, the matching `go test -timeout` values in the `e2e-test` / `behaviour-test` Make targets, and the default `E2E_LOCK_TIMEOUT`. Scenario-level wait or assertion windows (for example dispatch detection) are out of scope when an issue asks for them — those are not suite ceilings. On timeout failures, diagnose and fix the root cause (slow scenarios, unnecessary waits, lock contention); do not open a PR whose primary change is raising the suite timeout.
+
+**When reviewing PRs:** Flag unauthorized suite-timeout increases as an **important-severity** finding (policy violation). Explicit human authorization in the linked issue or PR description is the only exception.
+
 See [`docs/guides/dev/e2e-testing.md`](../guides/dev/e2e-testing.md) and `make help` for pool org setup and troubleshooting.
