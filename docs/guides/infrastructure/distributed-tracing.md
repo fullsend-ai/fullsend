@@ -202,11 +202,9 @@ Fullsend-specific attributes:
 
 ### Managed workflows
 
-Only the **triage** stage forwards OTEL configuration in this release; the
-other agents (code, fix, review, retro, prioritize) do not export yet.
-
-To enable export for triage runs, set on the org (or repo) that hosts the
-fullsend caller workflows:
+All agent stages (triage, code, review, fix, retro, prioritize, harness)
+forward OTEL configuration. To enable export, set on the org (or repo)
+that hosts the fullsend caller workflows:
 
 1. Actions **variable** `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` — the backend's
    full traces URL (e.g. `https://mlflow.example.com/v1/traces`).
@@ -217,10 +215,10 @@ fullsend caller workflows:
    `k=v,k=v` trace tags. The value is used verbatim: `${{ github.* }}`
    expressions evaluate only in workflow YAML, not in variables.
 
-Installations scaffolded before this release must also forward the secret
-(add `OTEL_EXPORTER_OTLP_TRACES_HEADERS` under `secrets:`) until the scaffold
-is re-synced: in the `.fullsend` repo's `triage.yml` (per-org), or in the
-fullsend shim workflow's dispatch job (per-repo).
+Installations scaffolded before OTEL support was added must also forward the
+secret (add `OTEL_EXPORTER_OTLP_TRACES_HEADERS` under `secrets:`) until the
+scaffold is re-synced: in the `.fullsend` repo's stage workflows (per-org),
+or in the fullsend shim workflow's dispatch job (per-repo).
 
 ### Bring your own workflow
 
