@@ -963,13 +963,25 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			// last-value-wins so this append takes precedence. TODO(fullsend-ai/agents#191):
 			// remove REPO_DIR from RunnerEnv entirely once harnesses no longer set it.
 			//
-			// Pass REPO_DIR only when the last repo extraction succeeded.
-			// If SafeDownload failed, hostRepositoryDownloadDir was cleaned
-			// up and may not exist — passing it would expose the post-script
-			// to unsanitized or missing content. Post-scripts must fail
-			// closed on empty REPO_DIR (the scaffolded post-code.sh and
-			// post-fix.sh already do via ${REPO_DIR:-repo} + directory
-			// existence check).
+			// Pass REPO_DIR only when repoExtractedOK is true: the last
+			// SafeDownload succeeded AND corresponds to the validated
+			// iteration (repoExtractedOK is forced false by the sweep when
+			// it validates an earlier iteration — see its doc comment).
+			// Passing a stale or missing dir would expose the post-script
+			// to unsanitized or wrong-iteration content.
+			//
+			// Only post-fix.sh's scaffolded post-script fails closed on an
+			// empty REPO_DIR (via ${REPO_DIR:-repo} + directory existence
+			// check) — it needs actual repo content to push. The other
+			// validation_loop post-scripts (post-review.sh, post-triage.sh,
+			// post-retro.sh, post-prioritize.sh) don't reference REPO_DIR at
+			// all; they rely on FULLSEND_VALIDATED_ITERATION_DIR (set below)
+			// to select the correct iteration's output. post-code.sh is
+			// unaffected because code.yaml has no validation_loop. Because
+			// there is no per-iteration repo checkout, post-fix.sh cannot
+			// recover a sweep-validated non-final iteration's repo state —
+			// it fails closed with "Extracted repo not found" instead of
+			// pushing. See #5393 follow-up.
 			postRepoDir := ""
 			if repoExtractedOK {
 				postRepoDir = hostRepositoryDownloadDir

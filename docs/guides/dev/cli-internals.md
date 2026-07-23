@@ -492,15 +492,22 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  ┌──────────────────┐                                           │
 │  │ Post-script       │ Run harness.post_script (host-side)      │
 │  │                   │ REPO_DIR set only when last SafeDownload │
-│  │                   │ succeeded and validated iteration is the  │
-│  │                   │ latest; empty otherwise (post-scripts     │
-│  │                   │ must fail closed on empty REPO_DIR)       │
+│  │                   │ succeeded and validated iteration is the │
+│  │                   │ latest; empty otherwise. Only post-      │
+│  │                   │ fix.sh fails closed on empty REPO_DIR;   │
+│  │                   │ the other validation_loop post-scripts   │
+│  │                   │ don't reference REPO_DIR at all. There   │
+│  │                   │ is no per-iteration repo checkout, so    │
+│  │                   │ post-fix.sh cannot recover a sweep-      │
+│  │                   │ validated non-final iteration; it fails  │
+│  │                   │ closed instead of pushing (known         │
+│  │                   │ limitation, see #5393).                  │
 │  │                   │                                          │
-│  │                   │ FULLSEND_VALIDATED_ITERATION_DIR points   │
-│  │                   │ to the validated iteration's output dir.  │
-│  │                   │ Post-scripts must use this (when set) to  │
-│  │                   │ select the result file instead of blindly │
-│  │                   │ taking the last iteration.                │
+│  │                   │ FULLSEND_VALIDATED_ITERATION_DIR points  │
+│  │                   │ to the validated iteration's output dir. │
+│  │                   │ Post-scripts must use this (when set) to │
+│  │                   │ select the result file instead of        │
+│  │                   │ blindly taking the last iteration.       │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
