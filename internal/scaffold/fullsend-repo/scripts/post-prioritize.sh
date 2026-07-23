@@ -343,8 +343,17 @@ fi
 # harness (FULLSEND_VALIDATED_ITERATION_DIR) — without it, the last iteration's
 # output may be schema-invalid content that failed validation. Fall back to
 # scanning for the last iteration for backward compatibility.
-if [[ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]] && [[ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json" ]]; then
+if [[ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]]; then
   RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
+  if [[ ! -f "${RESULT_FILE}" ]]; then
+    # Agents sometimes write "result.json" instead of "agent-result.json";
+    # validate-output-schema.sh accepts that filename as a fallback without
+    # renaming it. Check the same variant here rather than falling through
+    # to the rescan below, which could silently pick up a different (and
+    # possibly schema-invalid) iteration's output.
+    fallback_result="${FULLSEND_VALIDATED_ITERATION_DIR}/result.json"
+    [[ -f "${fallback_result}" ]] && RESULT_FILE="${fallback_result}"
+  fi
 else
   RESULT_FILE=""
   for dir in iteration-*/output; do
@@ -354,7 +363,7 @@ else
   done
 fi
 
-if [[ -z "${RESULT_FILE}" ]]; then
+if [[ -z "${RESULT_FILE}" ]] || [[ ! -f "${RESULT_FILE}" ]]; then
   echo "ERROR: agent-result.json not found in any iteration output directory" >&2
   exit 1
 fi
