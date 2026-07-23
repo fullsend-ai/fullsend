@@ -1,0 +1,20 @@
+name: Functional ok-to-test
+
+# Thin labeled-only entry point for fork / ok-to-test authorization.
+# Calls Functional Tests via workflow_call so non-ok-to-test labels do not start
+# skipped runs under the "Functional Tests" workflow name.
+#
+# No caller-level concurrency on the functional-{n} group — sharing that group
+# between this caller and the reusable functional-tests.yml deadlocks.
+
+permissions: {}
+
+on:
+  pull_request_target:
+    types: [labeled]
+
+jobs:
+  run:
+    if: github.event.label.name == 'ok-to-test'
+    uses: ./.github/workflows/functional-tests.yml
+    secrets: inherit
