@@ -7,6 +7,12 @@ receivers:
 exporters:
   otlphttp:
     endpoint: "${env:REPLAY_ENDPOINT}"
+    # Add headers below. otelcol-contrib ignores the OTEL_EXPORTER_OTLP_HEADERS
+    # env var; headers must be set here in the YAML config.
+    #
+    # headers:
+    #   Authorization: "Bearer mytoken"
+    #   x-mlflow-experiment-id: "42"
 
 service:
   pipelines:
