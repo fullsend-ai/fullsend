@@ -24,6 +24,14 @@ host_files:
 skills:
   - skills/issue-labels
 
+labels:
+  - name: ready-to-code
+    color: "0E8A16"
+    description: "Triaged and ready for code agent"
+  - name: triaged
+    color: ededed
+    description: "Triaged but awaiting human prioritization"
+
 pre_script: scripts/pre-triage.sh
 post_script: scripts/post-triage.sh
 

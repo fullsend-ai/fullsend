@@ -258,7 +258,22 @@ func Install(ctx context.Context, cfg InstallConfig,
 	}
 	progress(repoFullName, "scaffold", "Scaffold files committed")
 
-	// Step 6: Write repository variables.
+	// Step 6: Provision labels declared by harness files.
+	progress(repoFullName, "labels", "Provisioning pipeline labels")
+	harnessLabels, labelCollectErr := scaffold.CollectHarnessLabels()
+	if labelCollectErr != nil {
+		return result, fmt.Errorf("collecting harness labels: %w", labelCollectErr)
+	}
+	for _, l := range harnessLabels {
+		if err := client.CreateLabel(ctx, cfg.Owner, cfg.Repo, l.Name, l.Color, l.Description); err != nil {
+			return result, fmt.Errorf("creating label %q: %w", l.Name, err)
+		}
+	}
+	if len(harnessLabels) > 0 {
+		progress(repoFullName, "labels", fmt.Sprintf("Provisioned %d pipeline labels", len(harnessLabels)))
+	}
+
+	// Step 7: Write repository variables.
 	progress(repoFullName, "vars", "Configuring repository variables")
 	repoVars := map[string]string{
 		"FULLSEND_MINT_URL":   mintURL,

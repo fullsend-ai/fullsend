@@ -35,6 +35,11 @@ host_files:
     dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
 
+labels:
+  - name: ready-for-review
+    color: "0E8A16"
+    description: "Code agent PR ready for automated review"
+
 pre_script: scripts/pre-code.sh
 post_script: scripts/post-code.sh
 

@@ -2382,6 +2382,26 @@ func (c *LiveClient) CreateIssue(ctx context.Context, owner, repo, title, body s
 	}, nil
 }
 
+// CreateLabel creates a repository label. If a label with the same name
+// already exists the call succeeds without modification (idempotent).
+func (c *LiveClient) CreateLabel(ctx context.Context, owner, repo, name, color, description string) error {
+	body := map[string]string{
+		"name":        name,
+		"color":       color,
+		"description": description,
+	}
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/labels", owner, repo), body)
+	if err != nil {
+		// 422 "already_exists" is the expected duplicate case.
+		if errors.Is(err, forge.ErrAlreadyExists) {
+			return nil
+		}
+		return fmt.Errorf("create label %q: %w", name, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // AddIssueLabels adds labels to an existing issue.
 func (c *LiveClient) AddIssueLabels(ctx context.Context, owner, repo string, number int, labels ...string) error {
 	if len(labels) == 0 {

@@ -31,6 +31,17 @@ host_files:
     dest: /sandbox/workspace/prior-review.txt
     optional: true
 
+labels:
+  - name: ready-for-merge
+    color: "0E8A16"
+    description: "All reviewers approved — ready to merge"
+  - name: requires-manual-review
+    color: FBCA04
+    description: "Review requires human judgment"
+  - name: rejected
+    color: B60205
+    description: "Approach rejected by review agent"
+
 pre_script: scripts/pre-review.sh
 post_script: scripts/post-review.sh
 
