@@ -572,10 +572,7 @@ func (c *LiveClient) ListPipelineSchedules(ctx context.Context, owner, repo stri
 // CI variables (branch-restricted)
 // ---------------------------------------------------------------------------
 
-// UpdateCIVariable upserts a CI/CD variable: it attempts a PUT (update)
-// and falls back to POST (create) when the variable does not yet exist.
-// This makes the method safe for first-run scenarios where the caller
-// expects create-or-update semantics.
+// UpdateCIVariable upserts a CI/CD variable (update if exists, create if not).
 func (c *LiveClient) UpdateCIVariable(ctx context.Context, owner, repo, name, value string, protected bool) error {
 	path := fmt.Sprintf("/projects/%s/variables/%s", projectPath(owner, repo), url.PathEscape(name))
 	body := map[string]any{

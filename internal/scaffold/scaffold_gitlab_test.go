@@ -289,12 +289,12 @@ func TestGitLabPollContent(t *testing.T) {
 	assert.Contains(t, s, `entrypoint: [""]`)
 	// Poll and generate are merged into one job — no separate generate job
 	assert.NotContains(t, s, "generate-child-pipelines:")
-	// Dotenv artifact gates dispatch-agents on HAS_DISPATCHES
-	assert.Contains(t, s, "dispatch.env")
-	assert.Contains(t, s, "HAS_DISPATCHES")
-	assert.Contains(t, s, `$HAS_DISPATCHES == "true"`)
 	// Child pipeline generation happens inside poll-events
 	assert.Contains(t, s, "generate-child-pipeline")
+	// No-op child pipeline handles empty dispatches (no dotenv gating —
+	// GitLab evaluates rules: at pipeline creation, before dotenv is available)
+	assert.NotContains(t, s, "dispatch.env")
+	assert.NotContains(t, s, "HAS_DISPATCHES")
 }
 
 func TestGitLabRootPipelineContent(t *testing.T) {

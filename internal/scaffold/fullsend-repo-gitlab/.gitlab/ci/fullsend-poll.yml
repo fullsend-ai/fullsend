@@ -72,11 +72,9 @@ poll-events:
       # extra credentials needed for generation).
       if [ ! -s dispatches.json ] || [ "$(jq 'length' dispatches.json)" = "0" ]; then
         echo "No events to dispatch"
-        echo "HAS_DISPATCHES=false" > dispatch.env
         # Write a no-op child pipeline so the artifact contract is met
         echo 'no-op: { script: ["echo No events"], rules: [{ when: always }] }' > child-pipeline.yml
       else
-        echo "HAS_DISPATCHES=true" > dispatch.env
         fullsend poll generate-child-pipeline \
           --dispatches dispatches.json \
           --output child-pipeline.yml
@@ -84,15 +82,13 @@ poll-events:
   artifacts:
     paths:
       - child-pipeline.yml
-    reports:
-      dotenv: dispatch.env
     expire_in: 1 hour
 
 # Trigger child pipelines for each dispatched event
 dispatch-agents:
   stage: agent
   rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true" && $HAS_DISPATCHES == "true"
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
   needs:
     - job: poll-events
       artifacts: true
