@@ -1642,3 +1642,4 @@ jobs:
           status-repo: ${{ matrix.status_repo }}
           status-number: ${{ matrix.status_number }}
           mint-url: ${{ inputs.mint_url }}
+          pr-head-sha: ${{ fromJSON(matrix.event_payload).pull_request.head.sha || '' }}
