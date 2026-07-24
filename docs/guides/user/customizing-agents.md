@@ -404,8 +404,12 @@ variables to protect sandbox operation.
 
 ### Adding a Custom Skill
 
-Create `.fullsend/customized/skills/my-skill/SKILL.md` in your config repo
-(deprecated — use config-driven agent registration instead):
+> **Deprecated:** The `customized/skills/` path is deprecated per
+> [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
+> Use config-driven agent registration instead — see
+> [Bring Your Own Agent](bring-your-own-agent.md).
+
+Create `.fullsend/customized/skills/my-skill/SKILL.md` in your config repo:
 
 ```markdown
 # My Custom Skill
@@ -421,8 +425,13 @@ The skill will be automatically available to all agents that include `skills/my-
 
 ### Overriding an Agent Definition
 
+> **Deprecated:** The `customized/agents/` override is deprecated per
+> [ADR-0064](../../ADRs/0064-deprecate-customized-directory-overlay.md).
+> Use `base:` composition instead — see
+> [Configuring existing agents](bring-your-own-agent.md#configuring-existing-agents).
+
 Create `.fullsend/customized/agents/code.md` to override the default code agent
-with org-specific instructions (deprecated — use `base:` composition instead):
+with org-specific instructions:
 
 ```markdown
 # Code Agent (Customized)

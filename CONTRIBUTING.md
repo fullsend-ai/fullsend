@@ -73,6 +73,69 @@ Human contributors may include an ADR and its implementation in the same PR when
 
 ADR filenames use a four-digit number (`NNNN-short-description.md`). When multiple PRs add ADRs concurrently, number collisions can happen. Before merging, use the `/renumber-adr` skill to check whether your ADR number is still available on the target branch and renumber if needed.
 
+## Deprecation notices in documentation
+
+When a feature, field, command, or workflow is deprecated, label it clearly in
+the user-facing documentation so readers can distinguish current functionality
+from deprecated functionality. Use the following conventions consistently.
+
+### Blockquote notice (preferred for sections)
+
+Place a blockquote at the top of the section that describes the deprecated
+feature. Use this format:
+
+```markdown
+> **Deprecated:** `<feature>` is deprecated per
+> [ADR-NNNN](path/to/adr.md). Use `<replacement>` instead.
+> <Migration guidance — one or two sentences explaining how to migrate.>
+```
+
+Key elements:
+- Start with **`> **Deprecated:**`** (bold, followed by a colon).
+- Name the deprecated feature explicitly.
+- Link to the ADR or issue that made the decision.
+- Describe the replacement and how to migrate.
+
+### Inline annotation (for field references and tables)
+
+When a deprecated item appears in a table, code block, or field reference,
+add a short inline annotation:
+
+```yaml
+runner_env:    # ⚠ Deprecated: use env.runner instead (ADR 0055)
+```
+
+```markdown
+| `env`, `runner_env` (deprecated) | Merged; child keys win |
+```
+
+### Sidebar or guide index entry
+
+When an entire guide page is deprecated, annotate the link in the index:
+
+```markdown
+- [Building custom agents](path) — _(deprecated — see [Replacement](path))_
+```
+
+### What to include
+
+Every deprecation notice should answer three questions:
+1. **What** is deprecated?
+2. **What replaces it?** (link to the replacement feature or guide)
+3. **How do I migrate?** (command, config change, or link to migration docs)
+
+If there is no replacement yet, say so explicitly (e.g., "removal is planned
+for a future release; no migration is needed").
+
+### When to add notices
+
+- When an ADR deprecates a feature, update the affected user-facing docs in
+  the same PR or a follow-up.
+- When touching a doc page that references a deprecated feature without a
+  notice, add one.
+- Do not remove deprecated content from docs — label it so users on older
+  versions can still find the reference material.
+
 ## Building from source
 
 ```bash
