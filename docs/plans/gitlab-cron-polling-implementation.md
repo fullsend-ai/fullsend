@@ -1,5 +1,11 @@
 # Implementation Plan: GitLab Cron-Polling Event Dispatch
 
+> **Note (2026-07):** This plan describes the pre-#5556 architecture using
+> child-pipeline dispatch (bridge jobs, `generate-child-pipeline` CLI,
+> `dispatches.json` output). #5556 replaced that with direct API-triggered
+> pipelines. The cron-polling input driver and event discovery logic are
+> unchanged; the dispatch output path is superseded.
+
 **Context:** [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md) decides a two-path event dispatch model for GitLab — native CI for MR open/update/reopen events, cron-polled scheduled pipelines for issues, comments, labels, and MR merges. This document contains the implementation plan and pseudocode for the cron-polling subsystem.
 
 ## Table of Contents

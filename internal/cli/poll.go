@@ -18,7 +18,6 @@ func newPollCmd() *cobra.Command {
 		forgeFlag    string
 		projectPath  string
 		gitlabURL    string
-		outputPath   string
 		pollModeFlag string
 		fullsendDir  string
 	)
@@ -62,11 +61,20 @@ func newPollCmd() *cobra.Command {
 				return fmt.Errorf("build event router: %w", err)
 			}
 
+			pipelineRef := os.Getenv("CI_COMMIT_REF_NAME")
+			if pipelineRef == "" {
+				pipelineRef = os.Getenv("CI_DEFAULT_BRANCH")
+			}
+			if pipelineRef == "" {
+				return fmt.Errorf("CI_COMMIT_REF_NAME or CI_DEFAULT_BRANCH is required for pipeline dispatch")
+			}
+
 			opts := poll.Options{
 				SlashCommandsOnly: slashCommandsOnly,
 				BotUserID:         botUserID,
-				OutputPath:        outputPath,
 				GitLabURL:         gitlabURL,
+				PipelineRef:       pipelineRef,
+				PollJobURL:        os.Getenv("CI_JOB_URL"),
 			}
 
 			poller := poll.New(pollClient, router, projectPath, opts)
@@ -78,13 +86,11 @@ func newPollCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("forge")
 	cmd.Flags().StringVar(&projectPath, "project", "", "GitLab project path (default: $CI_PROJECT_PATH)")
 	cmd.Flags().StringVar(&gitlabURL, "gitlab-url", "https://gitlab.com", "GitLab instance URL")
-	cmd.Flags().StringVar(&outputPath, "output", "", "Path to write dispatches JSON")
 	cmd.Flags().StringVar(&pollModeFlag, "poll-mode", "", "Poll mode: fast (slash commands only) or full")
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "base directory containing the .fullsend layout")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 
 	cmd.Hidden = true
-	cmd.AddCommand(newPollGenerateChildPipelineCmd())
 	return cmd
 }
 
@@ -119,24 +125,4 @@ func buildRouter(fullsendDir string) (*dispatch.HarnessRouter, error) {
 	}
 
 	return dispatch.NewHarnessRouter(names), nil
-}
-
-func newPollGenerateChildPipelineCmd() *cobra.Command {
-	var (
-		dispatchesPath string
-		outputPath     string
-	)
-
-	cmd := &cobra.Command{
-		Use:   "generate-child-pipeline",
-		Short: "Generate child pipeline YAML from dispatches JSON",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return poll.GenerateChildPipelineFromFile(dispatchesPath, outputPath)
-		},
-	}
-
-	cmd.Flags().StringVar(&dispatchesPath, "dispatches", "dispatches.json", "Path to dispatches JSON file")
-	cmd.Flags().StringVar(&outputPath, "output", "child-pipeline.yml", "Path to write child pipeline YAML")
-
-	return cmd
 }

@@ -1248,6 +1248,33 @@ func TestFakeClient_PipelineScheduleRoundTrip(t *testing.T) {
 	assert.Equal(t, []int64{id}, fc.DeletedScheduleIDs)
 }
 
+func TestFakeClient_CreatePipeline(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+
+	p, err := fc.CreatePipeline(ctx, "org", "repo", "main", map[string]string{"STAGE": "triage"})
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), p.ID)
+	assert.Contains(t, p.WebURL, "pipelines/1")
+	require.Len(t, fc.CreatedPipelines, 1)
+
+	p2, err := fc.CreatePipeline(ctx, "org", "repo", "main", nil)
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), p2.ID)
+	require.Len(t, fc.CreatedPipelines, 2)
+}
+
+func TestFakeClient_CreatePipeline_Error(t *testing.T) {
+	ctx := context.Background()
+	fc := NewFakeClient()
+	fc.Errors["CreatePipeline"] = fmt.Errorf("forbidden")
+
+	p, err := fc.CreatePipeline(ctx, "org", "repo", "main", nil)
+	require.Error(t, err)
+	assert.Nil(t, p)
+	assert.Empty(t, fc.CreatedPipelines)
+}
+
 func TestFakeClient_UpdateCIVariable_RecordsProtected(t *testing.T) {
 	ctx := context.Background()
 	fc := NewFakeClient()

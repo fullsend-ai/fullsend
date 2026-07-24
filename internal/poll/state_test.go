@@ -9,6 +9,9 @@ import (
 )
 
 func newTestPoller(client GitLabClient, opts Options) *Poller {
+	if opts.PipelineRef == "" {
+		opts.PipelineRef = "main"
+	}
 	return &Poller{
 		client: client,
 		owner:  "testgroup",

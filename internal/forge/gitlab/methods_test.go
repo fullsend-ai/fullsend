@@ -1079,6 +1079,50 @@ func TestListRepoVariables_Pagination(t *testing.T) {
 	assert.Contains(t, vars, "LAST_VAR")
 }
 
+func TestCreatePipeline(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]any
+		readJSONBody(t, r, &body)
+		assert.Equal(t, "main", body["ref"])
+		vars, ok := body["variables"].([]any)
+		require.True(t, ok, "variables should be an array")
+		assert.NotEmpty(t, vars)
+
+		writeJSON(t, w, http.StatusCreated, map[string]any{
+			"id":      99,
+			"web_url": "https://gitlab.com/myorg/myrepo/-/pipelines/99",
+		})
+	})
+
+	p, err := client.CreatePipeline(ctx, "myorg", "myrepo", "main", map[string]string{
+		"STAGE":      "triage",
+		"EVENT_TYPE": "issue_comment",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(99), p.ID)
+	assert.Equal(t, "https://gitlab.com/myorg/myrepo/-/pipelines/99", p.WebURL)
+}
+
+func TestCreatePipeline_NoVariables(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusCreated, map[string]any{
+			"id":      100,
+			"web_url": "https://gitlab.com/myorg/myrepo/-/pipelines/100",
+		})
+	})
+
+	p, err := client.CreatePipeline(ctx, "myorg", "myrepo", "main", nil)
+	require.NoError(t, err)
+	assert.Equal(t, int64(100), p.ID)
+}
+
 func TestCreatePipelineSchedule(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()

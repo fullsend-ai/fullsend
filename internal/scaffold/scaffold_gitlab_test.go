@@ -180,8 +180,10 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.NotContains(t, s, "fullsend-code:latest")
 	// Resource group parameterized by STAGE
 	assert.Contains(t, s, `fullsend-${STAGE}-${RESOURCE_KEY}`)
-	// Rules gate on STAGE being set
-	assert.Contains(t, s, `$STAGE != ""`)
+	// Rules gate on STAGE being set (truthy form — `$STAGE != ""` would
+	// match when STAGE is undefined because GitLab evaluates null != "" as true)
+	assert.Contains(t, s, "if: $STAGE")
+	assert.NotContains(t, s, `$STAGE != ""`)
 	// ENTRYPOINT override for runner image
 	assert.Contains(t, s, `entrypoint: [""]`)
 	// Uses python3 for YAML parsing (yq not in runner image)
@@ -189,6 +191,9 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.NotContains(t, s, "yq")
 	// No fallback to working-tree config (untrusted in MR context)
 	assert.NotContains(t, s, "cat .fullsend/config.yaml")
+	// Back-link from dispatched pipelines to poll job
+	assert.Contains(t, s, "FULLSEND_POLL_JOB_URL")
+	assert.Contains(t, s, "Dispatched by:")
 }
 
 func TestGitLabAgentTemplateKillSwitch(t *testing.T) {
@@ -278,8 +283,6 @@ func TestGitLabPollContent(t *testing.T) {
 	s := string(content)
 	assert.Contains(t, s, "# fullsend-stage: poll")
 	assert.Contains(t, s, "fullsend poll")
-	assert.Contains(t, s, "dispatches.json")
-	assert.Contains(t, s, "child-pipeline.yml")
 	assert.Contains(t, s, "schedule")
 	assert.Contains(t, s, "CI_COMMIT_REF_PROTECTED")
 	// Credential validation
@@ -290,12 +293,13 @@ func TestGitLabPollContent(t *testing.T) {
 	assert.NotContains(t, s, "https://gitlab.com")
 	// ENTRYPOINT override for runner image
 	assert.Contains(t, s, `entrypoint: [""]`)
-	// Poll and generate are merged into one job — no separate generate job
-	assert.NotContains(t, s, "generate-child-pipelines:")
-	// Child pipeline generation happens inside poll-events
-	assert.Contains(t, s, "generate-child-pipeline")
-	// No-op child pipeline handles empty dispatches (no dotenv gating —
-	// GitLab evaluates rules: at pipeline creation, before dotenv is available)
+	// No bridge job — poller dispatches pipelines directly via API
+	assert.NotContains(t, s, "dispatch-agents")
+	assert.NotContains(t, s, "trigger:")
+	assert.NotContains(t, s, "child-pipeline.yml")
+	assert.NotContains(t, s, "generate-child-pipeline")
+	assert.NotContains(t, s, "dispatches.json")
+	// No dotenv gating
 	assert.NotContains(t, s, "dispatch.env")
 	assert.NotContains(t, s, "HAS_DISPATCHES")
 }
@@ -311,6 +315,15 @@ func TestGitLabRootPipelineContent(t *testing.T) {
 	assert.Contains(t, s, "- agent")
 	assert.Contains(t, s, "fullsend-dispatch.yml")
 	assert.Contains(t, s, "fullsend-poll.yml")
+	// Auto-cancel disabled to prevent queued agent pipelines from being killed
+	assert.Contains(t, s, "auto_cancel")
+	assert.Contains(t, s, "on_new_commit: none")
+	// API-triggered pipeline rule for cron-poller dispatched pipelines
+	// Requires API source + protected branch + STAGE variable
+	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "api"`)
+	assert.NotContains(t, s, `$STAGE != ""`)
+	// Agent template included for API-triggered pipelines
+	assert.Contains(t, s, "fullsend-agent.yml")
 	// push pipelines intentionally excluded — documented in workflow comment
 	assert.Contains(t, s, "Push-triggered pipelines are intentionally excluded")
 	// parent_pipeline rule removed (child pipelines don't inherit workflow:rules)

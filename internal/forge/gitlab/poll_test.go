@@ -901,6 +901,42 @@ func TestPollClient_GetAuthenticatedUser(t *testing.T) {
 	assert.Equal(t, "pollbot", username)
 }
 
+func TestPollClient_CreatePipeline(t *testing.T) {
+	pc, mux := setupPollTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "main", body["ref"])
+		writeJSON(t, w, http.StatusCreated, map[string]any{
+			"id":      42,
+			"web_url": "https://gitlab.com/myorg/myrepo/-/pipelines/42",
+		})
+	})
+
+	id, webURL, err := pc.CreatePipeline(ctx, "myorg", "myrepo", "main", map[string]string{
+		"STAGE":      "triage",
+		"EVENT_TYPE": "issue_comment",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, int64(42), id)
+	assert.Equal(t, "https://gitlab.com/myorg/myrepo/-/pipelines/42", webURL)
+}
+
+func TestPollClient_CreatePipeline_Error(t *testing.T) {
+	pc, mux := setupPollTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/pipeline", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusForbidden, map[string]string{"message": "403 Forbidden"})
+	})
+
+	_, _, err := pc.CreatePipeline(ctx, "myorg", "myrepo", "main", nil)
+	require.Error(t, err)
+}
+
 func TestPollClient_GetAuthenticatedUserID(t *testing.T) {
 	pc, mux := setupPollTest(t)
 	ctx := context.Background()

@@ -167,14 +167,9 @@ func (p *Poller) Run(ctx context.Context) error {
 		}
 	}
 
-	// Write dispatches before persisting keys: at-least-once delivery.
-	// If key persistence fails, events re-dispatch on the next cycle.
-	if p.opts.OutputPath != "" {
-		if err := p.writeDispatches(p.opts.OutputPath); err != nil {
-			return fmt.Errorf("write dispatches: %w", err)
-		}
-	}
-
+	// Persist dispatched keys. Pipelines were already created via API
+	// during dispatch — if key persistence fails, events may re-dispatch
+	// on the next cycle (at-least-once delivery).
 	for k, ts := range newDispatchedKeys {
 		previouslyDispatched[k] = ts
 	}

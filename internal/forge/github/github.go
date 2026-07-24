@@ -3623,6 +3623,11 @@ func (c *LiveClient) IsProtectedBranch(ctx context.Context, owner, repo, branch 
 	return true, nil
 }
 
+// CreatePipeline is not supported on GitHub.
+func (c *LiveClient) CreatePipeline(_ context.Context, _, _, _ string, _ map[string]string) (*forge.Pipeline, error) {
+	return nil, forge.ErrNotSupported
+}
+
 // CreatePipelineSchedule is not supported on GitHub.
 func (c *LiveClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref, description, cron string, _ map[string]string) (int64, error) {
 	return 0, forge.ErrNotSupported

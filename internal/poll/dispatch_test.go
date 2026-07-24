@@ -4,133 +4,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"os"
-	"path/filepath"
-	"strings"
+	"fmt"
 	"testing"
 	"time"
 )
 
-// --- appendDispatch tests ---
-
-func TestAppendDispatch_AddsToList(t *testing.T) {
-	mc := newMockClient()
-	p := newTestPoller(mc, Options{})
-
-	d := Dispatch{
-		Stage:           "triage",
-		EventType:       "issue_comment",
-		EventPayloadB64: "dGVzdA==",
-		ResourceKey:     "issue_comment-1",
-	}
-	if err := p.appendDispatch(d); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(p.dispatches) != 1 {
-		t.Fatalf("expected 1 dispatch, got %d", len(p.dispatches))
-	}
-	if p.dispatches[0].Stage != "triage" {
-		t.Errorf("got stage %q, want triage", p.dispatches[0].Stage)
-	}
-}
-
-func TestAppendDispatch_AccumulatesMultiple(t *testing.T) {
-	mc := newMockClient()
-	p := newTestPoller(mc, Options{})
-
-	for i := 0; i < 3; i++ {
-		_ = p.appendDispatch(Dispatch{Stage: "triage", ResourceKey: "k"})
-	}
-	if len(p.dispatches) != 3 {
-		t.Errorf("expected 3 dispatches, got %d", len(p.dispatches))
-	}
-}
-
-// --- writeDispatches tests ---
-
-func TestWriteDispatches_EmptyWritesEmptyArray(t *testing.T) {
-	mc := newMockClient()
-	p := newTestPoller(mc, Options{})
-
-	path := filepath.Join(t.TempDir(), "dispatches.json")
-	if err := p.writeDispatches(path); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read file: %v", err)
-	}
-	if string(data) != "[]\n" {
-		t.Errorf("got %q, want %q", string(data), "[]\n")
-	}
-}
-
-func TestWriteDispatches_WritesValidJSONArray(t *testing.T) {
-	mc := newMockClient()
-	p := newTestPoller(mc, Options{})
-
-	_ = p.appendDispatch(Dispatch{
-		Stage:           "triage",
-		EventType:       "issue_comment",
-		EventPayloadB64: "cGF5bG9hZA==",
-		ResourceKey:     "issue_comment-5",
-	})
-	_ = p.appendDispatch(Dispatch{
-		Stage:           "code",
-		EventType:       "issue_label",
-		EventPayloadB64: "bGFiZWw=",
-		ResourceKey:     "issue_label-10",
-	})
-
-	path := filepath.Join(t.TempDir(), "dispatches.json")
-	if err := p.writeDispatches(path); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read file: %v", err)
-	}
-
-	var parsed []Dispatch
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		t.Fatalf("invalid JSON: %v", err)
-	}
-	if len(parsed) != 2 {
-		t.Fatalf("expected 2 dispatches, got %d", len(parsed))
-	}
-	if parsed[0].Stage != "triage" {
-		t.Errorf("dispatch 0: got stage %q, want triage", parsed[0].Stage)
-	}
-	if parsed[1].Stage != "code" {
-		t.Errorf("dispatch 1: got stage %q, want code", parsed[1].Stage)
-	}
-}
-
-func TestWriteDispatches_TrailingNewline(t *testing.T) {
-	mc := newMockClient()
-	p := newTestPoller(mc, Options{})
-
-	_ = p.appendDispatch(Dispatch{Stage: "triage", ResourceKey: "k-1"})
-
-	path := filepath.Join(t.TempDir(), "dispatches.json")
-	if err := p.writeDispatches(path); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read file: %v", err)
-	}
-	if !strings.HasSuffix(string(data), "\n") {
-		t.Error("expected trailing newline")
-	}
-}
-
 // --- dispatch method tests ---
 
-func TestDispatch_BuildsPayloadAndAppends(t *testing.T) {
+func TestDispatch_CreatesAPIpipelineAndAppendsRecord(t *testing.T) {
 	mc := newMockClient()
 	p := newTestPoller(mc, Options{})
 
@@ -148,6 +29,43 @@ func TestDispatch_BuildsPayloadAndAppends(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	// Verify the mock client was called.
+	if mc.pipelineCounter != 1 {
+		t.Fatalf("expected 1 pipeline created, got %d", mc.pipelineCounter)
+	}
+
+	// Verify the API call arguments.
+	if len(mc.pipelineCalls) != 1 {
+		t.Fatalf("expected 1 pipeline call, got %d", len(mc.pipelineCalls))
+	}
+	call := mc.pipelineCalls[0]
+	if call.Owner != "owner" {
+		t.Errorf("owner: got %q, want owner", call.Owner)
+	}
+	if call.Repo != "repo" {
+		t.Errorf("repo: got %q, want repo", call.Repo)
+	}
+	vars := call.Variables
+	if vars["STAGE"] != "triage" {
+		t.Errorf("STAGE variable: got %q, want triage", vars["STAGE"])
+	}
+	if vars["EVENT_TYPE"] != "issue_comment" {
+		t.Errorf("EVENT_TYPE variable: got %q, want issue_comment", vars["EVENT_TYPE"])
+	}
+	if vars["RESOURCE_KEY"] != "issue-42" {
+		t.Errorf("RESOURCE_KEY variable: got %q, want issue-42", vars["RESOURCE_KEY"])
+	}
+	if vars["EVENT_PAYLOAD_B64"] == "" {
+		t.Error("EVENT_PAYLOAD_B64 variable should be set")
+	}
+	if vars["IS_FORK"] != "false" {
+		t.Errorf("IS_FORK variable: got %q, want false (issue event)", vars["IS_FORK"])
+	}
+	if _, ok := vars["MR_AUTHOR_ID"]; ok {
+		t.Error("MR_AUTHOR_ID should not be set for issue events")
+	}
+
+	// Verify a dispatch record was appended.
 	if len(p.dispatches) != 1 {
 		t.Fatalf("expected 1 dispatch, got %d", len(p.dispatches))
 	}
@@ -198,6 +116,18 @@ func TestDispatch_PropagatesMRAuthorAndFork(t *testing.T) {
 	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify variable contract for MR events.
+	vars := mc.pipelineCalls[0].Variables
+	if vars["MR_AUTHOR_ID"] != "99" {
+		t.Errorf("MR_AUTHOR_ID variable: got %q, want 99", vars["MR_AUTHOR_ID"])
+	}
+	if vars["IS_FORK"] != "true" {
+		t.Errorf("IS_FORK variable: got %q, want true (source != target)", vars["IS_FORK"])
+	}
+	if vars["STATUS_IID"] != "10" {
+		t.Errorf("STATUS_IID variable: got %q, want 10", vars["STATUS_IID"])
 	}
 
 	d := p.dispatches[0]
@@ -334,6 +264,139 @@ func TestDispatch_SameProjectIsNotFork(t *testing.T) {
 	}
 }
 
+func TestDispatch_PropagatesPollJobURL(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{PollJobURL: "https://gitlab.example.com/-/jobs/12345"})
+
+	event := RoutableEvent{
+		Type:      "issue_label",
+		IID:       5,
+		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	vars := mc.pipelineCalls[0].Variables
+	if vars["FULLSEND_POLL_JOB_URL"] != "https://gitlab.example.com/-/jobs/12345" {
+		t.Errorf("FULLSEND_POLL_JOB_URL: got %q, want poll job URL", vars["FULLSEND_POLL_JOB_URL"])
+	}
+}
+
+func TestDispatch_UsesPipelineRefOption(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{PipelineRef: "release/v2"})
+
+	event := RoutableEvent{
+		Type:      "issue_label",
+		IID:       5,
+		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if mc.pipelineCalls[0].Ref != "release/v2" {
+		t.Errorf("ref: got %q, want release/v2", mc.pipelineCalls[0].Ref)
+	}
+}
+
+func TestDispatch_CreatePipelineErrorPropagates(t *testing.T) {
+	mc := newMockClient()
+	mc.pipelineErr = fmt.Errorf("API error: 403 forbidden")
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:      "issue_comment",
+		IID:       42,
+		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		NoteBody:  "/fs-triage",
+		NoteID:    100,
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	if err == nil {
+		t.Fatal("expected error from dispatch when CreatePipeline fails")
+	}
+	if len(p.dispatches) != 0 {
+		t.Errorf("expected 0 dispatches on error, got %d", len(p.dispatches))
+	}
+}
+
+func TestRunCreatePipelineFailureDoesNotAdvanceWatermark(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-10 * time.Minute)
+	mc := newMockClient()
+	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.pipelineErr = fmt.Errorf("API error: 500 internal server error")
+	mc.issues = []Issue{
+		{IID: 1, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
+	}
+	mc.notes[1] = []Note{
+		{ID: 10, Body: "/fs-triage handle this", CreatedAt: now, Author: UserRef{ID: 42, Username: "alice"}},
+	}
+	mc.memberLevel[42] = 30
+	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
+
+	router := &stubRouter{stages: []string{"triage"}}
+	p := New(mc, router, "group/project", Options{PipelineRef: "main"})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	if mc.pipelineCounter != 0 {
+		t.Errorf("expected 0 pipelines created, got %d", mc.pipelineCounter)
+	}
+
+	if _, ok := mc.updatedVars["FULLSEND_LAST_POLL_AT_FULL"]; ok {
+		t.Error("watermark should not be advanced when pipeline creation fails")
+	}
+}
+
+func TestRunPartialDispatchFailure(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-10 * time.Minute)
+	mc := newMockClient()
+	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	// Fail after 1 successful CreatePipeline call.
+	mc.pipelineErr = fmt.Errorf("API error: 500 internal server error")
+	mc.pipelineErrAfter = 1
+	mc.issues = []Issue{
+		{IID: 1, Labels: []string{"bug"}, UpdatedAt: now.Add(-2 * time.Minute), Author: UserRef{ID: 42}},
+		{IID: 2, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
+	}
+	mc.notes[1] = []Note{
+		{ID: 10, Body: "/fs-triage first", CreatedAt: now.Add(-2 * time.Minute), Author: UserRef{ID: 42, Username: "alice"}},
+	}
+	mc.notes[2] = []Note{
+		{ID: 20, Body: "/fs-triage second", CreatedAt: now, Author: UserRef{ID: 42, Username: "alice"}},
+	}
+	mc.memberLevel[42] = 30
+	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
+	mc.issue[2] = &Issue{IID: 2, Author: UserRef{ID: 42}}
+
+	router := &stubRouter{stages: []string{"triage"}}
+	p := New(mc, router, "group/project", Options{PipelineRef: "main"})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	// First event should have succeeded, second should have failed.
+	if mc.pipelineCounter != 1 {
+		t.Errorf("expected 1 successful pipeline, got %d", mc.pipelineCounter)
+	}
+	// Dispatch record only for the successful event.
+	if len(p.dispatches) != 1 {
+		t.Errorf("expected 1 dispatch record, got %d", len(p.dispatches))
+	}
+}
+
 // --- buildEventPayload tests ---
 
 func TestBuildEventPayload_IncludesAllFields(t *testing.T) {
@@ -428,51 +491,6 @@ func TestBuildEventPayload_OmitsZeroOptionalFields(t *testing.T) {
 	}
 }
 
-// --- generateChildPipelineYAML tests ---
-
-func TestGenerateChildPipelineYAML_SingleDispatch(t *testing.T) {
-	dispatches := []Dispatch{
-		{
-			Stage:           "triage",
-			EventType:       "issue_comment",
-			EventPayloadB64: "cGF5bG9hZA==",
-			ResourceKey:     "issue_comment-1",
-		},
-	}
-
-	yaml, err := generateChildPipelineYAML(dispatches)
-	if err != nil {
-		t.Fatalf("generateChildPipelineYAML: %v", err)
-	}
-
-	expected := []string{
-		"agent-0:",
-		"trigger:",
-		".gitlab/ci/fullsend-agent.yml",
-		"strategy: depend",
-		`STAGE: "triage"`,
-		`EVENT_TYPE: "issue_comment"`,
-		`EVENT_PAYLOAD_B64: "cGF5bG9hZA=="`,
-		`RESOURCE_KEY: "issue_comment-1"`,
-		"rules:",
-		"- when: always",
-	}
-	for _, substr := range expected {
-		if !strings.Contains(yaml, substr) {
-			t.Errorf("missing %q in output:\n%s", substr, yaml)
-		}
-	}
-	if strings.Contains(yaml, "MR_AUTHOR_ID") {
-		t.Error("MR_AUTHOR_ID should be omitted when zero")
-	}
-	if strings.Contains(yaml, "ACTOR_ID") {
-		t.Error("ACTOR_ID should be omitted when zero")
-	}
-	if strings.Contains(yaml, "STATUS_IID") {
-		t.Error("STATUS_IID should be omitted when zero")
-	}
-}
-
 func TestDispatch_UnknownProjectIDsAreForkFailClosed(t *testing.T) {
 	mc := newMockClient()
 	p := newTestPoller(mc, Options{})
@@ -536,141 +554,6 @@ func TestDispatch_MREventOneZeroProjectIDIsFork(t *testing.T) {
 	}
 }
 
-func TestGenerateChildPipelineYAML_MultipleDispatches(t *testing.T) {
-	dispatches := []Dispatch{
-		{Stage: "triage", EventType: "issue_comment", EventPayloadB64: "a", ResourceKey: "k1"},
-		{Stage: "code", EventType: "issue_label", EventPayloadB64: "b", ResourceKey: "k2"},
-		{Stage: "review", EventType: "mr_comment", EventPayloadB64: "c", ResourceKey: "k3"},
-	}
-
-	yaml, err := generateChildPipelineYAML(dispatches)
-	if err != nil {
-		t.Fatalf("generateChildPipelineYAML: %v", err)
-	}
-
-	for i := 0; i < 3; i++ {
-		marker := "agent-" + strings.Repeat("", 0) + string(rune('0'+i)) + ":"
-		if !strings.Contains(yaml, marker) {
-			t.Errorf("missing %q in output:\n%s", marker, yaml)
-		}
-	}
-
-	if !strings.Contains(yaml, "fullsend-agent.yml") {
-		t.Error("missing agent template include")
-	}
-	if strings.Contains(yaml, "fullsend-triage.yml") || strings.Contains(yaml, "fullsend-code.yml") || strings.Contains(yaml, "fullsend-review.yml") {
-		t.Error("should use generic fullsend-agent.yml, not per-stage templates")
-	}
-}
-
-func TestGenerateChildPipelineYAML_EmptyDispatches(t *testing.T) {
-	yaml, err := generateChildPipelineYAML(nil)
-	if err != nil {
-		t.Fatalf("generateChildPipelineYAML(nil): %v", err)
-	}
-	if yaml != "" {
-		t.Errorf("expected empty string, got %q", yaml)
-	}
-
-	yaml, err = generateChildPipelineYAML([]Dispatch{})
-	if err != nil {
-		t.Fatalf("generateChildPipelineYAML([]): %v", err)
-	}
-	if yaml != "" {
-		t.Errorf("expected empty string for empty slice, got %q", yaml)
-	}
-}
-
-func TestGenerateChildPipelineYAML_MRDispatchIncludesAuthorAndFork(t *testing.T) {
-	dispatches := []Dispatch{
-		{
-			Stage:           "review",
-			EventType:       "mr_event",
-			EventPayloadB64: "cGF5bG9hZA==",
-			ResourceKey:     "mr-42",
-			MRAuthorID:      12345,
-			ActorID:         12345,
-			IsFork:          true,
-			IID:             42,
-		},
-	}
-
-	yaml, err := generateChildPipelineYAML(dispatches)
-	if err != nil {
-		t.Fatalf("generateChildPipelineYAML: %v", err)
-	}
-
-	expected := []string{
-		`MR_AUTHOR_ID: "12345"`,
-		`ACTOR_ID: "12345"`,
-		`IS_FORK: "true"`,
-		`STATUS_IID: "42"`,
-		".gitlab/ci/fullsend-agent.yml",
-	}
-	for _, substr := range expected {
-		if !strings.Contains(yaml, substr) {
-			t.Errorf("missing %q in output:\n%s", substr, yaml)
-		}
-	}
-}
-
-func TestGenerateChildPipelineYAML_IssueNoteDispatchEmitsActorID(t *testing.T) {
-	dispatches := []Dispatch{
-		{
-			Stage:           "triage",
-			EventType:       "issue_note",
-			EventPayloadB64: "cGF5bG9hZA==",
-			ResourceKey:     "issue-7",
-			ActorID:         99,
-		},
-	}
-
-	yaml, err := generateChildPipelineYAML(dispatches)
-	if err != nil {
-		t.Fatalf("generateChildPipelineYAML: %v", err)
-	}
-
-	if !strings.Contains(yaml, `ACTOR_ID: "99"`) {
-		t.Errorf("missing ACTOR_ID in output:\n%s", yaml)
-	}
-	if strings.Contains(yaml, "MR_AUTHOR_ID") {
-		t.Error("MR_AUTHOR_ID should be omitted for issue events (MRAuthorID=0)")
-	}
-}
-
-func TestGenerateChildPipelineYAML_OmitsActorIDWhenZero(t *testing.T) {
-	dispatches := []Dispatch{
-		{
-			Stage:           "code",
-			EventType:       "issue_label",
-			EventPayloadB64: "bGFiZWw=",
-			ResourceKey:     "issue-5",
-		},
-	}
-
-	yaml, err := generateChildPipelineYAML(dispatches)
-	if err != nil {
-		t.Fatalf("generateChildPipelineYAML: %v", err)
-	}
-
-	if strings.Contains(yaml, "ACTOR_ID") {
-		t.Error("ACTOR_ID should be omitted when zero")
-	}
-}
-
-func TestGenerateChildPipelineYAML_InvalidStageReturnsError(t *testing.T) {
-	dispatches := []Dispatch{
-		{Stage: "INVALID STAGE!", EventType: "issue_comment", EventPayloadB64: "a", ResourceKey: "k"},
-	}
-	_, err := generateChildPipelineYAML(dispatches)
-	if err == nil {
-		t.Fatal("expected error for invalid stage name")
-	}
-	if !strings.Contains(err.Error(), "invalid stage name") {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
 func TestResourceKey_EntityBased(t *testing.T) {
 	tests := []struct {
 		event RoutableEvent
@@ -686,110 +569,5 @@ func TestResourceKey_EntityBased(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("resourceKey(%s, IID=%d) = %q, want %q", tt.event.Type, tt.event.IID, got, tt.want)
 		}
-	}
-}
-
-// --- GenerateChildPipelineFromFile tests ---
-
-func TestGenerateChildPipelineFromFile_ReadsAndWrites(t *testing.T) {
-	tmpDir := t.TempDir()
-	inputPath := filepath.Join(tmpDir, "dispatches.json")
-	outputPath := filepath.Join(tmpDir, "child-pipeline.yml")
-
-	dispatches := []Dispatch{
-		{
-			Stage:           "triage",
-			EventType:       "issue_comment",
-			EventPayloadB64: "cGF5bG9hZA==",
-			ResourceKey:     "issue_comment-5",
-		},
-		{
-			Stage:           "code",
-			EventType:       "issue_label",
-			EventPayloadB64: "bGFiZWw=",
-			ResourceKey:     "issue_label-10",
-		},
-	}
-	data, err := json.Marshal(dispatches)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if err := os.WriteFile(inputPath, data, 0o644); err != nil {
-		t.Fatalf("write input: %v", err)
-	}
-
-	if err := GenerateChildPipelineFromFile(inputPath, outputPath); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	output, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
-	}
-	yamlStr := string(output)
-
-	if !strings.Contains(yamlStr, "agent-0:") {
-		t.Error("missing agent-0 in output")
-	}
-	if !strings.Contains(yamlStr, "agent-1:") {
-		t.Error("missing agent-1 in output")
-	}
-	if !strings.Contains(yamlStr, "fullsend-agent.yml") {
-		t.Error("missing agent template include")
-	}
-	if strings.Contains(yamlStr, "fullsend-triage.yml") || strings.Contains(yamlStr, "fullsend-code.yml") {
-		t.Error("should use generic fullsend-agent.yml, not per-stage templates")
-	}
-}
-
-func TestGenerateChildPipelineFromFile_MissingInputFile(t *testing.T) {
-	tmpDir := t.TempDir()
-	err := GenerateChildPipelineFromFile(
-		filepath.Join(tmpDir, "nonexistent.json"),
-		filepath.Join(tmpDir, "output.yml"),
-	)
-	if err == nil {
-		t.Fatal("expected error for missing input file")
-	}
-	if !strings.Contains(err.Error(), "read dispatches file") {
-		t.Errorf("unexpected error message: %v", err)
-	}
-}
-
-func TestGenerateChildPipelineFromFile_InvalidJSON(t *testing.T) {
-	tmpDir := t.TempDir()
-	inputPath := filepath.Join(tmpDir, "bad.json")
-	if err := os.WriteFile(inputPath, []byte("{not json"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	err := GenerateChildPipelineFromFile(inputPath, filepath.Join(tmpDir, "output.yml"))
-	if err == nil {
-		t.Fatal("expected error for invalid JSON")
-	}
-	if !strings.Contains(err.Error(), "unmarshal dispatches") {
-		t.Errorf("unexpected error message: %v", err)
-	}
-}
-
-func TestGenerateChildPipelineFromFile_EmptyDispatches(t *testing.T) {
-	tmpDir := t.TempDir()
-	inputPath := filepath.Join(tmpDir, "empty.json")
-	outputPath := filepath.Join(tmpDir, "output.yml")
-
-	if err := os.WriteFile(inputPath, []byte("[]"), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	if err := GenerateChildPipelineFromFile(inputPath, outputPath); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	output, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
-	}
-	if string(output) != "" {
-		t.Errorf("expected empty output for empty dispatches, got %q", string(output))
 	}
 }

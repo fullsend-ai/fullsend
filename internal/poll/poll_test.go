@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -74,24 +72,16 @@ func TestRunEmptyPoll(t *testing.T) {
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = now.Add(-10 * time.Minute).Format(time.RFC3339)
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
-	p := New(mc, nil, "org/project", Options{
-		OutputPath: outputPath,
-	})
+	p := New(mc, nil, "org/project", Options{})
 
 	err := p.Run(context.Background())
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
-	}
-	if string(data) != "[]\n" {
-		t.Errorf("output = %q, want empty JSON array", string(data))
+	// No events discovered, no pipelines should be created.
+	if mc.pipelineCounter != 0 {
+		t.Errorf("expected 0 pipelines, got %d", mc.pipelineCounter)
 	}
 
 	if _, ok := mc.updatedVars["FULLSEND_LAST_POLL_AT_FULL"]; !ok {
@@ -104,12 +94,8 @@ func TestRunSlashCommandsOnlyMode(t *testing.T) {
 	mc := newMockClient()
 	mc.variables["FULLSEND_LAST_POLL_AT_FAST"] = now.Add(-5 * time.Minute).Format(time.RFC3339)
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
 	p := New(mc, nil, "org/project", Options{
 		SlashCommandsOnly: true,
-		OutputPath:        outputPath,
 	})
 
 	err := p.Run(context.Background())
@@ -177,29 +163,24 @@ func TestRunFullPollWithRouterAndDispatch(t *testing.T) {
 	mc.memberLevel[42] = 30
 	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{OutputPath: outputPath})
+	p := New(mc, router, "group/project", Options{})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
+	// Verify pipeline was created via API.
+	if mc.pipelineCounter != 1 {
+		t.Fatalf("expected 1 pipeline, got %d", mc.pipelineCounter)
 	}
-	var dispatches []Dispatch
-	if err := json.Unmarshal(data, &dispatches); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+
+	// Verify dispatch was recorded.
+	if len(p.dispatches) != 1 {
+		t.Fatalf("expected 1 dispatch, got %d", len(p.dispatches))
 	}
-	if len(dispatches) != 1 {
-		t.Fatalf("expected 1 dispatch, got %d", len(dispatches))
-	}
-	if dispatches[0].Stage != "triage" {
-		t.Errorf("stage = %q, want %q", dispatches[0].Stage, "triage")
+	if p.dispatches[0].Stage != "triage" {
+		t.Errorf("stage = %q, want %q", p.dispatches[0].Stage, "triage")
 	}
 
 	if len(mc.emojis) != 1 {
@@ -232,26 +213,20 @@ func TestRunMultipleStages(t *testing.T) {
 	}
 	mc.memberLevel[5] = 30
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
 	router := &stubRouter{stages: []string{"triage", "code"}}
-	p := New(mc, router, "group/project", Options{OutputPath: outputPath})
+	p := New(mc, router, "group/project", Options{})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
+	// Verify 2 pipelines created via API.
+	if mc.pipelineCounter != 2 {
+		t.Fatalf("expected 2 pipelines, got %d", mc.pipelineCounter)
 	}
-	var dispatches []Dispatch
-	if err := json.Unmarshal(data, &dispatches); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if len(dispatches) != 2 {
-		t.Fatalf("expected 2 dispatches, got %d", len(dispatches))
+
+	if len(p.dispatches) != 2 {
+		t.Fatalf("expected 2 dispatches, got %d", len(p.dispatches))
 	}
 
 	if _, ok := mc.updatedVars["FULLSEND_LABEL_STATE"]; !ok {
@@ -273,22 +248,16 @@ func TestRunNoMatchingStages(t *testing.T) {
 	mc.memberLevel[42] = 30
 	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
 	router := &stubRouter{stages: nil}
-	p := New(mc, router, "group/project", Options{OutputPath: outputPath})
+	p := New(mc, router, "group/project", Options{})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
-	}
-	if string(data) != "[]\n" {
-		t.Errorf("expected empty dispatches, got %q", string(data))
+	// No matching stages → no pipelines created.
+	if mc.pipelineCounter != 0 {
+		t.Errorf("expected 0 pipelines, got %d", mc.pipelineCounter)
 	}
 }
 
@@ -306,11 +275,8 @@ func TestRunRouterError(t *testing.T) {
 	mc.memberLevel[42] = 30
 	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
 	router := &stubRouter{err: fmt.Errorf("routing failed")}
-	p := New(mc, router, "group/project", Options{OutputPath: outputPath})
+	p := New(mc, router, "group/project", Options{})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() should not return error on router failure, got: %v", err)
@@ -329,22 +295,16 @@ func TestRunConversionErrorSkipsEvent(t *testing.T) {
 		{ID: 10, Body: "note", CreatedAt: now, Author: UserRef{ID: 0}},
 	}
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{OutputPath: outputPath})
+	p := New(mc, router, "group/project", Options{})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}
 
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
-	}
-	if string(data) != "[]\n" {
-		t.Errorf("expected empty dispatches for unresolvable actor, got %q", string(data))
+	// Conversion error → no pipelines created.
+	if mc.pipelineCounter != 0 {
+		t.Errorf("expected 0 pipelines for unresolvable actor, got %d", mc.pipelineCounter)
 	}
 }
 
@@ -364,11 +324,8 @@ func TestRunAllEventsFailWatermarkNotAdvanced(t *testing.T) {
 		{ID: 11, Body: "note", CreatedAt: now, Author: UserRef{ID: 0}},
 	}
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{OutputPath: outputPath})
+	p := New(mc, router, "group/project", Options{})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -393,10 +350,7 @@ func TestRunNilRouter(t *testing.T) {
 	mc.memberLevel[42] = 30
 	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
-	p := New(mc, nil, "group/project", Options{OutputPath: outputPath})
+	p := New(mc, nil, "group/project", Options{})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)
@@ -417,46 +371,29 @@ func TestRunIdempotentSecondPoll(t *testing.T) {
 	mc.memberLevel[42] = 30
 	mc.issue[1] = &Issue{IID: 1, Author: UserRef{ID: 42}}
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{OutputPath: outputPath})
+	p := New(mc, router, "group/project", Options{})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("first Run() error: %v", err)
 	}
 
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
-	}
-	var dispatches []Dispatch
-	if err := json.Unmarshal(data, &dispatches); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if len(dispatches) != 1 {
-		t.Fatalf("first run: expected 1 dispatch, got %d", len(dispatches))
+	if mc.pipelineCounter != 1 {
+		t.Fatalf("first run: expected 1 pipeline, got %d", mc.pipelineCounter)
 	}
 
 	// Simulate persisted state being readable on next cycle.
 	mc.variables["FULLSEND_DISPATCHED_KEYS_FULL"] = mc.updatedVars["FULLSEND_DISPATCHED_KEYS_FULL"]
 	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = mc.updatedVars["FULLSEND_LAST_POLL_AT_FULL"]
 
-	p2 := New(mc, router, "group/project", Options{OutputPath: outputPath})
+	p2 := New(mc, router, "group/project", Options{})
 	if err := p2.Run(context.Background()); err != nil {
 		t.Fatalf("second Run() error: %v", err)
 	}
 
-	data, err = os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatalf("read output: %v", err)
-	}
-	if err := json.Unmarshal(data, &dispatches); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if len(dispatches) != 0 {
-		t.Errorf("second run: expected 0 dispatches (idempotent), got %d", len(dispatches))
+	// Second run should not create new pipelines (idempotent).
+	if mc.pipelineCounter != 1 {
+		t.Errorf("second run: expected no new pipelines (total 1), got %d", mc.pipelineCounter)
 	}
 }
 
@@ -486,11 +423,8 @@ func TestRunLabelFailureRollback(t *testing.T) {
 	mc.memberLevel[42] = 30
 	mc.issue[2] = &Issue{IID: 2, Author: UserRef{ID: 42}}
 
-	dir := t.TempDir()
-	outputPath := filepath.Join(dir, "dispatches.json")
-
 	router := &stubRouter{stages: []string{"triage"}}
-	p := New(mc, router, "group/project", Options{OutputPath: outputPath})
+	p := New(mc, router, "group/project", Options{})
 
 	if err := p.Run(context.Background()); err != nil {
 		t.Fatalf("Run() error: %v", err)

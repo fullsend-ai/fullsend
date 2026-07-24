@@ -31,6 +31,43 @@ Accepted
      the decision itself needs to change, write a new ADR that supersedes this
      one. For evolving design narrative, use docs/architecture.md. -->
 
+> **Update (2026-07, #5556):** The child-pipeline output driver described in
+> this ADR was replaced by direct API-triggered pipelines
+> (`POST /projects/:id/pipeline`). The poller now creates standalone pipelines
+> with dispatch variables instead of generating child pipeline YAML. This
+> eliminates the bridge job, YAML generation, and 2-level pipeline nesting.
+> The cron-polling input driver and dispatch core are unchanged. Superseded
+> sections: "Relationship to the dispatch driver architecture" (child-pipeline
+> output driver), "Pipeline nesting" under GitLab tier considerations, and the
+> architecture diagram showing parent-child pipeline flow.
+>
+> **Trust boundary change:** With child pipelines, dispatch variables were
+> computed server-side by the trusted poller and injected via the trigger YAML
+> artifact — only the poller could produce them. With API-triggered pipelines,
+> any user with pipeline-create access on the protected branch can POST
+> arbitrary variables (STAGE, EVENT_TYPE, EVENT_PAYLOAD_B64, RESOURCE_KEY,
+> IS_FORK, MR_AUTHOR_ID, STATUS_IID). The in-job authorization gate and fork
+> protection read these attacker-supplied variables. Mitigations tracked in
+> #5572: verify GITLAB_USER_ID matches the bot, HMAC-sign the payload, or
+> re-derive event data from the API instead of trusting pipeline variables.
+>
+> **New permission requirement:** The bot PAT must have merge or push access
+> to the protected branch to create pipelines via the API endpoint. The
+> child-pipeline path had no such requirement (the trigger ran inside an
+> existing pipeline context).
+>
+> **Pipeline visibility change:** Dispatched pipelines are first-class
+> pipelines on the default branch, not nested children. Agent failures mark
+> the latest pipeline on main as failed. The scaffold sets
+> `workflow:auto_cancel:on_new_commit:none` to prevent new commits from
+> canceling queued agent pipelines.
+>
+> **Observability trade-off:** The old `trigger: strategy: depend` mirrored
+> child pipeline pass/fail into the poll job's own status. API-triggered
+> pipelines are fire-and-forget — the poll job reports success after creating
+> the pipeline, regardless of downstream agent outcome. Dispatched pipeline
+> URLs are logged for manual inspection.
+
 ## Context
 
 Fullsend needs to detect and react to GitLab events — new issues, merge

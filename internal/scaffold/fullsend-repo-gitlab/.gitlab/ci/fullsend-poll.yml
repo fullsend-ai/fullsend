@@ -60,40 +60,11 @@ poll-events:
         exit 1
       fi
 
-      # Run the poller — outputs dispatches.json
+      # Run the poller — dispatches pipelines directly via the GitLab API.
+      # No child pipeline generation needed: the poller creates standalone
+      # pipelines for each discovered event and logs clickable URLs.
       fullsend poll \
         --forge gitlab \
         --project "${CI_PROJECT_PATH}" \
         --gitlab-url "${FULLSEND_GITLAB_URL:-${CI_SERVER_URL}}" \
-        --fullsend-dir .fullsend \
-        --output dispatches.json
-
-      # Generate child pipeline YAML from dispatches (same image, no
-      # extra credentials needed for generation).
-      if [ ! -s dispatches.json ] || [ "$(jq 'length' dispatches.json)" = "0" ]; then
-        echo "No events to dispatch"
-        # Write a no-op child pipeline so the artifact contract is met
-        echo 'no-op: { script: ["echo No events"], rules: [{ when: always }] }' > child-pipeline.yml
-      else
-        fullsend poll generate-child-pipeline \
-          --dispatches dispatches.json \
-          --output child-pipeline.yml
-      fi
-  artifacts:
-    paths:
-      - child-pipeline.yml
-    expire_in: 1 hour
-
-# Trigger child pipelines for each dispatched event
-dispatch-agents:
-  stage: agent
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
-  needs:
-    - job: poll-events
-      artifacts: true
-  trigger:
-    include:
-      - artifact: child-pipeline.yml
-        job: poll-events
-    strategy: depend
+        --fullsend-dir .fullsend
