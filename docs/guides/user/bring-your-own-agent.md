@@ -446,6 +446,8 @@ Authentication for CLI commands uses the `gh` CLI or `GH_TOKEN` environment vari
 
 The examples above show customizing built-in agents via `base`. If you've built an entirely new agent from scratch, register it the same way — just point to a local harness instead of a URL.
 
+> **Routing label convention:** if your agent is triggered by a label, the label must use the `ready-` prefix (e.g. `ready-for-my-agent`). The shim `if:` guard silently skips `labeled` events whose label name doesn't match `startsWith('ready-')`, so a non-conforming label will never reach dispatch.
+
 ### CLI
 
 ```bash

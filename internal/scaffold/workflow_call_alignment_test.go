@@ -616,6 +616,54 @@ func TestReusableDispatchPRHeadSHAPassthrough(t *testing.T) {
 	}
 }
 
+// TestShimLabeledEventFiltering validates that shim workflows skip non-routing
+// labeled events at the if: guard level and use label-aware concurrency keys
+// so routing labels don't cancel each other (#2452).
+func TestShimLabeledEventFiltering(t *testing.T) {
+	type shimCase struct {
+		name           string
+		content        func(t *testing.T) []byte
+		hasConcurrency bool
+	}
+
+	cases := []shimCase{
+		{"fullsend.yaml", loadRepoFile(".github/workflows/fullsend.yaml"), true},
+		{"scaffold/shim-workflow-call.yaml", loadScaffoldFile("templates/shim-workflow-call.yaml"), true},
+		{"scaffold/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml"), false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := string(tc.content(t))
+
+			// All shims must filter non-routing labeled events via startsWith.
+			assert.Contains(t, s, `github.event.action != 'labeled'`,
+				"%s must skip non-routing labeled events", tc.name)
+			assert.Contains(t, s, `startsWith(github.event.label.name, 'ready-')`,
+				"%s must use startsWith prefix match for routing labels", tc.name)
+		})
+	}
+
+	// Workflow-call shims must have a label-aware concurrency key (#2452).
+	// Parse YAML to check the concurrency group field directly, not just
+	// string-match on the whole file (which would false-positive on the if: guard).
+	for _, tc := range cases {
+		if !tc.hasConcurrency {
+			continue
+		}
+		t.Run(tc.name+"/concurrency", func(t *testing.T) {
+			var wf callerWorkflow
+			require.NoError(t, yaml.Unmarshal(tc.content(t), &wf))
+			job, ok := wf.Jobs["dispatch"]
+			require.True(t, ok, "%s must have a dispatch job", tc.name)
+			require.NotNil(t, job.Concurrency, "%s dispatch job must have a concurrency group", tc.name)
+			assert.Contains(t, job.Concurrency.Group,
+				"github.event.action == 'labeled' && github.event.label.name || 'dispatch'",
+				"%s concurrency group must use label-aware ternary", tc.name)
+		})
+	}
+}
+
 // TestRoleCheckCaseBranches validates the role-check step's case mapping and
 // backward-compat logic in both dispatch workflows (#2298).
 func TestRoleCheckCaseBranches(t *testing.T) {
