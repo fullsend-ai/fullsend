@@ -26,7 +26,7 @@ on:
       fullsend_version:
         required: false
         type: string
-        default: "latest"
+        default: ""
       install_mode:
         required: false
         type: string
@@ -179,7 +179,7 @@ jobs:
           OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
         with:
           agent: retro
-          version: ${{ inputs.fullsend_version }}
+          version: ${{ inputs.fullsend_version || job.workflow_sha }}
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ inputs.source_repo }}

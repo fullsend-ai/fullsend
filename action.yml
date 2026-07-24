@@ -115,6 +115,42 @@ runs:
           VERSION="${TAG}"
         fi
 
+        # Resolve a full commit SHA to its release tag (if any).
+        # Paginate through tags (capped at 50 pages); stop as soon as a
+        # match is found or the API returns fewer than per_page results.
+        if [[ "${VERSION}" =~ ^[0-9a-f]{40}$ ]]; then
+          TAG=""
+          page=1
+          max_pages=50
+          while :; do
+            if (( page > max_pages )); then
+              echo "::warning::Tag lookup reached ${max_pages} pages without a match; skipping SHA-to-tag resolution"
+              break
+            fi
+            resp=$(retry_curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              "https://api.github.com/repos/fullsend-ai/fullsend/tags?per_page=100&page=${page}") \
+              || { echo "::warning::Tag lookup failed on page ${page}; skipping SHA-to-tag resolution"; break; }
+            match=$(echo "${resp}" | jq -r --arg sha "${VERSION}" \
+              '.[] | select(.commit.sha == $sha) | .name' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+' | sort -V | tail -1) || true
+            if [[ -n "${match}" ]]; then
+              TAG="${match}"
+              break
+            fi
+            count=$(echo "${resp}" | jq 'length')
+            if [[ "${count}" -lt 100 ]]; then
+              break
+            fi
+            (( page++ ))
+          done
+          if [[ -n "${TAG}" ]]; then
+            echo "SHA ${VERSION} maps to release tag ${TAG}"
+            VERSION="${TAG}"
+          fi
+        fi
+
         if [[ "${VERSION}" == v* ]]; then
           VERSION_URL="${VERSION}"
           VERSION_ASSET="${VERSION#v}"
@@ -155,7 +191,9 @@ runs:
         echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
 
     - name: Download release binary
+      id: download-release
       if: steps.detect.outputs.install-method == 'release'
+      continue-on-error: true
       shell: bash
       env:
         VERSION_URL: ${{ steps.detect.outputs.version-url }}
@@ -187,16 +225,21 @@ runs:
           done
         }
 
-        os="$(echo "${RUNNER_OS}" | tr '[:upper:]' '[:lower:]')"
-        case "${os}" in
-          macos) os=darwin ;;
-        esac
+        # This action requires Linux (podman, systemd, cgroups v2 steps below).
+        # Release assets exist for linux_{amd64,arm64} only.
+        if [[ "${RUNNER_OS}" != "Linux" ]]; then
+          echo "::error::Unsupported runner OS: ${RUNNER_OS} (this action requires Linux)"
+          exit 1
+        fi
+        os=linux
 
-        arch="$(echo "${RUNNER_ARCH}" | tr '[:upper:]' '[:lower:]')"
-        case "${arch}" in
-          x64) arch=amd64 ;;
-          x86) arch=386 ;;
-          arm64|aarch64) arch=arm64 ;;
+        case "${RUNNER_ARCH}" in
+          X64)   arch=amd64 ;;
+          ARM64) arch=arm64 ;;
+          *)
+            echo "::error::Unsupported runner architecture: ${RUNNER_ARCH} (expected X64 or ARM64)"
+            exit 1
+            ;;
         esac
 
         ASSET_NAME="fullsend_${VERSION_ASSET}_${os}_${arch}.tar.gz"
@@ -209,13 +252,17 @@ runs:
         echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
 
     - name: Clone fullsend at ref for source build
-      if: steps.detect.outputs.install-method == 'source'
+      if: steps.detect.outputs.install-method == 'source' || steps.download-release.outcome == 'failure'
       shell: bash
       env:
-        SOURCE_REF: ${{ steps.detect.outputs.source-ref }}
+        SOURCE_REF: ${{ steps.detect.outputs.source-ref || steps.detect.outputs.version-url }}
         GH_TOKEN: ${{ inputs.github_token }}
+        DOWNLOAD_OUTCOME: ${{ steps.download-release.outcome }}
       run: |
         set -euo pipefail
+        if [[ "${DOWNLOAD_OUTCOME}" == "failure" ]]; then
+          echo "::warning::Release download failed; falling back to source build"
+        fi
         echo "::add-mask::${GH_TOKEN}"
         SRC="${RUNNER_TEMP}/fullsend-src"
         REMOTE="https://x-access-token:${GH_TOKEN}@github.com/fullsend-ai/fullsend.git"
@@ -234,14 +281,14 @@ runs:
         fi
 
     - name: Set up Go for source build
-      if: steps.detect.outputs.install-method == 'source'
+      if: steps.detect.outputs.install-method == 'source' || steps.download-release.outcome == 'failure'
       uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
       with:
         go-version-file: ${{ runner.temp }}/fullsend-src/go.mod
         cache-dependency-path: ${{ runner.temp }}/fullsend-src/go.sum
 
     - name: Build fullsend from source
-      if: steps.detect.outputs.install-method == 'source'
+      if: steps.detect.outputs.install-method == 'source' || steps.download-release.outcome == 'failure'
       shell: bash
       run: |
         set -euo pipefail
