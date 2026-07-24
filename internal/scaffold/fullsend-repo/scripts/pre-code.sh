@@ -69,19 +69,38 @@ if [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${COMMENT_BODY:-}" == *--force* ]]; 
   exit 0
 fi
 
-BOT_LOGIN="fullsend-ai[bot]"
-CODER_BOT_LOGIN="fullsend-ai-coder[bot]"
-
 echo "Checking for existing open PRs linked to issue #${ISSUE_NUMBER}..."
 
-# Search for open PRs in the repo that mention the issue number.
-# This catches PRs with "Closes #N", "Fixes #N", or "#N" in the body/title.
-# Use gh's built-in --jq to filter out bot-authored PRs in one call.
-HUMAN_PR_LINES="$(gh pr list --repo "${REPO_FULL_NAME}" --state open \
-  --search "${ISSUE_NUMBER} in:body,title" \
-  --json number,url,author \
-  --jq "[.[] | select(.author.login != \"${BOT_LOGIN}\" and .author.login != \"${CODER_BOT_LOGIN}\")] | .[] | \"\(.number)\t\(.author.login)\t\(.url)\"" \
-  2>/dev/null || true)"
+# Query the issue for PRs that actually close it (Fixes/Closes/Resolves
+# keywords), not a substring search over title/body — the latter false
+# -positives on any PR that merely references the issue number (#5575).
+# closedByPullRequestsReferences also returns MERGED PRs regardless of
+# includeClosedPrs, so filter on .state explicitly. GraphQL's Bot.login
+# omits the REST "[bot]" suffix, so match on __typename == "Bot" rather
+# than a literal "fullsend-ai-coder[bot]" string — see
+# docs/contributing/bot-identities.md for the login.
+OWNER="${REPO_FULL_NAME%%/*}"
+REPO_NAME="${REPO_FULL_NAME##*/}"
+GQL_ERR="$(mktemp)"
+if ! HUMAN_PR_LINES="$(gh api graphql -f query='
+  query($owner: String!, $repo: String!, $number: Int!) {
+    repository(owner: $owner, name: $repo) {
+      issue(number: $number) {
+        closedByPullRequestsReferences(first: 20) {
+          nodes { number url state author { login __typename } }
+        }
+      }
+    }
+  }' -f owner="${OWNER}" -f repo="${REPO_NAME}" -F number="${ISSUE_NUMBER}" \
+  --jq '[.data.repository.issue.closedByPullRequestsReferences.nodes[]
+         | select(.state == "OPEN")
+         | select(.author.__typename != "Bot" or .author.login != "fullsend-ai-coder")]
+         | .[] | "\(.number)\t\(.author.login)\t\(.url)"' \
+  2>"${GQL_ERR}")"; then
+  echo "::warning::Linked-PR query failed for issue #${ISSUE_NUMBER}: $(cat "${GQL_ERR}")"
+  HUMAN_PR_LINES=""
+fi
+rm -f "${GQL_ERR}"
 
 if [[ -n "${HUMAN_PR_LINES}" ]]; then
   # Parse the first PR for the notice.

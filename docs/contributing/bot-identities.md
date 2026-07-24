@@ -13,3 +13,5 @@ Fullsend agents authenticate as GitHub Apps; the table below also includes non-a
 | renovate | `renovate-fullsend[bot]` | Dependency updates (not a fullsend agent) |
 
 When referencing bot identities in code (e.g., trusted actor lists, dispatch filters), always verify the login name against this table. Do not assume each agent role has a unique app identity — the fix agent reuses `fullsend-ai-coder[bot]`, not a separate `fullsend-ai-fix[bot]`.
+
+**REST vs. GraphQL login format:** the `[bot]` suffix above is the REST/App-slug form. GitHub's GraphQL API omits it — a bot author's `login` field comes back as `fullsend-ai-coder`, not `fullsend-ai-coder[bot]`, with `__typename: "Bot"`. Comparing a GraphQL-sourced login against a literal `"...[bot]"` string never matches (see #5575) — match on `__typename == "Bot"` plus the un-suffixed login instead.
