@@ -402,6 +402,14 @@ type Client interface {
 	GetBranchRef(ctx context.Context, owner, repo, branch string) (sha string, err error)
 	CreateBranch(ctx context.Context, owner, repo, branchName string) error
 
+	// CreateBranchFromSHA creates a new branch pointing at the given commit
+	// SHA. Unlike CreateBranch (which resolves the repo's default branch),
+	// this allows the caller to specify an explicit starting point — for
+	// example, an upstream HEAD when creating a branch on a stale fork.
+	// Returns forge.ErrAlreadyExists if the branch already exists,
+	// and forge.ErrForbidden on insufficient permissions.
+	CreateBranchFromSHA(ctx context.Context, owner, repo, branchName, sha string) error
+
 	// DeleteRef deletes a git ref (e.g., "heads/my-branch", "tags/v1.0").
 	// Returns forge.ErrNotFound if the ref does not exist.
 	DeleteRef(ctx context.Context, owner, repo, refPath string) error

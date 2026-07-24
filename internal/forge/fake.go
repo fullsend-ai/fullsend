@@ -96,6 +96,11 @@ type DismissedReviewRecord struct {
 	Message     string
 }
 
+// BranchSHARecord records a CreateBranchFromSHA call.
+type BranchSHARecord struct {
+	Owner, Repo, Branch, SHA string
+}
+
 // CommitFilesRecord records a CommitFiles call.
 type CommitFilesRecord struct {
 	Owner, Repo, Message string
@@ -237,6 +242,7 @@ type FakeClient struct {
 	CreatedRepos           []Repository
 	CreatedFiles           []FileRecord
 	CreatedBranches        []string // "owner/repo/branch"
+	CreatedBranchSHAs      []BranchSHARecord
 	DeletedRefs            []string // "owner/repo/refPath"
 	CreatedProposals       []ChangeProposal
 	DeletedRepos           []string // "owner/repo"
@@ -742,6 +748,26 @@ func (f *FakeClient) CreateBranch(_ context.Context, owner, repo, branchName str
 	}
 
 	f.CreatedBranches = append(f.CreatedBranches, owner+"/"+repo+"/"+branchName)
+	return nil
+}
+
+func (f *FakeClient) CreateBranchFromSHA(_ context.Context, owner, repo, branchName, sha string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if f.CreateBranchErrors != nil {
+		if e, ok := f.CreateBranchErrors[owner+"/"+repo]; ok {
+			return e
+		}
+	}
+	if e := f.err("CreateBranchFromSHA"); e != nil {
+		return e
+	}
+
+	f.CreatedBranches = append(f.CreatedBranches, owner+"/"+repo+"/"+branchName)
+	f.CreatedBranchSHAs = append(f.CreatedBranchSHAs, BranchSHARecord{
+		Owner: owner, Repo: repo, Branch: branchName, SHA: sha,
+	})
 	return nil
 }
 

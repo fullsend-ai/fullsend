@@ -61,6 +61,7 @@ func TestCommitScaffoldViaPR_ExistingForkReused(t *testing.T) {
 	client.ExistingForks = map[string]string{
 		"acme/widget": "contributor",
 	}
+	client.BranchRefs["acme/widget/main"] = "upstream-sha"
 	printer, buf := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
@@ -164,6 +165,7 @@ func TestCommitScaffoldViaPR_ReadAccessFallsThrough(t *testing.T) {
 	client.Repos = append(client.Repos, forge.Repository{
 		FullName: "contributor/widget", DefaultBranch: "main",
 	})
+	client.BranchRefs["acme/widget/main"] = "upstream-sha"
 	printer, _ := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
@@ -180,6 +182,7 @@ func TestCommitScaffoldViaPR_NonInteractiveForksByDefault(t *testing.T) {
 	client.Repos = append(client.Repos, forge.Repository{
 		FullName: "contributor/widget", DefaultBranch: "main",
 	})
+	client.BranchRefs["acme/widget/main"] = "upstream-sha"
 	printer, buf := newTestPrinter()
 
 	// nil reader = non-interactive → auto-fork.
@@ -200,6 +203,7 @@ func TestCommitScaffoldViaPR_InteractiveForkChoice(t *testing.T) {
 	client.Repos = append(client.Repos, forge.Repository{
 		FullName: "contributor/widget", DefaultBranch: "main",
 	})
+	client.BranchRefs["acme/widget/main"] = "upstream-sha"
 	printer, _ := newTestPrinter()
 
 	// Simulate user pressing enter (default = fork).
@@ -252,6 +256,7 @@ func TestCommitScaffoldViaPR_CrossForkPRHead(t *testing.T) {
 	client.ExistingForks = map[string]string{
 		"acme/widget": "contributor",
 	}
+	client.BranchRefs["acme/widget/main"] = "upstream-sha"
 	printer, _ := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
@@ -267,6 +272,45 @@ func TestCommitScaffoldViaPR_CrossForkPRHead(t *testing.T) {
 	assert.Equal(t, "contributor", client.CommittedFilesToBranch[0].Owner)
 }
 
+func TestCommitScaffoldViaPR_CrossForkUsesUpstreamSHA(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.ExistingForks = map[string]string{
+		"acme/widget": "contributor",
+	}
+	// Set the upstream branch ref so we can verify it is used.
+	client.BranchRefs["acme/widget/main"] = "upstream-sha-abc123"
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	// The scaffold branch on the fork must be created from the upstream SHA,
+	// not from the fork's (potentially stale) default branch.
+	require.Len(t, client.CreatedBranchSHAs, 1, "cross-fork should use CreateBranchFromSHA")
+	assert.Equal(t, "contributor", client.CreatedBranchSHAs[0].Owner)
+	assert.Equal(t, "widget", client.CreatedBranchSHAs[0].Repo)
+	assert.Equal(t, "fullsend/scaffold-install", client.CreatedBranchSHAs[0].Branch)
+	assert.Equal(t, "upstream-sha-abc123", client.CreatedBranchSHAs[0].SHA,
+		"branch should be based on upstream HEAD, not fork's default branch")
+}
+
+func TestCommitScaffoldViaPR_SameRepoUsesCreateBranch(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	// Same-repo path should use CreateBranch (not CreateBranchFromSHA).
+	require.Len(t, client.CreatedBranches, 1)
+	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0])
+	assert.Empty(t, client.CreatedBranchSHAs, "same-repo should not use CreateBranchFromSHA")
+}
+
 func TestCommitScaffoldViaPR_FindExistingForkError(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "contributor"
@@ -277,6 +321,7 @@ func TestCommitScaffoldViaPR_FindExistingForkError(t *testing.T) {
 	client.Repos = append(client.Repos, forge.Repository{
 		FullName: "contributor/widget", DefaultBranch: "main",
 	})
+	client.BranchRefs["acme/widget/main"] = "upstream-sha"
 	printer, buf := newTestPrinter()
 
 	// Should warn but proceed (auto-fork since in=nil).
