@@ -10,7 +10,7 @@
 #
 # Required environment:
 #   EVAL_ORG      — GitHub org for ephemeral repos
-#   FULLSEND_DIR  — path to fullsend scaffold directory
+#   FULLSEND_DIR  — path to the .fullsend configuration directory
 #   GH_TOKEN      — GitHub token (defaults to gh auth token)
 #
 # Required:
