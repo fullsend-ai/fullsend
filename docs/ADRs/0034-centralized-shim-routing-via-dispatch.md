@@ -143,8 +143,19 @@ The `stage` input to `dispatch.yml` becomes optional. When provided
   (`fullsend-${{ github.event.pull_request.number || github.event.issue.number }}`).
   This is a behavioral change from the status quo, where stages run
   independently: a new dispatch now cancels any in-progress run for the
-  same issue/PR. In practice, only one agent should run per issue/PR at a
-  time, and the latest event takes priority.
+  same issue/PR.
+  **Note (2026-07, [#2452](https://github.com/fullsend-ai/fullsend/issues/2452)):** the per-org workflow-call shims
+  (`fullsend.yaml`, `shim-workflow-call.yaml`) now use label-aware
+  concurrency groups — `labeled` events include the label name in the
+  key so routing labels are not cancelled by non-routing labels applied
+  in the same burst. Non-labeled events still share a common per-issue/PR
+  group. The per-repo shim (`shim-per-repo.yaml`) has no job-level
+  concurrency group; per-role groups live in `reusable-dispatch.yml`
+  stage jobs. All shims gained an `if:` early-exit that skips non-routing
+  labels (those not matching the `ready-` prefix) to avoid wasting
+  runner time. Note: the concurrency-cancellation hypothesis for the
+  original incident (#2405) had medium confidence — dispatch.yml routing
+  drift was not ruled out — but the fix is low-risk regardless.
 - Events that don't match any stage still trigger a `workflow_call` to
   `dispatch.yml`, which exits early. Cost: one runner spin-up (~20s). The
   `if:` filter on the dispatch job eliminates bot comments, the

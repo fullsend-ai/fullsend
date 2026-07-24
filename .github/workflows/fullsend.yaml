@@ -40,13 +40,23 @@ on:
 jobs:
   dispatch:
     concurrency:
-      group: fullsend-dispatch-${{ github.event.issue.number || github.event.pull_request.number }}
+      # Include label name for labeled events so routing labels (ready-to-code,
+      # ready-for-review) don't share a concurrency slot with non-routing labels
+      # applied in the same burst (#2452).
+      group: >-
+        fullsend-dispatch-${{ github.event.issue.number || github.event.pull_request.number }}-${{
+          github.event.action == 'labeled' && github.event.label.name || 'dispatch'
+        }}
       cancel-in-progress: false
     if: >-
       (github.event_name != 'pull_request_target' && github.event_name != 'pull_request_review'
        || github.event.pull_request.head.ref != 'fullsend/scaffold-install')
       && (github.event_name != 'issue_comment'
        || github.event.comment.user.type != 'Bot')
+      && (
+        github.event.action != 'labeled'
+        || startsWith(github.event.label.name, 'ready-')
+      )
     uses: fullsend-ai/.fullsend/.github/workflows/dispatch.yml@main
     with:
       event_action: ${{ github.event.action }}

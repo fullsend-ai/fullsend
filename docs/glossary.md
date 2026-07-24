@@ -115,8 +115,8 @@ See [architecture.md](architecture.md) and [agent-architecture.md](problems/agen
 
 ### Label State Machine
 
-The set of valid label transitions on issues and PRs that encode workflow state. Labels like `ready-for-triage`, `ready-to-code`, and `ready-for-review` drive agent dispatch; others such as `ready-for-merge` and `requires-manual-review` encode review outcomes. In per-repo installs, `ready-for-review` on a PR also triggers review; applying it to a standalone issue does not. Per-org installs still accept legacy issue-side review triggers pending a follow-up. The label state machine guard validates that transitions are legal and enforces mutual exclusion — for example, starting a triage run clears downstream labels so stale state does not carry forward.
-See [ADR 0002](ADRs/0002-initial-fullsend-design.md) building block 3.
+The set of valid label transitions on issues and PRs that encode workflow state. Labels like `ready-for-triage`, `ready-to-code`, and `ready-for-review` drive agent dispatch; others such as `ready-for-merge` and `requires-manual-review` encode review outcomes. All routing labels share the `ready-` prefix — the shim `if:` guard silently skips `labeled` events whose label doesn't match `startsWith('ready-')`, so custom agents must follow this convention (e.g. `ready-for-my-agent`). In per-repo installs, `ready-for-review` on a PR also triggers review; applying it to a standalone issue does not. Per-org installs still accept legacy issue-side review triggers pending a follow-up. The label state machine guard validates that transitions are legal and enforces mutual exclusion — for example, starting a triage run clears downstream labels so stale state does not carry forward.
+See [ADR 0002](ADRs/0002-initial-fullsend-design.md) building block 3 and [Bring Your Own Agent — routing label convention](guides/user/bring-your-own-agent.md).
 
 ## M
 
