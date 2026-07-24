@@ -53,7 +53,7 @@ fullsend repos init <owner/repo> --mint-project <PROJECT>
 The command discovers repos by checking:
 
 1. **Per-repo guard variable** (`FULLSEND_PER_REPO_INSTALL`) — identifies per-repo installations
-2. **Per-org config enrollment** (`config.yaml` in `.fullsend` repo) — identifies per-org installations
+2. **Per-org config enrollment** (`config.yaml` in `.fullsend` repo) — identifies per-org installations; if no mint URL is set in the org config, falls back to the `FULLSEND_MINT_URL` org-level Actions variable
 3. **Workflow ref** — extracts the `@ref` from scaffold shim workflow files
 
 ### Defaults computation
