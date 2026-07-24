@@ -460,20 +460,60 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  │ Extract output    │ SafeDownload() with sanitization:        │
 │  │                   │ - Remove dangerous symlinks (sandbox escape) │
 │  │                   │ - Remove .git/hooks/ (hook injection)    │
+│  │                   │                                          │
+│  │                   │ With validation_loop: SafeDownload       │
+│  │                   │ failure is non-fatal — clean up repo dir │
+│  │                   │ and continue to next iteration. Output   │
+│  │                   │ files (extracted separately) are kept.   │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────────────────────────────┐                   │
 │  │ Validation loop (if configured)          │                   │
 │  │                                          │                   │
-│  │ for i := 0; i < max_iterations; i++ {    │                   │
+│  │ Phase 1 — inline validation:             │                   │
+│  │ for i := 1; i <= max_iterations; i++ {   │                   │
+│  │   run agent → extract output             │                   │
+│  │   SafeDownload repo (non-fatal on fail)  │                   │
 │  │   run validation script                  │                   │
-│  │   if pass → break                        │                   │
-│  │   feed feedback → re-run agent           │                   │
+│  │   if pass → break (early exit)           │                   │
+│  │   feed feedback → next iteration         │                   │
 │  │ }                                        │                   │
+│  │                                          │                   │
+│  │ Phase 2 — post-loop sweep (#5393):       │                   │
+│  │ if no inline pass:                       │                   │
+│  │   for i := latest..1 {                   │                   │
+│  │     run validation on iteration-i dir    │                   │
+│  │     TARGET_REPO_DIR="" (repo dir is      │                   │
+│  │       unreliable across iterations)      │                   │
+│  │     if pass → use this iteration; break  │                   │
+│  │   }                                      │                   │
 │  └──────────┬───────────────────────────────┘                   │
 │             ▼                                                   │
 │  ┌──────────────────┐                                           │
 │  │ Post-script       │ Run harness.post_script (host-side)      │
+│  │                   │ REPO_DIR set only when last SafeDownload │
+│  │                   │ succeeded and validated iteration is the │
+│  │                   │ latest; empty otherwise. post-fix.sh and │
+│  │                   │ post-code.sh both fail closed on empty   │
+│  │                   │ REPO_DIR in their own script logic; the  │
+│  │                   │ other validation_loop post-scripts don't │
+│  │                   │ reference REPO_DIR at all. code.yaml has │
+│  │                   │ no validation_loop, so post-code.sh      │
+│  │                   │ can't currently hit this path, but the   │
+│  │                   │ check is real, not dead code. There is   │
+│  │                   │ no per-iteration repo checkout, so post- │
+│  │                   │ fix.sh cannot recover a sweep-validated  │
+│  │                   │ non-final iteration; it fails closed     │
+│  │                   │ instead of pushing (known limitation,    │
+│  │                   │ see #5393).                              │
+│  │                   │                                          │
+│  │                   │ FULLSEND_VALIDATED_ITERATION_DIR points  │
+│  │                   │ to the validated iteration's output dir, │
+│  │                   │ for forward compatibility. The scaffold- │
+│  │                   │ embedded post-scripts don't consume it   │
+│  │                   │ yet (tracked in fullsend-ai/agents#411)  │
+│  │                   │ — they still scan for the last iteration │
+│  │                   │ blindly.                                 │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │

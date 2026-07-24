@@ -322,14 +322,22 @@ The pre-script has full credentials on the trusted runner. It fetches data from 
 #!/usr/bin/env bash
 set -euo pipefail
 
-RESULT_FILE=""
-for dir in iteration-*/output; do
-  if [[ -f "${dir}/agent-result.json" ]]; then
-    RESULT_FILE="${dir}/agent-result.json"
-  fi
-done
+# Prefer the validated iteration directory set by the harness
+# (FULLSEND_VALIDATED_ITERATION_DIR) — without it, scanning for the last
+# iteration can pick up output that failed validation. Fall back to
+# scanning for the last iteration for harnesses with no validation_loop.
+if [[ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]]; then
+  RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
+else
+  RESULT_FILE=""
+  for dir in iteration-*/output; do
+    if [[ -f "${dir}/agent-result.json" ]]; then
+      RESULT_FILE="${dir}/agent-result.json"
+    fi
+  done
+fi
 
-if [[ -z "${RESULT_FILE}" ]]; then
+if [[ -z "${RESULT_FILE}" ]] || [[ ! -f "${RESULT_FILE}" ]]; then
   echo "ERROR: agent-result.json not found"
   exit 1
 fi
