@@ -44,6 +44,12 @@ jobs:
 
       - run: make lint-all
 
+      - name: Lint agent configurations (harness-eval)
+        run: |
+          pip install -q harness-eval==6.1.1
+          harness-eval lint . --preset recommended --fail-on-error
+          harness-eval lint internal/scaffold/fullsend-repo --preset recommended --fail-on-error
+
       - name: Run Go tests with coverage
         run: go test -race -coverprofile=coverage.out ./...
         env:
