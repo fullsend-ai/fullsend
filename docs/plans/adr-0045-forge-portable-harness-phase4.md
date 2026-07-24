@@ -35,7 +35,7 @@ Phase 3 plan: `docs/plans/adr-0045-forge-portable-harness-phase3.md`
 | `HasAgentsBlock()` method | Remove method |
 | Deprecation notice in `runOrgInstall` | Remove notice code |
 | Dual-write in `runInstall` / `runGitHubSetup` | ✅ Stop passing agents to `NewOrgConfig` (#2447) |
-| `HarnessWrappersLayer` generating role/slug | Unchanged -- remains the sole source of agent identity |
+| ~~`HarnessWrappersLayer` generating role/slug~~ | ~~Unchanged -- remains the sole source of agent identity~~ *(layer removed — PR #5425)* |
 
 ### Config schema version: stay on v1
 
@@ -155,7 +155,7 @@ PRs 1, 2, and 3 can all start in parallel. PR 4 depends on PRs 2 and 3 (all call
 
 ## PR 2: Stop writing `agents:` block during install — ✅ Shipped (#2447)
 
-**Scope:** Remove the `agents` parameter from `NewOrgConfig()`. All `NewOrgConfig` callers stop building and passing agent entries. The `ConfigRepoLayer` writes config.yaml without an `agents:` block. The `HarnessWrappersLayer` remains unchanged -- it is now the sole source of agent identity.
+**Scope:** Remove the `agents` parameter from `NewOrgConfig()`. All `NewOrgConfig` callers stop building and passing agent entries. The `ConfigRepoLayer` writes config.yaml without an `agents:` block. ~~The `HarnessWrappersLayer` remains unchanged -- it is now the sole source of agent identity.~~ *(`HarnessWrappersLayer` removed — PR #5425; agent identity now resolved via config + agents-repo fallback.)*
 
 All items below were completed in #2447:
 

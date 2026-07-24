@@ -1398,7 +1398,7 @@ func runDryRun(ctx context.Context, client forge.Client, printer *ui.Printer, or
 		dispatcher = gcf.NewProvisioner(gcf.Config{}, nil)
 	}
 	vendorFn, vendorCollect := vendorStackArgs(vendor, fullsendBinary, fullsendSource)
-	stack := buildLayerStack(ctx, org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendor, vendorFn, vendorCollect, "", dispatcher, commitSHA, false)
+	stack := buildLayerStack(ctx, org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendor, vendorFn, vendorCollect, "", dispatcher, false)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -1738,7 +1738,7 @@ func runInstall(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	}
 
 	vendorFn, vendorCollect := vendorStackArgs(vendor, fullsendBinary, fullsendSource)
-	stack := buildLayerStack(ctx, org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendor, vendorFn, vendorCollect, "", disp, commitSHA, direct)
+	stack := buildLayerStack(ctx, org, client, cfg, printer, user, privateRepo, enabledRepos, agentCreds, enrolledRepoIDs, inferenceProvider, vendor, vendorFn, vendorCollect, "", disp, direct)
 
 	if err := runPreflight(ctx, stack, layers.OpInstall, client, printer); err != nil {
 		return err
@@ -1996,7 +1996,7 @@ func runAnalyze(ctx context.Context, client forge.Client, printer *ui.Printer, o
 	}
 
 	dispatcher := gcf.NewProvisioner(gcf.Config{}, nil)
-	stack := buildLayerStack(ctx, org, client, cfg, printer, user, privateRepo, nil, agentCreds, nil, inferenceProvider, false, nil, nil, analyzeFullsendSource, dispatcher, commitSHA, false)
+	stack := buildLayerStack(ctx, org, client, cfg, printer, user, privateRepo, nil, agentCreds, nil, inferenceProvider, false, nil, nil, analyzeFullsendSource, dispatcher, false)
 
 	if err := runPreflight(ctx, stack, layers.OpAnalyze, client, printer); err != nil {
 		return err
@@ -2030,7 +2030,6 @@ func buildLayerStack(
 	vendorCollect layers.VendorCollectFunc,
 	analyzeFullsendSource string,
 	dispatcher dispatch.Dispatcher,
-	commitSHA string,
 	direct bool,
 ) *layers.Stack {
 	dispatchLayer := layers.NewOIDCDispatchLayer(org, client, enrolledRepoIDs, dispatcher, printer)
@@ -2048,7 +2047,6 @@ func buildLayerStack(
 	return layers.NewStack(
 		layers.NewConfigRepoLayer(org, client, cfg, printer, privateRepo),
 		workflowsLayer(ctx, org, client, printer, user, version, vendor, vendorCollect, direct),
-		layers.NewHarnessWrappersLayer(org, client, printer, agentCreds, commitSHA, configAgentNames(cfg.AgentEntries())),
 		vendorLayer(org, client, printer, vendor, vendorFn, vendorCollect, analyzeFullsendSource),
 		layers.NewSecretsLayer(org, client, agentCreds, printer).WithOIDCMode(),
 		layers.NewInferenceLayer(org, client, inferenceProvider, printer),

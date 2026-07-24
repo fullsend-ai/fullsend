@@ -308,8 +308,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	// Best-effort org config loading — provides the allowlist for base
 	// harness fetching and the agent registry for config-driven resolution.
-	// If the file is missing or unparseable we proceed without it;
-	// HasURLReferences will enforce its presence later if needed.
+	// If the file is missing or unparseable, resolveAgentSource falls back
+	// to agents-repo resolution; a malformed file is warned by
+	// tryLoadOrgConfig but not surfaced as a distinct error here.
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
 	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
 	// Fallback for absent config; EnsureDefaultAllowedRemoteResources
@@ -339,7 +340,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// Resolve agent source: config agents take precedence, then agents repo
-	// fallback, then disk harnesses.
+	// fallback.
 	var fallbackForgeClient forge.Client
 	if composeGitToken != "" {
 		fallbackForgeClient = gh.New(composeGitToken)
@@ -3186,7 +3187,7 @@ func validateRepoNames(repos []string) error {
 
 // resolveAgentSource resolves the harness path for an agent, checking
 // config-registered agents first, then falling back to the agents repo
-// (fullsend-ai/agents), then to disk-based lookup.
+// (fullsend-ai/agents).
 // Returns the local filesystem path to the harness (cached for URL sources)
 // and any fetch dependencies from URL-based agent resolution.
 func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forgeClient forge.Client, orgCfg config.ConfigReader, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, error) {
@@ -3194,64 +3195,41 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
 			return path, deps, nil
 		}
-		path, err := resolveHarnessPath(fullsendDir, agentName, printer)
-		return path, nil, err
+		return "", nil, fmt.Errorf("resolving agent %q: no config and agents-repo fallback unavailable", agentName)
 	}
 
 	if err := config.ValidateAgentEntries(orgCfg.AgentEntries(), orgCfg.AllowedResources()); err != nil {
 		return "", nil, fmt.Errorf("invalid agent config: %w", err)
 	}
 
-	sha := commitSHA
-	if sha == "dev" {
-		sha = ""
-	}
-	scaffoldNames, snErr := scaffold.HarnessNames()
-	if snErr != nil {
-		return "", nil, fmt.Errorf("listing scaffold harnesses: %w", snErr)
+	if config.IsAgentExplicitlyDisabled(orgCfg.AgentEntries(), agentName) {
+		printer.StepFail(fmt.Sprintf("Agent %s is disabled in config", agentName))
+		return "", nil, fmt.Errorf("agent %q is explicitly disabled in config", agentName)
 	}
 
-	merged, err := config.MergedAgents(scaffoldNames, sha, orgCfg.AgentEntries(), scaffold.HarnessBaseURLWithHash)
-	if err != nil {
-		return "", nil, fmt.Errorf("building merged agent set: %w", err)
-	}
-
-	agent := config.LookupMergedAgent(merged, agentName)
-	if agent == nil || !agent.IsConfig {
-		// An explicitly disabled agent must not fall through to the
-		// agents-repo fallback or disk lookup — that would silently
-		// re-enable it. Return a clear error instead.
-		if config.IsAgentExplicitlyDisabled(orgCfg.AgentEntries(), agentName) {
-			printer.StepFail(fmt.Sprintf("Agent %s is disabled in config", agentName))
-			return "", nil, fmt.Errorf("agent %q is explicitly disabled in config", agentName)
-		}
+	entry := findConfigAgentEntry(orgCfg.AgentEntries(), agentName)
+	if entry == nil {
 		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
 			return path, deps, nil
 		}
-		path, err := resolveHarnessPath(fullsendDir, agentName, printer)
-		return path, nil, err
+		return "", nil, fmt.Errorf("resolving agent %q: not in config and agents-repo fallback unavailable", agentName)
 	}
 
-	entry := findConfigAgentEntry(orgCfg.AgentEntries(), agent.Name)
-	if entry == nil {
-		return "", nil, fmt.Errorf("config agent %s: entry not found", agent.Name)
-	}
-
-	if harness.IsURL(agent.Source) {
-		printer.StepStart(fmt.Sprintf("Fetching agent harness: %s", agent.Name))
+	if harness.IsURL(entry.Source) {
+		printer.StepStart(fmt.Sprintf("Fetching agent harness: %s", agentName))
 	}
 	resolved, err := harness.ResolveRegisteredPath(ctx, fullsendDir, *entry, orgCfg.AllowedResources(), composeOpts)
 	if err != nil {
-		if harness.IsURL(agent.Source) {
+		if harness.IsURL(entry.Source) {
 			printer.StepFail("Failed to fetch agent harness")
 		}
-		return "", nil, fmt.Errorf("resolving config agent %s: %w", agent.Name, err)
+		return "", nil, fmt.Errorf("resolving config agent %q: %w", agentName, err)
 	}
-	if harness.IsURL(agent.Source) {
-		printer.StepDone(fmt.Sprintf("Agent %s resolved from config (URL)", agent.Name))
+	if harness.IsURL(entry.Source) {
+		printer.StepDone(fmt.Sprintf("Agent %s resolved from config (URL)", agentName))
 		return resolved.Path, []harness.Dependency{resolved.Dep}, nil
 	}
-	printer.StepDone(fmt.Sprintf("Agent %s resolved from config (local path)", agent.Name))
+	printer.StepDone(fmt.Sprintf("Agent %s resolved from config (local path)", agentName))
 	return resolved.Path, nil, nil
 }
 
@@ -3273,7 +3251,7 @@ func findConfigAgentEntry(agents []config.AgentEntry, name string) *config.Agent
 //
 // Returns (path, deps, true) on success, or ("", nil, false) if the fallback
 // should be skipped (offline, no forge client, agent not known, not allowlisted, etc.).
-// All errors are non-fatal — the caller falls through to disk-based lookup.
+// All errors are non-fatal — returns false to signal that this fallback path was not usable.
 func tryAgentsRepoFallback(ctx context.Context, agentName string, forgeClient forge.Client, composeOpts harness.ComposeOpts, printer *ui.Printer) (string, []harness.Dependency, bool) {
 	normalizedName := strings.ToLower(agentName)
 	if !defaultAgentsRepoKnownAgents[normalizedName] {

@@ -45,8 +45,9 @@ in portable expressions over a forge-neutral **`NormalizedEvent`**
 
 CEL evaluation requires knowing which harness files exist. [ADR 0058](0058-agent-registration.md)
 defines config-level agent registration — an `agents` list in org/per-repo config
-merged with scaffold discovery — that `fullsend run` and dispatch use to resolve
-harness paths at runtime.
+— that `fullsend run` and dispatch use to resolve harness paths at runtime
+*(scaffold discovery removed — PR #5425; resolution is now config entries
+with agents-repo fallback for known first-party agents)*.
 
 ## Options
 
@@ -81,9 +82,10 @@ Adopt **Option C**.
   CEL expressions.
 - **Harness enumeration:** before evaluating CEL `trigger` expressions,
   `fullsend dispatch` loads the harness set from agent registration per
-  [ADR 0058](0058-agent-registration.md) (config `agents` entries merged with
-  scaffold discovery). Each registered harness path is a candidate for CEL
-  matching.
+  [ADR 0058](0058-agent-registration.md) (config `agents` entries with
+  agents-repo fallback for known first-party agents *(scaffold discovery
+  removed — PR #5425)*). Each registered harness path is a candidate for
+  CEL matching.
 - **Harness `trigger`:** optional CEL boolean with root variable `event`. No
   `trigger` → manual `fullsend run` only. Multiple harnesses may match (parallel
   fan-out).

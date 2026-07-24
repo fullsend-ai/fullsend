@@ -1176,7 +1176,6 @@ func TestBuildLayerStack_NilEnabledRepos_SkipsDisabledRepos(t *testing.T) {
 		nil,   // vendorCollect
 		"",    // analyzeFullsendSource
 		nil,   // dispatcher
-		"dev", // commitSHA
 		false, // direct
 	)
 
@@ -1212,7 +1211,7 @@ func TestBuildLayerStack_EmptyEnabledRepos_IncludesDisabledRepos(t *testing.T) {
 		"test-org", nil, cfg, printer, "user",
 		false,
 		[]string{}, // explicitly empty (not nil)
-		nil, nil, nil, false, nil, nil, "", nil, "dev",
+		nil, nil, nil, false, nil, nil, "", nil,
 		false, // direct
 	)
 
@@ -1307,7 +1306,6 @@ func TestCheckInstallScopes_SyncWithLayers(t *testing.T) {
 	stack := layers.NewStack(
 		layers.NewConfigRepoLayer("test-org", nil, emptyCfg, ui.New(&discardWriter{}), false),
 		layers.NewWorkflowsLayer("test-org", nil, ui.New(&discardWriter{}), "", "test-version", false),
-		layers.NewHarnessWrappersLayer("test-org", nil, ui.New(&discardWriter{}), nil, "dev", nil),
 		layers.NewSecretsLayer("test-org", nil, nil, ui.New(&discardWriter{})),
 		layers.NewInferenceLayer("test-org", nil, nil, ui.New(&discardWriter{})),
 		layers.NewOIDCDispatchLayer("test-org", nil, nil, nil, ui.New(&discardWriter{})),

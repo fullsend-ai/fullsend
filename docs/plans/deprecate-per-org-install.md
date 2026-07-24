@@ -328,10 +328,10 @@ All per-org commands gone.
   `repo-maintenance.yml`, manages enrollment).
 - `internal/layers/workflows.go` — writes exclusively to
   `forge.ConfigRepoName` (`.fullsend` config repo).
-- `internal/layers/harnesswrappers.go` — references
-  `forge.ConfigRepoName` for harness wrapper commits.
+- ~~`internal/layers/harnesswrappers.go`~~ — ~~references
+  `forge.ConfigRepoName` for harness wrapper commits.~~ *(file removed — PR #5425)*
 - Corresponding test files: `configrepo_test.go`, `enrollment_test.go`,
-  `workflows_test.go`, `harnesswrappers_test.go`.
+  `workflows_test.go`, ~~`harnesswrappers_test.go`~~ *(file removed — PR #5425)*.
 
 **Modify files:**
 

@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
@@ -1858,45 +1857,6 @@ func TestPerRepoConfig_Marshal_WithAgents(t *testing.T) {
 	assert.Contains(t, string(data), "agents:")
 	assert.Contains(t, string(data), "my-agent.yaml")
 	assert.Contains(t, string(data), "allowed_remote_resources:")
-}
-
-// --- DefaultAgentEntries tests ---
-
-func TestDefaultAgentEntries_WithBuilder(t *testing.T) {
-	builder := func(name, sha string) (string, error) {
-		return "https://example.com/" + sha + "/harness/" + name + ".yaml#sha256=0000000000000000000000000000000000000000000000000000000000000000", nil
-	}
-	entries, err := DefaultAgentEntries([]string{"triage", "code"}, "abc123", builder)
-	require.NoError(t, err)
-	require.Len(t, entries, 2)
-	assert.Contains(t, entries[0].Source, "triage.yaml")
-	assert.Contains(t, entries[1].Source, "code.yaml")
-	assert.Equal(t, "triage", entries[0].DerivedName())
-	assert.Equal(t, "code", entries[1].DerivedName())
-}
-
-func TestDefaultAgentEntries_NilBuilder(t *testing.T) {
-	entries, err := DefaultAgentEntries([]string{"triage"}, "abc123", nil)
-	require.NoError(t, err)
-	assert.Nil(t, entries)
-}
-
-func TestDefaultAgentEntries_BuilderError(t *testing.T) {
-	builder := func(name, sha string) (string, error) {
-		return "", fmt.Errorf("build failed for %s", name)
-	}
-	_, err := DefaultAgentEntries([]string{"triage"}, "abc123", builder)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "build failed for triage")
-}
-
-func TestDefaultAgentEntries_EmptySHA(t *testing.T) {
-	builder := func(name, sha string) (string, error) {
-		return "", nil
-	}
-	entries, err := DefaultAgentEntries([]string{"triage"}, "", builder)
-	require.NoError(t, err)
-	assert.Nil(t, entries)
 }
 
 // --- DefaultAllowedRemoteResources tests ---

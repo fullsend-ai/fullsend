@@ -10,15 +10,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-// configAgentNames extracts derived names from a list of agent entries.
-func configAgentNames(agents []config.AgentEntry) []string {
-	names := make([]string, len(agents))
-	for i, a := range agents {
-		names[i] = a.DerivedName()
-	}
-	return names
-}
-
 // tryLoadFullsendConfig attempts to load an org or per-repo config.yaml
 // from the given path. Returns nil without error when the file is absent
 // (best-effort). The returned ConfigWriter provides a unified view of

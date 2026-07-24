@@ -228,31 +228,6 @@ func EnsureDefaultAllowedRemoteResources(existing []string) []string {
 	return result
 }
 
-// DefaultAgentEntries computes default agent URL entries for the given
-// harness names at a specific commit SHA. Each entry is a pinned
-// raw.githubusercontent.com URL with an integrity hash.
-type AgentEntryBuilder func(harnessName, commitSHA string) (string, error)
-
-// DefaultAgentEntries returns agent entries for the given harness names,
-// using builder to compute each URL. When builder is nil, it returns
-// nil (for callers that don't have access to the scaffold package).
-// Called by install/scaffold in Phase 2 (ADR 0058); defined here in
-// Phase 1 so the type and validation are co-located.
-func DefaultAgentEntries(harnessNames []string, commitSHA string, builder AgentEntryBuilder) ([]AgentEntry, error) {
-	if builder == nil || commitSHA == "" {
-		return nil, nil
-	}
-	entries := make([]AgentEntry, 0, len(harnessNames))
-	for _, name := range harnessNames {
-		urlWithHash, err := builder(name, commitSHA)
-		if err != nil {
-			return nil, fmt.Errorf("building agent URL for %s: %w", name, err)
-		}
-		entries = append(entries, AgentEntry{Source: urlWithHash})
-	}
-	return entries, nil
-}
-
 // NewOrgConfig creates a new orgConfig with sensible defaults.
 // The returned OrgConfigWriter provides full read-write access.
 func NewOrgConfig(allRepos, enabledRepos, roles []string, inferenceProvider, org string) OrgConfigWriter {

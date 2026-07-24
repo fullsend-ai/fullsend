@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -10,7 +11,6 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/poll"
-	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 func newPollCmd() *cobra.Command {
@@ -56,7 +56,7 @@ func newPollCmd() *cobra.Command {
 				return fmt.Errorf("resolve bot user ID: %w", err)
 			}
 
-			// Build the event router from config + scaffold agents.
+			// Build the event router from config + agents-repo known agents.
 			router, err := buildRouter(fullsendDir)
 			if err != nil {
 				return fmt.Errorf("build event router: %w", err)
@@ -88,28 +88,34 @@ func newPollCmd() *cobra.Command {
 	return cmd
 }
 
-// buildRouter constructs a HarnessRouter from the merged set of
-// scaffold default agents and config-registered agents.
+// buildRouter constructs a HarnessRouter from config-registered agents
+// and the known first-party agents available via agents-repo fallback.
 func buildRouter(fullsendDir string) (*dispatch.HarnessRouter, error) {
 	cfg, err := config.LoadConfig(fullsendDir, config.LoadOpts{MissingOK: true})
 	if err != nil {
 		return nil, fmt.Errorf("load config: %w", err)
 	}
 
-	scaffoldNames, err := scaffold.HarnessNames()
-	if err != nil {
-		return nil, fmt.Errorf("list scaffold harnesses: %w", err)
+	seen := make(map[string]bool)
+	var names []string
+
+	entries := cfg.AgentEntries()
+	for i := len(entries) - 1; i >= 0; i-- {
+		name := entries[i].DerivedName()
+		lower := strings.ToLower(name)
+		if !seen[lower] {
+			seen[lower] = true
+			if entries[i].IsEnabled() {
+				names = append(names, name)
+			}
+		}
 	}
 
-	nameOnly := func(string, string) (string, error) { return "", nil }
-	merged, err := config.MergedAgents(scaffoldNames, "-", cfg.AgentEntries(), nameOnly)
-	if err != nil {
-		return nil, fmt.Errorf("merge agents: %w", err)
-	}
-
-	names := make([]string, 0, len(merged))
-	for _, a := range merged {
-		names = append(names, a.Name)
+	for name := range defaultAgentsRepoKnownAgents {
+		if !seen[name] && !config.IsAgentExplicitlyDisabled(entries, name) {
+			seen[name] = true
+			names = append(names, name)
+		}
 	}
 
 	return dispatch.NewHarnessRouter(names), nil

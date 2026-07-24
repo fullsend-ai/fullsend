@@ -26,7 +26,7 @@ Phase 3 builds on Phase 2's deliverables:
 | `DiscoverAgents()` + `LoadRaw()` | Foundation for remote harness discovery (same parse logic, different I/O) |
 | Wrapper harness files in config repo | Remote discovery reads these instead of `config.yaml` `agents:` block |
 | `forge.github:` blocks in scaffold templates | Lint can validate forge section completeness in future phases |
-| `HarnessWrappersLayer` dual-write | Ensures both sources exist during Phase 3 transition; Phase 4 removes the `agents:` write |
+| ~~`HarnessWrappersLayer` dual-write~~ | ~~Ensures both sources exist during Phase 3 transition; Phase 4 removes the `agents:` write~~ *(layer removed — PR #5425)* |
 
 ### Key design insight: remote vs local discovery
 
@@ -331,7 +331,7 @@ After all PRs merge, verify Phase 3 end-to-end:
 Phase 4 is not planned in detail here, but its scope is:
 
 - Require `role` in `Validate()` (move from `Lint()` warning to hard error)
-- Stop writing `agents:` block during install (remove the dual-write from `HarnessWrappersLayer` and config generation)
+- ~~Stop writing `agents:` block during install (remove the dual-write from `HarnessWrappersLayer` and config generation)~~ *(`HarnessWrappersLayer` removed — PR #5425)*
 - Remove `OrgConfig.Agents` field and `AgentSlugs()` method
 - Remove `loadKnownSlugsLegacy` and the fallback tier in `discoverAgentSlugs`
 - Remove `HasAgentsBlock()` and all deprecation notice code
