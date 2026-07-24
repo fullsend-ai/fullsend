@@ -572,7 +572,7 @@ func (c *LiveClient) ListPipelineSchedules(ctx context.Context, owner, repo stri
 // CI variables (branch-restricted)
 // ---------------------------------------------------------------------------
 
-// UpdateCIVariable updates an existing CI/CD variable's value and protected flag.
+// UpdateCIVariable upserts a CI/CD variable (update if exists, create if not).
 func (c *LiveClient) UpdateCIVariable(ctx context.Context, owner, repo, name, value string, protected bool) error {
 	path := fmt.Sprintf("/projects/%s/variables/%s", projectPath(owner, repo), url.PathEscape(name))
 	body := map[string]any{
@@ -580,11 +580,30 @@ func (c *LiveClient) UpdateCIVariable(ctx context.Context, owner, repo, name, va
 		"protected": protected,
 	}
 	resp, err := c.put(ctx, path, body)
-	if err != nil {
-		return fmt.Errorf("update CI variable %s: %w", name, err)
+	if err == nil {
+		resp.Body.Close()
+		return nil
 	}
-	resp.Body.Close()
-	return nil
+
+	// Variable does not exist yet — create it.
+	if errors.Is(err, forge.ErrNotFound) {
+		createPath := fmt.Sprintf("/projects/%s/variables", projectPath(owner, repo))
+		createBody := map[string]any{
+			"key":           name,
+			"value":         value,
+			"protected":     protected,
+			"masked":        false,
+			"variable_type": "env_var",
+		}
+		resp, err = c.post(ctx, createPath, createBody)
+		if err != nil {
+			return fmt.Errorf("create CI variable %s: %w", name, err)
+		}
+		resp.Body.Close()
+		return nil
+	}
+
+	return fmt.Errorf("update CI variable %s: %w", name, err)
 }
 
 // CreateProtectedCIVariable creates a branch-restricted, unmasked CI/CD variable.
