@@ -89,10 +89,11 @@ type ComposeOpts struct {
 //
 // Pipeline:
 //  1. LoadRaw(path) — preserves forge map
-//  2. If base absent: ResolveForge → Validate → return
+//  2. If base absent: resolve URL-sourced resources → ResolveForge → Validate → return
 //  3. If base present: loadBaseChain recursively, then mergeBaseIntoChild
-//  4. ResolveForge once on final merged result
-//  5. Validate
+//  4. Resolve remaining URL-sourced resources and scripts (child's own relative paths)
+//  5. ResolveForge once on final merged result
+//  6. Validate
 //
 // When base is absent, this behaves identically to LoadWithOpts.
 func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness, []Dependency, error) {
@@ -170,6 +171,41 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 
 	// Clear the base field (consumed)
 	child.Base = ""
+
+	// When the harness was fetched from a URL, the child may still have
+	// relative resource paths (skills, agent, policy, host_files, scripts)
+	// that originated in the child harness — not the base. After merge,
+	// base resources are absolute cache paths but the child's own relative
+	// paths remain unresolved. Resolve them against the SourceURL now,
+	// the same way the no-base path does.
+	//
+	// Without this, relative paths like "skills/pr-review" or
+	// "scripts/pre.sh" would be resolved against the local workspace by
+	// ResolveRelativeTo, missing companion files (sub-agents/,
+	// meta-prompt.md) that only exist at the source URL. See #5305.
+	//
+	// All three resolve functions skip absolute paths and URLs, so they
+	// are safe to call on the merged harness where base-inherited fields
+	// are already resolved to cache paths.
+	if opts.SourceURL != "" {
+		scriptDeps, err := resolveBaseScripts(ctx, child, opts.SourceURL, allowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving URL-sourced scripts after base composition: %w", err)
+		}
+		deps = append(deps, scriptDeps...)
+
+		resourceDeps, err := resolveBaseResources(ctx, child, opts.SourceURL, allowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving URL-sourced resources after base composition: %w", err)
+		}
+		deps = append(deps, resourceDeps...)
+
+		hostFileDeps, err := resolveBaseHostFiles(ctx, child, opts.SourceURL, allowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving URL-sourced host_files after base composition: %w", err)
+		}
+		deps = append(deps, hostFileDeps...)
+	}
 
 	// ResolveForge once on the merged result
 	if err := child.validateForge(); err != nil {
@@ -553,12 +589,39 @@ func mergeBaseIntoChild(base, child *Harness) {
 	}
 }
 
+// isFullsendCachePath reports whether p is an absolute path already inside
+// fullsend's own content-addressed cache (<workspaceRoot>/.fullsend-cache/...),
+// as opposed to an absolute path written directly into untrusted harness
+// content. Shape alone (filepath.IsAbs) can't tell these apart. Used by
+// resolveBaseScripts, resolveBaseResources, and resolveBaseHostFiles to
+// decide which absolute values are safe to skip (already resolved by an
+// earlier step) versus which must still be rejected by validateBaseRelPath:
+// an arbitrary host path in an exec field runs on the host via exec.Command,
+// and one in agent/policy/host_files is read on the host and becomes the
+// literal agent definition, sandbox policy, or an uploaded sandbox file —
+// letting either come from an untrusted absolute path is a code-execution
+// or disclosure risk, not just a resolution bug.
+func isFullsendCachePath(p, workspaceRoot string) bool {
+	if !filepath.IsAbs(p) || workspaceRoot == "" {
+		return false
+	}
+	rel, err := filepath.Rel(filepath.Join(workspaceRoot, ".fullsend-cache"), p)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // resolveBaseScripts fetches script fields from a URL-referenced base harness.
 // For each script field (pre_script, post_script, validation_loop.script) that
 // is a non-empty relative path, the script is fetched from the base URL's
 // directory, cached content-addressed, and the field is rewritten to the local
 // cache path. Forge-level scripts are also resolved. agent_input is excluded
 // because runtime treats it as a directory (uploaded recursively).
+//
+// A field is skipped (left unchanged) when it's a URL or already resolved to
+// a path inside fullsend's own cache (see isFullsendCachePath) — both cases
+// mean an earlier step already handled it. Any other absolute path is
+// untrusted and is rejected by validateBaseRelPath, since these fields are
+// executed on the host, not just read as data.
+//
 // Returns additional dependencies for the fetched scripts.
 func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
 	// Script paths in harness YAMLs are relative to the scaffold root (the
@@ -583,7 +646,7 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 	}
 
 	for _, f := range scriptFields {
-		if *f.ptr == "" {
+		if *f.ptr == "" || IsURL(*f.ptr) || isFullsendCachePath(*f.ptr, opts.WorkspaceRoot) {
 			continue
 		}
 		if err := validateBaseRelPath(f.name, *f.ptr); err != nil {
@@ -597,7 +660,7 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 		deps = append(deps, dep)
 	}
 
-	if base.ValidationLoop != nil && base.ValidationLoop.Script != "" {
+	if base.ValidationLoop != nil && base.ValidationLoop.Script != "" && !IsURL(base.ValidationLoop.Script) && !isFullsendCachePath(base.ValidationLoop.Script, opts.WorkspaceRoot) {
 		if err := validateBaseRelPath("validation_loop.script", base.ValidationLoop.Script); err != nil {
 			return nil, err
 		}
@@ -608,7 +671,7 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 		base.ValidationLoop.Script = cachePath
 		deps = append(deps, dep)
 	}
-	if base.ValidationLoop != nil && base.ValidationLoop.Schema != "" {
+	if base.ValidationLoop != nil && base.ValidationLoop.Schema != "" && !IsURL(base.ValidationLoop.Schema) && !isFullsendCachePath(base.ValidationLoop.Schema, opts.WorkspaceRoot) {
 		if err := validateBaseRelPath("validation_loop.schema", base.ValidationLoop.Schema); err != nil {
 			return nil, err
 		}
@@ -632,7 +695,7 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 			{fmt.Sprintf("forge.%s.post_script", platform), &fc.PostScript},
 		}
 		for _, f := range forgeScripts {
-			if *f.ptr == "" {
+			if *f.ptr == "" || IsURL(*f.ptr) || isFullsendCachePath(*f.ptr, opts.WorkspaceRoot) {
 				continue
 			}
 			if err := validateBaseRelPath(f.name, *f.ptr); err != nil {
@@ -645,7 +708,7 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 			*f.ptr = cachePath
 			deps = append(deps, dep)
 		}
-		if fc.ValidationLoop != nil && fc.ValidationLoop.Script != "" {
+		if fc.ValidationLoop != nil && fc.ValidationLoop.Script != "" && !IsURL(fc.ValidationLoop.Script) && !isFullsendCachePath(fc.ValidationLoop.Script, opts.WorkspaceRoot) {
 			fieldName := fmt.Sprintf("forge.%s.validation_loop.script", platform)
 			if err := validateBaseRelPath(fieldName, fc.ValidationLoop.Script); err != nil {
 				return nil, err
@@ -657,7 +720,7 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 			fc.ValidationLoop.Script = cachePath
 			deps = append(deps, dep)
 		}
-		if fc.ValidationLoop != nil && fc.ValidationLoop.Schema != "" {
+		if fc.ValidationLoop != nil && fc.ValidationLoop.Schema != "" && !IsURL(fc.ValidationLoop.Schema) && !isFullsendCachePath(fc.ValidationLoop.Schema, opts.WorkspaceRoot) {
 			fieldName := fmt.Sprintf("forge.%s.validation_loop.schema", platform)
 			if err := validateBaseRelPath(fieldName, fc.ValidationLoop.Schema); err != nil {
 				return nil, err
@@ -687,8 +750,12 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 // rewritten to the local cache path. For skills (directories), SKILL.md is
 // fetched and cached as a directory via CachePutDir, and the field is
 // rewritten to the cache tree directory. Fields that are already URLs or
-// absolute paths are left unchanged — they will be handled by
-// ResolveHarness in the caller.
+// already resolved to a path inside fullsend's own cache (see
+// isFullsendCachePath) are left unchanged — an earlier step already handled
+// them. Any other absolute path is untrusted and is rejected by
+// validateBaseRelPath: agent/policy content is read on the host and used as
+// the literal agent definition / sandbox policy, so an arbitrary host path
+// here is a disclosure risk, not just a resolution bug.
 func resolveBaseResources(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
 	baseURLDir := urlParentDirPrefix(baseURL)
 	if baseURLDir == "" {
@@ -706,7 +773,7 @@ func resolveBaseResources(ctx context.Context, base *Harness, baseURL string, al
 	}
 
 	for _, f := range fileFields {
-		if *f.ptr == "" || IsURL(*f.ptr) || filepath.IsAbs(*f.ptr) {
+		if *f.ptr == "" || IsURL(*f.ptr) || isFullsendCachePath(*f.ptr, opts.WorkspaceRoot) {
 			continue
 		}
 		if err := validateBaseRelPath(f.name, *f.ptr); err != nil {
@@ -721,7 +788,7 @@ func resolveBaseResources(ctx context.Context, base *Harness, baseURL string, al
 	}
 
 	for i, skill := range base.Skills {
-		if skill == "" || IsURL(skill) || filepath.IsAbs(skill) {
+		if skill == "" || IsURL(skill) || isFullsendCachePath(skill, opts.WorkspaceRoot) {
 			continue
 		}
 		fieldName := fmt.Sprintf("skills[%d]", i)
@@ -741,11 +808,14 @@ func resolveBaseResources(ctx context.Context, base *Harness, baseURL string, al
 
 // resolveBaseHostFiles fetches host_files with relative src paths from a
 // URL-referenced base harness. For each host_files entry whose src is a
-// non-empty relative path (not a ${VAR} reference, URL, or absolute path),
-// the file is fetched from the base URL's directory, cached content-addressed,
-// and the src field is rewritten to the local cache path. This ensures
-// host_files inherited through base: composition resolve correctly at sandbox
-// setup time, the same way scripts and resources do.
+// non-empty relative path (not a ${VAR} reference, URL, or a path already
+// resolved into fullsend's own cache — see isFullsendCachePath), the file is
+// fetched from the base URL's directory, cached content-addressed, and the
+// src field is rewritten to the local cache path. This ensures host_files
+// inherited through base: composition resolve correctly at sandbox setup
+// time, the same way scripts and resources do. Any other absolute src is
+// untrusted and rejected: host_files are read on the host and uploaded into
+// the sandbox, so an arbitrary host path here is a disclosure risk.
 func resolveBaseHostFiles(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
 	baseURLDir := urlParentDirPrefix(baseURL)
 	if baseURLDir == "" {
@@ -756,7 +826,7 @@ func resolveBaseHostFiles(ctx context.Context, base *Harness, baseURL string, al
 
 	for i := range base.HostFiles {
 		src := base.HostFiles[i].Src
-		if src == "" || strings.Contains(src, "${") || IsURL(src) || filepath.IsAbs(src) {
+		if src == "" || strings.Contains(src, "${") || IsURL(src) || isFullsendCachePath(src, opts.WorkspaceRoot) {
 			continue
 		}
 		fieldName := fmt.Sprintf("host_files[%d].src", i)
