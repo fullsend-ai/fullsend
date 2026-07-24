@@ -614,6 +614,24 @@ func TestReusableDispatchPRHeadSHAPassthrough(t *testing.T) {
 				"%s agent pr-head-sha must be populated from event_payload", stage)
 		})
 	}
+
+	t.Run("harness-run", func(t *testing.T) {
+		marker := "Run harness agent"
+		idx := strings.Index(s, marker)
+		require.NotEqual(t, -1, idx,
+			"workflow must contain %q step", marker)
+		section := s[idx:]
+		nextStep := strings.Index(section, "\n      - name:")
+		if nextStep > 0 {
+			section = section[:nextStep]
+		}
+		assert.Contains(t, section, "pr-head-sha:",
+			"harness-run agent step must pass pr-head-sha to action.yml")
+		assert.Contains(t, section, ".pull_request.head.sha",
+			"harness-run pr-head-sha must be populated from event_payload")
+		assert.Contains(t, section, "matrix.event_payload",
+			"harness-run must use matrix.event_payload, not needs.route.outputs")
+	})
 }
 
 // TestRoleCheckCaseBranches validates the role-check step's case mapping and
