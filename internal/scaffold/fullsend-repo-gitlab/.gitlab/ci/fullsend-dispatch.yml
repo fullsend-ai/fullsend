@@ -219,6 +219,7 @@ dispatch:
         RESOURCE_KEY: "${RESOURCE_KEY}"
         IS_FORK: "${IS_FORK}"
         MR_AUTHOR_ID: "${MR_AUTHOR_ID}"
+        ACTOR_ID: "${MR_AUTHOR_ID}"
         STATUS_IID: "${CI_MERGE_REQUEST_IID}"
 
       include:
