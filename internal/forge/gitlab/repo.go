@@ -368,6 +368,27 @@ func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName s
 	return nil
 }
 
+// CreateBranchFromSHA creates a new branch pointing at the given commit SHA.
+// GitLab's branch creation API accepts a commit SHA as the ref parameter.
+func (c *LiveClient) CreateBranchFromSHA(ctx context.Context, owner, repo, branchName, sha string) error {
+	proj := projectPath(owner, repo)
+	payload := map[string]string{
+		"branch": branchName,
+		"ref":    sha,
+	}
+	resp, err := c.post(ctx, fmt.Sprintf("/projects/%s/repository/branches", proj), payload)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest &&
+			strings.Contains(strings.ToLower(apiErr.Message), "already exists") {
+			return fmt.Errorf("create branch %s from SHA: %w: %w", branchName, forge.ErrAlreadyExists, err)
+		}
+		return fmt.Errorf("create branch %s from SHA: %w", branchName, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // DeleteRef deletes a git ref via the GitLab Branches or Tags API.
 // refPath must be in the form "heads/<branch>" or "tags/<tag>".
 // Returns forge.ErrNotFound (wrapped) if the ref does not exist.

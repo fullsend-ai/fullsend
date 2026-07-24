@@ -1597,6 +1597,26 @@ func (c *LiveClient) CreateBranch(ctx context.Context, owner, repo, branchName s
 	return nil
 }
 
+// CreateBranchFromSHA creates a new branch pointing at the given commit SHA.
+// Unlike CreateBranch (which resolves the repo's default branch), this allows
+// the caller to specify an explicit starting point.
+func (c *LiveClient) CreateBranchFromSHA(ctx context.Context, owner, repo, branchName, sha string) error {
+	payload := map[string]string{
+		"ref": "refs/heads/" + branchName,
+		"sha": sha,
+	}
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/refs", owner, repo), payload)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden {
+			return fmt.Errorf("%w: %w", forge.ErrForbidden, err)
+		}
+		return fmt.Errorf("create branch %s from SHA: %w", branchName, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // DeleteRef deletes a git ref (e.g., "heads/my-branch", "tags/v1.0").
 // Returns forge.ErrNotFound (wrapped) if the ref does not exist.
 func (c *LiveClient) DeleteRef(ctx context.Context, owner, repo, refPath string) error {

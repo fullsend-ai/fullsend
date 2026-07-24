@@ -176,7 +176,25 @@ func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pri
 	scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody string,
 	files []forge.TreeFile) (bool, error) {
 
-	if branchErr := client.CreateBranch(ctx, targetOwner, targetRepo, scaffoldBranch); branchErr != nil {
+	isCrossRepo := !strings.EqualFold(targetOwner, upstreamOwner) || !strings.EqualFold(targetRepo, upstreamRepo)
+
+	var branchErr error
+	if isCrossRepo {
+		// Cross-fork: create the scaffold branch from the upstream's HEAD so
+		// the PR diff only contains scaffold changes, even if the fork's
+		// default branch is behind upstream.
+		upstreamSHA, shaErr := client.GetBranchRef(ctx, upstreamOwner, upstreamRepo, defaultBranch)
+		if shaErr != nil {
+			printer.StepFail("Failed to resolve upstream branch")
+			return false, fmt.Errorf("getting upstream branch ref for %s/%s@%s: %w",
+				upstreamOwner, upstreamRepo, defaultBranch, shaErr)
+		}
+		branchErr = client.CreateBranchFromSHA(ctx, targetOwner, targetRepo, scaffoldBranch, upstreamSHA)
+	} else {
+		branchErr = client.CreateBranch(ctx, targetOwner, targetRepo, scaffoldBranch)
+	}
+
+	if branchErr != nil {
 		if forge.IsForbidden(branchErr) {
 			printer.StepFail("Insufficient permissions to push to repository")
 			return false, fmt.Errorf("cannot push to %s/%s (403 forbidden); re-run with the fork option or check your token scopes: %w",
