@@ -287,6 +287,14 @@ func TestGitLabPollContent(t *testing.T) {
 	assert.NotContains(t, s, "https://gitlab.com")
 	// ENTRYPOINT override for runner image
 	assert.Contains(t, s, `entrypoint: [""]`)
+	// Poll and generate are merged into one job — no separate generate job
+	assert.NotContains(t, s, "generate-child-pipelines:")
+	// Dotenv artifact gates dispatch-agents on HAS_DISPATCHES
+	assert.Contains(t, s, "dispatch.env")
+	assert.Contains(t, s, "HAS_DISPATCHES")
+	assert.Contains(t, s, `$HAS_DISPATCHES == "true"`)
+	// Child pipeline generation happens inside poll-events
+	assert.Contains(t, s, "generate-child-pipeline")
 }
 
 func TestGitLabRootPipelineContent(t *testing.T) {
@@ -296,7 +304,7 @@ func TestGitLabRootPipelineContent(t *testing.T) {
 	assert.Contains(t, s, "stages:")
 	assert.Contains(t, s, "- dispatch")
 	assert.Contains(t, s, "- poll")
-	assert.Contains(t, s, "- generate")
+	assert.NotContains(t, s, "- generate")
 	assert.Contains(t, s, "- agent")
 	assert.Contains(t, s, "fullsend-dispatch.yml")
 	assert.Contains(t, s, "fullsend-poll.yml")

@@ -34,8 +34,9 @@ type GitLabClient interface {
 	// (the poller iterates in reverse to find the most recent "add").
 	ListResourceLabelEvents(ctx context.Context, owner, repo string, issueIID int) ([]ResourceLabelEvent, error)
 	GetCIVariable(ctx context.Context, owner, repo, name string) (string, error)
-	// UpdateCIVariable creates or updates a CI variable. GitLab CI/CD
-	// variable values are capped at 10,000 characters.
+	// UpdateCIVariable upserts a CI variable: update if it exists,
+	// create if it does not. GitLab CI/CD variable values are capped
+	// at 10,000 characters.
 	UpdateCIVariable(ctx context.Context, owner, repo, name, value string, protected bool) error
 	GetAuthenticatedUser(ctx context.Context) (string, error)
 	GetAuthenticatedUserID(ctx context.Context) (int, error)

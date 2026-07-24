@@ -67,54 +67,37 @@ poll-events:
         --gitlab-url "${FULLSEND_GITLAB_URL:-${CI_SERVER_URL}}" \
         --fullsend-dir .fullsend \
         --output dispatches.json
-  artifacts:
-    paths:
-      - dispatches.json
-    expire_in: 1 hour
 
-# Generate dynamic child pipeline YAML from poll results
-generate-child-pipelines:
-  stage: generate
-  image:
-    name: ghcr.io/fullsend-ai/fullsend-runner:latest
-    entrypoint: [""]
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
-  needs:
-    - job: poll-events
-      artifacts: true
-  script:
-    - |
-      set -euo pipefail
-
-      # dispatches.json is a JSON array (not NDJSON) — the poller
-      # writes all dispatches as a single array on completion.
+      # Generate child pipeline YAML from dispatches (same image, no
+      # extra credentials needed for generation).
       if [ ! -s dispatches.json ] || [ "$(jq 'length' dispatches.json)" = "0" ]; then
         echo "No events to dispatch"
-        # Write a no-op child pipeline
+        echo "HAS_DISPATCHES=false" > dispatch.env
+        # Write a no-op child pipeline so the artifact contract is met
         echo 'no-op: { script: ["echo No events"], rules: [{ when: always }] }' > child-pipeline.yml
-        exit 0
+      else
+        echo "HAS_DISPATCHES=true" > dispatch.env
+        fullsend poll generate-child-pipeline \
+          --dispatches dispatches.json \
+          --output child-pipeline.yml
       fi
-
-      # Generate child pipeline YAML from dispatches
-      fullsend poll generate-child-pipeline \
-        --dispatches dispatches.json \
-        --output child-pipeline.yml
   artifacts:
     paths:
       - child-pipeline.yml
+    reports:
+      dotenv: dispatch.env
     expire_in: 1 hour
 
 # Trigger child pipelines for each dispatched event
 dispatch-agents:
   stage: agent
   rules:
-    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true" && $HAS_DISPATCHES == "true"
   needs:
-    - job: generate-child-pipelines
+    - job: poll-events
       artifacts: true
   trigger:
     include:
       - artifact: child-pipeline.yml
-        job: generate-child-pipelines
+        job: poll-events
     strategy: depend

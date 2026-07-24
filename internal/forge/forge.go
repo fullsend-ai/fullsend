@@ -568,6 +568,8 @@ type Client interface {
 	ListPipelineSchedules(ctx context.Context, owner, repo string) ([]PipelineSchedule, error)
 
 	// CI/CD branch-restricted variables (distinct from RepoVariable methods).
+	// UpdateCIVariable upserts a CI/CD variable: update if it exists,
+	// create if it does not.
 	UpdateCIVariable(ctx context.Context, owner, repo, name, value string, protected bool) error
 	// CreateProtectedCIVariable creates a branch-restricted, unmasked CI/CD variable.
 	// Values are visible in pipeline logs; use CreateRepoSecret for credentials.

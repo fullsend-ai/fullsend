@@ -1247,20 +1247,64 @@ func TestGetOrgPlan_NoPlanField(t *testing.T) {
 }
 
 func TestUpdateCIVariable(t *testing.T) {
-	client, mux := setupTest(t)
-	ctx := context.Background()
+	t.Run("existing variable updates via PUT", func(t *testing.T) {
+		client, mux := setupTest(t)
+		ctx := context.Background()
 
-	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/CI_VAR", func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, http.MethodPut, r.Method)
-		var body map[string]any
-		readJSONBody(t, r, &body)
-		assert.Equal(t, "new-val", body["value"])
-		assert.Equal(t, true, body["protected"])
-		writeJSON(t, w, http.StatusOK, map[string]any{"key": "CI_VAR", "value": "new-val"})
+		mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/CI_VAR", func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodPut, r.Method)
+			var body map[string]any
+			readJSONBody(t, r, &body)
+			assert.Equal(t, "new-val", body["value"])
+			assert.Equal(t, true, body["protected"])
+			writeJSON(t, w, http.StatusOK, map[string]any{"key": "CI_VAR", "value": "new-val"})
+		})
+
+		err := client.UpdateCIVariable(ctx, "myorg", "myrepo", "CI_VAR", "new-val", true)
+		require.NoError(t, err)
 	})
 
-	err := client.UpdateCIVariable(ctx, "myorg", "myrepo", "CI_VAR", "new-val", true)
-	require.NoError(t, err)
+	t.Run("missing variable falls back to create", func(t *testing.T) {
+		client, mux := setupTest(t)
+		ctx := context.Background()
+
+		mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/NEW_VAR", func(w http.ResponseWriter, r *http.Request) {
+			// PUT returns 404 — variable doesn't exist yet.
+			assert.Equal(t, http.MethodPut, r.Method)
+			writeJSON(t, w, http.StatusNotFound, map[string]string{"message": "404 Variable Not Found"})
+		})
+
+		var created bool
+		mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables", func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodPost, r.Method)
+			var body map[string]any
+			readJSONBody(t, r, &body)
+			assert.Equal(t, "NEW_VAR", body["key"])
+			assert.Equal(t, "first-val", body["value"])
+			assert.Equal(t, true, body["protected"])
+			assert.Equal(t, false, body["masked"])
+			assert.Equal(t, "env_var", body["variable_type"])
+			created = true
+			writeJSON(t, w, http.StatusCreated, map[string]any{"key": "NEW_VAR"})
+		})
+
+		err := client.UpdateCIVariable(ctx, "myorg", "myrepo", "NEW_VAR", "first-val", true)
+		require.NoError(t, err)
+		assert.True(t, created, "should have created the variable via POST")
+	})
+
+	t.Run("non-404 error propagates", func(t *testing.T) {
+		client, mux := setupTest(t)
+		ctx := context.Background()
+
+		mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/variables/BAD_VAR", func(w http.ResponseWriter, r *http.Request) {
+			writeJSON(t, w, http.StatusForbidden, map[string]string{"message": "403 Forbidden"})
+		})
+
+		err := client.UpdateCIVariable(ctx, "myorg", "myrepo", "BAD_VAR", "val", false)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, forge.ErrForbidden)
+	})
 }
 
 func TestCreateProtectedCIVariable(t *testing.T) {
