@@ -27,7 +27,7 @@ def build_summary_body(data):
     decision_points = data.get("decision_points", [])
     tests_passed = data.get("tests_passed", False)
     trigger = data.get("trigger_source", "unknown")
-    iteration = data.get("iteration", 1)
+    iteration = data.get("iteration", 1)  # Added default value for 'iteration'
     actions = data.get("actions", [])
 
     fixed = [a for a in actions if a.get("type") == "fix"]
