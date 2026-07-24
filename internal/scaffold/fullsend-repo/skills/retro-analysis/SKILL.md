@@ -96,6 +96,56 @@ After subagents return their findings, use your main context to:
 3. Form hypotheses about root causes
 4. Decide what changes to propose and where
 
+## Flapping detection
+
+Check whether the workflow exhibits fix-break oscillation. Flapping wastes agent cycles and often indicates a deeper problem (conflicting instructions, flaky tests, or an approach the agent cannot converge on).
+
+### Signals to check
+
+Dispatch a subagent to gather the data:
+
+> "List all code and fix agent runs for PR #N. For each run, get the list of changed files and the diff summary. Also get the CI test results (pass/fail) for each run."
+
+Then check for these patterns:
+
+1. **File oscillation:** the same file was changed in two or more consecutive runs, and the changes reverse each other (lines added in run N were removed in run N+1, or vice versa).
+2. **Test result flipping:** a test that passed after run N fails after run N+1, then passes again after run N+2.
+3. **Cycle count:** more than 2 review-fix cycles on the same PR without convergence (the review keeps requesting changes on the same findings).
+
+```bash
+# Get the last two code/fix run SHAs for this PR
+COMMITS=$(gh api "repos/$REPO_FULL_NAME/pulls/$PR_NUMBER/commits" \
+  --paginate --jq '.[].sha')
+CURRENT_SHA=$(echo "$COMMITS" | tail -1)
+PREVIOUS_SHA=$(echo "$COMMITS" | tail -2 | head -1)
+
+# Compare files changed in each run
+gh api "repos/$REPO_FULL_NAME/compare/${PREVIOUS_SHA}...${CURRENT_SHA}" \
+  --jq '.files[].filename' | sort > /tmp/current_files.txt
+
+gh api "repos/$REPO_FULL_NAME/pulls/$PR_NUMBER/files" \
+  --paginate --jq '.[].filename' | sort > /tmp/all_pr_files.txt
+
+# Files changed in both the latest push and the overall PR (potential oscillation)
+comm -12 /tmp/current_files.txt /tmp/all_pr_files.txt
+```
+
+### When flapping is detected
+
+Include a proposal with these specifics:
+
+- **title:** Start with "Flapping detected:" followed by what oscillated
+- **what_happened:** List each cycle with the run IDs, which files changed, and how the changes reversed
+- **what_could_go_better:** Identify what might be causing the loop (conflicting review criteria, flaky test, ambiguous instructions)
+- **proposed_change:** Suggest a concrete intervention (clarify the conflicting instruction, fix the flaky test, add a convergence guard)
+- **validation_criteria:** "The next code/fix cycle on similar PRs should converge within 2 iterations"
+
+### When NOT to flag
+
+- A single rework cycle (review requested changes, fix addressed them, review approved) is normal, not flapping.
+- Different files changing across runs is normal iteration, not oscillation.
+- Only flag when you see the same changes being applied and reversed repeatedly.
+
 ## Before proposing: check for existing issues
 
 **This step is mandatory.** Before including any proposal in your output, verify that no open issue already covers the same improvement. The retro agent is the primary source of systemic proposals — without this check, repeated runs produce duplicate issues that waste human triage time.
