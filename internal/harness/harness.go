@@ -612,6 +612,11 @@ func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) erro
 			return err
 		}
 	}
+	if h.ValidationLoop != nil && h.ValidationLoop.PreflightCheck != "" {
+		if err := checkVarRefs("validation_loop.preflight_check", h.ValidationLoop.PreflightCheck); err != nil {
+			return err
+		}
+	}
 	if h.Env != nil {
 		for k, v := range h.Env.Runner {
 			if err := checkVarRefs(fmt.Sprintf("env.runner[%s]", k), v); err != nil {

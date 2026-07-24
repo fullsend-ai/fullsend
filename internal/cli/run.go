@@ -64,12 +64,14 @@ const (
 	// harness dynamically.
 	defaultAgentsRepoOwner = "fullsend-ai"
 	defaultAgentsRepoName  = "agents"
-
-	// preflightCheckTimeout bounds the execution time for a validation_loop
-	// preflight_check command. Mirrors the preflightGitHubTimeout pattern —
-	// these are fast host-side dependency checks that should never hang.
-	preflightCheckTimeout = 30 * time.Second
 )
+
+// preflightCheckTimeout bounds the execution time for a validation_loop
+// preflight_check command. Mirrors the preflightGitHubTimeout pattern —
+// these are fast host-side dependency checks that should never hang. A var
+// (not const) so tests can shrink it to genuinely exercise deadline expiry
+// without waiting out the real duration.
+var preflightCheckTimeout = 30 * time.Second
 
 // defaultAgentsRepoURLPrefix is the base URL for fetching agent harnesses
 // from the agents repository. It is a var (not const) to allow test overrides.
@@ -544,6 +546,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.Schema, "${") {
 		h.ValidationLoop.Schema = os.Expand(h.ValidationLoop.Schema, expander)
 	}
+	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.PreflightCheck, "${") {
+		h.ValidationLoop.PreflightCheck = os.Expand(h.ValidationLoop.PreflightCheck, expander)
+	}
 
 	if err := h.ValidateFilesExist(); err != nil {
 		printer.StepFail("File validation failed")
@@ -682,18 +687,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		preflightCtx, preflightCancel := context.WithTimeout(ctx, preflightCheckTimeout)
 		defer preflightCancel()
 		preflightCmd := exec.CommandContext(preflightCtx, "sh", "-c", h.ValidationLoop.PreflightCheck)
-		preflightCmd.Env = os.Environ()
+		preflightCmd.Env = append(os.Environ(), envToList(h.RunnerEnv)...)
 		preflightOut, preflightErr := preflightCmd.CombinedOutput()
 		if preflightErr != nil {
 			printer.StepFail("Preflight dependency check failed")
 			if preflightCtx.Err() == context.DeadlineExceeded {
 				return fmt.Errorf("validation_loop.preflight_check timed out after %s: %s", preflightCheckTimeout, h.ValidationLoop.PreflightCheck)
 			}
-			detail := strings.TrimSpace(string(preflightOut))
-			if detail != "" {
-				return fmt.Errorf("validation_loop.preflight_check failed: %s\n%s\nInstall the missing dependency before running this agent", h.ValidationLoop.PreflightCheck, detail)
-			}
-			return fmt.Errorf("validation_loop.preflight_check failed: %s\nInstall the missing dependency before running this agent", h.ValidationLoop.PreflightCheck)
+			return fmt.Errorf("validation_loop.preflight_check failed: %s\n%s\nInstall the missing dependency before running this agent", h.ValidationLoop.PreflightCheck, validationFailMessage(preflightOut, preflightErr))
 		}
 		printer.StepDone("Preflight dependency check passed")
 	}

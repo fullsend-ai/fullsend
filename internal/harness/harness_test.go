@@ -567,6 +567,40 @@ func TestValidateRunnerEnvWith_ValidationLoopSchemaVarSet(t *testing.T) {
 	require.NoError(t, h.ValidateRunnerEnvWith(lookup))
 }
 
+func TestValidateRunnerEnvWith_ChecksValidationLoopPreflightCheck(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		ValidationLoop: &ValidationLoop{
+			Script:         "scripts/validate.sh",
+			PreflightCheck: "test -d ${MISSING_DIR}",
+		},
+	}
+	lookup := func(key string) (string, bool) { return "", false }
+	err := h.ValidateRunnerEnvWith(lookup)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MISSING_DIR")
+	assert.Contains(t, err.Error(), "validation_loop.preflight_check")
+}
+
+func TestValidateRunnerEnvWith_ValidationLoopPreflightCheckVarSet(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		ValidationLoop: &ValidationLoop{
+			Script:         "scripts/validate.sh",
+			PreflightCheck: "test -d ${FULLSEND_DIR}",
+		},
+	}
+	lookup := func(key string) (string, bool) {
+		if key == "FULLSEND_DIR" {
+			return "/opt/fullsend", true
+		}
+		return "", false
+	}
+	require.NoError(t, h.ValidateRunnerEnvWith(lookup))
+}
+
 func TestValidateRunnerEnvWith_NilEnvNoError(t *testing.T) {
 	h := &Harness{Agent: "agents/test.md", Role: "test"}
 	err := h.ValidateRunnerEnvWith(func(string) (string, bool) { return "", false })

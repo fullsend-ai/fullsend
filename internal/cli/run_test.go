@@ -2842,18 +2842,21 @@ func TestRunAgent_PreflightCheck_Timeout(t *testing.T) {
 	// A preflight_check that exceeds the context deadline should abort
 	// with a "timed out" error, not hang indefinitely.
 	useFakeOpenshell(t)
-	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"sleep 60\"\n  max_iterations: 2\n")
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"sleep 5\"\n  max_iterations: 2\n")
 
-	// Use an already-cancelled context to trigger immediate timeout.
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	// Shrink the real timeout so the "sleep 5" command genuinely outlives
+	// it, exercising the actual DeadlineExceeded branch rather than
+	// short-circuiting via an already-cancelled parent context.
+	original := preflightCheckTimeout
+	preflightCheckTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { preflightCheckTimeout = original })
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(ctx, "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "preflight_check")
+	assert.Contains(t, err.Error(), "timed out")
 }
 
 func TestBuildSandboxEnvLines_FromEnvSandbox(t *testing.T) {
