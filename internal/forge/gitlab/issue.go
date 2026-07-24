@@ -157,6 +157,27 @@ func (c *LiveClient) AddIssueLabels(ctx context.Context, owner, repo string, num
 	return nil
 }
 
+// CreateLabel creates a project label. If a label with the same name already
+// exists, the call succeeds without modification (idempotent).
+func (c *LiveClient) CreateLabel(ctx context.Context, owner, repo, name, color, description string) error {
+	path := fmt.Sprintf("/projects/%s/labels", projectPath(owner, repo))
+	body := map[string]string{
+		"name":        name,
+		"color":       "#" + color, // GitLab requires a leading '#' on color hex codes
+		"description": description,
+	}
+	resp, err := c.post(ctx, path, body)
+	if err != nil {
+		// GitLab returns 409 Conflict when the label already exists.
+		if forge.IsAlreadyExists(err) {
+			return nil
+		}
+		return fmt.Errorf("create label %q: %w", name, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
 // ListIssueComments returns all notes on an issue, sorted ascending.
 // GitLab calls issue comments "notes".
 func (c *LiveClient) ListIssueComments(ctx context.Context, owner, repo string, number int) ([]forge.IssueComment, error) {

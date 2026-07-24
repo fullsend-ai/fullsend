@@ -22,6 +22,17 @@ providers:
 role: coder
 slug: fullsend-ai-coder
 
+labels:
+  - name: needs-human
+    color: D93F0B
+    description: "Fix iterations approaching cap — human attention needed"
+  - name: fullsend-fix
+    color: 1D76DB
+    description: "Fix agent iteration in progress"
+  - name: fullsend-no-fix
+    color: FBCA04
+    description: "Disable fix agent for this PR"
+
 pre_script: scripts/pre-fix.sh
 post_script: scripts/post-fix.sh
 

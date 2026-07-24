@@ -545,7 +545,7 @@ func TestInstall_ProgressCallbackPhases(t *testing.T) {
 	}
 
 	// Verify expected phases are reported in order.
-	wantPhases := []string{"scaffold", "scaffold", "scaffold", "vars", "vars", "secrets", "secrets", "done"}
+	wantPhases := []string{"scaffold", "scaffold", "scaffold", "labels", "labels", "vars", "vars", "secrets", "secrets", "done"}
 	if len(phases) != len(wantPhases) {
 		t.Fatalf("got %d phases %v, want %d phases %v", len(phases), phases, len(wantPhases), wantPhases)
 	}
@@ -776,5 +776,63 @@ func TestInstall_NilProvisioner_WIFRequired(t *testing.T) {
 	_, err := Install(context.Background(), cfg, fc, nil, sc.fn(), noopProgress)
 	if err == nil {
 		t.Fatal("expected error when provisioner is nil and WIF provisioning required")
+	}
+}
+
+func TestInstall_ProvisionLabels(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	cfg := baseCfg()
+	sc := &fakeScaffoldCommit{}
+
+	result, err := Install(context.Background(), cfg, fc, nil, sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Install() returned error: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected Success=true")
+	}
+
+	// Verify that labels were created.
+	if len(fc.CreatedLabels) == 0 {
+		t.Fatal("expected labels to be provisioned during install")
+	}
+
+	// Build a set of created label names.
+	created := make(map[string]struct{}, len(fc.CreatedLabels))
+	for _, l := range fc.CreatedLabels {
+		created[l.Name] = struct{}{}
+		if l.Owner != "acme" || l.Repo != "widgets" {
+			t.Errorf("label %q created on %s/%s, want acme/widgets",
+				l.Name, l.Owner, l.Repo)
+		}
+	}
+
+	// Verify key pipeline labels.
+	for _, want := range []string{
+		"ready-for-review",
+		"ready-for-merge",
+		"requires-manual-review",
+		"ready-to-code",
+	} {
+		if _, ok := created[want]; !ok {
+			t.Errorf("expected label %q to be provisioned", want)
+		}
+	}
+}
+
+func TestInstall_LabelCreateError(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	fc.Errors["CreateLabel"] = fmt.Errorf("permission denied")
+	cfg := baseCfg()
+	sc := &fakeScaffoldCommit{}
+
+	_, err := Install(context.Background(), cfg, fc, nil, sc.fn(), noopProgress)
+	if err == nil {
+		t.Fatal("expected error when label creation fails")
+	}
+
+	// Scaffold should have been committed before the label step.
+	if !sc.called {
+		t.Error("expected scaffold commit to be called before label creation")
 	}
 }

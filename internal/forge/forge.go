@@ -487,6 +487,12 @@ type Client interface {
 	GetWorkflowRun(ctx context.Context, owner, repo string, runID int) (*WorkflowRun, error)
 	DispatchWorkflow(ctx context.Context, owner, repo, workflowFile, ref string, inputs map[string]string) error
 
+	// Label operations
+	// CreateLabel creates a repository label with the given name, color, and
+	// description. The call is idempotent: if a label with the same name
+	// already exists, it is not modified and no error is returned.
+	CreateLabel(ctx context.Context, owner, repo, name, color, description string) error
+
 	// Issue operations
 	CreateIssue(ctx context.Context, owner, repo, title, body string, labels ...string) (*Issue, error)
 	AddIssueLabels(ctx context.Context, owner, repo string, number int, labels ...string) error

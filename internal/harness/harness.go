@@ -263,6 +263,15 @@ func (dst *EnvConfig) mergeEnvFrom(src *EnvConfig, srcWins bool) {
 	}
 }
 
+// LabelDef declares a label that the agent pipeline requires in the target
+// repository. Labels are provisioned during enrollment so that post-scripts
+// can apply them without encountering "label not found" errors.
+type LabelDef struct {
+	Name        string `yaml:"name"`
+	Color       string `yaml:"color"`
+	Description string `yaml:"description,omitempty"`
+}
+
 // Harness is the per-agent configuration that the runner reads to provision
 // a sandbox and launch one agent. It follows the ADR-0017 schema.
 type Harness struct {
@@ -294,6 +303,7 @@ type Harness struct {
 	AllowedRemoteResources []string                `yaml:"allowed_remote_resources,omitempty"`
 	AllowRuntimeFetch      bool                    `yaml:"allow_runtime_fetch,omitempty"` // opt-in to runtime skill fetching (default: false)
 	MaxRuntimeFetches      *int                    `yaml:"max_runtime_fetches,omitempty"` // per-run fetch cap; nil = default (10), valid range 1-1000
+	Labels                 []LabelDef              `yaml:"labels,omitempty"`
 	Forge                  map[string]*ForgeConfig `yaml:"forge,omitempty"`
 	Trigger                string                  `yaml:"trigger,omitempty"` // optional CEL boolean over normevent (ADR 0061)
 }

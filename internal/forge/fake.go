@@ -73,6 +73,11 @@ type CreatedIssueRecord struct {
 	Number      int
 }
 
+// LabelRecord records a label creation call.
+type LabelRecord struct {
+	Owner, Repo, Name, Color, Description string
+}
+
 // MinimizedCommentRecord records a comment minimize call.
 type MinimizedCommentRecord struct {
 	NodeID string
@@ -232,6 +237,10 @@ type FakeClient struct {
 
 	// Annotations for GetWorkflowRunAnnotations.
 	Annotations []Annotation
+
+	// LabelRecord records a label creation call.
+	// CreatedLabels tracks CreateLabel calls.
+	CreatedLabels []LabelRecord
 
 	// Call recorders
 	CreatedRepos           []Repository
@@ -1132,6 +1141,24 @@ func (f *FakeClient) DispatchWorkflow(_ context.Context, _, _, _, _ string, _ ma
 		return e
 	}
 
+	return nil
+}
+
+func (f *FakeClient) CreateLabel(_ context.Context, owner, repo, name, color, description string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CreateLabel"); e != nil {
+		return e
+	}
+
+	f.CreatedLabels = append(f.CreatedLabels, LabelRecord{
+		Owner:       owner,
+		Repo:        repo,
+		Name:        name,
+		Color:       color,
+		Description: description,
+	})
 	return nil
 }
 
