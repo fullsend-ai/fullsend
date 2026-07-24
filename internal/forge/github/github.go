@@ -300,8 +300,26 @@ func checkStatus(resp *http.Response, acceptable ...int) error {
 		Message string           `json:"message"`
 		Errors  []APIErrorDetail `json:"errors"`
 	}
-	if json.Unmarshal(data, &msg) == nil && msg.Message != "" {
-		return &APIError{StatusCode: resp.StatusCode, Message: msg.Message, Errors: msg.Errors}
+	if json.Unmarshal(data, &msg) == nil {
+		if msg.Message != "" {
+			return &APIError{StatusCode: resp.StatusCode, Message: msg.Message, Errors: msg.Errors}
+		}
+		// Unmarshal succeeded but top-level message is empty. Preserve
+		// any error details GitHub included and fall back to the raw
+		// response body so callers see the full server response.
+		if len(msg.Errors) > 0 {
+			return &APIError{StatusCode: resp.StatusCode, Message: http.StatusText(resp.StatusCode), Errors: msg.Errors}
+		}
+	}
+	// Unmarshal failed or yielded no useful fields — use raw body when
+	// available so the caller can see exactly what GitHub returned.
+	if len(data) > 0 {
+		body := string(data)
+		const maxLen = 200
+		if len(body) > maxLen {
+			body = body[:maxLen] + "..."
+		}
+		return &APIError{StatusCode: resp.StatusCode, Message: body}
 	}
 	return &APIError{StatusCode: resp.StatusCode, Message: http.StatusText(resp.StatusCode)}
 }
