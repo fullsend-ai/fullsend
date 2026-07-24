@@ -4522,3 +4522,34 @@ func TestForceRemoveAll_NonExistent(t *testing.T) {
 	// Removing a path that does not exist should succeed (same as os.RemoveAll).
 	require.NoError(t, forceRemoveAll(filepath.Join(t.TempDir(), "does-not-exist")))
 }
+
+func TestForceRemoveAll_RestrictiveFilePerms(t *testing.T) {
+	// Simulate files created by a sandboxed process with restrictive
+	// permissions (e.g. 0o000). The directory is writable but file
+	// permissions could prevent some operations. forceRemoveAll's
+	// second pass (chmod on files) must handle this. See #5529.
+	if runtime.GOOS == "windows" {
+		t.Skip("permission semantics differ on Windows")
+	}
+	root := t.TempDir()
+	target := filepath.Join(root, "target", "website")
+	require.NoError(t, os.MkdirAll(target, 0o755))
+
+	// Create files with restrictive modes and a read-only directory.
+	gitignore := filepath.Join(target, ".gitignore")
+	require.NoError(t, os.WriteFile(gitignore, []byte("node_modules\n"), 0o000))
+	require.NoError(t, os.WriteFile(filepath.Join(target, "index.html"), []byte("<html/>"), 0o000))
+
+	// Make the containing directory read-only (no write → can't unlink children).
+	require.NoError(t, os.Chmod(target, 0o555))
+
+	// Plain os.RemoveAll should fail.
+	err := os.RemoveAll(filepath.Join(root, "target"))
+	require.Error(t, err, "os.RemoveAll should fail on restrictive tree")
+
+	// forceRemoveAll must succeed via the two-pass strategy.
+	require.NoError(t, forceRemoveAll(filepath.Join(root, "target")))
+
+	_, err = os.Stat(filepath.Join(root, "target"))
+	assert.True(t, os.IsNotExist(err), "directory should be fully removed")
+}

@@ -1388,8 +1388,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 		// 9d. Extract target repo back to host. SafeDownload removes dangerous
 		// symlinks (absolute or repo-escaping) and .git/hooks/ to prevent sandbox escape.
+		//
+		// Pre-extraction cleanup is best-effort: when a sandboxed process
+		// creates files owned by a different UID (e.g. sandbox user vs host
+		// user), the host cannot chmod or remove them. Rather than failing
+		// the entire run and losing review results (#5529), we warn and let
+		// the extraction proceed — a stale download dir is recoverable, but
+		// lost post-script output is not.
 		if clearErr := forceRemoveAll(hostRepositoryDownloadDir); clearErr != nil {
-			return fmt.Errorf("clearing local repo %s before extraction: %w", hostRepositoryDownloadDir, clearErr)
+			printer.StepWarn(fmt.Sprintf("Failed to clear local repo %s before extraction (continuing): %v", hostRepositoryDownloadDir, clearErr))
 		}
 
 		repoExtractStart := time.Now()
@@ -3263,24 +3270,46 @@ func sandboxProviderNames(harnessProviders []string, resolved []resolve.Resolved
 	return names
 }
 
-// forceRemoveAll restores owner-write permission on all directories under
-// path, then removes the entire tree. This handles directories left read-only
-// by the readonly_repo sandbox enforcement — os.RemoveAll alone fails with
+// forceRemoveAll restores owner-write permission on all entries under path,
+// then removes the entire tree. This handles directories left read-only by
+// the readonly_repo sandbox enforcement — os.RemoveAll alone fails with
 // EACCES when parent directories lack write permission (the unlinkat syscall
 // requires write permission on the containing directory).
 //
-// Assumption: the readonly_repo enforcement only strips write permission
-// (chmod a-w), preserving read and execute bits. WalkDir performs a
-// single-pass traversal and cannot retry children after fixing a parent, so
-// if a directory also lacked read+execute permissions its children would be
-// silently skipped. This is currently unreachable, but callers should be
-// aware of the limitation if the permission model changes.
+// Two-pass strategy:
+//  1. Walk the tree and restore owner-write on directories (handles the
+//     common readonly_repo case where only write was stripped).
+//  2. If os.RemoveAll fails with a permission error, do a second walk that
+//     also restores owner-write on regular files, then retry. This handles
+//     files created with restrictive modes (e.g. 0o600 by a sandboxed
+//     process running as the same UID).
+//
+// If the tree is owned by a different UID (e.g. sandbox user vs host user),
+// chmod will fail — callers must handle the returned error gracefully.
 func forceRemoveAll(path string) error {
-	// Best-effort permission restore; if WalkDir itself fails on a
-	// directory it cannot read, we fix the parent and continue.
-	// Chmod errors are logged for operator visibility — if chmod fails
-	// for an unexpected reason (e.g. TOCTOU race), the subsequent
-	// os.RemoveAll error alone may not indicate the root cause.
+	// Pass 1: restore owner-write on directories. Best-effort — chmod
+	// errors are logged for operator visibility. If WalkDir itself fails
+	// on a directory it cannot read, we fix the parent and continue.
+	forceChmodWalk(path, true)
+
+	err := os.RemoveAll(path)
+	if err == nil || !os.IsPermission(err) {
+		return err
+	}
+
+	// Pass 2: permission error — retry with chmod on all entries
+	// (directories AND files). This addresses restrictive file modes
+	// from sandboxed processes (#5529).
+	fmt.Fprintf(os.Stderr, "WARNING: forceRemoveAll: first removal attempt failed (%v), retrying after chmod\n", err)
+	forceChmodWalk(path, false)
+	return os.RemoveAll(path)
+}
+
+// forceChmodWalk walks path and restores owner-write permission on entries.
+// When dirsOnly is true, only directories are chmod'd (faster, handles the
+// common readonly_repo case). When false, both directories and files are
+// chmod'd to handle restrictive file modes.
+func forceChmodWalk(path string, dirsOnly bool) {
 	filepath.WalkDir(path, func(p string, d os.DirEntry, err error) error { //nolint:errcheck // best-effort walk; errors are logged individually and the final os.RemoveAll is the authoritative result
 		if err != nil {
 			// Can't stat p — likely the parent directory lacks +rx.
@@ -3300,10 +3329,15 @@ func forceRemoveAll(path string) error {
 			if chmodErr := os.Chmod(p, 0o755); chmodErr != nil {
 				fmt.Fprintf(os.Stderr, "WARNING: forceRemoveAll: chmod %s: %v\n", p, chmodErr)
 			}
+		} else if !dirsOnly {
+			// Restore owner-write on files so the parent directory's
+			// content can be fully cleaned up.
+			if chmodErr := os.Chmod(p, 0o644); chmodErr != nil {
+				fmt.Fprintf(os.Stderr, "WARNING: forceRemoveAll: chmod file %s: %v\n", p, chmodErr)
+			}
 		}
 		return nil
 	})
-	return os.RemoveAll(path)
 }
 
 // checkProviderProfileIntegrity validates that every URL-resolved provider
