@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -1024,6 +1025,111 @@ func TestDiscoverRepo_New(t *testing.T) {
 	assert.Equal(t, "new", d.Source)
 	assert.Empty(t, d.MintURL)
 	assert.Empty(t, d.FullsendRef)
+}
+
+// --- discoverRepo: org variable fallback tests ---
+
+func TestDiscoverRepo_PerOrg_OrgVarFallback(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setWorkflowFile(fc, "acme", "api",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+
+	// Org config has no mint_url in dispatch settings.
+	orgCfg, parseErr := config.ParseOrgConfig([]byte(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage]
+repos:
+  api:
+    enabled: true
+`))
+	require.NoError(t, parseErr)
+
+	// Set org-level variable as fallback.
+	fc.OrgVariables = map[string]bool{
+		"acme/FULLSEND_MINT_URL": true,
+	}
+	fc.OrgVariableValues = map[string]string{
+		"acme/FULLSEND_MINT_URL": "https://mint.example.com",
+	}
+
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, nopProgress)
+	require.NoError(t, err)
+	assert.Equal(t, "per-org", d.Source)
+	assert.Equal(t, "https://mint.example.com", d.MintURL)
+}
+
+func TestDiscoverRepo_PerOrg_OrgConfigTakesPrecedence(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setWorkflowFile(fc, "acme", "api",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+
+	// Org config has a mint_url.
+	orgCfg, parseErr := config.ParseOrgConfig([]byte(`version: "1"
+dispatch:
+  platform: github-actions
+  mint_url: https://config-mint.example.com
+defaults:
+  roles: [triage]
+repos:
+  api:
+    enabled: true
+`))
+	require.NoError(t, parseErr)
+
+	// Org variable also set — should NOT be used.
+	fc.OrgVariables = map[string]bool{
+		"acme/FULLSEND_MINT_URL": true,
+	}
+	fc.OrgVariableValues = map[string]string{
+		"acme/FULLSEND_MINT_URL": "https://var-mint.example.com",
+	}
+
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, nopProgress)
+	require.NoError(t, err)
+	assert.Equal(t, "per-org", d.Source)
+	assert.Equal(t, "https://config-mint.example.com", d.MintURL)
+}
+
+func TestDiscoverRepo_PerOrg_OrgVarError_NonFatal(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setWorkflowFile(fc, "acme", "api",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+	fc.Errors["GetOrgVariable"] = fmt.Errorf("forbidden")
+
+	// Org config has no mint_url.
+	orgCfg, parseErr := config.ParseOrgConfig([]byte(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage]
+repos:
+  api:
+    enabled: true
+`))
+	require.NoError(t, parseErr)
+
+	var warnings []string
+	progress := func(_, _, msg string) {
+		warnings = append(warnings, msg)
+	}
+
+	d, err := discoverRepo(context.Background(), fc, "acme", "api", orgCfg, progress)
+	require.NoError(t, err)
+	assert.Equal(t, "per-org", d.Source)
+	assert.Empty(t, d.MintURL)
+
+	// Should have logged a warning about the org variable.
+	hasWarning := false
+	for _, w := range warnings {
+		if strings.Contains(w, "FULLSEND_MINT_URL") &&
+			strings.Contains(w, "warning") {
+			hasWarning = true
+			break
+		}
+	}
+	assert.True(t, hasWarning, "expected a warning about GetOrgVariable failure")
 }
 
 // --- readWorkflowRef tests ---

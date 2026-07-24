@@ -367,6 +367,15 @@ func discoverRepo(ctx context.Context, client forge.Client,
 			if mintURL := orgCfg.DispatchSettings().MintURL; mintURL != "" {
 				d.MintURL = mintURL
 			}
+			if d.MintURL == "" {
+				v, exists, err := client.GetOrgVariable(ctx, owner, "FULLSEND_MINT_URL")
+				if err != nil {
+					progress(fullName, "discover", fmt.Sprintf("warning: could not read org variable FULLSEND_MINT_URL: %v", err))
+				}
+				if err == nil && exists {
+					d.MintURL = v
+				}
+			}
 			d.FullsendRef = ref
 			return d, nil
 		}

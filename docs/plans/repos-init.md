@@ -166,7 +166,9 @@ manifest contains one entry.
      - Mark `source: per-repo`.
    - Else if repo appears in per-org enrollment with
      `enabled: true`:
-     - Use mint URL and config from per-org `config.yaml`.
+     - Use mint URL and config from per-org `config.yaml`. If no
+       mint URL is set in `config.yaml`, fall back to reading the
+       `FULLSEND_MINT_URL` org-level variable via `GetOrgVariable`.
      - Read the per-org shim workflow file and extract `@ref` from
        the `uses:` line (same as per-repo discovery). Do not use
        `config.DefaultUpstreamRef` — it is `v0`, a major-version
