@@ -3792,6 +3792,10 @@ func TestUnsupportedMethods(t *testing.T) {
 	client := New("test-token")
 	ctx := context.Background()
 
+	t.Run("CreatePipeline", func(t *testing.T) {
+		_, err := client.CreatePipeline(ctx, "o", "r", "main", nil)
+		assert.ErrorIs(t, err, forge.ErrNotSupported)
+	})
 	t.Run("CreatePipelineSchedule", func(t *testing.T) {
 		_, err := client.CreatePipelineSchedule(ctx, "o", "r", "main", "desc", "0 * * * *", nil)
 		assert.ErrorIs(t, err, forge.ErrNotSupported)

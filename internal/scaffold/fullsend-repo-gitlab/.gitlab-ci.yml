@@ -8,9 +8,14 @@ include:
       - if: $CI_PIPELINE_SOURCE == "schedule"
   # The generic agent template (fullsend-agent.yml) is NOT included here —
   # it is included by the dynamically generated child pipeline YAML from
-  # both the MR dispatch path (mr-dispatch-pipeline.yml) and the cron-poller
-  # path (child-pipeline.yml). Including it in the root pipeline would add
+  # the MR dispatch path (mr-dispatch-pipeline.yml). The cron-poller path
+  # creates standalone pipelines via the API, which run .gitlab-ci.yml
+  # with STAGE set — the agent template is included via rules below.
+  # Including it in the root pipeline without a STAGE variable would add
   # a job that never matches (STAGE is unset in root context).
+  - local: '.gitlab/ci/fullsend-agent.yml'
+    rules:
+      - if: $CI_PIPELINE_SOURCE == "api" && $STAGE
 
 stages:
   - dispatch
@@ -18,11 +23,17 @@ stages:
   - agent
 
 workflow:
+  name: 'fullsend $STAGE $RESOURCE_KEY'
+  auto_cancel:
+    on_new_commit: none
   rules:
     # Native MR events (review only — retro uses cron-poller)
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     # Scheduled polling (triage, code, slash commands)
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    # API-triggered pipelines from the cron-poller (dispatched via
+    # POST /projects/:id/pipeline with STAGE variable set)
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
     # NOTE: Push-triggered pipelines are intentionally excluded — this
     # scaffold handles only fullsend agent dispatch. If the adopting
     # repo has existing push-triggered CI jobs (build, test, lint),

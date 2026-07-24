@@ -1,7 +1,7 @@
 // Package poll implements the GitLab cron-polling event dispatch loop.
 // It discovers events from the GitLab API, converts them to
 // NormalizedEvents, routes them through the dispatch core, and
-// triggers child pipelines for matched stages.
+// dispatches agent stages via API-triggered pipelines.
 package poll
 
 import (
@@ -51,6 +51,9 @@ type GitLabClient interface {
 	// which only returns direct members.
 	GetMemberAccessLevel(ctx context.Context, owner, repo string, userID int) (int, error)
 	GetProjectPath(ctx context.Context, projectID int) (string, error)
+	// CreatePipeline creates a new pipeline on the given ref with the
+	// given variables. Returns the pipeline ID and web URL.
+	CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (int64, string, error)
 }
 
 // Issue represents a GitLab issue as returned by the API.

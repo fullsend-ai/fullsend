@@ -58,6 +58,12 @@ type VariableRecord struct {
 	Protected                bool
 }
 
+// PipelineCallRecord records a CreatePipeline invocation.
+type PipelineCallRecord struct {
+	Owner, Repo, Ref string
+	Variables        map[string]string
+}
+
 // UpdatedCommentRecord records an issue comment update call.
 type UpdatedCommentRecord struct {
 	Owner, Repo string
@@ -258,6 +264,8 @@ type FakeClient struct {
 	CommittedFilesToBranch []CommitFilesToBranchRecord
 	CreatedForks           []string // "owner/repo"
 	DeletedComments        []int    // comment IDs
+	CreatedPipelines       []Pipeline
+	PipelineCalls          []PipelineCallRecord
 	CreatedSchedules       []PipelineSchedule
 	DeletedScheduleIDs     []int64
 	UpdatedVariables       []VariableRecord
@@ -1834,6 +1842,33 @@ func (f *FakeClient) IsProtectedBranch(_ context.Context, owner, repo, branch st
 
 	key := owner + "/" + repo + "/" + branch
 	return f.ProtectedBranches[key], nil
+}
+
+func (f *FakeClient) CreatePipeline(_ context.Context, owner, repo, ref string, variables map[string]string) (*Pipeline, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	vars := make(map[string]string, len(variables))
+	for k, v := range variables {
+		vars[k] = v
+	}
+	f.PipelineCalls = append(f.PipelineCalls, PipelineCallRecord{
+		Owner:     owner,
+		Repo:      repo,
+		Ref:       ref,
+		Variables: vars,
+	})
+
+	if e := f.err("CreatePipeline"); e != nil {
+		return nil, e
+	}
+
+	p := Pipeline{
+		ID:     int64(len(f.CreatedPipelines) + 1),
+		WebURL: fmt.Sprintf("https://gitlab.example.com/-/pipelines/%d", len(f.CreatedPipelines)+1),
+	}
+	f.CreatedPipelines = append(f.CreatedPipelines, p)
+	return &p, nil
 }
 
 func (f *FakeClient) CreatePipelineSchedule(_ context.Context, owner, repo, ref, description, cron string, _ map[string]string) (int64, error) {

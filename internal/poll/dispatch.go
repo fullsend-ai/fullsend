@@ -1,40 +1,15 @@
 package poll
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"os"
-	"regexp"
+	"log"
+	"strconv"
 	"strings"
 	"time"
 )
-
-var validStage = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
-var validYAMLField = regexp.MustCompile(`^[a-z][a-z0-9_-]*$`)
-
-// appendDispatch appends a dispatch record to the poller's in-memory list.
-func (p *Poller) appendDispatch(d Dispatch) error {
-	p.dispatches = append(p.dispatches, d)
-	return nil
-}
-
-// writeDispatches marshals the accumulated dispatches as a JSON array
-// and writes them to the given file path.
-func (p *Poller) writeDispatches(path string) error {
-	dispatches := p.dispatches
-	if len(dispatches) == 0 {
-		return os.WriteFile(path, []byte("[]\n"), 0o644)
-	}
-	data, err := json.MarshalIndent(dispatches, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal dispatches: %w", err)
-	}
-	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
-}
 
 // resourceKey returns a stable entity-based key for concurrency control.
 func resourceKey(event RoutableEvent) string {
@@ -45,12 +20,11 @@ func resourceKey(event RoutableEvent) string {
 	return fmt.Sprintf("%s-%d", prefix, event.IID)
 }
 
-// dispatch builds an event payload, base64-encodes it, and appends
-// a Dispatch record for child pipeline generation.
+// dispatch builds an event payload, base64-encodes it, and creates a
+// pipeline via the GitLab API with the dispatch variables. It logs a
+// clickable URL to the created pipeline and appends a Dispatch record
+// for tracking.
 func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event RoutableEvent) error {
-	_ = ctx   // reserved for future use
-	_ = owner // included in signature for routing context
-	_ = repo
 	payload, err := buildEventPayload(event)
 	if err != nil {
 		return fmt.Errorf("build event payload: %w", err)
@@ -76,16 +50,50 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 		actorID = event.NoteAuthorID
 	}
 
-	return p.appendDispatch(Dispatch{
+	rk := resourceKey(event)
+
+	variables := map[string]string{
+		"STAGE":             stage,
+		"EVENT_TYPE":        event.Type,
+		"EVENT_PAYLOAD_B64": encoded,
+		"RESOURCE_KEY":      rk,
+		"IS_FORK":           strconv.FormatBool(isFork),
+	}
+	if event.MRAuthorID != 0 {
+		variables["MR_AUTHOR_ID"] = strconv.Itoa(event.MRAuthorID)
+	}
+	if actorID != 0 {
+		variables["ACTOR_ID"] = strconv.Itoa(actorID)
+	}
+	if event.IID != 0 {
+		variables["STATUS_IID"] = strconv.Itoa(event.IID)
+	}
+	if p.opts.PollJobURL != "" {
+		variables["FULLSEND_POLL_JOB_URL"] = p.opts.PollJobURL
+	}
+
+	_, webURL, err := p.client.CreatePipeline(ctx, owner, repo, p.opts.PipelineRef, variables)
+	if err != nil {
+		return fmt.Errorf("create pipeline for %s/%s: %w", stage, rk, err)
+	}
+
+	entityPrefix := "#"
+	if strings.HasPrefix(event.Type, "mr_") {
+		entityPrefix = "!"
+	}
+	log.Printf("  → %s (%s %s%d, %s)", webURL, event.Type, entityPrefix, event.IID, stage)
+
+	p.dispatches = append(p.dispatches, Dispatch{
 		Stage:           stage,
 		EventType:       event.Type,
 		EventPayloadB64: encoded,
-		ResourceKey:     resourceKey(event),
+		ResourceKey:     rk,
 		MRAuthorID:      event.MRAuthorID,
 		ActorID:         actorID,
 		IsFork:          isFork,
 		IID:             event.IID,
 	})
+	return nil
 }
 
 // buildEventPayload creates a JSON payload from a RoutableEvent,
@@ -127,63 +135,4 @@ func buildEventPayload(event RoutableEvent) ([]byte, error) {
 		m["is_bot"] = true
 	}
 	return json.Marshal(m)
-}
-
-// generateChildPipelineYAML produces GitLab CI YAML that triggers
-// one child pipeline job per dispatch record. Returns an error if
-// any stage name contains invalid characters.
-func generateChildPipelineYAML(dispatches []Dispatch) (string, error) {
-	var buf bytes.Buffer
-	for i, d := range dispatches {
-		if !validStage.MatchString(d.Stage) {
-			return "", fmt.Errorf("invalid stage name %q: must match %s", d.Stage, validStage.String())
-		}
-		if !validYAMLField.MatchString(d.EventType) {
-			return "", fmt.Errorf("invalid event type %q: must match %s", d.EventType, validYAMLField.String())
-		}
-		if !validYAMLField.MatchString(d.ResourceKey) {
-			return "", fmt.Errorf("invalid resource key %q: must match %s", d.ResourceKey, validYAMLField.String())
-		}
-		fmt.Fprintf(&buf, "agent-%d:\n", i)
-		fmt.Fprintf(&buf, "  trigger:\n")
-		fmt.Fprintf(&buf, "    include: .gitlab/ci/fullsend-agent.yml\n")
-		fmt.Fprintf(&buf, "    strategy: depend\n")
-		fmt.Fprintf(&buf, "  variables:\n")
-		fmt.Fprintf(&buf, "    STAGE: %q\n", d.Stage)
-		fmt.Fprintf(&buf, "    EVENT_TYPE: %q\n", d.EventType)
-		fmt.Fprintf(&buf, "    EVENT_PAYLOAD_B64: %q\n", d.EventPayloadB64)
-		fmt.Fprintf(&buf, "    RESOURCE_KEY: %q\n", d.ResourceKey)
-		if d.MRAuthorID != 0 {
-			fmt.Fprintf(&buf, "    MR_AUTHOR_ID: \"%d\"\n", d.MRAuthorID)
-		}
-		if d.ActorID != 0 {
-			fmt.Fprintf(&buf, "    ACTOR_ID: \"%d\"\n", d.ActorID)
-		}
-		fmt.Fprintf(&buf, "    IS_FORK: \"%t\"\n", d.IsFork)
-		if d.IID != 0 {
-			fmt.Fprintf(&buf, "    STATUS_IID: \"%d\"\n", d.IID)
-		}
-		fmt.Fprintf(&buf, "  rules:\n")
-		fmt.Fprintf(&buf, "    - when: always\n")
-	}
-	return buf.String(), nil
-}
-
-// GenerateChildPipelineFromFile reads a dispatches JSON file and
-// writes the corresponding child pipeline YAML to outputPath.
-// It is used by the CLI "fullsend poll generate-child-pipeline" subcommand.
-func GenerateChildPipelineFromFile(dispatchesPath, outputPath string) error {
-	data, err := os.ReadFile(dispatchesPath)
-	if err != nil {
-		return fmt.Errorf("read dispatches file: %w", err)
-	}
-	var dispatches []Dispatch
-	if err := json.Unmarshal(data, &dispatches); err != nil {
-		return fmt.Errorf("unmarshal dispatches: %w", err)
-	}
-	yaml, err := generateChildPipelineYAML(dispatches)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(outputPath, []byte(yaml), 0o644)
 }

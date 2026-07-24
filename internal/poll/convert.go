@@ -11,7 +11,7 @@ import (
 )
 
 // toNormalizedEvent converts a RoutableEvent into a dispatch.NormalizedEvent
-// suitable for stage matching and child-pipeline triggering.
+// suitable for stage matching and dispatch.
 func (p *Poller) toNormalizedEvent(ctx context.Context, event RoutableEvent) (dispatch.NormalizedEvent, error) {
 	ne := dispatch.NormalizedEvent{
 		Repo: p.projectPath,

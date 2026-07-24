@@ -476,6 +476,48 @@ func (c *LiveClient) GetWorkflowRunAnnotations(_ context.Context, _, _ string, _
 }
 
 // ---------------------------------------------------------------------------
+// Pipeline creation (API-triggered dispatch)
+// ---------------------------------------------------------------------------
+
+// CreatePipeline creates a new pipeline on the given ref with the given
+// variables via POST /projects/:id/pipeline. Returns the pipeline ID and
+// web URL. Used by the cron-poller to dispatch agent stages directly.
+func (c *LiveClient) CreatePipeline(ctx context.Context, owner, repo, ref string, variables map[string]string) (*forge.Pipeline, error) {
+	path := fmt.Sprintf("/projects/%s/pipeline", projectPath(owner, repo))
+
+	type pipelineVar struct {
+		Key          string `json:"key"`
+		Value        string `json:"value"`
+		VariableType string `json:"variable_type"`
+	}
+
+	vars := make([]pipelineVar, 0, len(variables))
+	for k, v := range variables {
+		vars = append(vars, pipelineVar{Key: k, Value: v, VariableType: "env_var"})
+	}
+
+	body := map[string]any{
+		"ref":       ref,
+		"variables": vars,
+	}
+
+	resp, err := c.post(ctx, path, body)
+	if err != nil {
+		return nil, fmt.Errorf("create pipeline: %w", err)
+	}
+
+	var result struct {
+		ID     int64  `json:"id"`
+		WebURL string `json:"web_url"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return nil, fmt.Errorf("decode pipeline response: %w", err)
+	}
+
+	return &forge.Pipeline{ID: result.ID, WebURL: result.WebURL}, nil
+}
+
+// ---------------------------------------------------------------------------
 // Pipeline schedules (GitLab-native)
 // ---------------------------------------------------------------------------
 

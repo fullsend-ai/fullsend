@@ -21,6 +21,11 @@ agent:
     - |
       set -euo pipefail
 
+      # Back-link to the poll job that dispatched this pipeline
+      if [ -n "${FULLSEND_POLL_JOB_URL:-}" ]; then
+        echo "Dispatched by: ${FULLSEND_POLL_JOB_URL}"
+      fi
+
       # CI_DEBUG_TRACE guard
       if [ "${CI_DEBUG_TRACE:-}" = "true" ]; then
         echo "ERROR: CI_DEBUG_TRACE enabled — aborting to protect secrets"
@@ -155,4 +160,4 @@ agent:
         --status-number "${CI_MERGE_REQUEST_IID:-${STATUS_IID:-0}}"
   resource_group: "fullsend-${STAGE}-${RESOURCE_KEY}"
   rules:
-    - if: $STAGE != ""
+    - if: $STAGE
