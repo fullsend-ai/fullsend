@@ -857,7 +857,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		rootSpan.End()
 
-		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		flushCtx, cancel := context.WithTimeout(context.Background(), telemetry.FlushTimeout)
 		defer cancel()
 		tracingCleanup(flushCtx)
 	}()
