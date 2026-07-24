@@ -103,34 +103,32 @@ agent:
         fi
       fi
 
-      # Authorization gate (ADR 0054) — check MR author has Developer
-      # access. Read-only stages (retro, prioritize) are exempt to match
-      # GitHub behavior where any closer may trigger retro.
+      # Authorization gate (ADR 0054) — check actor has Developer access.
+      # Read-only stages (retro, prioritize) are exempt to match GitHub
+      # behavior where any closer may trigger retro.
       # Runs here (not in dispatch) because the Members API requires the
       # bot PAT, which is only available after credential retrieval.
       # Fail-closed: API failure → access_level 0 → reject.
-      # LIMITATION: This gate uses MR_AUTHOR_ID, which is only populated
-      # for MR events. Issue events and fast-poll slash commands do not
-      # set MR_AUTHOR_ID and will hit the fail-closed skip below.
-      # Generalizing to an ACTOR_ID/ACTOR_ROLE variable (covering issue
-      # authors and note authors) is needed before non-MR event routing
-      # is enabled (see poller's resolveActorRole in convert.go).
+      # ACTOR_ID is the generic actor identity, populated from MR_AUTHOR_ID
+      # for MR events or NoteAuthorID for issue/note events. Falls back to
+      # MR_AUTHOR_ID for backward compatibility with older dispatch pipelines.
       if [ "${STAGE}" != "retro" ] && [ "${STAGE}" != "prioritize" ]; then
-        if [ -z "${MR_AUTHOR_ID:-}" ]; then
-          echo "WARNING: MR_AUTHOR_ID not set — skipping stage (fail-closed)"
+        AUTH_ACTOR_ID="${ACTOR_ID:-${MR_AUTHOR_ID:-}}"
+        if [ -z "${AUTH_ACTOR_ID}" ]; then
+          echo "WARNING: No actor identity available — skipping stage (fail-closed)"
           exit 0
         fi
         AUTHOR_ACCESS=0
         if MEMBER_RESPONSE=$(curl -sf --retry 3 --retry-delay 2 --retry-all-errors \
-          "${CI_API_V4_URL}/projects/${CI_MERGE_REQUEST_PROJECT_ID:-${CI_PROJECT_ID}}/members/all/${MR_AUTHOR_ID}" \
+          "${CI_API_V4_URL}/projects/${CI_MERGE_REQUEST_PROJECT_ID:-${CI_PROJECT_ID}}/members/all/${AUTH_ACTOR_ID}" \
           -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}"); then
           AUTHOR_ACCESS=$(echo "${MEMBER_RESPONSE}" | jq -r '.access_level // 0')
         else
-          echo "WARNING: Members API call failed for user ${MR_AUTHOR_ID} — defaulting to access_level=0 (fail-closed)"
+          echo "WARNING: Members API call failed for user ${AUTH_ACTOR_ID} — defaulting to access_level=0 (fail-closed)"
         fi
         case "${AUTHOR_ACCESS}" in ''|*[!0-9]*|??????????*) AUTHOR_ACCESS=0 ;; esac
         if [ "${AUTHOR_ACCESS}" -lt 30 ]; then
-          echo "MR author does not have Developer access (access_level=${AUTHOR_ACCESS}) — skipping"
+          echo "Actor does not have Developer access (access_level=${AUTHOR_ACCESS}) — skipping"
           exit 0
         fi
       fi

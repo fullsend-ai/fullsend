@@ -60,6 +60,7 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 	// populate MRSource/MRTarget — they are "not applicable", not
 	// "unknown". For MR events, fail-closed: unknown project IDs
 	// default to fork so IS_FORK:-true is not overridden to "false".
+	// Derive dispatch fields from event metadata.
 	var isFork bool
 	if strings.HasPrefix(event.Type, "mr_") {
 		isFork = true
@@ -67,12 +68,21 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 			isFork = event.MRSource != event.MRTarget
 		}
 	}
+	var actorID int
+	switch event.Type {
+	case "issue_note", "mr_note":
+		actorID = event.NoteAuthorID
+	case "mr_event":
+		actorID = event.NoteAuthorID
+	}
+
 	return p.appendDispatch(Dispatch{
 		Stage:           stage,
 		EventType:       event.Type,
 		EventPayloadB64: encoded,
 		ResourceKey:     resourceKey(event),
 		MRAuthorID:      event.MRAuthorID,
+		ActorID:         actorID,
 		IsFork:          isFork,
 		IID:             event.IID,
 	})
@@ -145,6 +155,9 @@ func generateChildPipelineYAML(dispatches []Dispatch) (string, error) {
 		fmt.Fprintf(&buf, "    RESOURCE_KEY: %q\n", d.ResourceKey)
 		if d.MRAuthorID != 0 {
 			fmt.Fprintf(&buf, "    MR_AUTHOR_ID: \"%d\"\n", d.MRAuthorID)
+		}
+		if d.ActorID != 0 {
+			fmt.Fprintf(&buf, "    ACTOR_ID: \"%d\"\n", d.ActorID)
 		}
 		fmt.Fprintf(&buf, "    IS_FORK: \"%t\"\n", d.IsFork)
 		if d.IID != 0 {

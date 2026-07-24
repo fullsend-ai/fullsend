@@ -60,6 +60,7 @@ type Dispatch struct {
 	EventPayloadB64 string `json:"event_payload_b64"`
 	ResourceKey     string `json:"resource_key"`
 	MRAuthorID      int    `json:"mr_author_id,omitempty"`
+	ActorID         int    `json:"actor_id,omitempty"`
 	IsFork          bool   `json:"is_fork"`
 	IID             int    `json:"iid,omitempty"`
 }

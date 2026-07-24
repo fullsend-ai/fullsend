@@ -209,6 +209,109 @@ func TestDispatch_PropagatesMRAuthorAndFork(t *testing.T) {
 	}
 }
 
+func TestDispatch_ActorID_MREvent(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:         "mr_event",
+		IID:          10,
+		UpdatedAt:    time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		MRAuthorID:   42,
+		NoteAuthorID: 55,
+		MRSource:     100,
+		MRTarget:     100,
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	d := p.dispatches[0]
+	if d.ActorID != 55 {
+		t.Errorf("ActorID: got %d, want 55 (from NoteAuthorID, the merger)", d.ActorID)
+	}
+}
+
+func TestDispatch_ActorID_IssueNoteEvent(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:         "issue_note",
+		IID:          7,
+		UpdatedAt:    time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		NoteBody:     "/fs-triage",
+		NoteID:       300,
+		NoteAuthorID: 99,
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	d := p.dispatches[0]
+	if d.ActorID != 99 {
+		t.Errorf("ActorID: got %d, want 99 (from NoteAuthorID)", d.ActorID)
+	}
+	if d.MRAuthorID != 0 {
+		t.Errorf("MRAuthorID: got %d, want 0 (issue events have no MR author)", d.MRAuthorID)
+	}
+}
+
+func TestDispatch_ActorID_MRNoteUsesCommenter(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:         "mr_note",
+		IID:          10,
+		UpdatedAt:    time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		MRAuthorID:   42,
+		NoteAuthorID: 99,
+		NoteBody:     "/fs-triage",
+		NoteID:       500,
+		MRSource:     100,
+		MRTarget:     100,
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "triage", event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	d := p.dispatches[0]
+	if d.ActorID != 99 {
+		t.Errorf("ActorID: got %d, want 99 (NoteAuthorID, not MRAuthorID)", d.ActorID)
+	}
+	if d.MRAuthorID != 42 {
+		t.Errorf("MRAuthorID: got %d, want 42 (preserved for backward compat)", d.MRAuthorID)
+	}
+}
+
+func TestDispatch_ActorID_ZeroWhenNeitherSet(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:      "issue_label",
+		IID:       5,
+		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "code", event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	d := p.dispatches[0]
+	if d.ActorID != 0 {
+		t.Errorf("ActorID: got %d, want 0 (no actor available for label events)", d.ActorID)
+	}
+}
+
 func TestDispatch_SameProjectIsNotFork(t *testing.T) {
 	mc := newMockClient()
 	p := newTestPoller(mc, Options{})
@@ -362,6 +465,9 @@ func TestGenerateChildPipelineYAML_SingleDispatch(t *testing.T) {
 	if strings.Contains(yaml, "MR_AUTHOR_ID") {
 		t.Error("MR_AUTHOR_ID should be omitted when zero")
 	}
+	if strings.Contains(yaml, "ACTOR_ID") {
+		t.Error("ACTOR_ID should be omitted when zero")
+	}
 	if strings.Contains(yaml, "STATUS_IID") {
 		t.Error("STATUS_IID should be omitted when zero")
 	}
@@ -483,6 +589,7 @@ func TestGenerateChildPipelineYAML_MRDispatchIncludesAuthorAndFork(t *testing.T)
 			EventPayloadB64: "cGF5bG9hZA==",
 			ResourceKey:     "mr-42",
 			MRAuthorID:      12345,
+			ActorID:         12345,
 			IsFork:          true,
 			IID:             42,
 		},
@@ -495,6 +602,7 @@ func TestGenerateChildPipelineYAML_MRDispatchIncludesAuthorAndFork(t *testing.T)
 
 	expected := []string{
 		`MR_AUTHOR_ID: "12345"`,
+		`ACTOR_ID: "12345"`,
 		`IS_FORK: "true"`,
 		`STATUS_IID: "42"`,
 		".gitlab/ci/fullsend-agent.yml",
@@ -503,6 +611,50 @@ func TestGenerateChildPipelineYAML_MRDispatchIncludesAuthorAndFork(t *testing.T)
 		if !strings.Contains(yaml, substr) {
 			t.Errorf("missing %q in output:\n%s", substr, yaml)
 		}
+	}
+}
+
+func TestGenerateChildPipelineYAML_IssueNoteDispatchEmitsActorID(t *testing.T) {
+	dispatches := []Dispatch{
+		{
+			Stage:           "triage",
+			EventType:       "issue_note",
+			EventPayloadB64: "cGF5bG9hZA==",
+			ResourceKey:     "issue-7",
+			ActorID:         99,
+		},
+	}
+
+	yaml, err := generateChildPipelineYAML(dispatches)
+	if err != nil {
+		t.Fatalf("generateChildPipelineYAML: %v", err)
+	}
+
+	if !strings.Contains(yaml, `ACTOR_ID: "99"`) {
+		t.Errorf("missing ACTOR_ID in output:\n%s", yaml)
+	}
+	if strings.Contains(yaml, "MR_AUTHOR_ID") {
+		t.Error("MR_AUTHOR_ID should be omitted for issue events (MRAuthorID=0)")
+	}
+}
+
+func TestGenerateChildPipelineYAML_OmitsActorIDWhenZero(t *testing.T) {
+	dispatches := []Dispatch{
+		{
+			Stage:           "code",
+			EventType:       "issue_label",
+			EventPayloadB64: "bGFiZWw=",
+			ResourceKey:     "issue-5",
+		},
+	}
+
+	yaml, err := generateChildPipelineYAML(dispatches)
+	if err != nil {
+		t.Fatalf("generateChildPipelineYAML: %v", err)
+	}
+
+	if strings.Contains(yaml, "ACTOR_ID") {
+		t.Error("ACTOR_ID should be omitted when zero")
 	}
 }
 
