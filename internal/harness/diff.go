@@ -175,9 +175,9 @@ func DiffHarness(base, child *Harness, customizedFiles map[string]bool) *DiffRes
 		hasAny = true
 	}
 
-	// Pointer structs — keep if non-nil and different; abort if child removes.
-	if child.ValidationLoop != nil && !reflect.DeepEqual(child.ValidationLoop, base.ValidationLoop) {
-		result.Child.ValidationLoop = child.ValidationLoop
+	// ValidationLoop — field-level diff to match mergeValidationLoop semantics.
+	if vlDiff := diffValidationLoop(base.ValidationLoop, child.ValidationLoop); vlDiff != nil {
+		result.Child.ValidationLoop = vlDiff
 		hasAny = true
 	} else if child.ValidationLoop == nil && base.ValidationLoop != nil {
 		result.Warnings = append(result.Warnings, "validation_loop: child removes block from base; cannot express with base: composition")
@@ -467,8 +467,8 @@ func diffForgeConfig(base, child *ForgeConfig, platform string) (*ForgeConfig, [
 		fc.Skills = extras
 		hasAny = true
 	}
-	if child.ValidationLoop != nil && !reflect.DeepEqual(child.ValidationLoop, base.ValidationLoop) {
-		fc.ValidationLoop = child.ValidationLoop
+	if vlDiff := diffValidationLoop(base.ValidationLoop, child.ValidationLoop); vlDiff != nil {
+		fc.ValidationLoop = vlDiff
 		hasAny = true
 	}
 	if d, mapRemoved := diffStringMap(base.RunnerEnv, child.RunnerEnv); len(d) > 0 || mapRemoved {
@@ -490,4 +490,46 @@ func diffForgeConfig(base, child *ForgeConfig, platform string) (*ForgeConfig, [
 		return nil, warnings
 	}
 	return fc, warnings
+}
+
+// diffValidationLoop returns a ValidationLoop containing only the fields
+// where child differs from base. Returns nil when both are nil, both are
+// equal, or child is nil (removal is handled by the caller). This mirrors
+// mergeValidationLoop's field set so diff→merge round-trips correctly for
+// non-zero field values.
+func diffValidationLoop(base, child *ValidationLoop) *ValidationLoop {
+	if child == nil {
+		return nil
+	}
+	if base == nil {
+		return child
+	}
+	if reflect.DeepEqual(base, child) {
+		return nil
+	}
+
+	vl := &ValidationLoop{}
+	hasAny := false
+
+	if child.Script != base.Script {
+		vl.Script = child.Script
+		hasAny = true
+	}
+	if child.Schema != base.Schema {
+		vl.Schema = child.Schema
+		hasAny = true
+	}
+	if child.MaxIterations != base.MaxIterations {
+		vl.MaxIterations = child.MaxIterations
+		hasAny = true
+	}
+	if child.FeedbackMode != base.FeedbackMode {
+		vl.FeedbackMode = child.FeedbackMode
+		hasAny = true
+	}
+
+	if !hasAny {
+		return nil
+	}
+	return vl
 }

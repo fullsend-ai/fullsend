@@ -64,7 +64,10 @@ func (h *Harness) validateForge() error {
 			}
 		}
 		if fc.ValidationLoop != nil {
-			if fc.ValidationLoop.Script == "" {
+			// Allow empty forge script when the top-level harness has a script
+			// that will be inherited via field-level merge in ResolveForge.
+			topHasScript := h.ValidationLoop != nil && h.ValidationLoop.Script != ""
+			if fc.ValidationLoop.Script == "" && !topHasScript {
 				return fmt.Errorf("forge.%s.validation_loop.script is required when validation_loop is set", key)
 			}
 			if IsURL(fc.ValidationLoop.Script) {
@@ -112,7 +115,7 @@ func (h *Harness) ResolveForge(platform string) error {
 //   - Scalars: forge overrides if non-empty
 //   - Skills: top-level + forge (concatenated)
 //   - RunnerEnv: top-level merged with forge; forge keys win
-//   - ValidationLoop: forge replaces entirely if non-nil
+//   - ValidationLoop: field-level merge; forge non-zero fields win
 func mergeForgeConfig(h *Harness, fc *ForgeConfig) {
 	if fc.PreScript != "" {
 		h.PreScript = fc.PreScript
@@ -134,9 +137,8 @@ func mergeForgeConfig(h *Harness, fc *ForgeConfig) {
 		}
 	}
 
-	if fc.ValidationLoop != nil {
-		h.ValidationLoop = fc.ValidationLoop
-	}
+	// ValidationLoop: field-level merge; forge non-zero fields win
+	h.ValidationLoop = mergeValidationLoop(h.ValidationLoop, fc.ValidationLoop)
 
 	// Env: merge sub-maps independently; forge keys win (ADR 0055)
 	if fc.Env != nil {
