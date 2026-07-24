@@ -257,6 +257,7 @@ type FakeClient struct {
 	CommittedFiles         []CommitFilesRecord
 	CommittedFilesToBranch []CommitFilesToBranchRecord
 	CreatedForks           []string // "owner/repo"
+	ClosedProposals        []int    // PR numbers
 	DeletedComments        []int    // comment IDs
 	CreatedSchedules       []PipelineSchedule
 	DeletedScheduleIDs     []int64
@@ -854,6 +855,18 @@ func (f *FakeClient) ListRepoPullRequests(_ context.Context, owner, repo string)
 		}
 	}
 	return []ChangeProposal{}, nil
+}
+
+func (f *FakeClient) CloseChangeProposal(_ context.Context, _, _ string, number int) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if e := f.err("CloseChangeProposal"); e != nil {
+		return e
+	}
+
+	f.ClosedProposals = append(f.ClosedProposals, number)
+	return nil
 }
 
 func (f *FakeClient) GetOrgPlan(_ context.Context, _ string) (string, error) {

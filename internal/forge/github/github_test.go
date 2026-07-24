@@ -898,8 +898,22 @@ func TestListRepoPullRequests(t *testing.T) {
 		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
 
 		json.NewEncoder(w).Encode([]map[string]any{
-			{"html_url": "https://github.com/owner/repo/pull/1", "title": "PR 1", "number": 1},
-			{"html_url": "https://github.com/owner/repo/pull/2", "title": "PR 2", "number": 2},
+			{
+				"html_url": "https://github.com/owner/repo/pull/1",
+				"title":    "PR 1",
+				"number":   1,
+				"head":     map[string]any{"ref": "feature-branch"},
+				"base":     map[string]any{"ref": "main"},
+				"user":     map[string]any{"login": "alice"},
+			},
+			{
+				"html_url": "https://github.com/owner/repo/pull/2",
+				"title":    "PR 2",
+				"number":   2,
+				"head":     map[string]any{"ref": "fix-branch"},
+				"base":     map[string]any{"ref": "main"},
+				"user":     map[string]any{"login": "bob"},
+			},
 		})
 	}))
 	defer srv.Close()
@@ -909,7 +923,31 @@ func TestListRepoPullRequests(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, prs, 2)
 	assert.Equal(t, "PR 1", prs[0].Title)
+	assert.Equal(t, "feature-branch", prs[0].Head)
+	assert.Equal(t, "main", prs[0].Base)
+	assert.Equal(t, "alice", prs[0].Author)
 	assert.Equal(t, 2, prs[1].Number)
+	assert.Equal(t, "fix-branch", prs[1].Head)
+	assert.Equal(t, "bob", prs[1].Author)
+}
+
+func TestCloseChangeProposal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "PATCH", r.Method)
+		assert.Equal(t, "/repos/owner/repo/pulls/42", r.URL.Path)
+
+		var body map[string]string
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "closed", body["state"])
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{"number": 42, "state": "closed"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.CloseChangeProposal(context.Background(), "owner", "repo", 42)
+	require.NoError(t, err)
 }
 
 func TestGetAuthenticatedUser(t *testing.T) {

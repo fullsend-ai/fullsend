@@ -114,6 +114,7 @@ type ChangeProposal struct {
 	Number int
 	Head   string
 	Base   string
+	Author string // login of the user who opened the PR/MR
 }
 
 // PullRequestInfo carries branch/repo context for dispatch enrichment.
@@ -422,6 +423,11 @@ type Client interface {
 	CreateCrossRepoChangeProposal(ctx context.Context, baseOwner, baseRepo, headOwner, headRepo, title, body, headBranch, baseBranch string) (*ChangeProposal, error)
 
 	ListRepoPullRequests(ctx context.Context, owner, repo string) ([]ChangeProposal, error)
+
+	// CloseChangeProposal closes an open pull request / merge request by
+	// number without merging it. This is used to clean up stale PRs
+	// (e.g., scaffold PRs left over from a previous install mode).
+	CloseChangeProposal(ctx context.Context, owner, repo string, number int) error
 
 	// Organization metadata
 	// GetOrgPlan returns the billing plan name for the org (e.g. "free", "team", "enterprise").

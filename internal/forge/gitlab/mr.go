@@ -81,6 +81,9 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 			WebURL       string `json:"web_url"`
 			SourceBranch string `json:"source_branch"`
 			TargetBranch string `json:"target_branch"`
+			Author       struct {
+				Username string `json:"username"`
+			} `json:"author"`
 		}
 		if err := decodeJSON(resp, &mrs); err != nil {
 			return nil, fmt.Errorf("decode merge requests page %d: %w", page, err)
@@ -93,6 +96,7 @@ func (c *LiveClient) ListRepoPullRequests(ctx context.Context, owner, repo strin
 				Title:  mr.Title,
 				Head:   mr.SourceBranch,
 				Base:   mr.TargetBranch,
+				Author: mr.Author.Username,
 			})
 		}
 
@@ -244,6 +248,17 @@ func (c *LiveClient) ListPullRequestFileDiffs(ctx context.Context, owner, repo s
 	}
 
 	return files, nil
+}
+
+// CloseChangeProposal closes an open merge request without merging it.
+func (c *LiveClient) CloseChangeProposal(ctx context.Context, owner, repo string, number int) error {
+	path := fmt.Sprintf("/projects/%s/merge_requests/%d", projectPath(owner, repo), number)
+	resp, err := c.put(ctx, path, map[string]string{"state_event": "close"})
+	if err != nil {
+		return fmt.Errorf("close merge request !%d: %w", number, err)
+	}
+	resp.Body.Close()
+	return nil
 }
 
 // MergeChangeProposal merges a merge request by its IID.
