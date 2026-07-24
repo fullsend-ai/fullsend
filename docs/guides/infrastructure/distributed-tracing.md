@@ -14,9 +14,8 @@ configuration required:
   (sandbox creation, agent iterations, validation) with timestamps, durations,
   trace IDs, and token/cost attributes.
 
-This file is written on every run unless `OTEL_SDK_DISABLED=true`, which
-suppresses all telemetry output including the local file. It contains
-metadata only — no prompts, completions, or source code content.
+This file is written on every run. It contains metadata only — no prompts,
+completions, or source code content.
 
 ## Prerequisites
 
@@ -33,16 +32,31 @@ Level 1 requires nothing. To enable OTLP export (Level 2 and Level 3) you need:
   and bring-your-own-workflow runs only — the managed workflows do not yet
   pass a CA bundle through.
 
+## Disabling telemetry
+
+To disable all telemetry, including the local file exporter:
+
+```bash
+export OTEL_SDK_DISABLED=true  # case-insensitive
+```
+
+To disable only the OTLP exporter:
+
+```bash
+unset OTEL_EXPORTER_OTLP_ENDPOINT
+unset OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+```
+
 ## Enabling OTLP export (Level 2)
 
 To send metadata spans to an OpenTelemetry-compatible backend, set one of the
 standard OTEL environment variables:
 
 ```bash
-# Signal-specific (takes precedence, used as-is — no /v1/traces appended)
+# Signal-specific (used as-is, no path appended)
 export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="https://your-backend:4318/v1/traces"
 
-# Base URL (SDK appends /v1/traces automatically)
+# Base URL (SDK appends /v1/traces)
 export OTEL_EXPORTER_OTLP_ENDPOINT="https://your-backend:4318"
 ```
 
@@ -50,13 +64,13 @@ export OTEL_EXPORTER_OTLP_ENDPOINT="https://your-backend:4318"
 Headers follow the same pattern: `OTEL_EXPORTER_OTLP_TRACES_HEADERS` > `OTEL_EXPORTER_OTLP_HEADERS`.
 
 The local file (`run-telemetry.jsonl`) is produced with no configuration
-needed (Level 1), unless `OTEL_SDK_DISABLED=true`.
+needed (Level 1).
 
 When an endpoint is configured, spans are exported via OTLP/HTTP. Any backend
 that speaks OTLP works: Jaeger, Grafana Tempo, MLflow, Arize Phoenix,
 Langfuse, SigNoz, Honeycomb, Datadog, etc.
 
-If the endpoint is unreachable, the CLI continues normally — local files are
+If the endpoint is unreachable, the CLI continues normally; local files are
 still produced and the run is not affected.
 
 Operational details:
@@ -64,6 +78,10 @@ Operational details:
 - **Export timing:** spans are exported live via the OTel SDK's batch
   processor as they complete. On shutdown, the provider flushes remaining
   spans within a 5-second budget. A dead endpoint does not block the run.
+- **Retry:** the exporter retries on transient failures (HTTP 503, etc.)
+  with an initial interval of 250 ms and a max interval of 2 s. Retries
+  are capped by `MaxElapsedTime` (equal to the 5-second flush budget), so
+  a persistently failing endpoint does not extend shutdown.
 - **Crashed runs:** completed spans that were already flushed mid-run reach
   the backend; spans still in the batch buffer are lost. The local
   `run-telemetry.jsonl` (written synchronously per span) remains the
@@ -71,15 +89,6 @@ Operational details:
 - **Sampling:** when the run continues an inbound `TRACEPARENT` whose W3C
   sampled flag is unset (`-00`), the upstream sampling decision is respected:
   nothing is exported. The local file is still written.
-- **Protocol:** OTLP over `http/protobuf` only. Setting
-  `OTEL_EXPORTER_OTLP_PROTOCOL` (or the traces-specific variant) to anything
-  else — e.g. `grpc` — skips export with a warning rather than posting
-  protobuf at a gRPC endpoint.
-- **Validation:** a malformed endpoint value skips export with a warning; it
-  is never silently replaced with the SDK's `localhost:4318` default.
-- **Kill switches:** `OTEL_SDK_DISABLED=true` disables all telemetry output
-  (OTLP export *and* the local file). `OTEL_TRACES_EXPORTER=none` disables
-  only the OTLP export; the local file is still written.
 - **Private CAs:** point `OTEL_EXPORTER_OTLP_CERTIFICATE` at a PEM bundle for
   backends with certificates outside the system trust store. There is no
   skip-verify option.
