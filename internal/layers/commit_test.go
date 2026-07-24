@@ -675,3 +675,182 @@ func TestAdaptCommitMsg(t *testing.T) {
 		assert.Equal(t, "ci: initialize fullsend per-repo installation\n\nSigned-off-by: bot", msg)
 	})
 }
+
+func TestCloseStaleScaffoldPRs_ClosesOnboardPR(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 42, Title: "chore: connect to fullsend agent pipeline", Head: "fullsend/onboard", Base: "main", Author: "acme"},
+		},
+	}
+	printer, buf := newTestPrinter()
+
+	closeStaleScaffoldPRs(context.Background(), client, printer,
+		"acme", "widget", "fullsend/scaffold-install", "acme")
+
+	assert.Contains(t, client.ClosedProposals, 42)
+	assert.Contains(t, client.DeletedRefs, "acme/widget/heads/fullsend/onboard")
+	assert.Contains(t, buf.String(), "Closed stale scaffold PR #42")
+}
+
+func TestCloseStaleScaffoldPRs_SkipsCurrentBranch(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 10, Title: "scaffold PR", Head: "fullsend/scaffold-install", Base: "main", Author: "acme"},
+		},
+	}
+	printer, _ := newTestPrinter()
+
+	closeStaleScaffoldPRs(context.Background(), client, printer,
+		"acme", "widget", "fullsend/scaffold-install", "acme")
+
+	assert.Empty(t, client.ClosedProposals, "should not close the current branch's PR")
+}
+
+func TestCloseStaleScaffoldPRs_SkipsUnrelatedPRs(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 5, Title: "feat: add feature", Head: "feature/add-feature", Base: "main", Author: "acme"},
+		},
+	}
+	printer, _ := newTestPrinter()
+
+	closeStaleScaffoldPRs(context.Background(), client, printer,
+		"acme", "widget", "fullsend/scaffold-install", "acme")
+
+	assert.Empty(t, client.ClosedProposals, "should not close unrelated PRs")
+}
+
+func TestCloseStaleScaffoldPRs_ListError(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Errors = map[string]error{
+		"ListRepoPullRequests": fmt.Errorf("API rate limit"),
+	}
+	printer, buf := newTestPrinter()
+
+	closeStaleScaffoldPRs(context.Background(), client, printer,
+		"acme", "widget", "fullsend/scaffold-install", "acme")
+
+	assert.Empty(t, client.ClosedProposals)
+	assert.Contains(t, buf.String(), "Could not check for stale scaffold PRs")
+}
+
+func TestCloseStaleScaffoldPRs_CloseError(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 42, Title: "stale PR", Head: "fullsend/onboard", Base: "main", Author: "acme"},
+		},
+	}
+	client.Errors = map[string]error{
+		"CloseChangeProposal": fmt.Errorf("forbidden"),
+	}
+	printer, buf := newTestPrinter()
+
+	closeStaleScaffoldPRs(context.Background(), client, printer,
+		"acme", "widget", "fullsend/scaffold-install", "acme")
+
+	assert.Empty(t, client.ClosedProposals, "should not record if close failed")
+	assert.Contains(t, buf.String(), "Could not close stale PR #42")
+}
+
+func TestCommitScaffoldViaPR_ClosesStaleOnboardPR(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 99, Title: "chore: connect to fullsend", Head: "fullsend/onboard", Base: "main", Author: "acme"},
+		},
+	}
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	assert.Contains(t, client.ClosedProposals, 99, "stale onboard PR should be closed")
+	assert.Contains(t, buf.String(), "Closed stale scaffold PR #99")
+
+	// Should still create its own branch and PR.
+	require.Len(t, client.CreatedBranches, 1)
+	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0])
+}
+
+func TestCloseStaleScaffoldPRs_SkipsDifferentAuthor(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 42, Title: "stale PR", Head: "fullsend/onboard", Base: "main", Author: "external-user"},
+		},
+	}
+	printer, _ := newTestPrinter()
+
+	closeStaleScaffoldPRs(context.Background(), client, printer,
+		"acme", "widget", "fullsend/scaffold-install", "acme")
+
+	assert.Empty(t, client.ClosedProposals, "should not close PRs from different author")
+}
+
+func TestCloseStaleScaffoldPRs_SkipsEmptyAuthor(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 42, Title: "stale PR", Head: "fullsend/onboard", Base: "main", Author: ""},
+		},
+	}
+	printer, _ := newTestPrinter()
+
+	closeStaleScaffoldPRs(context.Background(), client, printer,
+		"acme", "widget", "fullsend/scaffold-install", "acme")
+
+	assert.Empty(t, client.ClosedProposals, "should not close PRs with empty author (fail-closed)")
+}
+
+func TestCloseStaleScaffoldPRs_DeleteRefError(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 42, Title: "stale PR", Head: "fullsend/onboard", Base: "main", Author: "acme"},
+		},
+	}
+	client.Errors = map[string]error{
+		"DeleteRef": fmt.Errorf("ref not found"),
+	}
+	printer, buf := newTestPrinter()
+
+	closeStaleScaffoldPRs(context.Background(), client, printer,
+		"acme", "widget", "fullsend/scaffold-install", "acme")
+
+	assert.Contains(t, client.ClosedProposals, 42, "PR should still be closed even if branch delete fails")
+	assert.Contains(t, buf.String(), "Could not delete stale branch fullsend/onboard")
+	assert.Contains(t, buf.String(), "Closed stale scaffold PR #42")
+}
+
+func TestCommitScaffoldViaPR_SkipsStaleCleanupInForkPath(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "contributor"
+	client.ExistingForks = map[string]string{
+		"acme/widget": "contributor",
+	}
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 99, Title: "chore: connect to fullsend", Head: "fullsend/onboard", Base: "main", Author: "acme"},
+		},
+	}
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+	require.NoError(t, err)
+
+	assert.Empty(t, client.ClosedProposals, "should not close upstream PRs when using fork path")
+}
+
+func TestIsKnownScaffoldBranch(t *testing.T) {
+	assert.True(t, isKnownScaffoldBranch("fullsend/scaffold-install"))
+	assert.True(t, isKnownScaffoldBranch("fullsend/onboard"))
+	assert.False(t, isKnownScaffoldBranch("feature/add-stuff"))
+	assert.False(t, isKnownScaffoldBranch("fullsend/offboard"))
+}

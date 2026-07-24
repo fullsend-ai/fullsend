@@ -1442,6 +1442,27 @@ func TestFakeClient_ListRepositoryFiles(t *testing.T) {
 	})
 }
 
+func TestFakeClient_CloseChangeProposal(t *testing.T) {
+	fc := NewFakeClient()
+	err := fc.CloseChangeProposal(context.Background(), "owner", "repo", 42)
+	require.NoError(t, err)
+	assert.Equal(t, []int{42}, fc.ClosedProposals)
+
+	err = fc.CloseChangeProposal(context.Background(), "owner", "repo", 99)
+	require.NoError(t, err)
+	assert.Equal(t, []int{42, 99}, fc.ClosedProposals)
+}
+
+func TestFakeClient_CloseChangeProposal_Error(t *testing.T) {
+	fc := NewFakeClient()
+	fc.Errors = map[string]error{
+		"CloseChangeProposal": fmt.Errorf("forbidden"),
+	}
+	err := fc.CloseChangeProposal(context.Background(), "owner", "repo", 1)
+	assert.ErrorContains(t, err, "forbidden")
+	assert.Empty(t, fc.ClosedProposals)
+}
+
 func TestFakeClient_ListRepositoryFiles_ConcurrentSafe(t *testing.T) {
 	fc := &FakeClient{
 		FileContents: map[string][]byte{

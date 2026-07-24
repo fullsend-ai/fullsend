@@ -50,6 +50,15 @@ func CommitFilesViaPR(ctx context.Context, client forge.Client, printer *ui.Prin
 
 const defaultScaffoldBranch = "fullsend/scaffold-install"
 
+// knownScaffoldBranches lists all branch names that have been used to deliver
+// scaffold files across different install modes. Per-org mode uses
+// "fullsend/onboard" (via reconcile-repos.sh); per-repo mode uses
+// "fullsend/scaffold-install" (via the Go CLI).
+var knownScaffoldBranches = []string{
+	"fullsend/scaffold-install",
+	"fullsend/onboard",
+}
+
 // commitScaffoldViaPR creates a feature branch, commits files, and opens a PR.
 // For non-owner users, it defaults to creating a fork and opening a cross-fork
 // PR rather than pushing directly to the upstream repository.
@@ -167,6 +176,66 @@ func commitViaFork(ctx context.Context, client forge.Client, printer *ui.Printer
 		scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody, files)
 }
 
+// closeStaleScaffoldPRs finds and closes open scaffold PRs from install modes
+// other than the current one. When switching from per-org to per-repo (or vice
+// versa), the old mode's scaffold PR may remain open with stale content (e.g.,
+// referencing a deleted .fullsend repo). This function closes those PRs and
+// deletes their head branches so they cannot be accidentally merged.
+//
+// Only PRs authored by authenticatedUser are closed (fail-closed: PRs with an
+// empty author field are skipped), preventing accidental closure of PRs opened
+// by external contributors on predictable branch names.
+func closeStaleScaffoldPRs(ctx context.Context, client forge.Client, printer *ui.Printer,
+	upstreamOwner, upstreamRepo, currentBranch, authenticatedUser string) {
+
+	prs, err := client.ListRepoPullRequests(ctx, upstreamOwner, upstreamRepo)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Could not check for stale scaffold PRs: %v", err))
+		return
+	}
+
+	for _, pr := range prs {
+		if pr.Head == currentBranch || !isKnownScaffoldBranch(pr.Head) {
+			continue
+		}
+
+		// Only close PRs authored by the authenticated user to avoid
+		// silently closing PRs opened by external contributors on
+		// predictable scaffold branch names. Fail-closed: if the author
+		// field is empty (unexpected API response), skip rather than
+		// risk closing someone else's PR.
+		if pr.Author == "" || !strings.EqualFold(pr.Author, authenticatedUser) {
+			continue
+		}
+
+		printer.StepStart(fmt.Sprintf("Closing stale scaffold PR #%d (%s)", pr.Number, pr.Head))
+		if closeErr := client.CloseChangeProposal(ctx, upstreamOwner, upstreamRepo, pr.Number); closeErr != nil {
+			printer.StepWarn(fmt.Sprintf("Could not close stale PR #%d: %v", pr.Number, closeErr))
+			continue
+		}
+
+		// Best-effort branch cleanup — the PR is already closed, so a
+		// failure here just leaves a dangling ref.
+		refPath := "heads/" + pr.Head
+		if delErr := client.DeleteRef(ctx, upstreamOwner, upstreamRepo, refPath); delErr != nil {
+			printer.StepWarn(fmt.Sprintf("Could not delete stale branch %s: %v", pr.Head, delErr))
+		}
+
+		printer.StepDone(fmt.Sprintf("Closed stale scaffold PR #%d from previous install mode", pr.Number))
+	}
+}
+
+// isKnownScaffoldBranch reports whether branch is one of the well-known branch
+// names used by scaffold installs (per-org or per-repo mode).
+func isKnownScaffoldBranch(branch string) bool {
+	for _, b := range knownScaffoldBranches {
+		if b == branch {
+			return true
+		}
+	}
+	return false
+}
+
 // commitBranchAndPR creates a branch on targetOwner/targetRepo, commits files,
 // and opens a PR against upstreamOwner/upstreamRepo. When target == upstream
 // (same-repo PR), head is the branch name. When target != upstream (cross-fork
@@ -175,6 +244,22 @@ func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pri
 	upstreamOwner, upstreamRepo, targetOwner, targetRepo,
 	scaffoldBranch, defaultBranch, commitMsg, prTitle, prBody string,
 	files []forge.TreeFile) (bool, error) {
+
+	// Close stale scaffold PRs from a different install mode before
+	// creating or updating our own. This prevents merging a PR that
+	// references infrastructure from a mode that has been torn down.
+	//
+	// Only run in same-repo mode (target == upstream). In the fork path
+	// the caller's token likely lacks permission to close upstream PRs,
+	// which would produce unnecessary 403 warnings.
+	if strings.EqualFold(targetOwner, upstreamOwner) && strings.EqualFold(targetRepo, upstreamRepo) {
+		user, userErr := client.GetAuthenticatedUser(ctx)
+		if userErr != nil {
+			printer.StepWarn(fmt.Sprintf("Could not identify user for stale PR cleanup: %v", userErr))
+		} else {
+			closeStaleScaffoldPRs(ctx, client, printer, upstreamOwner, upstreamRepo, scaffoldBranch, user)
+		}
+	}
 
 	if branchErr := client.CreateBranch(ctx, targetOwner, targetRepo, scaffoldBranch); branchErr != nil {
 		if forge.IsForbidden(branchErr) {

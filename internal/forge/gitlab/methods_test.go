@@ -454,6 +454,42 @@ func TestListRepoPullRequests(t *testing.T) {
 	assert.Equal(t, "MR Two", mrs[1].Title)
 }
 
+func TestListRepoPullRequests_Author(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{
+				"iid":           1,
+				"title":         "MR One",
+				"web_url":       "https://gitlab.com/myorg/myrepo/-/merge_requests/1",
+				"source_branch": "branch-1",
+				"target_branch": "main",
+				"author":        map[string]any{"username": "alice"},
+			},
+		})
+	})
+
+	mrs, err := client.ListRepoPullRequests(ctx, "myorg", "myrepo")
+	require.NoError(t, err)
+	require.Len(t, mrs, 1)
+	assert.Equal(t, "alice", mrs[0].Author)
+}
+
+func TestCloseChangeProposal(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/merge_requests/5", func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPut, r.Method)
+		writeJSON(t, w, http.StatusOK, map[string]any{"iid": 5, "state": "closed"})
+	})
+
+	err := client.CloseChangeProposal(ctx, "myorg", "myrepo", 5)
+	require.NoError(t, err)
+}
+
 func TestGetPullRequestHeadSHA(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()
