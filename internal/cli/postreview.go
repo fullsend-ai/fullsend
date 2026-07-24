@@ -384,6 +384,7 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 			printer.StepDone("Review submitted (inline comments omitted due to 422)")
 			return nil
 		}
+		logAPIErrorDetails(err, printer)
 		return fmt.Errorf("submitting review: %w", err)
 	}
 	printer.StepDone("Review submitted")
@@ -465,6 +466,18 @@ func is422Error(err error) bool {
 		return apiErr.StatusCode == http.StatusUnprocessableEntity
 	}
 	return false
+}
+
+// logAPIErrorDetails logs GitHub API error details when a non-inline-comment
+// 422 (or other error) occurs. This surfaces the validation error fields that
+// would otherwise be lost in the wrapped error message.
+func logAPIErrorDetails(err error, printer *ui.Printer) {
+	var apiErr *gh.APIError
+	if errors.As(err, &apiErr) && len(apiErr.Errors) > 0 {
+		for _, d := range apiErr.Errors {
+			printer.StepInfo(fmt.Sprintf("  API error detail: resource=%s field=%s code=%s message=%s", d.Resource, d.Field, d.Code, d.Message))
+		}
+	}
 }
 
 // logRejectedComments logs structured details about inline comments that
