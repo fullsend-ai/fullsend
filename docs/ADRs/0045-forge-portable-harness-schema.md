@@ -404,7 +404,9 @@ as the same file.
 
 #### Example: composed harness
 
-A fresh `fullsend install` generates thin harness wrappers:
+A fresh `fullsend install` generated thin harness wrappers
+*(wrapper generation removed — PR #5425; agents now resolve from config
+or agents-repo at runtime)*:
 
 ```yaml
 # .fullsend/harness/triage.yaml
@@ -510,8 +512,9 @@ func (h *Harness) ResolveForge(platform string) error { ... }
    identically to the current schema.
 
 2. **Phase 2 (adopt):** Migrate existing harnesses to include `role` and
-   `slug`. `fullsend install` generates thin harness wrappers with `base:`
-   pointing to upstream scaffold harnesses via URL. Harnesses that only
+   `slug`. `fullsend install` generated thin harness wrappers with `base:`
+   pointing to upstream scaffold harnesses via URL *(wrapper generation
+   removed — PR #5425)*. Harnesses that only
    target GitHub can optionally add `forge.github` but are not required
    to — top-level fields still work as implicit defaults for the
    single-forge case.

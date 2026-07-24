@@ -32,7 +32,8 @@ for where that line is and why it matters.
 Custom agents can be added to the fullsend pipeline via the `agents:` field in
 your org-level or per-repo `config.yaml`. Each entry is either a local path
 (relative to the fullsend directory) or a pinned HTTPS URL with an integrity
-hash. Config-registered agents override scaffold defaults when names collide
-(case-insensitive). See [ADR 0058](../ADRs/0058-agent-registration.md) for
+hash. Config entries are looked up directly by name; when absent, a runtime
+fallback resolves known first-party agents from `fullsend-ai/agents`.
+See [ADR 0058](../ADRs/0058-agent-registration.md) for
 details and [Bring Your Own Agent](../guides/user/bring-your-own-agent.md)
 for the complete guide to building and registering custom agents.

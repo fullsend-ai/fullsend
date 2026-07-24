@@ -184,6 +184,11 @@ func TestRunAgent_HarnessLoadPipeline(t *testing.T) {
 		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
@@ -209,6 +214,11 @@ func TestRunAgent_YMLFallback(t *testing.T) {
 		[]byte("agent: agents/code.md\nrole: test\n"),
 		0o644,
 	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yml\n"),
+		0o644,
+	))
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
@@ -228,7 +238,7 @@ func TestRunAgent_HarnessNotFound(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "nonexistent", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "harness file not found: tried nonexistent.yaml and nonexistent.yml")
+	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
 
 func TestRunAgent_HarnessLoadWithOrgConfig(t *testing.T) {
@@ -251,7 +261,7 @@ func TestRunAgent_HarnessLoadWithOrgConfig(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "config.yaml"),
-		[]byte("allowed_remote_resources:\n  - \"https://example.com/\"\n"),
+		[]byte("agents:\n  - harness/code.yaml\nallowed_remote_resources:\n  - \"https://example.com/\"\n"),
 		0o644,
 	))
 
@@ -264,6 +274,7 @@ func TestRunAgent_HarnessLoadWithOrgConfig(t *testing.T) {
 }
 
 func TestRunAgent_PerRepoConfig(t *testing.T) {
+	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
@@ -280,7 +291,7 @@ func TestRunAgent_PerRepoConfig(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "config.yaml"),
-		[]byte("version: \"1\"\nroles:\n  - triage\n  - coder\nallowed_remote_resources:\n  - \"https://example.com/\"\n"),
+		[]byte("version: \"1\"\nroles:\n  - triage\n  - coder\nagents:\n  - harness/code.yaml\nallowed_remote_resources:\n  - \"https://example.com/\"\n"),
 		0o644,
 	))
 
@@ -523,8 +534,8 @@ func TestRequireFullsendConfig_PerRepoMalformed(t *testing.T) {
 }
 
 func TestRunAgent_MalformedOrgConfig(t *testing.T) {
-	// A malformed config.yaml should produce a warning but not prevent
-	// local-only harnesses from proceeding through the pipeline.
+	// A malformed config.yaml means no agents can be resolved from config.
+	// Without disk fallback, agent resolution fails.
 	useFakeOpenshell(t)
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
@@ -551,13 +562,13 @@ func TestRunAgent_MalformedOrgConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "openshell")
+	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
 
 func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 	useFakeOpenshell(t)
-	// A malformed config.yaml with URL-referenced resources should fail
-	// with a parse error on the re-attempt inside HasURLReferences.
+	// A malformed config.yaml means no agents can be resolved from config.
+	// Without disk fallback, agent resolution fails before URL refs are checked.
 	agentHash := fetch.ComputeSHA256([]byte("agent content"))
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
@@ -578,13 +589,13 @@ func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing org config")
+	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
 
 func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
 	useFakeOpenshell(t)
-	// Harness with URL agent but no config.yaml → exercises the
-	// orgCfg == nil path inside HasURLReferences.
+	// No config.yaml means no agents can be resolved from config.
+	// Without disk fallback, agent resolution fails before URL refs are checked.
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
@@ -600,7 +611,7 @@ func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "URL-referenced resources require a config.yaml")
+	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
 
 func TestRunAgent_WithURLBase(t *testing.T) {
@@ -630,7 +641,7 @@ func TestRunAgent_WithURLBase(t *testing.T) {
 	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "config.yaml"),
-		[]byte(fmt.Sprintf("allowed_remote_resources:\n  - \"%s/\"\n", srv.URL)),
+		[]byte(fmt.Sprintf("agents:\n  - harness/code.yaml\nallowed_remote_resources:\n  - \"%s/\"\n", srv.URL)),
 		0o644,
 	))
 
@@ -708,10 +719,10 @@ openshell:
 	assert.NotContains(t, err.Error(), "creating sandbox")
 }
 
-func TestRunAgent_URLBaseNoOrgConfig(t *testing.T) {
+func TestRunAgent_URLBaseNoAllowlist(t *testing.T) {
 	useFakeOpenshell(t)
-	// Harness with a URL base but no config.yaml — exercises the
-	// pre-check that loads config strictly when a URL base is detected.
+	// Harness with a URL base but config.yaml has no allowed_remote_resources
+	// — exercises the pre-check that loads config strictly when a URL base is detected.
 	baseContent := []byte("agent: agents/shared.md\n")
 	baseHash := fetch.ComputeSHA256(baseContent)
 
@@ -723,21 +734,24 @@ func TestRunAgent_URLBaseNoOrgConfig(t *testing.T) {
 		[]byte(fmt.Sprintf("base: \"https://example.com/base.yaml#sha256=%s\"\n", baseHash)),
 		0o644,
 	))
-
-	// No config.yaml.
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
 
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "URL-referenced resources require a config.yaml")
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
 }
 
 func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
 	useFakeOpenshell(t)
-	// Harness with a URL base and malformed config.yaml — exercises the
-	// pre-check parse error path.
+	// Malformed config.yaml means no agents can be resolved from config.
+	// Without disk fallback, agent resolution fails before URL base is checked.
 	baseContent := []byte("agent: agents/shared.md\n")
 	baseHash := fetch.ComputeSHA256(baseContent)
 
@@ -760,7 +774,7 @@ func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parsing org config")
+	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
 
 func TestBuildScanContextCommand_SourcesEnv(t *testing.T) {
@@ -945,25 +959,14 @@ func TestRunAgent_ConfigAgentOverridesScaffold(t *testing.T) {
 	assert.Contains(t, err.Error(), "openshell")
 }
 
-func TestRunAgent_ScaffoldFallback(t *testing.T) {
+func TestRunAgent_AgentNotInConfig(t *testing.T) {
 	useFakeOpenshell(t)
-	// When config has agents but the requested agent is not in config,
-	// fall back to disk-based resolution.
+	// When config has agents but the requested agent is not among them
+	// and agents-repo fallback is unavailable, resolution fails.
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
 
-	require.NoError(t, os.WriteFile(
-		filepath.Join(dir, "agents", "code.md"),
-		[]byte("You are a coding agent."),
-		0o644,
-	))
-	require.NoError(t, os.WriteFile(
-		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\nrole: test\n"),
-		0o644,
-	))
-	// Config has agents but "code" is not among them — should fall back to disk.
+	// Config has agents but "code" is not among them.
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "config.yaml"),
 		[]byte("agents:\n  - harness/other.yaml\nallowed_remote_resources:\n  - \"https://example.com/\"\n"),
@@ -975,7 +978,7 @@ func TestRunAgent_ScaffoldFallback(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "openshell")
+	assert.Contains(t, err.Error(), "not in config and agents-repo fallback unavailable")
 }
 
 func TestRunAgent_UnknownAgentName(t *testing.T) {
@@ -983,7 +986,7 @@ func TestRunAgent_UnknownAgentName(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
-	// Config has agents but "nonexistent" is not among them, and no file on disk.
+	// Config has agents but "nonexistent" is not among them.
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "config.yaml"),
 		[]byte("agents:\n  - harness/other.yaml\nallowed_remote_resources:\n  - \"https://example.com/\"\n"),
@@ -995,23 +998,16 @@ func TestRunAgent_UnknownAgentName(t *testing.T) {
 	repoDir := t.TempDir()
 	err := runAgent(context.Background(), "nonexistent", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "harness file not found")
+	assert.Contains(t, err.Error(), "not in config and agents-repo fallback unavailable")
 }
 
 func TestResolveAgentSource_NoConfig(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
-	require.NoError(t, os.WriteFile(
-		filepath.Join(dir, "harness", "code.yaml"),
-		[]byte("agent: agents/code.md\nrole: test\n"),
-		0o644,
-	))
 
 	printer := ui.New(io.Discard)
-	path, deps, err := resolveAgentSource(context.Background(), dir, "code", nil, nil, harness.ComposeOpts{}, printer)
-	require.NoError(t, err)
-	assert.Contains(t, path, "code.yaml")
-	assert.Empty(t, deps)
+	_, _, err := resolveAgentSource(context.Background(), dir, "code", nil, nil, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
 
 // canonTempDir returns t.TempDir() with symlinks resolved, so equality
@@ -1060,7 +1056,7 @@ func TestResolveAgentSource_ConfigLocalPathNotFound(t *testing.T) {
 	printer := ui.New(io.Discard)
 	_, _, err := resolveAgentSource(context.Background(), dir, "missing", nil, orgCfg, harness.ComposeOpts{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "config agent missing")
+	assert.Contains(t, err.Error(), `config agent "missing"`)
 }
 
 func TestResolveAgentSource_ConfigLocalPathAbsoluteRejected(t *testing.T) {
@@ -1095,18 +1091,16 @@ func TestResolveAgentSource_ConfigLocalPathTraversalRejected(t *testing.T) {
 
 func TestResolveAgentSource_AgentsRepoFallback_UnknownAgent(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	fakeClient := forge.NewFakeClient()
 	printer := ui.New(io.Discard)
 	_, _, err := resolveAgentSource(context.Background(), dir, "nonexistent", fakeClient, nil, harness.ComposeOpts{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "harness file not found")
+	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
 
 func TestResolveAgentSource_AgentsRepoFallback_Offline(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	fakeClient := forge.NewFakeClient()
 	printer := ui.New(io.Discard)
@@ -1115,33 +1109,16 @@ func TestResolveAgentSource_AgentsRepoFallback_Offline(t *testing.T) {
 	}
 	_, _, err := resolveAgentSource(context.Background(), dir, "triage", fakeClient, nil, opts, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "harness file not found")
+	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
 
 func TestResolveAgentSource_AgentsRepoFallback_NoClient(t *testing.T) {
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 
 	printer := ui.New(io.Discard)
 	_, _, err := resolveAgentSource(context.Background(), dir, "triage", nil, nil, harness.ComposeOpts{}, printer)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "harness file not found")
-}
-
-func TestResolveAgentSource_AgentsRepoFallback_DiskFallback(t *testing.T) {
-	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
-	require.NoError(t, os.WriteFile(
-		filepath.Join(dir, "harness", "triage.yaml"),
-		[]byte("agent: agents/triage.md\nrole: test\n"),
-		0o644,
-	))
-
-	printer := ui.New(io.Discard)
-	path, deps, err := resolveAgentSource(context.Background(), dir, "triage", nil, nil, harness.ComposeOpts{}, printer)
-	require.NoError(t, err)
-	assert.Contains(t, path, "triage.yaml")
-	assert.Empty(t, deps)
+	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
 
 func TestResolveAgentSource_DisabledAgentBlocksFallback(t *testing.T) {
@@ -2751,6 +2728,11 @@ func preflightTestSetup(t *testing.T, harnessYAML string) string {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "scripts"), 0o755))
 
 	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "agents", "code.md"),
 		[]byte("You are a coding agent."),
 		0o644,
@@ -2819,6 +2801,11 @@ func TestRunAgent_PreflightCheck_NilValidationLoop(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "agents"), 0o755))
 
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "agents", "code.md"),
 		[]byte("You are a coding agent."),
@@ -3467,6 +3454,11 @@ func TestRunAgent_ErrorOnMissingRole(t *testing.T) {
 		[]byte("agent: agents/code.md\n"),
 		0o644,
 	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
 
 	var buf bytes.Buffer
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
@@ -4059,6 +4051,11 @@ func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {
 		[]byte("agent: agents/code.md\nrole: coder\n"),
 		0o644,
 	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
 
 	origMint := statusMintToken
 	defer func() { statusMintToken = origMint }()
@@ -4103,6 +4100,11 @@ func TestRunAgent_WarnsWhenNoMintURL(t *testing.T) {
 		[]byte("agent: agents/code.md\nrole: coder\n"),
 		0o644,
 	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
 
 	origMint := statusMintToken
 	defer func() { statusMintToken = origMint }()
@@ -4140,6 +4142,11 @@ func TestRunAgent_MintTokenError(t *testing.T) {
 		[]byte("agent: agents/code.md\nrole: coder\n"),
 		0o644,
 	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
+		0o644,
+	))
 
 	origMint := statusMintToken
 	defer func() { statusMintToken = origMint }()
@@ -4175,6 +4182,11 @@ func TestRunAgent_StatusNotifierSetup(t *testing.T) {
 	require.NoError(t, os.WriteFile(
 		filepath.Join(dir, "harness", "code.yaml"),
 		[]byte("agent: agents/code.md\nrole: coder\n"),
+		0o644,
+	))
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "config.yaml"),
+		[]byte("agents:\n  - harness/code.yaml\n"),
 		0o644,
 	))
 

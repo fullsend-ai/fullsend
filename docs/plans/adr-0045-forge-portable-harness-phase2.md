@@ -221,7 +221,7 @@ PRs 1, 2, 3, 5 can start in parallel. PR 4 depends on PR 3 (needs the base URL b
 
 The `WorkflowsLayer` currently uses `scaffold.WalkFullsendRepo()` which skips `layeredDirs` (including `harness/`). This is unchanged -- harness files are still NOT delivered by the workflows layer. Instead, a new layer handles harness wrapper generation.
 
-### New layer: `internal/layers/harnesswrappers.go`
+### New layer: `internal/layers/harnesswrappers.go` *(removed — PR #5425, config-driven agent migration complete)*
 
 **`HarnessWrappersLayer` struct:**
 - Fields: `org string`, `client forge.Client`, `printer *ui.Printer`, `agents []AgentCredentials`, `commitSHA string`, `existingHarnesses map[string]bool`

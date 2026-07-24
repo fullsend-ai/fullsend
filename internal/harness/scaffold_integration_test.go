@@ -258,38 +258,6 @@ func TestHarnessContentHash_MatchesEmbeddedContent(t *testing.T) {
 	}
 }
 
-// TestLoadRaw_GeneratedWrapperFormat verifies that the wrapper YAML format
-// produced by HarnessWrappersLayer (base + role + slug) parses correctly via
-// LoadRaw and contains the expected identity fields.
-func TestLoadRaw_GeneratedWrapperFormat(t *testing.T) {
-	names, err := scaffold.HarnessNames()
-	require.NoError(t, err)
-
-	fakeCommitSHA := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
-
-	for _, name := range names {
-		t.Run(name, func(t *testing.T) {
-			baseURL, err := scaffold.HarnessBaseURLWithHash(name, fakeCommitSHA)
-			require.NoError(t, err)
-
-			// Simulate the wrapper format produced by HarnessWrappersLayer.
-			wrapperYAML := "base: " + baseURL + "\n" +
-				"role: " + name + "\n" +
-				"slug: test-" + name + "\n"
-
-			dir := t.TempDir()
-			path := writeTestHarness(t, dir, name+".yaml", wrapperYAML)
-
-			h, err := LoadRaw(path)
-			require.NoError(t, err)
-
-			assert.Equal(t, baseURL, h.Base, "base should be the full URL with hash")
-			assert.Equal(t, name, h.Role)
-			assert.Equal(t, "test-"+name, h.Slug)
-		})
-	}
-}
-
 // TestResolveForge_ScaffoldRunnerEnvMerge verifies that forge resolution
 // produces the expected merged env.runner (or legacy runner_env) for each
 // scaffold template, with both top-level (platform-neutral) and
