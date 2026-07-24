@@ -9,6 +9,7 @@ import sys
 from collections import Counter
 from datetime import datetime
 from typing import TypedDict
+from urllib.parse import urlsplit
 
 # Prevent BrokenPipeError when output is piped through head/tail.
 signal.signal(signal.SIGPIPE, signal.SIG_DFL)
@@ -19,7 +20,7 @@ def parse_lines(path, line_range=None):
     if path == "-":
         yield from _parse_source(sys.stdin, line_range)
     else:
-        with open(path) as f:
+        with open(path, errors="replace") as f:
             yield from _parse_source(f, line_range)
 
 
@@ -35,9 +36,12 @@ def _parse_source(source, line_range):
         if not raw:
             continue
         try:
-            yield i, json.loads(raw)
+            obj = json.loads(raw)
         except json.JSONDecodeError:
             continue
+        if not isinstance(obj, dict):
+            continue
+        yield i, obj
 
 
 def parse_line_range(spec):
@@ -89,6 +93,38 @@ def get_tool_result_text(block):
     return ""
 
 
+def detect_file_type(path):
+    """Check first few lines to detect file type. Returns None if it looks like
+    a valid transcript, or a warning string if it's something else."""
+    if path == "-":
+        return None
+    try:
+        with open(path) as f:
+            for _ in range(5):
+                line = f.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+                if "resourceSpans" in obj or "scopeSpans" in obj:
+                    return (
+                        "This looks like OTLP telemetry data, not a Claude transcript. "
+                        "Look for a file named <agent>-<session-id>.jsonl instead."
+                    )
+                if obj.get("type") in ("assistant", "user", "agent-setting"):
+                    return None
+    except (OSError, UnicodeDecodeError):
+        pass
+    return None
+
+
 def iter_messages(path, line_range=None):
     """Yield (line_num, role, msg_obj, raw_obj) for message-type lines."""
     for i, obj in parse_lines(path, line_range):
@@ -108,7 +144,15 @@ def iter_messages(path, line_range=None):
 # --- Subcommands ---
 
 
-def cmd_summary(args):
+def _check_file_type(path):
+    warning = detect_file_type(path)
+    if warning:
+        print(f"Warning: {warning}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _accumulate_stats(path, line_range=None, messages=None):
+    """Single-pass accumulation of model/session/token/duration/tool/stop-reason stats."""
     models = set()
     session_ids = set()
     timestamps = []
@@ -121,7 +165,8 @@ def cmd_summary(args):
     stop_reasons = Counter()
     agent_setting = None
 
-    for _i, role, msg, raw in iter_messages(args.file, args.line_range):
+    source = messages if messages is not None else iter_messages(path, line_range)
+    for _i, role, msg, raw in source:
         if role == "meta":
             if raw.get("type") == "agent-setting":
                 agent_setting = raw.get("agentSetting")
@@ -153,9 +198,9 @@ def cmd_summary(args):
             if sr:
                 stop_reasons[sr] += 1
 
-            for btype, block in extract_content_blocks(msg):
-                if btype == "tool_use":
-                    tool_counts[block.get("name", "unknown")] += 1
+        for btype, block in extract_content_blocks(msg):
+            if role == "assistant" and btype == "tool_use":
+                tool_counts[block.get("name", "unknown")] += 1
 
     duration = None
     if len(timestamps) >= 2:
@@ -167,11 +212,11 @@ def cmd_summary(args):
         except (ValueError, TypeError):
             pass
 
-    result = {
+    return {
         "agent": agent_setting,
         "session_ids": sorted(session_ids),
         "models": sorted(models),
-        "messages": dict(msg_counts),
+        "messages": msg_counts,
         "tokens": {
             "input": total_input_tokens,
             "output": total_output_tokens,
@@ -179,38 +224,58 @@ def cmd_summary(args):
             "cache_create": total_cache_create,
         },
         "duration_seconds": duration,
-        "tool_calls": dict(tool_counts.most_common()),
-        "stop_reasons": dict(stop_reasons),
+        "tool_calls": tool_counts,
+        "stop_reasons": stop_reasons,
     }
 
-    if args.json_output:
-        print(json.dumps(result, indent=2))
-        return
 
-    print(f"Agent:      {agent_setting or 'unknown'}")
-    print(f"Session:    {', '.join(session_ids) or 'unknown'}")
-    print(f"Model:      {', '.join(models) or 'unknown'}")
+def _print_stats(s):
+    """Print the shared summary section from an _accumulate_stats result."""
+    print(f"Agent:      {s['agent'] or 'unknown'}")
+    print(f"Session:    {', '.join(s['session_ids']) or 'unknown'}")
+    print(f"Model:      {', '.join(s['models']) or 'unknown'}")
+    duration = s["duration_seconds"]
     if duration is not None:
         mins, secs = divmod(duration, 60)
         print(f"Duration:   {int(mins)}m {secs:.1f}s")
+    msg_counts = s["messages"]
     msg_parts = ", ".join(f"{v} {k}" for k, v in msg_counts.items())
     print(f"Messages:   {sum(msg_counts.values())} ({msg_parts})")
+    t = s["tokens"]
     print(
-        f"Tokens:     {total_input_tokens} in / "
-        f"{total_output_tokens} out / "
-        f"{total_cache_read} cache-read / "
-        f"{total_cache_create} cache-create"
+        f"Tokens:     {t['input']} in / "
+        f"{t['output']} out / "
+        f"{t['cache_read']} cache-read / "
+        f"{t['cache_create']} cache-create"
     )
-    print()
+    tool_counts = s["tool_calls"]
     if tool_counts:
+        print()
         print("Tool calls:")
         for name, count in tool_counts.most_common():
             print(f"  {name:30s} {count}")
+    stop_reasons = s["stop_reasons"]
     if stop_reasons:
         print(f"\nStop reasons: {', '.join(f'{k}={v}' for k, v in stop_reasons.items())}")
 
 
+def cmd_summary(args):
+    _check_file_type(args.file)
+    s = _accumulate_stats(args.file, args.line_range)
+
+    if args.json_output:
+        out = dict(s)
+        out["messages"] = dict(out["messages"])
+        out["tool_calls"] = dict(out["tool_calls"].most_common())
+        out["stop_reasons"] = dict(out["stop_reasons"])
+        print(json.dumps(out, indent=2))
+        return
+
+    _print_stats(s)
+
+
 def cmd_conversation(args):
+    _check_file_type(args.file)
     max_w = args.max_width
 
     for i, role, msg, _raw in iter_messages(args.file, args.line_range):
@@ -250,6 +315,7 @@ class ToolStats(TypedDict):
 
 
 def cmd_tools(args):
+    _check_file_type(args.file)
     tool_data: dict[str, ToolStats] = {}
 
     for i, role, msg, _raw in iter_messages(args.file, args.line_range):
@@ -281,33 +347,46 @@ def cmd_tools(args):
         print(f"{name:<30s} {data['count']:>5d}  {lines_str}")
 
 
-def cmd_errors(args):
-    max_w = args.max_width
+_ASSISTANT_ERROR_KEYWORDS = ["api error", "permission denied", "eacces", "fatal error"]
+
+
+def _check_block_error(role, btype, block, line, max_w, errors, mentions):
+    """Classify a single content block and append to errors/mentions if applicable."""
+    if btype == "tool_result":
+        if _is_error_result(block):
+            text = get_tool_result_text(block)
+            errors.append((line, truncate(text.strip(), max_w)))
+        else:
+            text = get_tool_result_text(block)
+            if _RESULT_ERROR_PATTERNS.search(text):
+                errors.append((line, truncate(text.strip(), max_w)))
+    elif role == "user" and btype == "text":
+        text = block if isinstance(block, str) else block.get("text", "")
+        if "<error>" in text:
+            errors.append((line, truncate(text.strip(), max_w)))
+    elif role == "assistant" and btype == "text":
+        text = block if isinstance(block, str) else block.get("text", "")
+        lower = text.lower()
+        if any(kw in lower for kw in _ASSISTANT_ERROR_KEYWORDS):
+            mentions.append((line, truncate(text.strip(), max_w)))
+
+
+def _collect_errors(file, max_w, line_range=None, messages=None):
+    """Shared error collection used by cmd_errors."""
     errors = []
     mentions = []
 
-    for i, role, msg, _raw in iter_messages(args.file, args.line_range):
+    source = messages if messages is not None else iter_messages(file, line_range)
+    for i, role, msg, _raw in source:
         for btype, block in extract_content_blocks(msg):
-            if btype == "tool_result":
-                if _is_error_result(block):
-                    text = get_tool_result_text(block)
-                    errors.append((i, truncate(text.strip(), max_w)))
-                else:
-                    text = get_tool_result_text(block)
-                    if _RESULT_ERROR_PATTERNS.search(text):
-                        errors.append((i, truncate(text.strip(), max_w)))
-            elif role == "user" and btype == "text":
-                text = block if isinstance(block, str) else block.get("text", "")
-                if "<error>" in text:
-                    errors.append((i, truncate(text.strip(), max_w)))
-            elif role == "assistant" and btype == "text":
-                text = block if isinstance(block, str) else block.get("text", "")
-                lower = text.lower()
-                if any(
-                    kw in lower
-                    for kw in ["api error", "permission denied", "eacces", "fatal error"]
-                ):
-                    mentions.append((i, truncate(text.strip(), max_w)))
+            _check_block_error(role, btype, block, i, max_w, errors, mentions)
+
+    return errors, mentions
+
+
+def cmd_errors(args):
+    _check_file_type(args.file)
+    errors, mentions = _collect_errors(args.file, args.max_width, args.line_range)
 
     if not errors and not mentions:
         print("No errors found.")
@@ -341,7 +420,32 @@ _RESULT_ERROR_PATTERNS = re.compile(
 )
 
 
+def cmd_audit(args):
+    """Combined summary + errors + tool breakdown."""
+    _check_file_type(args.file)
+
+    messages = list(iter_messages(args.file))
+    s = _accumulate_stats(args.file, messages=messages)
+    _print_stats(s)
+
+    errors, mentions = _collect_errors(args.file, args.max_width, messages=messages)
+    if errors or mentions:
+        print()
+        print(f"Errors ({len(errors)}):")
+        for line, text in errors:
+            print(f"  L{line}: {text}")
+        if mentions:
+            print()
+            print(f"Mentions ({len(mentions)}):")
+            for line, text in mentions:
+                print(f"  L{line}: {text}")
+    else:
+        print()
+        print("Errors: none")
+
+
 def cmd_search(args):
+    _check_file_type(args.file)
     pattern = re.compile(args.pattern, re.IGNORECASE)
     max_w = args.max_width
     found = False
@@ -426,6 +530,27 @@ def parse_sandbox_log(path):
             yield entry
 
 
+def _host_matches(candidate, filter_val):
+    """Check if candidate host matches filter_val (exact or parent-domain)."""
+    if not candidate:
+        return False
+    candidate = candidate.lower()
+    return candidate == filter_val or candidate.endswith("." + filter_val)
+
+
+def _match_network_entry(e, method_filter, host_filter):
+    """Return True if an HTTP entry passes the method/host filters."""
+    if not e.get("http_method"):
+        return False
+    if method_filter and e["http_method"].upper() not in method_filter:
+        return False
+    if host_filter and not _host_matches(e.get("host"), host_filter):
+        url_host = urlsplit(e.get("http_url", "")).hostname or ""
+        if not _host_matches(url_host, host_filter):
+            return False
+    return True
+
+
 def cmd_network(args):
     entries = list(parse_sandbox_log(args.file))
 
@@ -433,16 +558,23 @@ def cmd_network(args):
         print("No OCSF events found.")
         return
 
+    method_filter = (
+        {m.strip().upper() for m in args.method.split(",")}
+        if hasattr(args, "method") and args.method
+        else None
+    )
+    host_filter = args.host.lower() if hasattr(args, "host") and args.host else None
+
     if args.json_output:
+        if method_filter or host_filter:
+            entries = [e for e in entries if _match_network_entry(e, method_filter, host_filter)]
         print(json.dumps(entries, indent=2))
         return
 
-    # Compute time span.
     t0 = entries[0]["ts"]
     t1 = entries[-1]["ts"]
     duration = t1 - t0
 
-    # Collect stats.
     event_counts = Counter(e["event"] for e in entries)
     host_counts = Counter()
     denied = []
@@ -455,7 +587,7 @@ def cmd_network(args):
             host_counts[h] += 1
         if e.get("verdict") == "DENIED":
             denied.append(e)
-        if e.get("http_method"):
+        if _match_network_entry(e, method_filter, host_filter):
             http_requests.append(e)
         p = e.get("policy")
         if p and p != "-":
@@ -495,13 +627,21 @@ def cmd_network(args):
         print(f"  {event:20s} {count:>4d}")
 
     if args.http:
+        filter_desc = ""
+        if method_filter:
+            filter_desc += f" [{','.join(sorted(method_filter))}]"
+        if host_filter:
+            filter_desc += f" [host={host_filter}]"
         print()
-        print("HTTP requests:")
+        print(f"HTTP requests{filter_desc}:")
+        if not http_requests:
+            print("  (none matching filters)")
         for e in http_requests:
             ts_rel = e["ts"] - t0
             method = e.get("http_method", "?")
+            host = e.get("host", "?")
             url = e.get("http_url", "?")
-            print(f"  +{ts_rel:7.1f}s  {method:6s} {url}")
+            print(f"  +{ts_rel:7.1f}s  {method:6s} {host}  {url}")
 
 
 def cmd_network_search(args):
@@ -561,6 +701,10 @@ def main():
     p_errors.add_argument("--max-width", type=int, default=400, help=width_help)
     p_errors.add_argument("--lines", dest="line_range_spec", help=lines_help)
 
+    p_audit = sub.add_parser("audit", help="summary + errors + tools in one pass")
+    p_audit.add_argument("file", help="path to .jsonl file (or - for stdin)")
+    p_audit.add_argument("--max-width", type=int, default=400, help=width_help)
+
     p_search = sub.add_parser("search", help="search tool results and text for pattern")
     p_search.add_argument("pattern", help="regex pattern to search for")
     p_search.add_argument("file", help="path to .jsonl file (or - for stdin)")
@@ -571,6 +715,12 @@ def main():
     p_network.add_argument("file", help="path to sandbox .log file")
     p_network.add_argument("--json", dest="json_output", action="store_true", help=json_help)
     p_network.add_argument("--http", action="store_true", help="list individual HTTP requests")
+    p_network.add_argument(
+        "--method", help="filter HTTP requests by method (e.g. POST or POST,PUT,PATCH)"
+    )
+    p_network.add_argument(
+        "--host", help="filter HTTP requests by host (exact or parent domain match)"
+    )
 
     p_netsearch = sub.add_parser(
         "network-search", aliases=["netsearch"], help="search sandbox network logs"
@@ -599,6 +749,7 @@ def main():
         "conv": cmd_conversation,
         "tools": cmd_tools,
         "errors": cmd_errors,
+        "audit": cmd_audit,
         "search": cmd_search,
         "network": cmd_network,
         "net": cmd_network,
