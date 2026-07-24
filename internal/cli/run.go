@@ -478,6 +478,29 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// When profiles or providers use local paths (from ResolveRelativeTo or
+	// base composition), ResolveHarness must still run to parse them into
+	// ResolvedProfile/ResolvedProvider — even without URL references.
+	// The lock-file and URL-resolution paths strip entries they consume;
+	// this pass handles whatever remains. Outputs are merged and deduped.
+	if len(h.OpenShellProfiles()) > 0 || hasLocalProviders(h) {
+		prev := result
+		var resolveErr error
+		result, resolveErr = resolve.ResolveHarness(ctx, h, resolve.ResolveOpts{
+			WorkspaceRoot: absFullsendDir,
+		})
+		if resolveErr != nil {
+			return fmt.Errorf("resolving local profiles/providers: %w", resolveErr)
+		}
+		result.Deps = append(prev.Deps, result.Deps...)
+		result.Profiles = append(prev.Profiles, result.Profiles...)
+		result.Providers = append(prev.Providers, result.Providers...)
+		result.Warnings = append(prev.Warnings, result.Warnings...)
+	}
+	for _, w := range result.Warnings {
+		printer.StepWarn(w)
+	}
+
 	if resolved, overridden := applySandboxImageOverride(h.Image); overridden {
 		printer.StepInfo(fmt.Sprintf("Image override via FULLSEND_SANDBOX_IMAGE: %s -> %s", h.Image, resolved))
 		h.Image = resolved
@@ -3426,6 +3449,15 @@ func mergeProviderDefs(localDefs []harness.ProviderDef, urlProviders []resolve.R
 		allDefs = append(allDefs, lastByName[name].Def)
 	}
 	return allDefs, shadowed
+}
+
+func hasLocalProviders(h *harness.Harness) bool {
+	for _, p := range h.Providers {
+		if !harness.IsURL(p) && harness.IsProviderPath(p) {
+			return true
+		}
+	}
+	return false
 }
 
 // sandboxProviderNames returns the provider names that should be attached to

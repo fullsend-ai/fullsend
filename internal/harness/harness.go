@@ -413,8 +413,8 @@ func (h *Harness) Validate() error {
 		}
 	}
 	for i, p := range h.Providers {
-		if IsURL(p) {
-			continue // validated by ValidateResourceTypes below
+		if IsURL(p) || filepath.IsAbs(p) || IsProviderPath(p) {
+			continue // URL or path — validated by ValidateResourceTypes below
 		}
 		if !validProviderName.MatchString(p) {
 			return fmt.Errorf("providers[%d] name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", i, p)
@@ -575,6 +575,21 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 			}
 		}
 	}
+	if h.OpenShell != nil {
+		for i := range h.OpenShell.Profiles {
+			if h.OpenShell.Profiles[i], err = resolve(fmt.Sprintf("openshell.profiles[%d]", i), h.OpenShell.Profiles[i]); err != nil {
+				return err
+			}
+		}
+	}
+	for i := range h.Providers {
+		p := h.Providers[i]
+		if IsProviderPath(p) {
+			if h.Providers[i], err = resolve(fmt.Sprintf("providers[%d]", i), p); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -685,6 +700,18 @@ func (h *Harness) ValidateFilesExist() error {
 		}
 		if err := check(fmt.Sprintf("host_files[%d].src", i), hf.Src); err != nil {
 			return err
+		}
+	}
+	for i, p := range h.OpenShellProfiles() {
+		if err := check(fmt.Sprintf("openshell.profiles[%d]", i), p); err != nil {
+			return err
+		}
+	}
+	for i, p := range h.Providers {
+		if IsProviderPath(p) {
+			if err := check(fmt.Sprintf("providers[%d]", i), p); err != nil {
+				return err
+			}
 		}
 	}
 	if h.ValidationLoop != nil {
@@ -836,11 +863,10 @@ func (h *Harness) ValidateResourceTypes() error {
 		}
 	}
 	for i, p := range h.OpenShellProfiles() {
-		if !IsURL(p) {
-			return fmt.Errorf("openshell.profiles[%d] must be a URL (local profiles are not supported)", i)
-		}
-		if _, _, hasHash := ParseIntegrityHash(p); !hasHash {
-			return fmt.Errorf("openshell.profiles[%d] URL must include #sha256=... integrity hash", i)
+		if IsURL(p) {
+			if _, _, hasHash := ParseIntegrityHash(p); !hasHash {
+				return fmt.Errorf("openshell.profiles[%d] URL must include #sha256=... integrity hash", i)
+			}
 		}
 	}
 	for i, p := range h.Providers {
@@ -888,8 +914,10 @@ func (h *Harness) HasURLReferences() bool {
 			return true
 		}
 	}
-	if len(h.OpenShellProfiles()) > 0 { // profiles are always URLs (enforced by ValidateResourceTypes)
-		return true
+	for _, profile := range h.OpenShellProfiles() {
+		if IsURL(profile) {
+			return true
+		}
 	}
 	for _, p := range h.Providers {
 		if IsURL(p) {

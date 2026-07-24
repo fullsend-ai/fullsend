@@ -2,6 +2,7 @@ package harness
 
 import (
 	"path/filepath"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/urlutil"
 )
@@ -19,6 +20,13 @@ func IsAbsPath(s string) bool {
 // IsRelPath returns true if s is a non-empty relative file path (not a URL and not absolute).
 func IsRelPath(s string) bool {
 	return s != "" && !IsURL(s) && !IsAbsPath(s)
+}
+
+// IsProviderPath returns true if s looks like a file path rather than a bare
+// provider name. A provider string is a path if it contains a directory
+// separator or ends with a YAML extension.
+func IsProviderPath(s string) bool {
+	return strings.Contains(s, "/") || strings.HasSuffix(s, ".yaml") || strings.HasSuffix(s, ".yml")
 }
 
 // ParseIntegrityHash extracts the SHA256 hash from a URL fragment (#sha256=...).

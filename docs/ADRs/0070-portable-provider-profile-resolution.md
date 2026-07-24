@@ -56,26 +56,30 @@ profiles. Today, providers and profiles are an exception.
 
 Extend the harness schema with two new fields:
 
-1. **`openshell.profiles`** — A new list field accepting only HTTPS URLs with `#sha256=...`
-   integrity hashes. Profiles define openshell-level credential type schemas and
-   belong in shared repositories, not locally. No local-path form.
+1. **`openshell.profiles`** — A new list field accepting HTTPS URLs with `#sha256=...`
+   integrity hashes, and local file paths (resolved relative to the harness
+   directory or inherited as absolute cache paths from `base:` composition).
+   Profiles define openshell-level credential type schemas.
 
-2. **`providers`** — Extend the existing list field to accept both local provider
-   names (existing behavior) and remote HTTPS URLs with `#sha256=...` hashes.
+2. **`providers`** — Extend the existing list field to accept local provider
+   names (existing behavior), local file paths (resolved relative to the
+   harness directory), and remote HTTPS URLs with `#sha256=...` hashes.
    Mixed forms allowed in the same list.
 
 ### Schema
 
 ```yaml
-# New openshell.profiles field (URL-only)
+# openshell.profiles field (local paths or URLs)
 openshell:
   profiles:
+  - profiles/claude-code.yaml      # Local path (resolved relative to harness)
   - "https://github.com/org/profiles/tree/main/claude-code.yaml#sha256=abc..."
   - "https://github.com/org/profiles/tree/main/google-vertex-ai.yaml#sha256=def..."
 
-# Extended providers field (mixed local names and URLs)
+# Extended providers field (mixed local names, paths, and URLs)
 providers:
-  - "my-local-provider"  # Local name (existing)
+  - "my-local-provider"  # Local name: loaded from providers/my-local-provider.yaml
+  - providers/custom.yaml  # Local path (resolved relative to harness)
   - "https://github.com/org/repo/tree/main/providers/my-provider.yaml#sha256=789..."  # Remote
 ```
 

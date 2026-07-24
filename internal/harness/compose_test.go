@@ -3950,3 +3950,233 @@ func TestIsTransientFetchError(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadWithBase_URLBase_ProfileResolution(t *testing.T) {
+	profileContent := []byte(`id: test-profile
+network:
+  egress:
+    - host: "*.example.com"
+`)
+	profileHash := computeHash(profileContent)
+
+	baseContent := []byte(`
+agent: agents/remote.md
+role: test
+openshell:
+  profiles:
+    - profiles/test-profile.yaml
+`)
+	baseHash := computeHash(baseContent)
+
+	agentContent := []byte("# test agent")
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.Write(baseContent)
+		case "/profiles/test-profile.yaml":
+			w.Write(profileContent)
+		case "/agents/remote.md":
+			w.Write(agentContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+server.URL+`/base.yaml#sha256=`+baseHash+`
+`)
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	// Profile should be rewritten to a local cache path
+	require.NotNil(t, h.OpenShell)
+	require.Len(t, h.OpenShellProfiles(), 1)
+	assert.False(t, IsURL(h.OpenShellProfiles()[0]), "profile should be a local path, not a URL")
+	assert.True(t, filepath.IsAbs(h.OpenShellProfiles()[0]), "profile should be absolute (cache path)")
+
+	// Verify cached content matches
+	content, err := os.ReadFile(h.OpenShellProfiles()[0])
+	require.NoError(t, err)
+	assert.Equal(t, profileContent, content)
+
+	// Dependencies: base + agent + profile = 3
+	hasDep := false
+	for _, d := range deps {
+		if d.Field == "openshell.profiles[0]" {
+			hasDep = true
+			assert.Equal(t, server.URL+"/profiles/test-profile.yaml", d.URL)
+			assert.Equal(t, profileHash, d.SHA256)
+		}
+	}
+	assert.True(t, hasDep, "should have a dependency for the profile")
+}
+
+func TestLoadWithBase_URLBase_ProviderResolution(t *testing.T) {
+	providerContent := []byte(`name: test-provider
+type: custom
+credentials:
+  TEST_KEY: ""
+`)
+	providerHash := computeHash(providerContent)
+
+	baseContent := []byte(`
+agent: agents/remote.md
+role: test
+providers:
+  - providers/test-provider.yaml
+`)
+	baseHash := computeHash(baseContent)
+
+	agentContent := []byte("# test agent")
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.Write(baseContent)
+		case "/providers/test-provider.yaml":
+			w.Write(providerContent)
+		case "/agents/remote.md":
+			w.Write(agentContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+server.URL+`/base.yaml#sha256=`+baseHash+`
+`)
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	// Provider should be rewritten to a local cache path
+	require.Len(t, h.Providers, 1)
+	assert.False(t, IsURL(h.Providers[0]), "provider should be a local path, not a URL")
+	assert.True(t, filepath.IsAbs(h.Providers[0]), "provider should be absolute (cache path)")
+
+	// Verify cached content matches
+	content, err := os.ReadFile(h.Providers[0])
+	require.NoError(t, err)
+	assert.Equal(t, providerContent, content)
+
+	// Check dependency
+	hasDep := false
+	for _, d := range deps {
+		if d.Field == "providers[0]" {
+			hasDep = true
+			assert.Equal(t, server.URL+"/providers/test-provider.yaml", d.URL)
+			assert.Equal(t, providerHash, d.SHA256)
+		}
+	}
+	assert.True(t, hasDep, "should have a dependency for the provider")
+}
+
+func TestLoadWithBase_URLBase_BareProviderNameSkipped(t *testing.T) {
+	// A URL-fetched base harness with a bare provider name like "fullsend-github"
+	// should NOT trigger a fetch attempt. Only relative paths should be fetched.
+	baseContent := []byte(`
+agent: agents/remote.md
+role: test
+providers:
+  - fullsend-github
+  - providers/custom.yaml
+`)
+	baseHash := computeHash(baseContent)
+
+	providerContent := []byte(`name: custom-provider
+type: custom
+credentials:
+  CUSTOM_KEY: ""
+`)
+
+	agentContent := []byte("# test agent")
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.Write(baseContent)
+		case "/providers/custom.yaml":
+			w.Write(providerContent)
+		case "/agents/remote.md":
+			w.Write(agentContent)
+		case "/fullsend-github":
+			// If we hit this path, the bare name wasn't skipped
+			t.Error("bare provider name 'fullsend-github' was not skipped; tried to fetch as relative path")
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+server.URL+`/base.yaml#sha256=`+baseHash+`
+`)
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err)
+
+	// Should have two providers: the bare name (unchanged) and the resolved path
+	require.Len(t, h.Providers, 2)
+	assert.Equal(t, "fullsend-github", h.Providers[0], "bare provider name should remain unchanged")
+	assert.True(t, filepath.IsAbs(h.Providers[1]), "relative provider should be resolved to cache path")
+
+	// Should have one dependency for the relative provider path, none for bare name
+	providerDeps := 0
+	for _, d := range deps {
+		if strings.HasPrefix(d.Field, "providers[") {
+			providerDeps++
+			assert.Equal(t, "providers[1]", d.Field, "only providers[1] (relative path) should be fetched")
+		}
+	}
+	assert.Equal(t, 1, providerDeps, "should have exactly one provider dependency (for relative path)")
+}
