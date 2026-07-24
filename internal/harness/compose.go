@@ -572,9 +572,14 @@ func mergeBaseIntoChild(base, child *Harness) {
 		child.Env.mergeEnvFrom(base.Env, false)
 	}
 
-	// Pointer structs: child replaces if non-nil
+	// Pointer structs: child replaces if non-nil, but carry forward
+	// PreflightCheck when the child overrides validation_loop without
+	// setting its own preflight_check (avoids silently dropping inherited
+	// preflight checks — see #5074).
 	if child.ValidationLoop == nil {
 		child.ValidationLoop = base.ValidationLoop
+	} else if child.ValidationLoop.PreflightCheck == "" && base.ValidationLoop != nil {
+		child.ValidationLoop.PreflightCheck = base.ValidationLoop.PreflightCheck
 	}
 	// Security: child inherits base's config if nil. Note that a base harness
 	// (even integrity-pinned) could set fail_mode: open. Child authors must
@@ -1342,9 +1347,13 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 		child.Env.mergeEnvFrom(base.Env, false)
 	}
 
-	// ValidationLoop: child replaces if non-nil
+	// ValidationLoop: child replaces if non-nil, but carry forward
+	// PreflightCheck when the child overrides validation_loop without
+	// setting its own preflight_check (see #5074).
 	if child.ValidationLoop == nil {
 		child.ValidationLoop = base.ValidationLoop
+	} else if child.ValidationLoop.PreflightCheck == "" && base.ValidationLoop != nil {
+		child.ValidationLoop.PreflightCheck = base.ValidationLoop.PreflightCheck
 	}
 }
 

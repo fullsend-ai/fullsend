@@ -83,10 +83,14 @@ slug: test-triage
 	// Local base -> no URL deps.
 	assert.Nil(t, deps)
 
-	// ValidationLoop inherited from base.
+	// ValidationLoop inherited from base. PreflightCheck is intentionally
+	// empty here: fullsend's own agents resolve from fullsend-ai/agents
+	// (not this local scaffold), so preflight_check belongs there instead
+	// — see fullsend-ai/agents#422.
 	assert.NotNil(t, h.ValidationLoop)
 	assert.Equal(t, "scripts/validate-output-schema.sh", h.ValidationLoop.Script)
 	assert.Equal(t, 2, h.ValidationLoop.MaxIterations)
+	assert.Empty(t, h.ValidationLoop.PreflightCheck)
 }
 
 // TestLoadWithBase_WrapperOverridesBaseFields verifies that wrapper-level

@@ -567,6 +567,40 @@ func TestValidateRunnerEnvWith_ValidationLoopSchemaVarSet(t *testing.T) {
 	require.NoError(t, h.ValidateRunnerEnvWith(lookup))
 }
 
+func TestValidateRunnerEnvWith_ChecksValidationLoopPreflightCheck(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		ValidationLoop: &ValidationLoop{
+			Script:         "scripts/validate.sh",
+			PreflightCheck: "test -d ${MISSING_DIR}",
+		},
+	}
+	lookup := func(key string) (string, bool) { return "", false }
+	err := h.ValidateRunnerEnvWith(lookup)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MISSING_DIR")
+	assert.Contains(t, err.Error(), "validation_loop.preflight_check")
+}
+
+func TestValidateRunnerEnvWith_ValidationLoopPreflightCheckVarSet(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		ValidationLoop: &ValidationLoop{
+			Script:         "scripts/validate.sh",
+			PreflightCheck: "test -d ${FULLSEND_DIR}",
+		},
+	}
+	lookup := func(key string) (string, bool) {
+		if key == "FULLSEND_DIR" {
+			return "/opt/fullsend", true
+		}
+		return "", false
+	}
+	require.NoError(t, h.ValidateRunnerEnvWith(lookup))
+}
+
 func TestValidateRunnerEnvWith_NilEnvNoError(t *testing.T) {
 	h := &Harness{Agent: "agents/test.md", Role: "test"}
 	err := h.ValidateRunnerEnvWith(func(string) (string, bool) { return "", false })
@@ -858,6 +892,47 @@ func TestValidateFilesExist_SkipsOptionalPaths(t *testing.T) {
 	}
 	// Should not error — optional host files may not exist until runtime.
 	require.NoError(t, h.ValidateFilesExist())
+}
+
+// --- PreflightCheck tests ---
+
+func TestLoad_ValidationLoopPreflightCheck(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: scripts/validate.sh
+  preflight_check: "python3 -c 'import jsonschema'"
+  max_iterations: 2
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "scripts/validate.sh", h.ValidationLoop.Script)
+	assert.Equal(t, "python3 -c 'import jsonschema'", h.ValidationLoop.PreflightCheck)
+	assert.Equal(t, 2, h.ValidationLoop.MaxIterations)
+}
+
+func TestLoad_ValidationLoopWithoutPreflightCheck(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: scripts/validate.sh
+  max_iterations: 1
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+	require.NotNil(t, h.ValidationLoop)
+	assert.Empty(t, h.ValidationLoop.PreflightCheck)
 }
 
 // --- AllowedRemoteResources tests ---
