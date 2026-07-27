@@ -848,9 +848,9 @@ run_label_test "label-created-but-retry-fails" \
 run_label_test "label-create-fails" \
   "1" "1" "1" "error:create-failed"
 
-# Apply fails but create succeeds → only apply_rc matters for initial check
-run_label_test "label-apply-fails-create-succeeds-no-retry" \
-  "1" "0" "1" "error:created-but-apply-failed"
+# Early-return short-circuit: apply_rc=0 → create/retry values are ignored
+run_label_test "label-applied-ignores-create-and-retry" \
+  "0" "1" "1" "applied:direct"
 
 # --- Summary ---
 

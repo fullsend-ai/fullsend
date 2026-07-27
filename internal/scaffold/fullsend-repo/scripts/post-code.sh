@@ -550,13 +550,14 @@ if gh issue edit "${PR_NUMBER_FROM_URL}" \
   --add-label "ready-for-review" 2>"${LABEL_APPLY_STDERR}"; then
   echo "Applied ready-for-review label to PR #${PR_NUMBER_FROM_URL}"
 else
-  echo "::notice::Label application failed — attempting to create missing label"
+  echo "::notice::Label application failed — attempting to create or update label"
   cat "${LABEL_APPLY_STDERR}" >&2
   if gh label create "ready-for-review" \
     --repo "${REPO_FULL_NAME}" \
     --description "Fullsend: triggers review agent dispatch" \
-    --color "0E8A16" 2>/dev/null; then
-    echo "::notice::Created missing ready-for-review label in ${REPO_FULL_NAME}"
+    --color "0E8A16" \
+    --force 2>/dev/null; then
+    echo "::notice::Created/updated ready-for-review label in ${REPO_FULL_NAME}"
     if gh issue edit "${PR_NUMBER_FROM_URL}" \
       --repo "${REPO_FULL_NAME}" \
       --add-label "ready-for-review" 2>/dev/null; then
