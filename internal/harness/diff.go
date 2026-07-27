@@ -527,6 +527,10 @@ func diffValidationLoop(base, child *ValidationLoop) *ValidationLoop {
 		vl.FeedbackMode = child.FeedbackMode
 		hasAny = true
 	}
+	if child.PreflightCheck != base.PreflightCheck {
+		vl.PreflightCheck = child.PreflightCheck
+		hasAny = true
+	}
 
 	if !hasAny {
 		return nil
