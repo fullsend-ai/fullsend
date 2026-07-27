@@ -537,8 +537,37 @@ echo "pr_url=${PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
 # author to pass is_event_actor_authorized, which fails for bot accounts
 # (GitHub App bots have no collaborator role). The label-based path has no
 # explicit auth gate — label application itself requires write access.
+#
+# Defense-in-depth: if the label does not exist in the repo (e.g., deleted
+# by admin, or repo enrolled before label provisioning was implemented),
+# create it on-the-fly and retry. The bot has issues:write permission which
+# includes label creation. If creation also fails, escalate to ::error::
+# because the review dispatch chain is broken without this label.
 PR_NUMBER_FROM_URL="${PR_URL##*/}"
-gh issue edit "${PR_NUMBER_FROM_URL}" \
+LABEL_APPLY_STDERR=$(mktemp)
+if gh issue edit "${PR_NUMBER_FROM_URL}" \
   --repo "${REPO_FULL_NAME}" \
-  --add-label "ready-for-review" 2>/dev/null || \
-  echo "::warning::Failed to apply ready-for-review label to PR #${PR_NUMBER_FROM_URL}"
+  --add-label "ready-for-review" 2>"${LABEL_APPLY_STDERR}"; then
+  echo "Applied ready-for-review label to PR #${PR_NUMBER_FROM_URL}"
+else
+  echo "::notice::Label application failed — attempting to create missing label"
+  cat "${LABEL_APPLY_STDERR}" >&2
+  if gh label create "ready-for-review" \
+    --repo "${REPO_FULL_NAME}" \
+    --description "Fullsend: triggers review agent dispatch" \
+    --color "0E8A16" 2>/dev/null; then
+    echo "::notice::Created missing ready-for-review label in ${REPO_FULL_NAME}"
+    if gh issue edit "${PR_NUMBER_FROM_URL}" \
+      --repo "${REPO_FULL_NAME}" \
+      --add-label "ready-for-review" 2>/dev/null; then
+      echo "Applied ready-for-review label to PR #${PR_NUMBER_FROM_URL} after creating it"
+    else
+      echo "::error::Created ready-for-review label but failed to apply it to PR #${PR_NUMBER_FROM_URL}"
+      echo "::error::The review agent will NOT be dispatched for this PR"
+    fi
+  else
+    echo "::error::Failed to create ready-for-review label in ${REPO_FULL_NAME}"
+    echo "::error::The review agent will NOT be dispatched for this PR"
+  fi
+fi
+rm -f "${LABEL_APPLY_STDERR}"

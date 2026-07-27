@@ -778,6 +778,80 @@ run_precommit_retry_test "precommit-passes-with-unstaged" \
 run_precommit_retry_test "precommit-retry-passes-but-left-unstaged" \
   "1" "yes" "0" "blocked:retry-left-unstaged" "yes"
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the ready-for-review label application logic
+# from post-code.sh section 8. Given whether the initial label apply
+# succeeded, whether label creation succeeded, and whether the retry apply
+# succeeded, returns the action and severity the script would produce.
+# ---------------------------------------------------------------------------
+decide_label_action() {
+  local apply_rc="$1"            # 0 = label applied, 1 = failed
+  local create_rc="$2"           # 0 = label created, 1 = creation failed (ignored if apply_rc=0)
+  local retry_apply_rc="${3:-1}" # 0 = retry applied, 1 = retry failed (ignored if create_rc!=0)
+
+  if [ "${apply_rc}" -eq 0 ]; then
+    echo "applied:direct"
+    return 0
+  fi
+
+  # Apply failed — try to create label
+  if [ "${create_rc}" -eq 0 ]; then
+    if [ "${retry_apply_rc}" -eq 0 ]; then
+      echo "applied:after-create"
+    else
+      echo "error:created-but-apply-failed"
+    fi
+  else
+    echo "error:create-failed"
+  fi
+}
+
+run_label_test() {
+  local test_name="$1"
+  local apply_rc="$2"
+  local create_rc="$3"
+  local retry_apply_rc="$4"
+  local expected="$5"
+
+  local actual
+  actual="$(decide_label_action "${apply_rc}" "${create_rc}" "${retry_apply_rc}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  apply_rc:        '${apply_rc}'"
+    echo "  create_rc:       '${create_rc}'"
+    echo "  retry_apply_rc:  '${retry_apply_rc}'"
+    echo "  expected:        '${expected}'"
+    echo "  actual:          '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Label application test cases ---
+
+# Happy path: label already exists in repo → applied directly
+run_label_test "label-applied-directly" \
+  "0" "0" "0" "applied:direct"
+
+# Fallback: label missing → created, then retry applies it
+run_label_test "label-created-then-applied" \
+  "1" "0" "0" "applied:after-create"
+
+# Label missing → created, but retry apply still fails
+run_label_test "label-created-but-retry-fails" \
+  "1" "0" "1" "error:created-but-apply-failed"
+
+# Label missing → creation also fails (permission issue)
+run_label_test "label-create-fails" \
+  "1" "1" "1" "error:create-failed"
+
+# Apply fails but create succeeds → only apply_rc matters for initial check
+run_label_test "label-apply-fails-create-succeeds-no-retry" \
+  "1" "0" "1" "error:created-but-apply-failed"
+
 # --- Summary ---
 
 echo ""
