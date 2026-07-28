@@ -42,7 +42,7 @@ validate "approve-without-label-actions" '{
   "action": "approve",
   "pr_number": 42,
   "repo": "org/repo",
-  "head_sha": "abc1234",
+  "head_sha": "abcdef0123456789abcdef0123456789abcdef01",
   "body": "Looks good to me."
 }' true
 
@@ -51,7 +51,7 @@ validate "approve-with-label-actions" '{
   "action": "approve",
   "pr_number": 42,
   "repo": "org/repo",
-  "head_sha": "abc1234",
+  "head_sha": "abcdef0123456789abcdef0123456789abcdef01",
   "body": "Looks good to me.",
   "label_actions": {
     "reason": "Approved PR, adding reviewed label",
@@ -66,7 +66,7 @@ validate "request-changes-with-label-actions" '{
   "action": "request-changes",
   "pr_number": 42,
   "repo": "org/repo",
-  "head_sha": "abc1234",
+  "head_sha": "abcdef0123456789abcdef0123456789abcdef01",
   "body": "Please fix the issues.",
   "findings": [
     {
@@ -104,7 +104,7 @@ validate "label-actions-missing-reason" '{
   "action": "approve",
   "pr_number": 42,
   "repo": "org/repo",
-  "head_sha": "abc1234",
+  "head_sha": "abcdef0123456789abcdef0123456789abcdef01",
   "body": "LGTM",
   "label_actions": {
     "actions": [
@@ -118,7 +118,7 @@ validate "label-actions-empty-actions" '{
   "action": "approve",
   "pr_number": 42,
   "repo": "org/repo",
-  "head_sha": "abc1234",
+  "head_sha": "abcdef0123456789abcdef0123456789abcdef01",
   "body": "LGTM",
   "label_actions": {
     "reason": "No labels to change",
@@ -131,7 +131,7 @@ validate "label-actions-invalid-verb" '{
   "action": "approve",
   "pr_number": 42,
   "repo": "org/repo",
-  "head_sha": "abc1234",
+  "head_sha": "abcdef0123456789abcdef0123456789abcdef01",
   "body": "LGTM",
   "label_actions": {
     "reason": "Replace a label",
@@ -146,7 +146,7 @@ validate "label-actions-extra-property" '{
   "action": "approve",
   "pr_number": 42,
   "repo": "org/repo",
-  "head_sha": "abc1234",
+  "head_sha": "abcdef0123456789abcdef0123456789abcdef01",
   "body": "LGTM",
   "label_actions": {
     "reason": "Adding label",

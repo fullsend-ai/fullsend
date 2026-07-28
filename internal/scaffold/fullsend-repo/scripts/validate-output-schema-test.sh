@@ -347,25 +347,25 @@ run_test_custom_filename "path-traversal-stripped" \
 REVIEW_SCHEMA="${SCRIPT_DIR}/../schemas/review-result.schema.json"
 
 run_test_custom_filename "review-reject-valid" \
-  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Wrong approach.","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Wrong approach.","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
 
 run_test_custom_filename "review-reject-missing-findings" \
-  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Wrong approach."}' \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Wrong approach."}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false"
 
 run_test_custom_filename "review-reject-missing-body" \
-  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abc1234","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false"
 
 run_test_custom_filename "review-approve-valid" \
-  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Looks good, only minor nits."}' \
+  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Looks good, only minor nits."}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"

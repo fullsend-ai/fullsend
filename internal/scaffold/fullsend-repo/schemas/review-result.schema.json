@@ -13,7 +13,7 @@
     },
     "pr_number": { "type": "integer", "minimum": 1 },
     "repo": { "type": "string", "pattern": "^[^/]+/[^/]+$" },
-    "head_sha": { "type": "string", "minLength": 7 },
+    "head_sha": { "type": "string", "pattern": "^[0-9a-fA-F]{40}$|^[0-9a-fA-F]{64}$" },
     "body": { "type": "string", "minLength": 1 },
     "findings": {
       "type": "array",
