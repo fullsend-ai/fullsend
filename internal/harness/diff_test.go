@@ -617,6 +617,198 @@ func TestDiffForgeConfig_ValidationLoopFieldLevel(t *testing.T) {
 		"unchanged Schema should not be in forge diff")
 }
 
+func TestDiffValidationLoop(t *testing.T) {
+	tests := []struct {
+		name     string
+		base     *ValidationLoop
+		child    *ValidationLoop
+		expected *ValidationLoop
+	}{
+		{
+			name:     "both nil",
+			base:     nil,
+			child:    nil,
+			expected: nil,
+		},
+		{
+			name:  "base nil child non-nil",
+			base:  nil,
+			child: &ValidationLoop{Script: "child.sh", MaxIterations: 3},
+			expected: &ValidationLoop{
+				Script: "child.sh", MaxIterations: 3,
+			},
+		},
+		{
+			name:     "child nil",
+			base:     &ValidationLoop{Script: "base.sh"},
+			child:    nil,
+			expected: nil,
+		},
+		{
+			name: "both equal",
+			base: &ValidationLoop{
+				Script:        "same.sh",
+				Schema:        "same.json",
+				MaxIterations: 5,
+				FeedbackMode:  "append",
+			},
+			child: &ValidationLoop{
+				Script:        "same.sh",
+				Schema:        "same.json",
+				MaxIterations: 5,
+				FeedbackMode:  "append",
+			},
+			expected: nil,
+		},
+		{
+			name: "schema only diff",
+			base: &ValidationLoop{
+				Script:        "validate.sh",
+				Schema:        "base.json",
+				MaxIterations: 3,
+				FeedbackMode:  "append",
+			},
+			child: &ValidationLoop{
+				Script:        "validate.sh",
+				Schema:        "child.json",
+				MaxIterations: 3,
+				FeedbackMode:  "append",
+			},
+			expected: &ValidationLoop{
+				Schema: "child.json",
+			},
+		},
+		{
+			name: "feedback mode only diff",
+			base: &ValidationLoop{
+				Script:        "validate.sh",
+				Schema:        "schema.json",
+				MaxIterations: 3,
+				FeedbackMode:  "append",
+			},
+			child: &ValidationLoop{
+				Script:        "validate.sh",
+				Schema:        "schema.json",
+				MaxIterations: 3,
+				FeedbackMode:  "replace",
+			},
+			expected: &ValidationLoop{
+				FeedbackMode: "replace",
+			},
+		},
+		{
+			name: "preflight check only diff",
+			base: &ValidationLoop{
+				Script:         "validate.sh",
+				PreflightCheck: "which jq",
+			},
+			child: &ValidationLoop{
+				Script:         "validate.sh",
+				PreflightCheck: "python3 -c 'import json'",
+			},
+			expected: &ValidationLoop{
+				PreflightCheck: "python3 -c 'import json'",
+			},
+		},
+		{
+			name: "multiple fields differ",
+			base: &ValidationLoop{
+				Script:         "base.sh",
+				Schema:         "base.json",
+				MaxIterations:  3,
+				FeedbackMode:   "append",
+				PreflightCheck: "which jq",
+			},
+			child: &ValidationLoop{
+				Script:         "child.sh",
+				Schema:         "child.json",
+				MaxIterations:  5,
+				FeedbackMode:   "replace",
+				PreflightCheck: "which python3",
+			},
+			expected: &ValidationLoop{
+				Script:         "child.sh",
+				Schema:         "child.json",
+				MaxIterations:  5,
+				FeedbackMode:   "replace",
+				PreflightCheck: "which python3",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := diffValidationLoop(tt.base, tt.child)
+			if tt.expected == nil {
+				assert.Nil(t, result)
+			} else {
+				require.NotNil(t, result)
+				assert.Equal(t, tt.expected.Script, result.Script)
+				assert.Equal(t, tt.expected.Schema, result.Schema)
+				assert.Equal(t, tt.expected.MaxIterations, result.MaxIterations)
+				assert.Equal(t, tt.expected.FeedbackMode, result.FeedbackMode)
+				assert.Equal(t, tt.expected.PreflightCheck, result.PreflightCheck)
+			}
+		})
+	}
+}
+
+func TestDiffForgeConfig_ChildNil(t *testing.T) {
+	base := &ForgeConfig{
+		PreScript: "pre.sh",
+		ValidationLoop: &ValidationLoop{
+			Script: "validate.sh",
+		},
+	}
+	fc, warnings := diffForgeConfig(base, nil, "github")
+	assert.Nil(t, fc, "nil child should produce nil diff")
+	assert.Empty(t, warnings)
+}
+
+func TestDiffForgeConfig_PostScriptDiff(t *testing.T) {
+	base := &ForgeConfig{
+		PreScript:  "pre.sh",
+		PostScript: "post.sh",
+	}
+	child := &ForgeConfig{
+		PreScript:  "pre.sh",
+		PostScript: "post-v2.sh",
+	}
+	fc, warnings := diffForgeConfig(base, child, "github")
+	require.NotNil(t, fc)
+	assert.Empty(t, warnings)
+	assert.Equal(t, "post-v2.sh", fc.PostScript)
+	assert.Empty(t, fc.PreScript, "unchanged PreScript should not be in diff")
+}
+
+func TestDiffForgeConfig_RunnerEnvRemoval(t *testing.T) {
+	base := &ForgeConfig{
+		RunnerEnv: map[string]string{"A": "1", "B": "2"},
+	}
+	child := &ForgeConfig{
+		RunnerEnv: map[string]string{"A": "1"},
+	}
+	fc, warnings := diffForgeConfig(base, child, "github")
+	assert.Nil(t, fc)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "runner_env")
+	assert.Contains(t, warnings[0], "removes keys")
+}
+
+func TestDiffForgeConfig_EnvRemoval(t *testing.T) {
+	base := &ForgeConfig{
+		Env: &EnvConfig{Runner: map[string]string{"A": "1", "B": "2"}},
+	}
+	child := &ForgeConfig{
+		Env: &EnvConfig{Runner: map[string]string{"A": "1"}},
+	}
+	fc, warnings := diffForgeConfig(base, child, "github")
+	assert.Nil(t, fc)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "env")
+	assert.Contains(t, warnings[0], "removes keys")
+}
+
 func TestDiffHarness_PluginsAddition(t *testing.T) {
 	base := &Harness{Plugins: []string{"a"}}
 	child := &Harness{Plugins: []string{"a", "b"}}

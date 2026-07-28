@@ -226,6 +226,28 @@ func TestResolveForge_ValidationLoopNilInherits(t *testing.T) {
 	assert.Equal(t, "scripts/validate.sh", h.ValidationLoop.Script)
 }
 
+func TestResolveForge_EnvMergeNilHarnessEnv(t *testing.T) {
+	// When forge has Env but harness Env is nil, forge Env should be
+	// applied to a newly created EnvConfig.
+	h := &Harness{
+		Agent: "agents/test.md",
+		// h.Env is nil
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				Env: &EnvConfig{
+					Runner:  map[string]string{"GH_TOKEN": "${GH_TOKEN}"},
+					Sandbox: map[string]string{"DEBUG": "1"},
+				},
+			},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	require.NotNil(t, h.Env)
+	assert.Equal(t, "${GH_TOKEN}", h.Env.Runner["GH_TOKEN"])
+	assert.Equal(t, "1", h.Env.Sandbox["DEBUG"])
+}
+
 func TestResolveForge_NoForgeSection(t *testing.T) {
 	h := &Harness{
 		Agent:     "agents/test.md",

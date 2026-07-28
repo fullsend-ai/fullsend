@@ -1357,6 +1357,43 @@ func TestMergeForgeConfigInto_ValidationLoopFieldLevelMerge(t *testing.T) {
 	assert.Equal(t, "child-schema.json", child.ValidationLoop.Schema)
 }
 
+func TestMergeForgeConfigInto_RunnerEnvInherit(t *testing.T) {
+	// When child has no RunnerEnv, it should inherit base's RunnerEnv.
+	base := &ForgeConfig{
+		RunnerEnv: map[string]string{"KEY1": "val1", "KEY2": "val2"},
+	}
+	child := &ForgeConfig{
+		PreScript: "child-pre.sh",
+		// RunnerEnv is nil
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	require.NotNil(t, child.RunnerEnv)
+	assert.Equal(t, "val1", child.RunnerEnv["KEY1"])
+	assert.Equal(t, "val2", child.RunnerEnv["KEY2"])
+}
+
+func TestMergeForgeConfigInto_EnvInherit(t *testing.T) {
+	// When child has no Env, it should inherit base's Env.
+	base := &ForgeConfig{
+		Env: &EnvConfig{
+			Runner:  map[string]string{"R1": "val1"},
+			Sandbox: map[string]string{"S1": "val2"},
+		},
+	}
+	child := &ForgeConfig{
+		PreScript: "child-pre.sh",
+		// Env is nil
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	require.NotNil(t, child.Env)
+	assert.Equal(t, "val1", child.Env.Runner["R1"])
+	assert.Equal(t, "val2", child.Env.Sandbox["S1"])
+}
+
 func TestLoadWithBase_InvalidForgeAfterMerge(t *testing.T) {
 	dir := t.TempDir()
 
