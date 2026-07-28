@@ -29,6 +29,12 @@ Before running e2e locally or in CI:
 make e2e-test
 ```
 
+To run only the repos lifecycle test (requires `GITLAB_TOKEN`):
+
+```bash
+make repos-e2e-test
+```
+
 Optional environment variables:
 
 | Variable | Purpose |
@@ -37,6 +43,10 @@ Optional environment variables:
 | `FULLSEND_MINT_URL` | Override mint endpoint (default: hosted public mint, same as `fullsend admin --mint-url`) |
 | `E2E_LOCK_TIMEOUT` | Max wait for a free pool org (default 10m) |
 | `E2E_GCP_PROJECT_ID` | GCP project for inference setup (`github setup --inference-project`) |
+| `REPOS_E2E_GITHUB_TOKEN` | GitHub PAT for repos lifecycle e2e tests; overrides `GH_TOKEN`/`GITHUB_TOKEN` for the repos e2e org (test falls back to general auth if unset) |
+| `REPOS_E2E_GITHUB_ORG` | Override GitHub org for repos e2e tests (default: `fullsend-repos-e2e-gh`) |
+| `REPOS_E2E_GITLAB_GROUP` | Override GitLab group for repos e2e tests (default: `fullsend-repos-e2e-gl`) |
+| `GITLAB_TOKEN` | GitLab personal access token for repos lifecycle e2e tests (test skips if unset) |
 
 Behaviour tests use the same pool orgs but install via `fullsend github setup` (per-repo) instead of `fullsend admin install`. See [behaviour-testing.md](behaviour-testing.md) and [behaviour-drivers.md](behaviour-drivers.md).
 
@@ -62,6 +72,8 @@ Required repository secrets:
 | `E2E_GCP_PROJECT_ID` | GCP project ID for inference secrets (`github setup --inference-project`) |
 | `TEST_CLOUDFLARE_ACCOUNT_ID` | Cloudflare account ID for CF mint behaviour-test deploys (mapped to env `CLOUDFLARE_ACCOUNT_ID` in the behaviour job) |
 | `TEST_CLOUDFLARE_API_TOKEN` | Test-only Cloudflare API token for Wrangler against Worker `mint-test` (mapped to env `CLOUDFLARE_API_TOKEN`; distinct from site-deploy `CLOUDFLARE_*`) |
+| `REPOS_E2E_GITHUB_TOKEN` | GitHub PAT with `repo` + `delete_repo` scope and admin access to the repos e2e org (mapped to env `REPOS_E2E_GITHUB_TOKEN`) |
+| `REPOS_E2E_GITLAB_TOKEN` | GitLab personal access token (`api` scope) for repos lifecycle e2e tests (mapped to env `GITLAB_TOKEN`) |
 
 Mint URL uses the hosted public endpoint by default (same as `fullsend admin --mint-url`). Override with org/repo variable `FULLSEND_MINT_URL` if needed; no separate e2e secret.
 

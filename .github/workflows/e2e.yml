@@ -28,6 +28,8 @@ on:
       - 'internal/config/**'
       - 'internal/cli/github.go'
       - 'internal/cli/run.go'
+      - 'internal/cli/repos.go'
+      - 'internal/repos/**'
       - 'internal/layers/**'
       - 'internal/forge/**'
       - 'internal/harness/**'
@@ -136,7 +138,7 @@ jobs:
               exit 0
             }
           fi
-          if echo "$FILES" | grep -qE '\.go$|^go\.(mod|sum)$|^e2e/|^pkg/e2etest/|^internal/scaffold/fullsend-repo/|^internal/security/hooks/|^internal/dispatch/gcf/mintsrc/|^internal/sentencetoken/english\.json$|^Makefile$|^\.github/scripts/|^\.github/workflows/e2e\.yml$|^\.github/workflows/e2e-ok-to-test\.yml$|^action\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
+          if echo "$FILES" | grep -qE '\.go$|^go\.(mod|sum)$|^e2e/|^pkg/e2etest/|^internal/scaffold/fullsend-repo/|^internal/security/hooks/|^internal/dispatch/gcf/mintsrc/|^internal/sentencetoken/english\.json$|^internal/repos/|^internal/cli/repos\.go$|^Makefile$|^\.github/scripts/|^\.github/workflows/e2e\.yml$|^\.github/workflows/e2e-ok-to-test\.yml$|^action\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No e2e-relevant files changed — skipping tests"
@@ -170,6 +172,8 @@ jobs:
         env:
           E2E_SCREENSHOT_DIR: ${{ runner.temp }}/e2e-screenshots
           E2E_GCP_PROJECT_ID: ${{ secrets.E2E_GCP_PROJECT_ID }}
+          REPOS_E2E_GITHUB_TOKEN: ${{ secrets.REPOS_E2E_GITHUB_TOKEN }}
+          GITLAB_TOKEN: ${{ secrets.REPOS_E2E_GITLAB_TOKEN }}
 
       - name: Upload debug screenshots
         if: always() && steps.changes.outputs.relevant != 'false'

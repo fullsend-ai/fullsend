@@ -2,7 +2,7 @@
 .PHONY: help bootstrap ensure-hooks lint lint-all check fmt \
        mindmap go-build go-test go-lint go-fmt go-vet go-tidy \
        lint-md-links script-test test \
-       e2e-test behaviour-test lint-eval-cases functional-tests \
+       e2e-test repos-e2e-test behaviour-test lint-eval-cases functional-tests \
        wasm-build wasm-stage mint-cf-worker-test
 
 # Let Go automatically download the toolchain version required by go.mod.
@@ -189,6 +189,9 @@ test: lint-all go-test script-test lint-eval-cases
 
 e2e-test:
 	go test -tags e2e -v -count=1 -timeout 30m ./e2e/admin/
+
+repos-e2e-test:
+	go test -tags e2e -v -count=1 -timeout 30m -run TestReposLifecycle ./e2e/admin/
 
 behaviour-test:
 	go test -tags behaviour -race -v -count=1 -timeout 45m ./e2e/behaviour/
