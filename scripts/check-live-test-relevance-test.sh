@@ -6,12 +6,17 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 mapfile -t filters < <(sed -n "s/.*grep -qE '\(.*\)'; then/\1/p" \
   "$repo_root/.github/workflows/e2e.yml")
 
-if [[ ${#filters[@]} -ne 2 || ${filters[0]} != "${filters[1]}" ]]; then
+# The first two relevance filters are the behaviour and playback live suites,
+# which must stay identical. The repos suite adds a third, intentionally
+# narrower, filter (it only cares about internal/repos, internal/cli/repos.go
+# and its test harness) that is not held to the behaviour/playback path
+# expectations below.
+if [[ ${#filters[@]} -lt 2 || ${filters[0]} != "${filters[1]}" ]]; then
   echo 'Expected identical behaviour and playback relevance filters' >&2
   exit 1
 fi
 
-for filter in "${filters[@]}"; do
+for filter in "${filters[0]}" "${filters[1]}"; do
   # Each case is a single-file PR or merge-group change list.
   for path in \
     internal/fetch/fetch.go \

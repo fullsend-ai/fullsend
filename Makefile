@@ -2,7 +2,7 @@
 .PHONY: help bootstrap ensure-hooks lint lint-all check fmt \
        go-build go-test go-fmt go-vet go-tidy \
        lint-md-links script-test test ci-local \
-       behaviour-test playback-test \
+       repos-e2e-test behaviour-test playback-test \
        wasm-build wasm-stage wasm-stage-traced mint-cf-worker-test
 
 # Let Go automatically download the toolchain version required by go.mod.
@@ -279,6 +279,9 @@ ci-local:
 # main; when that passes, declare it here. Jira AISDLC-654 tracks that
 # step and the harnessLogPollWindow confirmation.
 BEHAVIOUR_CAPABILITIES ?= runtime-pi,inference-gateway,inference-gateway-api-key
+
+repos-e2e-test:
+	go test -tags e2e -v -count=1 -timeout 30m -run TestReposLifecycle ./e2e/repos/
 
 behaviour-test:
 	BEHAVIOUR_CAPABILITIES="$(BEHAVIOUR_CAPABILITIES)" go test -tags behaviour -race -v -count=1 -timeout 45m ./e2e/behaviour/
