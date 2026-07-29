@@ -586,17 +586,27 @@ func TestCommitRelativeResources_CommitsAgentFile(t *testing.T) {
 	scm := &fakeURLSCM{files: map[string][]byte{}}
 	w := &world.World{SCM: scm}
 	paths, err := commitRelativeResources(context.Background(), w, "org", "repo", "test",
-		"agent: agents/triage.md\nrole: triage")
+		"agent: agents/triage.md\nrole: triage", "")
 	require.NoError(t, err)
 	assert.Equal(t, minimalAgentContent, string(scm.files["org/repo/agents/triage.md"]))
 	assert.Equal(t, []string{"agents/triage.md"}, paths)
+}
+
+func TestCommitRelativeResources_WithDestPrefix(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{SCM: scm}
+	paths, err := commitRelativeResources(context.Background(), w, "org", "repo", "test",
+		"agent: agents/triage.md\nrole: triage", ".fullsend")
+	require.NoError(t, err)
+	assert.Equal(t, minimalAgentContent, string(scm.files["org/repo/.fullsend/agents/triage.md"]))
+	assert.Equal(t, []string{".fullsend/agents/triage.md"}, paths)
 }
 
 func TestCommitRelativeResources_SkipsAbsoluteAgentPath(t *testing.T) {
 	scm := &fakeURLSCM{files: map[string][]byte{}}
 	w := &world.World{SCM: scm}
 	paths, err := commitRelativeResources(context.Background(), w, "org", "repo", "test",
-		"agent: /absolute/agents/triage.md\nrole: triage")
+		"agent: /absolute/agents/triage.md\nrole: triage", "")
 	require.NoError(t, err)
 	assert.Empty(t, paths, "absolute paths should not be committed")
 }
@@ -605,7 +615,7 @@ func TestCommitRelativeResources_SkipsURLAgentPath(t *testing.T) {
 	scm := &fakeURLSCM{files: map[string][]byte{}}
 	w := &world.World{SCM: scm}
 	paths, err := commitRelativeResources(context.Background(), w, "org", "repo", "test",
-		"agent: https://example.com/agents/triage.md\nrole: triage")
+		"agent: https://example.com/agents/triage.md\nrole: triage", "")
 	require.NoError(t, err)
 	assert.Empty(t, paths, "URL paths should not be committed")
 }
@@ -614,7 +624,7 @@ func TestCommitRelativeResources_NoAgentField(t *testing.T) {
 	scm := &fakeURLSCM{files: map[string][]byte{}}
 	w := &world.World{SCM: scm}
 	paths, err := commitRelativeResources(context.Background(), w, "org", "repo", "test",
-		"role: triage\nslug: test")
+		"role: triage\nslug: test", "")
 	require.NoError(t, err)
 	assert.Empty(t, paths, "no files should be committed without agent field")
 }
@@ -623,7 +633,7 @@ func TestCommitRelativeResources_CommitsPolicyFile(t *testing.T) {
 	scm := &fakeURLSCM{files: map[string][]byte{}}
 	w := &world.World{SCM: scm}
 	paths, err := commitRelativeResources(context.Background(), w, "org", "repo", "test",
-		"agent: agents/triage.md\npolicy: policies/base.yaml\nrole: triage")
+		"agent: agents/triage.md\npolicy: policies/base.yaml\nrole: triage", "")
 	require.NoError(t, err)
 	assert.Equal(t, minimalAgentContent, string(scm.files["org/repo/agents/triage.md"]))
 	assert.Contains(t, string(scm.files["org/repo/policies/base.yaml"]), "Minimal policy")
@@ -638,7 +648,7 @@ func TestCommitRelativeResources_AgentCommitError(t *testing.T) {
 	}
 	w := &world.World{SCM: scm}
 	_, err := commitRelativeResources(context.Background(), w, "org", "repo", "test",
-		"agent: agents/triage.md\nrole: triage")
+		"agent: agents/triage.md\nrole: triage", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "committing agent resource")
 }
@@ -647,7 +657,7 @@ func TestCommitRelativeResources_PolicyCommitError(t *testing.T) {
 	scm := &fakeURLSCM{files: map[string][]byte{}}
 	w := &world.World{SCM: &policyFailSCM{fakeURLSCM: scm}}
 	_, err := commitRelativeResources(context.Background(), w, "org", "repo", "test",
-		"agent: agents/triage.md\npolicy: policies/base.yaml\nrole: triage")
+		"agent: agents/triage.md\npolicy: policies/base.yaml\nrole: triage", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "committing policy resource")
 }
@@ -656,7 +666,7 @@ func TestCommitRelativeResources_InvalidYAML(t *testing.T) {
 	scm := &fakeURLSCM{files: map[string][]byte{}}
 	w := &world.World{SCM: scm}
 	_, err := commitRelativeResources(context.Background(), w, "org", "repo", "test",
-		"invalid: [yaml: content")
+		"invalid: [yaml: content", "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parsing harness YAML")
 }

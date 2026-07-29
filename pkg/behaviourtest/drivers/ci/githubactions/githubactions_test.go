@@ -271,3 +271,98 @@ func TestWaitForHarnessAgent_FromRepositoryArtifact(t *testing.T) {
 	require.NotNil(t, run)
 	assert.Equal(t, 99, run.ID)
 }
+
+func TestWaitForHarnessAgent_FailFastOnFailedRun(t *testing.T) {
+	// Mutates package-level dispatchWait/dispatchPoll — not parallel-safe.
+	prevWait, prevPoll := dispatchWait, dispatchPoll
+	dispatchWait = 2 * time.Second
+	dispatchPoll = 10 * time.Millisecond
+	t.Cleanup(func() {
+		dispatchWait, dispatchPoll = prevWait, prevPoll
+	})
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {},
+	}
+	client.RecentWorkflowRuns = map[string][]forge.WorkflowRun{
+		"org/repo": {
+			{
+				ID:         42,
+				Name:       "Dispatch",
+				Status:     "completed",
+				Conclusion: "failure",
+				HTMLURL:    "https://github.com/org/repo/actions/runs/42",
+				CreatedAt:  "2026-01-02T00:00:00Z",
+			},
+		},
+	}
+
+	d := &Driver{Client: client}
+	_, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "fork-pr-sync", after)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `workflow run 42 concluded with "failure"`)
+	assert.Contains(t, err.Error(), "https://github.com/org/repo/actions/runs/42")
+	assert.Contains(t, err.Error(), "recent runs after")
+}
+
+func TestWaitForHarnessAgent_TimeoutIncludesRecentRunsDiag(t *testing.T) {
+	// Mutates package-level dispatchWait/dispatchPoll — not parallel-safe.
+	prevWait, prevPoll := dispatchWait, dispatchPoll
+	dispatchWait = 50 * time.Millisecond
+	dispatchPoll = 10 * time.Millisecond
+	t.Cleanup(func() {
+		dispatchWait, dispatchPoll = prevWait, prevPoll
+	})
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {},
+	}
+	client.RecentWorkflowRuns = map[string][]forge.WorkflowRun{
+		"org/repo": {
+			{
+				ID:         7,
+				Name:       "Dispatch",
+				Status:     "in_progress",
+				Conclusion: "",
+				HTMLURL:    "https://github.com/org/repo/actions/runs/7",
+				CreatedAt:  "2026-01-02T00:00:00Z",
+			},
+		},
+	}
+
+	d := &Driver{Client: client}
+	_, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "issue-ping", after)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `harness agent "issue-ping" did not complete successfully`)
+	assert.Contains(t, err.Error(), "id=7")
+	assert.Contains(t, err.Error(), "status=in_progress")
+}
+
+func TestSelectFailedWorkflowRunAfter(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	runs := []forge.WorkflowRun{
+		{ID: 1, Status: "completed", Conclusion: "failure", CreatedAt: "2025-12-31T00:00:00Z"},
+		{ID: 2, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:00Z"},
+		{ID: 3, Status: "completed", Conclusion: "failure", CreatedAt: "2026-01-02T01:00:00Z"},
+		{ID: 4, Status: "completed", Conclusion: "cancelled", CreatedAt: "2026-01-02T02:00:00Z"},
+		{ID: 5, Status: "in_progress", Conclusion: "", CreatedAt: "2026-01-02T03:00:00Z"},
+	}
+	got := selectFailedWorkflowRunAfter(runs, after)
+	require.NotNil(t, got)
+	assert.Equal(t, 4, got.ID)
+	assert.Equal(t, "cancelled", got.Conclusion)
+}
+
+func TestFormatRecentRunsDiag_NoRuns(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	got := formatRecentRunsDiag(nil, after)
+	assert.Contains(t, got, "no workflow runs after")
+}

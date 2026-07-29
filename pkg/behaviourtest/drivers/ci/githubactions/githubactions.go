@@ -16,8 +16,6 @@ import (
 
 const (
 	pollInterval   = 15 * time.Second
-	dispatchWait   = 12 * time.Minute
-	dispatchPoll   = 5 * time.Second
 	dispatchMaxTry = 48
 
 	artifactRunPoll = 5 * time.Second
@@ -27,6 +25,12 @@ const (
 
 	assertNoWorkflowChecks = 3
 	assertNoWorkflowDelay  = 10 * time.Second
+)
+
+// Overridable in tests so timeout / fail-fast paths do not burn wall clock.
+var (
+	dispatchWait = 12 * time.Minute
+	dispatchPoll = 5 * time.Second
 )
 
 // Driver implements ci.Driver against GitHub Actions.
@@ -432,6 +436,12 @@ func readLimited(r io.Reader, limit int64) ([]byte, error) {
 }
 
 // WaitForHarnessAgent waits for a successful harness-run workflow and artifact for agent.
+//
+// When the harness fails before uploading an artifact (for example missing
+// agent files after scaffold deletion), polling artifacts alone yields an
+// opaque timeout. This method fail-fasts on completed non-success workflow
+// runs after the trigger time and includes recent-run diagnostics on
+// timeout so flakes self-explain (#5707).
 func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent string, after time.Time) (*forge.WorkflowRun, error) {
 	artifactName := "fullsend-" + agent
 	deadline := time.Now().Add(dispatchWait)
@@ -446,22 +456,86 @@ func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent str
 			continue
 		}
 		art := selectRepositoryArtifactAfter(arts, artifactName, after)
-		if art == nil {
-			continue
+		if art != nil {
+			run, err := d.Client.GetWorkflowRun(ctx, owner, repo, art.WorkflowRunID)
+			if err != nil {
+				continue
+			}
+			if run.Status != "completed" {
+				continue
+			}
+			if run.Conclusion != "success" {
+				return nil, fmt.Errorf("harness run for %q concluded with %q%s", agent, run.Conclusion, formatWorkflowRunRef(run))
+			}
+			return run, nil
 		}
-		run, err := d.Client.GetWorkflowRun(ctx, owner, repo, art.WorkflowRunID)
-		if err != nil {
-			continue
+		if failed := selectFailedWorkflowRunAfter(d.listRecentRuns(ctx, owner, repo), after); failed != nil {
+			return nil, fmt.Errorf("harness agent %q did not complete successfully: workflow run %d concluded with %q%s%s",
+				agent, failed.ID, failed.Conclusion, formatWorkflowRunRef(failed), formatRecentRunsDiag(d.listRecentRuns(ctx, owner, repo), after))
 		}
-		if run.Status != "completed" {
-			continue
-		}
-		if run.Conclusion != "success" {
-			return nil, fmt.Errorf("harness run for %q concluded with %q", agent, run.Conclusion)
-		}
-		return run, nil
 	}
-	return nil, fmt.Errorf("harness agent %q did not complete successfully", agent)
+	return nil, fmt.Errorf("harness agent %q did not complete successfully%s",
+		agent, formatRecentRunsDiag(d.listRecentRuns(ctx, owner, repo), after))
+}
+
+func (d *Driver) listRecentRuns(ctx context.Context, owner, repo string) []forge.WorkflowRun {
+	runs, err := d.Client.ListRecentWorkflowRuns(ctx, owner, repo, 30)
+	if err != nil {
+		return nil
+	}
+	return runs
+}
+
+// selectFailedWorkflowRunAfter returns the newest completed non-success
+// workflow run created at or after after. Cancelled / failure / timed_out
+// conclusions all count — they explain a missing success artifact.
+func selectFailedWorkflowRunAfter(runs []forge.WorkflowRun, after time.Time) *forge.WorkflowRun {
+	var best *forge.WorkflowRun
+	for i := range runs {
+		run := &runs[i]
+		if run.Status != "completed" || run.Conclusion == "" || run.Conclusion == "success" {
+			continue
+		}
+		runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+		if parseErr != nil || runTime.Before(after) {
+			continue
+		}
+		if best == nil || run.ID > best.ID {
+			best = run
+		}
+	}
+	return best
+}
+
+func formatWorkflowRunRef(run *forge.WorkflowRun) string {
+	if run == nil {
+		return ""
+	}
+	if run.HTMLURL != "" {
+		return fmt.Sprintf(" (%s)", run.HTMLURL)
+	}
+	return ""
+}
+
+// formatRecentRunsDiag lists recent workflow runs after after for timeout
+// / fail-fast error messages.
+func formatRecentRunsDiag(runs []forge.WorkflowRun, after time.Time) string {
+	var parts []string
+	for _, run := range runs {
+		runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
+		if parseErr != nil || runTime.Before(after) {
+			continue
+		}
+		ref := fmt.Sprintf("id=%d name=%q status=%s conclusion=%q", run.ID, run.Name, run.Status, run.Conclusion)
+		if run.HTMLURL != "" {
+			ref += " url=" + run.HTMLURL
+		}
+		parts = append(parts, ref)
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("; no workflow runs after %s", after.Format(time.RFC3339))
+	}
+	return "; recent runs after " + after.Format(time.RFC3339) + ": " + strings.Join(parts, "; ")
 }
 
 // CountHarnessDispatches returns the number of fullsend-{agent} artifacts

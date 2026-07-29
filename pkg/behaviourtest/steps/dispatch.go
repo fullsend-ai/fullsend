@@ -91,13 +91,26 @@ func givenCustomHarness(w *world.World, name, doc string) error {
 	}
 	w.DispatchAgent = name
 
+	ctx := context.Background()
+	cfgOwner := w.Install.ConfigOwner()
+	cfgRepo := w.Install.ConfigRepo()
+
 	harnessPath := filepath.Join(".fullsend", "harness", name+".yaml")
-	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), harnessPath, fmt.Sprintf("behaviour: add harness %s", name), []byte(doc)); err != nil {
+	if err := w.SCM.CommitFile(ctx, cfgOwner, cfgRepo, harnessPath, fmt.Sprintf("behaviour: add harness %s", name), []byte(doc)); err != nil {
 		return fmt.Errorf("committing harness: %w", err)
 	}
 
+	// Scaffold agent files were removed in #5552. Local harnesses still
+	// reference relative paths like agents/triage.md, which resolve under
+	// .fullsend/ at runtime. Commit minimal fixtures so clean pool repos
+	// do not fail with "stat .../.fullsend/agents/triage.md: no such file".
+	prefix := w.Install.ConfigPathPrefix()
+	if _, err := commitRelativeResources(ctx, w, cfgOwner, cfgRepo, name, doc, prefix); err != nil {
+		return fmt.Errorf("committing harness relative resources: %w", err)
+	}
+
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
-	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath)
+	cfgData, err := w.SCM.GetFileContent(ctx, cfgOwner, cfgRepo, cfgPath)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
 	}
@@ -123,7 +136,7 @@ func givenCustomHarness(w *world.World, name, doc string) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath, fmt.Sprintf("behaviour: register harness %s", name), merged); err != nil {
+	if err := w.SCM.CommitFile(ctx, cfgOwner, cfgRepo, cfgPath, fmt.Sprintf("behaviour: register harness %s", name), merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil

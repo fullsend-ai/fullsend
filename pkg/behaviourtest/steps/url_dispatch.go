@@ -131,7 +131,7 @@ func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarn
 	// repo URL directory. Commit any relative resources so the runtime can
 	// fetch them. Without this, LoadWithBase fails because the agent file
 	// does not exist at the resolved URL.
-	relativePaths, err := commitRelativeResources(ctx, w, hostOwner, hostRepo, name, doc)
+	relativePaths, err := commitRelativeResources(ctx, w, hostOwner, hostRepo, name, doc, "")
 	if err != nil {
 		return fmt.Errorf("committing relative resources to hosting repo: %w", err)
 	}
@@ -236,18 +236,26 @@ func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarn
 	return nil
 }
 
-// minimalAgentContent is a stub agent definition committed to the hosting
-// repo so that URL-sourced harness resource resolution succeeds at runtime.
-// The behaviour tests override the agent with a dummy script, so the content
-// only needs to be fetchable — not a complete agent specification.
-const minimalAgentContent = "# URL Test Agent\n\nMinimal agent fixture for URL-sourced harness behaviour tests.\n"
+// minimalAgentContent is a stub agent definition committed so harness
+// resource resolution succeeds at runtime. Behaviour tests override the
+// agent with a dummy script, so the content only needs to be present —
+// not a complete agent specification.
+//
+// Used for both URL-sourced harness hosting repos and local custom
+// harnesses under .fullsend/ (scaffold agents were removed in #5552).
+const minimalAgentContent = "# Behaviour Test Agent\n\nMinimal agent fixture for harness behaviour tests.\n"
 
 // commitRelativeResources parses the harness YAML doc and commits any
-// relative resource files (agent, policy) to the hosting repo. This is
-// required by ADR-0045: when SourceURL is set, resolveBaseResources
-// fetches relative paths from the hosting repo URL directory.
-// Returns the list of committed relative paths for subsequent verification.
-func commitRelativeResources(ctx context.Context, w *world.World, owner, repo, harnessName, doc string) ([]string, error) {
+// relative resource files (agent, policy).
+//
+// destPrefix is prepended to relative paths when committing (for example
+// ".fullsend" for local custom harnesses that resolve against the
+// per-repo config directory). Pass "" for URL-sourced hosting repos,
+// where paths are rooted at the hosting repository.
+//
+// Returns the list of committed paths (including destPrefix) for
+// subsequent verification.
+func commitRelativeResources(ctx context.Context, w *world.World, owner, repo, harnessName, doc, destPrefix string) ([]string, error) {
 	// Parse just the resource fields we need from the harness YAML.
 	var h struct {
 		Agent  string `yaml:"agent"`
@@ -259,25 +267,34 @@ func commitRelativeResources(ctx context.Context, w *world.World, owner, repo, h
 
 	var committed []string
 
+	joinDest := func(rel string) string {
+		if destPrefix == "" {
+			return rel
+		}
+		return path.Join(destPrefix, rel)
+	}
+
 	// Commit relative agent file if specified.
 	if h.Agent != "" && !strings.HasPrefix(h.Agent, "/") && !strings.HasPrefix(h.Agent, "https://") {
-		if err := w.SCM.CommitFile(ctx, owner, repo, h.Agent,
+		dest := joinDest(h.Agent)
+		if err := w.SCM.CommitFile(ctx, owner, repo, dest,
 			fmt.Sprintf("behaviour: add agent resource for %s", harnessName),
 			[]byte(minimalAgentContent)); err != nil {
-			return nil, fmt.Errorf("committing agent resource %s: %w", h.Agent, err)
+			return nil, fmt.Errorf("committing agent resource %s: %w", dest, err)
 		}
-		committed = append(committed, h.Agent)
+		committed = append(committed, dest)
 	}
 
 	// Commit relative policy file if specified.
 	if h.Policy != "" && !strings.HasPrefix(h.Policy, "/") && !strings.HasPrefix(h.Policy, "https://") {
+		dest := joinDest(h.Policy)
 		minimalPolicy := fmt.Sprintf("# Minimal policy for %s\n", harnessName)
-		if err := w.SCM.CommitFile(ctx, owner, repo, h.Policy,
+		if err := w.SCM.CommitFile(ctx, owner, repo, dest,
 			fmt.Sprintf("behaviour: add policy resource for %s", harnessName),
 			[]byte(minimalPolicy)); err != nil {
-			return nil, fmt.Errorf("committing policy resource %s: %w", h.Policy, err)
+			return nil, fmt.Errorf("committing policy resource %s: %w", dest, err)
 		}
-		committed = append(committed, h.Policy)
+		committed = append(committed, dest)
 	}
 
 	return committed, nil

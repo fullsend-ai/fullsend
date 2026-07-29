@@ -17,6 +17,21 @@ func TestGivenCustomHarness_Validation(t *testing.T) {
 	require.Error(t, givenCustomHarness(w, "agent", ""))
 }
 
+func TestGivenCustomHarness_CommitsAgentFixture(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{
+		"test-org/test-repo/.fullsend/config.yaml": []byte("version: \"1\"\nagents: []\n"),
+	}}
+	w := &world.World{
+		Install: &fakeURLInstall{owner: "test-org", repo: "test-repo"},
+		SCM:     scm,
+	}
+	err := givenCustomHarness(w, "issue-ping", "agent: agents/triage.md\nrole: triage\nslug: issue-ping")
+	require.NoError(t, err)
+	assert.Equal(t, "issue-ping", w.DispatchAgent)
+	assert.Equal(t, minimalAgentContent, string(scm.files["test-org/test-repo/.fullsend/agents/triage.md"]))
+	assert.Contains(t, string(scm.files["test-org/test-repo/.fullsend/harness/issue-ping.yaml"]), "agent: agents/triage.md")
+}
+
 func TestDispatchSteps_RequireScenarioStart(t *testing.T) {
 	w := &world.World{}
 	require.Error(t, thenHarnessWorkflowCompletes(w, "agent"))
