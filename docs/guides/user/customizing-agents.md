@@ -508,6 +508,30 @@ my-repo/
 │       └── harness/code.yaml      # Repo-specific harness configuration
 ```
 
+## Status Notifications
+
+Agent workflows post status comments on issues and PRs when they start and complete. Control this with `status_notifications` in `config.yaml`:
+
+```yaml
+defaults:
+  status_notifications:
+    comment:
+      start: enabled      # "enabled" (default) | "disabled"
+      completion: enabled  # "enabled" (default) | "on_failure" | "disabled"
+```
+
+When `status_notifications` is omitted entirely, both start and completion comments default to enabled.
+
+### Completion modes
+
+| Value | Behavior |
+|-------|----------|
+| `enabled` | Always post a completion comment (default) |
+| `on_failure` | Post only when the agent fails or is cancelled; on success, silently remove the start comment |
+| `disabled` | Never post a completion comment; silently remove the start comment |
+
+`on_failure` is useful when you want to reduce notification noise — successful runs leave no trace, but failures still surface.
+
 ## Disabling Agents
 
 To disable an agent (including built-in scaffold agents) without removing
