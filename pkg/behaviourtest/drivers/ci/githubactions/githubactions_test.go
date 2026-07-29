@@ -350,13 +350,25 @@ func TestSelectFailedWorkflowRunAfter(t *testing.T) {
 		{ID: 1, Status: "completed", Conclusion: "failure", CreatedAt: "2025-12-31T00:00:00Z"},
 		{ID: 2, Status: "completed", Conclusion: "success", CreatedAt: "2026-01-02T00:00:00Z"},
 		{ID: 3, Status: "completed", Conclusion: "failure", CreatedAt: "2026-01-02T01:00:00Z"},
-		{ID: 4, Status: "completed", Conclusion: "cancelled", CreatedAt: "2026-01-02T02:00:00Z"},
-		{ID: 5, Status: "in_progress", Conclusion: "", CreatedAt: "2026-01-02T03:00:00Z"},
+		{ID: 4, Status: "completed", Conclusion: "skipped", CreatedAt: "2026-01-02T02:00:00Z"},
+		{ID: 5, Status: "completed", Conclusion: "cancelled", CreatedAt: "2026-01-02T02:30:00Z"},
+		{ID: 6, Status: "in_progress", Conclusion: "", CreatedAt: "2026-01-02T03:00:00Z"},
 	}
 	got := selectFailedWorkflowRunAfter(runs, after)
 	require.NotNil(t, got)
-	assert.Equal(t, 4, got.ID)
-	assert.Equal(t, "cancelled", got.Conclusion)
+	assert.Equal(t, 3, got.ID)
+	assert.Equal(t, "failure", got.Conclusion)
+}
+
+func TestSelectFailedWorkflowRunAfter_IgnoresSkipped(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	runs := []forge.WorkflowRun{
+		{ID: 1, Status: "completed", Conclusion: "skipped", CreatedAt: "2026-01-02T00:00:00Z"},
+		{ID: 2, Status: "in_progress", Conclusion: "", CreatedAt: "2026-01-02T01:00:00Z"},
+	}
+	assert.Nil(t, selectFailedWorkflowRunAfter(runs, after))
 }
 
 func TestFormatRecentRunsDiag_NoRuns(t *testing.T) {

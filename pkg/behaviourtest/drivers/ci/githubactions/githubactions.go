@@ -487,13 +487,18 @@ func (d *Driver) listRecentRuns(ctx context.Context, owner, repo string) []forge
 }
 
 // selectFailedWorkflowRunAfter returns the newest completed non-success
-// workflow run created at or after after. Cancelled / failure / timed_out
-// conclusions all count — they explain a missing success artifact.
+// workflow run created at or after after that indicates a real harness
+// failure.
+//
+// "skipped" is intentionally ignored: GitHub concurrency cancel-in-progress
+// and path-filter skips produce skipped conclusions while a newer run is
+// still in progress. Treating skipped as terminal caused false fail-fasts
+// during behaviour tests (#5707).
 func selectFailedWorkflowRunAfter(runs []forge.WorkflowRun, after time.Time) *forge.WorkflowRun {
 	var best *forge.WorkflowRun
 	for i := range runs {
 		run := &runs[i]
-		if run.Status != "completed" || run.Conclusion == "" || run.Conclusion == "success" {
+		if run.Status != "completed" || !isHarnessFailureConclusion(run.Conclusion) {
 			continue
 		}
 		runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
@@ -505,6 +510,17 @@ func selectFailedWorkflowRunAfter(runs []forge.WorkflowRun, after time.Time) *fo
 		}
 	}
 	return best
+}
+
+func isHarnessFailureConclusion(conclusion string) bool {
+	switch conclusion {
+	case "failure", "timed_out", "startup_failure":
+		return true
+	default:
+		// skipped/cancelled often come from concurrency cancel-in-progress
+		// while a newer run is still active — do not fail-fast on those.
+		return false
+	}
 }
 
 func formatWorkflowRunRef(run *forge.WorkflowRun) string {
