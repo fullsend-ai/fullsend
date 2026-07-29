@@ -267,7 +267,7 @@ fullsend run triage \
 ```
 
 Status comment behavior is configured via `status_notifications` in
-`config.yaml`. See the [operations guide](../getting-started/operations.md#status-notifications).
+`config.yaml`. See [Status Notifications](customizing-agents.md#status-notifications).
 
 ## Run from a container
 

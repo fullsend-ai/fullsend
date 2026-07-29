@@ -182,12 +182,10 @@ defaults:
   status_notifications:
     comment:
       start: enabled      # "enabled" (default) | "disabled"
-      completion: enabled  # "enabled" (default) | "on_failure" | "disabled"
+      completion: enabled  # "enabled" (default) | "disabled"
 ```
 
 When `status_notifications` is omitted, comments default to enabled.
-
-Setting `completion` to `on_failure` posts a completion comment only when the agent fails or is cancelled. On success, the start comment is silently removed. This reduces notification noise while still surfacing failures.
 
 The composite action accepts four optional inputs for status notifications:
 
