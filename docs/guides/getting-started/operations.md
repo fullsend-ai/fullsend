@@ -175,17 +175,7 @@ gcloud services enable \
 
 ## Status notifications
 
-Agent workflows post status comments on issues and PRs when they start and complete. This behavior is controlled by the `status_notifications` section in `config.yaml`:
-
-```yaml
-defaults:
-  status_notifications:
-    comment:
-      start: enabled      # "enabled" (default) | "disabled"
-      completion: enabled  # "enabled" (default) | "disabled"
-```
-
-When `status_notifications` is omitted, comments default to enabled.
+See [Status Notifications](../user/customizing-agents.md#status-notifications) for configuring start and completion comments.
 
 The composite action accepts four optional inputs for status notifications:
 
