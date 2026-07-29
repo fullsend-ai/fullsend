@@ -112,7 +112,8 @@ type StatusNotificationConfig struct {
 }
 
 // CommentNotificationConfig controls start/completion comments.
-// Valid values: "enabled" (default when parent is set), "disabled".
+// Valid start values: "enabled" (default), "disabled".
+// Valid completion values: "enabled" (default), "on_failure", "disabled".
 type CommentNotificationConfig struct {
 	Start      string `yaml:"start,omitempty"`
 	Completion string `yaml:"completion,omitempty"`
