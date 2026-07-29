@@ -135,10 +135,15 @@ func shouldPostCompletion(val, status string) bool {
 }
 
 // PostStart posts a start comment on the issue/PR.
+//
+// When completion is set to "on_failure", the start comment is automatically
+// suppressed regardless of the start setting. Posting a start comment that
+// gets deleted on success would still trigger a GitHub notification pointing
+// to a deleted comment — defeating the purpose of reducing noise.
 func (n *Notifier) PostStart(ctx context.Context, description string) error {
 	n.startTime = n.now().UTC()
 
-	if commentEnabled(n.cfg.Comment.Start) {
+	if commentEnabled(n.cfg.Comment.Start) && n.cfg.Comment.Completion != "on_failure" {
 		if err := n.refreshClient(ctx); err != nil {
 			return err
 		}
@@ -187,7 +192,7 @@ func (n *Notifier) PostCompletionWithDetail(ctx context.Context, description, st
 			if err := n.refreshClient(ctx); err != nil {
 				n.warnf("failed to mint token for start comment cleanup: %v", err)
 			} else if err := n.client.DeleteIssueComment(ctx, n.owner, n.repo, n.startCommentID); err != nil {
-				n.warnf("failed to delete start comment when completion disabled: %v", err)
+				n.warnf("failed to delete start comment when completion suppressed: %v", err)
 			}
 		}
 		return nil
