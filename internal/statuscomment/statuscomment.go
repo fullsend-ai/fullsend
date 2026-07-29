@@ -123,6 +123,17 @@ func commentEnabled(val string) bool {
 	return val == "" || val == "enabled"
 }
 
+// shouldPostCompletion reports whether a completion comment should be
+// posted given the configured value and the agent outcome status.
+func shouldPostCompletion(val, status string) bool {
+	switch val {
+	case "on_failure":
+		return status != "success"
+	default:
+		return commentEnabled(val)
+	}
+}
+
 // PostStart posts a start comment on the issue/PR.
 func (n *Notifier) PostStart(ctx context.Context, description string) error {
 	n.startTime = n.now().UTC()
@@ -168,9 +179,10 @@ func (n *Notifier) PostCompletion(ctx context.Context, description, status strin
 func (n *Notifier) PostCompletionWithDetail(ctx context.Context, description, status, detail string) error {
 	completionTime := n.now().UTC()
 
-	if !commentEnabled(n.cfg.Comment.Completion) {
-		// Completion comments disabled — clean up the start comment so it
-		// doesn't remain orphaned in its "Started" state.
+	if !shouldPostCompletion(n.cfg.Comment.Completion, status) {
+		// Completion comment suppressed (disabled or on_failure with success) —
+		// clean up the start comment so it doesn't remain orphaned in its
+		// "Started" state.
 		if n.startCommentID != 0 {
 			if err := n.refreshClient(ctx); err != nil {
 				n.warnf("failed to mint token for start comment cleanup: %v", err)

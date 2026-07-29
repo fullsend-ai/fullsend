@@ -876,6 +876,61 @@ func TestOrgConfigValidate_InvalidCommentCompletion(t *testing.T) {
 	assert.Contains(t, err.Error(), "status_notifications.comment.completion")
 }
 
+func TestOrgConfigValidate_OnFailureCompletion(t *testing.T) {
+	cfg := &orgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+			StatusNotifications: &StatusNotificationConfig{
+				Comment: CommentNotificationConfig{Completion: "on_failure"},
+			},
+		},
+	}
+	assert.NoError(t, cfg.Validate(), "on_failure should be valid for comment.completion")
+}
+
+func TestOrgConfigValidate_OnFailureStart_Rejected(t *testing.T) {
+	cfg := &orgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+			StatusNotifications: &StatusNotificationConfig{
+				Comment: CommentNotificationConfig{Start: "on_failure"},
+			},
+		},
+	}
+	err := cfg.Validate()
+	assert.Error(t, err, "on_failure should be rejected for comment.start")
+	assert.Contains(t, err.Error(), "status_notifications.comment.start")
+}
+
+func TestParseOrgConfig_OnFailureCompletion(t *testing.T) {
+	yamlData := `
+version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles:
+    - fullsend
+  max_implementation_retries: 2
+  status_notifications:
+    comment:
+      start: disabled
+      completion: on_failure
+agents: []
+repos: {}
+`
+	cfg, err := ParseOrgConfig([]byte(yamlData))
+	require.NoError(t, err)
+	require.NotNil(t, cfg.StatusNotifications())
+	assert.Equal(t, "disabled", cfg.StatusNotifications().Comment.Start)
+	assert.Equal(t, "on_failure", cfg.StatusNotifications().Comment.Completion)
+}
+
 func TestOrgConfigMarshal_WithStatusNotifications(t *testing.T) {
 	cfg := &orgConfig{
 		Version:  "1",
