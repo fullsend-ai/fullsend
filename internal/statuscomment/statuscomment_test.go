@@ -1077,6 +1077,107 @@ func TestClientFactory_CompletionDisabled_MintError(t *testing.T) {
 	assert.Contains(t, warnings[0], "mint service down")
 }
 
+// --- on_failure completion tests ---
+
+func TestPostCompletion_OnFailure_SuppressedOnSuccess(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "on_failure"},
+	}
+	n := newTestNotifier(fc, cfg)
+
+	err := n.PostStart(context.Background(), "Working")
+	require.NoError(t, err)
+	require.Equal(t, 1, n.startCommentID)
+
+	n.now = func() time.Time { return fixedTime().Add(time.Minute) }
+	err = n.PostCompletion(context.Background(), "Working", "success")
+	require.NoError(t, err)
+
+	// Success should suppress the completion comment and clean up the start comment.
+	assert.Empty(t, fc.UpdatedComments, "should not update start comment on success")
+	require.Len(t, fc.DeletedComments, 1, "should delete start comment on success")
+	assert.Equal(t, 1, fc.DeletedComments[0])
+}
+
+func TestPostCompletion_OnFailure_PostsOnFailure(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "on_failure"},
+	}
+	n := newTestNotifier(fc, cfg)
+
+	err := n.PostStart(context.Background(), "Coding issue #42")
+	require.NoError(t, err)
+
+	n.now = func() time.Time { return fixedTime().Add(10 * time.Minute) }
+	err = n.PostCompletion(context.Background(), "Coding issue #42", "failure")
+	require.NoError(t, err)
+
+	// Failure should post the completion comment.
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.Contains(t, fc.UpdatedComments[0].Body, "Finished Coding issue #42")
+	assert.Contains(t, fc.UpdatedComments[0].Body, "❌ Failure")
+}
+
+func TestPostCompletion_OnFailure_PostsOnCancelled(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "on_failure"},
+	}
+	n := newTestNotifier(fc, cfg)
+
+	err := n.PostStart(context.Background(), "Working")
+	require.NoError(t, err)
+
+	n.now = func() time.Time { return fixedTime().Add(2 * time.Minute) }
+	err = n.PostCompletion(context.Background(), "Working", "cancelled")
+	require.NoError(t, err)
+
+	// Cancelled is non-success, so completion should fire.
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.Contains(t, fc.UpdatedComments[0].Body, "⚠️ Cancelled")
+}
+
+func TestPostCompletion_OnFailure_NoStartComment_PostsOnFailure(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "disabled", Completion: "on_failure"},
+	}
+	n := newTestNotifier(fc, cfg)
+
+	err := n.PostStart(context.Background(), "Working")
+	require.NoError(t, err)
+	assert.Equal(t, 0, n.startCommentID)
+
+	n.now = func() time.Time { return fixedTime().Add(time.Minute) }
+	err = n.PostCompletion(context.Background(), "Working", "failure")
+	require.NoError(t, err)
+
+	comments := fc.IssueComments["org/repo/7"]
+	require.Len(t, comments, 1, "should post completion on failure")
+	assert.Contains(t, comments[0].Body, "❌ Failure")
+}
+
+func TestPostCompletion_OnFailure_NoStartComment_SuppressedOnSuccess(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "disabled", Completion: "on_failure"},
+	}
+	n := newTestNotifier(fc, cfg)
+
+	err := n.PostStart(context.Background(), "Working")
+	require.NoError(t, err)
+
+	n.now = func() time.Time { return fixedTime().Add(time.Minute) }
+	err = n.PostCompletion(context.Background(), "Working", "success")
+	require.NoError(t, err)
+
+	assert.Empty(t, fc.IssueComments, "should not post anything on success with on_failure")
+	assert.Empty(t, fc.UpdatedComments)
+	assert.Empty(t, fc.DeletedComments)
+}
+
 func TestClientFactory_CompletionDisabled_DeleteError(t *testing.T) {
 	fc := forge.NewFakeClient()
 	cfg := config.StatusNotificationConfig{

@@ -450,12 +450,13 @@ func validateStatusNotifications(cfg *StatusNotificationConfig) error {
 	if cfg == nil {
 		return nil
 	}
-	validCommentValues := []string{"", "enabled", "disabled"}
-	if !slices.Contains(validCommentValues, cfg.Comment.Start) {
+	validStartValues := []string{"", "enabled", "disabled"}
+	if !slices.Contains(validStartValues, cfg.Comment.Start) {
 		return fmt.Errorf("invalid status_notifications.comment.start %q: must be \"enabled\" or \"disabled\"", cfg.Comment.Start)
 	}
-	if !slices.Contains(validCommentValues, cfg.Comment.Completion) {
-		return fmt.Errorf("invalid status_notifications.comment.completion %q: must be \"enabled\" or \"disabled\"", cfg.Comment.Completion)
+	validCompletionValues := []string{"", "enabled", "disabled", "on_failure"}
+	if !slices.Contains(validCompletionValues, cfg.Comment.Completion) {
+		return fmt.Errorf("invalid status_notifications.comment.completion %q: must be \"enabled\", \"on_failure\", or \"disabled\"", cfg.Comment.Completion)
 	}
 	return nil
 }
