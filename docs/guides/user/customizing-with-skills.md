@@ -111,7 +111,7 @@ sees it.
 Some agents recognize skill names that do not ship with fullsend. Providing
 these unlocks additional capabilities. See each agent's documentation for the
 skills it supports — for example, the
-[prioritize agent](../../agents/prioritize.md) uses a `customer-research` skill
+[prioritize agent](https://fullsend.sh/docs/agents/prioritize) uses a `customer-research` skill
 when available.
 
 ## Overriding built-in skills
@@ -142,12 +142,12 @@ These skills ship with fullsend and can be overridden via `customized/skills/`
 
 | Agent | Skill | Purpose |
 |-------|-------|---------|
-| [Triage](../../agents/triage.md) | `issue-labels` | Label discovery and application during triage |
-| [Code](../../agents/code.md) | `code-implementation` | Step-by-step implementation procedure |
-| [Review](../../agents/review.md) | `code-review`, `pr-review`, `docs-review`, `issue-labels` | Review evaluation across dimensions |
-| [Fix](../../agents/fix.md) | `fix-review` | Review feedback interpretation and fix strategy |
-| [Prioritize](../../agents/prioritize.md) | `customer-research` | Customer data gathering for RICE scoring (extension point) |
-| [Retro](../../agents/retro.md) | `retro-analysis`, `finding-agent-runs` | Workflow analysis and proposal generation |
+| [Triage](https://fullsend.sh/docs/agents/triage) | `issue-labels` | Label discovery and application during triage |
+| [Code](https://fullsend.sh/docs/agents/code) | `code-implementation` | Step-by-step implementation procedure |
+| [Review](https://fullsend.sh/docs/agents/review) | `code-review`, `pr-review`, `docs-review`, `issue-labels` | Review evaluation across dimensions |
+| [Fix](https://fullsend.sh/docs/agents/fix) | `fix-review` | Review feedback interpretation and fix strategy |
+| [Prioritize](https://fullsend.sh/docs/agents/prioritize) | `customer-research` | Customer data gathering for RICE scoring (extension point) |
+| [Retro](https://fullsend.sh/docs/agents/retro) | `retro-analysis`, `finding-agent-runs` | Workflow analysis and proposal generation |
 
 ## When to use skills vs. AGENTS.md
 
@@ -166,5 +166,5 @@ apply to all agents and human contributors alike.
 ## See also
 
 - [Bring Your Own Agent](bring-your-own-agent.md) — building and registering custom agents
-- [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)
+- [Default, derived, and custom agents](default-vs-custom-agents.md)
   — adding skills keeps you in "configured default agent" territory

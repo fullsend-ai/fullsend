@@ -45,12 +45,12 @@ See [security-threat-model.md](problems/security-threat-model.md) and [architect
 ### Configured Default Agent
 
 A [default agent](#default-agent) whose behavior has been adjusted using documented extension points or general-purpose harness fields that do not alter the agent's identity — environment variables, skills, `AGENTS.md` instructions, sandbox image layers, plugins, or host files. The agent's identity (system prompt, scripts, slug, validation loop) is unchanged; it is still recognizably the same default agent.
-See [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
+See [Default, derived, and custom agents](guides/user/default-vs-custom-agents.md).
 
 ### Custom Agent
 
 An agent whose `base` chain does not trace back to a default agent harness in `fullsend-ai/fullsend`, or that has no `base` at all. A custom agent is built from scratch, even if it happens to resemble a default agent. Contrast with [derived agent](#derived-agent), which starts from a default.
-See [Default, derived, and custom agents](agents/topics/default-vs-custom.md) and [Bring Your Own Agent](guides/user/bring-your-own-agent.md).
+See [Default, derived, and custom agents](guides/user/default-vs-custom-agents.md) and [Bring Your Own Agent](guides/user/bring-your-own-agent.md).
 
 ### Customized Directory
 
@@ -67,12 +67,12 @@ See [architecture.md](architecture.md) (building block 1).
 ### Default Agent
 
 An agent shipped by fullsend, defined by harness files in `fullsend-ai/fullsend` and agent definitions in `fullsend-ai/agents`. A default agent remains a default agent when configured through its documented extension points (becoming a [configured default agent](#configured-default-agent)); it becomes a [derived agent](#derived-agent) when modifications go beyond those points.
-See [Agents reference](agents/) and [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
+See [Agents reference](https://fullsend.sh/docs/agents/) and [Default, derived, and custom agents](guides/user/default-vs-custom-agents.md).
 
 ### Derived Agent
 
 An agent that uses `base` inheritance from a default agent harness but replaces identity-defining components (system prompt, pre/post scripts, slug, or validation loop) beyond the documented extension points. It re-uses parts of a default agent but is no longer recognizably that agent. Contrast with [configured default agent](#configured-default-agent) (stays within extension points) and [custom agent](#custom-agent) (built from scratch).
-See [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
+See [Default, derived, and custom agents](guides/user/default-vs-custom-agents.md).
 
 ## E
 

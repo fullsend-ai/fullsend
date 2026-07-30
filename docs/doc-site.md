@@ -10,7 +10,7 @@ npm ci
 npm run dev
 ```
 
-The dev server starts on `http://localhost:5173/docs/`. Submodules (e.g. `experiments/`) are initialized automatically via a `predev` hook — no manual `git submodule` step needed.
+The dev server starts on `http://localhost:5173/docs/`. The `predev` hook initializes submodules (e.g. `experiments/`) and fetches agent docs from `fullsend-ai/agents` via `scripts/fetch-agent-docs.sh` -- no manual steps needed.
 
 ## Building
 
@@ -19,7 +19,7 @@ cd website
 npm run build
 ```
 
-A `prebuild` hook runs `git submodule update --init` before the VitePress build, matching CI behavior.
+A `prebuild` hook initializes submodules and fetches agent docs (with `--force` to re-fetch) before the VitePress build, matching CI behavior.
 
 ## How it works
 
@@ -29,7 +29,9 @@ A `prebuild` hook runs `git submodule update --init` before the VitePress build,
 - Symlinks connect submodule content into `docs/` (e.g. `docs/experiments` → `../experiments`)
 - The `search.options.scopes` array in `config.ts` defines the scope pills shown in the search modal. Each scope has a `label` and a list of `prefixes` (path prefixes like `/docs/guides/`). When a user activates a scope, search results are filtered to pages whose path starts with one of the scope's prefixes. Every `docs/` subfolder that produces rendered pages must appear in at least one scope; otherwise its pages become unreachable when any scope pill is active.
 
-## Submodules
+## External content
+
+### Submodules
 
 Some doc content lives in separate repositories linked as git submodules:
 
@@ -38,6 +40,10 @@ Some doc content lives in separate repositories linked as git submodules:
 | [fullsend-ai/experiments](https://github.com/fullsend-ai/experiments) | `experiments/` | `docs/experiments` → `../experiments` |
 
 The `predev` and `prebuild` hooks in `website/package.json` handle initialization automatically for local dev. CI uses `submodules: true` on `actions/checkout` in `.github/workflows/site-build.yml`.
+
+### Agent docs
+
+Agent documentation lives in [`fullsend-ai/agents`](https://github.com/fullsend-ai/agents) and is fetched at build time by `website/scripts/fetch-agent-docs.sh` into `docs/agents/` (gitignored). The script defaults to the `main` branch; override with `FULLSEND_AGENTS_REF=<ref>` (accepts a branch name, tag, or commit SHA). Agent doc updates in `fullsend-ai/agents` do not auto-trigger site rebuilds; they are picked up on the next rebuild triggered by other changes.
 
 ## CI/CD
 

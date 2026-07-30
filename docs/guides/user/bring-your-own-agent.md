@@ -584,5 +584,5 @@ When configured with `FALLBACK_MINT_URL`, the standalone mint serves custom role
 - [Configuring with Skills](customizing-with-skills.md) — creating and managing skills
 - [Configuring with AGENTS.md](customizing-with-agents-md.md) — repo-level instructions for all agents
 - [Configuring agent behavior](customizing-agents.md) — harness configurations and layered content resolution
-- [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md) — when configuration crosses into custom agent territory
+- [Default, derived, and custom agents](default-vs-custom-agents.md) — when configuration crosses into custom agent territory
 - [Standalone mint](../infrastructure/standalone-mint.md) — custom agent roles and identity

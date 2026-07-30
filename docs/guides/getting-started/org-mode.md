@@ -204,6 +204,6 @@ Each command prompts for confirmation. Add `--yolo` to skip prompts. See the [st
 
 ## Next Steps
 
-* Read the [Agents](../../agents/README.md) section to learn about the default agents Fullsend
+* Read the [Agents](https://fullsend.sh/docs/agents/) section to learn about the default agents Fullsend
 ships with.
 * Explore other sections of this documentation for more information.

@@ -11,7 +11,7 @@ fullsend installation.
 Before building from scratch, consider whether extending a default agent would
 meet your needs. You can use `base` inheritance to start from a default agent's
 harness and override only what differs — see
-[Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)
+[Default, derived, and custom agents](default-vs-custom-agents.md)
 for the distinction and when each approach makes sense.
 
 For the config-driven approach to building or configuring agents, see

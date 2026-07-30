@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "predev": "git -C .. submodule update --init",
-    "prebuild": "git -C .. submodule update --init",
+    "predev": "git -C .. submodule update --init && ./scripts/fetch-agent-docs.sh",
+    "prebuild": "git -C .. submodule update --init && ./scripts/fetch-agent-docs.sh --force",
     "dev": "vitepress dev",
     "build": "vitepress build",
     "preview": "vitepress preview"

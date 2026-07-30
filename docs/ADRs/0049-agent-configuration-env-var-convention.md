@@ -25,6 +25,11 @@ decides when a knob should be an `{AGENT}_` env var at all versus a
 which narrows the "CI workflow injection" delivery mechanism to
 infrastructure values.*
 
+*2026-08: References to `docs/agents/<agent>.md` below reflect the original
+layout. Agent documentation now lives in the
+[`fullsend-ai/agents`](https://github.com/fullsend-ai/agents) repository and
+is fetched into `docs/agents/` at build time.*
+
 ## Context
 
 Agents need behavioral knobs — settings that tune *how* they work without
