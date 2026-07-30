@@ -1280,28 +1280,6 @@ func TestPostCompletion_OnFailure_SuppressedOnSkipped(t *testing.T) {
 	assert.Empty(t, fc.UpdatedComments)
 }
 
-func TestPostCompletion_OnFailure_PostsOnTimeout(t *testing.T) {
-	fc := forge.NewFakeClient()
-	cfg := config.StatusNotificationConfig{
-		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "on_failure"},
-	}
-	n := newTestNotifier(fc, cfg)
-
-	err := n.PostStart(context.Background(), "Working")
-	require.NoError(t, err)
-	assert.Equal(t, 0, n.startCommentID, "start comment auto-suppressed")
-
-	n.now = func() time.Time { return fixedTime().Add(5 * time.Minute) }
-	err = n.PostCompletion(context.Background(), "Working", "timeout")
-	require.NoError(t, err)
-
-	// No start comment to update — timeout should create a new completion comment.
-	assert.Empty(t, fc.UpdatedComments)
-	comments := fc.IssueComments["org/repo/7"]
-	require.Len(t, comments, 1, "should post completion on timeout")
-	assert.Contains(t, comments[0].Body, "⚠️ Timeout")
-}
-
 func TestClientFactory_CompletionDisabled_DeleteError(t *testing.T) {
 	fc := forge.NewFakeClient()
 	cfg := config.StatusNotificationConfig{

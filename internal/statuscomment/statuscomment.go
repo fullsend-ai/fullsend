@@ -128,7 +128,7 @@ func commentEnabled(val string) bool {
 func shouldPostCompletion(val, status string) bool {
 	switch val {
 	case "on_failure":
-		return status == "failure" || status == "cancelled" || status == "timeout"
+		return status == "failure" || status == "cancelled"
 	default:
 		return commentEnabled(val)
 	}
