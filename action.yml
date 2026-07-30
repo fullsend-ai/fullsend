@@ -421,6 +421,7 @@ runs:
         RUN_URL: ${{ inputs.run-url }}
         JOB_STATUS: ${{ job.status }}
         PR_HEAD_SHA_INPUT: ${{ inputs.pr-head-sha }}
+        FULLSEND_DIR: ${{ inputs.fullsend-dir }}
       run: |
         set -euo pipefail
         # When the fullsend process is hard-killed (SIGKILL, OOM, segfault),
@@ -451,8 +452,10 @@ runs:
           COMMIT_SHA="${GITHUB_SHA}"
         fi
 
+        FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
         RECONCILE_FLAGS=(--repo "${STATUS_REPO}" --number "${STATUS_NUMBER}" --run-id "${RUN_ID}")
         RECONCILE_FLAGS+=(--mint-url "${MINT_URL}" --role "${AGENT}")
+        RECONCILE_FLAGS+=(--fullsend-dir "${FULLSEND_DIR}")
         if [[ -n "${RUN_URL}" ]]; then
           RECONCILE_FLAGS+=(--run-url "${RUN_URL}")
         fi

@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
@@ -21,15 +22,16 @@ var reconcileNewForgeClient = func(token string) forge.Client {
 
 func newReconcileStatusCmd() *cobra.Command {
 	var (
-		repo      string
-		number    int
-		runID     string
-		runURL    string
-		sha       string
-		reason    string
-		mintURL   string
-		role      string
-		forgeFlag string
+		repo        string
+		number      int
+		runID       string
+		runURL      string
+		sha         string
+		reason      string
+		mintURL     string
+		role        string
+		forgeFlag   string
+		fullsendDir string
 	)
 
 	cmd := &cobra.Command{
@@ -82,7 +84,17 @@ finalized, this is a no-op.`,
 			default:
 				termReason = statuscomment.ReasonTerminated
 			}
-			return statuscomment.ReconcileOrphaned(cmd.Context(), client, owner, repoName, number, runID, runURL, sha, termReason)
+
+			completionMode := ""
+			if fullsendDir != "" {
+				if writer, err := config.LoadConfigWriter(fullsendDir, config.LoadOpts{MissingOK: true}); err == nil && writer != nil {
+					if ocr, ok := writer.(config.OrgConfigReader); ok && ocr.StatusNotifications() != nil {
+						completionMode = ocr.StatusNotifications().Comment.Completion
+					}
+				}
+			}
+
+			return statuscomment.ReconcileOrphaned(cmd.Context(), client, owner, repoName, number, runID, runURL, sha, termReason, completionMode)
 		},
 	}
 
@@ -95,6 +107,7 @@ finalized, this is a no-op.`,
 	cmd.Flags().StringVar(&mintURL, "mint-url", "", "mint service URL for on-demand token (default: $FULLSEND_MINT_URL)")
 	cmd.Flags().StringVar(&role, "role", "", "agent role for minting (required with --mint-url)")
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform (e.g. "github", "gitlab"); auto-detected from CI env vars when omitted`)
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to fullsend config directory (used to detect completion mode for orphan synthesis)")
 	_ = cmd.MarkFlagRequired("repo")
 	_ = cmd.MarkFlagRequired("number")
 	_ = cmd.MarkFlagRequired("run-id")

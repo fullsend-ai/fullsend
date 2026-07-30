@@ -387,7 +387,7 @@ func setNow(t *testing.T, fixed time.Time) {
 
 func TestReconcileOrphaned_InvalidRunID(t *testing.T) {
 	fc := forge.NewFakeClient()
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "-->bad", "", "", ReasonTerminated)
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "-->bad", "", "", ReasonTerminated, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid run ID")
 }
@@ -570,7 +570,7 @@ func TestReconcileOrphaned_UpdatesStartedComment(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated)
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "")
 	require.NoError(t, err)
 
 	require.Len(t, fc.UpdatedComments, 1)
@@ -599,7 +599,7 @@ func TestReconcileOrphaned_SkipsAlreadyFinished(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated)
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "")
 	require.NoError(t, err)
 
 	assert.Empty(t, fc.UpdatedComments, "should not update already-finished comment")
@@ -609,8 +609,62 @@ func TestReconcileOrphaned_NoMatchingComment(t *testing.T) {
 	fc := forge.NewFakeClient()
 
 	// No comments at all.
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated)
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "")
 	require.NoError(t, err)
+	assert.Empty(t, fc.UpdatedComments)
+}
+
+func TestReconcileOrphaned_OnFailure_SynthesizesWhenNoMarker(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setNow(t, time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC))
+
+	// No comments at all — simulates on_failure mode where PostStart was suppressed
+	// and the process was hard-killed before PostCompletion ran.
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure")
+	require.NoError(t, err)
+
+	comments := fc.IssueComments["org/repo/7"]
+	require.Len(t, comments, 1, "should synthesize an interrupted comment")
+	body := comments[0].Body
+	assert.Contains(t, body, "<!-- fullsend:agent-status:run-99 -->")
+	assert.Contains(t, body, "<!-- fullsend:status:terminal -->")
+	assert.Contains(t, body, "❌ Terminated")
+	assert.Contains(t, body, "Ended 2:00 PM UTC")
+	assert.Contains(t, body, "Commit: `abc1234`")
+	assert.Contains(t, body, "[View workflow run →](https://ci/run/99)")
+}
+
+func TestReconcileOrphaned_OnFailure_NoSynthesisWhenMarkerExists(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.IssueComments = map[string][]forge.IssueComment{}
+	setNow(t, time.Date(2026, 6, 3, 14, 0, 0, 0, time.UTC))
+
+	// A start comment exists (shouldn't happen under on_failure, but if it does,
+	// reconcile should finalize it normally, not double-post).
+	fc.IssueComments["org/repo/7"] = []forge.IssueComment{
+		{
+			ID:     42,
+			Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Code · Started 6:43 AM UTC",
+			Author: "fullsend-bot[bot]",
+		},
+	}
+
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure")
+	require.NoError(t, err)
+
+	// Should update the existing comment, not create a new one.
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.Equal(t, 42, fc.UpdatedComments[0].CommentID)
+	assert.Contains(t, fc.UpdatedComments[0].Body, "❌ Terminated")
+}
+
+func TestReconcileOrphaned_EnabledMode_NoSynthesisWhenNoMarker(t *testing.T) {
+	fc := forge.NewFakeClient()
+
+	// No comments, default completion mode — should NOT synthesize.
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "")
+	require.NoError(t, err)
+	assert.Empty(t, fc.IssueComments, "should not synthesize for enabled mode")
 	assert.Empty(t, fc.UpdatedComments)
 }
 
@@ -627,7 +681,7 @@ func TestReconcileOrphaned_DifferentRunID(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated)
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "")
 	require.NoError(t, err)
 
 	assert.Empty(t, fc.UpdatedComments, "should not touch comment from different run")
@@ -637,7 +691,7 @@ func TestReconcileOrphaned_ListError(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.Errors["ListIssueComments"] = fmt.Errorf("api error")
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "", "", ReasonTerminated)
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "", "", ReasonTerminated, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "listing comments")
 }
@@ -655,7 +709,7 @@ func TestReconcileOrphaned_NoURLOrSHA(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "", "", ReasonTerminated)
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "", "", ReasonTerminated, "")
 	require.NoError(t, err)
 
 	require.Len(t, fc.UpdatedComments, 1)
@@ -680,7 +734,7 @@ func TestReconcileOrphaned_SkipsAlreadyInterrupted(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated)
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "")
 	require.NoError(t, err)
 
 	assert.Empty(t, fc.UpdatedComments, "should not re-update already-interrupted comment")
@@ -700,7 +754,7 @@ func TestReconcileOrphaned_UpdateError(t *testing.T) {
 
 	fc.Errors["UpdateIssueComment"] = fmt.Errorf("api rate limited")
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated)
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "updating orphaned comment")
 }
@@ -785,7 +839,7 @@ func TestReconcileOrphaned_CancelledReason(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled)
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonCancelled, "")
 	require.NoError(t, err)
 
 	require.Len(t, fc.UpdatedComments, 1)
@@ -810,7 +864,7 @@ func TestReconcileOrphaned_StartTimeNotParseable(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated)
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "")
 	require.NoError(t, err)
 
 	require.Len(t, fc.UpdatedComments, 1)
@@ -882,7 +936,7 @@ func TestReconcileOrphaned_UnknownReasonDefaultsToTerminated(t *testing.T) {
 		},
 	}
 
-	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", TerminationReason("unknown-value"))
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", TerminationReason("unknown-value"), "")
 	require.NoError(t, err)
 
 	require.Len(t, fc.UpdatedComments, 1)
@@ -1182,6 +1236,25 @@ func TestPostCompletion_OnFailure_NoStartComment_SuppressedOnSuccess(t *testing.
 	assert.Empty(t, fc.IssueComments, "should not post anything on success with on_failure")
 	assert.Empty(t, fc.UpdatedComments)
 	assert.Empty(t, fc.DeletedComments)
+}
+
+func TestPostCompletion_OnFailure_SuppressedOnSkipped(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "on_failure"},
+	}
+	n := newTestNotifier(fc, cfg)
+
+	err := n.PostStart(context.Background(), "Working")
+	require.NoError(t, err)
+	assert.Equal(t, 0, n.startCommentID, "start comment auto-suppressed")
+
+	n.now = func() time.Time { return fixedTime().Add(time.Minute) }
+	err = n.PostCompletion(context.Background(), "Working", "skipped")
+	require.NoError(t, err)
+
+	assert.Empty(t, fc.IssueComments, "skipped is not a failure — should not post with on_failure")
+	assert.Empty(t, fc.UpdatedComments)
 }
 
 func TestClientFactory_CompletionDisabled_DeleteError(t *testing.T) {
