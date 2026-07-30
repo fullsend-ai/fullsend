@@ -463,13 +463,19 @@ func statusEmoji(status string) string {
 // hard-killed before PostCompletion could run. In that case, a new
 // "Interrupted" comment is synthesized so the failure is still surfaced.
 //
+// jobStatus is the GitHub Actions job status (e.g., "success", "failure",
+// "cancelled"). When completionMode is "on_failure" and jobStatus is
+// "success", synthesis is skipped — the absence of a marker means the
+// agent completed normally and suppressed its comment, not that it was
+// hard-killed.
+//
 // This function is designed to be called from an out-of-process cleanup
 // mechanism (e.g., a GitHub Actions post-job step) that runs even when the
 // fullsend process is killed. It does not require a Notifier instance since
 // the process that created it is gone.
 //
 // Returns an error if runID contains characters outside [a-zA-Z0-9_-].
-func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo string, number int, runID, runURL, sha string, reason TerminationReason, completionMode string) error {
+func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo string, number int, runID, runURL, sha string, reason TerminationReason, completionMode, jobStatus string) error {
 	marker, err := buildMarker(runID)
 	if err != nil {
 		return fmt.Errorf("building marker: %w", err)
@@ -502,8 +508,10 @@ func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo str
 	// comment is intentionally suppressed — so an absent marker doesn't mean
 	// "nothing happened." It may mean the process was hard-killed before
 	// PostCompletion could run. Synthesize an "Interrupted" comment so the
-	// failure is visible. See PR #5736.
-	if completionMode == "on_failure" {
+	// failure is visible — but only when the job actually failed or was
+	// cancelled. A successful job with no marker means PostCompletion
+	// suppressed the comment as designed. See PR #5736.
+	if completionMode == "on_failure" && jobStatus != "success" {
 		endTime := now().UTC()
 		body := buildInterruptedBody(marker, runURL, sha, "", "", endTime, reason)
 		if _, err := client.CreateIssueComment(ctx, owner, repo, number, body); err != nil {

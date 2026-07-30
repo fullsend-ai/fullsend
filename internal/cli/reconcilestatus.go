@@ -32,6 +32,7 @@ func newReconcileStatusCmd() *cobra.Command {
 		role        string
 		forgeFlag   string
 		fullsendDir string
+		jobStatus   string
 	)
 
 	cmd := &cobra.Command{
@@ -87,14 +88,17 @@ finalized, this is a no-op.`,
 
 			completionMode := ""
 			if fullsendDir != "" {
-				if writer, err := config.LoadConfigWriter(fullsendDir, config.LoadOpts{MissingOK: true}); err == nil && writer != nil {
+				writer, err := config.LoadConfigWriter(fullsendDir, config.LoadOpts{MissingOK: true})
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "warning: could not load config from %s: %v\n", fullsendDir, err)
+				} else if writer != nil {
 					if ocr, ok := writer.(config.OrgConfigReader); ok && ocr.StatusNotifications() != nil {
 						completionMode = ocr.StatusNotifications().Comment.Completion
 					}
 				}
 			}
 
-			return statuscomment.ReconcileOrphaned(cmd.Context(), client, owner, repoName, number, runID, runURL, sha, termReason, completionMode)
+			return statuscomment.ReconcileOrphaned(cmd.Context(), client, owner, repoName, number, runID, runURL, sha, termReason, completionMode, jobStatus)
 		},
 	}
 
@@ -108,6 +112,7 @@ finalized, this is a no-op.`,
 	cmd.Flags().StringVar(&role, "role", "", "agent role for minting (required with --mint-url)")
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform (e.g. "github", "gitlab"); auto-detected from CI env vars when omitted`)
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to fullsend config directory (used to detect completion mode for orphan synthesis)")
+	cmd.Flags().StringVar(&jobStatus, "job-status", "", "job outcome from the CI runner (e.g. success, failure, cancelled)")
 	_ = cmd.MarkFlagRequired("repo")
 	_ = cmd.MarkFlagRequired("number")
 	_ = cmd.MarkFlagRequired("run-id")
