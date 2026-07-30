@@ -18,6 +18,7 @@ var reconcileMintToken = mintclient.MintToken
 var reconcileNewForgeClient = func(token string) forge.Client {
 	return gh.New(token)
 }
+var reconcileOrphaned = statuscomment.ReconcileOrphaned
 
 func newReconcileStatusCmd() *cobra.Command {
 	var (
@@ -102,7 +103,7 @@ finalized, this is a no-op.`,
 				}
 			}
 
-			return statuscomment.ReconcileOrphaned(cmd.Context(), client, owner, repoName, number, runID, runURL, sha, termReason, completionMode, jobStatus)
+			return reconcileOrphaned(cmd.Context(), client, owner, repoName, number, runID, runURL, sha, termReason, completionMode, jobStatus)
 		},
 	}
 
