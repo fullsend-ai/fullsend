@@ -128,7 +128,7 @@ func commentEnabled(val string) bool {
 func shouldPostCompletion(val, status string) bool {
 	switch val {
 	case "on_failure":
-		return status != "success"
+		return status == "failure" || status == "cancelled" || status == "timeout"
 	default:
 		return commentEnabled(val)
 	}
@@ -457,13 +457,19 @@ func statusEmoji(status string) string {
 // completion and interrupted comment bodies. If found in a non-terminal
 // state, it updates the comment to "Interrupted" and tags it as terminal.
 //
+// completionMode is the configured comment.completion value ("enabled",
+// "on_failure", or "disabled"). When "on_failure", no start comment marker
+// is created — so the absence of a marker means the process may have been
+// hard-killed before PostCompletion could run. In that case, a new
+// "Interrupted" comment is synthesized so the failure is still surfaced.
+//
 // This function is designed to be called from an out-of-process cleanup
 // mechanism (e.g., a GitHub Actions post-job step) that runs even when the
 // fullsend process is killed. It does not require a Notifier instance since
 // the process that created it is gone.
 //
 // Returns an error if runID contains characters outside [a-zA-Z0-9_-].
-func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo string, number int, runID, runURL, sha string, reason TerminationReason) error {
+func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo string, number int, runID, runURL, sha string, reason TerminationReason, completionMode string) error {
 	marker, err := buildMarker(runID)
 	if err != nil {
 		return fmt.Errorf("building marker: %w", err)
@@ -492,8 +498,19 @@ func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo str
 		return nil
 	}
 
-	// No matching comment found — either PostStart never ran, or the comment
-	// was already deleted. Both are fine.
+	// No matching comment found. When completion is "on_failure", the start
+	// comment is intentionally suppressed — so an absent marker doesn't mean
+	// "nothing happened." It may mean the process was hard-killed before
+	// PostCompletion could run. Synthesize an "Interrupted" comment so the
+	// failure is visible. See PR #5736.
+	if completionMode == "on_failure" {
+		endTime := now().UTC()
+		body := buildInterruptedBody(marker, runURL, sha, "", "", endTime, reason)
+		if _, err := client.CreateIssueComment(ctx, owner, repo, number, body); err != nil {
+			return fmt.Errorf("creating synthesized interrupted comment: %w", err)
+		}
+	}
+
 	return nil
 }
 
