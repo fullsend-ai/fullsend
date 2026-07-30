@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,6 +14,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
+	"github.com/fullsend-ai/fullsend/internal/statuscomment"
 )
 
 // gitlabNoteServer returns an httptest.Server that handles GitLab note API calls
@@ -311,4 +314,120 @@ func TestNewReconcileStatusCmd_GitLabNoMintRequired(t *testing.T) {
 
 	err := cmd.Execute()
 	require.NoError(t, err)
+}
+
+// stubReconcileVars replaces the three package-level func vars used by
+// newReconcileStatusCmd and returns a teardown function.
+func stubReconcileVars(t *testing.T, onReconcile func(completionMode, jobStatus string)) {
+	t.Helper()
+	origMint := reconcileMintToken
+	origForge := reconcileNewForgeClient
+	origReconcile := reconcileOrphaned
+
+	reconcileMintToken = func(_ context.Context, _ mintclient.MintRequest) (*mintclient.MintResult, error) {
+		return &mintclient.MintResult{Token: "ghs_stub_token"}, nil
+	}
+	reconcileNewForgeClient = func(token string) forge.Client {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("[]"))
+		}))
+		t.Cleanup(srv.Close)
+		return gh.New(token).WithBaseURL(srv.URL)
+	}
+	reconcileOrphaned = func(_ context.Context, _ forge.Client, _, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, completionMode, jobStatus string) error {
+		onReconcile(completionMode, jobStatus)
+		return nil
+	}
+	t.Cleanup(func() {
+		reconcileMintToken = origMint
+		reconcileNewForgeClient = origForge
+		reconcileOrphaned = origReconcile
+	})
+}
+
+func TestNewReconcileStatusCmd_FullsendDir_OnFailureConfig(t *testing.T) {
+	dir := t.TempDir()
+	err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  status_notifications:
+    comment:
+      completion: on_failure
+`), 0o644)
+	require.NoError(t, err)
+
+	var gotMode, gotStatus string
+	stubReconcileVars(t, func(completionMode, jobStatus string) {
+		gotMode = completionMode
+		gotStatus = jobStatus
+	})
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--mint-url", "https://mint.example.com",
+		"--role", "review",
+		"--fullsend-dir", dir,
+		"--job-status", "failure",
+	})
+
+	err = cmd.Execute()
+	require.NoError(t, err)
+	assert.Equal(t, "on_failure", gotMode)
+	assert.Equal(t, "failure", gotStatus)
+}
+
+func TestNewReconcileStatusCmd_FullsendDir_MalformedConfig(t *testing.T) {
+	dir := t.TempDir()
+	err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`{{{not valid yaml`), 0o644)
+	require.NoError(t, err)
+
+	var gotMode string
+	stubReconcileVars(t, func(completionMode, _ string) {
+		gotMode = completionMode
+	})
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--mint-url", "https://mint.example.com",
+		"--role", "review",
+		"--fullsend-dir", dir,
+	})
+
+	err = cmd.Execute()
+	require.NoError(t, err)
+	assert.Equal(t, "", gotMode, "malformed config should fall back to empty completionMode")
+}
+
+func TestNewReconcileStatusCmd_FullsendDir_MissingConfig(t *testing.T) {
+	dir := t.TempDir() // no config.yaml written
+
+	var gotMode string
+	stubReconcileVars(t, func(completionMode, _ string) {
+		gotMode = completionMode
+	})
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--mint-url", "https://mint.example.com",
+		"--role", "review",
+		"--fullsend-dir", dir,
+	})
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+	assert.Equal(t, "", gotMode, "missing config should fall back to empty completionMode")
 }
