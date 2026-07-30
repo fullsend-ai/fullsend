@@ -680,6 +680,17 @@ func TestReconcileOrphaned_OnFailure_NoSynthesisWhenJobSucceeded(t *testing.T) {
 	assert.Empty(t, fc.UpdatedComments)
 }
 
+func TestReconcileOrphaned_OnFailure_NoSynthesisWhenJobStatusEmpty(t *testing.T) {
+	fc := forge.NewFakeClient()
+
+	// No comments — on_failure mode but jobStatus is empty (--job-status flag
+	// was omitted). Should NOT synthesize since the job outcome is unknown.
+	err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated, "on_failure", "")
+	require.NoError(t, err)
+	assert.Empty(t, fc.IssueComments, "should not synthesize when job status is unknown")
+	assert.Empty(t, fc.UpdatedComments)
+}
+
 func TestReconcileOrphaned_DifferentRunID(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.IssueComments = map[string][]forge.IssueComment{}
