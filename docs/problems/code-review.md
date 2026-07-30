@@ -200,7 +200,7 @@ Whether this belongs in the review system or is a separate workflow operating on
 - Can we quantify review quality? How do we know if an agent's review is as good as a human's? [Review autonomy evidence](review-autonomy-evidence.md) tracks empirical observations from PRs where both agents and humans reviewed the same change.
 - How do we handle the case where an agent approves a PR that a human would have caught? (Learning from mistakes.)
 - Should review agents have access to the full repo context, or just the diff? Full context is more accurate but more expensive and more vulnerable to injection from existing code.
-- How do we prevent review agents from being "rubber stamps" — always approving because they're optimizing for throughput?
+- How do we prevent review agents from being "rubber stamps" — always approving because they're optimizing for throughput? (PR-level risk scoring provides one input — high-risk PRs can require stricter review thresholds; see [ADR 0078](../ADRs/0078-pr-risk-assessment-scoring.md). Risk gating of review outcomes is deferred until scoring confidence is established.)
 - What's the right interface for review feedback? GitHub PR comments? A structured report? Both?
 - How do we handle multi-repo changes where the review needs to consider changes across repos together?
 - Is there a "coherence" or "fitness" review dimension that can't be decomposed into the existing sub-agents? The [taste problem](contribution-volume.md#the-taste-problem) suggests that some review concerns require holistic project judgment rather than specialized analysis.
