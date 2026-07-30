@@ -1758,6 +1758,49 @@ func TestIsNonFastForwardError(t *testing.T) {
 	}
 }
 
+func TestIsStaleTreeSHAError(t *testing.T) {
+	tests := []struct {
+		name   string
+		apiErr *APIError
+		want   bool
+	}{
+		{
+			name:   "tree SHA does not exist in top-level message",
+			apiErr: &APIError{StatusCode: 422, Message: "Tree SHA does not exist"},
+			want:   true,
+		},
+		{
+			name: "tree SHA does not exist in error detail",
+			apiErr: &APIError{
+				StatusCode: 422,
+				Message:    "Validation Failed",
+				Errors:     []APIErrorDetail{{Message: "Tree SHA does not exist"}},
+			},
+			want: true,
+		},
+		{
+			name:   "unrelated 422",
+			apiErr: &APIError{StatusCode: 422, Message: "Reference already exists"},
+			want:   false,
+		},
+		{
+			name:   "non-fast-forward is not a stale tree SHA",
+			apiErr: &APIError{StatusCode: 422, Message: "Update is not a fast forward"},
+			want:   false,
+		},
+		{
+			name:   "case insensitive match",
+			apiErr: &APIError{StatusCode: 422, Message: "tree sha does not exist"},
+			want:   true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isStaleTreeSHAError(tt.apiErr))
+		})
+	}
+}
+
 func TestIsAlreadyExistsError(t *testing.T) {
 	tests := []struct {
 		name   string

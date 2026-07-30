@@ -1032,6 +1032,14 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 	newTreeResp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/trees", owner, repo), treePayload)
 	if err != nil {
+		// A 422 "Tree SHA does not exist" means the base_tree SHA went
+		// stale between when we read it and now — same class of race as
+		// non-fast-forward on the ref update. Wrap it so
+		// commitFilesWithRetry retries the entire operation from scratch.
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isStaleTreeSHAError(apiErr) {
+			return false, fmt.Errorf("create tree: %w: %w", forge.ErrNonFastForward, err)
+		}
 		return false, fmt.Errorf("create tree: %w", err)
 	}
 	var newTree struct {
@@ -1049,6 +1057,11 @@ func (c *LiveClient) commitFilesTo(ctx context.Context, owner, repo, branch, mes
 	}
 	newCommitResp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/git/commits", owner, repo), commitPayload)
 	if err != nil {
+		// Same stale-SHA race as the create-tree step above.
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusUnprocessableEntity && isStaleTreeSHAError(apiErr) {
+			return false, fmt.Errorf("create commit: %w: %w", forge.ErrNonFastForward, err)
+		}
 		return false, fmt.Errorf("create commit: %w", err)
 	}
 	var newCommit struct {
@@ -1242,6 +1255,19 @@ func isNonFastForwardError(apiErr *APIError) bool {
 		msg += " " + strings.ToLower(d.Message)
 	}
 	return strings.Contains(msg, "not a fast forward") || strings.Contains(msg, "not a fast-forward")
+}
+
+// isStaleTreeSHAError checks whether a 422 APIError indicates a stale
+// tree SHA — the base_tree or tree parameter references an object that no
+// longer exists (e.g. due to concurrent branch operations during parallel
+// e2e cleanup). This is the same class of race as a non-fast-forward ref
+// update and should be retried from scratch.
+func isStaleTreeSHAError(apiErr *APIError) bool {
+	msg := strings.ToLower(apiErr.Message)
+	for _, d := range apiErr.Errors {
+		msg += " " + strings.ToLower(d.Message)
+	}
+	return strings.Contains(msg, "tree sha does not exist")
 }
 
 func isAlreadyExistsError(apiErr *APIError) bool {
