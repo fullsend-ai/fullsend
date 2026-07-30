@@ -90,7 +90,7 @@ finalized, this is a no-op.`,
 			if fullsendDir != "" {
 				writer, err := config.LoadConfigWriter(fullsendDir, config.LoadOpts{MissingOK: true})
 				if err != nil {
-					fmt.Fprintf(os.Stderr, "WARNING: could not load config from %s: %v\n", fullsendDir, err)
+					fmt.Fprintf(os.Stderr, "WARNING: could not load config from %s: %v; using default completion mode\n", fullsendDir, err)
 				} else if writer != nil {
 					if ocr, ok := writer.(config.OrgConfigReader); ok && ocr.StatusNotifications() != nil {
 						completionMode = ocr.StatusNotifications().Comment.Completion
