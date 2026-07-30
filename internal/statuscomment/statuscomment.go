@@ -465,9 +465,9 @@ func statusEmoji(status string) string {
 //
 // jobStatus is the GitHub Actions job status (e.g., "success", "failure",
 // "cancelled"). When completionMode is "on_failure" and jobStatus is
-// "success", synthesis is skipped — the absence of a marker means the
-// agent completed normally and suppressed its comment, not that it was
-// hard-killed.
+// "success" or empty, synthesis is skipped — "success" means the agent
+// completed normally and suppressed its comment, and empty means the job
+// outcome is unknown (e.g., --job-status was omitted).
 //
 // This function is designed to be called from an out-of-process cleanup
 // mechanism (e.g., a GitHub Actions post-job step) that runs even when the
@@ -511,7 +511,7 @@ func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo str
 	// failure is visible — but only when the job actually failed or was
 	// cancelled. A successful job with no marker means PostCompletion
 	// suppressed the comment as designed. See PR #5736.
-	if completionMode == "on_failure" && jobStatus != "success" {
+	if completionMode == "on_failure" && jobStatus != "" && jobStatus != "success" {
 		endTime := now().UTC()
 		body := buildInterruptedBody(marker, runURL, sha, "", "", endTime, reason)
 		if _, err := client.CreateIssueComment(ctx, owner, repo, number, body); err != nil {
