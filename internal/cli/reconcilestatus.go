@@ -30,6 +30,7 @@ func newReconcileStatusCmd() *cobra.Command {
 		mintURL     string
 		role        string
 		fullsendDir string
+		jobStatus   string
 	)
 
 	cmd := &cobra.Command{
@@ -91,14 +92,17 @@ finalized, this is a no-op.`,
 
 			completionMode := ""
 			if fullsendDir != "" {
-				if writer, err := config.LoadConfigWriter(fullsendDir, config.LoadOpts{MissingOK: true}); err == nil && writer != nil {
+				writer, err := config.LoadConfigWriter(fullsendDir, config.LoadOpts{MissingOK: true})
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "warning: could not load config from %s: %v\n", fullsendDir, err)
+				} else if writer != nil {
 					if ocr, ok := writer.(config.OrgConfigReader); ok && ocr.StatusNotifications() != nil {
 						completionMode = ocr.StatusNotifications().Comment.Completion
 					}
 				}
 			}
 
-			return statuscomment.ReconcileOrphaned(cmd.Context(), client, owner, repoName, number, runID, runURL, sha, termReason, completionMode)
+			return statuscomment.ReconcileOrphaned(cmd.Context(), client, owner, repoName, number, runID, runURL, sha, termReason, completionMode, jobStatus)
 		},
 	}
 
@@ -111,6 +115,7 @@ finalized, this is a no-op.`,
 	cmd.Flags().StringVar(&mintURL, "mint-url", "", "mint service URL for on-demand token (default: $FULLSEND_MINT_URL)")
 	cmd.Flags().StringVar(&role, "role", "", "agent role for minting (required with --mint-url)")
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to fullsend config directory (used to detect completion mode for orphan synthesis)")
+	cmd.Flags().StringVar(&jobStatus, "job-status", "", "job outcome from the CI runner (e.g. success, failure, cancelled)")
 	_ = cmd.MarkFlagRequired("repo")
 	_ = cmd.MarkFlagRequired("number")
 	_ = cmd.MarkFlagRequired("run-id")

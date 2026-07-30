@@ -456,6 +456,7 @@ runs:
         RECONCILE_FLAGS=(--repo "${STATUS_REPO}" --number "${STATUS_NUMBER}" --run-id "${RUN_ID}")
         RECONCILE_FLAGS+=(--mint-url "${MINT_URL}" --role "${AGENT}")
         RECONCILE_FLAGS+=(--fullsend-dir "${FULLSEND_DIR}")
+        RECONCILE_FLAGS+=(--job-status "${JOB_STATUS}")
         if [[ -n "${RUN_URL}" ]]; then
           RECONCILE_FLAGS+=(--run-url "${RUN_URL}")
         fi
