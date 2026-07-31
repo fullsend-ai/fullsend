@@ -30,9 +30,21 @@ to reach the poll driver and agent pre-scripts, but no ADR specifies
 how those credentials are provisioned or where enrollment metadata lives.
 
 A proof-of-concept ([manish-jira](https://github.com/rh-hemartin-fullsendai/manish-jira))
-validated end-to-end Jira-to-agent dispatch. The enrollment steps
-(credential provisioning, config updates) were entirely manual; the
-CLI automates them.
+validated end-to-end Jira-to-agent dispatch using classic (unscoped)
+API tokens against `<tenant>.atlassian.net`. The PoC is GitHub-specific
+and uses push-based `repository_dispatch`; this ADR intentionally
+narrows scope to credential provisioning and poll-driver config,
+deferring dispatch mechanics to
+[ADR 0063](0063-polling-based-work-discovery.md). The enrollment steps
+were entirely manual in the PoC; the CLI automates them.
+
+Atlassian is deprecating unscoped API tokens. Scoped tokens require the
+`api.atlassian.com` gateway with a Cloud ID in the URL
+(`https://api.atlassian.com/ex/jira/{cloudId}/rest/api/3/...`) and
+Basic auth (`email:token`). The Cloud ID is a stable site identifier
+resolvable from any tenant hostname via
+`https://<host>/_edge/tenant_info`; the CLI resolves it once at
+enrollment time.
 
 ## Options
 
@@ -49,33 +61,52 @@ config. Follows established CLI patterns (cobra subcommands, `--dry-run`).
 
 ## Decision
 
-Add a `fullsend jira enroll <target-repo>` CLI command that provisions
-Jira API credentials as forge secrets and writes poll driver connection
-metadata to `.fullsend/config.yaml`. The command resolves Jira
-credentials via environment variables or CLI flags and supports
-`--dry-run`.
+Add a `fullsend jira enroll <target-repo>` CLI command that operates on
+a remote `owner/repo` target via the forge API (no local clone
+required). The command accepts Jira credentials via environment
+variables (`JIRA_HOST`, `JIRA_EMAIL`, `JIRA_API_TOKEN`) and supports
+`--dry-run`. Credentials are never accepted via CLI flags to avoid
+shell-history and process-list exposure.
 
-Enrollment writes Jira connection metadata (project key, host URL)
-directly into the poll driver's `poll.input_drivers[].connection`
-block in `.fullsend/config.yaml`, consistent with ADR 0063's existing
-schema. Credentials are stored as forge-level secrets (not checked
-into the repository), compatible with
+The CLI resolves the Jira Cloud ID from the host URL at enrollment
+time (`https://<host>/_edge/tenant_info`) and writes two non-secret
+values into the poll driver's `poll.input_drivers[].connection` block
+in `.fullsend/config.yaml`:
+
+```yaml
+poll:
+  input_drivers:
+    - type: jira-poll
+      connection:
+        cloud_id: "<resolved-at-enrollment>"
+        project_key: EXAMPLE
+```
+
+Two credentials are stored as forge-level secrets (not checked into
+the repository): `JIRA_EMAIL` (Atlassian account email) and
+`JIRA_API_TOKEN` (scoped API token). Together these support Basic auth
+against the `api.atlassian.com` gateway. This is compatible with
 [ADR 0017](0017-credential-isolation-for-sandboxed-agents.md)'s
-credential isolation model. Ensuring credentials stay outside the agent
-sandbox is the harness author's responsibility (via `env.runner` /
-`env.sandbox` per [ADR 0055](0055-unified-env-var-delivery.md) and
+credential isolation model. Ensuring credentials stay outside the
+agent sandbox is the harness author's responsibility (via `env.runner`
+/ `env.sandbox` per [ADR 0055](0055-unified-env-var-delivery.md) and
 pre/post scripts).
 
 Enrollment is designed to be idempotent — re-running with a new token
-updates the forge secret. The enrollment scope is credentials and config only; the dispatch
-mechanism is the poll driver's responsibility
-([ADR 0063](0063-polling-based-work-discovery.md)), and agent-level
-Jira awareness (harness `pre_script` / `post_script`) is the repo
-admin's responsibility.
+updates the forge secret. The enrollment scope is credentials and
+config only; the dispatch mechanism is the poll driver's
+responsibility ([ADR 0063](0063-polling-based-work-discovery.md)),
+and agent-level Jira awareness (harness `pre_script` /
+`post_script`) is the repo admin's responsibility. This is distinct
+from the CLI's `EnrollmentLayer` ([ADR 0006](0006-ordered-layer-model.md)),
+which manages forge-level installation scaffolding.
 
 ## Consequences
 
-- Jira credential provisioning is automated and consistent across forges.
+- Jira credential provisioning is automated and consistent across
+  forges. Two forge secrets (`JIRA_EMAIL`, `JIRA_API_TOKEN`) and two
+  config values (`cloud_id`, `project_key`) fully describe a Jira
+  connection.
 - Credentials are stored as forge secrets, compatible with
   [ADR 0017](0017-credential-isolation-for-sandboxed-agents.md)'s
   isolation model. Sandbox isolation is enforced downstream by harness
@@ -90,10 +121,15 @@ admin's responsibility.
   later, a future ADR can introduce integration-level config at that
   point. Forge-native credentials (`GITHUB_TOKEN`, App creds) remain
   unaddressed by this ADR.
+- Credentials are accepted only via environment variables, not CLI
+  flags, to avoid shell-history and process-list exposure.
+- The Cloud ID is resolved once at enrollment time from the Jira host
+  URL. Runtime API calls use the `api.atlassian.com` gateway with the
+  stored Cloud ID, avoiding per-poll lookups.
 - Jira API token rotation is the repo admin's responsibility —
   re-running `fullsend jira enroll` with a new token is designed to
-  update the forge secret. Per-forge idempotency verification is tracked
-  as an implementation concern.
+  update the forge secret. Per-forge idempotency verification is
+  tracked as an implementation concern.
 - Repo-to-issue association is out of scope — the poll driver
   ([ADR 0063](0063-polling-based-work-discovery.md)) handles which
   issues route to which repositories.
