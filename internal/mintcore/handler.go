@@ -38,6 +38,7 @@ type mintResponse struct {
 	GrantedRepos  []string          `json:"granted_repos,omitempty"`
 	GrantedPerms  map[string]string `json:"granted_permissions,omitempty"`
 	RepoSelection string            `json:"repository_selection,omitempty"`
+	InvalidRepos  []string          `json:"invalid_repos,omitempty"`
 }
 
 // statusResponse is returned by the /v1/status diagnostic endpoint.
@@ -268,6 +269,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else if granted.RepoSelection == "all" {
 			log.Printf("WARNING: token granted with repository_selection=all (requested specific repos: %v)", req.Repos)
 		}
+		if len(granted.InvalidRepos) > 0 {
+			log.Printf("WARNING: filtered invalid repos for target_org=%s role=%s invalid=%v",
+				targetOrg, req.Role, granted.InvalidRepos)
+		}
 		requested := RolePermissionsFor(req.Role)
 		for perm, level := range granted.Permissions {
 			if reqLevel, ok := requested[perm]; !ok {
@@ -291,6 +296,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		resp.GrantedRepos = granted.Repos
 		resp.GrantedPerms = granted.Permissions
 		resp.RepoSelection = granted.RepoSelection
+		resp.InvalidRepos = granted.InvalidRepos
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -370,7 +376,43 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 
 	token, expiresAt, granted, err := CreateInstallationToken(ctx, h.httpClient, h.githubBaseURL, jwt, installationID, role, repos)
 	if err != nil {
-		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
+		// When GitHub returns 422 with repos in the request, one or more
+		// repo names may be stale (deleted, renamed, or transferred).
+		// Validate each repo individually, filter out the invalid ones,
+		// and retry with the valid subset. This preserves the constraint
+		// from #1833: disabled repos stay in the request so unenrollment
+		// can succeed, while truly nonexistent repos are pruned.
+		var vf *ErrTokenValidationFailed
+		if errors.As(err, &vf) && len(repos) > 0 {
+			log.Printf("token request 422 for org=%s role=%s repos=%v; validating repos individually", org, role, repos)
+			valid, invalid := ValidateRepos(ctx, h.httpClient, h.githubBaseURL, jwt, org, repos)
+			if len(invalid) > 0 {
+				log.Printf("invalid repos for org=%s: %v", org, invalid)
+			}
+			if len(valid) == 0 {
+				return "", "", nil, &mintError{
+					status: http.StatusUnprocessableEntity,
+					msg:    fmt.Sprintf("all requested repos are invalid: %v", invalid),
+				}
+			}
+
+			// Re-resolve installation from the first valid repo in case
+			// repos[0] was among the invalid set.
+			installationID, err = FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org, valid[0])
+			if err != nil {
+				return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
+			}
+
+			token, expiresAt, granted, err = CreateInstallationToken(ctx, h.httpClient, h.githubBaseURL, jwt, installationID, role, valid)
+			if err != nil {
+				return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
+			}
+			if granted != nil {
+				granted.InvalidRepos = invalid
+			}
+		} else {
+			return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
+		}
 	}
 
 	if granted != nil {

@@ -51,6 +51,7 @@ type GrantedScope struct {
 	RepoSelection  string
 	AppID          string
 	InstallationID int64
+	InvalidRepos   []string // repos filtered from the request because they no longer exist
 }
 
 // canonicalRolePermissions defines the minimum GitHub App permissions per agent role.
@@ -400,6 +401,34 @@ func createInstallationTokenWithPermissions(ctx context.Context, httpClient HTTP
 	return tokenResp.Token, nil
 }
 
+// ErrTokenValidationFailed is returned when GitHub rejects a token request with
+// 422 Unprocessable Entity. This typically happens when one or more repo names
+// in the request are invalid (deleted, renamed, or transferred). The caller can
+// inspect the status to distinguish recoverable 422 errors from other failures.
+type ErrTokenValidationFailed struct {
+	Status  int
+	Message string
+}
+
+func (e *ErrTokenValidationFailed) Error() string {
+	return fmt.Sprintf("creating installation token returned status %d: %s", e.Status, e.Message)
+}
+
+// ValidateRepos checks which repos in the list are accessible to the GitHub App
+// by attempting a GET /repos/{org}/{repo}/installation for each. Returns two
+// slices: repos that are valid (installation found) and repos that are not.
+func ValidateRepos(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt, org string, repos []string) (valid, invalid []string) {
+	for _, repo := range repos {
+		_, err := FindInstallation(ctx, httpClient, githubBaseURL, jwt, org, repo)
+		if err != nil {
+			invalid = append(invalid, repo)
+		} else {
+			valid = append(valid, repo)
+		}
+	}
+	return valid, invalid
+}
+
 // ReadForeignAllowlist reads FULLSEND_FOREIGN_<role>_REPOS from the target org.
 func ReadForeignAllowlist(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt string, installationID int64, targetOrg, role string) ([]string, error) {
 	policyToken, err := createInstallationTokenWithPermissions(ctx, httpClient, githubBaseURL, jwt, installationID,
@@ -453,7 +482,13 @@ func CreateInstallationToken(ctx context.Context, httpClient HTTPDoer, githubBas
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		if resp.StatusCode == http.StatusUnprocessableEntity {
+			return "", "", nil, &ErrTokenValidationFailed{
+				Status:  resp.StatusCode,
+				Message: strings.TrimSpace(string(body)),
+			}
+		}
 		return "", "", nil, fmt.Errorf("creating installation token returned status %d", resp.StatusCode)
 	}
 

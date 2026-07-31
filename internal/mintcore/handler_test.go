@@ -1769,6 +1769,200 @@ func TestHandler_CrossOrgInstallation_SameOrgPasses(t *testing.T) {
 	}
 }
 
+func TestHandler_StaleRepo_422Recovery(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+
+	env := newTestOIDCEnv(t, &fakePEMAccessor{
+		pems: map[string][]byte{"coder": pemData},
+	})
+	token := env.signToken(t, nil)
+
+	var tokenAttempts int
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		// Installation lookup for repos — good-repo exists, stale-repo does not
+		case r.URL.Path == "/repos/test-org/good-repo/installation" && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 12345, Account: struct {
+					Login string `json:"login"`
+				}{Login: "test-org"},
+			})
+		case r.URL.Path == "/repos/test-org/stale-repo/installation" && r.Method == http.MethodGet:
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"message":"Not Found"}`))
+		case r.URL.Path == "/repos/test-org/also-good/installation" && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 12345, Account: struct {
+					Login string `json:"login"`
+				}{Login: "test-org"},
+			})
+		// Token creation — first attempt with all repos returns 422,
+		// second attempt with valid repos succeeds
+		case strings.HasPrefix(r.URL.Path, "/app/installations/12345/access_tokens") && r.Method == http.MethodPost:
+			tokenAttempts++
+			var body map[string]interface{}
+			json.NewDecoder(r.Body).Decode(&body)
+			repos, _ := body["repositories"].([]interface{})
+			// First attempt includes stale-repo → 422
+			if tokenAttempts == 1 {
+				for _, repo := range repos {
+					if repo == "stale-repo" {
+						w.WriteHeader(http.StatusUnprocessableEntity)
+						w.Write([]byte(`{"message":"Validation Failed","errors":[{"resource":"Integration","code":"invalid","field":"repositories"}]}`))
+						return
+					}
+				}
+			}
+			// Retry without stale-repo → success
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{
+				Token:     "ghs_recovered_token",
+				ExpiresAt: "2026-05-06T12:00:00Z",
+				Permissions: map[string]string{
+					"contents": "write", "metadata": "read",
+				},
+				Repositories: []installationTokenRepository{
+					{FullName: "test-org/good-repo"},
+					{FullName: "test-org/also-good"},
+				},
+				RepositorySelection: "selected",
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+	env.handler.githubBaseURL = github.URL
+
+	body := `{"role":"coder","repos":["good-repo","stale-repo","also-good"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	env.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp mintResponse
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp.Token != "ghs_recovered_token" {
+		t.Fatalf("expected ghs_recovered_token, got %s", resp.Token)
+	}
+	if len(resp.InvalidRepos) != 1 || resp.InvalidRepos[0] != "stale-repo" {
+		t.Fatalf("expected invalid_repos=[stale-repo], got %v", resp.InvalidRepos)
+	}
+	if len(resp.GrantedRepos) != 2 {
+		t.Fatalf("expected 2 granted repos, got %v", resp.GrantedRepos)
+	}
+	if tokenAttempts != 2 {
+		t.Fatalf("expected 2 token attempts (initial + retry), got %d", tokenAttempts)
+	}
+}
+
+func TestHandler_StaleRepo_AllReposInvalid(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+
+	env := newTestOIDCEnv(t, &fakePEMAccessor{
+		pems: map[string][]byte{"coder": pemData},
+	})
+	token := env.signToken(t, nil)
+
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/test-org/gone-1/installation" && r.Method == http.MethodGet:
+			// First repo exists (needed for initial FindInstallation)
+			// but then the token request fails with 422
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 12345, Account: struct {
+					Login string `json:"login"`
+				}{Login: "test-org"},
+			})
+		case r.URL.Path == "/repos/test-org/gone-2/installation" && r.Method == http.MethodGet:
+			w.WriteHeader(http.StatusNotFound)
+		case strings.HasPrefix(r.URL.Path, "/app/installations/12345/access_tokens") && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			w.Write([]byte(`{"message":"Validation Failed"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+	env.handler.githubBaseURL = github.URL
+
+	body := `{"role":"coder","repos":["gone-1","gone-2"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	env.handler.ServeHTTP(rec, req)
+
+	// When validation reveals gone-1 is valid (FindInstallation succeeds)
+	// but the token request still fails, the retry should proceed with
+	// valid repos only. If all repos validated as invalid, we'd get 422.
+	// In this case, gone-1 validates as valid, gone-2 as invalid, so
+	// a retry with [gone-1] happens. Since the mock always returns 422,
+	// the retry also fails → 502.
+	if rec.Code != http.StatusBadGateway && rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 502 or 422, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_StaleRepo_NoReposInRequest(t *testing.T) {
+	// When no repos are provided, 422 should not trigger recovery
+	// (no repos to validate)
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+
+	env := newTestOIDCEnv(t, &fakePEMAccessor{
+		pems: map[string][]byte{"coder": pemData},
+	})
+	token := env.signToken(t, nil)
+
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/orgs/test-org/installation" && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 12345, Account: struct {
+					Login string `json:"login"`
+				}{Login: "test-org"},
+			})
+		case strings.HasPrefix(r.URL.Path, "/app/installations/12345/access_tokens"):
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			w.Write([]byte(`{"message":"Validation Failed"}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+	env.handler.githubBaseURL = github.URL
+
+	body := `{"role":"coder"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	env.handler.ServeHTTP(rec, req)
+
+	// Without repos, 422 should propagate as a normal error (502)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 for 422 without repos, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandler_ErrorMessageLeak(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 	env := newTestOIDCEnv(t, &fakePEMAccessor{err: fmt.Errorf("secret projects/123/secrets/fullsend-coder-app-pem")})

@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -425,6 +426,70 @@ func TestFindOrgInstallation_NotFound(t *testing.T) {
 	_, err := FindOrgInstallation(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", "myorg")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "status 404")
+}
+
+func TestCreateInstallationToken_422ReturnsValidationError(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		w.Write([]byte(`{"message":"Validation Failed","errors":[{"resource":"Integration","code":"invalid","field":"repositories"}]}`))
+	}))
+	defer mockGH.Close()
+
+	_, _, _, err := CreateInstallationToken(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", 42, "coder", []string{"bad-repo"})
+	require.Error(t, err)
+
+	var vf *ErrTokenValidationFailed
+	assert.True(t, errors.As(err, &vf), "error should be ErrTokenValidationFailed")
+	assert.Equal(t, http.StatusUnprocessableEntity, vf.Status)
+	assert.Contains(t, vf.Message, "Validation Failed")
+}
+
+func TestValidateRepos(t *testing.T) {
+	callCount := 0
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		switch {
+		case r.URL.Path == "/repos/myorg/good-repo/installation":
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 42,
+				Account: struct {
+					Login string `json:"login"`
+				}{Login: "myorg"},
+			})
+		case r.URL.Path == "/repos/myorg/stale-repo/installation":
+			w.WriteHeader(http.StatusNotFound)
+		case r.URL.Path == "/repos/myorg/also-good/installation":
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 42,
+				Account: struct {
+					Login string `json:"login"`
+				}{Login: "myorg"},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer mockGH.Close()
+
+	valid, invalid := ValidateRepos(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", "myorg",
+		[]string{"good-repo", "stale-repo", "also-good"})
+
+	assert.Equal(t, []string{"good-repo", "also-good"}, valid)
+	assert.Equal(t, []string{"stale-repo"}, invalid)
+	assert.Equal(t, 3, callCount, "should check each repo individually")
+}
+
+func TestValidateRepos_AllInvalid(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer mockGH.Close()
+
+	valid, invalid := ValidateRepos(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", "myorg",
+		[]string{"gone-1", "gone-2"})
+
+	assert.Empty(t, valid)
+	assert.Equal(t, []string{"gone-1", "gone-2"}, invalid)
 }
 
 func TestGetOrgVariable_ErrorStatus(t *testing.T) {
