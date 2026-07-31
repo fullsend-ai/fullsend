@@ -1261,7 +1261,7 @@ func TestPostCompletion_OnFailure_NoStartComment_SuppressedOnSuccess(t *testing.
 	assert.Empty(t, fc.DeletedComments)
 }
 
-func TestPostCompletion_OnFailure_SuppressedOnSkipped(t *testing.T) {
+func TestPostCompletion_OnFailure_PostsOnSkipped(t *testing.T) {
 	fc := forge.NewFakeClient()
 	cfg := config.StatusNotificationConfig{
 		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "on_failure"},
@@ -1276,8 +1276,7 @@ func TestPostCompletion_OnFailure_SuppressedOnSkipped(t *testing.T) {
 	err = n.PostCompletion(context.Background(), "Working", "skipped")
 	require.NoError(t, err)
 
-	assert.Empty(t, fc.IssueComments, "skipped is not a failure — should not post with on_failure")
-	assert.Empty(t, fc.UpdatedComments)
+	assert.Len(t, fc.IssueComments, 1, "skip reason is informative signal — should post even with on_failure")
 }
 
 func TestClientFactory_CompletionDisabled_DeleteError(t *testing.T) {
