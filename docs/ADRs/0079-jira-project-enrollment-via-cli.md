@@ -1,5 +1,5 @@
 ---
-title: "71. Jira project enrollment via fullsend CLI"
+title: "79. Jira project enrollment via fullsend CLI"
 status: Accepted
 relates_to:
   - agent-infrastructure
@@ -10,7 +10,7 @@ topics:
   - credentials
 ---
 
-# 71. Jira project enrollment via fullsend CLI
+# 79. Jira project enrollment via fullsend CLI
 
 Date: 2026-07-09
 
@@ -61,16 +61,16 @@ metadata. Credentials are stored as forge-level secrets (not checked
 into the repository), compatible with
 [ADR 0017](0017-credential-isolation-for-sandboxed-agents.md)'s
 credential isolation model. Ensuring credentials stay outside the agent
-sandbox is the harness author's responsibility (via `runner_env` and
+sandbox is the harness author's responsibility (via `env.runner` /
+`env.sandbox` per [ADR 0055](0055-unified-env-var-delivery.md) and
 pre/post scripts).
 
-Enrollment is idempotent — re-running with a new token rotates the
-secret. The enrollment scope is credentials and config only; the dispatch
+Enrollment is designed to be idempotent — re-running with a new token
+updates the forge secret. The enrollment scope is credentials and config only; the dispatch
 mechanism is the poll driver's responsibility
 ([ADR 0063](0063-polling-based-work-discovery.md)), and agent-level
-Jira awareness (harness `pre_script`, `forge:` overrides via
-[ADR 0045](0045-forge-portable-harness-schema.md)) is the repo admin's
-responsibility.
+Jira awareness (harness `pre_script` / `post_script`) is the repo
+admin's responsibility.
 
 ## Consequences
 
@@ -78,12 +78,17 @@ responsibility.
 - Credentials are stored as forge secrets, compatible with
   [ADR 0017](0017-credential-isolation-for-sandboxed-agents.md)'s
   isolation model. Sandbox isolation is enforced downstream by harness
-  configuration (`runner_env`, pre/post scripts), not by enrollment.
-- ADR 0063's open question on credential placement is resolved for the
-  enrollment path; poll drivers read connection metadata from
-  `integrations.jira`.
-- Jira API token rotation is the repo admin's responsibility — re-running
-  `fullsend jira enroll` with a new token updates the secret.
+  configuration (`env.runner` / `env.sandbox` per
+  [ADR 0055](0055-unified-env-var-delivery.md), pre/post scripts), not
+  by enrollment.
+- The Jira-token portion of ADR 0063's open question on credential
+  placement is resolved for the enrollment path; poll drivers read
+  connection metadata from `integrations.jira`. Forge-native credentials
+  (`GITHUB_TOKEN`, App creds) remain unaddressed by this ADR.
+- Jira API token rotation is the repo admin's responsibility —
+  re-running `fullsend jira enroll` with a new token is designed to
+  update the forge secret. Per-forge idempotency verification is tracked
+  as an implementation concern.
 - Repo-to-issue association is out of scope — the poll driver
   ([ADR 0063](0063-polling-based-work-discovery.md)) handles which
   issues route to which repositories.
