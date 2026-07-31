@@ -44,20 +44,21 @@ setups and inconsistent across forges.
 
 ### Option 2: `fullsend jira enroll` CLI command
 
-A CLI command provisions credentials and writes enrollment metadata.
-Follows established CLI patterns (cobra subcommands, `--dry-run`).
+A CLI command provisions credentials and writes poll driver connection
+config. Follows established CLI patterns (cobra subcommands, `--dry-run`).
 
 ## Decision
 
 Add a `fullsend jira enroll <target-repo>` CLI command that provisions
-Jira API credentials as forge secrets and writes enrollment metadata to
-`.fullsend/config.yaml`. The command resolves Jira credentials via
-environment variables or CLI flags and supports `--dry-run`.
+Jira API credentials as forge secrets and writes poll driver connection
+metadata to `.fullsend/config.yaml`. The command resolves Jira
+credentials via environment variables or CLI flags and supports
+`--dry-run`.
 
-Enrollment writes Jira project entries to the `integrations.jira` key
-in `.fullsend/config.yaml` (project key, host URL). Poll driver
-configuration in `poll.input_drivers[].connection` references this
-metadata. Credentials are stored as forge-level secrets (not checked
+Enrollment writes Jira connection metadata (project key, host URL)
+directly into the poll driver's `poll.input_drivers[].connection`
+block in `.fullsend/config.yaml`, consistent with ADR 0063's existing
+schema. Credentials are stored as forge-level secrets (not checked
 into the repository), compatible with
 [ADR 0017](0017-credential-isolation-for-sandboxed-agents.md)'s
 credential isolation model. Ensuring credentials stay outside the agent
@@ -82,9 +83,13 @@ admin's responsibility.
   [ADR 0055](0055-unified-env-var-delivery.md), pre/post scripts), not
   by enrollment.
 - The Jira-token portion of ADR 0063's open question on credential
-  placement is resolved for the enrollment path; poll drivers read
-  connection metadata from `integrations.jira`. Forge-native credentials
-  (`GITHUB_TOKEN`, App creds) remain unaddressed by this ADR.
+  placement is resolved for the enrollment path; the CLI writes
+  connection metadata directly into `poll.input_drivers[].connection`.
+  No separate `integrations.jira` config key is introduced — if a
+  push-based dispatch path (e.g. Jira Automation webhooks) is adopted
+  later, a future ADR can introduce integration-level config at that
+  point. Forge-native credentials (`GITHUB_TOKEN`, App creds) remain
+  unaddressed by this ADR.
 - Jira API token rotation is the repo admin's responsibility —
   re-running `fullsend jira enroll` with a new token is designed to
   update the forge secret. Per-forge idempotency verification is tracked
