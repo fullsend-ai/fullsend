@@ -527,7 +527,7 @@ When `status_notifications` is omitted entirely, both start and completion comme
 | Value | Behavior |
 |-------|----------|
 | `enabled` | Always post a completion comment (default) |
-| `on_failure` | Post only when the agent fails or is cancelled; the start comment is automatically suppressed to avoid notification noise |
+| `on_failure` | Post when the agent fails, is cancelled, or is skipped by a pre-script; the start comment is automatically suppressed to avoid notification noise |
 | `disabled` | Never post a completion comment; silently remove the start comment |
 
 `on_failure` is useful when you want to reduce notification noise — successful runs leave no trace, but failures still surface. When `completion` is set to `on_failure`, the start comment is automatically suppressed regardless of the `start` setting, because posting and then deleting a start comment would still trigger a GitHub notification pointing to a deleted comment.
