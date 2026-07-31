@@ -607,6 +607,241 @@ func TestValidateRunnerEnvWith_NilEnvNoError(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// --- ${VAR} expansion semantics tests (issue #5799) ---
+//
+// These tests verify the interaction between ValidateRunnerEnvWith (which
+// gates expansion) and os.Expand (which performs it), covering all three
+// env targets: RunnerEnv, Env.Runner, and Env.Sandbox. The production
+// pipeline in run.go calls ValidateRunnerEnvWith first — if validation
+// passes, os.Expand materializes the values. These tests replicate that
+// pipeline to verify what downstream code (e.g. post-review.sh) actually
+// sees for each scenario.
+
+func TestExpansion_UnsetVarBlockedByValidation(t *testing.T) {
+	// When a ${VAR} reference points to a truly unset host variable,
+	// ValidateRunnerEnvWith must return an error. Expansion never runs.
+	// This covers RunnerEnv, Env.Runner, and Env.Sandbox paths.
+
+	lookup := func(string) (string, bool) { return "", false }
+
+	t.Run("runner_env", func(t *testing.T) {
+		h := &Harness{
+			Agent:     "agents/test.md",
+			Role:      "test",
+			RunnerEnv: map[string]string{"REVIEW_PROTECTED_PATHS": "${UNSET_VAR}"},
+		}
+		err := h.ValidateRunnerEnvWith(lookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "UNSET_VAR")
+		assert.Contains(t, err.Error(), "is not set")
+	})
+
+	t.Run("env_runner", func(t *testing.T) {
+		h := &Harness{
+			Agent: "agents/test.md",
+			Role:  "test",
+			Env: &EnvConfig{
+				Runner: map[string]string{"REVIEW_PROTECTED_PATHS": "${UNSET_VAR}"},
+			},
+		}
+		err := h.ValidateRunnerEnvWith(lookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "UNSET_VAR")
+		assert.Contains(t, err.Error(), "is not set")
+	})
+
+	t.Run("env_sandbox", func(t *testing.T) {
+		h := &Harness{
+			Agent: "agents/test.md",
+			Role:  "test",
+			Env: &EnvConfig{
+				Sandbox: map[string]string{"REVIEW_PROTECTED_PATHS": "${UNSET_VAR}"},
+			},
+		}
+		err := h.ValidateRunnerEnvWith(lookup)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "UNSET_VAR")
+		assert.Contains(t, err.Error(), "is not set")
+	})
+}
+
+func TestExpansion_EmptyVarMaterializesKey(t *testing.T) {
+	// When a ${VAR} reference points to a host variable set to "",
+	// ValidateRunnerEnvWith passes (set-to-empty is not unset), and
+	// os.Expand materializes the key with an empty string value.
+	// The key is PRESENT in the resulting map, not absent.
+	//
+	// This is the scenario that matters for agents#569: if an operator
+	// sets REVIEW_PROTECTED_PATHS="" (or their workflow exports it
+	// without a value), the runner/sandbox env will contain the key
+	// with an empty string — triggering post-review.sh's fail-closed
+	// abort path.
+
+	lookup := func(string) (string, bool) { return "", true }
+	expander := func(string) string { return "" }
+
+	t.Run("runner_env", func(t *testing.T) {
+		h := &Harness{
+			Agent:     "agents/test.md",
+			Role:      "test",
+			RunnerEnv: map[string]string{"REVIEW_PROTECTED_PATHS": "${EMPTY_VAR}"},
+		}
+		// Validation passes.
+		require.NoError(t, h.ValidateRunnerEnvWith(lookup))
+
+		// Expansion materializes the key with empty string.
+		for k, v := range h.RunnerEnv {
+			h.RunnerEnv[k] = os.Expand(v, expander)
+		}
+
+		val, exists := h.RunnerEnv["REVIEW_PROTECTED_PATHS"]
+		assert.True(t, exists, "key must be present in map after expansion")
+		assert.Equal(t, "", val, "value must be empty string, not absent")
+	})
+
+	t.Run("env_runner", func(t *testing.T) {
+		h := &Harness{
+			Agent: "agents/test.md",
+			Role:  "test",
+			Env: &EnvConfig{
+				Runner: map[string]string{"REVIEW_PROTECTED_PATHS": "${EMPTY_VAR}"},
+			},
+		}
+		require.NoError(t, h.ValidateRunnerEnvWith(lookup))
+
+		for k, v := range h.Env.Runner {
+			h.Env.Runner[k] = os.Expand(v, expander)
+		}
+
+		val, exists := h.Env.Runner["REVIEW_PROTECTED_PATHS"]
+		assert.True(t, exists, "key must be present in map after expansion")
+		assert.Equal(t, "", val, "value must be empty string, not absent")
+	})
+
+	t.Run("env_sandbox", func(t *testing.T) {
+		h := &Harness{
+			Agent: "agents/test.md",
+			Role:  "test",
+			Env: &EnvConfig{
+				Sandbox: map[string]string{"REVIEW_PROTECTED_PATHS": "${EMPTY_VAR}"},
+			},
+		}
+		require.NoError(t, h.ValidateRunnerEnvWith(lookup))
+
+		for k, v := range h.Env.Sandbox {
+			h.Env.Sandbox[k] = os.Expand(v, expander)
+		}
+
+		val, exists := h.Env.Sandbox["REVIEW_PROTECTED_PATHS"]
+		assert.True(t, exists, "key must be present in map after expansion")
+		assert.Equal(t, "", val, "value must be empty string, not absent")
+	})
+}
+
+func TestExpansion_LiteralValuePreserved(t *testing.T) {
+	// Values without ${VAR} references pass through both validation
+	// and expansion unchanged.
+
+	lookup := func(string) (string, bool) { return "", false }
+	expander := func(string) string { return "" }
+
+	t.Run("runner_env", func(t *testing.T) {
+		h := &Harness{
+			Agent:     "agents/test.md",
+			Role:      "test",
+			RunnerEnv: map[string]string{"KEY": ".github/CODEOWNERS"},
+		}
+		require.NoError(t, h.ValidateRunnerEnvWith(lookup))
+
+		for k, v := range h.RunnerEnv {
+			h.RunnerEnv[k] = os.Expand(v, expander)
+		}
+
+		assert.Equal(t, ".github/CODEOWNERS", h.RunnerEnv["KEY"])
+	})
+
+	t.Run("env_runner", func(t *testing.T) {
+		h := &Harness{
+			Agent: "agents/test.md",
+			Role:  "test",
+			Env: &EnvConfig{
+				Runner: map[string]string{"KEY": ".github/CODEOWNERS"},
+			},
+		}
+		require.NoError(t, h.ValidateRunnerEnvWith(lookup))
+
+		for k, v := range h.Env.Runner {
+			h.Env.Runner[k] = os.Expand(v, expander)
+		}
+
+		assert.Equal(t, ".github/CODEOWNERS", h.Env.Runner["KEY"])
+	})
+
+	t.Run("env_sandbox", func(t *testing.T) {
+		h := &Harness{
+			Agent: "agents/test.md",
+			Role:  "test",
+			Env: &EnvConfig{
+				Sandbox: map[string]string{"KEY": ".github/CODEOWNERS"},
+			},
+		}
+		require.NoError(t, h.ValidateRunnerEnvWith(lookup))
+
+		for k, v := range h.Env.Sandbox {
+			h.Env.Sandbox[k] = os.Expand(v, expander)
+		}
+
+		assert.Equal(t, ".github/CODEOWNERS", h.Env.Sandbox["KEY"])
+	})
+}
+
+func TestExpansion_MultipleVarRefsOneUnset(t *testing.T) {
+	// When a single value contains multiple ${VAR} refs and one is
+	// unset, validation rejects the value before expansion runs.
+
+	lookup := func(key string) (string, bool) {
+		if key == "HOST" {
+			return "example.com", true
+		}
+		return "", false // PORT is unset
+	}
+
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &EnvConfig{
+			Runner: map[string]string{"ENDPOINT": "https://${HOST}:${PORT}/api"},
+		},
+	}
+	err := h.ValidateRunnerEnvWith(lookup)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "PORT")
+	assert.Contains(t, err.Error(), "is not set")
+}
+
+func TestExpansion_WhitespaceOnlyVarPassesValidation(t *testing.T) {
+	// A variable set to whitespace-only is still "set" — validation
+	// passes and expansion materializes the whitespace value.
+
+	lookup := func(string) (string, bool) { return "   ", true }
+	expander := func(string) string { return "   " }
+
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Env: &EnvConfig{
+			Runner: map[string]string{"KEY": "${WHITESPACE_VAR}"},
+		},
+	}
+	require.NoError(t, h.ValidateRunnerEnvWith(lookup))
+
+	for k, v := range h.Env.Runner {
+		h.Env.Runner[k] = os.Expand(v, expander)
+	}
+
+	assert.Equal(t, "   ", h.Env.Runner["KEY"])
+}
+
 func TestValidate_AgentNameInvalid(t *testing.T) {
 	h := &Harness{Agent: "agents/test';echo hack;echo '.md"}
 	err := h.Validate()
