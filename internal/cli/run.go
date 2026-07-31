@@ -891,14 +891,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		if runCount > 0 {
 			rootSpan.SetAttributes(
-				attribute.String("gen_ai.request.model", aggMetrics.Model),
-				attribute.Int("gen_ai.usage.input_tokens", aggMetrics.TokenUsage.Input),
-				attribute.Int("gen_ai.usage.output_tokens", aggMetrics.TokenUsage.Output),
-				attribute.Int("gen_ai.usage.cache_creation.input_tokens", aggMetrics.TokenUsage.CacheCreation),
-				attribute.Int("gen_ai.usage.cache_read.input_tokens", aggMetrics.TokenUsage.CacheRead),
-				attribute.Float64("fullsend.cost_usd", roundUSD(aggMetrics.TotalCostUSD)),
 				attribute.Int("fullsend.num_turns", aggMetrics.NumTurns),
 				attribute.Int("fullsend.tool_calls", aggMetrics.ToolCalls),
+				attribute.Float64("fullsend.cost_usd", roundUSD(aggMetrics.TotalCostUSD)),
 				attribute.Int("fullsend.iterations", runCount),
 			)
 		}
