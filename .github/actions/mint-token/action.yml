@@ -68,8 +68,8 @@ runs:
           exit 1
         fi
         if [[ "$HTTP_CODE" -ge 400 ]]; then
-          ERROR_MSG=$(echo "$MINT_RESPONSE" | jq -r '.error // empty' 2>/dev/null)
-          echo "::error::Token mint returned HTTP $HTTP_CODE: ${ERROR_MSG:-$MINT_RESPONSE}"
+          ERROR_MSG=$(echo "$MINT_RESPONSE" | jq -r '.error // empty' 2>/dev/null | tr -d '\n')
+          echo "::error::Token mint returned HTTP $HTTP_CODE: ${ERROR_MSG:-$(echo "$MINT_RESPONSE" | tr -d '\n')}"
           exit 1
         fi
         TOKEN=$(echo "$MINT_RESPONSE" | jq -r '.token')

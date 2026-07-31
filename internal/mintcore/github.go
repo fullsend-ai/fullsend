@@ -42,9 +42,11 @@ func (e *GitHubAPIError) Error() string {
 }
 
 // readErrorBody reads up to 4096 bytes from r and returns the trimmed string.
+// Invalid UTF-8 sequences are replaced with the Unicode replacement character
+// so the result is safe to store in string fields and serialize as JSON.
 func readErrorBody(r io.Reader) string {
 	body, _ := io.ReadAll(io.LimitReader(r, 4096))
-	return strings.TrimSpace(string(body))
+	return strings.TrimSpace(strings.ToValidUTF8(string(body), "�"))
 }
 
 // installationResponse is the response from GET /repos/{owner}/{repo}/installation.

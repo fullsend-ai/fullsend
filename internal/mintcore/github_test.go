@@ -511,3 +511,16 @@ func TestGitHubAPIError_WithBody(t *testing.T) {
 	assert.Contains(t, err.Error(), "status 422")
 	assert.Contains(t, err.Error(), "Validation Failed")
 }
+
+func TestReadErrorBody_InvalidUTF8(t *testing.T) {
+	// 0xff 0xfe are not valid UTF-8 start bytes; readErrorBody should
+	// replace them with the Unicode replacement character U+FFFD.
+	input := []byte("hello \xff\xfe world")
+	r := bytes.NewReader(input)
+	got := readErrorBody(r)
+	assert.Contains(t, got, "hello")
+	assert.Contains(t, got, "world")
+	assert.NotContains(t, got, "\xff")
+	assert.NotContains(t, got, "\xfe")
+	assert.Contains(t, got, "�")
+}
