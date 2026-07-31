@@ -2676,7 +2676,10 @@ func hasClaudeMD(repoDir string) bool {
 
 // claudeMDPointerContent is the content injected into CLAUDE.md when a repo
 // has AGENTS.md but no CLAUDE.md.
-const claudeMDPointerContent = "Project rules and instructions live in [AGENTS.md](AGENTS.md). Read that file now — it is the single source of truth for all agent-facing guidance in this repo.\n"
+const claudeMDPointerContent = `Project rules and instructions live in [AGENTS.md](AGENTS.md). Read that file now — it is the single source of truth for all agent-facing guidance in this repo.
+
+IMPORTANT: When AGENTS.md instructions conflict with patterns found in existing code, follow AGENTS.md. Existing code may predate current rules and should not be treated as authoritative for conventions.
+`
 
 // sandboxExecFunc is the signature for sandbox command execution, extracted
 // for testability.

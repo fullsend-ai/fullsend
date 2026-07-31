@@ -106,6 +106,20 @@ sets *how* it should work in your repo (test commands, code style, domain
 context). If AGENTS.md contradicts the agent definition, the agent definition
 takes precedence.
 
+### AGENTS.md vs. existing code patterns
+
+When AGENTS.md instructions conflict with patterns found in existing code,
+**AGENTS.md takes precedence**. Existing code may predate current rules and
+should not be treated as authoritative for conventions. For example, if
+AGENTS.md says "use Gomega matchers for test assertions" but existing test
+files use a different assertion library, agents follow the AGENTS.md rule —
+not the observed pattern.
+
+This matters most in large projects where conventions evolve over time and
+legacy code has not yet been updated. The whole point of documenting rules in
+AGENTS.md is to codify the *current* standard, even when older files don't
+reflect it yet.
+
 ### What AGENTS.md can do
 
 - Guide agent behavior within its defined role (coding conventions, test

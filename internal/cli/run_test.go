@@ -1564,6 +1564,11 @@ func TestClaudeMDPointerContent(t *testing.T) {
 	// ends with a newline (so the file is well-formed).
 	assert.Contains(t, claudeMDPointerContent, "AGENTS.md")
 	assert.True(t, strings.HasSuffix(claudeMDPointerContent, "\n"), "content should end with newline")
+
+	// Verify the content includes explicit precedence guidance so agents
+	// prioritize AGENTS.md rules over patterns inferred from existing code.
+	assert.Contains(t, claudeMDPointerContent, "follow AGENTS.md")
+	assert.Contains(t, claudeMDPointerContent, "existing code")
 }
 
 func TestDoInjectClaudeMDPointer_Success(t *testing.T) {
