@@ -52,12 +52,26 @@ runs:
         BODY=$(jq -nc --arg role "$ROLE" --argjson repos "$REPOS_JSON" \
           '{role: $role, repos: $repos}')
         echo "Requesting token: role=$ROLE repos=$REPOS"
-        MINT_RESPONSE=$(curl -sSf --retry 5 --retry-delay 5 --retry-all-errors \
+        RESPONSE_FILE=$(mktemp)
+        CURL_EXIT=0
+        HTTP_CODE=$(curl -sS -o "$RESPONSE_FILE" -w '%{http_code}' \
+          --retry 5 --retry-delay 5 \
           -H "Authorization: Bearer $OIDC_TOKEN" \
           -H "Content-Type: application/json" \
           -d "$BODY" \
-          "${MINT_URL}/v1/token")
+          "${MINT_URL}/v1/token") || CURL_EXIT=$?
+        MINT_RESPONSE=$(cat "$RESPONSE_FILE")
+        rm -f "$RESPONSE_FILE"
         echo "::add-mask::$MINT_RESPONSE"
+        if [[ $CURL_EXIT -ne 0 ]]; then
+          echo "::error::Token mint request failed (curl exit $CURL_EXIT)"
+          exit 1
+        fi
+        if [[ "$HTTP_CODE" -ge 400 ]]; then
+          ERROR_MSG=$(echo "$MINT_RESPONSE" | jq -r '.error // empty' 2>/dev/null)
+          echo "::error::Token mint returned HTTP $HTTP_CODE: ${ERROR_MSG:-$MINT_RESPONSE}"
+          exit 1
+        fi
         TOKEN=$(echo "$MINT_RESPONSE" | jq -r '.token')
         if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
           echo "::error::Token mint returned no token for role=$ROLE"

@@ -437,3 +437,77 @@ func TestGetOrgVariable_ErrorStatus(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "status 403")
 }
+
+func TestCreateInstallationToken_ErrorIncludesBody(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		w.Write([]byte(`{"message":"Validation Failed","errors":[{"resource":"Access","code":"invalid","message":"one or more repos not found"}]}`))
+	}))
+	defer mockGH.Close()
+
+	_, _, _, err := CreateInstallationToken(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", 42, "coder", []string{"gone-repo"})
+	require.Error(t, err)
+
+	var ghErr *GitHubAPIError
+	require.ErrorAs(t, err, &ghErr)
+	assert.Equal(t, http.StatusUnprocessableEntity, ghErr.StatusCode)
+	assert.Contains(t, ghErr.Body, "Validation Failed")
+	assert.Contains(t, ghErr.Body, "one or more repos not found")
+	assert.Contains(t, ghErr.Error(), "status 422")
+	assert.Contains(t, ghErr.Error(), "Validation Failed")
+}
+
+func TestCreateInstallationTokenWithPermissions_ErrorIncludesBody(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		w.Write([]byte(`{"message":"Validation Failed"}`))
+	}))
+	defer mockGH.Close()
+
+	_, err := createInstallationTokenWithPermissions(
+		t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", 42,
+		map[string]string{"contents": "read"}, nil,
+	)
+	require.Error(t, err)
+
+	var ghErr *GitHubAPIError
+	require.ErrorAs(t, err, &ghErr)
+	assert.Equal(t, http.StatusUnprocessableEntity, ghErr.StatusCode)
+	assert.Contains(t, ghErr.Body, "Validation Failed")
+}
+
+func TestFindInstallation_ErrorIncludesBody(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"message":"Not Found"}`))
+	}))
+	defer mockGH.Close()
+
+	_, err := FindInstallation(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", "myorg", "my-repo")
+	require.Error(t, err)
+
+	var ghErr *GitHubAPIError
+	require.ErrorAs(t, err, &ghErr)
+	assert.Equal(t, http.StatusNotFound, ghErr.StatusCode)
+	assert.Contains(t, ghErr.Body, "Not Found")
+}
+
+func TestGitHubAPIError_EmptyBody(t *testing.T) {
+	err := &GitHubAPIError{
+		Operation:  "test operation",
+		StatusCode: 500,
+	}
+	assert.Equal(t, "test operation returned status 500", err.Error())
+}
+
+func TestGitHubAPIError_WithBody(t *testing.T) {
+	err := &GitHubAPIError{
+		Operation:  "test operation",
+		StatusCode: 422,
+		Body:       `{"message":"Validation Failed"}`,
+	}
+	assert.Contains(t, err.Error(), "status 422")
+	assert.Contains(t, err.Error(), "Validation Failed")
+}

@@ -250,7 +250,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		log.Printf("failed to mint token: org=%s target_org=%s role=%s err=%v", callerOrg, targetOrg, req.Role, err)
 		var me *mintError
 		if errors.As(err, &me) {
-			writeError(w, me.status, "mint failed")
+			msg := "mint failed"
+			var ghErr *GitHubAPIError
+			if errors.As(err, &ghErr) {
+				msg = ghErr.Error()
+			}
+			writeError(w, me.status, msg)
 		} else {
 			writeError(w, http.StatusInternalServerError, "internal error")
 		}
@@ -365,12 +370,12 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 		installationID, err = FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org, repos[0])
 	}
 	if err != nil {
-		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
+		return "", "", nil, githubErrToMintErr(err)
 	}
 
 	token, expiresAt, granted, err := CreateInstallationToken(ctx, h.httpClient, h.githubBaseURL, jwt, installationID, role, repos)
 	if err != nil {
-		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
+		return "", "", nil, githubErrToMintErr(err)
 	}
 
 	if granted != nil {
@@ -541,9 +546,22 @@ func (h *Handler) lookupRoleAppID(role string) (string, error) {
 type mintError struct {
 	status int
 	msg    string
+	cause  error // optional wrapped error for errors.As chaining
 }
 
 func (e *mintError) Error() string { return e.msg }
+func (e *mintError) Unwrap() error { return e.cause }
+
+// githubErrToMintErr wraps a GitHub API call error as a mintError,
+// mapping upstream 4xx → 422 (permanent client error) and 5xx → 502.
+func githubErrToMintErr(err error) *mintError {
+	status := http.StatusBadGateway
+	var ghErr *GitHubAPIError
+	if errors.As(err, &ghErr) && ghErr.StatusCode >= 400 && ghErr.StatusCode < 500 {
+		status = http.StatusUnprocessableEntity
+	}
+	return &mintError{status: status, msg: err.Error(), cause: err}
+}
 
 func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json")

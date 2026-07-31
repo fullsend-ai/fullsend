@@ -1270,16 +1270,21 @@ func TestHandler_InstallationNotFound(t *testing.T) {
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+token)
+
+	log.SetOutput(io.Discard)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
 	env.handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("expected 502, got %d: %s", rec.Code, rec.Body.String())
+	// 404 from GitHub is a 4xx client error → mapped to 422
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	var resp map[string]string
 	json.NewDecoder(rec.Body).Decode(&resp)
-	if resp["error"] != "mint failed" {
-		t.Fatalf("expected 'mint failed', got: %s", resp["error"])
+	if !strings.Contains(resp["error"], "Not Found") {
+		t.Fatalf("expected GitHub error detail in response, got: %s", resp["error"])
 	}
 }
 
@@ -2819,5 +2824,145 @@ func TestHandler_CrossOrgForeignDenied(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandler_GitHub422_Returns422WithDetail(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+
+	env := newTestOIDCEnv(t, &fakePEMAccessor{
+		pems: map[string][]byte{"coder": pemData},
+	})
+	token := env.signToken(t, nil)
+
+	// GitHub returns 200 for the installation lookup, but 422 when
+	// creating the access token (e.g. a requested repo was transferred
+	// out of the org).
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/test-org/test-repo/installation" && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 12345, Account: struct {
+					Login string `json:"login"`
+				}{Login: "test-org"},
+			})
+		case strings.HasPrefix(r.URL.Path, "/app/installations/12345/access_tokens") && r.Method == http.MethodPost:
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnprocessableEntity)
+			w.Write([]byte(`{"message":"Validation Failed","errors":[{"message":"one or more repos not found"}]}`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+	env.handler.githubBaseURL = github.URL
+
+	body := `{"role":"coder","repos":["test-repo"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	// Suppress log output during test.
+	log.SetOutput(io.Discard)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	env.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 for upstream 4xx, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]string
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if !strings.Contains(resp["error"], "Validation Failed") {
+		t.Fatalf("expected error to contain GitHub's message, got: %s", resp["error"])
+	}
+	if !strings.Contains(resp["error"], "status 422") {
+		t.Fatalf("expected error to contain upstream status code, got: %s", resp["error"])
+	}
+}
+
+func TestHandler_GitHub500_Returns502(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+
+	env := newTestOIDCEnv(t, &fakePEMAccessor{
+		pems: map[string][]byte{"coder": pemData},
+	})
+	token := env.signToken(t, nil)
+
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/repos/test-org/test-repo/installation" && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 12345, Account: struct {
+					Login string `json:"login"`
+				}{Login: "test-org"},
+			})
+		case strings.HasPrefix(r.URL.Path, "/app/installations/12345/access_tokens") && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte(`{"message":"Internal Server Error"}`))
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+	env.handler.githubBaseURL = github.URL
+
+	body := `{"role":"coder","repos":["test-repo"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	log.SetOutput(io.Discard)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	env.handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 for upstream 5xx, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]string
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if !strings.Contains(resp["error"], "Internal Server Error") {
+		t.Fatalf("expected error to contain GitHub's message, got: %s", resp["error"])
+	}
+}
+
+func TestHandler_NonGitHubError_ReturnsMintFailed(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	// PEM accessor error is not a GitHub API error — should return
+	// generic "mint failed" without leaking internal details.
+	env := newTestOIDCEnv(t, &fakePEMAccessor{
+		err: fmt.Errorf("secret-manager/forbidden"),
+	})
+	token := env.signToken(t, nil)
+
+	body := `{"role":"coder","repos":["test-repo"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	log.SetOutput(io.Discard)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	env.handler.ServeHTTP(rec, req)
+
+	var resp map[string]string
+	json.NewDecoder(rec.Body).Decode(&resp)
+	if resp["error"] != "mint failed" {
+		t.Fatalf("expected generic 'mint failed' for non-GitHub error, got: %s", resp["error"])
 	}
 }
