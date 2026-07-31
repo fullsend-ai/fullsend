@@ -28,17 +28,20 @@ Accepted
 
 ## Context
 
-The review pipeline has no quantitative risk signal. Protected-path checks in
-`post-review.sh` provide a binary gate, and the orchestrator's scope
-classification (trivial/small/standard) captures size but not risk. There is no
-composite score that accounts for path sensitivity, git history churn, author
-context, or linked-issue complexity — signals that would inform review effort,
-model selection, and auto-merge eligibility.
+The review pipeline (see [code-review.md](../problems/code-review.md)) has no
+quantitative risk signal. Protected-path checks in `post-review.sh` provide a
+binary gate, and the orchestrator's scope classification (trivial/small/standard)
+captures size but not risk. There is no composite score that accounts for path
+sensitivity, git history churn, author context, or linked-issue complexity —
+signals that would inform review effort, model selection, and auto-merge
+eligibility (see [agent-architecture.md](../problems/agent-architecture.md) for
+the broader agent composition model).
 
-The prioritize agent's RICE scoring
-([agents/agents/prioritize.md](https://github.com/fullsend-ai/agents)) provides
-a proven pattern: agent produces structured JSON → post-script applies labels
-and posts a breakdown comment.
+The prioritize agent's RICE scoring (see
+[prioritize agent](../agents/prioritize.md)) provides a proven pattern: agent
+produces structured JSON → post-script applies labels and posts a breakdown
+comment. The harness schema that governs agent configuration is defined in
+[ADR 0045](0045-forge-portable-harness-schema.md).
 
 A key constraint is that the fullsend harness expands `env.sandbox` values
 before the pre-script runs ([#5756](https://github.com/fullsend-ai/fullsend/issues/5756)),
@@ -81,7 +84,7 @@ Add PR-level risk assessment as a **pre-pass sub-agent inside the review
 pipeline** (Option B revised — metadata extraction moved inside the sandbox to
 work around [#5756](https://github.com/fullsend-ai/fullsend/issues/5756)).
 
-**Components:**
+**Components** (all in [fullsend-ai/agents](https://github.com/fullsend-ai/agents)):
 
 - `skills/pr-risk-assessment/SKILL.md` — scoring model, signal tier definitions,
   anchoring examples, output format.
@@ -110,7 +113,18 @@ could load the skill natively.
 
 When no linked issue exists, tier weights redistribute proportionally (metadata
 62%, git history 38%). The composite is a weighted average rounded to the nearest
-integer.
+integer. These weights are initial values — they should be recalibrated after
+production data is available.
+
+**Score-to-level mapping:**
+
+| Score | Level |
+|---|---|
+| 1 | low |
+| 2 | moderate |
+| 3 | elevated |
+| 4 | high |
+| 5 | critical |
 
 **Output:** An optional `risk_assessment` object in the review result JSON
 (absent when the feature flag is off):
@@ -136,7 +150,7 @@ and appends a breakdown table to the PR comment. Risk level is informational
 only — it does not gate the review outcome. The protected-path check remains
 the sole blocking mechanism.
 
-**Feature flag:** `FULLSEND_RISK_ASSESSMENT_ENABLED` env var, default `true`.
+**Feature flag:** `REVIEW_RISK_ASSESSMENT_ENABLED` env var, default `true`.
 
 ## Consequences
 
@@ -144,9 +158,14 @@ the sole blocking mechanism.
   comments, enabling risk-informed triage and review prioritization.
 - Risk scoring adds one sonnet-model sub-agent call per PR (cost-effective
   relative to the opus dimension sub-agents).
-- Metadata tier signals are deterministic and auditable via bash script output.
 - Risk level is decoupled from review outcome — gating can be added later once
   scoring confidence is established.
+- Metadata tier signals are computed deterministically by `risk-tier1.sh`, but
+  the sub-agent interprets and re-emits them in the output JSON — introducing
+  potential LLM-mediated non-determinism. Full bypass of the LLM for tier 1 is
+  deferred until the pre-script → sandbox data flow
+  ([#5756](https://github.com/fullsend-ai/fullsend/issues/5756)) is resolved,
+  enabling a pre-script to capture tier 1 output directly.
 - The docs-currency skill-loading pattern adds an implicit coupling between the
   orchestrator and the skill directory; this coupling is eliminated when sub-agent
   sandbox isolation lands ([#3978](https://github.com/fullsend-ai/fullsend/issues/3978)).
