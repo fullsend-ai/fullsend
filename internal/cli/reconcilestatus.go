@@ -90,11 +90,18 @@ finalized, this is a no-op.`,
 			completionMode := ""
 			if fullsendDir != "" {
 				writer, err := config.LoadConfigWriter(fullsendDir, config.LoadOpts{MissingOK: true})
-				if err != nil {
+				switch {
+				case err != nil:
 					fmt.Fprintf(os.Stderr, "WARNING: could not load config from %s: %v; using default completion mode\n", fullsendDir, err)
-				} else if writer != nil {
-					if ocr, ok := writer.(config.OrgConfigReader); ok && ocr.StatusNotifications() != nil {
+				default:
+					ocr, ok := writer.(config.OrgConfigReader)
+					switch {
+					case ok && ocr.StatusNotifications() != nil:
 						completionMode = ocr.StatusNotifications().Comment.Completion
+					case ok:
+						fmt.Fprintf(os.Stderr, "INFO: no status_notifications configured at %s; using default completion mode\n", fullsendDir)
+					default:
+						fmt.Fprintf(os.Stderr, "INFO: %s is not an org config (status_notifications is org-level only); using default completion mode\n", fullsendDir)
 					}
 				}
 			}

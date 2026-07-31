@@ -431,3 +431,27 @@ func TestNewReconcileStatusCmd_FullsendDir_MissingConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "", gotMode, "missing config should fall back to empty completionMode")
 }
+
+func TestNewReconcileStatusCmd_FullsendDir_MissingConfig_LogsDiagnostic(t *testing.T) {
+	dir := t.TempDir() // no config.yaml written
+
+	stubReconcileVars(t, func(_, _ string) {})
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--mint-url", "https://mint.example.com",
+		"--role", "review",
+		"--fullsend-dir", dir,
+	})
+
+	var err error
+	stderr := captureStderr(t, func() {
+		err = cmd.Execute()
+	})
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "status_notifications", "should log a diagnostic distinguishing 'not an org config' from a real load error")
+}
