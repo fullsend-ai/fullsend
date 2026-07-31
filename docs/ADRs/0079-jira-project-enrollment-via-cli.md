@@ -1,5 +1,5 @@
 ---
-title: "79. Jira project enrollment via fullsend CLI"
+title: "79. Jira project setup via fullsend CLI"
 status: Accepted
 relates_to:
   - agent-infrastructure
@@ -10,7 +10,7 @@ topics:
   - credentials
 ---
 
-# 79. Jira project enrollment via fullsend CLI
+# 79. Jira project setup via fullsend CLI
 
 Date: 2026-07-09
 
@@ -54,14 +54,18 @@ Operators follow a guide to create forge secrets and edit
 `.fullsend/config.yaml` by hand. Rejected — error-prone for multi-project
 setups and inconsistent across forges.
 
-### Option 2: `fullsend jira enroll` CLI command
+### Option 2: `fullsend jira setup` CLI command
 
 A CLI command provisions credentials and writes poll driver connection
-config. Follows established CLI patterns (cobra subcommands, `--dry-run`).
+config. The verb `setup` is chosen over `enroll` to avoid overloading:
+`fullsend github enroll` is a lightweight config toggle that does not
+set secrets, while `jira setup` provisions forge secrets alongside
+config. Follows established CLI patterns (cobra subcommands,
+`--dry-run`).
 
 ## Decision
 
-Add a `fullsend jira enroll <target-repo>` CLI command that operates on
+Add a `fullsend jira setup <target-repo>` CLI command that operates on
 a remote `owner/repo` target via the forge API (no local clone
 required). The command accepts Jira credentials via environment
 variables (`JIRA_HOST`, `JIRA_EMAIL`, `JIRA_API_TOKEN`) and supports
@@ -92,9 +96,9 @@ agent sandbox is the harness author's responsibility (via `env.runner`
 / `env.sandbox` per [ADR 0055](0055-unified-env-var-delivery.md) and
 pre/post scripts).
 
-Enrollment is designed to be idempotent — re-running with a new token
-updates the forge secret. The enrollment scope is credentials and
-config only; the dispatch mechanism is the poll driver's
+The command is designed to be idempotent — re-running with a new token
+updates the forge secret. The scope is credentials and config only;
+the dispatch mechanism is the poll driver's
 responsibility ([ADR 0063](0063-polling-based-work-discovery.md)),
 and agent-level Jira awareness (harness `pre_script` /
 `post_script`) is the repo admin's responsibility. This is distinct
@@ -127,7 +131,7 @@ which manages forge-level installation scaffolding.
   URL. Runtime API calls use the `api.atlassian.com` gateway with the
   stored Cloud ID, avoiding per-poll lookups.
 - Jira API token rotation is the repo admin's responsibility —
-  re-running `fullsend jira enroll` with a new token is designed to
+  re-running `fullsend jira setup` with a new token is designed to
   update the forge secret. Per-forge idempotency verification is
   tracked as an implementation concern.
 - Repo-to-issue association is out of scope — the poll driver
