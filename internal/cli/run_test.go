@@ -1585,6 +1585,9 @@ func TestDoInjectClaudeMDPointer_Success(t *testing.T) {
 	assert.Contains(t, cmds[0], "CLAUDE.md")
 	assert.Contains(t, cmds[0], "/workspace/repo/CLAUDE.md")
 	assert.Contains(t, cmds[0], "AGENTS.md") // content references AGENTS.md
+	// The write command must use printf '%b' (not '%s') so that Go's %q-escaped
+	// newline sequences (\n) are interpreted as real newlines in the output file.
+	assert.Contains(t, cmds[0], "printf '%b'")
 	assert.Contains(t, cmds[1], ".git/info/exclude")
 	assert.Contains(t, cmds[1], "CLAUDE.md")
 }

@@ -2693,7 +2693,7 @@ func injectClaudeMDPointer(sandboxName, remoteRepositoryDir string, printer *ui.
 
 // doInjectClaudeMDPointer is the testable core of injectClaudeMDPointer.
 func doInjectClaudeMDPointer(sandboxName, remoteRepositoryDir string, printer *ui.Printer, execFn sandboxExecFunc) {
-	writeCmd := fmt.Sprintf("printf '%%s' %q > %s/CLAUDE.md", claudeMDPointerContent, remoteRepositoryDir)
+	writeCmd := fmt.Sprintf("printf '%%b' %q > %s/CLAUDE.md", claudeMDPointerContent, remoteRepositoryDir)
 	if _, _, _, err := execFn(sandboxName, writeCmd, 5*time.Second); err != nil {
 		printer.StepWarn("Could not inject CLAUDE.md: " + err.Error())
 		return
