@@ -83,14 +83,16 @@ root-span attribute mirroring — there is no usable trace context.
   local JSON remains the forensic / handoff contract.
 - Dispatched child runs must inherit forge context via env so child snapshots
   are complete.
-- GitHub/GitLab coverage depends on CI vars or `FULLSEND_*` overrides (forges
-  with clients today). Forgejo is a planned target per
+- GitHub/GitLab coverage depends on CI vars or `FULLSEND_*` overrides — both
+  have in-tree `forge.Client` implementations today (`internal/forge/github`,
+  `internal/forge/gitlab`). Forgejo remains a planned target under
   [ADR 0005](0005-forge-abstraction-layer.md) and needs a forge client before
-  this join-key behavior applies there.
-- Implementation will be tracked in a follow-up issue filed after this ADR
-  merges (per repo convention; premature tracker [#5449](https://github.com/fullsend-ai/fullsend/issues/5449)
-  was closed as not planned). Detailed field lists for cross-project consumers
-  stay in the shared join contract, not duplicated here.
+  this join-key behavior applies there (ADR 0005 still groups GitLab with
+  Forgejo as future work; the GitLab client landed later).
+- Implementation will be tracked in a **new** follow-up issue filed after this
+  ADR merges (per repo convention). Do not cite closed #5449. Detailed field
+  lists for cross-project consumers stay in the shared join contract, not
+  duplicated here.
 
 ## Related
 
