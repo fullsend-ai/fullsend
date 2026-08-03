@@ -41,6 +41,26 @@ func TestRunCLIFromDir(t *testing.T) {
 	assert.Contains(t, out, "fullsend")
 }
 
+func TestRunCLIWithEnv(t *testing.T) {
+	script := writeCLIScript(t, "echo fullsend repos output")
+	out := RunCLIWithEnv(t, script, map[string]string{"GITHUB_TOKEN": "tok", "GITLAB_TOKEN": "gl-tok"}, "repos", "status")
+	assert.Contains(t, out, "fullsend")
+}
+
+func TestTryRunCLIWithEnv_Success(t *testing.T) {
+	script := writeCLIScript(t, "echo fullsend repos output")
+	out, err := TryRunCLIWithEnv(t, script, map[string]string{"GITHUB_TOKEN": "tok"}, "repos", "status")
+	require.NoError(t, err)
+	assert.Contains(t, out, "fullsend")
+}
+
+func TestTryRunCLIWithEnv_Failure(t *testing.T) {
+	script := writeCLIScript(t, "echo error >&2; exit 1")
+	_, err := TryRunCLIWithEnv(t, script, map[string]string{"GITHUB_TOKEN": "tok"}, "repos", "upgrade-mint")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "upgrade-mint")
+}
+
 func TestModuleRoot(t *testing.T) {
 	dir := ModuleRoot(t)
 	assert.DirExists(t, dir)

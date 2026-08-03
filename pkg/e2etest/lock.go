@@ -17,7 +17,7 @@ import (
 // acquireLock attempts to acquire the distributed e2e lock by creating an
 // e2e-lock repo in the test org. If the lock is already held, it polls
 // until the lock is released or the timeout expires.
-// The token parameter is needed for getRepoCreatedAt (direct API call).
+// The token parameter is needed for GetRepoCreatedAt (direct API call).
 // Pass "" if using a fake client (skips age checks).
 func acquireLock(ctx context.Context, client forge.Client, token, org, runID string, timeout time.Duration, logf func(string, ...any)) error {
 	// Try to create the lock repo.
@@ -73,7 +73,7 @@ func acquireLock(ctx context.Context, client forge.Client, token, org, runID str
 
 		// Check lock age if we have a token (skip for fake clients).
 		if token != "" {
-			createdAt, ageErr := getRepoCreatedAt(ctx, token, org, lockRepo)
+			createdAt, ageErr := GetRepoCreatedAt(ctx, token, org, lockRepo)
 			if ageErr == nil {
 				age := time.Since(createdAt)
 
@@ -205,7 +205,7 @@ func ReleaseLock(ctx context.Context, client forge.Client, org, runID string, t 
 // was reclaimed. This runs during the first pass so stale locks from
 // crashed runs don't waste pool capacity.
 func tryReclaimStaleLock(ctx context.Context, client forge.Client, token, org, runID string, logf func(string, ...any)) bool {
-	createdAt, err := getRepoCreatedAt(ctx, token, org, lockRepo)
+	createdAt, err := GetRepoCreatedAt(ctx, token, org, lockRepo)
 	if err != nil {
 		logf("[org-pool] Could not check lock age for %s: %v", org, err)
 		return false

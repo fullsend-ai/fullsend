@@ -389,10 +389,10 @@ func newLiveClient(token string) *gh.LiveClient {
 	return gh.New(token)
 }
 
-// getRepoCreatedAt fetches a repo's created_at timestamp directly from the
+// GetRepoCreatedAt fetches a repo's created_at timestamp directly from the
 // GitHub REST API. This is intentionally NOT added to forge.Client since it's
-// only needed for e2e lock management.
-func getRepoCreatedAt(ctx context.Context, token, org, repo string) (time.Time, error) {
+// only needed for e2e infrastructure (lock management, stale resource cleanup).
+func GetRepoCreatedAt(ctx context.Context, token, org, repo string) (time.Time, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/%s", org, repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -488,6 +488,49 @@ func RunCLIFromDir(t *testing.T, binary, token, dir string, args ...string) stri
 // runCLI executes the fullsend CLI with the given args, passing GITHUB_TOKEN.
 func runCLI(t *testing.T, binary, token string, args ...string) string {
 	return RunCLIFromDir(t, binary, token, ModuleRoot(t), args...)
+}
+
+// RunCLIWithEnv executes the fullsend CLI with custom environment variables.
+// Each entry in extraEnv is added to the subprocess environment as KEY=VALUE.
+// CI=true is always set. Calls t.Fatalf on non-zero exit.
+func RunCLIWithEnv(t *testing.T, binary string, extraEnv map[string]string, args ...string) string {
+	t.Helper()
+	t.Logf("[cli] fullsend %s", strings.Join(args, " "))
+
+	cmd := exec.Command(binary, args...)
+	cmd.Dir = ModuleRoot(t)
+	env := append(os.Environ(), "CI=true")
+	for k, v := range extraEnv {
+		env = append(env, k+"="+v)
+	}
+	cmd.Env = env
+	out, runErr := cmd.CombinedOutput()
+	output := string(out)
+	t.Logf("[cli] output:\n%s", output)
+	if runErr != nil {
+		t.Fatalf("[cli] fullsend %s failed: %v\n%s", strings.Join(args, " "), runErr, output)
+	}
+	return output
+}
+
+// TryRunCLIWithEnv is like RunCLIWithEnv but returns an error instead of
+// calling t.Fatalf. Useful when non-zero exit is expected.
+func TryRunCLIWithEnv(t *testing.T, binary string, extraEnv map[string]string, args ...string) (string, error) {
+	t.Helper()
+	cmd := exec.Command(binary, args...)
+	cmd.Dir = ModuleRoot(t)
+	env := append(os.Environ(), "CI=true")
+	for k, v := range extraEnv {
+		env = append(env, k+"="+v)
+	}
+	cmd.Env = env
+	out, runErr := cmd.CombinedOutput()
+	output := string(out)
+	if runErr != nil {
+		t.Logf("[cli] fullsend %s: %v\n%s", strings.Join(args, " "), runErr, output)
+		return output, fmt.Errorf("[cli] fullsend %s failed: %w\n%s", strings.Join(args, " "), runErr, output)
+	}
+	return output, nil
 }
 
 // retryOnNotFound retries an operation up to maxAttempts times with linear
