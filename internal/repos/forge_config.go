@@ -14,10 +14,10 @@ var (
 		`(uses:\s+` + shimOwner + `/` + shimRepo + `/[^@]+@)\S+([ \t]*#.*)?`,
 	)
 	glWorkflowRefPattern = regexp.MustCompile(
-		`(?m)ref:\s+['"]?(\S+?)['"]?[ \t]*$`,
+		`(?m)\bref:\s+['"]?(\S+?)['"]?[ \t]*$`,
 	)
 	glShimRefPattern = regexp.MustCompile(
-		`(?m)(ref:\s+)['"]?\S+?['"]?[ \t]*$`,
+		`(?m)(\bref:\s+)['"]?\S+?['"]?[ \t]*$`,
 	)
 )
 

@@ -275,6 +275,7 @@ var ValidDefaultKeys = []string{
 	"forge.github.mint_url",
 	"forge.github.fullsend_ref",
 	"forge.gitlab.url",
+	"forge.gitlab.runner_tags",
 }
 
 // validDefaultKeySet is the lookup set for ValidDefaultKeys.
@@ -338,6 +339,16 @@ func SetDefault(manifestPath, key, value string) error {
 		m.Forge.GitHub.FullsendRef = value
 	case "forge.gitlab.url":
 		m.Forge.GitLab.URL = value
+	case "forge.gitlab.runner_tags":
+		if value == "" {
+			m.Forge.GitLab.RunnerTags = nil
+		} else {
+			parts := strings.Split(value, ",")
+			for i := range parts {
+				parts[i] = strings.TrimSpace(parts[i])
+			}
+			m.Forge.GitLab.RunnerTags = parts
+		}
 	}
 
 	return writeManifest(manifestPath, m)
@@ -369,6 +380,12 @@ func validateDefaultValue(key, value string) error {
 			u, err := url.Parse(v)
 			if err != nil || u.Scheme != "https" || u.Host == "" {
 				return fmt.Errorf("defaults.allowed_remote_resources: %q must be a valid HTTPS URL", v)
+			}
+		}
+	case "forge.gitlab.runner_tags":
+		for _, raw := range strings.Split(value, ",") {
+			if strings.TrimSpace(raw) == "" {
+				return fmt.Errorf("forge.gitlab.runner_tags: tags must not be empty")
 			}
 		}
 	}

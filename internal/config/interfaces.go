@@ -68,6 +68,7 @@ type PerRepoConfigReader interface {
 	ConfigReader
 	ConfigRoles() []string
 	ConfigRuntime() string
+	ConfigForge() string
 }
 
 // --- Write superset interfaces ---
@@ -357,6 +358,17 @@ func (c *perRepoConfig) ConfigRuntime() string {
 	}
 	if c.parent != nil {
 		return c.parent.ConfigRuntime()
+	}
+	return ""
+}
+
+// ConfigForge returns the configured forge type (e.g. "github", "gitlab").
+func (c *perRepoConfig) ConfigForge() string {
+	if c.Forge != "" {
+		return c.Forge
+	}
+	if c.parent != nil {
+		return c.parent.ConfigForge()
 	}
 	return ""
 }

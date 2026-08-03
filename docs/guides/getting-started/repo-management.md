@@ -49,20 +49,6 @@ WIF infrastructure per repo, installs per-repo (scaffold, variables,
 secrets), unenrolls migrated repos from per-org config, and generates
 a `repos.yaml` manifest.
 
-### Creating a manifest from scratch
-
-If you do not have an existing per-org installation to migrate from,
-`repos install` can bootstrap a new manifest for you. Pass repo names
-as positional arguments with `--forge`:
-
-```bash
-fullsend repos install acme/api acme/web --forge github --direct
-```
-
-This creates `repos.yaml` (or the path given by `-f`) with
-`version: 1`, adds the specified repos, and runs the install. The
-`--forge` flag is required when no manifest exists.
-
 ### Multi-forge manifests
 
 Every repo entry in the manifest must declare its forge (`github` or

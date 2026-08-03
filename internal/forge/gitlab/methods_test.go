@@ -1326,6 +1326,104 @@ func TestGetOrgPlan_NoPlanField(t *testing.T) {
 	assert.Equal(t, "free", plan)
 }
 
+func TestIsEnterprise_True(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/metadata", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]interface{}{"version": "17.1.0", "enterprise": true})
+	})
+
+	assert.True(t, client.IsEnterprise(ctx))
+}
+
+func TestIsEnterprise_False(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/metadata", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]interface{}{"version": "17.1.0", "enterprise": false})
+	})
+
+	assert.False(t, client.IsEnterprise(ctx))
+}
+
+func TestIsEnterprise_ErrorReturnsFalse(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/metadata", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	})
+
+	assert.False(t, client.IsEnterprise(ctx))
+}
+
+func TestDetectRunnerTags_UntaggedRunner(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/runners", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"id": 1, "status": "online"},
+		})
+	})
+	mux.HandleFunc("/api/v4/runners/1", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"id": 1, "tag_list": []string{}, "run_untagged": true,
+		})
+	})
+
+	needsTags, tags, err := client.DetectRunnerTags(ctx, "myorg", "myrepo")
+	require.NoError(t, err)
+	assert.False(t, needsTags)
+	assert.Empty(t, tags)
+}
+
+func TestDetectRunnerTags_AllRequireTags(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/runners", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"id": 1, "status": "online"},
+			{"id": 2, "status": "online"},
+			{"id": 3, "status": "offline"},
+		})
+	})
+	mux.HandleFunc("/api/v4/runners/1", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"id": 1, "tag_list": []string{"docker", "linux"}, "run_untagged": false,
+		})
+	})
+	mux.HandleFunc("/api/v4/runners/2", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, map[string]any{
+			"id": 2, "tag_list": []string{"docker", "arm64"}, "run_untagged": false,
+		})
+	})
+
+	needsTags, tags, err := client.DetectRunnerTags(ctx, "myorg", "myrepo")
+	require.NoError(t, err)
+	assert.True(t, needsTags)
+	assert.Equal(t, []string{"docker", "arm64", "linux"}, tags)
+}
+
+func TestDetectRunnerTags_NoOnlineRunners(t *testing.T) {
+	client, mux := setupTest(t)
+	ctx := context.Background()
+
+	mux.HandleFunc("/api/v4/projects/myorg%2Fmyrepo/runners", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, w, http.StatusOK, []map[string]any{
+			{"id": 1, "status": "offline"},
+		})
+	})
+
+	needsTags, tags, err := client.DetectRunnerTags(ctx, "myorg", "myrepo")
+	require.NoError(t, err)
+	assert.False(t, needsTags)
+	assert.Empty(t, tags)
+}
+
 func TestUpdateCIVariable(t *testing.T) {
 	client, mux := setupTest(t)
 	ctx := context.Background()

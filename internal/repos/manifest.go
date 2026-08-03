@@ -88,7 +88,8 @@ func ForgeSectionFromURL(forgeName, forgeURL string) ForgeSection {
 
 // GitLabForgeInfra holds GitLab-specific infrastructure settings.
 type GitLabForgeInfra struct {
-	URL string `yaml:"url"`
+	URL        string   `yaml:"url"`
+	RunnerTags []string `yaml:"runner_tags,omitempty"`
 }
 
 // DefaultsConfig holds default field values applied to every repo.

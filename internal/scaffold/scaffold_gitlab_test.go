@@ -331,8 +331,58 @@ func TestGitLabRootPipelineContent(t *testing.T) {
 	assert.Contains(t, s, "fullsend-agent.yml")
 	// push pipelines intentionally excluded — documented in workflow comment
 	assert.Contains(t, s, "Push-triggered pipelines are intentionally excluded")
+	// no catch-all rule — workflow:rules is open-ended so adopters
+	// can add push rules without needing to remove a never gate
+	assert.NotContains(t, s, "- when: never")
 	// parent_pipeline rule removed (child pipelines don't inherit workflow:rules)
 	assert.NotContains(t, s, `$CI_PIPELINE_SOURCE == "parent_pipeline"`)
+}
+
+func TestGitLabRunnerTagsPlaceholder(t *testing.T) {
+	taggedFiles := []string{
+		".gitlab/ci/fullsend-poll.yml",
+		".gitlab/ci/fullsend-dispatch.yml",
+		".gitlab/ci/fullsend-agent.yml",
+	}
+	for _, path := range taggedFiles {
+		content, err := GitLabPerRepoFile(path)
+		require.NoError(t, err, path)
+		assert.Contains(t, string(content), "__RUNNER_TAGS__", "%s must contain __RUNNER_TAGS__ placeholder", path)
+	}
+}
+
+func TestCollectGitLabPerRepoInstallFiles_WithTags(t *testing.T) {
+	files, err := CollectGitLabPerRepoInstallFiles([]string{"docker", "linux"})
+	require.NoError(t, err)
+
+	for _, f := range files {
+		if strings.HasSuffix(f.Path, ".yml") {
+			s := string(f.Content)
+			assert.NotContains(t, s, "__RUNNER_TAGS__", "%s should have tags substituted", f.Path)
+			if strings.Contains(s, "tags:") {
+				assert.Contains(t, s, `["docker", "linux"]`, "%s should contain formatted tags", f.Path)
+			}
+		}
+	}
+}
+
+func TestCollectGitLabPerRepoInstallFiles_NoTags(t *testing.T) {
+	files, err := CollectGitLabPerRepoInstallFiles(nil)
+	require.NoError(t, err)
+
+	for _, f := range files {
+		if strings.HasSuffix(f.Path, ".yml") {
+			s := string(f.Content)
+			assert.NotContains(t, s, "__RUNNER_TAGS__", "%s should have tags substituted", f.Path)
+		}
+	}
+}
+
+func TestFormatRunnerTags(t *testing.T) {
+	assert.Equal(t, "[]", formatRunnerTags(nil))
+	assert.Equal(t, "[]", formatRunnerTags([]string{}))
+	assert.Equal(t, `["docker"]`, formatRunnerTags([]string{"docker"}))
+	assert.Equal(t, `["docker", "linux"]`, formatRunnerTags([]string{"docker", "linux"}))
 }
 
 func TestGitLabNoPerStageTemplates(t *testing.T) {

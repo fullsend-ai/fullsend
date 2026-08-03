@@ -80,12 +80,6 @@ fullsend repos migrate <org> --project <gcp-project>
 
 Converge repos to the desired state defined in a manifest. This is the primary command for managing per-repo installations — it handles adding repos to the manifest, provisioning new repos, syncing variable drift, and upgrading scaffold refs.
 
-When the manifest file does not exist and positional repo arguments are
-provided, `repos install` bootstraps a new manifest (`version: 1`),
-adds the specified repos, and writes the file. The `--forge` flag is
-required in this case. This enables a greenfield setup without running
-`repos migrate` or manually creating the YAML first.
-
 Runs in three phases:
 
 1. **Manifest add** — repos specified as positional arguments that are not already in the manifest are added (requires `--forge`). Per-repo overrides (`--inference-region`, `--fullsend-ref`, `--mint-url`, `--allowed-remote-resources`) are written to the manifest entry.
@@ -127,6 +121,17 @@ When repos are specified as positional arguments, only those repos are processed
 | `--fullsend-ref` | | Per-repo fullsend workflow ref override |
 | `--mint-url` | | Per-repo mint URL override |
 | `--allowed-remote-resources` | | Per-repo allowed remote resources override |
+| `--gitlab-bot-token` | | GitLab bot PAT for free-tier instances that don't support project access tokens |
+
+### GitLab bot token
+
+For GitLab repos, `repos install` automatically creates a project access token and stores it as the `FULLSEND_FORGE_TOKEN` CI/CD variable. This requires GitLab Premium or Ultimate.
+
+On free-tier or Community Edition instances where project access tokens are not available, pass `--gitlab-bot-token` with a personal access token (PAT) that has `api` scope:
+
+```bash
+fullsend repos install group/project --forge gitlab --gitlab-bot-token glpat-xxxxxxxxxxxx
+```
 
 ### Common workflows
 
@@ -154,9 +159,11 @@ Install specific repos:
 fullsend repos install acme/api acme/web
 ```
 
-### Limitations
+Add a GitLab repo and install it:
 
-- **GitLab scaffold generation is not yet implemented.** `repos install` only supports GitHub repos. GitLab repos in the manifest will fail with an error during the provision phase. GitLab support for `repos status` and `repos uninstall` (teardown) works normally.
+```bash
+fullsend repos install group/project --forge gitlab --direct
+```
 
 ## `repos status`
 
@@ -248,19 +255,46 @@ fullsend repos set-default forge.github.mint_url ""   # removes the key
 
 ### Valid keys
 
-| Key | Description |
-|-----|-------------|
-| `defaults.allowed_remote_resources` | Default allowed remote resources for all repos |
-| `forge.github.url` | GitHub instance URL (defaults to `https://github.com`) |
-| `forge.github.mint_url` | Token mint Cloud Run endpoint URL |
-| `forge.github.fullsend_ref` | Default fullsend workflow ref for GitHub repos |
-| `forge.gitlab.url` | GitLab instance URL |
+| Key | Type | Description |
+|-----|------|-------------|
+| `defaults.allowed_remote_resources` | comma-separated URLs | HTTPS URLs agents may fetch at runtime |
+| `forge.github.url` | URL | GitHub instance URL (default: `https://github.com`) |
+| `forge.github.mint_url` | URL | Cloud Run endpoint URL for the token mint |
+| `forge.github.fullsend_ref` | ref string | Git ref to pin in scaffold workflow YAML |
+| `forge.gitlab.url` | URL | GitLab instance URL |
+| `forge.gitlab.runner_tags` | comma-separated tags | CI runner tags for routing agent jobs |
 
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-f`, `--manifest` | `repos.yaml` | Path to repos.yaml |
+
+### Examples
+
+Set the GitLab runner tags:
+
+```bash
+fullsend repos set-default forge.gitlab.runner_tags fullsend-agent
+```
+
+Set multiple runner tags:
+
+```bash
+fullsend repos set-default forge.gitlab.runner_tags "fullsend-agent,gpu-runner"
+```
+
+Remove runner tags:
+
+```bash
+fullsend repos set-default forge.gitlab.runner_tags ""
+```
+
+Set the GitLab instance URL:
+
+```bash
+fullsend repos set-default forge.gitlab.url https://gitlab.example.com
+```
 
 ## See also
 

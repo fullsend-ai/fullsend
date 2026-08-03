@@ -15,6 +15,55 @@ var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, required
 
 var uninstallSecrets = requiredSecrets
 
+var gitlabUninstallVars = []string{
+	forge.PerRepoGuardVar,
+	"FULLSEND_CREDENTIAL_MODE",
+	"FULLSEND_FORGE",
+	"FULLSEND_FORGE_TOKEN",
+	"FULLSEND_LABEL_STATE",
+	"FULLSEND_LAST_POLL_AT_FAST",
+	"FULLSEND_LAST_POLL_AT_FULL",
+	"FULLSEND_DISPATCHED_KEYS_FAST",
+	"FULLSEND_DISPATCHED_KEYS_FULL",
+	"FULLSEND_FAILED_KEYS_FAST",
+	"FULLSEND_FAILED_KEYS_FULL",
+}
+
+var gitlabScaffoldPaths = []string{
+	".gitlab-ci.yml",
+	".gitlab/ci/fullsend-agent.yml",
+	".gitlab/ci/fullsend-dispatch.yml",
+	".gitlab/ci/fullsend-poll.yml",
+	".fullsend/config.yaml",
+}
+
+// UninstallVarsForForge returns the CI/CD variable names to delete for
+// the given forge during uninstall.
+func UninstallVarsForForge(forgeName string) []string {
+	if forgeName == ForgeGitLab {
+		return gitlabUninstallVars
+	}
+	return uninstallVariables
+}
+
+// UninstallSecretsForForge returns the CI/CD secret names to delete for
+// the given forge during uninstall.
+func UninstallSecretsForForge(forgeName string) []string {
+	if forgeName == ForgeGitLab {
+		return nil
+	}
+	return uninstallSecrets
+}
+
+// ScaffoldPathsForForge returns the scaffold file paths to delete for
+// the given forge during uninstall.
+func ScaffoldPathsForForge(forgeName string) []string {
+	if forgeName == ForgeGitLab {
+		return gitlabScaffoldPaths
+	}
+	return nil
+}
+
 // UninstallConfig holds all inputs for a multi-repo uninstall operation.
 type UninstallConfig struct {
 	Manifest       *Manifest
@@ -112,7 +161,7 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 				results[idx] = UninstallResult{Owner: owner, Repo: repo, Error: fcErr}
 				return
 			}
-			results[idx] = uninstallRepoResources(ctx, ResolvedConfig{Owner: owner, Repo: repo, ForgeConfig: fc}, progress)
+			results[idx] = uninstallRepoResources(ctx, ResolvedConfig{Owner: owner, Repo: repo, Forge: forgeName, ForgeConfig: fc}, progress)
 		}(i, p.owner, p.repo)
 	}
 	wg.Wait()
@@ -129,20 +178,31 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, progress ProgressFunc) UninstallResult {
 	owner, repo := cfg.Owner, cfg.Repo
 	client := cfg.ForgeConfig.Client
-	fc := cfg.ForgeConfig
 	fullName := owner + "/" + repo
 	result := UninstallResult{Owner: owner, Repo: repo}
 
-	progress(fullName, "workflow", "Deleting workflow file")
-	_, err := client.DeleteFiles(ctx, owner, repo,
-		"chore: remove fullsend workflow", fc.WorkflowPaths)
+	// Delete scaffold files. For GitHub this is just the workflow paths
+	// from ForgeConfig; for GitLab the full scaffold set is needed.
+	deletePaths := ScaffoldPathsForForge(cfg.Forge)
+	if len(deletePaths) == 0 {
+		deletePaths = cfg.ForgeConfig.WorkflowPaths
+	}
+	progress(fullName, "workflow", "Deleting scaffold files")
+	deleteMsg := "chore: remove fullsend workflow"
+	if cfg.Forge == ForgeGitLab {
+		deleteMsg += " [skip ci]"
+	}
+	_, err := client.DeleteFiles(ctx, owner, repo, deleteMsg, deletePaths)
 	if err != nil {
-		result.Error = fmt.Errorf("deleting workflow: %w", err)
+		result.Error = fmt.Errorf("deleting scaffold files: %w", err)
 		progress(fullName, "workflow", fmt.Sprintf("Failed: %v", err))
 		return result
 	}
 	result.WorkflowDeleted = true
-	progress(fullName, "workflow", "Workflow deleted")
+	progress(fullName, "workflow", "Scaffold files deleted")
+
+	forgeVars := UninstallVarsForForge(cfg.Forge)
+	forgeSecrets := UninstallSecretsForForge(cfg.Forge)
 
 	var varsDeleted, secretsDeleted int
 	var varErr, secretErr error
@@ -151,7 +211,7 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, progress Pr
 	innerWg.Add(2)
 	go func() {
 		defer innerWg.Done()
-		for _, name := range uninstallVariables {
+		for _, name := range forgeVars {
 			if delErr := client.DeleteRepoVariable(ctx, owner, repo, name); delErr != nil {
 				varErr = fmt.Errorf("deleting variable %s: %w", name, delErr)
 				return
@@ -161,7 +221,7 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, progress Pr
 	}()
 	go func() {
 		defer innerWg.Done()
-		for _, name := range uninstallSecrets {
+		for _, name := range forgeSecrets {
 			if delErr := client.DeleteRepoSecret(ctx, owner, repo, name); delErr != nil {
 				secretErr = fmt.Errorf("deleting secret %s: %w", name, delErr)
 				return

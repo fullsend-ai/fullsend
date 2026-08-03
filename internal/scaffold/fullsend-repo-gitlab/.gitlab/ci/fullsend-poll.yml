@@ -6,6 +6,7 @@ poll-events:
   image:
     name: ghcr.io/fullsend-ai/fullsend-runner:latest
     entrypoint: [""]
+  tags: __RUNNER_TAGS__
   resource_group: fullsend-poll
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"

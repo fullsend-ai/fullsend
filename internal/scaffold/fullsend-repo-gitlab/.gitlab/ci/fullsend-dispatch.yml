@@ -13,6 +13,7 @@ dispatch:
   image:
     name: ghcr.io/fullsend-ai/fullsend-runner:latest
     entrypoint: [""]
+  tags: __RUNNER_TAGS__
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   script:
@@ -55,13 +56,13 @@ dispatch:
         "${CI_API_V4_URL}/projects/${CI_MERGE_REQUEST_PROJECT_ID}/merge_requests/${CI_MERGE_REQUEST_IID}" \
         -H "JOB-TOKEN: ${CI_JOB_TOKEN}"); then
         echo "WARNING: MR API unreachable (connection/timeout) — writing no-op pipeline"
-        echo 'no-op: { script: ["echo MR API unavailable"], rules: [{ when: always }] }' > mr-dispatch-pipeline.yml
+        echo 'no-op: { script: ["echo MR API unavailable"], tags: __RUNNER_TAGS__, rules: [{ when: always }] }' > mr-dispatch-pipeline.yml
         exit 0
       fi
       if [ "${MR_HTTP_CODE}" -ge 400 ]; then
         if [ "${IS_FORK}" = "true" ]; then
           echo "WARNING: MR API returned ${MR_HTTP_CODE} for fork MR (expected: job-token scope) — writing no-op pipeline"
-          echo 'no-op: { script: ["echo MR API unavailable for fork"], rules: [{ when: always }] }' > mr-dispatch-pipeline.yml
+          echo 'no-op: { script: ["echo MR API unavailable for fork"], tags: __RUNNER_TAGS__, rules: [{ when: always }] }' > mr-dispatch-pipeline.yml
           exit 0
         fi
         if [ "${MR_HTTP_CODE}" -eq 401 ] || [ "${MR_HTTP_CODE}" -eq 403 ] || [ "${MR_HTTP_CODE}" -eq 404 ]; then
@@ -69,7 +70,7 @@ dispatch:
           exit 1
         fi
         echo "WARNING: MR API returned ${MR_HTTP_CODE} (transient) — writing no-op pipeline"
-        echo 'no-op: { script: ["echo MR API unavailable"], rules: [{ when: always }] }' > mr-dispatch-pipeline.yml
+        echo 'no-op: { script: ["echo MR API unavailable"], tags: __RUNNER_TAGS__, rules: [{ when: always }] }' > mr-dispatch-pipeline.yml
         exit 0
       fi
       MR_RESPONSE=$(cat /tmp/mr-response.json)
@@ -104,7 +105,7 @@ dispatch:
         closed) TRANSITION_KIND="closed" ;;
         *)
           echo "Unknown MR state '${MR_STATE}' — no dispatch"
-          echo 'no-op: { script: ["echo Unknown MR state"], rules: [{ when: always }] }' > mr-dispatch-pipeline.yml
+          echo 'no-op: { script: ["echo Unknown MR state"], tags: __RUNNER_TAGS__, rules: [{ when: always }] }' > mr-dispatch-pipeline.yml
           exit 0
           ;;
       esac
@@ -183,7 +184,7 @@ dispatch:
       # CEL: event.transition.kind == "merged"
       if [ "${TRANSITION}" = "merged" ]; then
         echo "MR already merged — retro handled by cron-poller"
-        echo 'no-op: { script: ["echo MR merged — retro via cron-poller"], rules: [{ when: always }] }' > mr-dispatch-pipeline.yml
+        echo 'no-op: { script: ["echo MR merged — retro via cron-poller"], tags: __RUNNER_TAGS__, rules: [{ when: always }] }' > mr-dispatch-pipeline.yml
         exit 0
       fi
 
@@ -198,7 +199,7 @@ dispatch:
 
       if [ -z "${STAGE}" ]; then
         echo "No stage matched for transition=${TRANSITION}"
-        echo 'no-op: { script: ["echo No matching stage"], rules: [{ when: always }] }' > mr-dispatch-pipeline.yml
+        echo 'no-op: { script: ["echo No matching stage"], tags: __RUNNER_TAGS__, rules: [{ when: always }] }' > mr-dispatch-pipeline.yml
         exit 0
       fi
 

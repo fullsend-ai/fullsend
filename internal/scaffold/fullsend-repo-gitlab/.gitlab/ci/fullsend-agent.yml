@@ -12,6 +12,7 @@ agent:
   image:
     name: ghcr.io/fullsend-ai/fullsend-runner:latest
     entrypoint: [""]
+  tags: __RUNNER_TAGS__
   id_tokens:
     FULLSEND_ID_TOKEN:
       aud: "fullsend"

@@ -17,6 +17,9 @@ func (d *perRepoDefaults) ConfigVersion() string { return "1" }
 // ConfigRuntime returns the default runtime.
 func (d *perRepoDefaults) ConfigRuntime() string { return "claude" }
 
+// ConfigForge returns the default forge (empty — auto-detected).
+func (d *perRepoDefaults) ConfigForge() string { return "" }
+
 // IsKillSwitchActive returns the default kill switch state (off).
 func (d *perRepoDefaults) IsKillSwitchActive() bool { return false }
 

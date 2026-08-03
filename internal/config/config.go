@@ -503,6 +503,7 @@ type perRepoConfig struct {
 	// where version is always required). This allows the fallback
 	// chain to inherit version from the parent layer.
 	Version    string       `yaml:"version,omitempty"`
+	Forge      string       `yaml:"forge,omitempty"`
 	KillSwitch *bool        `yaml:"kill_switch,omitempty"`
 	Runtime    string       `yaml:"runtime,omitempty"`
 	Roles      []string     `yaml:"roles,omitempty"`
@@ -670,6 +671,7 @@ func (c *perRepoConfig) Marshal() ([]byte, error) {
 // `allowed_remote_resources: []`).
 type perRepoConfigMarshal struct {
 	Version                string              `yaml:"version,omitempty"`
+	Forge                  string              `yaml:"forge,omitempty"`
 	KillSwitch             *bool               `yaml:"kill_switch,omitempty"`
 	Runtime                string              `yaml:"runtime,omitempty"`
 	Roles                  *[]string           `yaml:"roles,omitempty"`
@@ -686,6 +688,7 @@ type perRepoConfigMarshal struct {
 func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	h := perRepoConfigMarshal{
 		Version:      c.Version,
+		Forge:        c.Forge,
 		KillSwitch:   c.KillSwitch,
 		Runtime:      c.Runtime,
 		Agents:       c.Agents,

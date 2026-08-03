@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
 	"github.com/fullsend-ai/fullsend/internal/repos"
@@ -402,6 +402,9 @@ type reposInstallConfig struct {
 	inferenceProjectNumber string
 	inferenceRegion        string
 
+	// GitLab-specific
+	gitlabBotToken string
+
 	// Per-repo overrides
 	fullsendRef            string
 	mintURL                string
@@ -451,6 +454,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 	cmd.Flags().StringVar(&opts.fullsendRef, "fullsend-ref", "", "per-repo fullsend workflow ref override")
 	cmd.Flags().StringVar(&opts.mintURL, "mint-url", "", "per-repo mint URL override")
 	cmd.Flags().StringSliceVar(&opts.allowedRemoteResources, "allowed-remote-resources", nil, "per-repo allowed remote resources override")
+	cmd.Flags().StringVar(&opts.gitlabBotToken, "gitlab-bot-token", "", "GitLab bot PAT for free-tier instances that don't support project access tokens")
 
 	return cmd
 }
@@ -483,24 +487,12 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	printer.StepStart("Loading manifest")
 	manifest, err := repos.LoadManifest(ctx, opts.manifest)
 	if err != nil {
-		// Bootstrap an empty manifest when the file does not exist and
-		// positional repos are provided. The --forge requirement is
-		// enforced later when repos are added to the manifest.
-		if len(opts.repoFilter) > 0 &&
-			!strings.HasPrefix(opts.manifest, "https://") &&
-			!strings.HasPrefix(opts.manifest, "http://") &&
-			errors.Is(err, os.ErrNotExist) {
-			manifest = &repos.Manifest{Version: 1}
-			printer.StepDone("No manifest found; bootstrapping new manifest")
-		} else {
-			return fmt.Errorf("loading manifest: %w", err)
-		}
-	} else {
-		if err := manifest.Validate(); err != nil {
-			return fmt.Errorf("manifest validation failed: %w", err)
-		}
-		printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", len(manifest.Repos)))
+		return fmt.Errorf("loading manifest: %w", err)
 	}
+	if err := manifest.Validate(); err != nil {
+		return fmt.Errorf("manifest validation failed: %w", err)
+	}
+	printer.StepDone(fmt.Sprintf("Loaded manifest with %d repo entries", len(manifest.Repos)))
 
 	var clients repos.ForgeClientFactory
 	if opts.testClient != nil {
@@ -626,6 +618,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			return fmt.Errorf("getting repo info: %w", repoErr)
 		}
 		commitMsg := "chore: initialize fullsend per-repo installation"
+		if rc.Forge == repos.ForgeGitLab {
+			commitMsg += " [skip ci]"
+		}
 		prTitle := "chore: initialize fullsend per-repo installation"
 		prBody := defaultScaffoldPRBody
 		_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
@@ -667,6 +662,43 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 	result, err := repos.BatchInstall(ctx, cfg, clients, scaffoldCommitFn, progressFn)
 	if err != nil {
 		return err
+	}
+
+	// GitLab post-install: set up bot token and pipeline schedules for
+	// newly installed GitLab repos.
+	if !opts.dryRun && len(result.Installed) > 0 {
+		for _, r := range result.Installed {
+			rc, ok := manifest.ResolveConfigWithGlobs(r.Owner, r.Repo)
+			if !ok || rc.Forge != repos.ForgeGitLab {
+				continue
+			}
+			repoFullName := r.Owner + "/" + r.Repo
+			printer.Blank()
+			printer.StepStart(fmt.Sprintf("[%s] GitLab post-install setup", repoFullName))
+
+			fc, fcErr := clients.ConfigFor(repos.ForgeGitLab)
+			if fcErr != nil {
+				printer.StepWarn(fmt.Sprintf("[%s] Could not get GitLab client: %v", repoFullName, fcErr))
+				continue
+			}
+			glClient, _ := fc.Client.(*gl.LiveClient)
+
+			targetRepo, repoErr := fc.Client.GetRepo(ctx, r.Owner, r.Repo)
+			if repoErr != nil {
+				printer.StepWarn(fmt.Sprintf("[%s] Could not get repo info: %v", repoFullName, repoErr))
+				continue
+			}
+
+			_, botErr := setupGitLabBotToken(ctx, fc.Client, glClient, printer, r.Owner, r.Repo, opts.gitlabBotToken)
+			if botErr != nil {
+				printer.StepWarn(fmt.Sprintf("[%s] Bot token setup failed: %v", repoFullName, botErr))
+			}
+
+			_, schedErr := setupGitLabPipelineSchedules(ctx, fc.Client, glClient, printer, r.Owner, r.Repo, targetRepo.DefaultBranch)
+			if schedErr != nil {
+				printer.StepWarn(fmt.Sprintf("[%s] Pipeline schedule setup failed: %v", repoFullName, schedErr))
+			}
+		}
 	}
 
 	// Phase 2: converge already-installed repos (variable reconciliation + ref upgrade).
@@ -961,6 +993,32 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 			} else {
 				teardownFailed++
 				printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
+			}
+		}
+
+		// GitLab post-uninstall: clean up pipeline schedules and bot tokens.
+		if !opts.dryRun {
+			for _, r := range results {
+				if !r.Success {
+					continue
+				}
+				rc, ok := manifest.ResolveConfigWithGlobs(r.Owner, r.Repo)
+				if !ok || rc.Forge != repos.ForgeGitLab {
+					continue
+				}
+				repoFullName := r.Owner + "/" + r.Repo
+				printer.Blank()
+				printer.StepStart(fmt.Sprintf("[%s] GitLab cleanup", repoFullName))
+
+				fc, fcErr := clients.ConfigFor(repos.ForgeGitLab)
+				if fcErr != nil {
+					printer.StepWarn(fmt.Sprintf("[%s] Could not get GitLab client: %v", repoFullName, fcErr))
+					continue
+				}
+				glClient, _ := fc.Client.(*gl.LiveClient)
+
+				_ = cleanupGitLabPipelineSchedules(ctx, fc.Client, printer, r.Owner, r.Repo)
+				_ = cleanupGitLabBotToken(ctx, glClient, printer, r.Owner, r.Repo)
 			}
 		}
 	} else {

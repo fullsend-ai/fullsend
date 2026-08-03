@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -692,13 +693,107 @@ func (c *LiveClient) IsProtectedBranch(ctx context.Context, owner, repo, branch 
 }
 
 // ---------------------------------------------------------------------------
+// Instance metadata
+// ---------------------------------------------------------------------------
+
+// IsEnterprise checks the /metadata endpoint to determine if the GitLab
+// instance is running Enterprise Edition. Self-hosted EE instances always
+// have this set to true. Returns false on error or CE instances.
+func (c *LiveClient) IsEnterprise(ctx context.Context) bool {
+	resp, err := c.get(ctx, "/metadata")
+	if err != nil {
+		return false
+	}
+	var meta struct {
+		Enterprise bool `json:"enterprise"`
+	}
+	if err := decodeJSON(resp, &meta); err != nil {
+		return false
+	}
+	return meta.Enterprise
+}
+
+// ---------------------------------------------------------------------------
+// Runner tag detection
+// ---------------------------------------------------------------------------
+
+// DetectRunnerTags checks the project's available runners to determine
+// whether runner tags are required for CI jobs. Returns needsTags=false
+// if any online runner accepts untagged jobs. Otherwise returns the
+// sorted unique tags across all online runners.
+func (c *LiveClient) DetectRunnerTags(ctx context.Context, owner, repo string) (needsTags bool, availableTags []string, err error) {
+	path := fmt.Sprintf("/projects/%s/runners?per_page=100", projectPath(owner, repo))
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return false, nil, fmt.Errorf("list project runners: %w", err)
+	}
+	var runners []struct {
+		ID     int    `json:"id"`
+		Status string `json:"status"`
+	}
+	if err := decodeJSON(resp, &runners); err != nil {
+		return false, nil, fmt.Errorf("decode project runners: %w", err)
+	}
+
+	tagCounts := make(map[string]int)
+	for _, r := range runners {
+		if r.Status != "online" {
+			continue
+		}
+		detailResp, err := c.get(ctx, fmt.Sprintf("/runners/%d", r.ID))
+		if err != nil {
+			continue
+		}
+		var detail struct {
+			TagList     []string `json:"tag_list"`
+			RunUntagged bool     `json:"run_untagged"`
+		}
+		if err := decodeJSON(detailResp, &detail); err != nil {
+			continue
+		}
+		if detail.RunUntagged {
+			return false, nil, nil
+		}
+		for _, tag := range detail.TagList {
+			tagCounts[tag]++
+		}
+	}
+
+	if len(tagCounts) == 0 {
+		return false, nil, nil
+	}
+
+	// Sort tags by frequency (most common first), then alphabetically.
+	type tagFreq struct {
+		tag   string
+		count int
+	}
+	sorted := make([]tagFreq, 0, len(tagCounts))
+	for tag, count := range tagCounts {
+		sorted = append(sorted, tagFreq{tag, count})
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		if sorted[i].count != sorted[j].count {
+			return sorted[i].count > sorted[j].count
+		}
+		return sorted[i].tag < sorted[j].tag
+	})
+	tags := make([]string, len(sorted))
+	for i, tf := range sorted {
+		tags[i] = tf.tag
+	}
+	return true, tags, nil
+}
+
+// ---------------------------------------------------------------------------
 // Organization plan
 // ---------------------------------------------------------------------------
 
 // GetOrgPlan returns the billing plan name for a GitLab namespace.
 // Uses the Namespaces API where the plan field is documented, rather
 // than the Groups API where it is undocumented and may be absent.
-// Returns "free" if the plan field is empty.
+// Self-hosted instances typically return "default"; gitlab.com returns
+// the SaaS tier name ("free", "premium", "ultimate", etc.).
 func (c *LiveClient) GetOrgPlan(ctx context.Context, org string) (string, error) {
 	resp, err := c.get(ctx, fmt.Sprintf("/namespaces/%s", url.PathEscape(org)))
 	if err != nil {
@@ -714,4 +809,58 @@ func (c *LiveClient) GetOrgPlan(ctx context.Context, org string) (string, error)
 		return "free", nil
 	}
 	return ns.Plan, nil
+}
+
+// ---------------------------------------------------------------------------
+// Project Access Tokens
+// ---------------------------------------------------------------------------
+
+// ProjectAccessToken represents a GitLab project access token.
+type ProjectAccessToken struct {
+	ID     int    `json:"id"`
+	Name   string `json:"name"`
+	Active bool   `json:"active"`
+	Token  string `json:"token"`
+}
+
+// CreateProjectAccessToken creates a project access token with the given name,
+// scopes, and access level. Returns the token (only available at creation time)
+// and the token ID. accessLevel 40 = Maintainer.
+func (c *LiveClient) CreateProjectAccessToken(ctx context.Context, owner, repo, name string, scopes []string, accessLevel int, expiresAt string) (*ProjectAccessToken, error) {
+	basePath := fmt.Sprintf("/projects/%s/access_tokens", projectPath(owner, repo))
+	body := map[string]any{
+		"name":         name,
+		"scopes":       scopes,
+		"access_level": accessLevel,
+		"expires_at":   expiresAt,
+	}
+	resp, err := c.post(ctx, basePath, body)
+	if err != nil {
+		return nil, fmt.Errorf("create project access token: %w", err)
+	}
+	var token ProjectAccessToken
+	if err := decodeJSON(resp, &token); err != nil {
+		return nil, fmt.Errorf("decode project access token: %w", err)
+	}
+	return &token, nil
+}
+
+// ListProjectAccessTokens lists all project access tokens.
+func (c *LiveClient) ListProjectAccessTokens(ctx context.Context, owner, repo string) ([]ProjectAccessToken, error) {
+	basePath := fmt.Sprintf("/projects/%s/access_tokens", projectPath(owner, repo))
+	resp, err := c.get(ctx, basePath)
+	if err != nil {
+		return nil, fmt.Errorf("list project access tokens: %w", err)
+	}
+	var tokens []ProjectAccessToken
+	if err := decodeJSON(resp, &tokens); err != nil {
+		return nil, fmt.Errorf("decode project access tokens: %w", err)
+	}
+	return tokens, nil
+}
+
+// RevokeProjectAccessToken revokes (deletes) a project access token by ID.
+func (c *LiveClient) RevokeProjectAccessToken(ctx context.Context, owner, repo string, tokenID int) error {
+	path := fmt.Sprintf("/projects/%s/access_tokens/%d", projectPath(owner, repo), tokenID)
+	return c.delete_(ctx, path)
 }

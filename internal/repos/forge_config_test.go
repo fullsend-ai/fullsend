@@ -76,6 +76,11 @@ stages:
 			content: "stages:\n  - dispatch\n",
 			want:    "",
 		},
+		{
+			name:    "head_ref in jq template is not matched",
+			content: "              head_ref: $head_ref,\n              base_ref: $base_ref,",
+			want:    "",
+		},
 	}
 
 	for _, tt := range tests {
@@ -157,6 +162,12 @@ stages:
 		{
 			name:     "no matching ref line",
 			input:    "stages:\n  - dispatch\n",
+			newRef:   "v2.0.0",
+			wantDiff: false,
+		},
+		{
+			name:     "head_ref in jq template is not matched",
+			input:    "              head_ref: $head_ref,\n              base_ref: $base_ref,\n",
 			newRef:   "v2.0.0",
 			wantDiff: false,
 		},

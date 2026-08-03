@@ -848,6 +848,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		dryRunFiles, dryRunErr := repos.BuildScaffoldFiles(repos.InstallConfig{
 			Owner:            owner,
 			Repo:             repo,
+			Forge:            repos.ForgeGitHub,
 			Roles:            roles,
 			MintURL:          mintDisplay,
 			InferenceProject: inferenceProject,

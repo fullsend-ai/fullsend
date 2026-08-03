@@ -37,6 +37,7 @@ func baseCfg() InstallConfig {
 	return InstallConfig{
 		Owner:            "acme",
 		Repo:             "widgets",
+		Forge:            ForgeGitHub,
 		Roles:            []string{"triage", "coder"},
 		MintURL:          "https://mint.example.com",
 		InferenceProject: "fake-inference-project",
@@ -605,7 +606,7 @@ func TestCheckInstallComponents_WorkflowCheckError(t *testing.T) {
 	fc := newFakeClientWithRepo()
 	fc.Errors["GetFileContent"] = fmt.Errorf("API error")
 
-	installed, err := checkInstallComponents(context.Background(), fc, "acme", "widgets", defaultForgeConfig)
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "widgets", ForgeGitHub, defaultForgeConfig)
 	if err == nil {
 		t.Fatal("expected error from workflow file check")
 	}
@@ -619,7 +620,7 @@ func TestCheckInstallComponents_VariableCheckError(t *testing.T) {
 	fc.FileContents["acme/widgets/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
 	fc.Errors["GetRepoVariable"] = fmt.Errorf("API rate limit")
 
-	installed, err := checkInstallComponents(context.Background(), fc, "acme", "widgets", defaultForgeConfig)
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "widgets", ForgeGitHub, defaultForgeConfig)
 	if err == nil {
 		t.Fatal("expected error from variable check")
 	}
@@ -635,7 +636,7 @@ func TestCheckInstallComponents_SecretCheckError(t *testing.T) {
 	fc.VariableValues["acme/widgets/FULLSEND_GCP_REGION"] = "us-central1"
 	fc.Errors["RepoSecretExists"] = fmt.Errorf("API error")
 
-	installed, err := checkInstallComponents(context.Background(), fc, "acme", "widgets", defaultForgeConfig)
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "widgets", ForgeGitHub, defaultForgeConfig)
 	if err == nil {
 		t.Fatal("expected error from secret check")
 	}

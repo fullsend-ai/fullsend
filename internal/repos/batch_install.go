@@ -151,7 +151,7 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			}
 			installed := false
 			if guardExists && guardVal == "true" {
-				fullyInstalled, checkErr := checkInstallComponents(ctx, fc.Client, rr.Owner, rr.Repo, fc)
+				fullyInstalled, checkErr := checkInstallComponents(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge, fc)
 				if checkErr != nil {
 					discoveries[idx] = discoveryResult{repo: rr, resolved: resolved, err: checkErr}
 					return
@@ -415,6 +415,7 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 				UpstreamTag:      tag,
 				SkipGuardCheck:   true,
 				WIFProvider:      wifProvider,
+				RunnerTags:       cfg.Manifest.Forge.GitLab.RunnerTags,
 				Direct:           cfg.Direct,
 				ReuseSecrets:     dr.secretsExist,
 			}
