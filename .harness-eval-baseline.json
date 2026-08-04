@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "findings": [
+    {
+      "rule_id": "security/no-credential-access",
+      "file": ".github/scripts/install-openshell.sh",
+      "message_hash": "560a2bc83b5930ff"
+    },
+    {
+      "rule_id": "security/no-credential-access",
+      "file": ".github/scripts/install-podman.sh",
+      "message_hash": "a53e0e5755647af2"
+    },
+    {
+      "rule_id": "security/no-credential-access",
+      "file": ".github/scripts/install-podman.sh",
+      "message_hash": "738a16f03a2ce456"
+    },
+    {
+      "rule_id": "security/no-credential-access",
+      "file": ".github/scripts/install-podman.sh",
+      "message_hash": "bc68f4859610090c"
+    },
+    {
+      "rule_id": "security/no-credential-access",
+      "file": ".github/scripts/install-podman.sh",
+      "message_hash": "974243fddf758e71"
+    },
+    {
+      "rule_id": "security/no-credential-access",
+      "file": ".github/workflows/functional-tests.yml",
+      "message_hash": "a63fc70ec96c6500"
+    },
+    {
+      "rule_id": "content/broken-references",
+      "file": "skills/analyze-transcript/SKILL.md",
+      "message_hash": "c1ea7fad24ce996c"
+    }
+  ]
+}
