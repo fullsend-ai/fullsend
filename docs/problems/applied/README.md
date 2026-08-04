@@ -5,6 +5,7 @@ This directory contains organization-specific considerations for applying fullse
 ## Current consumers
 
 - **[konflux-ci](konflux-ci/)** — Kubernetes-native CI/CD platform. The original proving ground for fullsend.
+- **[agent-eval-tools](agent-eval-tools/)** — Agent setup evaluation tools. How fullsend's problem areas appear in tools that lint and security-scan agent configurations.
 
 ## Adding a new consumer
 
