@@ -43,12 +43,37 @@ The retro agent also runs automatically when a PR is closed (merged or not).
 
 | Label | Meaning |
 |-------|---------|
-| `ready-for-triage` | Applied by the post-script to proposal issues so they enter the [triage](triage.md) pipeline automatically. |
+| `ready-for-triage` | Applied by the post-script to proposal issues so they enter the [triage](triage.md) pipeline automatically. **Not applied on cross-repo/cross-org filings** — the retro token is scoped to the source org and lacks label-write permission on the target repo ([#3648](https://github.com/fullsend-ai/fullsend/issues/3648)). A maintainer must manually run `/fs-triage` on these issues. |
 
 ## Configuration and extension
 
 See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
 [Configuring with Skills](../guides/user/customizing-with-skills.md).
+
+### Cross-repo issue creation
+
+The retro agent can file proposal issues into upstream or allow-listed target
+repositories when it identifies improvements that belong outside the source repo.
+This uses the same `create_issues.allow_targets` configuration as the
+[triage agent](triage.md#cross-repo-issue-creation).
+
+**Labeling limitation:** When the retro agent files an issue cross-repo or
+cross-org, the `ready-for-triage` label is **not applied**. The retro token is
+minted scoped to the source org's repos only, so it has write access to create
+the issue but lacks the repo-scoped permission needed to manage labels on the
+target repository. The `gh issue create --label ready-for-triage` call succeeds
+for issue creation but the label is silently dropped. See
+[#3648](https://github.com/fullsend-ai/fullsend/issues/3648) for the
+underlying cause.
+
+As a result, cross-repo retro-filed issues:
+
+- Land with no labels on the target repo.
+- Do not enter the [triage](triage.md) pipeline automatically (triage's
+  `issues: opened` trigger requires the issue author to be an authorized
+  collaborator, which bot accounts are not).
+- Require a maintainer to manually run `/fs-triage` on the issue to start
+  the triage pipeline.
 
 ### Variables
 
