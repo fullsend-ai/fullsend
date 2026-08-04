@@ -179,6 +179,7 @@ endef
 
 script-test:
 	$(call run-timed,bash scripts/check-e2e-authorization-test.sh)
+	$(call run-timed,bash scripts/rework-rate-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/reconcile-repos-test.sh)
 	$(call run-timed,bash internal/scaffold/fullsend-repo/scripts/pre-fetch-prior-review-test.sh)
 	$(call run-timed,python3 skills/topissues/scripts/topissues_test.py)
