@@ -1761,3 +1761,127 @@ func TestParseProfileID(t *testing.T) {
 		})
 	}
 }
+
+// --- Plugin URL resolution tests ---
+
+func TestResolveHarness_PluginDirFetchAndCache(t *testing.T) {
+	lspJSON := []byte(`{"name": "gopls-lsp"}`)
+	pluginJSON := []byte(`{"type": "lsp"}`)
+
+	reg := newSkillRegistry()
+	treeHash := reg.register("plugins/gopls-lsp", map[string][]byte{
+		".lsp.json":   lspJSON,
+		"plugin.json": pluginJSON,
+	})
+
+	root := t.TempDir()
+	h := &harness.Harness{
+		Plugins:                []string{forgeSkillURL("plugins/gopls-lsp", treeHash)},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		TreeFetcher:   reg.fetcher(),
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Deps, 1)
+	assert.Equal(t, "directory", result.Deps[0].Type)
+	assert.Equal(t, treeHash, result.Deps[0].SHA256)
+	assert.False(t, result.Deps[0].CacheHit)
+	assert.Equal(t, "plugins[0]", result.Deps[0].Field)
+
+	// Verify h.Plugins[0] is a directory path whose basename is the plugin
+	// directory name from the URL ("gopls-lsp"), not the cache-internal "tree".
+	info, err := os.Stat(h.Plugins[0])
+	require.NoError(t, err)
+	assert.True(t, info.IsDir())
+	assert.Equal(t, "gopls-lsp", filepath.Base(h.Plugins[0]),
+		"plugin path basename should be the plugin directory name from the URL, not 'tree'")
+
+	// Verify plugin files are inside the cached directory.
+	got, err := os.ReadFile(filepath.Join(h.Plugins[0], ".lsp.json"))
+	require.NoError(t, err)
+	assert.Equal(t, lspJSON, got)
+
+	got, err = os.ReadFile(filepath.Join(h.Plugins[0], "plugin.json"))
+	require.NoError(t, err)
+	assert.Equal(t, pluginJSON, got)
+}
+
+func TestResolveHarness_PluginLocalPassThrough(t *testing.T) {
+	h := &harness.Harness{
+		Agent:   "/abs/path/agents/test.md",
+		Plugins: []string{"/abs/path/plugins/gopls-lsp"},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Deps)
+	assert.Equal(t, "/abs/path/plugins/gopls-lsp", h.Plugins[0])
+}
+
+func TestResolveHarness_PluginDirHashMismatch(t *testing.T) {
+	reg := newSkillRegistry()
+	reg.register("plugins/gopls-lsp", map[string][]byte{"plugin.json": []byte("wrong content")})
+
+	wrongHash := fetch.ComputeTreeHash(map[string][]byte{"plugin.json": []byte("expected content")})
+
+	h := &harness.Harness{
+		Plugins:                []string{forgeSkillURL("plugins/gopls-lsp", wrongHash)},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		TreeFetcher:   reg.fetcher(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "integrity check failed")
+}
+
+func TestResolveHarness_PluginURLNotInAllowlist(t *testing.T) {
+	fakeHash := strings.Repeat("a", 64)
+	h := &harness.Harness{
+		Plugins:                []string{forgeSkillURL("plugins/gopls-lsp", fakeHash)},
+		AllowedRemoteResources: []string{"https://other-domain.com/"},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+}
+
+func TestResolveHarness_MixedLocalAndURLPlugins(t *testing.T) {
+	pluginJSON := []byte(`{"type": "lsp"}`)
+
+	reg := newSkillRegistry()
+	treeHash := reg.register("plugins/gopls-lsp", map[string][]byte{
+		"plugin.json": pluginJSON,
+	})
+
+	root := t.TempDir()
+	h := &harness.Harness{
+		Agent: "/local/agents/test.md",
+		Plugins: []string{
+			"/local/plugins/local-plugin",
+			forgeSkillURL("plugins/gopls-lsp", treeHash),
+		},
+		AllowedRemoteResources: []string{testForgeBase},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		TreeFetcher:   reg.fetcher(),
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Deps, 1)
+
+	assert.Equal(t, "/local/plugins/local-plugin", h.Plugins[0])
+	assert.False(t, harness.IsURL(h.Plugins[1]))
+	assert.Equal(t, "gopls-lsp", filepath.Base(h.Plugins[1]))
+}

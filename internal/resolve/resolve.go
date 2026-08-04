@@ -240,6 +240,19 @@ func ResolveHarness(ctx context.Context, h *harness.Harness, opts ResolveOpts) (
 	}
 	h.Skills = filtered
 
+	// Resolve plugins — same directory fetch as skills, but without
+	// transitive dependency resolution (plugins have no SKILL.md frontmatter).
+	for i, p := range h.Plugins {
+		if harness.IsURL(p) {
+			dep, localPath, err := resolveSkillDirURL(ctx, fmt.Sprintf("plugins[%d]", i), p, h, opts, state, false, 0)
+			if err != nil {
+				return ResolveResult{}, fmt.Errorf("resolving plugins[%d]: %w", i, err)
+			}
+			h.Plugins[i] = localPath
+			state.appendDependency(dep)
+		}
+	}
+
 	// Resolve profiles (all entries must be URLs — enforced by
 	// ValidateResourceTypes at load time).
 	var profiles []ResolvedProfile

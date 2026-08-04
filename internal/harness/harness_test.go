@@ -3,6 +3,7 @@ package harness
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -829,6 +830,15 @@ func TestValidate_PluginNameInvalid(t *testing.T) {
 	}
 }
 
+func TestValidate_PluginURLSkipsNameCheck(t *testing.T) {
+	h := &Harness{
+		Agent:   "agents/test.md",
+		Role:    "test",
+		Plugins: []string{"https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=" + strings.Repeat("a", 64)},
+	}
+	require.NoError(t, h.Validate())
+}
+
 func TestResolveRelativeTo_Plugins(t *testing.T) {
 	h := &Harness{
 		Agent:   "agents/test.md",
@@ -1275,6 +1285,16 @@ func TestHasURLReferences(t *testing.T) {
 			name: "URL provider",
 			h:    Harness{Agent: "agents/test.md", Providers: []string{"https://example.com/prov.yaml#sha256=abc"}},
 			want: true,
+		},
+		{
+			name: "URL plugin",
+			h:    Harness{Agent: "agents/test.md", Plugins: []string{"https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=abc"}},
+			want: true,
+		},
+		{
+			name: "local plugin only",
+			h:    Harness{Agent: "agents/test.md", Plugins: []string{"plugins/gopls-lsp"}},
+			want: false,
 		},
 		{
 			name: "local provider only",
@@ -1873,4 +1893,64 @@ providers:
 	h, err := Load(path)
 	require.NoError(t, err, "Load must not reject URL providers via validProviderName")
 	assert.Len(t, h.Providers, 2)
+}
+
+func TestValidateResourceTypes_PluginURLRequiresHash(t *testing.T) {
+	h := &Harness{
+		Agent:   "agents/test.md",
+		Role:    "test",
+		Plugins: []string{"https://github.com/org/repo/tree/main/plugins/gopls-lsp"},
+	}
+	err := h.ValidateResourceTypes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "plugins[0] URL must include #sha256=")
+}
+
+func TestValidateResourceTypes_PluginURLRequiresForge(t *testing.T) {
+	h := &Harness{
+		Agent:   "agents/test.md",
+		Role:    "test",
+		Plugins: []string{"https://example.com/plugins/gopls-lsp#sha256=" + strings.Repeat("a", 64)},
+	}
+	err := h.ValidateResourceTypes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "supported forge")
+}
+
+func TestValidateResourceTypes_PluginURLWithHashValid(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Plugins: []string{
+			"https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=" + strings.Repeat("b", 64),
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.NoError(t, err)
+}
+
+func TestValidateResourceTypes_PluginLocalPassesThrough(t *testing.T) {
+	h := &Harness{
+		Agent:   "agents/test.md",
+		Role:    "test",
+		Plugins: []string{"plugins/gopls-lsp"},
+	}
+	err := h.ValidateResourceTypes()
+	require.NoError(t, err)
+}
+
+func TestLoad_PluginURLPassesValidation(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+plugins:
+  - "https://github.com/org/repo/tree/main/plugins/gopls-lsp#sha256=` + strings.Repeat("b", 64) + `"
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err, "Load must not reject URL plugins via validPluginName")
+	assert.Len(t, h.Plugins, 1)
 }

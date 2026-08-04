@@ -408,9 +408,13 @@ func (h *Harness) Validate() error {
 		return fmt.Errorf("slug %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -; must start with a letter or digit)", h.Slug)
 	}
 	for i, p := range h.Plugins {
-		pluginBase := filepath.Base(p)
-		if !validPluginName.MatchString(pluginBase) {
-			return fmt.Errorf("plugins[%d] name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", i, pluginBase)
+		// Skip name validation when plugin is a URL — the resolver will
+		// replace it with a local cache path before it reaches the shell.
+		if !IsURL(p) {
+			pluginBase := filepath.Base(p)
+			if !validPluginName.MatchString(pluginBase) {
+				return fmt.Errorf("plugins[%d] name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", i, pluginBase)
+			}
 		}
 	}
 	for i, p := range h.Providers {
@@ -841,6 +845,21 @@ func (h *Harness) ValidateResourceTypes() error {
 			}
 		}
 	}
+	for i, p := range h.Plugins {
+		if IsURL(p) {
+			if _, _, hasHash := ParseIntegrityHash(p); !hasHash {
+				return fmt.Errorf("plugins[%d] URL must include #sha256=... integrity hash", i)
+			}
+			cleanURL, _, _ := ParseIntegrityHash(p)
+			info, err := forge.ParseForgeURL(cleanURL)
+			if err != nil {
+				return fmt.Errorf("plugins[%d] URL must be hosted on a supported forge (github.com): %w", i, err)
+			}
+			if info.Forge != "github" {
+				return fmt.Errorf("plugins[%d] forge %q is recognized but fetch support has not landed yet", i, info.Forge)
+			}
+		}
+	}
 	for i, p := range h.OpenShellProfiles() {
 		if !IsURL(p) {
 			return fmt.Errorf("openshell.profiles[%d] must be a URL (local profiles are not supported)", i)
@@ -891,6 +910,11 @@ func (h *Harness) HasURLReferences() bool {
 	}
 	for _, s := range h.Skills {
 		if IsURL(s) {
+			return true
+		}
+	}
+	for _, p := range h.Plugins {
+		if IsURL(p) {
 			return true
 		}
 	}
