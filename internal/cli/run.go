@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -922,6 +923,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	securityTraceID := security.GenerateTraceID()
 	rootSpan.SetAttributes(attribute.String("fullsend.security_trace_id", securityTraceID))
 
+	// validationPassed is declared before both defer closures that guard on
+	// it: the telemetry defer keys the root span's status on it (validation,
+	// not the last agent exit code, is the run's success gate), and the
+	// post-script defer must only run when validation has passed — running it
+	// on unvalidated output would violate ADR 0022's zero-trust model.
+	var validationPassed bool
+
 	defer func() {
 		exitCode := telemetryExitCode(lastExitCode, runErr)
 
@@ -954,10 +962,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 
 		if runErr != nil {
-			rootSpan.SetStatus(codes.Error, runErr.Error())
-		} else {
-			rootSpan.SetStatus(codes.Ok, "")
+			rootSpan.RecordError(runErr)
 		}
+		code, msg := rootSpanStatus(runErr, exitCode, validationPassed)
+		rootSpan.SetStatus(code, msg)
 		rootSpan.End()
 
 		flushCtx, cancel := context.WithTimeout(context.Background(), telemetry.FlushTimeout)
@@ -1027,12 +1035,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	sandboxSpan.SetStatus(codes.Ok, "")
 	sandboxSpan.End()
-
-	// validationPassed is declared here (before the post-script defer) so the
-	// defer closure can guard on it. The post-script must only run when
-	// validation has passed — running it on unvalidated output would violate
-	// ADR 0022's zero-trust model.
-	var validationPassed bool
 
 	// repoExtractedOK tracks whether hostRepositoryDownloadDir is safe
 	// and corresponds to the validated iteration. It is false when:
@@ -1515,18 +1517,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
 
-		agentSpan.SetAttributes(agentSpanEndAttrs(iteration, exitCode, rt.System(), &metrics)...)
-		if runErr != nil {
-			agentSpan.SetStatus(codes.Error, runErr.Error())
-		} else {
-			agentSpan.SetStatus(codes.Ok, "")
-		}
-		agentSpan.End()
-
 		// Accumulate behavioral metrics across iterations.
 		aggregateRunMetrics(&aggMetrics, &metrics, iteration)
 
 		if runErr != nil {
+			finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, rt.System(), &metrics, "")
 			printer.StepFail("Agent execution failed")
 			// Record the real exit code (rt.Run returns -1 when the agent never
 			// started) so the telemetry summary reports the failure faithfully
@@ -1546,14 +1541,26 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// invalid_grant, quota exhaustion) while setting is_error:true in
 		// the transcript. Treat these as failures so downstream gating
 		// (transcript surfacing, post-script skip) can act. See #2786.
+		// This runs before the agent span is finalized so the span's
+		// status reflects the transcript-reported failure (#5361).
+		var transcriptErrMsg string
 		if exitCode == 0 {
 			outputJSONL := filepath.Join(iterDir, "output.jsonl")
 			if te, ok := tx.ParseTranscriptFile(outputJSONL); ok && te.IsError {
 				printer.StepWarn(fmt.Sprintf("Agent exited with code 0 but transcript contains error: %s", te.ErrorMessage))
 				lastExitCode = 1
 				transcriptErrorOverride = true
+				// ErrorMessage can be empty (the transcript result field is
+				// omitempty); substitute the emitTranscriptErrors fallback so
+				// the span status never reads Ok for a transcript failure.
+				transcriptErrMsg = te.ErrorMessage
+				if transcriptErrMsg == "" {
+					transcriptErrMsg = fmt.Sprintf("agent terminated with error (subtype: %s)", te.Subtype)
+				}
 			}
 		}
+
+		finalizeAgentSpan(agentSpan, nil, iteration, exitCode, rt.System(), &metrics, transcriptErrMsg)
 
 		printer.Blank()
 		// Non-zero exit is a warning, not a failure — the validation loop is the success gate.
@@ -2384,6 +2391,77 @@ func telemetryExitCode(lastExitCode int, runErr error) int {
 		return 1
 	}
 	return lastExitCode
+}
+
+// maxSpanStatusMsgLen caps status descriptions so a runaway transcript error
+// message cannot bloat every export of the span.
+const maxSpanStatusMsgLen = 256
+
+// truncateStatusMsg trims a status description to maxSpanStatusMsgLen. If
+// truncated, walks back to a valid UTF-8 rune boundary before appending the
+// ellipsis — an invalid-UTF-8 status fails proto marshaling of the entire
+// OTLP batch, silently dropping every span in it.
+func truncateStatusMsg(s string) string {
+	if len(s) <= maxSpanStatusMsgLen {
+		return s
+	}
+	truncated := s[:maxSpanStatusMsgLen]
+	for len(truncated) > 0 && !utf8.Valid([]byte(truncated)) {
+		truncated = truncated[:len(truncated)-1]
+	}
+	return truncated + "…"
+}
+
+// finalizeAgentSpan records the end-of-iteration attributes and status on an
+// agent span and ends it. transcriptErr is non-empty when the transcript
+// reported a failure the process exit code did not (#2786): exit_code keeps
+// the raw process exit and fullsend.transcript_error marks the override.
+func finalizeAgentSpan(span trace.Span, runErr error, iteration, exitCode int, system string, m *agentruntime.RunMetrics, transcriptErr string) {
+	span.SetAttributes(agentSpanEndAttrs(iteration, exitCode, system, m)...)
+	if runErr != nil {
+		span.RecordError(runErr)
+	}
+	if transcriptErr != "" {
+		span.SetAttributes(attribute.Bool("fullsend.transcript_error", true))
+	}
+	code, msg := agentSpanStatus(runErr, exitCode, transcriptErr)
+	span.SetStatus(code, msg)
+	span.End()
+}
+
+// agentSpanStatus maps one iteration's outcome to the agent span's status.
+// The validation loop, not the iteration, is the run's success gate — but the
+// span reports what happened in this iteration, and a failure is never
+// reported as success: a runtime error, a transcript-reported error (#2786),
+// or a non-zero exit is Error.
+func agentSpanStatus(runErr error, exitCode int, transcriptErr string) (codes.Code, string) {
+	switch {
+	case runErr != nil:
+		return codes.Error, truncateStatusMsg(runErr.Error())
+	case transcriptErr != "":
+		return codes.Error, truncateStatusMsg("transcript error: " + transcriptErr)
+	case exitCode != 0:
+		return codes.Error, fmt.Sprintf("agent exited with code %d", exitCode)
+	}
+	return codes.Ok, ""
+}
+
+// rootSpanStatus maps the run outcome to the root span's status. Validation,
+// not the last agent exit code, is the run's success gate: a passed
+// validation loop is Ok even when the final iteration exited non-zero.
+// exitCode is the telemetryExitCode result, so a harness without a
+// validation loop that returns nil alongside a failed agent still reports
+// Error (#5361).
+func rootSpanStatus(runErr error, exitCode int, validationPassed bool) (codes.Code, string) {
+	switch {
+	case runErr != nil:
+		return codes.Error, truncateStatusMsg(runErr.Error())
+	case validationPassed:
+		return codes.Ok, ""
+	case exitCode != 0:
+		return codes.Error, fmt.Sprintf("run finished with exit code %d", exitCode)
+	}
+	return codes.Ok, ""
 }
 
 // traceIdentity holds the resolved trace context for a run.

@@ -5,12 +5,15 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
@@ -406,4 +409,142 @@ func TestResolveTraceIdentity_MalformedInput(t *testing.T) {
 			assert.NotEmpty(t, tid.Traceparent, "must produce a traceparent")
 		})
 	}
+}
+
+// TestAgentSpanStatus pins the iteration-outcome → span-status mapping
+// (#5361): a runtime error, a transcript-reported error (#2786), or a
+// non-zero exit is Error — a failed iteration is never exported as Ok.
+func TestAgentSpanStatus(t *testing.T) {
+	cases := []struct {
+		name          string
+		runErr        error
+		exitCode      int
+		transcriptErr string
+		wantCode      codes.Code
+		wantMsgSubstr string
+	}{
+		{"green run", nil, 0, "", codes.Ok, ""},
+		{"runtime error", fmt.Errorf("sandbox exploded"), -1, "", codes.Error, "sandbox exploded"},
+		{"transcript error with exit 0", nil, 0, "API Error: invalid_grant", codes.Error, "transcript error: API Error: invalid_grant"},
+		{"non-zero exit", nil, 1, "", codes.Error, "agent exited with code 1"},
+		{"infra exit -1", nil, -1, "", codes.Error, "agent exited with code -1"},
+		{"runtime error wins over transcript", fmt.Errorf("boom"), 0, "also failed", codes.Error, "boom"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, msg := agentSpanStatus(tc.runErr, tc.exitCode, tc.transcriptErr)
+			assert.Equal(t, tc.wantCode, code)
+			if tc.wantMsgSubstr == "" {
+				assert.Empty(t, msg)
+			} else {
+				assert.Contains(t, msg, tc.wantMsgSubstr)
+			}
+		})
+	}
+}
+
+// TestRootSpanStatus pins the run-outcome → root-span-status mapping (#5361).
+// exitCode is the telemetryExitCode result, so the "no validation loop,
+// agent failed, runErr nil" case must still report Error.
+func TestRootSpanStatus(t *testing.T) {
+	cases := []struct {
+		name             string
+		runErr           error
+		exitCode         int
+		validationPassed bool
+		wantCode         codes.Code
+		wantMsgSubstr    string
+	}{
+		{"green run", nil, 0, false, codes.Ok, ""},
+		{"run error", fmt.Errorf("validation failed after 2 iteration(s)"), 1, false, codes.Error, "validation failed"},
+		{"failed agent without validation loop", nil, 1, false, codes.Error, "run finished with exit code 1"},
+		{"infra exit preserved", nil, -1, false, codes.Error, "run finished with exit code -1"},
+		{"validation passed, last agent exit non-zero", nil, 1, true, codes.Ok, ""},
+		{"validation passed, transcript override earlier", nil, 1, true, codes.Ok, ""},
+		{"run error wins over validation pass", fmt.Errorf("post-script failed"), 0, true, codes.Error, "post-script failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, msg := rootSpanStatus(tc.runErr, tc.exitCode, tc.validationPassed)
+			assert.Equal(t, tc.wantCode, code)
+			if tc.wantMsgSubstr == "" {
+				assert.Empty(t, msg)
+			} else {
+				assert.Contains(t, msg, tc.wantMsgSubstr)
+			}
+		})
+	}
+}
+
+func TestTruncateStatusMsg(t *testing.T) {
+	assert.Equal(t, "short", truncateStatusMsg("short"))
+
+	long := strings.Repeat("x", maxSpanStatusMsgLen+50)
+	got := truncateStatusMsg(long)
+	assert.LessOrEqual(t, len(got), maxSpanStatusMsgLen+len("…"), "capped at limit plus ellipsis")
+	assert.True(t, strings.HasSuffix(got, "…"))
+	assert.True(t, utf8.ValidString(got))
+
+	// A multi-byte rune straddling the cap must not be split: invalid UTF-8
+	// in a status description fails proto marshaling of the whole OTLP batch.
+	straddle := strings.Repeat("x", maxSpanStatusMsgLen-1) + "é" + strings.Repeat("y", 50)
+	got = truncateStatusMsg(straddle)
+	assert.True(t, utf8.ValidString(got), "truncation must land on a rune boundary")
+	assert.True(t, strings.HasSuffix(got, "…"))
+}
+
+// TestFinalizeAgentSpan pins the finalized agent span as exported (#5361):
+// status, the fullsend.transcript_error marker, the raw exit_code, and the
+// exception event on the runtime-error path.
+func TestFinalizeAgentSpan(t *testing.T) {
+	newRecorded := func(runErr error, exitCode int, transcriptErr string) tracetest.SpanStub {
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		_, span := tp.Tracer("test").Start(context.Background(), "agent")
+		m := &agentruntime.RunMetrics{Model: "claude-opus-4-6"}
+		finalizeAgentSpan(span, runErr, 1, exitCode, "gcp.vertex_ai", m, transcriptErr)
+		ended := rec.Ended()
+		require.Len(t, ended, 1, "span must be ended exactly once")
+		return tracetest.SpanStubFromReadOnlySpan(ended[0])
+	}
+
+	attrsOf := func(s tracetest.SpanStub) map[attribute.Key]attribute.Value {
+		out := map[attribute.Key]attribute.Value{}
+		for _, kv := range s.Attributes {
+			out[kv.Key] = kv.Value
+		}
+		return out
+	}
+
+	t.Run("transcript error with exit 0", func(t *testing.T) {
+		s := newRecorded(nil, 0, "API Error: invalid_grant")
+		assert.Equal(t, codes.Error, s.Status.Code)
+		assert.Contains(t, s.Status.Description, "transcript error: API Error: invalid_grant")
+		attrs := attrsOf(s)
+		assert.Equal(t, int64(0), attrs["exit_code"].AsInt64(), "exit_code stays the raw process exit")
+		assert.True(t, attrs["fullsend.transcript_error"].AsBool())
+	})
+
+	t.Run("runtime error records exception event", func(t *testing.T) {
+		s := newRecorded(fmt.Errorf("sandbox exploded"), -1, "")
+		assert.Equal(t, codes.Error, s.Status.Code)
+		var eventNames []string
+		for _, e := range s.Events {
+			eventNames = append(eventNames, e.Name)
+		}
+		assert.Contains(t, eventNames, "exception")
+	})
+
+	t.Run("green iteration", func(t *testing.T) {
+		s := newRecorded(nil, 0, "")
+		assert.Equal(t, codes.Ok, s.Status.Code)
+		_, hasMarker := attrsOf(s)["fullsend.transcript_error"]
+		assert.False(t, hasMarker, "no transcript marker on clean iterations")
+	})
+
+	t.Run("non-zero exit", func(t *testing.T) {
+		s := newRecorded(nil, 1, "")
+		assert.Equal(t, codes.Error, s.Status.Code)
+		assert.Equal(t, "agent exited with code 1", s.Status.Description)
+	})
 }
