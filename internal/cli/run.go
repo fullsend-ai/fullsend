@@ -1012,6 +1012,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// the correct iteration's output rather than blindly taking the last.
 	var validatedIterNum int
 
+	// lastIterElapsed records the wall-clock duration of the most recent
+	// agent iteration. Used after the loop to detect timeout exhaustion
+	// for agents without a validation loop. See #5075.
+	var lastIterElapsed time.Duration
+
 	// Download-dir cleanup is registered first so LIFO runs it last —
 	// after the post-script defer has finished using it.
 	hostRepositoryDownloadDir := filepath.Join(os.TempDir(), sandboxName)
@@ -1477,6 +1482,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			OutputPath:    filepath.Join(iterDir, "output.jsonl"),
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
+		lastIterElapsed = time.Since(agentStart)
 
 		agentSpan.SetAttributes(agentSpanEndAttrs(iteration, exitCode, rt.System(), &metrics)...)
 		if runErr != nil {
@@ -1728,6 +1734,20 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	if h.ValidationLoop != nil && !validationPassed {
 		return fmt.Errorf("validation failed after %d iteration(s)", runCount)
+	}
+
+	// Detect timeout exhaustion for agents without a validation loop
+	// (e.g., the code agent). When the agent used >= 90% of its time
+	// budget and exited non-zero, it was almost certainly killed by the
+	// timeout rather than finishing deliberately. Report as a failure so
+	// the post-script does not treat "no branch" as intentional success.
+	//
+	// Agents with a validation loop already fail via the check above when
+	// no iteration passes validation, so this is scoped to the no-loop
+	// path. See #5075.
+	if h.ValidationLoop == nil && lastExitCode != 0 && agentTimedOut(lastIterElapsed, timeout) {
+		return fmt.Errorf("agent timed out after %s without completing (timeout: %s)",
+			lastIterElapsed.Round(time.Second), timeout)
 	}
 
 	return nil
@@ -2460,6 +2480,14 @@ func postScriptEnv(h *harness.Harness, traceparent string) []string {
 		env = append(env, fmt.Sprintf("FULLSEND_OUTPUT_SCHEMA=%s", h.ValidationLoop.Schema))
 	}
 	return env
+}
+
+// agentTimedOut reports whether the agent's elapsed time indicates it was
+// killed by the timeout rather than exiting normally. An agent that used
+// >= 90% of its time budget was almost certainly killed by the timeout
+// mechanism rather than completing on its own. See #5075.
+func agentTimedOut(elapsed, timeout time.Duration) bool {
+	return elapsed >= timeout*9/10
 }
 
 // validationEnv builds the extra environment entries for the validation

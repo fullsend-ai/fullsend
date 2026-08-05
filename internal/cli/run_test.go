@@ -2310,6 +2310,32 @@ func TestPostScriptEnv_NoSchemaAppendedWhenNoValidationLoop(t *testing.T) {
 	}
 }
 
+func TestAgentTimedOut(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		elapsed time.Duration
+		timeout time.Duration
+		want    bool
+	}{
+		{"at timeout boundary", 30 * time.Minute, 30 * time.Minute, true},
+		{"over timeout", 31 * time.Minute, 30 * time.Minute, true},
+		{"exactly 90 percent", 27 * time.Minute, 30 * time.Minute, true},
+		{"just under 90 percent", 26*time.Minute + 59*time.Second, 30 * time.Minute, false},
+		{"well under timeout", 5 * time.Minute, 30 * time.Minute, false},
+		{"zero elapsed", 0, 30 * time.Minute, false},
+		{"custom timeout at boundary", 31*time.Minute + 30*time.Second, 35 * time.Minute, true},
+		{"custom timeout under", 20 * time.Minute, 35 * time.Minute, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := agentTimedOut(tt.elapsed, tt.timeout)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 // writeValScript creates a validation script at dir/name that exits 0 if a
 // marker file named "pass" exists in the script's working directory, and
 // exits 1 otherwise. Returns the absolute path to the script.
