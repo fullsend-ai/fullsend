@@ -150,3 +150,11 @@ and agent spans in `run-telemetry.jsonl`, which became the sole Level 1
 artifact. OTLP export also changed from post-hoc directory upload to live
 span export via the OTel SDK's batch processor. The core decision (three-level
 opt-in, OTel-native, W3C propagation) is unchanged.
+
+**2026-08-05 — Level 3 activation specified:** how Level 3 activates is
+decided in [ADR 0084](0084-level-3-content-capture-activation-contract.md)
+(dual consent plus an allow-listed destination, fail-closed). The environment
+variable named here is honored with the value semantics defined there.
+Level 3 remains unimplemented until ADR 0084's preconditions are met;
+[ADR 0085](0085-sandbox-environment-variable-denylist.md) closes the
+sandbox-side path around this ADR's opt-in model.

@@ -163,3 +163,11 @@ it suppresses JSONL for nearly all useful runs on private repos.
   human debugging). Complementary structured extraction via OpenTelemetry
   could power aggregate analysis at scale (pattern detection across many
   runs) — subsequently decided in [ADR 0050](0050-distributed-tracing-instrumentation.md).
+
+## Annotations
+
+**2026-08-05:** [ADR 0084](0084-level-3-content-capture-activation-contract.md)
+applies the secret redactor to Level 3 span content as an output-side
+invariant check, consistent with this ADR's framing: access control remains
+the security boundary, and a redaction hit is a breach signal, not the
+defense.

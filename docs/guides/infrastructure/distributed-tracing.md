@@ -128,27 +128,38 @@ export OTEL_EXPORTER_OTLP_TRACES_HEADERS="authorization=Basic%20${CREDS_B64},x-m
 ## Enabling content capture (Level 3)
 
 > **Planned:** Level 3 content capture is not yet implemented. This section
-> documents the telemetry contract.
+> documents the activation contract.
 
 By default, spans contain metadata only (timing, token counts, tool names,
-errors). To include full prompt/completion content in spans:
+errors). Content capture — prompts, messages, and tool activity in spans,
+in line with the [OTEL GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-spans.md)
+requirement that content capture be opt-in — activates only when three
+settings agree:
 
-```bash
-export OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true
-```
+1. `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` set to `true` (or
+   the equivalent `span_only`). `false` or unset disables capture; any
+   other value fails the run.
+2. `telemetry.content_capture: true` in the agent's harness — consent is
+   per-agent and reviewed like any other harness change.
+3. The OTLP traces endpoint's host listed in the
+   `FULLSEND_CONTENT_CAPTURE_ALLOWED_ENDPOINTS` org variable. Adding a host
+   is a reviewed change that records who approved content flowing there.
 
-This follows the [OTEL GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-spans.md)
-which mandate that content capture is opt-in. When enabled, spans include:
+While any setting is absent or off, runs stay metadata-only with no error.
+A run that requests capture (settings 1 and 2 on) but cannot satisfy the
+rest — endpoint host not allow-listed, secret redactor disabled — fails
+before the sandbox is created: content is never silently enabled, and a
+capture request never silently degrades.
 
-- System prompts and user messages
-- Tool arguments and results (file contents, command output)
-- Agent reasoning/thinking text
-- Completion text
+When active, spans include system prompts, user messages, per-turn assistant
+text, tool arguments, and tool results, all passed through secret redaction
+before export. Reasoning/thinking text is not captured. Content flows only
+to the allow-listed OTLP endpoint; `run-telemetry.jsonl` stays
+metadata-only.
 
-**Warning:** Only enable content capture when your backend's access controls
-are appropriate for the sensitivity of the data. Content may include
-proprietary source code, issue descriptions with PII, or credentials visible
-in tool outputs.
+**Warning:** Only allow-list a backend whose access controls are appropriate
+for the sensitivity of the data. Content may include proprietary source
+code, issue descriptions with PII, or credentials visible in tool outputs.
 
 ## Cross-run trace correlation
 
