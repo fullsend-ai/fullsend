@@ -15,6 +15,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -2710,6 +2711,33 @@ func (c *LiveClient) MinimizeComment(ctx context.Context, nodeID, reason string)
 		return fmt.Errorf("minimize comment %s: %s", nodeID, gqlResult.Errors[0].Message)
 	}
 	return nil
+}
+
+// validReactionContent lists the emoji reaction values accepted by the
+// GitHub reactions API.
+var validReactionContent = []string{"+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes"}
+
+// AddIssueReaction adds an emoji reaction to an issue or pull request.
+func (c *LiveClient) AddIssueReaction(ctx context.Context, owner, repo string, number int, content string) (int64, error) {
+	if !slices.Contains(validReactionContent, content) {
+		return 0, fmt.Errorf("add issue reaction: invalid content %q", content)
+	}
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/reactions", owner, repo, number), map[string]string{"content": content})
+	if err != nil {
+		return 0, fmt.Errorf("add issue reaction on #%d: %w", number, err)
+	}
+	var result struct {
+		ID int64 `json:"id"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return 0, fmt.Errorf("decode issue reaction: %w", err)
+	}
+	return result.ID, nil
+}
+
+// DeleteIssueReaction removes a previously added reaction by ID.
+func (c *LiveClient) DeleteIssueReaction(ctx context.Context, owner, repo string, number int, reactionID int64) error {
+	return c.delete_(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/reactions/%d", owner, repo, number, reactionID))
 }
 
 // GetPullRequestInfo returns branch/repo context for a pull request.

@@ -85,6 +85,13 @@ type MinimizedCommentRecord struct {
 	Reason string
 }
 
+// ReactionRecord records an AddIssueReaction call.
+type ReactionRecord struct {
+	Owner, Repo string
+	Number      int
+	Content     string
+}
+
 // ReviewRecord records a pull request review creation call.
 type ReviewRecord struct {
 	Owner, Repo string
@@ -268,6 +275,8 @@ type FakeClient struct {
 	CreatedIssues          []CreatedIssueRecord
 	UpdatedComments        []UpdatedCommentRecord
 	MinimizedComments      []MinimizedCommentRecord
+	AddedReactions         []ReactionRecord
+	DeletedReactions       []int64
 	CreatedReviews         []ReviewRecord
 	DismissedReviews       []DismissedReviewRecord
 	CommittedFiles         []CommitFilesRecord
@@ -286,6 +295,7 @@ type FakeClient struct {
 	proposalCounter int
 	commentCounter  int
 	issueCounter    int
+	reactionCounter int64
 }
 
 // err checks for an injected error for the given method name.
@@ -1413,6 +1423,32 @@ func (f *FakeClient) MinimizeComment(_ context.Context, nodeID, reason string) e
 		NodeID: nodeID,
 		Reason: reason,
 	})
+	return nil
+}
+
+func (f *FakeClient) AddIssueReaction(_ context.Context, owner, repo string, number int, content string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("AddIssueReaction"); e != nil {
+		return 0, e
+	}
+	f.reactionCounter++
+	f.AddedReactions = append(f.AddedReactions, ReactionRecord{
+		Owner:   owner,
+		Repo:    repo,
+		Number:  number,
+		Content: content,
+	})
+	return f.reactionCounter, nil
+}
+
+func (f *FakeClient) DeleteIssueReaction(_ context.Context, _, _ string, _ int, reactionID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("DeleteIssueReaction"); e != nil {
+		return e
+	}
+	f.DeletedReactions = append(f.DeletedReactions, reactionID)
 	return nil
 }
 

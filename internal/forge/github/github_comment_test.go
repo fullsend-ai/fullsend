@@ -534,3 +534,47 @@ func TestListPullRequestReviews(t *testing.T) {
 	assert.Equal(t, "APPROVED", reviews[0].State)
 	assert.Equal(t, "LGTM", reviews[0].Body)
 }
+
+func TestAddIssueReaction(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "/repos/owner/repo/issues/42/reactions", r.URL.Path)
+
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		assert.Equal(t, "eyes", body["content"])
+
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{"id": 789})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	id, err := client.AddIssueReaction(context.Background(), "owner", "repo", 42, "eyes")
+	require.NoError(t, err)
+	assert.Equal(t, int64(789), id)
+}
+
+func TestAddIssueReaction_InvalidContent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("request should not be sent for invalid content")
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	_, err := client.AddIssueReaction(context.Background(), "owner", "repo", 42, "bogus")
+	assert.Error(t, err)
+}
+
+func TestDeleteIssueReaction(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "DELETE", r.Method)
+		assert.Equal(t, "/repos/owner/repo/issues/42/reactions/789", r.URL.Path)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	err := client.DeleteIssueReaction(context.Background(), "owner", "repo", 42, 789)
+	require.NoError(t, err)
+}
