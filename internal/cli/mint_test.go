@@ -860,6 +860,55 @@ func TestMintDeployCmd_CloudflarePreviewDeployWithPemDir(t *testing.T) {
 	assert.NotEmpty(t, fake.secretCalls, "PEM secrets should be stored for preview deploys")
 }
 
+func TestMintDeployCmd_CloudflareDeployPemSecretFailure(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	roles := defaultMintRoles()
+	testPEM := generateTestPEM(t)
+	pemDir := t.TempDir()
+	for _, role := range roles {
+		require.NoError(t, os.WriteFile(filepath.Join(pemDir, role+".pem"), testPEM, 0o600))
+	}
+
+	appIDCounter := 300
+	lastLookedUpID := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/app" {
+			fmt.Fprintf(w, `{"id": %d, "slug": "test-app"}`, lastLookedUpID)
+			return
+		}
+		appIDCounter++
+		lastLookedUpID = appIDCounter
+		fmt.Fprintf(w, `{"id": %d, "slug": "%s"}`, appIDCounter, r.URL.Path[len("/apps/"):])
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	fake := &fakeCFWranglerRunner{
+		deployURL:    "https://fullsend-mint.workers.dev",
+		secretPutErr: fmt.Errorf("simulated secret storage failure"),
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--pem-dir=" + pemDir,
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "storing PEM for role")
+	assert.Contains(t, err.Error(), "already stored")
+	assert.Contains(t, err.Error(), "simulated secret storage failure")
+}
+
 func TestMintDeployCmd_CloudflareNoWarningForPemDir(t *testing.T) {
 	withCFEnvVars(t)
 

@@ -433,7 +433,7 @@ Cloudflare mode (--platform=cloudflare):
 			case "gcp":
 				return runMintDeployGCP(cmd.Context(), project, region, sourceDir, skipDeploy, dryRun, pemDir, public)
 			case "cloudflare":
-				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir)
+				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, pemDir, dryRun)
 			default:
 				return fmt.Errorf("unsupported platform %q: must be \"gcp\" or \"cloudflare\"", platform)
 			}
@@ -444,12 +444,12 @@ Cloudflare mode (--platform=cloudflare):
 	cmd.Flags().StringVar(&platform, "platform", "gcp", "target platform: gcp or cloudflare")
 	cmd.Flags().StringVar(&sourceDir, "source-dir", "", "path to local mint source (default: checkout path when present, embedded otherwise)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
+	cmd.Flags().StringVar(&pemDir, "pem-dir", "", "optional: directory containing {role}.pem files to bootstrap the default app set")
 
 	// GCP-specific flags.
 	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required for --platform=gcp)")
 	cmd.Flags().StringVar(&region, "region", "us-central1", "GCP region for the Cloud Function")
 	cmd.Flags().BoolVar(&skipDeploy, "skip-deploy", false, "skip code upload, reuse existing function (GCP only)")
-	cmd.Flags().StringVar(&pemDir, "pem-dir", "", "optional: directory containing {role}.pem files to bootstrap the default app set")
 	cmd.Flags().BoolVar(&public, "public", false, "deploy public mint (ALLOWED_ORGS=*, permissive WIF) (GCP only)")
 
 	// Cloudflare-specific flags.
@@ -608,7 +608,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 	return nil
 }
 
-func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool, pemDir string) error {
+func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias, pemDir string, dryRun bool) error {
 	if err := cf.ValidateCloudflareEnv(); err != nil {
 		return err
 	}
@@ -743,10 +743,10 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 			pemRoles = append(pemRoles, role)
 		}
 		sort.Strings(pemRoles)
-		for _, role := range pemRoles {
+		for i, role := range pemRoles {
 			if err := provisioner.StoreAgentPEM(ctx, role, agentPEMs[role]); err != nil {
-				printer.StepFail("Failed to store PEM secret")
-				return fmt.Errorf("storing PEM for role %s: %w", role, err)
+				printer.StepFail(fmt.Sprintf("Failed to store PEM secret for role %s (%d/%d stored)", role, i, len(pemRoles)))
+				return fmt.Errorf("storing PEM for role %s (%d/%d already stored; re-run is safe): %w", role, i, len(pemRoles), err)
 			}
 		}
 		printer.StepDone(fmt.Sprintf("Stored %d role PEM secrets", len(agentPEMs)))
