@@ -117,16 +117,28 @@ type PerRepoInferenceConfig struct {
 	WIFProvider string `yaml:"wif_provider,omitempty"`
 }
 
-// StatusNotificationConfig controls status comments posted on issues/PRs
-// when agents start and complete.
+// StatusNotificationConfig controls status comments and reactions posted
+// on issues/PRs when agents start and complete.
 type StatusNotificationConfig struct {
-	Comment CommentNotificationConfig `yaml:"comment,omitempty"`
+	Comment  CommentNotificationConfig  `yaml:"comment,omitempty"`
+	Reaction ReactionNotificationConfig `yaml:"reaction,omitempty"`
 }
 
 // CommentNotificationConfig controls start/completion comments.
 // Valid start values: "enabled" (default), "disabled".
 // Valid completion values: "enabled" (default), "on_failure", "disabled".
 type CommentNotificationConfig struct {
+	Start      string `yaml:"start,omitempty"`
+	Completion string `yaml:"completion,omitempty"`
+}
+
+// ReactionNotificationConfig controls start/completion emoji reactions,
+// an alternative to comments that doesn't generate a GitHub notification.
+// Unlike comments, both fields default to "disabled" — reactions are an
+// opt-in addition rather than a default-on behavior.
+// Valid start values: "enabled", "disabled" (default).
+// Valid completion values: "enabled", "on_failure", "disabled" (default).
+type ReactionNotificationConfig struct {
 	Start      string `yaml:"start,omitempty"`
 	Completion string `yaml:"completion,omitempty"`
 }
@@ -463,17 +475,33 @@ func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 	return nil
 }
 
+var (
+	validNotificationStartValues      = []string{"", "enabled", "disabled"}
+	validNotificationCompletionValues = []string{"", "enabled", "disabled", "on_failure"}
+)
+
 func validateStatusNotifications(cfg *StatusNotificationConfig) error {
 	if cfg == nil {
 		return nil
 	}
-	validStartValues := []string{"", "enabled", "disabled"}
-	if !slices.Contains(validStartValues, cfg.Comment.Start) {
-		return fmt.Errorf("invalid status_notifications.comment.start %q: must be \"enabled\" or \"disabled\"", cfg.Comment.Start)
+	if err := validateNotificationValue("status_notifications.comment.start", cfg.Comment.Start, validNotificationStartValues, "\"enabled\" or \"disabled\""); err != nil {
+		return err
 	}
-	validCompletionValues := []string{"", "enabled", "disabled", "on_failure"}
-	if !slices.Contains(validCompletionValues, cfg.Comment.Completion) {
-		return fmt.Errorf("invalid status_notifications.comment.completion %q: must be \"enabled\", \"on_failure\", or \"disabled\"", cfg.Comment.Completion)
+	if err := validateNotificationValue("status_notifications.comment.completion", cfg.Comment.Completion, validNotificationCompletionValues, "\"enabled\", \"on_failure\", or \"disabled\""); err != nil {
+		return err
+	}
+	if err := validateNotificationValue("status_notifications.reaction.start", cfg.Reaction.Start, validNotificationStartValues, "\"enabled\" or \"disabled\""); err != nil {
+		return err
+	}
+	if err := validateNotificationValue("status_notifications.reaction.completion", cfg.Reaction.Completion, validNotificationCompletionValues, "\"enabled\", \"on_failure\", or \"disabled\""); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateNotificationValue(field, val string, allowed []string, description string) error {
+	if !slices.Contains(allowed, val) {
+		return fmt.Errorf("invalid %s %q: must be %s", field, val, description)
 	}
 	return nil
 }

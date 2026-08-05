@@ -437,6 +437,32 @@ When `status_notifications` is omitted entirely, both start and completion comme
 
 In `enabled` mode (the default), a hard crash or cancellation that happens before the agent could post anything at all is also surfaced after the fact: a post-job cleanup step synthesizes an "Interrupted" comment so the run doesn't silently vanish.
 
+### Reactions
+
+As an alternative (or supplement) to comments, agents can signal status with emoji reactions on the issue/PR itself. Reactions don't generate a GitHub notification, so they're a lower-noise way to show that an agent is working on something and how it turned out.
+
+```yaml
+defaults:
+  status_notifications:
+    reaction:
+      start: enabled       # "enabled" | "disabled" (default)
+      completion: enabled  # "enabled" | "on_failure" | "disabled" (default)
+```
+
+Unlike comments, reactions default to `disabled` — they're an opt-in addition, not a default-on behavior. When `start` is enabled, a 👀 reaction is added when the agent begins.
+
+At completion, the start reaction (if any) is removed, and — depending on `completion` — replaced with an outcome reaction:
+
+| Value | Behavior |
+|-------|----------|
+| `enabled` | Always add a completion reaction: 👍 on success, 👎 on failure/cancelled/skipped |
+| `on_failure` | Add a 👎 reaction only on failure/cancelled/skipped; leave no reaction on success |
+| `disabled` | Never add a completion reaction (default) |
+
+Because reactions carry no notification cost, `on_failure` here simply means "leave no reaction on success," with no start-suppression workaround needed.
+
+Reactions are currently GitHub-only.
+
 ## Disabling Agents
 
 To disable an agent (including built-in scaffold agents) without removing

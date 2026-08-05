@@ -369,6 +369,18 @@ func (c *LiveClient) MinimizeComment(_ context.Context, _, _ string) error {
 	return forge.ErrNotSupported
 }
 
+// AddIssueReaction is not yet implemented for GitLab. GitLab has an
+// equivalent "award emoji" API, but no caller currently exercises this
+// path on GitLab, so it is left unimplemented rather than guessed at.
+func (c *LiveClient) AddIssueReaction(_ context.Context, _, _ string, _ int, _ string) (int64, error) {
+	return 0, forge.ErrNotSupported
+}
+
+// DeleteIssueReaction is not yet implemented for GitLab. See AddIssueReaction.
+func (c *LiveClient) DeleteIssueReaction(_ context.Context, _, _ string, _ int, _ int64) error {
+	return forge.ErrNotSupported
+}
+
 // projectWebURL returns the web URL for a project (without trailing slash).
 func (c *LiveClient) projectWebURL(owner, repo string) string {
 	return c.baseURL + "/" + owner + "/" + repo

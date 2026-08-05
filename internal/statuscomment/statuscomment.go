@@ -66,10 +66,11 @@ type Notifier struct {
 	sha           string
 	marker        string
 
-	startCommentID int
-	startTime      time.Time
-	now            func() time.Time
-	warnf          func(string, ...any)
+	startCommentID  int
+	startReactionID int64
+	startTime       time.Time
+	now             func() time.Time
+	warnf           func(string, ...any)
 }
 
 // New creates a Notifier. The runID is embedded in the HTML marker comment
@@ -136,15 +137,46 @@ func commentEnabled(val string) bool {
 	return val == "" || val == "enabled"
 }
 
+// reactionEnabled reports whether a reaction setting is turned on. Unlike
+// commentEnabled, the empty value means disabled: reactions are an opt-in
+// addition rather than a default-on behavior.
+func reactionEnabled(val string) bool {
+	return val == "enabled"
+}
+
+// isFailureStatus reports whether status represents a non-success outcome,
+// used by the "on_failure" completion mode shared by comments and reactions.
+func isFailureStatus(status string) bool {
+	return status == "failure" || status == "cancelled" || status == "skipped"
+}
+
 // shouldPostCompletion reports whether a completion comment should be
 // posted given the configured value and the agent outcome status.
 func shouldPostCompletion(val, status string) bool {
-	switch val {
-	case "on_failure":
-		return status == "failure" || status == "cancelled" || status == "skipped"
-	default:
-		return commentEnabled(val)
+	if val == "on_failure" {
+		return isFailureStatus(status)
 	}
+	return commentEnabled(val)
+}
+
+// shouldPostReactionCompletion reports whether a completion reaction
+// should be posted given the configured value and the agent outcome
+// status. Mirrors shouldPostCompletion, but defaults to disabled.
+func shouldPostReactionCompletion(val, status string) bool {
+	if val == "on_failure" {
+		return isFailureStatus(status)
+	}
+	return reactionEnabled(val)
+}
+
+// reactionForStatus maps an agent outcome status to a GitHub reaction
+// content value. success gets a thumbs-up; anything else (failure,
+// cancelled, skipped, or unrecognized) gets a thumbs-down.
+func reactionForStatus(status string) string {
+	if status == "success" {
+		return "+1"
+	}
+	return "-1"
 }
 
 // PostStart posts a start comment on the issue/PR.
@@ -156,16 +188,39 @@ func shouldPostCompletion(val, status string) bool {
 func (n *Notifier) PostStart(ctx context.Context, description string) error {
 	n.startTime = n.now().UTC()
 
-	if commentEnabled(n.cfg.Comment.Start) && n.cfg.Comment.Completion != "on_failure" {
+	postComment := commentEnabled(n.cfg.Comment.Start) && n.cfg.Comment.Completion != "on_failure"
+	postReaction := reactionEnabled(n.cfg.Reaction.Start)
+
+	if postComment || postReaction {
 		if err := n.refreshClient(ctx); err != nil {
-			return err
+			if postComment {
+				return err
+			}
+			// Only the reaction was requested; fail open — a reaction is a
+			// nice-to-have signal, not something that should abort the run.
+			n.warnf("failed to mint token for start reaction: %v", err)
+			return nil
 		}
+	}
+
+	if postComment {
 		body := n.buildStartBody(description)
 		comment, err := n.client.CreateIssueComment(ctx, n.owner, n.repo, n.number, body)
 		if err != nil {
 			return fmt.Errorf("posting start comment: %w", err)
 		}
 		n.startCommentID = comment.ID
+	}
+
+	if postReaction {
+		id, err := n.client.AddIssueReaction(ctx, n.owner, n.repo, n.number, "eyes")
+		if err != nil {
+			// Fail open: a reaction is a nice-to-have signal, not something
+			// that should abort the agent run.
+			n.warnf("failed to add start reaction: %v", err)
+		} else {
+			n.startReactionID = id
+		}
 	}
 
 	return nil
@@ -197,22 +252,33 @@ func (n *Notifier) PostCompletion(ctx context.Context, description, status strin
 func (n *Notifier) PostCompletionWithDetail(ctx context.Context, description, status, detail string) error {
 	completionTime := n.now().UTC()
 
-	if !shouldPostCompletion(n.cfg.Comment.Completion, status) {
+	postComment := shouldPostCompletion(n.cfg.Comment.Completion, status)
+	cleanupComment := !postComment && n.startCommentID != 0
+	cleanupReaction := n.startReactionID != 0
+	postReaction := shouldPostReactionCompletion(n.cfg.Reaction.Completion, status)
+
+	if postComment || cleanupComment || cleanupReaction || postReaction {
+		if err := n.refreshClient(ctx); err != nil {
+			if postComment {
+				return err
+			}
+			n.warnf("failed to mint token for completion: %v", err)
+			return nil
+		}
+	}
+
+	n.postCompletionReaction(ctx, status, cleanupReaction, postReaction)
+
+	if !postComment {
 		// Completion comment suppressed (disabled or on_failure with success) —
 		// clean up the start comment so it doesn't remain orphaned in its
 		// "Started" state.
-		if n.startCommentID != 0 {
-			if err := n.refreshClient(ctx); err != nil {
-				n.warnf("failed to mint token for start comment cleanup: %v", err)
-			} else if err := n.client.DeleteIssueComment(ctx, n.owner, n.repo, n.startCommentID); err != nil {
+		if cleanupComment {
+			if err := n.client.DeleteIssueComment(ctx, n.owner, n.repo, n.startCommentID); err != nil {
 				n.warnf("failed to delete start comment when completion suppressed: %v", err)
 			}
 		}
 		return nil
-	}
-
-	if err := n.refreshClient(ctx); err != nil {
-		return err
 	}
 
 	body := n.buildCompletionBody(description, status, detail, completionTime)
@@ -240,6 +306,27 @@ func (n *Notifier) PostCompletionWithDetail(ctx context.Context, description, st
 	}
 
 	return nil
+}
+
+// postCompletionReaction manages the reaction lifecycle at run completion:
+// the start reaction (if any) is removed — it no longer reflects the
+// run's state — and, if post is true, a new reaction reflecting the
+// outcome is added. Unlike comments, reactions generate no GitHub
+// notification, so there's no notification-noise reason to keep the start
+// reaction around across this swap. Errors are logged, not returned: a
+// reaction is a nice-to-have signal, not something that should fail the
+// run. Assumes the caller has already refreshed n.client if needed.
+func (n *Notifier) postCompletionReaction(ctx context.Context, status string, cleanup, post bool) {
+	if cleanup {
+		if err := n.client.DeleteIssueReaction(ctx, n.owner, n.repo, n.number, n.startReactionID); err != nil {
+			n.warnf("failed to remove start reaction: %v", err)
+		}
+	}
+	if post {
+		if _, err := n.client.AddIssueReaction(ctx, n.owner, n.repo, n.number, reactionForStatus(status)); err != nil {
+			n.warnf("failed to add completion reaction: %v", err)
+		}
+	}
 }
 
 // analyzeTimeline lists comments and determines two things:
