@@ -9,4 +9,5 @@ cloudflare_site/
 hack/
 internal/
 docs/
+!docs/.vitepress/
 web/public/
