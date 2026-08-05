@@ -62,6 +62,16 @@ func CollectPerRepoInstallFiles(vendored bool, upstreamRef, upstreamTag string) 
 		Mode:    "100644",
 	}}
 
+	scriptRaw, err := FullsendRepoFile(".github/scripts/stop-agent.sh")
+	if err != nil {
+		return nil, fmt.Errorf("loading stop-agent script: %w", err)
+	}
+	files = append(files, InstallFile{
+		Path:    ".github/scripts/stop-agent.sh",
+		Content: PrependManagedHeader(".github/scripts/stop-agent.sh", scriptRaw),
+		Mode:    FileMode(".github/scripts/stop-agent.sh"),
+	})
+
 	return files, nil
 }
 

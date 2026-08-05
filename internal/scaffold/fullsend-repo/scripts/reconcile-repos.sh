@@ -26,6 +26,8 @@ if ! command -v yq &>/dev/null; then
 fi
 SHIM_TEMPLATE="$CONFIG_DIR/templates/shim-workflow-call.yaml"
 SHIM_PATH=".github/workflows/fullsend.yaml"
+STOP_AGENT_SCRIPT="$CONFIG_DIR/.github/scripts/stop-agent.sh"
+STOP_AGENT_PATH=".github/scripts/stop-agent.sh"
 SENTINEL="# --- fullsend managed below - do not edit ---"
 REPO_NAME_PATTERN='^[a-zA-Z0-9._-]+$'
 
@@ -63,6 +65,10 @@ enabled: false in the fullsend config."
 
 if [ ! -f "$SHIM_TEMPLATE" ]; then
   echo "::error::shim template not found at $SHIM_TEMPLATE"
+  exit 1
+fi
+if [ ! -f "$STOP_AGENT_SCRIPT" ]; then
+  echo "::error::stop-agent script not found at $STOP_AGENT_SCRIPT"
   exit 1
 fi
 
@@ -315,12 +321,31 @@ write_shim_to_branch_from_default() {
     return 1
   fi
 
+  local script_b64 script_blob_sha
+  script_b64=$(base64 -w0 <"$STOP_AGENT_SCRIPT")
+  if ! script_blob_sha=$(jq -n \
+    --arg content "$script_b64" \
+    '{content: $content, encoding: "base64"}' |
+    gh api "repos/$ORG/$repo/git/blobs" --method POST --input - --jq .sha); then
+    echo "::error::Failed to create stop-agent script blob for $repo"
+    return 1
+  fi
+  if [ -z "$script_blob_sha" ]; then
+    echo "::error::Created empty stop-agent script blob SHA for $repo"
+    return 1
+  fi
+
   local tree_sha
   if ! tree_sha=$(jq -n \
     --arg base_tree "$default_tree_sha" \
-    --arg path "$SHIM_PATH" \
-    --arg sha "$blob_sha" \
-    '{base_tree: $base_tree, tree: [{path: $path, mode: "100644", type: "blob", sha: $sha}]}' |
+    --arg shim_path "$SHIM_PATH" \
+    --arg shim_sha "$blob_sha" \
+    --arg script_path "$STOP_AGENT_PATH" \
+    --arg script_sha "$script_blob_sha" \
+    '{base_tree: $base_tree, tree: [
+      {path: $shim_path, mode: "100644", type: "blob", sha: $shim_sha},
+      {path: $script_path, mode: "100755", type: "blob", sha: $script_sha}
+    ]}' |
     gh api "repos/$ORG/$repo/git/trees" --method POST --input - --jq .sha); then
     echo "::error::Failed to create shim tree for $repo"
     return 1

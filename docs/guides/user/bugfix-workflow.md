@@ -2,6 +2,14 @@
 
 How fullsend handles a bug report from issue creation to merged fix, end to end. This guide is for developers working in a repo where fullsend is [installed and enrolled](../getting-started/).
 
+## Prerequisites
+
+Before using the commands in this guide:
+
+- Fullsend is [installed and enrolled](../getting-started/) on the repository (shim workflow present).
+- You can comment on the issue or PR you want to control.
+- Slash commands that mutate work (`/fs-code`, `/fs-fix`, `/fs-retro`) require write-level repository permission (admin, maintain, or write). `/fs-triage` and `/fs-review` accept triage-level permission or higher. `/fs-stop` / `/fs-fix-stop` require write-level permission, or authorship of the issue/PR (ADR 0054).
+
 ## Overview
 
 When someone files a bug, fullsend's agent pipeline processes it through four stages:

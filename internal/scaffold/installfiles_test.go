@@ -43,8 +43,10 @@ func TestCollectInstallFiles_PerRepoPrefix(t *testing.T) {
 func TestCollectPerRepoInstallFiles(t *testing.T) {
 	files, err := CollectPerRepoInstallFiles(false, "", "")
 	require.NoError(t, err)
-	require.NotEmpty(t, files)
+	require.Len(t, files, 2)
 	assert.Equal(t, ".github/workflows/fullsend.yaml", files[0].Path)
+	assert.Equal(t, ".github/scripts/stop-agent.sh", files[1].Path)
+	assert.Equal(t, "100755", files[1].Mode)
 }
 
 func TestManagedPaths(t *testing.T) {
