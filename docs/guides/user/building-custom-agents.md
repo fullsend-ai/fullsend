@@ -337,6 +337,25 @@ hard error rather than a silent proceed, so a mistyped skip cannot turn into a
 duplicate agent run. See the [pre-script output v1 contract](../../normative/prescript-output/v1/README.md)
 for the full grammar, error semantics, and CI relay behavior.
 
+**Exit code 78 — neutral skip.** For simple cases, a pre-script can skip the
+run by exiting with code 78 instead of writing to the output file. The last
+non-empty line of stdout becomes the skip reason:
+
+```bash
+# Scheduled agent: check if there's work to do
+PENDING=$(gh api ... --jq 'length')
+if [[ "${PENDING}" -eq 0 ]]; then
+  echo "No issues need scoring"
+  exit 78
+fi
+```
+
+Exit 78 and the output-file protocol can be combined — the output file is
+still parsed for `reason` and other outputs when exit 78 is used, but a parse
+error does not block the skip. See the
+[normative spec](../../normative/prescript-output/v1/README.md#exit-code-78--neutral-skip)
+for full details.
+
 ### Post-script (action execution)
 
 `.fullsend/customized/scripts/post-my-agent.sh`:

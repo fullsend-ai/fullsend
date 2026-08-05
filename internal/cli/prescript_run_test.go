@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -197,6 +198,133 @@ func TestRunPreScript_CleansUpOutputFile(t *testing.T) {
 	entries, err := os.ReadDir(runDir)
 	require.NoError(t, err)
 	assert.Empty(t, entries)
+}
+
+// --- Exit code 78 (neutral skip) tests (issue #582) ---
+
+func TestRunPreScript_Exit78_SkipsWithStdoutReason(t *testing.T) {
+	printer := ui.New(io.Discard)
+	h := &harness.Harness{PreScript: writePreScript(t,
+		"echo \"No issues need scoring\"\nexit 78\n")}
+
+	res, err := runPreScript(h, t.TempDir(), "", printer)
+	require.NoError(t, err)
+	assert.True(t, res.Skipped)
+	assert.Equal(t, "No issues need scoring", res.Reason)
+}
+
+func TestRunPreScript_Exit78_SkipsWithOutputFileReason(t *testing.T) {
+	printer := ui.New(io.Discard)
+	// Script writes a reason to the output file, then exits 78. The file
+	// reason should take precedence over stdout.
+	h := &harness.Harness{PreScript: writePreScript(t,
+		`echo "reason=all scores are fresh" >> "${FULLSEND_PRESCRIPT_OUTPUT}"`+"\n"+
+			"echo \"stdout line\"\n"+
+			"exit 78\n")}
+
+	res, err := runPreScript(h, t.TempDir(), "", printer)
+	require.NoError(t, err)
+	assert.True(t, res.Skipped)
+	assert.Equal(t, "all scores are fresh", res.Reason)
+}
+
+func TestRunPreScript_Exit78_OverridesSkippedFalseInFile(t *testing.T) {
+	printer := ui.New(io.Discard)
+	// Script explicitly writes skipped=false but exits 78. Exit code wins.
+	h := &harness.Harness{PreScript: writePreScript(t,
+		`echo "skipped=false" >> "${FULLSEND_PRESCRIPT_OUTPUT}"`+"\n"+
+			"exit 78\n")}
+
+	res, err := runPreScript(h, t.TempDir(), "", printer)
+	require.NoError(t, err)
+	assert.True(t, res.Skipped, "exit 78 must override skipped=false in output file")
+}
+
+func TestRunPreScript_Exit78_NoReasonDefaultsEmpty(t *testing.T) {
+	printer := ui.New(io.Discard)
+	// Script exits 78 with no stdout and no output file content.
+	h := &harness.Harness{PreScript: writePreScript(t, "exit 78\n")}
+
+	res, err := runPreScript(h, t.TempDir(), "", printer)
+	require.NoError(t, err)
+	assert.True(t, res.Skipped)
+	assert.Empty(t, res.Reason)
+}
+
+func TestRunPreScript_Exit78_MalformedOutputFileStillSkips(t *testing.T) {
+	printer := ui.New(io.Discard)
+	// Script writes malformed content to the output file but exits 78.
+	// The exit code is authoritative — a parse error must not block the skip.
+	h := &harness.Harness{PreScript: writePreScript(t,
+		`echo "this is not key=value format but has no equals" >> "${FULLSEND_PRESCRIPT_OUTPUT}"`+"\n"+
+			"echo \"Skipping: no work\"\n"+
+			"exit 78\n")}
+
+	res, err := runPreScript(h, t.TempDir(), "", printer)
+	require.NoError(t, err)
+	assert.True(t, res.Skipped)
+	assert.Equal(t, "Skipping: no work", res.Reason)
+}
+
+func TestRunPreScript_Exit78_PreservesOtherOutputs(t *testing.T) {
+	printer := ui.New(io.Discard)
+	h := &harness.Harness{PreScript: writePreScript(t,
+		`echo "reason=stale scores refreshed" >> "${FULLSEND_PRESCRIPT_OUTPUT}"`+"\n"+
+			`echo "checked_count=42" >> "${FULLSEND_PRESCRIPT_OUTPUT}"`+"\n"+
+			"exit 78\n")}
+
+	res, err := runPreScript(h, t.TempDir(), "", printer)
+	require.NoError(t, err)
+	assert.True(t, res.Skipped)
+	assert.Equal(t, "stale scores refreshed", res.Reason)
+	assert.Equal(t, "42", res.Outputs["checked_count"])
+}
+
+func TestRunPreScript_Exit78_UsesLastNonEmptyStdoutLine(t *testing.T) {
+	printer := ui.New(io.Discard)
+	h := &harness.Harness{PreScript: writePreScript(t,
+		"echo \"Checking issues...\"\n"+
+			"echo \"Checked 5 issues\"\n"+
+			"echo \"All scores are current\"\n"+
+			"echo \"\"\n"+
+			"exit 78\n")}
+
+	res, err := runPreScript(h, t.TempDir(), "", printer)
+	require.NoError(t, err)
+	assert.True(t, res.Skipped)
+	assert.Equal(t, "All scores are current", res.Reason)
+}
+
+// Exit code 78 from a pre-script must still relay as skipped=true so
+// workflow-level gating works correctly.
+func TestRunAgent_PreScriptExit78_RelaysSkippedTrue(t *testing.T) {
+	usePreScriptStub(t)
+	out := filepath.Join(t.TempDir(), "github-output")
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITHUB_OUTPUT", out)
+	dir := newSkipHarnessDir(t, "echo \"Nothing to do\"\nexit 78\n")
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	require.NoError(t, runAgent(context.Background(), "code", dir, "", t.TempDir(), "", nil, false, "", "",
+		rFlags, statusOpts{}, ui.New(io.Discard), false))
+
+	data, err := os.ReadFile(out)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "skipped=true")
+	assert.Contains(t, string(data), "reason=Nothing to do")
+}
+
+// Other non-zero exit codes must remain hard failures — only 78 is neutral.
+func TestRunPreScript_OtherNonZeroExitIsStillHardError(t *testing.T) {
+	printer := ui.New(io.Discard)
+	for _, code := range []int{1, 2, 77, 79, 127} {
+		t.Run(fmt.Sprintf("exit_%d", code), func(t *testing.T) {
+			h := &harness.Harness{PreScript: writePreScript(t,
+				fmt.Sprintf("exit %d\n", code))}
+			_, err := runPreScript(h, t.TempDir(), "", printer)
+			require.ErrorContains(t, err, "running pre-script")
+		})
+	}
 }
 
 // usePreScriptStub puts an openshell stub on PATH that passes the gateway
