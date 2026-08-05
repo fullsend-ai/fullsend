@@ -71,7 +71,8 @@ The shim becomes a single `dispatch` job that forwards the event context to
 examines `event_type` and the event payload to determine which stage to
 trigger, then fans out to the matching agent workflow.
 
-The shim shrinks to ~50 lines (one `dispatch` job + one `stop-fix` job).
+The shim shrinks to ~50 lines (one `dispatch` job + one `stop-agent` job;
+formerly `stop-fix`).
 `dispatch.yml` gains ~50 lines of routing logic. New stages require zero
 changes to enrolled repos.
 
@@ -88,9 +89,11 @@ The shim has three jobs:
    `event_payload` inputs. Filters out bot comments via `if:` to avoid
    unnecessary invocations.
 
-2. **`stop-fix`** — adds the `fullsend-no-fix` label and posts a comment.
-   This job acts directly on the target repo and does not dispatch to
-   `.fullsend`. It stays in the shim (~25 lines).
+2. **`stop-agent`** — applies `fullsend-no-{agent}` labels for
+   `/fs-stop <agent>` / `/fs-fix-stop` (skips future auto-triggers; does not
+   cancel in-flight runs). Previously named `stop-fix` when it only handled
+   fix. This job acts directly on the target repo and does not dispatch to
+   `.fullsend`. It stays in the shim.
 
 3. **`post-run-link`** — posts a link to the dispatched workflow run as a
    comment on the triggering issue or PR. This job runs after `dispatch`
@@ -102,6 +105,7 @@ a stage name:
 - `issue_comment` with `/fs-triage`, `/fs-code`, `/fs-review`, `/fs-fix`, `/fs-retro`, `/fs-prioritize`
   commands → corresponding stage
 - `issue_comment` on `needs-info` issue from non-bot → `triage`
+  (skipped when `fullsend-no-triage` is present)
 - `issues` + `labeled` with `ready-to-code` → `code`
 - `pull_request_target` opened/synchronize/ready_for_review → `review`
 - `pull_request_target` closed → `retro`
@@ -160,7 +164,7 @@ The `stage` input to `dispatch.yml` becomes optional. When provided
 > gated behind the `actions-nga` feature flag and its runtime behaviour at
 > job-level concurrency has not been verified; moving to workflow-level
 > `concurrency` (where `queue` is also documented) would gate the
-> `stop-fix` job. See
+> `stop-agent` job. See
 > [#2452](https://github.com/fullsend-ai/fullsend/issues/2452) for
 > details. The per-repo shim has no concurrency group (BYOA compat).
 - Events that don't match any stage still trigger a `workflow_call` to
@@ -169,7 +173,7 @@ The `stage` input to `dispatch.yml` becomes optional. When provided
   highest-volume no-op.
 - Old shims (per-stage jobs with explicit `stage` input) continue to work —
   `dispatch.yml` supports both explicit and auto-determined stages.
-- The `stop-fix` job remains in the shim because it acts on the target repo
+- The `stop-agent` job remains in the shim because it acts on the target repo
   directly (label + comment), not via `.fullsend` dispatch.
 - This decision is sequenced after the token mint migration. The token mint
   provides `workflow_call`; this ADR uses it to simplify routing.

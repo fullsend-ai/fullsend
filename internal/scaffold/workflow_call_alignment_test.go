@@ -558,6 +558,11 @@ func TestReusableDispatchWorkflowContent(t *testing.T) {
 	s := string(content)
 	assert.Regexp(t, `(?s)/fs-review\)\s*\n\s+if \[\[ "\$\{ISSUE_IS_PR\}"`, s)
 	assert.Regexp(t, `(?s)ready-for-review"\s*\]\];\s*then\s*\n\s+if \[\[ "\$\{ISSUE_IS_PR\}"`, s)
+	assert.Contains(t, s, `has_label "needs-info" && ! has_label "feature" && ! has_label "fullsend-no-triage"`)
+	assert.Contains(t, s, "fullsend-no-review")
+	assert.Contains(t, s, "fullsend-no-code")
+	assert.Contains(t, s, "fullsend-no-retro")
+	assert.Contains(t, s, "/fs-stop|/fs-fix-stop")
 }
 
 // TestDispatchPerStageAuthorization ensures triage-role users can trigger
@@ -615,8 +620,8 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 			assert.NotRegexp(t, `(?s)ready-to-code".*is_event_actor_authorized "\$\{EVENT_SENDER_LOGIN\}" triage`, s,
 				"ready-to-code must not accept triage min on the mutation path")
 
-			// Retro on PR close remains intentionally ungated (documented)
-			assert.Regexp(t, `(?s)closed\)\s*\n\s+# Intentional ungated:.*\n\s+STAGE="retro"`, s)
+			// Retro on PR close is ungated for actors, but honors fullsend-no-retro.
+			assert.Regexp(t, `(?s)closed\)\s*\n\s+# Intentional ungated:.*fullsend-no-retro.*STAGE="retro"`, s)
 		})
 	}
 }

@@ -26,8 +26,10 @@ When triggered via `/fs-retro`, the human's comment is passed to the agent as hi
 | Command | Where | Effect |
 |---------|-------|--------|
 | `/fs-retro` | PR or issue comment | Triggers a retrospective analysis |
+| `/fs-stop retro` | Issue or PR comment | Applies `fullsend-no-retro` and skips further auto-triggered retro runs |
 
 Requires write-level repository permission (admin, maintain, or write).
+`/fs-stop` also allows the issue/PR author (ADR 0054).
 
 The `/fs-retro` command accepts optional free-text instructions after the
 command. The text is passed to the agent as high-signal direction about what
@@ -44,6 +46,7 @@ The retro agent also runs automatically when a PR is closed (merged or not).
 | Label | Meaning |
 |-------|---------|
 | `ready-for-triage` | Applied by the post-script to proposal issues so they enter the [triage](triage.md) pipeline automatically. |
+| `fullsend-no-retro` | Skips auto-triggered retro (for example PR closed). Applied by `/fs-stop retro` (or bare `/fs-stop`). Human `/fs-retro` is unaffected. |
 
 ## Configuration and extension
 

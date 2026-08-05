@@ -102,9 +102,11 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
 | Command | Where | Effect |
 |---------|-------|--------|
 | `/fs-fix` | PR comment | Triggers the fix agent on the PR |
-| `/fs-fix-stop` | PR comment | Disables the fix agent for this PR |
+| `/fs-fix-stop` | Issue or PR comment | Alias of `/fs-stop fix` — disables auto fix for this item |
+| `/fs-stop fix` | Issue or PR comment | Applies `fullsend-no-fix` |
 
 Requires write-level repository permission (admin, maintain, or write).
+`/fs-stop` / `/fs-fix-stop` also allow the issue/PR author (ADR 0054).
 
 The `/fs-fix` command accepts optional free-text instructions after the
 command. The text is passed to the agent as a human instruction, giving you
@@ -129,16 +131,17 @@ from pushing commits to your branch without your consent. You can still use
 `/fs-fix` at any time regardless of the label — the label only controls
 automatic (bot-triggered) runs.
 
-`/fs-fix-stop` adds the `fullsend-no-fix` label to the PR, preventing any
+`/fs-fix-stop` (alias of `/fs-stop fix`) adds the `fullsend-no-fix` label to the PR, preventing any
 further bot-triggered fix runs. Human-triggered `/fs-fix` commands still work.
-Remove the label or use `/fs-fix` to re-engage.
+Remove the label or use `/fs-fix` to re-engage. Prefer `/fs-stop fix` for new usage;
+`/fs-stop` with no argument stops all agents.
 
 ## Control labels
 
 | Label | Meaning |
 |-------|---------|
 | `fullsend-fix` | Enables automatic bot-triggered fix runs on human-authored PRs. Without this label, the fix agent only runs on human PRs when explicitly invoked via `/fs-fix`. Bot-authored PRs do not need this label. |
-| `fullsend-no-fix` | Prevents bot-triggered fix runs on this PR. Applied by `/fs-fix-stop`. Human `/fs-fix` commands are unaffected. Takes priority over `fullsend-fix`. |
+| `fullsend-no-fix` | Prevents bot-triggered fix runs on this PR. Applied by `/fs-fix-stop` or `/fs-stop fix`. Human `/fs-fix` commands are unaffected. Takes priority over `fullsend-fix`. |
 | `needs-human` | The fix agent is approaching its iteration cap and needs human direction. Applied automatically when a bot-triggered fix iteration reaches the warning threshold. |
 
 ## Configuration and extension

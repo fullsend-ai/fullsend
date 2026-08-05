@@ -62,14 +62,16 @@ You can control the pipeline from issue or PR comments:
 | `/fs-code` | Issue comment | Hands off to the code agent (expects `ready-to-code` or forces with human ack) |
 | `/fs-review` | PR comment | Enqueues a new review round for the current PR head |
 | `/fs-fix` | PR comment | Triggers the [fix agent](../../agents/fix.md) on the PR; accepts optional free-text instruction |
-| `/fs-fix-stop` | PR comment | Disables bot-triggered fix runs for this PR (human `/fs-fix` still works) |
+| `/fs-fix-stop` | Issue or PR comment | Alias of `/fs-stop fix` — disables bot-triggered fix runs (human `/fs-fix` still works). On an issue, the label only affects that issue (no carry-over to a later PR). |
+| `/fs-stop [agent]` | Issue or PR comment | Applies `fullsend-no-{agent}` (or all agents meaningful for this item type if omitted); skips auto-triggers. Does not cancel in-flight runs. |
 | `/fs-retro` | Issue or PR comment | Triggers a retrospective analysis of the workflow |
 
 Authorization is verified via the collaborator permission API and is
 stage-dependent: `/fs-triage` and `/fs-review` accept triage-level
-permission or higher; `/fs-code`, `/fs-fix`, `/fs-retro`, and
-`/fs-fix-stop` require write-level permission or higher (admin,
-maintain, or write). Bot-to-bot agent handoffs are not affected because
+permission or higher; `/fs-code`, `/fs-fix`, and `/fs-retro` require
+write-level permission or higher (admin, maintain, or write); `/fs-stop`
+and `/fs-fix-stop` require the same write-level permission, or authorship
+of the issue/PR (ADR 0054). Bot-to-bot agent handoffs are not affected because
 they use label-based triggers, not slash commands.
 
 ### What to expect from agent PRs
@@ -152,7 +154,7 @@ The [fix agent](../../agents/fix.md):
 3. **Verifies.** Runs the test suite and linters before committing.
 4. **Pushes a fix commit.** Posts a summary comment on the PR detailing what was fixed, what was disagreed with, and test results.
 
-After the fix commit, the review agents automatically re-review. This loop repeats until the reviewers approve, the iteration cap is reached, or a human intervenes with `/fs-fix-stop`.
+After the fix commit, the review agents automatically re-review. This loop repeats until the reviewers approve, the iteration cap is reached, or a human intervenes with `/fs-stop fix` (or `/fs-fix-stop`).
 
 For details on what the fix agent reads, what it ignores, and how URLs in instructions behave, see the [fix agent reference](../../agents/fix.md).
 
@@ -166,7 +168,11 @@ The **retro agent** ([#131](https://github.com/fullsend-ai/fullsend/issues/131))
 
 ### Stopping automation
 
-- Remove the triggering label (`ready-to-code`) to prevent the next stage from starting. Note: review is triggered automatically by PR events (`pull_request_target`), so closing the PR is the way to stop review dispatch.
+- `/fs-stop review` (or add the `fullsend-no-review` label) skips further auto-triggered review runs on a PR. `/fs-review` still works on demand.
+- `/fs-stop fix` / `/fs-fix-stop` (or `fullsend-no-fix`) skips bot-triggered fix runs.
+- `/fs-stop` with no argument applies the `fullsend-no-*` labels meaningful for that item (issue: triage/code; PR: review/fix/retro). Prioritize is slash-only and is not included.
+- Stopping agents does not cancel already-running workflow jobs.
+- Remove the triggering label (`ready-to-code`) to prevent the code stage from starting.
 - Close the issue. Agents don't act on closed issues (except `/fs-triage` which explicitly reopens).
 
 ### Restarting a stage
