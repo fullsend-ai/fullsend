@@ -606,6 +606,150 @@ func TestCreateWithRetry_NegativeAttempts(t *testing.T) {
 	assert.Contains(t, err.Error(), "maxAttempts must be >= 1")
 }
 
+func TestParseSandboxPolicy(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{
+			name:   "policy present",
+			output: "Name: test-sandbox\nStatus: Ready\nRuntime Policy: /path/to/policy.yaml\n",
+			want:   "/path/to/policy.yaml",
+		},
+		{
+			name:   "no policy field",
+			output: "Name: test-sandbox\nStatus: Ready\n",
+			want:   "",
+		},
+		{
+			name:   "empty policy value",
+			output: "Name: test-sandbox\nRuntime Policy: \nStatus: Ready\n",
+			want:   "",
+		},
+		{
+			name:   "extra whitespace",
+			output: "  Runtime Policy:   /path/to/policy.yaml  \n",
+			want:   "/path/to/policy.yaml",
+		},
+		{
+			name:   "policy among many fields",
+			output: "Name: sb\nImage: img:latest\nStatus: Ready\nRuntime Policy: base.yaml\nProviders: github\n",
+			want:   "base.yaml",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseSandboxPolicy(tt.output)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestVerifyPolicy_Match(t *testing.T) {
+	output := "Name: sb\nStatus: Ready\nRuntime Policy: /path/to/policy.yaml\n"
+	err := verifyPolicy("sb", output, "/path/to/policy.yaml")
+	assert.NoError(t, err)
+}
+
+func TestVerifyPolicy_Mismatch(t *testing.T) {
+	output := "Name: sb\nStatus: Ready\nRuntime Policy: /path/to/wrong.yaml\n"
+	err := verifyPolicy("sb", output, "/path/to/policy.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "policy mismatch")
+	assert.Contains(t, err.Error(), "/path/to/wrong.yaml")
+	assert.Contains(t, err.Error(), "/path/to/policy.yaml")
+}
+
+func TestVerifyPolicy_NoPolicyRequested(t *testing.T) {
+	output := "Name: sb\nStatus: Ready\n"
+	err := verifyPolicy("sb", output, "")
+	assert.NoError(t, err)
+}
+
+func TestVerifyPolicy_PolicyNotReported(t *testing.T) {
+	output := "Name: sb\nStatus: Ready\n"
+	err := verifyPolicy("sb", output, "/path/to/policy.yaml")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no runtime policy reported")
+}
+
+func TestCreateOnce_PolicyMatch(t *testing.T) {
+	dir := t.TempDir()
+	script := `#!/bin/sh
+if [ "$2" = "create" ]; then exit 0; fi
+if [ "$2" = "get" ]; then
+  echo "Name: test-sandbox"
+  echo "Status: Ready"
+  echo "Runtime Policy: /path/to/policy.yaml"
+  exit 0
+fi
+exit 1
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := createOnce("test-sandbox", nil, "", "/path/to/policy.yaml", 10*time.Second)
+	assert.NoError(t, err)
+}
+
+func TestCreateOnce_PolicyMismatch(t *testing.T) {
+	dir := t.TempDir()
+	script := `#!/bin/sh
+if [ "$2" = "create" ]; then exit 0; fi
+if [ "$2" = "get" ]; then
+  echo "Name: test-sandbox"
+  echo "Status: Ready"
+  echo "Runtime Policy: /path/to/wrong.yaml"
+  exit 0
+fi
+exit 1
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := createOnce("test-sandbox", nil, "", "/path/to/policy.yaml", 10*time.Second)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "policy mismatch")
+}
+
+func TestCreateOnce_NoPolicyRequested(t *testing.T) {
+	dir := t.TempDir()
+	script := `#!/bin/sh
+if [ "$2" = "create" ]; then exit 0; fi
+if [ "$2" = "get" ]; then
+  echo "Name: test-sandbox"
+  echo "Status: Ready"
+  exit 0
+fi
+exit 1
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := createOnce("test-sandbox", nil, "", "", 10*time.Second)
+	assert.NoError(t, err)
+}
+
+func TestCreateOnce_PolicyNotReported(t *testing.T) {
+	dir := t.TempDir()
+	script := `#!/bin/sh
+if [ "$2" = "create" ]; then exit 0; fi
+if [ "$2" = "get" ]; then
+  echo "Name: test-sandbox"
+  echo "Status: Ready"
+  exit 0
+fi
+exit 1
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := createOnce("test-sandbox", nil, "", "/path/to/policy.yaml", 10*time.Second)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no runtime policy reported")
+}
+
 func TestEffectiveReadyTimeout_CappedAtMax(t *testing.T) {
 	got := effectiveReadyTimeout(999 * time.Second)
 	assert.Equal(t, maxReadyTimeout, got)
