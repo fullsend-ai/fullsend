@@ -8,6 +8,14 @@ import (
 // ansiEscRe matches ANSI CSI sequences, OSC sequences, and charset designators.
 var ansiEscRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][A-Z0-9]`)
 
+// SanitizeOutput strips ANSI escape sequences, control characters, and GHA
+// workflow command markers from untrusted sandbox output. Callers outside
+// this package need it wherever agent-controlled transcript text reaches a
+// new sink (telemetry span status, annotations, rendered output).
+func SanitizeOutput(s string) string {
+	return sanitizeOutput(s)
+}
+
 // sanitizeOutput strips ANSI escape sequences, control characters, and GHA
 // workflow command markers from untrusted sandbox output.
 func sanitizeOutput(s string) string {

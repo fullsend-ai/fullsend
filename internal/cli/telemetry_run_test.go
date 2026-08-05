@@ -491,6 +491,14 @@ func TestTruncateStatusMsg(t *testing.T) {
 	got = truncateStatusMsg(straddle)
 	assert.True(t, utf8.ValidString(got), "truncation must land on a rune boundary")
 	assert.True(t, strings.HasSuffix(got, "…"))
+
+	// Invalid UTF-8 must be repaired at any length — a short malformed
+	// message never reaches the exporter untouched.
+	short := "bad\xff\xfebytes"
+	require.False(t, utf8.ValidString(short))
+	got = truncateStatusMsg(short)
+	assert.True(t, utf8.ValidString(got), "short strings are validated too")
+	assert.Equal(t, "badbytes", got)
 }
 
 // TestFinalizeAgentSpan pins the finalized agent span as exported (#5361):
@@ -523,6 +531,22 @@ func TestFinalizeAgentSpan(t *testing.T) {
 		attrs := attrsOf(s)
 		assert.Equal(t, int64(0), attrs["exit_code"].AsInt64(), "exit_code stays the raw process exit")
 		assert.True(t, attrs["fullsend.transcript_error"].AsBool())
+	})
+
+	t.Run("transcript error records full text as an event", func(t *testing.T) {
+		long := "API Error: " + strings.Repeat("payload ", 60)
+		s := newRecorded(nil, 0, long)
+		require.Greater(t, len(long), maxSpanStatusMsgLen, "fixture must exceed the status cap")
+		assert.Less(t, len(s.Status.Description), len(long), "status description is capped")
+		var found string
+		for _, e := range s.Events {
+			for _, kv := range e.Attributes {
+				if kv.Key == "exception.message" {
+					found = kv.Value.AsString()
+				}
+			}
+		}
+		assert.Equal(t, long, found, "the event carries the untruncated message")
 	})
 
 	t.Run("runtime error records exception event", func(t *testing.T) {

@@ -1553,9 +1553,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				// ErrorMessage can be empty (the transcript result field is
 				// omitempty); substitute the emitTranscriptErrors fallback so
 				// the span status never reads Ok for a transcript failure.
-				transcriptErrMsg = te.ErrorMessage
+				// Both fields are agent-controlled and reach a new export
+				// sink here, so they get the same sanitization the GHA
+				// annotation path applies.
+				transcriptErrMsg = agentruntime.SanitizeOutput(te.ErrorMessage)
 				if transcriptErrMsg == "" {
-					transcriptErrMsg = fmt.Sprintf("agent terminated with error (subtype: %s)", te.Subtype)
+					transcriptErrMsg = fmt.Sprintf("agent terminated with error (subtype: %s)", agentruntime.SanitizeOutput(te.Subtype))
 				}
 			}
 		}
@@ -2397,11 +2400,14 @@ func telemetryExitCode(lastExitCode int, runErr error) int {
 // message cannot bloat every export of the span.
 const maxSpanStatusMsgLen = 256
 
-// truncateStatusMsg trims a status description to maxSpanStatusMsgLen. If
-// truncated, walks back to a valid UTF-8 rune boundary before appending the
-// ellipsis — an invalid-UTF-8 status fails proto marshaling of the entire
-// OTLP batch, silently dropping every span in it.
+// truncateStatusMsg repairs invalid UTF-8 and trims a status description to
+// maxSpanStatusMsgLen, walking back to a rune boundary before appending the
+// ellipsis. Both steps matter: an invalid-UTF-8 status fails proto marshaling
+// of the entire OTLP batch, silently dropping every span in it, and the
+// source text (a wrapped command error, a transcript payload) can be invalid
+// at any length.
 func truncateStatusMsg(s string) string {
+	s = strings.ToValidUTF8(s, "")
 	if len(s) <= maxSpanStatusMsgLen {
 		return s
 	}
@@ -2418,8 +2424,13 @@ func truncateStatusMsg(s string) string {
 // the raw process exit and fullsend.transcript_error marks the override.
 func finalizeAgentSpan(span trace.Span, runErr error, iteration, exitCode int, system string, m *agentruntime.RunMetrics, transcriptErr string) {
 	span.SetAttributes(agentSpanEndAttrs(iteration, exitCode, system, m)...)
-	if runErr != nil {
+	switch {
+	case runErr != nil:
 		span.RecordError(runErr)
+	case transcriptErr != "":
+		// The status description is capped; this event carries the full
+		// text so a verbose API error payload survives export.
+		span.RecordError(errors.New(transcriptErr))
 	}
 	if transcriptErr != "" {
 		span.SetAttributes(attribute.Bool("fullsend.transcript_error", true))
