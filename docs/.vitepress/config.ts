@@ -1,10 +1,13 @@
-import { defineConfig } from "vitepress";
+import { defineConfig } from "@lando/vitepress-theme-default-plus/config";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+const version = process.env.VPL_MVB_VERSION ?? "dev";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const docsDir = path.resolve(__dirname, "..");
+const resolve = (pkg: string) => fileURLToPath(import.meta.resolve(pkg));
 
 /** Non-content entry: template placeholder or repo-metadata (ALL-CAPS) name. */
 function isNonContent(entry: string): boolean {
@@ -45,91 +48,6 @@ function getMarkdownFiles(dir: string, base: string): { text: string; link: stri
   return items;
 }
 
-// Escape Vue-incompatible syntax ({ }, {{ }}, <non-HTML-tags>) in markdown
-// before markdown-it processes it. Code fence tracking uses backtick-count
-// matching per CommonMark spec to correctly handle nested fences.
-function escapeVueSyntax(src: string): string {
-  const lines = src.split("\n");
-  let fenceLen = 0;
-  let fenceChar = "";
-  return lines
-    .map((line) => {
-      const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})/);
-      if (fenceMatch) {
-        const ch = fenceMatch[1][0];
-        const len = fenceMatch[1].length;
-        if (fenceLen === 0) {
-          fenceLen = len;
-          fenceChar = ch;
-          return line;
-        }
-        if (ch === fenceChar && len >= fenceLen && line.trim() === ch.repeat(len)) {
-          fenceLen = 0;
-          fenceChar = "";
-          return line;
-        }
-        return line;
-      }
-      if (fenceLen > 0) return line;
-      return escapeLine(line);
-    })
-    .join("\n");
-}
-
-const KNOWN_TAGS =
-  /^<\/?(?:a|abbr|address|area|article|aside|audio|b|base|bdi|bdo|blockquote|body|br|button|canvas|caption|cite|code|col|colgroup|data|datalist|dd|del|details|dfn|dialog|div|dl|dt|em|embed|fieldset|figcaption|figure|footer|form|h[1-6]|head|header|hgroup|hr|html|i|iframe|img|input|ins|kbd|label|legend|li|link|main|map|mark|menu|meta|meter|nav|noscript|object|ol|optgroup|option|output|p|param|picture|pre|progress|q|rp|rt|ruby|s|samp|script|search|section|select|slot|small|source|span|strong|style|sub|summary|sup|table|tbody|td|template|textarea|tfoot|th|thead|time|title|tr|track|u|ul|var|video|wbr|svg|path|g|circle|rect|line|polyline|polygon|text|defs|use|symbol)[\s>/!]/i;
-
-function escapeLine(line: string): string {
-  let result = "";
-  let i = 0;
-  while (i < line.length) {
-    if (line[i] === "`") {
-      let runLen = 0;
-      while (i + runLen < line.length && line[i + runLen] === "`") runLen++;
-      let found = -1;
-      let j = i + runLen;
-      while (j < line.length) {
-        if (line[j] === "`") {
-          let closeLen = 0;
-          while (j + closeLen < line.length && line[j + closeLen] === "`") closeLen++;
-          if (closeLen === runLen) {
-            found = j;
-            break;
-          }
-          j += closeLen;
-        } else {
-          j++;
-        }
-      }
-      if (found !== -1) {
-        result += line.slice(i, found + runLen);
-        i = found + runLen;
-      } else {
-        result += "`".repeat(runLen);
-        i += runLen;
-      }
-    } else if (line[i] === "{") {
-      result += "&#123;";
-      i++;
-    } else if (line[i] === "}") {
-      result += "&#125;";
-      i++;
-    } else if (line[i] === "<") {
-      const rest = line.slice(i);
-      if (KNOWN_TAGS.test(rest) || /^<!--/.test(rest)) {
-        result += "<";
-      } else {
-        result += "&lt;";
-      }
-      i++;
-    } else {
-      result += line[i];
-      i++;
-    }
-  }
-  return result;
-}
-
 export default defineConfig({
   title: "Fullsend",
   description: "Autonomous SDLC agents for your codebase",
@@ -161,13 +79,17 @@ export default defineConfig({
   ],
 
   srcExclude: ["**/agents/icons/**", "**/testing/**"],
-
   ignoreDeadLinks: true,
 
   themeConfig: {
     logo: "/img/logo.png",
     logoLink: { link: "https://fullsend.sh", target: "_self" },
     siteTitle: "Fullsend",
+
+    multiVersionBuild: {
+      satisfies: ">=0.36.0",
+      build: "dev",
+    },
 
     nav: [
       { text: "Docs", link: "/guides/getting-started/", activeMatch: "^/(?!cli/)" },
@@ -319,6 +241,26 @@ export default defineConfig({
       ],
     },
 
+    sidebarEnder: {
+      text: version,
+      collapsed: true,
+      items: [
+        {
+          text: "Other Doc Versions",
+          items: [
+            { rel: "mvb", text: "stable", target: "_blank", link: "/stable/" },
+            { rel: "mvb", text: "edge", target: "_blank", link: "/edge/" },
+            { rel: "mvb", text: "dev", target: "_blank", link: "/dev/" },
+            { text: "<strong>see all versions</strong>", link: "/v/" },
+          ],
+        },
+        {
+          text: "Other Releases",
+          link: "https://github.com/fullsend-ai/fullsend/releases",
+        },
+      ],
+    },
+
     socialLinks: [{ icon: "github", link: "https://github.com/fullsend-ai/fullsend" }],
 
     editLink: {
@@ -352,33 +294,11 @@ export default defineConfig({
             new URL("./theme/components/VPLocalSearchBox.vue", import.meta.url),
           ),
         },
-        {
-          find: "vue/server-renderer",
-          replacement: path.resolve(
-            __dirname,
-            "..",
-            "..",
-            "node_modules",
-            "vue",
-            "server-renderer",
-            "index.mjs",
-          ),
-        },
-        {
-          find: "vue",
-          replacement: path.resolve(__dirname, "..", "..", "node_modules", "vue"),
-        },
+        { find: "vue/server-renderer", replacement: resolve("vue/server-renderer") },
+        { find: "vue", replacement: resolve("vue") },
         {
           find: "mermaid",
-          replacement: path.resolve(
-            __dirname,
-            "..",
-            "..",
-            "node_modules",
-            "mermaid",
-            "dist",
-            "mermaid.esm.mjs",
-          ),
+          replacement: path.join(path.dirname(resolve("mermaid")), "mermaid.esm.mjs"),
         },
       ],
       // Prevent VitePress SSR from resolving CJS packages in the
@@ -395,15 +315,7 @@ export default defineConfig({
     shikiSetup: async (shiki) => {
       await shiki.loadLanguage("toml");
     },
-    preConfig: (md) => {
-      const defaultParse = md.parse.bind(md);
-      md.parse = (src: string, env: Record<string, unknown>) => {
-        return defaultParse(escapeVueSyntax(src), env);
-      };
-    },
-    // Auto-add v-pre to inline code so `{{ }}` inside backticks is safe.
-    // Recommended by VitePress maintainer brc-dd:
-    // https://github.com/vuejs/vitepress/discussions/3724
+
     config: (md) => {
       const defaultCodeInline = md.renderer.rules.code_inline!;
       md.renderer.rules.code_inline = (tokens, idx, options, env, self) => {
