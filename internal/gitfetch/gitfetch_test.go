@@ -24,9 +24,16 @@ func testGitEnv() []string {
 		"GIT_AUTHOR_EMAIL=test@test.com",
 		"GIT_COMMITTER_NAME=test",
 		"GIT_COMMITTER_EMAIL=test@test.com",
-		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_COUNT=2",
 		"GIT_CONFIG_KEY_0=commit.gpgsign",
 		"GIT_CONFIG_VALUE_0=false",
+		// Disable git's detached background maintenance (repack,
+		// pack-objects, multi-pack-index) triggered by commands like
+		// `commit`. Without this, the background process can still be
+		// writing to .git when t.TempDir() cleanup runs, causing
+		// "directory not empty" unlink errors.
+		"GIT_CONFIG_KEY_1=maintenance.auto",
+		"GIT_CONFIG_VALUE_1=false",
 	}
 }
 
