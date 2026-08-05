@@ -2310,6 +2310,31 @@ func TestPostScriptEnv_NoSchemaAppendedWhenNoValidationLoop(t *testing.T) {
 	}
 }
 
+func TestAgentTimingEnv_DefaultTimeout(t *testing.T) {
+	env := agentTimingEnv(0, 25*time.Minute)
+	assert.Contains(t, env, "FULLSEND_TIMEOUT_SECONDS=1800")
+	assert.Contains(t, env, "FULLSEND_AGENT_ELAPSED_SECONDS=1500")
+}
+
+func TestAgentTimingEnv_CustomTimeout(t *testing.T) {
+	env := agentTimingEnv(35, 34*time.Minute+30*time.Second)
+	assert.Contains(t, env, "FULLSEND_TIMEOUT_SECONDS=2100")
+	assert.Contains(t, env, "FULLSEND_AGENT_ELAPSED_SECONDS=2070")
+}
+
+func TestAgentTimingEnv_ShortRun(t *testing.T) {
+	env := agentTimingEnv(30, 5*time.Minute)
+	assert.Contains(t, env, "FULLSEND_TIMEOUT_SECONDS=1800")
+	assert.Contains(t, env, "FULLSEND_AGENT_ELAPSED_SECONDS=300")
+}
+
+func TestAgentTimingEnv_AlwaysTwoEntries(t *testing.T) {
+	env := agentTimingEnv(10, 0)
+	require.Len(t, env, 2, "agentTimingEnv should always return exactly two entries")
+	assert.Contains(t, env, "FULLSEND_TIMEOUT_SECONDS=600")
+	assert.Contains(t, env, "FULLSEND_AGENT_ELAPSED_SECONDS=0")
+}
+
 // writeValScript creates a validation script at dir/name that exits 0 if a
 // marker file named "pass" exists in the script's working directory, and
 // exits 1 otherwise. Returns the absolute path to the script.

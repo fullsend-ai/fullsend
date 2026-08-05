@@ -1012,6 +1012,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// the correct iteration's output rather than blindly taking the last.
 	var validatedIterNum int
 
+	// lastAgentElapsed records the wall-clock duration of the most recent
+	// agent iteration. The post-script defer uses it (via agentTimingEnv)
+	// to expose FULLSEND_TIMEOUT_SECONDS and FULLSEND_AGENT_ELAPSED_SECONDS,
+	// enabling post-scripts to distinguish "agent deliberately chose not to
+	// produce code" from "agent ran out of time." See #5075.
+	var lastAgentElapsed time.Duration
+
 	// Download-dir cleanup is registered first so LIFO runs it last —
 	// after the post-script defer has finished using it.
 	hostRepositoryDownloadDir := filepath.Join(os.TempDir(), sandboxName)
@@ -1102,6 +1109,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if postValidatedIterDir != "" {
 				postCmd.Env = append(postCmd.Env, fmt.Sprintf("FULLSEND_VALIDATED_ITERATION_DIR=%s", postValidatedIterDir))
 			}
+			// Expose agent timing so the post-script can detect timeout
+			// exhaustion and report it as a failure rather than success (#5075).
+			postCmd.Env = append(postCmd.Env, agentTimingEnv(h.TimeoutMinutes, lastAgentElapsed)...)
 			postCmd.Stdout = os.Stdout
 			postCmd.Stderr = os.Stderr
 			if err := postCmd.Run(); err != nil {
@@ -1477,6 +1487,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			OutputPath:    filepath.Join(iterDir, "output.jsonl"),
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
+		lastAgentElapsed = time.Since(agentStart)
 
 		agentSpan.SetAttributes(agentSpanEndAttrs(iteration, exitCode, rt.System(), &metrics)...)
 		if runErr != nil {
@@ -2460,6 +2471,26 @@ func postScriptEnv(h *harness.Harness, traceparent string) []string {
 		env = append(env, fmt.Sprintf("FULLSEND_OUTPUT_SCHEMA=%s", h.ValidationLoop.Schema))
 	}
 	return env
+}
+
+// agentTimingEnv returns environment entries that expose the agent's configured
+// timeout and actual elapsed time to the post-script. Post-scripts use these to
+// distinguish "agent deliberately chose not to produce code" from "agent ran
+// out of time" — the latter should not be reported as success (#5075).
+//
+//   - FULLSEND_TIMEOUT_SECONDS: the effective timeout in seconds (harness
+//     timeout_minutes converted, or 30 minutes when unset).
+//   - FULLSEND_AGENT_ELAPSED_SECONDS: the wall-clock duration of the most
+//     recent agent iteration, in seconds.
+func agentTimingEnv(timeoutMinutes int, elapsed time.Duration) []string {
+	effectiveTimeout := timeoutMinutes
+	if effectiveTimeout == 0 {
+		effectiveTimeout = 30 // match the default in the run loop
+	}
+	return []string{
+		fmt.Sprintf("FULLSEND_TIMEOUT_SECONDS=%d", effectiveTimeout*60),
+		fmt.Sprintf("FULLSEND_AGENT_ELAPSED_SECONDS=%d", int(elapsed.Seconds())),
+	}
 }
 
 // validationEnv builds the extra environment entries for the validation
