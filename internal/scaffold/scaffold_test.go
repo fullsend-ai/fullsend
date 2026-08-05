@@ -78,9 +78,9 @@ func TestShimWorkflowCallTemplateContent(t *testing.T) {
 	s := string(content)
 	// yamllint document-start rule requires --- at the top
 	assert.True(t, strings.HasPrefix(s, "---\n"), "shim workflow must start with YAML document start marker")
-	// ADR 34: shim has 2 jobs (dispatch + stop-fix), not per-stage jobs
+	// ADR 34: shim has 2 jobs (dispatch + stop-agent), not per-stage jobs
 	assert.Contains(t, s, "dispatch:")
-	assert.Contains(t, s, "stop-fix:")
+	assert.Contains(t, s, "stop-agent:")
 	assert.Contains(t, s, "event_action:")
 	assert.Contains(t, s, "id-token: write")
 	assert.Contains(t, s, "__ORG__/.fullsend/.github/workflows/dispatch.yml@main")
@@ -94,9 +94,10 @@ func TestShimWorkflowCallTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "issues:")
 	// Bot filter
 	assert.Contains(t, s, "comment.user.type != 'Bot'")
-	// stop-fix authorization
+	// stop-agent authorization + commands
+	assert.Contains(t, s, "/fs-stop")
 	assert.Contains(t, s, "/fs-fix-stop")
-	assert.Contains(t, s, "fullsend-no-fix")
+	assert.Contains(t, s, "fullsend-no-")
 	// Per-stage jobs removed
 	assert.NotContains(t, s, "dispatch-triage")
 	assert.NotContains(t, s, "dispatch-code")
@@ -120,9 +121,9 @@ func TestShimWorkflowCallTemplateContent(t *testing.T) {
 			Dispatch struct {
 				Permissions map[string]string `yaml:"permissions"`
 			} `yaml:"dispatch"`
-			StopFix struct {
+			StopAgent struct {
 				Permissions map[string]string `yaml:"permissions"`
-			} `yaml:"stop-fix"`
+			} `yaml:"stop-agent"`
 		} `yaml:"jobs"`
 	}
 	require.NoError(t, yaml.Unmarshal(content, &wc))
@@ -149,12 +150,12 @@ func TestShimWorkflowCallTemplateContent(t *testing.T) {
 	assert.NotEqual(t, "write", wc.Jobs.Dispatch.Permissions["pull-requests"],
 		"workflow-call dispatch must not have pull-requests: write")
 
-	// Stop-fix job permissions
+	// Stop-agent job permissions (label + comment only; no cancel)
 	assert.Equal(t, map[string]string{
 		"contents":      "read",
 		"issues":        "write",
 		"pull-requests": "write",
-	}, wc.Jobs.StopFix.Permissions, "stop-fix job permissions")
+	}, wc.Jobs.StopAgent.Permissions, "stop-agent job permissions")
 }
 
 func TestShimPerRepoTemplateContent(t *testing.T) {
@@ -163,7 +164,7 @@ func TestShimPerRepoTemplateContent(t *testing.T) {
 	s := string(content)
 	assert.True(t, strings.HasPrefix(s, "---\n"), "per-repo shim must start with YAML document start marker")
 	assert.Contains(t, s, "dispatch:")
-	assert.Contains(t, s, "stop-fix:")
+	assert.Contains(t, s, "stop-agent:")
 	assert.Contains(t, s, "__REUSABLE_DISPATCH__")
 	assert.Contains(t, s, "install_mode: per-repo")
 	// Per-role concurrency lives in reusable-dispatch.yml, not a monolithic shim group (#2452).
@@ -178,9 +179,9 @@ func TestShimPerRepoTemplateContent(t *testing.T) {
 			Dispatch struct {
 				Permissions map[string]string `yaml:"permissions"`
 			} `yaml:"dispatch"`
-			StopFix struct {
+			StopAgent struct {
 				Permissions map[string]string `yaml:"permissions"`
-			} `yaml:"stop-fix"`
+			} `yaml:"stop-agent"`
 		} `yaml:"jobs"`
 	}
 	require.NoError(t, yaml.Unmarshal(content, &pr))
@@ -202,20 +203,20 @@ func TestShimPerRepoTemplateContent(t *testing.T) {
 		"pull-requests": "write",
 	}, pr.Jobs.Dispatch.Permissions, "dispatch job permissions")
 
-	// Stop-fix job permissions
+	// Stop-agent job permissions
 	assert.Equal(t, map[string]string{
 		"contents":      "read",
 		"issues":        "write",
 		"pull-requests": "write",
-	}, pr.Jobs.StopFix.Permissions, "stop-fix job permissions")
+	}, pr.Jobs.StopAgent.Permissions, "stop-agent job permissions")
 }
 
-// TestShimStopFixAuthorization verifies the stop-fix job authorizes the
-// /fs-fix-stop command via the collaborator permission API (ADR 0054) rather
-// than author_association. See issue #5421: author_association grants
+// TestShimStopAgentAuthorization verifies the stop-agent job authorizes
+// /fs-stop (and /fs-fix-stop) via the collaborator permission API (ADR 0054)
+// rather than author_association. See issue #5421: author_association grants
 // CONTRIBUTOR to anyone with a single merged PR, which let an unauthorized
-// external contributor disable the fix agent on another user's PR.
-func TestShimStopFixAuthorization(t *testing.T) {
+// external contributor disable agents on another user's PR.
+func TestShimStopAgentAuthorization(t *testing.T) {
 	for _, tmpl := range []string{
 		"templates/shim-workflow-call.yaml",
 		"templates/shim-per-repo.yaml",
@@ -228,23 +229,23 @@ func TestShimStopFixAuthorization(t *testing.T) {
 			// CONTRIBUTOR must not gate any command — it is granted to anyone
 			// with a single merged PR (the DoS vector from #5421).
 			assert.NotContains(t, s, "CONTRIBUTOR",
-				"stop-fix must not authorize based on the CONTRIBUTOR association")
+				"stop-agent must not authorize based on the CONTRIBUTOR association")
 
 			// The label step must call the collaborator permission API and
 			// require an admin|maintain|write role (ADR 0054).
 			assert.Contains(t, s, "collaborators/$COMMENT_USER_LOGIN/permission",
-				"stop-fix must check permission via the collaborator API")
+				"stop-agent must check permission via the collaborator API")
 			assert.Contains(t, s, "admin|maintain|write",
-				"stop-fix must require admin/maintain/write access")
+				"stop-agent must require admin/maintain/write access")
 
-			// The PR author retains an escape hatch on their own PR regardless
-			// of their permission level.
+			// The PR/issue author retains an escape hatch on their own item
+			// regardless of their permission level.
 			assert.Contains(t, s, `"$COMMENT_USER_LOGIN" == "$ISSUE_USER_LOGIN"`,
-				"stop-fix must allow the PR author")
+				"stop-agent must allow the issue/PR author")
 
 			// Unauthorized callers exit before the label is applied.
 			assert.Contains(t, s, `if [[ "$authorized" != "true" ]]; then`,
-				"stop-fix must gate labeling on the authorization result")
+				"stop-agent must gate labeling on the authorization result")
 
 			// The authorization gate must precede the label mutation, not just
 			// coexist with it — moving the gate below the label would fail open.
@@ -258,17 +259,17 @@ func TestShimStopFixAuthorization(t *testing.T) {
 			// The coarse job-level if: must not resurrect author_association
 			// gating (the false-negative ADR 0054 exists to avoid).
 			assert.NotContains(t, s, "author_association ==",
-				"stop-fix job if: must not gate on author_association")
+				"stop-agent job if: must not gate on author_association")
 		})
 	}
 }
 
-// TestShimStopFixAuthorizationRuntime executes the stop-fix job's embedded
+// TestShimStopAgentAuthorizationRuntime executes the stop-agent job's embedded
 // bash against a stubbed `gh` binary to verify the authorization logic at
 // runtime (not just by static string matching): the PR-author escape hatch,
 // approval for write+ collaborators, denial for read-only collaborators, and
 // fail-closed behavior when the permission API errors.
-func TestShimStopFixAuthorizationRuntime(t *testing.T) {
+func TestShimStopAgentAuthorizationRuntime(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not available")
 	}
@@ -279,36 +280,42 @@ func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 		require.NoError(t, err)
 		var doc struct {
 			Jobs struct {
-				StopFix struct {
+				StopAgent struct {
 					Steps []struct {
 						Run string `yaml:"run"`
 					} `yaml:"steps"`
-				} `yaml:"stop-fix"`
+				} `yaml:"stop-agent"`
 			} `yaml:"jobs"`
 		}
 		require.NoError(t, yaml.Unmarshal(content, &doc))
-		require.NotEmpty(t, doc.Jobs.StopFix.Steps, "stop-fix must have a step")
-		run := doc.Jobs.StopFix.Steps[0].Run
-		require.NotEmpty(t, run, "stop-fix step must have a run script")
+		require.NotEmpty(t, doc.Jobs.StopAgent.Steps, "stop-agent must have a step")
+		run := doc.Jobs.StopAgent.Steps[0].Run
+		require.NotEmpty(t, run, "stop-agent step must have a run script")
 		return run
 	}
 
 	// runScenario runs the script with a stub gh that logs its invocations and
 	// returns the given role (or fails when role == "FAIL"). It returns the
-	// combined output and whether the label mutation (`gh pr edit`) ran.
-	runScenario := func(t *testing.T, script, commentUser, issueUser, role string) (string, bool) {
+	// combined output and whether a label mutation (`gh pr edit` / `gh issue edit`) ran.
+	runScenario := func(t *testing.T, script, commentUser, issueUser, role, commentBody, issueIsPR string) (string, bool) {
 		t.Helper()
 		dir := t.TempDir()
 		logPath := filepath.Join(dir, "gh.log")
 		stub := "#!/usr/bin/env bash\n" +
 			"echo \"$@\" >> \"$GH_STUB_LOG\"\n" +
+			"# Surface --body-file contents so tests can assert comment text.\n" +
+			"for ((i=1; i<=$#; i++)); do\n" +
+			"  if [[ \"${!i}\" == \"--body-file\" ]]; then\n" +
+			"    j=$((i+1)); cat \"${!j}\" >> \"$GH_STUB_LOG\"\n" +
+			"  fi\n" +
+			"done\n" +
 			"if [[ \"$1\" == \"api\" ]]; then\n" +
 			"  if [[ \"$GH_STUB_ROLE\" == \"FAIL\" ]]; then echo 'simulated api failure' >&2; exit 1; fi\n" +
 			"  echo \"$GH_STUB_ROLE\"; exit 0\n" +
 			"fi\n" +
 			"exit 0\n"
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "gh"), []byte(stub), 0o755))
-		scriptPath := filepath.Join(dir, "stop-fix.sh")
+		scriptPath := filepath.Join(dir, "stop-agent.sh")
 		require.NoError(t, os.WriteFile(scriptPath, []byte(script), 0o644))
 
 		cmd := exec.Command("bash", scriptPath)
@@ -318,16 +325,19 @@ func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 			"GH_STUB_ROLE="+role,
 			"COMMENT_USER_LOGIN="+commentUser,
 			"ISSUE_USER_LOGIN="+issueUser,
+			"COMMENT_BODY="+commentBody,
+			"ISSUE_IS_PR="+issueIsPR,
 			"REPO=octo/repo",
-			"PR_NUMBER=1",
+			"ISSUE_NUMBER=1",
 			"GH_TOKEN=stub",
 		)
 		out, err := cmd.CombinedOutput()
 		require.NoError(t, err, "script must exit 0 (fail-closed, not error): %s", out)
 
 		logBytes, _ := os.ReadFile(logPath)
-		labeled := strings.Contains(string(logBytes), "pr edit")
-		return string(out) + string(logBytes), labeled
+		log := string(logBytes)
+		labeled := strings.Contains(log, "pr edit") || strings.Contains(log, "issue edit")
+		return string(out) + log, labeled
 	}
 
 	for _, tmpl := range []string{
@@ -338,41 +348,116 @@ func TestShimStopFixAuthorizationRuntime(t *testing.T) {
 			script := extractRun(t, tmpl)
 
 			t.Run("pr author escape hatch", func(t *testing.T) {
-				// Author with only read access can still stop on their own PR,
-				// and the permission API is never consulted.
-				out, labeled := runScenario(t, script, "alice", "alice", "read")
-				assert.True(t, labeled, "PR author must be able to stop the fix agent")
+				out, labeled := runScenario(t, script, "alice", "alice", "read", "/fs-fix-stop", "true")
+				assert.True(t, labeled, "PR author must be able to stop agents")
 				assert.NotContains(t, out, "api repos/", "author hatch must skip the permission API")
 			})
 
 			t.Run("write collaborator authorized", func(t *testing.T) {
-				_, labeled := runScenario(t, script, "bob", "alice", "write")
+				_, labeled := runScenario(t, script, "bob", "alice", "write", "/fs-fix-stop", "true")
 				assert.True(t, labeled, "write-access collaborator must be authorized")
 			})
 
 			t.Run("read collaborator denied", func(t *testing.T) {
-				out, labeled := runScenario(t, script, "bob", "alice", "read")
+				out, labeled := runScenario(t, script, "bob", "alice", "read", "/fs-fix-stop", "true")
 				assert.False(t, labeled, "read-only collaborator must be denied")
 				assert.Contains(t, out, "not authorized")
 			})
 
 			t.Run("api failure fails closed", func(t *testing.T) {
-				out, labeled := runScenario(t, script, "bob", "alice", "FAIL")
+				out, labeled := runScenario(t, script, "bob", "alice", "FAIL", "/fs-fix-stop", "true")
 				assert.False(t, labeled, "API failure must fail closed (deny)")
 				assert.Contains(t, out, "Permission API call failed",
 					"API failure must emit a diagnostic warning")
+			})
+
+			t.Run("fs-stop review applies single label", func(t *testing.T) {
+				out, labeled := runScenario(t, script, "alice", "alice", "write", "/fs-stop review", "true")
+				assert.True(t, labeled)
+				assert.Contains(t, out, "fullsend-no-review")
+				assert.NotContains(t, out, "fullsend-no-fix")
+			})
+
+			t.Run("bare fs-stop on PR applies PR-meaningful labels only", func(t *testing.T) {
+				out, labeled := runScenario(t, script, "alice", "alice", "write", "/fs-stop", "true")
+				assert.True(t, labeled)
+				for _, label := range []string{
+					"fullsend-no-review", "fullsend-no-fix", "fullsend-no-retro",
+				} {
+					assert.Contains(t, out, label)
+				}
+				assert.NotContains(t, out, "fullsend-no-triage")
+				assert.NotContains(t, out, "fullsend-no-code")
+				assert.NotContains(t, out, "fullsend-no-prioritize")
+			})
+
+			t.Run("bare fs-stop on issue applies issue-meaningful labels only", func(t *testing.T) {
+				out, labeled := runScenario(t, script, "alice", "alice", "write", "/fs-stop", "false")
+				assert.True(t, labeled)
+				assert.Contains(t, out, "issue edit")
+				for _, label := range []string{"fullsend-no-triage", "fullsend-no-code"} {
+					assert.Contains(t, out, label)
+				}
+				assert.NotContains(t, out, "fullsend-no-review")
+				assert.NotContains(t, out, "fullsend-no-fix")
+				assert.NotContains(t, out, "fullsend-no-retro")
+			})
+
+			t.Run("fs-stop triage on issue uses issue edit", func(t *testing.T) {
+				out, labeled := runScenario(t, script, "alice", "alice", "write", "/fs-stop triage", "false")
+				assert.True(t, labeled)
+				assert.Contains(t, out, "issue edit")
+				assert.Contains(t, out, "fullsend-no-triage")
+			})
+
+			t.Run("fs-stop fix on issue notes cross-context", func(t *testing.T) {
+				out, labeled := runScenario(t, script, "alice", "alice", "write", "/fs-stop fix", "false")
+				assert.True(t, labeled)
+				assert.Contains(t, out, "fullsend-no-fix")
+				assert.Contains(t, out, "do not carry over")
+			})
+
+			t.Run("unknown agent posts error without labeling", func(t *testing.T) {
+				out, labeled := runScenario(t, script, "alice", "alice", "write", "/fs-stop bogus", "true")
+				assert.False(t, labeled)
+				assert.Contains(t, out, "Unknown or unsupported agent")
+			})
+
+			t.Run("unknown agent on issue posts via issue comment", func(t *testing.T) {
+				out, labeled := runScenario(t, script, "alice", "alice", "write", "/fs-stop bogus", "false")
+				assert.False(t, labeled)
+				assert.Contains(t, out, "issue comment")
+				assert.Contains(t, out, "Unknown or unsupported agent")
+			})
+
+			t.Run("injection-like arg rejected without labeling", func(t *testing.T) {
+				out, labeled := runScenario(t, script, "alice", "alice", "write", `/fs-stop x";echo`, "true")
+				assert.False(t, labeled)
+				assert.Contains(t, out, "Unknown or unsupported agent")
+			})
+
+			t.Run("job if uses fromJSON for newline matchers", func(t *testing.T) {
+				raw, err := FullsendRepoFile(tmpl)
+				require.NoError(t, err)
+				s := string(raw)
+				assert.Contains(t, s, `fromJSON('"/fs-stop\n"')`)
+				assert.Contains(t, s, `fromJSON('"/fs-stop\r"')`)
+				assert.Contains(t, s, `fromJSON('"/fs-fix-stop\n"')`)
+				assert.Contains(t, s, `fromJSON('"/fs-fix-stop\r"')`)
+				assert.NotContains(t, s, `startsWith(github.event.comment.body, '/fs-stop\n')`)
+				assert.NotContains(t, s, `startsWith(github.event.comment.body, '/fs-stop\r')`)
 			})
 		})
 	}
 }
 
-// TestManagedShimStopFixNotStale guards against drift between the shim
+// TestManagedShimStopAgentNotStale guards against drift between the shim
 // template and this repo's own rendered managed workflow
 // (.github/workflows/fullsend.yaml). That file is generated from
 // shim-workflow-call.yaml at deploy time; if a template security fix lands
 // without regenerating it, the repo keeps running the vulnerable logic. See
 // issue #5421.
-func TestManagedShimStopFixNotStale(t *testing.T) {
+func TestManagedShimStopAgentNotStale(t *testing.T) {
 	// Walk up from the package dir to the repo root that holds the managed file.
 	dir, err := os.Getwd()
 	require.NoError(t, err)
@@ -393,6 +478,8 @@ func TestManagedShimStopFixNotStale(t *testing.T) {
 	require.NoError(t, err)
 	s := string(content)
 
+	assert.Contains(t, s, "stop-agent:",
+		"managed shim must use the generalized stop-agent job")
 	assert.NotContains(t, s, "CONTRIBUTOR",
 		"managed shim must not authorize based on the CONTRIBUTOR association")
 	assert.NotContains(t, s, "author_association ==",
@@ -403,6 +490,10 @@ func TestManagedShimStopFixNotStale(t *testing.T) {
 		"managed shim must require admin/maintain/write access")
 	assert.Contains(t, s, `"$COMMENT_USER_LOGIN" == "$ISSUE_USER_LOGIN"`,
 		"managed shim must preserve the PR-author escape hatch")
+	assert.Contains(t, s, `fromJSON('"/fs-stop\n"')`,
+		"managed shim must use fromJSON for newline command matchers")
+	assert.Contains(t, s, "VALID_BARE",
+		"managed shim must filter bare /fs-stop by issue vs PR")
 }
 
 func TestShimTriggerParity(t *testing.T) {
@@ -462,6 +553,8 @@ func TestDispatchWorkflowContent(t *testing.T) {
 	assert.Contains(t, s, "changes_requested")
 	assert.Contains(t, s, "needs-info")
 	assert.Contains(t, s, `! has_label "feature"`)
+	// Coupled needs-info re-entry must respect fullsend-no-triage (regression guard).
+	assert.Contains(t, s, `has_label "needs-info" && ! has_label "feature" && ! has_label "fullsend-no-triage"`)
 	assert.Contains(t, s, "opened|synchronize|ready_for_review")
 	// /code must only run on issues, not PRs
 	assert.Contains(t, s, "ISSUE_HAS_PR")
@@ -481,8 +574,13 @@ func TestDispatchWorkflowContent(t *testing.T) {
 	// Bot filtering
 	assert.Contains(t, s, `COMMENT_USER_TYPE`)
 	assert.Contains(t, s, `!= "Bot"`)
-	// No-fix label check (uses PR_LABELS for pull_request_review events)
+	// No-* label checks (auto paths; slash commands bypass)
 	assert.Contains(t, s, "fullsend-no-fix")
+	assert.Contains(t, s, "fullsend-no-review")
+	assert.Contains(t, s, "fullsend-no-triage")
+	assert.Contains(t, s, "fullsend-no-code")
+	assert.Contains(t, s, "fullsend-no-retro")
+	assert.Contains(t, s, "/fs-stop|/fs-fix-stop")
 	assert.Contains(t, s, "PR_LABELS")
 	// Fork PR detection
 	assert.Contains(t, s, "PR_HEAD_REPO")
