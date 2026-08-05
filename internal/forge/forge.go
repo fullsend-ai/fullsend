@@ -523,6 +523,20 @@ type Client interface {
 	DeleteIssueComment(ctx context.Context, owner, repo string, commentID int) error
 	MinimizeComment(ctx context.Context, nodeID, reason string) error
 
+	// AddIssueReaction adds an emoji reaction to an issue or pull request.
+	// content must be one of the values accepted by the forge: on GitHub,
+	// "+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes".
+	// It returns the reaction's ID, used to remove it later via
+	// DeleteIssueReaction. Unlike comments, reactions do not generate
+	// GitHub notifications, making them useful for low-noise status
+	// signaling. Returns forge.ErrNotSupported if the forge has no
+	// equivalent concept.
+	AddIssueReaction(ctx context.Context, owner, repo string, number int, content string) (id int64, err error)
+
+	// DeleteIssueReaction removes a previously added reaction by ID.
+	// Returns forge.ErrNotSupported if the forge has no equivalent concept.
+	DeleteIssueReaction(ctx context.Context, owner, repo string, number int, reactionID int64) error
+
 	// Pull request operations
 	GetPullRequestInfo(ctx context.Context, owner, repo string, number int) (*PullRequestInfo, error)
 	GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error)

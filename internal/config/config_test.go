@@ -931,6 +931,131 @@ repos: {}
 	assert.Equal(t, "on_failure", cfg.StatusNotifications().Comment.Completion)
 }
 
+// --- Reaction notification tests ---
+
+func TestParseOrgConfig_WithReactionNotifications(t *testing.T) {
+	yamlData := `
+version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles:
+    - fullsend
+  max_implementation_retries: 2
+  status_notifications:
+    reaction:
+      start: enabled
+      completion: on_failure
+agents: []
+repos: {}
+`
+	cfg, err := ParseOrgConfig([]byte(yamlData))
+	require.NoError(t, err)
+	require.NotNil(t, cfg.StatusNotifications())
+	assert.Equal(t, "enabled", cfg.StatusNotifications().Reaction.Start)
+	assert.Equal(t, "on_failure", cfg.StatusNotifications().Reaction.Completion)
+}
+
+func TestOrgConfigValidate_ValidReactionNotifications(t *testing.T) {
+	cfg := &orgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+			StatusNotifications: &StatusNotificationConfig{
+				Reaction: ReactionNotificationConfig{Start: "enabled", Completion: "disabled"},
+			},
+		},
+	}
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestOrgConfigValidate_InvalidReactionStart(t *testing.T) {
+	cfg := &orgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+			StatusNotifications: &StatusNotificationConfig{
+				Reaction: ReactionNotificationConfig{Start: "bogus"},
+			},
+		},
+	}
+	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "status_notifications.reaction.start")
+}
+
+func TestOrgConfigValidate_InvalidReactionCompletion(t *testing.T) {
+	cfg := &orgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+			StatusNotifications: &StatusNotificationConfig{
+				Reaction: ReactionNotificationConfig{Completion: "bogus"},
+			},
+		},
+	}
+	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "status_notifications.reaction.completion")
+}
+
+func TestOrgConfigValidate_OnFailureReactionCompletion(t *testing.T) {
+	cfg := &orgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+			StatusNotifications: &StatusNotificationConfig{
+				Reaction: ReactionNotificationConfig{Completion: "on_failure"},
+			},
+		},
+	}
+	assert.NoError(t, cfg.Validate(), "on_failure should be valid for reaction.completion")
+}
+
+func TestOrgConfigValidate_OnFailureReactionStart_Rejected(t *testing.T) {
+	cfg := &orgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+			StatusNotifications: &StatusNotificationConfig{
+				Reaction: ReactionNotificationConfig{Start: "on_failure"},
+			},
+		},
+	}
+	err := cfg.Validate()
+	assert.Error(t, err, "on_failure should be rejected for reaction.start")
+	assert.Contains(t, err.Error(), "status_notifications.reaction.start")
+}
+
+func TestOrgConfigMarshal_WithReactionNotifications(t *testing.T) {
+	cfg := &orgConfig{
+		Version:  "1",
+		Dispatch: DispatchConfig{Platform: "github-actions"},
+		Defaults: RepoDefaults{
+			Roles:                    []string{"fullsend"},
+			MaxImplementationRetries: 2,
+			StatusNotifications: &StatusNotificationConfig{
+				Reaction: ReactionNotificationConfig{Start: "enabled"},
+			},
+		},
+		Repos: map[string]RepoConfig{},
+	}
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "reaction:")
+	assert.Contains(t, string(data), "start: enabled")
+}
+
 func TestOrgConfigMarshal_WithStatusNotifications(t *testing.T) {
 	cfg := &orgConfig{
 		Version:  "1",
