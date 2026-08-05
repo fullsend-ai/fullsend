@@ -155,6 +155,9 @@ opt-in, OTel-native, W3C propagation) is unchanged.
 decided in [ADR 0084](0084-level-3-content-capture-activation-contract.md)
 (dual consent plus an allow-listed destination, fail-closed). The environment
 variable named here is honored with the value semantics defined there.
-Level 3 remains unimplemented until ADR 0084's preconditions are met;
+ADR 0084 also narrows the captured scope: reasoning/thinking text is **not**
+captured, so the LLM-judge use case named above is served only by prompts,
+messages, and tool activity — extending scope to reasoning requires a new
+ADR. Level 3 remains unimplemented until ADR 0084's preconditions are met;
 [ADR 0085](0085-sandbox-environment-variable-denylist.md) closes the
 sandbox-side path around this ADR's opt-in model.

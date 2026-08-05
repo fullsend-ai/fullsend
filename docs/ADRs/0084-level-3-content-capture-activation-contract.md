@@ -49,12 +49,18 @@ rather than degrading silently:
    CODEOWNERS review is the consent mechanism — which is why this knob lives
    on the harness rather than `config.yaml` under
    [ADR 0080](0080-config-yaml-vs-agent-env-var-scope.md)'s placement rule.
-3. **Allowlisted destination:** the resolved OTLP traces endpoint host must
-   appear in the `FULLSEND_CONTENT_CAPTURE_ALLOWED_ENDPOINTS` org variable,
-   following the [ADR 0082](0082-workflow-host-allow-list.md) allow-list
-   shape (default-minimal, CLI-managed, surfaced in status). With no
-   allow-list no capture request can succeed, so implementation merges
-   inert; every host addition links a recorded governance sign-off.
+3. **Allowlisted destination:** the resolved OTLP traces endpoint's host —
+   `host` or `host:port`, matched exactly and case-insensitively, no
+   wildcards and no scheme or path matching — must appear in the
+   comma-separated `FULLSEND_CONTENT_CAPTURE_ALLOWED_ENDPOINTS` org
+   variable. Unset or empty means no capture request can succeed, so
+   implementation merges inert; every host addition links a recorded
+   governance sign-off. Exact matching is deliberate: a wildcard entry
+   would let a subdomain nobody reviewed receive content.
+   [ADR 0082](0082-workflow-host-allow-list.md)'s `WORKFLOW_HOST_REPOS` is
+   the precedent for the operational shape — default-minimal, CLI-managed,
+   surfaced in status — not for these matching rules, which govern a
+   different domain.
 
 A capture request also fails closed when the secret redactor is disabled
 (`security.enabled: false` or `host_scanners.secret_redactor: false`), when

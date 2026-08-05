@@ -141,9 +141,10 @@ settings agree:
    other value fails the run.
 2. `telemetry.content_capture: true` in the agent's harness — consent is
    per-agent and reviewed like any other harness change.
-3. The OTLP traces endpoint's host listed in the
-   `FULLSEND_CONTENT_CAPTURE_ALLOWED_ENDPOINTS` org variable. Adding a host
-   is a reviewed change that records who approved content flowing there.
+3. The OTLP traces endpoint's host listed in the comma-separated
+   `FULLSEND_CONTENT_CAPTURE_ALLOWED_ENDPOINTS` org variable — `host` or
+   `host:port`, matched exactly, no wildcards. Adding a host is a reviewed
+   change that records who approved content flowing there.
 
 While any setting is absent or off, runs stay metadata-only with no error.
 A run that requests capture (settings 1 and 2 on) but cannot satisfy the
