@@ -24,6 +24,7 @@ func FullsendRepoFile(path string) ([]byte, error) {
 // embed.FS does not preserve permission bits, so we track them here.
 // TestFileModeMatchesFilesystem verifies this set stays in sync.
 var executableFiles = map[string]struct{}{
+	".github/scripts/stop-agent.sh":          {},
 	"scripts/fullsend-check-output":          {},
 	"scripts/install-precommit-tools.sh":     {},
 	"scripts/prepare-sandbox-credentials.sh": {},
