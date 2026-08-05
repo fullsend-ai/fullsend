@@ -44,18 +44,27 @@ func generateTestPEM(t *testing.T) []byte {
 
 // fakeCFWranglerRunner implements cf.WranglerRunner for CLI tests.
 type fakeCFWranglerRunner struct {
-	deployErr   error
-	deployURL   string
-	deployCalls []fakeCFDeployCall
+	deployErr    error
+	deployURL    string
+	deployCalls  []fakeCFDeployCall
+	secretCalls  []fakeCFSecretCall
+	secretPutErr error
 }
 
 type fakeCFDeployCall struct {
 	workerName   string
 	previewAlias string
+	envVars      map[string]string
 }
 
-func (f *fakeCFWranglerRunner) Deploy(_ context.Context, _ string, workerName string, previewAlias string, _ map[string]string) (string, error) {
-	f.deployCalls = append(f.deployCalls, fakeCFDeployCall{workerName: workerName, previewAlias: previewAlias})
+type fakeCFSecretCall struct {
+	workerName string
+	secretName string
+	value      []byte
+}
+
+func (f *fakeCFWranglerRunner) Deploy(_ context.Context, _ string, workerName string, previewAlias string, envVars map[string]string) (string, error) {
+	f.deployCalls = append(f.deployCalls, fakeCFDeployCall{workerName: workerName, previewAlias: previewAlias, envVars: envVars})
 	if f.deployErr != nil {
 		return "", f.deployErr
 	}
@@ -66,8 +75,13 @@ func (f *fakeCFWranglerRunner) Deploy(_ context.Context, _ string, workerName st
 	return url, nil
 }
 
-func (f *fakeCFWranglerRunner) PutSecret(context.Context, string, string, []byte) error {
-	return nil
+func (f *fakeCFWranglerRunner) PutSecret(_ context.Context, workerName, secretName string, value []byte) error {
+	f.secretCalls = append(f.secretCalls, fakeCFSecretCall{
+		workerName: workerName,
+		secretName: secretName,
+		value:      value,
+	})
+	return f.secretPutErr
 }
 
 func (f *fakeCFWranglerRunner) Delete(context.Context, string) error {
@@ -675,6 +689,203 @@ func TestMintDeployCmd_CloudflareDeployBadSourceDir(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "deploying worker")
+}
+
+func TestMintDeployCmd_CloudflareDryRunWithPemDir(t *testing.T) {
+	withCFEnvVars(t)
+
+	roles := defaultMintRoles()
+	testPEM := generateTestPEM(t)
+	pemDir := t.TempDir()
+	for _, role := range roles {
+		require.NoError(t, os.WriteFile(filepath.Join(pemDir, role+".pem"), testPEM, 0o600))
+	}
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--dry-run",
+		"--pem-dir=" + pemDir,
+	})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "Would bootstrap app set")
+	assert.Contains(t, stdout, pemDir)
+}
+
+func TestMintDeployCmd_CloudflareDryRunWithBadPemDir(t *testing.T) {
+	withCFEnvVars(t)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--dry-run",
+		"--pem-dir=/nonexistent/path",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--pem-dir")
+}
+
+func TestMintDeployCmd_CloudflareDeployWithPemDir(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	roles := defaultMintRoles()
+	testPEM := generateTestPEM(t)
+	pemDir := t.TempDir()
+	for _, role := range roles {
+		require.NoError(t, os.WriteFile(filepath.Join(pemDir, role+".pem"), testPEM, 0o600))
+	}
+
+	// Set up a fake GitHub API that handles /apps/<slug> (lookup)
+	// and /app (verify PEM). The test PEM is valid so verification
+	// passes when the server returns the matching app ID.
+	appIDCounter := 100
+	lastLookedUpID := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/app" {
+			fmt.Fprintf(w, `{"id": %d, "slug": "test-app"}`, lastLookedUpID)
+			return
+		}
+		appIDCounter++
+		lastLookedUpID = appIDCounter
+		fmt.Fprintf(w, `{"id": %d, "slug": "%s"}`, appIDCounter, r.URL.Path[len("/apps/"):])
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--pem-dir=" + pemDir,
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	// Verify ROLE_APP_IDS was set as a Worker env var during deploy.
+	require.Len(t, fake.deployCalls, 1)
+	deployEnvVars := fake.deployCalls[0].envVars
+	assert.Contains(t, deployEnvVars, "ROLE_APP_IDS",
+		"ROLE_APP_IDS should be passed as a Worker env var")
+	assert.Contains(t, deployEnvVars["ROLE_APP_IDS"], "coder",
+		"ROLE_APP_IDS should contain role names")
+
+	// Verify PEM secrets were stored via PutSecret.
+	assert.GreaterOrEqual(t, len(fake.secretCalls), len(roles),
+		"should store at least one PEM secret per role")
+	secretNames := make(map[string]bool)
+	for _, call := range fake.secretCalls {
+		secretNames[call.secretName] = true
+	}
+	// Check that known roles produced the expected secret names.
+	assert.True(t, secretNames["CODER_APP_PEM"], "expected CODER_APP_PEM secret")
+}
+
+func TestMintDeployCmd_CloudflarePreviewDeployWithPemDir(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	roles := defaultMintRoles()
+	testPEM := generateTestPEM(t)
+	pemDir := t.TempDir()
+	for _, role := range roles {
+		require.NoError(t, os.WriteFile(filepath.Join(pemDir, role+".pem"), testPEM, 0o600))
+	}
+
+	appIDCounter := 200
+	lastLookedUpID := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/app" {
+			fmt.Fprintf(w, `{"id": %d, "slug": "test-app"}`, lastLookedUpID)
+			return
+		}
+		appIDCounter++
+		lastLookedUpID = appIDCounter
+		fmt.Fprintf(w, `{"id": %d, "slug": "%s"}`, appIDCounter, r.URL.Path[len("/apps/"):])
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	fake := &fakeCFWranglerRunner{}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--preview=bt-test-42",
+		"--source-dir=" + sourceDir,
+		"--pem-dir=" + pemDir,
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	assert.Equal(t, "bt-test-42", fake.deployCalls[0].previewAlias,
+		"preview alias should be passed to deploy")
+	assert.Contains(t, fake.deployCalls[0].envVars, "ROLE_APP_IDS",
+		"ROLE_APP_IDS should be set for preview deploys too")
+
+	// PEM secrets should still be stored — they go on the durable
+	// Worker script (shared with production).
+	assert.NotEmpty(t, fake.secretCalls, "PEM secrets should be stored for preview deploys")
+}
+
+func TestMintDeployCmd_CloudflareNoWarningForPemDir(t *testing.T) {
+	withCFEnvVars(t)
+
+	// Capture stderr to verify --pem-dir does NOT produce a warning
+	// when used with --platform=cloudflare.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--pem-dir=/some/path",
+		"--dry-run",
+	})
+	// Ignore the error (dry-run may fail due to nonexistent pem-dir).
+	_ = cmd.Execute()
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	out, _ := io.ReadAll(r)
+	stderr := string(out)
+	assert.NotContains(t, stderr, "--pem-dir is a GCP flag",
+		"--pem-dir should not produce a GCP warning on cloudflare")
 }
 
 func TestMintDeployCmd_GCPDefaultPlatform(t *testing.T) {

@@ -402,11 +402,17 @@ Cloudflare mode (--platform=cloudflare):
   WASM module with a thin TypeScript adapter for I/O.
 
   Required flags: none (Worker name defaults to "fullsend-mint")
-  Optional: --worker-name, --preview=<alias>, --source-dir
+  Optional: --worker-name, --preview=<alias>, --source-dir, --pem-dir
 
   Required environment variables:
     - CLOUDFLARE_ACCOUNT_ID    Cloudflare account identifier
     - CLOUDFLARE_API_TOKEN     API token with Workers write permission
+
+  Use --pem-dir to bootstrap role credentials during deploy. The directory
+  must contain {role}.pem files (e.g. coder.pem, triage.pem, review.pem).
+  Each PEM is verified against the GitHub App API, then stored as a Worker
+  secret (e.g. CODER_APP_PEM). ROLE_APP_IDS is set as a Worker variable
+  mapping roles to their numeric GitHub App IDs.
 
   Use --preview=<alias> for ephemeral preview deploys. This runs
   'wrangler versions upload --preview-alias=<alias>' instead of
@@ -427,7 +433,7 @@ Cloudflare mode (--platform=cloudflare):
 			case "gcp":
 				return runMintDeployGCP(cmd.Context(), project, region, sourceDir, skipDeploy, dryRun, pemDir, public)
 			case "cloudflare":
-				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun)
+				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir)
 			default:
 				return fmt.Errorf("unsupported platform %q: must be \"gcp\" or \"cloudflare\"", platform)
 			}
@@ -443,7 +449,7 @@ Cloudflare mode (--platform=cloudflare):
 	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required for --platform=gcp)")
 	cmd.Flags().StringVar(&region, "region", "us-central1", "GCP region for the Cloud Function")
 	cmd.Flags().BoolVar(&skipDeploy, "skip-deploy", false, "skip code upload, reuse existing function (GCP only)")
-	cmd.Flags().StringVar(&pemDir, "pem-dir", "", "optional: directory containing {role}.pem files to bootstrap the default app set (GCP only)")
+	cmd.Flags().StringVar(&pemDir, "pem-dir", "", "optional: directory containing {role}.pem files to bootstrap the default app set")
 	cmd.Flags().BoolVar(&public, "public", false, "deploy public mint (ALLOWED_ORGS=*, permissive WIF) (GCP only)")
 
 	// Cloudflare-specific flags.
@@ -471,7 +477,6 @@ func warnIrrelevantFlags(cmd *cobra.Command, platform string) {
 			{"project", "GCP"},
 			{"region", "GCP"},
 			{"skip-deploy", "GCP"},
-			{"pem-dir", "GCP"},
 			{"public", "GCP"},
 		},
 	}
@@ -603,7 +608,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 	return nil
 }
 
-func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool) error {
+func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool, pemDir string) error {
 	if err := cf.ValidateCloudflareEnv(); err != nil {
 		return err
 	}
@@ -663,10 +668,43 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		} else {
 			printer.StepInfo("Mode: durable (persistent)")
 		}
+		if pemDir != "" {
+			if _, err := validatePEMDir(pemDir); err != nil {
+				return err
+			}
+			printer.StepInfo(fmt.Sprintf("Would bootstrap app set %q with PEMs from %s (app ID lookup and PEM verification skipped in dry-run)", appsetup.DefaultAppSet, pemDir))
+		}
 		return nil
 	}
 
 	deployCommit := resolveAndReportMintDeployCommit(printer, commitSHA, sourceDir)
+
+	// Load PEMs and discover app IDs before building config so
+	// ROLE_APP_IDS can be passed as a Worker env var during deploy.
+	var agentPEMs map[string][]byte
+	var cfEnvVars map[string]string
+	if pemDir != "" {
+		printer.StepStart(fmt.Sprintf("Loading PEMs and discovering app IDs for app set %q", appsetup.DefaultAppSet))
+		var agentAppIDs map[string]string
+		var err error
+		agentPEMs, agentAppIDs, err = loadAppSetPEMs(ctx, pemDir, appsetup.DefaultAppSet)
+		if err != nil {
+			printer.StepFail("Failed to load app set PEMs")
+			return fmt.Errorf("loading app set PEMs: %w", err)
+		}
+		printer.StepDone(fmt.Sprintf("Loaded %d role PEMs for app set %q", len(agentPEMs), appsetup.DefaultAppSet))
+
+		roleAppIDsJSON, err := json.Marshal(agentAppIDs)
+		if err != nil {
+			return fmt.Errorf("marshaling role app IDs: %w", err)
+		}
+
+		// Set ROLE_APP_IDS as an env var so the Worker receives it
+		// via --var during deploy (same path ALLOWED_ORGS uses).
+		cfEnvVars = map[string]string{
+			"ROLE_APP_IDS": string(roleAppIDsJSON),
+		}
+	}
 
 	cfg := cf.Config{
 		AccountID:    accountID,
@@ -674,6 +712,7 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		DeployMode:   deployMode,
 		PreviewAlias: previewAlias,
 		SourceDir:    sourceDir,
+		EnvVars:      cfEnvVars,
 		Version:      version,
 		Commit:       deployCommit,
 	}
@@ -694,6 +733,25 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 
 	mintURL := result["FULLSEND_MINT_URL"]
 	printer.StepDone(fmt.Sprintf("Worker deployed at %s", mintURL))
+
+	// Store PEM secrets on the Worker after deploy so the Worker
+	// script exists when wrangler secret put runs.
+	if len(agentPEMs) > 0 {
+		printer.StepStart("Storing role PEM secrets on Worker")
+		pemRoles := make([]string, 0, len(agentPEMs))
+		for role := range agentPEMs {
+			pemRoles = append(pemRoles, role)
+		}
+		sort.Strings(pemRoles)
+		for _, role := range pemRoles {
+			if err := provisioner.StoreAgentPEM(ctx, role, agentPEMs[role]); err != nil {
+				printer.StepFail("Failed to store PEM secret")
+				return fmt.Errorf("storing PEM for role %s: %w", role, err)
+			}
+		}
+		printer.StepDone(fmt.Sprintf("Stored %d role PEM secrets", len(agentPEMs)))
+	}
+
 	printer.Blank()
 
 	summaryLines := []string{
@@ -706,6 +764,9 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		summaryLines = append(summaryLines, "Teardown: preview alias is abandoned (Worker script is preserved)")
 	} else {
 		summaryLines = append(summaryLines, "Mode: durable")
+	}
+	if pemDir != "" {
+		summaryLines = append(summaryLines, fmt.Sprintf("App set: %s (PEMs bootstrapped)", appsetup.DefaultAppSet))
 	}
 	summaryLines = append(summaryLines,
 		fmt.Sprintf("Version: %s", version),
