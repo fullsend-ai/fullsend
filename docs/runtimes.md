@@ -101,10 +101,8 @@ slots:
 │  Project:  <repo>/.claude/skills/ (repo)               │
 │  Precedence: personal > project (name collision →      │
 │              fullsend wins, repo version shadowed)     │
-│  Repo skills extend the agent; customized/skills/      │
-│  overrides at the config layer before upload           │
-│  ⚠ customized/ is deprecated per ADR-0064; use         │
-│  config-driven agents instead                          │
+│  Repo skills extend the agent; use config-driven       │
+│  agent registration for org-level skill overrides      │
 └────────────────────────────────────────────────────────┘
 ```
 

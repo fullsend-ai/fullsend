@@ -458,17 +458,15 @@ See [ADR 0003](ADRs/0003-org-config-repo-convention.md) for the config repo conv
 
 **Decided:**
 
-- Layered content resolution: upstream defaults (agents, skills, plugins, schemas,
-  harness, policies, scripts) are provided at runtime via sparse checkout of
-  `fullsend-ai/fullsend@v0`, or from vendored files when `--vendor` was used at
+- Agent configuration: upstream defaults (agents, skills, plugins, schemas,
+  harness, policies, scripts) are resolved at runtime from
+  `fullsend-ai/agents`, or from vendored files when `--vendor` was used at
   install (detected via `.defaults/action.yml` — see
-  [ADR 0047](ADRs/0047-vendored-installs-with-vendor-flag.md)). The
-  scaffold installs only org-specific files and a `customized/` directory for org
-  overrides. Org files in `customized/` overwrite upstream defaults at runtime
-  ([ADR 0035](ADRs/0035-layered-content-resolution.md)). The `customized/`
-  overlay is deprecated; `base:` harness composition, URL resource
-  references, and config-based agent registration now cover all customization
-  scenarios ([ADR 0064](ADRs/0064-deprecate-customized-directory-overlay.md)).
+  [ADR 0047](ADRs/0047-vendored-installs-with-vendor-flag.md)).
+  Customization uses `base:` harness composition, URL resource
+  references, and config-based agent registration
+  ([ADR 0045](ADRs/0045-forge-portable-harness-schema.md),
+  [ADR 0064](ADRs/0064-deprecate-customized-directory-overlay.md)).
 
 ## Multi-org deployment model
 

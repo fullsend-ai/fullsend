@@ -34,7 +34,7 @@ Guides for developers working in repositories where fullsend is active.
 
 - [Bugfix workflow](user/bugfix-workflow.md) — End-to-end guide to how fullsend handles a bug report from issue to merge
 - [Running agents locally](user/running-agents-locally.md) — Run fullsend agents on your machine using released binaries (macOS + Linux)
-- [Configuring agent behavior](user/customizing-agents.md) — Harness configurations and layered content resolution for your org and repos
+- [Configuring agent behavior](user/customizing-agents.md) — Harness configurations and `base:` composition for your org and repos
 - [Configuring with AGENTS.md](user/customizing-with-agents-md.md) — Guide agents using your repo's AGENTS.md file
 - [Configuring with skills](user/customizing-with-skills.md) — Extend or replace built-in agent skills
 - [Bring Your Own Agent](user/bring-your-own-agent.md) — Add a custom agent or configure an existing one, from harness file to CI

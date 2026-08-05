@@ -1,10 +1,10 @@
 # Configuring Agent Behavior
 
-This guide explains how to configure fullsend agents for your organization and repositories through harness configurations and layered content resolution.
+This guide explains how to configure fullsend agents for your organization and repositories through harness configurations and `base:` composition.
 
 ## Harness Configuration
 
-Each agent run is configured by a harness YAML file that defines the complete execution environment. These files live in the `.fullsend` config repo (per-org mode) or `.fullsend/customized/harness/` (per-repo mode).
+Each agent run is configured by a harness YAML file that defines the complete execution environment. These files live in the `.fullsend` config repo (per-org mode) or are registered via `config.yaml` with a `source:` path or `base:` URL.
 
 ### Harness YAML Structure
 
@@ -151,116 +151,35 @@ When using `base:` composition, the base harness can declare its own providers a
 
 Remote URLs must include a `#sha256=...` integrity hash and match an `allowed_remote_resources` prefix in the same config. The integrity hash is checked on every resolution to ensure the content hasn't been tampered with since it was pinned.
 
-## Layered Configuration Resolution
+## Configuration with `base:` Composition
 
-> **Deprecated:** The `customized/` directory overlay mechanism described
-> below is deprecated. Use `base:` composition instead: register agents in
-> `config.yaml` with a `base:` URL pointing to the upstream harness, and
-> override only the fields that differ. See
-> [Bring Your Own Agent](bring-your-own-agent.md) for the composition model
-> and config-driven registration.
+Fullsend uses `base:` harness composition ([ADR 0045](../../ADRs/0045-forge-portable-harness-schema.md)) as the primary mechanism for customizing agents. Register agents in `config.yaml` with a `base:` URL pointing to the upstream harness, and override only the fields that differ.
 
-Fullsend uses a three-tier configuration inheritance model for all configuration: agent definitions, skills, policies, harness definitions, and guardrails. Each configuration tier can extend or override the one below it.
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│    Configuration Layering (deprecated; use base: instead)    │
-├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│  Priority (highest wins):                                    │
-│                                                              │
-│  ┌──────────────────────┐                                    │
-│  │ Per-repo overrides   │  .fullsend/customized/{dir}/       │
-│  │ (target repo)        │  in the target repository          │
-│  └──────────┬───────────┘                                    │
-│             │ overrides                                      │
-│  ┌──────────▼───────────┐                                    │
-│  │ Org-level overrides  │  customized/{dir}/                 │
-│  │ (.fullsend config    │  in the .fullsend config repo      │
-│  │  repo)               │                                    │
-│  └──────────┬───────────┘                                    │
-│             │ overrides                                      │
-│  ┌──────────▼───────────┐                                    │
-│  │ Upstream defaults    │  Provided at runtime by reusable   │
-│  │ (fullsend-ai/        │  workflow workspace preparation    │
-│  │  fullsend)           │                                    │
-│  └──────────────────────┘                                    │
-│                                                              │
-│  Layered directories:                                        │
-│    agents/  skills/  schemas/  harness/  plugins/            │
-│    policies/  scripts/  env/                                 │
-│                                                              │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### The `customized/` Directory Structure
-
-Orgs configure layered directories by placing overrides in `customized/` subdirectories:
-
-```
-.fullsend/                          (config repo)
-├── customized/
-│   ├── agents/                     → Override agent definitions
-│   ├── skills/                     → Add/override skills
-│   ├── schemas/                    → Override output schemas
-│   ├── harness/                    → Override harness configs
-│   ├── policies/                   → Override security policies
-│   ├── scripts/                    → Override hook scripts
-│   └── env/                        → Override environment files
-└── .github/workflows/              → Reusable workflows
-```
-
-For per-repo mode, the same structure lives at `.fullsend/customized/` within the target repo.
-
-### How Override Resolution Works
-
-> **Deprecated:** This section describes the deprecated `customized/` overlay.
-> See the [deprecation notice above](#layered-configuration-resolution).
-
-**File-level replacement, not field-level merging.** When you place a file in `customized/harness/code.yaml`, it completely replaces the upstream `harness/code.yaml`. There is no YAML field merging.
+See [Bring Your Own Agent](bring-your-own-agent.md) for the full composition model and config-driven registration.
 
 **Example: Adding a skill to the code agent**
 
-To add a custom skill to the code agent's harness (deprecated — use `base:` composition instead):
+Register a configured code agent in your `config.yaml`:
 
-1. **Copy the full upstream harness** from `fullsend-ai/fullsend` to your customization directory:
-   ```bash
-   # ⚠ Deprecated: use config-driven agent registration instead
-   curl -o .fullsend/customized/harness/code.yaml \
-     https://raw.githubusercontent.com/fullsend-ai/agents/main/harness/code.yaml
-   ```
+```yaml
+agents:
+  - name: code
+    source: harness/my-code.yaml
+```
 
-2. **Edit the copy** to add your skill:
-   ```yaml
-   skills:
-     - skills/code-implementation      # Upstream skill
-     - skills/my-custom-validation      # Your custom skill
-   ```
+In `harness/my-code.yaml`, use `base:` to inherit from the upstream harness and add your skill:
 
-3. **Add your custom skill directory**:
-   ```bash
-   # Create your custom skill
-   mkdir -p .fullsend/customized/skills/my-custom-validation
-   cat > .fullsend/customized/skills/my-custom-validation/SKILL.md <<'EOF'
-   # My Custom Validation Skill
+```yaml
+base: "https://github.com/fullsend-ai/agents/tree/main/harness/code.yaml#sha256=..."
+skills:
+  - skills/my-custom-validation
+```
 
-   [Your skill content...]
-   EOF
-   ```
+Create your custom skill at `skills/my-custom-validation/SKILL.md`.
 
-**At runtime**, the reusable workflow:
-- Copies upstream defaults to `harness/`, `skills/`, etc.
-- Copies your `customized/` files on top, **replacing** any files with matching names
-- The harness loads `harness/code.yaml` (now your customized version)
-- Your skill at `skills/my-custom-validation/` is available
-
-**Important:** You must maintain the full harness structure. You cannot add just a `skills:` field—the entire YAML file must be present and valid.
+`base:` composition merges fields — you only specify what differs from upstream. This replaces the previous file-level replacement approach.
 
 ### Configuring Pre-commit Tool Dependencies
-
-> **Note:** The `customized/scripts/.pre-commit-tools.yaml` L1 overlay path
-> referenced below uses the deprecated `customized/` mechanism.
-> The per-repo L2 path (`.pre-commit-tools.yaml` at repo root) is unaffected.
 
 Fullsend auto-detects and installs tools required by a target repo's pre-commit hooks. The resolver reads `.pre-commit-config.yaml`, matches hooks against a tools registry, and installs missing dependencies before the authoritative pre-commit check runs.
 
@@ -275,27 +194,19 @@ Hooks using `language: python`, `language: node`, or `language: docker_image` ar
 - A `.pre-commit-config.yaml` in the target repo with hooks that use `language: system` or `language: golang`.
 - Access to commit to the target repo's base branch (L2 per-repo registries only take effect after merge).
 
-#### Three-layer resolution
+#### Two-layer resolution
 
 ```
-upstream defaults (fullsend-ai/fullsend)
-  → org replacement:  customized/scripts/.pre-commit-tools.yaml  (L1)
-    → per-repo additive:  .pre-commit-tools.yaml at repo root    (L2)
+upstream defaults (fullsend-ai/agents)
+  → per-repo additive:  .pre-commit-tools.yaml at repo root
 ```
 
 | Layer | Location | Behavior |
 |-------|----------|----------|
-| Upstream | Provided at runtime by reusable workflow | Base registry shipped with fullsend |
-| L1 org replacement | `customized/scripts/.pre-commit-tools.yaml` in `.fullsend` config repo | **Completely replaces** upstream registry |
-| L2 per-repo additive | `.pre-commit-tools.yaml` at target repo root | **Merges** with upstream/org registry |
+| Upstream | Provided at runtime by the agents repo | Base registry shipped with fullsend |
+| Per-repo additive | `.pre-commit-tools.yaml` at target repo root | **Merges** with upstream registry |
 
-**L1 replacement** works via the layered overlay — the file is copied over the upstream registry at runtime. Use this when your org needs a completely different set of tools.
-
-**L2 additive merge** is designed for repos that need to extend the registry with one or two entries. New entries are appended, entries matching an existing `(repo, hook_id)` key override it, and entries with `exclude: true` suppress the matching upstream entry.
-
-> **Note:** There are two per-repo customization paths with different semantics:
-> - `.fullsend/customized/scripts/.pre-commit-tools.yaml` — L1 full replacement (same overlay mechanism as other layered dirs)
-> - `.pre-commit-tools.yaml` at repo root — L2 additive merge (resolver discovers and merges)
+**Per-repo additive merge** is designed for repos that need to extend the registry with one or two entries. New entries are appended, entries matching an existing `(repo, hook_id)` key override it, and entries with `exclude: true` suppress the matching upstream entry.
 
 #### Adding a custom binary tool
 
@@ -410,11 +321,7 @@ variables to protect sandbox operation.
 
 ### Adding a Skill
 
-> **Deprecated:** The `customized/skills/` path is deprecated.
-> Use config-driven agent registration instead — see
-> [Bring Your Own Agent](bring-your-own-agent.md).
-
-Create `.fullsend/customized/skills/my-skill/SKILL.md` in your config repo:
+Create `skills/my-skill/SKILL.md` in your `.fullsend` config repo or agents repo:
 
 ```markdown
 # My Custom Skill
@@ -426,87 +333,46 @@ Custom domain knowledge for this organization.
 ...
 ```
 
-The skill will be automatically available to all agents that include `skills/my-skill/` in their harness configuration.
+Reference the skill in your harness's `skills:` list. The skill is available to all agents that include it in their harness configuration. See [Bring Your Own Agent](bring-your-own-agent.md) for the config-driven approach.
 
 ### Overriding an Agent Definition
 
-> **Deprecated:** The `customized/agents/` override is deprecated.
-> Use `base:` composition instead — see
-> [Configuring existing agents](bring-your-own-agent.md#configuring-existing-agents).
-
-Create `.fullsend/customized/agents/code.md` to override the default code agent
-with org-specific instructions:
-
-```markdown
-# Code Agent (Configured)
-
-[Org-specific instructions...]
-```
+Use `base:` composition to configure an existing agent with org-specific
+instructions. Register the agent in `config.yaml` and point it at a harness
+that uses `base:` to inherit from the upstream harness. See
+[Configuring existing agents](bring-your-own-agent.md#configuring-existing-agents).
 
 ### Configuring the Harness
 
-Create `.fullsend/customized/harness/code.yaml` to override the code agent's execution environment.
-
-**Important:** This is a complete file replacement. Start by copying the upstream harness, then modify it:
+Use `base:` composition to customize an agent's harness while inheriting
+from the upstream defaults. Create a harness file that references the
+upstream harness via `base:` and override only the fields that differ:
 
 ```yaml
-# Copy of upstream code.yaml with configuration overrides
-agent: agents/code.md
+# harness/my-code.yaml — inherits from upstream, overrides what differs
+base: "https://github.com/fullsend-ai/agents/tree/main/harness/code.yaml#sha256=..."
 model: claude-opus-4-6           # Changed from: opus
-image: ghcr.io/fullsend-ai/fullsend-code:latest
-policy: policies/base.yaml
-providers:
-  - vertex-ai
-  - github
-  - package-registries
 timeout_minutes: 45              # Changed from: 35
 
 skills:
-  - skills/code-implementation
   - skills/my-custom-linting     # Added: org-specific skill configuration
 
-plugins:
-  - plugins/gopls-lsp
-
-host_files:
-  - src: env/gcp-vertex.env
-    dest: /sandbox/workspace/.env.d/gcp-vertex.env
-    expand: true
-  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
-    dest: /tmp/.gcp-credentials.json
-  - src: ${GCP_OIDC_TOKEN_FILE}
-    dest: /sandbox/workspace/.gcp-oidc-token
-    optional: true
-
-pre_script: scripts/pre-code.sh
-post_script: scripts/post-code.sh
-
 validation_loop:
-  script: scripts/org-validate.sh      # Changed script
+  script: scripts/org-validate.sh
   schema: schemas/org-result.schema.json
-  max_iterations: 5                   # Changed from: 2
-
-env:
-  runner:
-    PUSH_TOKEN: "${PUSH_TOKEN}"
-    REPO_FULL_NAME: "${REPO_FULL_NAME}"
-    REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
+  max_iterations: 5
 ```
 
-Then create your skill at `.fullsend/customized/skills/my-custom-linting/SKILL.md`.
+Register the agent in `config.yaml`:
 
-### Per-Repo Overrides
-
-Target repos can override org-level configuration by placing files in `.fullsend/customized/` within the repo:
-
+```yaml
+agents:
+  - name: code
+    source: harness/my-code.yaml
 ```
-my-repo/
-├── .fullsend/
-│   └── customized/
-│       ├── agents/code.md         # Repo-specific agent configuration
-│       ├── skills/repo-skill/     # Repo-specific skill (contains SKILL.md)
-│       └── harness/code.yaml      # Repo-specific harness configuration
-```
+
+See [Bring Your Own Agent](bring-your-own-agent.md) for the full
+composition model and config-driven registration.
 
 ## Disabling Agents
 
