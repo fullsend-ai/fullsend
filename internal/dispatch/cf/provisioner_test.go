@@ -585,6 +585,129 @@ func TestValidateCloudflareEnv_Present(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// --- ResolveCloudflareAuth tests ---
+
+func withCFEnvCleared(t *testing.T) {
+	t.Helper()
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	os.Unsetenv("CLOUDFLARE_ACCOUNT_ID")
+	os.Unsetenv("CLOUDFLARE_API_TOKEN")
+	t.Cleanup(func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	})
+}
+
+func TestResolveCloudflareAuth_TokenAndAccountID(t *testing.T) {
+	withCFEnvCleared(t)
+	os.Setenv("CLOUDFLARE_API_TOKEN", "my-token")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "my-account-id")
+
+	accountID, err := ResolveCloudflareAuth(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "my-account-id", accountID)
+}
+
+func TestResolveCloudflareAuth_TokenWithoutAccountID(t *testing.T) {
+	withCFEnvCleared(t)
+	os.Setenv("CLOUDFLARE_API_TOKEN", "my-token")
+
+	_, err := ResolveCloudflareAuth(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CLOUDFLARE_ACCOUNT_ID is missing")
+}
+
+func TestResolveCloudflareAuth_WranglerSession_WithAccountEnv(t *testing.T) {
+	withCFEnvCleared(t)
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "env-account-id")
+
+	// Mock wrangler whoami to succeed.
+	old := WranglerWhoamiFn
+	WranglerWhoamiFn = func(ctx context.Context) (string, error) {
+		return "ℹ️  Logged in as user@example.com\n", nil
+	}
+	t.Cleanup(func() { WranglerWhoamiFn = old })
+
+	accountID, err := ResolveCloudflareAuth(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "env-account-id", accountID)
+}
+
+func TestResolveCloudflareAuth_WranglerSession_DiscoverAccountID(t *testing.T) {
+	withCFEnvCleared(t)
+
+	old := WranglerWhoamiFn
+	WranglerWhoamiFn = func(ctx context.Context) (string, error) {
+		return "┌──────────────┬──────────────────────────────────┐\n" +
+			"│ Account Name │ Account ID                       │\n" +
+			"├──────────────┼──────────────────────────────────┤\n" +
+			"│ My Account   │ abcdef1234567890abcdef1234567890 │\n" +
+			"└──────────────┴──────────────────────────────────┘\n", nil
+	}
+	t.Cleanup(func() { WranglerWhoamiFn = old })
+
+	accountID, err := ResolveCloudflareAuth(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "abcdef1234567890abcdef1234567890", accountID)
+}
+
+func TestResolveCloudflareAuth_WranglerSession_MultipleAccounts(t *testing.T) {
+	withCFEnvCleared(t)
+
+	old := WranglerWhoamiFn
+	WranglerWhoamiFn = func(ctx context.Context) (string, error) {
+		return "┌──────────────┬──────────────────────────────────┐\n" +
+			"│ Account Name │ Account ID                       │\n" +
+			"├──────────────┼──────────────────────────────────┤\n" +
+			"│ Account One  │ aaaabbbbccccddddeeeeffffaaaabbbb │\n" +
+			"│ Account Two  │ 11112222333344445555666677778888 │\n" +
+			"└──────────────┴──────────────────────────────────┘\n", nil
+	}
+	t.Cleanup(func() { WranglerWhoamiFn = old })
+
+	_, err := ResolveCloudflareAuth(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not be auto-detected")
+}
+
+func TestResolveCloudflareAuth_NoCredentials(t *testing.T) {
+	withCFEnvCleared(t)
+
+	old := WranglerWhoamiFn
+	WranglerWhoamiFn = func(ctx context.Context) (string, error) {
+		return "", fmt.Errorf("not logged in")
+	}
+	t.Cleanup(func() { WranglerWhoamiFn = old })
+
+	_, err := ResolveCloudflareAuth(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no Cloudflare credentials")
+	assert.Contains(t, err.Error(), "wrangler login")
+}
+
+// --- parseWranglerWhoamiAccountID tests ---
+
+func TestParseWranglerWhoamiAccountID_SingleAccount(t *testing.T) {
+	output := "┌──────────────┬──────────────────────────────────┐\n" +
+		"│ Account Name │ Account ID                       │\n" +
+		"├──────────────┼──────────────────────────────────┤\n" +
+		"│ My Account   │ abcdef1234567890abcdef1234567890 │\n" +
+		"└──────────────┴──────────────────────────────────┘\n"
+	assert.Equal(t, "abcdef1234567890abcdef1234567890", parseWranglerWhoamiAccountID(output))
+}
+
+func TestParseWranglerWhoamiAccountID_NoAccount(t *testing.T) {
+	output := "ℹ️  Logged in as user@example.com\n"
+	assert.Equal(t, "", parseWranglerWhoamiAccountID(output))
+}
+
+func TestParseWranglerWhoamiAccountID_MultipleAccounts(t *testing.T) {
+	output := "│ Account One  │ aaaabbbbccccddddeeeeffffaaaabbbb │\n" +
+		"│ Account Two  │ 11112222333344445555666677778888 │\n"
+	assert.Equal(t, "", parseWranglerWhoamiAccountID(output))
+}
+
 // --- Embed integrity tests ---
 
 func TestEmbeddedWorkerSource_ContainsRequiredFiles(t *testing.T) {

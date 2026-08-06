@@ -394,6 +394,9 @@ func DefaultWorkerSourceDir() string {
 
 // ValidateCloudflareEnv checks that required Cloudflare environment
 // variables are set. Returns an error listing all missing variables.
+//
+// Deprecated: Use ResolveCloudflareAuth which also accepts Wrangler OAuth
+// sessions as an alternative to CLOUDFLARE_API_TOKEN.
 func ValidateCloudflareEnv() error {
 	var missing []string
 	if os.Getenv("CLOUDFLARE_ACCOUNT_ID") == "" {
@@ -406,6 +409,109 @@ func ValidateCloudflareEnv() error {
 		return fmt.Errorf("missing required Cloudflare environment variables: %s", strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+// WranglerWhoamiFn is the function used to run `wrangler whoami`.
+// Override in tests to avoid needing a real wrangler installation.
+var WranglerWhoamiFn = runWranglerWhoami
+
+// runWranglerWhoami executes `npx wrangler whoami` and returns the
+// combined stdout+stderr output.
+func runWranglerWhoami(ctx context.Context) (string, error) {
+	cmd := exec.CommandContext(ctx, "npx", "wrangler", "whoami")
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// ResolveCloudflareAuth resolves Cloudflare authentication and returns
+// the account ID. It prefers explicit environment variables when set, but
+// falls back to a Wrangler OAuth session (from 'wrangler login') when
+// CLOUDFLARE_API_TOKEN is absent.
+//
+// Resolution order:
+//  1. CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID env vars → use both
+//  2. CLOUDFLARE_API_TOKEN set, CLOUDFLARE_ACCOUNT_ID unset → error
+//  3. CLOUDFLARE_API_TOKEN unset → check for Wrangler session via whoami
+//     a. If CLOUDFLARE_ACCOUNT_ID is set → use it
+//     b. If whoami output contains exactly one account → use its ID
+//     c. Otherwise → error with guidance
+func ResolveCloudflareAuth(ctx context.Context) (accountID string, err error) {
+	token := os.Getenv("CLOUDFLARE_API_TOKEN")
+	envAccountID := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+
+	if token != "" {
+		// Explicit API token — require account ID too.
+		if envAccountID == "" {
+			return "", fmt.Errorf("CLOUDFLARE_API_TOKEN is set but CLOUDFLARE_ACCOUNT_ID is missing; set both for API-token auth")
+		}
+		return envAccountID, nil
+	}
+
+	// No API token — check for Wrangler OAuth session.
+	whoamiOut, whoamiErr := WranglerWhoamiFn(ctx)
+	if whoamiErr != nil {
+		if envAccountID != "" {
+			return "", fmt.Errorf("CLOUDFLARE_API_TOKEN is not set and 'wrangler whoami' failed: %w\nSet CLOUDFLARE_API_TOKEN or run 'wrangler login' first", whoamiErr)
+		}
+		return "", fmt.Errorf("no Cloudflare credentials: CLOUDFLARE_API_TOKEN is not set and 'wrangler whoami' failed: %w\nEither set CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID, or run 'wrangler login'", whoamiErr)
+	}
+
+	// Wrangler session is valid. Resolve account ID.
+	if envAccountID != "" {
+		return envAccountID, nil
+	}
+
+	// Try to parse account ID from whoami output.
+	// `wrangler whoami` typically prints lines like:
+	//   │ Account Name    │ Account ID                       │
+	//   │ My Account      │ abc123def456                     │
+	parsed := parseWranglerWhoamiAccountID(whoamiOut)
+	if parsed == "" {
+		return "", fmt.Errorf("wrangler login session is active but CLOUDFLARE_ACCOUNT_ID is not set and could not be auto-detected from 'wrangler whoami' output; set CLOUDFLARE_ACCOUNT_ID explicitly")
+	}
+	return parsed, nil
+}
+
+// parseWranglerWhoamiAccountID extracts the account ID from wrangler
+// whoami output. Returns the account ID if exactly one is found, or
+// empty string if zero or multiple accounts are present (the user must
+// set CLOUDFLARE_ACCOUNT_ID explicitly in that case).
+func parseWranglerWhoamiAccountID(output string) string {
+	// wrangler whoami prints a table like:
+	//   ┌──────────────────┬──────────────────────────────────┐
+	//   │ Account Name     │ Account ID                       │
+	//   ├──────────────────┼──────────────────────────────────┤
+	//   │ My Account       │ abc123def456789...               │
+	//   └──────────────────┴──────────────────────────────────┘
+	//
+	// We look for lines with exactly two pipe-delimited cells where
+	// the second cell looks like a 32-char hex account ID.
+	var accountIDs []string
+	for line := range strings.SplitSeq(output, "\n") {
+		parts := strings.Split(line, "│")
+		if len(parts) < 3 {
+			continue
+		}
+		// The second column (parts[2]) is the Account ID.
+		candidate := strings.TrimSpace(parts[2])
+		if len(candidate) == 32 && isHex(candidate) {
+			accountIDs = append(accountIDs, candidate)
+		}
+	}
+	if len(accountIDs) == 1 {
+		return accountIDs[0]
+	}
+	return ""
+}
+
+// isHex returns true if s consists entirely of hexadecimal characters.
+func isHex(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
 // --- LiveWranglerRunner ---
