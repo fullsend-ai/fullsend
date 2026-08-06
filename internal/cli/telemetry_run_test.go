@@ -481,16 +481,18 @@ func TestTruncateStatusMsg(t *testing.T) {
 
 	long := strings.Repeat("x", maxSpanStatusMsgLen+50)
 	got := truncateStatusMsg(long)
-	assert.LessOrEqual(t, len(got), maxSpanStatusMsgLen+len("…"), "capped at limit plus ellipsis")
+	assert.LessOrEqual(t, len(got), maxSpanStatusMsgLen, "cap includes the ellipsis")
 	assert.True(t, strings.HasSuffix(got, "…"))
 	assert.True(t, utf8.ValidString(got))
 
-	// A multi-byte rune straddling the cap must not be split: invalid UTF-8
-	// in a status description fails proto marshaling of the whole OTLP batch.
-	straddle := strings.Repeat("x", maxSpanStatusMsgLen-1) + "é" + strings.Repeat("y", 50)
+	// A multi-byte rune straddling the cut point (cap minus ellipsis) must
+	// not be split: invalid UTF-8 in a status description fails proto
+	// marshaling of the whole OTLP batch.
+	straddle := strings.Repeat("x", maxSpanStatusMsgLen-len(statusEllipsis)-1) + "é" + strings.Repeat("y", 50)
 	got = truncateStatusMsg(straddle)
 	assert.True(t, utf8.ValidString(got), "truncation must land on a rune boundary")
 	assert.True(t, strings.HasSuffix(got, "…"))
+	assert.LessOrEqual(t, len(got), maxSpanStatusMsgLen)
 
 	// Invalid UTF-8 must be repaired at any length — a short malformed
 	// message never reaches the exporter untouched.
@@ -499,6 +501,30 @@ func TestTruncateStatusMsg(t *testing.T) {
 	got = truncateStatusMsg(short)
 	assert.True(t, utf8.ValidString(got), "short strings are validated too")
 	assert.Equal(t, "badbytes", got)
+}
+
+// TestAgentSpanStatus_TranscriptBoundary pins the transcript-status budget:
+// the prefixed total never exceeds maxSpanStatusMsgLen, and a message that
+// fits within the prefix headroom passes through untouched.
+func TestAgentSpanStatus_TranscriptBoundary(t *testing.T) {
+	const prefix = "transcript error: "
+
+	// Exactly at the headroom: no truncation at all.
+	fits := strings.Repeat("a", maxSpanStatusMsgLen-len(prefix))
+	_, msg := agentSpanStatus(nil, 0, fits)
+	assert.Equal(t, prefix+fits, msg, "message within headroom is untouched")
+	assert.Equal(t, maxSpanStatusMsgLen, len(msg))
+
+	// Worst case from the transcript parser: truncateError emits up to
+	// maxTranscriptErrorLength bytes plus its own "… (truncated)" suffix.
+	// The prefixed status must still respect the cap, keep valid UTF-8,
+	// and end with the status ellipsis.
+	parserMax := strings.Repeat("b", 2000) + "… (truncated)"
+	_, msg = agentSpanStatus(nil, 0, parserMax)
+	assert.LessOrEqual(t, len(msg), maxSpanStatusMsgLen, "prefixed total stays within the cap")
+	assert.True(t, utf8.ValidString(msg))
+	assert.True(t, strings.HasPrefix(msg, prefix))
+	assert.True(t, strings.HasSuffix(msg, statusEllipsis))
 }
 
 // TestFinalizeAgentSpan pins the finalized agent span as exported (#5361):

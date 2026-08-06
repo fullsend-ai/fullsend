@@ -1028,7 +1028,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	readyTimeout := time.Duration(h.SandboxTimeoutSeconds) * time.Second
 	if err := sandbox.CreateWithRetry(sandboxName, allProviderNames, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout); err != nil {
-		sandboxSpan.SetStatus(codes.Error, err.Error())
+		// This error embeds raw supervisor/gateway/container logs — same
+		// treatment as the agent and root spans: full text on the event,
+		// bounded valid-UTF-8 status.
+		recordSanitizedError(sandboxSpan, err)
+		sandboxSpan.SetStatus(codes.Error, truncateStatusMsg(err.Error()))
 		sandboxSpan.End()
 		printer.StepFail("Failed to create sandbox")
 		return fmt.Errorf("creating sandbox: %w", err)
@@ -2405,30 +2409,40 @@ func recordSanitizedError(span trace.Span, err error) {
 	span.RecordError(errors.New(strings.ToValidUTF8(err.Error(), "")))
 }
 
-// maxSpanStatusMsgLen caps status descriptions so a runaway error message
-// cannot bloat every export of the span. No OTel, collector, or backend
-// limit mandates a specific value; 2000 matches maxTranscriptErrorLength
-// (internal/runtime/claude_transcript.go), which bounds the same class of
-// consumer-facing error text — so a parse-time-truncated transcript message
-// is never truncated a second time here.
+// maxSpanStatusMsgLen bounds a status description's total bytes, prefix and
+// truncation ellipsis included. No OTel, collector, or backend limit
+// mandates a specific value; 2000 matches maxTranscriptErrorLength
+// (internal/runtime/claude_transcript.go), the repo's bound for the same
+// class of error text. Every status built from an error is preceded by
+// recordSanitizedError on the same span, so truncation here never loses
+// the only copy.
 const maxSpanStatusMsgLen = 2000
 
-// truncateStatusMsg repairs invalid UTF-8 and trims a status description to
-// maxSpanStatusMsgLen, walking back to a rune boundary before appending the
-// ellipsis. Both steps matter: an invalid-UTF-8 status fails proto marshaling
-// of the entire OTLP batch, silently dropping every span in it, and the
-// source text (a wrapped command error, a transcript payload) can be invalid
-// at any length.
+const statusEllipsis = "…"
+
+// truncateStatusMsg bounds s to maxSpanStatusMsgLen bytes.
 func truncateStatusMsg(s string) string {
+	return truncateStatusMsgTo(s, maxSpanStatusMsgLen)
+}
+
+// truncateStatusMsgTo repairs invalid UTF-8 and bounds s to n bytes,
+// ellipsis included, cutting on a rune boundary. Both steps matter: an
+// invalid-UTF-8 status fails proto marshaling of the entire OTLP batch,
+// silently dropping every span in it, and the source text (a wrapped
+// command error, a transcript payload) can be invalid at any length.
+func truncateStatusMsgTo(s string, n int) string {
 	s = strings.ToValidUTF8(s, "")
-	if len(s) <= maxSpanStatusMsgLen {
+	if len(s) <= n {
 		return s
 	}
-	truncated := s[:maxSpanStatusMsgLen]
+	if n < len(statusEllipsis) {
+		return ""
+	}
+	truncated := s[:n-len(statusEllipsis)]
 	for len(truncated) > 0 && !utf8.Valid([]byte(truncated)) {
 		truncated = truncated[:len(truncated)-1]
 	}
-	return truncated + "…"
+	return truncated + statusEllipsis
 }
 
 // finalizeAgentSpan records the end-of-iteration attributes and status on an
@@ -2463,7 +2477,10 @@ func agentSpanStatus(runErr error, exitCode int, transcriptErr string) (codes.Co
 	case runErr != nil:
 		return codes.Error, truncateStatusMsg(runErr.Error())
 	case transcriptErr != "":
-		return codes.Error, truncateStatusMsg("transcript error: " + transcriptErr)
+		// Budget the payload so the prefixed total stays within the cap;
+		// a message short enough to fit is not re-truncated.
+		const prefix = "transcript error: "
+		return codes.Error, prefix + truncateStatusMsgTo(transcriptErr, maxSpanStatusMsgLen-len(prefix))
 	case exitCode != 0:
 		return codes.Error, fmt.Sprintf("agent exited with code %d", exitCode)
 	}
