@@ -110,7 +110,11 @@ jobs:
             return 1
           }
 
-          # Extract the first word of the comment as the command
+          # Extract the first word of the comment as the command.
+          # NOTE: takes the literal first line — does not skip leading blank
+          # lines (stop-agent.sh does). Harmless now because the shim
+          # contains() guard routes stop commands away before dispatch, but
+          # align this when CEL triggers replace the bash guards (ADR 0086).
           COMMAND=""
           if [[ -n "${COMMENT_BODY:-}" ]]; then
             COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $1}')"

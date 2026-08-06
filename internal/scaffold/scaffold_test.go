@@ -388,6 +388,13 @@ func TestShimStopAgentAuthorizationRuntime(t *testing.T) {
 		assert.Contains(t, out, "issue edit")
 		assert.Contains(t, out, "fullsend-no-triage")
 	})
+	t.Run("fs-fix-stop on issue applies label and notes cross-context", func(t *testing.T) {
+		out, labeled := runScenario(t, "alice", "alice", "write", "/fs-fix-stop", "false")
+		assert.True(t, labeled)
+		assert.Contains(t, out, "fullsend-no-fix")
+		assert.Contains(t, out, "has no effect on this item type")
+		assert.Contains(t, out, "does not carry over")
+	})
 	t.Run("fs-stop fix on issue notes cross-context", func(t *testing.T) {
 		out, labeled := runScenario(t, "alice", "alice", "write", "/fs-stop fix", "false")
 		assert.True(t, labeled)
