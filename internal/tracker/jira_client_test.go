@@ -58,6 +58,24 @@ func (f *fakeJiraClient) UpdateComment(_ context.Context, issueIDOrKey, commentI
 
 var _ jiraClient = (*fakeJiraClient)(nil)
 
+// newTestJiraClient constructs a JiraClient for tests, failing immediately
+// on a validation error so call sites can stay a single line.
+func newTestJiraClient(t *testing.T, jc jiraClient, baseURL string) *JiraClient {
+	t.Helper()
+	c, err := NewJiraClient(jc, baseURL)
+	if err != nil {
+		t.Fatalf("NewJiraClient(%q) returned error: %v", baseURL, err)
+	}
+	return c
+}
+
+func TestNewJiraClient_RejectsCredentialBaseURL(t *testing.T) {
+	_, err := NewJiraClient(&fakeJiraClient{}, "https://user:token@acme.atlassian.net")
+	if err == nil {
+		t.Fatal("NewJiraClient with credential-bearing base URL: got nil error, want an error")
+	}
+}
+
 func TestJiraClient_GetIssue(t *testing.T) {
 	fc := &fakeJiraClient{
 		issues: map[string]*jira.Issue{
@@ -83,7 +101,7 @@ func TestJiraClient_GetIssue(t *testing.T) {
 		},
 	}
 
-	c := NewJiraClient(fc, "https://acme.atlassian.net")
+	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
 	issue, err := c.GetIssue(context.Background(), "PROJ", 42)
 	if err != nil {
 		t.Fatalf("GetIssue returned error: %v", err)
@@ -107,7 +125,7 @@ func TestJiraClient_GetIssue(t *testing.T) {
 
 func TestJiraClient_GetIssue_NotFound(t *testing.T) {
 	fc := &fakeJiraClient{issues: map[string]*jira.Issue{}}
-	c := NewJiraClient(fc, "https://acme.atlassian.net")
+	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
 
 	_, err := c.GetIssue(context.Background(), "PROJ", 999)
 	if !errors.Is(err, forge.ErrNotFound) {
@@ -128,7 +146,7 @@ func TestJiraClient_ListComments(t *testing.T) {
 			},
 		},
 	}
-	c := NewJiraClient(fc, "https://acme.atlassian.net")
+	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
 
 	comments, err := c.ListComments(context.Background(), "PROJ", 42)
 	if err != nil {
@@ -147,7 +165,7 @@ func TestJiraClient_ListComments(t *testing.T) {
 
 func TestJiraClient_CreateComment(t *testing.T) {
 	fc := &fakeJiraClient{}
-	c := NewJiraClient(fc, "https://acme.atlassian.net")
+	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
 
 	comment, err := c.CreateComment(context.Background(), "PROJ", 42, "**hello** there")
 	if err != nil {
@@ -166,7 +184,7 @@ func TestJiraClient_CreateComment(t *testing.T) {
 
 func TestJiraClient_UpdateComment(t *testing.T) {
 	fc := &fakeJiraClient{}
-	c := NewJiraClient(fc, "https://acme.atlassian.net")
+	c := newTestJiraClient(t, fc, "https://acme.atlassian.net")
 
 	if err := c.UpdateComment(context.Background(), "PROJ", 42, "50001", "updated text"); err != nil {
 		t.Fatalf("UpdateComment returned error: %v", err)

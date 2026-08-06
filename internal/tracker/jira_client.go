@@ -29,9 +29,15 @@ type JiraClient struct {
 
 // NewJiraClient returns a tracker.Client backed by jc. baseURL is the
 // Jira instance's base URL (e.g. "https://acme.atlassian.net"), used to
-// build issue browse URLs.
-func NewJiraClient(jc jiraClient, baseURL string) *JiraClient {
-	return &JiraClient{jira: jc, baseURL: strings.TrimRight(baseURL, "/")}
+// build issue browse URLs. Returns an error if baseURL embeds credentials
+// (https://user:token@host): those would otherwise propagate into every
+// Issue.URL this client returns, which are commonly logged or displayed.
+func NewJiraClient(jc jiraClient, baseURL string) (*JiraClient, error) {
+	trimmed := strings.TrimRight(baseURL, "/")
+	if err := jira.ValidateBaseURL(trimmed); err != nil {
+		return nil, err
+	}
+	return &JiraClient{jira: jc, baseURL: trimmed}, nil
 }
 
 // issueKey builds a Jira issue key from a project key and issue number,

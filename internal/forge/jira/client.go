@@ -72,9 +72,11 @@ func WithHTTPClient(client *http.Client) Option {
 	}
 }
 
-// validateBaseURL checks that the base URL uses https, unless it points to a
+// ValidateBaseURL checks that the base URL uses https, unless it points to a
 // loopback address (for httptest servers), and rejects embedded credentials.
-func validateBaseURL(rawURL string) error {
+// Exported so other Jira-backed clients (e.g. tracker.JiraClient) can apply
+// the same policy to base URLs they accept.
+func ValidateBaseURL(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("invalid base URL: %w", err)
@@ -139,7 +141,7 @@ func New(token string, opts ...Option) (*LiveClient, error) {
 	if c.baseURL == "" {
 		return nil, fmt.Errorf("jira: base URL must be set via WithBaseURL")
 	}
-	if err := validateBaseURL(c.baseURL); err != nil {
+	if err := ValidateBaseURL(c.baseURL); err != nil {
 		return nil, err
 	}
 	return c, nil
