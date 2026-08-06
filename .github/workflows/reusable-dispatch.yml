@@ -661,6 +661,7 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+          status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
@@ -787,6 +788,7 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+          status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
@@ -903,6 +905,7 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
@@ -1170,6 +1173,7 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ steps.context.outputs.pr_number }}
+          status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
@@ -1269,6 +1273,7 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ github.repository }}
           status-number: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.number || fromJSON(needs.route.outputs.event_payload).issue.number }}
+          status-comment-id: ${{ fromJSON(needs.route.outputs.event_payload).comment.id }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(needs.route.outputs.event_payload).pull_request.head.sha || '' }}
 
@@ -1668,5 +1673,6 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ matrix.status_repo }}
           status-number: ${{ matrix.status_number }}
+          status-comment-id: ${{ fromJSON(matrix.event_payload).comment.id }}
           mint-url: ${{ inputs.mint_url }}
           pr-head-sha: ${{ fromJSON(matrix.event_payload).pull_request.head.sha || '' }}
