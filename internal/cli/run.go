@@ -962,7 +962,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 
 		if runErr != nil {
-			rootSpan.RecordError(runErr)
+			recordSanitizedError(rootSpan, runErr)
 		}
 		code, msg := rootSpanStatus(runErr, exitCode, validationPassed)
 		rootSpan.SetStatus(code, msg)
@@ -2396,6 +2396,15 @@ func telemetryExitCode(lastExitCode int, runErr error) int {
 	return lastExitCode
 }
 
+// recordSanitizedError records err as an exception event with its message
+// repaired to valid UTF-8 — RecordError feeds the same OTLP proto marshal
+// path as status descriptions, and one invalid byte fails export of the
+// whole batch. The rewrap costs the concrete exception.type; the message is
+// what consumers read.
+func recordSanitizedError(span trace.Span, err error) {
+	span.RecordError(errors.New(strings.ToValidUTF8(err.Error(), "")))
+}
+
 // maxSpanStatusMsgLen caps status descriptions so a runaway transcript error
 // message cannot bloat every export of the span.
 const maxSpanStatusMsgLen = 256
@@ -2426,11 +2435,11 @@ func finalizeAgentSpan(span trace.Span, runErr error, iteration, exitCode int, s
 	span.SetAttributes(agentSpanEndAttrs(iteration, exitCode, system, m)...)
 	switch {
 	case runErr != nil:
-		span.RecordError(runErr)
+		recordSanitizedError(span, runErr)
 	case transcriptErr != "":
 		// The status description is capped; this event carries the full
 		// text so a verbose API error payload survives export.
-		span.RecordError(errors.New(transcriptErr))
+		recordSanitizedError(span, errors.New(transcriptErr))
 	}
 	if transcriptErr != "" {
 		span.SetAttributes(attribute.Bool("fullsend.transcript_error", true))

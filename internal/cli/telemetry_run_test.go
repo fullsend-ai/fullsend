@@ -559,6 +559,19 @@ func TestFinalizeAgentSpan(t *testing.T) {
 		assert.Contains(t, eventNames, "exception")
 	})
 
+	t.Run("invalid UTF-8 in runtime error is repaired on the event", func(t *testing.T) {
+		s := newRecorded(fmt.Errorf("cmd failed: %s", "\xff\xferaw"), -1, "")
+		for _, e := range s.Events {
+			for _, kv := range e.Attributes {
+				if kv.Key == "exception.message" {
+					assert.True(t, utf8.ValidString(kv.Value.AsString()),
+						"exception message must be valid UTF-8 — it rides the same proto marshal as status")
+					assert.Contains(t, kv.Value.AsString(), "raw")
+				}
+			}
+		}
+	})
+
 	t.Run("green iteration", func(t *testing.T) {
 		s := newRecorded(nil, 0, "")
 		assert.Equal(t, codes.Ok, s.Status.Code)
