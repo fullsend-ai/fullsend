@@ -429,6 +429,7 @@ runs:
         RUN_ID: ${{ github.run_id }}
         RUN_URL: ${{ inputs.run-url }}
         JOB_STATUS: ${{ job.status }}
+        WAS_SKIPPED: ${{ steps.run.outputs.skipped }}
         PR_HEAD_SHA_INPUT: ${{ inputs.pr-head-sha }}
         FULLSEND_DIR: ${{ inputs.fullsend-dir }}
       run: |
@@ -466,6 +467,9 @@ runs:
         RECONCILE_FLAGS+=(--mint-url "${MINT_URL}" --role "${AGENT}")
         RECONCILE_FLAGS+=(--fullsend-dir "${FULLSEND_DIR}")
         RECONCILE_FLAGS+=(--job-status "${JOB_STATUS}")
+        if [[ "${WAS_SKIPPED}" == "true" ]]; then
+          RECONCILE_FLAGS+=(--was-skipped)
+        fi
         if [[ -n "${RUN_URL}" ]]; then
           RECONCILE_FLAGS+=(--run-url "${RUN_URL}")
         fi

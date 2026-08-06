@@ -467,7 +467,15 @@ func statusEmoji(status string) string {
 // "cancelled"). When completionMode is "on_failure" and jobStatus is
 // "success" or empty, synthesis is skipped — "success" means the agent
 // completed normally and suppressed its comment, and empty means the job
-// outcome is unknown (e.g., --job-status was omitted).
+// outcome is unknown (e.g., --job-status was omitted). wasSkipped overrides
+// this: it's true when the pre-script itself decided to skip the run, which
+// means jobStatus can be "success" even though PostCompletionWithDetail's
+// skip-reason comment failed to post (its error is only logged, not
+// propagated to the job's exit code). See PR #5736.
+//
+// agentDescription is used as the heading for a synthesized "Interrupted"
+// comment (e.g. "Code" for the code agent), so operators can tell which
+// agent failed when multiple agents run against the same issue/PR.
 //
 // This function is designed to be called from an out-of-process cleanup
 // mechanism (e.g., a GitHub Actions post-job step) that runs even when the
@@ -475,7 +483,7 @@ func statusEmoji(status string) string {
 // the process that created it is gone.
 //
 // Returns an error if runID contains characters outside [a-zA-Z0-9_-].
-func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo string, number int, runID, runURL, sha string, reason TerminationReason, completionMode, jobStatus string) error {
+func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo string, number int, runID, runURL, sha string, reason TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string) error {
 	marker, err := buildMarker(runID)
 	if err != nil {
 		return fmt.Errorf("building marker: %w", err)
@@ -509,11 +517,12 @@ func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo str
 	// "nothing happened." It may mean the process was hard-killed before
 	// PostCompletion could run. Synthesize an "Interrupted" comment so the
 	// failure is visible — but only when the job actually failed or was
-	// cancelled. A successful job with no marker means PostCompletion
-	// suppressed the comment as designed. See PR #5736.
-	if completionMode == "on_failure" && jobStatus != "" && jobStatus != "success" {
+	// cancelled, or the run was skipped and its own skip-reason comment
+	// failed to post. A successful, non-skipped job with no marker means
+	// PostCompletion suppressed the comment as designed. See PR #5736.
+	if completionMode == "on_failure" && (wasSkipped || (jobStatus != "" && jobStatus != "success")) {
 		endTime := now().UTC()
-		body := buildInterruptedBody(marker, runURL, sha, "", "", endTime, reason)
+		body := buildInterruptedBody(marker, runURL, sha, agentDescription, "", endTime, reason)
 		if _, err := client.CreateIssueComment(ctx, owner, repo, number, body); err != nil {
 			return fmt.Errorf("creating synthesized interrupted comment: %w", err)
 		}

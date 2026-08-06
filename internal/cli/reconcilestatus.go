@@ -34,6 +34,7 @@ func newReconcileStatusCmd() *cobra.Command {
 		forgeFlag   string
 		fullsendDir string
 		jobStatus   string
+		wasSkipped  bool
 	)
 
 	cmd := &cobra.Command{
@@ -106,7 +107,9 @@ finalized, this is a no-op.`,
 				}
 			}
 
-			return reconcileOrphaned(cmd.Context(), client, owner, repoName, number, runID, runURL, sha, termReason, completionMode, jobStatus)
+			agentDescription := titleCase(strings.ReplaceAll(role, "-", " "))
+
+			return reconcileOrphaned(cmd.Context(), client, owner, repoName, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription)
 		},
 	}
 
@@ -121,6 +124,7 @@ finalized, this is a no-op.`,
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform (e.g. "github", "gitlab"); auto-detected from CI env vars when omitted`)
 	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to fullsend config directory (used to detect completion mode for orphan synthesis)")
 	cmd.Flags().StringVar(&jobStatus, "job-status", "", "job outcome from the CI runner (e.g. success, failure, cancelled)")
+	cmd.Flags().BoolVar(&wasSkipped, "was-skipped", false, "whether the pre-script decided to skip the run (forces synthesis under on_failure even when --job-status is success)")
 	_ = cmd.MarkFlagRequired("repo")
 	_ = cmd.MarkFlagRequired("number")
 	_ = cmd.MarkFlagRequired("run-id")

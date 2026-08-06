@@ -318,7 +318,7 @@ func TestNewReconcileStatusCmd_GitLabNoMintRequired(t *testing.T) {
 
 // stubReconcileVars replaces the three package-level func vars used by
 // newReconcileStatusCmd and returns a teardown function.
-func stubReconcileVars(t *testing.T, onReconcile func(completionMode, jobStatus string)) {
+func stubReconcileVars(t *testing.T, onReconcile func(completionMode, jobStatus string, wasSkipped bool, agentDescription string)) {
 	t.Helper()
 	origMint := reconcileMintToken
 	origForge := reconcileNewForgeClient
@@ -335,8 +335,8 @@ func stubReconcileVars(t *testing.T, onReconcile func(completionMode, jobStatus 
 		t.Cleanup(srv.Close)
 		return gh.New(token).WithBaseURL(srv.URL)
 	}
-	reconcileOrphaned = func(_ context.Context, _ forge.Client, _, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, completionMode, jobStatus string) error {
-		onReconcile(completionMode, jobStatus)
+	reconcileOrphaned = func(_ context.Context, _ forge.Client, _, _ string, _ int, _, _, _ string, _ statuscomment.TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string) error {
+		onReconcile(completionMode, jobStatus, wasSkipped, agentDescription)
 		return nil
 	}
 	t.Cleanup(func() {
@@ -359,7 +359,7 @@ defaults:
 	require.NoError(t, err)
 
 	var gotMode, gotStatus string
-	stubReconcileVars(t, func(completionMode, jobStatus string) {
+	stubReconcileVars(t, func(completionMode, jobStatus string, _ bool, _ string) {
 		gotMode = completionMode
 		gotStatus = jobStatus
 	})
@@ -388,7 +388,7 @@ func TestNewReconcileStatusCmd_FullsendDir_MalformedConfig(t *testing.T) {
 	require.NoError(t, err)
 
 	var gotMode string
-	stubReconcileVars(t, func(completionMode, _ string) {
+	stubReconcileVars(t, func(completionMode, _ string, _ bool, _ string) {
 		gotMode = completionMode
 	})
 	t.Setenv("FULLSEND_MINT_URL", "")
@@ -412,7 +412,7 @@ func TestNewReconcileStatusCmd_FullsendDir_MissingConfig(t *testing.T) {
 	dir := t.TempDir() // no config.yaml written
 
 	var gotMode string
-	stubReconcileVars(t, func(completionMode, _ string) {
+	stubReconcileVars(t, func(completionMode, _ string, _ bool, _ string) {
 		gotMode = completionMode
 	})
 	t.Setenv("FULLSEND_MINT_URL", "")
@@ -435,7 +435,7 @@ func TestNewReconcileStatusCmd_FullsendDir_MissingConfig(t *testing.T) {
 func TestNewReconcileStatusCmd_FullsendDir_MissingConfig_LogsDiagnostic(t *testing.T) {
 	dir := t.TempDir() // no config.yaml written
 
-	stubReconcileVars(t, func(_, _ string) {})
+	stubReconcileVars(t, func(_, _ string, _ bool, _ string) {})
 	t.Setenv("FULLSEND_MINT_URL", "")
 
 	cmd := newReconcileStatusCmd()
@@ -454,4 +454,69 @@ func TestNewReconcileStatusCmd_FullsendDir_MissingConfig_LogsDiagnostic(t *testi
 	})
 	require.NoError(t, err)
 	assert.Contains(t, stderr, "status_notifications", "should log a diagnostic distinguishing 'not an org config' from a real load error")
+}
+
+func TestNewReconcileStatusCmd_WasSkippedFlag_Threaded(t *testing.T) {
+	var gotSkipped bool
+	stubReconcileVars(t, func(_, _ string, wasSkipped bool, _ string) {
+		gotSkipped = wasSkipped
+	})
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--mint-url", "https://mint.example.com",
+		"--role", "review",
+		"--job-status", "success",
+		"--was-skipped",
+	})
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+	assert.True(t, gotSkipped)
+}
+
+func TestNewReconcileStatusCmd_WasSkippedFlag_DefaultsFalse(t *testing.T) {
+	var gotSkipped bool
+	stubReconcileVars(t, func(_, _ string, wasSkipped bool, _ string) {
+		gotSkipped = wasSkipped
+	})
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--mint-url", "https://mint.example.com",
+		"--role", "review",
+	})
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+	assert.False(t, gotSkipped)
+}
+
+func TestNewReconcileStatusCmd_AgentDescription_DerivedFromRole(t *testing.T) {
+	var gotDescription string
+	stubReconcileVars(t, func(_, _ string, _ bool, agentDescription string) {
+		gotDescription = agentDescription
+	})
+	t.Setenv("FULLSEND_MINT_URL", "")
+
+	cmd := newReconcileStatusCmd()
+	cmd.SetArgs([]string{
+		"--repo", "org/repo",
+		"--number", "7",
+		"--run-id", "run-1",
+		"--mint-url", "https://mint.example.com",
+		"--role", "code-review",
+	})
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+	assert.Equal(t, "Code Review", gotDescription)
 }
