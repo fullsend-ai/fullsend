@@ -364,6 +364,9 @@ func newMintDeployCmd() *cobra.Command {
 	// Cloudflare-specific flags.
 	var workerName string
 	var preview string
+	var allowedOrgs string
+	var perRepoWIFRepos string
+	var workflowHostRepos string
 
 	cmd := &cobra.Command{
 		Use:   "deploy",
@@ -402,11 +405,24 @@ Cloudflare mode (--platform=cloudflare):
   WASM module with a thin TypeScript adapter for I/O.
 
   Required flags: none (Worker name defaults to "fullsend-mint")
-  Optional: --worker-name, --preview=<alias>, --source-dir, --pem-dir
+  Optional: --worker-name, --preview=<alias>, --source-dir, --pem-dir,
+            --allowed-orgs, --per-repo-wif-repos, --workflow-host-repos,
+            --public
 
   Required environment variables:
     - CLOUDFLARE_ACCOUNT_ID    Cloudflare account identifier
     - CLOUDFLARE_API_TOKEN     API token with Workers write permission
+
+  Mint configuration flags (set Worker env vars during deploy):
+    --allowed-orgs=acme,bigcorp     Set ALLOWED_ORGS
+    --per-repo-wif-repos=a/b,c/d   Set PER_REPO_WIF_REPOS
+    --workflow-host-repos=o/r       Set WORKFLOW_HOST_REPOS
+    --public                        Alias for --per-repo-wif-repos="*"
+
+  For preview deploys, all mint configuration must be specified via
+  deploy flags since separate commands (enroll, add-role) are not
+  supported for preview versions. For durable deploys, configuration
+  can also be updated via those separate commands.
 
   Use --pem-dir to bootstrap role credentials during deploy. The directory
   must contain {role}.pem files (e.g. coder.pem, triage.pem, review.pem).
@@ -433,7 +449,7 @@ Cloudflare mode (--platform=cloudflare):
 			case "gcp":
 				return runMintDeployGCP(cmd.Context(), project, region, sourceDir, skipDeploy, dryRun, pemDir, public)
 			case "cloudflare":
-				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir)
+				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir, allowedOrgs, perRepoWIFRepos, workflowHostRepos, public)
 			default:
 				return fmt.Errorf("unsupported platform %q: must be \"gcp\" or \"cloudflare\"", platform)
 			}
@@ -445,12 +461,12 @@ Cloudflare mode (--platform=cloudflare):
 	cmd.Flags().StringVar(&sourceDir, "source-dir", "", "path to local mint source (default: checkout path when present, embedded otherwise)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 	cmd.Flags().StringVar(&pemDir, "pem-dir", "", "optional: directory containing {role}.pem files to bootstrap the default app set")
+	cmd.Flags().BoolVar(&public, "public", false, "deploy public mint (GCP: ALLOWED_ORGS=*; Cloudflare: PER_REPO_WIF_REPOS=*)")
 
 	// GCP-specific flags.
 	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required for --platform=gcp)")
 	cmd.Flags().StringVar(&region, "region", "us-central1", "GCP region for the Cloud Function")
 	cmd.Flags().BoolVar(&skipDeploy, "skip-deploy", false, "skip code upload, reuse existing function (GCP only)")
-	cmd.Flags().BoolVar(&public, "public", false, "deploy public mint (ALLOWED_ORGS=*, permissive WIF) (GCP only)")
 
 	// Cloudflare-specific flags.
 	cmd.Flags().StringVar(&workerName, "worker-name", "", "Cloudflare Worker script name (default: fullsend-mint)")
@@ -458,6 +474,10 @@ Cloudflare mode (--platform=cloudflare):
 Value is the preview alias passed to --preview-alias. The preview
 mint URL is deterministic: https://<alias>-<worker-name>.workers.dev
 Example: --preview=bt-run-42`)
+	cmd.Flags().StringVar(&allowedOrgs, "allowed-orgs", "", "comma-separated allowed GitHub orgs (Cloudflare only, sets ALLOWED_ORGS)")
+	cmd.Flags().StringVar(&perRepoWIFRepos, "per-repo-wif-repos", "", `comma-separated per-repo WIF repos (Cloudflare only, sets PER_REPO_WIF_REPOS)
+Use --public as shorthand for --per-repo-wif-repos="*"`)
+	cmd.Flags().StringVar(&workflowHostRepos, "workflow-host-repos", "", "comma-separated workflow host repos (Cloudflare only, sets WORKFLOW_HOST_REPOS)")
 
 	return cmd
 }
@@ -472,12 +492,14 @@ func warnIrrelevantFlags(cmd *cobra.Command, platform string) {
 		"gcp": {
 			{"worker-name", "Cloudflare"},
 			{"preview", "Cloudflare"},
+			{"allowed-orgs", "Cloudflare"},
+			{"per-repo-wif-repos", "Cloudflare"},
+			{"workflow-host-repos", "Cloudflare"},
 		},
 		"cloudflare": {
 			{"project", "GCP"},
 			{"region", "GCP"},
 			{"skip-deploy", "GCP"},
-			{"public", "GCP"},
 		},
 	}
 
@@ -608,9 +630,14 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 	return nil
 }
 
-func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool, pemDir string) error {
+func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool, pemDir, allowedOrgs, perRepoWIFRepos, workflowHostRepos string, public bool) error {
 	if err := cf.ValidateCloudflareEnv(); err != nil {
 		return err
+	}
+
+	// Handle --public as an alias for --per-repo-wif-repos="*".
+	if public {
+		perRepoWIFRepos = "*"
 	}
 
 	accountID := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
@@ -645,6 +672,20 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		effectiveName = "fullsend-mint"
 	}
 
+	// Build Worker env vars from deploy flags. These are passed to
+	// wrangler via --var flags during both preview and durable deploys,
+	// providing a unified code path for mint configuration.
+	cfEnvVars := make(map[string]string)
+	if allowedOrgs != "" {
+		cfEnvVars["ALLOWED_ORGS"] = allowedOrgs
+	}
+	if perRepoWIFRepos != "" {
+		cfEnvVars["PER_REPO_WIF_REPOS"] = perRepoWIFRepos
+	}
+	if workflowHostRepos != "" {
+		cfEnvVars["WORKFLOW_HOST_REPOS"] = workflowHostRepos
+	}
+
 	if dryRun {
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
@@ -668,6 +709,9 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		} else {
 			printer.StepInfo("Mode: durable (persistent)")
 		}
+		for k, v := range cfEnvVars {
+			printer.StepInfo(fmt.Sprintf("Would set %s=%s", k, v))
+		}
 		if pemDir != "" {
 			if _, err := validatePEMDir(pemDir); err != nil {
 				return err
@@ -682,7 +726,6 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 	// Load PEMs and discover app IDs before building config so
 	// ROLE_APP_IDS can be passed as a Worker env var during deploy.
 	var agentPEMs map[string][]byte
-	var cfEnvVars map[string]string
 	if pemDir != "" {
 		printer.StepStart(fmt.Sprintf("Loading PEMs and discovering app IDs for app set %q", appsetup.DefaultAppSet))
 		var agentAppIDs map[string]string
@@ -700,10 +743,8 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		}
 
 		// Set ROLE_APP_IDS as an env var so the Worker receives it
-		// via --var during deploy (same path ALLOWED_ORGS uses).
-		cfEnvVars = map[string]string{
-			"ROLE_APP_IDS": string(roleAppIDsJSON),
-		}
+		// via --var during deploy (same path as ALLOWED_ORGS etc.).
+		cfEnvVars["ROLE_APP_IDS"] = string(roleAppIDsJSON)
 	}
 
 	// For preview deploys, PEM secrets must be passed through the deploy
@@ -781,6 +822,15 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 	}
 	if pemDir != "" {
 		summaryLines = append(summaryLines, fmt.Sprintf("App set: %s (PEMs bootstrapped)", appsetup.DefaultAppSet))
+	}
+	if allowedOrgs != "" {
+		summaryLines = append(summaryLines, fmt.Sprintf("ALLOWED_ORGS: %s", allowedOrgs))
+	}
+	if perRepoWIFRepos != "" {
+		summaryLines = append(summaryLines, fmt.Sprintf("PER_REPO_WIF_REPOS: %s", perRepoWIFRepos))
+	}
+	if workflowHostRepos != "" {
+		summaryLines = append(summaryLines, fmt.Sprintf("WORKFLOW_HOST_REPOS: %s", workflowHostRepos))
 	}
 	summaryLines = append(summaryLines,
 		fmt.Sprintf("Version: %s", version),

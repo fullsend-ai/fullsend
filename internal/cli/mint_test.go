@@ -943,6 +943,241 @@ func TestMintDeployCmd_CloudflareNoWarningForPemDir(t *testing.T) {
 		"--pem-dir should not produce a GCP warning on cloudflare")
 }
 
+func TestMintDeployCmd_CloudflareDeployWithConfigFlags(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--allowed-orgs=acme,bigcorp",
+		"--per-repo-wif-repos=acme/widget,bigcorp/gadget",
+		"--workflow-host-repos=fullsend-ai/fullsend",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	envVars := fake.deployCalls[0].envVars
+	assert.Equal(t, "acme,bigcorp", envVars["ALLOWED_ORGS"],
+		"ALLOWED_ORGS should be set from --allowed-orgs flag")
+	assert.Equal(t, "acme/widget,bigcorp/gadget", envVars["PER_REPO_WIF_REPOS"],
+		"PER_REPO_WIF_REPOS should be set from --per-repo-wif-repos flag")
+	assert.Equal(t, "fullsend-ai/fullsend", envVars["WORKFLOW_HOST_REPOS"],
+		"WORKFLOW_HOST_REPOS should be set from --workflow-host-repos flag")
+}
+
+func TestMintDeployCmd_CloudflarePreviewDeployWithConfigFlags(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	fake := &fakeCFWranglerRunner{}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--preview=bt-test-99",
+		"--source-dir=" + sourceDir,
+		"--allowed-orgs=acme",
+		"--per-repo-wif-repos=acme/widget",
+		"--workflow-host-repos=fullsend-ai/fullsend",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	assert.Equal(t, "bt-test-99", fake.deployCalls[0].previewAlias,
+		"preview alias should be passed to deploy")
+	envVars := fake.deployCalls[0].envVars
+	assert.Equal(t, "acme", envVars["ALLOWED_ORGS"],
+		"ALLOWED_ORGS should be set for preview deploys")
+	assert.Equal(t, "acme/widget", envVars["PER_REPO_WIF_REPOS"],
+		"PER_REPO_WIF_REPOS should be set for preview deploys")
+	assert.Equal(t, "fullsend-ai/fullsend", envVars["WORKFLOW_HOST_REPOS"],
+		"WORKFLOW_HOST_REPOS should be set for preview deploys")
+}
+
+func TestMintDeployCmd_CloudflarePublicFlagSetsPRWR(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--public",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	envVars := fake.deployCalls[0].envVars
+	assert.Equal(t, "*", envVars["PER_REPO_WIF_REPOS"],
+		"--public should set PER_REPO_WIF_REPOS to *")
+}
+
+func TestMintDeployCmd_CloudflarePublicOverridesPerRepoWIF(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	// --public should override explicit --per-repo-wif-repos
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--public",
+		"--per-repo-wif-repos=acme/widget",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	envVars := fake.deployCalls[0].envVars
+	assert.Equal(t, "*", envVars["PER_REPO_WIF_REPOS"],
+		"--public should override --per-repo-wif-repos to *")
+}
+
+func TestMintDeployCmd_CloudflareDryRunWithConfigFlags(t *testing.T) {
+	withCFEnvVars(t)
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--dry-run",
+		"--allowed-orgs=acme",
+		"--public",
+	})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "ALLOWED_ORGS=acme")
+	assert.Contains(t, stdout, "PER_REPO_WIF_REPOS=*")
+}
+
+func TestMintDeployCmd_CloudflareNoConfigFlagsOmitsEnvVars(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	envVars := fake.deployCalls[0].envVars
+	_, hasAllowedOrgs := envVars["ALLOWED_ORGS"]
+	_, hasPRWR := envVars["PER_REPO_WIF_REPOS"]
+	_, hasWHR := envVars["WORKFLOW_HOST_REPOS"]
+	assert.False(t, hasAllowedOrgs, "ALLOWED_ORGS should not be set when --allowed-orgs is omitted")
+	assert.False(t, hasPRWR, "PER_REPO_WIF_REPOS should not be set when --per-repo-wif-repos is omitted")
+	assert.False(t, hasWHR, "WORKFLOW_HOST_REPOS should not be set when --workflow-host-repos is omitted")
+}
+
+func TestMintDeployCmd_CloudflareConfigFlagsWarnOnGCP(t *testing.T) {
+	// CF-specific config flags should produce a warning when used with GCP.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=gcp",
+		"--project=my-project-id",
+		"--dry-run",
+		"--allowed-orgs=acme",
+	})
+	_ = cmd.Execute()
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	out, _ := io.ReadAll(r)
+	stderr := string(out)
+	assert.Contains(t, stderr, "--allowed-orgs is a Cloudflare flag",
+		"--allowed-orgs should produce a warning on GCP")
+}
+
+func TestMintDeployCmd_CloudflarePublicNoWarning(t *testing.T) {
+	withCFEnvVars(t)
+
+	// --public should not produce a warning on cloudflare.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--public",
+		"--dry-run",
+	})
+	_ = cmd.Execute()
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	out, _ := io.ReadAll(r)
+	stderr := string(out)
+	assert.NotContains(t, stderr, "--public is a GCP flag",
+		"--public should not produce a GCP warning on cloudflare")
+}
+
+func TestMintDeployCmd_NewFlagsExist(t *testing.T) {
+	cmd := newMintDeployCmd()
+
+	allowedOrgsFlag := cmd.Flags().Lookup("allowed-orgs")
+	require.NotNil(t, allowedOrgsFlag, "expected --allowed-orgs flag")
+
+	perRepoWIFReposFlag := cmd.Flags().Lookup("per-repo-wif-repos")
+	require.NotNil(t, perRepoWIFReposFlag, "expected --per-repo-wif-repos flag")
+
+	workflowHostReposFlag := cmd.Flags().Lookup("workflow-host-repos")
+	require.NotNil(t, workflowHostReposFlag, "expected --workflow-host-repos flag")
+}
+
 func TestMintDeployCmd_GCPDefaultPlatform(t *testing.T) {
 	// Default platform is GCP, so omitting --platform should require --project.
 	cmd := newRootCmd()
