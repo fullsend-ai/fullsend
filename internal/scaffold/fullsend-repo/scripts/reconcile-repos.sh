@@ -41,7 +41,7 @@ UPDATE_PR_TITLE="chore: update fullsend shim workflow"
 ENROLL_PR_BODY="This PR adds a shim workflow that routes repository events to the fullsend agent dispatch workflow in the \`.fullsend\` config repo.
 
 Once merged, issues, PRs, and comments in this repo will be handled by the fullsend agent pipeline."
-UNENROLL_PR_BODY="This PR removes the fullsend shim workflow. The repo has been set to \`enabled: false\` in the fullsend config.
+UNENROLL_PR_BODY="This PR removes the fullsend shim workflow and stop-agent script. The repo has been set to \`enabled: false\` in the fullsend config.
 
 Once merged, this repo will no longer dispatch events to the fullsend agent pipeline."
 UPDATE_PR_BODY="This PR updates the fullsend shim workflow to match the current template in the \`.fullsend\` config repo.
@@ -58,10 +58,10 @@ ENROLL_COMMIT_MSG="chore: add fullsend shim workflow
 Add the shim workflow that routes repository events to
 the fullsend agent dispatch pipeline."
 
-UNENROLL_COMMIT_MSG="chore: remove fullsend shim workflow
+UNENROLL_COMMIT_MSG="chore: remove fullsend shim and stop-agent script
 
-Remove the shim workflow. The repo has been set to
-enabled: false in the fullsend config."
+Remove the shim workflow and stop-agent script. The repo
+has been set to enabled: false in the fullsend config."
 
 if [ ! -f "$SHIM_TEMPLATE" ]; then
   echo "::error::shim template not found at $SHIM_TEMPLATE"
@@ -608,6 +608,22 @@ if [ -n "$DISABLED_REPOS" ]; then
       echo "::error::Failed to delete shim from $REPO (path=$SHIM_PATH, branch=$UNENROLL_BRANCH)"
       FAILED=$((FAILED + 1))
       continue
+    fi
+
+    # Also remove stop-agent.sh when present (repos enrolled before this
+    # script shipped may not have it — treat missing as already clean).
+    SCRIPT_SHA=$(gh api "repos/$ORG/$REPO/contents/$STOP_AGENT_PATH?ref=$UNENROLL_BRANCH" --jq .sha 2>/dev/null || true)
+    if [ -n "$SCRIPT_SHA" ]; then
+      if ! gh api "repos/$ORG/$REPO/contents/$STOP_AGENT_PATH" \
+        --method DELETE \
+        --field "message=$UNENROLL_COMMIT_MSG" \
+        --field "branch=$UNENROLL_BRANCH" \
+        --field "sha=$SCRIPT_SHA" \
+        --silent; then
+        echo "::error::Failed to delete stop-agent script from $REPO (path=$STOP_AGENT_PATH, branch=$UNENROLL_BRANCH)"
+        FAILED=$((FAILED + 1))
+        continue
+      fi
     fi
 
     # Create removal PR.

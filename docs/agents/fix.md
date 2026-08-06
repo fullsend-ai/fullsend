@@ -135,7 +135,8 @@ automatic (bot-triggered) runs.
 `/fs-fix-stop` (alias of `/fs-stop fix`) adds the `fullsend-no-fix` label to the PR, preventing any
 further bot-triggered fix runs. Human-triggered `/fs-fix` commands still work.
 Remove the label or use `/fs-fix` to re-engage. Prefer `/fs-stop fix` for new usage;
-`/fs-stop` with no argument stops all agents.
+`/fs-stop` with no argument applies the `fullsend-no-*` labels meaningful for
+this item type (issue: triage/code; PR: review/fix/retro).
 
 ## Control labels
 

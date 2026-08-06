@@ -357,7 +357,7 @@ Ordered by the project's threat priority (external injection > insider > drift >
 ### `stop-fix` job placement
 
 **Resolved (PR #799):** The `stop-fix` job lives in the target repo's shim workflow (same location as per-org) since it only needs the default `GITHUB_TOKEN` — no mint or reusable workflow involvement.
-(Renamed to `stop-agent` when generalized for `/fs-stop`; see [ADR 0034](0034-centralized-shim-routing-via-dispatch.md).)
+(Renamed to `stop-agent` when generalized for `/fs-stop`; see [ADR 0086](0086-fs-stop-agent-and-no-agent-labels.md).)
 
 ### CLI command design
 

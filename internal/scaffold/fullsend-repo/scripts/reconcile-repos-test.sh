@@ -255,6 +255,12 @@ if grep -q "contents/.github/workflows/fullsend.yaml.*--method PUT" "${GH_LOG}";
   exit 1
 fi
 
+if ! grep -q "contents/.github/scripts/stop-agent.sh" "${GH_LOG}"; then
+  echo "FAIL: unenroll did not attempt to delete stop-agent.sh"
+  cat "${GH_LOG}"
+  exit 1
+fi
+
 echo "PASS: stale shim branch update is atomic"
 
 # ===========================
@@ -319,10 +325,10 @@ if [ "$msg_index" -eq 0 ]; then
   exit 1
 fi
 
-# Expect exactly 4 commit messages: update (stale shim), refresh (existing PR),
-# add (new enrollment), and remove (unenrollment).
-if [ "$msg_index" -ne 4 ]; then
-  echo "FAIL: expected 4 commit messages but found $msg_index"
+# Expect exactly 5 commit messages: update (stale shim), refresh (existing PR),
+# add (new enrollment), and remove shim + remove stop-agent script (unenrollment).
+if [ "$msg_index" -ne 5 ]; then
+  echo "FAIL: expected 5 commit messages but found $msg_index"
   exit 1
 fi
 
