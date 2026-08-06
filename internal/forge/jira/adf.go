@@ -24,16 +24,32 @@ func MarkdownToADF(source string) map[string]any {
 	return map[string]any{
 		"version": 1,
 		"type":    "doc",
-		"content": adfBlockContent(doc, src),
+		"content": adfBlockContent(doc, src, 0),
 	}
 }
 
+// maxADFWriteDepth caps how deep adfBlockContent/convertBlockNode/
+// walkInline will recurse into parsed markdown, mirroring maxADFDepth's
+// rationale on the read side below. MarkdownToADF's callers don't feed it
+// attacker-controlled input today, but it ships as a public API
+// (jira.MarkdownToADF, LiveClient.CreateComment/UpdateComment) that a
+// future caller could feed external content into (e.g. quoting an issue
+// or comment body) — the same unbounded-recursion risk applies once that
+// happens.
+const maxADFWriteDepth = 50
+
 // adfBlockContent converts each block-level child of parent into an ADF
 // block node, dropping any child type convertBlockNode doesn't recognize.
-func adfBlockContent(parent ast.Node, source []byte) []any {
+// depth is the nesting depth of parent's children; past maxADFWriteDepth,
+// remaining content is dropped rather than descended into, consistent with
+// how unsupported node types are already handled.
+func adfBlockContent(parent ast.Node, source []byte, depth int) []any {
 	content := []any{}
+	if depth > maxADFWriteDepth {
+		return content
+	}
 	for c := parent.FirstChild(); c != nil; c = c.NextSibling() {
-		if node := convertBlockNode(c, source); node != nil {
+		if node := convertBlockNode(c, source, depth); node != nil {
 			content = append(content, node)
 		}
 	}
@@ -42,25 +58,25 @@ func adfBlockContent(parent ast.Node, source []byte) []any {
 
 // convertBlockNode converts a single goldmark block node to its ADF
 // equivalent, or returns nil for node kinds outside MarkdownToADF's
-// supported vocabulary.
-func convertBlockNode(n ast.Node, source []byte) map[string]any {
+// supported vocabulary. depth is n's own nesting depth.
+func convertBlockNode(n ast.Node, source []byte, depth int) map[string]any {
 	switch v := n.(type) {
 	case *ast.Paragraph:
-		return map[string]any{"type": "paragraph", "content": adfInlineContent(n, source)}
+		return map[string]any{"type": "paragraph", "content": adfInlineContent(n, source, depth)}
 	case *ast.TextBlock:
 		// Tight list items wrap their text in a TextBlock rather than a
 		// Paragraph; ADF's listItem schema still expects a paragraph child.
-		return map[string]any{"type": "paragraph", "content": adfInlineContent(n, source)}
+		return map[string]any{"type": "paragraph", "content": adfInlineContent(n, source, depth)}
 	case *ast.Heading:
 		return map[string]any{
 			"type":    "heading",
 			"attrs":   map[string]any{"level": v.Level},
-			"content": adfInlineContent(n, source),
+			"content": adfInlineContent(n, source, depth),
 		}
 	case *ast.ThematicBreak:
 		return map[string]any{"type": "rule"}
 	case *ast.Blockquote:
-		return map[string]any{"type": "blockquote", "content": adfBlockContent(n, source)}
+		return map[string]any{"type": "blockquote", "content": adfBlockContent(n, source, depth+1)}
 	case *ast.CodeBlock:
 		return codeBlockNode(v.Lines().Value(source), "")
 	case *ast.FencedCodeBlock:
@@ -74,13 +90,13 @@ func convertBlockNode(n ast.Node, source []byte) map[string]any {
 				attrs = map[string]any{"order": v.Start}
 			}
 		}
-		node := map[string]any{"type": listType, "content": adfBlockContent(n, source)}
+		node := map[string]any{"type": listType, "content": adfBlockContent(n, source, depth+1)}
 		if attrs != nil {
 			node["attrs"] = attrs
 		}
 		return node
 	case *ast.ListItem:
-		return map[string]any{"type": "listItem", "content": adfBlockContent(n, source)}
+		return map[string]any{"type": "listItem", "content": adfBlockContent(n, source, depth+1)}
 	default:
 		return nil
 	}
@@ -100,17 +116,23 @@ func codeBlockNode(text []byte, lang string) map[string]any {
 }
 
 // adfInlineContent converts the inline children of a block node (paragraph
-// or heading) into a flat sequence of ADF text/hardBreak nodes.
-func adfInlineContent(parent ast.Node, source []byte) []any {
+// or heading) into a flat sequence of ADF text/hardBreak nodes. depth is
+// the block node's own nesting depth, threaded through to walkInline since
+// inline marks (nested emphasis/links/code spans) recurse too.
+func adfInlineContent(parent ast.Node, source []byte, depth int) []any {
 	content := []any{}
-	walkInline(parent, source, nil, &content)
+	walkInline(parent, source, nil, &content, depth)
 	return content
 }
 
 // walkInline recursively walks inline nodes, accumulating the marks
 // (strong/em/code/link) implied by enclosing nodes and emitting a text (or
-// hardBreak) ADF node for each leaf.
-func walkInline(parent ast.Node, source []byte, marks []any, out *[]any) {
+// hardBreak) ADF node for each leaf. Past maxADFWriteDepth, remaining
+// content is dropped rather than descended into.
+func walkInline(parent ast.Node, source []byte, marks []any, out *[]any, depth int) {
+	if depth > maxADFWriteDepth {
+		return
+	}
 	for c := parent.FirstChild(); c != nil; c = c.NextSibling() {
 		switch v := c.(type) {
 		case *ast.Text:
@@ -123,19 +145,19 @@ func walkInline(parent ast.Node, source []byte, marks []any, out *[]any) {
 		case *ast.String:
 			appendADFText(out, string(v.Value), marks)
 		case *ast.CodeSpan:
-			walkInline(v, source, withMark(marks, map[string]any{"type": "code"}), out)
+			walkInline(v, source, withMark(marks, map[string]any{"type": "code"}), out, depth+1)
 		case *ast.Emphasis:
 			markType := "em"
 			if v.Level >= 2 {
 				markType = "strong"
 			}
-			walkInline(v, source, withMark(marks, map[string]any{"type": markType}), out)
+			walkInline(v, source, withMark(marks, map[string]any{"type": markType}), out, depth+1)
 		case *ast.Link:
 			attrs := map[string]any{"href": string(v.Destination)}
 			if len(v.Title) > 0 {
 				attrs["title"] = string(v.Title)
 			}
-			walkInline(v, source, withMark(marks, map[string]any{"type": "link", "attrs": attrs}), out)
+			walkInline(v, source, withMark(marks, map[string]any{"type": "link", "attrs": attrs}), out, depth+1)
 		case *ast.AutoLink:
 			appendADFText(out, string(v.Label(source)), withMark(marks, map[string]any{
 				"type": "link", "attrs": map[string]any{"href": string(v.URL(source))},
@@ -144,7 +166,7 @@ func walkInline(parent ast.Node, source []byte, marks []any, out *[]any) {
 			// Node types without ADF-specific handling (e.g. Image,
 			// RawHTML) fall through to walking their children as plain
 			// text, so at least the readable content isn't lost.
-			walkInline(c, source, marks, out)
+			walkInline(c, source, marks, out, depth+1)
 		}
 	}
 }
@@ -176,9 +198,12 @@ func appendADFText(out *[]any, value string, marks []any) {
 // handful of levels for nested lists at most); a body is
 // attacker-controlled by any Jira user who can comment on or edit an
 // issue tracker.Client reads, so without a cap, deeply nested JSON could
-// exhaust the goroutine stack. Mirrors jirapoll's identical cap for the
-// same reason (see internal/jirapoll/discover.go); this is a separate,
-// deliberately unshared implementation — see adf.go's package doc comment.
+// exhaust the goroutine stack. Mirrors jirapoll's identical cap and logic
+// (see extractADFText/walkADFNode in internal/jirapoll/discover.go) — the
+// duplication is intentional for now, to avoid refactoring jirapoll's
+// private helpers as part of this package's feature work; consolidating
+// onto this exported ADFToPlainText is a reasonable follow-up once the
+// Jira tracker integration stabilizes.
 const maxADFDepth = 50
 
 // ADFToPlainText extracts plain text from a Jira issue or comment body.

@@ -265,6 +265,35 @@ func TestMarkdownToADF_ThematicBreak(t *testing.T) {
 	}
 }
 
+func TestMarkdownToADF_DeepNestingIsBounded(t *testing.T) {
+	// Mirrors TestADFToPlainText_DeepNestingIsBounded: MarkdownToADF's
+	// block/inline converters recurse once per markdown nesting level with
+	// no cap, so deeply nested input (e.g. thousands of ">" blockquote
+	// markers) must not be walked to full depth.
+	const depth = 10000
+	src := strings.Repeat("> ", depth) + "leaf"
+
+	doc := MarkdownToADF(src)
+
+	walked := 0
+	content := doc["content"]
+	for {
+		items, ok := content.([]any)
+		if !ok || len(items) == 0 {
+			break
+		}
+		node, ok := items[0].(map[string]any)
+		if !ok || node["type"] != "blockquote" {
+			break
+		}
+		walked++
+		content = node["content"]
+	}
+	if walked >= depth {
+		t.Errorf("MarkdownToADF walked all %d nesting levels; want it capped well below that", depth)
+	}
+}
+
 func TestMarkdownToADF_HardBreak(t *testing.T) {
 	doc := MarkdownToADF("line one  \nline two")
 
