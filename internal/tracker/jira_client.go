@@ -76,10 +76,10 @@ func (c *JiraClient) ListComments(ctx context.Context, project string, number in
 	return result, nil
 }
 
-// CreateComment implements Client. The returned Comment's Body is set to
-// the original markdown body argument rather than re-derived from the ADF
-// Jira echoes back in its response, avoiding a lossy ADF->plain-text round
-// trip of content the caller already has verbatim.
+// CreateComment implements Client. The returned Comment's Body is
+// ADFToPlainText(comment.Body), the same representation ListComments
+// uses, so tracker.Comment.Body has a stable meaning regardless of which
+// method produced it.
 func (c *JiraClient) CreateComment(ctx context.Context, project string, number int, body string) (*Comment, error) {
 	key := issueKey(project, number)
 	comment, err := c.jira.CreateComment(ctx, key, body)
@@ -87,7 +87,6 @@ func (c *JiraClient) CreateComment(ctx context.Context, project string, number i
 		return nil, err
 	}
 	result := fromJiraComment(*comment)
-	result.Body = body
 	return &result, nil
 }
 

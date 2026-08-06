@@ -38,7 +38,7 @@ func (f *fakeJiraClient) CreateComment(_ context.Context, issueIDOrKey, body str
 	f.createdBody = body
 	comment := jira.Comment{
 		ID:      "50001",
-		Body:    map[string]any{"type": "doc", "version": 1, "content": []any{}}, // deliberately not body's markdown
+		Body:    jira.MarkdownToADF(body), // mirrors Jira echoing back the ADF it stored
 		Author:  jira.User{DisplayName: "fullsend-bot"},
 		Created: "2026-08-06T00:00:00.000+0000",
 	}
@@ -177,8 +177,8 @@ func TestJiraClient_CreateComment(t *testing.T) {
 	if _, ok := fc.comments["PROJ-42"]; !ok {
 		t.Fatal("expected comment to be created against issue key PROJ-42")
 	}
-	if comment.Body != "**hello** there" {
-		t.Errorf("comment.Body = %q, want the original markdown %q, not a round-tripped ADF value", comment.Body, "**hello** there")
+	if comment.Body != "hello there" {
+		t.Errorf("comment.Body = %q, want %q (plain text, consistent with ListComments)", comment.Body, "hello there")
 	}
 }
 
