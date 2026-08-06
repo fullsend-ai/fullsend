@@ -2740,6 +2740,29 @@ func (c *LiveClient) DeleteIssueReaction(ctx context.Context, owner, repo string
 	return c.delete_(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/reactions/%d", owner, repo, number, reactionID))
 }
 
+// AddIssueCommentReaction adds an emoji reaction to an issue/PR comment.
+func (c *LiveClient) AddIssueCommentReaction(ctx context.Context, owner, repo string, commentID int, content string) (int64, error) {
+	if !slices.Contains(validReactionContent, content) {
+		return 0, fmt.Errorf("add issue comment reaction: invalid content %q", content)
+	}
+	resp, err := c.post(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d/reactions", owner, repo, commentID), map[string]string{"content": content})
+	if err != nil {
+		return 0, fmt.Errorf("add issue comment reaction on comment %d: %w", commentID, err)
+	}
+	var result struct {
+		ID int64 `json:"id"`
+	}
+	if err := decodeJSON(resp, &result); err != nil {
+		return 0, fmt.Errorf("decode issue comment reaction: %w", err)
+	}
+	return result.ID, nil
+}
+
+// DeleteIssueCommentReaction removes a previously added comment reaction by ID.
+func (c *LiveClient) DeleteIssueCommentReaction(ctx context.Context, owner, repo string, commentID int, reactionID int64) error {
+	return c.delete_(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d/reactions/%d", owner, repo, commentID, reactionID))
+}
+
 // GetPullRequestInfo returns branch/repo context for a pull request.
 func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string, number int) (*forge.PullRequestInfo, error) {
 	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number))

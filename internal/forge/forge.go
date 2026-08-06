@@ -537,6 +537,19 @@ type Client interface {
 	// Returns forge.ErrNotSupported if the forge has no equivalent concept.
 	DeleteIssueReaction(ctx context.Context, owner, repo string, number int, reactionID int64) error
 
+	// AddIssueCommentReaction adds an emoji reaction to a specific comment,
+	// rather than the issue/PR itself. Used when a run was triggered by a
+	// slash command, so the reaction targets the comment that invoked the
+	// agent instead of the issue/PR. See AddIssueReaction for content
+	// values. Returns forge.ErrNotSupported if the forge has no equivalent
+	// concept.
+	AddIssueCommentReaction(ctx context.Context, owner, repo string, commentID int, content string) (id int64, err error)
+
+	// DeleteIssueCommentReaction removes a previously added comment
+	// reaction by ID. Returns forge.ErrNotSupported if the forge has no
+	// equivalent concept.
+	DeleteIssueCommentReaction(ctx context.Context, owner, repo string, commentID int, reactionID int64) error
+
 	// Pull request operations
 	GetPullRequestInfo(ctx context.Context, owner, repo string, number int) (*PullRequestInfo, error)
 	GetPullRequestHeadSHA(ctx context.Context, owner, repo string, number int) (string, error)
