@@ -35,6 +35,12 @@ inputs:
   status-number:
     description: Issue/PR number for status comments (optional).
     default: ""
+  status-comment-id:
+    description: >-
+      ID of the comment that triggered this run via a slash command
+      (optional). When set, status reactions target that comment instead
+      of the issue/PR.
+    default: ""
   mint-url:
     description: >-
       Mint service URL for on-demand GitHub App tokens. Used for both
@@ -380,6 +386,7 @@ runs:
         STATUS_RUN_URL: ${{ inputs.run-url }}
         STATUS_REPO: ${{ inputs.status-repo }}
         STATUS_NUMBER: ${{ inputs.status-number }}
+        STATUS_COMMENT_ID: ${{ inputs.status-comment-id }}
         MINT_URL: ${{ inputs.mint-url }}
         PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
       run: |
@@ -396,6 +403,9 @@ runs:
           STATUS_FLAGS+=(--status-repo "${STATUS_REPO}" --status-number "${STATUS_NUMBER}")
           if [[ -n "${STATUS_RUN_URL}" ]]; then
             STATUS_FLAGS+=(--run-url "${STATUS_RUN_URL}")
+          fi
+          if [[ -n "${STATUS_COMMENT_ID}" ]]; then
+            STATUS_FLAGS+=(--status-comment-id "${STATUS_COMMENT_ID}")
           fi
         fi
         MINT_FLAGS=()

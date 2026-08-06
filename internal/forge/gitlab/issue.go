@@ -381,6 +381,16 @@ func (c *LiveClient) DeleteIssueReaction(_ context.Context, _, _ string, _ int, 
 	return forge.ErrNotSupported
 }
 
+// AddIssueCommentReaction is not yet implemented for GitLab. See AddIssueReaction.
+func (c *LiveClient) AddIssueCommentReaction(_ context.Context, _, _ string, _ int, _ string) (int64, error) {
+	return 0, forge.ErrNotSupported
+}
+
+// DeleteIssueCommentReaction is not yet implemented for GitLab. See AddIssueReaction.
+func (c *LiveClient) DeleteIssueCommentReaction(_ context.Context, _, _ string, _ int, _ int64) error {
+	return forge.ErrNotSupported
+}
+
 // projectWebURL returns the web URL for a project (without trailing slash).
 func (c *LiveClient) projectWebURL(owner, repo string) string {
 	return c.baseURL + "/" + owner + "/" + repo
