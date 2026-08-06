@@ -40,65 +40,54 @@ but cannot satisfy the rest of the contract fails before sandbox creation
 rather than degrading silently:
 
 1. **Operator opt-in (env):** `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`
-   set to `true`, or `span_only`, its fullsend-defined alias. The upstream
-   conventions require content capture to be opt-in but do not standardize
-   this variable's values, so the accepted set is defined here: `false` or
-   unset is off, and any other value is a hard error regardless of the other
-   conditions — ambiguous intent is never read as off. Delivered to runs as
-   CI-native infra plumbing per [ADR 0081](0081-reserve-workflow-env-for-infra-plumbing.md).
+   set to `true` or `span_only` (equivalent; the upstream conventions mandate
+   opt-in but leave values to implementations, so the accepted set is defined
+   here). `false` or unset is off; any other value is a hard error regardless
+   of the other conditions — ambiguous intent is never read as off. Delivered
+   as CI-native infra plumbing per [ADR 0081](0081-reserve-workflow-env-for-infra-plumbing.md).
 2. **Content-owner consent (harness):** `telemetry.content_capture: true` in
-   the agent's harness. Consent is deliberately per-agent — content
-   sensitivity varies by agent and repository, and the harness file's
-   CODEOWNERS review is the consent mechanism. A structured harness field is
-   a surface [ADR 0080](0080-config-yaml-vs-agent-env-var-scope.md)'s two
-   placements (org-wide `config.yaml` fields, `{AGENT}_`-prefixed env vars)
-   do not cover; it is chosen here because neither of those surfaces carries
-   the per-agent review semantics this consent requires.
-3. **Allowlisted destination:** the resolved OTLP traces endpoint's host —
-   `host` or `host:port`, matched exactly and case-insensitively, no
-   wildcards and no scheme or path matching — must appear in the
-   comma-separated `FULLSEND_CONTENT_CAPTURE_ALLOWED_ENDPOINTS` org
-   variable. Unset or empty means no capture request can succeed, so
-   implementation merges inert; every host addition records a reference to
-   its governance sign-off alongside the change. Exact matching is
-   deliberate: a wildcard entry would let a subdomain nobody reviewed
-   receive content.
-   [ADR 0082](0082-workflow-host-allow-list.md)'s `WORKFLOW_HOST_REPOS` is
-   the precedent for the operational shape — default-minimal, CLI-managed,
-   surfaced in status — not for these matching rules, which govern a
-   different domain. An organization variable is the gate precisely so its
-   owner is distinct from the harness's CODEOWNERS; repositories without an
-   organization (personal accounts) have no second owner and cannot enable
-   Level 3.
+   the agent's harness — content sensitivity is per-agent, and the harness
+   file's CODEOWNERS review is the consent mechanism. This is a surface
+   [ADR 0080](0080-config-yaml-vs-agent-env-var-scope.md)'s two placements
+   (org-wide `config.yaml` fields, `{AGENT}_` env vars) do not cover;
+   neither carries the per-agent review semantics this consent requires.
+3. **Allowlisted destination:** the resolved OTLP traces endpoint's host must
+   appear in the comma-separated `FULLSEND_CONTENT_CAPTURE_ALLOWED_ENDPOINTS`
+   org variable — `host` or `host:port`, matched exactly and
+   case-insensitively; no wildcards (an unreviewed subdomain must never
+   qualify), no scheme or path matching. Unset or empty means no capture
+   request can succeed, so implementation merges inert; each addition records
+   its governance sign-off reference. The org variable keeps this gate's
+   owner distinct from the harness's CODEOWNERS — personal-account
+   repositories have no second owner and cannot enable Level 3. Operational
+   shape (default-minimal, CLI-managed, surfaced in status) follows
+   [ADR 0082](0082-workflow-host-allow-list.md); the matching rules are
+   defined here, not there.
 
 A capture request also fails closed when the secret redactor is disabled
 (`security.enabled: false` or `host_scanners.secret_redactor: false`), when
 the SDK is disabled, or when the selected runtime has no content adapter.
 
 **The agent runtime's native content telemetry is never enabled.** Level 3
-re-exports the transcript fullsend already extracts, through fullsend's own
-pipeline — one exporter, one redaction path, no second trace identity — and
+re-exports the transcript fullsend already extracts through fullsend's own
+pipeline — one exporter, one redaction path, no second trace identity;
 [ADR 0085](0085-sandbox-environment-variable-denylist.md) makes the
 in-sandbox alternative unconstructible.
 
-Content flows over OTLP export only. `run-telemetry.jsonl` keeps its
-documented metadata-only contract, enforced by an attribute allow-list at the
-file exporter. Captured content is assembled post-iteration from the
-transcript and harness inputs into OTel GenAI semantic-convention aggregated
-attributes (v1.37.0 shape, pinned and stamped as a span attribute) on the
-existing per-iteration `agent` spans, under explicit per-kind size budgets
-with structure-preserving truncation markers (validating backend and
-collector attribute limits precedes the pilot; tracked in the implementation
-issue). Content passes through secret redaction at assembly: a hit masks the
-matched value before export and is recorded as a security finding; content
-that defeats masking through encoding is dropped whole rather than
-surgically masked; and the export path strips any content attribute lacking
-the redaction marker.
+Content flows over OTLP export only; `run-telemetry.jsonl` keeps its
+metadata-only contract via an attribute allow-list at the file exporter.
+Content is assembled post-iteration from the transcript and harness inputs
+into OTel GenAI aggregated attributes (v1.37.0 shape, pinned and stamped as
+a span attribute) on the existing per-iteration `agent` spans, under
+per-kind size budgets with structure-preserving truncation (validating
+backend attribute limits precedes the pilot; tracked in the implementation
+issue). Redaction runs at assembly: a hit masks the value and records a
+security finding, encoding evasion drops the affected part whole, and export
+strips any content attribute lacking the redaction marker.
 Reasoning/thinking text is not captured — a deliberate narrowing of
-ADR 0050's Level 3 sketch, which anticipated reasoning for LLM-judge
-scorers: reasoning traces carry the sensitivity this repo treats most
-conservatively, and extending scope to them requires a new ADR. The capture
-adapter is runtime-scoped behind the runtime interface (Claude first).
+ADR 0050's sketch (reasoning is the trace class this repo treats most
+conservatively); extending scope requires a new ADR. The capture adapter is
+runtime-scoped behind the runtime interface (Claude first).
 
 ## Consequences
 
