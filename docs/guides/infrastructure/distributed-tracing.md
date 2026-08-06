@@ -137,8 +137,8 @@ requirement that content capture be opt-in — activates only when three
 settings agree:
 
 1. `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` set to `true` (or
-   the equivalent `span_only`). `false` or unset disables capture; any
-   other value fails the run.
+   `span_only`, its fullsend-defined alias). `false` or unset disables
+   capture; any other value fails the run.
 2. `telemetry.content_capture: true` in the agent's harness — consent is
    per-agent and reviewed like any other harness change.
 3. The OTLP traces endpoint's host listed in the comma-separated
@@ -161,6 +161,11 @@ metadata-only.
 **Warning:** Only allow-list a backend whose access controls are appropriate
 for the sensitivity of the data. Content may include proprietary source
 code, issue descriptions with PII, or credentials visible in tool outputs.
+
+The activation contract is recorded in
+[ADR 0084](../../ADRs/0084-level-3-content-capture-activation-contract.md);
+the sandbox-side guard in
+[ADR 0085](../../ADRs/0085-sandbox-environment-variable-denylist.md).
 
 ## Cross-run trace correlation
 

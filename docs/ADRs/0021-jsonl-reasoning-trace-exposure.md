@@ -167,7 +167,9 @@ it suppresses JSONL for nearly all useful runs on private repos.
 ## Annotations
 
 **2026-08-05:** [ADR 0084](0084-level-3-content-capture-activation-contract.md)
-applies the secret redactor to Level 3 span content as an output-side
-invariant check, consistent with this ADR's framing: access control remains
-the security boundary, and a redaction hit is a breach signal, not the
-defense.
+applies the secret redactor to Level 3 span content before OTLP export, with
+hits recorded as security findings. The egress context differs from this
+ADR's stored-JSONL model: once content leaves over OTLP there is no post-hoc
+suppression, so on that path redaction acts as a preventive control on
+egress in addition to this ADR's breach-signal role. Access control at the
+receiving backend remains the primary boundary.
