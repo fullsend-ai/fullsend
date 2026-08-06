@@ -58,10 +58,14 @@ ENROLL_COMMIT_MSG="chore: add fullsend shim workflow
 Add the shim workflow that routes repository events to
 the fullsend agent dispatch pipeline."
 
-UNENROLL_COMMIT_MSG="chore: remove fullsend shim and stop-agent script
+UNENROLL_COMMIT_MSG="chore: remove fullsend shim workflow
 
-Remove the shim workflow and stop-agent script. The repo
-has been set to enabled: false in the fullsend config."
+Remove the shim workflow. The repo has been set to
+enabled: false in the fullsend config."
+
+UNENROLL_SCRIPT_COMMIT_MSG="chore: remove stop-agent script
+
+Remove the stop-agent script (paired with shim removal)."
 
 if [ ! -f "$SHIM_TEMPLATE" ]; then
   echo "::error::shim template not found at $SHIM_TEMPLATE"
@@ -616,7 +620,7 @@ if [ -n "$DISABLED_REPOS" ]; then
     if [ -n "$SCRIPT_SHA" ]; then
       if ! gh api "repos/$ORG/$REPO/contents/$STOP_AGENT_PATH" \
         --method DELETE \
-        --field "message=$UNENROLL_COMMIT_MSG" \
+        --field "message=$UNENROLL_SCRIPT_COMMIT_MSG" \
         --field "branch=$UNENROLL_BRANCH" \
         --field "sha=$SCRIPT_SHA" \
         --silent; then
