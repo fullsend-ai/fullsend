@@ -439,7 +439,7 @@ In `enabled` mode (the default), a hard crash or cancellation that happens befor
 
 ### Reactions
 
-As an alternative (or supplement) to comments, agents can signal status with emoji reactions on the issue/PR itself. Reactions don't generate a GitHub notification, so they're a lower-noise way to show that an agent is working on something and how it turned out.
+As an alternative (or supplement) to comments, agents can signal status with emoji reactions. Reactions don't generate a GitHub notification, so they're a lower-noise way to show that an agent is working on something and how it turned out.
 
 ```yaml
 defaults:
@@ -455,13 +455,20 @@ At completion, the start reaction (if any) is removed, and — depending on `com
 
 | Value | Behavior |
 |-------|----------|
-| `enabled` | Always add a completion reaction: 👍 on success, 👎 on failure/cancelled/skipped |
-| `on_failure` | Add a 👎 reaction only on failure/cancelled/skipped; leave no reaction on success |
+| `enabled` | Always add a completion reaction: 👍 on success, 😕 on failure/cancelled/skipped |
+| `on_failure` | Add a 😕 reaction only on failure/cancelled/skipped; leave no reaction on success |
 | `disabled` | Never add a completion reaction (default) |
+
+👎 is deliberately avoided for failures — it overloads GitHub's native up/down-vote convention, so a routine agent failure could be misread as the bot disliking the issue.
 
 Because reactions carry no notification cost, `on_failure` here simply means "leave no reaction on success," with no start-suppression workaround needed.
 
-Reactions are currently GitHub-only.
+**Where the reaction lands:** for runs triggered by an issue or PR event, the reaction is added to the issue/PR itself. For runs triggered by a slash command comment (e.g. `/fs-fix`), the reaction is added to the triggering comment instead, so it's clear which command the reaction is responding to.
+
+**Known limitations:**
+
+- Reactions are currently GitHub-only. Enabling `reaction.*` on a GitLab-backed repo is silently a no-op today ([#5998](https://github.com/fullsend-ai/fullsend/issues/5998)).
+- If a run is hard-killed before it can post its completion reaction, the start reaction (👀) can be left behind indefinitely — unlike status comments, there's no out-of-process reconciler for orphaned reactions yet.
 
 ## Disabling Agents
 
