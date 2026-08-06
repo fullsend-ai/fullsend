@@ -29,6 +29,8 @@ repos:
     enabled: true
   removed-repo:
     enabled: false
+  partial-unenroll-repo:
+    enabled: false
 EOF
 
 cat > "${CONFIG_DIR}/templates/shim-workflow-call.yaml" <<'EOF'
@@ -60,7 +62,7 @@ query="${1:-}"
 if [[ "$query" == *"enabled == true"* ]]; then
   printf '%s\n' "test-repo" "new-repo" "refresh-repo"
 elif [[ "$query" == *"enabled == false"* ]]; then
-  echo "removed-repo"
+  printf '%s\n' "removed-repo" "partial-unenroll-repo"
 else
   echo "unexpected yq query: $*" >&2
   exit 1
@@ -182,6 +184,20 @@ case "\$endpoint" in
       json='{"content":"c3RhbGUgc2hpbSB0ZW1wbGF0ZQo=","sha":"remove-file-sha"}'
     fi
     ;;
+  repos/test-org/partial-unenroll-repo/contents/.github/workflows/fullsend.yaml*)
+    # Shim does not exist (partial unenroll — only script left behind).
+    rc=1
+    ;;
+  repos/test-org/partial-unenroll-repo/contents/.github/scripts/stop-agent.sh*)
+    if [[ "\$method" == "DELETE" ]]; then
+      if [[ -n "\$field_message" ]]; then
+        removal_json=\$(jq -n --arg msg "\$field_message" '{message: \$msg}')
+        printf '%s\0' "\$removal_json" >> "${COMMIT_MSGS_LOG}"
+      fi
+    else
+      json='{"content":"c3RvcC1hZ2VudCBzdHVi","sha":"partial-script-sha"}'
+    fi
+    ;;
   repos/test-org/*/contents/*)
     # new-repo, refresh-repo: no shim on default branch.
     rc=1
@@ -263,6 +279,21 @@ fi
 
 echo "PASS: stale shim branch update is atomic"
 
+# Verify partial unenroll (shim absent, stop-agent.sh present) works.
+if ! grep -q "partial-unenroll-repo shim already removed from branch" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: partial-unenroll-repo should report shim already removed"
+  cat "${TMPDIR}/stdout.log"
+  exit 1
+fi
+
+if ! grep -q "repos/test-org/partial-unenroll-repo/contents/.github/scripts/stop-agent.sh.*DELETE" "${GH_LOG}"; then
+  echo "FAIL: partial-unenroll-repo did not attempt to delete stop-agent.sh"
+  cat "${GH_LOG}"
+  exit 1
+fi
+
+echo "PASS: partial unenroll cleans up orphaned stop-agent.sh"
+
 # ===========================
 # Test: commit messages include a non-trivial body
 # ===========================
@@ -325,10 +356,11 @@ if [ "$msg_index" -eq 0 ]; then
   exit 1
 fi
 
-# Expect exactly 5 commit messages: update (stale shim), refresh (existing PR),
-# add (new enrollment), and remove shim + remove stop-agent script (unenrollment).
-if [ "$msg_index" -ne 5 ]; then
-  echo "FAIL: expected 5 commit messages but found $msg_index"
+# Expect exactly 6 commit messages: update (stale shim), refresh (existing PR),
+# add (new enrollment), remove shim + remove stop-agent script (removed-repo),
+# and remove stop-agent script only (partial-unenroll-repo).
+if [ "$msg_index" -ne 6 ]; then
+  echo "FAIL: expected 6 commit messages but found $msg_index"
   exit 1
 fi
 
