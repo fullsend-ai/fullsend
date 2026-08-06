@@ -29,21 +29,22 @@ type deployCall struct {
 	workerName   string
 	previewAlias string
 	envVars      map[string]string
+	secrets      map[string][]byte
 }
 
 type secretCall struct {
-	workerName   string
-	secretName   string
-	previewAlias string
-	value        []byte
+	workerName string
+	secretName string
+	value      []byte
 }
 
-func (f *fakeWranglerRunner) Deploy(_ context.Context, sourceDir, workerName string, previewAlias string, envVars map[string]string) (string, error) {
+func (f *fakeWranglerRunner) Deploy(_ context.Context, sourceDir, workerName string, previewAlias string, envVars map[string]string, secrets map[string][]byte) (string, error) {
 	f.deployCalls = append(f.deployCalls, deployCall{
 		sourceDir:    sourceDir,
 		workerName:   workerName,
 		previewAlias: previewAlias,
 		envVars:      envVars,
+		secrets:      secrets,
 	})
 	if f.deployErr != nil {
 		return "", f.deployErr
@@ -55,12 +56,11 @@ func (f *fakeWranglerRunner) Deploy(_ context.Context, sourceDir, workerName str
 	return url, nil
 }
 
-func (f *fakeWranglerRunner) PutSecret(_ context.Context, workerName, secretName, previewAlias string, value []byte) error {
+func (f *fakeWranglerRunner) PutSecret(_ context.Context, workerName, secretName string, value []byte) error {
 	f.secretCalls = append(f.secretCalls, secretCall{
-		workerName:   workerName,
-		secretName:   secretName,
-		previewAlias: previewAlias,
-		value:        value,
+		workerName: workerName,
+		secretName: secretName,
+		value:      value,
 	})
 	return f.secretPutErr
 }
@@ -373,23 +373,31 @@ func TestProvisioner_StoreAgentPEM_Error(t *testing.T) {
 	assert.Contains(t, err.Error(), "storing PEM secret")
 }
 
-func TestProvisioner_StoreAgentPEM_WithPreviewAlias(t *testing.T) {
+func TestProvisioner_Provision_PreviewWithSecrets(t *testing.T) {
+	sourceDir := createFakeWorkerSourceDir(t)
 	fake := &fakeWranglerRunner{}
+	secrets := map[string][]byte{
+		"CODER_APP_PEM": []byte("pem-data"),
+	}
 	p := NewProvisioner(Config{
 		AccountID:    "abc123",
 		WorkerName:   "test-mint",
 		DeployMode:   DeployPreview,
 		PreviewAlias: "bt-test-42",
+		SourceDir:    sourceDir,
+		Secrets:      secrets,
 	}, fake)
 
-	err := p.StoreAgentPEM(context.Background(), "coder", []byte("pem-data"))
+	_, err := p.Provision(context.Background())
 	require.NoError(t, err)
-	require.Len(t, fake.secretCalls, 1)
-	assert.Equal(t, "test-mint", fake.secretCalls[0].workerName)
-	assert.Equal(t, "CODER_APP_PEM", fake.secretCalls[0].secretName)
-	assert.Equal(t, "bt-test-42", fake.secretCalls[0].previewAlias,
-		"preview alias should be forwarded to PutSecret")
-	assert.Equal(t, []byte("pem-data"), fake.secretCalls[0].value)
+	require.Len(t, fake.deployCalls, 1)
+	assert.Equal(t, "bt-test-42", fake.deployCalls[0].previewAlias)
+	require.NotNil(t, fake.deployCalls[0].secrets,
+		"secrets should be passed to Deploy for preview deploys")
+	assert.Equal(t, []byte("pem-data"), fake.deployCalls[0].secrets["CODER_APP_PEM"],
+		"PEM secrets should be passed through Deploy for preview deploys")
+	assert.Empty(t, fake.secretCalls,
+		"PutSecret should not be called when secrets are in Deploy")
 }
 
 // --- Teardown tests ---
@@ -435,6 +443,45 @@ func TestProvisioner_Teardown_DurableRejectsCleanup(t *testing.T) {
 	err := p.Teardown(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "only supported for preview")
+}
+
+// --- PEMSecretsFromRoles tests ---
+
+func TestPEMSecretsFromRoles(t *testing.T) {
+	agentPEMs := map[string][]byte{
+		"coder":  []byte("coder-pem"),
+		"triage": []byte("triage-pem"),
+	}
+	secrets := PEMSecretsFromRoles(agentPEMs)
+	assert.Len(t, secrets, 2)
+	assert.Equal(t, []byte("coder-pem"), secrets["CODER_APP_PEM"])
+	assert.Equal(t, []byte("triage-pem"), secrets["TRIAGE_APP_PEM"])
+}
+
+func TestPEMSecretsFromRoles_Empty(t *testing.T) {
+	secrets := PEMSecretsFromRoles(nil)
+	assert.Empty(t, secrets)
+}
+
+// --- writeSecretsFile tests ---
+
+func TestWriteSecretsFile(t *testing.T) {
+	secrets := map[string][]byte{
+		"MY_SECRET": []byte("secret-value"),
+	}
+	path, cleanup, err := writeSecretsFile(secrets)
+	require.NoError(t, err)
+	defer cleanup()
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"MY_SECRET"`)
+	assert.Contains(t, string(data), `"secret-value"`)
+
+	// Verify cleanup removes the file.
+	cleanup()
+	_, err = os.Stat(path)
+	assert.True(t, os.IsNotExist(err))
 }
 
 // --- pemSecretName tests ---
@@ -717,7 +764,7 @@ func TestLiveWranglerRunner_Deploy_DurableCommandError(t *testing.T) {
 	cancel()
 
 	envVars := map[string]string{"KEY": "value"}
-	_, err := runner.Deploy(ctx, dir, "test-worker", "", envVars)
+	_, err := runner.Deploy(ctx, dir, "test-worker", "", envVars, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "wrangler deploy failed")
 }
@@ -730,7 +777,7 @@ func TestLiveWranglerRunner_Deploy_PreviewCommandError(t *testing.T) {
 	cancel()
 
 	envVars := map[string]string{"KEY": "value"}
-	_, err := runner.Deploy(ctx, dir, "test-worker", "bt-alias", envVars)
+	_, err := runner.Deploy(ctx, dir, "test-worker", "bt-alias", envVars, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "wrangler versions upload failed")
 }
@@ -741,18 +788,7 @@ func TestLiveWranglerRunner_PutSecret_CommandError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := runner.PutSecret(ctx, "test-worker", "MY_SECRET", "", []byte("secret-value"))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "wrangler secret put failed")
-}
-
-func TestLiveWranglerRunner_PutSecret_PreviewCommandError(t *testing.T) {
-	runner := &LiveWranglerRunner{AccountID: "test-account"}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	err := runner.PutSecret(ctx, "test-worker", "MY_SECRET", "bt-alias", []byte("secret-value"))
+	err := runner.PutSecret(ctx, "test-worker", "MY_SECRET", []byte("secret-value"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "wrangler secret put failed")
 }

@@ -706,6 +706,16 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		}
 	}
 
+	// For preview deploys, PEM secrets must be passed through the deploy
+	// command (via --secrets-file on wrangler versions upload) because
+	// wrangler secret put does not support --preview-alias. For durable
+	// deploys, PEM secrets are stored separately via StoreAgentPEM after
+	// deploy completes.
+	var cfSecrets map[string][]byte
+	if previewAlias != "" && len(agentPEMs) > 0 {
+		cfSecrets = cf.PEMSecretsFromRoles(agentPEMs)
+	}
+
 	cfg := cf.Config{
 		AccountID:    accountID,
 		WorkerName:   workerName,
@@ -713,6 +723,7 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 		PreviewAlias: previewAlias,
 		SourceDir:    sourceDir,
 		EnvVars:      cfEnvVars,
+		Secrets:      cfSecrets,
 		Version:      version,
 		Commit:       deployCommit,
 	}
@@ -734,9 +745,10 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 	mintURL := result["FULLSEND_MINT_URL"]
 	printer.StepDone(fmt.Sprintf("Worker deployed at %s", mintURL))
 
-	// Store PEM secrets on the Worker after deploy so the Worker
-	// script exists when wrangler secret put runs.
-	if len(agentPEMs) > 0 {
+	// Store PEM secrets on the Worker after deploy. This path is only
+	// used for durable deploys — preview secrets were already passed
+	// via --secrets-file during wrangler versions upload above.
+	if len(agentPEMs) > 0 && previewAlias == "" {
 		printer.StepStart("Storing role PEM secrets on Worker")
 		pemRoles := make([]string, 0, len(agentPEMs))
 		for role := range agentPEMs {
@@ -750,6 +762,8 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 			}
 		}
 		printer.StepDone(fmt.Sprintf("Stored %d role PEM secrets", len(agentPEMs)))
+	} else if len(agentPEMs) > 0 {
+		printer.StepDone(fmt.Sprintf("PEM secrets for %d roles included in deploy via --secrets-file", len(agentPEMs)))
 	}
 
 	printer.Blank()

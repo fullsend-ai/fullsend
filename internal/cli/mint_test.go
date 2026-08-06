@@ -55,17 +55,17 @@ type fakeCFDeployCall struct {
 	workerName   string
 	previewAlias string
 	envVars      map[string]string
+	secrets      map[string][]byte
 }
 
 type fakeCFSecretCall struct {
-	workerName   string
-	secretName   string
-	previewAlias string
-	value        []byte
+	workerName string
+	secretName string
+	value      []byte
 }
 
-func (f *fakeCFWranglerRunner) Deploy(_ context.Context, _ string, workerName string, previewAlias string, envVars map[string]string) (string, error) {
-	f.deployCalls = append(f.deployCalls, fakeCFDeployCall{workerName: workerName, previewAlias: previewAlias, envVars: envVars})
+func (f *fakeCFWranglerRunner) Deploy(_ context.Context, _ string, workerName string, previewAlias string, envVars map[string]string, secrets map[string][]byte) (string, error) {
+	f.deployCalls = append(f.deployCalls, fakeCFDeployCall{workerName: workerName, previewAlias: previewAlias, envVars: envVars, secrets: secrets})
 	if f.deployErr != nil {
 		return "", f.deployErr
 	}
@@ -76,12 +76,11 @@ func (f *fakeCFWranglerRunner) Deploy(_ context.Context, _ string, workerName st
 	return url, nil
 }
 
-func (f *fakeCFWranglerRunner) PutSecret(_ context.Context, workerName, secretName, previewAlias string, value []byte) error {
+func (f *fakeCFWranglerRunner) PutSecret(_ context.Context, workerName, secretName string, value []byte) error {
 	f.secretCalls = append(f.secretCalls, fakeCFSecretCall{
-		workerName:   workerName,
-		secretName:   secretName,
-		previewAlias: previewAlias,
-		value:        value,
+		workerName: workerName,
+		secretName: secretName,
+		value:      value,
 	})
 	return f.secretPutErr
 }
@@ -857,13 +856,14 @@ func TestMintDeployCmd_CloudflarePreviewDeployWithPemDir(t *testing.T) {
 	assert.Contains(t, fake.deployCalls[0].envVars, "ROLE_APP_IDS",
 		"ROLE_APP_IDS should be set for preview deploys too")
 
-	// PEM secrets should be stored with the preview alias so wrangler
-	// scopes them to the preview version.
-	assert.NotEmpty(t, fake.secretCalls, "PEM secrets should be stored for preview deploys")
-	for _, call := range fake.secretCalls {
-		assert.Equal(t, "bt-test-42", call.previewAlias,
-			"PutSecret should receive the preview alias for preview deploys")
-	}
+	// For preview deploys, PEM secrets are passed through Deploy via
+	// --secrets-file (wrangler secret put does not support --preview-alias).
+	require.NotNil(t, fake.deployCalls[0].secrets,
+		"PEM secrets should be passed through Deploy for preview deploys")
+	assert.Contains(t, fake.deployCalls[0].secrets, "CODER_APP_PEM",
+		"expected CODER_APP_PEM in deploy secrets")
+	assert.Empty(t, fake.secretCalls,
+		"PutSecret should NOT be called for preview deploys (secrets go through Deploy)")
 }
 
 func TestMintDeployCmd_CloudflareDeployPemSecretFailure(t *testing.T) {
