@@ -102,7 +102,9 @@ if [[ "${authorized}" != "true" ]]; then
         admin|maintain|write) authorized=true ;;
       esac
     else
-      echo "::warning::Permission API call failed for ${COMMENT_USER_LOGIN}: $(cat "${api_err}")"
+      api_err_safe="$(tr -d '\r' <"${api_err}" | tr '\n' ' ')"
+      api_err_safe="${api_err_safe//::/_}"
+      echo "::warning::Permission API call failed for ${COMMENT_USER_LOGIN}: ${api_err_safe}"
     fi
     rm -f "${api_err}"
   else
