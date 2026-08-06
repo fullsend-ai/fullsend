@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"log"
 	"net/url"
 	"os"
 	"os/exec"
@@ -50,7 +51,11 @@ func FetchTree(ctx context.Context, cloneURL, subpath, ref, token string) (map[s
 	if err != nil {
 		return nil, fmt.Errorf("gitfetch: creating temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			log.Printf("gitfetch: removing temp dir %s: %v", tmpDir, err)
+		}
+	}()
 
 	if err := runGit(ctx, tmpDir, "init"); err != nil {
 		return nil, redactToken(fmt.Errorf("gitfetch: git init: %w", err), token)
@@ -182,6 +187,19 @@ func validatePath(p string) error {
 	return nil
 }
 
+// gitMaintenanceEnv disables git's detached background maintenance
+// (repack, pack-objects, multi-pack-index), which commands like fetch,
+// checkout, and commit can trigger. Without this, the background process
+// can still be writing under .git when the caller removes the repository
+// directory immediately after the git command returns.
+//
+// This is set via GIT_CONFIG_PARAMETERS rather than the
+// GIT_CONFIG_COUNT/KEY_n/VALUE_n scheme so it doesn't collide with the
+// auth-header override built in FetchTree, which uses that scheme.
+var gitMaintenanceEnv = []string{
+	"GIT_CONFIG_PARAMETERS='maintenance.auto=false'",
+}
+
 func runGit(ctx context.Context, dir string, args ...string) error {
 	return runGitWithEnv(ctx, dir, nil, args...)
 }
@@ -190,6 +208,7 @@ func runGitWithEnv(ctx context.Context, dir string, extraEnv []string, args ...s
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(cmd.Env, gitMaintenanceEnv...)
 	cmd.Env = append(cmd.Env, extraEnv...)
 
 	var stderr bytes.Buffer

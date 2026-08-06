@@ -697,6 +697,30 @@ func TestFetchTree_AuthFallbackHTTP(t *testing.T) {
 	}
 }
 
+// TestRunGitWithEnv_DisablesMaintenance verifies that production git
+// invocations (FetchTree's fetch and checkout) disable detached background
+// maintenance, the same way the test-only createTestRepo commit does. This
+// guards against a "git maintenance run --auto" process still writing under
+// .git when FetchTree's own tmpDir cleanup runs.
+func TestRunGitWithEnv_DisablesMaintenance(t *testing.T) {
+	dir := t.TempDir()
+	if err := runGit(context.Background(), dir, "init"); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("git", "config", "--get", "maintenance.auto")
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = append(cmd.Env, gitMaintenanceEnv...)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git config --get maintenance.auto failed: %v", err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "false" {
+		t.Errorf("maintenance.auto = %q, want %q", got, "false")
+	}
+}
+
 func keys(m map[string][]byte) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
