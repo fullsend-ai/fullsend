@@ -247,6 +247,60 @@ func TestGitHubEnrollCmd_DelegatesCorrectly(t *testing.T) {
 	assert.False(t, updatedCfg.RepoMap()["api"].Enabled)
 }
 
+// --- buildPresetOverlay tests ---
+
+func TestBuildPresetOverlay_NoFlagsChanged(t *testing.T) {
+	cfg := githubSetupConfig{
+		mintURL:         DefaultMintURL,
+		inferenceRegion: "global",
+		changedFlags:    map[string]bool{},
+	}
+	overlay := buildPresetOverlay(cfg)
+
+	// No flags changed: returns nil so the caller uses stubConfigYAML.
+	assert.Nil(t, overlay)
+}
+
+func TestBuildPresetOverlay_FlagsPopulateOverlay(t *testing.T) {
+	cfg := githubSetupConfig{
+		mintURL:              "https://custom-mint.example.com",
+		inferenceProject:     "custom-project",
+		inferenceRegion:      "us-west2",
+		inferenceWIFProvider: "projects/789/locations/global/workloadIdentityPools/pool/providers/prov",
+		changedFlags: map[string]bool{
+			"mint-url":               true,
+			"inference-project":      true,
+			"inference-region":       true,
+			"inference-wif-provider": true,
+		},
+	}
+	overlay := buildPresetOverlay(cfg)
+
+	assert.Equal(t, "https://custom-mint.example.com", overlay.ConfigMintURL())
+	assert.Equal(t, "custom-project", overlay.ConfigInferenceProject())
+	assert.Equal(t, "us-west2", overlay.ConfigInferenceRegion())
+	assert.Equal(t, "projects/789/locations/global/workloadIdentityPools/pool/providers/prov", overlay.ConfigInferenceWIFProvider())
+}
+
+func TestBuildPresetOverlay_PartialFlags(t *testing.T) {
+	cfg := githubSetupConfig{
+		mintURL:          "https://custom-mint.example.com",
+		inferenceProject: "custom-project",
+		inferenceRegion:  "global",
+		changedFlags: map[string]bool{
+			"mint-url": true,
+			// inference-project, inference-region, inference-wif-provider not changed
+		},
+	}
+	overlay := buildPresetOverlay(cfg)
+
+	// Only mint-url was changed, so only it should be in the overlay.
+	assert.Equal(t, "https://custom-mint.example.com", overlay.ConfigMintURL())
+	assert.Equal(t, "", overlay.ConfigInferenceProject())
+	assert.Equal(t, "", overlay.ConfigInferenceRegion())
+	assert.Equal(t, "", overlay.ConfigInferenceWIFProvider())
+}
+
 // --- Unenroll command tests ---
 
 func TestGitHubUnenrollCmd_RequiresOrg(t *testing.T) {

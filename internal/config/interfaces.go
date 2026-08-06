@@ -69,6 +69,14 @@ type PerRepoConfigReader interface {
 	ConfigRoles() []string
 	ConfigRuntime() string
 	ConfigForge() string
+	// Mint and inference accessors (ADR 0069 Decision 1).
+	// These resolve through the layered fallback chain:
+	// overlay → base → code defaults.
+	ConfigMintURL() string
+	ConfigInferenceProvider() string
+	ConfigInferenceProject() string
+	ConfigInferenceRegion() string
+	ConfigInferenceWIFProvider() string
 }
 
 // --- Write superset interfaces ---
@@ -102,6 +110,11 @@ type PerRepoConfigWriter interface {
 	ConfigWriter
 	SetRoles([]string)
 	SetRuntime(string)
+	SetMintURL(string)
+	SetInferenceProvider(string)
+	SetInferenceProject(string)
+	SetInferenceRegion(string)
+	SetInferenceWIFProvider(string)
 }
 
 // --- Compile-time assertions ---
@@ -373,6 +386,71 @@ func (c *perRepoConfig) ConfigForge() string {
 	return ""
 }
 
+// --- perRepoConfig mint/inference getter methods ---
+//
+// Scalar string fallback: local -> parent -> empty. The terminal
+// perRepoDefaults parent returns "" for all mint/inference fields,
+// so an empty string means "not configured".
+
+// ConfigMintURL returns the configured token mint URL.
+func (c *perRepoConfig) ConfigMintURL() string {
+	if c.MintURL != "" {
+		return c.MintURL
+	}
+	if c.parent != nil {
+		return c.parent.ConfigMintURL()
+	}
+	return ""
+}
+
+// ConfigInferenceProvider returns the configured inference provider
+// (e.g. "vertex").
+func (c *perRepoConfig) ConfigInferenceProvider() string {
+	if c.InferenceProvider != "" {
+		return c.InferenceProvider
+	}
+	if c.parent != nil {
+		return c.parent.ConfigInferenceProvider()
+	}
+	return ""
+}
+
+// ConfigInferenceProject returns the configured GCP project ID for
+// inference.
+func (c *perRepoConfig) ConfigInferenceProject() string {
+	if c.InferenceProject != "" {
+		return c.InferenceProject
+	}
+	if c.parent != nil {
+		return c.parent.ConfigInferenceProject()
+	}
+	return ""
+}
+
+// ConfigInferenceRegion returns the configured GCP region for
+// inference.
+func (c *perRepoConfig) ConfigInferenceRegion() string {
+	if c.InferenceRegion != "" {
+		return c.InferenceRegion
+	}
+	if c.parent != nil {
+		return c.parent.ConfigInferenceRegion()
+	}
+	return ""
+}
+
+// ConfigInferenceWIFProvider returns the configured Workload Identity
+// Federation provider resource name for inference.
+func (c *perRepoConfig) ConfigInferenceWIFProvider() string {
+	if c.InferenceWIFProvider != "" {
+		return c.InferenceWIFProvider
+	}
+	if c.parent != nil {
+		return c.parent.ConfigInferenceWIFProvider()
+	}
+	return ""
+}
+
 // --- perRepoConfig setter methods ---
 
 // SetKillSwitch sets the kill switch state. Stores a *bool so that
@@ -393,6 +471,22 @@ func (c *perRepoConfig) SetRoles(roles []string) { c.Roles = roles }
 
 // SetRuntime replaces the configured agent runtime.
 func (c *perRepoConfig) SetRuntime(runtime string) { c.Runtime = runtime }
+
+// SetMintURL sets the token mint URL.
+func (c *perRepoConfig) SetMintURL(u string) { c.MintURL = u }
+
+// SetInferenceProvider sets the inference provider name.
+func (c *perRepoConfig) SetInferenceProvider(p string) { c.InferenceProvider = p }
+
+// SetInferenceProject sets the GCP project ID for inference.
+func (c *perRepoConfig) SetInferenceProject(p string) { c.InferenceProject = p }
+
+// SetInferenceRegion sets the GCP region for inference.
+func (c *perRepoConfig) SetInferenceRegion(r string) { c.InferenceRegion = r }
+
+// SetInferenceWIFProvider sets the WIF provider resource name for
+// inference.
+func (c *perRepoConfig) SetInferenceWIFProvider(w string) { c.InferenceWIFProvider = w }
 
 // --- LoadConfig / LoadConfigWriter factories ---
 
