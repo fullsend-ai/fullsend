@@ -2405,9 +2405,13 @@ func recordSanitizedError(span trace.Span, err error) {
 	span.RecordError(errors.New(strings.ToValidUTF8(err.Error(), "")))
 }
 
-// maxSpanStatusMsgLen caps status descriptions so a runaway transcript error
-// message cannot bloat every export of the span.
-const maxSpanStatusMsgLen = 256
+// maxSpanStatusMsgLen caps status descriptions so a runaway error message
+// cannot bloat every export of the span. No OTel, collector, or backend
+// limit mandates a specific value; 2000 matches maxTranscriptErrorLength
+// (internal/runtime/claude_transcript.go), which bounds the same class of
+// consumer-facing error text — so a parse-time-truncated transcript message
+// is never truncated a second time here.
+const maxSpanStatusMsgLen = 2000
 
 // truncateStatusMsg repairs invalid UTF-8 and trims a status description to
 // maxSpanStatusMsgLen, walking back to a rune boundary before appending the

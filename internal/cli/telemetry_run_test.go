@@ -534,7 +534,7 @@ func TestFinalizeAgentSpan(t *testing.T) {
 	})
 
 	t.Run("transcript error records full text as an event", func(t *testing.T) {
-		long := "API Error: " + strings.Repeat("payload ", 60)
+		long := "API Error: " + strings.Repeat("payload ", 300)
 		s := newRecorded(nil, 0, long)
 		require.Greater(t, len(long), maxSpanStatusMsgLen, "fixture must exceed the status cap")
 		assert.Less(t, len(s.Status.Description), len(long), "status description is capped")
