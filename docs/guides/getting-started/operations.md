@@ -175,15 +175,16 @@ gcloud services enable \
 
 ## Status notifications
 
-See [Status Notifications](../user/customizing-agents.md#status-notifications) for configuring start and completion comments.
+See [Status Notifications](../user/customizing-agents.md#status-notifications) for configuring start/completion comments and reactions.
 
-The composite action accepts four optional inputs for status notifications:
+The composite action accepts five optional inputs for status notifications:
 
 | Input | Description |
 |-------|-------------|
 | `run-url` | URL of the CI/CD run shown in the status comment |
 | `status-repo` | Repository (`owner/repo`) to post status comments on |
 | `status-number` | Issue or PR number for status comments |
+| `status-comment-id` | ID of the comment that triggered a slash-command run; when set, reactions target that comment instead of the issue/PR |
 | `mint-url` | URL of the token mint service used to obtain fresh tokens for posting comments |
 
 All reusable workflows pass these inputs automatically.
