@@ -384,6 +384,7 @@ rm -f "${GH_LOG}" "${TMPDIR}/blob-input-test-repo.json"
 UPTODATE_MANAGED=$(cat "${CONFIG_DIR}/templates/shim-workflow-call.yaml")
 UPTODATE_REMOTE=$(printf '# Copyright 2026 Conforma\n# SPDX-License-Identifier: Apache-2.0\n%s\n' "$UPTODATE_MANAGED")
 UPTODATE_B64=$(printf '%s' "$UPTODATE_REMOTE" | /usr/bin/base64 | tr -d '\r\n')
+UPTODATE_SCRIPT_B64=$(/usr/bin/base64 -w0 <"${CONFIG_DIR}/.github/scripts/stop-agent.sh")
 
 # Create a new gh mock that returns the up-to-date content.
 cat > "${MOCK_BIN}/gh" <<EOF2
@@ -426,6 +427,9 @@ case "\$endpoint" in
   repos/test-org/test-repo/contents/.github/workflows/fullsend.yaml)
     json='{"content":"${UPTODATE_B64}","sha":"file-sha"}'
     ;;
+  repos/test-org/test-repo/contents/.github/scripts/stop-agent.sh)
+    json='{"content":"${UPTODATE_SCRIPT_B64}","sha":"script-sha"}'
+    ;;
   repos/test-org/test-repo)
     json='{"default_branch":"main","private":false}'
     ;;
@@ -447,7 +451,7 @@ chmod +x "${MOCK_BIN}/gh"
 
 bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout2.log" 2>&1 || true
 
-if grep -q "shim is stale" "${TMPDIR}/stdout2.log"; then
+if grep -qE 'stale — creating update PR' "${TMPDIR}/stdout2.log"; then
   echo "FAIL: up-to-date shim with user header was flagged as stale"
   cat "${TMPDIR}/stdout2.log"
   exit 1
@@ -576,7 +580,7 @@ chmod +x "${MOCK_BIN}/gh"
 
 bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout3.log" 2>&1 || true
 
-if ! grep -q "shim is stale" "${TMPDIR}/stdout3.log"; then
+if ! grep -qE 'stale — creating update PR' "${TMPDIR}/stdout3.log"; then
   echo "FAIL: pre-sentinel shim was not flagged as stale"
   cat "${TMPDIR}/stdout3.log"
   exit 1

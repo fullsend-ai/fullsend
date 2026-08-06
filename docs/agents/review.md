@@ -30,8 +30,8 @@ If a prior review exists (e.g., re-review after fixes), it is injected into the 
 
 Requires triage-level repository permission or higher (triage, write,
 maintain, or admin). Mutation stages such as `/fs-fix` still require
-write or higher. `/fs-stop` requires write-level permission or issue/PR
-authorship (same gate as `/fs-fix-stop`).
+write or higher. `/fs-stop review` (and bare `/fs-stop`) require write-level
+permission — issue/PR authorship alone cannot suppress auto-review.
 
 The `/fs-review` command does not accept arguments. The review agent also runs automatically when a PR is opened,
 synchronized (new commits pushed), or moved out of draft by a user with triage-level repository permission or higher.

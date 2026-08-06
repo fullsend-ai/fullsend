@@ -23,37 +23,10 @@ make_body_file() {
   printf '%s' "$f"
 }
 
-# ADR 0054: authorize via the collaborator permission API
-# (admin|maintain|write), not author_association — the latter grants
-# contributor status to anyone with a single merged PR (issue #5421).
-# Mirrors has_repo_permission() in dispatch.yml; keep the two in sync.
-# The issue/PR author may always stop agents on their own item.
-authorized=false
-if [[ -n "${COMMENT_USER_LOGIN}" && "${COMMENT_USER_LOGIN}" == "${ISSUE_USER_LOGIN}" ]]; then
-  authorized=true
-else
-  if api_err=$(mktemp); then
-    if role=$(gh api "repos/${REPO}/collaborators/${COMMENT_USER_LOGIN}/permission" \
-      --jq '.role_name' 2>"${api_err}"); then
-      case "${role}" in
-        admin|maintain|write) authorized=true ;;
-      esac
-    else
-      echo "::warning::Permission API call failed for ${COMMENT_USER_LOGIN}: $(cat "${api_err}")"
-    fi
-    rm -f "${api_err}"
-  else
-    echo "::warning::Failed to create temp file for permission check of ${COMMENT_USER_LOGIN}"
-  fi
-fi
-if [[ "${authorized}" != "true" ]]; then
-  echo "::notice::User ${COMMENT_USER_LOGIN} is not authorized to stop agents (requires write access or authorship)"
-  exit 0
-fi
-
-# Trim leading whitespace so copy/paste / markdown-indented comments still work
-# (matches awk tokenization used by other slash commands in dispatch).
-FIRST="$(printf '%s\n' "${COMMENT_BODY}" | sed 's/^[[:space:]]*//' | head -1 | tr -d '\r')"
+# Trim leading blank lines and leading whitespace on the first non-blank line
+# so copy/paste / markdown-quoted comments still work (matches awk tokenization
+# used by other slash commands in dispatch).
+FIRST="$(printf '%s\n' "${COMMENT_BODY}" | sed '/^[[:space:]]*$/d' | head -1 | sed 's/^[[:space:]]*//' | tr -d '\r')"
 CMD="$(printf '%s\n' "${FIRST}" | awk '{print $1}')"
 ARG="$(printf '%s\n' "${FIRST}" | awk '{print $2}')"
 # Sanitize for workflow-command interpolation (defense in depth).
@@ -94,19 +67,67 @@ elif [[ "${CMD}" == "/fs-stop" ]]; then
       fi
     fi
   else
-    BODY_FILE="$(make_body_file)" || exit 0
-    {
-      printf 'Unknown or unsupported agent.'
-      printf ' Valid auto-stop targets: %s.' "${VALID}"
-      printf ' Usage: `/fs-stop <agent>` or `/fs-stop` for all meaningful on this item.'
-      printf ' Note: prioritize is slash-only (`/fs-prioritize`); there is no auto-trigger to stop.'
-    } >"${BODY_FILE}"
-    post_comment "${BODY_FILE}" || true
-    rm -f "${BODY_FILE}"
-    exit 0
+    AGENTS=()
+    UNKNOWN_AGENT=true
   fi
 else
   echo "::notice::Ignoring unrecognized stop command: ${SAFE_CMD}"
+  exit 0
+fi
+
+# ADR 0054: authorize via the collaborator permission API
+# (admin|maintain|write), not author_association — the latter grants
+# contributor status to anyone with a single merged PR (issue #5421).
+# Mirrors has_repo_permission() in dispatch.yml; keep the two in sync.
+#
+# Author escape hatch is intentionally limited to stopping *fix* only
+# (historical /fs-fix-stop behavior). Stopping review/triage/code/retro —
+# including bare /fs-stop — requires write-level permission so PR authors
+# cannot unilaterally suppress security-relevant auto-gates.
+authorized=false
+is_author=false
+if [[ -n "${COMMENT_USER_LOGIN}" && "${COMMENT_USER_LOGIN}" == "${ISSUE_USER_LOGIN}" ]]; then
+  is_author=true
+fi
+author_fix_only=false
+if [[ "${is_author}" == "true" && "${UNKNOWN_AGENT:-}" != "true" && "${#AGENTS[@]}" -eq 1 && "${AGENTS[0]}" == "fix" ]]; then
+  author_fix_only=true
+  authorized=true
+fi
+if [[ "${authorized}" != "true" ]]; then
+  if api_err=$(mktemp); then
+    if role=$(gh api "repos/${REPO}/collaborators/${COMMENT_USER_LOGIN}/permission" \
+      --jq '.role_name' 2>"${api_err}"); then
+      case "${role}" in
+        admin|maintain|write) authorized=true ;;
+      esac
+    else
+      echo "::warning::Permission API call failed for ${COMMENT_USER_LOGIN}: $(cat "${api_err}")"
+    fi
+    rm -f "${api_err}"
+  else
+    echo "::warning::Failed to create temp file for permission check of ${COMMENT_USER_LOGIN}"
+  fi
+fi
+if [[ "${authorized}" != "true" ]]; then
+  if [[ "${is_author}" == "true" && "${author_fix_only}" != "true" ]]; then
+    echo "::notice::User ${COMMENT_USER_LOGIN} is not authorized to stop these agents (PR/issue authors may only /fs-stop fix or /fs-fix-stop; write access required otherwise)"
+  else
+    echo "::notice::User ${COMMENT_USER_LOGIN} is not authorized to stop agents (requires write access, or authorship for /fs-stop fix only)"
+  fi
+  exit 0
+fi
+
+if [[ "${UNKNOWN_AGENT:-}" == "true" ]]; then
+  BODY_FILE="$(make_body_file)" || exit 0
+  {
+    printf 'Unknown or unsupported agent.'
+    printf ' Valid auto-stop targets: %s.' "${VALID}"
+    printf ' Usage: `/fs-stop <agent>` or `/fs-stop` for all meaningful on this item.'
+    printf ' Note: prioritize is slash-only (`/fs-prioritize`); there is no auto-trigger to stop.'
+  } >"${BODY_FILE}"
+  post_comment "${BODY_FILE}" || true
+  rm -f "${BODY_FILE}"
   exit 0
 fi
 
@@ -144,7 +165,13 @@ else
     printf 'On-demand `/fs-<agent>` commands still work.\n'
     printf 'In-flight runs are not cancelled by this command — remove the label(s) or re-run `/fs-<agent>` to continue.\n'
     if [[ "${CROSS_CONTEXT}" == "true" ]]; then
-      printf 'Note: these labels only affect auto-triggers on *this* item; they do not carry over to a linked issue or PR.\n'
+      printf 'Note: this label has no effect on this item type'
+      if [[ "${ISSUE_IS_PR}" == "true" ]]; then
+        printf ' (auto-triggers for that agent run on issues, not PRs)'
+      else
+        printf ' (auto-triggers for that agent run on PRs, not issues)'
+      fi
+      printf ', and it does not carry over to a linked issue or PR.\n'
     fi
   } >"${BODY_FILE}"
 fi

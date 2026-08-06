@@ -106,7 +106,8 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
 | `/fs-stop fix` | Issue or PR comment | Applies `fullsend-no-fix` |
 
 Requires write-level repository permission (admin, maintain, or write).
-`/fs-stop` / `/fs-fix-stop` also allow the issue/PR author (ADR 0054).
+`/fs-stop fix` / `/fs-fix-stop` also allow the issue/PR author (ADR 0054).
+Bare `/fs-stop` and other agents still require write.
 
 The `/fs-fix` command accepts optional free-text instructions after the
 command. The text is passed to the agent as a human instruction, giving you

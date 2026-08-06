@@ -8,7 +8,7 @@ Before using the commands in this guide:
 
 - Fullsend is [installed and enrolled](../getting-started/) on the repository (shim workflow present).
 - You can comment on the issue or PR you want to control.
-- Slash commands that mutate work (`/fs-code`, `/fs-fix`, `/fs-retro`) require write-level repository permission (admin, maintain, or write). `/fs-triage` and `/fs-review` accept triage-level permission or higher. `/fs-stop` / `/fs-fix-stop` require write-level permission, or authorship of the issue/PR (ADR 0054).
+- Slash commands that mutate work (`/fs-code`, `/fs-fix`, `/fs-retro`) require write-level repository permission (admin, maintain, or write). `/fs-triage` and `/fs-review` accept triage-level permission or higher. `/fs-stop` requires write-level permission. `/fs-stop fix` / `/fs-fix-stop` also allow the issue/PR author (ADR 0054) — authorship does not authorize stopping review or other non-fix agents.
 
 ## Overview
 
@@ -77,9 +77,10 @@ You can control the pipeline from issue or PR comments:
 Authorization is verified via the collaborator permission API and is
 stage-dependent: `/fs-triage` and `/fs-review` accept triage-level
 permission or higher; `/fs-code`, `/fs-fix`, and `/fs-retro` require
-write-level permission or higher (admin, maintain, or write); `/fs-stop`
-and `/fs-fix-stop` require the same write-level permission, or authorship
-of the issue/PR (ADR 0054). Bot-to-bot agent handoffs are not affected because
+write-level permission or higher (admin, maintain, or write). `/fs-stop`
+requires write-level permission; `/fs-stop fix` / `/fs-fix-stop` also allow
+the issue/PR author (ADR 0054). Authorship alone cannot stop review or other
+non-fix agents. Bot-to-bot agent handoffs are not affected because
 they use label-based triggers, not slash commands.
 
 ### What to expect from agent PRs
