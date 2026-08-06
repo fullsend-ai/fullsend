@@ -381,6 +381,12 @@ ADR 0002: [Building block 10](ADRs/0002-initial-fullsend-design.md#10-check-fail
 Runs N parallel **review agent** invocations and produces structured review verdicts/comments.
 ADR 0002: [Building block 11](ADRs/0002-initial-fullsend-design.md#11-review-agent-runtime).
 
+**Decided:**
+
+- PR-level risk assessment scoring: pre-pass sub-agent computes a composite 1–5
+  risk score from metadata, git history, and linked-issue signals
+  ([ADR 0078](ADRs/0078-pr-risk-assessment-scoring.md)).
+
 ### 12. Coordinator merge algorithm
 
 Aggregates review verdicts and applies labels:
