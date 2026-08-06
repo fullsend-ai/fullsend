@@ -41,7 +41,7 @@ UPDATE_PR_TITLE="chore: update fullsend shim workflow"
 ENROLL_PR_BODY="This PR adds a shim workflow that routes repository events to the fullsend agent dispatch workflow in the \`.fullsend\` config repo.
 
 Once merged, issues, PRs, and comments in this repo will be handled by the fullsend agent pipeline."
-UNENROLL_PR_BODY="This PR removes the fullsend shim workflow and stop-agent script. The repo has been set to \`enabled: false\` in the fullsend config.
+UNENROLL_PR_BODY="This PR removes managed fullsend files. The repo has been set to \`enabled: false\` in the fullsend config.
 
 Once merged, this repo will no longer dispatch events to the fullsend agent pipeline."
 UPDATE_PR_BODY="This PR updates the fullsend shim workflow to match the current template in the \`.fullsend\` config repo.
@@ -65,7 +65,7 @@ enabled: false in the fullsend config."
 
 UNENROLL_SCRIPT_COMMIT_MSG="chore: remove stop-agent script
 
-Remove the stop-agent script (paired with shim removal)."
+Remove the stop-agent script."
 
 if [ ! -f "$SHIM_TEMPLATE" ]; then
   echo "::error::shim template not found at $SHIM_TEMPLATE"
@@ -580,9 +580,18 @@ if [ -n "$DISABLED_REPOS" ]; then
       continue
     fi
 
-    # Check if shim exists on default branch.
-    if ! gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --silent 2>/dev/null; then
-      echo "✓ $REPO already unenrolled (no shim on default branch)"
+    # Fully unenrolled only when both managed files are gone. A missing shim
+    # with a leftover stop-agent.sh (partial/older unenroll) must still clean up.
+    HAS_SHIM=false
+    HAS_SCRIPT=false
+    if gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --silent 2>/dev/null; then
+      HAS_SHIM=true
+    fi
+    if gh api "repos/$ORG/$REPO/contents/$STOP_AGENT_PATH" --silent 2>/dev/null; then
+      HAS_SCRIPT=true
+    fi
+    if [ "$HAS_SHIM" = false ] && [ "$HAS_SCRIPT" = false ]; then
+      echo "✓ $REPO already unenrolled (no shim or stop-agent script on default branch)"
       SKIPPED=$((SKIPPED + 1))
       continue
     fi
@@ -594,24 +603,24 @@ if [ -n "$DISABLED_REPOS" ]; then
       continue
     fi
 
-    # Fetch file SHA on the removal branch (required for DELETE).
-    FILE_SHA=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH?ref=$UNENROLL_BRANCH" --jq .sha 2>/dev/null || true)
-    if [ -z "$FILE_SHA" ]; then
-      echo "✓ $REPO shim already removed from branch"
-      SKIPPED=$((SKIPPED + 1))
-      continue
-    fi
+    DELETED_ANY=false
 
-    # Delete the shim workflow on the removal branch.
-    if ! gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" \
-      --method DELETE \
-      --field "message=$UNENROLL_COMMIT_MSG" \
-      --field "branch=$UNENROLL_BRANCH" \
-      --field "sha=$FILE_SHA" \
-      --silent; then
-      echo "::error::Failed to delete shim from $REPO (path=$SHIM_PATH, branch=$UNENROLL_BRANCH)"
-      FAILED=$((FAILED + 1))
-      continue
+    # Delete the shim workflow on the removal branch when present.
+    FILE_SHA=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH?ref=$UNENROLL_BRANCH" --jq .sha 2>/dev/null || true)
+    if [ -n "$FILE_SHA" ]; then
+      if ! gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" \
+        --method DELETE \
+        --field "message=$UNENROLL_COMMIT_MSG" \
+        --field "branch=$UNENROLL_BRANCH" \
+        --field "sha=$FILE_SHA" \
+        --silent; then
+        echo "::error::Failed to delete shim from $REPO (path=$SHIM_PATH, branch=$UNENROLL_BRANCH)"
+        FAILED=$((FAILED + 1))
+        continue
+      fi
+      DELETED_ANY=true
+    else
+      echo "✓ $REPO shim already removed from branch"
     fi
 
     # Also remove stop-agent.sh when present (repos enrolled before this
@@ -628,6 +637,13 @@ if [ -n "$DISABLED_REPOS" ]; then
         FAILED=$((FAILED + 1))
         continue
       fi
+      DELETED_ANY=true
+    fi
+
+    if [ "$DELETED_ANY" = false ]; then
+      echo "✓ $REPO already unenrolled on branch"
+      SKIPPED=$((SKIPPED + 1))
+      continue
     fi
 
     # Create removal PR.
