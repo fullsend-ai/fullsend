@@ -30,7 +30,8 @@ This separation ensures the agent never has direct write access to the repositor
 | `/fs-stop code` | Issue or PR comment | Applies `fullsend-no-code` and skips further auto-triggered code runs |
 
 Requires write-level repository permission (admin, maintain, or write).
-`/fs-stop` also allows the issue/PR author (ADR 0054).
+`/fs-stop code` requires write; authorship alone authorizes `/fs-stop fix` only
+(ADR 0054).
 
 The `/fs-code` command accepts an optional `--force` flag. It can only be used
 on issues (not PRs). The code agent is also triggered automatically when the

@@ -431,15 +431,40 @@ if [ -n "$ENABLED_REPOS" ]; then
       REMOTE_B64=$(printf '%s' "$REMOTE_CONTENT" | tr -d '\r\n')
       REMOTE_MANAGED=$(managed_content_b64 "$REMOTE_B64")
       EXPECTED_MANAGED=$(managed_content_b64 "$EXPECTED_B64")
-      if [ "$REMOTE_MANAGED" = "$EXPECTED_MANAGED" ]; then
+      SHIM_STALE=false
+      if [ "$REMOTE_MANAGED" != "$EXPECTED_MANAGED" ]; then
+        SHIM_STALE=true
+      fi
+
+      # Also compare stop-agent.sh — a script-only security fix must still
+      # open an update PR once the shim YAML has converged.
+      EXPECTED_SCRIPT_B64=$(base64 -w0 <"$STOP_AGENT_SCRIPT")
+      REMOTE_SCRIPT_CONTENT=$(gh api "repos/$ORG/$REPO/contents/$STOP_AGENT_PATH" --jq .content 2>/dev/null || true)
+      SCRIPT_STALE=false
+      if [ -z "$REMOTE_SCRIPT_CONTENT" ]; then
+        SCRIPT_STALE=true
+      else
+        REMOTE_SCRIPT_B64=$(printf '%s' "$REMOTE_SCRIPT_CONTENT" | tr -d '\r\n')
+        if [ "$REMOTE_SCRIPT_B64" != "$EXPECTED_SCRIPT_B64" ]; then
+          SCRIPT_STALE=true
+        fi
+      fi
+
+      if [ "$SHIM_STALE" = "false" ] && [ "$SCRIPT_STALE" = "false" ]; then
         echo "✓ $REPO already enrolled (shim up to date)"
         SKIPPED=$((SKIPPED + 1))
         continue
       fi
 
-      # Shim is stale — update via PR to respect branch protection.
-      # Preserve any user-owned content above the sentinel line.
-      echo "⟳ $REPO enrolled but shim is stale — creating update PR"
+      # Shim and/or stop-agent script is stale — update via PR to respect
+      # branch protection. Preserve any user-owned content above the sentinel.
+      if [ "$SHIM_STALE" = "true" ] && [ "$SCRIPT_STALE" = "true" ]; then
+        echo "⟳ $REPO enrolled but shim and stop-agent script are stale — creating update PR"
+      elif [ "$SCRIPT_STALE" = "true" ]; then
+        echo "⟳ $REPO enrolled but stop-agent script is stale — creating update PR"
+      else
+        echo "⟳ $REPO enrolled but shim is stale — creating update PR"
+      fi
 
       FINAL_B64=$(shim_with_header_b64 "$REMOTE_B64" "$REPO")
       if ! write_shim_to_branch_from_default "$REPO" "$ENROLL_BRANCH" "$FINAL_B64" "$UPDATE_COMMIT_MSG"; then

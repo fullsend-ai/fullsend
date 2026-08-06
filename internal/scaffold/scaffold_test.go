@@ -237,8 +237,10 @@ func TestShimStopAgentAuthorization(t *testing.T) {
 	require.GreaterOrEqual(t, labelIdx, 0)
 	assert.Less(t, gateIdx, labelIdx,
 		"the authorization exit gate must come before the label mutation")
-	assert.Contains(t, s, `sed 's/^[[:space:]]*//'`,
-		"stop-agent must trim leading whitespace before parsing")
+	assert.Contains(t, s, `sed '/^[[:space:]]*$/d'`,
+		"stop-agent must skip leading blank lines before parsing")
+	assert.Contains(t, s, `authors may only /fs-stop fix`,
+		"stop-agent must restrict the author escape hatch to fix-only")
 
 	for _, tmpl := range []string{
 		"templates/shim-workflow-call.yaml",
@@ -254,6 +256,8 @@ func TestShimStopAgentAuthorization(t *testing.T) {
 				"shim must invoke the shared stop-agent script")
 			assert.Contains(t, ys, "actions/checkout@",
 				"shim must check out the stop-agent script")
+			assert.Contains(t, ys, "github.event.repository.default_branch",
+				"shim must pin stop-agent checkout to the default branch")
 			assert.Contains(t, ys, "!contains(github.event.comment.body, '/fs-stop')",
 				"dispatch job must skip /fs-stop comments")
 		})
@@ -316,10 +320,20 @@ func TestShimStopAgentAuthorizationRuntime(t *testing.T) {
 		return string(out) + log, labeled
 	}
 
-	t.Run("pr author escape hatch", func(t *testing.T) {
+	t.Run("pr author escape hatch for fix-stop", func(t *testing.T) {
 		out, labeled := runScenario(t, "alice", "alice", "read", "/fs-fix-stop", "true")
 		assert.True(t, labeled)
 		assert.NotContains(t, out, "api repos/")
+	})
+	t.Run("pr author denied for stop review without write", func(t *testing.T) {
+		out, labeled := runScenario(t, "alice", "alice", "read", "/fs-stop review", "true")
+		assert.False(t, labeled)
+		assert.Contains(t, out, "authors may only /fs-stop fix")
+	})
+	t.Run("pr author denied for bare stop without write", func(t *testing.T) {
+		out, labeled := runScenario(t, "alice", "alice", "read", "/fs-stop", "true")
+		assert.False(t, labeled)
+		assert.Contains(t, out, "not authorized")
 	})
 	t.Run("write collaborator authorized", func(t *testing.T) {
 		_, labeled := runScenario(t, "bob", "alice", "write", "/fs-fix-stop", "true")
@@ -343,6 +357,11 @@ func TestShimStopAgentAuthorizationRuntime(t *testing.T) {
 	})
 	t.Run("leading whitespace still stops", func(t *testing.T) {
 		out, labeled := runScenario(t, "alice", "alice", "write", "  /fs-stop review", "true")
+		assert.True(t, labeled)
+		assert.Contains(t, out, "fullsend-no-review")
+	})
+	t.Run("leading blank line still stops", func(t *testing.T) {
+		out, labeled := runScenario(t, "alice", "alice", "write", "\n/fs-stop review", "true")
 		assert.True(t, labeled)
 		assert.Contains(t, out, "fullsend-no-review")
 	})
@@ -373,7 +392,8 @@ func TestShimStopAgentAuthorizationRuntime(t *testing.T) {
 		out, labeled := runScenario(t, "alice", "alice", "write", "/fs-stop fix", "false")
 		assert.True(t, labeled)
 		assert.Contains(t, out, "fullsend-no-fix")
-		assert.Contains(t, out, "do not carry over")
+		assert.Contains(t, out, "has no effect on this item type")
+		assert.Contains(t, out, "does not carry over")
 	})
 	t.Run("unknown agent posts error without labeling", func(t *testing.T) {
 		out, labeled := runScenario(t, "alice", "alice", "write", "/fs-stop bogus", "true")
@@ -440,8 +460,14 @@ func TestManagedShimStopAgentNotStale(t *testing.T) {
 		"parsing logic must live in the shared script, not the YAML")
 
 	scriptPath := filepath.Clean(filepath.Join(filepath.Dir(managedPath), "..", "scripts", "stop-agent.sh"))
-	_, err = os.Stat(scriptPath)
+	canonical, err := FullsendRepoFile(".github/scripts/stop-agent.sh")
+	require.NoError(t, err)
+	deployed, err := os.ReadFile(scriptPath)
 	require.NoError(t, err, "repo must ship .github/scripts/stop-agent.sh for the managed shim")
+	assert.Equal(t, string(canonical), string(deployed),
+		"deployed stop-agent.sh must match the canonical scaffold script")
+	assert.Contains(t, s, "github.event.repository.default_branch",
+		"managed shim must pin stop-agent checkout to the default branch")
 }
 
 func TestShimTriggerParity(t *testing.T) {

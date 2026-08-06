@@ -25,8 +25,8 @@ The agent runs in a read-only sandbox. It cannot modify issues, push code, or in
 
 Requires triage-level repository permission or higher (triage, write,
 maintain, or admin). Mutation stages such as `/fs-code` still require
-write or higher. `/fs-stop` requires write-level permission or issue/PR
-authorship (ADR 0054).
+write or higher. `/fs-stop triage` (and bare `/fs-stop`) require write-level
+permission (ADR 0054). Authorship alone authorizes `/fs-stop fix` only.
 
 The `/fs-triage` command does not accept arguments — it re-evaluates the issue
 using current content, comments, and any prior triage analysis.

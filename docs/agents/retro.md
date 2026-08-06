@@ -29,7 +29,8 @@ When triggered via `/fs-retro`, the human's comment is passed to the agent as hi
 | `/fs-stop retro` | Issue or PR comment | Applies `fullsend-no-retro` and skips further auto-triggered retro runs |
 
 Requires write-level repository permission (admin, maintain, or write).
-`/fs-stop` also allows the issue/PR author (ADR 0054).
+`/fs-stop retro` requires write; authorship alone authorizes `/fs-stop fix` only
+(ADR 0054).
 
 The `/fs-retro` command accepts optional free-text instructions after the
 command. The text is passed to the agent as high-signal direction about what
