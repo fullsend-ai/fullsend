@@ -433,7 +433,7 @@ Cloudflare mode (--platform=cloudflare):
 			case "gcp":
 				return runMintDeployGCP(cmd.Context(), project, region, sourceDir, skipDeploy, dryRun, pemDir, public)
 			case "cloudflare":
-				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, pemDir, dryRun)
+				return runMintDeployCloudflare(cmd.Context(), workerName, sourceDir, preview, dryRun, pemDir)
 			default:
 				return fmt.Errorf("unsupported platform %q: must be \"gcp\" or \"cloudflare\"", platform)
 			}
@@ -608,7 +608,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 	return nil
 }
 
-func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias, pemDir string, dryRun bool) error {
+func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, previewAlias string, dryRun bool, pemDir string) error {
 	if err := cf.ValidateCloudflareEnv(); err != nil {
 		return err
 	}

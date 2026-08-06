@@ -32,9 +32,10 @@ type deployCall struct {
 }
 
 type secretCall struct {
-	workerName string
-	secretName string
-	value      []byte
+	workerName   string
+	secretName   string
+	previewAlias string
+	value        []byte
 }
 
 func (f *fakeWranglerRunner) Deploy(_ context.Context, sourceDir, workerName string, previewAlias string, envVars map[string]string) (string, error) {
@@ -54,11 +55,12 @@ func (f *fakeWranglerRunner) Deploy(_ context.Context, sourceDir, workerName str
 	return url, nil
 }
 
-func (f *fakeWranglerRunner) PutSecret(_ context.Context, workerName, secretName string, value []byte) error {
+func (f *fakeWranglerRunner) PutSecret(_ context.Context, workerName, secretName, previewAlias string, value []byte) error {
 	f.secretCalls = append(f.secretCalls, secretCall{
-		workerName: workerName,
-		secretName: secretName,
-		value:      value,
+		workerName:   workerName,
+		secretName:   secretName,
+		previewAlias: previewAlias,
+		value:        value,
 	})
 	return f.secretPutErr
 }
@@ -369,6 +371,25 @@ func TestProvisioner_StoreAgentPEM_Error(t *testing.T) {
 	err := p.StoreAgentPEM(context.Background(), "coder", []byte("pem"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "storing PEM secret")
+}
+
+func TestProvisioner_StoreAgentPEM_WithPreviewAlias(t *testing.T) {
+	fake := &fakeWranglerRunner{}
+	p := NewProvisioner(Config{
+		AccountID:    "abc123",
+		WorkerName:   "test-mint",
+		DeployMode:   DeployPreview,
+		PreviewAlias: "bt-test-42",
+	}, fake)
+
+	err := p.StoreAgentPEM(context.Background(), "coder", []byte("pem-data"))
+	require.NoError(t, err)
+	require.Len(t, fake.secretCalls, 1)
+	assert.Equal(t, "test-mint", fake.secretCalls[0].workerName)
+	assert.Equal(t, "CODER_APP_PEM", fake.secretCalls[0].secretName)
+	assert.Equal(t, "bt-test-42", fake.secretCalls[0].previewAlias,
+		"preview alias should be forwarded to PutSecret")
+	assert.Equal(t, []byte("pem-data"), fake.secretCalls[0].value)
 }
 
 // --- Teardown tests ---
@@ -720,7 +741,18 @@ func TestLiveWranglerRunner_PutSecret_CommandError(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := runner.PutSecret(ctx, "test-worker", "MY_SECRET", []byte("secret-value"))
+	err := runner.PutSecret(ctx, "test-worker", "MY_SECRET", "", []byte("secret-value"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wrangler secret put failed")
+}
+
+func TestLiveWranglerRunner_PutSecret_PreviewCommandError(t *testing.T) {
+	runner := &LiveWranglerRunner{AccountID: "test-account"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := runner.PutSecret(ctx, "test-worker", "MY_SECRET", "bt-alias", []byte("secret-value"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "wrangler secret put failed")
 }

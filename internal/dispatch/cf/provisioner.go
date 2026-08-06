@@ -116,7 +116,9 @@ type WranglerRunner interface {
 	Deploy(ctx context.Context, sourceDir, workerName string, previewAlias string, envVars map[string]string) (url string, err error)
 
 	// PutSecret stores a secret value on a Worker.
-	PutSecret(ctx context.Context, workerName, secretName string, value []byte) error
+	// When previewAlias is non-empty, the runner scopes the secret to the
+	// preview version using --preview-alias (mirroring Deploy behavior).
+	PutSecret(ctx context.Context, workerName, secretName, previewAlias string, value []byte) error
 
 	// Delete removes a Worker deployment.
 	Delete(ctx context.Context, workerName string) error
@@ -193,12 +195,15 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 
 // StoreAgentPEM stores a role's PEM key as a Cloudflare Worker secret.
 // Secret names follow the convention <ROLE>_APP_PEM (e.g. CODER_APP_PEM).
+// When the provisioner is configured for preview deploys (PreviewAlias is
+// set), the preview alias is forwarded to PutSecret so the secret is
+// scoped to the preview version.
 func (p *Provisioner) StoreAgentPEM(ctx context.Context, role string, pemData []byte) error {
 	if err := mintcore.ValidateRoleName(role); err != nil {
 		return fmt.Errorf("invalid role name %q: %w", role, err)
 	}
 	secretName := pemSecretName(role)
-	if err := p.wrangler.PutSecret(ctx, p.cfg.WorkerName, secretName, pemData); err != nil {
+	if err := p.wrangler.PutSecret(ctx, p.cfg.WorkerName, secretName, p.cfg.PreviewAlias, pemData); err != nil {
 		return fmt.Errorf("storing PEM secret %s: %w", secretName, err)
 	}
 	return nil
@@ -481,8 +486,14 @@ func (r *LiveWranglerRunner) deployPreview(ctx context.Context, sourceDir, worke
 }
 
 // PutSecret stores a secret value on a Worker via wrangler secret put.
-func (r *LiveWranglerRunner) PutSecret(ctx context.Context, workerName, secretName string, value []byte) error {
-	cmd := exec.CommandContext(ctx, "npx", "wrangler", "secret", "put", secretName, "--name", workerName)
+// When previewAlias is non-empty, it passes --preview-alias to scope the
+// secret to the preview version (mirroring Deploy's preview-alias behavior).
+func (r *LiveWranglerRunner) PutSecret(ctx context.Context, workerName, secretName, previewAlias string, value []byte) error {
+	args := []string{"wrangler", "secret", "put", secretName, "--name", workerName}
+	if previewAlias != "" {
+		args = append(args, fmt.Sprintf("--preview-alias=%s", previewAlias))
+	}
+	cmd := exec.CommandContext(ctx, "npx", args...)
 	cmd.Stdin = strings.NewReader(string(value))
 	cmd.Env = append(os.Environ(),
 		"CLOUDFLARE_ACCOUNT_ID="+r.AccountID,

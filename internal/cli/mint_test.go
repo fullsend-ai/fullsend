@@ -58,9 +58,10 @@ type fakeCFDeployCall struct {
 }
 
 type fakeCFSecretCall struct {
-	workerName string
-	secretName string
-	value      []byte
+	workerName   string
+	secretName   string
+	previewAlias string
+	value        []byte
 }
 
 func (f *fakeCFWranglerRunner) Deploy(_ context.Context, _ string, workerName string, previewAlias string, envVars map[string]string) (string, error) {
@@ -75,11 +76,12 @@ func (f *fakeCFWranglerRunner) Deploy(_ context.Context, _ string, workerName st
 	return url, nil
 }
 
-func (f *fakeCFWranglerRunner) PutSecret(_ context.Context, workerName, secretName string, value []byte) error {
+func (f *fakeCFWranglerRunner) PutSecret(_ context.Context, workerName, secretName, previewAlias string, value []byte) error {
 	f.secretCalls = append(f.secretCalls, fakeCFSecretCall{
-		workerName: workerName,
-		secretName: secretName,
-		value:      value,
+		workerName:   workerName,
+		secretName:   secretName,
+		previewAlias: previewAlias,
+		value:        value,
 	})
 	return f.secretPutErr
 }
@@ -855,9 +857,13 @@ func TestMintDeployCmd_CloudflarePreviewDeployWithPemDir(t *testing.T) {
 	assert.Contains(t, fake.deployCalls[0].envVars, "ROLE_APP_IDS",
 		"ROLE_APP_IDS should be set for preview deploys too")
 
-	// PEM secrets should still be stored — they go on the durable
-	// Worker script (shared with production).
+	// PEM secrets should be stored with the preview alias so wrangler
+	// scopes them to the preview version.
 	assert.NotEmpty(t, fake.secretCalls, "PEM secrets should be stored for preview deploys")
+	for _, call := range fake.secretCalls {
+		assert.Equal(t, "bt-test-42", call.previewAlias,
+			"PutSecret should receive the preview alias for preview deploys")
+	}
 }
 
 func TestMintDeployCmd_CloudflareDeployPemSecretFailure(t *testing.T) {
