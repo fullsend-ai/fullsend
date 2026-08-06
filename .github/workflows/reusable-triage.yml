@@ -182,4 +182,5 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ inputs.source_repo }}
           status-number: ${{ fromJSON(inputs.event_payload).issue.number }}
+          status-comment-id: ${{ fromJSON(inputs.event_payload).comment.id }}
           mint-url: ${{ inputs.mint_url }}
