@@ -56,7 +56,7 @@ the problem from multiple angles:
 - **What triggers it?** Specific actions, configurations, timing, data shapes?
 - **Where does it manifest?** Which component, service, environment, platform?
 - **When did it start?** Always been this way, or a regression? What changed?
-- **What is the severity?** Workaround available? Blocks other work?
+- **What is the impact?** Workaround available? Blocks other work?
 - **What is the scope?** Isolated incident or pattern? How many people hit this?
 - **What has been tried?** Prior debugging, workarounds, related PRs?
 - **What context would a stranger need?** Version numbers, error messages, logs,
@@ -159,5 +159,11 @@ Do this **after** each `gh issue create` succeeds; then return all issue URLs.
   numbers, error messages, or reproduction steps.
 - **Respect the repo's conventions.** If existing issues use a template or
   follow a pattern, match it. Check `.github/ISSUE_TEMPLATE/` if it exists.
+- **No labels at filing time.** Never include `--label` flags in
+  `gh issue create`. Labels are applied by the triage pipeline, not at
+  filing time.
+- **No priority classification.** Do not ask the user for priority or
+  severity levels, and do not include priority labels. Triage handles
+  classification.
 - **Sub-issues:** If there is a parent/child hierarchy, use GitHub’s sub-issue
   API after creation; do not rely on body mentions alone.
