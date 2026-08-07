@@ -18,6 +18,9 @@ import (
 // via PR. When direct is true, files are pushed directly to the default branch,
 // falling back to a PR if branch protection blocks the push.
 //
+// The scaffoldBranch parameter controls the feature branch name for PR-based
+// delivery. Pass an empty string to use the default ("fullsend/scaffold-install").
+//
 // The in parameter enables interactive prompts (e.g., fork-vs-upstream choice).
 // Pass os.Stdin for interactive CLI callers; pass nil for non-interactive
 // callers (sync-scaffold), which default to forking without prompting.
@@ -26,16 +29,20 @@ import (
 // branch (false for PR-based delivery, idempotent no-ops, or unchanged content).
 func CommitScaffoldFiles(ctx context.Context, client forge.Client, printer *ui.Printer,
 	owner, repo, defaultBranch, commitMsg, prTitle, prBody string,
-	files []forge.TreeFile, direct bool, in io.Reader) (bool, error) {
+	files []forge.TreeFile, direct bool, in io.Reader, scaffoldBranch string) (bool, error) {
 
 	commitMsg = adaptCommitMsg(ctx, client, printer, owner, repo, commitMsg)
 
+	if scaffoldBranch == "" {
+		scaffoldBranch = defaultScaffoldBranch
+	}
+
 	if direct {
 		return commitScaffoldDirect(ctx, client, printer,
-			owner, repo, defaultBranch, commitMsg, prTitle, prBody, files, in)
+			owner, repo, defaultBranch, scaffoldBranch, commitMsg, prTitle, prBody, files, in)
 	}
 	return commitScaffoldViaPR(ctx, client, printer,
-		owner, repo, defaultBranch, commitMsg, prTitle, prBody, files, in)
+		owner, repo, defaultBranch, scaffoldBranch, commitMsg, prTitle, prBody, files, in)
 }
 
 // CommitFilesViaPR delivers files via a pull request on the given branch.
@@ -63,7 +70,7 @@ var knownScaffoldBranches = []string{
 // For non-owner users, it defaults to creating a fork and opening a cross-fork
 // PR rather than pushing directly to the upstream repository.
 func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.Printer,
-	owner, repo, defaultBranch, commitMsg, prTitle, prBody string,
+	owner, repo, defaultBranch, scaffoldBranch, commitMsg, prTitle, prBody string,
 	files []forge.TreeFile, in io.Reader) (bool, error) {
 
 	user, err := client.GetAuthenticatedUser(ctx)
@@ -74,7 +81,7 @@ func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.P
 	// Owner pushes directly to the repo — no fork needed.
 	if strings.EqualFold(user, owner) {
 		return commitBranchAndPR(ctx, client, printer,
-			owner, repo, owner, repo, defaultScaffoldBranch, defaultBranch,
+			owner, repo, owner, repo, scaffoldBranch, defaultBranch,
 			commitMsg, prTitle, prBody, files)
 	}
 
@@ -83,7 +90,7 @@ func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.P
 	if hasWriteAccess(ctx, client, owner, repo, user) {
 		printer.StepInfo(fmt.Sprintf("User %s has write access — pushing directly to %s/%s", user, owner, repo))
 		return commitBranchAndPR(ctx, client, printer,
-			owner, repo, owner, repo, defaultScaffoldBranch, defaultBranch,
+			owner, repo, owner, repo, scaffoldBranch, defaultBranch,
 			commitMsg, prTitle, prBody, files)
 	}
 
@@ -96,7 +103,7 @@ func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.P
 	if forkOwner != "" {
 		printer.StepDone(fmt.Sprintf("Using existing fork %s/%s", forkOwner, forkRepo))
 		return commitViaFork(ctx, client, printer,
-			owner, repo, forkOwner, forkRepo, defaultScaffoldBranch, defaultBranch,
+			owner, repo, forkOwner, forkRepo, scaffoldBranch, defaultBranch,
 			commitMsg, prTitle, prBody, files)
 	}
 
@@ -134,13 +141,13 @@ func commitScaffoldViaPR(ctx context.Context, client forge.Client, printer *ui.P
 
 	if useFork {
 		return forkAndCommit(ctx, client, printer,
-			owner, repo, defaultScaffoldBranch, defaultBranch,
+			owner, repo, scaffoldBranch, defaultBranch,
 			commitMsg, prTitle, prBody, files)
 	}
 
 	// Upstream path: try to push directly, fail clearly on 403.
 	return commitBranchAndPR(ctx, client, printer,
-		owner, repo, owner, repo, defaultScaffoldBranch, defaultBranch,
+		owner, repo, owner, repo, scaffoldBranch, defaultBranch,
 		commitMsg, prTitle, prBody, files)
 }
 
@@ -226,12 +233,17 @@ func closeStaleScaffoldPRs(ctx context.Context, client forge.Client, printer *ui
 }
 
 // isKnownScaffoldBranch reports whether branch is one of the well-known branch
-// names used by scaffold installs (per-org or per-repo mode).
+// names used by scaffold installs (per-org or per-repo mode), including
+// version-specific upgrade branches like "fullsend/bump-v0.28.0".
 func isKnownScaffoldBranch(branch string) bool {
 	for _, b := range knownScaffoldBranches {
 		if b == branch {
 			return true
 		}
+	}
+	// Match version-upgrade branches: fullsend/bump-v*
+	if strings.HasPrefix(branch, "fullsend/bump-") {
+		return true
 	}
 	return false
 }
@@ -507,7 +519,7 @@ func promptUpstreamOnly(printer *ui.Printer, in io.Reader, owner, repo string) (
 // commitScaffoldDirect pushes files directly to the default branch, falling
 // back to a PR when branch protection blocks the push.
 func commitScaffoldDirect(ctx context.Context, client forge.Client, printer *ui.Printer,
-	owner, repo, defaultBranch, commitMsg, prTitle, prBody string,
+	owner, repo, defaultBranch, scaffoldBranch, commitMsg, prTitle, prBody string,
 	files []forge.TreeFile, in io.Reader) (bool, error) {
 
 	committed, err := client.CommitFiles(ctx, owner, repo, commitMsg, files)
@@ -520,7 +532,7 @@ func commitScaffoldDirect(ctx context.Context, client forge.Client, printer *ui.
 		fallbackBody := fmt.Sprintf("The default branch (%s) has branch protection rules that prevent direct pushes.\n\n"+
 			"Merge this PR to deliver the scaffold files.", defaultBranch)
 		return commitScaffoldViaPR(ctx, client, printer,
-			owner, repo, defaultBranch, commitMsg, prTitle, fallbackBody, files, in)
+			owner, repo, defaultBranch, scaffoldBranch, commitMsg, prTitle, fallbackBody, files, in)
 	} else if err != nil {
 		printer.StepFail("Failed to commit scaffold files")
 		return false, fmt.Errorf("committing scaffold files: %w", err)

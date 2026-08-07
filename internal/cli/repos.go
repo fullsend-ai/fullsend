@@ -145,11 +145,9 @@ func runReposMigrate(cmd *cobra.Command, org string, cfg *reposMigrateConfig) er
 		if repoErr != nil {
 			return fmt.Errorf("getting repo info: %w", repoErr)
 		}
-		commitMsg := "chore: initialize fullsend per-repo installation"
-		prTitle := "chore: initialize fullsend per-repo installation"
-		prBody := defaultScaffoldPRBody
+		meta := repos.BuildScaffoldPRMetadata(ctx, fc.Client, owner, repo, upstreamTag)
 		_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
-			targetRepo.DefaultBranch, commitMsg, prTitle, prBody, files, direct, nil)
+			targetRepo.DefaultBranch, meta.CommitMsg, meta.PRTitle, meta.PRBody, files, direct, nil, meta.Branch)
 		return commitErr
 	}
 
@@ -633,14 +631,13 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		if repoErr != nil {
 			return fmt.Errorf("getting repo info: %w", repoErr)
 		}
-		commitMsg := "chore: initialize fullsend per-repo installation"
+		meta := repos.BuildScaffoldPRMetadata(ctx, fc.Client, owner, repo, upstreamTag)
+		commitMsg := meta.CommitMsg
 		if rc.Forge == repos.ForgeGitLab {
 			commitMsg += " [skip ci]"
 		}
-		prTitle := "chore: initialize fullsend per-repo installation"
-		prBody := defaultScaffoldPRBody
 		_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
-			targetRepo.DefaultBranch, commitMsg, prTitle, prBody, files, direct, nil)
+			targetRepo.DefaultBranch, commitMsg, meta.PRTitle, meta.PRBody, files, direct, nil, meta.Branch)
 		return commitErr
 	}
 
@@ -811,12 +808,9 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			if repoErr != nil {
 				return fmt.Errorf("getting repo info: %w", repoErr)
 			}
-			commitMsg := "chore: upgrade fullsend scaffold ref"
-			prTitle := "chore: upgrade fullsend scaffold ref"
-			prBody := "This PR upgrades the fullsend scaffold workflow ref.\n\n" +
-				"Merge this PR to activate the updated workflows."
+			meta := repos.BuildScaffoldPRMetadata(ctx, fc.Client, owner, repo, upstreamTag)
 			_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
-				targetRepo.DefaultBranch, commitMsg, prTitle, prBody, files, isDirect, nil)
+				targetRepo.DefaultBranch, meta.CommitMsg, meta.PRTitle, meta.PRBody, files, isDirect, nil, meta.Branch)
 			return commitErr
 		}
 

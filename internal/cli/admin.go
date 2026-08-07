@@ -60,9 +60,6 @@ type adminWIFProvisioner interface {
 // errMintNotFound indicates the mint function does not exist.
 var errMintNotFound = errors.New("mint function not found")
 
-const defaultScaffoldPRBody = "This PR adds the fullsend scaffold files for per-repo installation.\n\n" +
-	"Merge this PR to activate fullsend workflows."
-
 func newAdminCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "admin",
@@ -1050,9 +1047,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			}
 			return fmt.Errorf("getting repo info: %w", repoErr)
 		}
-		commitMsg := "chore: initialize fullsend per-repo installation"
-		prTitle := "chore: initialize fullsend per-repo installation"
-		prBody := defaultScaffoldPRBody
+		meta := repos.BuildScaffoldPRMetadata(ctx, client, owner, repo, upstreamTag)
 		if direct {
 			printer.StepStart(fmt.Sprintf("Committing scaffold files to %s/%s (%s branch)",
 				owner, repo, targetRepo.DefaultBranch))
@@ -1061,7 +1056,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 				owner, repo, targetRepo.DefaultBranch))
 		}
 		_, err := layers.CommitScaffoldFiles(ctx, client, printer, owner, repo,
-			targetRepo.DefaultBranch, commitMsg, prTitle, prBody, files, direct, os.Stdin)
+			targetRepo.DefaultBranch, meta.CommitMsg, meta.PRTitle, meta.PRBody, files, direct, os.Stdin, meta.Branch)
 		return err
 	}
 
@@ -1226,7 +1221,9 @@ func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.
 		}
 		return fmt.Errorf("getting repo info: %w", err)
 	}
-	commitMsg := "chore: initialize fullsend per-repo installation"
+	// applyPerRepoScaffold is only called from the vendor path, which
+	// always runs as a fresh install (no upstreamTag available here).
+	meta := repos.BuildScaffoldPRMetadata(ctx, client, owner, repo, "")
 	if direct {
 		printer.StepStart(fmt.Sprintf("Committing scaffold files to %s/%s (%s branch)",
 			owner, repo, targetRepo.DefaultBranch))
@@ -1236,7 +1233,7 @@ func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.
 	}
 	if _, err := layers.CommitScaffoldFiles(ctx, client, printer,
 		owner, repo, targetRepo.DefaultBranch,
-		commitMsg, "chore: initialize fullsend per-repo installation", defaultScaffoldPRBody, files, direct, os.Stdin); err != nil {
+		meta.CommitMsg, meta.PRTitle, meta.PRBody, files, direct, os.Stdin, meta.Branch); err != nil {
 		return err
 	}
 

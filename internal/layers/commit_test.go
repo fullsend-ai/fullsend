@@ -29,7 +29,7 @@ func TestCommitScaffoldViaPR_OwnerPushesDirect(t *testing.T) {
 	printer, _ := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	require.Len(t, client.CreatedBranches, 1)
@@ -46,7 +46,7 @@ func TestCommitScaffoldViaPR_OwnerCaseInsensitive(t *testing.T) {
 	printer, _ := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	// Should push to acme/widget directly (same-repo PR).
@@ -65,7 +65,7 @@ func TestCommitScaffoldViaPR_ExistingForkReused(t *testing.T) {
 	printer, buf := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	assert.Contains(t, buf.String(), "Using existing fork")
@@ -88,7 +88,7 @@ func TestCommitScaffoldViaPR_WriteAccessPushesDirect(t *testing.T) {
 	printer, buf := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	assert.Contains(t, buf.String(), "has write access")
@@ -106,7 +106,7 @@ func TestCommitScaffoldViaPR_AdminAccessPushesDirect(t *testing.T) {
 	printer, _ := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	assert.Empty(t, client.CreatedForks)
@@ -123,7 +123,7 @@ func TestCommitScaffoldViaPR_MaintainAccessPushesDirect(t *testing.T) {
 	printer, buf := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	assert.Contains(t, buf.String(), "has write access")
@@ -144,7 +144,7 @@ func TestCommitScaffoldViaPR_WriteAccessTakesPrecedenceOverFork(t *testing.T) {
 	printer, buf := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	assert.Contains(t, buf.String(), "has write access")
@@ -169,7 +169,7 @@ func TestCommitScaffoldViaPR_ReadAccessFallsThrough(t *testing.T) {
 	printer, _ := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	require.Len(t, client.CreatedForks, 1, "read-only user should fork")
@@ -187,7 +187,7 @@ func TestCommitScaffoldViaPR_NonInteractiveForksByDefault(t *testing.T) {
 
 	// nil reader = non-interactive → auto-fork.
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	require.Len(t, client.CreatedForks, 1)
@@ -209,7 +209,7 @@ func TestCommitScaffoldViaPR_InteractiveForkChoice(t *testing.T) {
 	// Simulate user pressing enter (default = fork).
 	in := strings.NewReader("\n")
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, in)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, in, "")
 	require.NoError(t, err)
 
 	require.Len(t, client.CreatedForks, 1)
@@ -224,7 +224,7 @@ func TestCommitScaffoldViaPR_InteractiveUpstreamChoice(t *testing.T) {
 	// Simulate user choosing upstream.
 	in := strings.NewReader("u\n")
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, in)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, in, "")
 	require.NoError(t, err)
 
 	assert.Empty(t, client.CreatedForks, "should not fork")
@@ -244,7 +244,7 @@ func TestCommitScaffoldViaPR_UpstreamForbidden(t *testing.T) {
 
 	in := strings.NewReader("u\n")
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, in)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, in, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "403 forbidden")
 	assert.Contains(t, err.Error(), "fork option")
@@ -260,7 +260,7 @@ func TestCommitScaffoldViaPR_CrossForkPRHead(t *testing.T) {
 	printer, _ := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	// Verify the PR was created on upstream with cross-fork head.
@@ -283,7 +283,7 @@ func TestCommitScaffoldViaPR_CrossForkUsesUpstreamSHA(t *testing.T) {
 	printer, _ := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	// The scaffold branch on the fork must be created from the upstream SHA,
@@ -302,7 +302,7 @@ func TestCommitScaffoldViaPR_SameRepoUsesCreateBranch(t *testing.T) {
 	printer, _ := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	// Same-repo path should use CreateBranch (not CreateBranchFromSHA).
@@ -324,7 +324,7 @@ func TestCommitScaffoldViaPR_CrossForkCreateBranchFromSHAForbidden(t *testing.T)
 	printer, _ := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "403 forbidden")
 }
@@ -342,7 +342,7 @@ func TestCommitScaffoldViaPR_CrossForkGetBranchRefError(t *testing.T) {
 	printer, _ := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "getting upstream branch ref")
 	assert.Contains(t, err.Error(), "acme/widget@main")
@@ -362,7 +362,7 @@ func TestCommitScaffoldViaPR_CrossForkBranchAlreadyExists(t *testing.T) {
 	printer, buf := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	// Should fall through and commit files even though the branch already exists.
@@ -385,7 +385,7 @@ func TestCommitScaffoldViaPR_CrossForkCreateBranchGenericError(t *testing.T) {
 	printer, buf := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating scaffold branch")
 	assert.Contains(t, buf.String(), "Failed to create scaffold branch")
@@ -404,7 +404,7 @@ func TestCommitScaffoldViaPR_CrossForkCommitFilesProtected(t *testing.T) {
 	printer, buf := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "scaffold branch")
 	assert.Contains(t, err.Error(), "protected")
@@ -424,7 +424,7 @@ func TestCommitScaffoldViaPR_CrossForkNoChanges(t *testing.T) {
 	printer, buf := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	// Should report up to date without error.
@@ -446,7 +446,7 @@ func TestCommitScaffoldViaPR_CrossForkPRAlreadyExistsUpdated(t *testing.T) {
 	printer, buf := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	// Verify the "updated with new files" message when PR exists but files changed.
@@ -469,7 +469,7 @@ func TestCommitScaffoldViaPR_CrossForkPRAlreadyExistsNoUpdate(t *testing.T) {
 	printer, buf := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	// When PR exists and no files changed, should report up to date.
@@ -490,7 +490,7 @@ func TestCommitScaffoldViaPR_NewForkUsesCreateBranchFromSHA(t *testing.T) {
 
 	// nil reader = non-interactive → auto-fork.
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	// Verify a fork was created.
@@ -519,7 +519,7 @@ func TestCommitScaffoldViaPR_FindExistingForkError(t *testing.T) {
 
 	// Should warn but proceed (auto-fork since in=nil).
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	assert.Contains(t, buf.String(), "Could not check for existing fork")
@@ -536,7 +536,7 @@ func TestCommitScaffoldViaPR_CreateForkError(t *testing.T) {
 	printer, _ := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "creating fork")
 }
@@ -549,7 +549,7 @@ func TestCommitScaffoldViaPR_GetAuthenticatedUserError(t *testing.T) {
 	printer, _ := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "getting authenticated user")
 }
@@ -563,7 +563,7 @@ func TestCommitScaffoldDirect_FallbackPreservesIn(t *testing.T) {
 	printer, buf := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, true, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, true, nil, "")
 	require.NoError(t, err)
 
 	assert.Contains(t, buf.String(), "protected")
@@ -581,7 +581,7 @@ func TestCommitScaffoldDirect_NonFastForwardRetrySucceeds(t *testing.T) {
 	printer, buf := newTestPrinter()
 
 	committed, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, true, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, true, nil, "")
 	require.NoError(t, err)
 	assert.True(t, committed)
 	assert.Contains(t, buf.String(), "auto_init race")
@@ -598,7 +598,7 @@ func TestCommitScaffoldDirect_NonFastForwardRetryFails(t *testing.T) {
 	printer, _ := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, true, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, true, nil, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "network error")
 }
@@ -612,7 +612,7 @@ func TestCommitScaffoldViaPR_FineGrainedSkipsFork_Interactive(t *testing.T) {
 	// Simulate user confirming upstream.
 	in := strings.NewReader("y\n")
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, in)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, in, "")
 	require.NoError(t, err)
 
 	output := buf.String()
@@ -632,7 +632,7 @@ func TestCommitScaffoldViaPR_FineGrainedDeclined(t *testing.T) {
 
 	in := strings.NewReader("n\n")
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, in)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, in, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "upstream delivery declined")
 }
@@ -644,7 +644,7 @@ func TestCommitScaffoldViaPR_FineGrainedNonInteractive(t *testing.T) {
 
 	// nil reader = non-interactive → should auto-upstream (not fork).
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	output := buf.String()
@@ -1005,7 +1005,7 @@ func TestCommitScaffoldViaPR_ClosesStaleOnboardPR(t *testing.T) {
 	printer, buf := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	assert.Contains(t, client.ClosedProposals, 99, "stale onboard PR should be closed")
@@ -1081,7 +1081,7 @@ func TestCommitScaffoldViaPR_SkipsStaleCleanupInForkPath(t *testing.T) {
 	printer, _ := newTestPrinter()
 
 	_, err := CommitScaffoldFiles(context.Background(), client, printer,
-		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil)
+		"acme", "widget", "main", "msg", "title", "body", testFiles, false, nil, "")
 	require.NoError(t, err)
 
 	assert.Empty(t, client.ClosedProposals, "should not close upstream PRs when using fork path")
@@ -1090,6 +1090,67 @@ func TestCommitScaffoldViaPR_SkipsStaleCleanupInForkPath(t *testing.T) {
 func TestIsKnownScaffoldBranch(t *testing.T) {
 	assert.True(t, isKnownScaffoldBranch("fullsend/scaffold-install"))
 	assert.True(t, isKnownScaffoldBranch("fullsend/onboard"))
+	assert.True(t, isKnownScaffoldBranch("fullsend/bump-v0.28.0"))
+	assert.True(t, isKnownScaffoldBranch("fullsend/bump-v1.0.0-rc.1"))
 	assert.False(t, isKnownScaffoldBranch("feature/add-stuff"))
 	assert.False(t, isKnownScaffoldBranch("fullsend/offboard"))
+}
+
+func TestCommitScaffoldFiles_CustomBranch(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body",
+		testFiles, false, nil, "fullsend/bump-v0.28.0")
+	require.NoError(t, err)
+
+	// Branch should use the custom name, not the default.
+	require.Len(t, client.CreatedBranches, 1)
+	assert.Equal(t, "acme/widget/fullsend/bump-v0.28.0", client.CreatedBranches[0])
+
+	// PR head should be the custom branch name.
+	require.Len(t, client.CreatedProposals, 1)
+	assert.Equal(t, "fullsend/bump-v0.28.0", client.CreatedProposals[0].Head)
+}
+
+func TestCommitScaffoldFiles_EmptyBranchUsesDefault(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	printer, _ := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body",
+		testFiles, false, nil, "")
+	require.NoError(t, err)
+
+	require.Len(t, client.CreatedBranches, 1)
+	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0])
+}
+
+func TestCommitScaffoldFiles_UpgradeBranchClosesOldInstallPR(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.PullRequests = map[string][]forge.ChangeProposal{
+		"acme/widget": {
+			{Number: 10, Title: "chore: initialize fullsend", Head: "fullsend/scaffold-install", Base: "main", Author: "acme"},
+		},
+	}
+	printer, buf := newTestPrinter()
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", "msg", "title", "body",
+		testFiles, false, nil, "fullsend/bump-v0.28.0")
+	require.NoError(t, err)
+
+	// The old install PR should be closed since we're using a different
+	// scaffold branch now.
+	assert.Contains(t, client.ClosedProposals, 10,
+		"old scaffold-install PR should be closed when upgrading via bump branch")
+	assert.Contains(t, buf.String(), "Closed stale scaffold PR #10")
+
+	// New branch should be created.
+	require.Len(t, client.CreatedBranches, 1)
+	assert.Equal(t, "acme/widget/fullsend/bump-v0.28.0", client.CreatedBranches[0])
 }
