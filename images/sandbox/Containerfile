@@ -144,7 +144,7 @@ RUN apt-get update \
 # Pinned version + sha256 checksum for supply chain safety.
 # To update: bump TIRITH_VERSION and TIRITH_SHA256_{AMD64,ARM64} from the checksums.txt
 # in the GitHub release: https://github.com/sheeki03/tirith/releases
-ARG TIRITH_VERSION=0.3.1
+ARG TIRITH_VERSION=0.3.3
 ARG TIRITH_SHA256_AMD64=571e6a300e4c444293476537a322666069e561c7f05283d6650f5b8ef83db3ac
 ARG TIRITH_SHA256_ARM64=0462fe5083b4c72c45a8de918d5413e21d17aa8077aa7dbe53c0876b112847bb
 RUN case "$TARGETARCH" in \
