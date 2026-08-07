@@ -37,3 +37,19 @@ func (d *perRepoDefaults) IssueCreationConfig() *CreateIssuesConfig { return nil
 
 // IsOrgMode returns false — per-repo configs are never org mode.
 func (d *perRepoDefaults) IsOrgMode() bool { return false }
+
+// ConfigMintURL returns "" — no default mint URL. Callers that need
+// a fallback (e.g. the CLI) use DefaultMintURL from the cli package.
+func (d *perRepoDefaults) ConfigMintURL() string { return "" }
+
+// ConfigInferenceProvider returns "" — no default inference provider.
+func (d *perRepoDefaults) ConfigInferenceProvider() string { return "" }
+
+// ConfigInferenceProject returns "" — no default inference project.
+func (d *perRepoDefaults) ConfigInferenceProject() string { return "" }
+
+// ConfigInferenceRegion returns "" — no default inference region.
+func (d *perRepoDefaults) ConfigInferenceRegion() string { return "" }
+
+// ConfigInferenceWIFProvider returns "" — no default WIF provider.
+func (d *perRepoDefaults) ConfigInferenceWIFProvider() string { return "" }

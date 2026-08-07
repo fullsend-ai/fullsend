@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
@@ -69,6 +70,12 @@ type githubSetupConfig struct {
 	runtime              string
 	configPreset         string // --config: local path or HTTPS URL to a preset
 	configHash           string // --config-hash: SHA-256 hex digest for preset validation
+
+	// changedFlags records which flags were explicitly set on the
+	// command line (populated by RunE before calling the setup
+	// function). Used to distinguish flag-specified values from
+	// defaults when building the preset overlay.
+	changedFlags map[string]bool
 }
 
 func newGitHubSetupCmd() *cobra.Command {
@@ -137,6 +144,14 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 					cfg.agents = strings.Join(config.PerRepoDefaultRoles(), ",")
 				}
 			}
+
+			// Record which flags were explicitly set so the
+			// installer can distinguish user overrides from defaults
+			// when building the preset overlay (ADR 0069 Decision 1).
+			cfg.changedFlags = make(map[string]bool)
+			cmd.Flags().Visit(func(f *pflag.Flag) {
+				cfg.changedFlags[f.Name] = true
+			})
 
 			token, err := resolveToken()
 			if err != nil {
@@ -270,10 +285,21 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	// --- Build config files ---
 	var cfgYAML []byte
 	if presetData == nil {
-		// No preset: generate a full per-repo config.yaml as before.
+		// No preset: generate a full per-repo config.yaml with
+		// mint/inference values from flags.
 		perRepoCfg := config.NewPerRepoConfig(roles, cfg.target)
 		if cfg.runtime != "" {
 			perRepoCfg.SetRuntime(cfg.runtime)
+		}
+		// Store mint/inference settings in config (ADR 0069 Decision 1).
+		perRepoCfg.SetMintURL(cfg.mintURL)
+		perRepoCfg.SetInferenceProvider("vertex")
+		perRepoCfg.SetInferenceRegion(cfg.inferenceRegion)
+		if cfg.inferenceProject != "" {
+			perRepoCfg.SetInferenceProject(cfg.inferenceProject)
+		}
+		if cfg.inferenceWIFProvider != "" {
+			perRepoCfg.SetInferenceWIFProvider(cfg.inferenceWIFProvider)
 		}
 		if err := perRepoCfg.Validate(); err != nil {
 			return fmt.Errorf("invalid config: %w", err)
@@ -284,8 +310,19 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 			return fmt.Errorf("marshaling per-repo config: %w", err)
 		}
 	} else {
-		// Preset provided: config.yaml is a stub overlay.
-		cfgYAML = []byte(stubConfigYAML)
+		// Preset provided: base layer carries the preset's values.
+		// Flag-specified values go into the overlay so the base
+		// layer remains identical to the fetched preset (ADR 0069).
+		if overlayCfg := buildPresetOverlay(cfg); overlayCfg != nil {
+			cfgYAML, err = overlayCfg.Marshal()
+			if err != nil {
+				return fmt.Errorf("marshaling overlay config: %w", err)
+			}
+		} else {
+			// No flags changed: use the stub overlay with comments
+			// explaining the layered relationship.
+			cfgYAML = []byte(stubConfigYAML)
+		}
 	}
 
 	upstreamRef, upstreamTag := resolveUpstreamRef()
@@ -381,6 +418,41 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	printer.Blank()
 	printer.StepDone(fmt.Sprintf("Per-repo setup complete for %s/%s", owner, repo))
 	return nil
+}
+
+// buildPresetOverlay constructs the per-repo config overlay when a
+// preset base layer is provided via --config. Only flag-specified
+// values are written to the overlay; omitted fields inherit from the
+// base layer via the layered accessor chain (ADR 0069 Decision 1).
+// Returns nil when no relevant flags were changed, signaling the
+// caller to use the stub overlay YAML with human-readable comments.
+func buildPresetOverlay(cfg githubSetupConfig) config.PerRepoConfigWriter {
+	flagNames := []string{"mint-url", "inference-project", "inference-region", "inference-wif-provider"}
+	anyChanged := false
+	for _, name := range flagNames {
+		if cfg.changedFlags[name] {
+			anyChanged = true
+			break
+		}
+	}
+	if !anyChanged {
+		return nil
+	}
+
+	o := config.NewEmptyPerRepoOverlay()
+	if cfg.changedFlags["mint-url"] {
+		o.SetMintURL(cfg.mintURL)
+	}
+	if cfg.changedFlags["inference-project"] {
+		o.SetInferenceProject(cfg.inferenceProject)
+	}
+	if cfg.changedFlags["inference-region"] {
+		o.SetInferenceRegion(cfg.inferenceRegion)
+	}
+	if cfg.changedFlags["inference-wif-provider"] {
+		o.SetInferenceWIFProvider(cfg.inferenceWIFProvider)
+	}
+	return o
 }
 
 // runGitHubSetupPerOrg sets up fullsend for an entire organization.

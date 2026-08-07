@@ -515,6 +515,17 @@ type perRepoConfig struct {
 	AllowedRemoteResources []string            `yaml:"allowed_remote_resources,omitempty"`
 	CreateIssues           *CreateIssuesConfig `yaml:"create_issues,omitempty"`
 
+	// Mint and inference backend settings (ADR 0069 Decision 1).
+	// These fields are the per-repo config source of truth for values
+	// previously supplied only via CLI flags and repo variables/secrets.
+	// Field names are prefixed to avoid colliding with the org-mode
+	// detection keys in IsPerRepoYAML ("dispatch", "inference").
+	MintURL              string `yaml:"mint_url,omitempty"`
+	InferenceProvider    string `yaml:"inference_provider,omitempty"`
+	InferenceProject     string `yaml:"inference_project,omitempty"`
+	InferenceRegion      string `yaml:"inference_region,omitempty"`
+	InferenceWIFProvider string `yaml:"inference_wif_provider,omitempty"`
+
 	// parent is the next layer in the fallback chain. Getters consult
 	// parent when the local field is unset. Excluded from YAML
 	// serialization so Marshal emits only locally-set values.
@@ -550,6 +561,16 @@ func NewPerRepoConfig(roles []string, targetRepo string) PerRepoConfigWriter {
 		}
 	}
 	return cfg
+}
+
+// NewEmptyPerRepoOverlay creates an empty per-repo config suitable for
+// use as a stub overlay when a preset base layer is provided. No roles,
+// agents, or version are populated; the overlay inherits everything from
+// the base layer via the parent fallback chain.
+func NewEmptyPerRepoOverlay() PerRepoConfigWriter {
+	return &perRepoConfig{
+		parent: &perRepoDefaults{},
+	}
 }
 
 // NewPerRepoConfigFromOrg creates a per-repo config by mapping portable
@@ -678,6 +699,11 @@ type perRepoConfigMarshal struct {
 	Agents                 []AgentEntry        `yaml:"agents,omitempty"`
 	AllowedRemoteResources *[]string           `yaml:"allowed_remote_resources,omitempty"`
 	CreateIssues           *CreateIssuesConfig `yaml:"create_issues,omitempty"`
+	MintURL                string              `yaml:"mint_url,omitempty"`
+	InferenceProvider      string              `yaml:"inference_provider,omitempty"`
+	InferenceProject       string              `yaml:"inference_project,omitempty"`
+	InferenceRegion        string              `yaml:"inference_region,omitempty"`
+	InferenceWIFProvider   string              `yaml:"inference_wif_provider,omitempty"`
 }
 
 // MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
@@ -687,12 +713,17 @@ type perRepoConfigMarshal struct {
 // sequence (e.g. `roles: []`, `allowed_remote_resources: []`).
 func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	h := perRepoConfigMarshal{
-		Version:      c.Version,
-		Forge:        c.Forge,
-		KillSwitch:   c.KillSwitch,
-		Runtime:      c.Runtime,
-		Agents:       c.Agents,
-		CreateIssues: c.CreateIssues,
+		Version:              c.Version,
+		Forge:                c.Forge,
+		KillSwitch:           c.KillSwitch,
+		Runtime:              c.Runtime,
+		Agents:               c.Agents,
+		CreateIssues:         c.CreateIssues,
+		MintURL:              c.MintURL,
+		InferenceProvider:    c.InferenceProvider,
+		InferenceProject:     c.InferenceProject,
+		InferenceRegion:      c.InferenceRegion,
+		InferenceWIFProvider: c.InferenceWIFProvider,
 	}
 	if c.Roles != nil {
 		h.Roles = &c.Roles
@@ -740,6 +771,12 @@ func (c *perRepoConfig) Validate() error {
 		validRuntimes := ValidRuntimes()
 		if !slices.Contains(validRuntimes, rt) {
 			return fmt.Errorf("invalid runtime %q: must be one of %s", rt, strings.Join(validRuntimes, ", "))
+		}
+	}
+	if ip := c.InferenceProvider; ip != "" {
+		validProviders := ValidProviders()
+		if !slices.Contains(validProviders, ip) {
+			return fmt.Errorf("invalid inference_provider %q: must be one of %s", ip, strings.Join(validProviders, ", "))
 		}
 	}
 	return nil
