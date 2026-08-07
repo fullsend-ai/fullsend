@@ -44,18 +44,28 @@ func generateTestPEM(t *testing.T) []byte {
 
 // fakeCFWranglerRunner implements cf.WranglerRunner for CLI tests.
 type fakeCFWranglerRunner struct {
-	deployErr   error
-	deployURL   string
-	deployCalls []fakeCFDeployCall
+	deployErr    error
+	deployURL    string
+	deployCalls  []fakeCFDeployCall
+	secretCalls  []fakeCFSecretCall
+	secretPutErr error
 }
 
 type fakeCFDeployCall struct {
 	workerName   string
 	previewAlias string
+	envVars      map[string]string
+	secrets      map[string][]byte
 }
 
-func (f *fakeCFWranglerRunner) Deploy(_ context.Context, _ string, workerName string, previewAlias string, _ map[string]string) (string, error) {
-	f.deployCalls = append(f.deployCalls, fakeCFDeployCall{workerName: workerName, previewAlias: previewAlias})
+type fakeCFSecretCall struct {
+	workerName string
+	secretName string
+	value      []byte
+}
+
+func (f *fakeCFWranglerRunner) Deploy(_ context.Context, _ string, workerName string, previewAlias string, envVars map[string]string, secrets map[string][]byte) (string, error) {
+	f.deployCalls = append(f.deployCalls, fakeCFDeployCall{workerName: workerName, previewAlias: previewAlias, envVars: envVars, secrets: secrets})
 	if f.deployErr != nil {
 		return "", f.deployErr
 	}
@@ -66,8 +76,13 @@ func (f *fakeCFWranglerRunner) Deploy(_ context.Context, _ string, workerName st
 	return url, nil
 }
 
-func (f *fakeCFWranglerRunner) PutSecret(context.Context, string, string, []byte) error {
-	return nil
+func (f *fakeCFWranglerRunner) PutSecret(_ context.Context, workerName, secretName string, value []byte) error {
+	f.secretCalls = append(f.secretCalls, fakeCFSecretCall{
+		workerName: workerName,
+		secretName: secretName,
+		value:      value,
+	})
+	return f.secretPutErr
 }
 
 func (f *fakeCFWranglerRunner) Delete(context.Context, string) error {
@@ -193,7 +208,7 @@ func TestRunMintDeployGCP_SkipDeployReportsCommitResolution(t *testing.T) {
 	require.NoError(t, err)
 	oldStdout := os.Stdout
 	os.Stdout = w
-	deployErr := runMintDeployGCP(context.Background(), "my-project-id", "us-central1", t.TempDir(), true, false, "", false)
+	deployErr := runMintDeployGCP(context.Background(), "my-project-id", "us-central1", t.TempDir(), true, false, "", "", false)
 	require.NoError(t, w.Close())
 	os.Stdout = oldStdout
 	require.NoError(t, deployErr)
@@ -391,12 +406,18 @@ func TestMintDeployCmd_CloudflareMissingEnv(t *testing.T) {
 	os.Unsetenv("CLOUDFLARE_ACCOUNT_ID")
 	os.Unsetenv("CLOUDFLARE_API_TOKEN")
 
+	// Mock wrangler whoami to fail (no session).
+	oldWhoami := cf.WranglerWhoamiFn
+	cf.WranglerWhoamiFn = func(ctx context.Context) (string, error) {
+		return "", fmt.Errorf("not logged in")
+	}
+	t.Cleanup(func() { cf.WranglerWhoamiFn = oldWhoami })
+
 	cmd := newRootCmd()
 	cmd.SetArgs([]string{"mint", "deploy", "--platform=cloudflare"})
 	err := cmd.Execute()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "CLOUDFLARE_ACCOUNT_ID")
-	assert.Contains(t, err.Error(), "CLOUDFLARE_API_TOKEN")
+	assert.Contains(t, err.Error(), "no Cloudflare credentials")
 }
 
 func TestMintDeployCmd_CloudflareInvalidWorkerName(t *testing.T) {
@@ -675,6 +696,672 @@ func TestMintDeployCmd_CloudflareDeployBadSourceDir(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "deploying worker")
+}
+
+func TestMintDeployCmd_CloudflareDryRunWithPemDir(t *testing.T) {
+	withCFEnvVars(t)
+
+	roles := defaultMintRoles()
+	testPEM := generateTestPEM(t)
+	pemDir := t.TempDir()
+	for _, role := range roles {
+		require.NoError(t, os.WriteFile(filepath.Join(pemDir, role+".pem"), testPEM, 0o600))
+	}
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--dry-run",
+		"--pem-dir=" + pemDir,
+	})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "Would bootstrap app set")
+	assert.Contains(t, stdout, pemDir)
+}
+
+func TestMintDeployCmd_CloudflareDryRunWithBadPemDir(t *testing.T) {
+	withCFEnvVars(t)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--dry-run",
+		"--pem-dir=/nonexistent/path",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--pem-dir")
+}
+
+func TestMintDeployCmd_CloudflareDeployWithPemDir(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	roles := defaultMintRoles()
+	testPEM := generateTestPEM(t)
+	pemDir := t.TempDir()
+	for _, role := range roles {
+		require.NoError(t, os.WriteFile(filepath.Join(pemDir, role+".pem"), testPEM, 0o600))
+	}
+
+	// Set up a fake GitHub API that handles /apps/<slug> (lookup)
+	// and /app (verify PEM). The test PEM is valid so verification
+	// passes when the server returns the matching app ID.
+	appIDCounter := 100
+	lastLookedUpID := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/app" {
+			fmt.Fprintf(w, `{"id": %d, "slug": "test-app"}`, lastLookedUpID)
+			return
+		}
+		appIDCounter++
+		lastLookedUpID = appIDCounter
+		fmt.Fprintf(w, `{"id": %d, "slug": "%s"}`, appIDCounter, r.URL.Path[len("/apps/"):])
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--pem-dir=" + pemDir,
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	// Verify ROLE_APP_IDS was set as a Worker env var during deploy.
+	require.Len(t, fake.deployCalls, 1)
+	deployEnvVars := fake.deployCalls[0].envVars
+	assert.Contains(t, deployEnvVars, "ROLE_APP_IDS",
+		"ROLE_APP_IDS should be passed as a Worker env var")
+	assert.Contains(t, deployEnvVars["ROLE_APP_IDS"], "coder",
+		"ROLE_APP_IDS should contain role names")
+
+	// Verify PEM secrets were stored via PutSecret.
+	assert.GreaterOrEqual(t, len(fake.secretCalls), len(roles),
+		"should store at least one PEM secret per role")
+	secretNames := make(map[string]bool)
+	for _, call := range fake.secretCalls {
+		secretNames[call.secretName] = true
+	}
+	// Check that known roles produced the expected secret names.
+	assert.True(t, secretNames["CODER_APP_PEM"], "expected CODER_APP_PEM secret")
+}
+
+func TestMintDeployCmd_CloudflarePreviewDeployWithPemDir(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	roles := defaultMintRoles()
+	testPEM := generateTestPEM(t)
+	pemDir := t.TempDir()
+	for _, role := range roles {
+		require.NoError(t, os.WriteFile(filepath.Join(pemDir, role+".pem"), testPEM, 0o600))
+	}
+
+	appIDCounter := 200
+	lastLookedUpID := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/app" {
+			fmt.Fprintf(w, `{"id": %d, "slug": "test-app"}`, lastLookedUpID)
+			return
+		}
+		appIDCounter++
+		lastLookedUpID = appIDCounter
+		fmt.Fprintf(w, `{"id": %d, "slug": "%s"}`, appIDCounter, r.URL.Path[len("/apps/"):])
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	fake := &fakeCFWranglerRunner{}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--preview=bt-test-42",
+		"--source-dir=" + sourceDir,
+		"--pem-dir=" + pemDir,
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	assert.Equal(t, "bt-test-42", fake.deployCalls[0].previewAlias,
+		"preview alias should be passed to deploy")
+	assert.Contains(t, fake.deployCalls[0].envVars, "ROLE_APP_IDS",
+		"ROLE_APP_IDS should be set for preview deploys too")
+
+	// For preview deploys, PEM secrets are passed through Deploy via
+	// --secrets-file (wrangler secret put does not support --preview-alias).
+	require.NotNil(t, fake.deployCalls[0].secrets,
+		"PEM secrets should be passed through Deploy for preview deploys")
+	assert.Contains(t, fake.deployCalls[0].secrets, "CODER_APP_PEM",
+		"expected CODER_APP_PEM in deploy secrets")
+	assert.Empty(t, fake.secretCalls,
+		"PutSecret should NOT be called for preview deploys (secrets go through Deploy)")
+}
+
+func TestMintDeployCmd_CloudflareDeployPemSecretFailure(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	roles := defaultMintRoles()
+	testPEM := generateTestPEM(t)
+	pemDir := t.TempDir()
+	for _, role := range roles {
+		require.NoError(t, os.WriteFile(filepath.Join(pemDir, role+".pem"), testPEM, 0o600))
+	}
+
+	appIDCounter := 300
+	lastLookedUpID := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/app" {
+			fmt.Fprintf(w, `{"id": %d, "slug": "test-app"}`, lastLookedUpID)
+			return
+		}
+		appIDCounter++
+		lastLookedUpID = appIDCounter
+		fmt.Fprintf(w, `{"id": %d, "slug": "%s"}`, appIDCounter, r.URL.Path[len("/apps/"):])
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	fake := &fakeCFWranglerRunner{
+		deployURL:    "https://fullsend-mint.workers.dev",
+		secretPutErr: fmt.Errorf("simulated secret storage failure"),
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--pem-dir=" + pemDir,
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "storing PEM for role")
+	assert.Contains(t, err.Error(), "already stored")
+	assert.Contains(t, err.Error(), "simulated secret storage failure")
+}
+
+func TestMintDeployCmd_CloudflareNoWarningForPemDir(t *testing.T) {
+	withCFEnvVars(t)
+
+	// Capture stderr to verify --pem-dir does NOT produce a warning
+	// when used with --platform=cloudflare.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--pem-dir=/some/path",
+		"--dry-run",
+	})
+	// Ignore the error (dry-run may fail due to nonexistent pem-dir).
+	_ = cmd.Execute()
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	out, _ := io.ReadAll(r)
+	stderr := string(out)
+	assert.NotContains(t, stderr, "--pem-dir is a GCP flag",
+		"--pem-dir should not produce a GCP warning on cloudflare")
+}
+
+func TestMintDeployCmd_CloudflareDeployWithConfigFlags(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--allowed-orgs=acme,bigcorp",
+		"--per-repo-wif-repos=acme/widget,bigcorp/gadget",
+		"--workflow-host-repos=fullsend-ai/fullsend",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	envVars := fake.deployCalls[0].envVars
+	assert.Equal(t, "acme,bigcorp", envVars["ALLOWED_ORGS"],
+		"ALLOWED_ORGS should be set from --allowed-orgs flag")
+	assert.Equal(t, "acme/widget,bigcorp/gadget", envVars["PER_REPO_WIF_REPOS"],
+		"PER_REPO_WIF_REPOS should be set from --per-repo-wif-repos flag")
+	assert.Equal(t, "fullsend-ai/fullsend", envVars["WORKFLOW_HOST_REPOS"],
+		"WORKFLOW_HOST_REPOS should be set from --workflow-host-repos flag")
+}
+
+func TestMintDeployCmd_CloudflarePreviewDeployWithConfigFlags(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	fake := &fakeCFWranglerRunner{}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--preview=bt-test-99",
+		"--source-dir=" + sourceDir,
+		"--allowed-orgs=acme",
+		"--per-repo-wif-repos=acme/widget",
+		"--workflow-host-repos=fullsend-ai/fullsend",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	assert.Equal(t, "bt-test-99", fake.deployCalls[0].previewAlias,
+		"preview alias should be passed to deploy")
+	envVars := fake.deployCalls[0].envVars
+	assert.Equal(t, "acme", envVars["ALLOWED_ORGS"],
+		"ALLOWED_ORGS should be set for preview deploys")
+	assert.Equal(t, "acme/widget", envVars["PER_REPO_WIF_REPOS"],
+		"PER_REPO_WIF_REPOS should be set for preview deploys")
+	assert.Equal(t, "fullsend-ai/fullsend", envVars["WORKFLOW_HOST_REPOS"],
+		"WORKFLOW_HOST_REPOS should be set for preview deploys")
+}
+
+func TestMintDeployCmd_CloudflarePublicFlagSetsPRWR(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--public",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	envVars := fake.deployCalls[0].envVars
+	assert.Equal(t, "*", envVars["PER_REPO_WIF_REPOS"],
+		"--public should set PER_REPO_WIF_REPOS to *")
+}
+
+func TestMintDeployCmd_CloudflarePublicOverridesPerRepoWIF(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	// --public should override explicit --per-repo-wif-repos
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--public",
+		"--per-repo-wif-repos=acme/widget",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	envVars := fake.deployCalls[0].envVars
+	assert.Equal(t, "*", envVars["PER_REPO_WIF_REPOS"],
+		"--public should override --per-repo-wif-repos to *")
+}
+
+func TestMintDeployCmd_CloudflareDryRunWithConfigFlags(t *testing.T) {
+	withCFEnvVars(t)
+
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--dry-run",
+		"--allowed-orgs=acme",
+		"--public",
+	})
+	err := cmd.Execute()
+
+	w.Close()
+	os.Stdout = oldStdout
+
+	out, _ := io.ReadAll(r)
+	stdout := string(out)
+
+	require.NoError(t, err)
+	assert.Contains(t, stdout, "ALLOWED_ORGS=acme")
+	assert.Contains(t, stdout, "PER_REPO_WIF_REPOS=*")
+}
+
+func TestMintDeployCmd_CloudflareNoConfigFlagsOmitsEnvVars(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	require.Len(t, fake.deployCalls, 1)
+	envVars := fake.deployCalls[0].envVars
+	_, hasAllowedOrgs := envVars["ALLOWED_ORGS"]
+	_, hasPRWR := envVars["PER_REPO_WIF_REPOS"]
+	_, hasWHR := envVars["WORKFLOW_HOST_REPOS"]
+	assert.False(t, hasAllowedOrgs, "ALLOWED_ORGS should not be set when --allowed-orgs is omitted")
+	assert.False(t, hasPRWR, "PER_REPO_WIF_REPOS should not be set when --per-repo-wif-repos is omitted")
+	assert.False(t, hasWHR, "WORKFLOW_HOST_REPOS should not be set when --workflow-host-repos is omitted")
+}
+
+func TestMintDeployCmd_CloudflareConfigFlagsWarnOnGCP(t *testing.T) {
+	// CF-specific config flags should produce a warning when used with GCP.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=gcp",
+		"--project=my-project-id",
+		"--dry-run",
+		"--allowed-orgs=acme",
+	})
+	_ = cmd.Execute()
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	out, _ := io.ReadAll(r)
+	stderr := string(out)
+	assert.Contains(t, stderr, "--allowed-orgs is a Cloudflare flag",
+		"--allowed-orgs should produce a warning on GCP")
+}
+
+func TestMintDeployCmd_CloudflarePublicNoWarning(t *testing.T) {
+	withCFEnvVars(t)
+
+	// --public should not produce a warning on cloudflare.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--public",
+		"--dry-run",
+	})
+	_ = cmd.Execute()
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	out, _ := io.ReadAll(r)
+	stderr := string(out)
+	assert.NotContains(t, stderr, "--public is a GCP flag",
+		"--public should not produce a GCP warning on cloudflare")
+}
+
+func TestMintDeployCmd_NewFlagsExist(t *testing.T) {
+	cmd := newMintDeployCmd()
+
+	allowedOrgsFlag := cmd.Flags().Lookup("allowed-orgs")
+	require.NotNil(t, allowedOrgsFlag, "expected --allowed-orgs flag")
+
+	perRepoWIFReposFlag := cmd.Flags().Lookup("per-repo-wif-repos")
+	require.NotNil(t, perRepoWIFReposFlag, "expected --per-repo-wif-repos flag")
+
+	workflowHostReposFlag := cmd.Flags().Lookup("workflow-host-repos")
+	require.NotNil(t, workflowHostReposFlag, "expected --workflow-host-repos flag")
+
+	appSetFlag := cmd.Flags().Lookup("app-set")
+	require.NotNil(t, appSetFlag, "expected --app-set flag")
+}
+
+func TestMintDeployCmd_CloudflareAppSetNonDefault(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	roles := defaultMintRoles()
+	testPEM := generateTestPEM(t)
+	pemDir := t.TempDir()
+	for _, role := range roles {
+		require.NoError(t, os.WriteFile(filepath.Join(pemDir, role+".pem"), testPEM, 0o600))
+	}
+
+	// Set up a fake GitHub API. The key check is that app slugs use
+	// the custom app set name ("fullsand-ai-coder" etc.), not the
+	// default ("fullsend-ai-coder").
+	var lookedUpSlugs []string
+	appIDCounter := 400
+	lastLookedUpID := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/app" {
+			fmt.Fprintf(w, `{"id": %d, "slug": "test-app"}`, lastLookedUpID)
+			return
+		}
+		slug := r.URL.Path[len("/apps/"):]
+		lookedUpSlugs = append(lookedUpSlugs, slug)
+		appIDCounter++
+		lastLookedUpID = appIDCounter
+		fmt.Fprintf(w, `{"id": %d, "slug": "%s"}`, appIDCounter, slug)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--pem-dir=" + pemDir,
+		"--app-set=fullsand-ai",
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	// Verify that the custom app set was used for slug lookups.
+	for _, slug := range lookedUpSlugs {
+		assert.True(t, strings.HasPrefix(slug, "fullsand-ai-"),
+			"expected slug to use custom app set prefix, got %q", slug)
+	}
+}
+
+func TestMintDeployCmd_CloudflareAppSetDefault(t *testing.T) {
+	withCFEnvVars(t)
+	sourceDir := createMinimalWorkerSourceDir(t)
+
+	roles := defaultMintRoles()
+	testPEM := generateTestPEM(t)
+	pemDir := t.TempDir()
+	for _, role := range roles {
+		require.NoError(t, os.WriteFile(filepath.Join(pemDir, role+".pem"), testPEM, 0o600))
+	}
+
+	var lookedUpSlugs []string
+	appIDCounter := 500
+	lastLookedUpID := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/app" {
+			fmt.Fprintf(w, `{"id": %d, "slug": "test-app"}`, lastLookedUpID)
+			return
+		}
+		slug := r.URL.Path[len("/apps/"):]
+		lookedUpSlugs = append(lookedUpSlugs, slug)
+		appIDCounter++
+		lastLookedUpID = appIDCounter
+		fmt.Fprintf(w, `{"id": %d, "slug": "%s"}`, appIDCounter, slug)
+	}))
+	defer srv.Close()
+
+	orig := githubAPIBaseURL
+	githubAPIBaseURL = srv.URL
+	defer func() { githubAPIBaseURL = orig }()
+
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	// Omit --app-set — should use default "fullsend-ai".
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+		"--pem-dir=" + pemDir,
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	// Verify that the default app set was used.
+	for _, slug := range lookedUpSlugs {
+		assert.True(t, strings.HasPrefix(slug, "fullsend-ai-"),
+			"expected slug to use default app set prefix, got %q", slug)
+	}
+}
+
+func TestMintDeployCmd_CloudflareWranglerSession(t *testing.T) {
+	// Test that CF deploy works without CLOUDFLARE_API_TOKEN when a
+	// wrangler session is active and CLOUDFLARE_ACCOUNT_ID is set.
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Unsetenv("CLOUDFLARE_API_TOKEN")
+	t.Cleanup(func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	})
+
+	// Mock wrangler whoami to succeed.
+	oldWhoami := cf.WranglerWhoamiFn
+	cf.WranglerWhoamiFn = func(ctx context.Context) (string, error) {
+		return "Logged in as user@example.com\n", nil
+	}
+	t.Cleanup(func() { cf.WranglerWhoamiFn = oldWhoami })
+
+	sourceDir := createMinimalWorkerSourceDir(t)
+	fake := &fakeCFWranglerRunner{
+		deployURL: "https://fullsend-mint.workers.dev",
+	}
+	withMintCFWrangler(t, fake)
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--source-dir=" + sourceDir,
+	})
+	err := cmd.Execute()
+	require.NoError(t, err)
+	require.Len(t, fake.deployCalls, 1)
+}
+
+func TestMintDeployCmd_CloudflareNoCredentialsError(t *testing.T) {
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	os.Unsetenv("CLOUDFLARE_ACCOUNT_ID")
+	os.Unsetenv("CLOUDFLARE_API_TOKEN")
+	t.Cleanup(func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	})
+
+	// Mock wrangler whoami to fail.
+	oldWhoami := cf.WranglerWhoamiFn
+	cf.WranglerWhoamiFn = func(ctx context.Context) (string, error) {
+		return "", fmt.Errorf("not logged in")
+	}
+	t.Cleanup(func() { cf.WranglerWhoamiFn = oldWhoami })
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{
+		"mint", "deploy",
+		"--platform=cloudflare",
+		"--dry-run",
+	})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no Cloudflare credentials")
 }
 
 func TestMintDeployCmd_GCPDefaultPlatform(t *testing.T) {

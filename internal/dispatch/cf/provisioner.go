@@ -9,6 +9,7 @@ package cf
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -99,6 +100,13 @@ type Config struct {
 	// (e.g. ROLE_APP_IDS, ALLOWED_ORGS, OIDC_AUDIENCE).
 	EnvVars map[string]string
 
+	// Secrets are secret values to bind to the Worker during deploy.
+	// When non-empty, Deploy writes them to a temporary JSON file and
+	// passes --secrets-file to wrangler versions upload. Use this for
+	// preview deploys where wrangler secret put cannot scope secrets
+	// to a preview version.
+	Secrets map[string][]byte
+
 	// Version is the fullsend semver stamped on the deployed Worker.
 	Version string
 
@@ -113,9 +121,16 @@ type WranglerRunner interface {
 	// `wrangler versions upload --preview-alias=<alias>` instead of
 	// the production `wrangler deploy`. An empty previewAlias triggers
 	// a durable production deploy.
-	Deploy(ctx context.Context, sourceDir, workerName string, previewAlias string, envVars map[string]string) (url string, err error)
+	//
+	// When secrets is non-empty, the runner writes them to a temporary
+	// JSON file and passes --secrets-file to wrangler. This is required
+	// for preview deploys because wrangler secret put does not support
+	// --preview-alias.
+	Deploy(ctx context.Context, sourceDir, workerName string, previewAlias string, envVars map[string]string, secrets map[string][]byte) (url string, err error)
 
-	// PutSecret stores a secret value on a Worker.
+	// PutSecret stores a secret value on the durable Worker via
+	// wrangler secret put. This command does not support --preview-alias;
+	// for preview deploys, pass secrets through Deploy instead.
 	PutSecret(ctx context.Context, workerName, secretName string, value []byte) error
 
 	// Delete removes a Worker deployment.
@@ -181,7 +196,7 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 		return nil, fmt.Errorf("writing version.ts: %w", err)
 	}
 
-	url, err := p.wrangler.Deploy(ctx, sourceDir, p.cfg.WorkerName, p.cfg.PreviewAlias, p.cfg.EnvVars)
+	url, err := p.wrangler.Deploy(ctx, sourceDir, p.cfg.WorkerName, p.cfg.PreviewAlias, p.cfg.EnvVars, p.cfg.Secrets)
 	if err != nil {
 		return nil, fmt.Errorf("deploying worker: %w", err)
 	}
@@ -191,8 +206,14 @@ func (p *Provisioner) Provision(ctx context.Context) (map[string]string, error) 
 	}, nil
 }
 
-// StoreAgentPEM stores a role's PEM key as a Cloudflare Worker secret.
-// Secret names follow the convention <ROLE>_APP_PEM (e.g. CODER_APP_PEM).
+// StoreAgentPEM stores a role's PEM key as a Cloudflare Worker secret
+// via wrangler secret put. Secret names follow the convention
+// <ROLE>_APP_PEM (e.g. CODER_APP_PEM).
+//
+// This method is intended for durable (non-preview) deploys. For preview
+// deploys, pass secrets via Config.Secrets so they are included in the
+// wrangler versions upload --secrets-file call, because wrangler secret
+// put does not support --preview-alias.
 func (p *Provisioner) StoreAgentPEM(ctx context.Context, role string, pemData []byte) error {
 	if err := mintcore.ValidateRoleName(role); err != nil {
 		return fmt.Errorf("invalid role name %q: %w", role, err)
@@ -373,6 +394,9 @@ func DefaultWorkerSourceDir() string {
 
 // ValidateCloudflareEnv checks that required Cloudflare environment
 // variables are set. Returns an error listing all missing variables.
+//
+// Deprecated: Use ResolveCloudflareAuth which also accepts Wrangler OAuth
+// sessions as an alternative to CLOUDFLARE_API_TOKEN.
 func ValidateCloudflareEnv() error {
 	var missing []string
 	if os.Getenv("CLOUDFLARE_ACCOUNT_ID") == "" {
@@ -385,6 +409,109 @@ func ValidateCloudflareEnv() error {
 		return fmt.Errorf("missing required Cloudflare environment variables: %s", strings.Join(missing, ", "))
 	}
 	return nil
+}
+
+// WranglerWhoamiFn is the function used to run `wrangler whoami`.
+// Override in tests to avoid needing a real wrangler installation.
+var WranglerWhoamiFn = runWranglerWhoami
+
+// runWranglerWhoami executes `npx wrangler whoami` and returns the
+// combined stdout+stderr output.
+func runWranglerWhoami(ctx context.Context) (string, error) {
+	cmd := exec.CommandContext(ctx, "npx", "wrangler", "whoami")
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// ResolveCloudflareAuth resolves Cloudflare authentication and returns
+// the account ID. It prefers explicit environment variables when set, but
+// falls back to a Wrangler OAuth session (from 'wrangler login') when
+// CLOUDFLARE_API_TOKEN is absent.
+//
+// Resolution order:
+//  1. CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID env vars → use both
+//  2. CLOUDFLARE_API_TOKEN set, CLOUDFLARE_ACCOUNT_ID unset → error
+//  3. CLOUDFLARE_API_TOKEN unset → check for Wrangler session via whoami
+//     a. If CLOUDFLARE_ACCOUNT_ID is set → use it
+//     b. If whoami output contains exactly one account → use its ID
+//     c. Otherwise → error with guidance
+func ResolveCloudflareAuth(ctx context.Context) (accountID string, err error) {
+	token := os.Getenv("CLOUDFLARE_API_TOKEN")
+	envAccountID := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+
+	if token != "" {
+		// Explicit API token — require account ID too.
+		if envAccountID == "" {
+			return "", fmt.Errorf("CLOUDFLARE_API_TOKEN is set but CLOUDFLARE_ACCOUNT_ID is missing; set both for API-token auth")
+		}
+		return envAccountID, nil
+	}
+
+	// No API token — check for Wrangler OAuth session.
+	whoamiOut, whoamiErr := WranglerWhoamiFn(ctx)
+	if whoamiErr != nil {
+		if envAccountID != "" {
+			return "", fmt.Errorf("CLOUDFLARE_API_TOKEN is not set and 'wrangler whoami' failed: %w\nSet CLOUDFLARE_API_TOKEN or run 'wrangler login' first", whoamiErr)
+		}
+		return "", fmt.Errorf("no Cloudflare credentials: CLOUDFLARE_API_TOKEN is not set and 'wrangler whoami' failed: %w\nEither set CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID, or run 'wrangler login'", whoamiErr)
+	}
+
+	// Wrangler session is valid. Resolve account ID.
+	if envAccountID != "" {
+		return envAccountID, nil
+	}
+
+	// Try to parse account ID from whoami output.
+	// `wrangler whoami` typically prints lines like:
+	//   │ Account Name    │ Account ID                       │
+	//   │ My Account      │ abc123def456                     │
+	parsed := parseWranglerWhoamiAccountID(whoamiOut)
+	if parsed == "" {
+		return "", fmt.Errorf("wrangler login session is active but CLOUDFLARE_ACCOUNT_ID is not set and could not be auto-detected from 'wrangler whoami' output; set CLOUDFLARE_ACCOUNT_ID explicitly")
+	}
+	return parsed, nil
+}
+
+// parseWranglerWhoamiAccountID extracts the account ID from wrangler
+// whoami output. Returns the account ID if exactly one is found, or
+// empty string if zero or multiple accounts are present (the user must
+// set CLOUDFLARE_ACCOUNT_ID explicitly in that case).
+func parseWranglerWhoamiAccountID(output string) string {
+	// wrangler whoami prints a table like:
+	//   ┌──────────────────┬──────────────────────────────────┐
+	//   │ Account Name     │ Account ID                       │
+	//   ├──────────────────┼──────────────────────────────────┤
+	//   │ My Account       │ abc123def456789...               │
+	//   └──────────────────┴──────────────────────────────────┘
+	//
+	// We look for lines with exactly two pipe-delimited cells where
+	// the second cell looks like a 32-char hex account ID.
+	var accountIDs []string
+	for line := range strings.SplitSeq(output, "\n") {
+		parts := strings.Split(line, "│")
+		if len(parts) < 3 {
+			continue
+		}
+		// The second column (parts[2]) is the Account ID.
+		candidate := strings.TrimSpace(parts[2])
+		if len(candidate) == 32 && isHex(candidate) {
+			accountIDs = append(accountIDs, candidate)
+		}
+	}
+	if len(accountIDs) == 1 {
+		return accountIDs[0]
+	}
+	return ""
+}
+
+// isHex returns true if s consists entirely of hexadecimal characters.
+func isHex(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return len(s) > 0
 }
 
 // --- LiveWranglerRunner ---
@@ -408,15 +535,24 @@ func NewLiveWranglerRunner(accountID string) *LiveWranglerRunner {
 //
 // When previewAlias is empty, uses `wrangler deploy` for a durable
 // production deploy.
-func (r *LiveWranglerRunner) Deploy(ctx context.Context, sourceDir, workerName string, previewAlias string, envVars map[string]string) (string, error) {
+//
+// When secrets is non-empty, writes them to a temporary JSON file and
+// passes --secrets-file. This is the only way to attach secrets to a
+// preview version, since wrangler secret put does not support
+// --preview-alias.
+func (r *LiveWranglerRunner) Deploy(ctx context.Context, sourceDir, workerName string, previewAlias string, envVars map[string]string, secrets map[string][]byte) (string, error) {
 	if previewAlias != "" {
-		return r.deployPreview(ctx, sourceDir, workerName, previewAlias, envVars)
+		return r.deployPreview(ctx, sourceDir, workerName, previewAlias, envVars, secrets)
 	}
-	return r.deployDurable(ctx, sourceDir, workerName, envVars)
+	return r.deployDurable(ctx, sourceDir, workerName, envVars, secrets)
 }
 
 // deployDurable performs a production deploy via `wrangler deploy`.
-func (r *LiveWranglerRunner) deployDurable(ctx context.Context, sourceDir, workerName string, envVars map[string]string) (string, error) {
+// Secrets passed here are stored via separate PutSecret calls by the
+// caller (Provisioner or CLI) after deploy completes — wrangler deploy
+// does not support --secrets-file. The secrets parameter is accepted
+// for interface consistency but not used in the deploy command.
+func (r *LiveWranglerRunner) deployDurable(ctx context.Context, sourceDir, workerName string, envVars map[string]string, _ map[string][]byte) (string, error) {
 	args := []string{"wrangler", "deploy", "--name", workerName}
 	// Always pass --keep-vars to preserve existing Worker secrets
 	// (e.g. PEM keys stored via StoreAgentPEM). Without this flag,
@@ -448,17 +584,32 @@ func (r *LiveWranglerRunner) deployDurable(ctx context.Context, sourceDir, worke
 }
 
 // deployPreview performs a preview deploy via `wrangler versions upload`.
-func (r *LiveWranglerRunner) deployPreview(ctx context.Context, sourceDir, workerName, previewAlias string, envVars map[string]string) (string, error) {
+// When secrets are provided, they are written to a temporary JSON file
+// and passed via --secrets-file. This is the only way to attach secrets
+// to a preview version because wrangler secret put does not support
+// --preview-alias.
+func (r *LiveWranglerRunner) deployPreview(ctx context.Context, sourceDir, workerName, previewAlias string, envVars map[string]string, secrets map[string][]byte) (string, error) {
 	args := []string{"wrangler", "versions", "upload", "--name", workerName}
 	args = append(args, fmt.Sprintf("--preview-alias=%s", previewAlias))
 	// Pass --keep-vars to preserve existing Worker secrets (PEM keys
-	// stored via StoreAgentPEM). Preview-alias deploys target the same
-	// Worker script as production, so omitting this could wipe secrets.
+	// stored via StoreAgentPEM on the durable Worker). Preview-alias
+	// deploys target the same Worker script as production, so omitting
+	// this could wipe secrets.
 	args = append(args, "--keep-vars")
 
 	// Pass env vars to wrangler via --var flags.
 	for k, v := range envVars {
 		args = append(args, "--var", fmt.Sprintf("%s:%s", k, v))
+	}
+
+	// Pass secrets via --secrets-file when present.
+	if len(secrets) > 0 {
+		secretsPath, cleanup, err := writeSecretsFile(secrets)
+		if err != nil {
+			return "", fmt.Errorf("preparing secrets file: %w", err)
+		}
+		defer cleanup()
+		args = append(args, fmt.Sprintf("--secrets-file=%s", secretsPath))
 	}
 
 	cmd := exec.CommandContext(ctx, "npx", args...)
@@ -480,7 +631,9 @@ func (r *LiveWranglerRunner) deployPreview(ctx context.Context, sourceDir, worke
 	return url, nil
 }
 
-// PutSecret stores a secret value on a Worker via wrangler secret put.
+// PutSecret stores a secret value on the durable Worker via wrangler
+// secret put. This command does not support --preview-alias; for preview
+// deploys, pass secrets through Deploy's secrets parameter instead.
 func (r *LiveWranglerRunner) PutSecret(ctx context.Context, workerName, secretName string, value []byte) error {
 	cmd := exec.CommandContext(ctx, "npx", "wrangler", "secret", "put", secretName, "--name", workerName)
 	cmd.Stdin = strings.NewReader(string(value))
@@ -507,6 +660,49 @@ func (r *LiveWranglerRunner) Delete(ctx context.Context, workerName string) erro
 		return fmt.Errorf("wrangler delete failed: %s\n%s", err, string(output))
 	}
 	return nil
+}
+
+// PEMSecretsFromRoles converts a role-keyed PEM map (e.g. "coder" → PEM data)
+// into a Cloudflare secret-name-keyed map (e.g. "CODER_APP_PEM" → PEM data)
+// suitable for passing as Config.Secrets during deploy.
+func PEMSecretsFromRoles(agentPEMs map[string][]byte) map[string][]byte {
+	secrets := make(map[string][]byte, len(agentPEMs))
+	for role, pem := range agentPEMs {
+		secrets[pemSecretName(role)] = pem
+	}
+	return secrets
+}
+
+// writeSecretsFile writes secrets to a temporary JSON file suitable for
+// wrangler's --secrets-file parameter. Returns the file path and a cleanup
+// function that removes the file. The file is created with restrictive
+// permissions (0600) since it may contain sensitive values like PEM keys.
+func writeSecretsFile(secrets map[string][]byte) (string, func(), error) {
+	// Convert []byte values to strings for JSON encoding.
+	jsonMap := make(map[string]string, len(secrets))
+	for k, v := range secrets {
+		jsonMap[k] = string(v)
+	}
+	data, err := json.Marshal(jsonMap)
+	if err != nil {
+		return "", nil, fmt.Errorf("marshaling secrets: %w", err)
+	}
+	f, err := os.CreateTemp("", "wrangler-secrets-*.json")
+	if err != nil {
+		return "", nil, fmt.Errorf("creating temp file: %w", err)
+	}
+	path := f.Name()
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(path)
+		return "", nil, fmt.Errorf("writing secrets: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return "", nil, fmt.Errorf("closing secrets file: %w", err)
+	}
+	cleanup := func() { os.Remove(path) }
+	return path, cleanup, nil
 }
 
 // parseWorkerURL extracts the deployed Worker URL from wrangler output.

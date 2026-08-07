@@ -29,6 +29,7 @@ type deployCall struct {
 	workerName   string
 	previewAlias string
 	envVars      map[string]string
+	secrets      map[string][]byte
 }
 
 type secretCall struct {
@@ -37,12 +38,13 @@ type secretCall struct {
 	value      []byte
 }
 
-func (f *fakeWranglerRunner) Deploy(_ context.Context, sourceDir, workerName string, previewAlias string, envVars map[string]string) (string, error) {
+func (f *fakeWranglerRunner) Deploy(_ context.Context, sourceDir, workerName string, previewAlias string, envVars map[string]string, secrets map[string][]byte) (string, error) {
 	f.deployCalls = append(f.deployCalls, deployCall{
 		sourceDir:    sourceDir,
 		workerName:   workerName,
 		previewAlias: previewAlias,
 		envVars:      envVars,
+		secrets:      secrets,
 	})
 	if f.deployErr != nil {
 		return "", f.deployErr
@@ -371,6 +373,33 @@ func TestProvisioner_StoreAgentPEM_Error(t *testing.T) {
 	assert.Contains(t, err.Error(), "storing PEM secret")
 }
 
+func TestProvisioner_Provision_PreviewWithSecrets(t *testing.T) {
+	sourceDir := createFakeWorkerSourceDir(t)
+	fake := &fakeWranglerRunner{}
+	secrets := map[string][]byte{
+		"CODER_APP_PEM": []byte("pem-data"),
+	}
+	p := NewProvisioner(Config{
+		AccountID:    "abc123",
+		WorkerName:   "test-mint",
+		DeployMode:   DeployPreview,
+		PreviewAlias: "bt-test-42",
+		SourceDir:    sourceDir,
+		Secrets:      secrets,
+	}, fake)
+
+	_, err := p.Provision(context.Background())
+	require.NoError(t, err)
+	require.Len(t, fake.deployCalls, 1)
+	assert.Equal(t, "bt-test-42", fake.deployCalls[0].previewAlias)
+	require.NotNil(t, fake.deployCalls[0].secrets,
+		"secrets should be passed to Deploy for preview deploys")
+	assert.Equal(t, []byte("pem-data"), fake.deployCalls[0].secrets["CODER_APP_PEM"],
+		"PEM secrets should be passed through Deploy for preview deploys")
+	assert.Empty(t, fake.secretCalls,
+		"PutSecret should not be called when secrets are in Deploy")
+}
+
 // --- Teardown tests ---
 
 func TestProvisioner_Teardown_PreviewWithAlias(t *testing.T) {
@@ -414,6 +443,45 @@ func TestProvisioner_Teardown_DurableRejectsCleanup(t *testing.T) {
 	err := p.Teardown(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "only supported for preview")
+}
+
+// --- PEMSecretsFromRoles tests ---
+
+func TestPEMSecretsFromRoles(t *testing.T) {
+	agentPEMs := map[string][]byte{
+		"coder":  []byte("coder-pem"),
+		"triage": []byte("triage-pem"),
+	}
+	secrets := PEMSecretsFromRoles(agentPEMs)
+	assert.Len(t, secrets, 2)
+	assert.Equal(t, []byte("coder-pem"), secrets["CODER_APP_PEM"])
+	assert.Equal(t, []byte("triage-pem"), secrets["TRIAGE_APP_PEM"])
+}
+
+func TestPEMSecretsFromRoles_Empty(t *testing.T) {
+	secrets := PEMSecretsFromRoles(nil)
+	assert.Empty(t, secrets)
+}
+
+// --- writeSecretsFile tests ---
+
+func TestWriteSecretsFile(t *testing.T) {
+	secrets := map[string][]byte{
+		"MY_SECRET": []byte("secret-value"),
+	}
+	path, cleanup, err := writeSecretsFile(secrets)
+	require.NoError(t, err)
+	defer cleanup()
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"MY_SECRET"`)
+	assert.Contains(t, string(data), `"secret-value"`)
+
+	// Verify cleanup removes the file.
+	cleanup()
+	_, err = os.Stat(path)
+	assert.True(t, os.IsNotExist(err))
 }
 
 // --- pemSecretName tests ---
@@ -515,6 +583,129 @@ func TestValidateCloudflareEnv_Present(t *testing.T) {
 
 	err := ValidateCloudflareEnv()
 	require.NoError(t, err)
+}
+
+// --- ResolveCloudflareAuth tests ---
+
+func withCFEnvCleared(t *testing.T) {
+	t.Helper()
+	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
+	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
+	os.Unsetenv("CLOUDFLARE_ACCOUNT_ID")
+	os.Unsetenv("CLOUDFLARE_API_TOKEN")
+	t.Cleanup(func() {
+		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
+		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
+	})
+}
+
+func TestResolveCloudflareAuth_TokenAndAccountID(t *testing.T) {
+	withCFEnvCleared(t)
+	os.Setenv("CLOUDFLARE_API_TOKEN", "my-token")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "my-account-id")
+
+	accountID, err := ResolveCloudflareAuth(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "my-account-id", accountID)
+}
+
+func TestResolveCloudflareAuth_TokenWithoutAccountID(t *testing.T) {
+	withCFEnvCleared(t)
+	os.Setenv("CLOUDFLARE_API_TOKEN", "my-token")
+
+	_, err := ResolveCloudflareAuth(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CLOUDFLARE_ACCOUNT_ID is missing")
+}
+
+func TestResolveCloudflareAuth_WranglerSession_WithAccountEnv(t *testing.T) {
+	withCFEnvCleared(t)
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "env-account-id")
+
+	// Mock wrangler whoami to succeed.
+	old := WranglerWhoamiFn
+	WranglerWhoamiFn = func(ctx context.Context) (string, error) {
+		return "ℹ️  Logged in as user@example.com\n", nil
+	}
+	t.Cleanup(func() { WranglerWhoamiFn = old })
+
+	accountID, err := ResolveCloudflareAuth(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "env-account-id", accountID)
+}
+
+func TestResolveCloudflareAuth_WranglerSession_DiscoverAccountID(t *testing.T) {
+	withCFEnvCleared(t)
+
+	old := WranglerWhoamiFn
+	WranglerWhoamiFn = func(ctx context.Context) (string, error) {
+		return "┌──────────────┬──────────────────────────────────┐\n" +
+			"│ Account Name │ Account ID                       │\n" +
+			"├──────────────┼──────────────────────────────────┤\n" +
+			"│ My Account   │ abcdef1234567890abcdef1234567890 │\n" +
+			"└──────────────┴──────────────────────────────────┘\n", nil
+	}
+	t.Cleanup(func() { WranglerWhoamiFn = old })
+
+	accountID, err := ResolveCloudflareAuth(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "abcdef1234567890abcdef1234567890", accountID)
+}
+
+func TestResolveCloudflareAuth_WranglerSession_MultipleAccounts(t *testing.T) {
+	withCFEnvCleared(t)
+
+	old := WranglerWhoamiFn
+	WranglerWhoamiFn = func(ctx context.Context) (string, error) {
+		return "┌──────────────┬──────────────────────────────────┐\n" +
+			"│ Account Name │ Account ID                       │\n" +
+			"├──────────────┼──────────────────────────────────┤\n" +
+			"│ Account One  │ aaaabbbbccccddddeeeeffffaaaabbbb │\n" +
+			"│ Account Two  │ 11112222333344445555666677778888 │\n" +
+			"└──────────────┴──────────────────────────────────┘\n", nil
+	}
+	t.Cleanup(func() { WranglerWhoamiFn = old })
+
+	_, err := ResolveCloudflareAuth(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not be auto-detected")
+}
+
+func TestResolveCloudflareAuth_NoCredentials(t *testing.T) {
+	withCFEnvCleared(t)
+
+	old := WranglerWhoamiFn
+	WranglerWhoamiFn = func(ctx context.Context) (string, error) {
+		return "", fmt.Errorf("not logged in")
+	}
+	t.Cleanup(func() { WranglerWhoamiFn = old })
+
+	_, err := ResolveCloudflareAuth(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no Cloudflare credentials")
+	assert.Contains(t, err.Error(), "wrangler login")
+}
+
+// --- parseWranglerWhoamiAccountID tests ---
+
+func TestParseWranglerWhoamiAccountID_SingleAccount(t *testing.T) {
+	output := "┌──────────────┬──────────────────────────────────┐\n" +
+		"│ Account Name │ Account ID                       │\n" +
+		"├──────────────┼──────────────────────────────────┤\n" +
+		"│ My Account   │ abcdef1234567890abcdef1234567890 │\n" +
+		"└──────────────┴──────────────────────────────────┘\n"
+	assert.Equal(t, "abcdef1234567890abcdef1234567890", parseWranglerWhoamiAccountID(output))
+}
+
+func TestParseWranglerWhoamiAccountID_NoAccount(t *testing.T) {
+	output := "ℹ️  Logged in as user@example.com\n"
+	assert.Equal(t, "", parseWranglerWhoamiAccountID(output))
+}
+
+func TestParseWranglerWhoamiAccountID_MultipleAccounts(t *testing.T) {
+	output := "│ Account One  │ aaaabbbbccccddddeeeeffffaaaabbbb │\n" +
+		"│ Account Two  │ 11112222333344445555666677778888 │\n"
+	assert.Equal(t, "", parseWranglerWhoamiAccountID(output))
 }
 
 // --- Embed integrity tests ---
@@ -696,7 +887,7 @@ func TestLiveWranglerRunner_Deploy_DurableCommandError(t *testing.T) {
 	cancel()
 
 	envVars := map[string]string{"KEY": "value"}
-	_, err := runner.Deploy(ctx, dir, "test-worker", "", envVars)
+	_, err := runner.Deploy(ctx, dir, "test-worker", "", envVars, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "wrangler deploy failed")
 }
@@ -709,7 +900,7 @@ func TestLiveWranglerRunner_Deploy_PreviewCommandError(t *testing.T) {
 	cancel()
 
 	envVars := map[string]string{"KEY": "value"}
-	_, err := runner.Deploy(ctx, dir, "test-worker", "bt-alias", envVars)
+	_, err := runner.Deploy(ctx, dir, "test-worker", "bt-alias", envVars, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "wrangler versions upload failed")
 }
