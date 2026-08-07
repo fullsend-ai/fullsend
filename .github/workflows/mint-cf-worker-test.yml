@@ -71,6 +71,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: steps.changes.outputs.relevant != 'false'
 
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        if: steps.changes.outputs.relevant != 'false'
+        with:
+          go-version-file: go.mod
+
+      # Node 22 matches repo engines / other CI jobs. npm cache is omitted:
+      # workersrc has no lockfile (Makefile uses `npm install`), and setup-node
+      # requires package-lock.json / npm-shrinkwrap.json to enable caching.
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        if: steps.changes.outputs.relevant != 'false'
+        with:
+          node-version: "22"
+
       - name: Run CF mint Worker bridge smoke tests
         if: steps.changes.outputs.relevant != 'false'
         run: make mint-cf-worker-test
