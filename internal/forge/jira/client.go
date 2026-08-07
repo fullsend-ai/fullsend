@@ -72,9 +72,11 @@ func WithHTTPClient(client *http.Client) Option {
 	}
 }
 
-// validateBaseURL checks that the base URL uses https, unless it points to a
+// ValidateBaseURL checks that the base URL uses https, unless it points to a
 // loopback address (for httptest servers), and rejects embedded credentials.
-func validateBaseURL(rawURL string) error {
+// Exported so other Jira-backed clients (e.g. tracker.JiraClient) can apply
+// the same policy to base URLs they accept.
+func ValidateBaseURL(rawURL string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("invalid base URL: %w", err)
@@ -139,7 +141,7 @@ func New(token string, opts ...Option) (*LiveClient, error) {
 	if c.baseURL == "" {
 		return nil, fmt.Errorf("jira: base URL must be set via WithBaseURL")
 	}
-	if err := validateBaseURL(c.baseURL); err != nil {
+	if err := ValidateBaseURL(c.baseURL); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -469,6 +471,43 @@ func (c *LiveClient) ListComments(ctx context.Context, issueIDOrKey string) ([]C
 		log.Printf("WARNING: comment listing for %s truncated at %d pages; newer comments beyond the cap are invisible to the poller", issueIDOrKey, maxListPages)
 	}
 	return all, nil
+}
+
+// commentRequest is the request body shape for creating or updating a
+// comment: Jira Cloud only accepts a comment body in ADF, not markdown.
+type commentRequest struct {
+	Body map[string]any `json:"body"`
+}
+
+// CreateComment adds a new comment to an issue. body is markdown; it's
+// converted to ADF before being sent, since Jira Cloud doesn't accept
+// markdown directly.
+func (c *LiveClient) CreateComment(ctx context.Context, issueIDOrKey, body string) (*Comment, error) {
+	reqBody, err := json.Marshal(commentRequest{Body: MarkdownToADF(body)})
+	if err != nil {
+		return nil, fmt.Errorf("marshal create comment request: %w", err)
+	}
+	var comment Comment
+	path := "/issue/" + url.PathEscape(issueIDOrKey) + "/comment"
+	if err := c.do(ctx, http.MethodPost, path, bytes.NewReader(reqBody), &comment); err != nil {
+		return nil, fmt.Errorf("create comment on %s: %w", issueIDOrKey, err)
+	}
+	return &comment, nil
+}
+
+// UpdateComment replaces the body of an existing comment. body is
+// markdown; it's converted to ADF before being sent, for the same reason
+// as CreateComment.
+func (c *LiveClient) UpdateComment(ctx context.Context, issueIDOrKey, commentID, body string) error {
+	reqBody, err := json.Marshal(commentRequest{Body: MarkdownToADF(body)})
+	if err != nil {
+		return fmt.Errorf("marshal update comment request: %w", err)
+	}
+	path := "/issue/" + url.PathEscape(issueIDOrKey) + "/comment/" + url.PathEscape(commentID)
+	if err := c.do(ctx, http.MethodPut, path, bytes.NewReader(reqBody), nil); err != nil {
+		return fmt.Errorf("update comment %s on %s: %w", commentID, issueIDOrKey, err)
+	}
+	return nil
 }
 
 // ListChangelog fetches all changelog entries for an issue, exhausting
