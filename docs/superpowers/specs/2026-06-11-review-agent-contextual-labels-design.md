@@ -144,7 +144,7 @@ triage post-script's pattern. While the review dispatch does not currently
 listen on `pull_request.labeled`, using the API keeps the approach consistent
 and future-proof.
 
-### 6. `docs/agents/review.md`
+### 6. `docs/agents/review.md` (now in `fullsend-ai/agents`)
 
 After the "Control labels" table, add a note:
 

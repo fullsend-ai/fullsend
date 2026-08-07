@@ -138,7 +138,7 @@ When a prerequisite issue is resolved and the original issue is re-triaged, the 
 | Agent prompt | `fullsend-ai/agents` `agents/triage.md` | Replace `blocked` action with `prerequisites`. Add hard constraint. Add guidance for `create` entry content. |
 | Post-script | `fullsend-ai/agents` `scripts/post-triage.sh` | Replace `blocked` handler with `prerequisites` handler. Add allowlist validation, issue creation, degraded path with collapsed draft. |
 | Pre-script | `fullsend-ai/agents` `scripts/pre-triage.sh` | No change. `blocked` label stripping stays the same. |
-| User docs | `docs/agents/triage.md` | New section documenting `create_issues` config surface: what it does, defaults, when to expand or restrict. |
+| User docs | `docs/agents/triage.md` (now in `fullsend-ai/agents`) | New section documenting `create_issues` config surface: what it does, defaults, when to expand or restrict. |
 | Config constructors | `internal/config/config.go` | `NewOrgConfig` and `NewPerRepoConfig` populate `create_issues.allow_targets` defaults. Callers in `internal/cli/admin.go` and `internal/cli/github.go` pass the org/repo context. |
 
 ## Out of scope

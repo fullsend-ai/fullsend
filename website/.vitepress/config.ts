@@ -204,18 +204,10 @@ export default defineConfig({
           ],
         },
         {
-          text: "Agents",
+          text: "Default Agents",
           collapsed: true,
           link: "/agents/",
-          items: [
-            { text: "Triage", link: "/agents/triage" },
-            { text: "Code", link: "/agents/code" },
-            { text: "Review", link: "/agents/review" },
-            { text: "Fix", link: "/agents/fix" },
-            { text: "Retro", link: "/agents/retro" },
-            { text: "Prioritize", link: "/agents/prioritize" },
-            { text: "Default vs. Custom", link: "/agents/topics/default-vs-custom" },
-          ],
+          items: getMarkdownFiles("agents", "agents"),
         },
         {
           text: "User Guides",
@@ -223,6 +215,7 @@ export default defineConfig({
           link: "/guides/",
           items: [
             { text: "Bring Your Own Agent", link: "/guides/user/bring-your-own-agent" },
+            { text: "Default vs. Custom Agents", link: "/guides/user/default-vs-custom-agents" },
             { text: "CEL Triggers Reference", link: "/guides/user/cel-triggers-reference" },
             { text: "Bugfix Workflow", link: "/guides/user/bugfix-workflow" },
             { text: "Configuring Agent Behavior", link: "/guides/user/customizing-agents" },
@@ -341,7 +334,13 @@ export default defineConfig({
     socialLinks: [{ icon: "github", link: "https://github.com/fullsend-ai/fullsend" }],
 
     editLink: {
-      pattern: "https://github.com/fullsend-ai/fullsend/edit/main/docs/:path",
+      pattern({ filePath }) {
+        if (filePath.startsWith("agents/")) {
+          const agentPath = filePath.replace(/^agents\//, "docs/");
+          return `https://github.com/fullsend-ai/agents/edit/main/${agentPath}`;
+        }
+        return `https://github.com/fullsend-ai/fullsend/edit/main/docs/${filePath}`;
+      },
       text: "Edit this page on GitHub",
     },
 

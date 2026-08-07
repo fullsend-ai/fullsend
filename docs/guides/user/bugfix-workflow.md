@@ -61,7 +61,7 @@ You can control the pipeline from issue or PR comments:
 | `/fs-triage` | Issue comment | Re-runs triage from scratch (clears all labels, reopens if closed) |
 | `/fs-code` | Issue comment | Hands off to the code agent (expects `ready-to-code` or forces with human ack) |
 | `/fs-review` | PR comment | Enqueues a new review round for the current PR head |
-| `/fs-fix` | PR comment | Triggers the [fix agent](../../agents/fix.md) on the PR; accepts optional free-text instruction |
+| `/fs-fix` | PR comment | Triggers the [fix agent](https://fullsend.sh/docs/agents/fix) on the PR; accepts optional free-text instruction |
 | `/fs-fix-stop` | PR comment | Disables bot-triggered fix runs for this PR (human `/fs-fix` still works) |
 | `/fs-retro` | Issue or PR comment | Triggers a retrospective analysis of the workflow |
 
@@ -95,7 +95,7 @@ Agent PRs go through the same review process as human PRs:
 The review stage runs N independent review agents in parallel. One is randomly selected as coordinator. The coordinator collects verdicts and applies one of three outcomes:
 
 - **Unanimous approve:** All reviewers agree the PR is good. Label `ready-for-merge` is applied. The PR can be merged per your org's governance policy.
-- **Unanimous rework:** All reviewers agree changes are needed. The [fix agent](../../agents/fix.md) triggers automatically, reads the consolidated review body, and pushes fixes to the existing PR. After the fix, a new review round begins.
+- **Unanimous rework:** All reviewers agree changes are needed. The [fix agent](https://fullsend.sh/docs/agents/fix) triggers automatically, reads the consolidated review body, and pushes fixes to the existing PR. After the fix, a new review round begins.
 - **Split or conflicting:** Reviewers disagree, or there are conflicting security assessments. Label `requires-manual-review` is applied. A human must decide.
 
 Every push to a PR in the review stage triggers a new review round. This means `ready-for-merge` is never stale — it always reflects the current PR head.
@@ -137,7 +137,7 @@ The review swarm:
 
 1. **N independent reviewers** evaluate the PR in parallel (configurable count).
 2. **One coordinator** (randomly selected) collects verdicts and posts a consolidated comment.
-3. **Outcome** is applied as a label (`ready-for-merge` or `requires-manual-review`) or triggers the [fix agent](../../agents/fix.md) (rework).
+3. **Outcome** is applied as a label (`ready-for-merge` or `requires-manual-review`) or triggers the [fix agent](https://fullsend.sh/docs/agents/fix) (rework).
 
 Re-review happens automatically on every push to the PR. The `ready-for-merge` label is scoped to the PR head SHA at the time of review — it is cleared and re-evaluated on each new round.
 
@@ -145,7 +145,7 @@ Re-review happens automatically on every push to the PR. The `ready-for-merge` l
 
 **Triggered by:** review agent submitting a "changes requested" review, or human `/fs-fix` command.
 
-The [fix agent](../../agents/fix.md):
+The [fix agent](https://fullsend.sh/docs/agents/fix):
 
 1. **Reads the review feedback.** For bot-triggered runs, the consolidated review body is the primary input. For human-triggered runs, the `/fs-fix` instruction text takes precedence.
 2. **Implements targeted fixes.** Addresses each actionable finding from the review, following repo conventions from `AGENTS.md`.
@@ -154,7 +154,7 @@ The [fix agent](../../agents/fix.md):
 
 After the fix commit, the review agents automatically re-review. This loop repeats until the reviewers approve, the iteration cap is reached, or a human intervenes with `/fs-fix-stop`.
 
-For details on what the fix agent reads, what it ignores, and how URLs in instructions behave, see the [fix agent reference](../../agents/fix.md).
+For details on what the fix agent reads, what it ignores, and how URLs in instructions behave, see the [fix agent reference](https://fullsend.sh/docs/agents/fix).
 
 ### After merge
 

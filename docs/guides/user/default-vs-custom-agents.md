@@ -43,7 +43,7 @@ your needs genuinely diverge from the default agent's charter.
 > identity-defining components, the result is a **derived agent**.
 
 Each default agent documents its extension points in
-[`docs/agents/<agent>.md`](../). The review agent, for example, documents
+[`docs/agents/<agent>.md`](https://fullsend.sh/docs/agents/). The review agent, for example, documents
 `REVIEW_FINDING_SEVERITY_THRESHOLD` as a configuration variable and
 `issue-labels` as an overloadable skill. Using those mechanisms produces a
 configured review agent, not a derived one.
@@ -70,7 +70,7 @@ agent is custom by definition — regardless of how similar it looks.
 | Add skills via `skills:` | Configured default | Skills extend knowledge. The agent's core behavior is unchanged. |
 | Add repo-level skills in `.agents/skills/` | Configured default | Repo skills are discovered automatically; no harness change needed. |
 | Add project instructions via `AGENTS.md` | Configured default | All agents read `AGENTS.md`. This is the standard customization path. |
-| Override a built-in skill via `customized/skills/` | Configured default | Documented extension point ([Configuring with Skills](../../guides/user/customizing-with-skills.md#overriding-built-in-skills)). |
+| Override a built-in skill via `customized/skills/` | Configured default | Documented extension point ([Configuring with Skills](customizing-with-skills.md#overriding-built-in-skills)). |
 | Replace the sandbox image with one based on the default image | Configured default | The agent's behavior is unchanged; the environment is augmented. |
 | Add plugins via `plugins:` | Configured default | Plugins extend tooling without changing the agent's identity. |
 | Add host files via `host_files:` | Configured default | Additional data for the sandbox. The agent itself is unchanged. |
@@ -87,14 +87,14 @@ for a stated purpose, that override does not make the agent derived.
 
 ## See also
 
-- [Agents reference](../) — default agent documentation and extension points
-- [Configuring agent behavior](../../guides/user/customizing-agents.md) — harness
+- [Agents reference](https://fullsend.sh/docs/agents/) — default agent documentation and extension points
+- [Configuring agent behavior](customizing-agents.md) — harness
   configuration and layered content resolution
-- [Configuring with AGENTS.md](../../guides/user/customizing-with-agents-md.md)
+- [Configuring with AGENTS.md](customizing-with-agents-md.md)
   — project-wide instructions for all agents
-- [Configuring with skills](../../guides/user/customizing-with-skills.md) —
+- [Configuring with skills](customizing-with-skills.md) —
   extending or replacing built-in skills
-- [Bring Your Own Agent](../../guides/user/bring-your-own-agent.md) —
+- [Bring Your Own Agent](bring-your-own-agent.md) —
   building custom agents and configuring existing ones
 - [ADR 0045](../../ADRs/0045-forge-portable-harness-schema.md) — `base`
   composition and harness inheritance

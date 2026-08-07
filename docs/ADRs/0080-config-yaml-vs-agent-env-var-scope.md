@@ -106,9 +106,9 @@ not a placement gap.
 ## Consequences
 
 - Resolves the fullsend-ai/agents#567 ambiguity: `TRIAGE_AUTO_CODE` stays
-  an env var; `docs/agents/<agent>.md`'s Variables table must state how to
-  override it (which harness layer to edit), matching the guidance ADR
-  0049 already expects.
+  an env var; each agent's doc file (in `fullsend-ai/agents`) Variables
+  table must state how to override it (which harness layer to edit),
+  matching the guidance ADR 0049 already expects.
 - `config.yaml` cannot accumulate `{agent}_foo`-style fields — any such
   field is a signal the knob was misplaced.
 - An env var cannot quietly gain a `config.yaml` mirror with its own

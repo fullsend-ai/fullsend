@@ -545,7 +545,7 @@ disables nothing because no agent has that harness name.
 ## See Also
 
 - [Bring Your Own Agent](bring-your-own-agent.md) - Building and registering custom agents from scratch
-- [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md) - When does configuration cross into derived or custom agent territory?
+- [Default, derived, and custom agents](default-vs-custom-agents.md) - When does configuration cross into derived or custom agent territory?
 - [Getting Started](../getting-started/) - Initial setup
 - [Bugfix Workflow](bugfix-workflow.md) - How agents work together
 - [Standalone Mint](../infrastructure/standalone-mint.md) - Running your own mint with custom agent roles

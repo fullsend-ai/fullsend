@@ -43,7 +43,7 @@ Guides for developers working in repositories where fullsend is active.
 - [Tracing with MLflow](user/tracing-with-mlflow.md) — MLflow-specific setup: experiment routing, Basic auth encoding, org-level organization, and cost column caveats
 - [Jira Integration](user/jira-integration.md) — Connect fullsend to a Jira project so that issue comments and label changes trigger agents
 - [Building custom agents from scratch](user/building-custom-agents.md) — _(deprecated — see [Bring Your Own Agent](user/bring-your-own-agent.md))_
-- [Default, derived, and custom agents](../agents/topics/default-vs-custom.md) — When configuration crosses into derived or custom agent territory
+- [Default, derived, and custom agents](user/default-vs-custom-agents.md) — When configuration crosses into derived or custom agent territory
 
 ## Development
 
