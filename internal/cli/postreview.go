@@ -339,13 +339,24 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 	// Findings whose file is in the PR diff but whose line falls
 	// outside any diff hunk are posted as file-level comments so
 	// they remain visible on the PR code.
-	inlineComments, fileFiltered, fileLevelFallback := findingsToReviewComments(findings, diffHunks)
+	inlineComments, fileLevelComments, fileFiltered := findingsToReviewComments(findings, diffHunks)
 
 	if fileFiltered > 0 {
 		printer.StepWarn(fmt.Sprintf("%d inline comment(s) omitted (file not in PR diff) — findings still count toward verdict", fileFiltered))
 	}
-	if fileLevelFallback > 0 {
-		printer.StepInfo(fmt.Sprintf("%d finding(s) posted as file-level comment(s) (line outside diff hunk)", fileLevelFallback))
+	if len(fileLevelComments) > 0 {
+		printer.StepInfo(fmt.Sprintf("%d finding(s) posted as file-level comment(s) (line outside diff hunk)", len(fileLevelComments)))
+	}
+
+	// Post file-level comments in a separate COMMENT review so they
+	// don't poison the main review batch. A single invalid file-level
+	// comment would otherwise 422 the entire submission.
+	if len(fileLevelComments) > 0 {
+		if err := client.CreatePullRequestReview(ctx, owner, repo, pr, "COMMENT", "", commitSHA, fileLevelComments); err != nil {
+			printer.StepWarn(fmt.Sprintf("File-level comments failed (%v), findings remain in sticky comment", err))
+		} else {
+			printer.StepDone(fmt.Sprintf("Posted %d file-level comment(s)", len(fileLevelComments)))
+		}
 	}
 
 	// COMMENT verdicts skip the formal review unless there are inline-
@@ -405,12 +416,11 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 // patches) skip line-level filtering — the file is known to be in the
 // diff but hunk coverage is unavailable.
 //
-// Returns the comments, count of findings dropped because their file
-// was not in the diff, and count of findings that fell back to
-// file-level comments.
-func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][2]int) ([]forge.ReviewComment, int, int) {
-	var comments []forge.ReviewComment
-	var fileFiltered, fileLevelFallback int
+// Returns inline comments (with line numbers), file-level comments
+// (Line=0, posted separately to avoid poisoning the review batch),
+// and the count of findings dropped because their file was not in
+// the diff.
+func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][2]int) (inline []forge.ReviewComment, fileLevel []forge.ReviewComment, fileFiltered int) {
 	for _, f := range findings {
 		if f.File == "" || f.Line <= 0 {
 			continue
@@ -422,27 +432,21 @@ func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][
 				continue
 			}
 			if len(hunks) > 0 && !lineInHunks(f.Line, hunks) {
-				// Fall back to file-level comments so findings
-				// remain visible on the PR even when the exact
-				// line is outside the changed region. Include the
-				// original line number in the body since file-level
-				// comments have no line annotation in the UI.
 				body := fmt.Sprintf("_Line %d_ · %s", f.Line, formatFindingComment(f))
-				comments = append(comments, forge.ReviewComment{
+				fileLevel = append(fileLevel, forge.ReviewComment{
 					Path: f.File,
 					Body: body,
 				})
-				fileLevelFallback++
 				continue
 			}
 		}
-		comments = append(comments, forge.ReviewComment{
+		inline = append(inline, forge.ReviewComment{
 			Path: f.File,
 			Line: f.Line,
 			Body: formatFindingComment(f),
 		})
 	}
-	return comments, fileFiltered, fileLevelFallback
+	return inline, fileLevel, fileFiltered
 }
 
 // formatFindingComment renders a single review finding as a Markdown

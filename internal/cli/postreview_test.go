@@ -829,20 +829,20 @@ func TestFindingsToReviewComments(t *testing.T) {
 		{File: "c.go", Line: 20, Severity: "critical", Category: "security", Description: "Desc C", Remediation: "Fix it"},
 	}
 
-	comments, fileFiltered, fileLevelFallback := findingsToReviewComments(findings, nil)
+	inline, fileLevel, fileFiltered := findingsToReviewComments(findings, nil)
 	assert.Equal(t, 0, fileFiltered)
-	assert.Equal(t, 0, fileLevelFallback)
-	require.Len(t, comments, 2)
+	assert.Empty(t, fileLevel)
+	require.Len(t, inline, 2)
 
-	assert.Equal(t, "a.go", comments[0].Path)
-	assert.Equal(t, 10, comments[0].Line)
-	assert.Contains(t, comments[0].Body, "high")
-	assert.Contains(t, comments[0].Body, "Desc A")
+	assert.Equal(t, "a.go", inline[0].Path)
+	assert.Equal(t, 10, inline[0].Line)
+	assert.Contains(t, inline[0].Body, "high")
+	assert.Contains(t, inline[0].Body, "Desc A")
 
-	assert.Equal(t, "c.go", comments[1].Path)
-	assert.Equal(t, 20, comments[1].Line)
-	assert.Contains(t, comments[1].Body, "critical")
-	assert.Contains(t, comments[1].Body, "Fix it")
+	assert.Equal(t, "c.go", inline[1].Path)
+	assert.Equal(t, 20, inline[1].Line)
+	assert.Contains(t, inline[1].Body, "critical")
+	assert.Contains(t, inline[1].Body, "Fix it")
 }
 
 func TestFindingsToReviewComments_FiltersByDiffHunks(t *testing.T) {
@@ -857,18 +857,18 @@ func TestFindingsToReviewComments_FiltersByDiffHunks(t *testing.T) {
 		"also-changed.go": {{1, 10}},
 	}
 
-	comments, fileFiltered, fileLevelFallback := findingsToReviewComments(findings, diffHunks)
+	inline, fileLevel, fileFiltered := findingsToReviewComments(findings, diffHunks)
 	assert.Equal(t, 1, fileFiltered)
-	assert.Equal(t, 1, fileLevelFallback, "low-severity out-of-hunk finding should fall back to file-level")
-	require.Len(t, comments, 3)
-	assert.Equal(t, "changed.go", comments[0].Path)
-	assert.Equal(t, 10, comments[0].Line)
-	// The out-of-hunk low finding now falls back to file-level.
-	assert.Equal(t, "changed.go", comments[1].Path)
-	assert.Equal(t, 0, comments[1].Line)
-	assert.Contains(t, comments[1].Body, "Line 50", "file-level fallback should include original line number")
-	assert.Equal(t, "also-changed.go", comments[2].Path)
-	assert.Equal(t, 3, comments[2].Line)
+	require.Len(t, fileLevel, 1, "low-severity out-of-hunk finding should fall back to file-level")
+	require.Len(t, inline, 2)
+	assert.Equal(t, "changed.go", inline[0].Path)
+	assert.Equal(t, 10, inline[0].Line)
+	assert.Equal(t, "also-changed.go", inline[1].Path)
+	assert.Equal(t, 3, inline[1].Line)
+	// The out-of-hunk low finding is in the file-level slice.
+	assert.Equal(t, "changed.go", fileLevel[0].Path)
+	assert.Equal(t, 0, fileLevel[0].Line)
+	assert.Contains(t, fileLevel[0].Body, "Line 50", "file-level fallback should include original line number")
 }
 
 func TestFindingsToReviewComments_EmptyPatchSkipsLineFiltering(t *testing.T) {
@@ -884,18 +884,18 @@ func TestFindingsToReviewComments_EmptyPatchSkipsLineFiltering(t *testing.T) {
 		"changed.go": {{5, 15}},
 	}
 
-	comments, fileFiltered, fileLevelFallback := findingsToReviewComments(findings, diffHunks)
+	inline, fileLevel, fileFiltered := findingsToReviewComments(findings, diffHunks)
 	assert.Equal(t, 0, fileFiltered)
-	assert.Equal(t, 1, fileLevelFallback, "out-of-hunk info finding on changed.go should fall back to file-level")
-	require.Len(t, comments, 4)
-	assert.Equal(t, "binary.png", comments[0].Path)
-	assert.Equal(t, "large.go", comments[1].Path)
-	assert.Equal(t, "changed.go", comments[2].Path)
-	assert.Equal(t, 10, comments[2].Line)
-	// The info finding outside the hunk now falls back to file-level.
-	assert.Equal(t, "changed.go", comments[3].Path)
-	assert.Equal(t, 0, comments[3].Line)
-	assert.Contains(t, comments[3].Body, "Line 50", "file-level fallback should include original line number")
+	require.Len(t, fileLevel, 1, "out-of-hunk info finding on changed.go should fall back to file-level")
+	require.Len(t, inline, 3)
+	assert.Equal(t, "binary.png", inline[0].Path)
+	assert.Equal(t, "large.go", inline[1].Path)
+	assert.Equal(t, "changed.go", inline[2].Path)
+	assert.Equal(t, 10, inline[2].Line)
+	// The info finding outside the hunk is in the file-level slice.
+	assert.Equal(t, "changed.go", fileLevel[0].Path)
+	assert.Equal(t, 0, fileLevel[0].Line)
+	assert.Contains(t, fileLevel[0].Body, "Line 50", "file-level fallback should include original line number")
 }
 
 func TestFindingsToReviewComments_AllSeveritiesPassThrough(t *testing.T) {
@@ -906,14 +906,14 @@ func TestFindingsToReviewComments_AllSeveritiesPassThrough(t *testing.T) {
 		{File: "a.go", Line: 25, Severity: "medium", Category: "bug", Description: "Medium finding"},
 	}
 
-	comments, fileFiltered, fileLevelFallback := findingsToReviewComments(findings, nil)
+	inline, fileLevel, fileFiltered := findingsToReviewComments(findings, nil)
 	assert.Equal(t, 0, fileFiltered)
-	assert.Equal(t, 0, fileLevelFallback)
-	require.Len(t, comments, 4, "all findings should pass through regardless of severity")
-	assert.Contains(t, comments[0].Body, "Info finding with location")
-	assert.Contains(t, comments[1].Body, "Info finding case insensitive")
-	assert.Contains(t, comments[2].Body, "Low finding")
-	assert.Contains(t, comments[3].Body, "Medium finding")
+	assert.Empty(t, fileLevel)
+	require.Len(t, inline, 4, "all findings should pass through regardless of severity")
+	assert.Contains(t, inline[0].Body, "Info finding with location")
+	assert.Contains(t, inline[1].Body, "Info finding case insensitive")
+	assert.Contains(t, inline[2].Body, "Low finding")
+	assert.Contains(t, inline[3].Body, "Medium finding")
 }
 
 func TestFindingsToReviewComments_AllSeveritiesFallbackToFileLevel(t *testing.T) {
@@ -929,23 +929,22 @@ func TestFindingsToReviewComments_AllSeveritiesFallbackToFileLevel(t *testing.T)
 		"changed.go": {{5, 15}},
 	}
 
-	comments, fileFiltered, fileLevelFallback := findingsToReviewComments(findings, diffHunks)
+	inline, fileLevel, fileFiltered := findingsToReviewComments(findings, diffHunks)
 	assert.Equal(t, 0, fileFiltered)
-	assert.Equal(t, 5, fileLevelFallback, "all out-of-hunk findings should fall back to file-level")
-	require.Len(t, comments, 6)
+	require.Len(t, fileLevel, 5, "all out-of-hunk findings should fall back to file-level")
+	require.Len(t, inline, 1)
 
-	// First comment: in-hunk high finding with line number.
-	assert.Equal(t, "changed.go", comments[0].Path)
-	assert.Equal(t, 10, comments[0].Line)
+	// In-hunk high finding with line number.
+	assert.Equal(t, "changed.go", inline[0].Path)
+	assert.Equal(t, 10, inline[0].Line)
 
-	// Remaining: file-level fallback comments for all out-of-hunk findings.
+	// File-level fallback comments for all out-of-hunk findings.
 	expectedLines := []int{50, 60, 70, 75, 80}
 	for i, desc := range []string{"Medium outside hunk", "Critical outside hunk", "Low outside hunk", "Info outside hunk", "High outside hunk case insensitive"} {
-		idx := i + 1
-		assert.Equal(t, "changed.go", comments[idx].Path)
-		assert.Equal(t, 0, comments[idx].Line, "file-level comment should have Line=0")
-		assert.Contains(t, comments[idx].Body, desc)
-		assert.Contains(t, comments[idx].Body, fmt.Sprintf("Line %d", expectedLines[i]), "file-level fallback should include original line number")
+		assert.Equal(t, "changed.go", fileLevel[i].Path)
+		assert.Equal(t, 0, fileLevel[i].Line, "file-level comment should have Line=0")
+		assert.Contains(t, fileLevel[i].Body, desc)
+		assert.Contains(t, fileLevel[i].Body, fmt.Sprintf("Line %d", expectedLines[i]), "file-level fallback should include original line number")
 	}
 }
 
@@ -970,15 +969,20 @@ func TestSubmitFormalReview_FiltersByPRFileDiffs(t *testing.T) {
 
 	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "request-changes", "", "", findings, false, printer)
 	require.NoError(t, err)
-	require.Len(t, fc.CreatedReviews, 1)
-	require.Len(t, fc.CreatedReviews[0].Comments, 3, "file-not-in-diff finding omitted; out-of-hunk finding falls back to file-level")
+	// Two reviews: COMMENT for file-level, REQUEST_CHANGES for main.
+	require.Len(t, fc.CreatedReviews, 2)
+	// First review: file-level comment posted separately.
+	assert.Equal(t, "COMMENT", fc.CreatedReviews[0].Event)
+	require.Len(t, fc.CreatedReviews[0].Comments, 1)
 	assert.Equal(t, "changed.go", fc.CreatedReviews[0].Comments[0].Path)
-	assert.Equal(t, 10, fc.CreatedReviews[0].Comments[0].Line)
-	// Out-of-hunk low finding falls back to file-level comment.
-	assert.Equal(t, "changed.go", fc.CreatedReviews[0].Comments[1].Path)
-	assert.Equal(t, 0, fc.CreatedReviews[0].Comments[1].Line)
-	assert.Contains(t, fc.CreatedReviews[0].Comments[1].Body, "Line 50", "file-level fallback should include original line number")
-	assert.Equal(t, "also-changed.go", fc.CreatedReviews[0].Comments[2].Path)
+	assert.Equal(t, 0, fc.CreatedReviews[0].Comments[0].Line)
+	assert.Contains(t, fc.CreatedReviews[0].Comments[0].Body, "Line 50", "file-level fallback should include original line number")
+	// Second review: inline comments only.
+	assert.Equal(t, "REQUEST_CHANGES", fc.CreatedReviews[1].Event)
+	require.Len(t, fc.CreatedReviews[1].Comments, 2, "file-not-in-diff finding omitted; file-level posted separately")
+	assert.Equal(t, "changed.go", fc.CreatedReviews[1].Comments[0].Path)
+	assert.Equal(t, 10, fc.CreatedReviews[1].Comments[0].Line)
+	assert.Equal(t, "also-changed.go", fc.CreatedReviews[1].Comments[1].Path)
 	assert.Contains(t, out.String(), "1 inline comment(s) omitted (file not in PR diff) — findings still count toward verdict")
 	assert.Contains(t, out.String(), "1 finding(s) posted as file-level comment(s) (line outside diff hunk)")
 }
@@ -1442,15 +1446,47 @@ func TestIs422Error(t *testing.T) {
 	}
 }
 
-func TestSubmitFormalReview_422FallbackWithFileLevelComment(t *testing.T) {
+func TestSubmitFormalReview_FileLevelCommentPostedSeparately(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.AuthenticatedUser = "fullsend-bot"
 	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
 		"acme/repo/1": {
-			// Hunk covers lines 30-54 only.
 			{Path: "internal/service.go", Patch: "@@ -30,20 +30,25 @@ func main() {"},
 		},
 	}
+
+	var out bytes.Buffer
+	printer := ui.New(&out)
+
+	findings := []ReviewFinding{
+		// Line 999 is outside hunk -> becomes file-level comment.
+		{Severity: "high", Category: "bug", File: "internal/service.go", Line: 999, Description: "Out of hunk."},
+	}
+
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "request-changes", "abc123", "", findings, false, printer)
+	require.NoError(t, err)
+
+	output := out.String()
+	assert.Contains(t, output, "file-level comment")
+
+	// Two reviews: one COMMENT for file-level, one REQUEST_CHANGES for main.
+	require.Len(t, fc.CreatedReviews, 2)
+	assert.Equal(t, "COMMENT", fc.CreatedReviews[0].Event)
+	require.Len(t, fc.CreatedReviews[0].Comments, 1)
+	assert.Equal(t, 0, fc.CreatedReviews[0].Comments[0].Line)
+	assert.Equal(t, "REQUEST_CHANGES", fc.CreatedReviews[1].Event)
+	assert.Empty(t, fc.CreatedReviews[1].Comments)
+}
+
+func TestSubmitFormalReview_FileLevelFailureDoesNotBlockMainReview(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			{Path: "internal/service.go", Patch: "@@ -30,20 +30,25 @@ func main() {"},
+		},
+	}
+	// First call (file-level) fails, second call (main review) succeeds.
 	fc.CreateReviewErrSeq = []error{
 		&gh.APIError{StatusCode: http.StatusUnprocessableEntity, Message: "Validation Failed"},
 		nil,
@@ -1460,7 +1496,6 @@ func TestSubmitFormalReview_422FallbackWithFileLevelComment(t *testing.T) {
 	printer := ui.New(&out)
 
 	findings := []ReviewFinding{
-		// Line 999 is outside hunk → becomes file-level comment (Line=0).
 		{Severity: "high", Category: "bug", File: "internal/service.go", Line: 999, Description: "Out of hunk."},
 	}
 
@@ -1468,11 +1503,12 @@ func TestSubmitFormalReview_422FallbackWithFileLevelComment(t *testing.T) {
 	require.NoError(t, err)
 
 	output := out.String()
-	assert.Contains(t, output, "file-level", "logRejectedComments should log file-level comment")
-	assert.Contains(t, output, "inline comments omitted due to 422")
+	assert.Contains(t, output, "File-level comments failed")
+	assert.Contains(t, output, "Review submitted")
 
+	// Only the main review succeeded; the file-level review errored.
 	require.Len(t, fc.CreatedReviews, 1)
-	assert.Contains(t, fc.CreatedReviews[0].Body, "internal/service.go")
+	assert.Equal(t, "REQUEST_CHANGES", fc.CreatedReviews[0].Event)
 }
 
 func TestBuildFallbackReviewBody(t *testing.T) {
