@@ -21,7 +21,7 @@
     "stylelint": "stylelint 'web/admin/src/**/*.{svelte,css}' 'docs/.vitepress/**/*.{vue,css}'",
     "stylelint:fix": "stylelint 'web/admin/src/**/*.{svelte,css}' 'docs/.vitepress/**/*.{vue,css}' --fix",
     "docs:dev": "git submodule update --init && vitepress dev docs",
-    "docs:build": "git submodule update --init && vitepress build docs",
+    "docs:build": "git submodule update --init && mvb docs",
     "docs:preview": "vitepress preview docs"
   },
   "devDependencies": {
@@ -54,6 +54,7 @@
     "vite": "^6.0.0",
     "vitest": "^4.1.4",
     "wrangler": "^4.110.0",
+    "@lando/vitepress-theme-default-plus": "^1.2.0",
     "@vueuse/core": "^12.4.0",
     "@vueuse/integrations": "^12.4.0",
     "mark.js": "8.11.1",
