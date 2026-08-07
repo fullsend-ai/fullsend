@@ -1188,13 +1188,7 @@ internal/scaffold/fullsend-repo-gitlab/
 │       ├── fullsend-poll.yml      ← cron-poller (scheduled pipeline)
 │       └── fullsend-agent.yml     ← generic agent stage (parameterized by $STAGE)
 └── .fullsend/
-    ├── config.yaml
-    └── customized/
-        ├── agents/.gitkeep
-        ├── harness/.gitkeep
-        ├── policies/.gitkeep
-        ├── skills/.gitkeep
-        └── scripts/.gitkeep
+    └── config.yaml
 ```
 
 ### Root pipeline (`.gitlab-ci.yml`)

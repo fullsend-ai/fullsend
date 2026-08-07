@@ -119,8 +119,8 @@ takes precedence.
 - Override the agent definition's tool restrictions (e.g., the review agent
   cannot write files regardless of what AGENTS.md says)
 - Remove or replace built-in skills — use
-  [`customized/skills/`](customizing-with-skills.md#overriding-built-in-skills)
-  for that (deprecated — use config-driven agent registration instead)
+  [config-driven agent registration](customizing-with-skills.md#overriding-built-in-skills)
+  for that
 - Change the agent's model or execution parameters
 
 ### Injection handling

@@ -224,8 +224,7 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │ Phase 5: Write scaffold + config files                     │ │
 │  │                                                            │ │
-│  │  Both modes: write workflow files (customized/ removed      │ │
-│  │  per ADR-0064; use config-driven agents instead)           │ │
+│  │  Both modes: write workflow files                           │ │
 │  │  CommitScaffoldFiles() delivery modes:                     │ │
 │  │    Default (PR):  create feature branch → commit → open PR │ │
 │  │    --direct:      try CommitFiles (default branch)         │ │

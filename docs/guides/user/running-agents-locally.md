@@ -339,27 +339,16 @@ Start by cloning `fullsend-ai/agents` to a dedicated directory:
 git clone --depth 1 https://github.com/fullsend-ai/agents.git /tmp/agents/
 ```
 
-Then apply your organization customizations, if any:
-
-> **Note:** The `customized/` overlay mechanism is deprecated. Orgs that
-> have migrated to config-driven agents should skip these
-> `cp -r customized/` steps and use the registered harness paths directly.
-> See [Bring Your Own Agent](bring-your-own-agent.md) for the recommended
-> approach.
+If your organization uses config-driven agents registered in `config.yaml`,
+pass your `.fullsend` config repo as `--fullsend-dir`:
 
 ```bash
 git clone --depth 1 https://github.com/{org}/.fullsend.git /tmp/org-fullsend/
-cp -r /tmp/org-fullsend/customized/. /tmp/agents/
 ```
 
-And finally apply your own target repository customizations, if any:
-
-```bash
-git clone https://github.com/{org}/{target-repo} /tmp/target-repo
-cp -r /tmp/target-repo/.fullsend/customized/. /tmp/agents/
-```
-
-When you execute `fullsend run`, pass `--fullsend-dir` as `/tmp/agents/`.
+When you execute `fullsend run`, pass `--fullsend-dir` as `/tmp/org-fullsend/`.
+See [Bring Your Own Agent](bring-your-own-agent.md) for the config-driven
+approach.
 
 ## Platform notes
 

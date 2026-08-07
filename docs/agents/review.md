@@ -66,12 +66,8 @@ labels and apply them to PRs during review. This is the same skill used by the
 To overload the built-in skill, create your own `issue-labels` skill in
 `.agents/skills/issue-labels/SKILL.md` and symlink `.claude/skills` to
 `.agents/skills` so it's discoverable by both fullsend and local agent tooling.
-You can also overload it at the org level in your `.fullsend` config repo at
-`customized/skills/issue-labels/SKILL.md`. At runtime, your version replaces
-the upstream default -- no other configuration needed.
-
-> **Deprecated (ADR-0064):** The `customized/` overlay is deprecated. Use
-> config-driven agent registration instead.
+You can also overload it at the org level using config-driven agent
+registration -- see [Bring Your Own Agent](../guides/user/bring-your-own-agent.md).
 
 See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
 [Configuring with Skills](../guides/user/customizing-with-skills.md).
