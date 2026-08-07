@@ -72,6 +72,7 @@ This matters for fullsend because review agents and code agents process forge co
 
 - **Output scanning** — the existing `SecretRedactor` pipeline should apply to all agent output, not just to content the agent explicitly identifies as sensitive. This is already the design intent (see [ADR 0022](../ADRs/0022-harness-level-output-schema-enforcement.md)), but the indirect disclosure pattern underscores why output-side scanning is not optional.
 - **Content-aware redaction** — agents processing forge content should redact PII patterns (SSNs, bank accounts, addresses) from their output regardless of whether the input was explicitly marked as sensitive.
+- **Input-side allowlisting for cross-boundary sources** — when the event source and dispatch target do not share a trust boundary (e.g. an internal Jira project polled for a public target repo), sensitive fields should be gated before they ever reach agent context, not only scanned on output. See [ADR 0068](../ADRs/0068-privacy-allowlist-for-poll-input-drivers.md).
 
 ### Disproportionate response via social pressure
 
