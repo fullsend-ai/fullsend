@@ -69,6 +69,7 @@ type githubSetupConfig struct {
 	runtime              string
 	configPreset         string // --config: local path or HTTPS URL to a preset
 	configHash           string // --config-hash: SHA-256 hex digest for preset validation
+	signoff              bool   // --signoff: add Signed-off-by trailer to scaffold commits
 }
 
 func newGitHubSetupCmd() *cobra.Command {
@@ -170,6 +171,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	addVendorFlags(cmd, &cfg.vendor, &cfg.fullsendBinary, &cfg.fullsendSource)
 	cmd.Flags().StringVar(&cfg.configPreset, "config", "", "local file path or HTTPS URL to a vendor preset (committed as .fullsend/config.base.yaml)")
 	cmd.Flags().StringVar(&cfg.configHash, "config-hash", "", "SHA-256 hex digest to validate the preset content")
+	cmd.Flags().BoolVar(&cfg.signoff, "signoff", false, "add Signed-off-by trailer to scaffold commits (requires git user identity)")
 
 	return cmd
 }
@@ -360,6 +362,16 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	}
 	printer.Blank()
 
+	// Resolve Signed-off-by trailer when --signoff is set.
+	var signOffTrailer string
+	if cfg.signoff {
+		id, idErr := client.GetAuthenticatedUserIdentity(ctx)
+		if idErr != nil {
+			return fmt.Errorf("--signoff requires git user identity (name and email): %w", idErr)
+		}
+		signOffTrailer = fmt.Sprintf("Signed-off-by: %s <%s>", id.Name, id.Email)
+	}
+
 	if cfg.vendor {
 		var vendorErr error
 		files, _, vendorErr = appendVendorTreeFiles(printer, owner, repo, files, cfg.vendor, cfg.fullsendBinary, cfg.fullsendSource)
@@ -368,7 +380,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 	}
 
-	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets, cfg.direct); err != nil {
+	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets, cfg.direct, signOffTrailer); err != nil {
 		return err
 	}
 
