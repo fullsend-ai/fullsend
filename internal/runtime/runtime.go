@@ -43,18 +43,19 @@ type TranscriptError struct {
 	Subtype      string
 }
 
-// DisplayMessage returns the sanitized message for a transcript error:
-// ErrorMessage with ANSI escapes, control characters, and GHA workflow
-// command markers stripped, or the subtype fallback when it sanitizes to
-// empty (both fields are omitempty in the transcript). Every sink that
-// renders a transcript error — GHA annotations, the CLI console, span
-// status and events — goes through this one method so the treatments
-// agree. Callers with a size-bounded sink truncate the result themselves;
-// ErrorMessage is parser-truncated but Subtype is not.
+// DisplayMessage returns the sanitized, bounded message for a transcript
+// error: ErrorMessage with ANSI escapes, control characters, and GHA
+// workflow command markers stripped, or the subtype fallback when it
+// sanitizes to empty (both fields are omitempty in the transcript).
+// ErrorMessage is truncated at parse time; Subtype is not, so the
+// fallback applies the same truncateError bound before sanitizing. Every
+// sink that renders a transcript error — GHA annotations, the CLI
+// console, span status and events — goes through this one method so the
+// treatments agree.
 func (te TranscriptError) DisplayMessage() string {
 	msg := sanitizeOutput(te.ErrorMessage)
 	if msg == "" {
-		msg = fmt.Sprintf("agent terminated with error (subtype: %s)", sanitizeOutput(te.Subtype))
+		msg = fmt.Sprintf("agent terminated with error (subtype: %s)", sanitizeOutput(truncateError(te.Subtype)))
 	}
 	return msg
 }

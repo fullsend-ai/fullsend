@@ -692,12 +692,12 @@ func TestTranscriptErrorMessage(t *testing.T) {
 	assert.Equal(t, "agent terminated with error (subtype: x: :y )", got)
 
 	// An agent-written result line can carry a Subtype up to the 1MB
-	// transcript line size; the bound here is what keeps it out of the
-	// console line and the span sinks.
+	// transcript line size; DisplayMessage bounds the fallback at the
+	// source, so the console line and the span sinks all stay small.
 	got = transcriptErrorMessage(agentruntime.TranscriptError{Subtype: strings.Repeat("s", 1<<20)})
-	assert.LessOrEqual(t, len(got), maxSpanEventMsgLen, "message is bounded")
-	assert.True(t, utf8.ValidString(got))
-	assert.True(t, strings.HasSuffix(got, statusEllipsis))
+	assert.Equal(t, "agent terminated with error (subtype: "+strings.Repeat("s", 2000)+"… (truncated))", got,
+		"huge subtype is bounded at the source")
+	assert.LessOrEqual(t, len(got), maxSpanEventMsgLen)
 
 	// Parser worst case survives sanitization growth whole: 2,000 bytes of
 	// colons grow to 3,000 when "::" is broken, plus the parser suffix —
