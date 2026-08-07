@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -559,10 +560,11 @@ func TestFinalizeAgentSpan(t *testing.T) {
 		assert.True(t, attrs["fullsend.transcript_error"].AsBool())
 	})
 
-	t.Run("transcript error records full text as an event", func(t *testing.T) {
+	t.Run("in-bound transcript error is untouched on the event", func(t *testing.T) {
 		long := "API Error: " + strings.Repeat("payload ", 300)
 		s := newRecorded(nil, 0, long)
 		require.Greater(t, len(long), maxSpanStatusMsgLen, "fixture must exceed the status cap")
+		require.LessOrEqual(t, len(long), maxSpanEventMsgLen, "fixture must fit the event bound, like any parser-truncated transcript message")
 		assert.Less(t, len(s.Status.Description), len(long), "status description is capped")
 		var found string
 		for _, e := range s.Events {
@@ -572,7 +574,7 @@ func TestFinalizeAgentSpan(t *testing.T) {
 				}
 			}
 		}
-		assert.Equal(t, long, found, "the event carries the untruncated message")
+		assert.Equal(t, long, found, "a message within the event bound is untouched")
 	})
 
 	t.Run("runtime error records exception event", func(t *testing.T) {
@@ -610,4 +612,98 @@ func TestFinalizeAgentSpan(t *testing.T) {
 		assert.Equal(t, codes.Error, s.Status.Code)
 		assert.Equal(t, "agent exited with code 1", s.Status.Description)
 	})
+}
+
+// TestRecordSanitizedError pins the exception-event contract: the message is
+// repaired to valid UTF-8 and bounded to maxSpanEventMsgLen. The SDK applies
+// no length limit of its own to event attributes, and a sandbox-create error
+// embeds raw supervisor/gateway/container logs of arbitrary size.
+func TestRecordSanitizedError(t *testing.T) {
+	record := func(err error) tracetest.SpanStub {
+		rec := tracetest.NewSpanRecorder()
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+		_, span := tp.Tracer("test").Start(context.Background(), "op")
+		recordSanitizedError(span, err)
+		span.End()
+		ended := rec.Ended()
+		require.Len(t, ended, 1)
+		return tracetest.SpanStubFromReadOnlySpan(ended[0])
+	}
+	exceptionMessage := func(s tracetest.SpanStub) string {
+		for _, e := range s.Events {
+			for _, kv := range e.Attributes {
+				if kv.Key == "exception.message" {
+					return kv.Value.AsString()
+				}
+			}
+		}
+		return ""
+	}
+
+	t.Run("oversized message is bounded", func(t *testing.T) {
+		huge := fmt.Errorf("sandbox create failed: %s", strings.Repeat("image pull log line\n", 4096))
+		msg := exceptionMessage(record(huge))
+		assert.LessOrEqual(t, len(msg), maxSpanEventMsgLen, "event message must not exceed the bound")
+		assert.True(t, utf8.ValidString(msg))
+		assert.True(t, strings.HasSuffix(msg, statusEllipsis))
+		assert.True(t, strings.HasPrefix(msg, "sandbox create failed:"))
+	})
+
+	t.Run("parser-truncated transcript message stays whole", func(t *testing.T) {
+		// truncateError emits at most maxTranscriptErrorLength bytes plus
+		// its "… (truncated)" suffix; the event bound keeps that whole.
+		parserMax := strings.Repeat("b", 2000) + "… (truncated)"
+		msg := exceptionMessage(record(errors.New(parserMax)))
+		assert.Equal(t, parserMax, msg)
+	})
+
+	t.Run("invalid UTF-8 is repaired at any length", func(t *testing.T) {
+		msg := exceptionMessage(record(fmt.Errorf("cmd failed: %s", "\xff\xferaw")))
+		assert.True(t, utf8.ValidString(msg))
+		assert.Contains(t, msg, "raw")
+	})
+
+	t.Run("multi-byte rune straddling the event cut stays valid", func(t *testing.T) {
+		straddle := strings.Repeat("x", maxSpanEventMsgLen-len(statusEllipsis)-1) + "é" + strings.Repeat("y", 50)
+		msg := exceptionMessage(record(errors.New(straddle)))
+		assert.True(t, utf8.ValidString(msg), "truncation must land on a rune boundary")
+		assert.LessOrEqual(t, len(msg), maxSpanEventMsgLen)
+		assert.True(t, strings.HasSuffix(msg, statusEllipsis))
+	})
+}
+
+// TestTranscriptErrorMessage pins the transcript-reported failure message
+// (#2786): sanitized and bounded, because the one string reaches the
+// console line and the span sinks — an embedded newline would otherwise
+// let a ::workflow-command:: start a line in the CI job log, and Subtype,
+// unlike ErrorMessage, is not truncated by the transcript parser.
+func TestTranscriptErrorMessage(t *testing.T) {
+	// Exact pins: ANSI escapes stripped, "::" broken, newline flattened.
+	got := transcriptErrorMessage(agentruntime.TranscriptError{
+		ErrorMessage: "API Error\n::error::forged\x1b[31mred",
+	})
+	assert.Equal(t, "API Error : :error: :forgedred", got)
+
+	got = transcriptErrorMessage(agentruntime.TranscriptError{Subtype: "error_during_execution"})
+	assert.Equal(t, "agent terminated with error (subtype: error_during_execution)", got,
+		"empty message falls back to the sanitized subtype")
+
+	got = transcriptErrorMessage(agentruntime.TranscriptError{Subtype: "x::y\n"})
+	assert.Equal(t, "agent terminated with error (subtype: x: :y )", got)
+
+	// An agent-written result line can carry a Subtype up to the 1MB
+	// transcript line size; the bound here is what keeps it out of the
+	// console line and the span sinks.
+	got = transcriptErrorMessage(agentruntime.TranscriptError{Subtype: strings.Repeat("s", 1<<20)})
+	assert.LessOrEqual(t, len(got), maxSpanEventMsgLen, "message is bounded")
+	assert.True(t, utf8.ValidString(got))
+	assert.True(t, strings.HasSuffix(got, statusEllipsis))
+
+	// Parser worst case survives sanitization growth whole: 2,000 bytes of
+	// colons grow to 3,000 when "::" is broken, plus the parser suffix —
+	// still inside the bound, so nothing is re-truncated.
+	worst := strings.Repeat(":", 2000) + "… (truncated)"
+	got = transcriptErrorMessage(agentruntime.TranscriptError{ErrorMessage: worst})
+	assert.Equal(t, strings.Repeat(": :", 1000)+"… (truncated)", got,
+		"worst-case sanitized growth stays whole")
 }

@@ -246,6 +246,30 @@ func TestEmitTranscriptErrors_NoSummaries(t *testing.T) {
 	}
 }
 
+// TestTranscriptError_DisplayMessage pins the one rendering every sink
+// shares: sanitized ErrorMessage, or the sanitized subtype fallback when
+// it comes up empty.
+func TestTranscriptError_DisplayMessage(t *testing.T) {
+	cases := []struct {
+		name string
+		te   TranscriptError
+		want string
+	}{
+		{"plain message", TranscriptError{ErrorMessage: "Agent reached maximum turns"}, "Agent reached maximum turns"},
+		{"injection is sanitized", TranscriptError{ErrorMessage: "API Error\n::error::forged\x1b[31mred"}, "API Error : :error: :forgedred"},
+		{"empty message falls back to subtype", TranscriptError{Subtype: "error_max_turns"}, "agent terminated with error (subtype: error_max_turns)"},
+		{"subtype is sanitized too", TranscriptError{Subtype: "x::y\n"}, "agent terminated with error (subtype: x: :y )"},
+		{"message that sanitizes to empty falls back", TranscriptError{ErrorMessage: "\x1b[31m", Subtype: "error_unknown"}, "agent terminated with error (subtype: error_unknown)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.te.DisplayMessage(); got != tc.want {
+				t.Errorf("DisplayMessage() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestParseTranscriptFile_APIErrorExitZero covers the scenario from #2786:
 // Claude Code exits 0 with is_error:true and subtype "success" on API errors
 // (e.g., invalid_grant from a stale OIDC token).

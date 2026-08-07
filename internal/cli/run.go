@@ -1029,8 +1029,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	readyTimeout := time.Duration(h.SandboxTimeoutSeconds) * time.Second
 	if err := sandbox.CreateWithRetry(sandboxName, allProviderNames, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout); err != nil {
 		// This error embeds raw supervisor/gateway/container logs — same
-		// treatment as the agent and root spans: full text on the event,
-		// bounded valid-UTF-8 status.
+		// treatment as the agent and root spans: the fuller bounded copy
+		// on the event, a tighter valid-UTF-8 status.
 		recordSanitizedError(sandboxSpan, err)
 		sandboxSpan.SetStatus(codes.Error, truncateStatusMsg(err.Error()))
 		sandboxSpan.End()
@@ -1551,19 +1551,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if exitCode == 0 {
 			outputJSONL := filepath.Join(iterDir, "output.jsonl")
 			if te, ok := tx.ParseTranscriptFile(outputJSONL); ok && te.IsError {
-				printer.StepWarn(fmt.Sprintf("Agent exited with code 0 but transcript contains error: %s", te.ErrorMessage))
 				lastExitCode = 1
 				transcriptErrorOverride = true
-				// ErrorMessage can be empty (the transcript result field is
-				// omitempty); substitute the emitTranscriptErrors fallback so
-				// the span status never reads Ok for a transcript failure.
-				// Both fields are agent-controlled and reach a new export
-				// sink here, so they get the same sanitization the GHA
-				// annotation path applies.
-				transcriptErrMsg = agentruntime.SanitizeOutput(te.ErrorMessage)
-				if transcriptErrMsg == "" {
-					transcriptErrMsg = fmt.Sprintf("agent terminated with error (subtype: %s)", agentruntime.SanitizeOutput(te.Subtype))
-				}
+				transcriptErrMsg = transcriptErrorMessage(te)
+				// The console line prints the same bounded, sanitized string
+				// the span event records: the raw fields can carry ANSI
+				// escapes, a newline-led ::workflow-command::, or an
+				// unbounded Subtype into the CI job log.
+				printer.StepWarn("Agent exited with code 0 but transcript contains error: " + transcriptErrMsg)
 			}
 		}
 
@@ -2401,12 +2396,14 @@ func telemetryExitCode(lastExitCode int, runErr error) int {
 }
 
 // recordSanitizedError records err as an exception event with its message
-// repaired to valid UTF-8 — RecordError feeds the same OTLP proto marshal
-// path as status descriptions, and one invalid byte fails export of the
-// whole batch. The rewrap costs the concrete exception.type; the message is
-// what consumers read.
+// repaired to valid UTF-8 and bounded to maxSpanEventMsgLen — RecordError
+// feeds the same OTLP proto marshal path as status descriptions, one
+// invalid byte fails export of the whole batch, and the SDK's attribute
+// value-length limit is not applied to event attributes (v1.44.0: addEvent
+// enforces only count limits, never value truncation). The rewrap costs
+// the concrete exception.type; the message is what consumers read.
 func recordSanitizedError(span trace.Span, err error) {
-	span.RecordError(errors.New(strings.ToValidUTF8(err.Error(), "")))
+	span.RecordError(errors.New(truncateStatusMsgTo(err.Error(), maxSpanEventMsgLen)))
 }
 
 // maxSpanStatusMsgLen bounds a status description's total bytes, prefix and
@@ -2414,9 +2411,19 @@ func recordSanitizedError(span trace.Span, err error) {
 // mandates a specific value; 2000 matches maxTranscriptErrorLength
 // (internal/runtime/claude_transcript.go), the repo's bound for the same
 // class of error text. Every status built from an error is preceded by
-// recordSanitizedError on the same span, so truncation here never loses
-// the only copy.
+// recordSanitizedError on the same span, which keeps the fuller
+// maxSpanEventMsgLen copy.
 const maxSpanStatusMsgLen = 2000
+
+// maxSpanEventMsgLen bounds an exception event's message. The event carries
+// the fuller copy of an error than the status description, but not an
+// unbounded one: a sandbox-create failure embeds raw supervisor/gateway/
+// container logs, the SDK never truncates event attribute values, and an
+// oversized batch can be rejected by the collector whole. 8192 holds the
+// worst-case transcript message — maxTranscriptErrorLength plus the parser
+// suffix, grown up to 1.5x by sanitization's "::" breaking (3,015 bytes) —
+// with room to spare; no external limit mandates the value.
+const maxSpanEventMsgLen = 8192
 
 const statusEllipsis = "…"
 
@@ -2445,6 +2452,16 @@ func truncateStatusMsgTo(s string, n int) string {
 	return truncated + statusEllipsis
 }
 
+// transcriptErrorMessage builds the message for a transcript-reported
+// failure (#2786): the sanitized DisplayMessage the GHA annotation path
+// also renders, bounded to maxSpanEventMsgLen. The one string reaches the
+// console line and the span sinks; the bound matters because Subtype,
+// unlike ErrorMessage, is not truncated by the transcript parser, so an
+// agent-written result line could otherwise flood the CI job log.
+func transcriptErrorMessage(te agentruntime.TranscriptError) string {
+	return truncateStatusMsgTo(te.DisplayMessage(), maxSpanEventMsgLen)
+}
+
 // finalizeAgentSpan records the end-of-iteration attributes and status on an
 // agent span and ends it. transcriptErr is non-empty when the transcript
 // reported a failure the process exit code did not (#2786): exit_code keeps
@@ -2455,8 +2472,8 @@ func finalizeAgentSpan(span trace.Span, runErr error, iteration, exitCode int, s
 	case runErr != nil:
 		recordSanitizedError(span, runErr)
 	case transcriptErr != "":
-		// The status description is capped; this event carries the full
-		// text so a verbose API error payload survives export.
+		// The status description is capped; the event's larger bound keeps
+		// a parser-truncated transcript payload whole for export.
 		recordSanitizedError(span, errors.New(transcriptErr))
 	}
 	if transcriptErr != "" {

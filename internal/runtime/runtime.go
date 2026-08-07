@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"time"
 
@@ -40,6 +41,22 @@ type TranscriptError struct {
 	IsError      bool
 	ErrorMessage string
 	Subtype      string
+}
+
+// DisplayMessage returns the sanitized message for a transcript error:
+// ErrorMessage with ANSI escapes, control characters, and GHA workflow
+// command markers stripped, or the subtype fallback when it sanitizes to
+// empty (both fields are omitempty in the transcript). Every sink that
+// renders a transcript error — GHA annotations, the CLI console, span
+// status and events — goes through this one method so the treatments
+// agree. Callers with a size-bounded sink truncate the result themselves;
+// ErrorMessage is parser-truncated but Subtype is not.
+func (te TranscriptError) DisplayMessage() string {
+	msg := sanitizeOutput(te.ErrorMessage)
+	if msg == "" {
+		msg = fmt.Sprintf("agent terminated with error (subtype: %s)", sanitizeOutput(te.Subtype))
+	}
+	return msg
 }
 
 // Runtime is an agent execution backend (LLM tool-use loop) inside the sandbox.
