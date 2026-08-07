@@ -142,7 +142,7 @@ There is also a governance question: if production feedback can autonomously cre
 - What are the right thresholds and response times for an andon cord trigger? How is blast radius assessed before a revert is proposed, and what agent activity should be quarantined while a regression is under investigation?
 - What is the right stopping condition for a false-positive remediation loop — iteration count, cost budget, or both — and who resets those counters once a human has investigated? How is cumulative agent cost tracked per issue lineage?
 - What attribution confidence threshold separates an implementation-ready issue from a human-triage observation, and how is that confidence measured in practice?
-- Should signal-driven issue creation be gated behind human approval initially (shadow mode) before graduating to fully autonomous triage?
+- Should signal-driven issue creation be gated behind human approval initially (shadow mode) before graduating to fully autonomous triage? (Observer write shadowing / allowlist partially decided in [ADR 0082](../ADRs/0082-semantic-observability-and-improvement-loop.md); signal-driven triage graduation remains open.)
 - How do we ensure failure signals don't leak user-sensitive content from raw execution logs into agent context?
 - Should product discovery signals (user feedback clustering, usage patterns, A/B test results) feed into the same backlog as health signals, or should they be a separate, human-curated channel?
 - What prevents a product discovery feedback loop from optimizing for easily measurable metrics at the expense of harder-to-measure qualities like simplicity and long-term usability?
