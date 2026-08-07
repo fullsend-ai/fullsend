@@ -26,6 +26,8 @@ if ! command -v yq &>/dev/null; then
 fi
 SHIM_TEMPLATE="$CONFIG_DIR/templates/shim-workflow-call.yaml"
 SHIM_PATH=".github/workflows/fullsend.yaml"
+STOP_AGENT_SCRIPT="$CONFIG_DIR/.github/scripts/stop-agent.sh"
+STOP_AGENT_PATH=".github/scripts/stop-agent.sh"
 SENTINEL="# --- fullsend managed below - do not edit ---"
 REPO_NAME_PATTERN='^[a-zA-Z0-9._-]+$'
 
@@ -39,7 +41,7 @@ UPDATE_PR_TITLE="chore: update fullsend shim workflow"
 ENROLL_PR_BODY="This PR adds a shim workflow that routes repository events to the fullsend agent dispatch workflow in the \`.fullsend\` config repo.
 
 Once merged, issues, PRs, and comments in this repo will be handled by the fullsend agent pipeline."
-UNENROLL_PR_BODY="This PR removes the fullsend shim workflow. The repo has been set to \`enabled: false\` in the fullsend config.
+UNENROLL_PR_BODY="This PR removes managed fullsend files. The repo has been set to \`enabled: false\` in the fullsend config.
 
 Once merged, this repo will no longer dispatch events to the fullsend agent pipeline."
 UPDATE_PR_BODY="This PR updates the fullsend shim workflow to match the current template in the \`.fullsend\` config repo.
@@ -61,8 +63,16 @@ UNENROLL_COMMIT_MSG="chore: remove fullsend shim workflow
 Remove the shim workflow. The repo has been set to
 enabled: false in the fullsend config."
 
+UNENROLL_SCRIPT_COMMIT_MSG="chore: remove stop-agent script
+
+Remove the stop-agent script."
+
 if [ ! -f "$SHIM_TEMPLATE" ]; then
   echo "::error::shim template not found at $SHIM_TEMPLATE"
+  exit 1
+fi
+if [ ! -f "$STOP_AGENT_SCRIPT" ]; then
+  echo "::error::stop-agent script not found at $STOP_AGENT_SCRIPT"
   exit 1
 fi
 
@@ -315,12 +325,31 @@ write_shim_to_branch_from_default() {
     return 1
   fi
 
+  local script_b64 script_blob_sha
+  script_b64=$(base64 -w0 <"$STOP_AGENT_SCRIPT")
+  if ! script_blob_sha=$(jq -n \
+    --arg content "$script_b64" \
+    '{content: $content, encoding: "base64"}' |
+    gh api "repos/$ORG/$repo/git/blobs" --method POST --input - --jq .sha); then
+    echo "::error::Failed to create stop-agent script blob for $repo"
+    return 1
+  fi
+  if [ -z "$script_blob_sha" ]; then
+    echo "::error::Created empty stop-agent script blob SHA for $repo"
+    return 1
+  fi
+
   local tree_sha
   if ! tree_sha=$(jq -n \
     --arg base_tree "$default_tree_sha" \
-    --arg path "$SHIM_PATH" \
-    --arg sha "$blob_sha" \
-    '{base_tree: $base_tree, tree: [{path: $path, mode: "100644", type: "blob", sha: $sha}]}' |
+    --arg shim_path "$SHIM_PATH" \
+    --arg shim_sha "$blob_sha" \
+    --arg script_path "$STOP_AGENT_PATH" \
+    --arg script_sha "$script_blob_sha" \
+    '{base_tree: $base_tree, tree: [
+      {path: $shim_path, mode: "100644", type: "blob", sha: $shim_sha},
+      {path: $script_path, mode: "100755", type: "blob", sha: $script_sha}
+    ]}' |
     gh api "repos/$ORG/$repo/git/trees" --method POST --input - --jq .sha); then
     echo "::error::Failed to create shim tree for $repo"
     return 1
@@ -406,15 +435,40 @@ if [ -n "$ENABLED_REPOS" ]; then
       REMOTE_B64=$(printf '%s' "$REMOTE_CONTENT" | tr -d '\r\n')
       REMOTE_MANAGED=$(managed_content_b64 "$REMOTE_B64")
       EXPECTED_MANAGED=$(managed_content_b64 "$EXPECTED_B64")
-      if [ "$REMOTE_MANAGED" = "$EXPECTED_MANAGED" ]; then
+      SHIM_STALE=false
+      if [ "$REMOTE_MANAGED" != "$EXPECTED_MANAGED" ]; then
+        SHIM_STALE=true
+      fi
+
+      # Also compare stop-agent.sh — a script-only security fix must still
+      # open an update PR once the shim YAML has converged.
+      EXPECTED_SCRIPT_B64=$(base64 -w0 <"$STOP_AGENT_SCRIPT")
+      REMOTE_SCRIPT_CONTENT=$(gh api "repos/$ORG/$REPO/contents/$STOP_AGENT_PATH" --jq .content 2>/dev/null || true)
+      SCRIPT_STALE=false
+      if [ -z "$REMOTE_SCRIPT_CONTENT" ]; then
+        SCRIPT_STALE=true
+      else
+        REMOTE_SCRIPT_B64=$(printf '%s' "$REMOTE_SCRIPT_CONTENT" | tr -d '\r\n')
+        if [ "$REMOTE_SCRIPT_B64" != "$EXPECTED_SCRIPT_B64" ]; then
+          SCRIPT_STALE=true
+        fi
+      fi
+
+      if [ "$SHIM_STALE" = "false" ] && [ "$SCRIPT_STALE" = "false" ]; then
         echo "✓ $REPO already enrolled (shim up to date)"
         SKIPPED=$((SKIPPED + 1))
         continue
       fi
 
-      # Shim is stale — update via PR to respect branch protection.
-      # Preserve any user-owned content above the sentinel line.
-      echo "⟳ $REPO enrolled but shim is stale — creating update PR"
+      # Shim and/or stop-agent script is stale — update via PR to respect
+      # branch protection. Preserve any user-owned content above the sentinel.
+      if [ "$SHIM_STALE" = "true" ] && [ "$SCRIPT_STALE" = "true" ]; then
+        echo "⟳ $REPO enrolled but shim and stop-agent script are stale — creating update PR"
+      elif [ "$SCRIPT_STALE" = "true" ]; then
+        echo "⟳ $REPO enrolled but stop-agent script is stale — creating update PR"
+      else
+        echo "⟳ $REPO enrolled but shim is stale — creating update PR"
+      fi
 
       FINAL_B64=$(shim_with_header_b64 "$REMOTE_B64" "$REPO")
       if ! write_shim_to_branch_from_default "$REPO" "$ENROLL_BRANCH" "$FINAL_B64" "$UPDATE_COMMIT_MSG"; then
@@ -526,9 +580,18 @@ if [ -n "$DISABLED_REPOS" ]; then
       continue
     fi
 
-    # Check if shim exists on default branch.
-    if ! gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --silent 2>/dev/null; then
-      echo "✓ $REPO already unenrolled (no shim on default branch)"
+    # Fully unenrolled only when both managed files are gone. A missing shim
+    # with a leftover stop-agent.sh (partial/older unenroll) must still clean up.
+    HAS_SHIM=false
+    HAS_SCRIPT=false
+    if gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --silent 2>/dev/null; then
+      HAS_SHIM=true
+    fi
+    if gh api "repos/$ORG/$REPO/contents/$STOP_AGENT_PATH" --silent 2>/dev/null; then
+      HAS_SCRIPT=true
+    fi
+    if [ "$HAS_SHIM" = false ] && [ "$HAS_SCRIPT" = false ]; then
+      echo "✓ $REPO already unenrolled (no shim or stop-agent script on default branch)"
       SKIPPED=$((SKIPPED + 1))
       continue
     fi
@@ -540,23 +603,46 @@ if [ -n "$DISABLED_REPOS" ]; then
       continue
     fi
 
-    # Fetch file SHA on the removal branch (required for DELETE).
+    DELETED_ANY=false
+
+    # Delete the shim workflow on the removal branch when present.
     FILE_SHA=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH?ref=$UNENROLL_BRANCH" --jq .sha 2>/dev/null || true)
-    if [ -z "$FILE_SHA" ]; then
+    if [ -n "$FILE_SHA" ]; then
+      if ! gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" \
+        --method DELETE \
+        --field "message=$UNENROLL_COMMIT_MSG" \
+        --field "branch=$UNENROLL_BRANCH" \
+        --field "sha=$FILE_SHA" \
+        --silent; then
+        echo "::error::Failed to delete shim from $REPO (path=$SHIM_PATH, branch=$UNENROLL_BRANCH)"
+        FAILED=$((FAILED + 1))
+        continue
+      fi
+      DELETED_ANY=true
+    else
       echo "✓ $REPO shim already removed from branch"
-      SKIPPED=$((SKIPPED + 1))
-      continue
     fi
 
-    # Delete the shim workflow on the removal branch.
-    if ! gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" \
-      --method DELETE \
-      --field "message=$UNENROLL_COMMIT_MSG" \
-      --field "branch=$UNENROLL_BRANCH" \
-      --field "sha=$FILE_SHA" \
-      --silent; then
-      echo "::error::Failed to delete shim from $REPO (path=$SHIM_PATH, branch=$UNENROLL_BRANCH)"
-      FAILED=$((FAILED + 1))
+    # Also remove stop-agent.sh when present (repos enrolled before this
+    # script shipped may not have it — treat missing as already clean).
+    SCRIPT_SHA=$(gh api "repos/$ORG/$REPO/contents/$STOP_AGENT_PATH?ref=$UNENROLL_BRANCH" --jq .sha 2>/dev/null || true)
+    if [ -n "$SCRIPT_SHA" ]; then
+      if ! gh api "repos/$ORG/$REPO/contents/$STOP_AGENT_PATH" \
+        --method DELETE \
+        --field "message=$UNENROLL_SCRIPT_COMMIT_MSG" \
+        --field "branch=$UNENROLL_BRANCH" \
+        --field "sha=$SCRIPT_SHA" \
+        --silent; then
+        echo "::error::Failed to delete stop-agent script from $REPO (path=$STOP_AGENT_PATH, branch=$UNENROLL_BRANCH)"
+        FAILED=$((FAILED + 1))
+        continue
+      fi
+      DELETED_ANY=true
+    fi
+
+    if [ "$DELETED_ANY" = false ]; then
+      echo "✓ $REPO already unenrolled on branch"
+      SKIPPED=$((SKIPPED + 1))
       continue
     fi
 

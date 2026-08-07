@@ -21,10 +21,12 @@ The agent runs in a read-only sandbox. It cannot modify issues, push code, or in
 | Command | Where | Effect |
 |---------|-------|--------|
 | `/fs-triage` | Issue comment | Runs triage on the issue |
+| `/fs-stop triage` | Issue or PR comment | Applies `fullsend-no-triage` and skips further auto-triggered triage runs |
 
 Requires triage-level repository permission or higher (triage, write,
 maintain, or admin). Mutation stages such as `/fs-code` still require
-write or higher.
+write or higher. `/fs-stop triage` (and bare `/fs-stop`) require write-level
+permission (ADR 0054). Authorship alone authorizes `/fs-stop fix` only.
 
 The `/fs-triage` command does not accept arguments — it re-evaluates the issue
 using current content, comments, and any prior triage analysis.
@@ -49,6 +51,7 @@ outcome and the post-script applies the corresponding label.
 | `duplicate` | The issue duplicates an existing one. The agent identified the original and the post-script closes the issue. |
 | `blocked` | The issue depends on prerequisites — existing issues/PRs or newly created upstream issues. The agent identified or created the blockers. |
 | `question` | The issue is a support request or question, not an actionable bug or feature. The agent attempted to answer it. |
+| `fullsend-no-triage` | Skips auto-triggered triage (including `needs-info` comment re-entry). Applied by `/fs-stop triage` (or bare `/fs-stop`). Human `/fs-triage` is unaffected. |
 
 The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
 `kind/bug`) but these are informational — they do not control agent behavior.

@@ -29,12 +29,21 @@ repos:
     enabled: true
   removed-repo:
     enabled: false
+  partial-unenroll-repo:
+    enabled: false
 EOF
 
 cat > "${CONFIG_DIR}/templates/shim-workflow-call.yaml" <<'EOF'
 # --- fullsend managed below - do not edit ---
 fresh shim template
 EOF
+
+mkdir -p "${CONFIG_DIR}/.github/scripts"
+cat > "${CONFIG_DIR}/.github/scripts/stop-agent.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "stop-agent stub"
+EOF
+chmod +x "${CONFIG_DIR}/.github/scripts/stop-agent.sh"
 
 cat > "${MOCK_BIN}/base64" <<'EOF'
 #!/usr/bin/env bash
@@ -53,7 +62,7 @@ query="${1:-}"
 if [[ "$query" == *"enabled == true"* ]]; then
   printf '%s\n' "test-repo" "new-repo" "refresh-repo"
 elif [[ "$query" == *"enabled == false"* ]]; then
-  echo "removed-repo"
+  printf '%s\n' "removed-repo" "partial-unenroll-repo"
 else
   echo "unexpected yq query: $*" >&2
   exit 1
@@ -143,7 +152,11 @@ if [[ "\$has_input" == "true" ]]; then
     printf '%s\0' "\$input_data" >> "${COMMIT_MSGS_LOG}"
   elif [[ "\$endpoint" == *"/git/blobs" ]]; then
     blob_repo=\$(printf '%s' "\$endpoint" | cut -d/ -f3)
-    printf '%s' "\$input_data" > "${TMPDIR}/blob-input-\${blob_repo}.json"
+    # Shim blob is created first; keep it (stop-agent script blob is second).
+    blob_file="${TMPDIR}/blob-input-\${blob_repo}.json"
+    if [[ ! -f "\$blob_file" ]]; then
+      printf '%s' "\$input_data" > "\$blob_file"
+    fi
   fi
 fi
 
@@ -169,6 +182,20 @@ case "\$endpoint" in
     else
       # Shim exists — return content and SHA for GET requests.
       json='{"content":"c3RhbGUgc2hpbSB0ZW1wbGF0ZQo=","sha":"remove-file-sha"}'
+    fi
+    ;;
+  repos/test-org/partial-unenroll-repo/contents/.github/workflows/fullsend.yaml*)
+    # Shim does not exist (partial unenroll — only script left behind).
+    rc=1
+    ;;
+  repos/test-org/partial-unenroll-repo/contents/.github/scripts/stop-agent.sh*)
+    if [[ "\$method" == "DELETE" ]]; then
+      if [[ -n "\$field_message" ]]; then
+        removal_json=\$(jq -n --arg msg "\$field_message" '{message: \$msg}')
+        printf '%s\0' "\$removal_json" >> "${COMMIT_MSGS_LOG}"
+      fi
+    else
+      json='{"content":"c3RvcC1hZ2VudCBzdHVi","sha":"partial-script-sha"}'
     fi
     ;;
   repos/test-org/*/contents/*)
@@ -244,7 +271,28 @@ if grep -q "contents/.github/workflows/fullsend.yaml.*--method PUT" "${GH_LOG}";
   exit 1
 fi
 
+if ! grep -q "contents/.github/scripts/stop-agent.sh" "${GH_LOG}"; then
+  echo "FAIL: unenroll did not attempt to delete stop-agent.sh"
+  cat "${GH_LOG}"
+  exit 1
+fi
+
 echo "PASS: stale shim branch update is atomic"
+
+# Verify partial unenroll (shim absent, stop-agent.sh present) works.
+if ! grep -q "partial-unenroll-repo shim already removed from branch" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: partial-unenroll-repo should report shim already removed"
+  cat "${TMPDIR}/stdout.log"
+  exit 1
+fi
+
+if ! grep -q "repos/test-org/partial-unenroll-repo/contents/.github/scripts/stop-agent.sh.*DELETE" "${GH_LOG}"; then
+  echo "FAIL: partial-unenroll-repo did not attempt to delete stop-agent.sh"
+  cat "${GH_LOG}"
+  exit 1
+fi
+
+echo "PASS: partial unenroll cleans up orphaned stop-agent.sh"
 
 # ===========================
 # Test: commit messages include a non-trivial body
@@ -308,10 +356,11 @@ if [ "$msg_index" -eq 0 ]; then
   exit 1
 fi
 
-# Expect exactly 4 commit messages: update (stale shim), refresh (existing PR),
-# add (new enrollment), and remove (unenrollment).
-if [ "$msg_index" -ne 4 ]; then
-  echo "FAIL: expected 4 commit messages but found $msg_index"
+# Expect exactly 6 commit messages: update (stale shim), refresh (existing PR),
+# add (new enrollment), remove shim + remove stop-agent script (removed-repo),
+# and remove stop-agent script only (partial-unenroll-repo).
+if [ "$msg_index" -ne 6 ]; then
+  echo "FAIL: expected 6 commit messages but found $msg_index"
   exit 1
 fi
 
@@ -373,6 +422,7 @@ rm -f "${GH_LOG}" "${TMPDIR}/blob-input-test-repo.json"
 UPTODATE_MANAGED=$(cat "${CONFIG_DIR}/templates/shim-workflow-call.yaml")
 UPTODATE_REMOTE=$(printf '# Copyright 2026 Conforma\n# SPDX-License-Identifier: Apache-2.0\n%s\n' "$UPTODATE_MANAGED")
 UPTODATE_B64=$(printf '%s' "$UPTODATE_REMOTE" | /usr/bin/base64 | tr -d '\r\n')
+UPTODATE_SCRIPT_B64=$(/usr/bin/base64 -w0 <"${CONFIG_DIR}/.github/scripts/stop-agent.sh")
 
 # Create a new gh mock that returns the up-to-date content.
 cat > "${MOCK_BIN}/gh" <<EOF2
@@ -415,6 +465,9 @@ case "\$endpoint" in
   repos/test-org/test-repo/contents/.github/workflows/fullsend.yaml)
     json='{"content":"${UPTODATE_B64}","sha":"file-sha"}'
     ;;
+  repos/test-org/test-repo/contents/.github/scripts/stop-agent.sh)
+    json='{"content":"${UPTODATE_SCRIPT_B64}","sha":"script-sha"}'
+    ;;
   repos/test-org/test-repo)
     json='{"default_branch":"main","private":false}'
     ;;
@@ -436,7 +489,7 @@ chmod +x "${MOCK_BIN}/gh"
 
 bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout2.log" 2>&1 || true
 
-if grep -q "shim is stale" "${TMPDIR}/stdout2.log"; then
+if grep -qE 'stale — creating update PR' "${TMPDIR}/stdout2.log"; then
   echo "FAIL: up-to-date shim with user header was flagged as stale"
   cat "${TMPDIR}/stdout2.log"
   exit 1
@@ -501,7 +554,12 @@ while [[ \$# -gt 0 ]]; do
 done
 
 if [[ "\$has_input" == "true" && "\$endpoint" == *"/git/blobs" ]]; then
-  cat > "${TMPDIR}/blob-input-test-repo.json"
+  # Shim blob is created first; keep it (stop-agent script blob is second).
+  if [[ ! -f "${TMPDIR}/blob-input-test-repo.json" ]]; then
+    cat > "${TMPDIR}/blob-input-test-repo.json"
+  else
+    cat >/dev/null
+  fi
 fi
 
 json=""
@@ -560,7 +618,7 @@ chmod +x "${MOCK_BIN}/gh"
 
 bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout3.log" 2>&1 || true
 
-if ! grep -q "shim is stale" "${TMPDIR}/stdout3.log"; then
+if ! grep -qE 'stale — creating update PR' "${TMPDIR}/stdout3.log"; then
   echo "FAIL: pre-sentinel shim was not flagged as stale"
   cat "${TMPDIR}/stdout3.log"
   exit 1
@@ -644,7 +702,12 @@ while [[ \$# -gt 0 ]]; do
 done
 
 if [[ "\$has_input" == "true" && "\$endpoint" == *"/git/blobs" ]]; then
-  cat > "${TMPDIR}/blob-input-test-repo.json"
+  # Shim blob is created first; keep it (stop-agent script blob is second).
+  if [[ ! -f "${TMPDIR}/blob-input-test-repo.json" ]]; then
+    cat > "${TMPDIR}/blob-input-test-repo.json"
+  else
+    cat >/dev/null
+  fi
 fi
 
 json=""

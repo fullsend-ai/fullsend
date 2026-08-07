@@ -92,6 +92,13 @@ The shim has three jobs:
    This job acts directly on the target repo and does not dispatch to
    `.fullsend`. It stays in the shim (~25 lines).
 
+> **Note (2026-08, [#5650](https://github.com/fullsend-ai/fullsend/issues/5650)):**
+> `stop-fix` was generalized to `stop-agent` (`/fs-stop`) with dispatch-side
+> `fullsend-no-*` enforcement in
+> [ADR 0086](0086-fs-stop-agent-and-no-agent-labels.md).
+   The historical Decision text above is preserved; see that ADR for current
+   behavior.
+
 3. **`post-run-link`** — posts a link to the dispatched workflow run as a
    comment on the triggering issue or PR. This job runs after `dispatch`
    completes and stays in the shim.

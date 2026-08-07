@@ -26,13 +26,16 @@ If a prior review exists (e.g., re-review after fixes), it is injected into the 
 | Command | Where | Effect |
 |---------|-------|--------|
 | `/fs-review` | PR comment | Triggers a review on the PR (per-repo installs only; standalone issues are ignored) |
+| `/fs-stop review` | Issue or PR comment | Applies `fullsend-no-review` and skips further auto-triggered review runs |
 
 Requires triage-level repository permission or higher (triage, write,
 maintain, or admin). Mutation stages such as `/fs-fix` still require
-write or higher.
+write or higher. `/fs-stop review` (and bare `/fs-stop`) require write-level
+permission — issue/PR authorship alone cannot suppress auto-review.
 
 The `/fs-review` command does not accept arguments. The review agent also runs automatically when a PR is opened,
 synchronized (new commits pushed), or moved out of draft by a user with triage-level repository permission or higher.
+Auto-review is skipped while the PR carries `fullsend-no-review`; `/fs-review` still works.
 
 ## Control labels
 
@@ -44,6 +47,7 @@ These labels are applied by the review post-script based on the review outcome.
 | `ready-for-merge` | The review agent approved the PR. No blocking findings. |
 | `requires-manual-review` | The review agent found issues that require human judgment — it could not confidently approve or reject. |
 | `rejected` | The review agent rejected the PR and the post-script closed it. |
+| `fullsend-no-review` | Skips auto-triggered review. Applied by `/fs-stop review` (or bare `/fs-stop`). Human `/fs-review` is unaffected. |
 
 When the review agent requests changes (without rejecting), no outcome label is
 applied — the `pull_request_review` event triggers the [fix agent](fix.md) directly.

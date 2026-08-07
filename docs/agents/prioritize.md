@@ -24,6 +24,10 @@ The prioritize agent fetches the issue and all its context, then evaluates it ac
 
 Requires write-level repository permission (admin, maintain, or write).
 
+`/fs-stop` does not apply to prioritize — it is slash-only and currently has
+no auto-trigger path in dispatch to suppress. Use `/fs-prioritize` only when
+you want a run.
+
 The `/fs-prioritize` command does not accept arguments. It scores the issue
 using the current content, comments, and any available `customer-research`
 skill data.

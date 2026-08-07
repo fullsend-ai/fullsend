@@ -27,8 +27,11 @@ This separation ensures the agent never has direct write access to the repositor
 | Command | Where | Effect |
 |---------|-------|--------|
 | `/fs-code` | Issue comment | Triggers the code agent on the issue |
+| `/fs-stop code` | Issue or PR comment | Applies `fullsend-no-code` and skips further auto-triggered code runs |
 
 Requires write-level repository permission (admin, maintain, or write).
+`/fs-stop code` requires write; authorship alone authorizes `/fs-stop fix` only
+(ADR 0054).
 
 The `/fs-code` command accepts an optional `--force` flag. It can only be used
 on issues (not PRs). The code agent is also triggered automatically when the
@@ -40,6 +43,7 @@ on issues (not PRs). The code agent is also triggered automatically when the
 |-------|---------|
 | `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) post-script for low-risk categories (bug, documentation, performance), or manually by a human for feature work after prioritization. |
 | `ready-for-review` | Applied by the code agent's post-script after pushing a PR. In per-repo installs, triggers review when applied to a PR; also marks workflow state for humans and the retro agent. |
+| `fullsend-no-code` | Skips auto-triggered code runs (for example `ready-to-code` labeling). Applied by `/fs-stop code` (or bare `/fs-stop`). Human `/fs-code` is unaffected. |
 
 ## Configuration and extension
 
