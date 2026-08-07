@@ -302,6 +302,42 @@ func cleanupGitLabPipelineSchedules(ctx context.Context, client forge.Client, pr
 	return nil
 }
 
+// healGitLabResourceGroups toggles process_mode on all fullsend-prefixed
+// resource groups to break stale locks left by cancelled or deleted pipelines.
+// This complements the per-job self-heal in the scaffold templates: the
+// self-heal cannot fix stale locks on first run because the job is blocked
+// before it starts. Running this during install breaks those locks.
+//
+// The toggle sequence (unordered → newest_first) forces GitLab to
+// re-evaluate the lock state and release stale locks.
+func healGitLabResourceGroups(ctx context.Context, glClient *gitlab.LiveClient, printer *ui.Printer, owner, repo string) {
+	printer.StepStart("Healing resource group locks")
+	groups, err := glClient.ListResourceGroups(ctx, owner, repo)
+	if err != nil {
+		printer.StepWarn(fmt.Sprintf("Could not list resource groups: %v", err))
+		return
+	}
+
+	var healed int
+	for _, g := range groups {
+		if !strings.HasPrefix(g.Key, "fullsend-") {
+			continue
+		}
+		// Toggle to unordered first to break any stale lock, then set to
+		// newest_first which is the desired production mode.
+		if err := glClient.UpdateResourceGroupProcessMode(ctx, owner, repo, g.Key, "unordered"); err != nil {
+			printer.StepWarn(fmt.Sprintf("Failed to toggle resource group %q to unordered: %v", g.Key, err))
+			continue
+		}
+		if err := glClient.UpdateResourceGroupProcessMode(ctx, owner, repo, g.Key, "newest_first"); err != nil {
+			printer.StepWarn(fmt.Sprintf("Failed to set resource group %q to newest_first: %v", g.Key, err))
+			continue
+		}
+		healed++
+	}
+	printer.StepDone(fmt.Sprintf("Healed %d resource group(s)", healed))
+}
+
 // cleanupGitLabBotTokenSecret deletes the bot token Secret Manager secret
 // and is a best-effort operation — errors are logged but not returned.
 // This handles the GCP side of cleanup; the GitLab side (CI/CD variables,

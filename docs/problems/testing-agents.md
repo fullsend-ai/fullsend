@@ -16,6 +16,8 @@ Today, if someone modifies a review agent's instructions, the only verification 
 
 The same prompt with the same input can produce different outputs across runs. Traditional assertions ("output must equal X") don't work. Testing must be statistical — "the agent produces the correct classification in at least 95 of 100 runs" — which is slower, more expensive, and harder to interpret than binary pass/fail.
 
+The cost of that statistical framing is easy to underestimate: reliable significance requires a large number of trials, and the count grows as the claim gets bolder relative to the agent's true performance. A run that scores 19/20 does not certify a 90% floor — that sample is consistent with a true rate as low as ~76%. Distinguishing a real ten-point regression from run-to-run noise takes on the order of a hundred-plus trials per variant, and small differences in a graded (1–5) judge score can take thousands. Two practical consequences: gate against the *lower bound* of a confidence interval rather than the point estimate, and size the suite to the smallest regression worth catching. [Experiment 0026](https://github.com/fullsend-ai/experiments/tree/main/0026-eval-statistical-significance) works through the sizing math and the numbers.
+
 ### Behavioral surface area
 
 An agent's behavior is the product of its instructions, the model it runs on, the context it receives, and the specific input. A change to any of these can alter behavior. Testing agent instructions in isolation doesn't capture how they interact with real-world inputs. Testing them with the actual model is expensive and slow. Testing them with a different model may not be representative.
@@ -368,7 +370,7 @@ Beyond testing individual instruction changes, there's a need for ongoing monito
 
 ## Open questions
 
-- What's the right statistical threshold for non-deterministic tests? How many runs constitute a reliable signal, and what pass rate is acceptable?
+- What's the right statistical threshold for non-deterministic tests? How many runs constitute a reliable signal, and what pass rate is acceptable? *(Partially explored in [experiment 0026](https://github.com/fullsend-ai/experiments/tree/main/0026-eval-statistical-significance): the required run count scales with the effect size you need to detect, and gating on the lower confidence bound beats the point estimate. The policy half — what pass rate is acceptable — remains open.)*
 - Can we use one LLM to test another's behavior reliably, or does LLM-as-judge just move the trust problem?
 - ~~How do we bootstrap the golden set? Do we start with synthetic examples, or do we capture real-world cases from early human-supervised agent operation?~~ Functional tests bootstrap with hand-crafted cases under `eval/`; see [ADR 0052](../ADRs/0052-functional-tests-for-agent-pipelines.md). Prompt-level evals and synthetic expansion remain open.
 - Who maintains the test suite for each agent? Is it the agent's instruction author, a separate testing team, or the agent itself (self-testing)?

@@ -90,6 +90,29 @@ corresponding GitHub Apps for each agent you enable (see the table above).
 For the full list of setup flags, see the
 [CLI reference](../../cli/github.md#flags).
 
+### Using a vendor preset
+
+If your platform operator provides a curated preset configuration, you can
+install it directly instead of relying on per-flag generation:
+
+```bash
+fullsend github setup <org>/<repo> \
+  --inference-project "<gcp-project>" \
+  --inference-wif-provider "<wif-provider-url>" \
+  --config "<path-or-url>" \
+  --config-hash "<sha256-hex>"
+```
+
+When `--config` is provided, the preset content is committed as
+`.fullsend/config.base.yaml` and a stub overlay is written to
+`.fullsend/config.yaml`. The `--config-hash` flag is optional but
+recommended for remote URLs — it verifies the SHA-256 digest of the
+fetched content before committing.
+
+> **Note:** `--config` cannot be combined with `--runtime` or `--agents`,
+> because the preset provides its own configuration. `--config` is only
+> valid for per-repo mode.
+
 ## Testing Fullsend
 
 After installing open a new issue or comment `/fs-triage` in an open issue. Then visit the

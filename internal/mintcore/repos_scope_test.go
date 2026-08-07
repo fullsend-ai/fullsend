@@ -1,6 +1,7 @@
 package mintcore
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -53,8 +54,6 @@ func TestValidateReposScope(t *testing.T) {
 	const emptyDeny = "same-org mint requires non-empty repos"
 	const perRepoDeny = "per-repo mint requires repos to be exactly the requesting repository"
 	const perOrgDeny = "repos scope not allowed for per-org caller"
-	const foreignDeny = "foreign mint requires empty repos"
-
 	tests := []struct {
 		name           string
 		foreign        bool
@@ -65,7 +64,8 @@ func TestValidateReposScope(t *testing.T) {
 		wantShape      string
 	}{
 		{"foreign empty", true, "fullsend-ai/fullsend", nil, false, "", ""},
-		{"foreign non-empty", true, "fullsend-ai/fullsend", []string{"e2e-lock"}, false, foreignDeny, ""},
+		{"foreign non-empty allowed", true, "fullsend-ai/fullsend", []string{"e2e-lock"}, false, "", reposScopeShapeForeignRepoScoped},
+		{"foreign non-empty multi", true, "fullsend-ai/fullsend", []string{"a", "b"}, true, "", reposScopeShapeForeignRepoScoped},
 		{"same self", false, "acme/api", []string{"api"}, false, "", ""},
 		{"same empty per-org", false, "acme/api", nil, false, emptyDeny, ""},
 		{"same empty per-repo", false, "acme/api", nil, true, emptyDeny, ""},
@@ -104,5 +104,16 @@ func TestValidateReposScope(t *testing.T) {
 				t.Fatalf("error %q does not contain %q", err.Error(), tc.wantErrSubstr)
 			}
 		})
+	}
+}
+
+func TestValidateReposScope_PerRepoSentinel(t *testing.T) {
+	t.Parallel()
+	_, err := validateReposScope(false, "acme/api", []string{"other"}, true)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, errPerRepoCrossRepo) {
+		t.Fatalf("expected errPerRepoCrossRepo sentinel, got %v", err)
 	}
 }

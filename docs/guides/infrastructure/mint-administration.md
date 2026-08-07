@@ -627,3 +627,5 @@ gcloud functions logs read fullsend-mint \
 - [Standalone Mint](standalone-mint.md) — Running the mint without GCP, with custom agent roles
 - [Infrastructure Reference](infrastructure-reference.md) — Token mint, WIF, and secrets deployment details
 - [CLI Internals](../dev/cli-internals.md) — Command structure and implementation details
+- [Cross-org authorization (ADR 0060)](../../ADRs/0060-cross-org-mint-authorization-via-org-variables.md) — Org-level FOREIGN authorization via `FULLSEND_FOREIGN_<role>_REPOS` org variables
+- [Repo-level foreign grants (ADR 0083)](../../ADRs/0083-repo-level-foreign-allow-list.md) — Per-repo FOREIGN authorization grants; manage with `fullsend admin foreign` commands

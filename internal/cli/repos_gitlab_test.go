@@ -545,6 +545,96 @@ func TestCleanupGitLabPipelineSchedules_DeleteError(t *testing.T) {
 	assert.Contains(t, buf.String(), "Removed 0 pipeline schedule(s)")
 }
 
+func TestHealGitLabResourceGroups(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("toggles fullsend-prefixed groups", func(t *testing.T) {
+		var toggleCalls []struct {
+			Key  string
+			Mode string
+		}
+		mux := http.NewServeMux()
+		mux.HandleFunc("/api/v4/projects/mygroup%2Fmyproject/resource_groups", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"key": "fullsend-poll", "process_mode": "unordered"},
+				{"key": "fullsend-triage-mr-1", "process_mode": "newest_first"},
+				{"key": "production", "process_mode": "oldest_first"},
+			})
+		})
+		mux.HandleFunc("/api/v4/projects/mygroup%2Fmyproject/resource_groups/", func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != http.MethodPut {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			// Extract key from URL path — last segment after resource_groups/
+			key := r.URL.Path[len("/api/v4/projects/mygroup%2Fmyproject/resource_groups/"):]
+			toggleCalls = append(toggleCalls, struct {
+				Key  string
+				Mode string
+			}{Key: key, Mode: body["process_mode"].(string)})
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"key": key, "process_mode": body["process_mode"]})
+		})
+		srv := httptest.NewServer(mux)
+		defer srv.Close()
+
+		glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
+		require.NoError(t, err)
+
+		var buf bytes.Buffer
+		printer := ui.New(&buf)
+
+		healGitLabResourceGroups(ctx, glClient, printer, "mygroup", "myproject")
+
+		// Should toggle only fullsend-prefixed groups, not "production".
+		assert.Len(t, toggleCalls, 4, "expected 2 fullsend groups × 2 toggles each")
+		assert.Contains(t, buf.String(), "Healed 2 resource group(s)")
+	})
+
+	t.Run("handles list error gracefully", func(t *testing.T) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/api/v4/projects/mygroup%2Fmyproject/resource_groups", func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message":"forbidden"}`))
+		})
+		srv := httptest.NewServer(mux)
+		defer srv.Close()
+
+		glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
+		require.NoError(t, err)
+
+		var buf bytes.Buffer
+		printer := ui.New(&buf)
+
+		healGitLabResourceGroups(ctx, glClient, printer, "mygroup", "myproject")
+		assert.Contains(t, buf.String(), "Could not list resource groups")
+	})
+
+	t.Run("handles no fullsend groups", func(t *testing.T) {
+		mux := http.NewServeMux()
+		mux.HandleFunc("/api/v4/projects/mygroup%2Fmyproject/resource_groups", func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"key": "production", "process_mode": "oldest_first"},
+			})
+		})
+		srv := httptest.NewServer(mux)
+		defer srv.Close()
+
+		glClient, err := gitlab.New("test-token", gitlab.WithBaseURL(srv.URL))
+		require.NoError(t, err)
+
+		var buf bytes.Buffer
+		printer := ui.New(&buf)
+
+		healGitLabResourceGroups(ctx, glClient, printer, "mygroup", "myproject")
+		assert.Contains(t, buf.String(), "Healed 0 resource group(s)")
+	})
+}
+
 func TestCleanupGitLabBotToken(t *testing.T) {
 	ctx := context.Background()
 

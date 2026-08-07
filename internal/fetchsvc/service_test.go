@@ -10,6 +10,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
@@ -602,4 +604,374 @@ func TestHandleFetch_AuditLogWriteFailure(t *testing.T) {
 	if resp.LocalPath == "" {
 		t.Fatal("expected non-empty LocalPath")
 	}
+}
+
+// threadSafeUploader is a concurrency-safe variant of stubUploader.
+type threadSafeUploader struct {
+	mu    sync.Mutex
+	calls []uploadCall
+	count atomic.Int32
+}
+
+func (u *threadSafeUploader) UploadSkillDir(sandboxName, localPath, remotePath string) error {
+	u.count.Add(1)
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.calls = append(u.calls, uploadCall{sandboxName, localPath, remotePath})
+	return nil
+}
+
+func TestHandleFetch_SameHashDifferentBasenameBothUpload(t *testing.T) {
+	tmpDir := t.TempDir()
+	files := fakeSkillFiles()
+	hash := fakeSkillHash()
+
+	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+
+	uploader := &stubUploader{}
+	svc := New(ServiceConfig{
+		Harness:       testHarness("https://github.com/org/repo/"),
+		WorkspaceRoot: tmpDir,
+		MaxFetches:    10,
+		Uploader:      uploader,
+		SandboxName:   "sandbox-1",
+		SkillDestDir:  "/sandbox/skills",
+	})
+
+	// Same content hash, but two different repo paths (different basenames)
+	// — each has its own remotePath and must be uploaded independently.
+	// Deduping on the bare content hash would skip the second upload even
+	// though its destination was never populated.
+	urlFoo := "https://github.com/org/repo/tree/abc123/skills/foo#sha256=" + hash
+	urlBar := "https://github.com/org/repo/tree/abc123/skills/bar#sha256=" + hash
+
+	respFoo, err := svc.HandleFetch(context.Background(), FetchRequest{URL: urlFoo})
+	if err != nil {
+		t.Fatalf("foo fetch: %v", err)
+	}
+	respBar, err := svc.HandleFetch(context.Background(), FetchRequest{URL: urlBar})
+	if err != nil {
+		t.Fatalf("bar fetch: %v", err)
+	}
+
+	if len(uploader.calls) != 2 {
+		t.Fatalf("expected 2 uploads (one per distinct destination), got %d", len(uploader.calls))
+	}
+	if uploader.calls[0].remotePath == uploader.calls[1].remotePath {
+		t.Fatalf("expected distinct remotePaths, both were %q", uploader.calls[0].remotePath)
+	}
+	if !strings.Contains(respFoo.LocalPath, "foo") || !strings.Contains(respBar.LocalPath, "bar") {
+		t.Fatalf("LocalPaths should reflect their own basename: foo=%q bar=%q", respFoo.LocalPath, respBar.LocalPath)
+	}
+}
+
+func TestHandleFetch_StaleHashAtRemotePathTriggersReupload(t *testing.T) {
+	tmpDir := t.TempDir()
+	files := fakeSkillFiles()
+	hash := fakeSkillHash()
+
+	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+
+	uploader := &stubUploader{}
+	svc := New(ServiceConfig{
+		Harness:       testHarness("https://github.com/org/repo/"),
+		WorkspaceRoot: tmpDir,
+		MaxFetches:    10,
+		Uploader:      uploader,
+		SandboxName:   "sandbox-1",
+		SkillDestDir:  "/sandbox/skills",
+	})
+
+	url := "https://github.com/org/repo/tree/abc123/skills/test-skill#sha256=" + hash
+
+	resp, err := svc.HandleFetch(context.Background(), FetchRequest{URL: url})
+	if err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	if len(uploader.calls) != 1 {
+		t.Fatalf("expected 1 upload, got %d", len(uploader.calls))
+	}
+
+	// Simulate a truncated-hash-prefix collision: some other content's hash
+	// was recorded against this exact remotePath (e.g. by a different,
+	// colliding expectedHash sharing the same 8-char prefix + basename).
+	// The next fetch for our real hash must not trust that stale entry and
+	// must re-upload, restoring pre-fix self-healing behavior.
+	svc.uploaded.Store(resp.LocalPath, "0000000000000000000000000000000000000000000000000000000000000000")
+
+	if _, err := svc.HandleFetch(context.Background(), FetchRequest{URL: url}); err != nil {
+		t.Fatalf("second fetch: %v", err)
+	}
+	if len(uploader.calls) != 2 {
+		t.Fatalf("expected re-upload after hash mismatch at remotePath, got %d calls", len(uploader.calls))
+	}
+}
+
+// TestHandleFetch_ConcurrentStaleHashSelfHealsOnce covers the same-hash
+// concurrent case: many callers for the real hash, with a stale/mismatched
+// hash left at remotePath by a hypothetical earlier collision, must still
+// coalesce into exactly one real re-upload rather than each racing its own.
+// It does NOT exercise two different hashes racing each other concurrently
+// (that would need a genuine hash-prefix collision to construct) — see the
+// "Accepted tradeoff" note on Service.uploadGroup for that scenario.
+func TestHandleFetch_ConcurrentStaleHashSelfHealsOnce(t *testing.T) {
+	tmpDir := t.TempDir()
+	files := fakeSkillFiles()
+	hash := fakeSkillHash()
+
+	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+
+	uploader := &threadSafeUploader{}
+	svc := New(ServiceConfig{
+		Harness:       testHarness("https://github.com/org/repo/"),
+		WorkspaceRoot: tmpDir,
+		MaxFetches:    20,
+		Uploader:      uploader,
+		SandboxName:   "sandbox-1",
+		SkillDestDir:  "/sandbox/skills",
+	})
+
+	url := "https://github.com/org/repo/tree/abc123/skills/test-skill#sha256=" + hash
+
+	hashPrefix := hash
+	if len(hashPrefix) > 8 {
+		hashPrefix = hashPrefix[:8]
+	}
+	remotePath := filepath.Join("/sandbox/skills", hashPrefix+"-test-skill")
+	svc.uploaded.Store(remotePath, "0000000000000000000000000000000000000000000000000000000000000000")
+
+	const goroutines = 10
+	var wg sync.WaitGroup
+	errs := make([]error, goroutines)
+	for i := range goroutines {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			_, errs[idx] = svc.HandleFetch(context.Background(), FetchRequest{URL: url})
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d: %v", i, err)
+		}
+	}
+
+	if got := int(uploader.count.Load()); got != 1 {
+		t.Fatalf("expected exactly 1 re-upload across %d concurrent fetches after stale hash, got %d", goroutines, got)
+	}
+}
+
+func TestHandleFetch_DuplicateSkipsUpload(t *testing.T) {
+	tmpDir := t.TempDir()
+	files := fakeSkillFiles()
+	hash := fakeSkillHash()
+
+	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+
+	uploader := &stubUploader{}
+	svc := New(ServiceConfig{
+		Harness:       testHarness("https://github.com/org/repo/"),
+		WorkspaceRoot: tmpDir,
+		MaxFetches:    10,
+		Uploader:      uploader,
+		SandboxName:   "sandbox-1",
+		SkillDestDir:  "/sandbox/skills",
+	})
+
+	url := "https://github.com/org/repo/tree/abc123/skills/test-skill#sha256=" + hash
+
+	// First fetch — should upload.
+	resp1, err := svc.HandleFetch(context.Background(), FetchRequest{URL: url})
+	if err != nil {
+		t.Fatalf("first fetch: %v", err)
+	}
+	if len(uploader.calls) != 1 {
+		t.Fatalf("after first fetch: expected 1 upload, got %d", len(uploader.calls))
+	}
+
+	// Second fetch (same URL) — should skip upload.
+	resp2, err := svc.HandleFetch(context.Background(), FetchRequest{URL: url})
+	if err != nil {
+		t.Fatalf("second fetch: %v", err)
+	}
+	if len(uploader.calls) != 1 {
+		t.Fatalf("after second fetch: expected still 1 upload, got %d", len(uploader.calls))
+	}
+	if resp2.LocalPath != resp1.LocalPath {
+		t.Fatalf("LocalPath mismatch: %q vs %q", resp2.LocalPath, resp1.LocalPath)
+	}
+
+	// Third fetch — still only 1 upload.
+	_, err = svc.HandleFetch(context.Background(), FetchRequest{URL: url})
+	if err != nil {
+		t.Fatalf("third fetch: %v", err)
+	}
+	if len(uploader.calls) != 1 {
+		t.Fatalf("after third fetch: expected still 1 upload, got %d", len(uploader.calls))
+	}
+}
+
+func TestHandleFetch_ConcurrentSameURLUploadsOnce(t *testing.T) {
+	tmpDir := t.TempDir()
+	files := fakeSkillFiles()
+	hash := fakeSkillHash()
+
+	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+
+	uploader := &threadSafeUploader{}
+	svc := New(ServiceConfig{
+		Harness:       testHarness("https://github.com/org/repo/"),
+		WorkspaceRoot: tmpDir,
+		MaxFetches:    20,
+		Uploader:      uploader,
+		SandboxName:   "sandbox-1",
+		SkillDestDir:  "/sandbox/skills",
+	})
+
+	url := "https://github.com/org/repo/tree/abc123/skills/test-skill#sha256=" + hash
+	const goroutines = 10
+
+	var wg sync.WaitGroup
+	errs := make([]error, goroutines)
+	for i := range goroutines {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			_, errs[idx] = svc.HandleFetch(context.Background(), FetchRequest{URL: url})
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d: %v", i, err)
+		}
+	}
+
+	uploadCount := int(uploader.count.Load())
+	if uploadCount != 1 {
+		t.Fatalf("expected exactly 1 upload across %d concurrent fetches, got %d", goroutines, uploadCount)
+	}
+}
+
+// TestHandleFetch_LateArrivalAfterUploadSkips exercises the specific
+// interleaving that would defeat a caller-side "Load, then Do" check: a
+// second call arrives only after the first upload's singleflight entry has
+// already been cleared. It must observe the stored hash and skip, not race
+// singleflight to become a new leader and upload a second time.
+func TestHandleFetch_LateArrivalAfterUploadSkips(t *testing.T) {
+	tmpDir := t.TempDir()
+	files := fakeSkillFiles()
+	hash := fakeSkillHash()
+
+	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var uploadCount atomic.Int32
+	uploader := &callbackUploader{
+		fn: func(_, _, _ string) error {
+			uploadCount.Add(1)
+			close(started)
+			<-release
+			return nil
+		},
+	}
+
+	svc := New(ServiceConfig{
+		Harness:       testHarness("https://github.com/org/repo/"),
+		WorkspaceRoot: tmpDir,
+		MaxFetches:    10,
+		Uploader:      uploader,
+		SandboxName:   "sandbox-1",
+		SkillDestDir:  "/sandbox/skills",
+	})
+
+	url := "https://github.com/org/repo/tree/abc123/skills/test-skill#sha256=" + hash
+
+	var wg sync.WaitGroup
+	var leaderErr error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, leaderErr = svc.HandleFetch(context.Background(), FetchRequest{URL: url})
+	}()
+
+	<-started // leader is inside UploadSkillDir; uploaded.Store hasn't run yet
+	close(release)
+	wg.Wait()
+	if leaderErr != nil {
+		t.Fatalf("leader fetch: %v", leaderErr)
+	}
+
+	// By the time this runs, the leader's singleflight entry is long gone —
+	// this call must become a fresh singleflight leader and rely on the
+	// uploaded map (checked inside Do) to skip, not race a second upload.
+	if _, err := svc.HandleFetch(context.Background(), FetchRequest{URL: url}); err != nil {
+		t.Fatalf("late arrival fetch: %v", err)
+	}
+
+	if calls := uploadCount.Load(); calls != 1 {
+		t.Fatalf("expected exactly 1 upload, got %d", calls)
+	}
+}
+
+func TestHandleFetch_UploadFailureAllowsRetry(t *testing.T) {
+	tmpDir := t.TempDir()
+	files := fakeSkillFiles()
+	hash := fakeSkillHash()
+
+	fetch.CachePutDir(tmpDir, "https://github.com/org/repo/tree/abc123/skills/test-skill", files)
+
+	callCount := 0
+	failingUploader := &callbackUploader{
+		fn: func(_, _, _ string) error {
+			callCount++
+			if callCount == 1 {
+				return fmt.Errorf("transient upload failure")
+			}
+			return nil
+		},
+	}
+
+	svc := New(ServiceConfig{
+		Harness:       testHarness("https://github.com/org/repo/"),
+		WorkspaceRoot: tmpDir,
+		MaxFetches:    10,
+		Uploader:      failingUploader,
+		SandboxName:   "sandbox-1",
+		SkillDestDir:  "/sandbox/skills",
+	})
+
+	url := "https://github.com/org/repo/tree/abc123/skills/test-skill#sha256=" + hash
+
+	// First attempt — upload fails.
+	_, err := svc.HandleFetch(context.Background(), FetchRequest{URL: url})
+	if err == nil {
+		t.Fatal("expected error on first attempt")
+	}
+
+	// Second attempt — upload succeeds; path should not be stuck as
+	// "already uploaded" from the failed first attempt.
+	resp, err := svc.HandleFetch(context.Background(), FetchRequest{URL: url})
+	if err != nil {
+		t.Fatalf("second attempt should succeed: %v", err)
+	}
+	if resp.LocalPath == "" {
+		t.Fatal("expected non-empty LocalPath")
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 upload attempts, got %d", callCount)
+	}
+}
+
+// callbackUploader delegates UploadSkillDir to a user-supplied function.
+type callbackUploader struct {
+	fn func(sandboxName, localPath, remotePath string) error
+}
+
+func (u *callbackUploader) UploadSkillDir(sandboxName, localPath, remotePath string) error {
+	return u.fn(sandboxName, localPath, remotePath)
 }

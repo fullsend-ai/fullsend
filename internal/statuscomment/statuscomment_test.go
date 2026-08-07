@@ -1426,3 +1426,61 @@ func TestPostCompletionWithDetail_DetailCannotForgeMarkers(t *testing.T) {
 	// And the detail stays on the status line.
 	assert.Contains(t, body, "⏭️ Skipped (evil &lt;!-- fullsend:agent-status:999 -->)")
 }
+
+func TestParagraphBreak_BetweenStatusAndMetadata(t *testing.T) {
+	// Verify that buildStartBody, buildCompletionBody, and
+	// buildInterruptedBody use \n\n (paragraph break) between the status
+	// line and the metadata line. A bare \n renders as inline whitespace
+	// on GitLab (strict CommonMark), collapsing the two lines into one.
+	t.Run("start body", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		cfg := config.StatusNotificationConfig{}
+		n := newTestNotifier(fc, cfg)
+
+		err := n.PostStart(context.Background(), "Triaging issue")
+		require.NoError(t, err)
+
+		body := fc.IssueComments["org/repo/7"][0].Body
+		assert.Contains(t, body, "Started 2:34 PM UTC\n\nCommit:",
+			"start body should use paragraph break before metadata line")
+	})
+
+	t.Run("completion body", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		cfg := config.StatusNotificationConfig{
+			Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
+		}
+		n := newTestNotifier(fc, cfg)
+
+		require.NoError(t, n.PostStart(context.Background(), "Triaging issue"))
+		n.now = func() time.Time { return fixedTime().Add(5 * time.Minute) }
+		require.NoError(t, n.PostCompletion(context.Background(), "Triaging issue", "success"))
+
+		require.Len(t, fc.UpdatedComments, 1)
+		body := fc.UpdatedComments[0].Body
+		assert.Contains(t, body, "Completed 2:39 PM UTC\n\nCommit:",
+			"completion body should use paragraph break before metadata line")
+	})
+
+	t.Run("interrupted body", func(t *testing.T) {
+		fc := forge.NewFakeClient()
+		fc.IssueComments = map[string][]forge.IssueComment{}
+		setNow(t, time.Date(2026, 6, 3, 7, 12, 0, 0, time.UTC))
+
+		fc.IssueComments["org/repo/7"] = []forge.IssueComment{
+			{
+				ID:     42,
+				Body:   "<!-- fullsend:agent-status:run-99 -->\n🤖 Code · Started 6:43 AM UTC\nCommit: `abc1234` · [View workflow run →](https://ci/run/99)",
+				Author: "fullsend-bot[bot]",
+			},
+		}
+
+		err := ReconcileOrphaned(context.Background(), fc, "org", "repo", 7, "run-99", "https://ci/run/99", "abc1234def", ReasonTerminated)
+		require.NoError(t, err)
+
+		require.Len(t, fc.UpdatedComments, 1)
+		body := fc.UpdatedComments[0].Body
+		assert.Contains(t, body, "Ended 7:12 AM UTC\n\nCommit:",
+			"interrupted body should use paragraph break before metadata line")
+	})
+}

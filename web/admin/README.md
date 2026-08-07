@@ -4,7 +4,7 @@ This directory holds the **admin installation UI**: a **Svelte 5 + Vite** single
 
 **Hardening (CORS + config model):** for review and security context, see [`docs/admin-oauth-worker.md`](../../docs/admin-oauth-worker.md) — **`GET /api/github/user`** when `Origin` is missing (Sec-Fetch-Site + Referer, path-limited), and **why there is no `ADMIN_OAUTH_ENABLED` flag** (Turnstile + 503 `missing_turnstile_keys`, etc.).
 
-Production packaging of this app for the public site is tracked in the repo-wide implementation plan (`docs/superpowers/plans/2026-04-12-fullsend-admin-spa.md`). Layout follows [ADR 0019](../../docs/ADRs/0019-web-source-and-cloudflare-site-layout.md) (`web/` + root `package.json` + `cloudflare_site/`).
+Layout follows [ADR 0019](../../docs/ADRs/0019-web-source-and-cloudflare-site-layout.md) (`web/` + root `package.json` + `cloudflare_site/`).
 
 ## Tooling with mise
 
@@ -47,7 +47,7 @@ The committed **`sample.env.local`** at the repository root lists **official Clo
 
 ## Global auth errors (401)
 
-[UX spec — global banners](../../docs/superpowers/specs/2026-04-21-fullsend-admin-spa-ux-design.md): when GitHub returns **401** for a request using the signed-in user’s token, the shell must show **Re-authenticate**, not a local “Retry only” banner.
+When GitHub returns **401** for a request using the signed-in user’s token, the shell must show **Re-authenticate**, not a local “Retry only” banner.
 
 - **`createUserOctokit`** (`web/admin/src/lib/github/client.ts`) dispatches **`notifyGitHubUserUnauthorized()`** from its request hook (see `web/admin/src/lib/auth/githubUnauthorized.ts`).
 - Any **other** browser call with the user token that can return **401** must call **`notifyGitHubUserUnauthorized()`** as well (or use that Octokit factory) so **`App.svelte`** runs **`signOut({ suggestReauth: true })`** consistently.

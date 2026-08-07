@@ -206,7 +206,7 @@ The implementation must address **how access policies work when agents don't kno
 
 ### Changes required
 
-See `docs/plans/universal-harness-access.md` for detailed implementation plan. Key changes:
+Key changes:
 
 1. **Harness loader (`internal/harness/harness.go`):** Add URL resolution and caching logic.
 2. **Resource fetcher (new package `internal/fetch/`):** HTTP client with SSRF protection, caching, integrity checking.
@@ -307,7 +307,7 @@ The following design questions have been resolved as part of this ADR:
 
 #### 6. Lock file format
 
-**Decision:** Phase 3 introduces harness lock files at `.fullsend/lock.yaml`. Lock files pin all transitive dependencies (resources referenced by resources) with full URLs and integrity hashes. See implementation plan (docs/plans/universal-harness-access.md) for detailed schema.
+**Decision:** Phase 3 introduces harness lock files at `.fullsend/lock.yaml`. Lock files pin all transitive dependencies (resources referenced by resources) with full URLs and integrity hashes.
 
 **Schema summary:**
 ```yaml
@@ -379,7 +379,7 @@ The proposed model follows the GitHub Actions approach: URL-based references wit
 
 ## Implementation Plan
 
-See `docs/plans/universal-harness-access.md` for full implementation details, security analysis, and migration path. See `docs/plans/universal-harness-access-phase1.md` for the phased PR breakdown (Phase 1 MVP), `docs/plans/universal-harness-access-phase2.md` for Phase 2 (transitive dependency resolution), `docs/plans/universal-harness-access-phase3.md` for Phase 3 (lock files), and `docs/plans/universal-harness-access-phase4.md` for Phase 4 (runtime dependency loading).
+Implementation was phased: Phase 1 (MVP), Phase 2 (transitive dependency resolution), Phase 3 (lock files), Phase 4 (runtime dependency loading).
 
 ## Amendments
 

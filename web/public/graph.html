@@ -171,7 +171,6 @@
   <div class="legend-item" data-group="problem"><span class="legend-dot" style="background:#6a9fd8;"></span> problems</div>
   <div class="legend-item" data-group="applied"><span class="legend-dot" style="background:#5cb87a;"></span> problems-applied</div>
   <div class="legend-item" data-group="adr"><span class="legend-dot" style="background:#d4a054; border-radius:2px;"></span> ADRs</div>
-  <div class="legend-item" data-group="plan"><span class="legend-dot" style="background:#a06ad8;"></span> plans</div>
   <div class="legend-item" data-group="docs,root"><span class="legend-dot" style="background:#c0c0c0;"></span> other</div>
   <div id="legend-pr" style="display:none;">
     <hr style="border-color:rgba(255,255,255,0.08); margin:8px 0;">
@@ -290,7 +289,6 @@ function nodeGroup(path) {
   if (path.startsWith('docs/problems/applied/')) return 'applied';
   if (path.startsWith('docs/problems/'))         return 'problem';
   if (path.startsWith('docs/ADRs/'))             return 'adr';
-  if (path.startsWith('docs/plans/'))            return 'plan';
   if (path.startsWith('docs/'))                  return 'docs';
   return 'root';
 }
@@ -300,7 +298,6 @@ const GROUP_COLORS = {
   problem:    '#8a95a5',
   applied:    '#8a9e8f',
   adr:        '#a5988a',
-  plan:       '#958aa5',
   docs:       '#959595',
   root:       '#959595',
 };
@@ -309,7 +306,6 @@ const GROUP_COLORS_BRIGHT = {
   problem:    '#6a9fd8',
   applied:    '#5cb87a',
   adr:        '#d4a054',
-  plan:       '#a06ad8',
   docs:       '#c0c0c0',
   root:       '#c0c0c0',
 };

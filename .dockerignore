@@ -6,7 +6,6 @@ bin/
 node_modules/
 **/node_modules/
 images/
-website/
 web/
 cloudflare_site/
 e2e/

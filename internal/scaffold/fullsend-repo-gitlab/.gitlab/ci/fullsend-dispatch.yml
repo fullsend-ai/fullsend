@@ -225,6 +225,8 @@ dispatch:
 
       include:
         - local: .gitlab/ci/fullsend-agent.yml
+          inputs:
+            stage: "${STAGE}"
       YAML
   artifacts:
     paths:

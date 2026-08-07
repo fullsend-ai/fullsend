@@ -131,6 +131,17 @@ Existing pool orgs (`halfsend-01` … `halfsend-12`) need a one-time operator pa
 go run ./cmd/fullsend admin foreign allow --org halfsend-NN --role e2e --caller fullsend-ai/fullsend
 ```
 
+For repo-level grants (scoped to a specific target repo rather than the
+entire org), add `--repo`:
+
+```bash
+go run ./cmd/fullsend admin foreign allow --org halfsend-NN --role e2e --caller fullsend-ai/fullsend --repo target-repo
+go run ./cmd/fullsend admin foreign list --org halfsend-NN --repo target-repo
+```
+
+See [ADR 0083](../../ADRs/0083-repo-level-foreign-allow-list.md) for details
+on repo-level foreign grants.
+
 ## CI authorization
 
 Pull requests trigger e2e via `pull_request_target` in

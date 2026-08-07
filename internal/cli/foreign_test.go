@@ -99,15 +99,26 @@ func TestLoadForeignAllowlist_NotSet(t *testing.T) {
 }
 
 type foreignVarState struct {
-	mu      sync.Mutex
-	vars    map[string]string
-	deleted []string
+	mu       sync.Mutex
+	vars     map[string]string // org-level vars
+	repoVars map[string]string // repo-level vars, keyed by "owner/repo/VAR_NAME"
+	deleted  []string
+}
+
+func (s *foreignVarState) repoVarKey(owner, repo, name string) string {
+	return owner + "/" + repo + "/" + name
 }
 
 func (s *foreignVarState) handler(t *testing.T) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
+
+		// Repo-level variable endpoints: /repos/{owner}/{repo}/actions/variables[/{name}]
+		if strings.HasPrefix(r.URL.Path, "/repos/") {
+			s.handleRepoVars(t, w, r)
+			return
+		}
 
 		switch {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/actions/variables/FULLSEND_FOREIGN_"):
@@ -151,6 +162,73 @@ func (s *foreignVarState) handler(t *testing.T) http.HandlerFunc {
 			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
 		}
+	}
+}
+
+// handleRepoVars dispatches repo-level variable API requests.
+// Path format: /repos/{owner}/{repo}/actions/variables[/{name}]
+func (s *foreignVarState) handleRepoVars(t *testing.T, w http.ResponseWriter, r *http.Request) {
+	// Parse: /repos/{owner}/{repo}/actions/variables[/{name}]
+	path := strings.TrimPrefix(r.URL.Path, "/repos/")
+	parts := strings.SplitN(path, "/", 3) // owner, repo, rest
+	if len(parts) < 3 {
+		t.Errorf("malformed repo path: %s", r.URL.Path)
+		http.NotFound(w, r)
+		return
+	}
+	owner, repo := parts[0], parts[1]
+	rest := parts[2] // "actions/variables" or "actions/variables/{name}"
+
+	switch {
+	case r.Method == http.MethodGet && rest == "actions/variables":
+		// List repo variables.
+		prefix := owner + "/" + repo + "/"
+		var out []map[string]string
+		for key, val := range s.repoVars {
+			if strings.HasPrefix(key, prefix) {
+				name := strings.TrimPrefix(key, prefix)
+				out = append(out, map[string]string{"name": name, "value": val})
+			}
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"total_count": len(out),
+			"variables":   out,
+		})
+	case r.Method == http.MethodGet && strings.HasPrefix(rest, "actions/variables/"):
+		name := strings.TrimPrefix(rest, "actions/variables/")
+		key := s.repoVarKey(owner, repo, name)
+		if val, ok := s.repoVars[key]; ok {
+			json.NewEncoder(w).Encode(map[string]string{"name": name, "value": val})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	case r.Method == http.MethodPatch && strings.HasPrefix(rest, "actions/variables/"):
+		name := strings.TrimPrefix(rest, "actions/variables/")
+		key := s.repoVarKey(owner, repo, name)
+		var body struct {
+			Value string `json:"value"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		s.repoVars[key] = body.Value
+		w.WriteHeader(http.StatusNoContent)
+	case r.Method == http.MethodPost && rest == "actions/variables":
+		var body struct {
+			Name  string `json:"name"`
+			Value string `json:"value"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		key := s.repoVarKey(owner, repo, body.Name)
+		s.repoVars[key] = body.Value
+		w.WriteHeader(http.StatusCreated)
+	case r.Method == http.MethodDelete && strings.HasPrefix(rest, "actions/variables/"):
+		name := strings.TrimPrefix(rest, "actions/variables/")
+		key := s.repoVarKey(owner, repo, name)
+		delete(s.repoVars, key)
+		s.deleted = append(s.deleted, key)
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		t.Errorf("unexpected repo %s %s", r.Method, r.URL.Path)
+		http.NotFound(w, r)
 	}
 }
 
@@ -300,4 +378,185 @@ func TestForeignCmd_ValidationErrors(t *testing.T) {
 	_, err := runForeignCmd(t, "http://unused", "allow", "--role", "e2e", "--caller", "fullsend-ai/fullsend")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--org is required")
+}
+
+// --- Repo-level foreign CLI tests ---
+
+func TestResolveForeignTarget(t *testing.T) {
+	tests := []struct {
+		name     string
+		org      string
+		repo     string
+		wantOrg  string
+		wantRepo string
+		wantErr  string
+	}{
+		{"org only", "pool-org", "", "pool-org", "", ""},
+		{"full owner/repo", "", "pool-org/target-repo", "pool-org", "target-repo", ""},
+		{"full owner/repo with --org match", "pool-org", "pool-org/target-repo", "pool-org", "target-repo", ""},
+		{"full owner/repo with --org conflict", "other-org", "pool-org/target-repo", "", "", "--org \"other-org\" conflicts"},
+		{"bare repo with --org", "pool-org", "target-repo", "pool-org", "target-repo", ""},
+		{"bare repo without --org", "", "target-repo", "", "", "--org is required"},
+		{"no flags", "", "", "", "", "--org is required"},
+		{"invalid org in owner/repo", "", "bad org/repo", "", "", "invalid owner"},
+		{"invalid repo name", "pool-org", "bad repo", "", "", "invalid repo name"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveForeignTarget(tc.org, tc.repo)
+			if tc.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantOrg, got.org)
+			assert.Equal(t, tc.wantRepo, got.repo)
+		})
+	}
+}
+
+func TestForeignAllowCmd_RepoLevel(t *testing.T) {
+	state := &foreignVarState{
+		vars:     map[string]string{},
+		repoVars: map[string]string{},
+	}
+	srv := httptest.NewServer(state.handler(t))
+	defer srv.Close()
+
+	_, err := runForeignCmd(t, srv.URL, "allow", "--repo", "pool-org/target-repo", "--role", "e2e", "--caller", "fullsend-ai/fullsend")
+	require.NoError(t, err)
+	assert.Equal(t, "fullsend-ai/fullsend", state.repoVars["pool-org/target-repo/FULLSEND_FOREIGN_E2E_REPOS"])
+}
+
+func TestForeignAllowCmd_RepoLevel_SplitForm(t *testing.T) {
+	state := &foreignVarState{
+		vars:     map[string]string{},
+		repoVars: map[string]string{},
+	}
+	srv := httptest.NewServer(state.handler(t))
+	defer srv.Close()
+
+	_, err := runForeignCmd(t, srv.URL, "allow", "--org", "pool-org", "--repo", "target-repo", "--role", "e2e", "--caller", "fullsend-ai/fullsend")
+	require.NoError(t, err)
+	assert.Equal(t, "fullsend-ai/fullsend", state.repoVars["pool-org/target-repo/FULLSEND_FOREIGN_E2E_REPOS"])
+}
+
+func TestForeignAllowCmd_RepoLevel_AppendsCaller(t *testing.T) {
+	state := &foreignVarState{
+		vars: map[string]string{},
+		repoVars: map[string]string{
+			"pool-org/target-repo/FULLSEND_FOREIGN_E2E_REPOS": "konflux-ci",
+		},
+	}
+	srv := httptest.NewServer(state.handler(t))
+	defer srv.Close()
+
+	_, err := runForeignCmd(t, srv.URL, "allow", "--repo", "pool-org/target-repo", "--role", "e2e", "--caller", "fullsend-ai/fullsend")
+	require.NoError(t, err)
+	val := state.repoVars["pool-org/target-repo/FULLSEND_FOREIGN_E2E_REPOS"]
+	assert.Contains(t, val, "konflux-ci")
+	assert.Contains(t, val, "fullsend-ai/fullsend")
+}
+
+func TestForeignListCmd_RepoLevel_SingleRole(t *testing.T) {
+	state := &foreignVarState{
+		vars: map[string]string{},
+		repoVars: map[string]string{
+			"pool-org/target-repo/FULLSEND_FOREIGN_E2E_REPOS": "fullsend-ai/fullsend",
+		},
+	}
+	srv := httptest.NewServer(state.handler(t))
+	defer srv.Close()
+
+	_, err := runForeignCmd(t, srv.URL, "list", "--repo", "pool-org/target-repo", "--role", "e2e")
+	require.NoError(t, err)
+}
+
+func TestForeignListCmd_RepoLevel_AllVars(t *testing.T) {
+	state := &foreignVarState{
+		vars: map[string]string{},
+		repoVars: map[string]string{
+			"pool-org/target-repo/FULLSEND_FOREIGN_E2E_REPOS":   "fullsend-ai",
+			"pool-org/target-repo/FULLSEND_FOREIGN_CODER_REPOS": "acme/api",
+			"pool-org/target-repo/OTHER_VAR":                    "ignored",
+		},
+	}
+	srv := httptest.NewServer(state.handler(t))
+	defer srv.Close()
+
+	_, err := runForeignCmd(t, srv.URL, "list", "--repo", "pool-org/target-repo")
+	require.NoError(t, err)
+}
+
+func TestForeignListCmd_RepoLevel_NoVars(t *testing.T) {
+	state := &foreignVarState{
+		vars:     map[string]string{},
+		repoVars: map[string]string{},
+	}
+	srv := httptest.NewServer(state.handler(t))
+	defer srv.Close()
+
+	_, err := runForeignCmd(t, srv.URL, "list", "--repo", "pool-org/target-repo")
+	require.NoError(t, err)
+}
+
+func TestForeignRevokeCmd_RepoLevel(t *testing.T) {
+	state := &foreignVarState{
+		vars: map[string]string{},
+		repoVars: map[string]string{
+			"pool-org/target-repo/FULLSEND_FOREIGN_E2E_REPOS": "fullsend-ai/fullsend, konflux-ci",
+		},
+	}
+	srv := httptest.NewServer(state.handler(t))
+	defer srv.Close()
+
+	_, err := runForeignCmd(t, srv.URL, "revoke", "--repo", "pool-org/target-repo", "--role", "e2e", "--caller", "konflux-ci")
+	require.NoError(t, err)
+	assert.Equal(t, "fullsend-ai/fullsend", state.repoVars["pool-org/target-repo/FULLSEND_FOREIGN_E2E_REPOS"])
+}
+
+func TestForeignRevokeCmd_RepoLevel_DeletesEmpty(t *testing.T) {
+	state := &foreignVarState{
+		vars: map[string]string{},
+		repoVars: map[string]string{
+			"pool-org/target-repo/FULLSEND_FOREIGN_E2E_REPOS": "fullsend-ai/fullsend",
+		},
+	}
+	srv := httptest.NewServer(state.handler(t))
+	defer srv.Close()
+
+	_, err := runForeignCmd(t, srv.URL, "revoke", "--repo", "pool-org/target-repo", "--role", "e2e", "--caller", "fullsend-ai/fullsend")
+	require.NoError(t, err)
+	assert.NotContains(t, state.repoVars, "pool-org/target-repo/FULLSEND_FOREIGN_E2E_REPOS")
+}
+
+func TestForeignRevokeCmd_RepoLevel_NotPresent(t *testing.T) {
+	state := &foreignVarState{
+		vars: map[string]string{},
+		repoVars: map[string]string{
+			"pool-org/target-repo/FULLSEND_FOREIGN_E2E_REPOS": "fullsend-ai/fullsend",
+		},
+	}
+	srv := httptest.NewServer(state.handler(t))
+	defer srv.Close()
+
+	_, err := runForeignCmd(t, srv.URL, "revoke", "--repo", "pool-org/target-repo", "--role", "e2e", "--caller", "missing/repo")
+	require.NoError(t, err)
+	assert.Equal(t, "fullsend-ai/fullsend", state.repoVars["pool-org/target-repo/FULLSEND_FOREIGN_E2E_REPOS"])
+}
+
+func TestForeignAllowCmd_OrgLevelStillWorks(t *testing.T) {
+	// Ensure existing org-level behavior is preserved when --repo is not used.
+	state := &foreignVarState{
+		vars:     map[string]string{},
+		repoVars: map[string]string{},
+	}
+	srv := httptest.NewServer(state.handler(t))
+	defer srv.Close()
+
+	_, err := runForeignCmd(t, srv.URL, "allow", "--org", "pool-org", "--role", "e2e", "--caller", "fullsend-ai/fullsend")
+	require.NoError(t, err)
+	assert.Equal(t, "fullsend-ai/fullsend", state.vars["FULLSEND_FOREIGN_E2E_REPOS"])
+	assert.Empty(t, state.repoVars)
 }

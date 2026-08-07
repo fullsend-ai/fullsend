@@ -92,10 +92,8 @@ local path or URL per [ADR 0038](0038-universal-harness-access.md).
 - Works alongside per-org installations during a migration period;
   serves as the migration path for ADR 0044 (pending) deprecation.
 
-Manifest schema, field resolution semantics, subcommand specifications,
-and implementation details are in the
-[repos management plan](../plans/repos-management.md) and
-[repos init plan](../plans/repos-init.md).
+Manifest schema, field resolution semantics, and subcommand specifications
+are covered in the sections below.
 
 ## Consequences
 
@@ -119,8 +117,6 @@ and implementation details are in the
 - ADR 0044 (pending) — per-org deprecation; repos tool replaces its deferred Option C
 - [ADR 0045](0045-forge-portable-harness-schema.md) — harness composition via `base` URLs
 - [ADR 0048](0048-automatic-updates.md) — `--upstream-ref` version pinning
-- [Implementation plan: repos management](../plans/repos-management.md)
-- [Implementation plan: repos init](../plans/repos-init.md)
 - [PR #5713](https://github.com/fullsend-ai/fullsend/pull/5713) — added forge URL fields (`forge.github.url`, `forge.gitlab.url`) to the manifest schema and `--forge-url` flag to `repos init` (now `repos migrate`); `forge.gitlab.url` is required (breaking change)
 
 > **Note:** [ADR 0074](0074-repos-command-consolidation.md) consolidates

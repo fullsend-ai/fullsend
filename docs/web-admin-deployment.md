@@ -8,7 +8,7 @@ The **admin installation UI** is a **Svelte 5 + Vite** single-page app under `we
 
 Deployment uses **Cloudflare Workers with [static assets](https://developers.cloudflare.com/workers/static-assets/)** (not the legacy **Pages direct-upload** / `wrangler pages deploy` flow). **Deploy Site** checks out **only the default branch** (trusted [`cloudflare_site/wrangler.toml`](../cloudflare_site/wrangler.toml); never PR-controlled config on the secret-bearing runner), downloads the build artifact, then **copies only** **`_bundle/public/`** and **`_bundle/worker/`** into **`cloudflare_site/`** (so a malicious artifact cannot overwrite `wrangler.toml` or other repo files), then runs Wrangler.
 
-For architecture and naming, see [2026-04-09-site-cloudflare-pages-design.md](superpowers/specs/2026-04-09-site-cloudflare-pages-design.md) (document filename still says "pages" for history; content describes Workers). Repository layout for `web/` vs `cloudflare_site/` is decided in [ADR 0019](ADRs/0019-web-source-and-cloudflare-site-layout.md).
+Repository layout for `web/` vs `cloudflare_site/` is decided in [ADR 0019](ADRs/0019-web-source-and-cloudflare-site-layout.md).
 
 ## Cloudflare setup
 

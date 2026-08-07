@@ -351,10 +351,7 @@ ADR 0045 is accepted and its implementation (Phases 1–4) is complete.
 
 ### 2. Implementation plan
 
-The detailed, per-file implementation plan is maintained in a companion
-document: [`docs/plans/deprecate-per-org-install.md`](../plans/deprecate-per-org-install.md).
-It contains a 15-PR dependency graph, per-function change lists, and a
-release checklist. The summary below captures the high-level ordering.
+The summary below captures the high-level ordering.
 
 **Phase 1** (5 PRs):
 
@@ -602,4 +599,3 @@ Ordered by the project's threat priority:
 - [ADR 0035: Layered content resolution](0035-layered-content-resolution.md) — `.fullsend/` directory replaces `.fullsend` repo
 - [ADR 0038: Universal harness access](0038-universal-harness-access.md) — URL-based resource references replace config repo as resource distribution point
 - [ADR 0045: Forge-portable harness schema](0045-forge-portable-harness-schema.md) — agent identity moves to harness files; `base` composition replaces centralized config repo overrides
-- [Implementation plan](../plans/deprecate-per-org-install.md) — PR dependency graph, per-file changes, release checklist

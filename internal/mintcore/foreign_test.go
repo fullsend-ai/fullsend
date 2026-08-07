@@ -45,3 +45,15 @@ func TestCallerAllowed(t *testing.T) {
 		t.Fatal("expected case-insensitive repo match")
 	}
 }
+
+func TestRepoForeignCacheKey(t *testing.T) {
+	got := repoForeignCacheKey("TargetOrg", "TargetRepo", "Coder")
+	if got != "targetorg/targetrepo/coder" {
+		t.Fatalf("got %q", got)
+	}
+	// Distinct from org-level key.
+	orgKey := foreignCacheKey("TargetOrg", "Coder")
+	if got == orgKey {
+		t.Fatal("repo cache key should differ from org cache key")
+	}
+}

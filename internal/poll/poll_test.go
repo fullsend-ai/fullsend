@@ -436,6 +436,104 @@ func TestRunIdempotentSecondPoll(t *testing.T) {
 	}
 }
 
+func TestRunEntityDedup_MultipleNotesOnSameIssue(t *testing.T) {
+	// Two /fs-triage notes on the same issue within a single poll cycle
+	// should dispatch only one pipeline. The second note is skipped by
+	// entity-level deduplication (stage:issue-3).
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-10 * time.Minute)
+	mc := newMockClient()
+	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.issues = []Issue{
+		{IID: 3, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
+	}
+	mc.notes[3] = []Note{
+		{ID: 100, Body: "/fs-triage first request", CreatedAt: now.Add(-2 * time.Minute), Author: UserRef{ID: 42, Username: "alice"}},
+		{ID: 101, Body: "/fs-triage second request", CreatedAt: now.Add(-1 * time.Minute), Author: UserRef{ID: 42, Username: "alice"}},
+	}
+	mc.memberLevel[42] = 30
+	mc.issue[3] = &Issue{IID: 3, Author: UserRef{ID: 42}}
+
+	router := &stubRouter{stages: []string{"triage"}}
+	p := New(mc, router, "group/project", Options{})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	// Only 1 pipeline should be created despite 2 matching events.
+	if mc.pipelineCounter != 1 {
+		t.Errorf("expected 1 pipeline (entity dedup), got %d", mc.pipelineCounter)
+	}
+	if len(p.dispatches) != 1 {
+		t.Errorf("expected 1 dispatch record, got %d", len(p.dispatches))
+	}
+}
+
+func TestRunEntityDedup_DifferentIssues(t *testing.T) {
+	// Notes on different issues should each dispatch their own pipeline.
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-10 * time.Minute)
+	mc := newMockClient()
+	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.issues = []Issue{
+		{IID: 3, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
+		{IID: 4, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 43}},
+	}
+	mc.notes[3] = []Note{
+		{ID: 100, Body: "/fs-triage", CreatedAt: now, Author: UserRef{ID: 42, Username: "alice"}},
+	}
+	mc.notes[4] = []Note{
+		{ID: 101, Body: "/fs-triage", CreatedAt: now, Author: UserRef{ID: 43, Username: "bob"}},
+	}
+	mc.memberLevel[42] = 30
+	mc.memberLevel[43] = 30
+	mc.issue[3] = &Issue{IID: 3, Author: UserRef{ID: 42}}
+	mc.issue[4] = &Issue{IID: 4, Author: UserRef{ID: 43}}
+
+	router := &stubRouter{stages: []string{"triage"}}
+	p := New(mc, router, "group/project", Options{})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	// Different issues → 2 separate pipelines.
+	if mc.pipelineCounter != 2 {
+		t.Errorf("expected 2 pipelines (different entities), got %d", mc.pipelineCounter)
+	}
+}
+
+func TestRunEntityDedup_DifferentStagesSameIssue(t *testing.T) {
+	// Two notes on the same issue routed to different stages should
+	// each dispatch (entity key includes the stage).
+	now := time.Now().Truncate(time.Second)
+	since := now.Add(-10 * time.Minute)
+	mc := newMockClient()
+	mc.variables["FULLSEND_LAST_POLL_AT_FULL"] = since.Format(time.RFC3339)
+	mc.issues = []Issue{
+		{IID: 5, Labels: []string{"bug"}, UpdatedAt: now, Author: UserRef{ID: 42}},
+	}
+	mc.notes[5] = []Note{
+		{ID: 200, Body: "/fs-triage", CreatedAt: now, Author: UserRef{ID: 42, Username: "alice"}},
+	}
+	mc.memberLevel[42] = 30
+	mc.issue[5] = &Issue{IID: 5, Author: UserRef{ID: 42}}
+
+	// Router returns two stages for the single event.
+	router := &stubRouter{stages: []string{"triage", "review"}}
+	p := New(mc, router, "group/project", Options{})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+
+	// Same entity, different stages → 2 pipelines.
+	if mc.pipelineCounter != 2 {
+		t.Errorf("expected 2 pipelines (different stages), got %d", mc.pipelineCounter)
+	}
+}
+
 func TestRunLabelFailureRollback(t *testing.T) {
 	now := time.Now().Truncate(time.Second)
 	since := now.Add(-10 * time.Minute)

@@ -1,14 +1,26 @@
 package mintcore
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
 
-// Org-mode shape labels returned by validateReposScope when a per-org caller
-// uses a broader-than-self same-org repos list. Empty means the default path
-// (foreign empty repos, or same-org requesting-repo-only).
+// errPerRepoCrossRepo is a sentinel returned when a per-repo caller
+// requests repos beyond its own repository. The handler checks this
+// sentinel to decide whether to try repo-level FOREIGN grants.
+var errPerRepoCrossRepo = errors.New("per-repo mint requires repos to be exactly the requesting repository")
+
+// Shape labels returned by validateReposScope. A non-empty shape signals that
+// the caller must take path-specific action (see each constant's doc).
 const (
+	// reposScopeShapeForeignRepoScoped is returned for foreign (cross-org)
+	// requests with non-empty repos. The caller MUST perform repo-level
+	// FOREIGN grant authorization (via mintTokenCrossOrg) before minting.
+	// Treating this shape as "fully authorized" without the follow-up check
+	// would bypass authorization entirely.
+	reposScopeShapeForeignRepoScoped = "foreign-repo-scoped"
+
 	reposScopeShapeFullsendAny      = "fullsend-any"
 	reposScopeShapeEnrolledFullsend = "enrolled-fullsend"
 	reposScopeShapeEnrolledPair     = "enrolled-pair"
@@ -42,7 +54,14 @@ func repositoryBareName(repository string) string {
 
 // validateReposScope enforces mint repos authorization after OIDC verification.
 //
-// Foreign (cross-org) requests may only omit repos (or use "*" → empty).
+// For foreign (cross-org) requests with non-empty repos, this function returns
+// reposScopeShapeForeignRepoScoped to signal that repo-level FOREIGN grant
+// authorization is required. Callers MUST check for this shape and invoke
+// mintTokenCrossOrg — treating a nil error alone as "fully authorized" would
+// bypass repo-level authorization entirely. Foreign requests with empty repos
+// (installation-wide) return an empty shape; org-level FOREIGN authorization
+// is handled by mintTokenCrossOrg's own empty-repos path.
+//
 // Same-org requests differ based on whether the caller is per-repo or per-org:
 //
 //   - Per-repo callers (perRepo=true): must list exactly the requesting
@@ -52,12 +71,18 @@ func repositoryBareName(repository string) string {
 //     other callers: exactly [.fullsend] or {requestingBare, .fullsend}.
 //     Same-org installation-wide (empty repos) is always denied.
 //
-// On success, shape is non-empty only when an org-mode exception matched.
+// On success, a non-empty shape signals a path-specific authorization
+// requirement (foreign-repo-scoped or org-mode exception).
 func validateReposScope(isTargetForeign bool, requestingRepo string, repos []string, perRepo bool) (shape string, err error) {
 	if isTargetForeign {
-		if len(repos) != 0 {
-			return "", fmt.Errorf("foreign mint requires empty repos")
+		if len(repos) > 0 {
+			// Non-empty repos → repo-scoped. Return the sentinel shape
+			// so the caller knows repo-level FOREIGN grant authorization
+			// is required (performed in mintTokenCrossOrg).
+			return reposScopeShapeForeignRepoScoped, nil
 		}
+		// Empty repos → installation-wide (org-level FOREIGN grant
+		// checked in mintTokenCrossOrg).
 		return "", nil
 	}
 
@@ -71,7 +96,7 @@ func validateReposScope(isTargetForeign bool, requestingRepo string, repos []str
 	}
 
 	if perRepo {
-		return "", fmt.Errorf("per-repo mint requires repos to be exactly the requesting repository")
+		return "", errPerRepoCrossRepo
 	}
 
 	// Per-org callers get org-mode shapes.

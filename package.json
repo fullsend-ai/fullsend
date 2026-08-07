@@ -16,10 +16,13 @@
     "check": "svelte-check --tsconfig web/admin/tsconfig.json",
     "lint": "eslint web/admin/src/",
     "lint:fix": "eslint web/admin/src/ --fix",
-    "format": "prettier --write 'web/admin/src/**/*.{svelte,ts,js,css}' 'website/.vitepress/**/*.{vue,ts,js,css}'",
-    "format:check": "prettier --check 'web/admin/src/**/*.{svelte,ts,js,css}' 'website/.vitepress/**/*.{vue,ts,js,css}'",
-    "stylelint": "stylelint 'web/admin/src/**/*.{svelte,css}' 'website/.vitepress/**/*.{vue,css}'",
-    "stylelint:fix": "stylelint 'web/admin/src/**/*.{svelte,css}' 'website/.vitepress/**/*.{vue,css}' --fix"
+    "format": "prettier --write 'web/admin/src/**/*.{svelte,ts,js,css}' 'docs/.vitepress/**/*.{vue,ts,js,css}'",
+    "format:check": "prettier --check 'web/admin/src/**/*.{svelte,ts,js,css}' 'docs/.vitepress/**/*.{vue,ts,js,css}'",
+    "stylelint": "stylelint 'web/admin/src/**/*.{svelte,css}' 'docs/.vitepress/**/*.{vue,css}'",
+    "stylelint:fix": "stylelint 'web/admin/src/**/*.{svelte,css}' 'docs/.vitepress/**/*.{vue,css}' --fix",
+    "docs:dev": "git submodule update --init && vitepress dev docs",
+    "docs:build": "git submodule update --init && vitepress build docs",
+    "docs:preview": "vitepress preview docs"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.0",
@@ -50,7 +53,14 @@
     "typescript-eslint": "^8.59.1",
     "vite": "^6.0.0",
     "vitest": "^4.1.4",
-    "wrangler": "^4.110.0"
+    "wrangler": "^4.110.0",
+    "@vueuse/core": "^12.4.0",
+    "@vueuse/integrations": "^12.4.0",
+    "mark.js": "8.11.1",
+    "mermaid": "~11.16.0",
+    "minisearch": "^7.1.1",
+    "vitepress": "1.6.4",
+    "vue": "^3.5.14"
   },
   "lint-staged": {
     "web/admin/src/**/*.{ts,js}": [
@@ -66,14 +76,14 @@
       "stylelint --fix",
       "prettier --write"
     ],
-    "website/.vitepress/**/*.{ts,js}": [
+    "docs/.vitepress/**/*.{ts,js}": [
       "prettier --write"
     ],
-    "website/.vitepress/**/*.vue": [
+    "docs/.vitepress/**/*.vue": [
       "stylelint --fix",
       "prettier --write"
     ],
-    "website/.vitepress/**/*.css": [
+    "docs/.vitepress/**/*.css": [
       "stylelint --fix",
       "prettier --write"
     ]
@@ -83,7 +93,6 @@
     "github-slugger": "^2.0.0",
     "gray-matter": "^4.0.3",
     "mdast-util-to-string": "^4.0.0",
-    "mermaid": "^11.14.0",
     "rehype-sanitize": "^6.0.0",
     "rehype-slug": "^6.0.0",
     "rehype-stringify": "^10.0.1",

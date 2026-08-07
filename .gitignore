@@ -22,4 +22,8 @@ bin/
 !.env.example
 .transcripts/
 eval/runs/
-docs/superpowers/plans/*.md
+docs/plans/
+docs/superpowers/
+docs/.vitepress/cache/
+docs/.vitepress/.temp/
+docs/.vitepress/dist/

@@ -52,3 +52,8 @@ This revises the installation-wide and unrestricted same-org `repos` consequence
 - Foreign mints cannot carry a non-empty `repos` list; installation-wide foreign tokens remain possible only with empty `repos` plus FOREIGN authorization.
 - Hosted and standalone mints must set `PER_ORG_FOREIGN_COMPAT` explicitly where org-mode dispatch is required; the default is off.
 - ADR 0060's earlier allowance of same-org installation-wide tokens is superseded for `repos` policy by this decision (FOREIGN mechanism unchanged).
+
+> **Later note:** [ADR 0083](0083-repo-level-foreign-allow-list.md) relaxes
+> the foreign empty-repos constraint. Cross-org requests with non-empty
+> `repos` are now permitted when each target repo has a repo-level
+> `FULLSEND_FOREIGN_<ROLE>_REPOS` variable authorizing the caller.

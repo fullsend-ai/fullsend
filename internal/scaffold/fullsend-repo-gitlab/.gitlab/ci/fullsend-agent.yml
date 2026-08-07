@@ -4,10 +4,15 @@
 # retro, prioritize). The dispatch and poll pipelines set STAGE as a
 # pipeline variable; this template reads it to select the agent.
 
+spec:
+  inputs:
+    stage:
+      default: '$STAGE'
+
 stages:
   - agent
 
-agent:
+"fullsend $[[ inputs.stage | expand_vars ]] agent":
   stage: agent
   image:
     name: ghcr.io/fullsend-ai/fullsend-runner:latest
@@ -49,7 +54,7 @@ agent:
         "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
         "token_url": "https://sts.googleapis.com/v1/token",
         "credential_source": { "file": "${OIDC_TOKEN_FILE}" },
-        "service_account_impersonation_url": "https://iam.googleapis.com/v1/projects/-/serviceAccounts/${FULLSEND_SA}:generateAccessToken"
+        "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${FULLSEND_SA}:generateAccessToken"
       }
       CRED
         )
@@ -59,9 +64,11 @@ agent:
 
         # Inference credential setup — write a file-based credential config
         # for Vertex AI so GOOGLE_APPLICATION_CREDENTIALS is available in the
-        # sandbox. Reuses the same OIDC token and SA as forge token WIF but
-        # with the inference-specific WIF provider. GitLab id_tokens last the
-        # full job duration (~1 hour), so no OIDC refresh loop is needed
+        # sandbox. Uses direct federated identity (no SA impersonation) — the
+        # inference WIF principal has roles/aiplatform.user granted directly.
+        # The credential_source.file points to the sandbox path because this
+        # config is read inside the sandbox container. GitLab id_tokens last
+        # the full job duration (~1 hour), so no OIDC refresh loop is needed
         # (unlike GitHub's 5-min expiry tokens).
         if [ -n "${FULLSEND_GCP_WIF_PROVIDER:-}" ]; then
           GCP_CRED_CONFIG_FILE=$(mktemp)
@@ -72,12 +79,12 @@ agent:
         "audience": "//iam.googleapis.com/${FULLSEND_GCP_WIF_PROVIDER}",
         "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
         "token_url": "https://sts.googleapis.com/v1/token",
-        "credential_source": { "file": "${OIDC_TOKEN_FILE}" },
-        "service_account_impersonation_url": "https://iam.googleapis.com/v1/projects/-/serviceAccounts/${FULLSEND_SA}:generateAccessToken"
+        "credential_source": { "file": "/sandbox/workspace/.gcp-oidc-token" }
       }
       INFERENCECRED
           export GOOGLE_APPLICATION_CREDENTIALS="${GCP_CRED_CONFIG_FILE}"
           export ANTHROPIC_VERTEX_PROJECT_ID="${FULLSEND_GCP_PROJECT_ID}"
+          export GCP_OIDC_TOKEN_FILE="${OIDC_TOKEN_FILE}"
         fi
       elif [ "${FULLSEND_CREDENTIAL_MODE:-}" != "variable" ]; then
         echo "ERROR: FULLSEND_CREDENTIAL_MODE must be 'wif' or 'variable', got '${FULLSEND_CREDENTIAL_MODE:-}'"
@@ -93,6 +100,15 @@ agent:
       if [ -n "${FULLSEND_GCP_REGION:-}" ]; then
         export CLOUD_ML_REGION="${FULLSEND_GCP_REGION}"
       fi
+
+      # Resource group self-heal — set process_mode to newest_first so stale
+      # locks from cancelled/deleted pipelines are preempted by new jobs.
+      # Best-effort: failures don't block the job.
+      curl -sf --retry 2 --retry-delay 1 --retry-all-errors \
+        -X PUT "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/resource_groups/fullsend-${STAGE}-${RESOURCE_KEY}" \
+        -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "process_mode=newest_first" > /dev/null 2>&1 || true
 
       # Bot identity verification (#5572 mitigation #1) — uses the
       # Pipelines API to fetch the server-side .source field (unforgeable,
@@ -261,6 +277,22 @@ agent:
           exit 1
         fi
       fi
+
+      # Harness environment variables — export the forge token and entity
+      # URL in the format that harnesses expect.
+      export GITLAB_TOKEN="${FULLSEND_FORGE_TOKEN}"
+
+      # Construct the entity URL for the harness. EVENT_TYPE values from
+      # the poller use prefixed forms: issue_note, issue_label (→ issue
+      # URL) and mr_note, mr_event (→ merge request URL).
+      case "${EVENT_TYPE:-}" in
+        issue_*)
+          export GITLAB_ISSUE_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}/-/issues/${STATUS_IID:-0}"
+          ;;
+        *)
+          export GITLAB_ISSUE_URL="${CI_SERVER_URL}/${CI_PROJECT_PATH}/-/merge_requests/${CI_MERGE_REQUEST_IID:-${STATUS_IID:-0}}"
+          ;;
+      esac
 
       # Run the agent — fullsend run resolves the harness file, reads
       # the image field, and creates the sandbox container via Podman.

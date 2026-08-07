@@ -67,6 +67,8 @@ type githubSetupConfig struct {
 	dryRun               bool
 	direct               bool
 	runtime              string
+	configPreset         string // --config: local path or HTTPS URL to a preset
+	configHash           string // --config-hash: SHA-256 hex digest for preset validation
 }
 
 func newGitHubSetupCmd() *cobra.Command {
@@ -98,6 +100,26 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 			applyDeprecatedVendorBinaryFlag(cmd, &cfg.vendor)
 			if err := validateVendorFlags(cfg.vendor, cfg.fullsendBinary, cfg.fullsendSource); err != nil {
 				return err
+			}
+
+			if cfg.configHash != "" && cfg.configPreset == "" {
+				return fmt.Errorf("--config-hash requires --config")
+			}
+
+			_, _, isRepoTarget := parseTarget(cfg.target)
+			if !isRepoTarget {
+				for _, name := range []string{"config", "config-hash"} {
+					if cmd.Flags().Changed(name) {
+						return fmt.Errorf("--%s is only valid for per-repo setup (fullsend github setup <owner/repo>)", name)
+					}
+				}
+			}
+			if cfg.configPreset != "" {
+				for _, name := range []string{"runtime", "agents"} {
+					if cmd.Flags().Changed(name) {
+						return fmt.Errorf("--%s cannot be used with --config (the preset provides its own configuration)", name)
+					}
+				}
 			}
 
 			if err := validateMintURLHTTPS(cfg.mintURL); err != nil {
@@ -146,6 +168,8 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	cmd.Flags().BoolVar(&cfg.direct, "direct", false, "push scaffold files directly to the default branch instead of creating a PR")
 	cmd.Flags().StringVar(&cfg.runtime, "runtime", "", "agent runtime for per-repo config (e.g. claude, dummy)")
 	addVendorFlags(cmd, &cfg.vendor, &cfg.fullsendBinary, &cfg.fullsendSource)
+	cmd.Flags().StringVar(&cfg.configPreset, "config", "", "local file path or HTTPS URL to a vendor preset (committed as .fullsend/config.base.yaml)")
+	cmd.Flags().StringVar(&cfg.configHash, "config-hash", "", "SHA-256 hex digest to validate the preset content")
 
 	return cmd
 }
@@ -214,17 +238,54 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		printer.StepInfo("Reusing existing FULLSEND_GCP_WIF_PROVIDER from " + cfg.target)
 	}
 
-	perRepoCfg := config.NewPerRepoConfig(roles, cfg.target)
-	if cfg.runtime != "" {
-		perRepoCfg.SetRuntime(cfg.runtime)
-	}
-	if err := perRepoCfg.Validate(); err != nil {
-		return fmt.Errorf("invalid config: %w", err)
+	// --- Preset handling (--config / --config-hash) ---
+	var presetData []byte
+	if cfg.configPreset != "" {
+		printer.StepStart("Fetching preset from " + cfg.configPreset)
+		var fetchErr error
+		presetData, fetchErr = fetchPreset(cfg.configPreset)
+		if fetchErr != nil {
+			printer.StepFail("Failed to fetch preset")
+			return fetchErr
+		}
+		printer.StepDone(fmt.Sprintf("Fetched preset (%d bytes)", len(presetData)))
+
+		if cfg.configHash != "" {
+			printer.StepStart("Validating preset hash")
+			if hashErr := validatePresetHash(presetData, cfg.configHash); hashErr != nil {
+				printer.StepFail("Preset hash validation failed")
+				return hashErr
+			}
+			printer.StepDone("Preset hash validated")
+		} else if isRemotePreset(cfg.configPreset) {
+			printer.StepWarn("Remote preset fetched without --config-hash; content integrity is not verified")
+		}
+
+		if yamlErr := validatePresetYAML(presetData); yamlErr != nil {
+			printer.StepFail("Preset YAML validation failed")
+			return yamlErr
+		}
 	}
 
-	cfgYAML, err := perRepoCfg.Marshal()
-	if err != nil {
-		return fmt.Errorf("marshaling per-repo config: %w", err)
+	// --- Build config files ---
+	var cfgYAML []byte
+	if presetData == nil {
+		// No preset: generate a full per-repo config.yaml as before.
+		perRepoCfg := config.NewPerRepoConfig(roles, cfg.target)
+		if cfg.runtime != "" {
+			perRepoCfg.SetRuntime(cfg.runtime)
+		}
+		if err := perRepoCfg.Validate(); err != nil {
+			return fmt.Errorf("invalid config: %w", err)
+		}
+
+		cfgYAML, err = perRepoCfg.Marshal()
+		if err != nil {
+			return fmt.Errorf("marshaling per-repo config: %w", err)
+		}
+	} else {
+		// Preset provided: config.yaml is a stub overlay.
+		cfgYAML = []byte(stubConfigYAML)
 	}
 
 	upstreamRef, upstreamTag := resolveUpstreamRef()
@@ -239,6 +300,13 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 			Path:    f.Path,
 			Content: f.Content,
 			Mode:    f.Mode,
+		})
+	}
+	if presetData != nil {
+		files = append(files, forge.TreeFile{
+			Path:    ".fullsend/config.base.yaml",
+			Content: presetData,
+			Mode:    "100644",
 		})
 	}
 	files = append(files, forge.TreeFile{

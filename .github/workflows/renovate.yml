@@ -47,3 +47,4 @@ jobs:
           LOG_LEVEL: info
           RENOVATE_REPOSITORIES: ${{ github.repository }}
           RENOVATE_DRY_RUN: ${{ inputs.dry-run || 'false' }}
+          RENOVATE_ALLOWED_COMMANDS: '["^bash scripts/renovate/[a-zA-Z0-9_-]+\\.sh$"]'

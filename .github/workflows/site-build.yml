@@ -4,7 +4,6 @@ on:
   pull_request:
     paths:
       - "web/**"
-      - "website/**"
       - "docs/**"
       - "cloudflare_site/**"
       - "package.json"
@@ -19,7 +18,6 @@ on:
     branches: [main]
     paths:
       - "web/**"
-      - "website/**"
       - "docs/**"
       - "cloudflare_site/**"
       - "package.json"
@@ -51,9 +49,7 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            website/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install JS dependencies
         run: npm ci
@@ -62,8 +58,7 @@ jobs:
         run: npm run build
 
       - name: Build documentation site
-        working-directory: website
-        run: npm ci && npm run build
+        run: npm run docs:build
 
       - name: Prepare deploy bundle
         run: |
@@ -76,7 +71,7 @@ jobs:
           mkdir -p _bundle/public/admin
           cp -a web/dist/admin/. _bundle/public/admin/
           mkdir -p _bundle/public/docs
-          cp -a website/dist/. _bundle/public/docs/
+          cp -a docs/.vitepress/dist/. _bundle/public/docs/
           cp -a cloudflare_site/public/. _bundle/public/
           mkdir -p _bundle/worker
           cp -a cloudflare_site/worker/. _bundle/worker/

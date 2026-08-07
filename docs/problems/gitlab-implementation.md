@@ -2,9 +2,7 @@
 
 > **Note:** The webhook-based dispatch approach described in this document is
 > superseded by [ADR 0067](../ADRs/0067-gitlab-cron-polling-event-dispatch.md)
-> (cron-polling event dispatch), which eliminates webhooks entirely. For the
-> current implementation approach, see
-> [docs/plans/gitlab-cron-polling-implementation.md](../plans/gitlab-cron-polling-implementation.md).
+> (cron-polling event dispatch), which eliminates webhooks entirely.
 > The sections below on CI/CD pipeline mapping, PAT-based auth, and forge
 > interface evolution remain valid reference material.
 

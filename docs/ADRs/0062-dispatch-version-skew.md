@@ -83,7 +83,7 @@ with the merged `reusable-dispatch.yml`.
 
 ## Implementation
 
-See [merge-stage-workflows plan](../plans/merge-stage-workflows.md).
+Stage workflows are merged into `reusable-dispatch.yml`.
 
 ## Consequences
 

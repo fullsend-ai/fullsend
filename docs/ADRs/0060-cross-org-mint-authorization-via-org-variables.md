@@ -93,3 +93,11 @@ Same-org installation-wide tokens and unrestricted `repos` lists are no longer t
 `repos` authorization is decided in
 [ADR 0077](0077-mint-repos-scope-hardening.md). FOREIGN allowlists and `target_org`
 from this ADR are unchanged.
+
+## Later note (repo-level foreign grants)
+
+[ADR 0083](0083-repo-level-foreign-allow-list.md) extends the FOREIGN
+mechanism with repo-level `FULLSEND_FOREIGN_<ROLE>_REPOS` variables.
+Repo-level grants additionally require `actions_variables: read` on the
+target repos (in addition to the `organization_actions_variables: read`
+needed for org-level grants from this ADR).

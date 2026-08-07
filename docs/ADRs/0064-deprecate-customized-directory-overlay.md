@@ -82,9 +82,6 @@ zero files.
 Deprecate and remove the `customized/` directory overlay mechanism introduced
 by ADR 0035.
 
-The implementation plan is in
-[docs/plans/deprecate-customized-directory-overlay.md](../plans/deprecate-customized-directory-overlay.md).
-
 This ADR should be implemented once ADRs 0038, 0045, and 0058 are fully
 implemented and in production.
 

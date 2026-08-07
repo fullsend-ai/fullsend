@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const docsDir = path.resolve(__dirname, "..", "..", "docs");
+const docsDir = path.resolve(__dirname, "..");
 
 /** Non-content entry: template placeholder or repo-metadata (ALL-CAPS) name. */
 function isNonContent(entry: string): boolean {
@@ -134,8 +134,6 @@ export default defineConfig({
   title: "Fullsend",
   description: "Autonomous SDLC agents for your codebase",
 
-  srcDir: "../docs",
-  outDir: "./dist",
   base: "/docs/",
 
   rewrites: {
@@ -234,6 +232,8 @@ export default defineConfig({
             },
             { text: "Running Agents Locally", link: "/guides/user/running-agents-locally" },
             { text: "Jira Integration", link: "/guides/user/jira-integration" },
+            { text: "How To Emit Traces", link: "/guides/user/how-to-emit-traces" },
+            { text: "Tracing with MLflow", link: "/guides/user/tracing-with-mlflow" },
           ],
         },
         {
@@ -257,7 +257,7 @@ export default defineConfig({
             { text: "Mint Administration", link: "/guides/infrastructure/mint-administration" },
             { text: "Standalone Mint", link: "/guides/infrastructure/standalone-mint" },
             { text: "Private Repositories", link: "/guides/infrastructure/private-repositories" },
-            { text: "Distributed Tracing", link: "/guides/infrastructure/distributed-tracing" },
+            { text: "Tracing Reference", link: "/guides/infrastructure/distributed-tracing" },
             { text: "Advanced Setup", link: "/guides/infrastructure/advanced-setup" },
             {
               text: "Layered Config Reference",
@@ -278,6 +278,7 @@ export default defineConfig({
                 { text: "CLI Internals", link: "/guides/dev/cli-internals" },
                 { text: "E2E Testing", link: "/guides/dev/e2e-testing" },
                 { text: "Testing Workflows", link: "/guides/dev/testing-workflows" },
+                { text: "Tracing Internals", link: "/guides/dev/tracing" },
               ],
             },
             {
@@ -286,6 +287,7 @@ export default defineConfig({
               items: getMarkdownFiles("contributing", "contributing"),
             },
             { text: "Roadmap", link: "/roadmap" },
+            { text: "Archived roadmaps", link: "/archived-roadmap" },
             { text: "Landscape", link: "/landscape" },
             {
               text: "Architecture Decisions",
@@ -314,22 +316,7 @@ export default defineConfig({
         {
           text: "Internals",
           collapsed: true,
-          items: [
-            { text: "Admin OAuth Worker", link: "/admin-oauth-worker" },
-            {
-              text: "Specifications",
-              collapsed: true,
-              items: getMarkdownFiles("superpowers/specs", "superpowers/specs"),
-            },
-            {
-              text: "Implementation Plans",
-              collapsed: true,
-              items: [
-                ...getMarkdownFiles("superpowers/plans", "superpowers/plans"),
-                ...getMarkdownFiles("plans", "plans"),
-              ],
-            },
-          ],
+          items: [{ text: "Admin OAuth Worker", link: "/admin-oauth-worker" }],
         },
       ],
     },
@@ -348,14 +335,7 @@ export default defineConfig({
           { label: "Guides", prefixes: ["/docs/guides/", "/docs/agents/", "/docs/cli/"] },
           {
             label: "Design Docs",
-            prefixes: [
-              "/docs/problems/",
-              "/docs/ADRs/",
-              "/docs/superpowers/",
-              "/docs/plans/",
-              "/docs/normative/",
-              "/docs/spikes/",
-            ],
+            prefixes: ["/docs/problems/", "/docs/ADRs/", "/docs/normative/", "/docs/spikes/"],
           },
           { label: "Experiments", prefixes: ["/docs/experiments/"] },
           { label: "Contributing", prefixes: ["/docs/contributing/"] },
@@ -379,6 +359,7 @@ export default defineConfig({
           replacement: path.resolve(
             __dirname,
             "..",
+            "..",
             "node_modules",
             "vue",
             "server-renderer",
@@ -387,12 +368,13 @@ export default defineConfig({
         },
         {
           find: "vue",
-          replacement: path.resolve(__dirname, "..", "node_modules", "vue"),
+          replacement: path.resolve(__dirname, "..", "..", "node_modules", "vue"),
         },
         {
           find: "mermaid",
           replacement: path.resolve(
             __dirname,
+            "..",
             "..",
             "node_modules",
             "mermaid",

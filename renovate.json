@@ -30,9 +30,24 @@
       "groupName": "cloudflare-workers"
     },
     {
-      "description": "Disable automerge for tirith — Renovate bumps the version but SHA256 checksums need manual refresh, so the PR always needs human intervention",
+      "description": "After cosign version bump, verify the new binary's sigstore signature and update COSIGN_SHA256",
+      "matchPackageNames": ["sigstore/cosign"],
+      "automerge": false,
+      "postUpgradeTasks": {
+        "commands": ["bash scripts/renovate/update-cosign-checksum.sh"],
+        "fileFilters": ["scripts/renovate/update-tirith-checksums.sh"],
+        "executionMode": "branch"
+      }
+    },
+    {
+      "description": "After tirith version bump, fetch and update SHA256 checksums from the release",
       "matchPackageNames": ["sheeki03/tirith"],
-      "automerge": false
+      "automerge": false,
+      "postUpgradeTasks": {
+        "commands": ["bash scripts/renovate/update-tirith-checksums.sh"],
+        "fileFilters": ["images/sandbox/Containerfile"],
+        "executionMode": "branch"
+      }
     }
   ],
   "postUpdateOptions": ["gomodTidy"],
@@ -89,12 +104,23 @@
     },
     {
       "customType": "regex",
-      "description": "Track tirith CLI version pin in the sandbox image. TIRITH_SHA256_{AMD64,ARM64} must be refreshed manually from the release checksums.txt at https://github.com/sheeki03/tirith/releases — the image build fails on checksum mismatch until they are.",
+      "description": "Track tirith CLI version pin in the sandbox image. SHA256 checksums are updated automatically by postUpgradeTasks (scripts/renovate/update-tirith-checksums.sh).",
       "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
       "matchStrings": [
         "ARG TIRITH_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
       ],
       "depNameTemplate": "sheeki03/tirith",
+      "datasourceTemplate": "github-releases",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "customType": "regex",
+      "description": "Track cosign version pin in update-tirith-checksums.sh. COSIGN_SHA256 is updated automatically by postUpgradeTasks (scripts/renovate/update-cosign-checksum.sh).",
+      "managerFilePatterns": ["/^scripts/renovate/update-tirith-checksums\\.sh$/"],
+      "matchStrings": [
+        "COSIGN_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "sigstore/cosign",
       "datasourceTemplate": "github-releases",
       "extractVersionTemplate": "^v(?<version>.*)$"
     }

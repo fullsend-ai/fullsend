@@ -616,6 +616,63 @@ func (c *LiveClient) ListPipelineSchedules(ctx context.Context, owner, repo stri
 }
 
 // ---------------------------------------------------------------------------
+// Resource groups
+// ---------------------------------------------------------------------------
+
+// ResourceGroup represents a GitLab project resource group.
+type ResourceGroup struct {
+	Key         string `json:"key"`
+	ProcessMode string `json:"process_mode"`
+}
+
+// ListResourceGroups returns all resource groups for the project.
+// Results are paginated; the method follows pagination until all groups
+// are fetched.
+func (c *LiveClient) ListResourceGroups(ctx context.Context, owner, repo string) ([]ResourceGroup, error) {
+	const perPage = 100
+	const maxPages = 100
+	proj := projectPath(owner, repo)
+	var result []ResourceGroup
+
+	for page := 1; page <= maxPages; page++ {
+		path := fmt.Sprintf("/projects/%s/resource_groups?per_page=%d&page=%d", proj, perPage, page)
+		resp, err := c.get(ctx, path)
+		if err != nil {
+			return nil, fmt.Errorf("list resource groups page %d: %w", page, err)
+		}
+
+		var groups []ResourceGroup
+		if err := decodeJSON(resp, &groups); err != nil {
+			return nil, fmt.Errorf("decode resource groups page %d: %w", page, err)
+		}
+
+		result = append(result, groups...)
+
+		if len(groups) < perPage {
+			return result, nil
+		}
+	}
+
+	return nil, fmt.Errorf("list resource groups: pagination exceeded %d pages", maxPages)
+}
+
+// UpdateResourceGroupProcessMode sets the process_mode for a resource group.
+// Valid modes are "unordered", "oldest_first", and "newest_first".
+func (c *LiveClient) UpdateResourceGroupProcessMode(ctx context.Context, owner, repo, key, processMode string) error {
+	path := fmt.Sprintf("/projects/%s/resource_groups/%s",
+		projectPath(owner, repo), url.PathEscape(key))
+	body := map[string]any{
+		"process_mode": processMode,
+	}
+	resp, err := c.put(ctx, path, body)
+	if err != nil {
+		return fmt.Errorf("update resource group %s process_mode: %w", key, err)
+	}
+	resp.Body.Close()
+	return nil
+}
+
+// ---------------------------------------------------------------------------
 // CI variables (branch-restricted)
 // ---------------------------------------------------------------------------
 

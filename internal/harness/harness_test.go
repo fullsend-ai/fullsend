@@ -2069,6 +2069,19 @@ func TestValidateResourceTypes_PluginBlobURLRejected(t *testing.T) {
 	assert.Contains(t, err.Error(), "plugins[0] URL must use /tree/ (directory), not /blob/ (single file)")
 }
 
+func TestValidateResourceTypes_SkillRepoRootURLRejected(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "test",
+		Skills: []string{
+			"https://github.com/org/myskills/tree/main#sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		},
+	}
+	err := h.ValidateResourceTypes()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "skills[0] URL must point to a directory inside the repo, not the repo root")
+}
+
 func TestValidateResourceTypes_PluginRepoRootURLRejected(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",

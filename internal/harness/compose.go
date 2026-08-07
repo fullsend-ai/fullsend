@@ -140,6 +140,12 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 				return nil, nil, fmt.Errorf("resolving URL-sourced providers: %w", err)
 			}
 			deps = append(deps, providerDeps...)
+
+			pluginDeps, err := resolveBasePlugins(ctx, child, opts.SourceURL, opts.OrgAllowlist, opts)
+			if err != nil {
+				return nil, nil, fmt.Errorf("resolving URL-sourced plugins: %w", err)
+			}
+			deps = append(deps, pluginDeps...)
 		}
 
 		if err := child.validateForge(); err != nil {
@@ -185,7 +191,8 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	child.Base = ""
 
 	// When the harness was fetched from a URL, the child may still have
-	// relative resource paths (skills, agent, policy, host_files, scripts)
+	// relative resource paths (including scripts, agent, policy, skills,
+	// host_files, profiles, providers, and plugins)
 	// that originated in the child harness — not the base. After merge,
 	// base resources are absolute cache paths but the child's own relative
 	// paths remain unresolved. Resolve them against the SourceURL now,
@@ -229,6 +236,12 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 			return nil, nil, fmt.Errorf("resolving URL-sourced providers after base composition: %w", err)
 		}
 		deps = append(deps, providerDeps...)
+
+		pluginDeps, err := resolveBasePlugins(ctx, child, opts.SourceURL, allowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving URL-sourced plugins after base composition: %w", err)
+		}
+		deps = append(deps, pluginDeps...)
 	}
 
 	// ResolveForge once on the merged result
@@ -331,6 +344,12 @@ func loadBaseChain(
 			return nil, nil, fmt.Errorf("resolving base providers from %s: %w", cleanURL, err)
 		}
 		deps = append(deps, providerDeps...)
+
+		pluginDeps, err := resolveBasePlugins(ctx, base, baseRef, allowlist, opts)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving base plugins from %s: %w", cleanURL, err)
+		}
+		deps = append(deps, pluginDeps...)
 
 		baseDir = childDir
 	} else {
@@ -1024,6 +1043,44 @@ func resolveBaseProviders(ctx context.Context, base *Harness, baseURL string, al
 	return deps, nil
 }
 
+// resolveBasePlugins fetches plugin directories with relative paths from a
+// URL-referenced base harness, following the same pattern as
+// resolveBaseResources. Plugins are directories (fetched via fetchBasePlugin)
+// that use plugin.json as their marker file instead of SKILL.md.
+func resolveBasePlugins(ctx context.Context, base *Harness, baseURL string, allowlist []string, opts ComposeOpts) ([]Dependency, error) {
+	if len(base.Plugins) == 0 {
+		return nil, nil
+	}
+
+	baseURLDir := urlParentDirPrefix(baseURL)
+	if baseURLDir == "" {
+		return nil, fmt.Errorf("cannot determine directory from base URL")
+	}
+
+	var deps []Dependency
+
+	for i, p := range base.Plugins {
+		if p == "" || IsURL(p) || isFullsendCachePath(p, opts.WorkspaceRoot) {
+			continue
+		}
+		fieldName := fmt.Sprintf("plugins[%d]", i)
+		if err := validateBaseRelPath(fieldName, p); err != nil {
+			return nil, err
+		}
+		if baseName := filepath.Base(p); !ValidPluginBasename(baseName) {
+			return nil, fmt.Errorf("base %s path %q does not end in a valid plugin basename (allowed: a-z, A-Z, 0-9, _, -)", fieldName, p)
+		}
+		dep, localDir, err := fetchBasePlugin(ctx, fieldName, baseURLDir, p, allowlist, opts)
+		if err != nil {
+			return nil, err
+		}
+		base.Plugins[i] = localDir
+		deps = append(deps, dep)
+	}
+
+	return deps, nil
+}
+
 // validateBaseRelPath validates that a relative path inherited from a URL base
 // is safe to resolve. Rejects null bytes, query/fragment markers, URLs,
 // absolute paths, and path traversal segments.
@@ -1442,6 +1499,148 @@ func fetchBaseSkillDir(ctx context.Context, field, skillDirURL, skillFileURL, sk
 	return Dependency{
 		Field:     field,
 		URL:       skillFileURL,
+		LocalPath: treePath,
+		SHA256:    treeHash,
+		FetchedAt: fetchedAt,
+		CacheHit:  false,
+		Type:      "directory",
+	}, treePath, nil
+}
+
+// fetchBasePlugin fetches a plugin directory from a URL-referenced base harness.
+// It mirrors fetchBaseSkill but uses plugin.json as the marker file instead of
+// SKILL.md, and uses "plugin:" as the cache index prefix.
+func fetchBasePlugin(ctx context.Context, field, baseURLDir, pluginPath string, allowlist []string, opts ComposeOpts) (Dependency, string, error) {
+	pluginDirURL := baseURLDir + pluginPath
+	pluginFileURL := pluginDirURL + "/plugin.json"
+
+	allowedBy := matchingAllowedPrefix(pluginFileURL, allowlist)
+	if allowedBy == "" {
+		return Dependency{}, "", fmt.Errorf("base %s: URL %q is not in allowed_remote_resources", field, pluginFileURL)
+	}
+
+	hash, indexHit := urlIndexLookup(opts.WorkspaceRoot, pluginFileURL)
+	var staleFallback *Dependency
+	var staleFallbackPath string
+	if indexHit {
+		treeHash, ok := urlIndexLookup(opts.WorkspaceRoot, "plugin:"+pluginFileURL)
+		if ok {
+			treePath, entry, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
+			if err == nil && treePath != "" {
+				treePath, err = fetch.CacheNamedSymlink(treePath, filepath.Base(pluginPath))
+				if err != nil {
+					return Dependency{}, "", fmt.Errorf("base %s: %w", field, err)
+				}
+				cachedDep := Dependency{
+					Field:     field,
+					URL:       pluginFileURL,
+					LocalPath: treePath,
+					SHA256:    treeHash,
+					FetchedAt: entry.FetchTime,
+					CacheHit:  true,
+					Type:      "directory",
+				}
+				if !entry.FullListing && !opts.FetchPolicy.Offline {
+					staleFallback = &cachedDep
+					staleFallbackPath = treePath
+				} else {
+					if aErr := auditBaseFetch(opts, pluginFileURL, treeHash, allowedBy, true, entry.FetchTime, "plugin"); aErr != nil {
+						return Dependency{}, "", aErr
+					}
+					if cErr := ChmodPluginDir(treePath); cErr != nil {
+						return Dependency{}, "", fmt.Errorf("base %s: setting plugin permissions: %w", field, cErr)
+					}
+					return cachedDep, treePath, nil
+				}
+			}
+		}
+		_ = hash
+	}
+
+	if opts.FetchPolicy.Offline {
+		// staleFallback is only set when Offline=false (line above), so it
+		// is always nil here; skip the nil guard and go straight to the
+		// cache-miss error.
+		return Dependency{}, "", fmt.Errorf("base %s: URL %s not in cache and offline mode is enabled (run 'fullsend lock' first)", field, pluginFileURL)
+	}
+
+	dep, dirPath, err := fetchBasePluginDir(ctx, field, pluginDirURL, pluginFileURL, pluginPath, allowedBy, allowlist, opts)
+	if err != nil && staleFallback != nil {
+		if !isTransientFetchError(err) {
+			return Dependency{}, "", err
+		}
+		staleFallback.Warning = fmt.Sprintf("using stale cached content (re-fetch failed: %s)", err)
+		if cErr := ChmodPluginDir(staleFallbackPath); cErr != nil {
+			return Dependency{}, "", fmt.Errorf("base %s: setting plugin permissions: %w", field, cErr)
+		}
+		return *staleFallback, staleFallbackPath, nil
+	}
+	return dep, dirPath, err
+}
+
+// fetchBasePluginDir fetches the full plugin directory via git sparse checkout.
+func fetchBasePluginDir(ctx context.Context, field, pluginDirURL, pluginFileURL, pluginPath, allowedBy string, allowlist []string, opts ComposeOpts) (Dependency, string, error) {
+	dirPrefix := pluginDirURL + "/"
+	if ab := matchingAllowedPrefix(dirPrefix, allowlist); ab == "" {
+		return Dependency{}, "", fmt.Errorf("base %s: plugin directory URL %q is not in allowed_remote_resources", field, dirPrefix)
+	}
+
+	forgeInfo, err := forge.ParseRawContentURL(pluginDirURL)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: parsing raw URL for plugin directory fetch: %w", field, err)
+	}
+
+	fetcher := opts.TreeFetcher
+	if fetcher == nil {
+		fetcher = gitfetch.FetchTree
+	}
+
+	files, err := fetcher(ctx, forgeInfo.CloneURL(), forgeInfo.Path, forgeInfo.Ref, opts.GitToken)
+	if err != nil {
+		if opts.GitToken == "" {
+			return Dependency{}, "", fmt.Errorf("base %s: fetching plugin directory %s: %w (hint: set GH_TOKEN or GITHUB_TOKEN for private repos)", field, pluginPath, err)
+		}
+		return Dependency{}, "", fmt.Errorf("base %s: fetching plugin directory %s: %w", field, pluginPath, err)
+	}
+
+	if _, ok := files["plugin.json"]; !ok {
+		return Dependency{}, "", fmt.Errorf("base %s: plugin directory %s has no plugin.json", field, pluginPath)
+	}
+
+	treeHash, err := fetch.CachePutDir(opts.WorkspaceRoot, pluginFileURL, files, fetch.DirCachePutOpts{FullListing: true})
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: caching plugin directory: %w", field, err)
+	}
+
+	treePath, _, err := fetch.CacheGetDir(opts.WorkspaceRoot, treeHash)
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: reading cached plugin directory: %w", field, err)
+	}
+
+	treePath, err = fetch.CacheNamedSymlink(treePath, filepath.Base(forgeInfo.Path))
+	if err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: %w", field, err)
+	}
+
+	if iErr := urlIndexPut(opts.WorkspaceRoot, pluginFileURL, treeHash); iErr != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: updating URL index: %w", field, iErr)
+	}
+	if iErr := urlIndexPut(opts.WorkspaceRoot, "plugin:"+pluginFileURL, treeHash); iErr != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: updating URL index for plugin tree: %w", field, iErr)
+	}
+
+	fetchedAt := time.Now().UTC()
+	if aErr := auditBaseFetch(opts, pluginFileURL, treeHash, allowedBy, false, fetchedAt, "plugin"); aErr != nil {
+		return Dependency{}, "", aErr
+	}
+
+	if err := ChmodPluginDir(treePath); err != nil {
+		return Dependency{}, "", fmt.Errorf("base %s: setting plugin permissions: %w", field, err)
+	}
+
+	return Dependency{
+		Field:     field,
+		URL:       pluginFileURL,
 		LocalPath: treePath,
 		SHA256:    treeHash,
 		FetchedAt: fetchedAt,

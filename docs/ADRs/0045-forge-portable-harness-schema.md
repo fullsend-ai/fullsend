@@ -706,9 +706,8 @@ forge-specific artifact. The harness and agent definition are portable.
   key in existing config files, so v1 compatibility is preserved.
   Phase 3 (PR 6) added `omitempty` as a deprecation step; Phase 4
   completed the removal. No v2 schema bump was needed.
-  *Note: Phase 3 PR 6 added `omitempty` to the `Agents` field. The
-  Phase 4 plan (`docs/plans/adr-0045-forge-portable-harness-phase4.md`)
-  recommends staying on v1 — removal is backward-compatible since
+  *Note: Phase 3 PR 6 added `omitempty` to the `Agents` field.
+  Staying on v1 is safe — removal is backward-compatible since
   `yaml.Unmarshal` silently ignores unknown keys.*
 
 - **config.yaml agents: block removal timeline.** The `agents:` block is

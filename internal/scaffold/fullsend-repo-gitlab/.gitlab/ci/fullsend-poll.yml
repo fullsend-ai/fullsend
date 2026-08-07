@@ -1,7 +1,12 @@
 ---
 # fullsend-stage: poll
 
-poll-events:
+spec:
+  inputs:
+    schedule_name:
+      default: '$CI_PIPELINE_SCHEDULE_DESCRIPTION'
+
+"$[[ inputs.schedule_name | expand_vars ]]":
   stage: poll
   image:
     name: ghcr.io/fullsend-ai/fullsend-runner:latest
@@ -42,7 +47,7 @@ poll-events:
         "subject_token_type": "urn:ietf:params:oauth:token-type:jwt",
         "token_url": "https://sts.googleapis.com/v1/token",
         "credential_source": { "file": "${OIDC_TOKEN_FILE}" },
-        "service_account_impersonation_url": "https://iam.googleapis.com/v1/projects/-/serviceAccounts/${FULLSEND_SA}:generateAccessToken"
+        "service_account_impersonation_url": "https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${FULLSEND_SA}:generateAccessToken"
       }
       CRED
         )
@@ -60,6 +65,15 @@ poll-events:
         echo "ERROR: FULLSEND_FORGE_TOKEN is not set after credential retrieval"
         exit 1
       fi
+
+      # Resource group self-heal — set process_mode to newest_first so stale
+      # locks from cancelled/deleted pipelines are preempted by new jobs.
+      # Best-effort: failures don't block the job.
+      curl -sf --retry 2 --retry-delay 1 --retry-all-errors \
+        -X PUT "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/resource_groups/fullsend-poll" \
+        -H "PRIVATE-TOKEN: ${FULLSEND_FORGE_TOKEN}" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        -d "process_mode=newest_first" > /dev/null 2>&1 || true
 
       # Run the poller — dispatches pipelines directly via the GitLab API.
       # No child pipeline generation needed: the poller creates standalone

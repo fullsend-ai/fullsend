@@ -754,19 +754,13 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 					return resolve.ResolveResult{}, fmt.Errorf("naming cached script dir for %s: %w", lockDep.Field, symlinkErr)
 				}
 				localPath = filepath.Join(namedPath, scriptName)
-			} else if strings.HasPrefix(lockDep.Field, "skills[") || strings.HasPrefix(lockDep.Field, "plugins[") {
-				dirName := path.Base(lockDep.URL)
-				if strings.HasPrefix(lockDep.Field, "plugins[") {
-					forgeInfo, parseErr := forge.ParseForgeURL(lockDep.URL)
-					if parseErr == nil {
-						if forgeInfo.Path == "" {
-							return resolve.ResolveResult{}, fmt.Errorf("%s: URL must point to a directory inside the repo, not the repo root", lockDep.Field)
-						}
-						dirName = filepath.Base(forgeInfo.Path)
-					}
-					if !harness.ValidPluginBasename(dirName) {
-						return resolve.ResolveResult{}, fmt.Errorf("%s: cached basename %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", lockDep.Field, dirName)
-					}
+			} else if isTreeLockField(lockDep.Field) {
+				dirName, dirErr := lockTreeDirName(lockDep.Field, lockDep.URL)
+				if dirErr != nil {
+					return resolve.ResolveResult{}, dirErr
+				}
+				if strings.HasPrefix(lockDep.Field, "plugins[") && !harness.ValidPluginBasename(dirName) {
+					return resolve.ResolveResult{}, fmt.Errorf("%s: cached basename %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", lockDep.Field, dirName)
 				}
 				namedPath, symlinkErr := fetch.CacheNamedSymlink(treePath, dirName)
 				if symlinkErr != nil {
@@ -958,6 +952,12 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			fmt.Sscanf(m.field, "plugins[%d]", &idx)
 			h.Plugins[idx] = m.localPath
 			urlResolvedPlugins[m.localPath] = true
+		case strings.HasPrefix(m.field, "forge.") && strings.Contains(m.field, ".skills["):
+			// Forge-scoped skills are resolved during LoadWithBase and merged
+			// into h.Skills by ResolveForge before resolveFromLock runs; the
+			// correctly named path is already in place. This entry exists for
+			// cache verification only — appending it via the default case
+			// would duplicate the skill under the cache's internal tree name.
 		default:
 			var idx int
 			if _, err := fmt.Sscanf(m.field, "skills[%d]", &idx); err == nil && idx >= 0 && idx < len(h.Skills) {
@@ -1050,6 +1050,45 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 		Profiles:  profiles,
 		Providers: providers,
 	}, nil
+}
+
+// isTreeLockField reports whether a lock dependency field names a cached
+// directory tree whose local basename must be derived from the recorded URL:
+// skills[N] and plugins[N] slots, plus forge-scoped skills
+// (forge.<platform>.skills[N], see resolveBaseResources in
+// internal/harness/compose.go). ForgeConfig has no plugins field.
+func isTreeLockField(field string) bool {
+	return strings.HasPrefix(field, "skills[") ||
+		strings.HasPrefix(field, "plugins[") ||
+		(strings.HasPrefix(field, "forge.") && strings.Contains(field, ".skills["))
+}
+
+// lockTreeDirName derives the local directory basename for a tree lock
+// dependency (see isTreeLockField) from its recorded URL. Direct URL entries
+// use forge tree URLs whose deepest path segment is the directory name.
+// Base-composed entries (see fetchBaseSkill/fetchBasePlugin in
+// internal/harness/compose.go) record raw.githubusercontent.com URLs pointing
+// at the marker file (SKILL.md or plugin.json); only those two names are
+// treated as markers and stripped — any other raw URL keeps its last segment
+// as the directory name.
+func lockTreeDirName(field, lockURL string) (string, error) {
+	if forgeInfo, err := forge.ParseForgeURL(lockURL); err == nil {
+		if forgeInfo.Path == "" {
+			return "", fmt.Errorf("%s: URL must point to a directory inside the repo, not the repo root", field)
+		}
+		return filepath.Base(forgeInfo.Path), nil
+	}
+	if rawInfo, err := forge.ParseRawContentURL(lockURL); err == nil {
+		if last := path.Base(rawInfo.Path); last == "SKILL.md" || last == "plugin.json" {
+			dir := path.Dir(rawInfo.Path)
+			if dir == "." {
+				return "", fmt.Errorf("%s: URL must point to a marker file inside a directory, not the repo root", field)
+			}
+			return filepath.Base(dir), nil
+		}
+		return path.Base(rawInfo.Path), nil
+	}
+	return path.Base(lockURL), nil
 }
 
 func isScriptLockField(field string) bool {

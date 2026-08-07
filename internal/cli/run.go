@@ -82,10 +82,9 @@ var defaultAgentsRepoURLPrefix = "https://raw.githubusercontent.com/fullsend-ai/
 // fullsend-ai/agents repository. Only these agents are eligible for the
 // runtime fallback — custom agents are never tried against the agents repo.
 //
-// This is a transitional mechanism to support agent extraction (see
-// docs/plans/agent-extraction-to-agents-repo.md). It will be removed once
-// all users have migrated to config-driven agent registration (ADR 0058
-// Phase 5 / extraction plan Step 7).
+// This is a transitional mechanism to support agent extraction. It will
+// be removed once all users have migrated to config-driven agent
+// registration (ADR 0058 Phase 5).
 var defaultAgentsRepoKnownAgents = map[string]bool{
 	"triage":     true,
 	"code":       true,

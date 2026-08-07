@@ -11,7 +11,10 @@ import (
 	"log"
 	"net/http"
 	"path/filepath"
+	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -74,6 +77,43 @@ type Service struct {
 	uploader      Uploader
 	skillDestDir  string
 	limiter       *RateLimiter
+
+	// uploaded tracks, per destination remotePath, the full content hash
+	// last uploaded there during this service's lifetime. A second
+	// HandleFetch for the same destination skips the upload only when the
+	// stored hash matches the current expectedHash, avoiding the rm-rf →
+	// mkdir → extract window where the destination is absent. Storing the
+	// full hash (not just presence) means a remotePath collision between
+	// two genuinely different contents — remotePath embeds only a
+	// truncated hash prefix — self-heals with a real re-upload instead of
+	// silently serving stale content, matching pre-fix behavior for that
+	// rare case.
+	uploaded sync.Map // remotePath → expectedHash (string)
+
+	// uploadGroup coalesces concurrent uploads that are truly identical
+	// requests (same destination AND same content hash) so only one
+	// UploadSkillDir call runs for them. It is keyed on remotePath+"|"+hash,
+	// not remotePath alone: singleflight.Do shares one call's result with
+	// every concurrent caller sharing its key, so if two different hashes
+	// collided on the same truncated remotePath and shared a plain
+	// remotePath key, the losing caller would get the leader's result
+	// without ever running its own hash check — silently misreporting its
+	// own (different) content as uploaded. Keying on the pair means a
+	// concurrent collision runs two independent closures instead, each
+	// doing its own uploaded-map check inside Do (not before it, so a
+	// staggered caller arriving just after a matching leader stores can't
+	// slip past both the outer check and the singleflight window either).
+	//
+	// Accepted tradeoff: this means two genuinely different hashes that
+	// collide on the same remotePath (still possible — the physical
+	// destination name is only a truncated prefix) are no longer
+	// serialized against each other at all, so their UploadSkillDir calls
+	// can race on the filesystem if they arrive concurrently. That is
+	// deliberately accepted rather than fixed: a real 32-bit prefix
+	// collision under a matching basename is astronomically unlikely, and
+	// closing it would require a second, remotePath-only lock purely to
+	// gate the filesystem write — not worth the complexity for this case.
+	uploadGroup singleflight.Group
 }
 
 // New creates a runtime fetch service.
@@ -206,7 +246,18 @@ func (s *Service) HandleFetch(ctx context.Context, req FetchRequest) (FetchRespo
 	remotePath := filepath.Join(s.skillDestDir, hashPrefix+"-"+basename)
 
 	if s.uploader != nil {
-		if err := s.uploader.UploadSkillDir(s.sandboxName, treePath, remotePath); err != nil {
+		uploadKey := remotePath + "|" + expectedHash
+		_, err, _ := s.uploadGroup.Do(uploadKey, func() (any, error) {
+			if h, ok := s.uploaded.Load(remotePath); ok && h.(string) == expectedHash {
+				return nil, nil
+			}
+			if uploadErr := s.uploader.UploadSkillDir(s.sandboxName, treePath, remotePath); uploadErr != nil {
+				return nil, uploadErr
+			}
+			s.uploaded.Store(remotePath, expectedHash)
+			return nil, nil
+		})
+		if err != nil {
 			return FetchResponse{}, &fetchError{"failed to upload skill to sandbox", http.StatusInternalServerError}
 		}
 	}

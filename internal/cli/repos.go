@@ -733,6 +733,10 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 			if schedErr != nil {
 				printer.StepWarn(fmt.Sprintf("[%s] Pipeline schedule setup failed: %v", repoFullName, schedErr))
 			}
+
+			// Break stale resource group locks that may have been left by
+			// cancelled or deleted pipelines during a previous install.
+			healGitLabResourceGroups(ctx, glClient, printer, r.Owner, r.Repo)
 		}
 	}
 

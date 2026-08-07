@@ -167,7 +167,7 @@ mint-cf-worker-test: wasm-stage
 	@echo "==> Worker smoke tests passed"
 
 lint-md-links:
-	lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments '**/*.md'
+	lychee --offline --no-progress --include-fragments --exclude-path node_modules --exclude-path experiments --exclude-path docs/archived-roadmap.md '**/*.md'
 
 define run-timed
 	@start=$$(date +%s); \

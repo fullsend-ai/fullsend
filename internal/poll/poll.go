@@ -89,6 +89,15 @@ func (p *Poller) Run(ctx context.Context) error {
 	var minFailedAt time.Time
 	failedLabelEvents := make(map[int]map[string]bool)
 
+	// Entity-level deduplication: within a single poll cycle, dispatch
+	// at most one pipeline per stage+entity (e.g. "triage:issue-3").
+	// Multiple /fs-triage comments on the same issue produce distinct
+	// event Keys (note-123, note-456) but share the same entity key.
+	// Without this, each comment dispatches a separate pipeline that
+	// blocks on the same resource group. The first event per entity
+	// wins; subsequent events are skipped.
+	dispatchedEntities := make(map[string]bool)
+
 	for _, event := range events {
 		eventKey := event.Key()
 
@@ -139,6 +148,13 @@ func (p *Poller) Run(ctx context.Context) error {
 			if _, ok := previouslyDispatched[dispatchKey]; ok {
 				continue
 			}
+			// Entity-level dedup: skip if this stage+entity was
+			// already dispatched in the current poll cycle.
+			entityKey := stage + ":" + resourceKey(event)
+			if dispatchedEntities[entityKey] {
+				log.Printf("  skipping %s for %s (already dispatched for entity %s)", stage, eventKey, entityKey)
+				continue
+			}
 			allSkipped = false
 			if err := p.dispatch(ctx, p.owner, p.repo, stage, event); err != nil {
 				log.Printf("dispatch %s for %s failed: %v", stage, eventKey, err)
@@ -150,6 +166,7 @@ func (p *Poller) Run(ctx context.Context) error {
 			dispatched++
 			anyDispatched = true
 			newDispatchedKeys[dispatchKey] = event.UpdatedAt.Unix()
+			dispatchedEntities[entityKey] = true
 			if event.UpdatedAt.After(maxUpdatedAt) {
 				maxUpdatedAt = event.UpdatedAt
 			}

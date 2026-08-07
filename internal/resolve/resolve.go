@@ -826,14 +826,5 @@ func resolveSkillTransitiveDeps(ctx context.Context, parentURL, skillDirPath str
 // files (markdown, JSON) executable is harmless, and the SHA-256
 // integrity pin constrains content, not permissions.
 func chmodPluginDir(dir string) error {
-	resolved, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return err
-	}
-	return filepath.Walk(resolved, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return err
-		}
-		return os.Chmod(path, 0o755)
-	})
+	return harness.ChmodPluginDir(dir)
 }

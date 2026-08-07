@@ -29,6 +29,22 @@ func ValidPluginBasename(name string) bool {
 	return validPluginName.MatchString(name)
 }
 
+// ChmodPluginDir makes all files under dir executable (0755). It resolves
+// symlinks first so it operates on the real directory tree. Plugins may
+// contain scripts or MCP server binaries that need the execute bit.
+func ChmodPluginDir(dir string) error {
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return err
+	}
+	return filepath.Walk(resolved, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		return os.Chmod(path, 0o755)
+	})
+}
+
 // HostFile describes a file on the host that must be copied into the sandbox
 // during bootstrap. Src may contain ${VAR} references that are expanded from
 // the host environment at bootstrap time. Use this for any file that must
@@ -867,6 +883,9 @@ func (h *Harness) ValidateResourceTypes() error {
 			}
 			if info.PathType == "blob" {
 				return fmt.Errorf("skills[%d] URL must use /tree/ (directory), not /blob/ (single file) — skills are directories", i)
+			}
+			if info.Path == "" {
+				return fmt.Errorf("skills[%d] URL must point to a directory inside the repo, not the repo root", i)
 			}
 		}
 	}

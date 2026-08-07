@@ -296,8 +296,7 @@ container image, invoked by a scheduled pipeline on the protected default
 branch. It reads a timestamp watermark, queries the GitLab API for events
 since the last poll, emits a `NormalizedEvent` per detected change, passes
 events to the dispatch core for authorization and harness CEL evaluation, and
-advances the watermark. See the [companion implementation plan](../plans/gitlab-cron-polling-implementation.md)
-for detailed pseudocode and numbered steps.
+advances the watermark.
 
 Change detection for labels uses client-side state diffing — the input driver
 tracks previously-seen labels per issue and emits events only for newly-added
@@ -560,9 +559,8 @@ methods rather than adding forge-conditional logic.
 | External infrastructure | Mint Cloud Function | None for event dispatch |
 | Credential types | App key + installation token | Single bot PAT |
 
-Detailed implementation guidance — including poller pseudocode, forge interface
-changes, CI/CD template scaffolding, and install flow — is in the companion
-document: [Implementation plan: GitLab cron-polling](../plans/gitlab-cron-polling-implementation.md).
+Implementation covers poller pseudocode, forge interface changes, CI/CD
+template scaffolding, and install flow.
 
 ## References
 
@@ -572,4 +570,3 @@ document: [Implementation plan: GitLab cron-polling](../plans/gitlab-cron-pollin
 - [ADR 0061](0061-harness-cel-dispatch.md) — harness CEL triggers, dispatch drivers, and NormalizedEvent schema
 - [ADR 0063](0063-polling-based-work-discovery.md) — polling-based work discovery via dispatch drivers (`fullsend poll`, input/output driver architecture)
 - [NormalizedEvent v1](../normative/normalized-event/v1/)
-- [Implementation plan: GitLab cron-polling](../plans/gitlab-cron-polling-implementation.md)

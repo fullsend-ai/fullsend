@@ -347,7 +347,7 @@ func TestFindOrgInstallation_OrgMismatch(t *testing.T) {
 func TestGetOrgVariable(t *testing.T) {
 	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/orgs/pool-org/actions/variables/FULLSEND_FOREIGN_E2E_REPOS", r.URL.Path)
-		json.NewEncoder(w).Encode(orgVariableResponse{
+		json.NewEncoder(w).Encode(variableResponse{
 			Name:  "FULLSEND_FOREIGN_E2E_REPOS",
 			Value: "fullsend-ai/fullsend",
 		})
@@ -380,7 +380,7 @@ func TestReadForeignAllowlist(t *testing.T) {
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(installationTokenResponse{Token: "ghs_policy"})
 		case r.URL.Path == "/orgs/pool-org/actions/variables/FULLSEND_FOREIGN_E2E_REPOS":
-			json.NewEncoder(w).Encode(orgVariableResponse{
+			json.NewEncoder(w).Encode(variableResponse{
 				Name:  "FULLSEND_FOREIGN_E2E_REPOS",
 				Value: "fullsend-ai/fullsend, fullsend-ai",
 			})
@@ -436,4 +436,91 @@ func TestGetOrgVariable_ErrorStatus(t *testing.T) {
 	_, _, err := GetOrgVariable(t.Context(), http.DefaultClient, mockGH.URL, "ghs_policy", "pool-org", "VAR")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "status 403")
+}
+
+func TestGetRepoVariable(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/repos/target-org/target-repo/actions/variables/MY_VAR" && r.Method == http.MethodGet {
+			json.NewEncoder(w).Encode(variableResponse{
+				Name:  "MY_VAR",
+				Value: "hello",
+			})
+			return
+		}
+		t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		http.NotFound(w, r)
+	}))
+	defer mockGH.Close()
+
+	val, exists, err := GetRepoVariable(t.Context(), http.DefaultClient, mockGH.URL, "ghs_tok", "target-org", "target-repo", "MY_VAR")
+	require.NoError(t, err)
+	assert.True(t, exists)
+	assert.Equal(t, "hello", val)
+}
+
+func TestGetRepoVariable_NotFound(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer mockGH.Close()
+
+	_, exists, err := GetRepoVariable(t.Context(), http.DefaultClient, mockGH.URL, "ghs_tok", "target-org", "target-repo", "MY_VAR")
+	require.NoError(t, err)
+	assert.False(t, exists)
+}
+
+func TestGetRepoVariable_ErrorStatus(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer mockGH.Close()
+
+	_, _, err := GetRepoVariable(t.Context(), http.DefaultClient, mockGH.URL, "ghs_tok", "target-org", "target-repo", "MY_VAR")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "status 403")
+}
+
+func TestReadForeignAllowlistFromRepo(t *testing.T) {
+	var tokenCalls int
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/app/installations/42/access_tokens") && r.Method == http.MethodPost:
+			tokenCalls++
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{Token: "ghs_repo_policy"})
+		case r.URL.Path == "/repos/pool-org/target-repo/actions/variables/FULLSEND_FOREIGN_E2E_REPOS":
+			json.NewEncoder(w).Encode(variableResponse{
+				Name:  "FULLSEND_FOREIGN_E2E_REPOS",
+				Value: "fullsend-ai/fullsend, caller-org",
+			})
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer mockGH.Close()
+
+	got, err := ReadForeignAllowlistFromRepo(t.Context(), http.DefaultClient, mockGH.URL, "app-jwt", 42, "pool-org", "target-repo", "e2e")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"fullsend-ai/fullsend", "caller-org"}, got)
+	assert.Equal(t, 1, tokenCalls)
+}
+
+func TestReadForeignAllowlistFromRepo_Empty(t *testing.T) {
+	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/app/installations/42/access_tokens"):
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{Token: "ghs_repo_policy"})
+		case strings.Contains(r.URL.Path, "/actions/variables/"):
+			w.WriteHeader(http.StatusNotFound)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer mockGH.Close()
+
+	got, err := ReadForeignAllowlistFromRepo(t.Context(), http.DefaultClient, mockGH.URL, "app-jwt", 42, "pool-org", "target-repo", "e2e")
+	require.NoError(t, err)
+	assert.Nil(t, got)
 }

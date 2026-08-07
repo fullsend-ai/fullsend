@@ -74,8 +74,8 @@ Per-repo config is read from the **base branch**, not the PR branch,
 so a PR cannot inject an attacker-controlled `allowed_remote_resources`
 entry or agent source.
 
-See the [implementation plan](../plans/agent-registration.md) for
-phasing, schema details, CLI behavior, and migration mechanics.
+Phasing, schema details, CLI behavior, and migration mechanics are covered
+in the sections below.
 
 ## Consequences
 
@@ -84,7 +84,7 @@ phasing, schema details, CLI behavior, and migration mechanics.
 - Config-driven registration allows agents to be added, updated, or removed without code changes.
 - Per-repo installs no longer need org config for remote resource validation.
 - Empty config falls back to agents-repo resolution for known first-party agents. *(The original scaffold-discovery disk fallback was removed once all customers migrated to config-driven agents — see PR #5425.)*
-- **Transitional agents-repo fallback:** During the [agent extraction](../plans/agent-extraction-to-agents-repo.md), a runtime fallback resolves known first-party agents from `fullsend-ai/agents` when not in config. This avoids requiring config changes from existing users during extraction. The fallback will be removed once all users have migrated to config-driven registration (Phase 5 / extraction plan Step 7).
+- **Transitional agents-repo fallback:** During the agent extraction, a runtime fallback resolves known first-party agents from `fullsend-ai/agents` when not in config. This avoids requiring config changes from existing users during extraction. The fallback will be removed once all users have migrated to config-driven registration (Phase 5).
 - The `agents` YAML key was previously used in `OrgConfig` with a different schema (role/name/slug identity tuples, removed by ADR 0045 Phase 4). The new schema (URL/path source entries) is incompatible; a custom unmarshaler detects and rejects old-format entries with a clear error message.
 
 ## References
@@ -94,4 +94,3 @@ phasing, schema details, CLI behavior, and migration mechanics.
 - [ADR 0045](0045-forge-portable-harness-schema.md) -- harness composition via `base:` URLs
 - [ADR 0057](0057-repos-management.md) -- repos management for per-repo installations
 - [Bring Your Own Agent](../guides/user/bring-your-own-agent.md) -- user-facing guide for agent registration
-- [Implementation plan](../plans/agent-registration.md)
