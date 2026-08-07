@@ -553,6 +553,9 @@ func mergeBaseIntoChild(base, child *Harness) {
 	if child.PostScript == "" {
 		child.PostScript = base.PostScript
 	}
+	if child.PreflightCheck == "" {
+		child.PreflightCheck = base.PreflightCheck
+	}
 	if child.AgentInput == "" {
 		child.AgentInput = base.AgentInput
 	}
@@ -1861,6 +1864,9 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 	}
 	if child.PostScript == "" {
 		child.PostScript = base.PostScript
+	}
+	if child.PreflightCheck == "" {
+		child.PreflightCheck = base.PreflightCheck
 	}
 
 	// Skills: base + child with child-overrides-base-by-basename

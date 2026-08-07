@@ -412,6 +412,47 @@ validation_loop:
 		"Child's own preflight_check should override base's")
 }
 
+func TestLoadWithBase_LocalBase_TopLevelPreflightCheckInherited(t *testing.T) {
+	// When a base harness sets a top-level preflight_check and the child
+	// does not, the base's value should be inherited.
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/base.md
+role: test
+preflight_check: "which jq"
+`)
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Equal(t, "which jq", h.PreflightCheck,
+		"Top-level PreflightCheck should be inherited from base")
+}
+
+func TestLoadWithBase_LocalBase_TopLevelPreflightCheckChildOverrides(t *testing.T) {
+	// When a child explicitly sets its own top-level preflight_check,
+	// it should take precedence over the base's value.
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/base.md
+role: test
+preflight_check: "which jq"
+`)
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+preflight_check: "which python3"
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+	assert.Equal(t, "which python3", h.PreflightCheck,
+		"Child's own top-level PreflightCheck should override base's")
+}
+
 func TestLoadWithBase_ChainedBases(t *testing.T) {
 	dir := t.TempDir()
 
@@ -1250,6 +1291,32 @@ func TestMergeForgeConfigInto_PreflightCheckCarryForward(t *testing.T) {
 	assert.Equal(t, 3, child.ValidationLoop.MaxIterations)
 	assert.Equal(t, "python3 -c 'import jsonschema'", child.ValidationLoop.PreflightCheck,
 		"PreflightCheck should be carried forward from base in forge merge")
+}
+
+func TestMergeForgeConfigInto_TopLevelPreflightCheckInherited(t *testing.T) {
+	base := &ForgeConfig{
+		PreflightCheck: "which jq",
+	}
+	child := &ForgeConfig{}
+
+	mergeForgeConfigInto(base, child)
+
+	assert.Equal(t, "which jq", child.PreflightCheck,
+		"Top-level PreflightCheck should be inherited from base ForgeConfig")
+}
+
+func TestMergeForgeConfigInto_TopLevelPreflightCheckChildOverrides(t *testing.T) {
+	base := &ForgeConfig{
+		PreflightCheck: "which jq",
+	}
+	child := &ForgeConfig{
+		PreflightCheck: "which python3",
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	assert.Equal(t, "which python3", child.PreflightCheck,
+		"Child's own top-level PreflightCheck should override base's in forge merge")
 }
 
 func TestMergeForgeConfigInto_PolicyInherited(t *testing.T) {
