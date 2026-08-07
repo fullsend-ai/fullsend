@@ -12,9 +12,17 @@ locate the current position rather than relying on line numbers.
 
 ADR-0044 deprecates the per-org installation mode in favor of per-repo
 ([ADR 0033](../ADRs/0033-per-repo-installation-mode.md)) as the sole
-supported model. The work proceeds in two phases: Phase 1 adds deprecation
-warnings and a migration command (shipping in v1.x); Phase 2 removes all
-per-org code (shipping as v2.0 breaking change).
+supported model. ADR-0044's own Decision section describes a phased
+rollout (a Phase 1 deprecation period with warnings and a migration
+command, followed by a Phase 2 removal). The team has since decided
+([#2302](https://github.com/fullsend-ai/fullsend/issues/2302), meeting
+update 2026-08-06) to skip the deprecation period and remove per-org
+support immediately and completely, in a single effort, rather than
+gradually. This plan reflects that updated decision: it covers only the
+removal work — formerly ADR-0044's Phase 2 — and drops the
+deprecation-warning/migration-command phase entirely. ADR-0044's text
+still describes the original phased plan; see #2302 for the updated
+decision context.
 
 [ADR 0045](../ADRs/0045-forge-portable-harness-schema.md) (forge-portable
 harness schema) reinforces this deprecation: agent identity has moved from
@@ -40,224 +48,32 @@ The per-org model touches these subsystems:
 | Reusable workflows | `.github/workflows/reusable-*.yml` | `install_mode` input branching |
 | Actions | `.github/actions/validate-enrollment/action.yml` | per-org enrollment validation |
 | Web admin | `web/admin/src/lib/layers/`, `web/admin/src/lib/orgs/` | `configRepo.ts`, `enrollment.ts`, `dispatch.ts`, `orgConfigParse.ts`, `constants.ts` (`CONFIG_REPO_NAME`); `orgListRow.ts`, `installReadinessProbes.ts` (config-repo checks) |
-| E2E tests | `e2e/admin/` | `TestAdminInstallUninstall`, org pool locking, org cleanup |
+| E2E tests | `e2e/admin/` | `TestAdminInstallUninstall`, org pool locking, org cleanup — conversion tracked in [#5990](https://github.com/fullsend-ai/fullsend/issues/5990) |
 
 ## PR Dependency Graph
 
 ```
-Phase 1 (deprecation, v1.x):
-
-PR 1 (deprecation warnings) ──┐
-                               ├──> PR 4 (migration command) ──> PR 5 (migration e2e test)
-PR 2 (docs update) ───────────┘
-PR 3 (per-repo e2e test)  [independent, no deps]
-
-Phase 2 (removal, v2.0):
-
-PR 5 ──> PR 6 (remove CLI) ──┬──> PR 10 (remove forge methods) ──> PR 12 (simplify appsetup)
-                              ├──> PR 11 (simplify dispatch)
-                              ├──> PR 13 (update mint)
-                              └──┬─> PR 14 (update workflows)
-                                 │
-         PR 7 (remove layers)  ──┤
-         PR 8 (remove config)  ──┤──> PR 15 (remove e2e, final cleanup)
-         PR 9 (remove scaffold) ─┘
+PR 1 (remove CLI) ──┬──> PR 5 (remove forge methods) ──> PR 7 (simplify appsetup)
+                     ├──> PR 6 (simplify dispatch)
+                     ├──> PR 8 (update mint)
+                     └──┬─> PR 9 (update workflows)
+                        │
+         PR 2 (remove layers)  ──┤
+         PR 3 (remove config)  ──┤──> PR 10 (remove e2e, final cleanup)
+         PR 4 (remove scaffold) ─┘
 ```
 
-PRs 6–9 can be developed in parallel after Phase 1 merges (the graph shows
-code-level dependencies; all Phase 2 PRs also depend on Phase 1 completing
-as a process prerequisite). PRs 10–11, 13–14 depend on PR 6 (CLI callers
-removed). PR 12 depends on PR 10 (forge interface updated). PR 15 is the
-final sweep after all prior PRs merge.
+PRs 1–4 can be developed in parallel as the starting point (the graph
+shows code-level dependencies; there is no longer a preceding deprecation
+phase to wait on). PRs 5–6, 8–9 depend on PR 1 (CLI callers removed).
+PR 7 depends on PR 5 (forge interface updated). PR 10 is the final sweep
+after all prior PRs merge.
 
 ---
 
-## Phase 1: Deprecation
+## Removal plan
 
-### PR 1: Add deprecation warnings to per-org CLI paths
-
-**Scope:** Emit deprecation warnings. Zero behavioral change.
-
-**`internal/cli/admin.go`:**
-
-Add a helper at the top of the file:
-
-```go
-func warnPerOrgDeprecated(p printer.Printer) {
-	p.Warnf("Per-org installation is deprecated and will be removed in v2.0.")
-	p.Warnf("Migrate to per-repo: fullsend admin install <owner/repo>")
-	p.Warnf("See https://docs.fullsend.dev/migration/per-org-to-per-repo")
-}
-```
-
-Call `warnPerOrgDeprecated(p)` at the start of:
-
-- `runInstall()` (~line 1498) — per-org install
-- `runUninstall()` (~line 1615) — per-org uninstall
-- `runDryRun()` (~line 1163) — per-org dry-run
-- `runAnalyze()` (~line 1773) — per-org analyze
-- `runEnableRepos()` (~line 2155) — enable repos
-- `runDisableRepos()` (~line 2335) — disable repos
-
-**`internal/cli/github.go`:**
-
-Call `warnPerOrgDeprecated(p)` at the start of:
-
-- `runGitHubSetupPerOrg()` (~line 310) — github setup for org
-- `newGitHubEnrollCmd()` / `newGitHubUnenrollCmd()` — github enroll/unenroll
-  (these delegate to `runEnableRepos()` / `runDisableRepos()` in admin.go)
-
-**Tests:**
-
-- Add test cases in `internal/cli/admin_test.go` verifying deprecation
-  warning appears in output for per-org `install`, `uninstall`,
-  `enable repos`, `disable repos`.
-- Add test case in `internal/cli/github_test.go` verifying warning for
-  `github setup <org>`.
-
-**After merge:** All per-org commands emit deprecation warnings. No
-behavioral change.
-
----
-
-### PR 2: Update documentation
-
-**Scope:** Documentation-only. No code changes.
-
-**`docs/guides/`:**
-
-- Update admin install guide: present per-repo as primary, per-org as
-  deprecated with a callout box.
-- Add migration guide page at `docs/guides/admin/migrate-per-org-to-per-repo.md`
-  with the step-by-step migration procedure from ADR-0044 section 3.
-  Include a section on using ADR 0045's `base` harness composition to
-  replicate org-wide defaults without a centralized config repo.
-
-**`docs/architecture.md`:** (deferred from ADR-only PR to this PR so
-architecture updates ship alongside the deprecation warnings, not before
-users can see them)
-
-- Add deprecation notice to per-org architecture sections.
-- Update installation overview to lead with per-repo.
-
-**`README.md`:**
-
-- Update installation quick-start to use per-repo example.
-- Add deprecation notice for per-org references.
-
-**After merge:** Documentation reflects per-repo as primary. Migration
-guide published.
-
----
-
-### PR 3: Add per-repo e2e test
-
-**Scope:** New test coverage. No changes to existing tests.
-
-**Create `e2e/admin/per_repo_test.go`:**
-
-Test the per-repo lifecycle:
-
-1. **Install:** `fullsend admin install <owner>/<repo>` with
-   `--skip-app-setup`, `--mint-url`, `--inference-project`.
-2. **Verify scaffold:** Check `.github/workflows/fullsend.yml` exists on
-   default branch, `.fullsend/config.yaml` exists, repo variables
-   `FULLSEND_MINT_URL` and `FULLSEND_PER_REPO_INSTALL` are set.
-3. **Triage smoke test:** Create issue, wait for triage agent comment.
-4. **Cleanup:** Delete workflow file, remove repo variables/secrets.
-
-Use existing `testutil.go` helpers for PAT creation and GitHub auth.
-Use repo-level cleanup (no org-level cleanup needed).
-
-**After merge:** Per-repo installation path has e2e coverage.
-
----
-
-### PR 4: Add `fullsend admin migrate` command
-
-**Scope:** New subcommand. No changes to existing commands.
-
-**Depends on:** PR 1 (deprecation warnings wired up), PR 2 (migration
-guide exists to link to).
-
-**`internal/cli/admin.go`:**
-
-Add `newMigrateCmd()` under `newAdminCmd()`:
-
-```go
-func newMigrateCmd() *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "migrate <org> [repo...]",
-		Short: "Migrate repos from per-org to per-repo installation",
-	}
-	// flags: --all, --dry-run, --mint-url, --inference-project,
-	//        --inference-region, --skip-app-setup, --skip-mint-deploy
-	return cmd
-}
-```
-
-**`internal/cli/migrate.go`** *(removed — #5864)*:
-
-Implement `runMigrate()`:
-
-1. Load existing org config from `.fullsend/config.yaml` via
-   `forge.GetFileContent()` + `config.ParseOrgConfig()`.
-2. Determine target repos: if `--all`, use `OrgConfig.EnabledRepos()`;
-   otherwise use positional args.
-3. For each repo (sequentially — per-repo WIF registration is not
-   concurrent-safe):
-   a. Check if `FULLSEND_PER_REPO_INSTALL` already set (skip if so).
-   b. Run the per-repo install flow (reuse `runPerRepoInstall()` logic
-      with appropriate flags).
-   c. Copy customizations: read `customized/` from `.fullsend` config
-      repo, commit to `<repo>/.fullsend/customized/` via
-      `forge.CommitFiles()`. For orgs using ADR 0045 harness
-      composition, harness files with `base:` URLs referencing shared
-      upstream harnesses replace per-org `customized/` overrides —
-      the migration command should generate thin harness wrappers
-      with `base:` when harness files exist in the source config.
-   d. Verify: check repo variable `FULLSEND_PER_REPO_INSTALL` is set
-      and workflow file exists.
-   e. Disable per-org enrollment: call `runDisableRepos()` for this
-      repo (updates `config.yaml`, triggers `repo-maintenance.yml`).
-   f. Report: print status (success/failure/skipped) for each repo.
-4. If `--dry-run`: report what would happen without making changes.
-
-**`internal/cli/migrate_test.go`** (new file):
-
-- Test `--dry-run` output.
-- Test single-repo migration with fake forge client.
-- Test `--all` flag reads from org config.
-- Test skip behavior when guard variable already set.
-- Test error handling: repo not found, per-repo install fails.
-
-**After merge:** `fullsend admin migrate <org> [repo...] [--all]` is
-available. Existing commands unchanged.
-
----
-
-### PR 5: Migration e2e test
-
-**Scope:** E2e test for the migration flow. Depends on PR 4.
-
-**Create `e2e/admin/migrate_test.go`:**
-
-1. **Setup:** Run per-org install on test org (reuse existing
-   `TestAdminInstallUninstall` setup logic).
-2. **Migrate:** Run `fullsend admin migrate <org> <test-repo>`.
-3. **Verify per-repo:** Confirm per-repo shim exists, repo variables
-   set, triage agent responds to a test issue.
-4. **Verify per-org removed:** Confirm repo is no longer in
-   `config.yaml` enrollment.
-5. **Cleanup:** Delete per-repo artifacts, uninstall per-org.
-
-**After merge:** Migration path is e2e-tested. Phase 1 is complete.
-
----
-
-## Phase 2: Removal
-
-### PR 6: Remove per-org CLI commands and flags
+### PR 1: Remove per-org CLI commands and flags
 
 **Scope:** Remove per-org entry points from the CLI. Breaking change.
 
@@ -273,12 +89,9 @@ available. Existing commands unchanged.
   (~lines 2055–2286).
 - Remove `newDisableCmd()`, `newDisableReposCmd()`, `runDisableRepos()`
   (~lines 2334–2449).
-- Remove `newMigrateCmd()` and `runMigrate()` (migration tool no longer
-  needed after removal).
 - Remove `--enroll-all`, `--enroll-none` `BoolVar` definitions (~lines
   551–552), `perOrgOnlyFlags` list (~lines 114–116), and validation
   (~lines 281–285).
-- Remove `warnPerOrgDeprecated()` helper (from PR 1).
 - Remove per-org helpers: `loadExistingInferenceProvider()`,
   `loadExistingEnabledRepos()`, `loadKnownSlugs()`,
   `collectEnrolledRepoIDs()`, `syncOrgVariableVisibility()`.
@@ -294,14 +107,10 @@ available. Existing commands unchanged.
   `ensureConfigRepoExists` ~line 472).
 - Remove `newGitHubEnrollCmd()`, `newGitHubUnenrollCmd()` and their
   delegated run functions (`runEnableRepos()`, `runDisableRepos()` are
-  removed in PR 6's admin.go changes above).
+  removed in PR 1's admin.go changes above).
 - Simplify `parseTarget()` to remove org-mode detection branching
   (the function is shared with per-repo paths; only remove the
   org-only logic, not the function itself).
-
-**`internal/cli/migrate.go`:** *(completed — #5864)*
-
-- Delete entire file (migration command removed with per-org).
 
 **Test updates:**
 
@@ -309,14 +118,13 @@ available. Existing commands unchanged.
   bare org name is rejected.
 - `internal/cli/github_test.go`: Remove per-org test cases, update
   remaining tests.
-- `internal/cli/migrate_test.go`: Delete entire file.
 
 **After merge:** CLI only accepts `fullsend admin install <owner/repo>`.
 All per-org commands gone.
 
 ---
 
-### PR 7: Remove per-org layers
+### PR 2: Remove per-org layers
 
 **Scope:** Remove layer implementations that are per-org only.
 
@@ -400,7 +208,7 @@ All per-org commands gone.
 
 ---
 
-### PR 8: Remove per-org config structures
+### PR 3: Remove per-org config structures
 
 **Scope:** Simplify `internal/config/config.go`.
 
@@ -452,7 +260,7 @@ All per-org commands gone.
 - `internal/cli/admin.go`: Update `config.DefaultAgentRoles()` call
   (line 551, `--agents` flag default in `newInstallCmd()`). Lines 1617,
   1624, and 1792 are inside `runUninstall()` and `runAnalyze()`, both
-  deleted by PR 6. **Behavioral consequence:** the `--agents` flag
+  deleted by PR 1. **Behavioral consequence:** the `--agents` flag
   default changes from `fullsend,triage,coder,review,retro,prioritize`
   to `triage,coder,review,fix,retro,prioritize`.
 - `internal/cli/github.go`: Update `config.DefaultAgentRoles()` calls
@@ -507,7 +315,7 @@ All per-org commands gone.
 - `internal/cli/admin_test.go`: Update `config.DefaultAgentRoles()`
   reference (~line 51, `TestInstallCmd_Flags`). Lines 1774, 1811,
   1829, 1837 are inside per-org test functions (`TestRunDryRun`,
-  `TestRunInstall`), deleted by PR 6.
+  `TestRunInstall`), deleted by PR 1.
 - `internal/cli/github_test.go`: Update `config.DefaultAgentRoles()`
   references (~lines 62, 593).
 
@@ -515,7 +323,7 @@ All per-org commands gone.
 
 ---
 
-### PR 9: Remove per-org scaffold templates
+### PR 4: Remove per-org scaffold templates
 
 **Scope:** Remove scaffold files only used by per-org.
 
@@ -542,7 +350,7 @@ All per-org commands gone.
 **Rename files:**
 
 - `templates/shim-per-repo.yaml` → `templates/shim.yaml`. Retains
-  `install_mode: per-repo` (removed later in PR 14).
+  `install_mode: per-repo` (removed later in PR 9).
 
 **`internal/scaffold/render.go`:**
 
@@ -586,15 +394,15 @@ All per-org commands gone.
   53) — after the rename both branches call the same function, making
   the prefix branching dead logic. Note: `CollectInstallFiles()` and
   `ManagedPaths()` are only called from `internal/layers/workflows.go`
-  (deleted in PR 7); they become dead code after PR 7 merges. Evaluate
+  (deleted in PR 2); they become dead code after PR 2 merges. Evaluate
   whether to remove them as dead code or retain for future per-repo
   use. `installfiles_test.go` also calls `CollectInstallFiles()` and
-  `ManagedPaths()` — these test callers survive PR 7 and would need
+  `ManagedPaths()` — these test callers survive PR 2 and would need
   updating if the functions are removed. This cleanup is only safe
-  after PR 7 lands. **Deferred cleanup:** if kept, add a `// TODO:
+  after PR 2 lands. **Deferred cleanup:** if kept, add a `// TODO:
   dead code after per-org removal — evaluate for removal or per-repo
   reuse` comment so reviewers know this is intentional.
-- `internal/layers/workflows.go`: Already deleted in PR 7 (writes
+- `internal/layers/workflows.go`: Already deleted in PR 2 (writes
   exclusively to `.fullsend` config repo). Verify no remaining callers.
 
 **Test updates:**
@@ -617,9 +425,9 @@ removes these references.
 
 ---
 
-### PR 10: Remove org-level forge methods
+### PR 5: Remove org-level forge methods
 
-**Scope:** Clean up the forge interface. Depends on PR 6 (callers removed).
+**Scope:** Clean up the forge interface. Depends on PR 1 (callers removed).
 
 **`internal/forge/forge.go`:**
 
@@ -647,25 +455,25 @@ GetOrgVariableRepos(ctx context.Context, org, name string) ([]int64, error)
 ```
 
 Remove `PerRepoGuardVar` constant and all its callers (these are
-per-repo code paths, not removed by per-org CLI cleanup in PR 6):
+per-repo code paths, not removed by per-org CLI cleanup in PR 1):
 
 - `admin.go`: guard checks (~lines 682, 826, 987) and variable
   creation in the per-repo install path. (Line 455 is inside the
-  `enrollAll` branch, already deleted by PR 6.)
+  `enrollAll` branch, already deleted by PR 1.)
 - `github.go`: per-repo variable map (~line 243), status display
   (~line 367), and `configKeyMapping` entry (~line 557).
 - `admin_test.go`: guard variable assertions (~lines 2324, 2346).
 - `github_test.go`: guard variable test cases (~lines 333, 341).
 - `layers/enrollment.go`: guard check (~line 373) — already deleted
-  in PR 7, listed here for completeness.
+  in PR 2, listed here for completeness.
 - `scaffold/fullsend-repo/scripts/reconcile-repos.sh`:
   `check_per_repo_guard` function (~lines 167–195) and callers
-  (~lines 393, 516) — already deleted in PR 9, listed here for
+  (~lines 393, 516) — already deleted in PR 4, listed here for
   completeness.
 
 The guard variable is no longer needed when per-org enrollment does not
 exist. All callers are explicitly covered: per-repo paths in this PR,
-`enrollment.go` in PR 7, and `reconcile-repos.sh` in PR 9.
+`enrollment.go` in PR 2, and `reconcile-repos.sh` in PR 4.
 
 Keep `ListOrgInstallations()` (now on `GitHubExtensions`) — used by
 per-repo app discovery (`detectSharedApps`, `findExistingInstallation`,
@@ -707,9 +515,9 @@ discovery. ~400 lines removed from GitHub implementation.
 
 ---
 
-### PR 11: Simplify dispatch infrastructure
+### PR 6: Simplify dispatch infrastructure
 
-**Scope:** Remove org-level dispatch from provisioner. Depends on PR 6.
+**Scope:** Remove org-level dispatch from provisioner. Depends on PR 1.
 
 **`internal/dispatch/dispatch.go`:**
 
@@ -746,9 +554,9 @@ Keep `Provision()`, `StoreAgentPEM()`, `Name()`.
 
 ---
 
-### PR 12: Simplify appsetup
+### PR 7: Simplify appsetup
 
-**Scope:** Simplify appsetup for per-repo only. Depends on PR 10
+**Scope:** Simplify appsetup for per-repo only. Depends on PR 5
 (forge interface updated).
 
 **`internal/appsetup/appsetup.go`:**
@@ -778,7 +586,7 @@ while per-org-specific branching is removed.
 
 ---
 
-### PR 13: Update mint validation
+### PR 8: Update mint validation
 
 **Scope:** Remove per-org workflow ref pattern from mint.
 
@@ -808,7 +616,7 @@ registered per-repo workflow refs.
 
 ---
 
-### PR 14: Update reusable workflows and actions
+### PR 9: Update reusable workflows and actions
 
 **Scope:** Remove per-org branching from GitHub Actions workflows.
 
@@ -844,7 +652,7 @@ registered per-repo workflow refs.
 - Or remove if `fullsend-ai/fullsend` does not use fullsend on itself.
 
 **`internal/scaffold/fullsend-repo/templates/shim.yaml`** (renamed from
-`shim-per-repo.yaml` in PR 9):
+`shim-per-repo.yaml` in PR 4):
 
 - Remove the `install_mode: per-repo` input (line 47) — no longer needed
   when all workflows assume per-repo.
@@ -863,7 +671,7 @@ registered per-repo workflow refs.
    `install_mode` from the required-inputs assertion (~line 178);
    after this PR the reusable workflows no longer declare it.
 
-**Verification:** PR 15's grep sweep (see `install_mode` pattern) covers
+**Verification:** PR 10's grep sweep (see `install_mode` pattern) covers
 final verification that no `install_mode` references remain.
 
 **After merge:** Reusable workflows have no per-org code paths. Single
@@ -871,14 +679,17 @@ checkout, single workspace root.
 
 ---
 
-### PR 15: Remove per-org e2e tests and final cleanup
+### PR 10: Remove per-org e2e tests and final cleanup
 
 **Scope:** Final sweep. Depends on all prior PRs.
 
-**Delete files:**
+**Delete or convert files:**
 
 - `e2e/admin/admin_test.go` — `TestAdminInstallUninstall` (per-org
-  lifecycle test).
+  lifecycle test). Converting this suite to exercise per-repo
+  install/uninstall instead of deleting it outright is tracked
+  separately in [#5990](https://github.com/fullsend-ai/fullsend/issues/5990);
+  coordinate with that issue so coverage isn't lost.
 - `e2e/admin/lock_test.go` — org pool locking (only needed for
   parallel per-org e2e tests).
 
@@ -964,17 +775,6 @@ references surfaced by the sweep should be removed in this PR.
 
 ## Release checklist
 
-### v1.x release (after Phase 1 merges)
-
-- [ ] All per-org commands emit deprecation warnings
-- [ ] Migration guide published at `docs/guides/admin/migrate-per-org-to-per-repo.md`
-- [ ] `fullsend admin migrate` command functional
-- [ ] Per-repo e2e test passing
-- [ ] Migration e2e test passing
-- [ ] Release notes mention per-org deprecation and link to migration guide
-
-### v2.0 release (after Phase 2 merges)
-
 - [x] Confirm ADR 0045 Phases 1–4 are merged and functional (harness
   `base` composition available) — prerequisite per ADR 0044 §Decision
 - [ ] All per-org CLI commands removed
@@ -987,14 +787,11 @@ references surfaced by the sweep should be removed in this PR.
 - [ ] Mint validates only upstream + per-repo workflow refs
 - [ ] Reusable workflows have no `install_mode` branching
 - [ ] `validate-enrollment` action simplified or removed
-- [ ] Per-org e2e tests removed, per-repo e2e tests passing
+- [ ] Per-org e2e tests removed or converted (see [#5990](https://github.com/fullsend-ai/fullsend/issues/5990)), per-repo e2e tests passing
 - [ ] Grep sweep clean — no stale per-org references
 - [ ] Commit message: `feat(cli)!: remove per-org installation mode`
 - [ ] `BREAKING CHANGE:` trailer in commit body: "Per-org installation
   mode removed. All `fullsend admin install --org`, `github enroll`,
   `github unenroll` commands are gone. Migrate to per-repo mode using
-  `fullsend admin install <owner/repo>` (or use `fullsend admin migrate`
-  on v1.x before upgrading). See
-  docs/guides/admin/migrate-per-org-to-per-repo.md"
-- [ ] Release notes: migration guide link, list of removed commands,
-  upgrade instructions
+  `fullsend admin install <owner/repo>`."
+- [ ] Release notes: list of removed commands, upgrade instructions
