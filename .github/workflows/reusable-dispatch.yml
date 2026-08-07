@@ -1439,8 +1439,8 @@ jobs:
         uses: ./.workflow-actions/.github/actions/install-fullsend-cli
         with:
           mode: upstream
-          workflow_repository: ${{ job.workflow_repository }}
-          workflow_sha: ${{ job.workflow_sha }}
+          repository: ${{ job.workflow_repository }}
+          sha: ${{ job.workflow_sha }}
           github_token: ${{ github.token }}
 
       - name: Expose cached fullsend CLI
