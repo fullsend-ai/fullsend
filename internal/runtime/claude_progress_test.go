@@ -287,6 +287,19 @@ func TestProgressParserOversizedLineSkipped(t *testing.T) {
 	}
 }
 
+// TestSanitizeOutput_ExportedWrapper pins that the exported wrapper applies
+// the same treatment as the internal one — telemetry span status and GHA
+// annotations must not diverge on agent-controlled text.
+func TestSanitizeOutput_ExportedWrapper(t *testing.T) {
+	in := "\x1b[31mred\x1b[0m ::set-output:: ctrl\x07char"
+	if got, want := SanitizeOutput(in), sanitizeOutput(in); got != want {
+		t.Fatalf("SanitizeOutput(%q) = %q, want %q", in, got, want)
+	}
+	if got := SanitizeOutput(in); strings.Contains(got, "\x1b") || strings.Contains(got, "::") {
+		t.Errorf("SanitizeOutput left escapes or GHA markers: %q", got)
+	}
+}
+
 func TestSanitizeOutput(t *testing.T) {
 	tests := []struct {
 		name  string

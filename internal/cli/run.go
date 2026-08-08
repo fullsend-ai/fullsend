@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
@@ -922,6 +923,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	securityTraceID := security.GenerateTraceID()
 	rootSpan.SetAttributes(attribute.String("fullsend.security_trace_id", securityTraceID))
 
+	// validationPassed is declared before both defer closures that guard on
+	// it: the telemetry defer keys the root span's status on it (validation,
+	// not the last agent exit code, is the run's success gate), and the
+	// post-script defer must only run when validation has passed — running it
+	// on unvalidated output would violate ADR 0022's zero-trust model.
+	var validationPassed bool
+
 	defer func() {
 		exitCode := telemetryExitCode(lastExitCode, runErr)
 
@@ -954,10 +962,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 
 		if runErr != nil {
-			rootSpan.SetStatus(codes.Error, runErr.Error())
-		} else {
-			rootSpan.SetStatus(codes.Ok, "")
+			recordSanitizedError(rootSpan, runErr)
 		}
+		code, msg := rootSpanStatus(runErr, exitCode, validationPassed)
+		rootSpan.SetStatus(code, msg)
 		rootSpan.End()
 
 		flushCtx, cancel := context.WithTimeout(context.Background(), telemetry.FlushTimeout)
@@ -1020,19 +1028,17 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 
 	readyTimeout := time.Duration(h.SandboxTimeoutSeconds) * time.Second
 	if err := sandbox.CreateWithRetry(sandboxName, allProviderNames, h.Image, h.Policy, sandbox.DefaultMaxCreateAttempts, readyTimeout); err != nil {
-		sandboxSpan.SetStatus(codes.Error, err.Error())
+		// This error embeds raw supervisor/gateway/container logs — same
+		// treatment as the agent and root spans: the fuller bounded copy
+		// on the event, a tighter valid-UTF-8 status.
+		recordSanitizedError(sandboxSpan, err)
+		sandboxSpan.SetStatus(codes.Error, truncateStatusMsg(err.Error()))
 		sandboxSpan.End()
 		printer.StepFail("Failed to create sandbox")
 		return fmt.Errorf("creating sandbox: %w", err)
 	}
 	sandboxSpan.SetStatus(codes.Ok, "")
 	sandboxSpan.End()
-
-	// validationPassed is declared here (before the post-script defer) so the
-	// defer closure can guard on it. The post-script must only run when
-	// validation has passed — running it on unvalidated output would violate
-	// ADR 0022's zero-trust model.
-	var validationPassed bool
 
 	// repoExtractedOK tracks whether hostRepositoryDownloadDir is safe
 	// and corresponds to the validated iteration. It is false when:
@@ -1515,18 +1521,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
 
-		agentSpan.SetAttributes(agentSpanEndAttrs(iteration, exitCode, rt.System(), &metrics)...)
-		if runErr != nil {
-			agentSpan.SetStatus(codes.Error, runErr.Error())
-		} else {
-			agentSpan.SetStatus(codes.Ok, "")
-		}
-		agentSpan.End()
-
 		// Accumulate behavioral metrics across iterations.
 		aggregateRunMetrics(&aggMetrics, &metrics, iteration)
 
 		if runErr != nil {
+			finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, rt.System(), &metrics, "")
 			printer.StepFail("Agent execution failed")
 			// Record the real exit code (rt.Run returns -1 when the agent never
 			// started) so the telemetry summary reports the failure faithfully
@@ -1546,14 +1545,24 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		// invalid_grant, quota exhaustion) while setting is_error:true in
 		// the transcript. Treat these as failures so downstream gating
 		// (transcript surfacing, post-script skip) can act. See #2786.
+		// This runs before the agent span is finalized so the span's
+		// status reflects the transcript-reported failure (#5361).
+		var transcriptErrMsg string
 		if exitCode == 0 {
 			outputJSONL := filepath.Join(iterDir, "output.jsonl")
 			if te, ok := tx.ParseTranscriptFile(outputJSONL); ok && te.IsError {
-				printer.StepWarn(fmt.Sprintf("Agent exited with code 0 but transcript contains error: %s", te.ErrorMessage))
 				lastExitCode = 1
 				transcriptErrorOverride = true
+				transcriptErrMsg = transcriptErrorMessage(te)
+				// The console line prints the same bounded, sanitized string
+				// the span event records: the raw fields can carry ANSI
+				// escapes, a newline-led ::workflow-command::, or an
+				// unbounded Subtype into the CI job log.
+				printer.StepWarn("Agent exited with code 0 but transcript contains error: " + transcriptErrMsg)
 			}
 		}
+
+		finalizeAgentSpan(agentSpan, nil, iteration, exitCode, rt.System(), &metrics, transcriptErrMsg)
 
 		printer.Blank()
 		// Non-zero exit is a warning, not a failure — the validation loop is the success gate.
@@ -2384,6 +2393,133 @@ func telemetryExitCode(lastExitCode int, runErr error) int {
 		return 1
 	}
 	return lastExitCode
+}
+
+// recordSanitizedError records err as an exception event with its message
+// repaired to valid UTF-8 and bounded to maxSpanEventMsgLen — RecordError
+// feeds the same OTLP proto marshal path as status descriptions, one
+// invalid byte fails export of the whole batch, and the SDK's attribute
+// value-length limit is not applied to event attributes (v1.44.0: addEvent
+// enforces only count limits, never value truncation). The rewrap costs
+// the concrete exception.type; the message is what consumers read.
+func recordSanitizedError(span trace.Span, err error) {
+	span.RecordError(errors.New(truncateStatusMsgTo(err.Error(), maxSpanEventMsgLen)))
+}
+
+// maxSpanStatusMsgLen bounds a status description's total bytes, prefix and
+// truncation ellipsis included. No OTel, collector, or backend limit
+// mandates a specific value; 2000 matches maxTranscriptErrorLength
+// (internal/runtime/claude_transcript.go), the repo's bound for the same
+// class of error text. Every status built from an error is preceded by
+// recordSanitizedError on the same span, which keeps the fuller
+// maxSpanEventMsgLen copy.
+const maxSpanStatusMsgLen = 2000
+
+// maxSpanEventMsgLen bounds an exception event's message. The event carries
+// the fuller copy of an error than the status description, but not an
+// unbounded one: a sandbox-create failure embeds raw supervisor/gateway/
+// container logs, the SDK never truncates event attribute values, and an
+// oversized batch can be rejected by the collector whole. 8192 holds the
+// worst-case transcript message — maxTranscriptErrorLength plus the parser
+// suffix, grown up to 1.5x by sanitization's "::" breaking (3,015 bytes) —
+// with room to spare; no external limit mandates the value.
+const maxSpanEventMsgLen = 8192
+
+const statusEllipsis = "…"
+
+// truncateStatusMsg bounds s to maxSpanStatusMsgLen bytes.
+func truncateStatusMsg(s string) string {
+	return truncateStatusMsgTo(s, maxSpanStatusMsgLen)
+}
+
+// truncateStatusMsgTo repairs invalid UTF-8 and bounds s to n bytes,
+// ellipsis included, cutting on a rune boundary. Both steps matter: an
+// invalid-UTF-8 status fails proto marshaling of the entire OTLP batch,
+// silently dropping every span in it, and the source text (a wrapped
+// command error, a transcript payload) can be invalid at any length.
+func truncateStatusMsgTo(s string, n int) string {
+	s = strings.ToValidUTF8(s, "")
+	if len(s) <= n {
+		return s
+	}
+	if n < len(statusEllipsis) {
+		return ""
+	}
+	truncated := s[:n-len(statusEllipsis)]
+	for len(truncated) > 0 && !utf8.Valid([]byte(truncated)) {
+		truncated = truncated[:len(truncated)-1]
+	}
+	return truncated + statusEllipsis
+}
+
+// transcriptErrorMessage builds the message for a transcript-reported
+// failure (#2786): the sanitized DisplayMessage the GHA annotation path
+// also renders, bounded to maxSpanEventMsgLen. The one string reaches the
+// console line and the span sinks; the bound matters because Subtype,
+// unlike ErrorMessage, is not truncated by the transcript parser, so an
+// agent-written result line could otherwise flood the CI job log.
+func transcriptErrorMessage(te agentruntime.TranscriptError) string {
+	return truncateStatusMsgTo(te.DisplayMessage(), maxSpanEventMsgLen)
+}
+
+// finalizeAgentSpan records the end-of-iteration attributes and status on an
+// agent span and ends it. transcriptErr is non-empty when the transcript
+// reported a failure the process exit code did not (#2786): exit_code keeps
+// the raw process exit and fullsend.transcript_error marks the override.
+func finalizeAgentSpan(span trace.Span, runErr error, iteration, exitCode int, system string, m *agentruntime.RunMetrics, transcriptErr string) {
+	span.SetAttributes(agentSpanEndAttrs(iteration, exitCode, system, m)...)
+	switch {
+	case runErr != nil:
+		recordSanitizedError(span, runErr)
+	case transcriptErr != "":
+		// The status description is capped; the event's larger bound keeps
+		// a parser-truncated transcript payload whole for export.
+		recordSanitizedError(span, errors.New(transcriptErr))
+	}
+	if transcriptErr != "" {
+		span.SetAttributes(attribute.Bool("fullsend.transcript_error", true))
+	}
+	code, msg := agentSpanStatus(runErr, exitCode, transcriptErr)
+	span.SetStatus(code, msg)
+	span.End()
+}
+
+// agentSpanStatus maps one iteration's outcome to the agent span's status.
+// The validation loop, not the iteration, is the run's success gate — but the
+// span reports what happened in this iteration, and a failure is never
+// reported as success: a runtime error, a transcript-reported error (#2786),
+// or a non-zero exit is Error.
+func agentSpanStatus(runErr error, exitCode int, transcriptErr string) (codes.Code, string) {
+	switch {
+	case runErr != nil:
+		return codes.Error, truncateStatusMsg(runErr.Error())
+	case transcriptErr != "":
+		// Budget the payload so the prefixed total stays within the cap;
+		// a message short enough to fit is not re-truncated.
+		const prefix = "transcript error: "
+		return codes.Error, prefix + truncateStatusMsgTo(transcriptErr, maxSpanStatusMsgLen-len(prefix))
+	case exitCode != 0:
+		return codes.Error, fmt.Sprintf("agent exited with code %d", exitCode)
+	}
+	return codes.Ok, ""
+}
+
+// rootSpanStatus maps the run outcome to the root span's status. Validation,
+// not the last agent exit code, is the run's success gate: a passed
+// validation loop is Ok even when the final iteration exited non-zero.
+// exitCode is the telemetryExitCode result, so a harness without a
+// validation loop that returns nil alongside a failed agent still reports
+// Error (#5361).
+func rootSpanStatus(runErr error, exitCode int, validationPassed bool) (codes.Code, string) {
+	switch {
+	case runErr != nil:
+		return codes.Error, truncateStatusMsg(runErr.Error())
+	case validationPassed:
+		return codes.Ok, ""
+	case exitCode != 0:
+		return codes.Error, fmt.Sprintf("run finished with exit code %d", exitCode)
+	}
+	return codes.Ok, ""
 }
 
 // traceIdentity holds the resolved trace context for a run.

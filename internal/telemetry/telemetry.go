@@ -78,6 +78,27 @@ func validateEndpoints(endpoint, tracesEndpoint string) error {
 	return nil
 }
 
+// maxSpanAttrValueLen bounds every span attribute value recorded through
+// this provider. The SDK applies the limit (with UTF-8-safe truncation)
+// to span attributes only — event messages are bounded at their call
+// site — and free-text attributes such as a transcript-derived model
+// name or a pre-script skip reason are otherwise unbounded. 8192 matches
+// the exception-event bound in internal/cli; an operator's
+// OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT / OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT
+// setting takes precedence.
+const maxSpanAttrValueLen = 8192
+
+// spanLimits returns the SDK span limits (env vars included), with the
+// attribute value-length limit defaulted to maxSpanAttrValueLen when the
+// operator has not set one.
+func spanLimits() sdktrace.SpanLimits {
+	limits := sdktrace.NewSpanLimits()
+	if limits.AttributeValueLengthLimit < 0 {
+		limits.AttributeValueLengthLimit = maxSpanAttrValueLen
+	}
+	return limits
+}
+
 // Setup creates a TracerProvider with file and (optionally) OTLP exporters.
 // On any failure it returns a noop tracer and an empty cleanup func so the
 // run is never affected. The cleanup func shuts down the provider (flushing
@@ -100,6 +121,7 @@ func Setup(dir string, serviceVersion string) (trace.Tracer, func(context.Contex
 	opts := []sdktrace.TracerProviderOption{
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithRawSpanLimits(spanLimits()),
 		sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(newFileExporter(f))),
 	}
 

@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
@@ -65,6 +66,48 @@ func TestSetup_FileExporter(t *testing.T) {
 	require.NotEmpty(t, td.ResourceSpans)
 	require.NotEmpty(t, td.ResourceSpans[0].ScopeSpans)
 	assert.Equal(t, "test-span", td.ResourceSpans[0].ScopeSpans[0].Spans[0].Name)
+}
+
+// TestSetup_SpanAttributeValueLengthLimit pins the provider-level bound on
+// attribute values: a free-text attribute (model name, skip reason) cannot
+// ride an export at arbitrary size.
+func TestSetup_SpanAttributeValueLengthLimit(t *testing.T) {
+	pinOTELEnv(t)
+	dir := t.TempDir()
+	tracer, cleanup := Setup(dir, "1.0.0-test")
+
+	_, span := tracer.Start(context.Background(), "attr-span")
+	span.SetAttributes(attribute.String("fullsend.test_attr", strings.Repeat("a", 100_000)))
+	span.End()
+	cleanup(context.Background())
+
+	data, err := os.ReadFile(filepath.Join(dir, TelemetryFile))
+	require.NoError(t, err)
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(data, &doc))
+	spans := doc["resourceSpans"].([]any)[0].(map[string]any)["scopeSpans"].([]any)[0].(map[string]any)["spans"].([]any)
+	attrs := spans[0].(map[string]any)["attributes"].([]any)
+	var got string
+	for _, a := range attrs {
+		kv := a.(map[string]any)
+		if kv["key"] == "fullsend.test_attr" {
+			got = kv["value"].(map[string]any)["stringValue"].(string)
+		}
+	}
+	require.NotEmpty(t, got, "test attribute must be exported")
+	assert.Len(t, got, maxSpanAttrValueLen, "attribute value must be truncated to the provider limit")
+}
+
+// TestSpanLimits pins the default and the operator-env precedence.
+func TestSpanLimits(t *testing.T) {
+	pinOTELEnv(t)
+	assert.Equal(t, maxSpanAttrValueLen, spanLimits().AttributeValueLengthLimit,
+		"unset env defaults to maxSpanAttrValueLen")
+
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "512")
+	assert.Equal(t, 512, spanLimits().AttributeValueLengthLimit,
+		"operator env setting wins over the default")
 }
 
 func TestSetup_NoopOnBadDir(t *testing.T) {

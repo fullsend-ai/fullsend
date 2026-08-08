@@ -125,6 +125,7 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 | `fullsend.security_trace_id` | `run` | Security scanner trace correlation ID |
 | `fullsend.prescript.skipped` | `run` | Whether the pre-script signaled a skip |
 | `fullsend.prescript.skip_reason` | `run` | Human-readable skip reason from the pre-script |
+| `fullsend.transcript_error` | `agent` | Present (`true`) when the agent exited 0 but its transcript reported an error — the span's status is Error while `exit_code` keeps the raw process exit |
 
 ### Common attributes
 
