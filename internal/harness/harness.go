@@ -305,6 +305,7 @@ type Harness struct {
 	Model                  string                  `yaml:"model,omitempty"`
 	PreScript              string                  `yaml:"pre_script,omitempty"`
 	PostScript             string                  `yaml:"post_script,omitempty"`
+	PreflightCheck         string                  `yaml:"preflight_check,omitempty"` // shell command to validate host deps before sandbox creation (all scripts)
 	AgentInput             string                  `yaml:"agent_input,omitempty"`
 	ValidationLoop         *ValidationLoop         `yaml:"validation_loop,omitempty"`
 	RunnerEnv              map[string]string       `yaml:"runner_env,omitempty"`
@@ -619,9 +620,10 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 }
 
 // ValidateRunnerEnvWith checks that all ${VAR} references in RunnerEnv,
-// Env.Runner, Env.Sandbox, and HostFiles.Src are defined in the host
-// environment using the provided lookup function. Variables set to an empty
-// string are allowed; only truly unset variables produce an error.
+// Env.Runner, Env.Sandbox, HostFiles.Src, PreflightCheck, and
+// ValidationLoop.Schema/PreflightCheck are defined in the host environment
+// using the provided lookup function. Variables set to an empty string are
+// allowed; only truly unset variables produce an error.
 func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) error {
 	checkVarRefs := func(source, value string) error {
 		for _, match := range envVarRef.FindAllStringSubmatch(value, -1) {
@@ -648,6 +650,11 @@ func (h *Harness) ValidateRunnerEnvWith(lookup func(string) (string, bool)) erro
 	}
 	if h.ValidationLoop != nil && h.ValidationLoop.Schema != "" {
 		if err := checkVarRefs("validation_loop.schema", h.ValidationLoop.Schema); err != nil {
+			return err
+		}
+	}
+	if h.PreflightCheck != "" {
+		if err := checkVarRefs("preflight_check", h.PreflightCheck); err != nil {
 			return err
 		}
 	}

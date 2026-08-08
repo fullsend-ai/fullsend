@@ -385,6 +385,10 @@ api_servers:
 pre_script: scripts/<pre>.sh
 post_script: scripts/<post>.sh
 
+# Optional host-dependency check, run before sandbox creation and before
+# pre_script/post_script/validation_loop.
+preflight_check: <shell-command>
+
 # Additional input files copied into the sandbox for the agent to consume.
 agent_input: <directory>
 

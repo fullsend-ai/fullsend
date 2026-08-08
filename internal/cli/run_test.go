@@ -3003,6 +3003,90 @@ func TestRunAgent_PreflightCheck_Timeout(t *testing.T) {
 	assert.Contains(t, err.Error(), "timed out")
 }
 
+func TestRunAgent_TopLevelPreflightCheck_Passing(t *testing.T) {
+	// A passing top-level preflight_check should not block the run —
+	// runAgent proceeds past the guard and fails later at openshell.
+	useFakeOpenshell(t)
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\npreflight_check: \"true\"\npre_script: scripts/validate.sh\n")
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	// Must pass the preflight guard and reach the openshell check.
+	assert.Contains(t, err.Error(), "openshell")
+}
+
+func TestRunAgent_TopLevelPreflightCheck_Failing(t *testing.T) {
+	// A failing top-level preflight_check should abort runAgent with a
+	// descriptive error.
+	useFakeOpenshell(t)
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\npreflight_check: \"exit 1\"\npre_script: scripts/validate.sh\n")
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preflight_check failed")
+}
+
+func TestRunAgent_TopLevelPreflightCheck_Timeout(t *testing.T) {
+	// A top-level preflight_check that exceeds the deadline should abort
+	// with a "timed out" error.
+	useFakeOpenshell(t)
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\npreflight_check: \"sleep 5\"\n")
+
+	original := preflightCheckTimeout
+	preflightCheckTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { preflightCheckTimeout = original })
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "timed out")
+}
+
+func TestRunAgent_BothPreflightChecks_ValidationLoopFailsAfterTopLevel(t *testing.T) {
+	// When both top-level and validation_loop preflight checks are set,
+	// a passing top-level check followed by a failing validation_loop
+	// check should still abort.
+	useFakeOpenshell(t)
+	dir := preflightTestSetup(t, "agent: agents/code.md\nrole: test\npreflight_check: \"true\"\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"exit 1\"\n  max_iterations: 2\n")
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "validation_loop.preflight_check failed")
+}
+
+func TestRunAgent_TopLevelPreflightCheck_Failing_SkipsValidationLoopCheck(t *testing.T) {
+	// When the top-level preflight_check fails, runAgent should return
+	// immediately without ever invoking validation_loop.preflight_check.
+	// Guards against a future refactor (e.g. a collected-error pattern)
+	// accidentally running both checks even when the first one fails.
+	useFakeOpenshell(t)
+	sentinel := filepath.Join(t.TempDir(), "validation-loop-preflight-ran")
+	harnessYAML := fmt.Sprintf("agent: agents/code.md\nrole: test\npreflight_check: \"exit 1\"\nvalidation_loop:\n  script: scripts/validate.sh\n  preflight_check: \"touch %s\"\n  max_iterations: 2\n", sentinel)
+	dir := preflightTestSetup(t, harnessYAML)
+
+	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
+	printer := ui.New(io.Discard)
+	repoDir := t.TempDir()
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preflight_check failed")
+	assert.NotContains(t, err.Error(), "validation_loop.preflight_check")
+
+	_, statErr := os.Stat(sentinel)
+	assert.True(t, os.IsNotExist(statErr), "validation_loop.preflight_check must not run when the top-level check fails")
+}
+
 func TestBuildSandboxEnvLines_FromEnvSandbox(t *testing.T) {
 	h := &harness.Harness{
 		Agent: "agents/test.md",
