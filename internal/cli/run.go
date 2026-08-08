@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -2429,8 +2430,17 @@ func resolveTraceIdentity(ctx context.Context, tracer trace.Tracer, inboundTP, i
 // runPreScript executes the harness pre-script with the pre-script output
 // protocol's file (FULLSEND_PRESCRIPT_OUTPUT) in its environment and parses
 // the result. See internal/prescript for the protocol (issue #4718).
-// A non-zero script exit remains a hard failure; a malformed output file
-// is also a hard failure so a mistyped skip cannot silently proceed.
+//
+// Exit code handling:
+//   - Exit 0: parse the output file; skipped=true in the file requests a skip.
+//   - Exit 78 (neutral, issue #582): treat as a skip regardless of the output
+//     file content. The output file is still parsed best-effort for reason and
+//     other outputs; if parsing fails, the skip proceeds with stdout as the
+//     reason. This lets simple scripts just `echo "No work" && exit 78`.
+//   - Any other non-zero exit: hard failure.
+//
+// A malformed output file on exit 0 is a hard failure so a mistyped skip
+// cannot silently proceed.
 func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Printer) (prescript.Result, error) {
 	preStart := time.Now()
 	printer.StepStart("Running pre-script: " + h.PreScript)
@@ -2442,12 +2452,40 @@ func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Pr
 	defer cleanup()
 	preCmd := exec.Command(h.PreScript)
 	preCmd.Env = append(childScriptEnv(h.RunnerEnv, traceparent), prescript.EnvVar+"="+outPath)
-	preCmd.Stdout = os.Stdout
+
+	// Tee stdout so we can use it as a fallback skip reason when the
+	// script exits 78 without writing a reason to the output file.
+	var stdoutBuf bytes.Buffer
+	preCmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
 	preCmd.Stderr = os.Stderr
-	if err := preCmd.Run(); err != nil {
-		printer.StepFail("Pre-script failed")
-		return prescript.Result{}, fmt.Errorf("running pre-script: %w", err)
+
+	runErr := preCmd.Run()
+	if runErr != nil {
+		// Check for exit code 78 (neutral/skip).
+		var exitErr *exec.ExitError
+		if !errors.As(runErr, &exitErr) || exitErr.ExitCode() != prescript.ExitCodeNeutral {
+			printer.StepFail("Pre-script failed")
+			return prescript.Result{}, fmt.Errorf("running pre-script: %w", runErr)
+		}
+
+		// Exit 78: parse the output file best-effort for reason and other
+		// outputs. If parsing fails the exit code is still authoritative.
+		result, parseErr := prescript.ParseFile(outPath)
+		if parseErr != nil {
+			result = prescript.Result{Outputs: map[string]string{}}
+		}
+		result.Skipped = true
+		result.Outputs["skipped"] = "true"
+		if result.Reason == "" {
+			result.Reason = lastNonEmptyLine(stdoutBuf.String())
+		}
+		if result.Reason != "" {
+			result.Outputs["reason"] = result.Reason
+		}
+		printer.StepDone(fmt.Sprintf("Pre-script exited 78 (neutral skip) (%.1fs)", time.Since(preStart).Seconds()))
+		return result, nil
 	}
+
 	result, err := prescript.ParseFile(outPath)
 	if err != nil {
 		printer.StepFail("Pre-script output invalid")
@@ -2455,6 +2493,20 @@ func runPreScript(h *harness.Harness, runDir, traceparent string, printer *ui.Pr
 	}
 	printer.StepDone(fmt.Sprintf("Pre-script completed (%.1fs)", time.Since(preStart).Seconds()))
 	return result, nil
+}
+
+// lastNonEmptyLine returns the last non-blank line from s, trimmed. Scripts
+// that exit 78 often print a human-readable reason as their last output line
+// (e.g. "No issues need scoring"); this extracts it for use as the skip
+// reason when no reason= key was written to the output file.
+func lastNonEmptyLine(s string) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" {
+			return l
+		}
+	}
+	return ""
 }
 
 // childScriptEnv builds the environment for a host-side child script (pre- or
