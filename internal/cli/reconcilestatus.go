@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
 	gl "github.com/fullsend-ai/fullsend/internal/forge/gitlab"
@@ -18,18 +19,22 @@ var reconcileMintToken = mintclient.MintToken
 var reconcileNewForgeClient = func(token string) forge.Client {
 	return gh.New(token)
 }
+var reconcileOrphaned = statuscomment.ReconcileOrphaned
 
 func newReconcileStatusCmd() *cobra.Command {
 	var (
-		repo      string
-		number    int
-		runID     string
-		runURL    string
-		sha       string
-		reason    string
-		mintURL   string
-		role      string
-		forgeFlag string
+		repo        string
+		number      int
+		runID       string
+		runURL      string
+		sha         string
+		reason      string
+		mintURL     string
+		role        string
+		forgeFlag   string
+		fullsendDir string
+		jobStatus   string
+		wasSkipped  bool
 	)
 
 	cmd := &cobra.Command{
@@ -82,7 +87,29 @@ finalized, this is a no-op.`,
 			default:
 				termReason = statuscomment.ReasonTerminated
 			}
-			return statuscomment.ReconcileOrphaned(cmd.Context(), client, owner, repoName, number, runID, runURL, sha, termReason)
+
+			completionMode := ""
+			if fullsendDir != "" {
+				writer, err := config.LoadConfigWriter(fullsendDir, config.LoadOpts{MissingOK: true})
+				switch {
+				case err != nil:
+					fmt.Fprintf(os.Stderr, "WARNING: could not load config from %s: %v; using default completion mode\n", fullsendDir, err)
+				default:
+					ocr, ok := writer.(config.OrgConfigReader)
+					switch {
+					case ok && ocr.StatusNotifications() != nil:
+						completionMode = ocr.StatusNotifications().Comment.Completion
+					case ok:
+						fmt.Fprintf(os.Stderr, "INFO: no status_notifications configured at %s; using default completion mode\n", fullsendDir)
+					default:
+						fmt.Fprintf(os.Stderr, "INFO: %s is not an org config (status_notifications is org-level only); using default completion mode\n", fullsendDir)
+					}
+				}
+			}
+
+			agentDescription := titleCase(strings.ReplaceAll(role, "-", " "))
+
+			return reconcileOrphaned(cmd.Context(), client, owner, repoName, number, runID, runURL, sha, termReason, completionMode, jobStatus, wasSkipped, agentDescription)
 		},
 	}
 
@@ -95,6 +122,9 @@ finalized, this is a no-op.`,
 	cmd.Flags().StringVar(&mintURL, "mint-url", "", "mint service URL for on-demand token (default: $FULLSEND_MINT_URL)")
 	cmd.Flags().StringVar(&role, "role", "", "agent role for minting (required with --mint-url)")
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform (e.g. "github", "gitlab"); auto-detected from CI env vars when omitted`)
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to fullsend config directory (used to detect completion mode for orphan synthesis)")
+	cmd.Flags().StringVar(&jobStatus, "job-status", "", "job outcome from the CI runner (e.g. success, failure, cancelled)")
+	cmd.Flags().BoolVar(&wasSkipped, "was-skipped", false, "whether the pre-script decided to skip the run (forces synthesis under on_failure even when --job-status is success)")
 	_ = cmd.MarkFlagRequired("repo")
 	_ = cmd.MarkFlagRequired("number")
 	_ = cmd.MarkFlagRequired("run-id")

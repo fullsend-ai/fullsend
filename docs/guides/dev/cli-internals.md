@@ -117,7 +117,9 @@ fullsend
     ├── --reason <string>                    #   Termination reason: terminated or cancelled (default: terminated)
     ├── --mint-url <url>                     #   Mint service URL for on-demand token (default: $FULLSEND_MINT_URL)
     ├── --role <string>                      #   Agent role for minting (required with --mint-url)
-    └── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
+    ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
+    ├── --fullsend-dir <path>                #   Path to fullsend config directory (completion mode detection)
+    └── --job-status <string>                #   Job outcome from CI runner (e.g. success, failure, cancelled)
 ```
 
 ### Command Decomposition

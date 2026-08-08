@@ -123,11 +123,27 @@ func commentEnabled(val string) bool {
 	return val == "" || val == "enabled"
 }
 
+// shouldPostCompletion reports whether a completion comment should be
+// posted given the configured value and the agent outcome status.
+func shouldPostCompletion(val, status string) bool {
+	switch val {
+	case "on_failure":
+		return status == "failure" || status == "cancelled" || status == "skipped"
+	default:
+		return commentEnabled(val)
+	}
+}
+
 // PostStart posts a start comment on the issue/PR.
+//
+// When completion is set to "on_failure", the start comment is automatically
+// suppressed regardless of the start setting. Posting a start comment that
+// gets deleted on success would still trigger a GitHub notification pointing
+// to a deleted comment — defeating the purpose of reducing noise.
 func (n *Notifier) PostStart(ctx context.Context, description string) error {
 	n.startTime = n.now().UTC()
 
-	if commentEnabled(n.cfg.Comment.Start) {
+	if commentEnabled(n.cfg.Comment.Start) && n.cfg.Comment.Completion != "on_failure" {
 		if err := n.refreshClient(ctx); err != nil {
 			return err
 		}
@@ -168,14 +184,15 @@ func (n *Notifier) PostCompletion(ctx context.Context, description, status strin
 func (n *Notifier) PostCompletionWithDetail(ctx context.Context, description, status, detail string) error {
 	completionTime := n.now().UTC()
 
-	if !commentEnabled(n.cfg.Comment.Completion) {
-		// Completion comments disabled — clean up the start comment so it
-		// doesn't remain orphaned in its "Started" state.
+	if !shouldPostCompletion(n.cfg.Comment.Completion, status) {
+		// Completion comment suppressed (disabled or on_failure with success) —
+		// clean up the start comment so it doesn't remain orphaned in its
+		// "Started" state.
 		if n.startCommentID != 0 {
 			if err := n.refreshClient(ctx); err != nil {
 				n.warnf("failed to mint token for start comment cleanup: %v", err)
 			} else if err := n.client.DeleteIssueComment(ctx, n.owner, n.repo, n.startCommentID); err != nil {
-				n.warnf("failed to delete start comment when completion disabled: %v", err)
+				n.warnf("failed to delete start comment when completion suppressed: %v", err)
 			}
 		}
 		return nil
@@ -440,13 +457,33 @@ func statusEmoji(status string) string {
 // completion and interrupted comment bodies. If found in a non-terminal
 // state, it updates the comment to "Interrupted" and tags it as terminal.
 //
+// completionMode is the configured comment.completion value ("enabled",
+// "on_failure", or "disabled"). When "on_failure", no start comment marker
+// is created — so the absence of a marker means the process may have been
+// hard-killed before PostCompletion could run. In that case, a new
+// "Interrupted" comment is synthesized so the failure is still surfaced.
+//
+// jobStatus is the GitHub Actions job status (e.g., "success", "failure",
+// "cancelled"). When completionMode is "on_failure" and jobStatus is
+// "success" or empty, synthesis is skipped — "success" means the agent
+// completed normally and suppressed its comment, and empty means the job
+// outcome is unknown (e.g., --job-status was omitted). wasSkipped overrides
+// this: it's true when the pre-script itself decided to skip the run, which
+// means jobStatus can be "success" even though PostCompletionWithDetail's
+// skip-reason comment failed to post (its error is only logged, not
+// propagated to the job's exit code). See PR #5736.
+//
+// agentDescription is used as the heading for a synthesized "Interrupted"
+// comment (e.g. "Code" for the code agent), so operators can tell which
+// agent failed when multiple agents run against the same issue/PR.
+//
 // This function is designed to be called from an out-of-process cleanup
 // mechanism (e.g., a GitHub Actions post-job step) that runs even when the
 // fullsend process is killed. It does not require a Notifier instance since
 // the process that created it is gone.
 //
 // Returns an error if runID contains characters outside [a-zA-Z0-9_-].
-func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo string, number int, runID, runURL, sha string, reason TerminationReason) error {
+func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo string, number int, runID, runURL, sha string, reason TerminationReason, completionMode, jobStatus string, wasSkipped bool, agentDescription string) error {
 	marker, err := buildMarker(runID)
 	if err != nil {
 		return fmt.Errorf("building marker: %w", err)
@@ -475,8 +512,22 @@ func ReconcileOrphaned(ctx context.Context, client forge.Client, owner, repo str
 		return nil
 	}
 
-	// No matching comment found — either PostStart never ran, or the comment
-	// was already deleted. Both are fine.
+	// No matching comment found. When completion is "on_failure", the start
+	// comment is intentionally suppressed — so an absent marker doesn't mean
+	// "nothing happened." It may mean the process was hard-killed before
+	// PostCompletion could run. Synthesize an "Interrupted" comment so the
+	// failure is visible — but only when the job actually failed or was
+	// cancelled, or the run was skipped and its own skip-reason comment
+	// failed to post. A successful, non-skipped job with no marker means
+	// PostCompletion suppressed the comment as designed. See PR #5736.
+	if completionMode == "on_failure" && (wasSkipped || (jobStatus != "" && jobStatus != "success")) {
+		endTime := now().UTC()
+		body := buildInterruptedBody(marker, runURL, sha, agentDescription, "", endTime, reason)
+		if _, err := client.CreateIssueComment(ctx, owner, repo, number, body); err != nil {
+			return fmt.Errorf("creating synthesized interrupted comment: %w", err)
+		}
+	}
+
 	return nil
 }
 

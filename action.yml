@@ -409,7 +409,16 @@ runs:
           "${STATUS_FLAGS[@]+"${STATUS_FLAGS[@]}"}" \
           "${MINT_FLAGS[@]+"${MINT_FLAGS[@]}"}"
 
+    - name: Upload fullsend artifacts
+      if: always() && inputs.agent != '__install_only__'
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: fullsend-${{ inputs.agent }}
+        path: ${{ github.workspace }}/output
+
     - name: Finalize orphaned status comment
+      # Runs last (after all other always() steps) so job.status reflects
+      # the job's true final outcome, not just the fullsend run outcome.
       if: always() && inputs.agent != '__install_only__' && inputs.status-repo != '' && inputs.status-number != '' && inputs.mint-url != ''
       shell: bash
       env:
@@ -420,7 +429,9 @@ runs:
         RUN_ID: ${{ github.run_id }}
         RUN_URL: ${{ inputs.run-url }}
         JOB_STATUS: ${{ job.status }}
+        WAS_SKIPPED: ${{ steps.run.outputs.skipped }}
         PR_HEAD_SHA_INPUT: ${{ inputs.pr-head-sha }}
+        FULLSEND_DIR: ${{ inputs.fullsend-dir }}
       run: |
         set -euo pipefail
         # When the fullsend process is hard-killed (SIGKILL, OOM, segfault),
@@ -451,8 +462,14 @@ runs:
           COMMIT_SHA="${GITHUB_SHA}"
         fi
 
+        FULLSEND_DIR="${FULLSEND_DIR:-${GITHUB_WORKSPACE}}"
         RECONCILE_FLAGS=(--repo "${STATUS_REPO}" --number "${STATUS_NUMBER}" --run-id "${RUN_ID}")
         RECONCILE_FLAGS+=(--mint-url "${MINT_URL}" --role "${AGENT}")
+        RECONCILE_FLAGS+=(--fullsend-dir "${FULLSEND_DIR}")
+        RECONCILE_FLAGS+=(--job-status "${JOB_STATUS}")
+        if [[ "${WAS_SKIPPED}" == "true" ]]; then
+          RECONCILE_FLAGS+=(--was-skipped)
+        fi
         if [[ -n "${RUN_URL}" ]]; then
           RECONCILE_FLAGS+=(--run-url "${RUN_URL}")
         fi
@@ -465,10 +482,3 @@ runs:
         fullsend reconcile-status "${RECONCILE_FLAGS[@]+"${RECONCILE_FLAGS[@]}"}" || {
           echo "::warning::Could not reconcile orphaned status comment"
         }
-
-    - name: Upload fullsend artifacts
-      if: always() && inputs.agent != '__install_only__'
-      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-      with:
-        name: fullsend-${{ inputs.agent }}
-        path: ${{ github.workspace }}/output
