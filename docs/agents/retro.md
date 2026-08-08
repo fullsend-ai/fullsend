@@ -43,12 +43,47 @@ The retro agent also runs automatically when a PR is closed (merged or not).
 
 | Label | Meaning |
 |-------|---------|
-| `ready-for-triage` | Applied by the post-script to proposal issues so they enter the [triage](triage.md) pipeline automatically. |
+| `ready-for-triage` | Applied by the post-script to proposal issues so they enter the [triage](triage.md) pipeline automatically. **Not applied on cross-repo/cross-org filings** — the retro token is scoped to the source org and lacks label-write permission on the target repo ([#3648](https://github.com/fullsend-ai/fullsend/issues/3648)). A maintainer must manually run `/fs-triage` on these issues. |
 
 ## Configuration and extension
 
 See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
 [Configuring with Skills](../guides/user/customizing-with-skills.md).
+
+### Cross-repo issue creation
+
+The retro agent can file proposal issues into a different repository than the
+one it analyzed — for example, a platform-level bug filed into
+`fullsend-ai/fullsend`, or an agent-definition issue filed into the agents
+repo, when the improvement belongs outside the source repo.
+
+Unlike the [triage agent](triage.md#cross-repo-issue-creation), this is
+**not** governed by a config-enforced allowlist. `post-retro.sh` only checks
+that each proposal's `target_repo` is a well-formed `owner/repo` string — it
+never reads `config.yaml` or `create_issues.allow_targets`. Target-repo
+selection is entirely prompt-driven: the retro agent's own definition
+includes target-repo guidance (platform tooling → `fullsend-ai/fullsend`,
+agent definitions/skills/harness configs → the agents repo, repo-specific
+fixes → the source repo) that the agent applies at its own judgment when
+choosing where to file each proposal.
+
+**Labeling limitation:** When the retro agent files an issue cross-repo or
+cross-org, the `ready-for-triage` label is **not applied**. The retro token is
+minted scoped to the source org's repos only, so it has write access to create
+the issue but lacks the repo-scoped permission needed to manage labels on the
+target repository. The `gh issue create --label ready-for-triage` call succeeds
+for issue creation but the label is silently dropped. See
+[#3648](https://github.com/fullsend-ai/fullsend/issues/3648) for the
+underlying cause.
+
+As a result, cross-repo retro-filed issues:
+
+- Land with no labels on the target repo.
+- Do not enter the [triage](triage.md) pipeline automatically (triage's
+  `issues: opened` trigger requires the issue author to be an authorized
+  collaborator, which bot accounts are not).
+- Require a maintainer to manually run `/fs-triage` on the issue to start
+  the triage pipeline.
 
 ### Variables
 
