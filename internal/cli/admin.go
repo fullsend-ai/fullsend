@@ -1133,7 +1133,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			"FULLSEND_GCP_PROJECT_ID":   inferenceProject,
 			"FULLSEND_GCP_WIF_PROVIDER": inferenceWIFProvider,
 		}
-		if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, vendorFiles, repoVars, repoSecrets, c.Direct); err != nil {
+		if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, vendorFiles, repoVars, repoSecrets, c.Direct, ""); err != nil {
 			return err
 		}
 	}
@@ -1215,9 +1215,11 @@ func (a *gcfProvisionerAdapter) DeleteWIFProvider(ctx context.Context, repo stri
 
 // applyPerRepoScaffold commits scaffold files to the repo's default branch
 // and configures the repository variables and secrets needed for fullsend.
+// When signOffTrailer is non-empty, it is appended to the commit message
+// as a Signed-off-by trailer (e.g. "Signed-off-by: Name <email>").
 func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.Printer,
 	owner, repo string, files []forge.TreeFile,
-	repoVars, repoSecrets map[string]string, direct bool) error {
+	repoVars, repoSecrets map[string]string, direct bool, signOffTrailer string) error {
 
 	targetRepo, err := client.GetRepo(ctx, owner, repo)
 	if err != nil {
@@ -1227,6 +1229,9 @@ func applyPerRepoScaffold(ctx context.Context, client forge.Client, printer *ui.
 		return fmt.Errorf("getting repo info: %w", err)
 	}
 	commitMsg := "chore: initialize fullsend per-repo installation"
+	if signOffTrailer != "" {
+		commitMsg += "\n\n" + signOffTrailer
+	}
 	if direct {
 		printer.StepStart(fmt.Sprintf("Committing scaffold files to %s/%s (%s branch)",
 			owner, repo, targetRepo.DefaultBranch))

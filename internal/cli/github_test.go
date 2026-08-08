@@ -96,6 +96,10 @@ func TestGitHubSetupCmd_Flags(t *testing.T) {
 
 	inferenceWIFFlag := cmd.Flags().Lookup("inference-wif-provider")
 	require.NotNil(t, inferenceWIFFlag, "expected --inference-wif-provider flag")
+
+	signoffFlag := cmd.Flags().Lookup("signoff")
+	require.NotNil(t, signoffFlag, "expected --signoff flag")
+	assert.Equal(t, "false", signoffFlag.DefValue)
 }
 
 func TestGitHubSetupCmd_UsesDefaultMintURL(t *testing.T) {
@@ -716,6 +720,116 @@ func TestRunGitHubSetupPerRepo(t *testing.T) {
 	}
 	assert.Equal(t, "my-project", secretNames["FULLSEND_GCP_PROJECT_ID"])
 	assert.Contains(t, secretNames, "FULLSEND_GCP_WIF_PROVIDER")
+}
+
+func TestRunGitHubSetupPerRepo_SignoffAddsTrailer(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.AuthenticatedUserIdentity = &forge.UserIdentity{
+		Name:  "Test User",
+		Email: "test@example.com",
+	}
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:               "acme/widget",
+		mintURL:              "https://mint-test-abc123.run.app",
+		inferenceProject:     "my-project",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		inferenceRegion:      "global",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		signoff:              true,
+	})
+	require.NoError(t, err)
+
+	// Verify the commit message contains the Signed-off-by trailer.
+	require.NotEmpty(t, client.CommittedFilesToBranch)
+	commitMsg := client.CommittedFilesToBranch[0].Message
+	assert.Contains(t, commitMsg, "Signed-off-by: Test User <test@example.com>")
+}
+
+func TestRunGitHubSetupPerRepo_WithoutSignoffOmitsTrailer(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.AuthenticatedUserIdentity = &forge.UserIdentity{
+		Name:  "Test User",
+		Email: "test@example.com",
+	}
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:               "acme/widget",
+		mintURL:              "https://mint-test-abc123.run.app",
+		inferenceProject:     "my-project",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		inferenceRegion:      "global",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		signoff:              false,
+	})
+	require.NoError(t, err)
+
+	// Verify the commit message does NOT contain a Signed-off-by trailer.
+	require.NotEmpty(t, client.CommittedFilesToBranch)
+	commitMsg := client.CommittedFilesToBranch[0].Message
+	assert.NotContains(t, commitMsg, "Signed-off-by")
+}
+
+func TestRunGitHubSetupPerRepo_SignoffMissingIdentity(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	// No AuthenticatedUserIdentity set — simulates a bot token.
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:               "acme/widget",
+		mintURL:              "https://mint-test-abc123.run.app",
+		inferenceProject:     "my-project",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		inferenceRegion:      "global",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		signoff:              true,
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--signoff requires git user identity")
+}
+
+func TestRunGitHubSetupPerRepo_SignoffDirect(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.AuthenticatedUserIdentity = &forge.UserIdentity{
+		Name:  "Test User",
+		Email: "test@example.com",
+	}
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:               "acme/widget",
+		mintURL:              "https://mint-test-abc123.run.app",
+		inferenceProject:     "my-project",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		inferenceRegion:      "global",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		signoff:              true,
+		direct:               true,
+	})
+	require.NoError(t, err)
+
+	// Direct mode commits to the default branch.
+	require.NotEmpty(t, client.CommittedFiles)
+	commitMsg := client.CommittedFiles[0].Message
+	assert.Contains(t, commitMsg, "Signed-off-by: Test User <test@example.com>")
 }
 
 func TestGitHubSetCmd_OrgTargetDefaultsToConfigRepo(t *testing.T) {
