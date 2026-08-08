@@ -33,6 +33,12 @@ type CreateIssuesReader interface {
 	IssueCreationConfig() *CreateIssuesConfig
 }
 
+// StatusNotificationsReader provides read access to status notification
+// configuration (comment/reaction start & completion).
+type StatusNotificationsReader interface {
+	StatusNotifications() *StatusNotificationConfig
+}
+
 // --- Composite read interface ---
 
 // ConfigReader is the common read interface for fields shared by both
@@ -43,6 +49,7 @@ type ConfigReader interface {
 	KillSwitchReader
 	AllowedResourcesReader
 	CreateIssuesReader
+	StatusNotificationsReader
 	ConfigVersion() string
 	IsOrgMode() bool
 }
@@ -58,7 +65,6 @@ type OrgConfigReader interface {
 	RepoMap() map[string]RepoConfig
 	EnabledRepos() []string
 	DisabledRepos() []string
-	StatusNotifications() *StatusNotificationConfig
 }
 
 // PerRepoConfigReader extends ConfigReader with per-repo-specific
@@ -318,6 +324,18 @@ func (c *perRepoConfig) IssueCreationConfig() *CreateIssuesConfig {
 	}
 	if c.parent != nil {
 		return c.parent.IssueCreationConfig()
+	}
+	return nil
+}
+
+// StatusNotifications returns the status notification configuration.
+// nil falls through to parent.
+func (c *perRepoConfig) StatusNotifications() *StatusNotificationConfig {
+	if c.Notifications != nil {
+		return c.Notifications
+	}
+	if c.parent != nil {
+		return c.parent.StatusNotifications()
 	}
 	return nil
 }

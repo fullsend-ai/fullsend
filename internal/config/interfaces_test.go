@@ -183,6 +183,26 @@ func TestPerRepoConfig_ConfigRuntime(t *testing.T) {
 	assert.Equal(t, "claude", cfg.ConfigRuntime())
 }
 
+func TestPerRepoConfig_StatusNotifications(t *testing.T) {
+	t.Run("returns local value when set", func(t *testing.T) {
+		sn := &StatusNotificationConfig{Comment: CommentNotificationConfig{Start: "enabled"}}
+		cfg := &perRepoConfig{Notifications: sn}
+		assert.Equal(t, sn, cfg.StatusNotifications())
+	})
+
+	t.Run("falls through to parent", func(t *testing.T) {
+		sn := &StatusNotificationConfig{Comment: CommentNotificationConfig{Start: "enabled"}}
+		parent := &perRepoConfig{Notifications: sn}
+		child := &perRepoConfig{parent: parent}
+		assert.Equal(t, sn, child.StatusNotifications())
+	})
+
+	t.Run("returns nil when unset", func(t *testing.T) {
+		cfg := &perRepoConfig{}
+		assert.Nil(t, cfg.StatusNotifications())
+	})
+}
+
 // --- PerRepoConfig setter tests ---
 
 func TestPerRepoConfig_SetKillSwitch(t *testing.T) {

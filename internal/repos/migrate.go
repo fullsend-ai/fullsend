@@ -439,10 +439,6 @@ func warnNonPortableFields(orgCfg config.OrgConfigReader, org string, progress P
 		progress(org, "warning",
 			"defaults.auto_merge=true has no per-repo equivalent and will not be carried over")
 	}
-	if defaults.StatusNotifications != nil {
-		progress(org, "warning",
-			"defaults.status_notifications has no per-repo equivalent and will not be carried over")
-	}
 }
 
 // discoverReposForMigrate checks the installation status of enrolled repos

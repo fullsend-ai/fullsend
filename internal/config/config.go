@@ -514,6 +514,12 @@ type perRepoConfig struct {
 	// marshaled as `allowed_remote_resources: []`.
 	AllowedRemoteResources []string            `yaml:"allowed_remote_resources,omitempty"`
 	CreateIssues           *CreateIssuesConfig `yaml:"create_issues,omitempty"`
+	// Notifications backs the StatusNotifications() accessor. Named
+	// distinctly from the method (unlike CreateIssues/IssueCreationConfig)
+	// because "StatusNotifications" is the established accessor name
+	// shared with orgConfig via ConfigReader, and Go forbids a field and
+	// method sharing a name on the same type.
+	Notifications *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
 
 	// parent is the next layer in the fallback chain. Getters consult
 	// parent when the local field is unset. Excluded from YAML
@@ -555,8 +561,8 @@ func NewPerRepoConfig(roles []string, targetRepo string) PerRepoConfigWriter {
 // NewPerRepoConfigFromOrg creates a per-repo config by mapping portable
 // fields from an org config. Per-repo role overrides (repos.<name>.roles)
 // take precedence over defaults.roles. Non-portable fields
-// (max_implementation_retries, auto_merge, status_notifications) are not
-// carried over — callers should warn separately.
+// (max_implementation_retries, auto_merge) are not carried over —
+// callers should warn separately.
 func NewPerRepoConfigFromOrg(orgCfg OrgConfigReader, repoName, targetRepo string) PerRepoConfigWriter {
 	// Determine roles: per-repo overrides take precedence over defaults.
 	roles := orgCfg.OrgRepoDefaults().Roles
@@ -626,6 +632,12 @@ func NewPerRepoConfigFromOrg(orgCfg OrgConfigReader, repoName, targetRepo string
 		cfg.Runtime = rt
 	}
 
+	// StatusNotifications: deep-copy from org config to avoid pointer aliasing.
+	if sn := orgCfg.StatusNotifications(); sn != nil {
+		snCopy := *sn
+		cfg.Notifications = &snCopy
+	}
+
 	return cfg
 }
 
@@ -670,14 +682,15 @@ func (c *perRepoConfig) Marshal() ([]byte, error) {
 // as an empty YAML sequence (e.g. `roles: []`,
 // `allowed_remote_resources: []`).
 type perRepoConfigMarshal struct {
-	Version                string              `yaml:"version,omitempty"`
-	Forge                  string              `yaml:"forge,omitempty"`
-	KillSwitch             *bool               `yaml:"kill_switch,omitempty"`
-	Runtime                string              `yaml:"runtime,omitempty"`
-	Roles                  *[]string           `yaml:"roles,omitempty"`
-	Agents                 []AgentEntry        `yaml:"agents,omitempty"`
-	AllowedRemoteResources *[]string           `yaml:"allowed_remote_resources,omitempty"`
-	CreateIssues           *CreateIssuesConfig `yaml:"create_issues,omitempty"`
+	Version                string                    `yaml:"version,omitempty"`
+	Forge                  string                    `yaml:"forge,omitempty"`
+	KillSwitch             *bool                     `yaml:"kill_switch,omitempty"`
+	Runtime                string                    `yaml:"runtime,omitempty"`
+	Roles                  *[]string                 `yaml:"roles,omitempty"`
+	Agents                 []AgentEntry              `yaml:"agents,omitempty"`
+	AllowedRemoteResources *[]string                 `yaml:"allowed_remote_resources,omitempty"`
+	CreateIssues           *CreateIssuesConfig       `yaml:"create_issues,omitempty"`
+	StatusNotifications    *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
 }
 
 // MarshalYAML implements yaml.Marshaler to preserve the nil-vs-empty
@@ -687,12 +700,13 @@ type perRepoConfigMarshal struct {
 // sequence (e.g. `roles: []`, `allowed_remote_resources: []`).
 func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 	h := perRepoConfigMarshal{
-		Version:      c.Version,
-		Forge:        c.Forge,
-		KillSwitch:   c.KillSwitch,
-		Runtime:      c.Runtime,
-		Agents:       c.Agents,
-		CreateIssues: c.CreateIssues,
+		Version:             c.Version,
+		Forge:               c.Forge,
+		KillSwitch:          c.KillSwitch,
+		Runtime:             c.Runtime,
+		Agents:              c.Agents,
+		CreateIssues:        c.CreateIssues,
+		StatusNotifications: c.Notifications,
 	}
 	if c.Roles != nil {
 		h.Roles = &c.Roles
@@ -741,6 +755,9 @@ func (c *perRepoConfig) Validate() error {
 		if !slices.Contains(validRuntimes, rt) {
 			return fmt.Errorf("invalid runtime %q: must be one of %s", rt, strings.Join(validRuntimes, ", "))
 		}
+	}
+	if err := validateStatusNotifications(c.Notifications); err != nil {
+		return err
 	}
 	return nil
 }

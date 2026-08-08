@@ -1013,9 +1013,9 @@ repos:
 	}, newTestClientFactory(fc), prov, nil, nopScaffoldCommit, progressFn)
 
 	require.NoError(t, err)
-	assert.Len(t, warnings, 3, "should warn about all 3 non-portable fields")
+	assert.Len(t, warnings, 2, "should warn about both non-portable fields")
 
-	var foundRetries, foundAutoMerge, foundNotifications bool
+	var foundRetries, foundAutoMerge bool
 	for _, w := range warnings {
 		if assert.ObjectsAreEqual("defaults.max_implementation_retries=3 has no per-repo equivalent and will not be carried over", w) {
 			foundRetries = true
@@ -1023,13 +1023,61 @@ repos:
 		if assert.ObjectsAreEqual("defaults.auto_merge=true has no per-repo equivalent and will not be carried over", w) {
 			foundAutoMerge = true
 		}
-		if assert.ObjectsAreEqual("defaults.status_notifications has no per-repo equivalent and will not be carried over", w) {
-			foundNotifications = true
-		}
 	}
 	assert.True(t, foundRetries, "should warn about max_implementation_retries")
 	assert.True(t, foundAutoMerge, "should warn about auto_merge")
-	assert.True(t, foundNotifications, "should warn about status_notifications")
+}
+
+func TestMigrate_CarriesOverStatusNotifications(t *testing.T) {
+	fc := forge.NewFakeClient()
+	setOrgConfig(fc, "acme", `
+version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles:
+    - triage
+    - coder
+  status_notifications:
+    comment:
+      start: enabled
+      completion: disabled
+repos:
+  api:
+    enabled: true
+`)
+	setWorkflowFile(fc, "acme", "api",
+		"    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.1.0")
+
+	prov := newFakeProvisioner()
+	prov.provisionResults["acme/api"] = "projects/123/locations/global/workloadIdentityPools/inference/providers/prov"
+
+	var warnings []string
+	progressFn := func(_, phase, msg string) {
+		if phase == "warning" {
+			warnings = append(warnings, msg)
+		}
+	}
+
+	captured := make(map[string][]forge.TreeFile)
+	result, err := Migrate(context.Background(), MigrateConfig{
+		Org:     "acme",
+		Project: "my-project",
+	}, newTestClientFactory(fc), prov, nil, capturingScaffoldCommit(&captured), progressFn)
+
+	require.NoError(t, err)
+	require.Len(t, result.Migrated, 1)
+
+	for _, w := range warnings {
+		assert.NotContains(t, w, "status_notifications",
+			"status_notifications is now portable and should not be warned about")
+	}
+
+	cfgYAML := findConfigYAML(captured["acme/api"])
+	require.NotEmpty(t, cfgYAML, "should have generated config.yaml")
+	assert.Contains(t, cfgYAML, "status_notifications:", "status_notifications should be carried over")
+	assert.Contains(t, cfgYAML, "start: enabled")
+	assert.Contains(t, cfgYAML, "completion: disabled")
 }
 
 func TestMigrate_NilMintRegistrar_SkipsRegistration(t *testing.T) {

@@ -47,12 +47,12 @@ The migrate command maps portable fields from the org-level `config.yaml` into e
 | `defaults.roles` | `roles` | Per-repo overrides from `repos.<name>.roles` take precedence |
 | `defaults.runtime` | `runtime` | Only when explicitly set |
 | `kill_switch` | `kill_switch` | Only when active |
+| `defaults.status_notifications` | `status_notifications` | Deep copy |
 
 The following org config fields have no per-repo equivalent and are **not** carried over. A warning is emitted for each:
 
 - `defaults.max_implementation_retries`
 - `defaults.auto_merge`
-- `defaults.status_notifications`
 
 **Note:** Any automated process that keeps the org-level `config.yaml` up to date (e.g., agent source pinning) needs to be replicated for each migrated repo's `.fullsend/config.yaml`.
 

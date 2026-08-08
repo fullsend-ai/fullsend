@@ -35,5 +35,8 @@ func (d *perRepoDefaults) AllowedResources() []string { return DefaultAllowedRem
 // IssueCreationConfig returns nil — no issue creation config by default.
 func (d *perRepoDefaults) IssueCreationConfig() *CreateIssuesConfig { return nil }
 
+// StatusNotifications returns nil — no status notifications by default.
+func (d *perRepoDefaults) StatusNotifications() *StatusNotificationConfig { return nil }
+
 // IsOrgMode returns false — per-repo configs are never org mode.
 func (d *perRepoDefaults) IsOrgMode() bool { return false }

@@ -3503,6 +3503,34 @@ func TestSetupStatusNotifier_ConfigYAML(t *testing.T) {
 	assert.NotNil(t, n)
 }
 
+func TestSetupStatusNotifier_PerRepoConfigYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	printer := ui.New(io.Discard)
+
+	// No "defaults"/"dispatch"/"repos"/"inference" key, so this parses as
+	// per-repo config (see config.IsPerRepoYAML). Per #5994, per-repo
+	// configs support status_notifications the same way org configs do.
+	configData := `version: "1"
+status_notifications:
+  comment:
+    start: enabled
+    completion: disabled
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte(configData), 0o644))
+
+	sOpts := statusOpts{
+		statusRepo: "org/repo",
+		statusNum:  7,
+		mintURL:    "https://mint.example.com",
+	}
+
+	t.Setenv("GITHUB_RUN_ID", "run-42")
+
+	n, err := setupStatusNotifier(tmpDir, "review", "", sOpts, printer)
+	require.NoError(t, err)
+	assert.NotNil(t, n)
+}
+
 func TestSetupStatusNotifier_RunIDFallback(t *testing.T) {
 	tmpDir := t.TempDir()
 	printer := ui.New(io.Discard)
