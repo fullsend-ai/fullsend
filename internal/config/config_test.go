@@ -13,7 +13,7 @@ import (
 
 func TestValidRoles(t *testing.T) {
 	roles := ValidRoles()
-	assert.Len(t, roles, 8)
+	assert.Len(t, roles, 9)
 	assert.Contains(t, roles, "fullsend")
 	assert.Contains(t, roles, "triage")
 	assert.Contains(t, roles, "coder")
@@ -22,6 +22,7 @@ func TestValidRoles(t *testing.T) {
 	assert.Contains(t, roles, "retro")
 	assert.Contains(t, roles, "prioritize")
 	assert.Contains(t, roles, "e2e")
+	assert.Contains(t, roles, "scribe")
 }
 
 func TestValidRoles_RecognizedByMintcore(t *testing.T) {

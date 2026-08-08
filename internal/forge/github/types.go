@@ -144,6 +144,15 @@ func AgentAppConfig(org, role, appSet string) AppConfig {
 		// No webhook events — triggered via workflow_dispatch from other agents.
 		base.Events = []string{}
 
+	case "scribe":
+		base.Description = fmt.Sprintf("Fullsend scribe agent for %s", org)
+		base.Permissions = AppPermissions{
+			Contents: "read",
+			Issues:   "write",
+		}
+		// No webhook events — schedule / workflow_dispatch only (like prioritize/retro).
+		base.Events = []string{}
+
 	case "e2e":
 		base.Description = fmt.Sprintf("Fullsend e2e pool testing for %s", org)
 		base.Permissions = AppPermissions{

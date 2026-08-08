@@ -349,6 +349,7 @@ Each agent role has its own identity, permissions, and purpose:
 | `fix` | (reuses coder app) | Fix failures |
 | `retro` | `{org}-retro[bot]` | Retrospectives |
 | `prioritize` | `{org}-prioritize[bot]` | Backlog priority |
+| `scribe` | `{org}-scribe[bot]` | Meeting-notes issue filing (opt-in; not in default installs) |
 
 **Naming conventions:**
 - App naming: `{org}-{role}`

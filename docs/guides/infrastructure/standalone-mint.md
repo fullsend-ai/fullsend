@@ -227,7 +227,7 @@ Permission names and levels match the [GitHub App permissions API](https://docs.
 
 The following role names are reserved and cannot be used in `CUSTOM_ROLE_PERMISSIONS`:
 
-- `triage`, `coder`, `review`, `fix`, `retro`, `prioritize`, `fullsend`, `e2e`
+- `triage`, `coder`, `review`, `fix`, `retro`, `prioritize`, `fullsend`, `e2e`, `scribe`
 
 Attempting to define a custom role with a built-in name will cause the mint to fail at startup:
 

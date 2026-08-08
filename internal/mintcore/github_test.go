@@ -147,7 +147,7 @@ func TestCreateInstallationToken_UnknownRole(t *testing.T) {
 }
 
 func TestRolePermissions_AllRolesPresent(t *testing.T) {
-	expectedRoles := []string{"triage", "coder", "review", "fix", "retro", "prioritize", "fullsend", "e2e"}
+	expectedRoles := []string{"triage", "scribe", "coder", "review", "fix", "retro", "prioritize", "fullsend", "e2e"}
 	allPerms := RolePermissions()
 	for _, role := range expectedRoles {
 		perms, ok := allPerms[role]
@@ -156,6 +156,16 @@ func TestRolePermissions_AllRolesPresent(t *testing.T) {
 		_, hasMetadata := perms["metadata"]
 		assert.True(t, hasMetadata, "role %q should have metadata permission", role)
 	}
+}
+
+func TestRolePermissions_Scribe(t *testing.T) {
+	perms := RolePermissionsFor("scribe")
+	require.NotNil(t, perms)
+	assert.Equal(t, "read", perms["contents"])
+	assert.Equal(t, "write", perms["issues"])
+	assert.Equal(t, "read", perms["metadata"])
+	assert.Empty(t, perms["organization_projects"])
+	assert.Empty(t, perms["pull_requests"])
 }
 
 func TestRolePermissions_E2e(t *testing.T) {

@@ -84,6 +84,7 @@ Custom roles can be registered via the standalone mint's `CUSTOM_ROLE_PERMISSION
 |------|----------|---------------|--------|---------|--------|-----------|-------------------|-----------------------|----------|
 | **fullsend** | write | write | — | write | — | write | read | — | read |
 | **triage** | read | — | write | — | — | — | — | — | read |
+| **scribe** | read | — | write | — | — | — | — | — | read |
 | **coder** | write | write | write | — | read | — | — | — | read |
 | **review** | read | write | write | — | read | — | — | — | read |
 | **fix** | write | write | write | — | — | — | — | — | read |

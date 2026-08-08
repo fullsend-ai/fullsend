@@ -59,6 +59,7 @@ type GrantedScope struct {
 // RolePermissions() to get a copy.
 var canonicalRolePermissions = map[string]map[string]string{
 	"triage":     {"contents": "read", "issues": "write", "metadata": "read"},
+	"scribe":     {"contents": "read", "issues": "write", "metadata": "read"},
 	"coder":      {"contents": "write", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
 	"review":     {"contents": "read", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
 	"fix":        {"contents": "write", "pull_requests": "write", "issues": "write", "metadata": "read"},

@@ -104,6 +104,19 @@ func TestAgentAppConfig_Retro(t *testing.T) {
 	assert.Empty(t, cfg.Events)
 }
 
+func TestAgentAppConfig_Scribe(t *testing.T) {
+	cfg := AgentAppConfig("myorg", "scribe", "fullsend")
+
+	assert.Equal(t, "fullsend-scribe", cfg.Name)
+	assert.Equal(t, "read", cfg.Permissions.Contents)
+	assert.Equal(t, "write", cfg.Permissions.Issues)
+	assert.Empty(t, cfg.Permissions.OrganizationProjects)
+	assert.Empty(t, cfg.Permissions.PullRequests)
+
+	// Scribe is schedule / workflow_dispatch driven, no webhook events.
+	assert.Empty(t, cfg.Events)
+}
+
 func TestAgentAppConfig_E2e(t *testing.T) {
 	cfg := AgentAppConfig("myorg", "e2e", "fullsend-ai")
 
@@ -180,6 +193,23 @@ func TestAgentAppConfig_E2eMatchesMintcorePermissions(t *testing.T) {
 		}
 		got, ok := manifest[key]
 		assert.True(t, ok, "AgentAppConfig(e2e) missing permission %q from mintcore canonicalRolePermissions", key)
+		assert.Equal(t, want, got, "permission %q mismatch between AgentAppConfig and mintcore", key)
+	}
+}
+
+func TestAgentAppConfig_ScribeMatchesMintcorePermissions(t *testing.T) {
+	canonical := mintcore.RolePermissionsFor("scribe")
+	require.NotNil(t, canonical)
+
+	manifest := appPermissionsAsMap(AgentAppConfig("myorg", "scribe", "fullsend-ai").Permissions)
+
+	// metadata is added at mint token time; GitHub App manifests omit it explicitly.
+	for key, want := range canonical {
+		if key == "metadata" {
+			continue
+		}
+		got, ok := manifest[key]
+		assert.True(t, ok, "AgentAppConfig(scribe) missing permission %q from mintcore canonicalRolePermissions", key)
 		assert.Equal(t, want, got, "permission %q mismatch between AgentAppConfig and mintcore", key)
 	}
 }
