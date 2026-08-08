@@ -1,0 +1,96 @@
+---
+# VirtualMachine template for a GitLab Runner on OpenShift Virtualization.
+#
+# Creates a Fedora VM with podman, curl, git, and python3 pre-installed
+# via cloud-init. After the VM boots, run setup.sh to register and configure
+# the runner.
+#
+# Usage: ./create-vm.sh (auto-numbers and applies this template)
+#
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: __VM_NAME__
+  labels:
+    app: fullsend-gitlab-runner
+    kubevirt.io/dynamic-credentials-support: "true"
+    vm.kubevirt.io/template: fedora-server-medium
+spec:
+  runStrategy: Always
+  dataVolumeTemplates:
+    - apiVersion: cdi.kubevirt.io/v1beta1
+      kind: DataVolume
+      metadata:
+        name: __VM_NAME__
+      spec:
+        sourceRef:
+          kind: DataSource
+          name: fedora
+          namespace: openshift-virtualization-os-images
+        storage:
+          resources:
+            requests:
+              storage: 20Gi
+  template:
+    metadata:
+      annotations:
+        vm.kubevirt.io/flavor: medium
+        vm.kubevirt.io/os: fedora
+        vm.kubevirt.io/workload: server
+      labels:
+        kubevirt.io/domain: __VM_NAME__
+        kubevirt.io/size: medium
+    spec:
+      architecture: amd64
+      domain:
+        cpu:
+          cores: 2
+          sockets: 1
+          threads: 1
+        memory:
+          guest: 4Gi
+        resources:
+          requests:
+            memory: 4608Mi
+          limits:
+            memory: 5Gi
+        devices:
+          disks:
+            - disk:
+                bus: virtio
+              name: rootdisk
+            - disk:
+                bus: virtio
+              name: cloudinitdisk
+          interfaces:
+            - masquerade: {}
+              model: virtio
+              name: default
+          rng: {}
+        features:
+          smm:
+            enabled: true
+        firmware:
+          bootloader:
+            efi: {}
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - dataVolume:
+            name: __VM_NAME__
+          name: rootdisk
+        - cloudInitNoCloud:
+            userData: |
+              #cloud-config
+              user: fedora
+              ssh_authorized_keys:
+                - __SSH_PUBLIC_KEY__
+              packages:
+                - podman
+                - curl
+                - git
+                - python3
+              runcmd:
+                - dnf install -y podman curl git
+          name: cloudinitdisk
