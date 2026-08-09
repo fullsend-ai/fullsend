@@ -213,6 +213,7 @@ export default defineConfig({
             { text: "Retro", link: "/agents/retro" },
             { text: "Prioritize", link: "/agents/prioritize" },
             { text: "Default vs. Custom", link: "/agents/topics/default-vs-custom" },
+            { text: "Escalation Ladder", link: "/agents/topics/escalation-ladder" },
           ],
         },
         {

@@ -360,6 +360,23 @@ Each agent role has its own identity, permissions, and purpose:
 
 ## Configuration Examples
 
+### Extending the sandbox image
+
+When `host_files` injection is not enough and you need additional packages or
+toolchains in the sandbox, build an image that extends the published base and
+point your harness `image:` field at it:
+
+```dockerfile
+FROM ghcr.io/fullsend-ai/fullsend-sandbox:latest
+RUN apt-get update && apt-get install -y --no-install-recommends rustc \
+  && rm -rf /var/lib/apt/lists/*
+```
+
+Use `ghcr.io/fullsend-ai/fullsend-code:latest` as the parent instead when you
+also need the Go toolchain. Then set `image:` in a thin `base`-composed
+harness (see [Configuring existing agents](bring-your-own-agent.md#configuring-existing-agents)).
+Pin the parent tag to a digest before CI use.
+
 ### Adding Executables
 
 The sandbox already has `/sandbox/workspace/bin` on its `PATH`. To make a
@@ -546,6 +563,7 @@ disables nothing because no agent has that harness name.
 
 - [Bring Your Own Agent](bring-your-own-agent.md) - Building and registering custom agents from scratch
 - [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md) - When does configuration cross into derived or custom agent territory?
+- [Escalation ladder](../../agents/topics/escalation-ladder.md) - Prove-it path before deriving or replacing a core agent
 - [Getting Started](../getting-started/) - Initial setup
 - [Bugfix Workflow](bugfix-workflow.md) - How agents work together
 - [Standalone Mint](../infrastructure/standalone-mint.md) - Running your own mint with custom agent roles
