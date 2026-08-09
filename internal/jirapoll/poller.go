@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand/v2"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 
@@ -113,10 +115,14 @@ func (p *Poller) Run(ctx context.Context) error {
 	if len(selected) > 0 {
 		if p.opts.JiraProject != "" {
 			membership, err := p.client.GetProjectRoleMembership(ctx, p.opts.JiraProject)
-			if err != nil {
+			switch {
+			case err == nil:
+				p.roleMembership = membership
+			case errors.Is(err, forge.ErrForbidden):
+				log.Printf("WARNING: insufficient permissions to read project roles for %s (defaulting to external): %v", p.opts.JiraProject, err)
+			default:
 				return fmt.Errorf("load project roles for %s: %w", p.opts.JiraProject, err)
 			}
-			p.roleMembership = membership
 		} else {
 			log.Printf("WARNING: no Jira project key set, cannot resolve actor roles (defaulting to external)")
 		}

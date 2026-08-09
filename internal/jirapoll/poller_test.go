@@ -543,6 +543,58 @@ func TestRunRoleLoadFailure_FailsCycle(t *testing.T) {
 	}
 }
 
+// TestRunRoleLoadForbidden_DegradesToExternal verifies that a permission
+// error (401/403) on the project role endpoint degrades gracefully to
+// external roles instead of aborting the cycle. The poll should still
+// complete and advance checkpoints; only transient errors (5xx) should
+// fail the cycle.
+func TestRunRoleLoadForbidden_DegradesToExternal(t *testing.T) {
+	now := time.Now().Truncate(time.Second)
+	mc := newMockClient()
+	mc.roleErr = fmt.Errorf("list project roles for PROJ: %w",
+		&jira.APIError{StatusCode: 401, Message: "You cannot edit the configuration of this project."})
+	mc.searchResult = []jira.Issue{
+		{
+			ID:  "10042",
+			Key: "PROJ-123",
+			Fields: jira.IssueFields{
+				Reporter: jira.User{AccountID: "reporter-id"},
+				Created:  now.Add(-1 * time.Hour).Format("2006-01-02T15:04:05.000-0700"),
+			},
+		},
+	}
+	mc.comments["PROJ-123"] = []jira.Comment{
+		{
+			ID:      "1",
+			Body:    "/fs-code fix it",
+			Created: now.Add(-30 * time.Minute).Format("2006-01-02T15:04:05.000-0700"),
+			Author:  jira.User{AccountID: "u1", AccountType: "atlassian"},
+		},
+	}
+
+	dir := t.TempDir()
+	outputPath := filepath.Join(dir, "dispatches.json")
+	p := newTestPoller(mc, &stubRouter{stages: []string{"code"}}, Options{
+		TargetRepo:  "acme/platform",
+		JiraBaseURL: "https://acme.atlassian.net",
+		JiraProject: "PROJ",
+		OutputPath:  outputPath,
+	})
+
+	if err := p.Run(context.Background()); err != nil {
+		t.Fatalf("Run() should succeed on permission-denied role load, got: %v", err)
+	}
+
+	// Checkpoint should have advanced (cycle completed, not aborted).
+	lastCheck, err := p.readLastCheck(context.Background(), "PROJ-123")
+	if err != nil {
+		t.Fatalf("readLastCheck() error: %v", err)
+	}
+	if lastCheck.IsZero() {
+		t.Error("expected lastCheck to advance after a gracefully degraded cycle")
+	}
+}
+
 // TestDetectChanges_EditedCommentAttributedToEditor: a comment edited by
 // someone other than its author must be attributed to the EDITOR, not the
 // original author — otherwise attacker-injected slash-command text runs

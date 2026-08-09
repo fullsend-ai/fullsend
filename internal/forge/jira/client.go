@@ -159,7 +159,9 @@ func (e *APIError) Unwrap() error {
 	if e.StatusCode == http.StatusNotFound {
 		return forge.ErrNotFound
 	}
-	if e.StatusCode == http.StatusForbidden {
+	// Jira Cloud returns 401 for project-level permission denials
+	// (e.g. project role listing) in addition to the standard 403.
+	if e.StatusCode == http.StatusForbidden || e.StatusCode == http.StatusUnauthorized {
 		return forge.ErrForbidden
 	}
 	return nil

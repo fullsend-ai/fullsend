@@ -461,6 +461,7 @@ func TestErrorResponse_401(t *testing.T) {
 	var apiErr *APIError
 	require.True(t, errors.As(err, &apiErr))
 	assert.Equal(t, http.StatusUnauthorized, apiErr.StatusCode)
+	assert.True(t, errors.Is(err, forge.ErrForbidden), "401 should unwrap to forge.ErrForbidden")
 }
 
 func TestErrorResponse_403(t *testing.T) {
