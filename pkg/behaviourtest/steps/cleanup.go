@@ -244,6 +244,11 @@ func CleanupScenario(w *world.World) {
 		}
 	}
 
+	// --- OWNERS auth cleanup ---
+	if w.OwnersAuthActivated {
+		cleanupOwnersAuth(w)
+	}
+
 	// --- Reaction notification cleanup ---
 	// Disable reaction notifications so the next scenario on this slot
 	// is not affected by sticky config state.

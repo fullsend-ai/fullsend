@@ -113,6 +113,11 @@ type World struct {
 	AgentsOverridden bool
 	AgentsOriginal   []config.AgentEntry
 
+	// OwnersAuthActivated records whether this scenario committed an
+	// OWNERS file and/or enabled authorization.owners_file in config.yaml.
+	// CleanupScenario removes both.
+	OwnersAuthActivated bool
+
 	// Jira mock state — set by the "Given a mock Jira server" step.
 	JiraMockServer *httptest.Server
 	JiraMockState  *jiramock.State

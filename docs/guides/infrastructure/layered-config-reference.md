@@ -90,6 +90,7 @@ the overlay → base → code defaults chain.
 | `models.aliases` | `map[string]string` (nested) | Per-key merge | `nil` (fleet defaults) |
 | `create_issues` | `*CreateIssuesConfig` | Replace whole object if set | `nil` |
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
+| `authorization` | `object` | Replace whole object if set | `nil` |
 
 ### Per-agent `runtime`, `model`, `effort` on `agents:` entries
 
@@ -365,6 +366,29 @@ The `status_notifications` field uses the same replace-if-set semantics as
   `nil`.
 - Non-nil — replaces the parent value entirely, including nested
   `comment.start`/`comment.completion` settings.
+
+### `authorization` — replace whole object if set
+
+The `authorization` field controls alternative authorization backends
+for the dispatch workflow's `has_repo_permission` check. Currently
+supports one sub-field:
+
+- `owners_file` (`bool`, default `false`) — when `true`, the dispatch
+  routing logic checks the repo-root `OWNERS` and `OWNERS_ALIASES`
+  files before falling back to the GitHub collaborator API. OWNERS
+  approvers get write-equivalent access; reviewers get
+  triage-equivalent. See [ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)
+  for details.
+
+Example:
+
+```yaml
+authorization:
+  owners_file: true
+```
+
+This field is read by `yq` in the workflow bash routing logic, not by
+the Go config package. It is only meaningful in per-repo mode.
 
 ## Code defaults reference
 
