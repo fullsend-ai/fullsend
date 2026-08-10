@@ -1329,12 +1329,15 @@ func blobSHA(content []byte) string {
 func blobTimeout(contentLen int) time.Duration {
 	const (
 		// Conservative upload rate. Base64 encoding inflates content
-		// ~33%, so 750 KB/s of raw content ≈ 1 MB/s on the wire.
-		rateBytesPerSec = 750 * 1024
+		// ~33%, so 384 KB/s of raw content ≈ 512 KB/s on the wire.
+		// Deliberately pessimistic: real-world GitHub API uploads
+		// showed that 750 KB/s was too optimistic (e2e failures on
+		// 37 MB binaries; see #6052).
+		rateBytesPerSec = 384 * 1024
 		maxTimeout      = 5 * time.Minute
 	)
 	scaled := defaultRequestTimeout +
-		time.Duration(contentLen/rateBytesPerSec)*time.Second
+		time.Duration(contentLen)*time.Second/time.Duration(rateBytesPerSec)
 	if scaled > maxTimeout {
 		return maxTimeout
 	}

@@ -2861,19 +2861,19 @@ func TestBlobTimeout(t *testing.T) {
 			name:    "small file uses default timeout",
 			size:    1024,
 			wantMin: defaultRequestTimeout,
-			wantMax: defaultRequestTimeout,
+			wantMax: defaultRequestTimeout + 1*time.Second,
 		},
 		{
 			name:    "50MB binary gets scaled timeout",
 			size:    50 * 1024 * 1024,
-			wantMin: defaultRequestTimeout + 60*time.Second,
-			wantMax: defaultRequestTimeout + 80*time.Second,
+			wantMin: defaultRequestTimeout + 130*time.Second,
+			wantMax: defaultRequestTimeout + 140*time.Second,
 		},
 		{
 			name:    "100MB binary gets longer timeout",
 			size:    100 * 1024 * 1024,
-			wantMin: defaultRequestTimeout + 120*time.Second,
-			wantMax: defaultRequestTimeout + 150*time.Second,
+			wantMin: defaultRequestTimeout + 260*time.Second,
+			wantMax: defaultRequestTimeout + 270*time.Second,
 		},
 		{
 			name:    "huge file capped at 5 minutes",
@@ -2919,7 +2919,7 @@ func TestCreateBlob_LargePayloadDoesNotUseDefaultTimeout(t *testing.T) {
 
 	client := newTestClient(t, srv)
 
-	// 2MB payload — blobTimeout yields ~1s (default) + 2s (size) = ~3s,
+	// 2MB payload — blobTimeout yields ~1s (default) + 5s (size) = ~6s,
 	// which is enough to survive the 2s server delay.
 	content := make([]byte, 2*1024*1024)
 	sha, err := client.createBlob(context.Background(), "test", "repo", content)
