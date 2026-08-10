@@ -1,4 +1,4 @@
-# Implementation Plan: Deprecate Per-Org Installation Mode (ADR-0044)
+# Implementation Plan: Remove Per-Org Installation Mode (ADR-0044)
 
 ## Conventions
 
@@ -24,6 +24,16 @@ deprecation-warning/migration-command phase entirely. ADR-0044's text
 still describes the original phased plan; see #2302 for the updated
 decision context.
 
+Because the migration command is dropped, existing per-org
+installations have no automated migration path or warning period.
+Operators must manually reinstall via `fullsend admin install
+<owner/repo>` for each repo and recreate any org-level customizations
+(agent roles, allowed remote resources, skills) as per-repo harness
+files using `base:` composition (see [ADR
+0045](../ADRs/0045-forge-portable-harness-schema.md)). This is an
+accepted support/communication risk for this release; see the release
+checklist below.
+
 [ADR 0045](../ADRs/0045-forge-portable-harness-schema.md) (forge-portable
 harness schema) reinforces this deprecation: agent identity has moved from
 `config.yaml`'s centralized `agents:` block into individual harness files,
@@ -48,7 +58,7 @@ The per-org model touches these subsystems:
 | Reusable workflows | `.github/workflows/reusable-*.yml` | `install_mode` input branching |
 | Actions | `.github/actions/validate-enrollment/action.yml` | per-org enrollment validation |
 | Web admin | `web/admin/src/lib/layers/`, `web/admin/src/lib/orgs/` | `configRepo.ts`, `enrollment.ts`, `dispatch.ts`, `orgConfigParse.ts`, `constants.ts` (`CONFIG_REPO_NAME`); `orgListRow.ts`, `installReadinessProbes.ts` (config-repo checks) |
-| E2E tests | `e2e/admin/` | `TestAdminInstallUninstall`, org pool locking, org cleanup — conversion tracked in [#5990](https://github.com/fullsend-ai/fullsend/issues/5990) |
+| E2E tests | `e2e/admin/` | `TestAdminInstallUninstall` (conversion tracked in [#5990](https://github.com/fullsend-ai/fullsend/issues/5990)), org pool locking, org cleanup |
 
 ## PR Dependency Graph
 
@@ -691,7 +701,9 @@ checkout, single workspace root.
   separately in [#5990](https://github.com/fullsend-ai/fullsend/issues/5990);
   coordinate with that issue so coverage isn't lost.
 - `e2e/admin/lock_test.go` — org pool locking (only needed for
-  parallel per-org e2e tests).
+  parallel per-org e2e tests). This deletion proceeds independently of
+  #5990's outcome: a per-repo lifecycle test (whether `admin_test.go`
+  is deleted or converted) does not need org-level pool locking.
 
 **Simplify files:**
 
@@ -701,7 +713,10 @@ checkout, single workspace root.
   cleanup).
 - Remove `.fullsend` config repo deletion.
 - Remove org variable cleanup.
-- Keep repo-level cleanup utilities.
+- Keep repo-level cleanup utilities. If #5990 converts (rather than
+  deletes) `admin_test.go` into a per-repo suite, confirm the retained
+  repo-level utilities here and in `testutil.go` cover that suite's
+  teardown needs.
 
 **`e2e/admin/testutil.go`:**
 
@@ -734,6 +749,26 @@ grep -rn "PerRepo" --include="*.go"
 ```
 
 Fix or remove any remaining references.
+
+**User-facing documentation (this PR):**
+
+The grep sweep above catches stray keyword matches, but the following
+structural doc changes are explicit tasks, not incidental sweep
+findings:
+
+- Delete `docs/guides/getting-started/org-mode.md` (per-org install
+  guide — no longer applicable).
+- `docs/architecture.md`: rewrite or remove the per-org tier of the
+  config-layering diagram/section (~line 420-450), which currently
+  presents per-org as a "historical model" rather than a removed one.
+- Sweep `docs/guides/` for other per-org references beyond
+  `org-mode.md` (e.g. `getting-started/README.md`,
+  `getting-started/repo-management.md`,
+  `getting-started/operations.md`, and guides under `dev/`,
+  `user/`, `infrastructure/`) and update or remove per-org content.
+- `README.md` does not currently document per-org install specifics
+  (it points to fullsend.sh for docs), so no changes are expected
+  there — confirm this is still true when this PR lands.
 
 **TypeScript per-org cleanup (this PR):**
 
@@ -789,9 +824,16 @@ references surfaced by the sweep should be removed in this PR.
 - [ ] `validate-enrollment` action simplified or removed
 - [ ] Per-org e2e tests removed or converted (see [#5990](https://github.com/fullsend-ai/fullsend/issues/5990)), per-repo e2e tests passing
 - [ ] Grep sweep clean — no stale per-org references
+- [ ] User-facing docs updated: `org-mode.md` removed,
+  `architecture.md` per-org section rewritten, `docs/guides/` swept
+  for remaining per-org references
 - [ ] Commit message: `feat(cli)!: remove per-org installation mode`
 - [ ] `BREAKING CHANGE:` trailer in commit body: "Per-org installation
   mode removed. All `fullsend admin install --org`, `github enroll`,
   `github unenroll` commands are gone. Migrate to per-repo mode using
-  `fullsend admin install <owner/repo>`."
-- [ ] Release notes: list of removed commands, upgrade instructions
+  `fullsend admin install <owner/repo>`. No automated config migration
+  is provided — recreate org-level customizations as per-repo harness
+  files using `base:` composition (see ADR 0045)."
+- [ ] Release notes: list of removed commands, upgrade instructions,
+  and explicit guidance for existing per-org installs on manually
+  migrating customizations (no `admin migrate` command exists)

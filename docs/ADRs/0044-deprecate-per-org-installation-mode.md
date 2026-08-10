@@ -351,6 +351,14 @@ ADR 0045 is accepted and its implementation (Phases 1–4) is complete.
 
 ### 2. Implementation plan
 
+> **Update (2026-08, #2302):** The team decided to skip the phased
+> deprecation and remove per-org support immediately and completely,
+> rather than the two-phase rollout described in this section. The
+> companion plan document was renumbered to a flat 1-10 removal-only
+> sequence and no longer matches the Phase 1/Phase 2, 15-PR list
+> below. Treat the plan document's numbering as authoritative; this
+> section is historical.
+
 The detailed, per-file implementation plan is maintained in a companion
 document: [`docs/plans/deprecate-per-org-install.md`](../plans/deprecate-per-org-install.md).
 It contains a 15-PR dependency graph, per-function change lists, and a
