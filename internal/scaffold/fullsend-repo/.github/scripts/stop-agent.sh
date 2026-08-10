@@ -31,6 +31,7 @@ CMD="$(printf '%s\n' "${FIRST}" | awk '{print $1}')"
 ARG="$(printf '%s\n' "${FIRST}" | awk '{print $2}')"
 # Sanitize for workflow-command interpolation (defense in depth).
 SAFE_CMD="${CMD//::/_}"
+SAFE_USER="${COMMENT_USER_LOGIN//::/_}"
 
 # Agents with auto-trigger paths gated by fullsend-no-* in dispatch.
 # prioritize is slash-only and has no auto-trigger to suppress.
@@ -104,18 +105,18 @@ if [[ "${authorized}" != "true" ]]; then
     else
       api_err_safe="$(tr -d '\r' <"${api_err}" | tr '\n' ' ')"
       api_err_safe="${api_err_safe//::/_}"
-      echo "::warning::Permission API call failed for ${COMMENT_USER_LOGIN}: ${api_err_safe}"
+      echo "::warning::Permission API call failed for ${SAFE_USER}: ${api_err_safe}"
     fi
     rm -f "${api_err}"
   else
-    echo "::warning::Failed to create temp file for permission check of ${COMMENT_USER_LOGIN}"
+    echo "::warning::Failed to create temp file for permission check of ${SAFE_USER}"
   fi
 fi
 if [[ "${authorized}" != "true" ]]; then
   if [[ "${is_author}" == "true" && "${author_fix_only}" != "true" ]]; then
-    echo "::notice::User ${COMMENT_USER_LOGIN} is not authorized to stop these agents (PR/issue authors may only /fs-stop fix or /fs-fix-stop; write access required otherwise)"
+    echo "::notice::User ${SAFE_USER} is not authorized to stop these agents (PR/issue authors may only /fs-stop fix or /fs-fix-stop; write access required otherwise)"
   else
-    echo "::notice::User ${COMMENT_USER_LOGIN} is not authorized to stop agents (requires write access, or authorship for /fs-stop fix only)"
+    echo "::notice::User ${SAFE_USER} is not authorized to stop agents (requires write access, or authorship for /fs-stop fix only)"
   fi
   exit 0
 fi

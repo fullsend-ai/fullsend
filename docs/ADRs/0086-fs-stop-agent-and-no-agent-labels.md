@@ -26,6 +26,9 @@ needed the same per-item skip for other auto-triggered agents (triage, code,
 review, retro) without disabling on-demand `/fs-*` commands, and without
 waiting for the harness CEL trigger port ([#2888](https://github.com/fullsend-ai/fullsend/issues/2888)).
 See [#5650](https://github.com/fullsend-ai/fullsend/issues/5650).
+Cancelling already-running workflows is deferred: it needs a separate
+control-plane design (see [#5445](https://github.com/fullsend-ai/fullsend/issues/5445)),
+and this change only needs a durable skip for *future* auto-triggers.
 
 ## Decision
 
@@ -47,6 +50,9 @@ See [#5650](https://github.com/fullsend-ai/fullsend/issues/5650).
 4. Authorization: write+ collaborator permission (ADR 0054). The issue/PR
    **author escape hatch** applies only to `/fs-stop fix` / `/fs-fix-stop`
    — authors cannot unilaterally suppress review or other non-fix gates.
+   Fix pushes commits onto the author's own branch (author-controlled work);
+   review is a merge/security gate, so authors must not be able to silence it
+   unilaterally.
 
 5. In-flight workflow cancellation remains out of scope (see also [#5445](https://github.com/fullsend-ai/fullsend/issues/5445)).
 
