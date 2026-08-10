@@ -206,6 +206,11 @@ func CleanupScenario(w *world.World) {
 		}
 	}
 
+	// --- OWNERS auth cleanup ---
+	if w.OwnersAuthActivated {
+		cleanupOwnersAuth(w)
+	}
+
 	// --- Dummy script cleanup ---
 	if len(w.DummyOps) > 0 {
 		if w.Org == "" || w.RepoName == "" {

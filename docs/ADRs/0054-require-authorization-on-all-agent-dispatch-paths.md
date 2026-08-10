@@ -189,6 +189,21 @@ permission list, not by bypassing the check.
 > any closer can trigger read-only lifecycle accounting. This follows
 > the extension path above rather than bypassing the check.
 
+> **Note (2026-08-10, [#6042](https://github.com/fullsend-ai/fullsend/issues/6042)):**
+> Prow-based repositories (e.g., OpenShift) use OWNERS files rather than
+> GitHub collaborator roles to define contributor authority.
+> `has_repo_permission` now supports an opt-in OWNERS-file authorization
+> path: when `authorization.owners_file: true` is set in
+> `.fullsend/config.yaml`, the function checks the repo-root `OWNERS`
+> (and `OWNERS_ALIASES`) before falling back to the collaborator API.
+> OWNERS approvers get write-equivalent access; reviewers get
+> triage-equivalent. The sparse-checkout pins to the base branch SHA, so
+> PR authors cannot self-authorize by modifying OWNERS in their PR.
+> This follows the extension path above (extending the allowed permission
+> sources in `has_repo_permission`) rather than bypassing the check.
+> OWNERS auth applies to built-in stages only; harness agents are
+> unaffected.
+
 ## Consequences
 
 - All dispatch paths require write-level repository permission,

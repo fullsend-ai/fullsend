@@ -89,6 +89,11 @@ type World struct {
 	// the switch so the next scenario on this slot is not affected.
 	KillSwitchActivated bool
 
+	// OwnersAuthActivated records whether this scenario committed an
+	// OWNERS file and/or enabled authorization.owners_file in config.yaml.
+	// CleanupScenario removes both.
+	OwnersAuthActivated bool
+
 	// Jira mock state — set by the "Given a mock Jira server" step.
 	JiraMockServer *httptest.Server
 	JiraMockState  *jiramock.State
