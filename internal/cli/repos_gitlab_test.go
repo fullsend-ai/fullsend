@@ -87,7 +87,13 @@ func (f *fakeSecretManagerClient) ReplaceSecretIAMBinding(_ context.Context, res
 func (f *fakeSecretManagerClient) CreateServiceAccount(context.Context, string, string, string) error {
 	return nil
 }
+func (f *fakeSecretManagerClient) DeleteServiceAccount(context.Context, string, string) error {
+	return nil
+}
 func (f *fakeSecretManagerClient) CreateWIFPool(context.Context, string, string, string) error {
+	return nil
+}
+func (f *fakeSecretManagerClient) DeleteWIFPool(context.Context, string, string) error {
 	return nil
 }
 func (f *fakeSecretManagerClient) CreateWIFProvider(context.Context, string, string, string, gcf.OIDCProviderConfig) error {
@@ -130,6 +136,9 @@ func (f *fakeSecretManagerClient) SetProjectIAMBinding(context.Context, string, 
 	return nil
 }
 func (f *fakeSecretManagerClient) SetCloudRunInvoker(context.Context, string, string, string) error {
+	return nil
+}
+func (f *fakeSecretManagerClient) DeleteFunction(context.Context, string, string, string) error {
 	return nil
 }
 func (f *fakeSecretManagerClient) GetFunction(context.Context, string, string, string) (*gcf.FunctionInfo, error) {

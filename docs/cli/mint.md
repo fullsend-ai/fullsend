@@ -11,6 +11,7 @@ Deploy and manage the OIDC token mint service. The mint exchanges GitHub Actions
 | Command | Description |
 |---------|-------------|
 | `fullsend mint deploy` | Deploy or update the token mint (GCP or Cloudflare) |
+| `fullsend mint delete` | Tear down mint infrastructure (GCP or Cloudflare) |
 | `fullsend mint add-role <role>` | Register a role PEM and app ID on the mint |
 | `fullsend mint remove-role <role>` | Remove a role from the mint |
 | `fullsend mint enroll <org\|owner/repo>` | Register an org or repo in the mint |
@@ -52,20 +53,34 @@ fullsend mint deploy \
 
 ### Cloudflare mode (`--platform=cloudflare`)
 
-Deploys the mint as a Cloudflare Worker running the mintcore WASM module with a thin TypeScript adapter.
+Deploys the mint as a Cloudflare Worker running the mintcore WASM module with a thin TypeScript adapter. The WASM binary and `wasm_exec.js` are auto-built at deploy time if not already present (requires Go toolchain + wrangler).
 
 ```bash
 fullsend mint deploy \
   --platform cloudflare
 ```
 
-Use `--preview=<alias>` for ephemeral preview deploys. This runs `wrangler versions upload --preview-alias=<alias>` instead of `wrangler deploy`, so the durable Worker script is not affected. The preview mint URL is deterministic: `https://<alias>-<worker-name>.workers.dev`. Preview teardown abandons the alias without deleting the Worker script.
+Use `--preview=<alias>` for ephemeral preview deploys. This runs `wrangler versions upload --preview-alias=<alias>` instead of `wrangler deploy`, so the durable Worker script is not affected. The preview mint URL is deterministic: `https://<alias>-<worker-name>.workers.dev`. Preview teardown via `mint delete --platform=cloudflare --preview=<alias>` abandons the alias without deleting the Worker script.
+
+If the target Worker script does not yet exist (first-time preview on a new `--worker-name`), the CLI automatically creates it with a one-time durable deploy before proceeding with the preview upload. Subsequent preview deploys skip this bootstrap step. When `--pem-dir` is set, the bootstrap deploy includes PEM secrets so the Worker is immediately usable.
 
 Use `--worker-name` to target a specific Worker script name.
 
-Required environment variables:
-- `CLOUDFLARE_ACCOUNT_ID` — Cloudflare account identifier
-- `CLOUDFLARE_API_TOKEN` — API token with Workers write permission
+Authentication (one of):
+- `CLOUDFLARE_API_TOKEN` env var (+ `CLOUDFLARE_ACCOUNT_ID`) — API token with Workers write permission
+- Wrangler OAuth session (`wrangler login`, then `wrangler whoami`) — when `CLOUDFLARE_API_TOKEN` is unset, the CLI falls back to the Wrangler login session. If `CLOUDFLARE_ACCOUNT_ID` is also unset, the CLI discovers the account from `wrangler whoami`.
+
+#### Omit-vs-empty semantics for config flags on redeploy
+
+**Durable deploys** use `--keep-vars` so existing Worker bindings are preserved when a flag is omitted:
+
+- **Flag omitted:** existing Worker value is preserved.
+- **Flag non-empty:** Worker binding set to the given value.
+- **Flag set to `""`:** Worker binding cleared (set to empty string).
+
+Example: `--per-repo-wif-repos=` clears `PER_REPO_WIF_REPOS` without requiring `wrangler delete` first.
+
+**Preview deploys** do **not** use `--keep-vars`. Each preview version is self-contained — only the `--var` env vars and `--secrets-file` PEMs passed in the deploy command are applied. This prevents cross-preview contamination when deploying multiple preview aliases in sequence (e.g. `both` → `per-repo` → `per-org`). `ALLOWED_WORKFLOW_FILES` defaults to `*` on preview when `--allowed-workflow-files` is omitted, so previews are usable out of the box (mintcore deny-alls workflow refs when the env var is unset). Pass an explicit value to restrict.
 
 ### Flags
 
@@ -74,12 +89,19 @@ Required environment variables:
 | `--platform` | `gcp` | Target platform: `gcp` or `cloudflare` |
 | `--project` | | GCP project ID (GCP only) |
 | `--region` | `us-central1` | Cloud region for the function (GCP only) |
-| `--pem-dir` | | Directory containing role PEM files (GCP only, first-time bootstrap) |
-| `--public` | `false` | Deploy public mint (GCP only) |
+| `--pem-dir` | | Directory containing `{role}.pem` files for PEM bootstrap |
+| `--app-set` | `fullsend-ai` | App set name for PEM bootstrap |
+| `--roles` | _(default roles)_ | Comma-separated role names to bootstrap with `--pem-dir`. Overrides the default set. Example: `--roles=fullsend,triage,coder,review,retro,prioritize,e2e` |
+| `--public` | `false` | Deploy public mint (GCP: `ALLOWED_ORGS=*`; Cloudflare: `PER_REPO_WIF_REPOS=*`). Mutually exclusive with `--per-repo-wif-repos` on Cloudflare |
 | `--source-dir` | | Path to local mint source (default: checkout path when present, embedded otherwise) |
 | `--dry-run` | `false` | Preview changes without making them |
+| `--skip-deploy` | `false` | Skip code upload, reuse existing function (GCP only) |
 | `--worker-name` | `fullsend-mint` | Cloudflare Worker script name (Cloudflare only) |
 | `--preview` | `""` | Preview alias for `wrangler versions upload` (Cloudflare only). Example: `--preview=bt-run-42` |
+| `--allowed-orgs` | | Comma-separated allowed GitHub orgs (Cloudflare only, sets `ALLOWED_ORGS`). Omit to preserve existing; set to `""` to clear |
+| `--per-repo-wif-repos` | | Comma-separated per-repo WIF repos (Cloudflare only, sets `PER_REPO_WIF_REPOS`). Mutually exclusive with `--public` |
+| `--workflow-host-repos` | | Comma-separated workflow host repos (Cloudflare only, sets `WORKFLOW_HOST_REPOS`). Omit to preserve existing; set to `""` to clear |
+| `--allowed-workflow-files` | | Comma-separated workflow file basenames (Cloudflare only, sets `ALLOWED_WORKFLOW_FILES`). Durable: omit to preserve existing binding; set to `""` to clear. Preview: defaults to `*` when omitted (all basenames allowed) |
 
 ### Required IAM roles (GCP)
 
@@ -104,6 +126,57 @@ gcloud services enable \
   iamcredentials.googleapis.com \
   --project="$GCP_PROJECT"
 ```
+
+## `mint delete`
+
+Tears down mint infrastructure. This is the inverse of `mint deploy`. Use `--platform` to select the target platform (default: `gcp`).
+
+### GCP mode (`--platform=gcp`)
+
+Deletes all GCP mint infrastructure in order: Cloud Function, PEM secrets, service account, and WIF pool (with all providers). Non-critical resource failures (service account, WIF pool) are reported as warnings rather than hard errors.
+
+```bash
+fullsend mint delete \
+  --project "<GCP_PROJECT>" \
+  --region "us-central1"
+```
+
+### Cloudflare durable mode (`--platform=cloudflare`)
+
+Deletes the durable Worker script and all associated bindings/secrets via `wrangler delete`.
+
+```bash
+fullsend mint delete --platform cloudflare
+```
+
+### Cloudflare preview mode (`--platform=cloudflare --preview=<alias>`)
+
+Abandons the preview alias without deleting the durable Worker script. This is the explicit teardown for preview mints deployed with `mint deploy --preview=<alias>`.
+
+```bash
+fullsend mint delete --platform cloudflare --preview bt-run-42
+```
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--platform` | `gcp` | Target platform: `gcp` or `cloudflare` |
+| `--project` | | GCP project ID (GCP only, required) |
+| `--region` | `us-central1` | GCP region for the Cloud Function (GCP only) |
+| `--worker-name` | `fullsend-mint` | Cloudflare Worker script name (Cloudflare only) |
+| `--preview` | | Tear down a preview mint identified by this alias (Cloudflare only) |
+| `--dry-run` | `false` | Preview changes without making them |
+| `--yolo` | `false` | Skip confirmation prompt |
+
+### Required IAM roles (GCP)
+
+| Role | Description |
+|------|-------------|
+| `roles/cloudfunctions.developer` | Delete the Cloud Function |
+| `roles/secretmanager.admin` | Delete PEM secrets |
+| `roles/iam.serviceAccountAdmin` | Delete the mint service account |
+| `roles/iam.workloadIdentityPoolAdmin` | Delete the WIF pool and providers |
 
 ## `mint add-role`
 

@@ -5,6 +5,7 @@ This guide covers deploying and managing the fullsend token mint. The mint is th
 | Command | Description |
 |---------|-------------|
 | `mint deploy` | Deploy or update the token mint (GCP Cloud Function or Cloudflare Worker) |
+| `mint delete` | Tear down mint infrastructure (Cloud Function, secrets, SA, WIF pool or Worker) |
 | `mint add-role` | Add an agent role (PEM secret + `ROLE_APP_IDS` entry) |
 | `mint remove-role` | Remove an agent role from the mint (deletes PEM secret by default) |
 | `mint enroll` | Register an org or repo in `ALLOWED_ORGS` and configure WIF |
@@ -52,16 +53,16 @@ Pass this URL as `--mint-url` when running `fullsend github setup`, or set the `
 
 - **GCP IAM roles** — the user running mint commands authenticates via ADC (`gcloud auth application-default login`). The required roles depend on the command:
 
-  | IAM Role | `mint deploy` | `mint add-role` | `mint remove-role` | `mint enroll` | `mint unenroll` | `mint status` |
-  |----------|:---:|:---:|:---:|:---:|:---:|:---:|
-  | `roles/iam.serviceAccountAdmin` | x | | | | | |
-  | `roles/iam.workloadIdentityPoolAdmin` | x | | | x | x | |
-  | `roles/resourcemanager.projectIamAdmin` | \* | | | | | |
-  | `roles/secretmanager.admin` | \* | \*\* | \*\*\* | | | |
-  | `roles/cloudfunctions.developer` | x | | | | | |
-  | `roles/cloudfunctions.viewer` | | x | x | x | x | x |
-  | `roles/run.admin` | x | x | x | x | x | |
-  | `roles/secretmanager.viewer` | | § | | | | x |
+  | IAM Role | `mint deploy` | `mint delete` | `mint add-role` | `mint remove-role` | `mint enroll` | `mint unenroll` | `mint status` |
+  |----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+  | `roles/iam.serviceAccountAdmin` | x | x | | | | | |
+  | `roles/iam.workloadIdentityPoolAdmin` | x | x | | | x | x | |
+  | `roles/resourcemanager.projectIamAdmin` | \* | | | | | | |
+  | `roles/secretmanager.admin` | \* | x | \*\* | \*\*\* | | | |
+  | `roles/cloudfunctions.developer` | x | x | | | | | |
+  | `roles/cloudfunctions.viewer` | | | x | x | x | x | x |
+  | `roles/run.admin` | x | | x | x | x | x | |
+  | `roles/secretmanager.viewer` | | | § | | | | x |
 
   \* `roles/resourcemanager.projectIamAdmin` and `roles/secretmanager.admin` are required for `mint deploy` only when using `--pem-dir` (first-time bootstrap). Standard deploys without `--pem-dir` do not need these roles.
 
@@ -126,24 +127,36 @@ Redeploying or upgrading an existing mint must use the same mode: `--public` for
 |------|---------|-------------|
 | `--project` | | GCP project ID for the mint (required) |
 | `--region` | `us-central1` | Cloud region for the mint function |
-| `--pem-dir` | | Path to directory containing `{role}.pem` files (first-time bootstrap only); uses the default app set (`fullsend-ai`) |
-| `--public` | `false` | Deploy public mint (`ALLOWED_ORGS=*`, permissive WIF); required to redeploy an existing public mint |
+| `--pem-dir` | | Path to directory containing `{role}.pem` files for PEM bootstrap (GCP and Cloudflare) |
+| `--app-set` | `fullsend-ai` | App set name for PEM bootstrap (used with `--pem-dir`) |
+| `--roles` | _(default roles)_ | Comma-separated role names to bootstrap with `--pem-dir` |
+| `--public` | `false` | Deploy public mint (GCP: `ALLOWED_ORGS=*`; Cloudflare: `PER_REPO_WIF_REPOS=*`); required to redeploy an existing public mint |
 | `--source-dir` | | Path to local mint source directory (default: checkout path when present, embedded otherwise) |
 | `--skip-deploy` | `false` | Skip code upload, reuse existing function (only update WIF/config) |
 | `--dry-run` | `false` | Preview changes without making them |
 
-### Bootstrapping PEMs (first-time only)
+### Bootstrapping PEMs
 
-For first-time setup, the optional `--pem-dir` flag seeds the default app set's PEM secrets during deployment. This allows `mint enroll` to work immediately without a separate `mint add-role` step.
+The optional `--pem-dir` flag seeds role PEM secrets during deployment on both GCP and Cloudflare. This allows `mint enroll` (GCP) or immediate token minting (Cloudflare) to work without a separate `mint add-role` step.
 
 ```bash
-# First-time bootstrap with PEMs:
+# GCP bootstrap:
 fullsend mint deploy --project="$GCP_PROJECT" --pem-dir=/path/to/pems
+
+# Cloudflare bootstrap:
+fullsend mint deploy --platform=cloudflare --pem-dir=/path/to/pems --allowed-orgs=acme
 ```
 
 The `--pem-dir` directory must contain one `{role}.pem` file per agent role (e.g., `fullsend.pem`, `triage.pem`, `coder.pem`, `review.pem`, `retro.pem`, `prioritize.pem`). The CLI auto-discovers each app's numeric ID from the GitHub API by looking up the public app slug (`fullsend-ai-{role}`).
 
-> **Note:** PEM bootstrapping requires `roles/resourcemanager.projectIamAdmin` and `roles/secretmanager.admin` in addition to the base roles. It also requires the GitHub Apps to already exist as public apps.
+Use `--app-set` to target a non-default app set (default: `fullsend-ai`). Use `--roles` to override the default role list — for example, to include the `e2e` role:
+
+```bash
+fullsend mint deploy --project="$GCP_PROJECT" --pem-dir=/path/to/pems \
+  --roles=fullsend,triage,coder,review,retro,prioritize,e2e
+```
+
+> **Note:** On GCP, PEM bootstrapping requires `roles/resourcemanager.projectIamAdmin` and `roles/secretmanager.admin` in addition to the base roles. On Cloudflare, PEM secrets are stored via `wrangler secret put` (durable) or `--secrets-file` (preview). The GitHub Apps must already exist as public apps.
 
 ### Mint URL stability
 

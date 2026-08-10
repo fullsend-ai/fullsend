@@ -119,3 +119,65 @@ func TestNewFakeGCFClient_AccessSecretVersionNotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrSecretNotFound)
 }
+
+func TestNewFakeGCFClient_DeleteOperations(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	client := NewFakeGCFClient()
+
+	// Test DeleteFunction records the call.
+	require.NoError(t, client.DeleteFunction(ctx, "proj", "us-central1", "fullsend-mint"))
+
+	// Test DeleteServiceAccount records the call.
+	require.NoError(t, client.DeleteServiceAccount(ctx, "proj", "sa@proj.iam.gserviceaccount.com"))
+
+	// Test DeleteWIFPool records the call.
+	require.NoError(t, client.DeleteWIFPool(ctx, "123456789", "fullsend-pool"))
+
+	// Verify all calls were recorded.
+	calls := RecordedCalls(client)
+	assert.Contains(t, calls, "DeleteFunction")
+	assert.Contains(t, calls, "DeleteServiceAccount")
+	assert.Contains(t, calls, "DeleteWIFPool")
+}
+
+func TestNewFakeGCFClient_DeleteOperationErrors(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	client := NewFakeGCFClient(WithFakeErrors(map[string]error{
+		"DeleteFunction":       errors.New("fn delete err"),
+		"DeleteServiceAccount": errors.New("sa delete err"),
+		"DeleteWIFPool":        errors.New("pool delete err"),
+	}))
+
+	err := client.DeleteFunction(ctx, "p", "r", "fn")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fn delete err")
+
+	err = client.DeleteServiceAccount(ctx, "p", "sa")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sa delete err")
+
+	err = client.DeleteWIFPool(ctx, "p", "pool")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pool delete err")
+}
+
+func TestRecordedCalls_NonFake(t *testing.T) {
+	t.Parallel()
+	// RecordedCalls should return nil for non-fake clients.
+	result := RecordedCalls(nil)
+	assert.Nil(t, result)
+}
+
+func TestProjectIAMBindingCount_NonFake(t *testing.T) {
+	t.Parallel()
+	result := ProjectIAMBindingCount(nil)
+	assert.Equal(t, 0, result)
+}
+
+func TestDeletedSecretIDs_NonFake(t *testing.T) {
+	t.Parallel()
+	result := DeletedSecretIDs(nil)
+	assert.Nil(t, result)
+}

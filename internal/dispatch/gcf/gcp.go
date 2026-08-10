@@ -98,9 +98,11 @@ type FunctionConfig struct {
 type GCFClient interface {
 	// Service account operations
 	CreateServiceAccount(ctx context.Context, projectID, saName, displayName string) error
+	DeleteServiceAccount(ctx context.Context, projectID, saEmail string) error
 
 	// WIF operations
 	CreateWIFPool(ctx context.Context, projectNumber, poolID, displayName string) error
+	DeleteWIFPool(ctx context.Context, projectNumber, poolID string) error
 	CreateWIFProvider(ctx context.Context, projectNumber, poolID, providerID string, cfg OIDCProviderConfig) error
 	GetWIFProvider(ctx context.Context, projectNumber, poolID, providerID string) (*WIFProviderInfo, error)
 	UpdateWIFProvider(ctx context.Context, projectNumber, poolID, providerID string, cfg OIDCProviderConfig) error
@@ -134,6 +136,7 @@ type GCFClient interface {
 	SetCloudRunInvoker(ctx context.Context, projectID, region, serviceName string) error
 
 	// Cloud Functions v2
+	DeleteFunction(ctx context.Context, projectID, region, functionName string) error
 	GetFunction(ctx context.Context, projectID, region, functionName string) (*FunctionInfo, error)
 	// GetCloudRunServiceURI returns the public URI of the Cloud Run service
 	// backing a Gen2 Cloud Function (same name as the function).
@@ -220,6 +223,27 @@ func (c *LiveGCFClient) CreateServiceAccount(ctx context.Context, projectID, saN
 	return nil
 }
 
+// DeleteServiceAccount permanently deletes a service account.
+func (c *LiveGCFClient) DeleteServiceAccount(ctx context.Context, projectID, saEmail string) error {
+	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/serviceAccounts/%s",
+		url.PathEscape(projectID), url.PathEscape(saEmail))
+
+	resp, err := c.Client.DoRequest(ctx, http.MethodDelete, reqURL, "")
+	if err != nil {
+		return fmt.Errorf("deleting service account: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil // already deleted
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return fmt.Errorf("unexpected status %d deleting service account: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
+	}
+	return nil
+}
+
 // CreateWIFPool creates a new WIF pool.
 func (c *LiveGCFClient) CreateWIFPool(ctx context.Context, projectNumber, poolID, displayName string) error {
 	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools?workloadIdentityPoolId=%s",
@@ -246,6 +270,31 @@ func (c *LiveGCFClient) CreateWIFPool(ctx context.Context, projectNumber, poolID
 
 	if err := c.waitForIAMOperation(ctx, resp.Body); err != nil {
 		return fmt.Errorf("waiting for WIF pool creation: %w", err)
+	}
+	return nil
+}
+
+// DeleteWIFPool permanently deletes a WIF pool and all its providers.
+func (c *LiveGCFClient) DeleteWIFPool(ctx context.Context, projectNumber, poolID string) error {
+	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools/%s",
+		url.PathEscape(projectNumber), url.PathEscape(poolID))
+
+	resp, err := c.Client.DoRequest(ctx, http.MethodDelete, reqURL, "")
+	if err != nil {
+		return fmt.Errorf("deleting WIF pool: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil // already deleted
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return fmt.Errorf("unexpected status %d deleting WIF pool: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
+	}
+
+	if err := c.waitForIAMOperation(ctx, resp.Body); err != nil {
+		return fmt.Errorf("waiting for WIF pool deletion: %w", err)
 	}
 	return nil
 }
@@ -995,6 +1044,40 @@ func (c *LiveGCFClient) trySetCloudRunInvoker(ctx context.Context, baseURL strin
 		return true, fmt.Errorf("unexpected status %d setting invoker: %s", setResp.StatusCode, gcp.ExtractErrorMessage(body))
 	}
 	return true, nil
+}
+
+// DeleteFunction permanently deletes a Cloud Function v2.
+func (c *LiveGCFClient) DeleteFunction(ctx context.Context, projectID, region, functionName string) error {
+	reqURL := fmt.Sprintf("https://cloudfunctions.googleapis.com/v2/projects/%s/locations/%s/functions/%s",
+		url.PathEscape(projectID), url.PathEscape(region), url.PathEscape(functionName))
+
+	resp, err := c.Client.DoRequest(ctx, http.MethodDelete, reqURL, "")
+	if err != nil {
+		return fmt.Errorf("deleting function: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil // already deleted
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return fmt.Errorf("unexpected status %d deleting function: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
+	}
+
+	// The response is a long-running operation.
+	var result struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("decoding delete function response: %w", err)
+	}
+	if result.Name != "" {
+		if err := c.WaitForOperation(ctx, result.Name); err != nil {
+			return fmt.Errorf("waiting for function deletion: %w", err)
+		}
+	}
+	return nil
 }
 
 // GetFunction checks if a Cloud Function exists and returns its info.

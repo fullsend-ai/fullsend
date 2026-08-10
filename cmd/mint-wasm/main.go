@@ -84,6 +84,17 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 // headersJSON must include Authorization when authentication is required.
 // The Worker JS side converts Fetch Request → these arguments, and converts
 // the returned {status, headers, body} back into a Response.
+//
+// CRITICAL: ServeHTTP must NOT run synchronously inside this js.FuncOf
+// callback. js.FuncOf callbacks block the JavaScript event loop while
+// they execute. ServeHTTP calls HostFetchDoer.Do / HostPEMAccessor.AccessPEM,
+// which call awaitPromise() to wait on JS Promises (host fetch, PEM lookup).
+// Those Promises cannot settle while the event loop is blocked by this
+// callback — causing a fatal deadlock ("all goroutines are asleep").
+//
+// The fix: return a JS Promise immediately and run ServeHTTP on a separate
+// goroutine. The js.FuncOf callback returns, freeing the event loop, and
+// the goroutine's awaitPromise calls can settle normally.
 func handleFetch(_ js.Value, args []js.Value) interface{} {
 	if handler == nil {
 		return newPromiseReject("mint not initialized; call mintcoreInitMint first")
@@ -92,58 +103,83 @@ func handleFetch(_ js.Value, args []js.Value) interface{} {
 		return newPromiseReject("mintcoreHandleFetch requires 4 arguments: method, url, headersJSON, body")
 	}
 
+	// Capture JS values as Go strings before returning from the callback.
+	// js.Value references are only valid on the calling goroutine's stack
+	// during the js.FuncOf callback; the goroutine below must use copies.
 	method := args[0].String()
 	reqURL := args[1].String()
 	headersJSON := args[2].String()
 	body := args[3].String()
 
-	// Build an http.Request from the Fetch arguments.
-	var bodyReader *bytes.Reader
-	if body != "" {
-		bodyReader = bytes.NewReader([]byte(body))
-	} else {
-		bodyReader = bytes.NewReader(nil)
-	}
-
-	req, err := http.NewRequest(method, reqURL, bodyReader)
-	if err != nil {
-		return newPromiseReject(fmt.Sprintf("failed to create request: %v", err))
-	}
-
-	// Parse request headers.
-	if headersJSON != "" && headersJSON != "{}" {
-		var headers map[string]string
-		if err := json.Unmarshal([]byte(headersJSON), &headers); err != nil {
-			return newPromiseReject(fmt.Sprintf("failed to parse headersJSON: %v", err))
-		}
-		for k, v := range headers {
-			req.Header.Set(k, v)
-		}
-	}
-
-	// Use httptest.ResponseRecorder as a buffered ResponseWriter.
-	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, req)
-
-	// Build response headers JSON.
-	respHeaders := make(map[string]string, len(rec.Header()))
-	for k, v := range rec.Header() {
-		respHeaders[k] = strings.Join(v, ", ")
-	}
-	respHeadersBytes, _ := json.Marshal(respHeaders)
-
-	// Return a resolved Promise with {status, headers, body}.
-	return newPromiseResolve(map[string]interface{}{
-		"status":  rec.Code,
-		"headers": string(respHeadersBytes),
-		"body":    rec.Body.String(),
+	// Create a JS Promise whose executor captures resolve/reject, then
+	// launch a goroutine to run ServeHTTP asynchronously. The executor
+	// itself is synchronous (called by the Promise constructor), so we
+	// release its js.FuncOf immediately after Promise.new returns.
+	var resolve, reject js.Value
+	executor := js.FuncOf(func(_ js.Value, promiseArgs []js.Value) interface{} {
+		resolve = promiseArgs[0]
+		reject = promiseArgs[1]
+		return nil
 	})
-}
+	promise := js.Global().Get("Promise").New(executor)
+	executor.Release()
 
-// newPromiseResolve creates a JS Promise that resolves with the given value.
-func newPromiseResolve(val map[string]interface{}) js.Value {
-	promiseConstructor := js.Global().Get("Promise")
-	return promiseConstructor.Call("resolve", mapToJSObject(val))
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				reject.Invoke(js.Global().Get("Error").New(
+					fmt.Sprintf("panic in ServeHTTP: %v", r)))
+			}
+		}()
+
+		// Build an http.Request from the Fetch arguments.
+		var bodyReader *bytes.Reader
+		if body != "" {
+			bodyReader = bytes.NewReader([]byte(body))
+		} else {
+			bodyReader = bytes.NewReader(nil)
+		}
+
+		req, err := http.NewRequest(method, reqURL, bodyReader)
+		if err != nil {
+			reject.Invoke(js.Global().Get("Error").New(
+				fmt.Sprintf("failed to create request: %v", err)))
+			return
+		}
+
+		// Parse request headers.
+		if headersJSON != "" && headersJSON != "{}" {
+			var headers map[string]string
+			if err := json.Unmarshal([]byte(headersJSON), &headers); err != nil {
+				reject.Invoke(js.Global().Get("Error").New(
+					fmt.Sprintf("failed to parse headersJSON: %v", err)))
+				return
+			}
+			for k, v := range headers {
+				req.Header.Set(k, v)
+			}
+		}
+
+		// Use httptest.ResponseRecorder as a buffered ResponseWriter.
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+
+		// Build response headers JSON.
+		respHeaders := make(map[string]string, len(rec.Header()))
+		for k, v := range rec.Header() {
+			respHeaders[k] = strings.Join(v, ", ")
+		}
+		respHeadersBytes, _ := json.Marshal(respHeaders)
+
+		// Resolve the Promise with {status, headers, body}.
+		resolve.Invoke(mapToJSObject(map[string]interface{}{
+			"status":  rec.Code,
+			"headers": string(respHeadersBytes),
+			"body":    rec.Body.String(),
+		}))
+	}()
+
+	return promise
 }
 
 // newPromiseReject creates a JS Promise that rejects with the given error message.

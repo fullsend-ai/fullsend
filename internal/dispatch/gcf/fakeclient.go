@@ -81,8 +81,14 @@ func (f *fakeGCFClient) record(method string) error {
 func (f *fakeGCFClient) CreateServiceAccount(_ context.Context, _, _, _ string) error {
 	return f.record("CreateServiceAccount")
 }
+func (f *fakeGCFClient) DeleteServiceAccount(_ context.Context, _, _ string) error {
+	return f.record("DeleteServiceAccount")
+}
 func (f *fakeGCFClient) CreateWIFPool(_ context.Context, _, _, _ string) error {
 	return f.record("CreateWIFPool")
+}
+func (f *fakeGCFClient) DeleteWIFPool(_ context.Context, _, _ string) error {
+	return f.record("DeleteWIFPool")
 }
 func (f *fakeGCFClient) CreateWIFProvider(_ context.Context, _, _, providerID string, cfg OIDCProviderConfig) error {
 	f.lastWIFProviderConfig = cfg
@@ -171,6 +177,9 @@ func (f *fakeGCFClient) SetProjectIAMBinding(_ context.Context, projectID, membe
 }
 func (f *fakeGCFClient) SetCloudRunInvoker(_ context.Context, _, _, _ string) error {
 	return f.record("SetCloudRunInvoker")
+}
+func (f *fakeGCFClient) DeleteFunction(_ context.Context, _, _, _ string) error {
+	return f.record("DeleteFunction")
 }
 func (f *fakeGCFClient) GetFunction(_ context.Context, _, _, _ string) (*FunctionInfo, error) {
 	f.calls = append(f.calls, "GetFunction")
@@ -342,4 +351,14 @@ func DeletedSecretIDs(client GCFClient) []string {
 		return nil
 	}
 	return f.deletedSecretIDs
+}
+
+// RecordedCalls returns the method names recorded on a fake client, for
+// cross-package test assertions. Returns nil if client isn't a fake.
+func RecordedCalls(client GCFClient) []string {
+	f, ok := client.(*fakeGCFClient)
+	if !ok {
+		return nil
+	}
+	return f.calls
 }

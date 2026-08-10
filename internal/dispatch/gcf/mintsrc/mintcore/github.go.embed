@@ -22,6 +22,16 @@ import (
 	"time"
 )
 
+// githubUserAgent returns the User-Agent header value for outbound GitHub API
+// requests. Cloudflare Workers only forward explicitly set headers — without
+// this, HostFetchDoer requests reach GitHub with no User-Agent and receive 403.
+func githubUserAgent() string {
+	if Version != "" {
+		return "fullsend-mint/" + Version
+	}
+	return "fullsend-mint"
+}
+
 // installationResponse is the response from GET /repos/{owner}/{repo}/installation.
 type installationResponse struct {
 	ID      int64 `json:"id"`
@@ -245,6 +255,7 @@ func FindInstallation(ctx context.Context, httpClient HTTPDoer, githubBaseURL, j
 	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", githubUserAgent())
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -285,6 +296,7 @@ func FindOrgInstallation(ctx context.Context, httpClient HTTPDoer, githubBaseURL
 	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", githubUserAgent())
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -330,6 +342,7 @@ func GetOrgVariable(ctx context.Context, httpClient HTTPDoer, githubBaseURL, ins
 	}
 	req.Header.Set("Authorization", "Bearer "+installationToken)
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", githubUserAgent())
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -361,6 +374,7 @@ func GetRepoVariable(ctx context.Context, httpClient HTTPDoer, githubBaseURL, in
 	}
 	req.Header.Set("Authorization", "Bearer "+installationToken)
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", githubUserAgent())
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -415,6 +429,7 @@ func createInstallationTokenWithPermissions(ctx context.Context, httpClient HTTP
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", githubUserAgent())
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -502,6 +517,7 @@ func CreateInstallationToken(ctx context.Context, httpClient HTTPDoer, githubBas
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", githubUserAgent())
 
 	resp, err := httpClient.Do(req)
 	if err != nil {

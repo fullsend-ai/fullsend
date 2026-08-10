@@ -18,7 +18,10 @@
 //   - mintcoreHandleFetch(method, url, headersJSON, body): Promise<{status, headers, body}>
 //     Routes a Fetch request through Go's http.Handler (ServeHTTP).
 //     Authorization is passed inside headersJSON, not as a separate argument.
-//     Returns a Promise resolving to {status: number, headers: string, body: string}
+//     Returns a truly async Promise — ServeHTTP runs on a separate goroutine
+//     so that the js.FuncOf callback returns immediately, freeing the JS
+//     event loop for awaitPromise calls (host fetch, PEM lookup) to settle.
+//     Resolves to {status: number, headers: string, body: string}
 //     where headers is a JSON-encoded map.
 //
 // wasm_exec.js is the Go WASM support file from the Go toolchain
@@ -51,8 +54,8 @@ import mintcoreWasm from "../mintcore.wasm";
 export interface Env {
   /** JSON map of role -> GitHub App ID. */
   ROLE_APP_IDS: string;
-  /** Comma-separated list of allowed GitHub orgs. */
-  ALLOWED_ORGS: string;
+  /** Comma-separated list of allowed GitHub orgs (optional for per-repo-only deployments). */
+  ALLOWED_ORGS?: string;
   /** Expected OIDC audience claim value. */
   OIDC_AUDIENCE: string;
   /** Comma-separated list of allowed roles (derived from ROLE_APP_IDS if unset). */
@@ -98,7 +101,6 @@ class ConfigError extends Error {
 function validateEnv(env: Env): void {
   const required: Array<{ key: keyof Env; label: string }> = [
     { key: "ROLE_APP_IDS", label: "ROLE_APP_IDS" },
-    { key: "ALLOWED_ORGS", label: "ALLOWED_ORGS" },
     { key: "OIDC_AUDIENCE", label: "OIDC_AUDIENCE" },
   ];
   const missing = required.filter((f) => {
@@ -159,7 +161,7 @@ function detectRoleSecretCollisions(roleAppIDs: Record<string, string>): void {
 function buildWasmConfig(env: Env): string {
   return JSON.stringify({
     RoleAppIDs: env.ROLE_APP_IDS,
-    AllowedOrgs: env.ALLOWED_ORGS,
+    AllowedOrgs: env.ALLOWED_ORGS ?? "",
     OIDCAudience: env.OIDC_AUDIENCE,
     AllowedRoles: env.ALLOWED_ROLES ?? "",
     AllowedWorkflowFiles: env.ALLOWED_WORKFLOW_FILES ?? "",

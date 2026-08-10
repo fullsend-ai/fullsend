@@ -103,6 +103,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | GitHub Maintainer | `fullsend github sync-scaffold <org>` | Update workflow templates to current CLI version |
 | GitHub Maintainer | `fullsend github uninstall <org>` | Remove GitHub configuration (org-level only) |
 | GCP Admin (Mint) | `fullsend mint deploy` | Deploy the token mint Cloud Function |
+| GCP Admin (Mint) | `fullsend mint delete` | Tear down mint infrastructure (inverse of deploy) |
 | GCP Admin (Mint) | `fullsend mint add-role <role>` | Register a role PEM and app ID on the mint |
 | GCP Admin (Mint) | `fullsend mint remove-role <role>` | Remove a role from the mint (deletes PEM secret by default) |
 | GCP Admin (Mint) | `fullsend mint enroll <org\|owner/repo>` | Register an org or repo in the mint (does not grant Agent Platform access — use `inference provision`) |
@@ -126,17 +127,17 @@ The typical handoff: a GCP admin runs `mint deploy` + `mint enroll` + `inference
 
 When using the split-responsibility workflow, each standalone command requires a subset of IAM roles. Use this table to request only what you need.
 
-| IAM Role | `inference provision` | `inference deprovision` | `inference status` | `mint deploy` | `mint add-role` | `mint remove-role` | `mint enroll` | `mint unenroll` | `mint status` |
-|----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| `roles/iam.workloadIdentityPoolAdmin` | x | x | | x | | | x | x | |
-| `roles/resourcemanager.projectIamAdmin` | x | | | \* | | | | | |
-| `roles/iam.serviceAccountAdmin` | | | | x | | | | | |
-| `roles/secretmanager.admin` | | | | \* | \*\* | \*\*\* | | | |
-| `roles/cloudfunctions.developer` | | | | x | | | | | |
-| `roles/cloudfunctions.viewer` | | | | | x | x | x | x | x |
-| `roles/run.admin` | | | | x | x | x | x | x | |
-| `roles/iam.workloadIdentityPoolViewer` | | | x† | | | | | | |
-| `roles/secretmanager.viewer` | | | | | § | | | | x |
+| IAM Role | `inference provision` | `inference deprovision` | `inference status` | `mint deploy` | `mint delete` | `mint add-role` | `mint remove-role` | `mint enroll` | `mint unenroll` | `mint status` |
+|----------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| `roles/iam.workloadIdentityPoolAdmin` | x | x | | x | x | | | x | x | |
+| `roles/resourcemanager.projectIamAdmin` | x | | | \* | | | | | | |
+| `roles/iam.serviceAccountAdmin` | | | | x | x | | | | | |
+| `roles/secretmanager.admin` | | | | \* | x | \*\* | \*\*\* | | | |
+| `roles/cloudfunctions.developer` | | | | x | x | | | | | |
+| `roles/cloudfunctions.viewer` | | | | | | x | x | x | x | x |
+| `roles/run.admin` | | | | x | | x | x | x | x | |
+| `roles/iam.workloadIdentityPoolViewer` | | | x† | | | | | | | |
+| `roles/secretmanager.viewer` | | | | | | § | | | | x |
 
 \* `roles/resourcemanager.projectIamAdmin` and `roles/secretmanager.admin` are required for `mint deploy` only when using `--pem-dir` (first-time bootstrap). Standard deploys without `--pem-dir` do not need these roles.
 

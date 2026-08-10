@@ -4175,3 +4175,93 @@ func TestRemoveWorkflowHostRepo_EmptyExistingList(t *testing.T) {
 	// Should not call UpdateServiceEnvVars since repo is not in empty list.
 	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
 }
+
+// --- Delete wrapper method tests ---
+
+func TestDeleteMintFunction(t *testing.T) {
+	fake := newFakeGCFClient()
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+
+	err := p.DeleteMintFunction(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "DeleteFunction")
+}
+
+func TestDeleteMintFunction_Error(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["DeleteFunction"] = fmt.Errorf("permission denied")
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+
+	err := p.DeleteMintFunction(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "permission denied")
+}
+
+func TestDeleteMintServiceAccount(t *testing.T) {
+	fake := newFakeGCFClient()
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+
+	err := p.DeleteMintServiceAccount(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "DeleteServiceAccount")
+}
+
+func TestDeleteMintServiceAccount_Error(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["DeleteServiceAccount"] = fmt.Errorf("SA not found")
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+
+	err := p.DeleteMintServiceAccount(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "SA not found")
+}
+
+func TestDeleteMintWIFPool(t *testing.T) {
+	fake := newFakeGCFClient()
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+
+	err := p.DeleteMintWIFPool(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "GetProjectNumber")
+	assert.Contains(t, fake.calls, "DeleteWIFPool")
+}
+
+func TestDeleteMintWIFPool_ProjectNumberError(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetProjectNumber"] = fmt.Errorf("project not found")
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+
+	err := p.DeleteMintWIFPool(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "getting project number")
+}
+
+func TestDeleteMintWIFPool_DeleteError(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["DeleteWIFPool"] = fmt.Errorf("pool delete failed")
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+
+	err := p.DeleteMintWIFPool(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pool delete failed")
+}
+
+func TestDeleteWIFProvider(t *testing.T) {
+	fake := newFakeGCFClient()
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+
+	err := p.DeleteWIFProvider(context.Background(), "github-oidc")
+	require.NoError(t, err)
+	assert.Contains(t, fake.calls, "GetProjectNumber")
+	assert.Contains(t, fake.calls, "DeleteWIFProvider")
+}
+
+func TestDeleteWIFProvider_ProjectNumberError(t *testing.T) {
+	fake := newFakeGCFClient()
+	fake.errs["GetProjectNumber"] = fmt.Errorf("project not found")
+	p := NewProvisioner(Config{ProjectID: "my-test-proj1", Region: "us-central1"}, fake)
+
+	err := p.DeleteWIFProvider(context.Background(), "github-oidc")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "getting project number")
+}

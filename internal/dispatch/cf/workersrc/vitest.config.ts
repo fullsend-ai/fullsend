@@ -14,12 +14,15 @@ export default defineWorkersConfig({
           // ConfigError is cached permanently.
           // PEM secrets are not needed for the /health and routing tests.
           //
+          // ALLOWED_ORGS is intentionally omitted to verify the Worker
+          // boots without it (per-repo-only deployment parity with Go
+          // mintcore, which allows empty ALLOWED_ORGS since #5856).
+          //
           // ALLOWED_WORKFLOW_FILES is set explicitly here (not via a
           // production default). Production code defaults to "" (fail-
           // closed) when the env var is absent — matching cmd/mint.
           bindings: {
             ROLE_APP_IDS: '{"coder":"12345"}',
-            ALLOWED_ORGS: "test-org",
             OIDC_AUDIENCE: "test-aud",
             ALLOWED_WORKFLOW_FILES: "*",
           },

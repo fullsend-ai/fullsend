@@ -8,7 +8,10 @@ import { SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 describe("mint worker bridge smoke", () => {
-  it("boots and serves /health", async () => {
+  // The vitest config intentionally omits ALLOWED_ORGS from bindings
+  // to verify the Worker boots for per-repo-only deployments (parity
+  // with Go mintcore which allows empty ALLOWED_ORGS since #5856).
+  it("boots and serves /health without ALLOWED_ORGS", async () => {
     const resp = await SELF.fetch("https://worker.test/health");
     expect(resp.status).toBe(200);
 

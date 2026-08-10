@@ -524,3 +524,97 @@ func TestReadForeignAllowlistFromRepo_Empty(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, got)
 }
+
+func TestGitHubUserAgent(t *testing.T) {
+	t.Run("without version", func(t *testing.T) {
+		origVersion := Version
+		Version = ""
+		t.Cleanup(func() { Version = origVersion })
+		assert.Equal(t, "fullsend-mint", githubUserAgent())
+	})
+	t.Run("with version", func(t *testing.T) {
+		origVersion := Version
+		Version = "0.42.0"
+		t.Cleanup(func() { Version = origVersion })
+		assert.Equal(t, "fullsend-mint/0.42.0", githubUserAgent())
+	})
+}
+
+func TestGitHubRequests_IncludeUserAgent(t *testing.T) {
+	// Verify that all GitHub API helpers set a User-Agent header.
+	// Without User-Agent, Cloudflare Worker HostFetchDoer requests
+	// hit GitHub with no UA and receive 403.
+	assertUA := func(t *testing.T, r *http.Request) {
+		t.Helper()
+		ua := r.Header.Get("User-Agent")
+		assert.NotEmpty(t, ua, "User-Agent header must be set")
+		assert.Contains(t, ua, "fullsend-mint", "User-Agent should contain fullsend-mint")
+	}
+
+	t.Run("FindInstallation", func(t *testing.T) {
+		mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assertUA(t, r)
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 1, Account: struct {
+					Login string `json:"login"`
+				}{Login: "org"},
+			})
+		}))
+		defer mockGH.Close()
+
+		_, err := FindInstallation(t.Context(), http.DefaultClient, mockGH.URL, "jwt", "org", "repo")
+		require.NoError(t, err)
+	})
+
+	t.Run("FindOrgInstallation", func(t *testing.T) {
+		mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assertUA(t, r)
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 1, Account: struct {
+					Login string `json:"login"`
+				}{Login: "org"},
+			})
+		}))
+		defer mockGH.Close()
+
+		_, err := FindOrgInstallation(t.Context(), http.DefaultClient, mockGH.URL, "jwt", "org")
+		require.NoError(t, err)
+	})
+
+	t.Run("GetOrgVariable", func(t *testing.T) {
+		mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assertUA(t, r)
+			json.NewEncoder(w).Encode(variableResponse{Name: "VAR", Value: "val"})
+		}))
+		defer mockGH.Close()
+
+		_, _, err := GetOrgVariable(t.Context(), http.DefaultClient, mockGH.URL, "tok", "org", "VAR")
+		require.NoError(t, err)
+	})
+
+	t.Run("GetRepoVariable", func(t *testing.T) {
+		mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assertUA(t, r)
+			json.NewEncoder(w).Encode(variableResponse{Name: "VAR", Value: "val"})
+		}))
+		defer mockGH.Close()
+
+		_, _, err := GetRepoVariable(t.Context(), http.DefaultClient, mockGH.URL, "tok", "org", "repo", "VAR")
+		require.NoError(t, err)
+	})
+
+	t.Run("CreateInstallationToken", func(t *testing.T) {
+		mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assertUA(t, r)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{
+				Token:     "ghs_tok",
+				ExpiresAt: "2099-01-01T00:00:00Z",
+			})
+		}))
+		defer mockGH.Close()
+
+		_, _, _, err := CreateInstallationToken(t.Context(), http.DefaultClient, mockGH.URL, "jwt", 1, "coder", nil)
+		require.NoError(t, err)
+	})
+}

@@ -1797,6 +1797,26 @@ func (p *Provisioner) DisableWIFProvider(ctx context.Context, providerID string)
 	return p.gcpAPI.DisableWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, providerID)
 }
 
+// DeleteMintFunction permanently deletes the mint Cloud Function.
+func (p *Provisioner) DeleteMintFunction(ctx context.Context) error {
+	return p.gcpAPI.DeleteFunction(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
+}
+
+// DeleteMintServiceAccount permanently deletes the mint service account.
+func (p *Provisioner) DeleteMintServiceAccount(ctx context.Context) error {
+	saEmail := MintServiceAccountEmail(p.cfg.ProjectID)
+	return p.gcpAPI.DeleteServiceAccount(ctx, p.cfg.ProjectID, saEmail)
+}
+
+// DeleteMintWIFPool permanently deletes the WIF pool and all its providers.
+func (p *Provisioner) DeleteMintWIFPool(ctx context.Context) error {
+	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)
+	if err != nil {
+		return fmt.Errorf("getting project number: %w", err)
+	}
+	return p.gcpAPI.DeleteWIFPool(ctx, projectNumber, p.cfg.WIFPoolName)
+}
+
 // DeleteWIFProvider permanently deletes a WIF provider.
 func (p *Provisioner) DeleteWIFProvider(ctx context.Context, providerID string) error {
 	projectNumber, err := p.gcpAPI.GetProjectNumber(ctx, p.cfg.ProjectID)

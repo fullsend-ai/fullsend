@@ -2607,6 +2607,142 @@ func TestIAMAudience(t *testing.T) {
 	assert.Equal(t, "https://iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc", got)
 }
 
+// --- DeleteFunction ---
+
+func TestLiveGCFClient_DeleteFunction(t *testing.T) {
+	t.Run("success with operation", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			if callCount == 1 {
+				assert.Equal(t, http.MethodDelete, r.Method)
+				assert.Contains(t, r.URL.Path, "functions/fullsend-mint")
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprintln(w, `{"name":"operations/delete-fn-op","done":true}`)
+			} else {
+				// WaitForOperation poll
+				w.WriteHeader(http.StatusOK)
+				fmt.Fprintln(w, `{"name":"operations/delete-fn-op","done":true}`)
+			}
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).DeleteFunction(context.Background(), "proj", "us-central1", "fullsend-mint")
+		require.NoError(t, err)
+	})
+
+	t.Run("success without operation name", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodDelete, r.Method)
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, `{}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).DeleteFunction(context.Background(), "proj", "us-central1", "fullsend-mint")
+		require.NoError(t, err)
+	})
+
+	t.Run("not found is idempotent", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).DeleteFunction(context.Background(), "proj", "us-central1", "missing")
+		require.NoError(t, err)
+	})
+
+	t.Run("error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprintln(w, `{"error":{"message":"permission denied"}}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).DeleteFunction(context.Background(), "proj", "us-central1", "fn")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected status 403")
+	})
+}
+
+// --- DeleteServiceAccount ---
+
+func TestLiveGCFClient_DeleteServiceAccount(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodDelete, r.Method)
+			assert.Contains(t, r.URL.Path, "serviceAccounts/")
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).DeleteServiceAccount(context.Background(), "proj", "sa@proj.iam.gserviceaccount.com")
+		require.NoError(t, err)
+	})
+
+	t.Run("not found is idempotent", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).DeleteServiceAccount(context.Background(), "proj", "missing@proj.iam.gserviceaccount.com")
+		require.NoError(t, err)
+	})
+
+	t.Run("error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprintln(w, `{"error":{"message":"permission denied"}}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).DeleteServiceAccount(context.Background(), "proj", "sa@proj.iam.gserviceaccount.com")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected status 403")
+	})
+}
+
+// --- DeleteWIFPool ---
+
+func TestLiveGCFClient_DeleteWIFPool(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			assert.Equal(t, http.MethodDelete, r.Method)
+			assert.Contains(t, r.URL.Path, "workloadIdentityPools/fullsend-pool")
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, `{"name":"operations/delete-pool-op","done":true}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).DeleteWIFPool(context.Background(), "123456789", "fullsend-pool")
+		require.NoError(t, err)
+	})
+
+	t.Run("not found is idempotent", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).DeleteWIFPool(context.Background(), "123456789", "missing-pool")
+		require.NoError(t, err)
+	})
+
+	t.Run("error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprintln(w, `{"error":{"message":"permission denied"}}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).DeleteWIFPool(context.Background(), "123456789", "pool")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "unexpected status 403")
+	})
+}
+
 // --- encodeBase64 ---
 
 func TestEncodeBase64(t *testing.T) {
