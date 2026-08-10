@@ -35,10 +35,17 @@ type LiveClient struct {
 var _ forge.Client = (*LiveClient)(nil)
 var _ forge.GitHubExtensions = (*LiveClient)(nil)
 
+// defaultRequestTimeout is the per-attempt timeout applied in do() when
+// the caller's context carries no deadline. Individual operations may
+// set a longer deadline on the context before calling the HTTP helpers;
+// when they do, do() respects the caller-provided deadline instead.
+// Overridable in tests.
+var defaultRequestTimeout = 30 * time.Second
+
 // New creates a new GitHub client with the given personal access token.
 func New(token string) *LiveClient {
 	return &LiveClient{
-		http:    &http.Client{Timeout: 30 * time.Second},
+		http:    &http.Client{},
 		token:   token,
 		baseURL: "https://api.github.com",
 	}
@@ -140,6 +147,21 @@ func IsPATForbiddenError(err error) bool {
 
 const maxRetries = 5
 
+// cancelOnClose wraps an io.ReadCloser so that closing it also cancels
+// the associated context. This lets do() hand a per-attempt timeout
+// context to http.Do while ensuring the context stays alive until the
+// caller finishes reading the response body.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
+}
+
 // do performs an HTTP request against the GitHub API with retry on rate limits.
 func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*http.Response, error) {
 	url := c.baseURL + path
@@ -153,14 +175,30 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 		}
 	}
 
+	// Check once whether the caller set a deadline. When no deadline is
+	// present, each attempt gets an independent per-attempt timeout
+	// (replacing the former flat http.Client.Timeout). Callers that set
+	// a deadline — like createBlob's size-scaled timeout — keep their
+	// deadline across all attempts.
+	_, hasDeadline := ctx.Deadline()
+
 	for attempt := range maxRetries {
 		var reqBody io.Reader
 		if bodyData != nil {
 			reqBody = bytes.NewReader(bodyData)
 		}
 
-		req, err := http.NewRequestWithContext(ctx, method, url, reqBody)
+		attemptCtx := ctx
+		var attemptCancel context.CancelFunc
+		if !hasDeadline {
+			attemptCtx, attemptCancel = context.WithTimeout(ctx, defaultRequestTimeout)
+		}
+
+		req, err := http.NewRequestWithContext(attemptCtx, method, url, reqBody)
 		if err != nil {
+			if attemptCancel != nil {
+				attemptCancel()
+			}
 			return nil, fmt.Errorf("create request: %w", err)
 		}
 
@@ -175,6 +213,9 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 
 		resp, err := c.http.Do(req)
 		if err != nil {
+			if attemptCancel != nil {
+				attemptCancel()
+			}
 			return nil, fmt.Errorf("http %s %s: %w", method, path, err)
 		}
 
@@ -185,12 +226,25 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 				// replace it so callers can still read it.
 				resp.Body.Close()
 				resp.Body = io.NopCloser(bytes.NewReader(respBody))
+				if attemptCancel != nil {
+					attemptCancel()
+				}
+			} else if attemptCancel != nil {
+				// Body not yet read — wrap it so the context stays
+				// alive until the caller closes the body.
+				resp.Body = &cancelOnClose{
+					ReadCloser: resp.Body,
+					cancel:     attemptCancel,
+				}
 			}
 			return resp, nil
 		}
 
 		// Body already read or drained by isRetryable.
 		resp.Body.Close()
+		if attemptCancel != nil {
+			attemptCancel()
+		}
 
 		delay := retryDelay(resp, attempt)
 		retryAfter := resp.Header.Get("Retry-After")
@@ -1268,7 +1322,34 @@ func blobSHA(content []byte) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
+// blobTimeout returns a timeout for blob uploads scaled to the content
+// size. Small blobs use the default request timeout; large blobs (e.g.,
+// vendored binaries up to ~100 MB) get additional time proportional to
+// their size at a conservative transfer rate.
+func blobTimeout(contentLen int) time.Duration {
+	const (
+		// Conservative upload rate. Base64 encoding inflates content
+		// ~33%, so 750 KB/s of raw content ≈ 1 MB/s on the wire.
+		rateBytesPerSec = 750 * 1024
+		maxTimeout      = 5 * time.Minute
+	)
+	scaled := defaultRequestTimeout +
+		time.Duration(contentLen/rateBytesPerSec)*time.Second
+	if scaled > maxTimeout {
+		return maxTimeout
+	}
+	return scaled
+}
+
 func (c *LiveClient) createBlob(ctx context.Context, owner, repo string, content []byte) (string, error) {
+	// Use a size-scaled timeout for large payloads. The base64-encoded
+	// body can be ~33% larger than the raw content; the scaled timeout
+	// gives the upload enough runway to complete under normal API
+	// latency. If the caller already set a tighter deadline,
+	// context.WithTimeout preserves the earlier deadline.
+	ctx, cancel := context.WithTimeout(ctx, blobTimeout(len(content)))
+	defer cancel()
+
 	payload := map[string]string{
 		"content":  base64.StdEncoding.EncodeToString(content),
 		"encoding": "base64",

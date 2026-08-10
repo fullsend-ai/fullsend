@@ -2848,6 +2848,130 @@ func TestBlobSHA(t *testing.T) {
 	assert.Equal(t, "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391", got)
 }
 
+func TestBlobTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		size    int
+		wantMin time.Duration
+		wantMax time.Duration
+	}{
+		{
+			name:    "small file uses default timeout",
+			size:    1024,
+			wantMin: defaultRequestTimeout,
+			wantMax: defaultRequestTimeout,
+		},
+		{
+			name:    "50MB binary gets scaled timeout",
+			size:    50 * 1024 * 1024,
+			wantMin: defaultRequestTimeout + 60*time.Second,
+			wantMax: defaultRequestTimeout + 80*time.Second,
+		},
+		{
+			name:    "100MB binary gets longer timeout",
+			size:    100 * 1024 * 1024,
+			wantMin: defaultRequestTimeout + 120*time.Second,
+			wantMax: defaultRequestTimeout + 150*time.Second,
+		},
+		{
+			name:    "huge file capped at 5 minutes",
+			size:    500 * 1024 * 1024,
+			wantMin: 5 * time.Minute,
+			wantMax: 5 * time.Minute,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := blobTimeout(tt.size)
+			assert.GreaterOrEqual(t, got, tt.wantMin, "timeout too short")
+			assert.LessOrEqual(t, got, tt.wantMax, "timeout too long")
+		})
+	}
+}
+
+func TestCreateBlob_LargePayloadDoesNotUseDefaultTimeout(t *testing.T) {
+	// Not parallel: this test mutates the package-level
+	// defaultRequestTimeout and must run alone.
+
+	// Temporarily reduce the default timeout so this test can verify
+	// that createBlob uses a scaled timeout rather than the default.
+	// The test server delays longer than the reduced default; if
+	// createBlob were using the default it would time out.
+	origTimeout := defaultRequestTimeout
+	defaultRequestTimeout = 1 * time.Second
+	t.Cleanup(func() { defaultRequestTimeout = origTimeout })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/git/blobs") {
+			// Delay longer than defaultRequestTimeout (1s) but shorter
+			// than the scaled timeout for a 2MB payload (~3s).
+			time.Sleep(2 * time.Second)
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{"sha": "abc123"})
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+
+	// 2MB payload — blobTimeout yields ~1s (default) + 2s (size) = ~3s,
+	// which is enough to survive the 2s server delay.
+	content := make([]byte, 2*1024*1024)
+	sha, err := client.createBlob(context.Background(), "test", "repo", content)
+	require.NoError(t, err)
+	assert.Equal(t, "abc123", sha)
+}
+
+func TestDo_AppliesDefaultTimeoutPerAttempt(t *testing.T) {
+	// Not parallel: this test mutates the package-level
+	// defaultRequestTimeout and must run alone.
+
+	origTimeout := defaultRequestTimeout
+	defaultRequestTimeout = 2 * time.Second
+	t.Cleanup(func() { defaultRequestTimeout = origTimeout })
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Respond quickly — well within the 2s timeout.
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+
+	// A bare context.Background() has no deadline; do() should add one.
+	resp, err := client.do(context.Background(), "GET", "/test", nil)
+	require.NoError(t, err)
+	resp.Body.Close()
+}
+
+func TestDo_RespectsCallerDeadline(t *testing.T) {
+	// Not parallel: depends on defaultRequestTimeout not being mutated
+	// by other tests.
+
+	// When the caller sets a deadline, do() should respect it rather
+	// than overriding with the default timeout.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Delay longer than the caller's deadline.
+		time.Sleep(3 * time.Second)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	_, err := client.do(ctx, "GET", "/test", nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
 func TestCommitFiles_AllNew(t *testing.T) {
 	var calls []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
