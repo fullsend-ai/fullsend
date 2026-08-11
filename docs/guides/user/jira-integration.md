@@ -185,6 +185,60 @@ When `--jql` is provided, `--jira-project` is not required. Note that without `-
 
 Custom JQL must be a **bounded query**: Jira's enhanced search endpoint rejects queries without a search restriction (e.g. a bare `ORDER BY updated DESC`) with a 400 on every cycle. Always include at least a `project = ...` or similar restriction, as the examples above do.
 
+## Receiving workflow
+
+The dispatch step in the poll workflow above routes each event to an **agent workflow** — the GitHub Actions workflow that actually runs the fullsend agent for a given stage. If you set up your repo with `fullsend github setup`, these workflows already exist under `.github/workflows/` (one per built-in stage: triage, code, review, fix, retro). This section explains the contract they follow so you can verify your setup or troubleshoot dispatch failures.
+
+Each receiving workflow must include three elements:
+
+1. **A stage marker comment** — `# fullsend-stage: <stage>` on a line by itself, near the top of the file. The dispatch step scans every `.github/workflows/*.yml` file for this exact line (via `grep -qxF`) to find the workflow that handles a given stage. If no workflow file contains the marker for the dispatched stage, the dispatch step logs a warning and skips it.
+2. **Three `workflow_dispatch` inputs** — `event_type`, `source_repo`, and `event_payload`, all required strings. These match the `-f` flags in the dispatch step's `gh workflow run` call.
+3. **A concurrency group** keyed on the source repo and issue number, to prevent duplicate agent runs for the same work item.
+
+Here is a minimal example for the `triage` stage:
+
+```yaml
+---
+# fullsend-stage: triage
+name: fullsend Triage
+
+permissions:
+  actions: write
+  contents: read
+  id-token: write
+  issues: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      event_type:
+        required: true
+        type: string
+      source_repo:
+        required: true
+        type: string
+      event_payload:
+        required: true
+        type: string
+
+concurrency:
+  group: fullsend-triage-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  triage:
+    uses: <reusable-workflow-ref>
+    with:
+      event_type: ${{ inputs.event_type }}
+      source_repo: ${{ inputs.source_repo }}
+      event_payload: ${{ inputs.event_payload }}
+    secrets: inherit
+```
+
+The `uses:` line references the reusable workflow that `fullsend github setup` configured for your installation — the actual value depends on your install mode (per-org or per-repo) and is filled in automatically during setup. The `secrets: inherit` line is shorthand; the scaffold workflows pass secrets explicitly, but both approaches work.
+
+To add a receiving workflow for a custom stage, create a new `.github/workflows/<stage>.yml` following the same pattern — change the stage marker, workflow name, concurrency group prefix, and `uses:` target to match your agent. See [Bring Your Own Agent](bring-your-own-agent.md) for the full harness and agent definition setup.
+
 ## Actor role resolution
 
 > **Known limitation.** Roles are resolved by Jira project **role name**, not by actual granted permissions. This is intentional for the MVP — see below.
