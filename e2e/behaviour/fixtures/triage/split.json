@@ -1,0 +1,19 @@
+{
+  "action": "split",
+  "reasoning": "This issue bundles three independent documentation gaps. Each gap is a self-contained task with no dependency on the others. Splitting into separate issues enables parallel triage and implementation.",
+  "comment": "## Triage Summary\n\nThis issue contains multiple independent concerns that are better tracked separately. I've created individual issues for each one — see the links below.\n\nSplitting allows each concern to be triaged, prioritized, and implemented independently.",
+  "sub_issues": [
+    {
+      "title": "docs: add troubleshooting row for pagination cap",
+      "body": "The pagination cap is undocumented. Add a troubleshooting row explaining the 100-page limit on group member enumeration.\n\nSplit from #42."
+    },
+    {
+      "title": "docs: clarify --jira-project requirement",
+      "body": "The `--jira-project` flag is framed as optional but is effectively required for slash commands. Reframe the documentation.\n\nSplit from #42."
+    },
+    {
+      "title": "docs: add receiving agent workflow example",
+      "body": "The guide shows the poll workflow but never shows an example of the receiving agent workflow. Add a minimal example.\n\nSplit from #42."
+    }
+  ]
+}

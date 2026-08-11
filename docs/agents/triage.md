@@ -49,9 +49,31 @@ outcome and the post-script applies the corresponding label.
 | `duplicate` | The issue duplicates an existing one. The agent identified the original and the post-script closes the issue. |
 | `blocked` | The issue depends on prerequisites — existing issues/PRs or newly created upstream issues. The agent identified or created the blockers. |
 | `question` | The issue is a support request or question, not an actionable bug or feature. The agent attempted to answer it. |
+| `split` | The issue bundles multiple independent concerns. The agent created separate sub-issues for each concern, linked them, and closed the original. |
 
 The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
 `kind/bug`) but these are informational — they do not control agent behavior.
+
+### Issue splitting
+
+When the triage agent detects that an issue bundles multiple independent
+concerns — none blocking any other — it can split the issue into separate
+sub-issues in the same repository. Each sub-issue gets its own title and
+body derived from the original, with a back-reference to the parent issue.
+The original issue is closed with a summary comment linking to all the
+newly created sub-issues.
+
+Splitting is appropriate when an issue contains multiple independent work
+items (e.g., several documentation gaps filed together, or a list of
+unrelated bugs). It is **not** appropriate when the concerns are facets of
+the same problem (e.g., a bug with multiple symptoms from one root cause)
+or when one concern blocks another (use the `blocked` / prerequisites
+action instead).
+
+The split action creates sub-issues only in the source repository. Unlike
+the prerequisites action, it does not support cross-repo issue creation —
+bundled concerns that span repositories should be handled manually or via
+the prerequisites action.
 
 ## Configuration and extension
 
@@ -117,7 +139,7 @@ invent labels or apply labels not listed here.
 ## Control labels (never recommend these)
 
 These are managed by the triage pipeline. Never include them in `label_actions`:
-`needs-info`, `ready-to-code`, `duplicate`, `blocked`, `triaged`, `question`.
+`needs-info`, `ready-to-code`, `duplicate`, `blocked`, `triaged`, `question`, `split`.
 
 ## Area labels
 

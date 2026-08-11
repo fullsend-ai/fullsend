@@ -20,6 +20,7 @@ Issue filed → Triage → ready-to-code → Code Agent → PR opened → Review
                 │                                           Fix ───┘ └─── Re-review
                 ├── blocked → waiting for dependency
                 ├── duplicate → closed
+                ├── split → sub-issues created, original closed
                 └── needs-info → waiting for info
 ```
 
@@ -42,6 +43,7 @@ These labels track where an issue is in the pipeline:
 |-------|---------|-------------------|
 | `blocked` | Progress depends on another issue or PR | Triage comment links to the blocker; re-triage on edit checks if blocker is resolved |
 | `duplicate` | Same issue already tracked elsewhere | Issue closed, link to canonical issue |
+| `split` | Issue bundles multiple independent concerns | Sub-issues created in the same repo, original closed with links |
 | `needs-info` | Missing information | Triage comment explains what's needed; add a comment or edit the issue body to fix |
 | `feature` | Issue categorized as a feature request | Waits for human prioritization before coding |
 | `triaged` | Triage passed but not auto-promoted | Waits for human review (applies to features and uncategorized issues) |
@@ -110,9 +112,10 @@ The triage agent:
 
 1. **Checks for duplicates.** Searches existing issues by title, body, and metadata. If it finds a match with high confidence, it labels `duplicate`, posts a comment linking the canonical issue, and closes this one.
 2. **Checks for blocking dependencies.** Searches for open issues or PRs (in this repo or upstream) that must be resolved before work can start. If a prerequisite is found, it labels `blocked` and posts a comment linking to it. When no upstream tracking issue exists, the triage agent can also create one in the upstream repo (controlled by `create_issues.allow_targets` in config). On re-triage, it checks whether existing prerequisites have been resolved.
-3. **Checks information sufficiency.** If the issue body is missing steps to reproduce, expected behavior, or other critical details, it labels `needs-info` and posts a comment explaining what's missing.
-4. **Produces a test artifact.** When possible, writes a failing test case aligned with the repo's test framework.
-5. **Hands off.** Labels `ready-to-code` with a summary comment.
+3. **Checks for bundled concerns.** If the issue contains multiple independent work items (none blocking any other), it splits the issue into separate sub-issues in the same repo, labels `split`, posts a summary comment linking to all sub-issues, and closes the original.
+4. **Checks information sufficiency.** If the issue body is missing steps to reproduce, expected behavior, or other critical details, it labels `needs-info` and posts a comment explaining what's missing.
+5. **Produces a test artifact.** When possible, writes a failing test case aligned with the repo's test framework.
+6. **Hands off.** Labels `ready-to-code` with a summary comment.
 
 **If triage gets it wrong:** Add a comment with the missing information, or edit the issue body. Edits to the title or body trigger triage automatically. You can also use `/fs-triage` to force a fresh run — this clears previous triage labels and re-evaluates, building on any prior triage analysis rather than discarding it.
 

@@ -145,6 +145,7 @@ Existing fixtures under `e2e/behaviour/fixtures/`:
 | Fixture | Target schema | Purpose |
 |---------|---------------|---------|
 | `triage/sufficient.json` | `triage-result.schema.json` | Triage stage result with `action: "sufficient"` |
+| `triage/split.json` | `triage-result.schema.json` | Triage stage result with `action: "split"` for bundled issues |
 | `dispatch/ok.json` | _(none — dispatch proof)_ | Lightweight proof-of-execution marker for dispatch scenarios |
 | `review/comment.json` | `review-result.schema.json` | Review stage result with `action: "comment"` |
 | `code/implemented.json` | `code-result.schema.json` | Code stage result targeting the default branch |
