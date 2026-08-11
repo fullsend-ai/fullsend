@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
@@ -143,6 +144,14 @@ type WranglerRunner interface {
 	// already exists. Used to determine whether a bootstrap durable
 	// deploy is needed before a preview deploy.
 	WorkerExists(ctx context.Context, workerName string) (bool, error)
+
+	// DeleteSecret removes a secret from the durable Worker via
+	// wrangler secret delete.
+	DeleteSecret(ctx context.Context, workerName, secretName string) error
+
+	// ListSecrets returns the names of all secrets bound to the Worker.
+	// Used to check whether a PEM secret already exists.
+	ListSecrets(ctx context.Context, workerName string) ([]string, error)
 }
 
 // Provisioner creates Cloudflare Worker infrastructure for token minting.
@@ -570,6 +579,13 @@ func validateSourceDir(dir string) error {
 func pemSecretName(role string) string {
 	mapped := mintcore.PemSecretRole(role)
 	return strings.ToUpper(strings.ReplaceAll(mapped, "-", "_")) + "_APP_PEM"
+}
+
+// PemSecretNameForRole returns the Cloudflare Worker secret name for a
+// role's PEM key. This is the exported version of pemSecretName for use
+// by CLI code that needs to display the secret name.
+func PemSecretNameForRole(role string) string {
+	return pemSecretName(role)
 }
 
 // ValidateWorkerName checks if a string is a valid CF Worker name.
@@ -1099,6 +1115,349 @@ func parseWranglerSubdomainOutput(output string) string {
 		}
 	}
 	return ""
+}
+
+// --- Role management (add-role / remove-role) ---
+
+// GetWorkerVarsFn reads plain-text var bindings from a Cloudflare Worker
+// via the Cloudflare API. Override in tests to avoid real API calls.
+var GetWorkerVarsFn = getWorkerVars
+
+// PatchWorkerVarsFn updates plain-text var bindings on a Cloudflare Worker.
+// Override in tests.
+var PatchWorkerVarsFn = patchWorkerVars
+
+// getWorkerVars calls the Cloudflare API to read Worker script settings
+// and extracts plain_text bindings as a name→value map.
+func getWorkerVars(ctx context.Context, accountID, workerName string) (map[string]string, error) {
+	token := os.Getenv("CLOUDFLARE_API_TOKEN")
+	if token == "" {
+		return nil, fmt.Errorf("CLOUDFLARE_API_TOKEN is required for reading Worker settings")
+	}
+	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/workers/scripts/%s/settings", accountID, workerName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("calling Cloudflare settings API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Cloudflare settings API returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Result struct {
+			Bindings []struct {
+				Type string `json:"type"`
+				Name string `json:"name"`
+				Text string `json:"text"`
+			} `json:"bindings"`
+		} `json:"result"`
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("parsing settings response: %w", err)
+	}
+	if !result.Success {
+		return nil, fmt.Errorf("Cloudflare settings API returned success=false: %s", string(body))
+	}
+
+	vars := make(map[string]string)
+	for _, b := range result.Result.Bindings {
+		if b.Type == "plain_text" {
+			vars[b.Name] = b.Text
+		}
+	}
+	return vars, nil
+}
+
+// patchWorkerVars updates plain-text var bindings on a Cloudflare Worker
+// via the settings PATCH API. Only the vars in the map are updated;
+// other existing bindings (secrets, other vars) are preserved.
+func patchWorkerVars(ctx context.Context, accountID, workerName string, vars map[string]string) error {
+	token := os.Getenv("CLOUDFLARE_API_TOKEN")
+	if token == "" {
+		return fmt.Errorf("CLOUDFLARE_API_TOKEN is required for updating Worker settings")
+	}
+
+	bindings := make([]map[string]string, 0, len(vars))
+	for name, text := range vars {
+		bindings = append(bindings, map[string]string{
+			"type": "plain_text",
+			"name": name,
+			"text": text,
+		})
+	}
+
+	payload := map[string]interface{}{
+		"bindings": bindings,
+	}
+	bodyBytes, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshaling settings payload: %w", err)
+	}
+
+	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/workers/scripts/%s/settings", accountID, workerName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, url, strings.NewReader(string(bodyBytes)))
+	if err != nil {
+		return fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("calling Cloudflare settings API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("reading response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Cloudflare settings PATCH returned %d: %s", resp.StatusCode, string(respBody))
+	}
+	return nil
+}
+
+// AddRoleToMint registers a role's app ID in ROLE_APP_IDS and updates
+// ALLOWED_ROLES on the durable Worker via the Cloudflare API.
+func (p *Provisioner) AddRoleToMint(ctx context.Context, role, appID string) error {
+	if err := mintcore.ValidateRoleName(role); err != nil {
+		return fmt.Errorf("invalid role name %q: %w", role, err)
+	}
+	if appID == "" {
+		return fmt.Errorf("app ID is required for role %q", role)
+	}
+
+	vars, err := GetWorkerVarsFn(ctx, p.cfg.AccountID, p.cfg.WorkerName)
+	if err != nil {
+		return fmt.Errorf("reading Worker vars: %w", err)
+	}
+
+	existingJSON := vars["ROLE_APP_IDS"]
+	prevMap := make(map[string]string)
+	if existingJSON != "" {
+		if err := json.Unmarshal([]byte(existingJSON), &prevMap); err != nil {
+			return fmt.Errorf("parsing existing ROLE_APP_IDS: %w", err)
+		}
+	}
+	prevMap[role] = appID
+	merged, err := json.Marshal(prevMap)
+	if err != nil {
+		return fmt.Errorf("marshaling ROLE_APP_IDS: %w", err)
+	}
+
+	updated := map[string]string{
+		"ROLE_APP_IDS":  string(merged),
+		"ALLOWED_ROLES": deriveAllowedRoles(string(merged)),
+	}
+	if err := PatchWorkerVarsFn(ctx, p.cfg.AccountID, p.cfg.WorkerName, updated); err != nil {
+		return fmt.Errorf("updating Worker vars: %w", err)
+	}
+	return nil
+}
+
+// RemoveRoleFromMint removes a role-only entry from ROLE_APP_IDS and
+// updates ALLOWED_ROLES on the durable Worker via the Cloudflare API.
+func (p *Provisioner) RemoveRoleFromMint(ctx context.Context, role string) error {
+	if err := mintcore.ValidateRoleName(role); err != nil {
+		return fmt.Errorf("invalid role name %q: %w", role, err)
+	}
+
+	vars, err := GetWorkerVarsFn(ctx, p.cfg.AccountID, p.cfg.WorkerName)
+	if err != nil {
+		return fmt.Errorf("reading Worker vars: %w", err)
+	}
+
+	existingJSON := vars["ROLE_APP_IDS"]
+	prevMap := make(map[string]string)
+	if existingJSON != "" {
+		if err := json.Unmarshal([]byte(existingJSON), &prevMap); err != nil {
+			return fmt.Errorf("parsing existing ROLE_APP_IDS: %w", err)
+		}
+	}
+	delete(prevMap, role)
+	pruned, err := json.Marshal(prevMap)
+	if err != nil {
+		return fmt.Errorf("marshaling ROLE_APP_IDS: %w", err)
+	}
+
+	updated := map[string]string{
+		"ROLE_APP_IDS":  string(pruned),
+		"ALLOWED_ROLES": deriveAllowedRoles(string(pruned)),
+	}
+	if err := PatchWorkerVarsFn(ctx, p.cfg.AccountID, p.cfg.WorkerName, updated); err != nil {
+		return fmt.Errorf("updating Worker vars: %w", err)
+	}
+	return nil
+}
+
+// DeleteAgentPEM removes a role's PEM secret from the Worker.
+func (p *Provisioner) DeleteAgentPEM(ctx context.Context, role string) error {
+	if err := mintcore.ValidateRoleName(role); err != nil {
+		return fmt.Errorf("invalid role name %q: %w", role, err)
+	}
+	secretName := pemSecretName(role)
+	if err := p.wrangler.DeleteSecret(ctx, p.cfg.WorkerName, secretName); err != nil {
+		return fmt.Errorf("deleting PEM secret %s: %w", secretName, err)
+	}
+	return nil
+}
+
+// SecretExists checks whether a PEM secret exists for the given role
+// on the Worker.
+func (p *Provisioner) SecretExists(ctx context.Context, role string) (bool, error) {
+	secretName := pemSecretName(role)
+	secrets, err := p.wrangler.ListSecrets(ctx, p.cfg.WorkerName)
+	if err != nil {
+		return false, fmt.Errorf("listing Worker secrets: %w", err)
+	}
+	for _, s := range secrets {
+		if s == secretName {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// GetWorkerRoleAppIDs returns role-only ROLE_APP_IDS from the durable
+// Worker's current configuration.
+func (p *Provisioner) GetWorkerRoleAppIDs(ctx context.Context) (map[string]string, error) {
+	vars, err := GetWorkerVarsFn(ctx, p.cfg.AccountID, p.cfg.WorkerName)
+	if err != nil {
+		return nil, fmt.Errorf("reading Worker vars: %w", err)
+	}
+	raw := vars["ROLE_APP_IDS"]
+	if raw == "" {
+		return make(map[string]string), nil
+	}
+	var m map[string]string
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return nil, fmt.Errorf("parsing ROLE_APP_IDS: %w", err)
+	}
+	return mintcore.RoleOnlyAppIDs(m), nil
+}
+
+// GetWorkerMintURL returns the deployed Worker's mint URL by reading
+// the FULLSEND_MINT_URL env var, or constructing it from the worker name.
+func (p *Provisioner) GetWorkerMintURL(ctx context.Context) (string, error) {
+	vars, err := GetWorkerVarsFn(ctx, p.cfg.AccountID, p.cfg.WorkerName)
+	if err != nil {
+		// Fall back to constructing the URL from the worker name if
+		// the API call fails (e.g. var not set).
+		subdomain, subErr := ResolveWorkersSubdomainFn(ctx, p.cfg.AccountID)
+		if subErr != nil {
+			return "", fmt.Errorf("reading Worker vars: %w (and subdomain lookup failed: %v)", err, subErr)
+		}
+		return fmt.Sprintf("https://%s.%s.workers.dev", p.cfg.WorkerName, subdomain), nil
+	}
+	if url := vars["FULLSEND_MINT_URL"]; url != "" {
+		return url, nil
+	}
+	// FULLSEND_MINT_URL not set as a var — construct from subdomain.
+	subdomain, subErr := ResolveWorkersSubdomainFn(ctx, p.cfg.AccountID)
+	if subErr != nil {
+		return "", fmt.Errorf("FULLSEND_MINT_URL not set and subdomain lookup failed: %w", subErr)
+	}
+	return fmt.Sprintf("https://%s.%s.workers.dev", p.cfg.WorkerName, subdomain), nil
+}
+
+// HasPreviewVersions checks whether the Worker has any preview versions
+// deployed. Used to warn operators that mutating the durable Worker
+// may affect preview versions.
+func (p *Provisioner) HasPreviewVersions(ctx context.Context) (bool, error) {
+	// Use wrangler versions list to check for versions. If the command
+	// succeeds and outputs multiple versions, previews may exist.
+	// This is best-effort — false negatives are acceptable since the
+	// policy is warn-only.
+	return false, nil // Stub: always returns false for now; full detection deferred
+}
+
+// deriveAllowedRoles extracts unique role names from role-only ROLE_APP_IDS
+// keys. This is the CF-local equivalent of the GCF function.
+func deriveAllowedRoles(roleAppIDsJSON string) string {
+	var m map[string]string
+	if err := json.Unmarshal([]byte(roleAppIDsJSON), &m); err != nil {
+		return ""
+	}
+	roleSet := make(map[string]bool)
+	for key := range mintcore.RoleOnlyAppIDs(m) {
+		roleSet[key] = true
+	}
+	roles := make([]string, 0, len(roleSet))
+	for role := range roleSet {
+		roles = append(roles, role)
+	}
+	sort.Strings(roles)
+	return strings.Join(roles, ",")
+}
+
+// --- LiveWranglerRunner: DeleteSecret and ListSecrets ---
+
+// DeleteSecret removes a secret from the durable Worker via
+// wrangler secret delete.
+func (r *LiveWranglerRunner) DeleteSecret(ctx context.Context, workerName, secretName string) error {
+	cmd := exec.CommandContext(ctx, "npx", "wrangler", "secret", "delete", secretName, "--name", workerName, "--force")
+	cmd.Env = append(os.Environ(),
+		"CLOUDFLARE_ACCOUNT_ID="+r.AccountID,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("wrangler secret delete failed: %s\n%s", err, string(output))
+	}
+	return nil
+}
+
+// ListSecrets returns the names of all secrets bound to the Worker via
+// wrangler secret list. Parses the JSON output to extract secret names.
+func (r *LiveWranglerRunner) ListSecrets(ctx context.Context, workerName string) ([]string, error) {
+	cmd := exec.CommandContext(ctx, "npx", "wrangler", "secret", "list", "--name", workerName)
+	cmd.Env = append(os.Environ(),
+		"CLOUDFLARE_ACCOUNT_ID="+r.AccountID,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("wrangler secret list failed: %s\n%s", err, string(output))
+	}
+
+	// wrangler secret list outputs JSON array of objects with "name" and "type".
+	var secrets []struct {
+		Name string `json:"name"`
+		Type string `json:"type"`
+	}
+	if err := json.Unmarshal(output, &secrets); err != nil {
+		// Fall back to line-by-line parsing for non-JSON output.
+		var names []string
+		for line := range strings.SplitSeq(string(output), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" && !strings.HasPrefix(line, "[") && !strings.HasPrefix(line, "]") {
+				names = append(names, line)
+			}
+		}
+		return names, nil
+	}
+
+	names := make([]string, 0, len(secrets))
+	for _, s := range secrets {
+		names = append(names, s.Name)
+	}
+	return names, nil
 }
 
 // --- Test support ---

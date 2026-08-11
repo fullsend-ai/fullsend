@@ -15,6 +15,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/dispatch/cf"
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	gh "github.com/fullsend-ai/fullsend/internal/forge/github"
@@ -41,6 +42,7 @@ const (
 )
 
 func newMintAddRoleCmd() *cobra.Command {
+	var platform string
 	var project string
 	var region string
 	var slug string
@@ -51,12 +53,15 @@ func newMintAddRoleCmd() *cobra.Command {
 	var useExistingPEMSecret bool
 	var force bool
 	var dryRun bool
+	var workerName string
 
 	cmd := &cobra.Command{
 		Use:   "add-role <role>",
 		Short: "Add an agent role to the token mint",
 		Long: `Registers a role on the mint by storing its PEM (when needed) and updating
-ROLE_APP_IDS / ALLOWED_ROLES on the deployed Cloud Function.
+ROLE_APP_IDS / ALLOWED_ROLES on the deployed mint.
+
+Use --platform to select the target (default: gcp).
 
 Use one of three mutually exclusive input modes:
 
@@ -68,21 +73,20 @@ Requires the mint to already be deployed (fullsend mint deploy).
 
 When using --org, a GitHub token is required (GH_TOKEN, GITHUB_TOKEN, or gh auth login).
 
-Required IAM roles on the mint project:
-  - roles/run.admin                            (update Cloud Run env vars)
-  - roles/cloudfunctions.viewer                (read mint function metadata)
-  - roles/secretmanager.admin                  (create/update PEM secrets; not needed for --use-existing-pem-secret)`,
+GCP mode (--platform=gcp):
+  Stores PEM in Secret Manager and updates Cloud Run env vars.
+  Required flags: --project
+  Required IAM roles:
+    - roles/run.admin, roles/cloudfunctions.viewer, roles/secretmanager.admin
+
+Cloudflare mode (--platform=cloudflare):
+  Stores PEM as a Worker secret and updates Worker vars.
+  Optional: --worker-name (default: fullsend-mint)
+  Authentication: CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
+  Note: --preview on add-role is not supported. Preview Workers get
+  PEMs only via 'mint deploy' (e.g. --pem-dir) or a full redeploy.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if project == "" {
-				return fmt.Errorf("--project is required")
-			}
-			if !gcf.ValidateProjectID(project) {
-				return fmt.Errorf("invalid GCP project ID: %q", project)
-			}
-			if !gcf.ValidateRegion(region) {
-				return fmt.Errorf("invalid GCP region: %q", region)
-			}
 			if err := appsetup.ValidateAppSet(appSet); err != nil {
 				return fmt.Errorf("invalid --app-set: %w", err)
 			}
@@ -99,70 +103,107 @@ Required IAM roles on the mint project:
 
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
-			return runMintSetupAddRole(ctx, printer, mintSetupAddRoleConfig{
-				role:                 role,
-				project:              project,
-				region:               region,
-				slug:                 slug,
-				pemPath:              pemPath,
-				org:                  org,
-				appSet:               appSet,
-				publicApps:           publicApps,
-				useExistingPEMSecret: useExistingPEMSecret,
-				force:                force,
-				dryRun:               dryRun,
-				mode:                 mode,
-			})
+
+			switch platform {
+			case "gcp":
+				if project == "" {
+					return fmt.Errorf("--project is required for --platform=gcp")
+				}
+				if !gcf.ValidateProjectID(project) {
+					return fmt.Errorf("invalid GCP project ID: %q", project)
+				}
+				if !gcf.ValidateRegion(region) {
+					return fmt.Errorf("invalid GCP region: %q", region)
+				}
+				return runMintSetupAddRole(ctx, printer, mintSetupAddRoleConfig{
+					role:                 role,
+					project:              project,
+					region:               region,
+					slug:                 slug,
+					pemPath:              pemPath,
+					org:                  org,
+					appSet:               appSet,
+					publicApps:           publicApps,
+					useExistingPEMSecret: useExistingPEMSecret,
+					force:                force,
+					dryRun:               dryRun,
+					mode:                 mode,
+				})
+			case "cloudflare":
+				return runMintSetupAddRoleCF(ctx, printer, mintSetupAddRoleConfig{
+					role:                 role,
+					slug:                 slug,
+					pemPath:              pemPath,
+					org:                  org,
+					appSet:               appSet,
+					publicApps:           publicApps,
+					useExistingPEMSecret: useExistingPEMSecret,
+					force:                force,
+					dryRun:               dryRun,
+					mode:                 mode,
+					workerName:           workerName,
+				})
+			default:
+				return fmt.Errorf("unsupported platform %q: must be \"gcp\" or \"cloudflare\"", platform)
+			}
 		},
 	}
 
-	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required)")
-	cmd.Flags().StringVar(&region, "region", "us-central1", "GCP region")
+	// Common flags.
+	cmd.Flags().StringVar(&platform, "platform", "gcp", "target platform: gcp or cloudflare")
 	cmd.Flags().StringVar(&slug, "slug", "", "GitHub App slug (with --pem or --use-existing-pem-secret)")
 	cmd.Flags().StringVar(&pemPath, "pem", "", "path to PEM file for the role (with --slug)")
 	cmd.Flags().StringVar(&org, "org", "", "GitHub org for browser-based app creation")
 	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for browser-based app creation")
 	cmd.Flags().BoolVar(&publicApps, "public", false, "install existing public app without confirm prompt (browser mode)")
-	cmd.Flags().BoolVar(&useExistingPEMSecret, "use-existing-pem-secret", false, "skip PEM upload; require fullsend-{role}-app-pem in Secret Manager (with --slug)")
+	cmd.Flags().BoolVar(&useExistingPEMSecret, "use-existing-pem-secret", false, "skip PEM upload; require PEM secret to exist (with --slug)")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite existing ROLE_APP_IDS entry for this role")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
+
+	// GCP-specific flags.
+	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required for --platform=gcp)")
+	cmd.Flags().StringVar(&region, "region", "us-central1", "GCP region")
+
+	// Cloudflare-specific flags.
+	cmd.Flags().StringVar(&workerName, "worker-name", "", "Cloudflare Worker script name (default: fullsend-mint)")
 
 	return cmd
 }
 
 func newMintRemoveRoleCmd() *cobra.Command {
+	var platform string
 	var project string
 	var region string
 	var keepPEM bool
 	var dryRun bool
 	var yolo bool
+	var workerName string
 
 	cmd := &cobra.Command{
 		Use:   "remove-role <role>",
 		Short: "Remove an agent role from the token mint",
-		Long: `Removes a role from ROLE_APP_IDS and ALLOWED_ROLES on the mint Cloud Function.
-By default, also deletes the role's PEM secret from Secret Manager.
+		Long: `Removes a role from ROLE_APP_IDS and ALLOWED_ROLES on the mint.
 
-Use --keep-pem to retain the PEM secret for later re-registration.
+Use --platform to select the target (default: gcp).
+
+By default, also deletes the role's PEM secret. Use --keep-pem to retain it.
 
 Requires typing the role name to confirm (unless --dry-run or --yolo).
 
-Required IAM roles on the mint project:
-  - roles/run.admin                            (update Cloud Run env vars)
-  - roles/cloudfunctions.viewer                (read mint function metadata)
-  - roles/secretmanager.admin                  (delete PEM secrets; not needed with --keep-pem)`,
+GCP mode (--platform=gcp):
+  Updates Cloud Run env vars and deletes PEM from Secret Manager.
+  Required flags: --project
+  Required IAM roles:
+    - roles/run.admin, roles/cloudfunctions.viewer, roles/secretmanager.admin
+
+Cloudflare mode (--platform=cloudflare):
+  Updates Worker vars and deletes PEM Worker secret.
+  Optional: --worker-name (default: fullsend-mint)
+  Authentication: CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
+  Note: --preview on remove-role is not supported. Preview Workers
+  get PEMs only via 'mint deploy' (e.g. --pem-dir) or a full redeploy.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if project == "" {
-				return fmt.Errorf("--project is required")
-			}
-			if !gcf.ValidateProjectID(project) {
-				return fmt.Errorf("invalid GCP project ID: %q", project)
-			}
-			if !gcf.ValidateRegion(region) {
-				return fmt.Errorf("invalid GCP region: %q", region)
-			}
-
 			role, err := validateMintSetupRole(args[0])
 			if err != nil {
 				return err
@@ -170,15 +211,39 @@ Required IAM roles on the mint project:
 
 			printer := ui.New(os.Stdout)
 			ctx := cmd.Context()
-			return runMintSetupRemoveRole(ctx, printer, role, project, region, keepPEM, dryRun, yolo, os.Stdin)
+
+			switch platform {
+			case "gcp":
+				if project == "" {
+					return fmt.Errorf("--project is required for --platform=gcp")
+				}
+				if !gcf.ValidateProjectID(project) {
+					return fmt.Errorf("invalid GCP project ID: %q", project)
+				}
+				if !gcf.ValidateRegion(region) {
+					return fmt.Errorf("invalid GCP region: %q", region)
+				}
+				return runMintSetupRemoveRole(ctx, printer, role, project, region, keepPEM, dryRun, yolo, os.Stdin)
+			case "cloudflare":
+				return runMintSetupRemoveRoleCF(ctx, printer, role, workerName, keepPEM, dryRun, yolo, os.Stdin)
+			default:
+				return fmt.Errorf("unsupported platform %q: must be \"gcp\" or \"cloudflare\"", platform)
+			}
 		},
 	}
 
-	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required)")
-	cmd.Flags().StringVar(&region, "region", "us-central1", "GCP region")
-	cmd.Flags().BoolVar(&keepPEM, "keep-pem", false, "retain PEM secret in Secret Manager (default: delete)")
+	// Common flags.
+	cmd.Flags().StringVar(&platform, "platform", "gcp", "target platform: gcp or cloudflare")
+	cmd.Flags().BoolVar(&keepPEM, "keep-pem", false, "retain PEM secret (default: delete)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 	cmd.Flags().BoolVar(&yolo, "yolo", false, "skip confirmation prompt")
+
+	// GCP-specific flags.
+	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required for --platform=gcp)")
+	cmd.Flags().StringVar(&region, "region", "us-central1", "GCP region")
+
+	// Cloudflare-specific flags.
+	cmd.Flags().StringVar(&workerName, "worker-name", "", "Cloudflare Worker script name (default: fullsend-mint)")
 
 	return cmd
 }
@@ -196,6 +261,8 @@ type mintSetupAddRoleConfig struct {
 	force                bool
 	dryRun               bool
 	mode                 mintAddRoleMode
+	// Cloudflare-specific fields.
+	workerName string
 }
 
 func validateMintSetupRole(role string) (string, error) {
@@ -528,4 +595,322 @@ func mintTrafficRoleAppIDs(ctx context.Context, printer *ui.Printer, provisioner
 		return mintcore.RoleOnlyAppIDs(m), nil
 	}
 	return mintcore.RoleOnlyAppIDs(discovery.RoleAppIDs), nil
+}
+
+// --- Cloudflare add-role / remove-role ---
+
+func runMintSetupAddRoleCF(ctx context.Context, printer *ui.Printer, cfg mintSetupAddRoleConfig) error {
+	printer.Banner(Version())
+	printer.Blank()
+	printer.Header(fmt.Sprintf("Adding role %q to mint (Cloudflare)", cfg.role))
+	printer.Blank()
+
+	accountID, err := cf.ResolveCloudflareAuth(ctx)
+	if err != nil {
+		return err
+	}
+
+	wName := cfg.workerName
+	if wName != "" && !cf.ValidateWorkerName(wName) {
+		return fmt.Errorf("invalid --worker-name %q: must be 2-63 lowercase alphanumeric characters or hyphens", wName)
+	}
+
+	wrangler := mintCFWranglerFactory(accountID)
+	provisioner := cf.NewProvisioner(cf.Config{
+		AccountID:  accountID,
+		WorkerName: wName,
+	}, wrangler)
+
+	effectiveName := wName
+	if effectiveName == "" {
+		effectiveName = "fullsend-mint"
+	}
+
+	printer.StepStart("Reading Worker role configuration")
+	existing, err := provisioner.GetWorkerRoleAppIDs(ctx)
+	if err != nil {
+		printer.StepFail("Failed to read Worker vars")
+		return fmt.Errorf("reading Worker ROLE_APP_IDS: %w", err)
+	}
+	if existingID, ok := existing[cfg.role]; ok && !cfg.force {
+		return fmt.Errorf("role %q is already registered (app ID %s); use --force to overwrite", cfg.role, existingID)
+	}
+	printer.StepDone(fmt.Sprintf("Worker %s has %d existing roles", effectiveName, len(existing)))
+
+	// Warn if preview versions exist (mutable-vs-preview policy).
+	if hasPreview, _ := provisioner.HasPreviewVersions(ctx); hasPreview {
+		printer.StepWarn("Preview versions detected on this Worker — mutating the durable Worker may affect previews")
+	}
+
+	if cfg.dryRun && cfg.mode == addRoleModeBrowser {
+		printer.Blank()
+		printer.StepInfo("Dry run — no changes will be made")
+		printer.StepInfo(fmt.Sprintf("Would create GitHub App for role %q in org %s", cfg.role, cfg.org))
+		printer.StepInfo(fmt.Sprintf("Would store PEM as Worker secret %s", cf.PemSecretNameForRole(cfg.role)))
+		printer.StepInfo("Would update ROLE_APP_IDS and ALLOWED_ROLES on Worker")
+		return nil
+	}
+
+	var appID int
+
+	switch cfg.mode {
+	case addRoleModeSlugPEM:
+		appID, err = resolveAddRoleFromSlugPEMCF(ctx, printer, provisioner, cfg)
+	case addRoleModeExistingSecret:
+		appID, err = resolveAddRoleFromExistingSecretCF(ctx, printer, provisioner, cfg)
+	case addRoleModeBrowser:
+		appID, err = resolveAddRoleFromBrowserCF(ctx, printer, provisioner, cfg)
+	default:
+		return fmt.Errorf("internal error: unspecified add-role mode")
+	}
+	if err != nil {
+		return err
+	}
+
+	if cfg.dryRun {
+		printer.Blank()
+		printer.StepInfo("Dry run — no changes will be made")
+		printer.StepInfo(fmt.Sprintf("Would register role %q with app ID %d", cfg.role, appID))
+		if cfg.mode != addRoleModeExistingSecret {
+			printer.StepInfo(fmt.Sprintf("Would store PEM as Worker secret %s", cf.PemSecretNameForRole(cfg.role)))
+		}
+		printer.StepInfo("Would update ROLE_APP_IDS and ALLOWED_ROLES on Worker")
+		return nil
+	}
+
+	printer.StepStart("Updating Worker role configuration")
+	if err := provisioner.AddRoleToMint(ctx, cfg.role, strconv.Itoa(appID)); err != nil {
+		printer.StepFail("Failed to update Worker vars")
+		if cfg.mode != addRoleModeExistingSecret {
+			secretName := cf.PemSecretNameForRole(cfg.role)
+			return fmt.Errorf("registering role on Worker: %w (PEM was already stored as secret %s; re-run with --use-existing-pem-secret to retry)",
+				err, secretName)
+		}
+		return fmt.Errorf("registering role on Worker: %w", err)
+	}
+	printer.StepDone("Role registered on Worker")
+
+	mintURL, _ := provisioner.GetWorkerMintURL(ctx)
+	if mintURL == "" {
+		mintURL = fmt.Sprintf("https://%s.workers.dev", effectiveName)
+	}
+	printer.Blank()
+	printer.Summary("Role added", []string{
+		fmt.Sprintf("Role: %s", cfg.role),
+		fmt.Sprintf("App ID: %d", appID),
+		fmt.Sprintf("Worker: %s", effectiveName),
+		fmt.Sprintf("Mint URL: %s", mintURL),
+	})
+	return nil
+}
+
+func resolveAddRoleFromSlugPEMCF(ctx context.Context, printer *ui.Printer, provisioner *cf.Provisioner, cfg mintSetupAddRoleConfig) (int, error) {
+	if err := validateAppSlug(cfg.slug); err != nil {
+		return 0, err
+	}
+	printer.StepStart(fmt.Sprintf("Loading PEM and verifying app %q", cfg.slug))
+	pemData, err := os.ReadFile(cfg.pemPath)
+	if err != nil {
+		printer.StepFail("Failed to read PEM file")
+		return 0, fmt.Errorf("reading PEM file %q: %w", cfg.pemPath, err)
+	}
+	if err := appsetup.ValidateRSAPEM(pemData); err != nil {
+		printer.StepFail("Invalid PEM file")
+		return 0, fmt.Errorf("invalid PEM in %q: %w", cfg.pemPath, err)
+	}
+
+	appID, err := lookupAppID(ctx, cfg.slug)
+	if err != nil {
+		printer.StepFail("Failed to look up app ID")
+		return 0, err
+	}
+	if err := verifyPEMMatchesApp(ctx, pemData, appID, cfg.slug); err != nil {
+		printer.StepFail("PEM verification failed")
+		return 0, fmt.Errorf("verifying PEM for role %q: %w", cfg.role, err)
+	}
+	printer.StepDone(fmt.Sprintf("Verified PEM for app %s (ID %d)", cfg.slug, appID))
+
+	if cfg.dryRun {
+		return appID, nil
+	}
+
+	printer.StepStart("Storing PEM as Worker secret")
+	if err := provisioner.StoreAgentPEM(ctx, cfg.role, pemData); err != nil {
+		printer.StepFail("Failed to store PEM")
+		return 0, fmt.Errorf("storing PEM for role %q: %w", cfg.role, err)
+	}
+	printer.StepDone("PEM stored as Worker secret")
+	return appID, nil
+}
+
+func resolveAddRoleFromExistingSecretCF(ctx context.Context, printer *ui.Printer, provisioner *cf.Provisioner, cfg mintSetupAddRoleConfig) (int, error) {
+	if err := validateAppSlug(cfg.slug); err != nil {
+		return 0, err
+	}
+	printer.StepStart(fmt.Sprintf("Looking up app ID for %q", cfg.slug))
+	appID, err := lookupAppID(ctx, cfg.slug)
+	if err != nil {
+		printer.StepFail("Failed to look up app ID")
+		return 0, err
+	}
+	printer.StepDone(fmt.Sprintf("Found app %s (ID %d)", cfg.slug, appID))
+
+	printer.StepStart("Checking PEM secret on Worker")
+	exists, err := provisioner.SecretExists(ctx, cfg.role)
+	if err != nil {
+		printer.StepFail("Failed to check PEM secret")
+		return 0, fmt.Errorf("checking PEM secret for role %q: %w", cfg.role, err)
+	}
+	if !exists {
+		secretName := cf.PemSecretNameForRole(cfg.role)
+		printer.StepFail("PEM secret not found")
+		return 0, fmt.Errorf("PEM secret %s does not exist on Worker — omit --use-existing-pem-secret and pass --pem to upload one",
+			secretName)
+	}
+	printer.StepDone("PEM secret present on Worker")
+	secretName := cf.PemSecretNameForRole(cfg.role)
+	printer.StepWarn(fmt.Sprintf("Skipping PEM verification — ensure %s matches app %q", secretName, cfg.slug))
+	return appID, nil
+}
+
+func resolveAddRoleFromBrowserCF(ctx context.Context, printer *ui.Printer, provisioner *cf.Provisioner, cfg mintSetupAddRoleConfig) (int, error) {
+	org := strings.ToLower(cfg.org)
+	if err := validateOrgName(org); err != nil {
+		return 0, err
+	}
+
+	token, err := mintAddRoleResolveToken()
+	if err != nil {
+		return 0, err
+	}
+	client := gh.New(token)
+
+	// For the browser flow, appsetup needs a StoreSecret callback
+	// that stores the PEM on the Worker (not GCP Secret Manager).
+	printer.StepStart(fmt.Sprintf("Setting up GitHub App for role %q in org %s", cfg.role, org))
+	creds, err := mintAddRoleAppSetup(ctx, client, printer, org, []string{cfg.role}, "", "", cfg.publicApps, nil, cfg.appSet, nil)
+	if err != nil {
+		printer.StepFail("GitHub App setup failed")
+		return 0, err
+	}
+	if len(creds) != 1 {
+		return 0, fmt.Errorf("expected one app credential, got %d", len(creds))
+	}
+
+	// Store the PEM on the Worker (appsetup's default storeSecret
+	// targets GCP Secret Manager; we need to store on the Worker).
+	if !cfg.dryRun && creds[0].PEM != "" {
+		printer.StepStart("Storing PEM as Worker secret")
+		if err := provisioner.StoreAgentPEM(ctx, cfg.role, []byte(creds[0].PEM)); err != nil {
+			printer.StepFail("Failed to store PEM on Worker")
+			return 0, fmt.Errorf("storing PEM for role %q on Worker: %w", cfg.role, err)
+		}
+		printer.StepDone("PEM stored as Worker secret")
+	}
+
+	printer.StepDone(fmt.Sprintf("GitHub App ready: %s (ID %d)", creds[0].Slug, creds[0].AppID))
+	return creds[0].AppID, nil
+}
+
+func runMintSetupRemoveRoleCF(ctx context.Context, printer *ui.Printer, role, workerName string, keepPEM, dryRun, yolo bool, stdin *os.File) error {
+	printer.Banner(Version())
+	printer.Blank()
+	printer.Header(fmt.Sprintf("Removing role %q from mint (Cloudflare)", role))
+	printer.Blank()
+
+	if role == "coder" {
+		printer.StepWarn("Removing coder also prevents fix/code token minting")
+	}
+
+	accountID, err := cf.ResolveCloudflareAuth(ctx)
+	if err != nil {
+		return err
+	}
+
+	if workerName != "" && !cf.ValidateWorkerName(workerName) {
+		return fmt.Errorf("invalid --worker-name %q: must be 2-63 lowercase alphanumeric characters or hyphens", workerName)
+	}
+
+	wrangler := mintCFWranglerFactory(accountID)
+	provisioner := cf.NewProvisioner(cf.Config{
+		AccountID:  accountID,
+		WorkerName: workerName,
+	}, wrangler)
+
+	effectiveName := workerName
+	if effectiveName == "" {
+		effectiveName = "fullsend-mint"
+	}
+
+	printer.StepStart("Reading Worker role configuration")
+	existing, err := provisioner.GetWorkerRoleAppIDs(ctx)
+	if err != nil {
+		printer.StepFail("Failed to read Worker vars")
+		return fmt.Errorf("reading Worker ROLE_APP_IDS: %w", err)
+	}
+	if _, ok := existing[role]; !ok {
+		return fmt.Errorf("role %q is not registered on the Worker", role)
+	}
+	printer.StepDone(fmt.Sprintf("Worker %s has role %q registered", effectiveName, role))
+
+	// Warn if preview versions exist (mutable-vs-preview policy).
+	if hasPreview, _ := provisioner.HasPreviewVersions(ctx); hasPreview {
+		printer.StepWarn("Preview versions detected on this Worker — mutating the durable Worker may affect previews")
+	}
+
+	if dryRun {
+		printer.Blank()
+		printer.StepInfo("Dry run — no changes will be made")
+		printer.StepInfo(fmt.Sprintf("Would remove role %q from ROLE_APP_IDS and ALLOWED_ROLES", role))
+		if keepPEM {
+			printer.StepInfo("Would retain PEM secret")
+		} else {
+			printer.StepInfo(fmt.Sprintf("Would delete Worker secret %s", cf.PemSecretNameForRole(role)))
+		}
+		return nil
+	}
+
+	if !yolo {
+		isTerminal := term.IsTerminal(int(stdin.Fd()))
+		if err := confirmUnenroll(printer, role, bufio.NewReader(stdin), isTerminal, "remove-role"); err != nil {
+			return err
+		}
+	}
+
+	printer.StepStart("Removing role from Worker configuration")
+	if err := provisioner.RemoveRoleFromMint(ctx, role); err != nil {
+		printer.StepFail("Failed to update Worker vars")
+		return fmt.Errorf("removing role from Worker: %w", err)
+	}
+	printer.StepDone("Role removed from Worker vars")
+
+	if !keepPEM {
+		printer.StepStart("Deleting PEM secret from Worker")
+		if err := provisioner.DeleteAgentPEM(ctx, role); err != nil {
+			printer.StepFail("Failed to delete PEM secret")
+			secretName := cf.PemSecretNameForRole(role)
+			return fmt.Errorf("deleting PEM secret for role %q: %w (role was removed from Worker vars; delete the orphaned secret manually: wrangler secret delete %s --name %s)",
+				role, err, secretName, effectiveName)
+		}
+		printer.StepDone("PEM secret deleted")
+	}
+
+	mintURL, _ := provisioner.GetWorkerMintURL(ctx)
+	if mintURL == "" {
+		mintURL = fmt.Sprintf("https://%s.workers.dev", effectiveName)
+	}
+
+	printer.Blank()
+	summary := []string{
+		fmt.Sprintf("Role: %s", role),
+		fmt.Sprintf("Worker: %s", effectiveName),
+		fmt.Sprintf("Mint URL: %s", mintURL),
+	}
+	if keepPEM {
+		summary = append(summary, "PEM secret: retained")
+	} else {
+		summary = append(summary, "PEM secret: deleted")
+	}
+	printer.Summary("Role removed", summary)
+	return nil
 }

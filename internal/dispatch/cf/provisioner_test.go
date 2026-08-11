@@ -31,6 +31,12 @@ type fakeWranglerRunner struct {
 	workerExists *bool
 	// workerExistsErr, if non-nil, is returned by WorkerExists.
 	workerExistsErr error
+	// deleteSecretCalls tracks calls to DeleteSecret.
+	deleteSecretCalls []secretCall
+	deleteSecretErr   error
+	// listSecretsResult and listSecretsErr control ListSecrets behavior.
+	listSecretsResult []string
+	listSecretsErr    error
 }
 
 type deployCall struct {
@@ -105,6 +111,21 @@ func (f *fakeWranglerRunner) WorkerExists(_ context.Context, _ string) (bool, er
 		return *f.workerExists, nil
 	}
 	return true, nil // default: Worker exists
+}
+
+func (f *fakeWranglerRunner) DeleteSecret(_ context.Context, workerName, secretName string) error {
+	f.deleteSecretCalls = append(f.deleteSecretCalls, secretCall{
+		workerName: workerName,
+		secretName: secretName,
+	})
+	return f.deleteSecretErr
+}
+
+func (f *fakeWranglerRunner) ListSecrets(_ context.Context, _ string) ([]string, error) {
+	if f.listSecretsErr != nil {
+		return nil, f.listSecretsErr
+	}
+	return f.listSecretsResult, nil
 }
 
 // --- Provisioner tests ---
@@ -1728,6 +1749,270 @@ func TestProvisioner_Provision_PreviewBootstrap_EmptyEnvVars(t *testing.T) {
 		"preview deploy should receive configured env vars")
 	assert.Equal(t, `{"coder":"42"}`, fake.deployCalls[1].envVars["ROLE_APP_IDS"],
 		"preview deploy should receive ROLE_APP_IDS")
+}
+
+// --- AddRoleToMint tests ---
+
+func TestProvisioner_AddRoleToMint(t *testing.T) {
+	fake := &fakeWranglerRunner{}
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+	}, fake)
+
+	// Stub CF API calls.
+	oldGet := GetWorkerVarsFn
+	oldPatch := PatchWorkerVarsFn
+	GetWorkerVarsFn = func(_ context.Context, _, _ string) (map[string]string, error) {
+		return map[string]string{
+			"ROLE_APP_IDS":  `{"triage":"111"}`,
+			"ALLOWED_ROLES": "triage",
+		}, nil
+	}
+	var patchedVars map[string]string
+	PatchWorkerVarsFn = func(_ context.Context, _, _ string, vars map[string]string) error {
+		patchedVars = vars
+		return nil
+	}
+	t.Cleanup(func() {
+		GetWorkerVarsFn = oldGet
+		PatchWorkerVarsFn = oldPatch
+	})
+
+	err := p.AddRoleToMint(context.Background(), "coder", "222")
+	require.NoError(t, err)
+	require.NotNil(t, patchedVars)
+	assert.Contains(t, patchedVars["ROLE_APP_IDS"], `"coder":"222"`)
+	assert.Contains(t, patchedVars["ROLE_APP_IDS"], `"triage":"111"`)
+	assert.Contains(t, patchedVars["ALLOWED_ROLES"], "coder")
+	assert.Contains(t, patchedVars["ALLOWED_ROLES"], "triage")
+}
+
+func TestProvisioner_AddRoleToMint_EmptyExisting(t *testing.T) {
+	fake := &fakeWranglerRunner{}
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+	}, fake)
+
+	oldGet := GetWorkerVarsFn
+	oldPatch := PatchWorkerVarsFn
+	GetWorkerVarsFn = func(_ context.Context, _, _ string) (map[string]string, error) {
+		return map[string]string{}, nil
+	}
+	var patchedVars map[string]string
+	PatchWorkerVarsFn = func(_ context.Context, _, _ string, vars map[string]string) error {
+		patchedVars = vars
+		return nil
+	}
+	t.Cleanup(func() {
+		GetWorkerVarsFn = oldGet
+		PatchWorkerVarsFn = oldPatch
+	})
+
+	err := p.AddRoleToMint(context.Background(), "coder", "42")
+	require.NoError(t, err)
+	assert.Equal(t, `{"coder":"42"}`, patchedVars["ROLE_APP_IDS"])
+	assert.Equal(t, "coder", patchedVars["ALLOWED_ROLES"])
+}
+
+func TestProvisioner_AddRoleToMint_InvalidRole(t *testing.T) {
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+	}, &fakeWranglerRunner{})
+
+	err := p.AddRoleToMint(context.Background(), "INVALID", "42")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid role name")
+}
+
+// --- RemoveRoleFromMint tests ---
+
+func TestProvisioner_RemoveRoleFromMint(t *testing.T) {
+	fake := &fakeWranglerRunner{}
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+	}, fake)
+
+	oldGet := GetWorkerVarsFn
+	oldPatch := PatchWorkerVarsFn
+	GetWorkerVarsFn = func(_ context.Context, _, _ string) (map[string]string, error) {
+		return map[string]string{
+			"ROLE_APP_IDS":  `{"coder":"222","triage":"111"}`,
+			"ALLOWED_ROLES": "coder,triage",
+		}, nil
+	}
+	var patchedVars map[string]string
+	PatchWorkerVarsFn = func(_ context.Context, _, _ string, vars map[string]string) error {
+		patchedVars = vars
+		return nil
+	}
+	t.Cleanup(func() {
+		GetWorkerVarsFn = oldGet
+		PatchWorkerVarsFn = oldPatch
+	})
+
+	err := p.RemoveRoleFromMint(context.Background(), "coder")
+	require.NoError(t, err)
+	require.NotNil(t, patchedVars)
+	assert.NotContains(t, patchedVars["ROLE_APP_IDS"], "coder")
+	assert.Contains(t, patchedVars["ROLE_APP_IDS"], `"triage":"111"`)
+	assert.Equal(t, "triage", patchedVars["ALLOWED_ROLES"])
+}
+
+// --- DeleteAgentPEM tests ---
+
+func TestProvisioner_DeleteAgentPEM(t *testing.T) {
+	fake := &fakeWranglerRunner{}
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.DeleteAgentPEM(context.Background(), "coder")
+	require.NoError(t, err)
+	require.Len(t, fake.deleteSecretCalls, 1)
+	assert.Equal(t, "test-mint", fake.deleteSecretCalls[0].workerName)
+	assert.Equal(t, "CODER_APP_PEM", fake.deleteSecretCalls[0].secretName)
+}
+
+func TestProvisioner_DeleteAgentPEM_InvalidRole(t *testing.T) {
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+	}, &fakeWranglerRunner{})
+
+	err := p.DeleteAgentPEM(context.Background(), "INVALID")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid role name")
+}
+
+func TestProvisioner_DeleteAgentPEM_Error(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		deleteSecretErr: fmt.Errorf("api error"),
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.DeleteAgentPEM(context.Background(), "coder")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deleting PEM secret")
+}
+
+// --- SecretExists tests ---
+
+func TestProvisioner_SecretExists_Found(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		listSecretsResult: []string{"CODER_APP_PEM", "TRIAGE_APP_PEM"},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+	}, fake)
+
+	exists, err := p.SecretExists(context.Background(), "coder")
+	require.NoError(t, err)
+	assert.True(t, exists)
+}
+
+func TestProvisioner_SecretExists_NotFound(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		listSecretsResult: []string{"TRIAGE_APP_PEM"},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+	}, fake)
+
+	exists, err := p.SecretExists(context.Background(), "coder")
+	require.NoError(t, err)
+	assert.False(t, exists)
+}
+
+func TestProvisioner_SecretExists_Error(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		listSecretsErr: fmt.Errorf("list failed"),
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+	}, fake)
+
+	_, err := p.SecretExists(context.Background(), "coder")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "listing Worker secrets")
+}
+
+// --- GetWorkerRoleAppIDs tests ---
+
+func TestProvisioner_GetWorkerRoleAppIDs(t *testing.T) {
+	fake := &fakeWranglerRunner{}
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+	}, fake)
+
+	oldGet := GetWorkerVarsFn
+	GetWorkerVarsFn = func(_ context.Context, _, _ string) (map[string]string, error) {
+		return map[string]string{
+			"ROLE_APP_IDS": `{"coder":"42","triage":"99"}`,
+		}, nil
+	}
+	t.Cleanup(func() { GetWorkerVarsFn = oldGet })
+
+	ids, err := p.GetWorkerRoleAppIDs(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "42", ids["coder"])
+	assert.Equal(t, "99", ids["triage"])
+}
+
+func TestProvisioner_GetWorkerRoleAppIDs_Empty(t *testing.T) {
+	fake := &fakeWranglerRunner{}
+	p := NewProvisioner(Config{
+		AccountID:  "abc123",
+		WorkerName: "test-mint",
+	}, fake)
+
+	oldGet := GetWorkerVarsFn
+	GetWorkerVarsFn = func(_ context.Context, _, _ string) (map[string]string, error) {
+		return map[string]string{}, nil
+	}
+	t.Cleanup(func() { GetWorkerVarsFn = oldGet })
+
+	ids, err := p.GetWorkerRoleAppIDs(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, ids)
+}
+
+// --- PemSecretNameForRole tests ---
+
+func TestPemSecretNameForRole(t *testing.T) {
+	assert.Equal(t, "CODER_APP_PEM", PemSecretNameForRole("coder"))
+	assert.Equal(t, "TRIAGE_APP_PEM", PemSecretNameForRole("triage"))
+	assert.Equal(t, "REVIEW_APP_PEM", PemSecretNameForRole("review"))
+}
+
+// --- deriveAllowedRoles tests ---
+
+func TestDeriveAllowedRoles(t *testing.T) {
+	tests := []struct {
+		input  string
+		expect string
+	}{
+		{`{"coder":"42","triage":"99"}`, "coder,triage"},
+		{`{"coder":"42"}`, "coder"},
+		{`{}`, ""},
+		{`invalid`, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			assert.Equal(t, tc.expect, deriveAllowedRoles(tc.input))
+		})
+	}
 }
 
 // --- helpers ---
