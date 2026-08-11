@@ -181,9 +181,65 @@ fullsend poll \
   --fullsend-dir .fullsend
 ```
 
-When `--jql` is provided, `--jira-project` is not required. Note that without `--jira-project`, the poller cannot resolve Jira project roles — all actors default to the `external` role. If your routing rules depend on actor roles (e.g., requiring `write` for slash commands), provide `--jira-project` alongside `--jql`.
+When `--jql` is provided, `--jira-project` is not strictly required by the CLI. However, **`--jira-project` is effectively required for any project using slash commands** — without it, the poller cannot resolve Jira project roles and all actors silently default to `external`. Since `external` actors fail the write-role gate, every `/fs-*` command is silently ignored. If your routing rules depend on actor roles (e.g., requiring `write` for slash commands or `ready-to-code` label dispatch), always provide `--jira-project` alongside `--jql`.
 
 Custom JQL must be a **bounded query**: Jira's enhanced search endpoint rejects queries without a search restriction (e.g. a bare `ORDER BY updated DESC`) with a 400 on every cycle. Always include at least a `project = ...` or similar restriction, as the examples above do.
+
+## Receiving workflow
+
+The poll workflow dispatches agent runs via `gh workflow run`, targeting workflows that carry a `# fullsend-stage: <stage>` comment marker. Each receiving workflow must accept the same three `workflow_dispatch` inputs the dispatch step sends.
+
+Here is a minimal example for a triage agent workflow:
+
+```yaml
+---
+# fullsend-stage: triage
+name: Triage
+
+permissions:
+  actions: write
+  contents: read
+  id-token: write
+  issues: write
+
+on:
+  workflow_dispatch:
+    inputs:
+      event_type:
+        required: true
+        type: string
+      source_repo:
+        required: true
+        type: string
+      event_payload:
+        required: true
+        type: string
+
+concurrency:
+  group: fullsend-triage-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  triage:
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@main
+    with:
+      event_type: ${{ inputs.event_type }}
+      source_repo: ${{ inputs.source_repo }}
+      event_payload: ${{ inputs.event_payload }}
+      mint_url: ${{ vars.FULLSEND_MINT_URL }}
+    secrets:
+      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+```
+
+Key points:
+
+- **`# fullsend-stage: triage`** — the dispatch script scans workflow files for this marker to match the `stage` field from `dispatches.json`. Use `code`, `triage`, or another stage name that your routing rules emit.
+- **Three required inputs** — `event_type`, `source_repo`, and `event_payload` are the same across all stages. The poll workflow's dispatch step sends these via `gh workflow run -f`.
+- **Concurrency group** — uses `fromJSON(inputs.event_payload).issue.number` to serialize runs for the same issue. This is a numeric issue ID (Jira's internal ID), not the Jira key string.
+- **Reusable workflow** — the `uses:` line should reference your organization's reusable workflow. Replace with the actual reference from `fullsend github setup` output.
+
+If you already ran `fullsend github setup`, your repo should have stage workflows generated from the scaffold. The poll workflow's dispatch step targets these existing workflows — no additional workflow files are needed beyond the poll workflow itself.
 
 ## Actor role resolution
 
@@ -204,6 +260,12 @@ This does **not** check the project's permission scheme, so it can be wrong in b
 
 If your project uses Jira's default role names ("Administrators"/"Developers") with their default permissions, this works as expected. If you use custom role names, expect actors to resolve to `read` regardless of their real permissions until real permission-scheme resolution is implemented (tracked as future work, not planned for the MVP).
 
+### Group member pagination
+
+Early versions of the poller enumerated all members of groups assigned to project roles to build an account-to-role map. Jira's group member endpoint paginates at 50 members per page with a 100-page volume guard, silently truncating groups larger than 5,000 members. Members beyond the cap resolved to `external`, blocking all `/fs-*` dispatches.
+
+This was fixed in [#6041](https://github.com/fullsend-ai/fullsend/issues/6041): the poller now uses **per-actor role resolution** — it checks each event actor's group memberships individually via `GetUserGroups` rather than enumerating entire groups. This avoids the pagination cap entirely. The cost scales with the number of distinct commenting actors per cycle rather than the size of the groups backing a role. If you see actors unexpectedly resolving to `external` despite being in a role-mapped group, check the Troubleshooting table below.
+
 ### Jira membership is not GitHub membership
 
 > **Known limitation.** No cross-system identity check is performed between Jira and GitHub. The Jira project is the entire authorization boundary for Jira-sourced events.
@@ -211,6 +273,53 @@ If your project uses Jira's default role names ("Administrators"/"Developers") w
 The role resolved above feeds directly into ADR 0054's dispatch authorization gate — there is no separate check against the target GitHub repo's actual collaborators. This means anyone holding a Jira project role that maps to `write` (Jira's default "Developers" role, by default) can trigger write-gated slash commands like `/fs-code` against your repo, **even if that person has no GitHub access to it at all**.
 
 If your Jira project's membership is broader than your GitHub repo's collaborator list — which is common, since the two are usually administered separately — treat that gap as real: anyone in that gap can use their Jira membership alone to induce agent-proposed changes to your repository. Before enabling this driver, check who holds `write`-mapped roles in the target Jira project and make sure you're comfortable with each of them being able to do that.
+
+## Dispatch record format
+
+The `--output` file (typically `dispatches.json`) contains a JSON array of dispatch records. Each record describes one agent workflow to trigger:
+
+| Field | Type | Description |
+|---|---|---|
+| `stage` | string | Agent stage to dispatch (e.g., `triage`, `code`). Matched against the `# fullsend-stage:` marker in workflow files. |
+| `event_type` | string | What happened in Jira (e.g., `comment_added`, `label_changed`). See [Event semantics](#event-semantics). |
+| `event_payload_b64` | string | Base64-encoded JSON of the full [NormalizedEvent](../../normative/normalized-event/v1/). Decode to inspect routing decisions, actor role, and entity metadata. |
+| `resource_key` | string | Deduplication key. For Jira issues, formatted as `issue-PROJ-123` (the Jira issue key prefixed with `issue-`). |
+| `is_fork` | boolean | Always `false` for Jira-sourced events (fork detection is a forge-native concept). |
+| `iid` | integer | Jira's internal numeric issue ID. Used by the dispatch step to build `event_payload` for the receiving workflow's concurrency group. |
+
+Example record:
+
+```json
+{
+  "stage": "triage",
+  "event_type": "comment_added",
+  "event_payload_b64": "eyJldmVudF90eXBlIjoiY29tbWVudF9hZGRlZCIsLi4ufQ==",
+  "resource_key": "issue-PROJ-42",
+  "is_fork": false,
+  "iid": 10042
+}
+```
+
+To inspect the decoded event payload:
+
+```bash
+jq -r '.event_payload_b64' dispatches.json | base64 -d | jq .
+```
+
+## Event semantics
+
+The poller detects Jira activity and converts it to [NormalizedEvent](../../normative/normalized-event/v1/) records. Each `event_type` in `dispatches.json` describes **what happened in Jira**, not what the agent will do:
+
+| `event_type` | Trigger | Notes |
+|---|---|---|
+| `comment_added` | A new comment was posted, or an existing comment was edited | Edited comments are attributed to the `updateAuthor`, not the original author — see [Poll coordination](#poll-coordination) |
+| `label_changed` | A label was added or removed from an issue | Produces one event per label change |
+| `opened` | An issue was created within the backfill window | Only emitted on the issue's first poll, and only if created within the 24-hour backfill window |
+| `reopened` | An issue transitioned from a `Done` status category to a non-`Done` category | Determined by `statusCategory`, not by the status name |
+| `closed` | An issue transitioned to a `Done` status category | Same `statusCategory`-based detection |
+| `edited` | An issue's summary, description, or other tracked field was changed | Detected via the issue changelog |
+
+**Jira output limitations.** The poller produces input events (Jira activity → agent dispatch) but does **not** produce output events (agent results → Jira). Built-in agent pre/post scripts expect GitHub issue numbers, not Jira keys, so dispatched agent runs will not complete successfully until the output driver follow-up lands. Tracked in [#2264](https://github.com/fullsend-ai/fullsend/issues/2264). The NormalizedEvent is produced and routed correctly, but the receiving agent's scripts fail when they attempt to write results back to Jira.
 
 ## Poll coordination
 
@@ -236,6 +345,75 @@ Two more scaling limits, following [ADR 0063](../../ADRs/0063-polling-based-work
 - **Comments are re-listed in full, oldest-first, every cycle.** The Jira REST API has no way to filter comments server-side by date, so `ListComments` always paginates from the start of an issue's comment history; the poller then filters client-side by timestamp. For issues with very long comment histories, this means re-fetching (and re-decoding) old comments every cycle just to discard them. Listings are capped at 10,000 entries per issue; an issue beyond that cap has its newest activity invisible to the poller (a WARNING is logged when the cap is hit). Each API response is bounded to 10MB, but the accumulated per-issue comment history is bounded only by the page cap — a per-issue byte budget is a tracked follow-up; against real Jira Cloud (which caps individual comments) the realistic worst case is tens of MB per issue.
 - **Sustained Jira errors can stall a cycle.** Each Jira call retries up to 5 times with exponential backoff, honoring `Retry-After` (capped at 5 minutes). Under a sustained 429 or outage a single cycle can therefore run long; the workflow's concurrency group queues subsequent cron runs rather than stacking them, and a failed cycle simply retries from its checkpoints on the next run.
 
+## Multi-repo polling
+
+When multiple GitHub repos need to poll the same Jira project, each repo should have its own poll workflow with its own `--target-repo` value. This is the recommended pattern because:
+
+- **Entity property locks are namespaced per target repo.** The lock key is `fullsend.poll.{owner}.{repo}.lock`, so two repos polling the same Jira project acquire independent locks and do not interfere with each other's poll cycles.
+- **Checkpoints (`lastCheck`) are also per-repo.** Each repo maintains its own `lastCheck` timestamp on each issue, so they independently track which changes they have processed.
+- **Dispatch targets the correct repo's workflows.** The `--target-repo` flag determines where `gh workflow run` dispatches agent workflows, so each repo receives its own dispatches.
+
+### Recommended setup
+
+1. In each repo, create a `fullsend-poll-jira.yml` workflow with the repo's own `--target-repo "${{ github.repository }}"`.
+2. Use the same `JIRA_TOKEN`, `JIRA_USER_EMAIL`, and `JIRA_BASE_URL` secrets/variables — or different ones if repos poll different Jira instances.
+3. Optionally narrow each repo's `--jql` to different label sets or issue types to reduce overlap.
+
+### Scaling considerations
+
+- **API cost multiplies.** Each repo's poll workflow makes its own Jira API calls. For N repos polling the same project on 5-minute crons, Jira sees N independent poll cycles per 5 minutes.
+- **Stagger cron schedules.** Offset the cron expressions (e.g., `*/5 * * * *` for repo A, `1-59/5 * * * *` for repo B) to avoid all repos hitting Jira simultaneously.
+- **Entity property volume.** Each polled issue accumulates lock and checkpoint properties per repo. This has no functional impact but is visible in Jira's entity properties API.
+
+## Local testing
+
+You can run the Jira poller locally to test your configuration and inspect the output without triggering agent workflows.
+
+### Required environment variables
+
+```bash
+export JIRA_TOKEN="your-jira-api-token"
+export JIRA_USER_EMAIL="you@example.com"
+export JIRA_BASE_URL="https://myteam.atlassian.net"
+```
+
+### Running a poll cycle
+
+```bash
+fullsend poll \
+  --input-driver jira-poll \
+  --jira-url "${JIRA_BASE_URL}" \
+  --jira-project PROJ \
+  --target-repo "myorg/myrepo" \
+  --output dispatches.json \
+  --fullsend-dir .fullsend
+```
+
+This runs a single poll cycle: it queries Jira, detects changes, resolves actor roles, routes events, and writes dispatch records to `dispatches.json`. It also advances `lastCheck` checkpoints and acquires/releases locks on processed issues — **a local run has real side effects in Jira**.
+
+### Inspecting output
+
+After the poll completes, inspect the dispatch records:
+
+```bash
+# Show all dispatch records
+jq . dispatches.json
+
+# Decode a specific event payload
+jq -r '.[0].event_payload_b64' dispatches.json | base64 -d | jq .
+
+# Count dispatches by stage
+jq 'group_by(.stage) | map({stage: .[0].stage, count: length})' dispatches.json
+```
+
+If `dispatches.json` is empty (`[]`), the poller found no new changes since the last checkpoint. Check the `lastCheck` entity property on the issue (see [Poll coordination](#poll-coordination)).
+
+### Caveats
+
+- **Checkpoints advance.** A local run updates Jira entity properties (`lastCheck`, locks) just like a CI run. Activity processed locally will not be re-dispatched by the next CI-scheduled poll.
+- **No dispatch step.** The local `fullsend poll` command writes `dispatches.json` but does not call `gh workflow run`. The dispatch step in the workflow YAML handles that separately.
+- **Credentials.** The Jira API token must belong to a user with read access to the project and write access to issue entity properties.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
@@ -244,6 +422,8 @@ Two more scaling limits, following [ADR 0063](../../ADRs/0063-polling-based-work
 | 200 on `/myself` but 403 on issue search | Org restricts personal API tokens for project data | Ask your Atlassian org admin to allow API token access for project data |
 | No dispatches produced | No changes since last poll | Check the `lastCheck` entity property on the issue — the poller only dispatches for changes newer than this timestamp |
 | Slash command ignored | Actor lacks `write` role in Jira project | The actor must be a member of a Jira project role named exactly "Developers" or "Administrators" — see [Actor role resolution](#actor-role-resolution) if you use custom role names |
+| All actors resolve to `external`, all `/fs-*` commands ignored | `--jira-project` not provided | Without `--jira-project`, the poller logs `WARNING: no Jira project key set` and cannot resolve roles. Add `--jira-project PROJ` to your poll command, even when using `--jql` |
+| Actor resolves to `external` despite being in a role-mapped group | Group membership not detected | The poller resolves roles per actor via `GetUserGroups`. Verify the actor's Jira account is a direct member of a group assigned to the "Developers" or "Administrators" project role. Nested group memberships are not followed |
 | Duplicate dispatches | `lastCheck` was cleared or missing | The poller treats a missing `lastCheck` as "never polled" and processes all recent changes. This is self-correcting — the next cycle advances `lastCheck` past the duplicates |
 | Old comment or label change on a newly polled issue never dispatches | Activity predates the first-poll backfill window | On an issue's first poll, activity older than the 24-hour backfill window is permanently skipped (the checkpoint advances past it). To pick up older activity, scope the initial `--jql` to recently updated issues and widen it gradually, or have someone re-trigger by commenting again |
 | Dispatched agent workflow fails immediately | Agent pre/post scripts don't understand Jira-keyed payloads yet | Known limitation, tracked in [#2264](https://github.com/fullsend-ai/fullsend/issues/2264). The dispatch step above still runs the workflow and produces a `NormalizedEvent`, but built-in agent scripts expect a GitHub issue number, not a Jira key |
