@@ -93,8 +93,9 @@ jobs:
           # checkout@v7 blocks fork PR checkouts on pull_request_target by
           # default. Safe here: only .fullsend/ config is read, no fork code
           # is executed, and credentials are not persisted. Pin to base branch
-          # so kill-switch / role gating always reads trusted config.
-          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
+          # SHA for PR-scoped events so kill-switch / role gating always reads
+          # trusted config — PR authors cannot self-authorize.
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
           sparse-checkout: |
@@ -138,7 +139,7 @@ jobs:
           # the collaborator API — not a fail-open gate.
           _owners_has_user() {
             local key="${1}" user="${2}"
-            if yq -e ".${key}[] | select(. == \"${user}\")" OWNERS &>/dev/null; then
+            if yq -e ".${key}[] | select((. | downcase) == \"${user}\")" OWNERS &>/dev/null; then
               return 0
             fi
             if [[ -f "OWNERS_ALIASES" ]]; then
@@ -146,7 +147,7 @@ jobs:
               while IFS= read -r entry; do
                 [[ -z "${entry}" ]] && continue
                 [[ ! "${entry}" =~ ^[a-zA-Z0-9_-]+$ ]] && continue
-                if yq -e ".aliases.\"${entry}\"[] | select(. == \"${user}\")" OWNERS_ALIASES &>/dev/null; then
+                if yq -e ".aliases.\"${entry}\"[] | select((. | downcase) == \"${user}\")" OWNERS_ALIASES &>/dev/null; then
                   return 0
                 fi
               done < <(yq ".${key}[]" OWNERS 2>/dev/null)
@@ -169,15 +170,16 @@ jobs:
                 if [[ ! "${username}" =~ ^[a-zA-Z0-9-]+$ ]]; then
                   echo "::warning::OWNERS auth skipped: username '${username}' contains unexpected characters" >&2
                 else
+                  local lc_user="${username,,}"
                   case "${min}" in
                     write|triage)
-                      if _owners_has_user approvers "${username}"; then
+                      if _owners_has_user approvers "${lc_user}"; then
                         echo "::notice::User '${username}' authorized via OWNERS file (approver, requested: ${min})"
                         return 0
                       fi
                       ;;&
                     triage)
-                      if _owners_has_user reviewers "${username}"; then
+                      if _owners_has_user reviewers "${lc_user}"; then
                         echo "::notice::User '${username}' authorized via OWNERS file (reviewer, requested: ${min})"
                         return 0
                       fi

@@ -617,6 +617,23 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 
 			// Retro on PR close remains intentionally ungated (documented)
 			assert.Regexp(t, `(?s)closed\)\s*\n\s+# Intentional ungated:.*\n\s+STAGE="retro"`, s)
+
+			// OWNERS role→permission mapping: approvers in write|triage arm,
+			// reviewers in triage-only arm, connected by ;;&  (pattern-retest).
+			// A ;& (unconditional fallthrough) would silently give reviewers
+			// write-level access — this assertion catches that.
+			assert.Regexp(t, `(?s)write\|triage\).*_owners_has_user approvers`, s,
+				"OWNERS approvers must be checked in the write|triage case arm")
+			assert.Regexp(t, `(?s);;&\s*\n\s+triage\).*_owners_has_user reviewers`, s,
+				"OWNERS reviewers must be in the triage-only arm after ;;&  (not ;&)")
+			assert.Contains(t, s, `lc_user="${username,,}"`,
+				"OWNERS username comparison must be case-insensitive")
+			assert.Contains(t, s, `_owners_has_user approvers "${lc_user}"`,
+				"OWNERS approver check must use lowercased lc_user, not original username")
+			assert.Contains(t, s, `_owners_has_user reviewers "${lc_user}"`,
+				"OWNERS reviewer check must use lowercased lc_user, not original username")
+			assert.Regexp(t, `::notice::User '\$\{username\}' authorized via OWNERS file`, s,
+				"OWNERS audit log must use original username casing, not lc_user")
 		})
 	}
 }

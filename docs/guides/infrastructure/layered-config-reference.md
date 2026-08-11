@@ -86,7 +86,14 @@ the overlay → base → code defaults chain.
 | `inference.wif_provider` | `string` (nested) | Scalar override | `""` (empty) |
 | `create_issues` | `*CreateIssuesConfig` | Replace whole object if set | `nil` |
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
-| `authorization` | `object` | Replace whole object if set | `nil` |
+| `authorization`¹ | `object` | Overlay only (not layered) | `nil` |
+
+> ¹ `authorization` is read by the dispatch workflow's bash/yq directly
+> from `.fullsend/config.yaml` (the overlay). It does **not** participate
+> in the overlay → base → code-defaults merge chain and is not part of the
+> Go config package. Setting it in `config.base.yaml` has no effect.
+> See [#6072](https://github.com/fullsend-ai/fullsend/issues/6072) for
+> the planned migration to the Go config layer.
 
 ### Scalar override fields
 
