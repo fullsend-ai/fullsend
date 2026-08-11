@@ -187,7 +187,12 @@ Custom JQL must be a **bounded query**: Jira's enhanced search endpoint rejects 
 
 ## Receiving workflow
 
-The dispatch step in the poll workflow above routes each event to an **agent workflow** — the GitHub Actions workflow that actually runs the fullsend agent for a given stage. If you set up your repo with `fullsend github setup`, these workflows already exist under `.github/workflows/` (one per built-in stage: triage, code, review, fix, retro). This section explains the contract they follow so you can verify your setup or troubleshoot dispatch failures.
+The dispatch step in the poll workflow above routes each event to an **agent workflow** — the GitHub Actions workflow that actually runs the fullsend agent for a given stage. This section explains the contract those workflows must follow so you can verify your setup or troubleshoot dispatch failures.
+
+How the stage workflows are installed depends on your installation mode:
+
+- **Org-mode** (`fullsend github setup <org>`) — `fullsend github setup` creates one stage-marked workflow per built-in stage (triage, code, review, fix, retro, prioritize) in the `.fullsend` config repo's `.github/workflows/` directory. The dispatch step's `grep -qxF` scan finds these markers and dispatches to the matching workflow.
+- **Per-repo mode** (`fullsend github setup <owner>/<repo>`) — setup creates a single shim workflow at `.github/workflows/fullsend.yaml` that routes internally via `reusable-dispatch.yml`. It does **not** create individual stage-marked workflow files, so the Jira poll dispatch step's `grep -qxF` scan will find no stage markers and skip all dispatches. To use the Jira poll with per-repo mode, either switch to org-mode or manually create stage workflows following the contract below.
 
 Each receiving workflow must include three elements:
 
@@ -237,7 +242,7 @@ jobs:
 
 The `uses:` line references the reusable workflow that `fullsend github setup` configured for your installation — the actual value depends on your install mode (per-org or per-repo) and is filled in automatically during setup. The `secrets: inherit` line is shorthand; the scaffold workflows pass secrets explicitly, but both approaches work.
 
-To add a receiving workflow for a custom stage, create a new `.github/workflows/<stage>.yml` following the same pattern — change the stage marker, workflow name, concurrency group prefix, and `uses:` target to match your agent. See [Bring Your Own Agent](bring-your-own-agent.md) for the full harness and agent definition setup.
+To add a receiving workflow for a custom stage (or to create stage workflows for per-repo mode), create a new `.github/workflows/<stage>.yml` following the same pattern — change the stage marker, workflow name, concurrency group prefix, and `uses:` target to match your agent. For the harness definition and CEL trigger setup that controls *when* a custom agent runs, see [Bring Your Own Agent](bring-your-own-agent.md).
 
 ## Actor role resolution
 
