@@ -485,14 +485,19 @@ func (c *perRepoConfig) ConfigInferenceWIFProvider() string {
 func (c *perRepoConfig) SetKillSwitch(v bool) { c.KillSwitch = &v }
 
 // SetAuthorizationOwnersFile enables or disables OWNERS-file authorization.
+// Clears only OwnersFile; the struct is niled only when all fields are zero
+// so future sibling fields are not silently wiped.
 func (c *perRepoConfig) SetAuthorizationOwnersFile(v bool) {
 	if v {
 		if c.Authorization == nil {
 			c.Authorization = &AuthorizationConfig{}
 		}
 		c.Authorization.OwnersFile = true
-	} else {
-		c.Authorization = nil
+	} else if c.Authorization != nil {
+		c.Authorization.OwnersFile = false
+		if *c.Authorization == (AuthorizationConfig{}) {
+			c.Authorization = nil
+		}
 	}
 }
 
