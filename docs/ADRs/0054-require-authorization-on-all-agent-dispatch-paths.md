@@ -197,8 +197,9 @@ permission list, not by bypassing the check.
 > `.fullsend/config.yaml`, the function checks the repo-root `OWNERS`
 > (and `OWNERS_ALIASES`) before falling back to the collaborator API.
 > OWNERS approvers get write-equivalent access; reviewers get
-> triage-equivalent. The sparse-checkout pins to the base branch SHA, so
-> PR authors cannot self-authorize by modifying OWNERS in their PR.
+> triage-equivalent. The sparse-checkout pins to the base branch SHA for
+> PR-scoped events (`pull_request_target`, `pull_request_review`), so PR
+> authors cannot self-authorize by modifying OWNERS in their PR.
 > This follows the extension path above (extending the allowed permission
 > sources in `has_repo_permission`) rather than bypassing the check.
 > OWNERS auth applies to built-in stages only; harness agents are

@@ -96,6 +96,7 @@ type PerRepoConfigReader interface {
 type ConfigWriter interface {
 	ConfigReader
 	SetKillSwitch(bool)
+	SetAuthorizationOwnersFile(bool)
 	SetAgents([]AgentEntry)
 	SetAllowedRemoteResources([]string)
 	SetStatusNotifications(*StatusNotificationConfig)
@@ -184,6 +185,10 @@ func (c *orgConfig) StatusNotifications() *StatusNotificationConfig {
 
 // SetKillSwitch sets the kill switch state.
 func (c *orgConfig) SetKillSwitch(v bool) { c.KillSwitch = v }
+
+// SetAuthorizationOwnersFile is a no-op for org configs; OWNERS
+// authorization is per-repo only.
+func (c *orgConfig) SetAuthorizationOwnersFile(bool) {}
 
 // SetAgents replaces the registered agent entries.
 func (c *orgConfig) SetAgents(agents []AgentEntry) { c.Agents = agents }
@@ -562,6 +567,18 @@ func (c *perRepoConfig) ConfigModelAliases() map[string]string {
 // SetKillSwitch sets the kill switch state. Stores a *bool so that
 // an explicit false is distinguishable from unset (nil) across layers.
 func (c *perRepoConfig) SetKillSwitch(v bool) { c.KillSwitch = &v }
+
+// SetAuthorizationOwnersFile enables or disables OWNERS-file authorization.
+func (c *perRepoConfig) SetAuthorizationOwnersFile(v bool) {
+	if v {
+		if c.Authorization == nil {
+			c.Authorization = &AuthorizationConfig{}
+		}
+		c.Authorization.OwnersFile = true
+	} else {
+		c.Authorization = nil
+	}
+}
 
 // SetAgents replaces the registered agent entries.
 func (c *perRepoConfig) SetAgents(agents []AgentEntry) { c.Agents = agents }

@@ -275,6 +275,12 @@ type CreateIssuesConfig struct {
 	AllowTargets AllowTargets `yaml:"allow_targets"`
 }
 
+// AuthorizationConfig controls opt-in authorization mechanisms that
+// extend the default collaborator-API permission check.
+type AuthorizationConfig struct {
+	OwnersFile bool `yaml:"owners_file,omitempty"`
+}
+
 // orgConfig is the top-level configuration for a fullsend organization.
 // Consumer packages should use the OrgConfigReader or OrgConfigWriter
 // interfaces rather than referencing this type directly.
@@ -780,8 +786,9 @@ type perRepoConfig struct {
 	// resource prefixes. MarshalYAML preserves the nil-vs-empty
 	// distinction: nil (unset) is omitted, empty (deny-all) is
 	// marshaled as `allowed_remote_resources: []`.
-	AllowedRemoteResources []string            `yaml:"allowed_remote_resources,omitempty"`
-	CreateIssues           *CreateIssuesConfig `yaml:"create_issues,omitempty"`
+	AllowedRemoteResources []string             `yaml:"allowed_remote_resources,omitempty"`
+	CreateIssues           *CreateIssuesConfig  `yaml:"create_issues,omitempty"`
+	Authorization          *AuthorizationConfig `yaml:"authorization,omitempty"`
 	// Notifications backs the StatusNotifications() accessor. Named
 	// distinctly from the method (unlike CreateIssues/IssueCreationConfig)
 	// because "StatusNotifications" is the established accessor name
@@ -982,6 +989,7 @@ type perRepoConfigMarshal struct {
 	Agents                 []AgentEntry              `yaml:"agents,omitempty"`
 	AllowedRemoteResources *[]string                 `yaml:"allowed_remote_resources,omitempty"`
 	CreateIssues           *CreateIssuesConfig       `yaml:"create_issues,omitempty"`
+	Authorization          *AuthorizationConfig      `yaml:"authorization,omitempty"`
 	StatusNotifications    *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
 	MintURL                string                    `yaml:"mint_url,omitempty"`
 	Inference              *PerRepoInferenceConfig   `yaml:"inference,omitempty"`
@@ -1002,6 +1010,7 @@ func (c *perRepoConfig) MarshalYAML() (interface{}, error) {
 		Runtime:             c.Runtime,
 		Agents:              c.Agents,
 		CreateIssues:        c.CreateIssues,
+		Authorization:       c.Authorization,
 		StatusNotifications: c.Notifications,
 		MintURL:             c.MintURL,
 	}
