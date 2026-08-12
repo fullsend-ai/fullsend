@@ -52,6 +52,7 @@ type ConfigReader interface {
 	StatusNotificationsReader
 	ConfigVersion() string
 	IsOrgMode() bool
+	AuthorizationOwnersFile() bool
 }
 
 // --- Mode-specific read interfaces ---
@@ -185,6 +186,10 @@ func (c *orgConfig) StatusNotifications() *StatusNotificationConfig {
 
 // SetKillSwitch sets the kill switch state.
 func (c *orgConfig) SetKillSwitch(v bool) { c.KillSwitch = v }
+
+// AuthorizationOwnersFile returns false for org configs; OWNERS
+// authorization is per-repo only.
+func (c *orgConfig) AuthorizationOwnersFile() bool { return false }
 
 // SetAuthorizationOwnersFile is a no-op for org configs; OWNERS
 // authorization is per-repo only.
@@ -403,6 +408,11 @@ func (c *perRepoConfig) ConfigVersion() string {
 
 // IsOrgMode reports that this is a per-repo configuration.
 func (c *perRepoConfig) IsOrgMode() bool { return false }
+
+// AuthorizationOwnersFile returns whether OWNERS-file authorization is enabled.
+func (c *perRepoConfig) AuthorizationOwnersFile() bool {
+	return c.Authorization != nil && c.Authorization.OwnersFile
+}
 
 // ConfigRoles returns the configured agent roles. nil (key omitted)
 // falls through to parent. Non-nil (including empty) replaces the

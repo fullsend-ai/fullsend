@@ -123,6 +123,16 @@ func TestBehaviourSuite(t *testing.T) {
 		RepoOwner:    org,
 	}
 
+	if outsiderPAT := os.Getenv("TEST_ACTOR_OUTSIDER_PAT"); outsiderPAT != "" {
+		outsiderClient := e2etest.NewLiveClient(outsiderPAT)
+		template.OutsiderSCM = scmgh.New(outsiderClient)
+		login, err := outsiderClient.GetAuthenticatedUser(ctx)
+		if err != nil {
+			t.Fatalf("resolving outsider login: %v", err)
+		}
+		template.OutsiderLogin = login
+	}
+
 	suiteRunner := godog.TestSuite{
 		Name:                "behaviour",
 		ScenarioInitializer: func(sc *godog.ScenarioContext) { suite.InitScenario(sc, template) },

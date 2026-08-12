@@ -1518,11 +1518,13 @@ jobs:
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
           sparse-checkout: |
             .fullsend/
+            OWNERS
+            OWNERS_ALIASES
             .defaults/action.yml
             .defaults/.github/actions/install-fullsend-cli/
             .fullsend/.defaults/action.yml

@@ -85,6 +85,13 @@ type World struct {
 	// Nil when no driver is configured.
 	Driver install.Driver
 
+	// OutsiderSCM is an SCM driver authenticated as fstest-outsider, a
+	// GitHub User with no collaborator access. Used by the OWNERS
+	// write-denial E2E scenario. Nil when TEST_ACTOR_OUTSIDER_PAT is
+	// not set. Shared across scenarios, never reset.
+	OutsiderSCM   scm.Driver
+	OutsiderLogin string
+
 	// KillSwitchActivated records whether this scenario activated the
 	// repo-level kill switch. CleanupScenario uses this to deactivate
 	// the switch so the next scenario on this slot is not affected.
