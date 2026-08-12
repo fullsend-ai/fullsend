@@ -47,6 +47,13 @@ Feature: OWNERS file authorization for bash routing
     And the agent will succeed to Prove execution
     And the triage workflow logs contain "authorized via OWNERS file (reviewer"
 
+  Scenario: OWNERS reviewer is denied write-level access
+    Given an OWNERS file listing the outsider as a reviewer
+    And OWNERS authorization is enabled
+    And an issue
+    When the outsider posts "/fs-code" on the issue
+    Then the dispatch run does not authorize via OWNERS
+
   Scenario: Triage dispatches without OWNERS path when not opted in
     Given an OWNERS file listing the bot as an approver
     And a dummy agent that would:

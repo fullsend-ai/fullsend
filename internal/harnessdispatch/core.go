@@ -3,10 +3,12 @@ package harnessdispatch
 import (
 	"context"
 	"fmt"
+	"log"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
+	"github.com/fullsend-ai/fullsend/internal/owners"
 )
 
 // Options configures a dispatch run.
@@ -36,6 +38,17 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 	}
 	if dirCfg.IsKillSwitchActive() {
 		return nil, nil
+	}
+
+	// Upgrade Actor.Role in place if OWNERS grants a higher level.
+	// Bare paths — same working-directory assumption as ConfigDir.
+	if dirCfg.AuthorizationOwnersFile() && opts.Event.Actor.ID != "" {
+		role, err := owners.Resolve("OWNERS", "OWNERS_ALIASES", opts.Event.Actor.ID)
+		if err != nil {
+			log.Printf("harness dispatch: OWNERS resolution failed for %s: %v", opts.Event.Actor.ID, err)
+		} else if role != owners.None {
+			opts.Event.Actor.Role = owners.MapToActorRole(role, opts.Event.Actor.Role)
+		}
 	}
 
 	if !IsAuthorized(opts.Event) {

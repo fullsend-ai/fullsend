@@ -638,6 +638,45 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 	}
 }
 
+// TestOwnersCheckoutRefPin validates that every checkout step whose
+// sparse-checkout includes OWNERS files pins to base branch SHA for
+// pull_request_review events. Without this, a PR author can add
+// themselves to OWNERS in their branch and self-authorize on the
+// pull_request_review dispatch path.
+func TestOwnersCheckoutRefPin(t *testing.T) {
+	cases := []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
+		{"scaffold/dispatch.yml", loadScaffoldFile(".github/workflows/dispatch.yml")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := string(tc.content(t))
+			// Split into sections by checkout step boundary. Each section
+			// starting with "uses: actions/checkout@" contains one step's
+			// with: block up to the next step or job boundary.
+			sections := regexp.MustCompile(`(?m)^[ \t]*- name:`).Split(s, -1)
+
+			var ownersCheckouts int
+			for _, section := range sections {
+				if !strings.Contains(section, "actions/checkout@") {
+					continue
+				}
+				if !strings.Contains(section, "OWNERS") {
+					continue
+				}
+				ownersCheckouts++
+				assert.Contains(t, section, "pull_request_review",
+					"checkout that sparse-checks-out OWNERS must pin ref for pull_request_review events")
+			}
+			require.NotZero(t, ownersCheckouts,
+				"should find at least one checkout step with OWNERS in sparse-checkout")
+		})
+	}
+}
+
 // TestShimScaffoldBranchFilter validates that both shim templates skip dispatch
 // for PRs from the fullsend/scaffold branch. Without this filter, the shim
 // fires pull_request_target on the scaffold PR, causing dispatch noise (#5470).

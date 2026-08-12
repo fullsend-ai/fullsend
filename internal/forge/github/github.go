@@ -3130,6 +3130,9 @@ func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 			Conclusion string `json:"conclusion"`
 			HTMLURL    string `json:"html_url"`
 			CreatedAt  string `json:"created_at"`
+			Actor      struct {
+				Login string `json:"login"`
+			} `json:"actor"`
 		} `json:"workflow_runs"`
 	}
 	if err := decodeJSON(resp, &result); err != nil {
@@ -3145,6 +3148,7 @@ func (c *LiveClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflow
 			Conclusion: r.Conclusion,
 			HTMLURL:    r.HTMLURL,
 			CreatedAt:  r.CreatedAt,
+			ActorLogin: r.Actor.Login,
 		}
 	}
 	return runs, nil

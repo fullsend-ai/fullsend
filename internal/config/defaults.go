@@ -62,6 +62,9 @@ func (d *perRepoDefaults) StatusNotifications() *StatusNotificationConfig { retu
 // IsOrgMode returns false — per-repo configs are never org mode.
 func (d *perRepoDefaults) IsOrgMode() bool { return false }
 
+// AuthorizationOwnersFile returns false — OWNERS auth is off by default.
+func (d *perRepoDefaults) AuthorizationOwnersFile() bool { return false }
+
 // ConfigMintURL returns the default mint URL (hosted public mint).
 func (d *perRepoDefaults) ConfigMintURL() string { return DefaultPerRepoMintURL }
 

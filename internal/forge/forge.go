@@ -193,6 +193,7 @@ type WorkflowRun struct {
 	Conclusion string // "success", "failure", "cancelled", etc.
 	HTMLURL    string
 	CreatedAt  string
+	ActorLogin string // GitHub login of the user who triggered the run
 }
 
 // WorkflowJob represents a job within a workflow run.
