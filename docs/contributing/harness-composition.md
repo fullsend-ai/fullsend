@@ -71,6 +71,14 @@ structs:
    blocks.
 5. **Update tests** in `compose_test.go` and `forge_test.go` to cover
    the new field in all affected functions.
+6. **Update ADR-0045** — If the change adds a new field to `ForgeConfig`, moves
+   a field between classification tiers (top-level-only → forge-overridable),
+   or changes merge semantics, update the relevant tables in
+   `docs/ADRs/0045-forge-portable-harness-schema.md`:
+   - Field classification table ("Fields that stay at top level only" vs
+     "Fields that can appear at both levels")
+   - `ForgeConfig` struct definition
+   - Merge-rules table
 
 ## When reviewing PRs
 
