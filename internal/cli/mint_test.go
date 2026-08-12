@@ -53,6 +53,12 @@ type fakeCFWranglerRunner struct {
 	// workerExists controls the return value of WorkerExists.
 	// Defaults to true (Worker exists).
 	workerExists *bool
+	// deleteSecretCalls tracks calls to DeleteSecret.
+	deleteSecretCalls []fakeCFSecretCall
+	deleteSecretErr   error
+	// listSecretsResult and listSecretsErr control ListSecrets behavior.
+	listSecretsResult []string
+	listSecretsErr    error
 }
 
 type fakeCFDeployCall struct {
@@ -101,6 +107,21 @@ func (f *fakeCFWranglerRunner) WorkerExists(_ context.Context, _ string) (bool, 
 	return true, nil // default: Worker exists
 }
 
+func (f *fakeCFWranglerRunner) DeleteSecret(_ context.Context, workerName, secretName string) error {
+	f.deleteSecretCalls = append(f.deleteSecretCalls, fakeCFSecretCall{
+		workerName: workerName,
+		secretName: secretName,
+	})
+	return f.deleteSecretErr
+}
+
+func (f *fakeCFWranglerRunner) ListSecrets(_ context.Context, _ string) ([]string, error) {
+	if f.listSecretsErr != nil {
+		return nil, f.listSecretsErr
+	}
+	return f.listSecretsResult, nil
+}
+
 func TestMintCommand_HasSubcommands(t *testing.T) {
 	cmd := newMintCmd()
 	names := make(map[string]bool)
@@ -119,16 +140,68 @@ func TestMintCommand_HasSubcommands(t *testing.T) {
 
 func TestMintAddRoleCmd_Flags(t *testing.T) {
 	cmd := newMintAddRoleCmd()
+	assert.NotNil(t, cmd.Flags().Lookup("platform"))
 	assert.NotNil(t, cmd.Flags().Lookup("project"))
 	assert.NotNil(t, cmd.Flags().Lookup("slug"))
 	assert.NotNil(t, cmd.Flags().Lookup("pem"))
 	assert.NotNil(t, cmd.Flags().Lookup("use-existing-pem-secret"))
+	assert.NotNil(t, cmd.Flags().Lookup("worker-name"))
 }
 
 func TestMintRemoveRoleCmd_Flags(t *testing.T) {
 	cmd := newMintRemoveRoleCmd()
+	assert.NotNil(t, cmd.Flags().Lookup("platform"))
 	assert.NotNil(t, cmd.Flags().Lookup("project"))
 	assert.NotNil(t, cmd.Flags().Lookup("keep-pem"))
+	assert.NotNil(t, cmd.Flags().Lookup("worker-name"))
+}
+
+func TestMintAddRoleCmd_UnsupportedPlatform(t *testing.T) {
+	cmd := newMintAddRoleCmd()
+	cmd.SetArgs([]string{"--platform=invalid", "--slug=test", "--pem=/dev/null", "coder"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported platform")
+}
+
+func TestMintRemoveRoleCmd_UnsupportedPlatform(t *testing.T) {
+	cmd := newMintRemoveRoleCmd()
+	cmd.SetArgs([]string{"--platform=invalid", "coder"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported platform")
+}
+
+func TestMintAddRoleCmd_GCPRequiresProject(t *testing.T) {
+	cmd := newMintAddRoleCmd()
+	cmd.SetArgs([]string{"--platform=gcp", "--slug=test", "--pem=/dev/null", "coder"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--project is required")
+}
+
+func TestMintRemoveRoleCmd_GCPRequiresProject(t *testing.T) {
+	cmd := newMintRemoveRoleCmd()
+	cmd.SetArgs([]string{"--platform=gcp", "coder"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--project is required")
+}
+
+func TestMintAddRoleCmd_PreviewRejected(t *testing.T) {
+	cmd := newMintAddRoleCmd()
+	cmd.SetArgs([]string{"--preview", "--slug=test", "--pem=/dev/null", "coder"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--preview is not supported on add-role")
+}
+
+func TestMintRemoveRoleCmd_PreviewRejected(t *testing.T) {
+	cmd := newMintRemoveRoleCmd()
+	cmd.SetArgs([]string{"--preview", "coder"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--preview is not supported on remove-role")
 }
 
 func TestMintCommand_RegisteredInRoot(t *testing.T) {

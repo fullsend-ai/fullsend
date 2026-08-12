@@ -102,13 +102,13 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | GitHub Maintainer | `fullsend github status <org>` | Analyze GitHub-side installation state |
 | GitHub Maintainer | `fullsend github sync-scaffold <org>` | Update workflow templates to current CLI version |
 | GitHub Maintainer | `fullsend github uninstall <org>` | Remove GitHub configuration (org-level only) |
-| GCP Admin (Mint) | `fullsend mint deploy` | Deploy the token mint Cloud Function |
-| GCP Admin (Mint) | `fullsend mint delete` | Tear down mint infrastructure (inverse of deploy) |
-| GCP Admin (Mint) | `fullsend mint add-role <role>` | Register a role PEM and app ID on the mint |
-| GCP Admin (Mint) | `fullsend mint remove-role <role>` | Remove a role from the mint (deletes PEM secret by default) |
-| GCP Admin (Mint) | `fullsend mint enroll <org\|owner/repo>` | Register an org or repo in the mint (does not grant Agent Platform access — use `inference provision`) |
-| GCP Admin (Mint) | `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
-| GCP Admin (Mint) | `fullsend mint status` | Inspect mint state and PEM health |
+| Mint Admin | `fullsend mint deploy` | Deploy the token mint (GCP or Cloudflare) |
+| Mint Admin | `fullsend mint delete` | Tear down mint infrastructure (inverse of deploy) |
+| Mint Admin | `fullsend mint add-role <role>` | Register a role PEM and app ID on the mint |
+| Mint Admin | `fullsend mint remove-role <role>` | Remove a role from the mint (deletes PEM secret by default) |
+| Mint Admin | `fullsend mint enroll <org\|owner/repo>` | Register an org or repo in the mint (does not grant Agent Platform access — use `inference provision`) |
+| Mint Admin | `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
+| Mint Admin | `fullsend mint status` | Inspect mint state and PEM health |
 
 | Fleet Admin | `fullsend repos migrate <org> --project <gcp-project>` | Migrate an org from per-org to per-repo install, generating a `repos.yaml` manifest |
 | Platform Admin | `fullsend repos install [repos...]` | Converge repos to desired state: provision new, sync variables, upgrade refs |
@@ -121,7 +121,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | Developer | `fullsend agent update <name> [sha]` | Re-pin a URL agent to a new commit SHA |
 | Developer | `fullsend agent remove <name>` | Unregister an agent from config |
 
-The typical handoff: a GCP admin runs `mint deploy` + `mint enroll` + `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`.
+The typical handoff: a mint admin runs `mint deploy` + `mint enroll` + `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`.
 
 ### Per-command IAM role breakdown
 
