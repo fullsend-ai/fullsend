@@ -54,6 +54,7 @@ func newMintAddRoleCmd() *cobra.Command {
 	var force bool
 	var dryRun bool
 	var workerName string
+	var preview bool
 
 	cmd := &cobra.Command{
 		Use:   "add-role <role>",
@@ -87,6 +88,9 @@ Cloudflare mode (--platform=cloudflare):
   PEMs only via 'mint deploy' (e.g. --pem-dir) or a full redeploy.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if preview {
+				return fmt.Errorf("--preview is not supported on add-role: preview Workers receive PEMs only via 'mint deploy' (e.g. --pem-dir) or a full redeploy")
+			}
 			if err := appsetup.ValidateAppSet(appSet); err != nil {
 				return fmt.Errorf("invalid --app-set: %w", err)
 			}
@@ -167,6 +171,9 @@ Cloudflare mode (--platform=cloudflare):
 	// Cloudflare-specific flags.
 	cmd.Flags().StringVar(&workerName, "worker-name", "", "Cloudflare Worker script name (default: fullsend-mint)")
 
+	// Rejected flags — registered so cobra produces a contextual error.
+	cmd.Flags().BoolVar(&preview, "preview", false, "not supported on add-role (preview Workers get PEMs only via 'mint deploy')")
+
 	return cmd
 }
 
@@ -178,6 +185,7 @@ func newMintRemoveRoleCmd() *cobra.Command {
 	var dryRun bool
 	var yolo bool
 	var workerName string
+	var preview bool
 
 	cmd := &cobra.Command{
 		Use:   "remove-role <role>",
@@ -204,6 +212,10 @@ Cloudflare mode (--platform=cloudflare):
   get PEMs only via 'mint deploy' (e.g. --pem-dir) or a full redeploy.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if preview {
+				return fmt.Errorf("--preview is not supported on remove-role: preview Workers receive PEMs only via 'mint deploy' (e.g. --pem-dir) or a full redeploy")
+			}
+
 			role, err := validateMintSetupRole(args[0])
 			if err != nil {
 				return err
@@ -244,6 +256,9 @@ Cloudflare mode (--platform=cloudflare):
 
 	// Cloudflare-specific flags.
 	cmd.Flags().StringVar(&workerName, "worker-name", "", "Cloudflare Worker script name (default: fullsend-mint)")
+
+	// Rejected flags — registered so cobra produces a contextual error.
+	cmd.Flags().BoolVar(&preview, "preview", false, "not supported on remove-role (preview Workers get PEMs only via 'mint deploy')")
 
 	return cmd
 }
@@ -787,8 +802,12 @@ func resolveAddRoleFromBrowserCF(ctx context.Context, printer *ui.Printer, provi
 
 	// For the browser flow, appsetup needs a StoreSecret callback
 	// that stores the PEM on the Worker (not GCP Secret Manager).
+	// Pass a non-empty mintURL so runAppSetup skips the GitHub
+	// repo-secret fallback (which would store the PEM in GitHub
+	// repo secrets unintentionally). We store the PEM on the
+	// Worker explicitly below.
 	printer.StepStart(fmt.Sprintf("Setting up GitHub App for role %q in org %s", cfg.role, org))
-	creds, err := mintAddRoleAppSetup(ctx, client, printer, org, []string{cfg.role}, "", "", cfg.publicApps, nil, cfg.appSet, nil)
+	creds, err := mintAddRoleAppSetup(ctx, client, printer, org, []string{cfg.role}, "", "cloudflare-managed", cfg.publicApps, nil, cfg.appSet, nil)
 	if err != nil {
 		printer.StepFail("GitHub App setup failed")
 		return 0, err

@@ -53,6 +53,12 @@ type fakeCFWranglerRunner struct {
 	// workerExists controls the return value of WorkerExists.
 	// Defaults to true (Worker exists).
 	workerExists *bool
+	// deleteSecretCalls tracks calls to DeleteSecret.
+	deleteSecretCalls []fakeCFSecretCall
+	deleteSecretErr   error
+	// listSecretsResult and listSecretsErr control ListSecrets behavior.
+	listSecretsResult []string
+	listSecretsErr    error
 }
 
 type fakeCFDeployCall struct {
@@ -101,12 +107,19 @@ func (f *fakeCFWranglerRunner) WorkerExists(_ context.Context, _ string) (bool, 
 	return true, nil // default: Worker exists
 }
 
-func (f *fakeCFWranglerRunner) DeleteSecret(_ context.Context, _, _ string) error {
-	return nil
+func (f *fakeCFWranglerRunner) DeleteSecret(_ context.Context, workerName, secretName string) error {
+	f.deleteSecretCalls = append(f.deleteSecretCalls, fakeCFSecretCall{
+		workerName: workerName,
+		secretName: secretName,
+	})
+	return f.deleteSecretErr
 }
 
 func (f *fakeCFWranglerRunner) ListSecrets(_ context.Context, _ string) ([]string, error) {
-	return nil, nil
+	if f.listSecretsErr != nil {
+		return nil, f.listSecretsErr
+	}
+	return f.listSecretsResult, nil
 }
 
 func TestMintCommand_HasSubcommands(t *testing.T) {
@@ -173,6 +186,22 @@ func TestMintRemoveRoleCmd_GCPRequiresProject(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--project is required")
+}
+
+func TestMintAddRoleCmd_PreviewRejected(t *testing.T) {
+	cmd := newMintAddRoleCmd()
+	cmd.SetArgs([]string{"--preview", "--slug=test", "--pem=/dev/null", "coder"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--preview is not supported on add-role")
+}
+
+func TestMintRemoveRoleCmd_PreviewRejected(t *testing.T) {
+	cmd := newMintRemoveRoleCmd()
+	cmd.SetArgs([]string{"--preview", "coder"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--preview is not supported on remove-role")
 }
 
 func TestMintCommand_RegisteredInRoot(t *testing.T) {

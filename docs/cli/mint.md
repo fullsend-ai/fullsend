@@ -180,7 +180,9 @@ fullsend mint delete --platform cloudflare --preview bt-run-42
 
 ## `mint add-role`
 
-Registers a GitHub App role on the mint by uploading its PEM key and recording the app ID.
+Registers a GitHub App role on the mint by uploading its PEM key and recording the app ID. Use `--platform` to select the target (default: `gcp`).
+
+### GCP mode (default)
 
 ```bash
 fullsend mint add-role <role> \
@@ -192,9 +194,29 @@ fullsend mint add-role <role> \
 
 Pass `--use-existing-pem-secret` to reference a PEM secret that already exists in Secret Manager (only requires `roles/secretmanager.viewer`).
 
+### Cloudflare mode
+
+```bash
+fullsend mint add-role <role> \
+  --platform=cloudflare \
+  --slug=fullsend-ai-coder \
+  --pem=/path/to/coder.pem
+```
+
+Requires `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` environment variables. Optionally pass `--worker-name` to target a Worker other than the default (`fullsend-mint`).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--platform` | `gcp` | Target platform: `gcp` or `cloudflare` |
+| `--worker-name` | `fullsend-mint` | Cloudflare Worker script name |
+
+`--preview` is not supported on `add-role`. Preview Workers receive PEMs only via `mint deploy` (e.g. `--pem-dir`) or a full redeploy.
+
 ## `mint remove-role`
 
-Removes a role from the mint. Deletes the PEM secret by default.
+Removes a role from the mint. Deletes the PEM secret by default. Use `--platform` to select the target (default: `gcp`).
+
+### GCP mode (default)
 
 ```bash
 fullsend mint remove-role <role> \
@@ -203,6 +225,17 @@ fullsend mint remove-role <role> \
 ```
 
 Pass `--keep-pem` to preserve the PEM secret in Secret Manager.
+
+### Cloudflare mode
+
+```bash
+fullsend mint remove-role <role> \
+  --platform=cloudflare
+```
+
+Requires `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` environment variables. Pass `--keep-pem` to retain the PEM Worker secret. Optionally pass `--worker-name` to target a Worker other than the default (`fullsend-mint`).
+
+`--preview` is not supported on `remove-role`. Preview Workers receive PEMs only via `mint deploy`.
 
 ## `mint enroll`
 

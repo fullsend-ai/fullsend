@@ -7,6 +7,7 @@
 package cf
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
@@ -1431,10 +1432,17 @@ func (r *LiveWranglerRunner) ListSecrets(ctx context.Context, workerName string)
 		"CLOUDFLARE_ACCOUNT_ID="+r.AccountID,
 	)
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("wrangler secret list failed: %s\n%s", err, string(output))
+	// Capture stdout separately from stderr so wrangler diagnostics
+	// on stderr don't pollute the JSON/fallback secret-name parser.
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("wrangler secret list failed: %s\n%s", err, stderr.String())
 	}
+
+	output := stdout.Bytes()
 
 	// wrangler secret list outputs JSON array of objects with "name" and "type".
 	var secrets []struct {

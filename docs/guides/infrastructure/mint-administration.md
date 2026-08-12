@@ -178,7 +178,9 @@ Agent roles on the mint are **global** — each role maps to a GitHub App PEM se
 
 ### Adding a role
 
-`fullsend mint add-role` requires the mint to already be deployed. Choose one of three mutually exclusive input modes:
+`fullsend mint add-role` requires the mint to already be deployed. Use `--platform` to select the target (default: `gcp`). Choose one of three mutually exclusive input modes:
+
+#### GCP mode (default)
 
 **1. Existing app + PEM file** (`--slug` and `--pem`):
 
@@ -200,7 +202,7 @@ fullsend mint add-role review \
   --use-existing-pem-secret
 ```
 
-Use this when the PEM secret `fullsend-{role}-app-pem` already exists in Secret Manager (for example, copied from another project) and you only need to register the app ID on the mint. `--pem` and `--use-existing-pem-secret` cannot be combined.
+Use this when the PEM secret already exists in Secret Manager (for example, copied from another project) and you only need to register the app ID on the mint. `--pem` and `--use-existing-pem-secret` cannot be combined.
 
 **3. Create GitHub App via browser** (`--org`):
 
@@ -213,15 +215,32 @@ fullsend mint add-role prioritize \
 
 Opens the GitHub App manifest flow in your browser, stores the PEM in Secret Manager, and updates the mint. Requires a GitHub token (`GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth login`).
 
+#### Cloudflare mode
+
+All three input modes (slug+PEM, existing secret, browser) work with `--platform=cloudflare`. PEMs are stored as Worker secrets instead of Secret Manager.
+
+```bash
+fullsend mint add-role coder \
+  --platform=cloudflare \
+  --slug=fullsend-ai-coder \
+  --pem=/path/to/coder.pem
+```
+
+Requires `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` environment variables. Optionally pass `--worker-name` to target a Worker other than the default (`fullsend-mint`).
+
+`--preview` is not supported on `add-role`. Preview Workers receive PEMs only via `mint deploy` (e.g. `--pem-dir`) or a full redeploy.
+
 #### add-role flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--project` | | GCP project ID (required) |
-| `--region` | `us-central1` | Cloud region for the mint service |
+| `--platform` | `gcp` | Target platform: `gcp` or `cloudflare` |
+| `--project` | | GCP project ID (required for `--platform=gcp`) |
+| `--region` | `us-central1` | Cloud region for the mint service (GCP only) |
+| `--worker-name` | `fullsend-mint` | Cloudflare Worker script name (Cloudflare only) |
 | `--slug` | | GitHub App slug (with `--pem` or `--use-existing-pem-secret`) |
 | `--pem` | | Path to PEM file (with `--slug`; mutually exclusive with `--use-existing-pem-secret`) |
-| `--use-existing-pem-secret` | `false` | Skip PEM upload; require existing Secret Manager secret (with `--slug`) |
+| `--use-existing-pem-secret` | `false` | Skip PEM upload; require PEM secret to already exist (with `--slug`) |
 | `--org` | | GitHub org for browser-based app creation |
 | `--app-set` | `fullsend-ai` | App set prefix for browser mode (`{app-set}-{role}`) |
 | `--public` | `false` | Install existing public app without confirm prompt (browser mode) |
@@ -232,7 +251,9 @@ The `fix` and `code` roles reuse the `coder` app — add role `coder` instead.
 
 ### Removing a role
 
-`fullsend mint remove-role` removes a role from `ROLE_APP_IDS` and `ALLOWED_ROLES`. By default it also deletes the PEM secret from Secret Manager. Use `--keep-pem` to retain the secret for later re-registration.
+`fullsend mint remove-role` removes a role from `ROLE_APP_IDS` and `ALLOWED_ROLES`. By default it also deletes the PEM secret. Use `--keep-pem` to retain the secret for later re-registration. Use `--platform` to select the target (default: `gcp`).
+
+#### GCP mode (default)
 
 ```bash
 # Remove role and delete PEM secret (default)
@@ -242,15 +263,31 @@ fullsend mint remove-role retro --project="$GCP_PROJECT"
 fullsend mint remove-role retro --project="$GCP_PROJECT" --keep-pem
 ```
 
+#### Cloudflare mode
+
+```bash
+# Remove role and delete PEM Worker secret
+fullsend mint remove-role retro --platform=cloudflare
+
+# Remove role but keep PEM secret
+fullsend mint remove-role retro --platform=cloudflare --keep-pem
+```
+
+Requires `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` environment variables. Optionally pass `--worker-name` to target a Worker other than the default (`fullsend-mint`).
+
+`--preview` is not supported on `remove-role`. Preview Workers receive PEMs only via `mint deploy`.
+
 Requires typing the role name to confirm (unless `--dry-run` or `--yolo`). Removing `coder` also prevents `fix`/`code` token minting.
 
 #### remove-role flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--project` | | GCP project ID (required) |
-| `--region` | `us-central1` | Cloud region for the mint service |
-| `--keep-pem` | `false` | Retain PEM secret in Secret Manager (default: delete) |
+| `--platform` | `gcp` | Target platform: `gcp` or `cloudflare` |
+| `--project` | | GCP project ID (required for `--platform=gcp`) |
+| `--region` | `us-central1` | Cloud region for the mint service (GCP only) |
+| `--worker-name` | `fullsend-mint` | Cloudflare Worker script name (Cloudflare only) |
+| `--keep-pem` | `false` | Retain PEM secret (default: delete) |
 | `--dry-run` | `false` | Preview changes without making them |
 | `--yolo` | `false` | Skip interactive confirmation |
 
