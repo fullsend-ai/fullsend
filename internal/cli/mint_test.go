@@ -483,7 +483,7 @@ func TestMintDeployCmd_CloudflareInvalidWorkerName(t *testing.T) {
 		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
 	}()
 
-	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", testAccountID)
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	cmd := newRootCmd()
@@ -501,7 +501,7 @@ func TestMintDeployCmd_CloudflareDryRun(t *testing.T) {
 		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
 	}()
 
-	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", testAccountID)
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	cmd := newRootCmd()
@@ -596,7 +596,7 @@ func TestMintDeployCmd_CloudflareDryRunPreview(t *testing.T) {
 		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
 	}()
 
-	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", testAccountID)
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	cmd := newRootCmd()
@@ -613,7 +613,7 @@ func TestMintDeployCmd_CloudflareDryRunPreviewInvalidAlias(t *testing.T) {
 		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
 	}()
 
-	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", testAccountID)
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	cmd := newRootCmd()
@@ -670,11 +670,14 @@ func withFakeWASMBuild(t *testing.T) {
 
 // withCFEnvVars sets the required Cloudflare env vars and restores them
 // after the test.
+// testAccountID is a valid 32-hex-char Cloudflare account ID for tests.
+const testAccountID = "aabbccddee11223344556677aabbccdd"
+
 func withCFEnvVars(t *testing.T) {
 	t.Helper()
 	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
 	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
-	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", testAccountID)
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 	t.Cleanup(func() {
 		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
@@ -2173,7 +2176,7 @@ func TestMintDeployCmd_CloudflareWranglerSession(t *testing.T) {
 	// wrangler session is active and CLOUDFLARE_ACCOUNT_ID is set.
 	origAccount := os.Getenv("CLOUDFLARE_ACCOUNT_ID")
 	origToken := os.Getenv("CLOUDFLARE_API_TOKEN")
-	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", testAccountID)
 	os.Unsetenv("CLOUDFLARE_API_TOKEN")
 	t.Cleanup(func() {
 		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
@@ -2267,7 +2270,7 @@ func TestMintDeployCmd_WarnsGCPFlagsOnCloudflare(t *testing.T) {
 		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
 	}()
 
-	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", testAccountID)
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	// Capture stderr to check warnings.
@@ -2798,7 +2801,7 @@ func TestMintDeleteCloudflare_DryRunDurable(t *testing.T) {
 		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
 		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
 	}()
-	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", testAccountID)
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", "", true, false, os.Stdin)
@@ -2818,7 +2821,7 @@ func TestMintDeleteCloudflare_DurableTeardown(t *testing.T) {
 		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
 		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
 	}()
-	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", testAccountID)
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	err := runMintDeleteCloudflare(context.Background(), "test-mint", "", "", false, true, os.Stdin)
@@ -2840,7 +2843,7 @@ func TestMintDeleteCloudflare_PreviewTeardown(t *testing.T) {
 		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
 		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
 	}()
-	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", testAccountID)
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	err := runMintDeleteCloudflare(context.Background(), "test-mint", "bt-run-42", "", false, true, os.Stdin)
@@ -2864,7 +2867,7 @@ func TestMintDeleteCloudflare_DurableWithCustomDomainSummary(t *testing.T) {
 		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
 		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
 	}()
-	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", testAccountID)
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	// Dry run verifies the flag is wired through.
@@ -3134,7 +3137,7 @@ func TestMintDeleteCloudflare_InvalidWorkerName(t *testing.T) {
 		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
 		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
 	}()
-	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", testAccountID)
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	err := runMintDeleteCloudflare(context.Background(), "INVALID_NAME!", "", "", false, true, os.Stdin)
@@ -3149,7 +3152,7 @@ func TestMintDeleteCloudflare_InvalidPreviewAlias(t *testing.T) {
 		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
 		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
 	}()
-	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", testAccountID)
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	err := runMintDeleteCloudflare(context.Background(), "test-mint", "INVALID!", "", false, true, os.Stdin)
@@ -3190,7 +3193,7 @@ func TestMintDeleteCloudflare_DryRunPreview(t *testing.T) {
 		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
 		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
 	}()
-	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", testAccountID)
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	err := runMintDeleteCloudflare(context.Background(), "test-mint", "bt-run-42", "", true, false, os.Stdin)
@@ -3211,7 +3214,7 @@ func TestMintDeleteCloudflare_DefaultWorkerName(t *testing.T) {
 		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
 		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
 	}()
-	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", testAccountID)
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	// Empty worker name should use default "fullsend-mint".
@@ -3233,7 +3236,7 @@ func TestMintDeleteCloudflare_ConfirmationRequired(t *testing.T) {
 		os.Setenv("CLOUDFLARE_ACCOUNT_ID", origAccount)
 		os.Setenv("CLOUDFLARE_API_TOKEN", origToken)
 	}()
-	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "test-account")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", testAccountID)
 	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
 
 	// stdin is not a terminal → should fail without --yolo.
@@ -4061,6 +4064,38 @@ func TestRunMintEnrollRepoCloudflare_Success(t *testing.T) {
 	require.Len(t, fake.updateVarsCalls, 1)
 	assert.Equal(t, "fullsend-mint", fake.updateVarsCalls[0].workerName, "should use default worker name")
 	assert.Equal(t, "acme/widget", fake.updateVarsCalls[0].vars["PER_REPO_WIF_REPOS"])
+}
+
+func TestRunMintEnrollRepoCloudflare_InvalidRepoSlug(t *testing.T) {
+	withMintCFWrangler(t, &fakeCFWranglerRunner{})
+	printer := ui.New(&strings.Builder{})
+	err := runMintEnrollRepoCloudflare(context.Background(), printer, "acme/.invalid", "", "test-account", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid repo name")
+}
+
+func TestRunMintEnrollRepoCloudflare_PlaceholderOrg(t *testing.T) {
+	withMintCFWrangler(t, &fakeCFWranglerRunner{})
+	printer := ui.New(&strings.Builder{})
+	err := runMintEnrollRepoCloudflare(context.Background(), printer, "x0fullsend0placeholder/repo", "", "test-account", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reserved placeholder org")
+}
+
+func TestRunMintUnenrollRepoCloudflare_InvalidRepoSlug(t *testing.T) {
+	withMintCFWrangler(t, &fakeCFWranglerRunner{})
+	printer := ui.New(&strings.Builder{})
+	err := runMintUnenrollRepoCloudflare(context.Background(), printer, "acme/.bad-repo", "", "test-account", false, true, os.Stdin)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid repo name")
+}
+
+func TestRunMintUnenrollRepoCloudflare_PlaceholderOrg(t *testing.T) {
+	withMintCFWrangler(t, &fakeCFWranglerRunner{})
+	printer := ui.New(&strings.Builder{})
+	err := runMintUnenrollRepoCloudflare(context.Background(), printer, "x0fullsend0placeholder/repo", "", "test-account", false, true, os.Stdin)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reserved placeholder org")
 }
 
 func TestRunMintEnrollOrgCloudflare_WorkerNotFound(t *testing.T) {

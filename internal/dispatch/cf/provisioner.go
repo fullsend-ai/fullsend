@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
@@ -896,6 +897,17 @@ func DefaultWorkerSourceDir() string {
 	return filepath.Join("internal", "dispatch", "cf", "workersrc")
 }
 
+// accountIDPattern validates Cloudflare account IDs: exactly 32
+// lowercase hex characters (same format as the whoami parser checks).
+var accountIDPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
+
+// ValidateAccountID checks if a string is a valid Cloudflare account ID
+// (32 lowercase hex characters). This prevents malformed values from
+// being interpolated into API URLs.
+func ValidateAccountID(id string) bool {
+	return accountIDPattern.MatchString(id)
+}
+
 // ValidateCloudflareEnv checks that required Cloudflare environment
 // variables are set. Returns an error listing all missing variables.
 //
@@ -948,6 +960,9 @@ func ResolveCloudflareAuth(ctx context.Context) (accountID string, err error) {
 		if envAccountID == "" {
 			return "", fmt.Errorf("CLOUDFLARE_API_TOKEN is set but CLOUDFLARE_ACCOUNT_ID is missing; set both for API-token auth")
 		}
+		if !ValidateAccountID(envAccountID) {
+			return "", fmt.Errorf("CLOUDFLARE_ACCOUNT_ID %q is not a valid account ID (expected 32 lowercase hex characters)", envAccountID)
+		}
 		return envAccountID, nil
 	}
 
@@ -962,6 +977,9 @@ func ResolveCloudflareAuth(ctx context.Context) (accountID string, err error) {
 
 	// Wrangler session is valid. Resolve account ID.
 	if envAccountID != "" {
+		if !ValidateAccountID(envAccountID) {
+			return "", fmt.Errorf("CLOUDFLARE_ACCOUNT_ID %q is not a valid account ID (expected 32 lowercase hex characters)", envAccountID)
+		}
 		return envAccountID, nil
 	}
 
@@ -972,6 +990,11 @@ func ResolveCloudflareAuth(ctx context.Context) (accountID string, err error) {
 	parsed := parseWranglerWhoamiAccountID(whoamiOut)
 	if parsed == "" {
 		return "", fmt.Errorf("wrangler login session is active but CLOUDFLARE_ACCOUNT_ID is not set and could not be auto-detected from 'wrangler whoami' output; set CLOUDFLARE_ACCOUNT_ID explicitly")
+	}
+	// whoami parser already validates format (32 hex chars), but
+	// double-check defensively since parsed values hit API URLs.
+	if !ValidateAccountID(parsed) {
+		return "", fmt.Errorf("auto-detected account ID %q from wrangler whoami is not valid (expected 32 lowercase hex characters); set CLOUDFLARE_ACCOUNT_ID explicitly", parsed)
 	}
 	return parsed, nil
 }
@@ -1431,13 +1454,21 @@ func fetchWorkerContent(ctx context.Context, accountID, workerName, token string
 // bytes. Only plain_text bindings are specified; all other binding types
 // are preserved via keep_bindings.
 func createVersionWithVars(ctx context.Context, accountID, workerName, token string, modules []workerModule, mainModule string, vars map[string]string) (string, error) {
-	// Build plain_text bindings from the merged vars map.
+	// Build plain_text bindings from the merged vars map. Sort keys
+	// for deterministic metadata so version uploads produce stable
+	// output for debugging and diffing.
+	sortedKeys := make([]string, 0, len(vars))
+	for k := range vars {
+		sortedKeys = append(sortedKeys, k)
+	}
+	sort.Strings(sortedKeys)
+
 	var bindings []map[string]string
-	for k, v := range vars {
+	for _, k := range sortedKeys {
 		bindings = append(bindings, map[string]string{
 			"type": "plain_text",
 			"name": k,
-			"text": v,
+			"text": vars[k],
 		})
 	}
 

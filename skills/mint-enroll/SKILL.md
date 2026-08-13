@@ -106,7 +106,26 @@ or by running `go run ./cmd/fullsend admin install`.
 
 ### 1. Triage
 
-Determine enrollment type and target. Choose one:
+Determine the target platform and enrollment type.
+
+**Platform (ask the operator):**
+
+```bash
+# GCP (default) — Cloud Function mint
+PLATFORM="gcp"
+
+# Cloudflare — Worker mint
+PLATFORM="cloudflare"
+```
+
+For Cloudflare enrollment, the operator needs `CLOUDFLARE_API_TOKEN` +
+`CLOUDFLARE_ACCOUNT_ID` (or an active `wrangler login` session). The
+`--worker-name` flag selects the Worker (default: `fullsend-mint`).
+See [`docs/cli/mint.md`](../../docs/cli/mint.md) and
+[`docs/guides/infrastructure/mint-administration.md`](../../docs/guides/infrastructure/mint-administration.md)
+for full Cloudflare credential and enrollment details.
+
+**Enrollment type and target:**
 
 ```bash
 # Per-org enrollment
@@ -155,6 +174,8 @@ healthy and the enrollment target is correct before proceeding.
 
 ### 3. Enroll
 
+**GCP enrollment** (`--platform=gcp`, the default):
+
 Preview the enrollment first with `--dry-run`:
 
 ```bash
@@ -182,6 +203,25 @@ The CLI performs the following automatically:
 2. Updates Cloud Run service env var `ALLOWED_ORGS` using REVISION-pinned traffic routing
 3. Runs post-enrollment verification
 4. Configures WIF provider (shared for per-org, dedicated for per-repo)
+
+**Cloudflare enrollment** (`--platform=cloudflare`):
+
+```bash
+# Dry-run first
+go run ./cmd/fullsend mint enroll "$TARGET" \
+  --platform=cloudflare \
+  --worker-name="fullsend-mint" \
+  --dry-run
+
+# Actual enrollment (after operator confirms)
+go run ./cmd/fullsend mint enroll "$TARGET" \
+  --platform=cloudflare \
+  --worker-name="fullsend-mint"
+```
+
+The CLI reads the Worker's current env vars via the Cloudflare API,
+merges the new org/repo, and redeploys a new version at 100% traffic.
+No local Worker sources or WASM artifacts are required.
 
 ### 4. Verify
 

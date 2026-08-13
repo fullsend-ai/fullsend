@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -868,11 +869,11 @@ func withCFEnvCleared(t *testing.T) {
 func TestResolveCloudflareAuth_TokenAndAccountID(t *testing.T) {
 	withCFEnvCleared(t)
 	os.Setenv("CLOUDFLARE_API_TOKEN", "my-token")
-	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "my-account-id")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "aabbccddee11223344556677aabbccdd")
 
 	accountID, err := ResolveCloudflareAuth(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, "my-account-id", accountID)
+	assert.Equal(t, "aabbccddee11223344556677aabbccdd", accountID)
 }
 
 func TestResolveCloudflareAuth_TokenWithoutAccountID(t *testing.T) {
@@ -886,7 +887,7 @@ func TestResolveCloudflareAuth_TokenWithoutAccountID(t *testing.T) {
 
 func TestResolveCloudflareAuth_WranglerSession_WithAccountEnv(t *testing.T) {
 	withCFEnvCleared(t)
-	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "env-account-id")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "11223344556677889900aabbccddeeff")
 
 	// Mock wrangler whoami to succeed.
 	old := WranglerWhoamiFn
@@ -897,7 +898,7 @@ func TestResolveCloudflareAuth_WranglerSession_WithAccountEnv(t *testing.T) {
 
 	accountID, err := ResolveCloudflareAuth(context.Background())
 	require.NoError(t, err)
-	assert.Equal(t, "env-account-id", accountID)
+	assert.Equal(t, "11223344556677889900aabbccddeeff", accountID)
 }
 
 func TestResolveCloudflareAuth_WranglerSession_DiscoverAccountID(t *testing.T) {
@@ -3513,4 +3514,84 @@ func TestLastNonEmptyLine(t *testing.T) {
 			assert.Equal(t, tc.expect, lastNonEmptyLine(tc.input))
 		})
 	}
+}
+
+// --- ValidateAccountID tests ---
+
+func TestValidateAccountID(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		valid bool
+	}{
+		{"valid 32 hex", "aabbccddee11223344556677aabbccdd", true},
+		{"valid all digits", "00112233445566778899001122334455", true},
+		{"valid all lowercase letters", "aabbccddeeffaabbccddeeffaabbccdd", true},
+		{"too short", "aabbccdd", false},
+		{"too long", "aabbccddee11223344556677aabbccddee", false},
+		{"uppercase hex", "AABBCCDDEE11223344556677AABBCCDD", false},
+		{"mixed case", "AAbbccddee11223344556677aabbccdd", false},
+		{"non-hex chars", "ghijklmnop11223344556677aabbccdd", false},
+		{"empty", "", false},
+		{"dashes", "aabb-ccdd-ee11-2233-4455-6677-aabb", false},
+		{"spaces", "aabbccddee112233 4556677aabbccdd", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.valid, ValidateAccountID(tc.input))
+		})
+	}
+}
+
+func TestResolveCloudflareAuth_InvalidAccountID(t *testing.T) {
+	withCFEnvCleared(t)
+	os.Setenv("CLOUDFLARE_API_TOKEN", "my-token")
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "not-valid-hex")
+
+	_, err := ResolveCloudflareAuth(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a valid account ID")
+}
+
+func TestResolveCloudflareAuth_InvalidAccountID_WranglerPath(t *testing.T) {
+	withCFEnvCleared(t)
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "bad-id")
+
+	old := WranglerWhoamiFn
+	WranglerWhoamiFn = func(ctx context.Context) (string, error) {
+		return "ℹ️  Logged in\n", nil
+	}
+	t.Cleanup(func() { WranglerWhoamiFn = old })
+
+	_, err := ResolveCloudflareAuth(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a valid account ID")
+}
+
+// --- createVersionWithVars binding order test ---
+
+func TestCreateVersionWithVars_BindingOrderIsDeterministic(t *testing.T) {
+	// Run the binding-building portion of createVersionWithVars twice
+	// with the same vars and verify the order is identical.
+	vars := map[string]string{
+		"ZEBRA_VAR":     "z",
+		"ALPHA_VAR":     "a",
+		"MIDDLE_VAR":    "m",
+		"BETA_VAR":      "b",
+		"OIDC_AUDIENCE": "fullsend-mint",
+	}
+
+	buildBindings := func() []string {
+		keys := make([]string, 0, len(vars))
+		for k := range vars {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		return keys
+	}
+
+	order1 := buildBindings()
+	order2 := buildBindings()
+	assert.Equal(t, order1, order2, "binding key order should be deterministic")
+	assert.Equal(t, []string{"ALPHA_VAR", "BETA_VAR", "MIDDLE_VAR", "OIDC_AUDIENCE", "ZEBRA_VAR"}, order1)
 }

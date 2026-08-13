@@ -1808,15 +1808,22 @@ func runMintEnrollCloudflare(ctx context.Context, arg, workerName string, dryRun
 	return runMintEnrollOrgCloudflare(ctx, printer, arg, workerName, accountID, dryRun)
 }
 
-func runMintEnrollOrgCloudflare(ctx context.Context, printer *ui.Printer, org, workerName, accountID string, dryRun bool) error {
-	org = strings.ToLower(org)
-	if err := validateOrgName(org); err != nil {
-		return err
-	}
+// cfEnrollContext holds the resolved CF Worker context shared by all
+// enroll/unenroll Cloudflare functions. It bundles the effective Worker
+// name, provisioner, and wrangler so callers don't repeat the preamble.
+type cfEnrollContext struct {
+	effectiveName string
+	provisioner   *cf.Provisioner
+	wrangler      cf.WranglerRunner
+}
 
-	printer.Header("Enrolling org " + org + " in mint (Cloudflare)")
-	printer.Blank()
-
+// prepareCFEnrollContext defaults the Worker name, constructs the
+// wrangler + provisioner, verifies the Worker exists, and warns about
+// preview versions. The operation string (e.g., "enroll", "unenroll")
+// is used in the preview-version warning message. notFoundMsg is the
+// error returned when the Worker does not exist (enroll and unenroll
+// use different messages).
+func prepareCFEnrollContext(ctx context.Context, printer *ui.Printer, workerName, accountID, operation, notFoundMsg string) (*cfEnrollContext, error) {
 	effectiveName := workerName
 	if effectiveName == "" {
 		effectiveName = "fullsend-mint"
@@ -1833,11 +1840,11 @@ func runMintEnrollOrgCloudflare(ctx context.Context, printer *ui.Printer, org, w
 	exists, err := wrangler.WorkerExists(ctx, effectiveName)
 	if err != nil {
 		printer.StepFail("Worker check failed")
-		return fmt.Errorf("checking worker: %w", err)
+		return nil, fmt.Errorf("checking worker: %w", err)
 	}
 	if !exists {
 		printer.StepFail("Worker not found")
-		return fmt.Errorf("Worker %s not found — deploy with 'mint deploy --platform=cloudflare' first", effectiveName)
+		return nil, fmt.Errorf(notFoundMsg, effectiveName)
 	}
 	printer.StepDone(fmt.Sprintf("Worker %s found", effectiveName))
 
@@ -1847,19 +1854,41 @@ func runMintEnrollOrgCloudflare(ctx context.Context, printer *ui.Printer, org, w
 		printer.StepWarn(fmt.Sprintf("Could not check for preview versions: %v", previewErr))
 	} else if hasPreviews {
 		printer.StepWarn("Preview versions exist on this Worker — durable config changes may diverge from previews")
-		printer.StepInfo("Previews use their own config from 'mint deploy --preview'. This enroll updates the durable Worker only.")
+		printer.StepInfo(fmt.Sprintf("Previews use their own config from 'mint deploy --preview'. This %s updates the durable Worker only.", operation))
+	}
+
+	return &cfEnrollContext{
+		effectiveName: effectiveName,
+		provisioner:   provisioner,
+		wrangler:      wrangler,
+	}, nil
+}
+
+func runMintEnrollOrgCloudflare(ctx context.Context, printer *ui.Printer, org, workerName, accountID string, dryRun bool) error {
+	org = strings.ToLower(org)
+	if err := validateOrgName(org); err != nil {
+		return err
+	}
+
+	printer.Header("Enrolling org " + org + " in mint (Cloudflare)")
+	printer.Blank()
+
+	cfc, err := prepareCFEnrollContext(ctx, printer, workerName, accountID, "enroll",
+		"Worker %s not found — deploy with 'mint deploy --platform=cloudflare' first")
+	if err != nil {
+		return err
 	}
 
 	if dryRun {
 		printer.Blank()
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
-		printer.StepInfo(fmt.Sprintf("  Would add %s to ALLOWED_ORGS on Worker %s", org, effectiveName))
+		printer.StepInfo(fmt.Sprintf("  Would add %s to ALLOWED_ORGS on Worker %s", org, cfc.effectiveName))
 		return nil
 	}
 
 	printer.StepStart("Registering org in Worker env vars")
-	if err := provisioner.EnsureOrgInWorker(ctx, org); err != nil {
+	if err := cfc.provisioner.EnsureOrgInWorker(ctx, org); err != nil {
 		printer.StepFail("Failed to register org")
 		return fmt.Errorf("registering org: %w", err)
 	}
@@ -1868,7 +1897,7 @@ func runMintEnrollOrgCloudflare(ctx context.Context, printer *ui.Printer, org, w
 	printer.Blank()
 	printer.Summary("Enrollment complete", []string{
 		fmt.Sprintf("Organization: %s", org),
-		fmt.Sprintf("Worker: %s", effectiveName),
+		fmt.Sprintf("Worker: %s", cfc.effectiveName),
 		"ALLOWED_ORGS updated on durable Worker",
 	})
 
@@ -1881,57 +1910,36 @@ func runMintEnrollRepoCloudflare(ctx context.Context, printer *ui.Printer, repoF
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return fmt.Errorf("repo must be in owner/repo format, got %q", repoFullName)
 	}
-	owner := parts[0]
+	owner, repo := parts[0], parts[1]
 	if err := validateOrgName(owner); err != nil {
 		return fmt.Errorf("invalid owner: %w", err)
+	}
+	if owner == gcf.PlaceholderOrg {
+		return fmt.Errorf("cannot enroll reserved placeholder org %q", owner)
+	}
+	if !gcf.ValidateRepoSlug(repo) {
+		return fmt.Errorf("invalid repo name: %q", repo)
 	}
 
 	printer.Header("Enrolling repo " + repoFullName + " in mint (Cloudflare)")
 	printer.Blank()
 
-	effectiveName := workerName
-	if effectiveName == "" {
-		effectiveName = "fullsend-mint"
-	}
-
-	wrangler := mintCFWranglerFactory(accountID)
-	provisioner := cf.NewProvisioner(cf.Config{
-		AccountID:  accountID,
-		WorkerName: effectiveName,
-	}, wrangler)
-
-	// Verify Worker exists.
-	printer.StepStart("Verifying Worker exists")
-	exists, err := wrangler.WorkerExists(ctx, effectiveName)
+	cfc, err := prepareCFEnrollContext(ctx, printer, workerName, accountID, "enroll",
+		"Worker %s not found — deploy with 'mint deploy --platform=cloudflare' first")
 	if err != nil {
-		printer.StepFail("Worker check failed")
-		return fmt.Errorf("checking worker: %w", err)
-	}
-	if !exists {
-		printer.StepFail("Worker not found")
-		return fmt.Errorf("Worker %s not found — deploy with 'mint deploy --platform=cloudflare' first", effectiveName)
-	}
-	printer.StepDone(fmt.Sprintf("Worker %s found", effectiveName))
-
-	// Warn about preview versions.
-	hasPreviews, previewErr := provisioner.CheckPreviewVersions(ctx)
-	if previewErr != nil {
-		printer.StepWarn(fmt.Sprintf("Could not check for preview versions: %v", previewErr))
-	} else if hasPreviews {
-		printer.StepWarn("Preview versions exist on this Worker — durable config changes may diverge from previews")
-		printer.StepInfo("Previews use their own config from 'mint deploy --preview'. This enroll updates the durable Worker only.")
+		return err
 	}
 
 	if dryRun {
 		printer.Blank()
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
-		printer.StepInfo(fmt.Sprintf("  Would add %s to PER_REPO_WIF_REPOS on Worker %s", repoFullName, effectiveName))
+		printer.StepInfo(fmt.Sprintf("  Would add %s to PER_REPO_WIF_REPOS on Worker %s", repoFullName, cfc.effectiveName))
 		return nil
 	}
 
 	printer.StepStart("Registering repo in Worker env vars")
-	if err := provisioner.RegisterRepoInWorker(ctx, repoFullName); err != nil {
+	if err := cfc.provisioner.RegisterRepoInWorker(ctx, repoFullName); err != nil {
 		printer.StepFail("Failed to register repo")
 		return fmt.Errorf("registering repo: %w", err)
 	}
@@ -1940,7 +1948,7 @@ func runMintEnrollRepoCloudflare(ctx context.Context, printer *ui.Printer, repoF
 	printer.Blank()
 	printer.Summary("Enrollment complete", []string{
 		fmt.Sprintf("Repository: %s", repoFullName),
-		fmt.Sprintf("Worker: %s", effectiveName),
+		fmt.Sprintf("Worker: %s", cfc.effectiveName),
 		"PER_REPO_WIF_REPOS updated on durable Worker",
 	})
 
@@ -1977,44 +1985,17 @@ func runMintUnenrollOrgCloudflare(ctx context.Context, printer *ui.Printer, org,
 	printer.Header("Unenrolling org " + org + " from mint (Cloudflare)")
 	printer.Blank()
 
-	effectiveName := workerName
-	if effectiveName == "" {
-		effectiveName = "fullsend-mint"
-	}
-
-	wrangler := mintCFWranglerFactory(accountID)
-	provisioner := cf.NewProvisioner(cf.Config{
-		AccountID:  accountID,
-		WorkerName: effectiveName,
-	}, wrangler)
-
-	// Verify Worker exists.
-	printer.StepStart("Verifying Worker exists")
-	exists, err := wrangler.WorkerExists(ctx, effectiveName)
+	cfc, err := prepareCFEnrollContext(ctx, printer, workerName, accountID, "unenroll",
+		"Worker %s not found — nothing to unenroll")
 	if err != nil {
-		printer.StepFail("Worker check failed")
-		return fmt.Errorf("checking worker: %w", err)
-	}
-	if !exists {
-		printer.StepFail("Worker not found")
-		return fmt.Errorf("Worker %s not found — nothing to unenroll", effectiveName)
-	}
-	printer.StepDone(fmt.Sprintf("Worker %s found", effectiveName))
-
-	// Warn about preview versions.
-	hasPreviews, previewErr := provisioner.CheckPreviewVersions(ctx)
-	if previewErr != nil {
-		printer.StepWarn(fmt.Sprintf("Could not check for preview versions: %v", previewErr))
-	} else if hasPreviews {
-		printer.StepWarn("Preview versions exist on this Worker — durable config changes may diverge from previews")
-		printer.StepInfo("Previews use their own config from 'mint deploy --preview'. This unenroll updates the durable Worker only.")
+		return err
 	}
 
 	if dryRun {
 		printer.Blank()
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
-		printer.StepInfo(fmt.Sprintf("  Would remove %s from ALLOWED_ORGS on Worker %s", org, effectiveName))
+		printer.StepInfo(fmt.Sprintf("  Would remove %s from ALLOWED_ORGS on Worker %s", org, cfc.effectiveName))
 		return nil
 	}
 
@@ -2029,7 +2010,7 @@ func runMintUnenrollOrgCloudflare(ctx context.Context, printer *ui.Printer, org,
 	}
 
 	printer.StepStart("Removing org from Worker env vars")
-	if err := provisioner.RemoveOrgFromWorker(ctx, org); err != nil {
+	if err := cfc.provisioner.RemoveOrgFromWorker(ctx, org); err != nil {
 		printer.StepFail("Failed to remove org")
 		return fmt.Errorf("removing org: %w", err)
 	}
@@ -2038,7 +2019,7 @@ func runMintUnenrollOrgCloudflare(ctx context.Context, printer *ui.Printer, org,
 	printer.Blank()
 	printer.Summary("Unenrollment complete", []string{
 		fmt.Sprintf("Organization: %s", org),
-		fmt.Sprintf("Worker: %s", effectiveName),
+		fmt.Sprintf("Worker: %s", cfc.effectiveName),
 		"ALLOWED_ORGS updated on durable Worker",
 	})
 
@@ -2051,52 +2032,31 @@ func runMintUnenrollRepoCloudflare(ctx context.Context, printer *ui.Printer, rep
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return fmt.Errorf("repo must be in owner/repo format, got %q", repoFullName)
 	}
-	owner := parts[0]
+	owner, repo := parts[0], parts[1]
 	if err := validateOrgName(owner); err != nil {
 		return fmt.Errorf("invalid owner: %w", err)
+	}
+	if owner == gcf.PlaceholderOrg {
+		return fmt.Errorf("cannot unenroll reserved placeholder org %q", owner)
+	}
+	if !gcf.ValidateRepoSlug(repo) {
+		return fmt.Errorf("invalid repo name: %q", repo)
 	}
 
 	printer.Header("Unenrolling repo " + repoFullName + " from mint (Cloudflare)")
 	printer.Blank()
 
-	effectiveName := workerName
-	if effectiveName == "" {
-		effectiveName = "fullsend-mint"
-	}
-
-	wrangler := mintCFWranglerFactory(accountID)
-	provisioner := cf.NewProvisioner(cf.Config{
-		AccountID:  accountID,
-		WorkerName: effectiveName,
-	}, wrangler)
-
-	// Verify Worker exists.
-	printer.StepStart("Verifying Worker exists")
-	exists, err := wrangler.WorkerExists(ctx, effectiveName)
+	cfc, err := prepareCFEnrollContext(ctx, printer, workerName, accountID, "unenroll",
+		"Worker %s not found — nothing to unenroll")
 	if err != nil {
-		printer.StepFail("Worker check failed")
-		return fmt.Errorf("checking worker: %w", err)
-	}
-	if !exists {
-		printer.StepFail("Worker not found")
-		return fmt.Errorf("Worker %s not found — nothing to unenroll", effectiveName)
-	}
-	printer.StepDone(fmt.Sprintf("Worker %s found", effectiveName))
-
-	// Warn about preview versions.
-	hasPreviews, previewErr := provisioner.CheckPreviewVersions(ctx)
-	if previewErr != nil {
-		printer.StepWarn(fmt.Sprintf("Could not check for preview versions: %v", previewErr))
-	} else if hasPreviews {
-		printer.StepWarn("Preview versions exist on this Worker — durable config changes may diverge from previews")
-		printer.StepInfo("Previews use their own config from 'mint deploy --preview'. This unenroll updates the durable Worker only.")
+		return err
 	}
 
 	if dryRun {
 		printer.Blank()
 		printer.StepInfo("Dry run — no changes will be made")
 		printer.Blank()
-		printer.StepInfo(fmt.Sprintf("  Would remove %s from PER_REPO_WIF_REPOS on Worker %s", repoFullName, effectiveName))
+		printer.StepInfo(fmt.Sprintf("  Would remove %s from PER_REPO_WIF_REPOS on Worker %s", repoFullName, cfc.effectiveName))
 		return nil
 	}
 
@@ -2111,7 +2071,7 @@ func runMintUnenrollRepoCloudflare(ctx context.Context, printer *ui.Printer, rep
 	}
 
 	printer.StepStart("Removing repo from Worker env vars")
-	if err := provisioner.RemoveRepoFromWorker(ctx, repoFullName); err != nil {
+	if err := cfc.provisioner.RemoveRepoFromWorker(ctx, repoFullName); err != nil {
 		printer.StepFail("Failed to remove repo")
 		return fmt.Errorf("removing repo: %w", err)
 	}
@@ -2120,7 +2080,7 @@ func runMintUnenrollRepoCloudflare(ctx context.Context, printer *ui.Printer, rep
 	printer.Blank()
 	printer.Summary("Unenrollment complete", []string{
 		fmt.Sprintf("Repository: %s", repoFullName),
-		fmt.Sprintf("Worker: %s", effectiveName),
+		fmt.Sprintf("Worker: %s", cfc.effectiveName),
 		"PER_REPO_WIF_REPOS updated on durable Worker",
 	})
 
