@@ -1,12 +1,13 @@
-// Package cfmint implements an install.Driver that deploys a temporary
+// Package cfmint implements an install.MintDriver that deploys a temporary
 // Cloudflare Worker preview mint for behaviour tests. The preview mint is
 // self-contained: all configuration (PEMs, allowlists, provenance) is
 // passed at deploy time. Teardown abandons the preview alias.
 //
 // The driver only manages the mint lifecycle (deploy + teardown). It does
 // not run github setup, post-install validation, or per-repo teardown on
-// any target repository — that responsibility belongs to the RepoEnsurer
-// which handles leased pool repos on demand.
+// any target repository — that responsibility belongs to the composed
+// install.Driver which handles leased pool repos on demand via
+// AllocateRepo.
 package cfmint
 
 import (
@@ -78,7 +79,7 @@ func NewDriver(
 	token, binary, gcpProjectID string,
 	logf func(string, ...any),
 	cfg Config,
-) (install.Driver, error) {
+) (install.MintDriver, error) {
 	if cfg.PEMDir == "" {
 		return nil, fmt.Errorf("cfmint: PEMDir is required (no PEMs materialized)")
 	}
@@ -166,8 +167,8 @@ func (d *driver) Install(_ context.Context, org string) (install.State, error) {
 	}
 
 	// The driver only manages the mint lifecycle. Per-repo github setup
-	// and post-install validation are handled by the RepoEnsurer for each
-	// leased pool repo.
+	// and post-install validation are handled by the composed
+	// install.Driver for each leased pool repo.
 	return install.NewPerRepoState(org, "", mintURL), nil
 }
 

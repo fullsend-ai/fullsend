@@ -24,9 +24,9 @@ import (
 )
 
 // poolSize is the number of enrolled test-repo-NN repos in the pool org.
-// GODOG_CONCURRENCY must not exceed this — extra workers would block in
-// pool.Acquire with no warning because the pool org only has test-repo-01
-// through test-repo-12 with per-repo mint enrollment.
+// This determines the driver's Capacity — the maximum number of
+// concurrently allocated repos. Scenarios that exceed this block in
+// AllocateRepo until a slot frees.
 const poolSize = 12
 
 // suiteName identifies this test suite. It is used to derive the CF Worker
@@ -45,9 +45,6 @@ func TestBehaviourSuite(t *testing.T) {
 			t.Fatalf("GODOG_CONCURRENCY must be a positive integer, got %q", c)
 		}
 		concurrency = n
-	}
-	if concurrency > poolSize {
-		t.Fatalf("GODOG_CONCURRENCY=%d exceeds repo pool size %d", concurrency, poolSize)
 	}
 
 	cfg := env.LoadRunnerConfig()
@@ -82,7 +79,7 @@ func TestBehaviourSuite(t *testing.T) {
 	// WorkflowHostRepos registers the pool repos whose vendored workflows
 	// need to mint tokens. Without this, the mint rejects
 	// job_workflow_ref values from pool repos → 401.
-	installDriver, err := cfmint.NewDriver(client, token, binary, e2eCfg.GCPProjectID, t.Logf, cfmint.Config{
+	mintDriver, err := cfmint.NewDriver(client, token, binary, e2eCfg.GCPProjectID, t.Logf, cfmint.Config{
 		PEMDir:            e2eCfg.CFMintPEMDir,
 		SuiteName:         suiteName,
 		AllowedOrgs:       "",
@@ -91,54 +88,44 @@ func TestBehaviourSuite(t *testing.T) {
 		AppSet:            "fullsend-test",
 	})
 	if err != nil {
-		t.Fatalf("creating install driver: %v", err)
+		t.Fatalf("creating mint driver: %v", err)
 	}
 
 	e2etest.CleanupStaleResources(ctx, client, token, org, t)
 
-	// Register teardown before Install so that a partially deployed
-	// preview mint is cleaned up even if Install fails partway through.
-	var installState install.State
+	// NewComposedDriver calls mint.Install internally, creates the
+	// internal repo-name pool, and creates the RepoEnsurer. The suite
+	// does not construct or thread RepoEnsurer + RepoPool itself.
+	driver, mintState, err := install.NewComposedDriver(ctx, mintDriver, org, e2eCfg, client, token, binary, poolSize, t.Logf)
+	if err != nil {
+		t.Fatalf("creating install driver: %v", err)
+	}
+
+	// Register Finalize for teardown — it reclaims any outstanding
+	// leases, logs them, and tears down the mint (e.g. CF preview).
 	t.Cleanup(func() {
-		if installState == nil {
-			return
-		}
-		teardownCtx := context.Background()
-		if teardownErr := installDriver.Teardown(teardownCtx, org, installState); teardownErr != nil {
-			t.Logf("install teardown: %v", teardownErr)
+		if finalizeErr := driver.Finalize(context.Background()); finalizeErr != nil {
+			t.Logf("driver finalize: %v", finalizeErr)
 		}
 	})
 
-	installState, err = installDriver.Install(ctx, org)
-	if err != nil {
-		t.Fatalf("installing fullsend on %s: %v", org, err)
+	// Advisory warning when concurrency exceeds the driver's capacity.
+	// Per #6135: excess workers block in AllocateRepo; this is not a
+	// correctness signal and must not fail the run.
+	if concurrency > driver.Capacity() {
+		t.Logf("WARNING: GODOG_CONCURRENCY=%d exceeds driver capacity %d; excess workers may block in AllocateRepo", concurrency, driver.Capacity())
 	}
-
-	// The install state carries the mint URL from the selected driver.
-	// Thread it to the ensurer so additional pool repos use the same
-	// mint endpoint.
-	if m, ok := installState.(install.MintURLProvider); ok && m.MintURL() != "" {
-		t.Logf("using mint URL for ensurer: %s", m.MintURL())
-		e2eCfg.MintURL = m.MintURL()
-	}
-
-	pool, err := world.NewRepoPool(poolSize)
-	if err != nil {
-		t.Fatalf("creating repo pool: %v", err)
-	}
-
-	ensurer := install.NewRepoEnsurer(e2eCfg, client, token, binary, t.Logf)
 
 	// The install driver only manages the mint lifecycle — it does not
 	// install on any specific repo. RepoName and RepoFull are set per-
-	// scenario by the ensurer when "Given the enrolled test repository"
+	// scenario by AllocateRepo when "Given the enrolled test repository"
 	// acquires a leased pool repo.
 	template := &world.World{
 		Config:       cfg,
 		SCM:          scmgh.New(client),
 		CI:           gaci.New(client, token),
-		Install:      installState,
-		Ensurer:      ensurer,
+		Install:      mintState,
+		RepoDriver:   driver,
 		Org:          org,
 		Token:        token,
 		Logf:         t.Logf,
@@ -148,7 +135,7 @@ func TestBehaviourSuite(t *testing.T) {
 
 	suiteRunner := godog.TestSuite{
 		Name:                "behaviour",
-		ScenarioInitializer: func(sc *godog.ScenarioContext) { suite.InitScenario(sc, template, pool) },
+		ScenarioInitializer: func(sc *godog.ScenarioContext) { suite.InitScenario(sc, template) },
 		Options: &godog.Options{
 			Format:      "pretty",
 			Paths:       []string{"features"},

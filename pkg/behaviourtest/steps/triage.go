@@ -7,6 +7,7 @@ import (
 
 	"github.com/cucumber/godog"
 
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -36,25 +37,30 @@ func registerTriageSteps(sc *godog.ScenarioContext) {
 }
 
 func givenEnrolledTestRepository(ctx context.Context, w *world.World) error {
-	// When a leased repo name is available (from the pool) and an ensurer
-	// is configured, lazily create and install the leased repo. This
-	// removes the requirement for pre-existing repos in the pool org.
-	if w.LeasedRepoName != "" && w.Ensurer != nil {
-		st, err := w.Ensurer.EnsureRepo(ctx, w.Org, w.LeasedRepoName)
-		if err != nil {
-			return fmt.Errorf("ensuring leased repo %s/%s: %w", w.Org, w.LeasedRepoName, err)
-		}
-		w.Install = st
-		w.RepoOwner = w.Org
-		w.RepoName = w.LeasedRepoName
-		w.RepoFull = w.Org + "/" + w.LeasedRepoName
-		return nil
+	if w.RepoDriver == nil {
+		return fmt.Errorf("no repo driver configured; configure a unified install.Driver on the World template")
 	}
 
-	// No leased repo and no ensurer — the scenario cannot proceed without
-	// a repo. The install driver only manages the mint lifecycle and does
-	// not target a specific repo.
-	return fmt.Errorf("no leased repo name or ensurer configured; use a pool to acquire a repo for each scenario")
+	// AllocateRepo leases a pool slot and ensures the repo is created
+	// and has fullsend installed. This replaces the former two-step
+	// flow of pool.Acquire (in Before hook) + Ensurer.EnsureRepo (here).
+	repoName, err := w.RepoDriver.AllocateRepo(ctx)
+	if err != nil {
+		return fmt.Errorf("allocating repo: %w", err)
+	}
+
+	w.LeasedRepoName = repoName
+	w.RepoOwner = w.Org
+	w.RepoName = repoName
+	w.RepoFull = w.Org + "/" + repoName
+
+	// Construct per-repo install state for this allocated repo.
+	// The mint URL is internal to the driver and not needed by
+	// step-level code; TriageWorkflowRepo, ConfigPathPrefix, etc.
+	// are derived from org and repo name.
+	w.Install = install.NewPerRepoState(w.Org, repoName, "")
+
+	return nil
 }
 
 func givenEnrolledRepository(w *world.World, fullName string) error {

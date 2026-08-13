@@ -21,8 +21,8 @@ func TestNewDriver_OK(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, d)
 
-	// Verify it implements install.Driver.
-	var _ install.Driver = d
+	// Verify it implements install.MintDriver.
+	var _ install.MintDriver = d
 }
 
 func TestInstall_ReturnsStateWithMintURL(t *testing.T) {

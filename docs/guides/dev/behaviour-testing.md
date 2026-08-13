@@ -395,23 +395,36 @@ require github.com/fullsend-ai/fullsend v0.x.y // released tag, not @main
 
 ### API changes
 
-**`suite.InitScenario` signature change:** The function signature changed from `InitScenario(sc, w)` to `InitScenario(sc, template, pool)` starting in the release that includes this change. Instead of passing a single `*world.World`, callers now pass a template `*world.World` (cloned per scenario) and a `*world.RepoPool` (used to lease unique repo names). Update your `suite_test.go` accordingly:
+**`suite.InitScenario` signature change:** The function signature changed from `InitScenario(sc, template, pool)` to `InitScenario(sc, template)` starting in the release that includes this change. The `*world.RepoPool` parameter was removed because repo allocation is now handled by the unified `install.Driver` on the World template — `AllocateRepo` is called by the `Given the enrolled test repository` step, and `DeallocateRepo` is called in the After hook. Set `World.RepoDriver` on the template instead:
 
 ```go
-pool, err := world.NewRepoPool(12)
+driver, mintState, err := install.NewComposedDriver(ctx, mintDriver, org, e2eCfg, client, token, binary, 12, t.Logf)
 if err != nil {
-    t.Fatalf("creating repo pool: %v", err)
+    t.Fatalf("creating install driver: %v", err)
 }
+t.Cleanup(func() {
+    if err := driver.Finalize(context.Background()); err != nil {
+        t.Logf("driver finalize: %v", err)
+    }
+})
 
-template := &world.World{ /* ... driver fields ... */ }
+template := &world.World{
+    Install:    mintState,
+    RepoDriver: driver,
+    // ... other driver fields ...
+}
 
 suiteRunner := godog.TestSuite{
     ScenarioInitializer: func(sc *godog.ScenarioContext) {
-        suite.InitScenario(sc, template, pool)
+        suite.InitScenario(sc, template)
     },
     // ...
 }
 ```
+
+**`World.Ensurer` → `World.RepoDriver` field change:** The `Ensurer install.RepoEnsurer` field on `world.World` has been replaced by `RepoDriver install.Driver`. External runners that set `World.Ensurer` must switch to `World.RepoDriver` and pass a unified `install.Driver` (created via `install.NewComposedDriver`).
+
+**`install.Driver` → `install.MintDriver` rename:** The former `install.Driver` interface (with `Install`/`Teardown` methods) has been renamed to `install.MintDriver`. The `install.Driver` name now refers to the unified repo-allocation interface (`AllocateRepo`/`DeallocateRepo`/`Finalize`/`Capacity`). Update any code that references the old `install.Driver` type. The `cfmint.NewDriver` and `legacy.NewDriver` functions now return `install.MintDriver`.
 
 **`steps.Register` signature change:** The function signature changed from `Register(ctx, w)` (where `ctx` was a `*godog.ScenarioContext` and `w` was a `*world.World`) to `Register(sc)` starting in the same release. Step definitions no longer receive `*world.World` as a parameter. Instead, they accept `context.Context` and extract the per-scenario World via `world.FromContext(ctx)`.
 

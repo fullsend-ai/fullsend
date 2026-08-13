@@ -8,9 +8,10 @@ Behaviour tests isolate forge-specific code behind drivers so Gherkin scenarios 
 |-----------|---------|----------------|
 | `scm.Driver` | `pkg/behaviourtest/drivers/scm` | Issues, comments, labels (via GetIssue), file commits |
 | `ci.Driver` | `pkg/behaviourtest/drivers/ci` | Workflow polling, logs, artifact download |
-| `install.Driver` | `pkg/behaviourtest/drivers/install` | Provision and tear down fullsend in the acquired pool org |
+| `install.Driver` | `pkg/behaviourtest/drivers/install` | Unified repo allocation: leases pool slots, lazily creates/installs repos, and manages mint lifecycle via `AllocateRepo`/`DeallocateRepo`/`Finalize`/`Capacity` |
+| `install.MintDriver` | `pkg/behaviourtest/drivers/install` | Provision and tear down fullsend mint in the acquired pool org (internal to composed `Driver`) |
 | `install.State` | `pkg/behaviourtest/drivers/install` | Post-install config paths (script commits, workflow polling) |
-| `install.RepoEnsurer` | `pkg/behaviourtest/drivers/install` | Lazily create and install numbered pool repos on demand; caches by org/repo key; concurrent-safe via singleflight |
+| `install.RepoEnsurer` | `pkg/behaviourtest/drivers/install` | Lazily create and install numbered pool repos on demand; caches by org/repo key; concurrent-safe via singleflight (internal to composed `Driver`) |
 
 v1 reference implementations:
 
@@ -28,11 +29,11 @@ BEHAVIOUR_CI=githubactions        # future: tekton, gitlabci
 BEHAVIOUR_INSTALL_MODE=per-repo   # v1 default and only supported value
 ```
 
-The suite in `e2e/behaviour/suite_test.go` (or an external runner) acquires a pool org via `pkg/e2etest`, runs pre-install cleanup, calls `install.Driver.Install` (which deploys the mint), constructs SCM and CI drivers, creates a `world.RepoPool` (a buffered-channel lease pool of logical repo names), then runs godog with `pkg/behaviourtest/suite.InitScenario`. `InitScenario` clones a template `*world.World` per scenario and leases a unique repo name from the pool for the scenario's duration. Unsupported `BEHAVIOUR_INSTALL_MODE` values fail at suite startup.
+The suite in `e2e/behaviour/suite_test.go` (or an external runner) acquires a pool org via `pkg/e2etest`, runs pre-install cleanup, creates a `MintDriver` (cfmint or legacy), and passes it to `install.NewComposedDriver` which performs suite setup (mint deploy), creates an internal repo-name pool and `RepoEnsurer`, and returns a unified `install.Driver`. The suite then constructs SCM and CI drivers and runs godog with `pkg/behaviourtest/suite.InitScenario`. `InitScenario` clones a template `*world.World` per scenario; repo allocation (slot lease + lazy create/install) is handled by the unified driver's `AllocateRepo` when the `Given the enrolled test repository` step runs. Unsupported `BEHAVIOUR_INSTALL_MODE` values fail at suite startup.
 
 ### Install driver (v1 per-repo)
 
-The install driver only manages the **mint lifecycle**: the cfmint driver deploys a Cloudflare Worker preview mint and tears it down; the legacy driver holds a pre-configured mint URL. Neither driver runs `github setup`, post-install validation, or `TeardownPerRepoInstall` on any target repository — that responsibility belongs to the `RepoEnsurer`, which lazily creates and installs numbered pool repos (`test-repo-01` … `test-repo-12`) on demand via `EnsureRepo`.
+The unified `install.Driver` (created by `install.NewComposedDriver`) wraps a `MintDriver` with an internal pool and `RepoEnsurer`. The `MintDriver` only manages the **mint lifecycle**: the cfmint driver deploys a Cloudflare Worker preview mint and tears it down; the legacy driver holds a pre-configured mint URL. Neither mint driver runs `github setup`, post-install validation, or `TeardownPerRepoInstall` on any target repository — that responsibility belongs to the internal `RepoEnsurer`, which lazily creates and installs numbered pool repos (`test-repo-01` … `test-repo-12`) on demand via `AllocateRepo`.
 
 Pool orgs must already have shared GitHub Apps, org-level mint enrollment, and per-repo mint enrollment for each numbered repo (one-time GCP admin step on the hosted mint project). The driver does not run `fullsend admin install` or `fullsend mint enroll`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 

@@ -72,10 +72,11 @@ type World struct {
 	// for this scenario's duration. Empty when no pool is configured.
 	LeasedRepoName string
 
-	// Ensurer lazily creates and installs repos on demand. Shared across
-	// scenarios (like other driver fields) and safe for concurrent use.
-	// Nil when lazy ensure is not configured.
-	Ensurer install.RepoEnsurer
+	// RepoDriver is the unified repo-allocation driver that owns pool
+	// leasing and lazy repo creation/install. Shared across scenarios
+	// (like other driver fields) and safe for concurrent use. Nil when
+	// repo allocation is not configured.
+	RepoDriver install.Driver
 
 	// KillSwitchActivated records whether this scenario activated the
 	// repo-level kill switch. CleanupScenario uses this to deactivate

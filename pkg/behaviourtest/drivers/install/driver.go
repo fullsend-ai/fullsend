@@ -1,13 +1,58 @@
 package install
 
-import "context"
+import (
+	"context"
 
-// Driver provisions and tears down fullsend in an acquired pool org.
-// Driver is used only during suite setup (single-threaded) and is not
+	"github.com/fullsend-ai/fullsend/internal/forge"
+)
+
+// MintDriver provisions and tears down fullsend in an acquired pool org.
+// MintDriver is used only during suite setup (single-threaded) and is not
 // shared across concurrent scenarios.
-type Driver interface {
+//
+// Renamed from Driver so that the Driver name can refer to the unified
+// repo-allocation interface (#6135).
+type MintDriver interface {
 	Install(ctx context.Context, org string) (State, error)
 	Teardown(ctx context.Context, org string, state State) error
+}
+
+// Factory constructs a unified Driver for a given org and credentials.
+// Driver-specific inputs (mint URL, PEMs, allowlists, …) come from env
+// or are closed over by the factory function. Factory performs suite
+// setup (e.g. preview mint deploy) before returning so setup failures
+// fail the suite before scenarios run.
+type Factory func(
+	org string,
+	client forge.Client,
+	token, binary, gcpProjectID string,
+	logf func(string, ...any),
+) (Driver, error)
+
+// Driver is the unified repo-allocation interface that suite and
+// scenario lifecycle code speaks to. It combines mint/environment
+// lifecycle, repo-name leasing, and lazy repo creation behind a
+// single surface. Implementations must be safe for concurrent use.
+//
+// See #6135 for the full contract.
+type Driver interface {
+	// AllocateRepo leases a slot and makes that repo ready. It blocks
+	// until a slot is free or ctx is cancelled. Returns repo name only
+	// (org is fixed for the driver).
+	AllocateRepo(ctx context.Context) (repoName string, err error)
+
+	// DeallocateRepo returns a previously allocated repo. Errors on
+	// unknown name or double-release.
+	DeallocateRepo(ctx context.Context, repoName string) error
+
+	// Finalize tears down suite-scoped resources. If leases are still
+	// outstanding, it reclaims them (logging the names), completes
+	// teardown, and returns an error so leaked After-hooks fail CI
+	// without stranding resources.
+	Finalize(ctx context.Context) error
+
+	// Capacity returns the max concurrent outstanding allocations.
+	Capacity() int
 }
 
 // State describes where behaviour tests find fullsend configuration after install.
@@ -39,8 +84,9 @@ type State interface {
 }
 
 // MintURLProvider is optionally implemented by State values that carry
-// the effective mint URL. The suite uses this to thread the mint URL
-// from the install driver to the RepoEnsurer.
+// the effective mint URL. The composed driver uses this to thread the
+// mint URL from the MintDriver install output to the internal
+// RepoEnsurer.
 type MintURLProvider interface {
 	MintURL() string
 }

@@ -1,11 +1,11 @@
-// Package legacy implements an install.Driver that uses a pre-configured
+// Package legacy implements an install.MintDriver that uses a pre-configured
 // mint URL. This is the original install path retained as a separate driver
 // so other test configurations can select it.
 //
 // The driver only manages the mint URL lifecycle. It does not run github
 // setup, post-install validation, or per-repo teardown on any target
-// repository — that responsibility belongs to the RepoEnsurer which
-// handles leased pool repos on demand.
+// repository — that responsibility belongs to the composed install.Driver
+// which handles leased pool repos on demand via AllocateRepo.
 package legacy
 
 import (
@@ -26,14 +26,14 @@ type driver struct {
 	logf         func(string, ...any)
 }
 
-// NewDriver creates a legacy install driver that uses the provided
+// NewDriver creates a legacy mint driver that uses the provided
 // mintURL. The driver only holds the mint URL; per-repo install is
-// handled by the RepoEnsurer for each leased pool repo.
+// handled by the composed install.Driver for each leased pool repo.
 func NewDriver(
 	client forge.Client,
 	token, binary, mintURL, gcpProjectID string,
 	logf func(string, ...any),
-) (install.Driver, error) {
+) (install.MintDriver, error) {
 	if mintURL == "" {
 		return nil, fmt.Errorf("legacy: mintURL is required")
 	}
@@ -49,13 +49,12 @@ func NewDriver(
 
 func (d *driver) Install(_ context.Context, org string) (install.State, error) {
 	// The driver only provides the mint URL. Per-repo github setup and
-	// post-install validation are handled by the RepoEnsurer for each
-	// leased pool repo.
+	// post-install validation are handled by the composed install.Driver
+	// for each leased pool repo.
 	return install.NewPerRepoState(org, "", d.mintURL), nil
 }
 
 func (d *driver) Teardown(_ context.Context, _ string, _ install.State) error {
 	// The legacy driver has no mint infrastructure to tear down.
-	// Per-repo teardown is handled by the RepoEnsurer.
 	return nil
 }

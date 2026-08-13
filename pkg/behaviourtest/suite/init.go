@@ -14,62 +14,55 @@ import (
 )
 
 // InitScenario registers tag-based skips, Before/After hooks, and shared steps.
-// Each scenario receives its own World cloned from template. If pool is non-nil,
-// a repo name is leased from it for the scenario's duration.
-func InitScenario(sc *godog.ScenarioContext, template *world.World, pool *world.RepoPool) {
+// Each scenario receives its own World cloned from template. Repo allocation
+// and deallocation are handled by the unified install.Driver on the World —
+// AllocateRepo is called by the "Given the enrolled test repository" step,
+// and DeallocateRepo is called in the After hook for scenarios that allocated.
+func InitScenario(sc *godog.ScenarioContext, template *world.World) {
 	sc.Before(func(ctx context.Context, scenario *godog.Scenario) (context.Context, error) {
-		return beforeScenario(ctx, tagNames(scenario.Tags), template, pool)
+		return beforeScenario(ctx, tagNames(scenario.Tags), template)
 	})
 	sc.After(func(ctx context.Context, scenario *godog.Scenario, err error) (context.Context, error) {
-		return afterScenario(ctx, pool, err)
+		return afterScenario(ctx, err)
 	})
 	steps.Register(sc)
 }
 
-// beforeScenario clones the template World, resets scenario fields, and
-// optionally acquires a pool lease. Extracted for unit testing without
-// live godog infrastructure.
-func beforeScenario(ctx context.Context, tags []string, template *world.World, pool *world.RepoPool) (context.Context, error) {
+// beforeScenario clones the template World and resets scenario fields.
+// Repo allocation is deferred to the step that needs it (via
+// World.RepoDriver.AllocateRepo) rather than eagerly acquiring a pool
+// slot here, so scenarios that never allocate a repo do not consume a
+// slot.
+func beforeScenario(ctx context.Context, tags []string, template *world.World) (context.Context, error) {
 	if err := SkipErrorForTagNames(tags, template); err != nil {
 		return ctx, err
 	}
 	w := template.Clone()
 	resetScenarioWorld(w)
 
-	if pool != nil {
-		name, err := pool.Acquire(ctx)
-		if err != nil {
-			return ctx, fmt.Errorf("acquiring pool repo name: %w", err)
-		}
-		w.LeasedRepoName = name
-	}
-
 	ctx = world.WithWorld(ctx, w)
 	return ctx, nil
 }
 
-// afterScenario runs scenario cleanup and releases the pool lease.
-// Extracted for unit testing. Release errors are surfaced as test
-// failures rather than panicking the godog runner.
-//
-// pool.Release is deferred so the lease is returned even if
-// CleanupScenario panics. Named return values allow the deferred
-// closure to surface a release error when no scenario error exists.
-func afterScenario(ctx context.Context, pool *world.RepoPool, scenarioErr error) (_ context.Context, retErr error) {
+// afterScenario runs scenario cleanup and deallocates the repo if one
+// was allocated. Deallocation is deferred so the slot is returned even
+// if CleanupScenario panics. Named return values allow the deferred
+// closure to surface a deallocation error when no scenario error exists.
+func afterScenario(ctx context.Context, scenarioErr error) (_ context.Context, retErr error) {
 	retErr = scenarioErr
 	w := world.FromContext(ctx)
 	if w == nil {
 		return ctx, retErr
 	}
-	if pool != nil && w.LeasedRepoName != "" {
+	if w.RepoDriver != nil && w.LeasedRepoName != "" {
 		name := w.LeasedRepoName
 		defer func() {
-			if releaseErr := pool.Release(name); releaseErr != nil {
+			if deallocErr := w.RepoDriver.DeallocateRepo(ctx, name); deallocErr != nil {
 				if w.Logf != nil {
-					w.Logf("releasing pool repo name: %v", releaseErr)
+					w.Logf("deallocating repo %s: %v", name, deallocErr)
 				}
 				if retErr == nil {
-					retErr = fmt.Errorf("releasing pool repo name: %w", releaseErr)
+					retErr = fmt.Errorf("deallocating repo %s: %w", name, deallocErr)
 				}
 			}
 		}()
