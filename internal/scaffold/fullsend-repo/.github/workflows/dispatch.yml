@@ -38,8 +38,8 @@ jobs:
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
           sparse-checkout: |
             .fullsend/config.yaml
-            OWNERS
-            OWNERS_ALIASES
+            /OWNERS
+            /OWNERS_ALIASES
           sparse-checkout-cone-mode: false
 
       - name: Determine stage
@@ -112,13 +112,13 @@ jobs:
                   case "${min}" in
                     write|triage)
                       if _owners_has_user approvers "${lc_user}"; then
-                        echo "::notice::User '${username}' authorized via OWNERS file (approver, requested: ${min})"
+                        echo "::notice::OWNERS file resolved user '${username}' as approver (requested: ${min})"
                         return 0
                       fi
                       ;;&
                     triage)
                       if _owners_has_user reviewers "${lc_user}"; then
-                        echo "::notice::User '${username}' authorized via OWNERS file (reviewer, requested: ${min})"
+                        echo "::notice::OWNERS file resolved user '${username}' as reviewer (requested: ${min})"
                         return 0
                       fi
                       ;;

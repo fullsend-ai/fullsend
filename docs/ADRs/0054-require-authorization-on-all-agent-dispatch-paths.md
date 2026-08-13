@@ -202,8 +202,16 @@ permission list, not by bypassing the check.
 > authors cannot self-authorize by modifying OWNERS in their PR.
 > This follows the extension path above (extending the allowed permission
 > sources in `has_repo_permission`) rather than bypassing the check.
-> OWNERS auth applies to built-in stages only; harness agents are
-> unaffected.
+> OWNERS auth applies to both built-in stages (bash routing) and the
+> harness/custom-agent dispatch path (`internal/harnessdispatch`), where
+> `owners.Resolve` computes an effective role for the `IsAuthorized`
+> gate without mutating the original event.
+>
+> OWNERS reviewer access (triage-equivalent) applies to built-in
+> bash-routed stages only (e.g. `/fs-triage`, `/fs-review`). Custom
+> harness dispatch requires write-level access — OWNERS approver or
+> GitHub write+ collaborator — because `IsAuthorized` gates all
+> harness triggers at the write level.
 
 ## Consequences
 

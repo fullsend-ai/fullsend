@@ -891,3 +891,27 @@ func TestPerRepoConfig_InferenceOpenAI_Fallback(t *testing.T) {
 	})
 	assert.Equal(t, []string{"identity_provider_id", "service_account_id"}, OpenAIWIFConfig{Audience: "a"}.Missing())
 }
+
+// --- AuthorizationOwnersFile: intentionally no parent fallback ---
+
+func TestPerRepoConfig_AuthorizationOwnersFile_NoFallback(t *testing.T) {
+	t.Run("returns false when unset", func(t *testing.T) {
+		cfg := &perRepoConfig{}
+		assert.False(t, cfg.AuthorizationOwnersFile())
+	})
+
+	t.Run("does not fall through to parent", func(t *testing.T) {
+		parent := &perRepoConfig{
+			Authorization: &AuthorizationConfig{OwnersFile: true},
+		}
+		child := &perRepoConfig{parent: parent}
+		assert.False(t, child.AuthorizationOwnersFile())
+	})
+
+	t.Run("returns true when set locally", func(t *testing.T) {
+		cfg := &perRepoConfig{
+			Authorization: &AuthorizationConfig{OwnersFile: true},
+		}
+		assert.True(t, cfg.AuthorizationOwnersFile())
+	})
+}

@@ -660,7 +660,7 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 				"OWNERS approver check must use lowercased lc_user, not original username")
 			assert.Contains(t, s, `_owners_has_user reviewers "${lc_user}"`,
 				"OWNERS reviewer check must use lowercased lc_user, not original username")
-			assert.Regexp(t, `::notice::User '\$\{username\}' authorized via OWNERS file`, s,
+			assert.Regexp(t, `::notice::OWNERS file resolved user '\$\{username\}'`, s,
 				"OWNERS audit log must use original username casing, not lc_user")
 		})
 	}

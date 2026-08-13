@@ -10,20 +10,19 @@ import (
 	"github.com/cucumber/godog"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
-	gaci "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci/githubactions"
 	scmgh "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/github"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
 func registerOwnersSteps(sc *godog.ScenarioContext) {
-	sc.Step(`^an OWNERS file listing the bot as (?:an? )?(approver|reviewer)(?: only)?$`, func(ctx context.Context, role string) (context.Context, error) {
-		return ctx, givenBotInOwners(world.FromContext(ctx), role)
+	sc.Step(`^an OWNERS file listing the (bot|outsider) as (?:an? )?(approver|reviewer)(?: only)?$`, func(ctx context.Context, actor, role string) (context.Context, error) {
+		return ctx, givenActorInOwners(world.FromContext(ctx), actor, role)
 	})
 	sc.Step(`^an OWNERS file with alias "([^"]+)" as approver$`, func(ctx context.Context, alias string) (context.Context, error) {
 		return ctx, givenOwnersFileWithAlias(world.FromContext(ctx), alias)
 	})
-	sc.Step(`^an OWNERS_ALIASES file mapping "([^"]+)" to the bot$`, func(ctx context.Context, alias string) (context.Context, error) {
-		return ctx, givenOwnersAliasesFile(world.FromContext(ctx), alias)
+	sc.Step(`^an OWNERS_ALIASES file mapping "([^"]+)" to the (bot|outsider)$`, func(ctx context.Context, alias, actor string) (context.Context, error) {
+		return ctx, givenOwnersAliasesFile(world.FromContext(ctx), alias, actor)
 	})
 	sc.Step(`^OWNERS authorization is enabled$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, givenOwnersAuthEnabled(world.FromContext(ctx))
@@ -34,11 +33,8 @@ func registerOwnersSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the triage workflow logs do not contain "([^"]+)"$`, func(ctx context.Context, needle string) (context.Context, error) {
 		return ctx, thenWorkflowLogsDoNotContain(world.FromContext(ctx), needle)
 	})
-	sc.Step(`^an issue is opened for OWNERS auth testing$`, func(ctx context.Context) (context.Context, error) {
-		return ctx, whenIssueOpenedForOwnersAuth(world.FromContext(ctx))
-	})
-	sc.Step(`^an OWNERS file listing the outsider as a reviewer$`, func(ctx context.Context) (context.Context, error) {
-		return ctx, givenOwnersFileWithOutsiderReviewer(world.FromContext(ctx))
+	sc.Step(`^the (bot|outsider) opens an issue for OWNERS auth testing$`, func(ctx context.Context, actor string) (context.Context, error) {
+		return ctx, whenIssueOpenedForOwnersAuth(world.FromContext(ctx), actor)
 	})
 	sc.Step(`^the outsider posts "([^"]+)" on the issue$`, func(ctx context.Context, command string) (context.Context, error) {
 		return ctx, whenOutsiderPostsCommand(world.FromContext(ctx), command)
@@ -48,12 +44,22 @@ func registerOwnersSteps(sc *godog.ScenarioContext) {
 	})
 }
 
-func resolveBotLogin(w *world.World) (string, error) {
-	ghDriver, ok := w.SCM.(*scmgh.Driver)
-	if !ok {
-		return "", fmt.Errorf("OWNERS test requires GitHub SCM driver")
+func resolveActorLogin(w *world.World, actor string) (string, error) {
+	switch actor {
+	case "bot":
+		ghDriver, ok := w.SCM.(*scmgh.Driver)
+		if !ok {
+			return "", fmt.Errorf("OWNERS test requires GitHub SCM driver")
+		}
+		return ghDriver.Client.GetAuthenticatedUser(context.Background())
+	case "outsider":
+		if err := requireOutsider(w); err != nil {
+			return "", err
+		}
+		return w.OutsiderLogin, nil
+	default:
+		return "", fmt.Errorf("unknown actor %q", actor)
 	}
-	return ghDriver.Client.GetAuthenticatedUser(context.Background())
 }
 
 func commitFile(w *world.World, path, message, content string) error {
@@ -65,10 +71,10 @@ func commitFile(w *world.World, path, message, content string) error {
 	return nil
 }
 
-func givenBotInOwners(w *world.World, role string) error {
-	login, err := resolveBotLogin(w)
+func givenActorInOwners(w *world.World, actor, role string) error {
+	login, err := resolveActorLogin(w, actor)
 	if err != nil {
-		return fmt.Errorf("resolving bot login: %w", err)
+		return err
 	}
 	var content string
 	switch role {
@@ -95,10 +101,10 @@ func givenOwnersFileWithAlias(w *world.World, alias string) error {
 	return nil
 }
 
-func givenOwnersAliasesFile(w *world.World, alias string) error {
-	login, err := resolveBotLogin(w)
+func givenOwnersAliasesFile(w *world.World, alias, actor string) error {
+	login, err := resolveActorLogin(w, actor)
 	if err != nil {
-		return fmt.Errorf("resolving bot login: %w", err)
+		return err
 	}
 	if err := commitFile(w, "OWNERS_ALIASES", "behaviour: add OWNERS_ALIASES for auth test",
 		fmt.Sprintf("aliases:\n  %s:\n    - %s\n", alias, login)); err != nil {
@@ -134,21 +140,22 @@ func givenOwnersAuthEnabled(w *world.World) error {
 	return nil
 }
 
-// whenIssueOpenedForOwnersAuth creates an issue without draining the
-// issues.opened workflow run. The issues.opened path unconditionally
-// calls is_event_actor_authorized, which exercises has_repo_permission
-// and the OWNERS authorization code path.
-func whenIssueOpenedForOwnersAuth(w *world.World) error {
+func whenIssueOpenedForOwnersAuth(w *world.World, actor string) error {
 	if w.RepoOwner == "" || w.RepoName == "" {
-		w.RepoOwner = w.Org
-		w.RepoName = w.Install.TestRepo()
-		w.RepoFull = w.Org + "/" + w.RepoName
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before creating issues")
+	}
+	scmDriver := w.SCM
+	if actor == "outsider" {
+		if err := requireOutsider(w); err != nil {
+			return err
+		}
+		scmDriver = w.OutsiderSCM
 	}
 	w.ScenarioStart = time.Now().Add(-issueOpenDrainSkewBuffer)
 	w.TriageTriggerEvent = issueOpenEvent
 	title := fmt.Sprintf("behaviour-owners-auth-%d", time.Now().UnixNano())
 	body := "Behaviour test issue for OWNERS authorization path."
-	issue, err := w.SCM.CreateIssue(context.Background(), w.RepoOwner, w.RepoName, title, body)
+	issue, err := scmDriver.CreateIssue(context.Background(), w.RepoOwner, w.RepoName, title, body)
 	if err != nil {
 		return err
 	}
@@ -197,18 +204,6 @@ func requireOutsider(w *world.World) error {
 	return nil
 }
 
-func givenOwnersFileWithOutsiderReviewer(w *world.World) error {
-	if err := requireOutsider(w); err != nil {
-		return err
-	}
-	if err := commitFile(w, "OWNERS", "behaviour: add OWNERS file for auth test",
-		fmt.Sprintf("approvers: []\nreviewers:\n  - %s\n", w.OutsiderLogin)); err != nil {
-		return err
-	}
-	w.OwnersAuthActivated = true
-	return nil
-}
-
 func whenOutsiderPostsCommand(w *world.World, command string) error {
 	if err := requireOutsider(w); err != nil {
 		return err
@@ -216,67 +211,47 @@ func whenOutsiderPostsCommand(w *world.World, command string) error {
 	if w.IssueNumber == 0 {
 		return fmt.Errorf("no issue created")
 	}
-	w.ScenarioStart = time.Now().Add(-issueOpenDrainSkewBuffer)
+	w.ScenarioStart = time.Now()
 	_, err := w.OutsiderSCM.AddComment(context.Background(),
 		w.RepoOwner, w.RepoName, w.IssueNumber, command)
 	return err
 }
 
 func thenDispatchRunDoesNotAuthorizeViaOwners(w *world.World) error {
-	gaciDriver, ok := w.CI.(*gaci.Driver)
-	if !ok {
-		return fmt.Errorf("dispatch run check requires GitHub Actions CI driver")
-	}
-	run, err := waitForDispatchRun(gaciDriver, w)
+	run, err := waitForDispatchRun(w)
 	if err != nil {
 		return err
 	}
-	logs, err := gaciDriver.Client.GetWorkflowRunLogs(context.Background(),
+	logs, err := w.CI.GetRunLogs(context.Background(),
 		w.RepoOwner, w.Install.TriageWorkflowRepo(), run.ID)
 	if err != nil {
 		return fmt.Errorf("fetching dispatch run logs: %w", err)
 	}
-	if strings.Contains(logs, "authorized via OWNERS file") {
-		return fmt.Errorf("dispatch run logs unexpectedly contain OWNERS authorization")
+	if strings.Contains(logs, "OWNERS file resolved user") {
+		return fmt.Errorf("dispatch run %d (%s) logs unexpectedly contain OWNERS authorization", run.ID, run.HTMLURL)
 	}
 	if !strings.Contains(logs, "No stage matched") {
-		return fmt.Errorf("dispatch run logs do not contain 'No stage matched' — dispatch may have proceeded via a non-OWNERS path")
+		return fmt.Errorf("dispatch run %d (%s) logs do not contain 'No stage matched' — dispatch may have proceeded via a non-OWNERS path", run.ID, run.HTMLURL)
 	}
 	return nil
 }
 
-func waitForDispatchRun(driver *gaci.Driver, w *world.World) (*forge.WorkflowRun, error) {
-	workflowFile := filepath.Base(w.Install.TriageWorkflowFile())
+func waitForDispatchRun(w *world.World) (*forge.WorkflowRun, error) {
 	ctx := context.Background()
+	repo := w.Install.TriageWorkflowRepo()
+	file := w.Install.TriageWorkflowFile()
 
-	const poll = 5 * time.Second
-	deadline := time.Now().Add(12 * time.Minute)
-
-	for time.Now().Before(deadline) {
-		time.Sleep(poll)
-		runs, err := driver.Client.ListWorkflowRuns(ctx,
-			w.RepoOwner, w.Install.TriageWorkflowRepo(), workflowFile)
-		if err != nil {
-			continue
-		}
-		for _, run := range runs {
-			if run.Event != "issue_comment" {
-				continue
-			}
-			if w.OutsiderLogin != "" && run.ActorLogin != w.OutsiderLogin {
-				continue
-			}
-			runTime, parseErr := time.Parse(time.RFC3339, run.CreatedAt)
-			if parseErr != nil || runTime.Before(w.ScenarioStart) {
-				continue
-			}
-			if run.Status == "completed" {
-				return &run, nil
-			}
-		}
+	run, err := w.CI.WaitForWorkflow(ctx, w.RepoOwner, repo, file, w.ScenarioStart, issueCommentEvent)
+	if err == nil {
+		return run, nil
 	}
 
-	return nil, fmt.Errorf("dispatch workflow (issue_comment, actor=%s) did not complete within deadline", w.OutsiderLogin)
+	worldLogf(w, "dispatch run: retrying with skew buffer: %v", err)
+	buffered := w.ScenarioStart.Add(-issueOpenDrainSkewBuffer)
+	if retryRun, retryErr := w.CI.WaitForWorkflow(ctx, w.RepoOwner, repo, file, buffered, issueCommentEvent); retryErr == nil {
+		return retryRun, nil
+	}
+	return nil, fmt.Errorf("waiting for dispatch workflow (issue_comment): %w", err)
 }
 
 func disableOwnersAuth(w *world.World) error {
