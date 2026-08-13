@@ -743,3 +743,108 @@ if ! grep -q "::warning::test-repo: non-comment content above sentinel was rejec
 fi
 
 echo "PASS: non-comment YAML above sentinel rejected by content-injection guard"
+
+# ===========================
+# Test 5: remote with sentinel not flagged stale when template lacks sentinel (#2247)
+# ===========================
+# Regression test: when the .fullsend repo template predates the sentinel
+# addition but the deployed shim already has --- and the sentinel (e.g. from
+# a scaffold deploy), the comparison must not produce a false-positive diff.
+# Before the fix, managed_content_b64 included the sentinel line in the
+# extracted content, causing a structural mismatch against the full template.
+
+# Reset state for test 5.
+rm -f "${GH_LOG}" "${TMPDIR}/blob-input-test-repo.json"
+
+# Rewrite the template to NOT include the sentinel (simulates an older
+# .fullsend repo deployment that predates the sentinel addition).
+cat > "${CONFIG_DIR}/templates/shim-workflow-call.yaml" <<'EOF'
+fresh shim template
+EOF
+
+# Build the remote content: --- + sentinel + same managed content as the
+# template.  This is what the scaffold would have deployed to the repo.
+REMOTE5_RAW=$(printf '%s\n%s\nfresh shim template\n' "---" "# --- fullsend managed below - do not edit ---")
+REMOTE5_B64=$(printf '%s' "$REMOTE5_RAW" | /usr/bin/base64 | tr -d '\r\n')
+
+# Create a gh mock that returns this remote content for test-repo only.
+cat > "${MOCK_BIN}/gh" <<EOF5
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'gh' >> "${GH_LOG}"
+for arg in "\$@"; do
+  printf ' %q' "\$arg" >> "${GH_LOG}"
+done
+printf '\n' >> "${GH_LOG}"
+
+if [[ "\$1" == "pr" ]]; then
+  exit 0
+fi
+
+if [[ "\$1" != "api" ]]; then
+  exit 0
+fi
+
+jq_filter=""
+shift
+endpoint="\$1"; shift
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    --jq) jq_filter="\$2"; shift 2 ;;
+    --input) shift 2 ;;
+    --method|--field) shift 2 ;;
+    --silent) shift ;;
+    *) shift ;;
+  esac
+done
+
+json=""
+rc=0
+case "\$endpoint" in
+  repos/test-org/test-repo/actions/variables/*)
+    json='{"status":"404","message":"Not Found"}'
+    rc=1
+    ;;
+  repos/test-org/test-repo/contents/.github/workflows/fullsend.yaml)
+    json='{"content":"${REMOTE5_B64}","sha":"file-sha"}'
+    ;;
+  repos/test-org/test-repo)
+    json='{"default_branch":"main","private":false}'
+    ;;
+  *)
+    rc=0
+    ;;
+esac
+
+if [[ -n "\$json" ]]; then
+  if [[ -n "\$jq_filter" ]]; then
+    printf '%s' "\$json" | jq -r "\$jq_filter"
+  else
+    printf '%s\n' "\$json"
+  fi
+fi
+exit "\$rc"
+EOF5
+chmod +x "${MOCK_BIN}/gh"
+
+bash "${RECONCILE_SCRIPT}" "${CONFIG_DIR}" > "${TMPDIR}/stdout5.log" 2>&1 || true
+
+if grep -q "shim is stale" "${TMPDIR}/stdout5.log"; then
+  echo "FAIL: remote with sentinel falsely flagged as stale when template lacks sentinel (#2247)"
+  cat "${TMPDIR}/stdout5.log"
+  exit 1
+fi
+
+if ! grep -q "already enrolled (shim up to date)" "${TMPDIR}/stdout5.log"; then
+  echo "FAIL: remote with sentinel not recognized as up to date when template lacks sentinel"
+  cat "${TMPDIR}/stdout5.log"
+  exit 1
+fi
+
+# Verify no blob was created (no update was needed).
+if [ -f "${TMPDIR}/blob-input-test-repo.json" ]; then
+  echo "FAIL: blob was created for shim that is actually up to date (#2247)"
+  exit 1
+fi
+
+echo "PASS: remote with sentinel not falsely flagged when template lacks sentinel (#2247)"

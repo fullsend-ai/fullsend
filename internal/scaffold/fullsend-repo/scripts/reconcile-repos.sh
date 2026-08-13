@@ -143,21 +143,29 @@ shim_with_header_b64() {
   fi
 }
 
-# managed_content_b64 extracts the fullsend-managed portion from raw content.
-# If no sentinel is found, returns the full content (pre-sentinel shim).
+# managed_content_text extracts the fullsend-managed content BELOW the
+# sentinel line and returns it as plain text for comparison.  The sentinel
+# line itself is excluded so that a template without the sentinel can be
+# compared directly against a deployed shim that has it — avoiding false-
+# positive drift when the only difference is the sentinel/--- prefix.
+# If no sentinel is found, returns the full decoded content (pre-sentinel
+# shim or template).  Trailing newlines are stripped by command substitution
+# in the caller, normalizing both paths.
 # Args: $1 = base64-encoded file content
-# Prints: base64-encoded managed portion
-managed_content_b64() {
+# Prints: plain text managed portion (sentinel excluded)
+managed_content_text() {
   local raw
   raw=$(printf '%s' "$1" | base64 -d | tr -d '\r')
-  local managed
-  managed=$(printf '%s\n' "$raw" | extract_managed_content)
-
-  if [ -z "$managed" ]; then
-    # No sentinel found — treat entire content as managed (pre-sentinel shim).
-    printf '%s' "$1"
+  local below
+  below=$(printf '%s\n' "$raw" | awk -v sentinel="$SENTINEL" '
+    found { print; next }
+    $0 == sentinel { found=1 }
+  ')
+  if [ -n "$below" ]; then
+    printf '%s' "$below"
   else
-    printf '%s\n' "$managed" | base64 -w0
+    # No sentinel found — entire content is managed.
+    printf '%s' "$raw"
   fi
 }
 
@@ -399,13 +407,15 @@ if [ -n "$ENABLED_REPOS" ]; then
     # Fetch content and SHA in one call to avoid race between reads.
     REMOTE_CONTENT=$(gh api "repos/$ORG/$REPO/contents/$SHIM_PATH" --jq .content 2>/dev/null || true)
     if [ -n "$REMOTE_CONTENT" ]; then
-      # File exists — compare only the managed portion (from sentinel onward)
-      # so user-added headers (e.g. license) do not trigger false drift.
+      # File exists — compare only the managed portion (below sentinel)
+      # so user-added headers (e.g. license) and the sentinel/--- prefix
+      # do not trigger false drift.  Text comparison (not base64) avoids
+      # encoding artifacts; command substitution normalizes trailing newlines.
       EXPECTED_B64=$(shim_content_b64)
       # GitHub returns base64 with newlines; strip them for comparison.
       REMOTE_B64=$(printf '%s' "$REMOTE_CONTENT" | tr -d '\r\n')
-      REMOTE_MANAGED=$(managed_content_b64 "$REMOTE_B64")
-      EXPECTED_MANAGED=$(managed_content_b64 "$EXPECTED_B64")
+      REMOTE_MANAGED=$(managed_content_text "$REMOTE_B64")
+      EXPECTED_MANAGED=$(managed_content_text "$EXPECTED_B64")
       if [ "$REMOTE_MANAGED" = "$EXPECTED_MANAGED" ]; then
         echo "✓ $REPO already enrolled (shim up to date)"
         SKIPPED=$((SKIPPED + 1))
