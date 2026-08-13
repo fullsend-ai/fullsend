@@ -1323,7 +1323,7 @@ func (r *LiveWranglerRunner) UpdateVars(ctx context.Context, workerName string, 
 
 	// 5. Deploy the new version to 100% traffic.
 	if err := deployVersionFn(ctx, r.AccountID, workerName, token, versionID); err != nil {
-		return fmt.Errorf("deploying version: %w", err)
+		return fmt.Errorf("deploying version %s: %w", versionID, err)
 	}
 
 	return nil

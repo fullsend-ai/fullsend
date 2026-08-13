@@ -265,6 +265,8 @@ Updates the durable Worker's `ALLOWED_ORGS` (org mode) or `PER_REPO_WIF_REPOS` (
 
 `--preview` is rejected — preview Workers are configured exclusively via `mint deploy`.
 
+> **Enroll serially.** Concurrent enroll or unenroll commands against the same Worker can race — the CLI uses a read-modify-write cycle without concurrency control. Run them one at a time. See [Enrollment ordering](../guides/infrastructure/mint-administration.md#enrollment-ordering).
+
 ### Flags
 
 | Flag | Default | Description |
@@ -297,6 +299,8 @@ fullsend mint unenroll <org|owner/repo> \
 ```
 
 Removes the org/repo from the durable Worker's env vars via the Cloudflare Versions API — no local Worker sources or WASM build artifacts required.
+
+> **Unenroll serially.** Like enroll, the Cloudflare unenroll path uses a read-modify-write cycle. Do not run concurrent unenroll commands against the same Worker — see [Enrollment ordering](../guides/infrastructure/mint-administration.md#enrollment-ordering).
 
 ### Flags
 
