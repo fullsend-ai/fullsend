@@ -62,7 +62,7 @@ func TestExtractSafeContext(t *testing.T) {
 			name:     "bash with github token redacted",
 			toolName: "Bash",
 			input:    map[string]interface{}{"command": "curl -H 'Authorization: Bearer ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' https://api.github.com"},
-			want:     "curl -H 'Authorization: Bearer *** https://api.github.com",
+			want:     "curl -H 'Authorization: Bearer ghp_...' https://api.github.com",
 		},
 		{
 			name:     "read file",
