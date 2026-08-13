@@ -1882,7 +1882,8 @@ func TestProvisionWIF_RepoScoped(t *testing.T) {
 	require.Len(t, fake.projectIAMBindings, 1)
 	assert.Contains(t, fake.projectIAMBindings[0].Member, "attribute.repository/acme/widget")
 
-	assert.NotContains(t, fake.calls, "GetWIFProvider")
+	// provisionRepoWIFProvider now does a read-before-write check (#6179).
+	assert.Contains(t, fake.calls, "GetWIFProvider")
 }
 
 func TestProvisionWIF_RepoScoped_PreservesRepoCase(t *testing.T) {
@@ -2129,6 +2130,8 @@ func TestProvisionRepoWIFProvider_Errors(t *testing.T) {
 			errs: map[string]error{"GetProjectNumber": fmt.Errorf("forbidden")}, wantErr: "getting project number"},
 		{name: "create WIF pool fails", projectID: "my-project", repo: "acme/widget",
 			errs: map[string]error{"CreateWIFPool": fmt.Errorf("denied")}, wantErr: "creating WIF pool"},
+		{name: "get WIF provider fails", projectID: "my-project", repo: "acme/widget",
+			errs: map[string]error{"GetWIFProvider": fmt.Errorf("transient")}, wantErr: "checking existing WIF provider"},
 		{name: "create WIF provider fails", projectID: "my-project", repo: "acme/widget",
 			errs: map[string]error{"CreateWIFProvider": fmt.Errorf("denied")}, wantErr: "creating WIF provider"},
 	}
@@ -2144,6 +2147,216 @@ func TestProvisionRepoWIFProvider_Errors(t *testing.T) {
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
 			assert.Empty(t, fake.projectIAMBindings)
+		})
+	}
+}
+
+func TestProvisionRepoWIFProvider_SkipsWriteWhenConfigMatches(t *testing.T) {
+	// When the existing WIF provider already has the desired
+	// attributeCondition and allowedAudiences, CreateWIFProvider
+	// should be skipped entirely (#6179).
+	fake := newFakeGCFClient()
+	fake.wifProvider = &WIFProviderInfo{
+		AttributeCondition: "assertion.repository == 'acme/widget'",
+		AllowedAudiences: []string{
+			oidcAudience,
+			iamAudience("123456789", defaultPool, "gh-acme-widget"),
+		},
+	}
+	p := NewProvisioner(Config{
+		ProjectID: "my-project",
+		Repo:      "acme/widget",
+	}, fake)
+
+	wifPath, err := p.ProvisionRepoWIFProvider(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, wifPath, "gh-acme-widget")
+
+	// GetWIFProvider should be called (the read-before-write check).
+	assert.Contains(t, fake.calls, "GetWIFProvider")
+	// CreateWIFProvider must NOT be called — config already matches.
+	assert.NotContains(t, fake.calls, "CreateWIFProvider")
+}
+
+func TestProvisionRepoWIFProvider_WritesWhenConditionDrifted(t *testing.T) {
+	// When the existing provider has a different attributeCondition,
+	// CreateWIFProvider must be called to correct the drift.
+	fake := newFakeGCFClient()
+	fake.wifProvider = &WIFProviderInfo{
+		AttributeCondition: "assertion.repository == 'acme/old-name'",
+		AllowedAudiences: []string{
+			oidcAudience,
+			iamAudience("123456789", defaultPool, "gh-acme-widget"),
+		},
+	}
+	p := NewProvisioner(Config{
+		ProjectID: "my-project",
+		Repo:      "acme/widget",
+	}, fake)
+
+	_, err := p.ProvisionRepoWIFProvider(context.Background())
+	require.NoError(t, err)
+
+	assert.Contains(t, fake.calls, "GetWIFProvider")
+	assert.Contains(t, fake.calls, "CreateWIFProvider")
+}
+
+func TestProvisionRepoWIFProvider_WritesWhenAudiencesDrifted(t *testing.T) {
+	// When the existing provider has different audiences,
+	// CreateWIFProvider must be called.
+	fake := newFakeGCFClient()
+	fake.wifProvider = &WIFProviderInfo{
+		AttributeCondition: "assertion.repository == 'acme/widget'",
+		AllowedAudiences:   []string{oidcAudience}, // missing IAM audience
+	}
+	p := NewProvisioner(Config{
+		ProjectID: "my-project",
+		Repo:      "acme/widget",
+	}, fake)
+
+	_, err := p.ProvisionRepoWIFProvider(context.Background())
+	require.NoError(t, err)
+
+	assert.Contains(t, fake.calls, "GetWIFProvider")
+	assert.Contains(t, fake.calls, "CreateWIFProvider")
+}
+
+func TestProvisionRepoWIFProvider_WritesWhenProviderMissing(t *testing.T) {
+	// When GetWIFProvider returns nil (provider does not exist),
+	// CreateWIFProvider must be called.
+	fake := newFakeGCFClient()
+	// wifProvider is nil by default → GetWIFProvider returns nil
+	p := NewProvisioner(Config{
+		ProjectID: "my-project",
+		Repo:      "acme/widget",
+	}, fake)
+
+	_, err := p.ProvisionRepoWIFProvider(context.Background())
+	require.NoError(t, err)
+
+	assert.Contains(t, fake.calls, "GetWIFProvider")
+	assert.Contains(t, fake.calls, "CreateWIFProvider")
+}
+
+func TestProvisionRepoWIFProvider_GetWIFProviderError(t *testing.T) {
+	// When GetWIFProvider returns an error, provisionRepoWIFProvider
+	// should fail rather than blindly calling CreateWIFProvider.
+	fake := newFakeGCFClient()
+	fake.errs["GetWIFProvider"] = fmt.Errorf("permission denied")
+	p := NewProvisioner(Config{
+		ProjectID: "my-project",
+		Repo:      "acme/widget",
+	}, fake)
+
+	_, err := p.ProvisionRepoWIFProvider(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking existing WIF provider")
+	assert.NotContains(t, fake.calls, "CreateWIFProvider")
+}
+
+func TestProvisionWIF_OrgScoped_SkipsWriteWhenConfigMatches(t *testing.T) {
+	// When the org-level WIF provider already has the desired
+	// attributeCondition and audiences, CreateWIFProvider should
+	// be skipped (#6179).
+	fake := newFakeGCFClient()
+	fake.wifProvider = &WIFProviderInfo{
+		AttributeCondition: "assertion.repository_owner == 'acme'",
+		AllowedAudiences: []string{
+			oidcAudience,
+			iamAudience("123456789", defaultPool, defaultProvider),
+		},
+	}
+	p := NewProvisioner(Config{
+		ProjectID:  "my-project",
+		GitHubOrgs: []string{"acme"},
+	}, fake)
+
+	_, err := p.ProvisionWIF(context.Background())
+	require.NoError(t, err)
+
+	assert.Contains(t, fake.calls, "GetWIFProvider")
+	assert.NotContains(t, fake.calls, "CreateWIFProvider")
+}
+
+func TestProvisionWIF_OrgScoped_WritesWhenNewOrgAdded(t *testing.T) {
+	// When a new org is being added, the condition changes and
+	// CreateWIFProvider must be called.
+	fake := newFakeGCFClient()
+	fake.wifProvider = &WIFProviderInfo{
+		AttributeCondition: "assertion.repository_owner == 'beta'",
+		AllowedAudiences: []string{
+			oidcAudience,
+			iamAudience("123456789", defaultPool, defaultProvider),
+		},
+	}
+	p := NewProvisioner(Config{
+		ProjectID:  "my-project",
+		GitHubOrgs: []string{"acme"},
+	}, fake)
+
+	_, err := p.ProvisionWIF(context.Background())
+	require.NoError(t, err)
+
+	assert.Contains(t, fake.calls, "GetWIFProvider")
+	// Merged condition now includes both orgs → config changed → write needed.
+	assert.Contains(t, fake.calls, "CreateWIFProvider")
+}
+
+func TestWifProviderConfigMatches(t *testing.T) {
+	tests := []struct {
+		name      string
+		existing  *WIFProviderInfo
+		condition string
+		audiences []string
+		want      bool
+	}{
+		{
+			name:      "exact match",
+			existing:  &WIFProviderInfo{AttributeCondition: "cond", AllowedAudiences: []string{"a", "b"}},
+			condition: "cond",
+			audiences: []string{"a", "b"},
+			want:      true,
+		},
+		{
+			name:      "audiences different order",
+			existing:  &WIFProviderInfo{AttributeCondition: "cond", AllowedAudiences: []string{"b", "a"}},
+			condition: "cond",
+			audiences: []string{"a", "b"},
+			want:      true,
+		},
+		{
+			name:      "condition differs",
+			existing:  &WIFProviderInfo{AttributeCondition: "old", AllowedAudiences: []string{"a"}},
+			condition: "new",
+			audiences: []string{"a"},
+			want:      false,
+		},
+		{
+			name:      "audiences differ in count",
+			existing:  &WIFProviderInfo{AttributeCondition: "cond", AllowedAudiences: []string{"a"}},
+			condition: "cond",
+			audiences: []string{"a", "b"},
+			want:      false,
+		},
+		{
+			name:      "audiences differ in value",
+			existing:  &WIFProviderInfo{AttributeCondition: "cond", AllowedAudiences: []string{"a", "c"}},
+			condition: "cond",
+			audiences: []string{"a", "b"},
+			want:      false,
+		},
+		{
+			name:      "empty audiences match",
+			existing:  &WIFProviderInfo{AttributeCondition: "cond", AllowedAudiences: nil},
+			condition: "cond",
+			audiences: nil,
+			want:      true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := wifProviderConfigMatches(tt.existing, tt.condition, tt.audiences)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

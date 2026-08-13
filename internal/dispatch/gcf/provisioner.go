@@ -1162,6 +1162,31 @@ func buildAttributeCondition(orgs []string) string {
 	return fmt.Sprintf("assertion.repository_owner in [%s]", strings.Join(quoted, ", "))
 }
 
+// wifProviderConfigMatches reports whether an existing WIF provider's
+// attributeCondition and allowedAudiences match the desired values, meaning
+// the write path (create → conflict → undelete → update → enable) can be
+// skipped entirely. Audience order is ignored during comparison.
+func wifProviderConfigMatches(existing *WIFProviderInfo, attrCondition string, audiences []string) bool {
+	if existing.AttributeCondition != attrCondition {
+		return false
+	}
+	if len(existing.AllowedAudiences) != len(audiences) {
+		return false
+	}
+	eSorted := make([]string, len(existing.AllowedAudiences))
+	copy(eSorted, existing.AllowedAudiences)
+	sort.Strings(eSorted)
+	dSorted := make([]string, len(audiences))
+	copy(dSorted, audiences)
+	sort.Strings(dSorted)
+	for i := range eSorted {
+		if eSorted[i] != dSorted[i] {
+			return false
+		}
+	}
+	return true
+}
+
 // publicAttributeCondition is the permissive WIF CEL for public mint mode.
 const publicAttributeCondition = "assertion.repository_owner != ''"
 
@@ -1270,12 +1295,20 @@ func (p *Provisioner) ensureWIFPoolAndProvider(ctx context.Context, installingOr
 		attrCondition = buildAttributeCondition(allOrgs)
 	}
 	audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider)}
-	if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider, OIDCProviderConfig{
-		IssuerURI:          oidcIssuer,
-		AttributeCondition: attrCondition,
-		AllowedAudiences:   audiences,
-	}); err != nil {
-		return nil, fmt.Errorf("creating WIF provider: %w", err)
+
+	// Read-before-write: skip CreateWIFProvider when the existing provider
+	// already has the desired config. The existingProvider was already fetched
+	// above for org merging; reuse it to avoid a redundant GET (#6179).
+	if existingProvider != nil && wifProviderConfigMatches(existingProvider, attrCondition, audiences) {
+		log.Printf("WIF provider %s already matches desired config, skipping write", p.cfg.WIFProvider)
+	} else {
+		if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, p.cfg.WIFProvider, OIDCProviderConfig{
+			IssuerURI:          oidcIssuer,
+			AttributeCondition: attrCondition,
+			AllowedAudiences:   audiences,
+		}); err != nil {
+			return nil, fmt.Errorf("creating WIF provider: %w", err)
+		}
 	}
 
 	return &wifMergeResult{projectNumber: projectNumber, allOrgs: allOrgs}, nil
@@ -1502,12 +1535,25 @@ func (p *Provisioner) provisionRepoWIFProvider(ctx context.Context) (wifProvider
 	providerID := mintcore.BuildRepoProviderID(partsLower[0], partsLower[1])
 	attrCondition := fmt.Sprintf("assertion.repository == '%s'", p.cfg.Repo)
 	audiences := []string{oidcAudience, iamAudience(projectNumber, p.cfg.WIFPoolName, providerID)}
-	if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, providerID, OIDCProviderConfig{
-		IssuerURI:          oidcIssuer,
-		AttributeCondition: attrCondition,
-		AllowedAudiences:   audiences,
-	}); err != nil {
-		return "", "", fmt.Errorf("creating WIF provider: %w", err)
+
+	// Read-before-write: skip CreateWIFProvider when the existing provider
+	// already has the desired attributeCondition and allowedAudiences.
+	// This avoids the create → conflict → undelete → update → enable write
+	// sequence on every run for providers that rarely change (#6179).
+	existing, getErr := p.gcpAPI.GetWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, providerID)
+	if getErr != nil {
+		return "", "", fmt.Errorf("checking existing WIF provider: %w", getErr)
+	}
+	if existing != nil && wifProviderConfigMatches(existing, attrCondition, audiences) {
+		log.Printf("WIF provider %s already matches desired config, skipping write", providerID)
+	} else {
+		if err := p.gcpAPI.CreateWIFProvider(ctx, projectNumber, p.cfg.WIFPoolName, providerID, OIDCProviderConfig{
+			IssuerURI:          oidcIssuer,
+			AttributeCondition: attrCondition,
+			AllowedAudiences:   audiences,
+		}); err != nil {
+			return "", "", fmt.Errorf("creating WIF provider: %w", err)
+		}
 	}
 
 	wifProvider = fmt.Sprintf("projects/%s/locations/global/workloadIdentityPools/%s/providers/%s",
