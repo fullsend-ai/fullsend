@@ -2743,6 +2743,179 @@ func TestLiveGCFClient_DeleteWIFPool(t *testing.T) {
 	})
 }
 
+// --- IAM quota retry (429) ---
+
+func TestLiveGCFClient_EnableWIFProvider_RetriesOn429(t *testing.T) {
+	// Override retry delay to avoid sleeping in tests.
+	origDelay := iamRetryDelay
+	iamRetryDelay = func(_ int) time.Duration { return time.Millisecond }
+	t.Cleanup(func() { iamRetryDelay = origDelay })
+
+	t.Run("succeeds after transient 429", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			if callCount <= 2 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, `{"name":"operations/enable-op","done":true}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).enableWIFProvider(context.Background(), "123", "pool", "prov")
+		require.NoError(t, err)
+		assert.Equal(t, 3, callCount, "should retry twice then succeed")
+	})
+
+	t.Run("exhausts retries on persistent 429", func(t *testing.T) {
+		origRetries := iamQuotaRetries
+		iamQuotaRetries = 3
+		t.Cleanup(func() { iamQuotaRetries = origRetries })
+
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			w.WriteHeader(http.StatusTooManyRequests)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).enableWIFProvider(context.Background(), "123", "pool", "prov")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "quota exhausted")
+		assert.Equal(t, 3, callCount, "should attempt exactly iamQuotaRetries times")
+	})
+
+	t.Run("context cancellation during backoff", func(t *testing.T) {
+		// Use a longer retry delay so the context cancellation fires during
+		// the backoff sleep, not after all retries finish.
+		origDelay2 := iamRetryDelay
+		iamRetryDelay = func(_ int) time.Duration { return 5 * time.Second }
+		t.Cleanup(func() { iamRetryDelay = origDelay2 })
+
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			w.WriteHeader(http.StatusTooManyRequests)
+		}))
+		defer srv.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		// Cancel shortly after the first 429 response triggers a backoff sleep.
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+		}()
+
+		err := newTestClient(srv).enableWIFProvider(ctx, "123", "pool", "prov")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+		assert.Equal(t, 1, callCount, "should stop after first 429 when context is cancelled")
+	})
+}
+
+func TestLiveGCFClient_CreateWIFProvider_RetriesOn429(t *testing.T) {
+	origDelay := iamRetryDelay
+	iamRetryDelay = func(_ int) time.Duration { return time.Millisecond }
+	t.Cleanup(func() { iamRetryDelay = origDelay })
+
+	t.Run("succeeds after transient 429", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			if callCount == 1 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, `{"name":"operations/create-op","done":true}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).CreateWIFProvider(context.Background(), "123", "pool", "gh-oidc", OIDCProviderConfig{
+			IssuerURI:        "https://token.actions.githubusercontent.com",
+			AllowedAudiences: []string{"fullsend-mint"},
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 2, callCount)
+	})
+}
+
+func TestLiveGCFClient_CreateWIFPool_RetriesOn429(t *testing.T) {
+	origDelay := iamRetryDelay
+	iamRetryDelay = func(_ int) time.Duration { return time.Millisecond }
+	t.Cleanup(func() { iamRetryDelay = origDelay })
+
+	t.Run("succeeds after transient 429", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			if callCount == 1 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, `{"name":"operations/pool-op","done":true}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).CreateWIFPool(context.Background(), "123", "pool", "Pool")
+		require.NoError(t, err)
+		assert.Equal(t, 2, callCount)
+	})
+}
+
+func TestLiveGCFClient_CreateServiceAccount_RetriesOn429(t *testing.T) {
+	origDelay := iamRetryDelay
+	iamRetryDelay = func(_ int) time.Duration { return time.Millisecond }
+	t.Cleanup(func() { iamRetryDelay = origDelay })
+
+	t.Run("succeeds after transient 429", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			if callCount == 1 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, `{"email":"sa@proj.iam.gserviceaccount.com"}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).CreateServiceAccount(context.Background(), "proj", "sa", "SA")
+		require.NoError(t, err)
+		assert.Equal(t, 2, callCount)
+	})
+}
+
+func TestLiveGCFClient_UpdateWIFProvider_RetriesOn429(t *testing.T) {
+	origDelay := iamRetryDelay
+	iamRetryDelay = func(_ int) time.Duration { return time.Millisecond }
+	t.Cleanup(func() { iamRetryDelay = origDelay })
+
+	t.Run("succeeds after transient 429", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			if callCount == 1 {
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintln(w, `{"name":"operations/update-op","done":true}`)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).UpdateWIFProvider(context.Background(), "123", "pool", "prov", OIDCProviderConfig{
+			AttributeCondition: "assertion.repository_owner == 'my-org'",
+		})
+		require.NoError(t, err)
+		assert.Equal(t, 2, callCount)
+	})
+}
+
 // --- encodeBase64 ---
 
 func TestEncodeBase64(t *testing.T) {

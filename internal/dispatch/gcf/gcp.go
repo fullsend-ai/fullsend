@@ -190,6 +190,7 @@ func NewLiveGCFClient(quotaProject string) *LiveGCFClient {
 }
 
 // CreateServiceAccount creates a new service account.
+// Retries on HTTP 429 (quota exhaustion) with exponential backoff.
 func (c *LiveGCFClient) CreateServiceAccount(ctx context.Context, projectID, saName, displayName string) error {
 	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/serviceAccounts",
 		url.PathEscape(projectID))
@@ -207,20 +208,39 @@ func (c *LiveGCFClient) CreateServiceAccount(ctx context.Context, projectID, saN
 	}
 	payload := string(payloadBytes)
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPost, reqURL, payload)
-	if err != nil {
-		return fmt.Errorf("creating service account: %w", err)
-	}
-	defer resp.Body.Close()
+	for attempt := range iamQuotaRetries {
+		resp, err := c.Client.DoRequest(ctx, http.MethodPost, reqURL, payload)
+		if err != nil {
+			return fmt.Errorf("creating service account: %w", err)
+		}
 
-	if resp.StatusCode == http.StatusConflict {
-		return nil // already exists
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			if attempt == iamQuotaRetries-1 {
+				return fmt.Errorf("creating service account: quota exhausted after %d attempts", iamQuotaRetries)
+			}
+			log.Printf("create service account: 429 quota exhausted, retrying (attempt %d/%d)", attempt+1, iamQuotaRetries)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(iamRetryDelay(attempt)):
+			}
+			continue
+		}
+
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusConflict {
+			return nil // already exists
+		}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			return fmt.Errorf("unexpected status %d creating service account: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
+		}
+		return nil
 	}
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return fmt.Errorf("unexpected status %d creating service account: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
-	}
-	return nil
+
+	return fmt.Errorf("creating service account: exhausted retries")
 }
 
 // DeleteServiceAccount permanently deletes a service account.
@@ -245,6 +265,7 @@ func (c *LiveGCFClient) DeleteServiceAccount(ctx context.Context, projectID, saE
 }
 
 // CreateWIFPool creates a new WIF pool.
+// Retries on HTTP 429 (quota exhaustion) with exponential backoff.
 func (c *LiveGCFClient) CreateWIFPool(ctx context.Context, projectNumber, poolID, displayName string) error {
 	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools?workloadIdentityPoolId=%s",
 		url.PathEscape(projectNumber), url.QueryEscape(poolID))
@@ -254,24 +275,45 @@ func (c *LiveGCFClient) CreateWIFPool(ctx context.Context, projectNumber, poolID
 	}
 	payload := string(payloadBytes)
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPost, reqURL, payload)
-	if err != nil {
-		return fmt.Errorf("creating WIF pool: %w", err)
-	}
-	defer resp.Body.Close()
+	for attempt := range iamQuotaRetries {
+		resp, err := c.Client.DoRequest(ctx, http.MethodPost, reqURL, payload)
+		if err != nil {
+			return fmt.Errorf("creating WIF pool: %w", err)
+		}
 
-	if resp.StatusCode == http.StatusConflict {
-		return nil // already exists
-	}
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return fmt.Errorf("unexpected status %d creating WIF pool: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			if attempt == iamQuotaRetries-1 {
+				return fmt.Errorf("creating WIF pool: quota exhausted after %d attempts", iamQuotaRetries)
+			}
+			log.Printf("create WIF pool: 429 quota exhausted, retrying (attempt %d/%d)", attempt+1, iamQuotaRetries)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(iamRetryDelay(attempt)):
+			}
+			continue
+		}
+
+		if resp.StatusCode == http.StatusConflict {
+			resp.Body.Close()
+			return nil // already exists
+		}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			return fmt.Errorf("unexpected status %d creating WIF pool: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
+		}
+
+		err = c.waitForIAMOperation(ctx, resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return fmt.Errorf("waiting for WIF pool creation: %w", err)
+		}
+		return nil
 	}
 
-	if err := c.waitForIAMOperation(ctx, resp.Body); err != nil {
-		return fmt.Errorf("waiting for WIF pool creation: %w", err)
-	}
-	return nil
+	return fmt.Errorf("creating WIF pool: exhausted retries")
 }
 
 // DeleteWIFPool permanently deletes a WIF pool and all its providers.
@@ -300,6 +342,7 @@ func (c *LiveGCFClient) DeleteWIFPool(ctx context.Context, projectNumber, poolID
 }
 
 // CreateWIFProvider creates a WIF OIDC provider.
+// Retries on HTTP 429 (quota exhaustion) with exponential backoff.
 func (c *LiveGCFClient) CreateWIFProvider(ctx context.Context, projectNumber, poolID, providerID string, cfg OIDCProviderConfig) error {
 	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools/%s/providers?workloadIdentityPoolProviderId=%s",
 		url.PathEscape(projectNumber), url.PathEscape(poolID), url.QueryEscape(providerID))
@@ -326,32 +369,54 @@ func (c *LiveGCFClient) CreateWIFProvider(ctx context.Context, projectNumber, po
 	if err != nil {
 		return fmt.Errorf("marshaling WIF provider payload: %w", err)
 	}
+	payload := string(payloadBytes)
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPost, reqURL, string(payloadBytes))
-	if err != nil {
-		return fmt.Errorf("creating WIF provider: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusConflict {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
-		if err := c.undeleteWIFProvider(ctx, projectNumber, poolID, providerID); err != nil {
-			log.Printf("undelete attempt during conflict recovery: %v", err)
+	for attempt := range iamQuotaRetries {
+		resp, err := c.Client.DoRequest(ctx, http.MethodPost, reqURL, payload)
+		if err != nil {
+			return fmt.Errorf("creating WIF provider: %w", err)
 		}
-		if err := c.UpdateWIFProvider(ctx, projectNumber, poolID, providerID, cfg); err != nil {
-			return err
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			if attempt == iamQuotaRetries-1 {
+				return fmt.Errorf("creating WIF provider: quota exhausted after %d attempts", iamQuotaRetries)
+			}
+			log.Printf("create WIF provider: 429 quota exhausted, retrying (attempt %d/%d)", attempt+1, iamQuotaRetries)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(iamRetryDelay(attempt)):
+			}
+			continue
 		}
-		return c.enableWIFProvider(ctx, projectNumber, poolID, providerID)
-	}
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return fmt.Errorf("unexpected status %d creating WIF provider: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
+
+		if resp.StatusCode == http.StatusConflict {
+			io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			if err := c.undeleteWIFProvider(ctx, projectNumber, poolID, providerID); err != nil {
+				log.Printf("undelete attempt during conflict recovery: %v", err)
+			}
+			if err := c.UpdateWIFProvider(ctx, projectNumber, poolID, providerID, cfg); err != nil {
+				return err
+			}
+			return c.enableWIFProvider(ctx, projectNumber, poolID, providerID)
+		}
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			return fmt.Errorf("unexpected status %d creating WIF provider: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
+		}
+
+		err = c.waitForIAMOperation(ctx, resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return fmt.Errorf("waiting for WIF provider creation: %w", err)
+		}
+		return nil
 	}
 
-	if err := c.waitForIAMOperation(ctx, resp.Body); err != nil {
-		return fmt.Errorf("waiting for WIF provider creation: %w", err)
-	}
-	return nil
+	return fmt.Errorf("creating WIF provider: exhausted retries")
 }
 
 // GetWIFProvider reads an existing WIF OIDC provider's configuration.
@@ -391,6 +456,7 @@ func (c *LiveGCFClient) GetWIFProvider(ctx context.Context, projectNumber, poolI
 
 // UpdateWIFProvider patches an existing WIF OIDC provider's attribute condition
 // and allowed audiences.
+// Retries on HTTP 429 (quota exhaustion) with exponential backoff.
 func (c *LiveGCFClient) UpdateWIFProvider(ctx context.Context, projectNumber, poolID, providerID string, cfg OIDCProviderConfig) error {
 	patchURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools/%s/providers/%s?updateMask=attributeCondition,oidc.allowedAudiences",
 		url.PathEscape(projectNumber), url.PathEscape(poolID), url.PathEscape(providerID))
@@ -407,22 +473,43 @@ func (c *LiveGCFClient) UpdateWIFProvider(ctx context.Context, projectNumber, po
 	if err != nil {
 		return fmt.Errorf("marshaling WIF provider update: %w", err)
 	}
+	payload := string(payloadBytes)
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPatch, patchURL, string(payloadBytes))
-	if err != nil {
-		return fmt.Errorf("updating WIF provider: %w", err)
-	}
-	defer resp.Body.Close()
+	for attempt := range iamQuotaRetries {
+		resp, err := c.Client.DoRequest(ctx, http.MethodPatch, patchURL, payload)
+		if err != nil {
+			return fmt.Errorf("updating WIF provider: %w", err)
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return fmt.Errorf("unexpected status %d updating WIF provider: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			if attempt == iamQuotaRetries-1 {
+				return fmt.Errorf("updating WIF provider: quota exhausted after %d attempts", iamQuotaRetries)
+			}
+			log.Printf("update WIF provider: 429 quota exhausted, retrying (attempt %d/%d)", attempt+1, iamQuotaRetries)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(iamRetryDelay(attempt)):
+			}
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			return fmt.Errorf("unexpected status %d updating WIF provider: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
+		}
+
+		err = c.waitForIAMOperation(ctx, resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			return fmt.Errorf("waiting for WIF provider update: %w", err)
+		}
+		return nil
 	}
 
-	if err := c.waitForIAMOperation(ctx, resp.Body); err != nil {
-		return fmt.Errorf("waiting for WIF provider update: %w", err)
-	}
-	return nil
+	return fmt.Errorf("updating WIF provider: exhausted retries")
 }
 
 // undeleteWIFProvider restores a soft-deleted WIF provider.
@@ -718,7 +805,13 @@ func (c *LiveGCFClient) DisableWIFProvider(ctx context.Context, projectNumber, p
 	return c.waitForIAMOperation(ctx, resp.Body)
 }
 
+// iamQuotaRetries is the maximum number of retry attempts when an IAM API
+// call receives HTTP 429 (Too Many Requests / quota exhausted). Package-level
+// var so tests can override. Uses exponential backoff via iamRetryDelay.
+var iamQuotaRetries = 5
+
 // enableWIFProvider sets a WIF provider's disabled state to false.
+// Retries on HTTP 429 (quota exhaustion) with exponential backoff.
 func (c *LiveGCFClient) enableWIFProvider(ctx context.Context, projectNumber, poolID, providerID string) error {
 	patchURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools/%s/providers/%s?updateMask=disabled",
 		url.PathEscape(projectNumber), url.PathEscape(poolID), url.PathEscape(providerID))
@@ -729,19 +822,40 @@ func (c *LiveGCFClient) enableWIFProvider(ctx context.Context, projectNumber, po
 	if err != nil {
 		return fmt.Errorf("marshaling enable payload: %w", err)
 	}
+	payload := string(payloadBytes)
 
-	resp, err := c.Client.DoRequest(ctx, http.MethodPatch, patchURL, string(payloadBytes))
-	if err != nil {
-		return fmt.Errorf("enabling WIF provider: %w", err)
+	for attempt := range iamQuotaRetries {
+		resp, err := c.Client.DoRequest(ctx, http.MethodPatch, patchURL, payload)
+		if err != nil {
+			return fmt.Errorf("enabling WIF provider: %w", err)
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			if attempt == iamQuotaRetries-1 {
+				return fmt.Errorf("enabling WIF provider: quota exhausted after %d attempts", iamQuotaRetries)
+			}
+			log.Printf("WIF provider enable: 429 quota exhausted, retrying (attempt %d/%d)", attempt+1, iamQuotaRetries)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(iamRetryDelay(attempt)):
+			}
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			return fmt.Errorf("unexpected status %d enabling WIF provider: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
+		}
+
+		err = c.waitForIAMOperation(ctx, resp.Body)
+		resp.Body.Close()
+		return err
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return fmt.Errorf("unexpected status %d enabling WIF provider: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
-	}
-
-	return c.waitForIAMOperation(ctx, resp.Body)
+	return fmt.Errorf("enabling WIF provider: exhausted retries")
 }
 
 // DeleteWIFProvider permanently deletes a WIF provider.
