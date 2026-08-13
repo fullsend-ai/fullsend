@@ -10,8 +10,10 @@ import (
 type CLIRunnerFunc = func(binary, token string, args ...string) (string, error)
 
 // RunGitHubSetup runs fullsend github setup for the given target with the
-// provided mint URL. If gcpProjectID is non-empty, inference provisioning
-// is performed first and the resulting WIF provider is threaded to setup.
+// provided mint URL. If gcpProjectID is non-empty, the existing WIF
+// provider is looked up first via "inference status". Provisioning is
+// only performed when no healthy provider exists, avoiding redundant
+// create/undelete/update/enable IAM writes on every run.
 func RunGitHubSetup(
 	binary, token, target, mintURL, gcpProjectID string,
 	runCLI CLIRunnerFunc,
@@ -25,9 +27,18 @@ func RunGitHubSetup(
 		"--runtime", "dummy",
 	}
 	if project := strings.TrimSpace(gcpProjectID); project != "" {
-		wifProvider, err := ProvisionInference(binary, token, target, project, runCLI, logf)
+		// Read-before-write: reuse the existing WIF provider when it
+		// is already healthy to avoid redundant IAM write operations.
+		wifProvider, err := GetExistingInferenceWIFProvider(binary, token, target, project, runCLI, logf)
 		if err != nil {
-			return err
+			// Provider missing or unhealthy — fall through to provision.
+			logf("[install] existing WIF provider not found for %s, provisioning: %v", target, err)
+			wifProvider, err = ProvisionInference(binary, token, target, project, runCLI, logf)
+			if err != nil {
+				return err
+			}
+		} else {
+			logf("[install] reusing existing WIF provider for %s: %s", target, wifProvider)
 		}
 		args = append(args, "--inference-project", project, "--inference-wif-provider", wifProvider)
 	}
@@ -37,6 +48,25 @@ func RunGitHubSetup(
 		return fmt.Errorf("github setup %s: %w", target, err)
 	}
 	return nil
+}
+
+// GetExistingInferenceWIFProvider checks whether a healthy WIF provider
+// already exists for the given target by running "inference status". It
+// returns the provider resource name when one is found, or an error when
+// the provider is missing, unhealthy, or the status command fails.
+func GetExistingInferenceWIFProvider(
+	binary, token, target, project string,
+	runCLI CLIRunnerFunc,
+	logf func(string, ...any),
+) (string, error) {
+	statusArgs := []string{"inference", "status", target, "--project", project, "--format", "json"}
+	logf("[install] checking existing inference WIF provider: fullsend %s", strings.Join(statusArgs, " "))
+	out, err := runCLI(binary, token, statusArgs...)
+	if err != nil {
+		return "", fmt.Errorf("inference status %s: %w", target, err)
+	}
+
+	return ParseInferenceStatusWIFProvider(out)
 }
 
 // ProvisionInference runs inference provision and returns the WIF provider

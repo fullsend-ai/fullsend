@@ -368,10 +368,11 @@ func TestRepoEnsurer_DoEnsure_RepoMissing_ThenInstalled(t *testing.T) {
 	assert.Len(t, cliCalls, 1, "cached call should not invoke CLI again")
 }
 
-func TestRepoEnsurer_DoEnsure_WithGCPProject(t *testing.T) {
+func TestRepoEnsurer_DoEnsure_WithGCPProject_SkipsProvision(t *testing.T) {
 	speedUpValidateRetries(t)
-	// When GCPProjectID is set, provisionInference should be called
-	// before github setup.
+	// When GCPProjectID is set and the WIF provider already exists,
+	// the read-before-write guard should skip inference provision and
+	// reuse the existing provider from inference status.
 	sc := &stubClient{installed: false}
 	var cliCalls [][]string
 	e := &repoEnsurer{
@@ -401,17 +402,70 @@ func TestRepoEnsurer_DoEnsure_WithGCPProject(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, st)
 
-	// Expect: inference provision, inference status, github setup (3 calls).
-	require.Len(t, cliCalls, 3, "expected 3 CLI calls (provision, status, setup)")
+	// Read-before-write: inference status (existing check) + github setup.
+	// No inference provision call — the provider already exists.
+	require.Len(t, cliCalls, 2, "expected 2 CLI calls (status, setup)")
 	assert.Equal(t, "inference", cliCalls[0][0])
-	assert.Equal(t, "provision", cliCalls[0][1])
-	assert.Equal(t, "inference", cliCalls[1][0])
-	assert.Equal(t, "status", cliCalls[1][1])
-	assert.Equal(t, "github", cliCalls[2][0])
-	assert.Equal(t, "setup", cliCalls[2][1])
+	assert.Equal(t, "status", cliCalls[0][1])
+	assert.Equal(t, "github", cliCalls[1][0])
+	assert.Equal(t, "setup", cliCalls[1][1])
 	// Verify inference flags were threaded to github setup.
-	assert.Contains(t, cliCalls[2], "--inference-project")
-	assert.Contains(t, cliCalls[2], "--inference-wif-provider")
+	assert.Contains(t, cliCalls[1], "--inference-project")
+	assert.Contains(t, cliCalls[1], "--inference-wif-provider")
+}
+
+func TestRepoEnsurer_DoEnsure_WithGCPProject_FallsBackToProvision(t *testing.T) {
+	speedUpValidateRetries(t)
+	// When the initial inference status check fails (provider missing),
+	// the fallback provisions the WIF provider via the full create path.
+	sc := &stubClient{installed: false}
+	var cliCalls [][]string
+	statusCallCount := 0
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{
+			MintURL:      "https://mint.test",
+			GCPProjectID: "test-project",
+		},
+		client: sc,
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		runCLI: func(binary, token string, args ...string) (string, error) {
+			cliCalls = append(cliCalls, args)
+			if len(args) >= 2 && args[0] == "github" && args[1] == "setup" {
+				sc.installed = true
+			}
+			if len(args) >= 2 && args[0] == "inference" && args[1] == "status" {
+				statusCallCount++
+				if statusCallCount == 1 {
+					// First status call (read-before-write check): provider not found.
+					return "", fmt.Errorf("provider not found")
+				}
+				// Second status call (inside ProvisionInference): provider now exists.
+				return `{"status":"healthy","FULLSEND_GCP_WIF_PROVIDER":"projects/p/locations/l/providers/wif"}`, nil
+			}
+			return "", nil
+		},
+		settle:  noopSettle,
+		logf:    t.Logf,
+		ensured: make(map[string]State),
+	}
+
+	st, err := e.EnsureRepo(context.Background(), "org", "test-repo-gcp-fallback")
+	require.NoError(t, err)
+	require.NotNil(t, st)
+
+	// Fallback path: status (fail) + provision + status (ok) + setup = 4 calls.
+	require.Len(t, cliCalls, 4, "expected 4 CLI calls (status-fail, provision, status-ok, setup)")
+	assert.Equal(t, "inference", cliCalls[0][0])
+	assert.Equal(t, "status", cliCalls[0][1])
+	assert.Equal(t, "inference", cliCalls[1][0])
+	assert.Equal(t, "provision", cliCalls[1][1])
+	assert.Equal(t, "inference", cliCalls[2][0])
+	assert.Equal(t, "status", cliCalls[2][1])
+	assert.Equal(t, "github", cliCalls[3][0])
+	assert.Equal(t, "setup", cliCalls[3][1])
+	assert.Contains(t, cliCalls[3], "--inference-project")
+	assert.Contains(t, cliCalls[3], "--inference-wif-provider")
 }
 
 func TestRepoEnsurer_DoEnsure_MintURLPopulated(t *testing.T) {
