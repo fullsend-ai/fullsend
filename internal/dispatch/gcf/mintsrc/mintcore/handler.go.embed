@@ -80,6 +80,24 @@ type Handler struct {
 	// call the mint in per-repo mode. Defaults to fullsend-ai/fullsend.
 	// Per-org callers hard-wire to {org}/.fullsend and upstream instead.
 	workflowHostRepos map[string]bool
+
+	// statusAuthModes lists the enabled auth modes for /v1/status.
+	// Valid modes: "oidc" (GHA OIDC JWT), "github" (GitHub user token).
+	// Default: ["oidc"].
+	statusAuthModes []string
+
+	// statusGithubGroup is the ORG/TEAM slug that gates GitHub OAuth2
+	// access to /v1/status. Required when "github" mode is enabled.
+	statusGithubGroup string
+
+	// statusGithubClientID is the GitHub OAuth App client ID. Stored
+	// for client discovery; not used by the server for token validation.
+	statusGithubClientID string
+
+	// statusGithubClientSecret is the GitHub OAuth App client secret.
+	// Stored for client discovery; not used by the server for token
+	// validation.
+	statusGithubClientSecret string
 }
 
 type foreignInflight struct {
@@ -111,18 +129,30 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		workflowHostRepos["fullsend-ai/fullsend"] = true
 	}
 
+	statusAuthModes := ParseStatusAuthModes(os.Getenv("STATUS_AUTH"))
+	statusGithubGroup := os.Getenv("STATUS_GITHUB_GROUP")
+	statusGithubClientID := os.Getenv("STATUS_GITHUB_CLIENT_ID")
+	statusGithubClientSecret := os.Getenv("STATUS_GITHUB_CLIENT_SECRET")
+	if err := ValidateStatusAuthConfig(statusAuthModes, statusGithubGroup, statusGithubClientID, statusGithubClientSecret); err != nil {
+		return nil, err
+	}
+
 	h := &Handler{
-		httpClient:           httpClient,
-		pemAccessor:          pemAccessor,
-		oidcVerifier:         oidcVerifier,
-		githubBaseURL:        "https://api.github.com",
-		foreignCache:         make(map[string]foreignCacheEntry),
-		foreignInflight:      make(map[string]*foreignInflight),
-		foreignCacheTTL:      defaultForeignCacheTTL,
-		perRepoWIFRepos:      perRepoWIFRepos,
-		allowedOrgs:          ParseAllowedOrgs(os.Getenv("ALLOWED_ORGS")),
-		allowedWorkflowFiles: SplitCSV(os.Getenv("ALLOWED_WORKFLOW_FILES")),
-		workflowHostRepos:    workflowHostRepos,
+		httpClient:               httpClient,
+		pemAccessor:              pemAccessor,
+		oidcVerifier:             oidcVerifier,
+		githubBaseURL:            "https://api.github.com",
+		foreignCache:             make(map[string]foreignCacheEntry),
+		foreignInflight:          make(map[string]*foreignInflight),
+		foreignCacheTTL:          defaultForeignCacheTTL,
+		perRepoWIFRepos:          perRepoWIFRepos,
+		allowedOrgs:              ParseAllowedOrgs(os.Getenv("ALLOWED_ORGS")),
+		allowedWorkflowFiles:     SplitCSV(os.Getenv("ALLOWED_WORKFLOW_FILES")),
+		workflowHostRepos:        workflowHostRepos,
+		statusAuthModes:          statusAuthModes,
+		statusGithubGroup:        statusGithubGroup,
+		statusGithubClientID:     statusGithubClientID,
+		statusGithubClientSecret: statusGithubClientSecret,
 	}
 
 	if raw := os.Getenv("ROLE_APP_IDS"); raw != "" {
@@ -196,34 +226,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	oidcToken := strings.TrimPrefix(authHeader, "Bearer ")
 
 	if r.URL.Path == "/v1/status" {
-		claims, err := h.oidcVerifier.Verify(r.Context(), oidcToken)
-		if err != nil {
-			log.Printf("OIDC verification failed for /v1/status: %v", err)
-			writeError(w, http.StatusUnauthorized, "authentication failed")
+		callerOrg, statusErr := h.authenticateStatus(r.Context(), oidcToken)
+		if statusErr != nil {
+			writeError(w, statusErr.status, statusErr.message)
 			return
 		}
-		if err := AuthorizeToken(claims, h.allowedOrgs, h.perRepoWIFRepos); err != nil {
-			log.Printf("token authorization failed for /v1/status: %v", err)
-			writeError(w, http.StatusUnauthorized, "authentication failed")
-			return
-		}
-		isPerRepo := IsPerRepoMode(claims.Repository, h.perRepoWIFRepos)
-		isDualEnrolled := false
-		if isPerRepo && !IsPublicMintRepos(h.perRepoWIFRepos) &&
-			ValidateOrgAllowed(claims.RepositoryOwner, h.allowedOrgs) == nil {
-			isDualEnrolled = true
-			isPerRepo = false
-		}
-		wfErr := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, isPerRepo, h.workflowHostRepos, h.allowedWorkflowFiles)
-		if wfErr != nil && isDualEnrolled {
-			wfErr = ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, true, h.workflowHostRepos, h.allowedWorkflowFiles)
-		}
-		if wfErr != nil {
-			log.Printf("workflow ref validation failed for /v1/status: %v", wfErr)
-			writeError(w, http.StatusUnauthorized, "authentication failed")
-			return
-		}
-		h.handleStatus(w, claims)
+		h.handleStatus(w, callerOrg)
 		return
 	}
 
@@ -451,8 +459,8 @@ func (h *Handler) handleHealth(w http.ResponseWriter) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-func (h *Handler) handleStatus(w http.ResponseWriter, claims *Claims) {
-	org := strings.ToLower(claims.RepositoryOwner)
+func (h *Handler) handleStatus(w http.ResponseWriter, callerOrg string) {
+	org := strings.ToLower(callerOrg)
 	roles := append([]string(nil), h.allowedRoles...)
 
 	// Build sorted workflow host repos list for the status response.

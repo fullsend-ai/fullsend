@@ -41,6 +41,22 @@ type WorkerConfig struct {
 	// Same format as the CUSTOM_ROLE_PERMISSIONS environment variable.
 	CustomRolePermissions string
 
+	// StatusAuth is a comma-separated list of enabled auth modes for
+	// GET /v1/status. Valid modes: "oidc", "github". Default: "oidc".
+	StatusAuth string
+
+	// StatusGithubGroup is the ORG/TEAM slug that gates GitHub OAuth2
+	// access to /v1/status. Required when "github" mode is in StatusAuth.
+	StatusGithubGroup string
+
+	// StatusGithubClientID is the GitHub OAuth App client ID. Required
+	// when "github" mode is in StatusAuth.
+	StatusGithubClientID string
+
+	// StatusGithubClientSecret is the GitHub OAuth App client secret.
+	// Required when "github" mode is in StatusAuth.
+	StatusGithubClientSecret string
+
 	// Version is the fullsend semver stamped on the deployed Worker.
 	// For WASM deployments this is injected via the config JSON since
 	// the binary is precompiled and cannot embed version at compile time.
@@ -81,7 +97,13 @@ func ParseWorkerConfig(cfg WorkerConfig, pemAccessor PEMAccessor, oidcVerifier O
 		}
 	}
 
-	h, err := NewHandlerFromConfig(cfg.RoleAppIDs, cfg.AllowedRoles, cfg.PerRepoWIFRepos, cfg.AllowedOrgs, cfg.AllowedWorkflowFiles, cfg.WorkflowHostRepos, pemAccessor, oidcVerifier, httpClient)
+	statusCfg := StatusAuthConfig{
+		StatusAuth:               cfg.StatusAuth,
+		StatusGithubGroup:        cfg.StatusGithubGroup,
+		StatusGithubClientID:     cfg.StatusGithubClientID,
+		StatusGithubClientSecret: cfg.StatusGithubClientSecret,
+	}
+	h, err := NewHandlerFromConfig(cfg.RoleAppIDs, cfg.AllowedRoles, cfg.PerRepoWIFRepos, cfg.AllowedOrgs, cfg.AllowedWorkflowFiles, cfg.WorkflowHostRepos, statusCfg, pemAccessor, oidcVerifier, httpClient)
 	if err != nil {
 		return nil, err
 	}
@@ -113,10 +135,12 @@ func SplitCSV(s string) []string {
 // allowedWorkflowFilesCSV is the comma-separated ALLOWED_WORKFLOW_FILES list;
 // workflowHostReposCSV is the comma-separated WORKFLOW_HOST_REPOS list
 // (defaults to fullsend-ai/fullsend when empty).
+// statusCfg holds the status auth configuration (modes, GitHub group, client
+// ID/secret).
 //
 // The handler performs authorization (org-allowed, workflow-ref) after the
 // OIDCVerifier authenticates the token.
-func NewHandlerFromConfig(roleAppIDsJSON, allowedRolesCSV, perRepoWIFReposCSV, allowedOrgsCSV, allowedWorkflowFilesCSV, workflowHostReposCSV string, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, httpClient HTTPDoer) (*Handler, error) {
+func NewHandlerFromConfig(roleAppIDsJSON, allowedRolesCSV, perRepoWIFReposCSV, allowedOrgsCSV, allowedWorkflowFilesCSV, workflowHostReposCSV string, statusCfg StatusAuthConfig, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, httpClient HTTPDoer) (*Handler, error) {
 	perRepoWIFRepos := make(map[string]bool)
 	for _, entry := range SplitCSV(perRepoWIFReposCSV) {
 		perRepoWIFRepos[strings.ToLower(entry)] = true
@@ -130,18 +154,27 @@ func NewHandlerFromConfig(roleAppIDsJSON, allowedRolesCSV, perRepoWIFReposCSV, a
 		workflowHostRepos["fullsend-ai/fullsend"] = true
 	}
 
+	statusAuthModes := ParseStatusAuthModes(statusCfg.StatusAuth)
+	if err := ValidateStatusAuthConfig(statusAuthModes, statusCfg.StatusGithubGroup, statusCfg.StatusGithubClientID, statusCfg.StatusGithubClientSecret); err != nil {
+		return nil, err
+	}
+
 	h := &Handler{
-		httpClient:           httpClient,
-		pemAccessor:          pemAccessor,
-		oidcVerifier:         oidcVerifier,
-		githubBaseURL:        "https://api.github.com",
-		foreignCache:         make(map[string]foreignCacheEntry),
-		foreignInflight:      make(map[string]*foreignInflight),
-		foreignCacheTTL:      defaultForeignCacheTTL,
-		perRepoWIFRepos:      perRepoWIFRepos,
-		allowedOrgs:          SplitCSV(allowedOrgsCSV),
-		allowedWorkflowFiles: SplitCSV(allowedWorkflowFilesCSV),
-		workflowHostRepos:    workflowHostRepos,
+		httpClient:               httpClient,
+		pemAccessor:              pemAccessor,
+		oidcVerifier:             oidcVerifier,
+		githubBaseURL:            "https://api.github.com",
+		foreignCache:             make(map[string]foreignCacheEntry),
+		foreignInflight:          make(map[string]*foreignInflight),
+		foreignCacheTTL:          defaultForeignCacheTTL,
+		perRepoWIFRepos:          perRepoWIFRepos,
+		allowedOrgs:              SplitCSV(allowedOrgsCSV),
+		allowedWorkflowFiles:     SplitCSV(allowedWorkflowFilesCSV),
+		workflowHostRepos:        workflowHostRepos,
+		statusAuthModes:          statusAuthModes,
+		statusGithubGroup:        statusCfg.StatusGithubGroup,
+		statusGithubClientID:     statusCfg.StatusGithubClientID,
+		statusGithubClientSecret: statusCfg.StatusGithubClientSecret,
 	}
 
 	if roleAppIDsJSON != "" {
