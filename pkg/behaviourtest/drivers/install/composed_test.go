@@ -91,14 +91,22 @@ func TestNewComposedDriver_ThreadsMintURL(t *testing.T) {
 	}
 	e2eCfg := e2etest.EnvConfig{}
 
-	_, _, err := NewComposedDriver(
+	drv, _, err := NewComposedDriver(
 		context.Background(), mint, "org", e2eCfg,
 		nil, "tok", "/bin/true", 3, t.Logf,
 	)
 	require.NoError(t, err)
-	// The e2eCfg was passed by value so we can't verify the mutation
-	// directly, but the driver was created successfully which means
-	// the mint URL extraction path ran without error.
+
+	// Type-assert to the concrete composedDriver and inspect the
+	// internal RepoEnsurer to verify the mint URL was threaded through.
+	cd, ok := drv.(*composedDriver)
+	require.True(t, ok, "expected *composedDriver, got %T", drv)
+
+	re, ok := cd.ensurer.(*repoEnsurer)
+	require.True(t, ok, "expected *repoEnsurer, got %T", cd.ensurer)
+
+	assert.Equal(t, "https://preview.test", re.e2eCfg.MintURL,
+		"mint URL should be threaded from MintDriver install state to the internal RepoEnsurer config")
 }
 
 // --- AllocateRepo / DeallocateRepo tests ---
