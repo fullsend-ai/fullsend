@@ -22,6 +22,20 @@ const (
 	Approver      // write-equivalent
 )
 
+func (r Role) String() string {
+	switch r {
+	case Reviewer:
+		return "reviewer"
+	case Approver:
+		return "approver"
+	default:
+		return "none"
+	}
+}
+
+// ownersFile represents a root-level Prow OWNERS file with flat
+// approvers/reviewers lists. v1 limitation: filters: blocks and
+// nested per-directory OWNERS files are not supported.
 type ownersFile struct {
 	Approvers []string `yaml:"approvers"`
 	Reviewers []string `yaml:"reviewers"`

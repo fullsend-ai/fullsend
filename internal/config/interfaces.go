@@ -377,6 +377,8 @@ func (c *perRepoConfig) ConfigVersion() string {
 func (c *perRepoConfig) IsOrgMode() bool { return false }
 
 // AuthorizationOwnersFile returns whether OWNERS-file authorization is enabled.
+// Intentionally no parent fallback: OWNERS auth is a per-repo opt-in that must
+// not be inheritable from config.base.yaml.
 func (c *perRepoConfig) AuthorizationOwnersFile() bool {
 	return c.Authorization != nil && c.Authorization.OwnersFile
 }

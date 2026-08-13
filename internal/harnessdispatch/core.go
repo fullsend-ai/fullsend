@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/fetch"
@@ -40,18 +41,27 @@ func Dispatch(ctx context.Context, opts Options) ([]ExecutionRef, error) {
 		return nil, nil
 	}
 
-	// Upgrade Actor.Role in place if OWNERS grants a higher level.
-	// Bare paths — same working-directory assumption as ConfigDir.
+	// Compute the effective role for the auth gate without mutating the
+	// caller's event. The OWNERS-upgraded role is used only for
+	// IsAuthorized; downstream CEL evaluation sees the original
+	// collaborator-API role.
+	repoRoot := filepath.Dir(opts.ConfigDir)
+	effectiveRole := opts.Event.Actor.Role
 	if dirCfg.AuthorizationOwnersFile() && opts.Event.Actor.ID != "" {
-		role, err := owners.Resolve("OWNERS", "OWNERS_ALIASES", opts.Event.Actor.ID)
+		ownersPath := filepath.Join(repoRoot, "OWNERS")
+		aliasesPath := filepath.Join(repoRoot, "OWNERS_ALIASES")
+		role, err := owners.Resolve(ownersPath, aliasesPath, opts.Event.Actor.ID)
 		if err != nil {
 			log.Printf("harness dispatch: OWNERS resolution failed for %s: %v", opts.Event.Actor.ID, err)
 		} else if role != owners.None {
-			opts.Event.Actor.Role = owners.MapToActorRole(role, opts.Event.Actor.Role)
+			effectiveRole = owners.MapToActorRole(role, effectiveRole)
+			log.Printf("harness dispatch: OWNERS file resolved user %s as %s", opts.Event.Actor.ID, role)
 		}
 	}
 
-	if !IsAuthorized(opts.Event) {
+	authCheck := *opts.Event
+	authCheck.Actor.Role = effectiveRole
+	if !IsAuthorized(&authCheck) {
 		return nil, nil
 	}
 

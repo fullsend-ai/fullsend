@@ -88,10 +88,12 @@ the overlay → base → code defaults chain.
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
 | `authorization`¹ | `object` | Overlay only (not layered) | `nil` |
 
-> ¹ `authorization` is read by the dispatch workflow's bash/yq directly
-> from `.fullsend/config.yaml` (the overlay). It does **not** participate
-> in the overlay → base → code-defaults merge chain and is not part of the
-> Go config package. Setting it in `config.base.yaml` has no effect.
+> ¹ `authorization` is part of the Go config package
+> (`AuthorizationConfig` / `AuthorizationOwnersFile()`) and is consumed
+> by both the dispatch workflow's bash/yq and `internal/harnessdispatch`.
+> However, it is intentionally **overlay-only**: `AuthorizationOwnersFile()`
+> does not fall through to the parent config, so setting it in
+> `config.base.yaml` has no effect — each repo must opt in explicitly.
 > See [#6072](https://github.com/fullsend-ai/fullsend/issues/6072) for
 > the planned migration to the Go config layer.
 
@@ -309,11 +311,21 @@ for the dispatch workflow's `has_repo_permission` check. Currently
 supports one sub-field:
 
 - `owners_file` (`bool`, default `false`) — when `true`, the dispatch
-  routing logic checks the repo-root `OWNERS` and `OWNERS_ALIASES`
-  files before falling back to the GitHub collaborator API. OWNERS
+  routing logic checks the repo-root `OWNERS` file (and `OWNERS_ALIASES`
+  if present) before falling back to the GitHub collaborator API. OWNERS
   approvers get write-equivalent access; reviewers get
-  triage-equivalent. See [ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)
-  for details.
+  triage-equivalent. If the user is not listed in OWNERS, authorization
+  falls through to the collaborator API — OWNERS never blocks a
+  collaborator who isn't in the file.
+
+This applies to both the bash routing path (built-in stages) and the
+Go harness-dispatch path (custom agents). A missing or malformed OWNERS
+file fails closed: the OWNERS check is skipped and authorization falls
+through to the collaborator API.
+
+v1 limitation: only the repo-root flat `approvers`/`reviewers` lists
+are read. Prow `filters:` blocks and nested per-directory OWNERS files
+are not supported.
 
 Example:
 
@@ -322,8 +334,8 @@ authorization:
   owners_file: true
 ```
 
-This field is read by `yq` in the workflow bash routing logic, not by
-the Go config package. It is only meaningful in per-repo mode.
+See [ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)
+for the full design rationale.
 
 ## Code defaults reference
 
