@@ -208,9 +208,9 @@ scenario or when `-v` output from multiple scenarios would interleave.
 
 In CI, the test runner mints cross-org `e2e` installation tokens via OIDC (same as admin e2e) for GitHub API operations. Triage workflows on the pool org's `test-repo` mint same-org `triage` tokens from vendored reusable workflows; those require per-repo mint enrollment (`PER_REPO_WIF_REPOS`) on the hosted mint project. Pool `test-repo` repos are enrolled once by a GCP admin — not during CI install. The install driver provisions repo-scoped inference WIF via `fullsend inference provision` before `github setup`. See [e2e-testing.md](e2e-testing.md#behaviour-tests-and-per-repo-mint-enrollment).
 
-### Lazy create+install (`RepoEnsurer`)
+### Lazy create+install (`AllocateRepo`)
 
-The `Given the enrolled test repository` step lazily creates and installs numbered pool repos (`test-repo-NN`) on demand via `RepoEnsurer`. When a scenario leases a repo name from the pool and an ensurer is configured, the step calls `EnsureRepo(ctx, org, repoName)` which:
+The `Given the enrolled test repository` step lazily creates and installs numbered pool repos (`test-repo-NN`) on demand via the unified `install.Driver.AllocateRepo`. When a scenario calls `AllocateRepo`, the composed driver leases a slot from its internal pool and delegates to the internal `RepoEnsurer`, which calls `EnsureRepo(ctx, org, repoName)` to:
 
 1. Creates the repo if it does not exist (the forge's `auto_init` provides the initial commit).
 2. Validates post-install files; if validation fails, runs `fullsend github setup` (and inference provision when configured).
