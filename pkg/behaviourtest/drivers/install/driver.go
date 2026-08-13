@@ -1,10 +1,6 @@
 package install
 
-import (
-	"context"
-
-	"github.com/fullsend-ai/fullsend/internal/forge"
-)
+import "context"
 
 // MintDriver provisions and tears down fullsend in an acquired pool org.
 // MintDriver is used only during suite setup (single-threaded) and is not
@@ -16,18 +12,6 @@ type MintDriver interface {
 	Install(ctx context.Context, org string) (State, error)
 	Teardown(ctx context.Context, org string, state State) error
 }
-
-// Factory constructs a unified Driver for a given org and credentials.
-// Driver-specific inputs (mint URL, PEMs, allowlists, …) come from env
-// or are closed over by the factory function. Factory performs suite
-// setup (e.g. preview mint deploy) before returning so setup failures
-// fail the suite before scenarios run.
-type Factory func(
-	org string,
-	client forge.Client,
-	token, binary, gcpProjectID string,
-	logf func(string, ...any),
-) (Driver, error)
 
 // Driver is the unified repo-allocation interface that suite and
 // scenario lifecycle code speaks to. It combines mint/environment

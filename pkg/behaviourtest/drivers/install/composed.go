@@ -2,6 +2,7 @@ package install
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -164,13 +165,15 @@ func (d *composedDriver) Finalize(ctx context.Context) error {
 	}
 
 	// Tear down mint infrastructure (e.g. CF preview worker).
+	var teardownErr error
 	if d.mint != nil && d.mintState != nil {
 		if err := d.mint.Teardown(ctx, d.org, d.mintState); err != nil {
 			d.logf("Finalize: mint teardown: %v", err)
+			teardownErr = fmt.Errorf("mint teardown: %w", err)
 		}
 	}
 
-	return leakErr
+	return errors.Join(leakErr, teardownErr)
 }
 
 // Capacity returns the max concurrent outstanding allocations (the

@@ -109,9 +109,7 @@ func TestBehaviourSuite(t *testing.T) {
 		}
 	})
 
-	// Advisory warning when concurrency exceeds the driver's capacity.
-	// Per #6135: excess workers block in AllocateRepo; this is not a
-	// correctness signal and must not fail the run.
+	// Advisory: excess workers block in AllocateRepo (#6135).
 	if concurrency > driver.Capacity() {
 		t.Logf("WARNING: GODOG_CONCURRENCY=%d exceeds driver capacity %d; excess workers may block in AllocateRepo", concurrency, driver.Capacity())
 	}

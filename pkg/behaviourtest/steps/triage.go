@@ -41,6 +41,14 @@ func givenEnrolledTestRepository(ctx context.Context, w *world.World) error {
 		return fmt.Errorf("no repo driver configured; configure a unified install.Driver on the World template")
 	}
 
+	// Guard against double-call: if a repo is already allocated for this
+	// scenario, treat the second call as a no-op. Without this guard each
+	// invocation would lease a new slot while overwriting LeasedRepoName,
+	// silently leaking the first slot until Finalize reclaims it.
+	if w.LeasedRepoName != "" {
+		return nil
+	}
+
 	// AllocateRepo leases a pool slot and ensures the repo is created
 	// and has fullsend installed. This replaces the former two-step
 	// flow of pool.Acquire (in Before hook) + Ensurer.EnsureRepo (here).

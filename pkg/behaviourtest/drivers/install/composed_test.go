@@ -266,6 +266,46 @@ func TestFinalize_WithOutstanding_ReclaimsAndReturnsError(t *testing.T) {
 	assert.Equal(t, 1, mint.TeardownCallCount())
 }
 
+func TestFinalize_CombinesLeakAndTeardownErrors(t *testing.T) {
+	mint := &fakeMintDriver{
+		installState: NewPerRepoState("org", "", ""),
+		teardownErr:  fmt.Errorf("teardown boom"),
+	}
+	drv, _, err := NewComposedDriver(
+		context.Background(), mint, "org", e2etest.EnvConfig{},
+		nil, "tok", "/bin/true", 3, t.Logf,
+	)
+	require.NoError(t, err)
+	cd := drv.(*composedDriver)
+	cd.ensurer = newFakeEnsurer()
+
+	// Allocate but don't deallocate — this creates a leak error.
+	_, err = drv.AllocateRepo(context.Background())
+	require.NoError(t, err)
+
+	err = drv.Finalize(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "outstanding allocations were not deallocated")
+	assert.Contains(t, err.Error(), "mint teardown")
+}
+
+func TestFinalize_TeardownErrorOnly(t *testing.T) {
+	mint := &fakeMintDriver{
+		installState: NewPerRepoState("org", "", ""),
+		teardownErr:  fmt.Errorf("teardown boom"),
+	}
+	drv, _, err := NewComposedDriver(
+		context.Background(), mint, "org", e2etest.EnvConfig{},
+		nil, "tok", "/bin/true", 3, t.Logf,
+	)
+	require.NoError(t, err)
+
+	// No outstanding allocations, but teardown fails.
+	err = drv.Finalize(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mint teardown")
+}
+
 func TestCapacity(t *testing.T) {
 	mint := &fakeMintDriver{
 		installState: NewPerRepoState("org", "", ""),
