@@ -7,13 +7,17 @@
 package cf
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
+	"mime"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,11 +41,28 @@ const (
 const (
 	defaultWorkerName   = "fullsend-mint"
 	defaultOIDCAudience = "fullsend-mint"
+
+	// maxAPIResponseBytes caps io.ReadAll on Cloudflare JSON API
+	// responses (settings, versions, deployments, subdomain).
+	maxAPIResponseBytes = 10 << 20 // 10 MB
+
+	// maxErrorResponseBytes caps io.ReadAll on error response bodies.
+	maxErrorResponseBytes = 1 << 20 // 1 MB
 )
+
+// maxWorkerModuleBytes caps io.ReadAll on Worker module content
+// retrieved from the content API (multipart parts or single body).
+// This is a var (not const) so tests can temporarily lower it.
+var maxWorkerModuleBytes int64 = 50 << 20 // 50 MB
 
 // workerNamePattern validates Cloudflare Worker names.
 // Worker names must be lowercase alphanumeric with hyphens, 2-63 chars.
 var workerNamePattern = regexp.MustCompile(`^[a-z][a-z0-9-]{0,61}[a-z0-9]$`)
+
+// moduleNamePattern validates module names before embedding them in
+// Content-Disposition headers. Only letters, digits, dots, underscores,
+// and hyphens are allowed to prevent header injection.
+var moduleNamePattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
 
 // Compile-time check that Provisioner implements dispatch.Dispatcher.
 var _ dispatch.Dispatcher = (*Provisioner)(nil)
@@ -155,6 +176,25 @@ type WranglerRunner interface {
 	// already exists. Used to determine whether a bootstrap durable
 	// deploy is needed before a preview deploy.
 	WorkerExists(ctx context.Context, workerName string) (bool, error)
+
+	// GetVars reads the current plain-text variable bindings from a
+	// durable Worker via the Cloudflare API. Returns a map of var
+	// names to values. Secret bindings are excluded.
+	GetVars(ctx context.Context, workerName string) (map[string]string, error)
+
+	// HasPreviewVersions reports whether any preview-aliased versions
+	// exist on the Worker. Used to warn operators before mutating
+	// durable config.
+	HasPreviewVersions(ctx context.Context, workerName string) (bool, error)
+
+	// UpdateVars creates a new Worker version by cloning the currently
+	// deployed version's modules and bindings, updating only the
+	// specified plain_text vars, and deploying the new version to 100%
+	// traffic. This does not require local Worker sources or WASM build
+	// artifacts — module bytes are fetched from the Cloudflare API and
+	// re-uploaded. Non-plain_text bindings (secrets, KV, DO, etc.) are
+	// preserved via keep_bindings.
+	UpdateVars(ctx context.Context, workerName string, vars map[string]string) error
 }
 
 // Provisioner creates Cloudflare Worker infrastructure for token minting.
@@ -354,6 +394,190 @@ func (p *Provisioner) Teardown(ctx context.Context) error {
 	default:
 		return fmt.Errorf("unknown deploy mode for teardown")
 	}
+}
+
+// GetWorkerVars reads the current plain-text variable bindings from the
+// durable Worker. Delegates to the WranglerRunner.
+func (p *Provisioner) GetWorkerVars(ctx context.Context) (map[string]string, error) {
+	return p.wrangler.GetVars(ctx, p.cfg.WorkerName)
+}
+
+// CheckPreviewVersions reports whether any preview-aliased versions
+// exist on the Worker. Used to warn operators before mutating durable
+// config.
+func (p *Provisioner) CheckPreviewVersions(ctx context.Context) (bool, error) {
+	return p.wrangler.HasPreviewVersions(ctx, p.cfg.WorkerName)
+}
+
+// EnsureOrgInWorker adds an org to the durable Worker's ALLOWED_ORGS.
+// If the org is already present (case-insensitive), this is a no-op.
+// The Worker must already exist (deployed via 'mint deploy').
+func (p *Provisioner) EnsureOrgInWorker(ctx context.Context, org string) error {
+	vars, err := p.wrangler.GetVars(ctx, p.cfg.WorkerName)
+	if err != nil {
+		return fmt.Errorf("reading worker vars: %w", err)
+	}
+
+	// Public mode on CF is PER_REPO_WIF_REPOS=* (set by mint deploy --public).
+	// Org enroll is a no-op when the mint is public.
+	perRepoWIFRepos := parsePerRepoWIFReposMap(vars["PER_REPO_WIF_REPOS"])
+	if mintcore.IsPublicMintRepos(perRepoWIFRepos) {
+		return nil
+	}
+
+	existingOrgs := mintcore.ParseAllowedOrgs(vars["ALLOWED_ORGS"])
+
+	// Check if org is already present (case-insensitive).
+	orgLower := strings.ToLower(org)
+	for _, existing := range existingOrgs {
+		if strings.ToLower(existing) == orgLower {
+			return nil // already enrolled
+		}
+	}
+
+	// Append org and update.
+	existingOrgs = append(existingOrgs, org)
+	updatedVars := map[string]string{
+		"ALLOWED_ORGS": strings.Join(existingOrgs, ","),
+	}
+
+	return p.updateDurableVars(ctx, updatedVars)
+}
+
+// RemoveOrgFromWorker removes an org from the durable Worker's ALLOWED_ORGS.
+func (p *Provisioner) RemoveOrgFromWorker(ctx context.Context, org string) error {
+	vars, err := p.wrangler.GetVars(ctx, p.cfg.WorkerName)
+	if err != nil {
+		return fmt.Errorf("reading worker vars: %w", err)
+	}
+
+	// Public mode on CF is PER_REPO_WIF_REPOS=* (set by mint deploy --public).
+	perRepoWIFRepos := parsePerRepoWIFReposMap(vars["PER_REPO_WIF_REPOS"])
+	if mintcore.IsPublicMintRepos(perRepoWIFRepos) {
+		return fmt.Errorf("mint is in public mode (PER_REPO_WIF_REPOS=*); individual org unenroll is not supported")
+	}
+
+	existingOrgs := mintcore.ParseAllowedOrgs(vars["ALLOWED_ORGS"])
+
+	// Filter out org (case-insensitive).
+	orgLower := strings.ToLower(org)
+	var filtered []string
+	for _, existing := range existingOrgs {
+		if strings.ToLower(existing) != orgLower {
+			filtered = append(filtered, existing)
+		}
+	}
+
+	// Skip redeploy if the org was not present.
+	if len(filtered) == len(existingOrgs) {
+		return nil
+	}
+
+	updatedVars := map[string]string{
+		"ALLOWED_ORGS": strings.Join(filtered, ","),
+	}
+
+	return p.updateDurableVars(ctx, updatedVars)
+}
+
+// RegisterRepoInWorker adds a repo to the durable Worker's
+// PER_REPO_WIF_REPOS. The owner is NOT added to ALLOWED_ORGS —
+// per-repo enrollment is independent of org-level enrollment on
+// both GCP and Cloudflare. Per-repo callers are authorized via
+// PER_REPO_WIF_REPOS alone; ALLOWED_ORGS governs org-level access.
+// The Worker must already exist (deployed via 'mint deploy').
+func (p *Provisioner) RegisterRepoInWorker(ctx context.Context, repoFullName string) error {
+	vars, err := p.wrangler.GetVars(ctx, p.cfg.WorkerName)
+	if err != nil {
+		return fmt.Errorf("reading worker vars: %w", err)
+	}
+
+	// Public mode on CF is PER_REPO_WIF_REPOS=* (set by mint deploy --public).
+	// Per-repo registration is a no-op when the mint is already public.
+	perRepoWIFRepos := parsePerRepoWIFReposMap(vars["PER_REPO_WIF_REPOS"])
+	if mintcore.IsPublicMintRepos(perRepoWIFRepos) {
+		return nil
+	}
+
+	// Parse existing per-repo WIF repos.
+	existingRepos := mintcore.ParseAllowedOrgs(vars["PER_REPO_WIF_REPOS"])
+
+	// Check if repo is already present (case-insensitive).
+	repoLower := strings.ToLower(repoFullName)
+	for _, existing := range existingRepos {
+		if strings.ToLower(existing) == repoLower {
+			return nil // already enrolled
+		}
+	}
+
+	// Append repo.
+	existingRepos = append(existingRepos, repoFullName)
+
+	updatedVars := map[string]string{
+		"PER_REPO_WIF_REPOS": strings.Join(existingRepos, ","),
+	}
+
+	return p.updateDurableVars(ctx, updatedVars)
+}
+
+// RemoveRepoFromWorker removes a repo from the durable Worker's
+// PER_REPO_WIF_REPOS.
+func (p *Provisioner) RemoveRepoFromWorker(ctx context.Context, repoFullName string) error {
+	vars, err := p.wrangler.GetVars(ctx, p.cfg.WorkerName)
+	if err != nil {
+		return fmt.Errorf("reading worker vars: %w", err)
+	}
+
+	// Public mode on CF is PER_REPO_WIF_REPOS=* (set by mint deploy --public).
+	perRepoWIFRepos := parsePerRepoWIFReposMap(vars["PER_REPO_WIF_REPOS"])
+	if mintcore.IsPublicMintRepos(perRepoWIFRepos) {
+		return fmt.Errorf("mint is in public mode (PER_REPO_WIF_REPOS=*); per-repo unenroll is not supported")
+	}
+
+	// Parse existing per-repo WIF repos.
+	existingRepos := mintcore.ParseAllowedOrgs(vars["PER_REPO_WIF_REPOS"])
+
+	// Filter out repo (case-insensitive).
+	repoLower := strings.ToLower(repoFullName)
+	var filtered []string
+	for _, existing := range existingRepos {
+		if strings.ToLower(existing) != repoLower {
+			filtered = append(filtered, existing)
+		}
+	}
+
+	// Skip redeploy if the repo was not present.
+	if len(filtered) == len(existingRepos) {
+		return nil
+	}
+
+	updatedVars := map[string]string{
+		"PER_REPO_WIF_REPOS": strings.Join(filtered, ","),
+	}
+
+	return p.updateDurableVars(ctx, updatedVars)
+}
+
+// parsePerRepoWIFReposMap splits a PER_REPO_WIF_REPOS CSV string into
+// the map[string]bool format that mintcore.IsPublicMintRepos expects.
+// Entries are lowercased to match the NewHandler convention.
+func parsePerRepoWIFReposMap(csv string) map[string]bool {
+	m := make(map[string]bool)
+	for _, entry := range mintcore.SplitCSV(csv) {
+		m[strings.ToLower(entry)] = true
+	}
+	return m
+}
+
+// updateDurableVars updates env vars on the durable Worker by cloning
+// the currently deployed version's modules and bindings via the
+// Cloudflare API. Only the specified plain_text vars are modified;
+// all other bindings (secrets, KV, DO, etc.) are preserved via
+// keep_bindings. This does not require local Worker sources, WASM
+// build artifacts, or wrangler deploy — module bytes are fetched
+// from the Cloudflare API and re-uploaded.
+func (p *Provisioner) updateDurableVars(ctx context.Context, vars map[string]string) error {
+	return p.wrangler.UpdateVars(ctx, p.cfg.WorkerName, vars)
 }
 
 // validate checks that the Config has all required fields.
@@ -995,6 +1219,492 @@ func (r *LiveWranglerRunner) WorkerExists(ctx context.Context, workerName string
 	return true, nil
 }
 
+// GetVars reads the current plain-text variable bindings from a durable
+// Worker via the Cloudflare API (GET /accounts/:id/workers/scripts/:name/settings).
+// Returns a map of var names to values. Secret bindings are excluded.
+func (r *LiveWranglerRunner) GetVars(ctx context.Context, workerName string) (map[string]string, error) {
+	return GetWorkerVarsFn(ctx, r.AccountID, workerName)
+}
+
+// HasPreviewVersions reports whether any preview-aliased versions exist
+// on the Worker by parsing `wrangler versions list` output.
+func (r *LiveWranglerRunner) HasPreviewVersions(ctx context.Context, workerName string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "npx", "wrangler", "versions", "list", "--name", workerName)
+	cmd.Env = append(os.Environ(),
+		"CLOUDFLARE_ACCOUNT_ID="+r.AccountID,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("listing worker versions: %s\n%s", err, string(output))
+	}
+
+	return parseHasPreviewVersions(string(output)), nil
+}
+
+// parseHasPreviewVersions checks wrangler versions list output for
+// preview-aliased entries. Wrangler outputs lines containing
+// "preview" or "alias" when preview versions exist.
+func parseHasPreviewVersions(output string) bool {
+	lower := strings.ToLower(output)
+	// Wrangler versions list shows aliases in the output table.
+	// A line containing "preview" in the alias column indicates a
+	// preview version exists.
+	for line := range strings.SplitSeq(lower, "\n") {
+		line = strings.TrimSpace(line)
+		// Skip header/decoration lines.
+		if line == "" || strings.HasPrefix(line, "─") || strings.HasPrefix(line, "┌") ||
+			strings.HasPrefix(line, "├") || strings.HasPrefix(line, "└") {
+			continue
+		}
+		// Look for alias indicators in version rows.
+		if strings.Contains(line, "preview") && !strings.Contains(line, "version id") {
+			return true
+		}
+	}
+	return false
+}
+
+// UpdateVars creates a new Worker version by cloning the currently
+// deployed version's modules and bindings, updating only the specified
+// plain_text vars, and deploying the new version to 100% traffic.
+// This does not require local Worker sources or WASM build artifacts.
+func (r *LiveWranglerRunner) UpdateVars(ctx context.Context, workerName string, vars map[string]string) error {
+	token, err := ResolveCloudflareAPITokenFn(ctx)
+	if err != nil {
+		return fmt.Errorf("resolving API token: %w", err)
+	}
+
+	// 1. Fetch module content from the currently deployed Worker.
+	modules, mainModule, err := fetchWorkerContent(ctx, r.AccountID, workerName, token)
+	if err != nil {
+		return fmt.Errorf("fetching worker content: %w", err)
+	}
+
+	// 2. Fetch current settings to get existing plain_text bindings.
+	currentVars, err := GetWorkerVarsFn(ctx, r.AccountID, workerName)
+	if err != nil {
+		return fmt.Errorf("reading current vars: %w", err)
+	}
+
+	// 3. Merge updated vars into current vars.
+	for k, v := range vars {
+		currentVars[k] = v
+	}
+
+	// 4. Create a new version with updated bindings.
+	versionID, err := createVersionWithVars(ctx, r.AccountID, workerName, token, modules, mainModule, currentVars)
+	if err != nil {
+		return fmt.Errorf("creating new version: %w", err)
+	}
+
+	// 5. Deploy the new version to 100% traffic.
+	if err := deployVersionFn(ctx, r.AccountID, workerName, token, versionID); err != nil {
+		return fmt.Errorf("deploying version: %w", err)
+	}
+
+	return nil
+}
+
+// workerModule represents a module fetched from the Workers content API.
+type workerModule struct {
+	name        string
+	contentType string
+	data        []byte
+}
+
+// fetchWorkerContent fetches the currently deployed Worker's module
+// content via GET /accounts/{account}/workers/scripts/{name}/content/v2.
+// Returns the modules and the main module name.
+func fetchWorkerContent(ctx context.Context, accountID, workerName, token string) ([]workerModule, string, error) {
+	apiURL := fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/workers/scripts/%s/content/v2", accountID, workerName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("calling content API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorResponseBytes))
+		return nil, "", fmt.Errorf("content API returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	// The cf-entrypoint header tells us which module is main.
+	mainModule := resp.Header.Get("cf-entrypoint")
+
+	ct := resp.Header.Get("Content-Type")
+	mediaType, params, err := mime.ParseMediaType(ct)
+	if err != nil {
+		return nil, "", fmt.Errorf("parsing content-type %q: %w", ct, err)
+	}
+
+	var modules []workerModule
+
+	if strings.HasPrefix(mediaType, "multipart/") {
+		boundary := params["boundary"]
+		if boundary == "" {
+			return nil, "", fmt.Errorf("multipart response missing boundary")
+		}
+		reader := multipart.NewReader(resp.Body, boundary)
+		for {
+			part, partErr := reader.NextPart()
+			if partErr == io.EOF {
+				break
+			}
+			if partErr != nil {
+				return nil, "", fmt.Errorf("reading multipart part: %w", partErr)
+			}
+			lr := io.LimitReader(part, maxWorkerModuleBytes)
+			data, readErr := io.ReadAll(lr)
+			if readErr != nil {
+				return nil, "", fmt.Errorf("reading part data: %w", readErr)
+			}
+			// Detect truncation: if LimitReader hit the cap,
+			// there may be unread data. Try reading one more
+			// byte — if it succeeds the module was truncated.
+			if int64(len(data)) == maxWorkerModuleBytes {
+				var probe [1]byte
+				if n, _ := part.Read(probe[:]); n > 0 {
+					name := part.FileName()
+					if name == "" {
+						name = part.FormName()
+					}
+					return nil, "", fmt.Errorf("module %q exceeds %d bytes; refusing to upload truncated content", name, maxWorkerModuleBytes)
+				}
+			}
+			name := part.FileName()
+			if name == "" {
+				name = part.FormName()
+			}
+			partCT := part.Header.Get("Content-Type")
+			if partCT == "" {
+				partCT = "application/octet-stream"
+			}
+			modules = append(modules, workerModule{
+				name:        name,
+				contentType: partCT,
+				data:        data,
+			})
+		}
+	} else {
+		// Single-module Worker — entire body is the module.
+		lr := io.LimitReader(resp.Body, maxWorkerModuleBytes)
+		data, readErr := io.ReadAll(lr)
+		if readErr != nil {
+			return nil, "", fmt.Errorf("reading single-module body: %w", readErr)
+		}
+		// Detect truncation: if LimitReader hit the cap, there may
+		// be unread data. Try reading one more byte from the original
+		// body — if it succeeds the module was truncated.
+		if int64(len(data)) == maxWorkerModuleBytes {
+			var probe [1]byte
+			if n, _ := resp.Body.Read(probe[:]); n > 0 {
+				return nil, "", fmt.Errorf("single-module worker exceeds %d bytes; refusing to upload truncated content", maxWorkerModuleBytes)
+			}
+		}
+		name := mainModule
+		if name == "" {
+			name = "index.js"
+		}
+		modules = append(modules, workerModule{
+			name:        name,
+			contentType: ct,
+			data:        data,
+		})
+	}
+
+	if mainModule == "" && len(modules) > 0 {
+		mainModule = modules[0].name
+	}
+
+	return modules, mainModule, nil
+}
+
+// createVersionWithVars creates a new Worker version via the Versions
+// Upload API (POST /versions). Modules are re-uploaded from API-fetched
+// bytes. Only plain_text bindings are specified; all other binding types
+// are preserved via keep_bindings.
+func createVersionWithVars(ctx context.Context, accountID, workerName, token string, modules []workerModule, mainModule string, vars map[string]string) (string, error) {
+	// Build plain_text bindings from the merged vars map.
+	var bindings []map[string]string
+	for k, v := range vars {
+		bindings = append(bindings, map[string]string{
+			"type": "plain_text",
+			"name": k,
+			"text": v,
+		})
+	}
+
+	// Metadata specifies the main module, updated bindings, and
+	// keep_bindings for all non-plain_text binding types (so secrets,
+	// KV, DO, service bindings, etc. are preserved from the prior version).
+	metadata := map[string]interface{}{
+		"main_module": mainModule,
+		"bindings":    bindings,
+		"keep_bindings": []string{
+			"secret_text",
+			"secret_key",
+			"kv_namespace",
+			"durable_object_namespace",
+			"r2_bucket",
+			"service",
+			"queue",
+			"d1",
+			"vectorize",
+			"hyperdrive",
+			"ai",
+			"browser",
+			"mtls_certificate",
+			"send_email",
+			"version_metadata",
+		},
+	}
+
+	metadataJSON, err := json.Marshal(metadata)
+	if err != nil {
+		return "", fmt.Errorf("marshaling metadata: %w", err)
+	}
+
+	// Build multipart form: metadata part + module parts.
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	// Metadata part.
+	metaHeader := textproto.MIMEHeader{}
+	metaHeader.Set("Content-Disposition", `form-data; name="metadata"`)
+	metaHeader.Set("Content-Type", "application/json")
+	metaPart, err := writer.CreatePart(metaHeader)
+	if err != nil {
+		return "", fmt.Errorf("creating metadata part: %w", err)
+	}
+	if _, err := metaPart.Write(metadataJSON); err != nil {
+		return "", fmt.Errorf("writing metadata: %w", err)
+	}
+
+	// Module parts — re-upload bytes fetched from the API.
+	for _, mod := range modules {
+		// Sanitize module name before embedding in Content-Disposition
+		// to prevent header injection via crafted module names.
+		if !moduleNamePattern.MatchString(mod.name) {
+			return "", fmt.Errorf("module name %q contains invalid characters; allowed: [a-zA-Z0-9._-]", mod.name)
+		}
+		partHeader := textproto.MIMEHeader{}
+		partHeader.Set("Content-Disposition", fmt.Sprintf(`form-data; name="%s"; filename="%s"`, mod.name, mod.name))
+		partHeader.Set("Content-Type", mod.contentType)
+		modPart, partErr := writer.CreatePart(partHeader)
+		if partErr != nil {
+			return "", fmt.Errorf("creating module part %s: %w", mod.name, partErr)
+		}
+		if _, err := modPart.Write(mod.data); err != nil {
+			return "", fmt.Errorf("writing module %s: %w", mod.name, err)
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		return "", fmt.Errorf("closing multipart writer: %w", err)
+	}
+
+	// POST to versions endpoint.
+	apiURL := fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/workers/scripts/%s/versions", accountID, workerName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, &body)
+	if err != nil {
+		return "", fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("calling versions API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxAPIResponseBytes))
+	if err != nil {
+		return "", fmt.Errorf("reading response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return "", fmt.Errorf("versions API returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	// Parse version ID from response.
+	var versionResp struct {
+		Result struct {
+			ID string `json:"id"`
+		} `json:"result"`
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(respBody, &versionResp); err != nil {
+		return "", fmt.Errorf("parsing version response: %w", err)
+	}
+	if !versionResp.Success || versionResp.Result.ID == "" {
+		return "", fmt.Errorf("versions API returned success=%v, id=%q: %s", versionResp.Success, versionResp.Result.ID, string(respBody))
+	}
+
+	return versionResp.Result.ID, nil
+}
+
+// deployVersionFn deploys a Worker version to 100% traffic via the
+// Cloudflare Deployments API. Override in tests.
+var deployVersionFn = deployVersion
+
+// deployVersion deploys a Worker version to 100% traffic via
+// POST /accounts/{account}/workers/scripts/{name}/deployments.
+func deployVersion(ctx context.Context, accountID, workerName, token, versionID string) error {
+	payload := map[string]interface{}{
+		"versions": []map[string]interface{}{
+			{
+				"version_id": versionID,
+				"percentage": 100,
+			},
+		},
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshaling deployment payload: %w", err)
+	}
+
+	apiURL := fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/workers/scripts/%s/deployments", accountID, workerName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(payloadJSON))
+	if err != nil {
+		return fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("calling deployments API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAPIResponseBytes))
+	if err != nil {
+		return fmt.Errorf("reading response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return fmt.Errorf("deployments API returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	return nil
+}
+
+// ResolveCloudflareAPITokenFn resolves a Cloudflare API bearer token.
+// Prefers CLOUDFLARE_API_TOKEN env var; falls back to `npx wrangler
+// auth token` (wrangler ≥ 4.57) for OAuth sessions from `wrangler login`.
+// Override in tests.
+var ResolveCloudflareAPITokenFn = resolveCloudflareAPIToken
+
+func resolveCloudflareAPIToken(ctx context.Context) (string, error) {
+	token := os.Getenv("CLOUDFLARE_API_TOKEN")
+	if token != "" {
+		return token, nil
+	}
+	// Try wrangler auth token (OAuth sessions from `wrangler login`).
+	// Use Output (not CombinedOutput) to capture only stdout — stderr
+	// carries banner/diagnostic noise that would corrupt the token.
+	cmd := exec.CommandContext(ctx, "npx", "wrangler", "auth", "token")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("CLOUDFLARE_API_TOKEN not set and 'wrangler auth token' failed: %w; set CLOUDFLARE_API_TOKEN or run 'wrangler login'", err)
+	}
+	// Wrangler may print banner/info lines before the actual token.
+	// Extract the last non-empty line, which is the token value.
+	resolved := lastNonEmptyLine(string(out))
+	if resolved == "" {
+		return "", fmt.Errorf("'wrangler auth token' returned empty token; run 'wrangler login'")
+	}
+	return resolved, nil
+}
+
+// lastNonEmptyLine returns the last non-empty, trimmed line from s.
+// Used to extract the actual token/value from CLI output that may
+// include banner or diagnostic lines before the value.
+func lastNonEmptyLine(s string) string {
+	var last string
+	for line := range strings.SplitSeq(s, "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed != "" {
+			last = trimmed
+		}
+	}
+	return last
+}
+
+// GetWorkerVarsFn is the function used to read Worker vars via the
+// Cloudflare API. Override in tests to avoid real API calls.
+var GetWorkerVarsFn = getWorkerVars
+
+// getWorkerVars calls the Cloudflare API to read a Worker's settings
+// and extracts plain_text variable bindings. Supports both API-token
+// auth (CLOUDFLARE_API_TOKEN) and Wrangler OAuth sessions.
+func getWorkerVars(ctx context.Context, accountID, workerName string) (map[string]string, error) {
+	token, err := ResolveCloudflareAPITokenFn(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolving API token: %w", err)
+	}
+
+	url := fmt.Sprintf("https://api.cloudflare.com/client/v4/accounts/%s/workers/scripts/%s/settings", accountID, workerName)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("calling Cloudflare Workers settings API: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAPIResponseBytes))
+	if err != nil {
+		return nil, fmt.Errorf("reading response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("Cloudflare Workers settings API returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	return parseWorkerSettingsVars(body)
+}
+
+// parseWorkerSettingsVars extracts plain_text variable bindings from the
+// Cloudflare Workers settings API response.
+func parseWorkerSettingsVars(body []byte) (map[string]string, error) {
+	var response struct {
+		Result struct {
+			Bindings []struct {
+				Type string `json:"type"`
+				Name string `json:"name"`
+				Text string `json:"text"`
+			} `json:"bindings"`
+		} `json:"result"`
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("parsing settings response: %w", err)
+	}
+	if !response.Success {
+		return nil, fmt.Errorf("Cloudflare Workers settings API returned success=false: %s", string(body))
+	}
+
+	vars := make(map[string]string)
+	for _, b := range response.Result.Bindings {
+		if b.Type == "plain_text" {
+			vars[b.Name] = b.Text
+		}
+	}
+	return vars, nil
+}
+
 // PEMSecretsFromRoles converts a role-keyed PEM map (e.g. "coder" → PEM data)
 // into a Cloudflare secret-name-keyed map (e.g. "CODER_APP_PEM" → PEM data)
 // suitable for passing as Config.Secrets during deploy.
@@ -1125,7 +1835,7 @@ func resolveSubdomainViaAPI(ctx context.Context, accountID, token string) (strin
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxAPIResponseBytes))
 	if err != nil {
 		return "", fmt.Errorf("reading response: %w", err)
 	}

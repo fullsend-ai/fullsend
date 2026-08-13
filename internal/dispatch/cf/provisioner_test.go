@@ -1,9 +1,16 @@
 package cf
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
+	"mime/multipart"
+	"net/http"
+	"net/http/httptest"
+	"net/textproto"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -31,6 +38,23 @@ type fakeWranglerRunner struct {
 	workerExists *bool
 	// workerExistsErr, if non-nil, is returned by WorkerExists.
 	workerExistsErr error
+	// workerVars holds the vars returned by GetVars.
+	workerVars map[string]string
+	// getVarsErr, if non-nil, is returned by GetVars.
+	getVarsErr error
+	// hasPreviewVersions controls the return value of HasPreviewVersions.
+	hasPreviewVersions bool
+	// hasPreviewVersionsErr, if non-nil, is returned by HasPreviewVersions.
+	hasPreviewVersionsErr error
+	// updateVarsCalls tracks calls to UpdateVars.
+	updateVarsCalls []updateVarsCall
+	// updateVarsErr, if non-nil, is returned by UpdateVars.
+	updateVarsErr error
+}
+
+type updateVarsCall struct {
+	workerName string
+	vars       map[string]string
 }
 
 type deployCall struct {
@@ -105,6 +129,31 @@ func (f *fakeWranglerRunner) WorkerExists(_ context.Context, _ string) (bool, er
 		return *f.workerExists, nil
 	}
 	return true, nil // default: Worker exists
+}
+
+func (f *fakeWranglerRunner) GetVars(_ context.Context, _ string) (map[string]string, error) {
+	if f.getVarsErr != nil {
+		return nil, f.getVarsErr
+	}
+	if f.workerVars != nil {
+		return f.workerVars, nil
+	}
+	return make(map[string]string), nil
+}
+
+func (f *fakeWranglerRunner) HasPreviewVersions(_ context.Context, _ string) (bool, error) {
+	if f.hasPreviewVersionsErr != nil {
+		return false, f.hasPreviewVersionsErr
+	}
+	return f.hasPreviewVersions, nil
+}
+
+func (f *fakeWranglerRunner) UpdateVars(_ context.Context, workerName string, vars map[string]string) error {
+	f.updateVarsCalls = append(f.updateVarsCalls, updateVarsCall{
+		workerName: workerName,
+		vars:       vars,
+	})
+	return f.updateVarsErr
 }
 
 // --- Provisioner tests ---
@@ -2153,4 +2202,1315 @@ func stubWASMBuild(t *testing.T) {
 		BuildWASMFn = origBuild
 		CopyWASMExecFn = origCopy
 	})
+}
+
+// --- Enroll / Unenroll tests ---
+
+func TestEnsureOrgInWorker_AddsOrg(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{"ALLOWED_ORGS": "existing-org"},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.EnsureOrgInWorker(context.Background(), "new-org")
+	require.NoError(t, err)
+	require.Len(t, fake.updateVarsCalls, 1)
+	assert.Equal(t, "existing-org,new-org", fake.updateVarsCalls[0].vars["ALLOWED_ORGS"])
+	assert.Equal(t, "test-mint", fake.updateVarsCalls[0].workerName)
+	assert.Empty(t, fake.deployCalls, "enroll should not call Deploy")
+}
+
+func TestEnsureOrgInWorker_AlreadyEnrolled(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{"ALLOWED_ORGS": "acme,other"},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.EnsureOrgInWorker(context.Background(), "ACME")
+	require.NoError(t, err)
+	assert.Empty(t, fake.updateVarsCalls, "should not update vars when org already enrolled")
+}
+
+func TestEnsureOrgInWorker_PublicMode(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{"PER_REPO_WIF_REPOS": "*"},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.EnsureOrgInWorker(context.Background(), "acme")
+	require.NoError(t, err)
+	assert.Empty(t, fake.updateVarsCalls, "should not update vars in public mode")
+}
+
+func TestEnsureOrgInWorker_EmptyAllowedOrgs(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.EnsureOrgInWorker(context.Background(), "acme")
+	require.NoError(t, err)
+	require.Len(t, fake.updateVarsCalls, 1)
+	assert.Equal(t, "acme", fake.updateVarsCalls[0].vars["ALLOWED_ORGS"])
+}
+
+func TestRemoveOrgFromWorker_RemovesOrg(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{"ALLOWED_ORGS": "acme,other"},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.RemoveOrgFromWorker(context.Background(), "acme")
+	require.NoError(t, err)
+	require.Len(t, fake.updateVarsCalls, 1)
+	assert.Equal(t, "other", fake.updateVarsCalls[0].vars["ALLOWED_ORGS"])
+}
+
+func TestRemoveOrgFromWorker_PublicMode(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{"PER_REPO_WIF_REPOS": "*"},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.RemoveOrgFromWorker(context.Background(), "acme")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "public mode")
+	assert.Contains(t, err.Error(), "PER_REPO_WIF_REPOS=*")
+}
+
+func TestRemoveOrgFromWorker_NotEnrolled(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{"ALLOWED_ORGS": "acme,other"},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.RemoveOrgFromWorker(context.Background(), "missing-org")
+	require.NoError(t, err)
+	assert.Empty(t, fake.updateVarsCalls, "should not update vars when org is not enrolled")
+}
+
+func TestRegisterRepoInWorker_AddsRepo(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{
+			"ALLOWED_ORGS":       "existing-org",
+			"PER_REPO_WIF_REPOS": "",
+		},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.RegisterRepoInWorker(context.Background(), "new-org/widget")
+	require.NoError(t, err)
+	require.Len(t, fake.updateVarsCalls, 1)
+	assert.Equal(t, "new-org/widget", fake.updateVarsCalls[0].vars["PER_REPO_WIF_REPOS"])
+	// Per-repo enrollment must NOT modify ALLOWED_ORGS.
+	_, hasAllowedOrgs := fake.updateVarsCalls[0].vars["ALLOWED_ORGS"]
+	assert.False(t, hasAllowedOrgs, "per-repo enrollment should not modify ALLOWED_ORGS")
+}
+
+func TestRegisterRepoInWorker_DoesNotModifyAllowedOrgs(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{
+			"ALLOWED_ORGS":       "acme",
+			"PER_REPO_WIF_REPOS": "",
+		},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.RegisterRepoInWorker(context.Background(), "acme/widget")
+	require.NoError(t, err)
+	require.Len(t, fake.updateVarsCalls, 1)
+	assert.Equal(t, "acme/widget", fake.updateVarsCalls[0].vars["PER_REPO_WIF_REPOS"])
+	// Per-repo enrollment must NOT modify ALLOWED_ORGS — it is independent
+	// of org-level enrollment on both GCP and Cloudflare.
+	_, hasAllowedOrgs := fake.updateVarsCalls[0].vars["ALLOWED_ORGS"]
+	assert.False(t, hasAllowedOrgs, "per-repo enrollment should not modify ALLOWED_ORGS")
+}
+
+func TestRegisterRepoInWorker_AlreadyEnrolled(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{
+			"ALLOWED_ORGS":       "acme",
+			"PER_REPO_WIF_REPOS": "acme/widget",
+		},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.RegisterRepoInWorker(context.Background(), "ACME/widget")
+	require.NoError(t, err)
+	assert.Empty(t, fake.updateVarsCalls, "should not update vars when repo already enrolled")
+}
+
+func TestRemoveRepoFromWorker_RemovesRepo(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{
+			"ALLOWED_ORGS":       "acme",
+			"PER_REPO_WIF_REPOS": "acme/widget,acme/other",
+		},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.RemoveRepoFromWorker(context.Background(), "acme/widget")
+	require.NoError(t, err)
+	require.Len(t, fake.updateVarsCalls, 1)
+	assert.Equal(t, "acme/other", fake.updateVarsCalls[0].vars["PER_REPO_WIF_REPOS"])
+}
+
+func TestRemoveRepoFromWorker_NotEnrolled(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{
+			"ALLOWED_ORGS":       "acme",
+			"PER_REPO_WIF_REPOS": "acme/other",
+		},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.RemoveRepoFromWorker(context.Background(), "acme/missing-repo")
+	require.NoError(t, err)
+	assert.Empty(t, fake.updateVarsCalls, "should not update vars when repo is not enrolled")
+}
+
+func TestRemoveRepoFromWorker_PublicMode(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{"PER_REPO_WIF_REPOS": "*"},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.RemoveRepoFromWorker(context.Background(), "acme/widget")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "public mode")
+	assert.Contains(t, err.Error(), "PER_REPO_WIF_REPOS=*")
+}
+
+func TestParseWorkerSettingsVars(t *testing.T) {
+	body := []byte(`{
+		"result": {
+			"bindings": [
+				{"type": "plain_text", "name": "ALLOWED_ORGS", "text": "acme,other"},
+				{"type": "plain_text", "name": "PER_REPO_WIF_REPOS", "text": "acme/widget"},
+				{"type": "secret_text", "name": "CODER_APP_PEM"}
+			]
+		},
+		"success": true
+	}`)
+
+	vars, err := parseWorkerSettingsVars(body)
+	require.NoError(t, err)
+	assert.Equal(t, "acme,other", vars["ALLOWED_ORGS"])
+	assert.Equal(t, "acme/widget", vars["PER_REPO_WIF_REPOS"])
+	_, hasSecret := vars["CODER_APP_PEM"]
+	assert.False(t, hasSecret, "secret bindings should be excluded")
+}
+
+func TestParseWorkerSettingsVars_FailureResponse(t *testing.T) {
+	body := []byte(`{"result": {}, "success": false}`)
+	_, err := parseWorkerSettingsVars(body)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "success=false")
+}
+
+func TestParseHasPreviewVersions(t *testing.T) {
+	// No preview versions.
+	assert.False(t, parseHasPreviewVersions("Version ID     Created\nabc123        2026-01-01"))
+	// Has preview versions.
+	assert.True(t, parseHasPreviewVersions("Version ID     Created       Preview\nabc123        2026-01-01    my-preview"))
+}
+
+func TestCheckPreviewVersions(t *testing.T) {
+	fake := &fakeWranglerRunner{hasPreviewVersions: true}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	has, err := p.CheckPreviewVersions(context.Background())
+	require.NoError(t, err)
+	assert.True(t, has)
+}
+
+// --- HTTP transport interception helper ---
+
+// testRoundTripper implements http.RoundTripper via a function.
+type testRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f testRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+// withHTTPIntercept replaces http.DefaultTransport with one that routes
+// all requests to the test server, preserving the original URL path.
+// Tests using this must not run in parallel.
+func withHTTPIntercept(t *testing.T, handler http.Handler) {
+	t.Helper()
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+
+	tsURL, err := url.Parse(ts.URL)
+	require.NoError(t, err)
+
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = testRoundTripper(func(req *http.Request) (*http.Response, error) {
+		req2 := req.Clone(req.Context())
+		req2.URL.Scheme = tsURL.Scheme
+		req2.URL.Host = tsURL.Host
+		return (&http.Transport{}).RoundTrip(req2)
+	})
+	t.Cleanup(func() { http.DefaultTransport = origTransport })
+}
+
+// --- fetchWorkerContent tests ---
+
+func TestFetchWorkerContent_SingleModule(t *testing.T) {
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+		assert.Contains(t, r.URL.Path, "/content/v2")
+		w.Header().Set("Content-Type", "application/javascript")
+		w.Header().Set("cf-entrypoint", "index.js")
+		fmt.Fprint(w, "console.log('hello')")
+	}))
+
+	modules, main, err := fetchWorkerContent(context.Background(), "acc-id", "my-worker", "test-token")
+	require.NoError(t, err)
+	assert.Equal(t, "index.js", main)
+	require.Len(t, modules, 1)
+	assert.Equal(t, "index.js", modules[0].name)
+	assert.Equal(t, "application/javascript", modules[0].contentType)
+	assert.Equal(t, []byte("console.log('hello')"), modules[0].data)
+}
+
+func TestFetchWorkerContent_SingleModule_NoEntrypoint(t *testing.T) {
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript")
+		// No cf-entrypoint header — should default to "index.js".
+		fmt.Fprint(w, "export default {}")
+	}))
+
+	modules, main, err := fetchWorkerContent(context.Background(), "acc-id", "my-worker", "test-token")
+	require.NoError(t, err)
+	assert.Equal(t, "index.js", main)
+	require.Len(t, modules, 1)
+	assert.Equal(t, "index.js", modules[0].name)
+}
+
+func TestFetchWorkerContent_Multipart(t *testing.T) {
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+
+		// Part 1: JS module.
+		h1 := textproto.MIMEHeader{}
+		h1.Set("Content-Disposition", `form-data; name="index.js"; filename="index.js"`)
+		h1.Set("Content-Type", "application/javascript")
+		p1, _ := mw.CreatePart(h1)
+		fmt.Fprint(p1, "export default {}")
+
+		// Part 2: WASM module (no Content-Type — should default).
+		h2 := textproto.MIMEHeader{}
+		h2.Set("Content-Disposition", `form-data; name="module.wasm"; filename="module.wasm"`)
+		p2, _ := mw.CreatePart(h2)
+		p2.Write([]byte{0x00, 0x61, 0x73, 0x6d})
+
+		mw.Close()
+
+		w.Header().Set("Content-Type", mw.FormDataContentType())
+		w.Header().Set("cf-entrypoint", "index.js")
+		w.Write(buf.Bytes())
+	}))
+
+	modules, main, err := fetchWorkerContent(context.Background(), "acc-id", "my-worker", "test-token")
+	require.NoError(t, err)
+	assert.Equal(t, "index.js", main)
+	require.Len(t, modules, 2)
+	assert.Equal(t, "index.js", modules[0].name)
+	assert.Equal(t, "application/javascript", modules[0].contentType)
+	assert.Equal(t, "module.wasm", modules[1].name)
+}
+
+func TestFetchWorkerContent_ErrorStatus(t *testing.T) {
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, "not found")
+	}))
+
+	_, _, err := fetchWorkerContent(context.Background(), "acc-id", "my-worker", "test-token")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "content API returned 404")
+}
+
+func TestFetchWorkerContent_CancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, err := fetchWorkerContent(ctx, "acc-id", "my-worker", "test-token")
+	require.Error(t, err)
+}
+
+func TestFetchWorkerContent_SingleModuleTruncation(t *testing.T) {
+	// When the single-module body exceeds maxWorkerModuleBytes,
+	// fetchWorkerContent should return an error instead of silently
+	// uploading truncated content.
+	origMax := maxWorkerModuleBytes
+	// Use a small limit for testing.
+	defer func() { maxWorkerModuleBytes = origMax }()
+	maxWorkerModuleBytes = 10
+
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript")
+		w.Header().Set("cf-entrypoint", "index.js")
+		// Write more than the 10-byte limit.
+		fmt.Fprint(w, "this content is definitely longer than ten bytes")
+	}))
+
+	_, _, err := fetchWorkerContent(context.Background(), "acc-id", "my-worker", "test-token")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds")
+	assert.Contains(t, err.Error(), "truncated")
+}
+
+func TestFetchWorkerContent_MultipartTruncation(t *testing.T) {
+	// When a multipart module part exceeds maxWorkerModuleBytes,
+	// fetchWorkerContent should return an error.
+	origMax := maxWorkerModuleBytes
+	defer func() { maxWorkerModuleBytes = origMax }()
+	maxWorkerModuleBytes = 10
+
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var buf bytes.Buffer
+		mw := multipart.NewWriter(&buf)
+
+		h1 := textproto.MIMEHeader{}
+		h1.Set("Content-Disposition", `form-data; name="module.wasm"; filename="module.wasm"`)
+		h1.Set("Content-Type", "application/wasm")
+		p1, _ := mw.CreatePart(h1)
+		// Write more than the 10-byte limit.
+		p1.Write(bytes.Repeat([]byte{0x00}, 20))
+
+		mw.Close()
+
+		w.Header().Set("Content-Type", mw.FormDataContentType())
+		w.Header().Set("cf-entrypoint", "index.js")
+		w.Write(buf.Bytes())
+	}))
+
+	_, _, err := fetchWorkerContent(context.Background(), "acc-id", "my-worker", "test-token")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "exceeds")
+	assert.Contains(t, err.Error(), "truncated")
+}
+
+// --- createVersionWithVars tests ---
+
+func TestCreateVersionWithVars_Success(t *testing.T) {
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Contains(t, r.URL.Path, "/versions")
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+		assert.Contains(t, r.Header.Get("Content-Type"), "multipart/form-data")
+
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"result":  map[string]string{"id": "version-abc123"},
+			"success": true,
+		})
+	}))
+
+	modules := []workerModule{
+		{name: "index.js", contentType: "application/javascript", data: []byte("export default {}")},
+	}
+	vars := map[string]string{"ALLOWED_ORGS": "acme"}
+
+	id, err := createVersionWithVars(context.Background(), "acc-id", "my-worker", "test-token", modules, "index.js", vars)
+	require.NoError(t, err)
+	assert.Equal(t, "version-abc123", id)
+}
+
+func TestCreateVersionWithVars_MultipleModules(t *testing.T) {
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"result":  map[string]string{"id": "version-multi"},
+			"success": true,
+		})
+	}))
+
+	modules := []workerModule{
+		{name: "index.js", contentType: "application/javascript", data: []byte("code")},
+		{name: "module.wasm", contentType: "application/wasm", data: []byte("wasmdata")},
+	}
+	vars := map[string]string{"KEY": "value"}
+
+	id, err := createVersionWithVars(context.Background(), "acc-id", "my-worker", "test-token", modules, "index.js", vars)
+	require.NoError(t, err)
+	assert.Equal(t, "version-multi", id)
+}
+
+func TestCreateVersionWithVars_ErrorStatus(t *testing.T) {
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, "bad request")
+	}))
+
+	modules := []workerModule{
+		{name: "index.js", contentType: "application/javascript", data: []byte("code")},
+	}
+
+	_, err := createVersionWithVars(context.Background(), "acc-id", "my-worker", "test-token", modules, "index.js", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "versions API returned 400")
+}
+
+func TestCreateVersionWithVars_FailureResponse(t *testing.T) {
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"result":  map[string]string{"id": ""},
+			"success": false,
+		})
+	}))
+
+	modules := []workerModule{
+		{name: "index.js", contentType: "application/javascript", data: []byte("code")},
+	}
+
+	_, err := createVersionWithVars(context.Background(), "acc-id", "my-worker", "test-token", modules, "index.js", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "success=false")
+}
+
+func TestCreateVersionWithVars_InvalidModuleName(t *testing.T) {
+	// createVersionWithVars should reject module names containing
+	// characters outside [a-zA-Z0-9._-] to prevent header injection.
+	modules := []workerModule{
+		{name: "index.js", contentType: "application/javascript", data: []byte("ok")},
+		{name: `evil"; evil="x`, contentType: "application/javascript", data: []byte("bad")},
+	}
+
+	_, err := createVersionWithVars(context.Background(), "acc-id", "my-worker", "test-token", modules, "index.js", nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid characters")
+}
+
+// --- deployVersion tests ---
+
+func TestDeployVersion_Success(t *testing.T) {
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Contains(t, r.URL.Path, "/deployments")
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+
+		var payload map[string]interface{}
+		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+		versions, ok := payload["versions"].([]interface{})
+		require.True(t, ok)
+		require.Len(t, versions, 1)
+
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	err := deployVersion(context.Background(), "acc-id", "my-worker", "test-token", "version-123")
+	require.NoError(t, err)
+}
+
+func TestDeployVersion_ErrorStatus(t *testing.T) {
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, "internal error")
+	}))
+
+	err := deployVersion(context.Background(), "acc-id", "my-worker", "test-token", "version-123")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deployments API returned 500")
+}
+
+func TestDeployVersion_CancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := deployVersion(ctx, "acc-id", "my-worker", "test-token", "version-123")
+	require.Error(t, err)
+}
+
+// --- resolveSubdomainViaAPI tests ---
+
+func TestResolveSubdomainViaAPI_Success(t *testing.T) {
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Contains(t, r.URL.Path, "/subdomain")
+		assert.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"result":  map[string]string{"subdomain": "my-sub"},
+			"success": true,
+		})
+	}))
+
+	sub, err := resolveSubdomainViaAPI(context.Background(), "acc-id", "test-token")
+	require.NoError(t, err)
+	assert.Equal(t, "my-sub", sub)
+}
+
+func TestResolveSubdomainViaAPI_ErrorStatus(t *testing.T) {
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, "forbidden")
+	}))
+
+	_, err := resolveSubdomainViaAPI(context.Background(), "acc-id", "test-token")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "returned 403")
+}
+
+func TestResolveSubdomainViaAPI_EmptySubdomain(t *testing.T) {
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"result":  map[string]string{"subdomain": ""},
+			"success": true,
+		})
+	}))
+
+	_, err := resolveSubdomainViaAPI(context.Background(), "acc-id", "test-token")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "empty subdomain")
+}
+
+func TestResolveSubdomainViaAPI_CancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := resolveSubdomainViaAPI(ctx, "acc-id", "test-token")
+	require.Error(t, err)
+}
+
+// --- getWorkerVars (actual implementation) tests ---
+
+func TestGetWorkerVars_Implementation_Success(t *testing.T) {
+	origToken := ResolveCloudflareAPITokenFn
+	ResolveCloudflareAPITokenFn = func(_ context.Context) (string, error) {
+		return "test-token", nil
+	}
+	t.Cleanup(func() { ResolveCloudflareAPITokenFn = origToken })
+
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Contains(t, r.URL.Path, "/settings")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"result": map[string]interface{}{
+				"bindings": []map[string]string{
+					{"type": "plain_text", "name": "ALLOWED_ORGS", "text": "acme,other"},
+					{"type": "plain_text", "name": "PER_REPO_WIF_REPOS", "text": "acme/widget"},
+					{"type": "secret_text", "name": "CODER_APP_PEM"},
+				},
+			},
+			"success": true,
+		})
+	}))
+
+	vars, err := getWorkerVars(context.Background(), "acc-id", "my-worker")
+	require.NoError(t, err)
+	assert.Equal(t, "acme,other", vars["ALLOWED_ORGS"])
+	assert.Equal(t, "acme/widget", vars["PER_REPO_WIF_REPOS"])
+	_, hasSecret := vars["CODER_APP_PEM"]
+	assert.False(t, hasSecret, "secret bindings should be excluded")
+}
+
+func TestGetWorkerVars_Implementation_TokenError(t *testing.T) {
+	origToken := ResolveCloudflareAPITokenFn
+	ResolveCloudflareAPITokenFn = func(_ context.Context) (string, error) {
+		return "", fmt.Errorf("no token")
+	}
+	t.Cleanup(func() { ResolveCloudflareAPITokenFn = origToken })
+
+	_, err := getWorkerVars(context.Background(), "acc-id", "my-worker")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving API token")
+}
+
+func TestGetWorkerVars_Implementation_HTTPError(t *testing.T) {
+	origToken := ResolveCloudflareAPITokenFn
+	ResolveCloudflareAPITokenFn = func(_ context.Context) (string, error) {
+		return "test-token", nil
+	}
+	t.Cleanup(func() { ResolveCloudflareAPITokenFn = origToken })
+
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, "server error")
+	}))
+
+	_, err := getWorkerVars(context.Background(), "acc-id", "my-worker")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "returned 500")
+}
+
+// --- resolveCloudflareAPIToken tests ---
+
+func TestResolveCloudflareAPIToken_FromEnv(t *testing.T) {
+	withCFEnvCleared(t)
+	os.Setenv("CLOUDFLARE_API_TOKEN", "env-token")
+
+	token, err := resolveCloudflareAPIToken(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "env-token", token)
+}
+
+func TestResolveCloudflareAPIToken_FallbackError(t *testing.T) {
+	withCFEnvCleared(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := resolveCloudflareAPIToken(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CLOUDFLARE_API_TOKEN not set")
+}
+
+// --- resolveWorkersSubdomain tests ---
+
+func TestResolveWorkersSubdomain_WithAPIToken(t *testing.T) {
+	withCFEnvCleared(t)
+	os.Setenv("CLOUDFLARE_API_TOKEN", "test-token")
+
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"result":  map[string]string{"subdomain": "my-subdomain"},
+			"success": true,
+		})
+	}))
+
+	sub, err := resolveWorkersSubdomain(context.Background(), "acc-id")
+	require.NoError(t, err)
+	assert.Equal(t, "my-subdomain", sub)
+}
+
+func TestResolveWorkersSubdomain_FallbackExecError(t *testing.T) {
+	withCFEnvCleared(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := resolveWorkersSubdomain(ctx, "acc-id")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wrangler subdomain failed")
+}
+
+// --- resolveSubdomainViaWrangler tests ---
+
+func TestResolveSubdomainViaWrangler_ExecError(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := resolveSubdomainViaWrangler(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wrangler subdomain failed")
+}
+
+// --- Provisioner.GetWorkerVars tests ---
+
+func TestProvisioner_GetWorkerVars_Success(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{"ALLOWED_ORGS": "acme", "PER_REPO_WIF_REPOS": "acme/widget"},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	vars, err := p.GetWorkerVars(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "acme", vars["ALLOWED_ORGS"])
+	assert.Equal(t, "acme/widget", vars["PER_REPO_WIF_REPOS"])
+}
+
+func TestProvisioner_GetWorkerVars_Error(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		getVarsErr: fmt.Errorf("API error"),
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	_, err := p.GetWorkerVars(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "API error")
+}
+
+// --- LiveWranglerRunner.GetVars tests ---
+
+func TestLiveWranglerRunner_GetVars_Success(t *testing.T) {
+	orig := GetWorkerVarsFn
+	GetWorkerVarsFn = func(_ context.Context, accountID, workerName string) (map[string]string, error) {
+		assert.Equal(t, "test-account", accountID)
+		assert.Equal(t, "test-worker", workerName)
+		return map[string]string{"KEY": "value"}, nil
+	}
+	t.Cleanup(func() { GetWorkerVarsFn = orig })
+
+	runner := &LiveWranglerRunner{AccountID: "test-account"}
+	vars, err := runner.GetVars(context.Background(), "test-worker")
+	require.NoError(t, err)
+	assert.Equal(t, "value", vars["KEY"])
+}
+
+func TestLiveWranglerRunner_GetVars_Error(t *testing.T) {
+	orig := GetWorkerVarsFn
+	GetWorkerVarsFn = func(_ context.Context, _, _ string) (map[string]string, error) {
+		return nil, fmt.Errorf("API error")
+	}
+	t.Cleanup(func() { GetWorkerVarsFn = orig })
+
+	runner := &LiveWranglerRunner{AccountID: "test-account"}
+	_, err := runner.GetVars(context.Background(), "test-worker")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "API error")
+}
+
+// --- LiveWranglerRunner.HasPreviewVersions tests ---
+
+func TestLiveWranglerRunner_HasPreviewVersions_CommandError(t *testing.T) {
+	runner := &LiveWranglerRunner{AccountID: "test-account"}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := runner.HasPreviewVersions(ctx, "test-worker")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "listing worker versions")
+}
+
+// --- LiveWranglerRunner.UpdateVars tests ---
+
+func TestLiveWranglerRunner_UpdateVars_Success(t *testing.T) {
+	// Override token resolution.
+	origToken := ResolveCloudflareAPITokenFn
+	ResolveCloudflareAPITokenFn = func(_ context.Context) (string, error) {
+		return "test-token", nil
+	}
+	t.Cleanup(func() { ResolveCloudflareAPITokenFn = origToken })
+
+	// Override GetWorkerVarsFn.
+	origGetVars := GetWorkerVarsFn
+	GetWorkerVarsFn = func(_ context.Context, _, _ string) (map[string]string, error) {
+		return map[string]string{"EXISTING": "keep"}, nil
+	}
+	t.Cleanup(func() { GetWorkerVarsFn = origGetVars })
+
+	// Override deployVersionFn.
+	origDeploy := deployVersionFn
+	deployVersionFn = func(_ context.Context, _, _, _, versionID string) error {
+		assert.Equal(t, "version-new", versionID)
+		return nil
+	}
+	t.Cleanup(func() { deployVersionFn = origDeploy })
+
+	// Track API calls: fetchWorkerContent + createVersionWithVars
+	callCount := 0
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if r.Method == http.MethodGet && r.URL.Path != "" {
+			// fetchWorkerContent call — return single-module response.
+			w.Header().Set("Content-Type", "application/javascript")
+			w.Header().Set("cf-entrypoint", "index.js")
+			fmt.Fprint(w, "module code")
+			return
+		}
+		// createVersionWithVars call — return success.
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"result":  map[string]string{"id": "version-new"},
+			"success": true,
+		})
+	}))
+
+	runner := &LiveWranglerRunner{AccountID: "test-account"}
+	err := runner.UpdateVars(context.Background(), "test-worker", map[string]string{"NEW_VAR": "new-value"})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, callCount, 2, "should make at least 2 HTTP calls")
+}
+
+func TestLiveWranglerRunner_UpdateVars_TokenError(t *testing.T) {
+	origToken := ResolveCloudflareAPITokenFn
+	ResolveCloudflareAPITokenFn = func(_ context.Context) (string, error) {
+		return "", fmt.Errorf("no token available")
+	}
+	t.Cleanup(func() { ResolveCloudflareAPITokenFn = origToken })
+
+	runner := &LiveWranglerRunner{AccountID: "test-account"}
+	err := runner.UpdateVars(context.Background(), "test-worker", map[string]string{"K": "V"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving API token")
+}
+
+func TestLiveWranglerRunner_UpdateVars_FetchContentError(t *testing.T) {
+	origToken := ResolveCloudflareAPITokenFn
+	ResolveCloudflareAPITokenFn = func(_ context.Context) (string, error) {
+		return "test-token", nil
+	}
+	t.Cleanup(func() { ResolveCloudflareAPITokenFn = origToken })
+
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, "worker not found")
+	}))
+
+	runner := &LiveWranglerRunner{AccountID: "test-account"}
+	err := runner.UpdateVars(context.Background(), "test-worker", map[string]string{"K": "V"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fetching worker content")
+}
+
+func TestLiveWranglerRunner_UpdateVars_GetVarsError(t *testing.T) {
+	origToken := ResolveCloudflareAPITokenFn
+	ResolveCloudflareAPITokenFn = func(_ context.Context) (string, error) {
+		return "test-token", nil
+	}
+	t.Cleanup(func() { ResolveCloudflareAPITokenFn = origToken })
+
+	origGetVars := GetWorkerVarsFn
+	GetWorkerVarsFn = func(_ context.Context, _, _ string) (map[string]string, error) {
+		return nil, fmt.Errorf("settings fetch error")
+	}
+	t.Cleanup(func() { GetWorkerVarsFn = origGetVars })
+
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// fetchWorkerContent succeeds.
+		w.Header().Set("Content-Type", "application/javascript")
+		w.Header().Set("cf-entrypoint", "index.js")
+		fmt.Fprint(w, "code")
+	}))
+
+	runner := &LiveWranglerRunner{AccountID: "test-account"}
+	err := runner.UpdateVars(context.Background(), "test-worker", map[string]string{"K": "V"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading current vars")
+}
+
+func TestLiveWranglerRunner_UpdateVars_DeployError(t *testing.T) {
+	origToken := ResolveCloudflareAPITokenFn
+	ResolveCloudflareAPITokenFn = func(_ context.Context) (string, error) {
+		return "test-token", nil
+	}
+	t.Cleanup(func() { ResolveCloudflareAPITokenFn = origToken })
+
+	origGetVars := GetWorkerVarsFn
+	GetWorkerVarsFn = func(_ context.Context, _, _ string) (map[string]string, error) {
+		return map[string]string{}, nil
+	}
+	t.Cleanup(func() { GetWorkerVarsFn = origGetVars })
+
+	origDeploy := deployVersionFn
+	deployVersionFn = func(_ context.Context, _, _, _, _ string) error {
+		return fmt.Errorf("deploy failed")
+	}
+	t.Cleanup(func() { deployVersionFn = origDeploy })
+
+	withHTTPIntercept(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/javascript")
+			w.Header().Set("cf-entrypoint", "index.js")
+			fmt.Fprint(w, "code")
+			return
+		}
+		// createVersionWithVars succeeds.
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"result":  map[string]string{"id": "version-x"},
+			"success": true,
+		})
+	}))
+
+	runner := &LiveWranglerRunner{AccountID: "test-account"}
+	err := runner.UpdateVars(context.Background(), "test-worker", map[string]string{"K": "V"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deploying version")
+}
+
+// --- Enroll/Unenroll error path tests ---
+
+func TestEnsureOrgInWorker_GetVarsError(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		getVarsErr: fmt.Errorf("API error"),
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.EnsureOrgInWorker(context.Background(), "acme")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading worker vars")
+}
+
+func TestRemoveOrgFromWorker_GetVarsError(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		getVarsErr: fmt.Errorf("API error"),
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.RemoveOrgFromWorker(context.Background(), "acme")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading worker vars")
+}
+
+func TestRegisterRepoInWorker_GetVarsError(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		getVarsErr: fmt.Errorf("API error"),
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.RegisterRepoInWorker(context.Background(), "acme/widget")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading worker vars")
+}
+
+func TestRegisterRepoInWorker_PublicMode(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{"PER_REPO_WIF_REPOS": "*"},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.RegisterRepoInWorker(context.Background(), "acme/widget")
+	require.NoError(t, err)
+	// Should be a no-op in public mode.
+	assert.Empty(t, fake.updateVarsCalls)
+}
+
+func TestRemoveRepoFromWorker_GetVarsError(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		getVarsErr: fmt.Errorf("API error"),
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.RemoveRepoFromWorker(context.Background(), "acme/widget")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading worker vars")
+}
+
+// --- findRepoRoot tests ---
+
+func TestFindRepoRoot(t *testing.T) {
+	root := findRepoRoot()
+	// Should find a directory containing go.mod with the fullsend module.
+	goMod := filepath.Join(root, "go.mod")
+	data, err := os.ReadFile(goMod)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "github.com/fullsend-ai/fullsend")
+}
+
+// --- parseWorkerSettingsVars additional tests ---
+
+func TestParseWorkerSettingsVars_InvalidJSON(t *testing.T) {
+	_, err := parseWorkerSettingsVars([]byte("not-json"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing settings response")
+}
+
+func TestParseWorkerSettingsVars_NoBindings(t *testing.T) {
+	body := []byte(`{"result": {"bindings": []}, "success": true}`)
+	vars, err := parseWorkerSettingsVars(body)
+	require.NoError(t, err)
+	assert.Empty(t, vars)
+}
+
+// --- parseHasPreviewVersions additional tests ---
+
+func TestParseHasPreviewVersions_EmptyOutput(t *testing.T) {
+	assert.False(t, parseHasPreviewVersions(""))
+}
+
+func TestParseHasPreviewVersions_HeaderOnly(t *testing.T) {
+	output := "┌──────────┬──────────┐\n" +
+		"│ Version ID │ Created │\n" +
+		"├──────────┼──────────┤\n" +
+		"└──────────┴──────────┘\n"
+	assert.False(t, parseHasPreviewVersions(output))
+}
+
+// --- Teardown unknown deploy mode ---
+
+func TestProvisioner_Teardown_UnknownDeployMode(t *testing.T) {
+	fake := &fakeWranglerRunner{}
+	p := &Provisioner{
+		cfg: Config{
+			AccountID:  "abc123",
+			WorkerName: "test-mint",
+			DeployMode: DeployMode(99), // unknown mode
+		},
+		wrangler: fake,
+	}
+
+	err := p.Teardown(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unknown deploy mode")
+}
+
+// --- LiveWranglerRunner.Deploy preview with secrets ---
+
+func TestLiveWranglerRunner_Deploy_PreviewWithSecretsCommandError(t *testing.T) {
+	dir := t.TempDir()
+	runner := &LiveWranglerRunner{AccountID: "test-account"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	secrets := map[string][]byte{"MY_SECRET": []byte("value")}
+	_, err := runner.Deploy(ctx, dir, "test-worker", "bt-alias", nil, secrets)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wrangler versions upload failed")
+}
+
+// --- ResolveCloudflareAuth additional tests ---
+
+func TestResolveCloudflareAuth_WranglerFailed_WithAccountIDSet(t *testing.T) {
+	withCFEnvCleared(t)
+	os.Setenv("CLOUDFLARE_ACCOUNT_ID", "env-account")
+
+	old := WranglerWhoamiFn
+	WranglerWhoamiFn = func(_ context.Context) (string, error) {
+		return "", fmt.Errorf("exec failed")
+	}
+	t.Cleanup(func() { WranglerWhoamiFn = old })
+
+	_, err := ResolveCloudflareAuth(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "wrangler whoami")
+}
+
+// --- EnsureOrgInWorker/RemoveOrgFromWorker UpdateVars error ---
+
+func TestEnsureOrgInWorker_UpdateVarsError(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		workerVars:    map[string]string{"ALLOWED_ORGS": "existing"},
+		updateVarsErr: fmt.Errorf("update failed"),
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.EnsureOrgInWorker(context.Background(), "new-org")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "update failed")
+}
+
+func TestRemoveOrgFromWorker_UpdateVarsError(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		workerVars:    map[string]string{"ALLOWED_ORGS": "acme,other"},
+		updateVarsErr: fmt.Errorf("update failed"),
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.RemoveOrgFromWorker(context.Background(), "acme")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "update failed")
+}
+
+func TestRegisterRepoInWorker_UpdateVarsError(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		workerVars:    map[string]string{"ALLOWED_ORGS": "acme"},
+		updateVarsErr: fmt.Errorf("update failed"),
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.RegisterRepoInWorker(context.Background(), "acme/widget")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "update failed")
+}
+
+func TestRemoveRepoFromWorker_UpdateVarsError(t *testing.T) {
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{
+			"ALLOWED_ORGS":       "acme",
+			"PER_REPO_WIF_REPOS": "acme/widget",
+		},
+		updateVarsErr: fmt.Errorf("update failed"),
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.RemoveRepoFromWorker(context.Background(), "acme/widget")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "update failed")
+}
+
+// --- Regression: deploy --public then per-repo enroll must not corrupt PER_REPO_WIF_REPOS ---
+
+func TestRegisterRepoInWorker_PublicMode_DoesNotAppend(t *testing.T) {
+	// Regression test: when the mint is deployed with --public
+	// (PER_REPO_WIF_REPOS=*), calling RegisterRepoInWorker must NOT
+	// produce PER_REPO_WIF_REPOS=*,owner/repo. It must be a clean no-op.
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{
+			"PER_REPO_WIF_REPOS": "*",
+		},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.RegisterRepoInWorker(context.Background(), "owner/repo")
+	require.NoError(t, err)
+	assert.Empty(t, fake.updateVarsCalls,
+		"public mode repo enroll must be a no-op — must not append to PER_REPO_WIF_REPOS=*")
+}
+
+func TestRemoveRepoFromWorker_PublicMode_DoesNotModify(t *testing.T) {
+	// When the mint is public (PER_REPO_WIF_REPOS=*), unenroll must
+	// return an error — not silently modify PER_REPO_WIF_REPOS.
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{
+			"PER_REPO_WIF_REPOS": "*",
+		},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.RemoveRepoFromWorker(context.Background(), "owner/repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "PER_REPO_WIF_REPOS=*")
+	assert.Empty(t, fake.updateVarsCalls,
+		"public mode repo unenroll must not modify vars")
+}
+
+// --- Org enroll/unenroll on public CF mint does not consult ALLOWED_ORGS ---
+
+func TestEnsureOrgInWorker_PublicMintRepos_NotAllowedOrgs(t *testing.T) {
+	// On a public CF mint (PER_REPO_WIF_REPOS=*), org enroll is a no-op
+	// regardless of what ALLOWED_ORGS contains. In particular, ALLOWED_ORGS
+	// is NOT set to "*" on CF public deploys — only PER_REPO_WIF_REPOS is.
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{
+			"ALLOWED_ORGS":       "", // no ALLOWED_ORGS=* on CF public
+			"PER_REPO_WIF_REPOS": "*",
+		},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.EnsureOrgInWorker(context.Background(), "new-org")
+	require.NoError(t, err)
+	assert.Empty(t, fake.updateVarsCalls, "org enroll should be no-op on public CF mint")
+}
+
+func TestRemoveOrgFromWorker_PublicMintRepos_NotAllowedOrgs(t *testing.T) {
+	// On a public CF mint (PER_REPO_WIF_REPOS=*), org unenroll returns
+	// an error citing PER_REPO_WIF_REPOS=*, not ALLOWED_ORGS=*.
+	fake := &fakeWranglerRunner{
+		workerVars: map[string]string{
+			"ALLOWED_ORGS":       "acme",
+			"PER_REPO_WIF_REPOS": "*",
+		},
+	}
+	p := NewProvisioner(Config{
+		AccountID:  "test-account",
+		WorkerName: "test-mint",
+	}, fake)
+
+	err := p.RemoveOrgFromWorker(context.Background(), "acme")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "PER_REPO_WIF_REPOS=*")
+}
+
+// --- parsePerRepoWIFReposMap tests ---
+
+func TestParsePerRepoWIFReposMap(t *testing.T) {
+	tests := []struct {
+		name   string
+		csv    string
+		expect map[string]bool
+	}{
+		{"empty", "", map[string]bool{}},
+		{"wildcard", "*", map[string]bool{"*": true}},
+		{"single repo", "Acme/Widget", map[string]bool{"acme/widget": true}},
+		{"multiple repos", "acme/foo,Other/Bar", map[string]bool{"acme/foo": true, "other/bar": true}},
+		{"with spaces", " acme/foo , other/bar ", map[string]bool{"acme/foo": true, "other/bar": true}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := parsePerRepoWIFReposMap(tc.csv)
+			assert.Equal(t, tc.expect, result)
+		})
+	}
+}
+
+// --- lastNonEmptyLine tests ---
+
+func TestLastNonEmptyLine(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		expect string
+	}{
+		{"empty", "", ""},
+		{"single line", "token-value", "token-value"},
+		{"single line with newline", "token-value\n", "token-value"},
+		{"banner then token", "⛅️ wrangler 4.57\n\ntoken-value\n", "token-value"},
+		{"multiple banner lines", "line1\nline2\nline3\nactual-token\n", "actual-token"},
+		{"whitespace lines", "  \n\n  token  \n\n", "token"},
+		{"only whitespace", "  \n  \n", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expect, lastNonEmptyLine(tc.input))
+		})
+	}
 }

@@ -106,8 +106,8 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | GCP Admin (Mint) | `fullsend mint delete` | Tear down mint infrastructure (inverse of deploy) |
 | GCP Admin (Mint) | `fullsend mint add-role <role>` | Register a role PEM and app ID on the mint |
 | GCP Admin (Mint) | `fullsend mint remove-role <role>` | Remove a role from the mint (deletes PEM secret by default) |
-| GCP Admin (Mint) | `fullsend mint enroll <org\|owner/repo>` | Register an org or repo in the mint (does not grant Agent Platform access — use `inference provision`) |
-| GCP Admin (Mint) | `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint |
+| Mint Admin | `fullsend mint enroll <org\|owner/repo>` | Register an org or repo in the mint — supports `--platform=gcp` (default) and `--platform=cloudflare` |
+| Mint Admin | `fullsend mint unenroll <org\|owner/repo>` | Remove an org or repo from the mint — supports `--platform=gcp` (default) and `--platform=cloudflare` |
 | GCP Admin (Mint) | `fullsend mint status` | Inspect mint state and PEM health |
 
 | Fleet Admin | `fullsend repos migrate <org> --project <gcp-project>` | Migrate an org from per-org to per-repo install, generating a `repos.yaml` manifest |

@@ -619,6 +619,29 @@ func warnIrrelevantFlags(cmd *cobra.Command, platform string) {
 	}
 }
 
+// warnIrrelevantEnrollFlags prints a warning for each flag that was explicitly
+// set but belongs to a different platform than the one being used. This is the
+// enroll/unenroll counterpart to warnIrrelevantFlags (used by deploy/delete).
+func warnIrrelevantEnrollFlags(cmd *cobra.Command, platform string) {
+	irrelevant := map[string][]struct{ flag, owner string }{
+		"gcp": {
+			{"worker-name", "Cloudflare"},
+			{"preview", "Cloudflare"},
+		},
+		"cloudflare": {
+			{"project", "GCP"},
+			{"region", "GCP"},
+			{"delete-provider", "GCP"},
+		},
+	}
+
+	for _, entry := range irrelevant[platform] {
+		if cmd.Flags().Changed(entry.flag) {
+			fmt.Fprintf(os.Stderr, "WARNING: --%s is a %s flag and has no effect with --platform=%s\n", entry.flag, entry.owner, platform)
+		}
+	}
+}
+
 func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, skipDeploy, dryRun bool, pemDir, appSet string, roles []string, public bool) error {
 	if appSet == "" {
 		appSet = appsetup.DefaultAppSet
@@ -1054,64 +1077,114 @@ func runMintDeployCloudflare(ctx context.Context, workerName, sourceDir, preview
 }
 
 func newMintEnrollCmd() *cobra.Command {
+	var platform string
 	var project string
 	var region string
 	var dryRun bool
+
+	// Cloudflare-specific flags.
+	var workerName string
+	var preview string
 
 	cmd := &cobra.Command{
 		Use:   "enroll <org|owner/repo>",
 		Short: "Enroll an org or repo in the token mint",
 		Long: `Performs full enrollment of an organization or per-repo into an existing mint.
 
-Per-org enrollment (fullsend mint enroll acme):
-  - Registers the org in ALLOWED_ORGS
-  - Updates the WIF provider condition
-  - Requires role PEM secrets to already exist (fullsend-{role}-app-pem)
-  - Requires shared role app IDs to already be configured on the mint
+Use --platform to select the target (default: gcp).
 
-Per-repo enrollment (fullsend mint enroll acme/widget):
-  - Adds repo to PER_REPO_WIF_REPOS
-  - Creates a dedicated WIF provider for the repo
-  - Does NOT add the owner to ALLOWED_ORGS (per-repo callers are
-    authorized independently of ALLOWED_ORGS)
-  - Does NOT grant any IAM roles; Vertex AI access is provisioned
-    separately via 'fullsend inference provision'
+GCP mode (--platform=gcp):
 
-Requires the same GCP APIs as 'mint deploy' (see 'fullsend mint deploy --help').
+  Per-org enrollment (fullsend mint enroll acme):
+    - Registers the org in ALLOWED_ORGS
+    - Updates the WIF provider condition
+    - Requires role PEM secrets to already exist (fullsend-{role}-app-pem)
+    - Requires shared role app IDs to already be configured on the mint
 
-Required IAM roles on the mint project:
-  - roles/cloudfunctions.viewer                (read Cloud Function metadata)
-  - roles/run.admin                            (update Cloud Run service env vars)
-  - roles/iam.workloadIdentityPoolAdmin        (update WIF provider condition; create repo-scoped providers)`,
+  Per-repo enrollment (fullsend mint enroll acme/widget):
+    - Adds repo to PER_REPO_WIF_REPOS
+    - Creates a dedicated WIF provider for the repo
+    - Does NOT add the owner to ALLOWED_ORGS (per-repo callers are
+      authorized independently of ALLOWED_ORGS)
+    - Does NOT grant any IAM roles; Vertex AI access is provisioned
+      separately via 'fullsend inference provision'
+
+  Required flags: --project
+  Required IAM roles on the mint project:
+    - roles/cloudfunctions.viewer                (read Cloud Function metadata)
+    - roles/run.admin                            (update Cloud Run service env vars)
+    - roles/iam.workloadIdentityPoolAdmin        (update WIF provider condition; create repo-scoped providers)
+
+Cloudflare mode (--platform=cloudflare):
+
+  Updates the durable Worker's env vars via the Cloudflare Versions API.
+  Does not require local Worker sources or WASM build artifacts — the
+  currently deployed version's modules are cloned from the API.
+  Org enrollment updates ALLOWED_ORGS; per-repo enrollment updates
+  PER_REPO_WIF_REPOS only (ALLOWED_ORGS is not modified).
+
+  --preview is rejected: preview Workers are configured exclusively via
+  'mint deploy' with the full desired config. Use a dedicated durable
+  Worker for enroll/unenroll.
+
+  Enroll serially — the CLI reads, merges, and redeploys Worker vars in
+  a read-modify-write cycle without ETag concurrency control. Concurrent
+  enroll commands against the same Worker will race.
+
+  Required env vars: CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
+    (or a Wrangler OAuth session via 'wrangler login')
+  Optional: --worker-name (default: fullsend-mint)`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if project == "" {
-				return fmt.Errorf("--project is required")
-			}
-			if !gcf.ValidateProjectID(project) {
-				return fmt.Errorf("invalid GCP project ID: %q", project)
-			}
-			if !gcf.ValidateRegion(region) {
-				return fmt.Errorf("invalid GCP region: %q", region)
-			}
+			warnIrrelevantEnrollFlags(cmd, platform)
 
-			arg := args[0]
-			printer := ui.New(os.Stdout)
-			ctx := cmd.Context()
+			switch platform {
+			case "gcp":
+				if project == "" {
+					return fmt.Errorf("--project is required")
+				}
+				if !gcf.ValidateProjectID(project) {
+					return fmt.Errorf("invalid GCP project ID: %q", project)
+				}
+				if !gcf.ValidateRegion(region) {
+					return fmt.Errorf("invalid GCP region: %q", region)
+				}
 
-			printer.Banner(Version())
-			printer.Blank()
+				arg := args[0]
+				printer := ui.New(os.Stdout)
+				ctx := cmd.Context()
 
-			if strings.Contains(arg, "/") {
-				return runMintEnrollRepo(ctx, printer, arg, project, region, dryRun)
+				printer.Banner(Version())
+				printer.Blank()
+
+				if strings.Contains(arg, "/") {
+					return runMintEnrollRepo(ctx, printer, arg, project, region, dryRun)
+				}
+				return runMintEnrollOrg(ctx, printer, arg, project, region, dryRun)
+
+			case "cloudflare":
+				if preview != "" {
+					return fmt.Errorf("--preview is not supported for enroll; preview Workers are configured via 'mint deploy' with the full desired config")
+				}
+				return runMintEnrollCloudflare(cmd.Context(), args[0], workerName, dryRun)
+
+			default:
+				return fmt.Errorf("unsupported platform %q: must be \"gcp\" or \"cloudflare\"", platform)
 			}
-			return runMintEnrollOrg(ctx, printer, arg, project, region, dryRun)
 		},
 	}
 
-	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required)")
-	cmd.Flags().StringVar(&region, "region", "us-central1", "GCP region")
+	// Common flags.
+	cmd.Flags().StringVar(&platform, "platform", "gcp", "target platform: gcp or cloudflare")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
+
+	// GCP-specific flags.
+	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required for --platform=gcp)")
+	cmd.Flags().StringVar(&region, "region", "us-central1", "GCP region")
+
+	// Cloudflare-specific flags.
+	cmd.Flags().StringVar(&workerName, "worker-name", "", "Cloudflare Worker script name (default: fullsend-mint)")
+	cmd.Flags().StringVar(&preview, "preview", "", "rejected: preview Workers use 'mint deploy' instead")
 
 	return cmd
 }
@@ -1377,67 +1450,117 @@ func runMintEnrollRepo(ctx context.Context, printer *ui.Printer, repoFullName, p
 }
 
 func newMintUnenrollCmd() *cobra.Command {
+	var platform string
 	var project string
 	var region string
 	var deleteProvider bool
 	var dryRun bool
 	var yolo bool
 
+	// Cloudflare-specific flags.
+	var workerName string
+	var preview string
+
 	cmd := &cobra.Command{
 		Use:   "unenroll <org|owner/repo>",
 		Short: "Remove an org or repo from the token mint",
 		Long: `Reverses enrollment by removing the org/repo from mint env vars.
 
-Org unenroll removes the org from ALLOWED_ORGS and the WIF provider condition.
-Role PEM secrets and shared role app IDs are not modified during unenroll.
+Use --platform to select the target (default: gcp).
 
-Repo unenroll removes the repo from PER_REPO_WIF_REPOS. By default, the
-repo's WIF provider is disabled (not deleted). Use --delete-provider for
-permanent removal.
+GCP mode (--platform=gcp):
 
-Requires typing the org/repo name to confirm (unless --dry-run or --yolo).
+  Org unenroll removes the org from ALLOWED_ORGS and the WIF provider condition.
+  Role PEM secrets and shared role app IDs are not modified during unenroll.
 
-Required IAM roles on the mint project:
-  - roles/cloudfunctions.viewer                (read Cloud Function metadata)
-  - roles/run.admin                            (update Cloud Run service env vars)
-  - roles/iam.workloadIdentityPoolAdmin        (update, disable, or delete WIF providers)`,
+  Repo unenroll removes the repo from PER_REPO_WIF_REPOS. By default, the
+  repo's WIF provider is disabled (not deleted). Use --delete-provider for
+  permanent removal.
+
+  Requires typing the org/repo name to confirm (unless --dry-run or --yolo).
+
+  Required flags: --project
+  Required IAM roles on the mint project:
+    - roles/cloudfunctions.viewer                (read Cloud Function metadata)
+    - roles/run.admin                            (update Cloud Run service env vars)
+    - roles/iam.workloadIdentityPoolAdmin        (update, disable, or delete WIF providers)
+
+Cloudflare mode (--platform=cloudflare):
+
+  Removes the org/repo from the durable Worker's env vars (ALLOWED_ORGS,
+  PER_REPO_WIF_REPOS) via the Cloudflare Versions API. Does not require
+  local Worker sources or WASM build artifacts.
+
+  --preview is rejected: preview Workers are configured exclusively via
+  'mint deploy' with the full desired config. Use a dedicated durable
+  Worker for enroll/unenroll.
+
+  Unenroll serially — the CLI reads, merges, and redeploys Worker vars in
+  a read-modify-write cycle without ETag concurrency control. Concurrent
+  unenroll commands against the same Worker will race.
+
+  Required env vars: CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID
+    (or a Wrangler OAuth session via 'wrangler login')
+  Optional: --worker-name (default: fullsend-mint)`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if project == "" {
-				return fmt.Errorf("--project is required")
-			}
-			if !gcf.ValidateProjectID(project) {
-				return fmt.Errorf("invalid GCP project ID: %q", project)
-			}
-			if !gcf.ValidateRegion(region) {
-				return fmt.Errorf("invalid GCP region: %q", region)
-			}
+			warnIrrelevantEnrollFlags(cmd, platform)
 
-			arg := args[0]
-			isRepo := strings.Contains(arg, "/")
+			switch platform {
+			case "gcp":
+				if project == "" {
+					return fmt.Errorf("--project is required")
+				}
+				if !gcf.ValidateProjectID(project) {
+					return fmt.Errorf("invalid GCP project ID: %q", project)
+				}
+				if !gcf.ValidateRegion(region) {
+					return fmt.Errorf("invalid GCP region: %q", region)
+				}
 
-			if !isRepo && deleteProvider {
-				return fmt.Errorf("--delete-provider applies to repo unenroll, not org unenroll")
+				arg := args[0]
+				isRepo := strings.Contains(arg, "/")
+
+				if !isRepo && deleteProvider {
+					return fmt.Errorf("--delete-provider applies to repo unenroll, not org unenroll")
+				}
+
+				printer := ui.New(os.Stdout)
+				ctx := cmd.Context()
+
+				printer.Banner(Version())
+				printer.Blank()
+
+				if isRepo {
+					return runMintUnenrollRepo(ctx, printer, arg, project, region, deleteProvider, dryRun, yolo, os.Stdin)
+				}
+				return runMintUnenrollOrg(ctx, printer, arg, project, region, dryRun, yolo, os.Stdin)
+
+			case "cloudflare":
+				if preview != "" {
+					return fmt.Errorf("--preview is not supported for unenroll; preview Workers are configured via 'mint deploy' with the full desired config")
+				}
+				return runMintUnenrollCloudflare(cmd.Context(), args[0], workerName, dryRun, yolo, os.Stdin)
+
+			default:
+				return fmt.Errorf("unsupported platform %q: must be \"gcp\" or \"cloudflare\"", platform)
 			}
-
-			printer := ui.New(os.Stdout)
-			ctx := cmd.Context()
-
-			printer.Banner(Version())
-			printer.Blank()
-
-			if isRepo {
-				return runMintUnenrollRepo(ctx, printer, arg, project, region, deleteProvider, dryRun, yolo, os.Stdin)
-			}
-			return runMintUnenrollOrg(ctx, printer, arg, project, region, dryRun, yolo, os.Stdin)
 		},
 	}
 
-	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required)")
-	cmd.Flags().StringVar(&region, "region", "us-central1", "GCP region")
-	cmd.Flags().BoolVar(&deleteProvider, "delete-provider", false, "permanently delete WIF provider (default: disable only)")
+	// Common flags.
+	cmd.Flags().StringVar(&platform, "platform", "gcp", "target platform: gcp or cloudflare")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "preview changes without making them")
 	cmd.Flags().BoolVar(&yolo, "yolo", false, "skip confirmation prompt")
+
+	// GCP-specific flags.
+	cmd.Flags().StringVar(&project, "project", "", "GCP project ID (required for --platform=gcp)")
+	cmd.Flags().StringVar(&region, "region", "us-central1", "GCP region")
+	cmd.Flags().BoolVar(&deleteProvider, "delete-provider", false, "permanently delete WIF provider (GCP repo unenroll; default: disable only)")
+
+	// Cloudflare-specific flags.
+	cmd.Flags().StringVar(&workerName, "worker-name", "", "Cloudflare Worker script name (default: fullsend-mint)")
+	cmd.Flags().StringVar(&preview, "preview", "", "rejected: preview Workers use 'mint deploy' instead")
 
 	return cmd
 }
@@ -1659,6 +1782,346 @@ func runMintUnenrollRepo(ctx context.Context, printer *ui.Printer, repoFullName,
 	printer.Summary("Unenrollment complete", []string{
 		fmt.Sprintf("Repository: %s", repoFullName),
 		"Repo removed from PER_REPO_WIF_REPOS",
+	})
+
+	return nil
+}
+
+func runMintEnrollCloudflare(ctx context.Context, arg, workerName string, dryRun bool) error {
+	accountID, err := cf.ResolveCloudflareAuth(ctx)
+	if err != nil {
+		return err
+	}
+
+	if workerName != "" && !cf.ValidateWorkerName(workerName) {
+		return fmt.Errorf("invalid --worker-name %q: must be 2-63 lowercase alphanumeric characters or hyphens", workerName)
+	}
+
+	printer := ui.New(os.Stdout)
+
+	printer.Banner(Version())
+	printer.Blank()
+
+	if strings.Contains(arg, "/") {
+		return runMintEnrollRepoCloudflare(ctx, printer, arg, workerName, accountID, dryRun)
+	}
+	return runMintEnrollOrgCloudflare(ctx, printer, arg, workerName, accountID, dryRun)
+}
+
+func runMintEnrollOrgCloudflare(ctx context.Context, printer *ui.Printer, org, workerName, accountID string, dryRun bool) error {
+	org = strings.ToLower(org)
+	if err := validateOrgName(org); err != nil {
+		return err
+	}
+
+	printer.Header("Enrolling org " + org + " in mint (Cloudflare)")
+	printer.Blank()
+
+	effectiveName := workerName
+	if effectiveName == "" {
+		effectiveName = "fullsend-mint"
+	}
+
+	wrangler := mintCFWranglerFactory(accountID)
+	provisioner := cf.NewProvisioner(cf.Config{
+		AccountID:  accountID,
+		WorkerName: effectiveName,
+	}, wrangler)
+
+	// Verify Worker exists.
+	printer.StepStart("Verifying Worker exists")
+	exists, err := wrangler.WorkerExists(ctx, effectiveName)
+	if err != nil {
+		printer.StepFail("Worker check failed")
+		return fmt.Errorf("checking worker: %w", err)
+	}
+	if !exists {
+		printer.StepFail("Worker not found")
+		return fmt.Errorf("Worker %s not found — deploy with 'mint deploy --platform=cloudflare' first", effectiveName)
+	}
+	printer.StepDone(fmt.Sprintf("Worker %s found", effectiveName))
+
+	// Warn about preview versions.
+	hasPreviews, previewErr := provisioner.CheckPreviewVersions(ctx)
+	if previewErr != nil {
+		printer.StepWarn(fmt.Sprintf("Could not check for preview versions: %v", previewErr))
+	} else if hasPreviews {
+		printer.StepWarn("Preview versions exist on this Worker — durable config changes may diverge from previews")
+		printer.StepInfo("Previews use their own config from 'mint deploy --preview'. This enroll updates the durable Worker only.")
+	}
+
+	if dryRun {
+		printer.Blank()
+		printer.StepInfo("Dry run — no changes will be made")
+		printer.Blank()
+		printer.StepInfo(fmt.Sprintf("  Would add %s to ALLOWED_ORGS on Worker %s", org, effectiveName))
+		return nil
+	}
+
+	printer.StepStart("Registering org in Worker env vars")
+	if err := provisioner.EnsureOrgInWorker(ctx, org); err != nil {
+		printer.StepFail("Failed to register org")
+		return fmt.Errorf("registering org: %w", err)
+	}
+	printer.StepDone("Org registered in Worker")
+
+	printer.Blank()
+	printer.Summary("Enrollment complete", []string{
+		fmt.Sprintf("Organization: %s", org),
+		fmt.Sprintf("Worker: %s", effectiveName),
+		"ALLOWED_ORGS updated on durable Worker",
+	})
+
+	return nil
+}
+
+func runMintEnrollRepoCloudflare(ctx context.Context, printer *ui.Printer, repoFullName, workerName, accountID string, dryRun bool) error {
+	repoFullName = strings.ToLower(repoFullName)
+	parts := strings.SplitN(repoFullName, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("repo must be in owner/repo format, got %q", repoFullName)
+	}
+	owner := parts[0]
+	if err := validateOrgName(owner); err != nil {
+		return fmt.Errorf("invalid owner: %w", err)
+	}
+
+	printer.Header("Enrolling repo " + repoFullName + " in mint (Cloudflare)")
+	printer.Blank()
+
+	effectiveName := workerName
+	if effectiveName == "" {
+		effectiveName = "fullsend-mint"
+	}
+
+	wrangler := mintCFWranglerFactory(accountID)
+	provisioner := cf.NewProvisioner(cf.Config{
+		AccountID:  accountID,
+		WorkerName: effectiveName,
+	}, wrangler)
+
+	// Verify Worker exists.
+	printer.StepStart("Verifying Worker exists")
+	exists, err := wrangler.WorkerExists(ctx, effectiveName)
+	if err != nil {
+		printer.StepFail("Worker check failed")
+		return fmt.Errorf("checking worker: %w", err)
+	}
+	if !exists {
+		printer.StepFail("Worker not found")
+		return fmt.Errorf("Worker %s not found — deploy with 'mint deploy --platform=cloudflare' first", effectiveName)
+	}
+	printer.StepDone(fmt.Sprintf("Worker %s found", effectiveName))
+
+	// Warn about preview versions.
+	hasPreviews, previewErr := provisioner.CheckPreviewVersions(ctx)
+	if previewErr != nil {
+		printer.StepWarn(fmt.Sprintf("Could not check for preview versions: %v", previewErr))
+	} else if hasPreviews {
+		printer.StepWarn("Preview versions exist on this Worker — durable config changes may diverge from previews")
+		printer.StepInfo("Previews use their own config from 'mint deploy --preview'. This enroll updates the durable Worker only.")
+	}
+
+	if dryRun {
+		printer.Blank()
+		printer.StepInfo("Dry run — no changes will be made")
+		printer.Blank()
+		printer.StepInfo(fmt.Sprintf("  Would add %s to PER_REPO_WIF_REPOS on Worker %s", repoFullName, effectiveName))
+		return nil
+	}
+
+	printer.StepStart("Registering repo in Worker env vars")
+	if err := provisioner.RegisterRepoInWorker(ctx, repoFullName); err != nil {
+		printer.StepFail("Failed to register repo")
+		return fmt.Errorf("registering repo: %w", err)
+	}
+	printer.StepDone("Repo registered in Worker")
+
+	printer.Blank()
+	printer.Summary("Enrollment complete", []string{
+		fmt.Sprintf("Repository: %s", repoFullName),
+		fmt.Sprintf("Worker: %s", effectiveName),
+		"PER_REPO_WIF_REPOS updated on durable Worker",
+	})
+
+	return nil
+}
+
+func runMintUnenrollCloudflare(ctx context.Context, arg, workerName string, dryRun, yolo bool, stdin *os.File) error {
+	accountID, err := cf.ResolveCloudflareAuth(ctx)
+	if err != nil {
+		return err
+	}
+
+	if workerName != "" && !cf.ValidateWorkerName(workerName) {
+		return fmt.Errorf("invalid --worker-name %q: must be 2-63 lowercase alphanumeric characters or hyphens", workerName)
+	}
+
+	printer := ui.New(os.Stdout)
+
+	printer.Banner(Version())
+	printer.Blank()
+
+	if strings.Contains(arg, "/") {
+		return runMintUnenrollRepoCloudflare(ctx, printer, arg, workerName, accountID, dryRun, yolo, stdin)
+	}
+	return runMintUnenrollOrgCloudflare(ctx, printer, arg, workerName, accountID, dryRun, yolo, stdin)
+}
+
+func runMintUnenrollOrgCloudflare(ctx context.Context, printer *ui.Printer, org, workerName, accountID string, dryRun, yolo bool, stdin *os.File) error {
+	org = strings.ToLower(org)
+	if err := validateOrgName(org); err != nil {
+		return err
+	}
+
+	printer.Header("Unenrolling org " + org + " from mint (Cloudflare)")
+	printer.Blank()
+
+	effectiveName := workerName
+	if effectiveName == "" {
+		effectiveName = "fullsend-mint"
+	}
+
+	wrangler := mintCFWranglerFactory(accountID)
+	provisioner := cf.NewProvisioner(cf.Config{
+		AccountID:  accountID,
+		WorkerName: effectiveName,
+	}, wrangler)
+
+	// Verify Worker exists.
+	printer.StepStart("Verifying Worker exists")
+	exists, err := wrangler.WorkerExists(ctx, effectiveName)
+	if err != nil {
+		printer.StepFail("Worker check failed")
+		return fmt.Errorf("checking worker: %w", err)
+	}
+	if !exists {
+		printer.StepFail("Worker not found")
+		return fmt.Errorf("Worker %s not found — nothing to unenroll", effectiveName)
+	}
+	printer.StepDone(fmt.Sprintf("Worker %s found", effectiveName))
+
+	// Warn about preview versions.
+	hasPreviews, previewErr := provisioner.CheckPreviewVersions(ctx)
+	if previewErr != nil {
+		printer.StepWarn(fmt.Sprintf("Could not check for preview versions: %v", previewErr))
+	} else if hasPreviews {
+		printer.StepWarn("Preview versions exist on this Worker — durable config changes may diverge from previews")
+		printer.StepInfo("Previews use their own config from 'mint deploy --preview'. This unenroll updates the durable Worker only.")
+	}
+
+	if dryRun {
+		printer.Blank()
+		printer.StepInfo("Dry run — no changes will be made")
+		printer.Blank()
+		printer.StepInfo(fmt.Sprintf("  Would remove %s from ALLOWED_ORGS on Worker %s", org, effectiveName))
+		return nil
+	}
+
+	// Confirmation.
+	if !yolo {
+		reader := bufio.NewReader(stdin)
+		isTerminal := term.IsTerminal(int(stdin.Fd()))
+		if err := confirmUnenroll(printer, org, reader, isTerminal); err != nil {
+			return err
+		}
+		printer.Blank()
+	}
+
+	printer.StepStart("Removing org from Worker env vars")
+	if err := provisioner.RemoveOrgFromWorker(ctx, org); err != nil {
+		printer.StepFail("Failed to remove org")
+		return fmt.Errorf("removing org: %w", err)
+	}
+	printer.StepDone("Org removed from Worker")
+
+	printer.Blank()
+	printer.Summary("Unenrollment complete", []string{
+		fmt.Sprintf("Organization: %s", org),
+		fmt.Sprintf("Worker: %s", effectiveName),
+		"ALLOWED_ORGS updated on durable Worker",
+	})
+
+	return nil
+}
+
+func runMintUnenrollRepoCloudflare(ctx context.Context, printer *ui.Printer, repoFullName, workerName, accountID string, dryRun, yolo bool, stdin *os.File) error {
+	repoFullName = strings.ToLower(repoFullName)
+	parts := strings.SplitN(repoFullName, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return fmt.Errorf("repo must be in owner/repo format, got %q", repoFullName)
+	}
+	owner := parts[0]
+	if err := validateOrgName(owner); err != nil {
+		return fmt.Errorf("invalid owner: %w", err)
+	}
+
+	printer.Header("Unenrolling repo " + repoFullName + " from mint (Cloudflare)")
+	printer.Blank()
+
+	effectiveName := workerName
+	if effectiveName == "" {
+		effectiveName = "fullsend-mint"
+	}
+
+	wrangler := mintCFWranglerFactory(accountID)
+	provisioner := cf.NewProvisioner(cf.Config{
+		AccountID:  accountID,
+		WorkerName: effectiveName,
+	}, wrangler)
+
+	// Verify Worker exists.
+	printer.StepStart("Verifying Worker exists")
+	exists, err := wrangler.WorkerExists(ctx, effectiveName)
+	if err != nil {
+		printer.StepFail("Worker check failed")
+		return fmt.Errorf("checking worker: %w", err)
+	}
+	if !exists {
+		printer.StepFail("Worker not found")
+		return fmt.Errorf("Worker %s not found — nothing to unenroll", effectiveName)
+	}
+	printer.StepDone(fmt.Sprintf("Worker %s found", effectiveName))
+
+	// Warn about preview versions.
+	hasPreviews, previewErr := provisioner.CheckPreviewVersions(ctx)
+	if previewErr != nil {
+		printer.StepWarn(fmt.Sprintf("Could not check for preview versions: %v", previewErr))
+	} else if hasPreviews {
+		printer.StepWarn("Preview versions exist on this Worker — durable config changes may diverge from previews")
+		printer.StepInfo("Previews use their own config from 'mint deploy --preview'. This unenroll updates the durable Worker only.")
+	}
+
+	if dryRun {
+		printer.Blank()
+		printer.StepInfo("Dry run — no changes will be made")
+		printer.Blank()
+		printer.StepInfo(fmt.Sprintf("  Would remove %s from PER_REPO_WIF_REPOS on Worker %s", repoFullName, effectiveName))
+		return nil
+	}
+
+	// Confirmation.
+	if !yolo {
+		reader := bufio.NewReader(stdin)
+		isTerminal := term.IsTerminal(int(stdin.Fd()))
+		if err := confirmUnenroll(printer, repoFullName, reader, isTerminal); err != nil {
+			return err
+		}
+		printer.Blank()
+	}
+
+	printer.StepStart("Removing repo from Worker env vars")
+	if err := provisioner.RemoveRepoFromWorker(ctx, repoFullName); err != nil {
+		printer.StepFail("Failed to remove repo")
+		return fmt.Errorf("removing repo: %w", err)
+	}
+	printer.StepDone("Repo removed from Worker")
+
+	printer.Blank()
+	printer.Summary("Unenrollment complete", []string{
+		fmt.Sprintf("Repository: %s", repoFullName),
+		fmt.Sprintf("Worker: %s", effectiveName),
+		"PER_REPO_WIF_REPOS updated on durable Worker",
 	})
 
 	return nil
