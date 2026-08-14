@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -47,11 +48,14 @@ func ParseStatusAuthModes(raw string) []string {
 // When "github" mode is enabled, STATUS_GITHUB_GROUP, STATUS_GITHUB_CLIENT_ID,
 // and STATUS_GITHUB_CLIENT_SECRET are required.
 func ValidateStatusAuthConfig(modes []string, group, clientID, clientSecret string) error {
+	hasImplemented := false
 	for _, mode := range modes {
 		switch mode {
 		case "oidc":
+			hasImplemented = true
 			// No additional config required.
 		case "github":
+			hasImplemented = true
 			if group == "" {
 				return fmt.Errorf("STATUS_GITHUB_GROUP is required when github status auth mode is enabled")
 			}
@@ -69,6 +73,9 @@ func ValidateStatusAuthConfig(modes []string, group, clientID, clientSecret stri
 		default:
 			return fmt.Errorf("STATUS_AUTH contains unknown mode %q", mode)
 		}
+	}
+	if !hasImplemented {
+		return fmt.Errorf("STATUS_AUTH must include at least one implemented mode (oidc or github)")
 	}
 	return nil
 }
@@ -236,7 +243,7 @@ type teamMembershipResponse struct {
 // CheckTeamMembership checks whether a user is an active member of the given
 // org/team by calling GET /orgs/{org}/teams/{team}/memberships/{username}.
 func CheckTeamMembership(ctx context.Context, httpClient HTTPDoer, githubBaseURL, token, org, team, username string) (bool, error) {
-	reqURL := fmt.Sprintf("%s/orgs/%s/teams/%s/memberships/%s", githubBaseURL, org, team, username)
+	reqURL := fmt.Sprintf("%s/orgs/%s/teams/%s/memberships/%s", githubBaseURL, url.PathEscape(org), url.PathEscape(team), url.PathEscape(username))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return false, fmt.Errorf("creating team membership request: %w", err)

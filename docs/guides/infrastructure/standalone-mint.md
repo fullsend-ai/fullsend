@@ -117,6 +117,10 @@ The standalone mint is configured entirely through environment variables:
 | `CUSTOM_ROLE_PERMISSIONS` | JSON map of custom role permissions (see below) | `{"scanner":{"contents":"read"}}` |
 | `PER_REPO_WIF_REPOS` | Comma-separated repos with per-repo WIF treatment. Use `*` for public mint mode (all repos get per-repo treatment). Per-repo callers can only mint to their own repo scope. Callers not in this list fall through to per-org (`ALLOWED_ORGS`) and get org-mode repos shapes. | `myorg/private-repo` |
 | `WORKFLOW_HOST_REPOS` | Comma-separated repos whose workflows are trusted to call the mint for per-repo callers. Per-org callers are not affected (they hard-wire to `{org}/.fullsend` and upstream). Defaults to `fullsend-ai/fullsend` when unset. | `fullsend-ai/fullsend,myorg/my-workflows` |
+| `STATUS_AUTH` | Comma-separated list of enabled auth modes for `GET /v1/status`. Valid modes: `oidc` (default), `github`. At least one implemented mode must be present. | `oidc,github` |
+| `STATUS_GITHUB_GROUP` | `ORG/TEAM` slug that gates GitHub OAuth2 access to `/v1/status`. Required when `github` mode is enabled. | `myorg/platform-team` |
+| `STATUS_GITHUB_CLIENT_ID` | GitHub OAuth App client ID. Required when `github` mode is enabled. | `Iv1.abc123` |
+| `STATUS_GITHUB_CLIENT_SECRET` | GitHub OAuth App client secret. Required when `github` mode is enabled. | _(secret)_ |
 | `PORT` | HTTP listen port | `8080` (default) |
 
 ### Public mint mode

@@ -93,8 +93,16 @@ func TestValidateStatusAuthConfig(t *testing.T) {
 			wantErr: "STATUS_AUTH contains unknown mode",
 		},
 		{
-			name:  "access mode - accepted for forward compat",
-			modes: []string{"access"},
+			name:    "access mode alone - rejected (no implemented mode)",
+			modes:   []string{"access"},
+			wantErr: "STATUS_AUTH must include at least one implemented mode",
+		},
+		{
+			name:         "access with github - accepted",
+			modes:        []string{"access", "github"},
+			group:        "myorg/myteam",
+			clientID:     "client-id",
+			clientSecret: "client-secret",
 		},
 	}
 

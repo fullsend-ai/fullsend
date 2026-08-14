@@ -131,8 +131,8 @@ A single mint instance can serve multiple orgs:
 
 `GET /v1/status` returns the configured roles available for the authenticated caller's org.
 
-- **Authentication:** Bearer OIDC JWT (same as `/v1/token`)
-- **Authorization:** Any valid OIDC token from an allowed org — no role restriction
+- **Authentication:** Bearer token — OIDC JWT (default) or GitHub user token when `STATUS_AUTH` includes `github`
+- **Authorization:** OIDC mode requires a valid token from an allowed org (no role restriction). GitHub mode validates the user token via `GET /user` and checks org/team membership against `STATUS_GITHUB_GROUP`
 - **Response:**
   ```json
   {"org": "my-org", "roles": ["coder", "review", "triage"]}
