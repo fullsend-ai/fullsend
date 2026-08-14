@@ -1496,6 +1496,24 @@ func (f *FakeClient) DeleteIssueCommentReaction(_ context.Context, _, _ string, 
 	return nil
 }
 
+func (f *FakeClient) ListIssueReactions(_ context.Context, owner, repo string, number int) ([]Reaction, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListIssueReactions"); e != nil {
+		return nil, e
+	}
+	var reactions []Reaction
+	for _, r := range f.AddedReactions {
+		if r.Owner == owner && r.Repo == repo && r.Number == number {
+			reactions = append(reactions, Reaction{
+				Content: r.Content,
+				User:    f.AuthenticatedUser,
+			})
+		}
+	}
+	return reactions, nil
+}
+
 func (f *FakeClient) GetPullRequestInfo(_ context.Context, owner, repo string, number int) (*PullRequestInfo, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

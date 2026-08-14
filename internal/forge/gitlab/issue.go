@@ -369,6 +369,11 @@ func (c *LiveClient) MinimizeComment(_ context.Context, _, _ string) error {
 	return forge.ErrNotSupported
 }
 
+// ListIssueReactions is not yet implemented for GitLab. See AddIssueReaction.
+func (c *LiveClient) ListIssueReactions(_ context.Context, _, _ string, _ int) ([]forge.Reaction, error) {
+	return nil, forge.ErrNotSupported
+}
+
 // AddIssueReaction is not yet implemented for GitLab. GitLab has an
 // equivalent "award emoji" API, but no caller currently exercises this
 // path on GitLab, so it is left unimplemented rather than guessed at.

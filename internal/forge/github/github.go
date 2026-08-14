@@ -2853,6 +2853,33 @@ func (c *LiveClient) DeleteIssueCommentReaction(ctx context.Context, owner, repo
 	return c.delete_(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d/reactions/%d", owner, repo, commentID, reactionID))
 }
 
+// ListIssueReactions returns the emoji reactions on an issue or pull request.
+func (c *LiveClient) ListIssueReactions(ctx context.Context, owner, repo string, number int) ([]forge.Reaction, error) {
+	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/reactions", owner, repo, number))
+	if err != nil {
+		return nil, fmt.Errorf("list issue reactions on #%d: %w", number, err)
+	}
+	var items []struct {
+		ID      int64  `json:"id"`
+		Content string `json:"content"`
+		User    struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	}
+	if err := decodeJSON(resp, &items); err != nil {
+		return nil, fmt.Errorf("decode issue reactions: %w", err)
+	}
+	reactions := make([]forge.Reaction, len(items))
+	for i, item := range items {
+		reactions[i] = forge.Reaction{
+			ID:      item.ID,
+			Content: item.Content,
+			User:    item.User.Login,
+		}
+	}
+	return reactions, nil
+}
+
 // GetPullRequestInfo returns branch/repo context for a pull request.
 func (c *LiveClient) GetPullRequestInfo(ctx context.Context, owner, repo string, number int) (*forge.PullRequestInfo, error) {
 	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/pulls/%d", owner, repo, number))

@@ -38,6 +38,9 @@ type Driver interface {
 	ListOpenChangeProposals(ctx context.Context, owner, repo string) ([]forge.ChangeProposal, error)
 	// ListComments returns the comments on an issue or pull request.
 	ListComments(ctx context.Context, owner, repo string, number int) ([]forge.IssueComment, error)
+	// ListIssueReactions returns the emoji reactions on an issue or
+	// pull request. Used by reaction notification assertions.
+	ListIssueReactions(ctx context.Context, owner, repo string, number int) ([]forge.Reaction, error)
 
 	// CreateRepo creates a new repository in the given org. It is
 	// idempotent — if a repo with the given name already exists,

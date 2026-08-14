@@ -555,6 +555,10 @@ func (f *fakeCleanupSCM) CreateForkChangeProposal(context.Context, string, strin
 	return nil, nil
 }
 
+func (f *fakeCleanupSCM) ListIssueReactions(context.Context, string, string, int) ([]forge.Reaction, error) {
+	return nil, nil
+}
+
 // --- Issue cleanup tests ---
 
 func TestCleanupScenario_ClosesIssue(t *testing.T) {

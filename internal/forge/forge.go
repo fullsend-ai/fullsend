@@ -251,6 +251,14 @@ type IssueComment struct {
 	CreatedAt string
 }
 
+// Reaction represents an emoji reaction on an issue, pull request,
+// or comment.
+type Reaction struct {
+	ID      int64
+	Content string // e.g. "+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes"
+	User    string // login of the user who added the reaction
+}
+
 // PullRequestReview represents a formal review on a pull request.
 type PullRequestReview struct {
 	ID          int
@@ -626,6 +634,11 @@ type Client interface {
 	// reaction by ID. Returns forge.ErrNotSupported if the forge has no
 	// equivalent concept.
 	DeleteIssueCommentReaction(ctx context.Context, owner, repo string, commentID int, reactionID int64) error
+
+	// ListIssueReactions returns the emoji reactions on an issue or
+	// pull request. Returns forge.ErrNotSupported if the forge has no
+	// equivalent concept.
+	ListIssueReactions(ctx context.Context, owner, repo string, number int) ([]Reaction, error)
 
 	// Pull request operations
 	GetPullRequestInfo(ctx context.Context, owner, repo string, number int) (*PullRequestInfo, error)

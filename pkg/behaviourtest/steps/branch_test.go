@@ -88,6 +88,9 @@ func (f *fakeBranchSCM) AddComment(_ context.Context, _, _ string, _ int, body s
 	f.addedComments = append(f.addedComments, body)
 	return &forge.IssueComment{Body: body}, nil
 }
+func (f *fakeBranchSCM) ListIssueReactions(context.Context, string, string, int) ([]forge.Reaction, error) {
+	return nil, nil
+}
 
 // fakeBranchCI implements WaitForFailedHarnessAgent; other ci.Driver
 // methods come from the embedded interface and panic when called.

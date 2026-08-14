@@ -92,6 +92,7 @@ type ConfigWriter interface {
 	SetKillSwitch(bool)
 	SetAgents([]AgentEntry)
 	SetAllowedRemoteResources([]string)
+	SetStatusNotifications(*StatusNotificationConfig)
 	Marshal() ([]byte, error)
 	Validate() error
 }
@@ -193,6 +194,11 @@ func (c *orgConfig) SetInference(i InferenceConfig) { c.Inference = i }
 
 // SetDefaultRuntime replaces the default agent runtime.
 func (c *orgConfig) SetDefaultRuntime(rt string) { c.Defaults.Runtime = rt }
+
+// SetStatusNotifications sets the status notification configuration.
+func (c *orgConfig) SetStatusNotifications(sn *StatusNotificationConfig) {
+	c.Defaults.StatusNotifications = sn
+}
 
 // SetRepo adds or replaces a per-repo configuration entry.
 // Callers should use this method instead of mutating the map returned
@@ -507,6 +513,11 @@ func (c *perRepoConfig) SetInferenceProject(project string) { c.ensureInference(
 
 // SetInferenceRegion sets the GCP region for inference.
 func (c *perRepoConfig) SetInferenceRegion(region string) { c.ensureInference().Region = region }
+
+// SetStatusNotifications sets the status notification configuration.
+func (c *perRepoConfig) SetStatusNotifications(sn *StatusNotificationConfig) {
+	c.Notifications = sn
+}
 
 // SetInferenceWIFProvider sets the WIF provider resource name.
 func (c *perRepoConfig) SetInferenceWIFProvider(wifProvider string) {
