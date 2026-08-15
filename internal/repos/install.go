@@ -313,7 +313,8 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 	} else {
 		switch cfg.Forge {
 		case ForgeGitHub:
-			installFiles, err = scaffold.CollectPerRepoInstallFiles(cfg.VendorBinary, cfg.UpstreamRef, cfg.UpstreamTag)
+			credMode := resolveCredentialMode(cfg.Forge, cfg.CredentialMode, cfg.InferenceProject, cfg.DiscoveredCredMode)
+			installFiles, err = scaffold.CollectPerRepoInstallFiles(cfg.VendorBinary, cfg.UpstreamRef, cfg.UpstreamTag, credMode)
 		case ForgeGitLab:
 			installFiles, err = scaffold.CollectGitLabPerRepoInstallFiles(cfg.RunnerTags, cfg.UpstreamRef, cfg.UpstreamTag)
 		default:

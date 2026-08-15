@@ -9,11 +9,12 @@ import (
 
 // RenderOptions controls install-time substitution for shim and thin-caller templates.
 type RenderOptions struct {
-	Vendored    bool
-	PerRepo     bool
-	UpstreamRef string // commit SHA to pin workflow refs to; empty = use DefaultUpstreamRef
-	UpstreamTag string // version tag for traceability comment (e.g. "v0.19.0")
-	RunnerImage string // GitHub Actions runner image; empty = use DefaultGHRunner
+	Vendored       bool
+	PerRepo        bool
+	UpstreamRef    string // commit SHA to pin workflow refs to; empty = use DefaultUpstreamRef
+	UpstreamTag    string // version tag for traceability comment (e.g. "v0.19.0")
+	RunnerImage    string // GitHub Actions runner image; empty = use DefaultGHRunner
+	CredentialMode string // credential mode (wif/oidc); controls WIF secret inclusion in per-repo shim
 }
 
 // RenderOptionsForInstall builds render options from the --vendor flag.
@@ -50,6 +51,7 @@ func RenderTemplate(path string, content []byte, opts RenderOptions) ([]byte, er
 		out = strings.ReplaceAll(out, "__REUSABLE_WORKFLOW__", reusableWorkflowUses(stage, opts))
 	case path == "templates/shim-per-repo.yaml":
 		out = strings.ReplaceAll(out, "__REUSABLE_DISPATCH__", reusableDispatchUses(opts))
+		out = stripWIFSecrets(out, opts)
 	}
 
 	out = strings.ReplaceAll(out, "__FULLSEND_AI_REF__", resolvedRefWithComment(opts))
@@ -108,6 +110,21 @@ func reusableWorkflowUses(stage string, opts RenderOptions) string {
 		uses += " # " + opts.UpstreamTag
 	}
 	return uses
+}
+
+// stripWIFSecrets removes WIF secret references from the per-repo shim
+// when credential mode is "oidc". OIDC repos authenticate directly to
+// a public mint without GCP WIF, so these secrets are unnecessary and
+// their presence in the generated workflow is confusing.
+func stripWIFSecrets(content string, opts RenderOptions) string {
+	if opts.CredentialMode != "oidc" {
+		return content
+	}
+	content = strings.ReplaceAll(content,
+		"      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}\n", "")
+	content = strings.ReplaceAll(content,
+		"      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}\n", "")
+	return content
 }
 
 func reusableDispatchUses(opts RenderOptions) string {

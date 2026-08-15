@@ -34,10 +34,11 @@ var scaffoldGitLabPaths = []struct {
 func FetchRemoteScaffold(ctx context.Context, ghClient forge.Client,
 	manifestRef, resolvedSHA, forgeName string,
 	runnerTags []string,
+	credentialMode string,
 ) (scaffold.InstallFiles, error) {
 	switch forgeName {
 	case ForgeGitHub:
-		return fetchRemoteGitHubScaffold(ctx, ghClient, manifestRef, resolvedSHA)
+		return fetchRemoteGitHubScaffold(ctx, ghClient, manifestRef, resolvedSHA, credentialMode)
 	case ForgeGitLab:
 		return fetchRemoteGitLabScaffold(ctx, ghClient, manifestRef, resolvedSHA, runnerTags)
 	default:
@@ -46,7 +47,7 @@ func FetchRemoteScaffold(ctx context.Context, ghClient forge.Client,
 }
 
 func fetchRemoteGitHubScaffold(ctx context.Context, client forge.Client,
-	manifestRef, resolvedSHA string,
+	manifestRef, resolvedSHA, credentialMode string,
 ) (scaffold.InstallFiles, error) {
 	content, err := client.GetFileContentAtRef(ctx, shimOwner, shimRepo, scaffoldGitHubShimPath, manifestRef)
 	if err != nil {
@@ -54,6 +55,7 @@ func fetchRemoteGitHubScaffold(ctx context.Context, client forge.Client,
 	}
 
 	opts := scaffold.RenderOptionsForInstall(false, true, resolvedSHA, manifestRef)
+	opts.CredentialMode = credentialMode
 	rendered, err := scaffold.RenderTemplate("templates/shim-per-repo.yaml", content, opts)
 	if err != nil {
 		return nil, fmt.Errorf("rendering remote GitHub shim: %w", err)

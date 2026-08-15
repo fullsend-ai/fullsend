@@ -210,6 +210,55 @@ func TestRenderPerRepoShimRunner(t *testing.T) {
 	assert.NotContains(t, out, "__GH_RUNNER__")
 }
 
+func TestRenderPerRepoShimWIFMode(t *testing.T) {
+	raw, err := PerRepoShimTemplate()
+	require.NoError(t, err)
+
+	rendered, err := RenderTemplate("templates/shim-per-repo.yaml", raw, RenderOptions{
+		PerRepo:        true,
+		CredentialMode: "wif",
+	})
+	require.NoError(t, err)
+	out := string(rendered)
+	assert.Contains(t, out, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
+	assert.Contains(t, out, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assert.Contains(t, out, "OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}")
+	assertFreeOfRenderPlaceholders(t, out)
+}
+
+func TestRenderPerRepoShimOIDCMode(t *testing.T) {
+	raw, err := PerRepoShimTemplate()
+	require.NoError(t, err)
+
+	rendered, err := RenderTemplate("templates/shim-per-repo.yaml", raw, RenderOptions{
+		PerRepo:        true,
+		CredentialMode: "oidc",
+	})
+	require.NoError(t, err)
+	out := string(rendered)
+	assert.NotContains(t, out, "FULLSEND_GCP_WIF_PROVIDER")
+	assert.NotContains(t, out, "FULLSEND_GCP_PROJECT_ID")
+	// OTEL secrets should still be present
+	assert.Contains(t, out, "OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}")
+	assert.Contains(t, out, "OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}")
+	assertFreeOfRenderPlaceholders(t, out)
+}
+
+func TestRenderPerRepoShimDefaultCredMode(t *testing.T) {
+	raw, err := PerRepoShimTemplate()
+	require.NoError(t, err)
+
+	// Empty credential mode defaults to including WIF secrets
+	rendered, err := RenderTemplate("templates/shim-per-repo.yaml", raw, RenderOptions{
+		PerRepo: true,
+	})
+	require.NoError(t, err)
+	out := string(rendered)
+	assert.Contains(t, out, "FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}")
+	assert.Contains(t, out, "FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}")
+	assertFreeOfRenderPlaceholders(t, out)
+}
+
 func TestRenderFallbackToDefaultRef(t *testing.T) {
 	raw, err := FullsendRepoFile(".github/workflows/triage.yml")
 	require.NoError(t, err)

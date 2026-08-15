@@ -446,10 +446,12 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			// running binary, fetch scaffold templates from the repo
 			// at the pinned ref instead of using embedded templates.
 			if manifestRef != "" && refResolver != nil {
+				resolvedCredMode := resolveCredentialMode(dr.resolved.Forge, dr.resolved.CredentialMode, cfg.InferenceProject, dr.discoveredCredMode)
 				scaffoldFiles, fetchErr := FetchRemoteScaffold(
 					ctx, refResolver.client,
 					manifestRef, ref, dr.resolved.Forge,
 					cfg.Manifest.Forge.GitLab.RunnerTags,
+					resolvedCredMode,
 				)
 				if fetchErr == nil {
 					installCfg.PrebuiltScaffoldFiles = scaffoldFiles

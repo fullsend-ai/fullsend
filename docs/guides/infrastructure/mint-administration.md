@@ -32,6 +32,49 @@ https://fullsend-mint-gljhbkcloq-uc.a.run.app
 
 Pass this URL as `--mint-url` when running `fullsend github setup`, or set the `FULLSEND_MINT_URL` repository/org variable in GitHub. If you are using the hosted mint, the rest of this guide (deploying, enrolling, troubleshooting) is handled by the fullsend team — you do not need to manage mint infrastructure yourself.
 
+## Credential modes
+
+Fullsend supports three credential modes that control how a repository authenticates to the token mint. The mode is set per forge section or per repo in `repos.yaml` via `credential_mode`, or automatically resolved during `repos install` based on the provided flags.
+
+| Mode | Forge | Authentication path | Required secrets/variables |
+|------|-------|--------------------|----|
+| `wif` | GitHub, GitLab | OIDC token exchanged via GCP Workload Identity Federation | `FULLSEND_GCP_WIF_PROVIDER`, `FULLSEND_GCP_PROJECT_ID`, `FULLSEND_MINT_URL` |
+| `oidc` | GitHub | OIDC token sent directly to a public mint | `FULLSEND_MINT_URL` |
+| `token` | GitLab | Bot PAT stored as a CI/CD variable | CI/CD variable with the PAT |
+
+### When each mode applies
+
+**`wif` (Workload Identity Federation)** — the default when `--inference-project` is provided during installation. The workflow authenticates to GCP via WIF, then exchanges the WIF-issued token for a GitHub App installation token at the mint. This mode requires a GCP project with WIF infrastructure provisioned via `mint deploy` and `mint enroll`. Use this mode for private mints or when GCP inference (Vertex AI) is configured.
+
+**`oidc` (direct OIDC)** — the default for GitHub repos when no `--inference-project` is provided. The workflow sends the GitHub Actions OIDC token directly to a public mint (one deployed with `--public`). No GCP WIF infrastructure is needed on the repo side. The generated shim workflow omits `FULLSEND_GCP_WIF_PROVIDER` and `FULLSEND_GCP_PROJECT_ID` secrets since they are not used in this mode.
+
+**`token` (bot PAT)** — the default for GitLab repos when no `--inference-project` is provided. The workflow uses a bot personal access token stored as a CI/CD variable. No OIDC or WIF infrastructure is needed.
+
+### Public vs private mint credentials
+
+**Public mint** (`ALLOWED_ORGS=*`): deployed with `mint deploy --public`. Any GitHub organization can authenticate using `oidc` mode — no per-org enrollment is required. Repos installed against a public mint default to `oidc` mode unless the operator explicitly sets `credential_mode: wif` with a GCP project.
+
+**Private (tight) mint**: deployed without `--public`. Only organizations listed in `ALLOWED_ORGS` can authenticate. Enrollment via `mint enroll` is required for each org or repo, and WIF infrastructure must be provisioned. Repos installed against a private mint use `wif` mode.
+
+### Overriding credential mode
+
+Set `credential_mode` in the forge section of `repos.yaml` to apply a default to all repos under that forge:
+
+```yaml
+forge:
+  github:
+    mint_url: https://mint.example.com
+    credential_mode: oidc
+```
+
+Override per repo when a specific repo needs a different mode:
+
+```yaml
+repos:
+  - repo: acme/special-repo
+    credential_mode: wif
+```
+
 ## Prerequisites
 
 - **GCP project** with the following APIs enabled:

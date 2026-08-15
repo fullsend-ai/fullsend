@@ -344,7 +344,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 	}
 
 	upstreamRef, upstreamTag := resolveUpstreamRef()
-	installFiles, err := scaffold.CollectPerRepoInstallFiles(cfg.vendor, upstreamRef, upstreamTag)
+	installFiles, err := scaffold.CollectPerRepoInstallFiles(cfg.vendor, upstreamRef, upstreamTag, "")
 	if err != nil {
 		return fmt.Errorf("collecting per-repo scaffold files: %w", err)
 	}

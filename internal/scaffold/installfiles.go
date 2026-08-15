@@ -44,8 +44,11 @@ func CollectInstallFiles(opts CollectInstallFilesOptions) (InstallFiles, error) 
 }
 
 // CollectPerRepoInstallFiles gathers files for per-repo installation.
-func CollectPerRepoInstallFiles(vendored bool, upstreamRef, upstreamTag string) (InstallFiles, error) {
+// credentialMode controls WIF secret inclusion in the shim template:
+// "oidc" omits WIF secrets; "wif" or "" includes them.
+func CollectPerRepoInstallFiles(vendored bool, upstreamRef, upstreamTag, credentialMode string) (InstallFiles, error) {
 	opts := RenderOptionsForInstall(vendored, true, upstreamRef, upstreamTag)
+	opts.CredentialMode = credentialMode
 
 	shimRaw, err := PerRepoShimTemplate()
 	if err != nil {

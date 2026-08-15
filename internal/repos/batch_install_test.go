@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 func newBatchManifest(repos ...string) *Manifest {
@@ -1281,7 +1282,7 @@ func TestFetchRemoteScaffold_GitLab(t *testing.T) {
 		fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+sp.repoPath+"@"+ref] = []byte(content)
 	}
 
-	files, err := FetchRemoteScaffold(context.Background(), fc, ref, sha, ForgeGitLab, []string{"docker"})
+	files, err := FetchRemoteScaffold(context.Background(), fc, ref, sha, ForgeGitLab, []string{"docker"}, "")
 	if err != nil {
 		t.Fatalf("FetchRemoteScaffold() error: %v", err)
 	}
@@ -1302,9 +1303,37 @@ func TestFetchRemoteScaffold_GitLab(t *testing.T) {
 	}
 }
 
+func TestFetchRemoteScaffold_GitHubOIDCMode(t *testing.T) {
+	fc := forge.NewFakeClient()
+	ref := "v0.35.0"
+	sha := "deadbeef1234567890abcdef1234567890abcdef"
+
+	raw, err := scaffold.PerRepoShimTemplate()
+	if err != nil {
+		t.Fatalf("PerRepoShimTemplate() error: %v", err)
+	}
+	fc.FileContentsRef[shimOwner+"/"+shimRepo+"/"+scaffoldGitHubShimPath+"@"+ref] = raw
+
+	files, err := FetchRemoteScaffold(context.Background(), fc, ref, sha, ForgeGitHub, nil, "oidc")
+	if err != nil {
+		t.Fatalf("FetchRemoteScaffold() error: %v", err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+
+	content := string(files[0].Content)
+	if strings.Contains(content, "FULLSEND_GCP_WIF_PROVIDER") {
+		t.Error("OIDC mode should strip FULLSEND_GCP_WIF_PROVIDER from remote scaffold")
+	}
+	if strings.Contains(content, "FULLSEND_GCP_PROJECT_ID") {
+		t.Error("OIDC mode should strip FULLSEND_GCP_PROJECT_ID from remote scaffold")
+	}
+}
+
 func TestFetchRemoteScaffold_UnsupportedForge(t *testing.T) {
 	fc := forge.NewFakeClient()
-	_, err := FetchRemoteScaffold(context.Background(), fc, "v1.0.0", "sha", "unsupported", nil)
+	_, err := FetchRemoteScaffold(context.Background(), fc, "v1.0.0", "sha", "unsupported", nil, "")
 	if err == nil {
 		t.Fatal("expected error for unsupported forge")
 	}

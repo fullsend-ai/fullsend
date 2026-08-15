@@ -63,7 +63,7 @@ on:
       FULLSEND_GCP_WIF_PROVIDER:
         required: false
       FULLSEND_GCP_PROJECT_ID:
-        required: true
+        required: false
       OTEL_EXPORTER_OTLP_TRACES_HEADERS:
         description: >-
           OTLP headers for ADR 0050 Level 2 trace export, forwarded to all
