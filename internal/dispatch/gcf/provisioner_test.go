@@ -1533,7 +1533,7 @@ func TestEmbeddedMintSource_MatchesOriginal(t *testing.T) {
 
 	// Check mintcore files too.
 	// file_pem.go is standalone-mint-only and excluded from the GCF bundle.
-	gcfSkip := map[string]bool{"fetch_js.go": true, "file_pem.go": true, "pem_js.go": true}
+	gcfSkip := map[string]bool{"crypto_js.go": true, "fetch_js.go": true, "file_pem.go": true, "github_crypto_js.go": true, "jwks_verifier_js.go": true, "pem_js.go": true}
 	mintcoreEntries, err := os.ReadDir(mintcoreDir)
 	if err == nil {
 		for _, entry := range mintcoreEntries {

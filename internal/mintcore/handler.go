@@ -5,10 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -51,7 +48,7 @@ type statusResponse struct {
 
 // Handler holds dependencies for the token mint HTTP server.
 type Handler struct {
-	httpClient   HTTPDoer
+	doer         Doer
 	pemAccessor  PEMAccessor
 	oidcVerifier OIDCVerifier
 
@@ -88,124 +85,58 @@ type foreignInflight struct {
 	err       error
 }
 
-// NewHandler creates a Handler with the given dependencies.
-// Environment variables for handler-level config (ROLE_APP_IDS, ALLOWED_ROLES,
-// ALLOWED_ORGS, ALLOWED_WORKFLOW_FILES, PER_REPO_WIF_REPOS) are read once at
-// construction time. The OIDCVerifier is injected by the caller so different
-// verification strategies can be used (STSVerifier for the Cloud Function,
-// JWKSVerifier for devmint). The handler performs authorization (org-allowed,
-// workflow-ref) after the verifier authenticates the token.
-func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, error) {
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-
-	perRepoWIFRepos := make(map[string]bool)
-	for _, entry := range SplitCSV(os.Getenv("PER_REPO_WIF_REPOS")) {
-		perRepoWIFRepos[strings.ToLower(entry)] = true
+// jsonHeaders returns standard JSON response headers.
+func jsonHeaders() map[string]string {
+	return map[string]string{
+		"Content-Type":  "application/json",
+		"Cache-Control": "no-store",
 	}
-
-	workflowHostRepos := make(map[string]bool)
-	for _, entry := range SplitCSV(os.Getenv("WORKFLOW_HOST_REPOS")) {
-		workflowHostRepos[strings.ToLower(entry)] = true
-	}
-	if len(workflowHostRepos) == 0 {
-		workflowHostRepos["fullsend-ai/fullsend"] = true
-	}
-
-	h := &Handler{
-		httpClient:           httpClient,
-		pemAccessor:          pemAccessor,
-		oidcVerifier:         oidcVerifier,
-		githubBaseURL:        "https://api.github.com",
-		foreignCache:         make(map[string]foreignCacheEntry),
-		foreignInflight:      make(map[string]*foreignInflight),
-		foreignCacheTTL:      defaultForeignCacheTTL,
-		perRepoWIFRepos:      perRepoWIFRepos,
-		allowedOrgs:          ParseAllowedOrgs(os.Getenv("ALLOWED_ORGS")),
-		allowedWorkflowFiles: SplitCSV(os.Getenv("ALLOWED_WORKFLOW_FILES")),
-		workflowHostRepos:    workflowHostRepos,
-	}
-
-	if raw := os.Getenv("ROLE_APP_IDS"); raw != "" {
-		var ids map[string]string
-		if err := json.Unmarshal([]byte(raw), &ids); err != nil {
-			return nil, fmt.Errorf("failed to parse ROLE_APP_IDS: %w", err)
-		}
-		h.roleAppIDs = RoleOnlyAppIDs(ids)
-		h.legacyAppIDsOnly = legacyAppIDsOnly(ids)
-	}
-
-	roleSet := make(map[string]bool, len(h.roleAppIDs))
-	for role := range h.roleAppIDs {
-		roleSet[role] = true
-	}
-
-	if raw := os.Getenv("ALLOWED_ROLES"); raw != "" {
-		for _, entry := range strings.Split(raw, ",") {
-			if trimmed := strings.TrimSpace(entry); trimmed != "" {
-				if !RolePattern.MatchString(trimmed) {
-					return nil, fmt.Errorf("ALLOWED_ROLES contains invalid entry %q: must match %s", trimmed, RolePattern.String())
-				}
-				h.allowedRoles = append(h.allowedRoles, trimmed)
-			}
-		}
-	} else {
-		for role := range roleSet {
-			h.allowedRoles = append(h.allowedRoles, role)
-		}
-		sort.Strings(h.allowedRoles)
-	}
-
-	for _, role := range h.allowedRoles {
-		if !HasRole(role) {
-			return nil, fmt.Errorf("ALLOWED_ROLES contains %q but RolePermissions has no entry for it", role)
-		}
-		if !roleSet[role] {
-			return nil, fmt.Errorf("ALLOWED_ROLES contains %q but ROLE_APP_IDS has no entry for it", role)
-		}
-	}
-
-	return h, nil
 }
 
-// ServeHTTP handles incoming token mint requests.
-func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.Method == http.MethodGet && r.URL.Path == "/health" {
-		h.handleHealth(w)
-		return
+// errorResponse returns a JSON error body.
+func errorResponse(msg string) []byte {
+	b, _ := json.Marshal(map[string]string{"error": msg})
+	return b
+}
+
+// HandleRaw processes a request using simple types (no net/http dependency).
+// This is the primary entry point for WASM builds and is also used by
+// ServeHTTP on non-WASM platforms.
+func (h *Handler) HandleRaw(ctx context.Context, method, path string, headers map[string]string, body []byte) (int, map[string]string, []byte) {
+	if method == "GET" && path == "/health" {
+		return h.handleHealthRaw()
 	}
 
-	if r.URL.Path != "/v1/token" && r.URL.Path != "/" && r.URL.Path != "/v1/status" {
-		writeError(w, http.StatusNotFound, "not found")
-		return
+	if path != "/v1/token" && path != "/" && path != "/v1/status" {
+		return statusNotFound, jsonHeaders(), errorResponse("not found")
 	}
 
-	if r.URL.Path == "/v1/status" && r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
+	if path == "/v1/status" && method != "GET" {
+		return statusMethodNotAllowed, jsonHeaders(), errorResponse("method not allowed")
 	}
-	if r.URL.Path != "/v1/status" && r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
+	if path != "/v1/status" && method != "POST" {
+		return statusMethodNotAllowed, jsonHeaders(), errorResponse("method not allowed")
 	}
 
-	authHeader := r.Header.Get("Authorization")
+	authHeader := headers["Authorization"]
+	if authHeader == "" {
+		// Also check lowercase (HTTP/2 normalizes to lowercase).
+		authHeader = headers["authorization"]
+	}
 	if !strings.HasPrefix(authHeader, "Bearer ") {
-		writeError(w, http.StatusUnauthorized, "missing or invalid Authorization header")
-		return
+		return statusUnauthorized, jsonHeaders(), errorResponse("missing or invalid Authorization header")
 	}
 	oidcToken := strings.TrimPrefix(authHeader, "Bearer ")
 
-	if r.URL.Path == "/v1/status" {
-		claims, err := h.oidcVerifier.Verify(r.Context(), oidcToken)
+	if path == "/v1/status" {
+		claims, err := h.oidcVerifier.Verify(ctx, oidcToken)
 		if err != nil {
 			log.Printf("OIDC verification failed for /v1/status: %v", err)
-			writeError(w, http.StatusUnauthorized, "authentication failed")
-			return
+			return statusUnauthorized, jsonHeaders(), errorResponse("authentication failed")
 		}
 		if err := AuthorizeToken(claims, h.allowedOrgs, h.perRepoWIFRepos); err != nil {
 			log.Printf("token authorization failed for /v1/status: %v", err)
-			writeError(w, http.StatusUnauthorized, "authentication failed")
-			return
+			return statusUnauthorized, jsonHeaders(), errorResponse("authentication failed")
 		}
 		isPerRepo := IsPerRepoMode(claims.Repository, h.perRepoWIFRepos)
 		isDualEnrolled := false
@@ -220,79 +151,58 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if wfErr != nil {
 			log.Printf("workflow ref validation failed for /v1/status: %v", wfErr)
-			writeError(w, http.StatusUnauthorized, "authentication failed")
-			return
+			return statusUnauthorized, jsonHeaders(), errorResponse("authentication failed")
 		}
-		h.handleStatus(w, claims)
-		return
-	}
-
-	defer r.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(r.Body, 64<<10))
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read request body")
-		return
+		return h.handleStatusRaw(claims)
 	}
 
 	var req mintRequest
 	if err := json.Unmarshal(body, &req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
-		return
+		return statusBadRequest, jsonHeaders(), errorResponse("invalid JSON body")
 	}
 
 	if req.Role == "" {
-		writeError(w, http.StatusBadRequest, "role is required")
-		return
+		return statusBadRequest, jsonHeaders(), errorResponse("role is required")
 	}
 
 	if !RolePattern.MatchString(req.Role) {
-		writeError(w, http.StatusBadRequest, "invalid role format")
-		return
+		return statusBadRequest, jsonHeaders(), errorResponse("invalid role format")
 	}
 
 	if !h.checkAllowedRole(req.Role) {
-		writeError(w, http.StatusForbidden, "role not allowed")
-		return
+		return statusForbidden, jsonHeaders(), errorResponse("role not allowed")
 	}
 
 	if len(req.Repos) == 0 {
-		writeError(w, http.StatusBadRequest, "repos is required")
-		return
+		return statusBadRequest, jsonHeaders(), errorResponse("repos is required")
 	}
 
 	req.Repos = normalizeMintRepos(req.Repos)
 
 	if len(req.Repos) > maxRepos {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("too many repos (max %d)", maxRepos))
-		return
+		return statusBadRequest, jsonHeaders(), errorResponse(fmt.Sprintf("too many repos (max %d)", maxRepos))
 	}
 	for _, repo := range req.Repos {
 		if !RepoNamePattern.MatchString(repo) || strings.Contains(repo, "..") {
-			writeError(w, http.StatusBadRequest, "invalid repo name")
-			return
+			return statusBadRequest, jsonHeaders(), errorResponse("invalid repo name")
 		}
 	}
 
 	if req.TargetOrg != "" {
 		if err := validateTargetOrg(req.TargetOrg); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid target_org")
-			return
+			return statusBadRequest, jsonHeaders(), errorResponse("invalid target_org")
 		}
 	}
-
-	ctx := r.Context()
 
 	claims, err := h.oidcVerifier.Verify(ctx, oidcToken)
 	if err != nil {
 		log.Printf("OIDC verification failed: %v", err)
-		writeError(w, http.StatusUnauthorized, "authentication failed")
-		return
+		return statusUnauthorized, jsonHeaders(), errorResponse("authentication failed")
 	}
 
 	if err := AuthorizeToken(claims, h.allowedOrgs, h.perRepoWIFRepos); err != nil {
 		log.Printf("token authorization failed: %v", err)
-		writeError(w, http.StatusUnauthorized, "authentication failed")
-		return
+		return statusUnauthorized, jsonHeaders(), errorResponse("authentication failed")
 	}
 	callerOrg := strings.ToLower(claims.RepositoryOwner)
 	targetOrg := strings.ToLower(strings.TrimSpace(req.TargetOrg))
@@ -302,16 +212,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	isTargetForeign := !strings.EqualFold(targetOrg, callerOrg)
 	isPerRepo := IsPerRepoMode(claims.Repository, h.perRepoWIFRepos)
-	// Dual enrollment: if the caller is explicitly listed in
-	// PER_REPO_WIF_REPOS (not via wildcard public mint) and their
-	// owner org is also in ALLOWED_ORGS, use per-org scope treatment
-	// — per-org shapes are a superset of per-repo self-only scope.
-	// Workflow ref validation accepts sources from EITHER mode:
-	// per-repo (workflowHostRepos) or per-org ({org}/.fullsend, upstream).
-	// Note: when ALLOWED_ORGS=* with specific PER_REPO_WIF_REPOS
-	// entries, per-repo callers are upgraded to per-org scope; this
-	// is consistent because all non-per-repo callers from any org
-	// already receive per-org treatment in that configuration.
 	isDualEnrolled := false
 	if isPerRepo && !IsPublicMintRepos(h.perRepoWIFRepos) &&
 		ValidateOrgAllowed(claims.RepositoryOwner, h.allowedOrgs) == nil {
@@ -321,22 +221,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	wfErr := ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, isPerRepo, h.workflowHostRepos, h.allowedWorkflowFiles)
 	if wfErr != nil && isDualEnrolled {
-		// Per-org validation failed; try per-repo validation since
-		// dual-enrolled callers accept workflows from either mode.
 		wfErr = ValidateWorkflowRef(claims.JobWorkflowRef, claims.Repository, true, h.workflowHostRepos, h.allowedWorkflowFiles)
 	}
 	if wfErr != nil {
 		log.Printf("workflow ref validation failed: %v", wfErr)
-		writeError(w, http.StatusUnauthorized, "authentication failed")
-		return
+		return statusUnauthorized, jsonHeaders(), errorResponse("authentication failed")
 	}
 	shape, scopeErr := validateReposScope(isTargetForeign, claims.Repository, req.Repos, isPerRepo)
 	if scopeErr != nil && !isTargetForeign {
-		// Same-org scope denied. For per-repo callers requesting repos
-		// beyond their own (specific per-repo denial), check repo-level
-		// FOREIGN grants. Only override the per-repo cross-repo denial;
-		// other denial reasons (empty repos, org-mode shape violations)
-		// must not be overridden.
 		if isPerRepo && len(req.Repos) > 0 && errors.Is(scopeErr, errPerRepoCrossRepo) {
 			if fErr := h.checkRepoForeignGrants(ctx, claims, callerOrg, req.Role, req.Repos); fErr == nil {
 				log.Printf("intra-org repo-level foreign grant: caller=%s target_org=%s repos=%v role=%s",
@@ -348,8 +240,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if scopeErr != nil {
-		writeError(w, http.StatusForbidden, scopeErr.Error())
-		return
+		return statusForbidden, jsonHeaders(), errorResponse(scopeErr.Error())
 	}
 	if shape != "" {
 		log.Printf("repos scope shape=%s requested_repos=%v source_repo=%s target_org=%s role=%s",
@@ -374,18 +265,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var me *mintError
 		if errors.As(err, &me) {
 			msg := "mint failed"
-			// Surface the user-facing message when the error explicitly
-			// provides one. Only errors that set userMsg opt into this;
-			// all others keep the generic message to avoid leaking
-			// internal details.
 			if me.userMsg != "" {
 				msg = me.userMsg
 			}
-			writeError(w, me.status, msg)
-		} else {
-			writeError(w, http.StatusInternalServerError, "internal error")
+			return me.status, jsonHeaders(), errorResponse(msg)
 		}
-		return
+		return statusInternalServerError, jsonHeaders(), errorResponse("internal error")
 	}
 
 	if granted != nil {
@@ -424,21 +309,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		resp.RepoSelection = granted.RepoSelection
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(resp)
+	respBody, _ := json.Marshal(resp)
+	return statusOK, jsonHeaders(), respBody
 }
 
-func (h *Handler) handleHealth(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "application/json")
+func (h *Handler) handleHealthRaw() (int, map[string]string, []byte) {
+	hdrs := jsonHeaders()
 	if h.legacyAppIDsOnly {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		json.NewEncoder(w).Encode(map[string]string{
+		body, _ := json.Marshal(map[string]string{
 			"status": "unhealthy",
 			"reason": "ROLE_APP_IDS contains legacy org/role keys but no role-only keys; migration required",
 		})
-		return
+		return statusServiceUnavailable, hdrs, body
 	}
 	resp := map[string]string{"status": "ok"}
 	if Version != "" {
@@ -447,11 +329,11 @@ func (h *Handler) handleHealth(w http.ResponseWriter) {
 	if Commit != "" {
 		resp["commit"] = Commit
 	}
-	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(resp)
+	body, _ := json.Marshal(resp)
+	return statusOK, hdrs, body
 }
 
-func (h *Handler) handleStatus(w http.ResponseWriter, claims *Claims) {
+func (h *Handler) handleStatusRaw(claims *Claims) (int, map[string]string, []byte) {
 	org := strings.ToLower(claims.RepositoryOwner)
 	roles := append([]string(nil), h.allowedRoles...)
 
@@ -462,29 +344,29 @@ func (h *Handler) handleStatus(w http.ResponseWriter, claims *Claims) {
 	}
 	sort.Strings(hostRepos)
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(statusResponse{
+	body, err := json.Marshal(statusResponse{
 		Org:               org,
 		Roles:             roles,
 		WorkflowHostRepos: hostRepos,
 		Version:           Version,
 		Commit:            Commit,
-	}); err != nil {
+	})
+	if err != nil {
 		log.Printf("encoding status response: %v", err)
 	}
+
+	return statusOK, jsonHeaders(), body
 }
 
 func (h *Handler) mintToken(ctx context.Context, org, role string, repos []string) (string, string, *GrantedScope, error) {
 	appID, err := h.lookupRoleAppID(role)
 	if err != nil {
-		return "", "", nil, &mintError{status: http.StatusForbidden, msg: fmt.Sprintf("looking up app ID for role %s: %v", role, err)}
+		return "", "", nil, &mintError{status: statusForbidden, msg: fmt.Sprintf("looking up app ID for role %s: %v", role, err)}
 	}
 
 	pemData, err := h.pemAccessor.AccessPEM(ctx, role)
 	if err != nil {
-		return "", "", nil, &mintError{status: http.StatusForbidden, msg: fmt.Sprintf("reading PEM secret for role %s: %v", role, err)}
+		return "", "", nil, &mintError{status: statusForbidden, msg: fmt.Sprintf("reading PEM secret for role %s: %v", role, err)}
 	}
 	defer func() {
 		for i := range pemData {
@@ -494,58 +376,45 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 
 	jwt, err := GenerateAppJWT(appID, pemData)
 	if err != nil {
-		return "", "", nil, &mintError{status: http.StatusInternalServerError, msg: fmt.Sprintf("generating app JWT: %v", err)}
+		return "", "", nil, &mintError{status: statusInternalServerError, msg: fmt.Sprintf("generating app JWT: %v", err)}
 	}
 
 	var installationID int64
 	if len(repos) == 0 {
-		installationID, err = FindOrgInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org)
+		installationID, err = FindOrgInstallation(ctx, h.doer, h.githubBaseURL, jwt, org)
 	} else {
-		installationID, err = FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org, repos[0])
+		installationID, err = FindInstallation(ctx, h.doer, h.githubBaseURL, jwt, org, repos[0])
 	}
 	if err != nil {
-		// A 404 from FindInstallation means the repo is not covered by
-		// the GitHub App installation. Surface a clear 422 so callers
-		// can diagnose misconfigured installations. Transient errors
-		// (500, 503, 429, network) propagate as 502.
 		if len(repos) > 0 && errors.Is(err, ErrInstallationNotFound) {
 			umsg := fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repos[0])
 			return "", "", nil, &mintError{
-				status:  http.StatusUnprocessableEntity,
+				status:  statusUnprocessableEntity,
 				msg:     umsg,
 				userMsg: umsg,
 			}
 		}
-		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
+		return "", "", nil, &mintError{status: statusBadGateway, msg: err.Error()}
 	}
 
-	// Verify all requested repos are covered by the same installation.
-	// If the GitHub App uses selected-repository installation mode,
-	// repos not in the selection return 404 from the installation
-	// lookup. Detecting this upfront produces a clear error instead
-	// of a confusing 422 from CreateInstallationToken.
-	//
-	// Only 404 responses indicate a genuinely uncovered repo (→ 422).
-	// Transient failures (500, 503, 429, network errors) are propagated
-	// as 502, matching the repos[0] error path above.
 	if len(repos) > 1 {
 		for _, repo := range repos[1:] {
-			otherID, otherErr := FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, org, repo)
+			otherID, otherErr := FindInstallation(ctx, h.doer, h.githubBaseURL, jwt, org, repo)
 			if otherErr != nil {
 				if errors.Is(otherErr, ErrInstallationNotFound) {
 					umsg := fmt.Sprintf("repository %s/%s is not covered by the GitHub App installation", org, repo)
 					return "", "", nil, &mintError{
-						status:  http.StatusUnprocessableEntity,
+						status:  statusUnprocessableEntity,
 						msg:     umsg,
 						userMsg: umsg,
 					}
 				}
-				return "", "", nil, &mintError{status: http.StatusBadGateway, msg: otherErr.Error()}
+				return "", "", nil, &mintError{status: statusBadGateway, msg: otherErr.Error()}
 			}
 			if otherID != installationID {
 				umsg := fmt.Sprintf("repository %s/%s uses a different GitHub App installation than %s", org, repo, repos[0])
 				return "", "", nil, &mintError{
-					status:  http.StatusUnprocessableEntity,
+					status:  statusUnprocessableEntity,
 					msg:     umsg,
 					userMsg: umsg,
 				}
@@ -553,9 +422,9 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 		}
 	}
 
-	token, expiresAt, granted, err := CreateInstallationToken(ctx, h.httpClient, h.githubBaseURL, jwt, installationID, role, repos)
+	token, expiresAt, granted, err := CreateInstallationToken(ctx, h.doer, h.githubBaseURL, jwt, installationID, role, repos)
 	if err != nil {
-		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
+		return "", "", nil, &mintError{status: statusBadGateway, msg: err.Error()}
 	}
 
 	if granted != nil {
@@ -567,29 +436,25 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 }
 
 func (h *Handler) mintTokenCrossOrg(ctx context.Context, claims *Claims, targetOrg, role string, repos []string) (string, string, *GrantedScope, error) {
-	// Specific repos requested → authorize exclusively via per-repo
-	// FOREIGN grants. Org-level FOREIGN is not consulted for repo-scoped
-	// requests; it authorizes only installation-wide tokens.
 	if len(repos) > 0 {
 		if err := h.checkRepoForeignGrants(ctx, claims, targetOrg, role, repos); err != nil {
 			log.Printf("repo-level foreign grant check failed: %v", err)
-			return "", "", nil, &mintError{status: http.StatusForbidden, msg: "foreign caller not authorized for target repos"}
+			return "", "", nil, &mintError{status: statusForbidden, msg: "foreign caller not authorized for target repos"}
 		}
 		log.Printf("repo-level foreign grant: caller=%s target_org=%s repos=%v role=%s",
 			claims.Repository, targetOrg, repos, role)
 		return h.mintToken(ctx, targetOrg, role, repos)
 	}
 
-	// Installation-wide (empty repos) → org-level FOREIGN check only.
 	allowlist, err := h.loadForeignAllowlist(ctx, targetOrg, role)
 	if err != nil {
-		return "", "", nil, &mintError{status: http.StatusBadGateway, msg: err.Error()}
+		return "", "", nil, &mintError{status: statusBadGateway, msg: err.Error()}
 	}
 	if CallerAllowed(allowlist, claims.Repository, claims.RepositoryOwner) {
 		return h.mintToken(ctx, targetOrg, role, repos)
 	}
 
-	return "", "", nil, &mintError{status: http.StatusForbidden, msg: "foreign caller not authorized for target org"}
+	return "", "", nil, &mintError{status: statusForbidden, msg: "foreign caller not authorized for target org"}
 }
 
 func (h *Handler) loadForeignAllowlist(ctx context.Context, targetOrg, role string) ([]string, error) {
@@ -656,12 +521,12 @@ func (h *Handler) fetchForeignAllowlist(ctx context.Context, targetOrg, role str
 		return nil, fmt.Errorf("generating app JWT: %v", err)
 	}
 
-	installationID, err := FindOrgInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, targetOrg)
+	installationID, err := FindOrgInstallation(ctx, h.doer, h.githubBaseURL, jwt, targetOrg)
 	if err != nil {
 		return nil, fmt.Errorf("finding org installation on %s: %v", targetOrg, err)
 	}
 
-	allowlist, err := ReadForeignAllowlist(ctx, h.httpClient, h.githubBaseURL, jwt, installationID, targetOrg, role)
+	allowlist, err := ReadForeignAllowlist(ctx, h.doer, h.githubBaseURL, jwt, installationID, targetOrg, role)
 	if err != nil {
 		return nil, err
 	}
@@ -669,15 +534,6 @@ func (h *Handler) fetchForeignAllowlist(ctx context.Context, targetOrg, role str
 	return allowlist, nil
 }
 
-// checkRepoForeignGrants verifies that every repo in repos has a repo-level
-// FULLSEND_FOREIGN_<role>_REPOS variable that authorizes the caller.
-//
-// This function serves two distinct authorization paths:
-//   - Cross-org primary authorization: called from mintTokenCrossOrg when
-//     a foreign request carries specific repos (repo-scoped FOREIGN grant).
-//   - Intra-org fallback: called from the main handler when a per-repo
-//     caller requests repos beyond its own repository within the same org
-//     (errPerRepoCrossRepo), allowing cross-repo access via repo-level grants.
 func (h *Handler) checkRepoForeignGrants(ctx context.Context, claims *Claims, targetOrg, role string, repos []string) error {
 	for _, repo := range repos {
 		allowlist, err := h.loadRepoForeignAllowlist(ctx, targetOrg, repo, role)
@@ -691,9 +547,6 @@ func (h *Handler) checkRepoForeignGrants(ctx context.Context, claims *Claims, ta
 	return nil
 }
 
-// loadRepoForeignAllowlist loads the repo-level FOREIGN allowlist for a
-// specific target repo, with in-memory caching and inflight dedup (same
-// pattern as loadForeignAllowlist for org-level).
 func (h *Handler) loadRepoForeignAllowlist(ctx context.Context, targetOrg, targetRepo, role string) ([]string, error) {
 	key := repoForeignCacheKey(targetOrg, targetRepo, role)
 
@@ -737,8 +590,6 @@ func (h *Handler) loadRepoForeignAllowlist(ctx context.Context, targetOrg, targe
 	return allowlist, nil
 }
 
-// fetchRepoForeignAllowlist reads FULLSEND_FOREIGN_<role>_REPOS from a
-// specific target repo's repo-level Actions variables.
 func (h *Handler) fetchRepoForeignAllowlist(ctx context.Context, targetOrg, targetRepo, role string) ([]string, error) {
 	appID, err := h.lookupRoleAppID(role)
 	if err != nil {
@@ -760,12 +611,12 @@ func (h *Handler) fetchRepoForeignAllowlist(ctx context.Context, targetOrg, targ
 		return nil, fmt.Errorf("generating app JWT: %v", err)
 	}
 
-	installationID, err := FindInstallation(ctx, h.httpClient, h.githubBaseURL, jwt, targetOrg, targetRepo)
+	installationID, err := FindInstallation(ctx, h.doer, h.githubBaseURL, jwt, targetOrg, targetRepo)
 	if err != nil {
 		return nil, fmt.Errorf("finding repo installation on %s/%s: %v", targetOrg, targetRepo, err)
 	}
 
-	allowlist, err := ReadForeignAllowlistFromRepo(ctx, h.httpClient, h.githubBaseURL, jwt, installationID, targetOrg, targetRepo, role)
+	allowlist, err := ReadForeignAllowlistFromRepo(ctx, h.doer, h.githubBaseURL, jwt, installationID, targetOrg, targetRepo, role)
 	if err != nil {
 		return nil, err
 	}
@@ -838,10 +689,6 @@ func (h *Handler) lookupRoleAppID(role string) (string, error) {
 }
 
 // mintError is an HTTP-aware error carrying a status code for the response.
-// userMsg, when non-empty, is a client-safe message that the response
-// boundary surfaces instead of the generic "mint failed". Errors that
-// do not set userMsg keep the generic message, preventing accidental
-// disclosure of internal details.
 type mintError struct {
 	status  int
 	msg     string
@@ -849,10 +696,3 @@ type mintError struct {
 }
 
 func (e *mintError) Error() string { return e.msg }
-
-func writeError(w http.ResponseWriter, status int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
-}

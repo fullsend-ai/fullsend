@@ -11,7 +11,7 @@ import (
 
 func TestNewHandlerFromConfig_Basic(t *testing.T) {
 	roleAppIDs := `{"triage":"100","coder":"200"}`
-	h, err := NewHandlerFromConfig(roleAppIDs, "", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	h, err := NewHandlerFromConfig(roleAppIDs, "", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 	if err != nil {
 		t.Fatalf("NewHandlerFromConfig: %v", err)
 	}
@@ -30,7 +30,7 @@ func TestNewHandlerFromConfig_Basic(t *testing.T) {
 
 func TestNewHandlerFromConfig_ExplicitAllowedRoles(t *testing.T) {
 	roleAppIDs := `{"triage":"100","coder":"200","review":"300"}`
-	h, err := NewHandlerFromConfig(roleAppIDs, "triage,coder", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	h, err := NewHandlerFromConfig(roleAppIDs, "triage,coder", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 	if err != nil {
 		t.Fatalf("NewHandlerFromConfig: %v", err)
 	}
@@ -47,14 +47,14 @@ func TestNewHandlerFromConfig_ExplicitAllowedRoles(t *testing.T) {
 }
 
 func TestNewHandlerFromConfig_MissingRoleAppIDs(t *testing.T) {
-	_, err := NewHandlerFromConfig("", "", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	_, err := NewHandlerFromConfig("", "", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 	if err != nil {
 		t.Fatalf("expected no error for empty RoleAppIDs, got: %v", err)
 	}
 }
 
 func TestNewHandlerFromConfig_InvalidRoleAppIDsJSON(t *testing.T) {
-	_, err := NewHandlerFromConfig("not-json", "", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	_, err := NewHandlerFromConfig("not-json", "", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -65,7 +65,7 @@ func TestNewHandlerFromConfig_InvalidRoleAppIDsJSON(t *testing.T) {
 
 func TestNewHandlerFromConfig_InvalidAllowedRoleFormat(t *testing.T) {
 	roleAppIDs := `{"coder":"200"}`
-	_, err := NewHandlerFromConfig(roleAppIDs, "INVALID", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	_, err := NewHandlerFromConfig(roleAppIDs, "INVALID", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 	if err == nil {
 		t.Fatal("expected error for invalid role format")
 	}
@@ -76,7 +76,7 @@ func TestNewHandlerFromConfig_InvalidAllowedRoleFormat(t *testing.T) {
 
 func TestNewHandlerFromConfig_AllowedRoleNotInPermissions(t *testing.T) {
 	roleAppIDs := `{"nonexistent":"100"}`
-	_, err := NewHandlerFromConfig(roleAppIDs, "nonexistent", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	_, err := NewHandlerFromConfig(roleAppIDs, "nonexistent", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 	if err == nil {
 		t.Fatal("expected error for role not in RolePermissions")
 	}
@@ -87,7 +87,7 @@ func TestNewHandlerFromConfig_AllowedRoleNotInPermissions(t *testing.T) {
 
 func TestNewHandlerFromConfig_AllowedRoleNotInAppIDs(t *testing.T) {
 	roleAppIDs := `{"coder":"200"}`
-	_, err := NewHandlerFromConfig(roleAppIDs, "triage", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	_, err := NewHandlerFromConfig(roleAppIDs, "triage", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 	if err == nil {
 		t.Fatal("expected error for role not in RoleAppIDs")
 	}
@@ -98,13 +98,13 @@ func TestNewHandlerFromConfig_AllowedRoleNotInAppIDs(t *testing.T) {
 
 func TestNewHandlerFromConfig_InjectsHTTPClient(t *testing.T) {
 	roleAppIDs := `{"coder":"200"}`
-	client := &http.Client{}
+	client := &HTTPClientDoer{Client: &http.Client{}}
 	h, err := NewHandlerFromConfig(roleAppIDs, "", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, client)
 	if err != nil {
 		t.Fatalf("NewHandlerFromConfig: %v", err)
 	}
-	if h.httpClient != client {
-		t.Fatal("expected injected HTTP client")
+	if h.doer != client {
+		t.Fatal("expected injected doer")
 	}
 }
 
@@ -115,7 +115,7 @@ func TestNewHandlerFromConfig_NoEnvDependency(t *testing.T) {
 	t.Setenv("ALLOWED_ROLES", "")
 
 	roleAppIDs := `{"triage":"100","coder":"200"}`
-	h, err := NewHandlerFromConfig(roleAppIDs, "coder", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	h, err := NewHandlerFromConfig(roleAppIDs, "coder", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 	if err != nil {
 		t.Fatalf("NewHandlerFromConfig: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestNewHandlerFromConfig_NoEnvDependency(t *testing.T) {
 
 func TestNewHandlerFromConfig_PerRepoWIFReposCSV(t *testing.T) {
 	roleAppIDs := `{"coder":"200"}`
-	h, err := NewHandlerFromConfig(roleAppIDs, "", "org/repo-a, Org/Repo-B", "org", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	h, err := NewHandlerFromConfig(roleAppIDs, "", "org/repo-a, Org/Repo-B", "org", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 	if err != nil {
 		t.Fatalf("NewHandlerFromConfig: %v", err)
 	}
@@ -154,7 +154,7 @@ func TestNewHandlerFromConfig_PerRepoWIFReposCSV(t *testing.T) {
 
 func TestNewHandlerFromConfig_WorkflowHostReposCSV(t *testing.T) {
 	roleAppIDs := `{"coder":"200"}`
-	h, err := NewHandlerFromConfig(roleAppIDs, "", "", "org", "*", "acme/workflows, Acme/Other", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	h, err := NewHandlerFromConfig(roleAppIDs, "", "", "org", "*", "acme/workflows, Acme/Other", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 	if err != nil {
 		t.Fatalf("NewHandlerFromConfig: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestNewHandlerFromConfig_WorkflowHostReposCSV(t *testing.T) {
 
 func TestNewHandlerFromConfig_WorkflowHostReposCSV_DefaultFallback(t *testing.T) {
 	roleAppIDs := `{"coder":"200"}`
-	h, err := NewHandlerFromConfig(roleAppIDs, "", "", "org", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	h, err := NewHandlerFromConfig(roleAppIDs, "", "", "org", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 	if err != nil {
 		t.Fatalf("NewHandlerFromConfig: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestNewHandlerFromConfig_WorkflowHostReposCSV_DefaultFallback(t *testing.T)
 
 func TestNewHandlerFromConfig_ServeHTTPWorks(t *testing.T) {
 	roleAppIDs := `{"coder":"200"}`
-	h, err := NewHandlerFromConfig(roleAppIDs, "", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	h, err := NewHandlerFromConfig(roleAppIDs, "", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 	if err != nil {
 		t.Fatalf("NewHandlerFromConfig: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestParseWorkerConfig_Basic(t *testing.T) {
 		AllowedOrgs:  "test-org",
 		OIDCAudience: "fullsend-mint",
 	}
-	h, err := ParseWorkerConfig(cfg, &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	h, err := ParseWorkerConfig(cfg, &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 	if err != nil {
 		t.Fatalf("ParseWorkerConfig: %v", err)
 	}
@@ -243,7 +243,7 @@ func TestParseWorkerConfig_MissingRequired(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := ParseWorkerConfig(tc.cfg, &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+			_, err := ParseWorkerConfig(tc.cfg, &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 			if err == nil {
 				t.Fatalf("expected error containing %q", tc.want)
 			}
@@ -260,7 +260,7 @@ func TestParseWorkerConfig_EmptyAllowedOrgs(t *testing.T) {
 		OIDCAudience:    "fullsend-mint",
 		PerRepoWIFRepos: "test-org/my-repo",
 	}
-	h, err := ParseWorkerConfig(cfg, &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	h, err := ParseWorkerConfig(cfg, &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 	if err != nil {
 		t.Fatalf("ParseWorkerConfig should succeed with empty AllowedOrgs: %v", err)
 	}
@@ -287,7 +287,7 @@ func TestParseWorkerConfig_WithCustomRolePermissions(t *testing.T) {
 		CustomRolePermissions: `{"deployer":{"contents":"write","deployments":"write"}}`,
 		AllowedRoles:          "deployer",
 	}
-	h, err := ParseWorkerConfig(cfg, &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	h, err := ParseWorkerConfig(cfg, &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 	if err != nil {
 		t.Fatalf("ParseWorkerConfig: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestParseWorkerConfig_InvalidCustomPermissions(t *testing.T) {
 		OIDCAudience:          "fullsend-mint",
 		CustomRolePermissions: "not-json",
 	}
-	_, err := ParseWorkerConfig(cfg, &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	_, err := ParseWorkerConfig(cfg, &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 	if err == nil {
 		t.Fatal("expected error for invalid custom permissions JSON")
 	}
@@ -358,7 +358,7 @@ func TestNewHandlerFromConfig_FullMintFlow(t *testing.T) {
 	}))
 	defer github.Close()
 
-	h, err := NewHandlerFromConfig(roleAppIDs, "", "", "test-org", "*", "", pemAccessor, verifier, github.Client())
+	h, err := NewHandlerFromConfig(roleAppIDs, "", "", "test-org", "*", "", pemAccessor, verifier, &HTTPClientDoer{Client: github.Client()})
 	if err != nil {
 		t.Fatalf("NewHandlerFromConfig: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestNewHandlerFromConfig_FullMintFlow(t *testing.T) {
 
 func TestNewHandlerFromConfig_LegacyAppIDsOnly(t *testing.T) {
 	roleAppIDs := `{"test-org/coder":"200"}`
-	h, err := NewHandlerFromConfig(roleAppIDs, "", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	h, err := NewHandlerFromConfig(roleAppIDs, "", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 	if err != nil {
 		t.Fatalf("NewHandlerFromConfig: unexpected error: %v", err)
 	}
@@ -400,7 +400,7 @@ func TestNewHandlerFromConfig_LegacyAppIDsOnly(t *testing.T) {
 
 func TestNewHandlerFromConfig_DefaultGithubBaseURL(t *testing.T) {
 	roleAppIDs := `{"coder":"200"}`
-	h, err := NewHandlerFromConfig(roleAppIDs, "", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	h, err := NewHandlerFromConfig(roleAppIDs, "", "", "", "*", "", &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 	if err != nil {
 		t.Fatalf("NewHandlerFromConfig: %v", err)
 	}
@@ -418,8 +418,8 @@ func TestNewHandlerFromConfig_NilHTTPClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewHandlerFromConfig: %v", err)
 	}
-	if h.httpClient != nil {
-		t.Fatal("expected nil HTTP client")
+	if h.doer != nil {
+		t.Fatal("expected nil doer")
 	}
 }
 
@@ -434,7 +434,7 @@ func TestParseWorkerConfig_SetsAllowedOrgsOnHandler(t *testing.T) {
 		PerRepoWIFRepos:      "test-org/my-repo",
 	}
 
-	h, err := ParseWorkerConfig(cfg, &fakePEMAccessor{}, &fakeOIDCVerifier{}, &http.Client{})
+	h, err := ParseWorkerConfig(cfg, &fakePEMAccessor{}, &fakeOIDCVerifier{}, &HTTPClientDoer{Client: &http.Client{}})
 	if err != nil {
 		t.Fatalf("ParseWorkerConfig: %v", err)
 	}

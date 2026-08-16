@@ -57,7 +57,7 @@ func TestFindInstallation(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	id, err := FindInstallation(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", "myorg", "my-repo")
+	id, err := FindInstallation(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "fake-jwt", "myorg", "my-repo")
 	require.NoError(t, err)
 	assert.Equal(t, int64(42), id)
 }
@@ -73,7 +73,7 @@ func TestFindInstallation_OrgMismatch(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	_, err := FindInstallation(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", "myorg", "my-repo")
+	_, err := FindInstallation(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "fake-jwt", "myorg", "my-repo")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "belongs to other-org")
 }
@@ -84,7 +84,7 @@ func TestFindInstallation_NotFound(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	_, err := FindInstallation(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", "myorg", "my-repo")
+	_, err := FindInstallation(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "fake-jwt", "myorg", "my-repo")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrInstallationNotFound)
 }
@@ -105,7 +105,7 @@ func TestCreateInstallationToken_Unscoped(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	token, expiresAt, granted, err := CreateInstallationToken(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", 42, "coder", nil)
+	token, expiresAt, granted, err := CreateInstallationToken(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "fake-jwt", 42, "coder", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "ghs_test_token", token)
 	assert.Equal(t, "2099-01-01T00:00:00Z", expiresAt)
@@ -126,7 +126,7 @@ func TestFindOrgInstallation(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	id, err := FindOrgInstallation(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", "myorg")
+	id, err := FindOrgInstallation(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "fake-jwt", "myorg")
 	require.NoError(t, err)
 	assert.Equal(t, int64(42), id)
 }
@@ -146,14 +146,14 @@ func TestCreateInstallationToken(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	token, expiresAt, _, err := CreateInstallationToken(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", 42, "coder", []string{"my-repo"})
+	token, expiresAt, _, err := CreateInstallationToken(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "fake-jwt", 42, "coder", []string{"my-repo"})
 	require.NoError(t, err)
 	assert.Equal(t, "ghs_test_token", token)
 	assert.Equal(t, "2099-01-01T00:00:00Z", expiresAt)
 }
 
 func TestCreateInstallationToken_UnknownRole(t *testing.T) {
-	_, _, _, err := CreateInstallationToken(t.Context(), http.DefaultClient, "http://unused", "fake-jwt", 42, "nonexistent", []string{"repo"})
+	_, _, _, err := CreateInstallationToken(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, "http://unused", "fake-jwt", 42, "nonexistent", []string{"repo"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no permissions defined")
 }
@@ -358,7 +358,7 @@ func TestCreateInstallationToken_CustomRole(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	token, _, _, err := CreateInstallationToken(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", 42, "scanner", []string{"my-repo"})
+	token, _, _, err := CreateInstallationToken(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "fake-jwt", 42, "scanner", []string{"my-repo"})
 	require.NoError(t, err)
 	assert.Equal(t, "ghs_custom_token", token)
 }
@@ -374,7 +374,7 @@ func TestFindOrgInstallation_OrgMismatch(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	_, err := FindOrgInstallation(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", "myorg")
+	_, err := FindOrgInstallation(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "fake-jwt", "myorg")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "belongs to other-org")
 }
@@ -389,7 +389,7 @@ func TestGetOrgVariable(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	value, exists, err := GetOrgVariable(t.Context(), http.DefaultClient, mockGH.URL, "ghs_policy", "pool-org", "FULLSEND_FOREIGN_E2E_REPOS")
+	value, exists, err := GetOrgVariable(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "ghs_policy", "pool-org", "FULLSEND_FOREIGN_E2E_REPOS")
 	require.NoError(t, err)
 	assert.True(t, exists)
 	assert.Equal(t, "fullsend-ai/fullsend", value)
@@ -401,7 +401,7 @@ func TestGetOrgVariable_NotFound(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	_, exists, err := GetOrgVariable(t.Context(), http.DefaultClient, mockGH.URL, "ghs_policy", "pool-org", "FULLSEND_FOREIGN_E2E_REPOS")
+	_, exists, err := GetOrgVariable(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "ghs_policy", "pool-org", "FULLSEND_FOREIGN_E2E_REPOS")
 	require.NoError(t, err)
 	assert.False(t, exists)
 }
@@ -426,7 +426,7 @@ func TestReadForeignAllowlist(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	got, err := ReadForeignAllowlist(t.Context(), http.DefaultClient, mockGH.URL, "app-jwt", 42, "pool-org", "e2e")
+	got, err := ReadForeignAllowlist(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "app-jwt", 42, "pool-org", "e2e")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"fullsend-ai/fullsend", "fullsend-ai"}, got)
 	assert.Equal(t, 1, tokenCalls)
@@ -446,7 +446,7 @@ func TestReadForeignAllowlist_EmptyVariable(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	got, err := ReadForeignAllowlist(t.Context(), http.DefaultClient, mockGH.URL, "app-jwt", 42, "pool-org", "e2e")
+	got, err := ReadForeignAllowlist(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "app-jwt", 42, "pool-org", "e2e")
 	require.NoError(t, err)
 	assert.Nil(t, got)
 }
@@ -457,7 +457,7 @@ func TestFindOrgInstallation_NotFound(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	_, err := FindOrgInstallation(t.Context(), http.DefaultClient, mockGH.URL, "fake-jwt", "myorg")
+	_, err := FindOrgInstallation(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "fake-jwt", "myorg")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "status 404")
 }
@@ -468,7 +468,7 @@ func TestGetOrgVariable_ErrorStatus(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	_, _, err := GetOrgVariable(t.Context(), http.DefaultClient, mockGH.URL, "ghs_policy", "pool-org", "VAR")
+	_, _, err := GetOrgVariable(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "ghs_policy", "pool-org", "VAR")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "status 403")
 }
@@ -487,7 +487,7 @@ func TestGetRepoVariable(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	val, exists, err := GetRepoVariable(t.Context(), http.DefaultClient, mockGH.URL, "ghs_tok", "target-org", "target-repo", "MY_VAR")
+	val, exists, err := GetRepoVariable(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "ghs_tok", "target-org", "target-repo", "MY_VAR")
 	require.NoError(t, err)
 	assert.True(t, exists)
 	assert.Equal(t, "hello", val)
@@ -499,7 +499,7 @@ func TestGetRepoVariable_NotFound(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	_, exists, err := GetRepoVariable(t.Context(), http.DefaultClient, mockGH.URL, "ghs_tok", "target-org", "target-repo", "MY_VAR")
+	_, exists, err := GetRepoVariable(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "ghs_tok", "target-org", "target-repo", "MY_VAR")
 	require.NoError(t, err)
 	assert.False(t, exists)
 }
@@ -510,7 +510,7 @@ func TestGetRepoVariable_ErrorStatus(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	_, _, err := GetRepoVariable(t.Context(), http.DefaultClient, mockGH.URL, "ghs_tok", "target-org", "target-repo", "MY_VAR")
+	_, _, err := GetRepoVariable(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "ghs_tok", "target-org", "target-repo", "MY_VAR")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "status 403")
 }
@@ -535,7 +535,7 @@ func TestReadForeignAllowlistFromRepo(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	got, err := ReadForeignAllowlistFromRepo(t.Context(), http.DefaultClient, mockGH.URL, "app-jwt", 42, "pool-org", "target-repo", "e2e")
+	got, err := ReadForeignAllowlistFromRepo(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "app-jwt", 42, "pool-org", "target-repo", "e2e")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"fullsend-ai/fullsend", "caller-org"}, got)
 	assert.Equal(t, 1, tokenCalls)
@@ -555,7 +555,7 @@ func TestReadForeignAllowlistFromRepo_Empty(t *testing.T) {
 	}))
 	defer mockGH.Close()
 
-	got, err := ReadForeignAllowlistFromRepo(t.Context(), http.DefaultClient, mockGH.URL, "app-jwt", 42, "pool-org", "target-repo", "e2e")
+	got, err := ReadForeignAllowlistFromRepo(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "app-jwt", 42, "pool-org", "target-repo", "e2e")
 	require.NoError(t, err)
 	assert.Nil(t, got)
 }
@@ -597,7 +597,7 @@ func TestGitHubRequests_IncludeUserAgent(t *testing.T) {
 		}))
 		defer mockGH.Close()
 
-		_, err := FindInstallation(t.Context(), http.DefaultClient, mockGH.URL, "jwt", "org", "repo")
+		_, err := FindInstallation(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "jwt", "org", "repo")
 		require.NoError(t, err)
 	})
 
@@ -612,7 +612,7 @@ func TestGitHubRequests_IncludeUserAgent(t *testing.T) {
 		}))
 		defer mockGH.Close()
 
-		_, err := FindOrgInstallation(t.Context(), http.DefaultClient, mockGH.URL, "jwt", "org")
+		_, err := FindOrgInstallation(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "jwt", "org")
 		require.NoError(t, err)
 	})
 
@@ -623,7 +623,7 @@ func TestGitHubRequests_IncludeUserAgent(t *testing.T) {
 		}))
 		defer mockGH.Close()
 
-		_, _, err := GetOrgVariable(t.Context(), http.DefaultClient, mockGH.URL, "tok", "org", "VAR")
+		_, _, err := GetOrgVariable(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "tok", "org", "VAR")
 		require.NoError(t, err)
 	})
 
@@ -634,7 +634,7 @@ func TestGitHubRequests_IncludeUserAgent(t *testing.T) {
 		}))
 		defer mockGH.Close()
 
-		_, _, err := GetRepoVariable(t.Context(), http.DefaultClient, mockGH.URL, "tok", "org", "repo", "VAR")
+		_, _, err := GetRepoVariable(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "tok", "org", "repo", "VAR")
 		require.NoError(t, err)
 	})
 
@@ -649,7 +649,7 @@ func TestGitHubRequests_IncludeUserAgent(t *testing.T) {
 		}))
 		defer mockGH.Close()
 
-		_, _, _, err := CreateInstallationToken(t.Context(), http.DefaultClient, mockGH.URL, "jwt", 1, "coder", nil)
+		_, _, _, err := CreateInstallationToken(t.Context(), &HTTPClientDoer{Client: http.DefaultClient}, mockGH.URL, "jwt", 1, "coder", nil)
 		require.NoError(t, err)
 	})
 }

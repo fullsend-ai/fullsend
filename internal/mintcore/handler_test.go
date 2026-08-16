@@ -1993,7 +1993,7 @@ func TestLookupRoleAppID_NotSet(t *testing.T) {
 
 func TestWriteError(t *testing.T) {
 	rec := httptest.NewRecorder()
-	writeError(rec, http.StatusBadRequest, "test error")
+	writeHTTPError(rec, http.StatusBadRequest, "test error")
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rec.Code)

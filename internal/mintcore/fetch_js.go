@@ -3,15 +3,12 @@
 package mintcore
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
-	"net/http"
-	"strings"
 	"syscall/js"
 )
 
-// HostFetchDoer implements HTTPDoer by delegating to a JavaScript fetch
+// HostFetchDoer implements Doer by delegating to a JavaScript fetch
 // callback provided by the Worker host. The callback signature is:
 //
 //	callback(method, url, headersJSON, body) => {status, headersJSON, body}
@@ -23,7 +20,7 @@ type HostFetchDoer struct {
 	fetchFn js.Value
 }
 
-// NewHostFetchDoer wraps a JavaScript function as an HTTPDoer.
+// NewHostFetchDoer wraps a JavaScript function as a Doer.
 // The function must accept (method, url, headersJSON, body) and return
 // a Promise resolving to {status: number, headers: string, body: string}.
 func NewHostFetchDoer(fetchFn js.Value) (*HostFetchDoer, error) {
@@ -37,62 +34,85 @@ func NewHostFetchDoer(fetchFn js.Value) (*HostFetchDoer, error) {
 }
 
 // Do executes an HTTP request by calling the host fetch callback.
-func (h *HostFetchDoer) Do(req *http.Request) (*http.Response, error) {
+func (h *HostFetchDoer) Do(_ context.Context, method, url string, headers map[string]string, body []byte) (int, []byte, error) {
 	// Serialize headers to JSON.
-	headerMap := make(map[string]string, len(req.Header))
-	for k, v := range req.Header {
-		headerMap[k] = strings.Join(v, ", ")
-	}
-
-	headersJSON, err := json.Marshal(headerMap)
-	if err != nil {
-		return nil, fmt.Errorf("marshalling request headers: %w", err)
-	}
+	headersJSON := marshalStringMap(headers)
 
 	var bodyStr string
-	if req.Body != nil {
-		bodyBytes, err := io.ReadAll(req.Body)
-		if err != nil {
-			return nil, fmt.Errorf("reading request body: %w", err)
-		}
-		bodyStr = string(bodyBytes)
+	if len(body) > 0 {
+		bodyStr = string(body)
 	}
 
-	// Call the JS fetch callback synchronously via Await.
+	// Call the JS fetch callback synchronously via awaitPromise.
 	// The callback returns a Promise; we block until it resolves.
 	result, err := awaitPromise(h.fetchFn.Invoke(
-		req.Method,
-		req.URL.String(),
-		string(headersJSON),
+		method,
+		url,
+		headersJSON,
 		bodyStr,
 	))
 	if err != nil {
-		return nil, fmt.Errorf("host fetch failed: %w", err)
+		return 0, nil, fmt.Errorf("host fetch failed: %w", err)
 	}
 
 	status := result.Get("status").Int()
-	respHeadersJSON := result.Get("headers").String()
 	respBody := result.Get("body").String()
 
-	resp := &http.Response{
-		StatusCode: status,
-		Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
-		Header:     make(http.Header),
-		Body:       io.NopCloser(strings.NewReader(respBody)),
-	}
+	return status, []byte(respBody), nil
+}
 
-	// Parse response headers.
-	if respHeadersJSON != "" && respHeadersJSON != "{}" {
-		var parsed map[string]string
-		if err := json.Unmarshal([]byte(respHeadersJSON), &parsed); err != nil {
-			return nil, fmt.Errorf("parsing response headers: %w", err)
+// marshalStringMap produces a JSON object string from a Go map.
+// This avoids importing encoding/json for a simple key-value map.
+func marshalStringMap(m map[string]string) string {
+	if len(m) == 0 {
+		return "{}"
+	}
+	// Use encoding/json via the global JSON object is not available,
+	// so we build the JSON manually for simple string maps.
+	buf := []byte{'{'}
+	first := true
+	for k, v := range m {
+		if !first {
+			buf = append(buf, ',')
 		}
-		for k, v := range parsed {
-			resp.Header.Set(k, v)
+		first = false
+		buf = append(buf, '"')
+		buf = append(buf, escapeJSONString(k)...)
+		buf = append(buf, '"', ':', '"')
+		buf = append(buf, escapeJSONString(v)...)
+		buf = append(buf, '"')
+	}
+	buf = append(buf, '}')
+	return string(buf)
+}
+
+// escapeJSONString escapes special characters in a JSON string value.
+func escapeJSONString(s string) string {
+	var out []byte
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch c {
+		case '"':
+			out = append(out, '\\', '"')
+		case '\\':
+			out = append(out, '\\', '\\')
+		case '\n':
+			out = append(out, '\\', 'n')
+		case '\r':
+			out = append(out, '\\', 'r')
+		case '\t':
+			out = append(out, '\\', 't')
+		default:
+			if c < 0x20 {
+				out = append(out, '\\', 'u', '0', '0',
+					"0123456789abcdef"[c>>4],
+					"0123456789abcdef"[c&0xf])
+			} else {
+				out = append(out, c)
+			}
 		}
 	}
-
-	return resp, nil
+	return string(out)
 }
 
 // awaitPromise blocks until a JS Promise resolves or rejects.

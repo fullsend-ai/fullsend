@@ -124,7 +124,7 @@ go-tidy:
 
 wasm-build:
 	@echo "==> Building mintcore WASM binary (GOOS=js GOARCH=wasm)..."
-	cd cmd/mint-wasm && GOOS=js GOARCH=wasm go build -o mint.wasm .
+	cd cmd/mint-wasm && GOOS=js GOARCH=wasm go build -ldflags "-s -w" -o mint.wasm .
 	@raw_size=$$(wc -c < cmd/mint-wasm/mint.wasm); \
 	gz_size=$$(gzip -c cmd/mint-wasm/mint.wasm | wc -c); \
 	raw_mb=$$(echo "scale=2; $$raw_size / 1048576" | bc); \
@@ -134,10 +134,8 @@ wasm-build:
 	echo "    Gzip size: $$gz_mb MB ($$gz_size bytes)"; \
 	if [ "$$gz_size" -le 3145728 ]; then \
 		echo "    ✓ Within Workers Free tier limit (3 MB gzip)"; \
-	elif [ "$$gz_size" -le 10485760 ]; then \
-		echo "    ⚠ Exceeds Free tier (3 MB); within Workers Paid tier limit (10 MB gzip)"; \
 	else \
-		echo "    ✗ Exceeds Workers Paid tier limit (10 MB gzip)"; \
+		echo "    ✗ Exceeds Workers Free tier limit (3 MB gzip)"; \
 		exit 1; \
 	fi
 	@echo "==> WASM build OK"

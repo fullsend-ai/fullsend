@@ -53,7 +53,7 @@ type WorkerConfig struct {
 // ParseWorkerConfig parses a WorkerConfig and returns a Handler.
 // This is the primary constructor for Worker deployments where config
 // comes from Worker bindings rather than process environment variables.
-func ParseWorkerConfig(cfg WorkerConfig, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, httpClient HTTPDoer) (*Handler, error) {
+func ParseWorkerConfig(cfg WorkerConfig, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, doer Doer) (*Handler, error) {
 	if cfg.RoleAppIDs == "" {
 		return nil, fmt.Errorf("RoleAppIDs is required")
 	}
@@ -81,7 +81,7 @@ func ParseWorkerConfig(cfg WorkerConfig, pemAccessor PEMAccessor, oidcVerifier O
 		}
 	}
 
-	h, err := NewHandlerFromConfig(cfg.RoleAppIDs, cfg.AllowedRoles, cfg.PerRepoWIFRepos, cfg.AllowedOrgs, cfg.AllowedWorkflowFiles, cfg.WorkflowHostRepos, pemAccessor, oidcVerifier, httpClient)
+	h, err := NewHandlerFromConfig(cfg.RoleAppIDs, cfg.AllowedRoles, cfg.PerRepoWIFRepos, cfg.AllowedOrgs, cfg.AllowedWorkflowFiles, cfg.WorkflowHostRepos, pemAccessor, oidcVerifier, doer)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +116,7 @@ func SplitCSV(s string) []string {
 //
 // The handler performs authorization (org-allowed, workflow-ref) after the
 // OIDCVerifier authenticates the token.
-func NewHandlerFromConfig(roleAppIDsJSON, allowedRolesCSV, perRepoWIFReposCSV, allowedOrgsCSV, allowedWorkflowFilesCSV, workflowHostReposCSV string, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, httpClient HTTPDoer) (*Handler, error) {
+func NewHandlerFromConfig(roleAppIDsJSON, allowedRolesCSV, perRepoWIFReposCSV, allowedOrgsCSV, allowedWorkflowFilesCSV, workflowHostReposCSV string, pemAccessor PEMAccessor, oidcVerifier OIDCVerifier, doer Doer) (*Handler, error) {
 	perRepoWIFRepos := make(map[string]bool)
 	for _, entry := range SplitCSV(perRepoWIFReposCSV) {
 		perRepoWIFRepos[strings.ToLower(entry)] = true
@@ -131,7 +131,7 @@ func NewHandlerFromConfig(roleAppIDsJSON, allowedRolesCSV, perRepoWIFReposCSV, a
 	}
 
 	h := &Handler{
-		httpClient:           httpClient,
+		doer:                 doer,
 		pemAccessor:          pemAccessor,
 		oidcVerifier:         oidcVerifier,
 		githubBaseURL:        "https://api.github.com",

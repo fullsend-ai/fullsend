@@ -3,21 +3,12 @@
 package mintcore
 
 import (
-	"bytes"
 	"context"
-	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -204,94 +195,59 @@ func BuiltInRoles() []string {
 	return roles
 }
 
-// GenerateAppJWT creates a signed RS256 JWT for GitHub App authentication.
-func GenerateAppJWT(appID string, pemData []byte) (string, error) {
-	block, _ := pem.Decode(pemData)
-	if block == nil {
-		return "", fmt.Errorf("failed to decode PEM block")
-	}
-
-	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-	if err != nil {
-		pkcs8Key, pkcs8Err := x509.ParsePKCS8PrivateKey(block.Bytes)
-		if pkcs8Err != nil {
-			return "", fmt.Errorf("failed to parse private key (PKCS1: %v, PKCS8: %v)", err, pkcs8Err)
-		}
-		var ok bool
-		key, ok = pkcs8Key.(*rsa.PrivateKey)
-		if !ok {
-			return "", fmt.Errorf("PKCS8 key is not RSA")
-		}
-	}
-
-	now := time.Now()
-	header := map[string]string{"alg": "RS256", "typ": "JWT"}
-	claims := map[string]interface{}{
-		"iss": appID,
-		"iat": now.Add(-60 * time.Second).Unix(),
-		"exp": now.Add(10 * time.Minute).Unix(),
-	}
-
-	headerJSON, err := json.Marshal(header)
-	if err != nil {
-		return "", fmt.Errorf("marshaling JWT header: %w", err)
-	}
-
-	claimsJSON, err := json.Marshal(claims)
-	if err != nil {
-		return "", fmt.Errorf("marshaling JWT claims: %w", err)
-	}
-
-	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
-	claimsB64 := base64.RawURLEncoding.EncodeToString(claimsJSON)
-
-	signingInput := headerB64 + "." + claimsB64
-
-	hashed := sha256.Sum256([]byte(signingInput))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, hashed[:])
-	if err != nil {
-		return "", fmt.Errorf("signing JWT: %w", err)
-	}
-
-	signatureB64 := base64.RawURLEncoding.EncodeToString(signature)
-
-	return signingInput + "." + signatureB64, nil
-}
-
 // ErrInstallationNotFound is returned by FindInstallation when the GitHub
 // API responds with 404 — meaning the repo is not covered by the GitHub
 // App's installation.
 var ErrInstallationNotFound = errors.New("installation not found")
 
+// githubHeaders returns common headers for GitHub API requests.
+func githubHeaders(jwt string) map[string]string {
+	return map[string]string{
+		"Authorization": "Bearer " + jwt,
+		"Accept":        "application/vnd.github+json",
+		"User-Agent":    githubUserAgent(),
+	}
+}
+
+// githubHeadersWithJSON returns headers for GitHub API requests with a JSON body.
+func githubHeadersWithJSON(jwt string) map[string]string {
+	return map[string]string{
+		"Authorization": "Bearer " + jwt,
+		"Accept":        "application/vnd.github+json",
+		"Content-Type":  "application/json",
+		"User-Agent":    githubUserAgent(),
+	}
+}
+
+// tokenHeaders returns headers using an installation token (not app JWT).
+func tokenHeaders(installationToken string) map[string]string {
+	return map[string]string{
+		"Authorization": "Bearer " + installationToken,
+		"Accept":        "application/vnd.github+json",
+		"User-Agent":    githubUserAgent(),
+	}
+}
+
 // FindInstallation looks up a GitHub App's installation ID for a repo.
 // The returned installation's account is verified against the expected org to
 // prevent cross-org token leakage.
-func FindInstallation(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt, org, repo string) (int64, error) {
+func FindInstallation(ctx context.Context, doer Doer, githubBaseURL, jwt, org, repo string) (int64, error) {
 	reqURL := fmt.Sprintf("%s/repos/%s/%s/installation", githubBaseURL, org, repo)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return 0, fmt.Errorf("creating installation request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+jwt)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", githubUserAgent())
 
-	resp, err := httpClient.Do(req)
+	status, body, err := doer.Do(ctx, "GET", reqURL, githubHeaders(jwt), nil)
 	if err != nil {
 		return 0, fmt.Errorf("getting installation: %w", err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		if resp.StatusCode == http.StatusNotFound {
+	if status != statusOK {
+		if status == statusNotFound {
 			return 0, fmt.Errorf("getting installation for %s/%s: %w", org, repo, ErrInstallationNotFound)
 		}
-		return 0, fmt.Errorf("getting installation for %s/%s returned status %d", org, repo, resp.StatusCode)
+		return 0, fmt.Errorf("getting installation for %s/%s returned status %d", org, repo, status)
 	}
 
 	var inst installationResponse
-	if err := json.NewDecoder(resp.Body).Decode(&inst); err != nil {
+	if err := json.Unmarshal(body, &inst); err != nil {
 		return 0, fmt.Errorf("decoding installation: %w", err)
 	}
 
@@ -310,29 +266,20 @@ func FindInstallation(ctx context.Context, httpClient HTTPDoer, githubBaseURL, j
 }
 
 // FindOrgInstallation looks up a GitHub App's installation ID for an organization.
-func FindOrgInstallation(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt, org string) (int64, error) {
+func FindOrgInstallation(ctx context.Context, doer Doer, githubBaseURL, jwt, org string) (int64, error) {
 	reqURL := fmt.Sprintf("%s/orgs/%s/installation", githubBaseURL, org)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return 0, fmt.Errorf("creating org installation request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+jwt)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", githubUserAgent())
 
-	resp, err := httpClient.Do(req)
+	status, body, err := doer.Do(ctx, "GET", reqURL, githubHeaders(jwt), nil)
 	if err != nil {
 		return 0, fmt.Errorf("getting org installation: %w", err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return 0, fmt.Errorf("getting org installation for %s returned status %d", org, resp.StatusCode)
+	if status != statusOK {
+		return 0, fmt.Errorf("getting org installation for %s returned status %d", org, status)
 	}
 
 	var inst installationResponse
-	if err := json.NewDecoder(resp.Body).Decode(&inst); err != nil {
+	if err := json.Unmarshal(body, &inst); err != nil {
 		return 0, fmt.Errorf("decoding org installation: %w", err)
 	}
 
@@ -356,64 +303,46 @@ type variableResponse struct {
 }
 
 // GetOrgVariable reads an org-level Actions variable using an installation token.
-func GetOrgVariable(ctx context.Context, httpClient HTTPDoer, githubBaseURL, installationToken, org, name string) (value string, exists bool, err error) {
+func GetOrgVariable(ctx context.Context, doer Doer, githubBaseURL, installationToken, org, name string) (value string, exists bool, err error) {
 	reqURL := fmt.Sprintf("%s/orgs/%s/actions/variables/%s", githubBaseURL, org, name)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return "", false, fmt.Errorf("creating org variable request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+installationToken)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", githubUserAgent())
 
-	resp, err := httpClient.Do(req)
+	status, body, err := doer.Do(ctx, "GET", reqURL, tokenHeaders(installationToken), nil)
 	if err != nil {
 		return "", false, fmt.Errorf("getting org variable: %w", err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNotFound {
+	if status == statusNotFound {
 		return "", false, nil
 	}
-	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return "", false, fmt.Errorf("getting org variable %s returned status %d", name, resp.StatusCode)
+	if status != statusOK {
+		return "", false, fmt.Errorf("getting org variable %s returned status %d", name, status)
 	}
 
 	var varResp variableResponse
-	if err := json.NewDecoder(resp.Body).Decode(&varResp); err != nil {
+	if err := json.Unmarshal(body, &varResp); err != nil {
 		return "", false, fmt.Errorf("decoding org variable: %w", err)
 	}
 	return varResp.Value, true, nil
 }
 
 // GetRepoVariable reads a repo-level Actions variable using an installation token.
-func GetRepoVariable(ctx context.Context, httpClient HTTPDoer, githubBaseURL, installationToken, owner, repo, name string) (value string, exists bool, err error) {
+func GetRepoVariable(ctx context.Context, doer Doer, githubBaseURL, installationToken, owner, repo, name string) (value string, exists bool, err error) {
 	reqURL := fmt.Sprintf("%s/repos/%s/%s/actions/variables/%s", githubBaseURL, owner, repo, name)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
-	if err != nil {
-		return "", false, fmt.Errorf("creating repo variable request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+installationToken)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", githubUserAgent())
 
-	resp, err := httpClient.Do(req)
+	status, body, err := doer.Do(ctx, "GET", reqURL, tokenHeaders(installationToken), nil)
 	if err != nil {
 		return "", false, fmt.Errorf("getting repo variable: %w", err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNotFound {
+	if status == statusNotFound {
 		return "", false, nil
 	}
-	if resp.StatusCode != http.StatusOK {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return "", false, fmt.Errorf("getting repo variable %s on %s/%s returned status %d", name, owner, repo, resp.StatusCode)
+	if status != statusOK {
+		return "", false, fmt.Errorf("getting repo variable %s on %s/%s returned status %d", name, owner, repo, status)
 	}
 
 	var varResp variableResponse
-	if err := json.NewDecoder(resp.Body).Decode(&varResp); err != nil {
+	if err := json.Unmarshal(body, &varResp); err != nil {
 		return "", false, fmt.Errorf("decoding repo variable: %w", err)
 	}
 	return varResp.Value, true, nil
@@ -430,7 +359,7 @@ var repoForeignPolicyPermissions = map[string]string{
 }
 
 // createInstallationTokenWithPermissions creates an installation access token with explicit permissions.
-func createInstallationTokenWithPermissions(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt string, installationID int64, perms map[string]string, repos []string) (string, error) {
+func createInstallationTokenWithPermissions(ctx context.Context, doer Doer, githubBaseURL, jwt string, installationID int64, perms map[string]string, repos []string) (string, error) {
 	tokenReqBody := map[string]interface{}{
 		"permissions": perms,
 	}
@@ -444,28 +373,18 @@ func createInstallationTokenWithPermissions(ctx context.Context, httpClient HTTP
 	}
 
 	reqURL := fmt.Sprintf("%s/app/installations/%d/access_tokens", githubBaseURL, installationID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(tokenReqBytes))
-	if err != nil {
-		return "", fmt.Errorf("creating token request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+jwt)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", githubUserAgent())
 
-	resp, err := httpClient.Do(req)
+	status, body, err := doer.Do(ctx, "POST", reqURL, githubHeadersWithJSON(jwt), tokenReqBytes)
 	if err != nil {
 		return "", fmt.Errorf("creating installation token: %w", err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusCreated {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return "", fmt.Errorf("creating installation token returned status %d", resp.StatusCode)
+	if status != statusCreated {
+		return "", fmt.Errorf("creating installation token returned status %d", status)
 	}
 
 	var tokenResp installationTokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
 		return "", fmt.Errorf("decoding token response: %w", err)
 	}
 	if tokenResp.Token == "" {
@@ -475,14 +394,14 @@ func createInstallationTokenWithPermissions(ctx context.Context, httpClient HTTP
 }
 
 // ReadForeignAllowlist reads FULLSEND_FOREIGN_<role>_REPOS from the target org.
-func ReadForeignAllowlist(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt string, installationID int64, targetOrg, role string) ([]string, error) {
-	policyToken, err := createInstallationTokenWithPermissions(ctx, httpClient, githubBaseURL, jwt, installationID,
+func ReadForeignAllowlist(ctx context.Context, doer Doer, githubBaseURL, jwt string, installationID int64, targetOrg, role string) ([]string, error) {
+	policyToken, err := createInstallationTokenWithPermissions(ctx, doer, githubBaseURL, jwt, installationID,
 		foreignPolicyPermissions, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating policy check token: %w", err)
 	}
 
-	value, exists, err := GetOrgVariable(ctx, httpClient, githubBaseURL, policyToken, targetOrg, ForeignVariableName(role))
+	value, exists, err := GetOrgVariable(ctx, doer, githubBaseURL, policyToken, targetOrg, ForeignVariableName(role))
 	if err != nil {
 		return nil, err
 	}
@@ -495,14 +414,14 @@ func ReadForeignAllowlist(ctx context.Context, httpClient HTTPDoer, githubBaseUR
 // ReadForeignAllowlistFromRepo reads FULLSEND_FOREIGN_<role>_REPOS from a
 // specific target repository. This is the repo-level counterpart of
 // ReadForeignAllowlist, enabling per-repo foreign authorization grants.
-func ReadForeignAllowlistFromRepo(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt string, installationID int64, targetOrg, targetRepo, role string) ([]string, error) {
-	policyToken, err := createInstallationTokenWithPermissions(ctx, httpClient, githubBaseURL, jwt, installationID,
+func ReadForeignAllowlistFromRepo(ctx context.Context, doer Doer, githubBaseURL, jwt string, installationID int64, targetOrg, targetRepo, role string) ([]string, error) {
+	policyToken, err := createInstallationTokenWithPermissions(ctx, doer, githubBaseURL, jwt, installationID,
 		repoForeignPolicyPermissions, []string{targetRepo})
 	if err != nil {
 		return nil, fmt.Errorf("creating repo policy check token: %w", err)
 	}
 
-	value, exists, err := GetRepoVariable(ctx, httpClient, githubBaseURL, policyToken, targetOrg, targetRepo, ForeignVariableName(role))
+	value, exists, err := GetRepoVariable(ctx, doer, githubBaseURL, policyToken, targetOrg, targetRepo, ForeignVariableName(role))
 	if err != nil {
 		return nil, err
 	}
@@ -514,7 +433,7 @@ func ReadForeignAllowlistFromRepo(ctx context.Context, httpClient HTTPDoer, gith
 
 // CreateInstallationToken exchanges a JWT for an installation access token,
 // scoped to the given repos and role-specific permissions.
-func CreateInstallationToken(ctx context.Context, httpClient HTTPDoer, githubBaseURL, jwt string, installationID int64, role string, repos []string) (string, string, *GrantedScope, error) {
+func CreateInstallationToken(ctx context.Context, doer Doer, githubBaseURL, jwt string, installationID int64, role string, repos []string) (string, string, *GrantedScope, error) {
 	perms := RolePermissionsFor(role)
 	if perms == nil {
 		return "", "", nil, fmt.Errorf("no permissions defined for role %q", role)
@@ -532,28 +451,18 @@ func CreateInstallationToken(ctx context.Context, httpClient HTTPDoer, githubBas
 	}
 
 	reqURL := fmt.Sprintf("%s/app/installations/%d/access_tokens", githubBaseURL, installationID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, reqURL, bytes.NewReader(tokenReqBytes))
-	if err != nil {
-		return "", "", nil, fmt.Errorf("creating token request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+jwt)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", githubUserAgent())
 
-	resp, err := httpClient.Do(req)
+	status, body, err := doer.Do(ctx, "POST", reqURL, githubHeadersWithJSON(jwt), tokenReqBytes)
 	if err != nil {
 		return "", "", nil, fmt.Errorf("creating installation token: %w", err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusCreated {
-		io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return "", "", nil, fmt.Errorf("creating installation token returned status %d", resp.StatusCode)
+	if status != statusCreated {
+		return "", "", nil, fmt.Errorf("creating installation token returned status %d", status)
 	}
 
 	var tokenResp installationTokenResponse
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
 		return "", "", nil, fmt.Errorf("decoding token response: %w", err)
 	}
 
@@ -570,4 +479,32 @@ func CreateInstallationToken(ctx context.Context, httpClient HTTPDoer, githubBas
 	}
 
 	return tokenResp.Token, tokenResp.ExpiresAt, granted, nil
+}
+
+// GenerateAppJWTPayload creates the unsigned header.claims portion of a
+// GitHub App JWT. The actual signing is platform-specific: Go crypto on
+// non-WASM, host Web Crypto on WASM. Both call this shared function.
+func GenerateAppJWTPayload(appID string) (string, error) {
+	now := time.Now()
+	header := map[string]string{"alg": "RS256", "typ": "JWT"}
+	claims := map[string]interface{}{
+		"iss": appID,
+		"iat": now.Add(-60 * time.Second).Unix(),
+		"exp": now.Add(10 * time.Minute).Unix(),
+	}
+
+	headerJSON, err := json.Marshal(header)
+	if err != nil {
+		return "", fmt.Errorf("marshaling JWT header: %w", err)
+	}
+
+	claimsJSON, err := json.Marshal(claims)
+	if err != nil {
+		return "", fmt.Errorf("marshaling JWT claims: %w", err)
+	}
+
+	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)
+	claimsB64 := base64.RawURLEncoding.EncodeToString(claimsJSON)
+
+	return headerB64 + "." + claimsB64, nil
 }
