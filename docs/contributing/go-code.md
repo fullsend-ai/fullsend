@@ -157,6 +157,17 @@ This applies to all `require` functions (`require.NoError`, `require.Equal`, `re
 
 Stubs that implement an interface with no-ops or stateless pass-throughs hold no mutable state, so the race detector has nothing to detect. Even stubs that use `atomic.Int64` counters are invisible to `-race` because atomics are correctly synchronized by definition. The point of a race test is to exercise the **real type's fields** — only a real constructor backed by a thread-safe fake can trigger the detector on unsynchronized production code.
 
+## Injectable function variables (test seams)
+
+Package-level variables that hold function values for test overriding must:
+
+- Use an `XxxFn` suffix (e.g., `BuildWASMFn`, `RetrySleepFn`, `WranglerWhoamiFn`)
+- Default to the real implementation
+- Include a doc comment starting with "Override in tests to..." that describes what the override achieves
+- Be restored in a `t.Cleanup` callback when overridden
+
+Examples: `internal/sandbox/sandbox.go` (`RetrySleepFn`), `internal/dispatch/cf/provisioner.go` (`BuildWASMFn`, `CopyWASMExecFn`).
+
 ## Running the fullsend CLI
 
 **Audience:** contributors and agents working from a **repo checkout**. Do not
