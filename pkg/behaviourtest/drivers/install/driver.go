@@ -1,6 +1,23 @@
 package install
 
-import "context"
+import (
+	"context"
+
+	"github.com/fullsend-ai/fullsend/internal/forge"
+)
+
+// Factory constructs a unified Driver from suite-level parameters.
+// Implementations capture env config, pool size, and backend-specific
+// settings (PEMs, platform flags) in a closure so the suite does not
+// thread those details.
+//
+// See #6135 for the consolidation contract.
+type Factory func(
+	org string,
+	client forge.Client,
+	token, binary, gcpProjectID string,
+	logf func(string, ...any),
+) (Driver, error)
 
 // MintDriver provisions and tears down fullsend in an acquired pool org.
 // MintDriver is used only during suite setup (single-threaded) and is not
@@ -37,6 +54,13 @@ type Driver interface {
 
 	// Capacity returns the max concurrent outstanding allocations.
 	Capacity() int
+}
+
+// StateProvider is optionally implemented by Driver values that carry
+// suite-level install state. The suite uses this to seed World.Install
+// without threading State separately through the Factory return value.
+type StateProvider interface {
+	InstallState() State
 }
 
 // State describes where behaviour tests find fullsend configuration after install.

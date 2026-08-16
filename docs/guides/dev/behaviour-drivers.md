@@ -9,8 +9,10 @@ Behaviour tests isolate forge-specific code behind drivers so Gherkin scenarios 
 | `scm.Driver` | `pkg/behaviourtest/drivers/scm` | Issues, comments, labels (via GetIssue), file commits |
 | `ci.Driver` | `pkg/behaviourtest/drivers/ci` | Workflow polling, logs, artifact download |
 | `install.Driver` | `pkg/behaviourtest/drivers/install` | Unified repo allocation: leases pool slots, lazily creates/installs repos, and manages mint lifecycle via `AllocateRepo`/`DeallocateRepo`/`Finalize`/`Capacity` |
+| `install.Factory` | `pkg/behaviourtest/drivers/install` | Constructs a unified `Driver` from suite-level parameters; suite code selects a Factory and does not compose `MintDriver` + ensurer + pool itself (#6135) |
 | `install.MintDriver` | `pkg/behaviourtest/drivers/install` | Provision and tear down fullsend mint in the acquired pool org (internal to composed `Driver`) |
 | `install.State` | `pkg/behaviourtest/drivers/install` | Post-install config paths (script commits, workflow polling) |
+| `install.StateProvider` | `pkg/behaviourtest/drivers/install` | Optional interface for `Driver` implementations that carry suite-level install state (`InstallState() State`) |
 | `install.RepoEnsurer` | `pkg/behaviourtest/drivers/install` | Lazily create and install numbered pool repos on demand; caches by org/repo key; concurrent-safe via singleflight (internal to composed `Driver`) |
 
 v1 reference implementations:
@@ -29,7 +31,7 @@ BEHAVIOUR_CI=githubactions        # future: tekton, gitlabci
 BEHAVIOUR_INSTALL_MODE=per-repo   # v1 default and only supported value
 ```
 
-The suite in `e2e/behaviour/suite_test.go` (or an external runner) acquires a pool org via `pkg/e2etest`, runs pre-install cleanup, creates a `MintDriver` (cfmint or legacy), and passes it to `install.NewComposedDriver` which performs suite setup (mint deploy), creates an internal repo-name pool and `RepoEnsurer`, and returns a unified `install.Driver`. The suite then constructs SCM and CI drivers and runs godog with `pkg/behaviourtest/suite.InitScenario`. `InitScenario` clones a template `*world.World` per scenario; repo allocation (slot lease + lazy create/install) is handled by the unified driver's `AllocateRepo` when the `Given the enrolled test repository` step runs. Unsupported `BEHAVIOUR_INSTALL_MODE` values fail at suite startup.
+The suite in `e2e/behaviour/suite_test.go` (or an external runner) acquires a pool org via `pkg/e2etest`, runs pre-install cleanup, selects an `install.Factory` (e.g. `cfmint.NewFactory`), and calls it to obtain a unified `install.Driver`. The Factory internally creates a `MintDriver`, performs suite setup (mint deploy via `NewComposedDriver`), and wires the internal repo-name pool and `RepoEnsurer` behind the Driver — the suite does not compose these itself. The suite then constructs SCM and CI drivers and runs godog with `pkg/behaviourtest/suite.InitScenario`. `InitScenario` clones a template `*world.World` per scenario; repo allocation (slot lease + lazy create/install) is handled by the unified driver's `AllocateRepo` when the `Given the enrolled test repository` step runs. Unsupported `BEHAVIOUR_INSTALL_MODE` values fail at suite startup.
 
 ### Install driver (v1 per-repo)
 

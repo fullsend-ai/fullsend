@@ -395,10 +395,14 @@ require github.com/fullsend-ai/fullsend v0.x.y // released tag, not @main
 
 ### API changes
 
-**`suite.InitScenario` signature change:** The function signature changed from `InitScenario(sc, template, pool)` to `InitScenario(sc, template)` starting in the release that includes this change. The `*world.RepoPool` parameter was removed because repo allocation is now handled by the unified `install.Driver` on the World template — `AllocateRepo` is called by the `Given the enrolled test repository` step, and `DeallocateRepo` is called in the After hook. Set `World.RepoDriver` on the template instead:
+**`suite.InitScenario` signature change:** The function signature changed from `InitScenario(sc, template, pool)` to `InitScenario(sc, template)` starting in the release that includes this change. The `*world.RepoPool` parameter was removed because repo allocation is now handled by the unified `install.Driver` on the World template — `AllocateRepo` is called by the `Given the enrolled test repository` step, and `DeallocateRepo` is called in the After hook. Select an `install.Factory` and call it to obtain a Driver, then set `World.RepoDriver` on the template:
 
 ```go
-driver, mintState, err := install.NewComposedDriver(ctx, mintDriver, org, e2eCfg, client, token, binary, 12, t.Logf)
+// Select an install.Factory — suite code does not compose
+// MintDriver + ensurer + pool itself.
+factory := cfmint.NewFactory(ctx, e2eCfg, 12, cfmintCfg)
+
+driver, err := factory(org, client, token, binary, gcpProjectID, t.Logf)
 if err != nil {
     t.Fatalf("creating install driver: %v", err)
 }
@@ -407,6 +411,12 @@ t.Cleanup(func() {
         t.Logf("driver finalize: %v", err)
     }
 })
+
+// Extract install state from the driver.
+var mintState install.State
+if sp, ok := driver.(install.StateProvider); ok {
+    mintState = sp.InstallState()
+}
 
 template := &world.World{
     Install:    mintState,
@@ -422,7 +432,7 @@ suiteRunner := godog.TestSuite{
 }
 ```
 
-**`World.Ensurer` → `World.RepoDriver` field change:** The `Ensurer install.RepoEnsurer` field on `world.World` has been replaced by `RepoDriver install.Driver`. External runners that set `World.Ensurer` must switch to `World.RepoDriver` and pass a unified `install.Driver` (created via `install.NewComposedDriver`).
+**`World.Ensurer` → `World.RepoDriver` field change:** The `Ensurer install.RepoEnsurer` field on `world.World` has been replaced by `RepoDriver install.Driver`. External runners that set `World.Ensurer` must switch to `World.RepoDriver` and pass a unified `install.Driver` (created via an `install.Factory`).
 
 **`install.Driver` → `install.MintDriver` rename:** The former `install.Driver` interface (with `Install`/`Teardown` methods) has been renamed to `install.MintDriver`. The `install.Driver` name now refers to the unified repo-allocation interface (`AllocateRepo`/`DeallocateRepo`/`Finalize`/`Capacity`). Update any code that references the old `install.Driver` type. The `cfmint.NewDriver` and `legacy.NewDriver` functions now return `install.MintDriver`.
 

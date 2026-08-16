@@ -182,5 +182,16 @@ func (d *composedDriver) Capacity() int {
 	return d.poolSize
 }
 
-// Compile-time check.
-var _ Driver = (*composedDriver)(nil)
+// InstallState returns the suite-level install state obtained from the
+// MintDriver during construction. The suite uses this via the
+// StateProvider interface to seed World.Install without threading State
+// through the Factory return value.
+func (d *composedDriver) InstallState() State {
+	return d.mintState
+}
+
+// Compile-time checks.
+var (
+	_ Driver        = (*composedDriver)(nil)
+	_ StateProvider = (*composedDriver)(nil)
+)

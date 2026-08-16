@@ -113,6 +113,33 @@ func NewDriver(
 	}, nil
 }
 
+// NewFactory returns an install.Factory that builds a composed Driver
+// backed by a Cloudflare mint preview. The returned closure captures
+// ctx, env config, pool size, and cfmint Config; the Factory's
+// org/client/token/binary/gcpProjectID are supplied by the suite at
+// call time.
+//
+// The Factory calls NewDriver and install.NewComposedDriver internally
+// so the suite does not compose MintDriver + pool + ensurer itself.
+func NewFactory(ctx context.Context, e2eCfg e2etest.EnvConfig, poolSize int, cfg Config) install.Factory {
+	return func(
+		org string,
+		client forge.Client,
+		token, binary, gcpProjectID string,
+		logf func(string, ...any),
+	) (install.Driver, error) {
+		md, err := NewDriver(client, token, binary, gcpProjectID, logf, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("creating cfmint driver: %w", err)
+		}
+		d, _, err := install.NewComposedDriver(ctx, md, org, e2eCfg, client, token, binary, poolSize, logf)
+		if err != nil {
+			return nil, err
+		}
+		return d, nil
+	}
+}
+
 // WorkerName derives the CF Worker script name from a suite name.
 // The name clearly indicates it is the e2e/BT worker for that suite.
 func WorkerName(suiteName string) string {

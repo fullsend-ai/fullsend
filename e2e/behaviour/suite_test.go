@@ -67,10 +67,10 @@ func TestBehaviourSuite(t *testing.T) {
 
 	binary := e2etest.BuildCLIBinary(t)
 
-	// Construct the CF mint driver with caller-provided parameters.
-	// The driver does not hardcode pool size or test-repo-NN assumptions;
-	// the calling code passes allowed orgs, per-repo WIF repos, and
-	// workflow host repos.
+	// Build a Factory that captures the cfmint configuration.
+	// The Factory is the #6135 consolidation seam — suite code
+	// selects a Factory and does not compose MintDriver + ensurer +
+	// pool itself.
 	//
 	// AllowedOrgs is explicitly empty ("") — this is per-repo mode, so
 	// we must not dual-enroll the pool org as an allowed org. The CLI's
@@ -79,7 +79,7 @@ func TestBehaviourSuite(t *testing.T) {
 	// WorkflowHostRepos registers the pool repos whose vendored workflows
 	// need to mint tokens. Without this, the mint rejects
 	// job_workflow_ref values from pool repos → 401.
-	mintDriver, err := cfmint.NewDriver(client, token, binary, e2eCfg.GCPProjectID, t.Logf, cfmint.Config{
+	factory := cfmint.NewFactory(ctx, e2eCfg, poolSize, cfmint.Config{
 		PEMDir:            e2eCfg.CFMintPEMDir,
 		SuiteName:         suiteName,
 		AllowedOrgs:       "",
@@ -87,16 +87,13 @@ func TestBehaviourSuite(t *testing.T) {
 		WorkflowHostRepos: buildWorkflowHostRepos(org),
 		AppSet:            "fullsend-test",
 	})
-	if err != nil {
-		t.Fatalf("creating mint driver: %v", err)
-	}
 
 	e2etest.CleanupStaleResources(ctx, client, token, org, t)
 
-	// NewComposedDriver calls mint.Install internally, creates the
-	// internal repo-name pool, and creates the RepoEnsurer. The suite
-	// does not construct or thread RepoEnsurer + RepoPool itself.
-	driver, mintState, err := install.NewComposedDriver(ctx, mintDriver, org, e2eCfg, client, token, binary, poolSize, t.Logf)
+	// Call the Factory to construct the unified Driver. The Factory
+	// creates the MintDriver, calls mint.Install, and wires the
+	// internal pool + RepoEnsurer behind the Driver interface.
+	driver, err := factory(org, client, token, binary, e2eCfg.GCPProjectID, t.Logf)
 	if err != nil {
 		t.Fatalf("creating install driver: %v", err)
 	}
@@ -118,6 +115,15 @@ func TestBehaviourSuite(t *testing.T) {
 	// install on any specific repo. RepoName and RepoFull are set per-
 	// scenario by AllocateRepo when "Given the enrolled test repository"
 	// acquires a leased pool repo.
+	//
+	// The Driver carries the mint install state internally; extract it
+	// via the StateProvider interface so the suite does not thread State
+	// separately.
+	var mintState install.State
+	if sp, ok := driver.(install.StateProvider); ok {
+		mintState = sp.InstallState()
+	}
+
 	template := &world.World{
 		Config:       cfg,
 		SCM:          scmgh.New(client),
