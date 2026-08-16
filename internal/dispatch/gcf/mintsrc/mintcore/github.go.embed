@@ -5,14 +5,8 @@ package mintcore
 import (
 	"bytes"
 	"context"
-	"crypto"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -205,25 +199,10 @@ func BuiltInRoles() []string {
 }
 
 // GenerateAppJWT creates a signed RS256 JWT for GitHub App authentication.
+// The RSA signing is delegated to the platform-specific signRS256WithPEM
+// function: on native builds this uses Go's crypto/rsa; on WASM builds
+// it delegates to the host's Web Crypto API via a JavaScript callback.
 func GenerateAppJWT(appID string, pemData []byte) (string, error) {
-	block, _ := pem.Decode(pemData)
-	if block == nil {
-		return "", fmt.Errorf("failed to decode PEM block")
-	}
-
-	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
-	if err != nil {
-		pkcs8Key, pkcs8Err := x509.ParsePKCS8PrivateKey(block.Bytes)
-		if pkcs8Err != nil {
-			return "", fmt.Errorf("failed to parse private key (PKCS1: %v, PKCS8: %v)", err, pkcs8Err)
-		}
-		var ok bool
-		key, ok = pkcs8Key.(*rsa.PrivateKey)
-		if !ok {
-			return "", fmt.Errorf("PKCS8 key is not RSA")
-		}
-	}
-
 	now := time.Now()
 	header := map[string]string{"alg": "RS256", "typ": "JWT"}
 	claims := map[string]interface{}{
@@ -247,8 +226,7 @@ func GenerateAppJWT(appID string, pemData []byte) (string, error) {
 
 	signingInput := headerB64 + "." + claimsB64
 
-	hashed := sha256.Sum256([]byte(signingInput))
-	signature, err := rsa.SignPKCS1v15(rand.Reader, key, crypto.SHA256, hashed[:])
+	signature, err := signRS256WithPEM(pemData, signingInput)
 	if err != nil {
 		return "", fmt.Errorf("signing JWT: %w", err)
 	}

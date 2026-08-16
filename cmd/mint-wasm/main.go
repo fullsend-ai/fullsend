@@ -37,16 +37,18 @@ func main() {
 }
 
 // initMint initializes the mint handler from Worker bindings.
-// JS signature: mintcoreInitMint(configJSON, fetchCallback, pemCallback) => string
+// JS signature: mintcoreInitMint(configJSON, fetchCallback, pemCallback, verifyRS256Callback, signRS256Callback) => string
 // Returns "" on success or an error message string on failure.
 func initMint(_ js.Value, args []js.Value) interface{} {
-	if len(args) < 3 {
-		return "mintcoreInitMint requires 3 arguments: configJSON, fetchCallback, pemCallback"
+	if len(args) < 5 {
+		return "mintcoreInitMint requires 5 arguments: configJSON, fetchCallback, pemCallback, verifyRS256Callback, signRS256Callback"
 	}
 
 	configJSON := args[0].String()
 	fetchFn := args[1]
 	pemFn := args[2]
+	verifyRS256Fn := args[3]
+	signRS256Fn := args[4]
 
 	var cfg mintcore.WorkerConfig
 	if err := json.Unmarshal([]byte(configJSON), &cfg); err != nil {
@@ -61,6 +63,10 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 	pemAccessor, err := mintcore.NewHostPEMAccessor(pemFn)
 	if err != nil {
 		return fmt.Sprintf("invalid PEM callback: %v", err)
+	}
+
+	if err := mintcore.RegisterHostCrypto(verifyRS256Fn, signRS256Fn); err != nil {
+		return fmt.Sprintf("invalid crypto callbacks: %v", err)
 	}
 
 	verifier := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{

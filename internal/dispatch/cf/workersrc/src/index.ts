@@ -11,8 +11,8 @@
 // The WASM module is compiled from cmd/mint-wasm with
 // GOOS=js GOARCH=wasm and registers two global functions via syscall/js:
 //
-//   - mintcoreInitMint(configJSON, fetchCallback, pemCallback): string
-//     Initializes the mint handler with explicit config and host callbacks.
+//   - mintcoreInitMint(configJSON, fetchCallback, pemCallback, verifyRS256Callback, signRS256Callback): string
+//     Initializes the mint handler with explicit config, I/O, and crypto callbacks.
 //     Returns "" on success or an error message on failure.
 //
 //   - mintcoreHandleFetch(method, url, headersJSON, body): Promise<{status, headers, body}>
@@ -222,6 +222,111 @@ function createPemCallback(
 }
 
 /**
+ * Create an RS256 signature verification callback for the WASM module.
+ *
+ * The Go side (verifyRS256Signature in crypto_js.go) calls this with
+ * (signingInput, signatureB64url, jwkJSON) and expects a Promise
+ * resolving to a boolean indicating whether the signature is valid.
+ *
+ * Uses the Web Crypto API (crypto.subtle) to import the JWK and
+ * verify the RSASSA-PKCS1-v1_5 SHA-256 signature, offloading Go's
+ * crypto/rsa and math/big from the WASM binary.
+ */
+function createVerifyRS256Callback(): (
+  signingInput: string,
+  signatureB64url: string,
+  jwkJSON: string,
+) => Promise<boolean> {
+  return async (
+    signingInput: string,
+    signatureB64url: string,
+    jwkJSON: string,
+  ): Promise<boolean> => {
+    try {
+      const jwk = JSON.parse(jwkJSON);
+      const key = await crypto.subtle.importKey(
+        "jwk",
+        { kty: jwk.kty, n: jwk.n, e: jwk.e, alg: "RS256" },
+        { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+        false,
+        ["verify"],
+      );
+      // Decode base64url signature to Uint8Array.
+      const sigBinary = Uint8Array.from(
+        atob(signatureB64url.replace(/-/g, "+").replace(/_/g, "/")),
+        (c) => c.charCodeAt(0),
+      );
+      const data = new TextEncoder().encode(signingInput);
+      return await crypto.subtle.verify(
+        "RSASSA-PKCS1-v1_5",
+        key,
+        sigBinary,
+        data,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return Promise.reject(`verifyRS256 failed: ${msg}`);
+    }
+  };
+}
+
+/**
+ * Create an RS256 signing callback for the WASM module.
+ *
+ * The Go side (signRS256WithPEM in crypto_js.go) calls this with
+ * (pemPEM, signingInput) and expects a Promise resolving to a
+ * base64url-encoded signature string.
+ *
+ * Uses the Web Crypto API (crypto.subtle) to import the PEM private
+ * key and sign with RSASSA-PKCS1-v1_5 SHA-256, offloading Go's
+ * crypto/rsa, crypto/x509, and encoding/pem from the WASM binary.
+ */
+function createSignRS256Callback(): (
+  pemPEM: string,
+  signingInput: string,
+) => Promise<string> {
+  return async (
+    pemPEM: string,
+    signingInput: string,
+  ): Promise<string> => {
+    try {
+      // Extract DER from PEM: strip header/footer and decode base64.
+      const pemBody = pemPEM
+        .replace(/-----BEGIN [A-Z ]+-----/g, "")
+        .replace(/-----END [A-Z ]+-----/g, "")
+        .replace(/\s/g, "");
+      const derBinary = Uint8Array.from(atob(pemBody), (c) =>
+        c.charCodeAt(0),
+      );
+
+      const key = await crypto.subtle.importKey(
+        "pkcs8",
+        derBinary,
+        { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+        false,
+        ["sign"],
+      );
+
+      const data = new TextEncoder().encode(signingInput);
+      const signature = await crypto.subtle.sign(
+        "RSASSA-PKCS1-v1_5",
+        key,
+        data,
+      );
+
+      // Encode signature as base64url.
+      const sigBytes = new Uint8Array(signature);
+      let base64 = btoa(String.fromCharCode(...sigBytes));
+      base64 = base64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+      return base64;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return Promise.reject(`signRS256 failed: ${msg}`);
+    }
+  };
+}
+
+/**
  * Create a fetch callback for the WASM module.
  *
  * The Go side (HostFetchDoer.Do) calls this with
@@ -329,7 +434,7 @@ const HANDLE_FETCH_TIMEOUT_MS = 25_000;
  *
  * The WASM bridge (cmd/mint-wasm) registers two functions on globalThis:
  *
- *   - mintcoreInitMint(configJSON, fetchCallback, pemCallback): string
+ *   - mintcoreInitMint(configJSON, fetchCallback, pemCallback, verifyRS256Callback, signRS256Callback): string
  *   - mintcoreHandleFetch(method, url, headersJSON, body): Promise<{status, headers, body}>
  */
 class GoWasm {
@@ -448,11 +553,13 @@ class GoWasm {
       console.error("Go WASM runtime error:", msg);
     });
 
-    // Initialize the mint handler with config and I/O callbacks.
-    // Signature: mintcoreInitMint(configJSON, fetchCallback, pemCallback)
+    // Initialize the mint handler with config, I/O, and crypto callbacks.
+    // Signature: mintcoreInitMint(configJSON, fetchCallback, pemCallback, verifyRS256Callback, signRS256Callback)
     const configJSON = buildWasmConfig(env);
     const fetchCallback = createFetchCallback();
     const pemCallback = createPemCallback(env);
+    const verifyRS256Callback = createVerifyRS256Callback();
+    const signRS256Callback = createSignRS256Callback();
 
     const mintcoreInitMint = (globalThis as Record<string, unknown>)[
       "mintcoreInitMint"
@@ -461,6 +568,8 @@ class GoWasm {
           config: string,
           fetch: unknown,
           pem: unknown,
+          verifyRS256: unknown,
+          signRS256: unknown,
         ) => string)
       | undefined;
 
@@ -470,7 +579,7 @@ class GoWasm {
       );
     }
 
-    const initErr = mintcoreInitMint(configJSON, fetchCallback, pemCallback);
+    const initErr = mintcoreInitMint(configJSON, fetchCallback, pemCallback, verifyRS256Callback, signRS256Callback);
     if (initErr) {
       // Go-returned init errors are deterministic for the same env
       // (bad config, invalid role-app-ID JSON, etc.). Classify as

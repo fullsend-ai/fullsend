@@ -2,14 +2,10 @@ package mintcore
 
 import (
 	"context"
-	"crypto"
-	"crypto/rsa"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
-	"math/big"
 	"net/http"
 	"net/url"
 	"strings"
@@ -36,7 +32,7 @@ type JWKSVerifier struct {
 	httpClient HTTPDoer
 
 	mu            sync.RWMutex
-	keys          map[string]*rsa.PublicKey
+	keys          map[string]jwkKey
 	cachedJWKSURI string
 	fetchedAt     time.Time
 	lastKidMissAt time.Time
@@ -158,19 +154,18 @@ func (v *JWKSVerifier) Verify(ctx context.Context, rawToken string) (*Claims, er
 		return nil, fmt.Errorf("decoding JWT signature: %w", err)
 	}
 	signingInput := parts[0] + "." + parts[1]
-	hashed := sha256.Sum256([]byte(signingInput))
-	if err := rsa.VerifyPKCS1v15(key, crypto.SHA256, hashed[:], signature); err != nil {
+	if err := verifyRS256Signature(signingInput, signature, key); err != nil {
 		return nil, fmt.Errorf("invalid JWT signature")
 	}
 
 	return &claims, nil
 }
 
-// getKey returns the RSA public key for the given kid, refreshing the
+// getKey returns the raw JWK entry for the given kid, refreshing the
 // JWKS cache if the kid is not found or the cache has expired.
 // A minimum interval between kid-miss refreshes prevents thundering-herd
 // JWKS fetches from tokens with unknown or random kid values.
-func (v *JWKSVerifier) getKey(ctx context.Context, kid string) (*rsa.PublicKey, error) {
+func (v *JWKSVerifier) getKey(ctx context.Context, kid string) (jwkKey, error) {
 	v.mu.RLock()
 	key, ok := v.keys[kid]
 	expired := time.Since(v.fetchedAt) > jwksCacheTTL
@@ -182,7 +177,7 @@ func (v *JWKSVerifier) getKey(ctx context.Context, kid string) (*rsa.PublicKey, 
 	}
 
 	if !ok && recentKidMiss {
-		return nil, fmt.Errorf("key %q not found in JWKS", kid)
+		return jwkKey{}, fmt.Errorf("key %q not found in JWKS", kid)
 	}
 
 	_, err, _ := v.refreshGroup.Do("refresh", func() (interface{}, error) {
@@ -192,7 +187,7 @@ func (v *JWKSVerifier) getKey(ctx context.Context, kid string) (*rsa.PublicKey, 
 		if ok && time.Since(v.fetchedAt) <= maxKeysStaleness {
 			return key, nil
 		}
-		return nil, err
+		return jwkKey{}, err
 	}
 
 	v.mu.RLock()
@@ -203,7 +198,7 @@ func (v *JWKSVerifier) getKey(ctx context.Context, kid string) (*rsa.PublicKey, 
 		v.mu.Lock()
 		v.lastKidMissAt = time.Now()
 		v.mu.Unlock()
-		return nil, fmt.Errorf("key %q not found in JWKS", kid)
+		return jwkKey{}, fmt.Errorf("key %q not found in JWKS", kid)
 	}
 	return key, nil
 }
@@ -251,16 +246,12 @@ func (v *JWKSVerifier) refreshKeys(ctx context.Context) error {
 		return fmt.Errorf("parsing JWKS: %w", err)
 	}
 
-	keys := make(map[string]*rsa.PublicKey, len(jwks.Keys))
+	keys := make(map[string]jwkKey, len(jwks.Keys))
 	for _, k := range jwks.Keys {
 		if k.Kty != "RSA" || k.Kid == "" {
 			continue
 		}
-		pub, err := parseRSAPublicKey(k.N, k.E)
-		if err != nil {
-			continue
-		}
-		keys[k.Kid] = pub
+		keys[k.Kid] = k
 	}
 
 	v.mu.Lock()
@@ -322,26 +313,4 @@ func (v *JWKSVerifier) discoverJWKSURI(ctx context.Context) (string, error) {
 	}
 
 	return doc.JWKSURI, nil
-}
-
-func parseRSAPublicKey(nB64, eB64 string) (*rsa.PublicKey, error) {
-	nBytes, err := base64.RawURLEncoding.DecodeString(nB64)
-	if err != nil {
-		return nil, fmt.Errorf("decoding modulus: %w", err)
-	}
-	eBytes, err := base64.RawURLEncoding.DecodeString(eB64)
-	if err != nil {
-		return nil, fmt.Errorf("decoding exponent: %w", err)
-	}
-
-	n := new(big.Int).SetBytes(nBytes)
-	if n.BitLen() < 2048 {
-		return nil, fmt.Errorf("RSA key too small: %d bits (minimum 2048)", n.BitLen())
-	}
-	e := new(big.Int).SetBytes(eBytes)
-	if !e.IsInt64() {
-		return nil, fmt.Errorf("exponent too large")
-	}
-
-	return &rsa.PublicKey{N: n, E: int(e.Int64())}, nil
 }
