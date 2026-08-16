@@ -226,7 +226,9 @@ Pass `--keep-pem` to preserve the PEM secret in Secret Manager.
 
 ## `mint enroll`
 
-Registers a GitHub organization or repository in the mint's allowed list, enabling it to request tokens.
+Registers a GitHub organization or repository in the mint's allowed list, enabling it to request tokens. Use `--platform` to select the target (default: `gcp`).
+
+### GCP mode
 
 ```bash
 fullsend mint enroll <org> \
@@ -244,15 +246,74 @@ fullsend mint enroll <owner/repo> \
 
 Enrollment creates the WIF provider needed for OIDC verification only — it does not grant any IAM roles. Vertex AI access is provisioned separately via `fullsend inference provision`.
 
+### Cloudflare mode
+
+```bash
+fullsend mint enroll <org> \
+  --platform cloudflare \
+  --worker-name "fullsend-mint"
+```
+
+Per-repo mode:
+
+```bash
+fullsend mint enroll <owner/repo> \
+  --platform cloudflare
+```
+
+Updates the durable Worker's `ALLOWED_ORGS` (org mode) or `PER_REPO_WIF_REPOS` (per-repo mode) via the Cloudflare Versions API — no local Worker sources or WASM build artifacts required. Per-repo enrollment does not modify `ALLOWED_ORGS`. Requires `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` (or a Wrangler OAuth session via `wrangler login`).
+
+`--preview` is rejected — preview Workers are configured exclusively via `mint deploy`.
+
+> **Enroll serially.** Concurrent enroll or unenroll commands against the same Worker can race — the CLI uses a read-modify-write cycle without concurrency control. Run them one at a time. See [Enrollment ordering](../guides/infrastructure/mint-administration.md#enrollment-ordering).
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--platform` | `gcp` | Target platform: `gcp` or `cloudflare` |
+| `--project` | | GCP project ID (required for `--platform=gcp`) |
+| `--region` | `us-central1` | GCP region |
+| `--worker-name` | `fullsend-mint` | Cloudflare Worker script name |
+| `--preview` | | Rejected for enroll — use `mint deploy` for preview Workers |
+| `--dry-run` | `false` | Preview changes without making them |
+
 ## `mint unenroll`
 
-Removes an organization or repository from the mint's allowed list.
+Removes an organization or repository from the mint's allowed list. Use `--platform` to select the target (default: `gcp`).
+
+### GCP mode
 
 ```bash
 fullsend mint unenroll <org|owner/repo> \
   --project "<GCP_PROJECT>" \
   --region "us-central1"
 ```
+
+### Cloudflare mode
+
+```bash
+fullsend mint unenroll <org|owner/repo> \
+  --platform cloudflare \
+  --worker-name "fullsend-mint"
+```
+
+Removes the org/repo from the durable Worker's env vars via the Cloudflare Versions API — no local Worker sources or WASM build artifacts required.
+
+> **Unenroll serially.** Like enroll, the Cloudflare unenroll path uses a read-modify-write cycle. Do not run concurrent unenroll commands against the same Worker — see [Enrollment ordering](../guides/infrastructure/mint-administration.md#enrollment-ordering).
+
+### Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--platform` | `gcp` | Target platform: `gcp` or `cloudflare` |
+| `--project` | | GCP project ID (required for `--platform=gcp`) |
+| `--region` | `us-central1` | GCP region |
+| `--delete-provider` | `false` | Permanently delete WIF provider (GCP repo unenroll only) |
+| `--worker-name` | `fullsend-mint` | Cloudflare Worker script name |
+| `--preview` | | Rejected for unenroll — use `mint deploy` for preview Workers |
+| `--dry-run` | `false` | Preview changes without making them |
+| `--yolo` | `false` | Skip interactive confirmation |
 
 ## `mint workflow-host`
 

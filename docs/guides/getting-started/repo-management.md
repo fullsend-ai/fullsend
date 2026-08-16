@@ -482,7 +482,7 @@ infrastructure, coordinate between roles:
 |------|------|---------|
 | 1 | Platform Admin | `fullsend repos uninstall "org/*" --yes` (forge-side cleanup + manifest removal) |
 | 2 | GCP Admin (Inference) | `fullsend inference deprovision <org>` (WIF cleanup) |
-| 3 | GCP Admin (Mint) | `fullsend mint unenroll <org>` |
+| 3 | Mint Admin | `fullsend mint unenroll <org>` |
 
 Each `fullsend` command that prompts for confirmation accepts a skip
 flag: `--yes` for `repos` commands, `--yolo` for `github` and `mint`

@@ -149,9 +149,11 @@ The `mint`, `inference`, and `github` subcommands decompose setup into role-spec
 | Install Phase | Standalone Command | Required Access |
 |---------------|--------------------|-----------------|
 | Phases 1-3: Mint deployment | `fullsend mint deploy` | GCP project (mint): `roles/iam.serviceAccountAdmin`, `roles/iam.workloadIdentityPoolAdmin`, `roles/cloudfunctions.developer`, `roles/run.admin`; with `--pem-dir` also `roles/secretmanager.admin`, `roles/resourcemanager.projectIamAdmin` |
-| Phases 1-3: Mint enrollment | `fullsend mint enroll` | GCP project (mint): `roles/cloudfunctions.viewer`, `roles/run.admin`, `roles/iam.workloadIdentityPoolAdmin` |
+| Phases 1-3: Mint enrollment | `fullsend mint enroll` | GCP project (mint): `roles/cloudfunctions.viewer`, `roles/run.admin`, `roles/iam.workloadIdentityPoolAdmin` ¹ |
 | Phase 4: WIF provisioning | `fullsend inference provision` | GCP project (inference): `roles/iam.workloadIdentityPoolAdmin`, `roles/resourcemanager.projectIamAdmin` |
 | Phases 5-7: GitHub setup + enrollment | `fullsend github setup` | GitHub only |
+
+¹ GCP IAM roles apply to `--platform=gcp` (the default). Cloudflare enrollment (`--platform=cloudflare`) requires `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` (or an active `wrangler login` session via `wrangler auth token`). See [`docs/cli/mint.md`](../../cli/mint.md) and [`mint-administration.md`](../infrastructure/mint-administration.md).
 
 The typical handoff: a GCP admin runs `mint deploy`, `mint enroll`, and `inference provision`, then passes the mint URL and WIF provider resource name to a GitHub maintainer who runs `github setup --mint-url=... --inference-wif-provider=...`. See [Advanced setup](../infrastructure/advanced-setup.md).
 

@@ -198,7 +198,7 @@ To tear down the entire fullsend installation (GitHub + GCP), coordinate between
 |------|------|---------|
 | 1 | GitHub Maintainer | `fullsend github uninstall "$ORG_NAME"` |
 | 2 | GCP Admin (Inference) | `fullsend inference deprovision "$ORG_NAME"` |
-| 3 | GCP Admin (Mint) | `fullsend mint unenroll "$ORG_NAME"` |
+| 3 | Mint Admin | `fullsend mint unenroll "$ORG_NAME"` |
 
 Each command prompts for confirmation. Add `--yolo` to skip prompts. See the [standalone commands](operations.md#standalone-commands) table for details on each command.
 

@@ -258,7 +258,9 @@ This command does not uninstall GitHub Apps from organizations or update org `.f
 
 ## Enrolling organizations and repositories
 
-`fullsend mint enroll` registers an organization or repository in the mint and configures WIF to accept OIDC tokens from the target.
+`fullsend mint enroll` registers an organization or repository in the mint. Use `--platform` to select the target (default: `gcp`).
+
+### GCP enrollment
 
 ```bash
 # Enroll an organization
@@ -268,14 +270,35 @@ fullsend mint enroll acme-corp --project="$GCP_PROJECT"
 fullsend mint enroll acme-corp/my-repo --project="$GCP_PROJECT"
 ```
 
-Enrollment does **not** grant Agent Platform (inference) access — use `fullsend inference provision` separately after enrollment. See [Getting Started](../getting-started/) for the end-user inference setup path.
+GCP enrollment configures WIF to accept OIDC tokens from the target. Enrollment does **not** grant Agent Platform (inference) access — use `fullsend inference provision` separately after enrollment. See [Getting Started](../getting-started/) for the end-user inference setup path.
+
+### Cloudflare enrollment
+
+```bash
+# Enroll an organization
+fullsend mint enroll acme-corp --platform=cloudflare
+
+# Enroll a specific repository
+fullsend mint enroll acme-corp/my-repo --platform=cloudflare --worker-name="my-mint"
+```
+
+Cloudflare enrollment updates the durable Worker's env vars via the Cloudflare Versions API — no local Worker sources or WASM build artifacts required. The command clones the currently deployed version's modules, updates the target plain-text bindings, and deploys the new version to 100% traffic. Org enrollment updates `ALLOWED_ORGS`; per-repo enrollment updates `PER_REPO_WIF_REPOS` only (it does not modify `ALLOWED_ORGS`). There is no WIF step — the CF mint handler authorizes callers directly via env var lists.
+
+Required credentials: `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID`, or a Wrangler OAuth session (`wrangler login`).
+
+`--preview` is rejected for enroll — preview Workers are configured exclusively via `mint deploy` with the full desired config.
+
+> **Enroll serially.** The Cloudflare enroll/unenroll path uses a read-modify-write cycle against the Versions API — the CLI reads the current env vars, merges the change, and deploys a new version. Concurrent enroll or unenroll commands against the same Worker will race, and one change may be lost. Run enrollment and unenrollment commands one at a time, just like GCP enrollment (see [Enrollment ordering](#enrollment-ordering)).
 
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--project` | | GCP project ID (required) |
+| `--platform` | `gcp` | Target platform: `gcp` or `cloudflare` |
+| `--project` | | GCP project ID (required for `--platform=gcp`) |
 | `--region` | `us-central1` | Cloud region for the mint service |
+| `--worker-name` | `fullsend-mint` | Cloudflare Worker script name |
+| `--preview` | | Rejected for enroll — use `mint deploy` for preview Workers |
 | `--dry-run` | `false` | Preview changes without making them |
 
 ### Migration from per-org app ID flags
@@ -315,11 +338,13 @@ This prevents a class of bugs where the service template is updated but traffic 
 
 ### Enrollment ordering
 
-Enroll organizations serially — do not run concurrent enrollment commands against the same mint. The CLI reads the current env vars, merges the new org's entries, and writes the result back. Two concurrent enrollments will race, and one org's entries may be lost.
+Enroll organizations serially — do not run concurrent enrollment or unenrollment commands against the same mint. On both GCP and Cloudflare, the CLI reads the current env vars, merges the new org's entries, and writes the result back. Two concurrent commands will race, and one change may be lost. This is an accepted CLI limitation (no ETag-based concurrency control); always run enroll and unenroll commands one at a time.
 
 ## Unenrolling organizations and repositories
 
-`fullsend mint unenroll` removes an organization or repository from the mint.
+`fullsend mint unenroll` removes an organization or repository from the mint. Use `--platform` to select the target (default: `gcp`).
+
+### GCP unenrollment
 
 ```bash
 # Unenroll an organization
@@ -331,13 +356,32 @@ fullsend mint unenroll acme-corp/my-repo --project="$GCP_PROJECT"
 
 Org-scoped unenroll removes the org from mint env vars and the shared WIF provider's attribute condition. Role PEM secrets are shared across orgs and are not modified. Repo-scoped unenroll only disables the repo-specific WIF provider (or permanently deletes it with `--delete-provider`) — it does not touch PEM secrets.
 
+### Cloudflare unenrollment
+
+```bash
+# Unenroll an organization
+fullsend mint unenroll acme-corp --platform=cloudflare
+
+# Unenroll a specific repository
+fullsend mint unenroll acme-corp/my-repo --platform=cloudflare --worker-name="my-mint"
+```
+
+Removes the org/repo from the durable Worker's env vars (`ALLOWED_ORGS` or `PER_REPO_WIF_REPOS`) via the Cloudflare Versions API — no local Worker sources or WASM build artifacts required. If the entity is not currently enrolled, the command succeeds without creating a new version.
+
+`--preview` is rejected — preview Workers are configured exclusively via `mint deploy`.
+
+> **Unenroll serially.** Like enroll, the Cloudflare unenroll path uses a read-modify-write cycle. Do not run concurrent unenroll commands against the same Worker — see [Enrollment ordering](#enrollment-ordering).
+
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--project` | | GCP project ID (required) |
+| `--platform` | `gcp` | Target platform: `gcp` or `cloudflare` |
+| `--project` | | GCP project ID (required for `--platform=gcp`) |
 | `--region` | `us-central1` | Cloud region for the mint service |
-| `--delete-provider` | `false` | Permanently delete WIF provider (repo-scoped only) |
+| `--delete-provider` | `false` | Permanently delete WIF provider (GCP repo-scoped only) |
+| `--worker-name` | `fullsend-mint` | Cloudflare Worker script name |
+| `--preview` | | Rejected for unenroll — use `mint deploy` for preview Workers |
 | `--dry-run` | `false` | Preview changes without making them |
 | `--yolo` | `false` | Skip interactive confirmation (for automation) |
 
