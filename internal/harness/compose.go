@@ -80,6 +80,10 @@ type ComposeOpts struct {
 	// If nil, ResolveOverlays is a no-op.
 	Event map[string]any
 
+	// Config is the per-repo config (from config.yaml) exposed to overlay
+	// CEL when expressions as the config variable (ADR 0088).
+	Config map[string]any
+
 	// allowSelfAllowlist permits using the child harness's own AllowedRemoteResources
 	// when OrgAllowlist is empty. This is for testing only; production callers should
 	// always provide OrgAllowlist from config.yaml. Unexported to prevent misuse.
@@ -161,7 +165,7 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		if err := child.ResolveForge(opts.ForgePlatform); err != nil {
 			return nil, nil, fmt.Errorf("resolving forge config: %w", err)
 		}
-		if err := child.ResolveOverlays(opts.Event); err != nil {
+		if err := child.ResolveOverlays(opts.Event, opts.ForgePlatform, opts.Config); err != nil {
 			return nil, nil, fmt.Errorf("resolving overlays: %w", err)
 		}
 		if err := child.Validate(); err != nil {
@@ -264,7 +268,7 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 	if err := child.ResolveForge(opts.ForgePlatform); err != nil {
 		return nil, nil, fmt.Errorf("resolving forge config: %w", err)
 	}
-	if err := child.ResolveOverlays(opts.Event); err != nil {
+	if err := child.ResolveOverlays(opts.Event, opts.ForgePlatform, opts.Config); err != nil {
 		return nil, nil, fmt.Errorf("resolving overlays: %w", err)
 	}
 	if err := child.Validate(); err != nil {

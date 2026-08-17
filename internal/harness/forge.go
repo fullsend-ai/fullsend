@@ -27,10 +27,12 @@ type ForgeConfig struct {
 }
 
 // OverlayEntry is a CEL-guarded conditional config block (ADR 0088).
-// Each entry carries a CEL expression in When (evaluated against the event
-// variable, same environment as trigger:) and the same override fields as
-// ForgeConfig. Entries whose When evaluates to true are merged into the
-// harness in declaration order.
+// Each entry carries a CEL expression in When and the same override fields
+// as ForgeConfig. The first entry whose When evaluates to true is merged
+// into the harness; remaining entries are skipped (first-match-wins).
+// The When expression is evaluated against the overlay CEL environment:
+// event (normevent map), runtime.forge (platform string), and config
+// (per-repo config map).
 type OverlayEntry struct {
 	When        string `yaml:"when"`
 	ForgeConfig `yaml:",inline"`
@@ -218,7 +220,7 @@ func (h *Harness) validateOverlays() error {
 		if when == "" {
 			return fmt.Errorf("overlays[%d].when is required", i)
 		}
-		env, err := NewTriggerEnv()
+		env, err := NewOverlayEnv()
 		if err != nil {
 			return fmt.Errorf("overlays[%d]: creating CEL env: %w", i, err)
 		}
@@ -237,11 +239,12 @@ func (h *Harness) validateOverlays() error {
 	return nil
 }
 
-// ResolveOverlays evaluates each overlay's When expression against event
-// data and merges matching entries into the harness in declaration order.
+// ResolveOverlays evaluates each overlay's When expression against the
+// overlay CEL environment (event, runtime.forge, config) and merges the
+// first matching entry into the harness (first-match-wins, ADR 0088).
 // After resolution, h.Overlays is set to nil (consumed). When event is
 // nil or h.Overlays is empty, this is a no-op.
-func (h *Harness) ResolveOverlays(event map[string]any) error {
+func (h *Harness) ResolveOverlays(event map[string]any, forgePlatform string, config map[string]any) error {
 	if len(h.Overlays) == 0 {
 		h.Overlays = nil
 		return nil
@@ -251,13 +254,14 @@ func (h *Harness) ResolveOverlays(event map[string]any) error {
 		return nil
 	}
 	for i, entry := range h.Overlays {
-		matched, err := EvaluateTrigger(entry.When, event)
+		matched, err := EvaluateOverlay(entry.When, event, forgePlatform, config)
 		if err != nil {
 			return fmt.Errorf("overlays[%d].when: %w", i, err)
 		}
 		if matched {
 			fc := entry.ForgeConfig
 			mergeForgeConfig(h, &fc)
+			break
 		}
 	}
 	h.Overlays = nil

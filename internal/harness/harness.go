@@ -360,6 +360,7 @@ func Load(path string) (*Harness, error) {
 type LoadOpts struct {
 	ForgePlatform string
 	Event         map[string]any // event data for CEL overlay resolution (ADR 0088)
+	Config        map[string]any // per-repo config for CEL overlay resolution (ADR 0088)
 }
 
 // LoadWithOpts reads a harness YAML file and applies forge resolution before
@@ -385,7 +386,7 @@ func LoadWithOpts(path string, opts LoadOpts) (*Harness, error) {
 		return nil, fmt.Errorf("resolving forge config: %w", err)
 	}
 
-	if err := h.ResolveOverlays(opts.Event); err != nil {
+	if err := h.ResolveOverlays(opts.Event, opts.ForgePlatform, opts.Config); err != nil {
 		return nil, fmt.Errorf("resolving overlays: %w", err)
 	}
 

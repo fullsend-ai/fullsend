@@ -8329,6 +8329,10 @@ base: `+baseURL+`
 func TestLoadWithBase_OverlayConcatBothHaveOverlays(t *testing.T) {
 	dir := t.TempDir()
 
+	// With first-match-wins, cross-concern scenarios need combined entries.
+	// Base overlays come first in the concatenated list; child appended after.
+	// The first matching entry wins — a child entry with a more-specific when
+	// shadows base entries.
 	baseContent := `
 agent: agents/test.md
 role: fix
@@ -8341,21 +8345,22 @@ overlays:
 	childContent := `
 base: base.yaml
 overlays:
-- when: 'event.entity.kind == "issue"'
-  post_script: scripts/child-issue.sh
+- when: 'event.source.system == "github"'
+  pre_script: scripts/child-gh.sh
+  post_script: scripts/child-post.sh
 `
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "base.yaml"), []byte(baseContent), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "child.yaml"), []byte(childContent), 0o644))
 
 	h, _, err := LoadWithBase(context.Background(), filepath.Join(dir, "child.yaml"), ComposeOpts{
 		WorkspaceRoot: dir,
-		Event:         map[string]any{"source": map[string]any{"system": "github"}, "entity": map[string]any{"kind": "issue"}},
+		Event:         map[string]any{"source": map[string]any{"system": "github"}},
 	})
 	require.NoError(t, err)
-	// Base overlay matched → pre_script set
+	// Base overlay is first in concat order and matches → first-match-wins
 	assert.Equal(t, "scripts/base-gh.sh", h.PreScript)
-	// Child overlay matched → post_script set
-	assert.Equal(t, "scripts/child-issue.sh", h.PostScript)
+	// Child overlay not reached because base entry matched first
+	assert.Empty(t, h.PostScript)
 }
 
 func TestLoadWithBase_OverlayConcatOnlyBaseHasOverlays(t *testing.T) {

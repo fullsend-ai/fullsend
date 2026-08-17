@@ -1045,6 +1045,30 @@ func TestValidateOverlays_ValidCELAccepted(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestValidateOverlays_RuntimeForgeAccepted(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: `runtime.forge == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/pre.sh"}},
+		},
+	}
+	err := h.validateOverlays()
+	require.NoError(t, err)
+}
+
+func TestValidateOverlays_ConfigVariableAccepted(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: `config.tracker == "jira" && runtime.forge == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/pre.sh"}},
+		},
+	}
+	err := h.validateOverlays()
+	require.NoError(t, err)
+}
+
 func TestValidateOverlays_InvalidScriptPathRejected(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
@@ -1093,13 +1117,13 @@ func TestResolveOverlays_SingleMatch(t *testing.T) {
 		},
 	}
 	event := map[string]any{"source": map[string]any{"system": "github"}}
-	err := h.ResolveOverlays(event)
+	err := h.ResolveOverlays(event, "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "scripts/gh.sh", h.PreScript)
 	assert.Nil(t, h.Overlays)
 }
 
-func TestResolveOverlays_MultipleMatchesScalarLastWins(t *testing.T) {
+func TestResolveOverlays_FirstMatchWins(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
 		Role:  "fix",
@@ -1109,12 +1133,12 @@ func TestResolveOverlays_MultipleMatchesScalarLastWins(t *testing.T) {
 		},
 	}
 	event := map[string]any{"source": map[string]any{"system": "github"}}
-	err := h.ResolveOverlays(event)
+	err := h.ResolveOverlays(event, "", nil)
 	require.NoError(t, err)
-	assert.Equal(t, "b.sh", h.PreScript)
+	assert.Equal(t, "a.sh", h.PreScript, "first-match-wins: first entry should be applied")
 }
 
-func TestResolveOverlays_ListFieldsAccumulate(t *testing.T) {
+func TestResolveOverlays_FirstMatchWinsSkipsLater(t *testing.T) {
 	h := &Harness{
 		Agent:  "agents/test.md",
 		Role:   "fix",
@@ -1125,12 +1149,11 @@ func TestResolveOverlays_ListFieldsAccumulate(t *testing.T) {
 		},
 	}
 	event := map[string]any{"source": map[string]any{"system": "github"}}
-	err := h.ResolveOverlays(event)
+	err := h.ResolveOverlays(event, "", nil)
 	require.NoError(t, err)
-	require.Len(t, h.Skills, 3)
+	require.Len(t, h.Skills, 2, "only first matching overlay should be applied")
 	assert.Equal(t, "skills/base", h.Skills[0].Source)
 	assert.Equal(t, "skills/gh", h.Skills[1].Source)
-	assert.Equal(t, "skills/extra", h.Skills[2].Source)
 }
 
 func TestResolveOverlays_NoMatchUnchanged(t *testing.T) {
@@ -1143,7 +1166,7 @@ func TestResolveOverlays_NoMatchUnchanged(t *testing.T) {
 		},
 	}
 	event := map[string]any{"source": map[string]any{"system": "github"}}
-	err := h.ResolveOverlays(event)
+	err := h.ResolveOverlays(event, "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "scripts/common.sh", h.PreScript)
 	assert.Nil(t, h.Overlays)
@@ -1157,7 +1180,7 @@ func TestResolveOverlays_NilEventNoop(t *testing.T) {
 			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
 		},
 	}
-	err := h.ResolveOverlays(nil)
+	err := h.ResolveOverlays(nil, "", nil)
 	require.NoError(t, err)
 	assert.Nil(t, h.Overlays)
 }
@@ -1168,7 +1191,58 @@ func TestResolveOverlays_EmptyOverlaysNoop(t *testing.T) {
 		Role:      "fix",
 		PreScript: "scripts/common.sh",
 	}
-	err := h.ResolveOverlays(map[string]any{"source": map[string]any{"system": "github"}})
+	err := h.ResolveOverlays(map[string]any{"source": map[string]any{"system": "github"}}, "", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "scripts/common.sh", h.PreScript)
+}
+
+func TestResolveOverlays_RuntimeForge(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: `runtime.forge == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
+			{When: `runtime.forge == "gitlab"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gl.sh"}},
+		},
+	}
+	event := map[string]any{"source": map[string]any{"system": "jira"}}
+	err := h.ResolveOverlays(event, "github", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+}
+
+func TestResolveOverlays_ConfigVariable(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: `config.tracker == "jira"`, ForgeConfig: ForgeConfig{PreScript: "scripts/jira.sh"}},
+			{When: `config.tracker == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
+		},
+	}
+	event := map[string]any{"source": map[string]any{"system": "jira"}}
+	config := map[string]any{"tracker": "jira"}
+	err := h.ResolveOverlays(event, "github", config)
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/jira.sh", h.PreScript)
+}
+
+func TestResolveOverlays_CombinedWhenExpression(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "jira" && runtime.forge == "github"`, ForgeConfig: ForgeConfig{
+				PreScript: "scripts/jira-on-gh.sh",
+				Skills:    []SkillEntry{{Source: "skills/jira-read"}},
+			}},
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
+		},
+	}
+	event := map[string]any{"source": map[string]any{"system": "jira"}}
+	err := h.ResolveOverlays(event, "github", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/jira-on-gh.sh", h.PreScript)
+	require.Len(t, h.Skills, 1)
+	assert.Equal(t, "skills/jira-read", h.Skills[0].Source)
 }

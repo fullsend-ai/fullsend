@@ -2294,3 +2294,45 @@ overlays:
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "forge and overlays cannot coexist")
 }
+
+func TestLoadWithOpts_OverlayWithRuntimeForge(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: fix
+overlays:
+- when: 'runtime.forge == "github"'
+  pre_script: scripts/gh.sh
+- when: 'runtime.forge == "gitlab"'
+  pre_script: scripts/gl.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{
+		ForgePlatform: "github",
+		Event:         map[string]any{"source": map[string]any{"system": "jira"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+}
+
+func TestLoadWithOpts_OverlayWithConfig(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: fix
+overlays:
+- when: 'config.tracker == "jira"'
+  pre_script: scripts/jira.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{
+		Event:  map[string]any{"source": map[string]any{"system": "jira"}},
+		Config: map[string]any{"tracker": "jira"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/jira.sh", h.PreScript)
+}

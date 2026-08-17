@@ -171,7 +171,7 @@ validation_loop:
 timeout_minutes: 10
 
 overlays:
-- when: 'event.source.system == "github"'
+- when: 'runtime.forge == "github"'
   pre_script: scripts/pre-triage.sh
   post_script: scripts/post-triage.sh
   env:
@@ -188,7 +188,7 @@ Key patterns to note:
 - **`policy: policies/triage.yaml`** is a per-agent policy that includes filesystem, landlock, process, and network rules (via inline `network_policies`). This agent predates the provider-based pattern — new agents can use `providers:` instead (see [Minimum viable agent](#minimum-viable-agent)).
 - **`host_files`** copy credentials from the trusted runner into the sandbox. `expand: true` resolves `${VAR}` references before copying.
 - **`validation_loop.schema`** references the JSON schema file directly — the validation script checks agent output against it.
-- **`overlays`** uses CEL `when` expressions to conditionally apply scripts, skills, providers, host_files, and env vars. Here, the overlay matches GitHub events. Multiple overlays can match a single event — all matching entries are merged in declaration order (later scalars win, lists accumulate).
+- **`overlays`** uses CEL `when` expressions to conditionally apply scripts, skills, providers, host_files, and env vars. Resolution is first-match-wins: the first entry whose `when` evaluates to true is merged; remaining entries are skipped. The CEL environment exposes `event` (the triggering event), `runtime.forge` (the effective forge platform), and `config` (per-repo config from config.yaml).
 - **`common/env/gcp-vertex.env`** is referenced by relative path because both files live in the same repo. If your agent lives in a different repo, reference it by URL (see [Remote references](#referencing-resources-local-vs-remote)) or copy it locally.
 
 ## Harness field reference
@@ -273,12 +273,19 @@ api_servers:                         # Host-side REST proxies exposed to sandbox
     env:                             # Env vars for the server process
       API_KEY: "${API_KEY}"
 
-# ── Conditional overrides (CEL-guarded) ──────────────────────
+# ── Conditional overrides (CEL-guarded, first-match-wins) ────
 overlays:
-- when: 'event.source.system == "github"'
+- when: 'event.source.system == "jira" && runtime.forge == "github"'
+  pre_script: scripts/pre-jira-on-gh.sh
+  skills: [skills/jira-read]          # Merged with top-level
+  env:
+    runner:
+      GH_TOKEN: "${GH_TOKEN}"
+      JIRA_TOKEN: "${JIRA_TOKEN}"
+- when: 'runtime.forge == "github"'
   pre_script: scripts/pre-gh.sh
   post_script: scripts/post-gh.sh
-  skills: [skills/github-specific]    # Concatenated with top-level
+  skills: [skills/github-specific]    # Merged with top-level
   providers: [providers/github.yaml]  # Concatenated with top-level
   openshell:
     profiles: [profiles/github.yaml]  # Concatenated with top-level
@@ -310,8 +317,12 @@ security:
 > expressions instead (see [ADR 0088](../../ADRs/0088-cel-guarded-overlays.md)).
 > The `forge` field still works but emits a deprecation warning at lint time.
 > Migration: each forge key becomes an overlay entry — e.g. `forge: github:`
-> becomes `overlays: - when: 'event.source.system == "github"'`.
-> `forge` and `overlays` cannot coexist in the same harness.
+> becomes `overlays: - when: 'runtime.forge == "github"'`. Note the conditioning
+> axis: `runtime.forge` reflects the effective forge platform (from `--forge`
+> flag, `config.forge`, or CI env vars), while `event.source.system` identifies
+> the event origin. These diverge for cross-system events (e.g. a JIRA issue
+> triggering work on GitHub). `forge` and `overlays` cannot coexist in the
+> same harness.
 
 > **Deprecated:** `runner_env` is deprecated. Use `env.runner`
 > instead. The `runner_env` field still works but emits a deprecation warning
@@ -320,11 +331,16 @@ security:
 
 ### Field merge rules (for `base` and `overlays`)
 
+Overlays use first-match-wins: exactly one overlay (or none) applies to any
+given event. When an agent needs config from multiple concerns (e.g.
+JIRA-specific scripts *and* GitHub-specific runner env), create a combined
+entry. More-specific entries go first; broader fallbacks go last.
+
 | Field type | Behavior |
 |-----------|----------|
 | Scalars (`model`, `pre_script`, `policy`, `image`, etc.) | Child wins if non-empty |
 | `skills` | Merged with deduplication by basename (child overrides base) |
-| `providers`, `openshell.profiles` | Concatenated (base + child); also applies per-overlay |
+| `providers`, `openshell.profiles` | Concatenated (base + child); also applies per matched overlay |
 | `plugins`, `api_servers` | Concatenated (base + child) |
 | `host_files` | Concatenated; child overrides by `dest` |
 | `env`, `runner_env` (deprecated) | Merged; child keys win |
