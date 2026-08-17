@@ -188,7 +188,7 @@ Key patterns to note:
 - **`policy: policies/triage.yaml`** is a per-agent policy that includes filesystem, landlock, process, and network rules (via inline `network_policies`). This agent predates the provider-based pattern — new agents can use `providers:` instead (see [Minimum viable agent](#minimum-viable-agent)).
 - **`host_files`** copy credentials from the trusted runner into the sandbox. `expand: true` resolves `${VAR}` references before copying.
 - **`validation_loop.schema`** references the JSON schema file directly — the validation script checks agent output against it.
-- **`overlays`** uses CEL `when` expressions to conditionally apply scripts, skills, providers, host_files, and env vars. Here, the overlay matches GitHub events. Multiple overlays can match a single event (e.g. one for the source system, another for the event type) — they are applied in declaration order.
+- **`overlays`** uses CEL `when` expressions to conditionally apply scripts, skills, providers, host_files, and env vars. Here, the overlay matches GitHub events. Multiple overlays can match a single event — all matching entries are merged in declaration order (later scalars win, lists accumulate).
 - **`common/env/gcp-vertex.env`** is referenced by relative path because both files live in the same repo. If your agent lives in a different repo, reference it by URL (see [Remote references](#referencing-resources-local-vs-remote)) or copy it locally.
 
 ## Harness field reference

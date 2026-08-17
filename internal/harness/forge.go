@@ -134,7 +134,11 @@ func (h *Harness) validateForge() error {
 }
 
 // validateOverlayForgeConfig validates a ForgeConfig embedded in an overlay
-// entry, applying the same checks as validateForge per entry.
+// entry, applying the same checks as validateForge per entry. OverlayEntry
+// embeds ForgeConfig via yaml:",inline" (see OverlayEntry), so overlay
+// entries carry the same override fields as forge platform blocks. The
+// "ForgeConfig" name is a legacy artifact from the forge feature being
+// deprecated in favor of overlays (ADR 0088).
 func validateOverlayForgeConfig(idx int, fc *ForgeConfig) error {
 	prefix := fmt.Sprintf("overlays[%d]", idx)
 	if fc.Policy != "" && IsURL(fc.Policy) {
