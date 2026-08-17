@@ -71,6 +71,14 @@ func (h *Harness) Lint() []Diagnostic {
 		}
 	}
 
+	if h.Forge != nil {
+		diags = append(diags, Diagnostic{
+			Severity: SeverityWarning,
+			Field:    "forge",
+			Message:  "forge is deprecated; use overlays with CEL when expressions instead (see ADR 0088)",
+		})
+	}
+
 	if strings.TrimSpace(h.Trigger) != "" {
 		if err := ValidateTriggerExpression(h.Trigger); err != nil {
 			diags = append(diags, Diagnostic{

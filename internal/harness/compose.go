@@ -76,6 +76,10 @@ type ComposeOpts struct {
 	// for no-base harnesses.
 	SourceURL string
 
+	// Event is the normalized event data for CEL overlay resolution (ADR 0088).
+	// If nil, ResolveOverlays is a no-op.
+	Event map[string]any
+
 	// allowSelfAllowlist permits using the child harness's own AllowedRemoteResources
 	// when OrgAllowlist is empty. This is for testing only; production callers should
 	// always provide OrgAllowlist from config.yaml. Unexported to prevent misuse.
@@ -89,10 +93,10 @@ type ComposeOpts struct {
 //
 // Pipeline:
 //  1. LoadRaw(path) — preserves forge map
-//  2. If base absent: resolve URL-sourced resources → ResolveForge → Validate → return
+//  2. If base absent: resolve URL-sourced resources → ResolveForge → ResolveOverlays → Validate → return
 //  3. If base present: loadBaseChain recursively, then mergeBaseIntoChild
 //  4. Resolve remaining URL-sourced resources and scripts (child's own relative paths)
-//  5. ResolveForge once on final merged result
+//  5. ResolveForge and ResolveOverlays once on final merged result
 //  6. Validate
 //
 // When base is absent, this behaves identically to LoadWithOpts.
@@ -151,8 +155,14 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		if err := child.validateForge(); err != nil {
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
 		}
+		if err := child.validateOverlays(); err != nil {
+			return nil, nil, fmt.Errorf("invalid harness: %w", err)
+		}
 		if err := child.ResolveForge(opts.ForgePlatform); err != nil {
 			return nil, nil, fmt.Errorf("resolving forge config: %w", err)
+		}
+		if err := child.ResolveOverlays(opts.Event); err != nil {
+			return nil, nil, fmt.Errorf("resolving overlays: %w", err)
 		}
 		if err := child.Validate(); err != nil {
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
@@ -244,12 +254,18 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		deps = append(deps, pluginDeps...)
 	}
 
-	// ResolveForge once on the merged result
+	// ResolveForge and ResolveOverlays once on the merged result
 	if err := child.validateForge(); err != nil {
+		return nil, nil, fmt.Errorf("invalid harness: %w", err)
+	}
+	if err := child.validateOverlays(); err != nil {
 		return nil, nil, fmt.Errorf("invalid harness: %w", err)
 	}
 	if err := child.ResolveForge(opts.ForgePlatform); err != nil {
 		return nil, nil, fmt.Errorf("resolving forge config: %w", err)
+	}
+	if err := child.ResolveOverlays(opts.Event); err != nil {
+		return nil, nil, fmt.Errorf("resolving overlays: %w", err)
 	}
 	if err := child.Validate(); err != nil {
 		return nil, nil, fmt.Errorf("invalid harness: %w", err)
@@ -649,6 +665,16 @@ func mergeBaseIntoChild(base, child *Harness) {
 	// Forge: key-by-key merge
 	if base.Forge != nil {
 		child.Forge = mergeForgeBlocks(base.Forge, child.Forge)
+	}
+
+	// Overlays: concatenated (base first, child appended) — same as plugins,
+	// providers, api_servers. Declaration order matters: later entries override
+	// earlier ones for scalars, so child entries naturally take precedence.
+	if base.Overlays != nil {
+		merged := make([]OverlayEntry, 0, len(base.Overlays)+len(child.Overlays))
+		merged = append(merged, base.Overlays...)
+		merged = append(merged, child.Overlays...)
+		child.Overlays = merged
 	}
 }
 

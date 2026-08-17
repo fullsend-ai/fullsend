@@ -1004,3 +1004,171 @@ pre_script: scripts/pre.sh
 	assert.Nil(t, h.Forge)
 	assert.Equal(t, "scripts/pre.sh", h.PreScript)
 }
+
+// --- Overlay tests ---
+
+func TestValidateOverlays_EmptyWhenRejected(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: "", ForgeConfig: ForgeConfig{PreScript: "scripts/pre.sh"}},
+		},
+	}
+	err := h.validateOverlays()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlays[0].when is required")
+}
+
+func TestValidateOverlays_NonBoolCELRejected(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: "event.source.system", ForgeConfig: ForgeConfig{PreScript: "scripts/pre.sh"}},
+		},
+	}
+	err := h.validateOverlays()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must evaluate to bool")
+}
+
+func TestValidateOverlays_ValidCELAccepted(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/pre.sh"}},
+		},
+	}
+	err := h.validateOverlays()
+	require.NoError(t, err)
+}
+
+func TestValidateOverlays_InvalidScriptPathRejected(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "https://example.com/pre.sh"}},
+		},
+	}
+	err := h.validateOverlays()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlays[0].pre_script must be a local path, not a URL")
+}
+
+func TestValidateOverlays_MutualExclusionWithForge(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Forge: map[string]*ForgeConfig{
+			"github": {PreScript: "scripts/pre-gh.sh"},
+		},
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/pre.sh"}},
+		},
+	}
+	err := h.validateOverlays()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forge and overlays cannot coexist")
+}
+
+func TestValidateOverlays_NoOverlaysIsNoop(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+	}
+	err := h.validateOverlays()
+	require.NoError(t, err)
+}
+
+func TestResolveOverlays_SingleMatch(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Role:      "fix",
+		PreScript: "scripts/common.sh",
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
+		},
+	}
+	event := map[string]any{"source": map[string]any{"system": "github"}}
+	err := h.ResolveOverlays(event)
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+	assert.Nil(t, h.Overlays)
+}
+
+func TestResolveOverlays_MultipleMatchesScalarLastWins(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "a.sh"}},
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "b.sh"}},
+		},
+	}
+	event := map[string]any{"source": map[string]any{"system": "github"}}
+	err := h.ResolveOverlays(event)
+	require.NoError(t, err)
+	assert.Equal(t, "b.sh", h.PreScript)
+}
+
+func TestResolveOverlays_ListFieldsAccumulate(t *testing.T) {
+	h := &Harness{
+		Agent:  "agents/test.md",
+		Role:   "fix",
+		Skills: []SkillEntry{{Source: "skills/base"}},
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{Skills: []SkillEntry{{Source: "skills/gh"}}}},
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{Skills: []SkillEntry{{Source: "skills/extra"}}}},
+		},
+	}
+	event := map[string]any{"source": map[string]any{"system": "github"}}
+	err := h.ResolveOverlays(event)
+	require.NoError(t, err)
+	require.Len(t, h.Skills, 3)
+	assert.Equal(t, "skills/base", h.Skills[0].Source)
+	assert.Equal(t, "skills/gh", h.Skills[1].Source)
+	assert.Equal(t, "skills/extra", h.Skills[2].Source)
+}
+
+func TestResolveOverlays_NoMatchUnchanged(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Role:      "fix",
+		PreScript: "scripts/common.sh",
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "jira"`, ForgeConfig: ForgeConfig{PreScript: "scripts/jira.sh"}},
+		},
+	}
+	event := map[string]any{"source": map[string]any{"system": "github"}}
+	err := h.ResolveOverlays(event)
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/common.sh", h.PreScript)
+	assert.Nil(t, h.Overlays)
+}
+
+func TestResolveOverlays_NilEventNoop(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
+		},
+	}
+	err := h.ResolveOverlays(nil)
+	require.NoError(t, err)
+	assert.Nil(t, h.Overlays)
+}
+
+func TestResolveOverlays_EmptyOverlaysNoop(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Role:      "fix",
+		PreScript: "scripts/common.sh",
+	}
+	err := h.ResolveOverlays(map[string]any{"source": map[string]any{"system": "github"}})
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/common.sh", h.PreScript)
+}

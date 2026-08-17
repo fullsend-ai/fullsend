@@ -8325,3 +8325,110 @@ base: `+baseURL+`
 	}
 	assert.True(t, foundPlugin, "should have plugin dependency")
 }
+
+func TestLoadWithBase_OverlayConcatBothHaveOverlays(t *testing.T) {
+	dir := t.TempDir()
+
+	baseContent := `
+agent: agents/test.md
+role: fix
+overlays:
+- when: 'event.source.system == "github"'
+  pre_script: scripts/base-gh.sh
+- when: 'event.source.system == "jira"'
+  pre_script: scripts/base-jira.sh
+`
+	childContent := `
+base: base.yaml
+overlays:
+- when: 'event.entity.kind == "issue"'
+  post_script: scripts/child-issue.sh
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "base.yaml"), []byte(baseContent), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "child.yaml"), []byte(childContent), 0o644))
+
+	h, _, err := LoadWithBase(context.Background(), filepath.Join(dir, "child.yaml"), ComposeOpts{
+		WorkspaceRoot: dir,
+		Event:         map[string]any{"source": map[string]any{"system": "github"}, "entity": map[string]any{"kind": "issue"}},
+	})
+	require.NoError(t, err)
+	// Base overlay matched → pre_script set
+	assert.Equal(t, "scripts/base-gh.sh", h.PreScript)
+	// Child overlay matched → post_script set
+	assert.Equal(t, "scripts/child-issue.sh", h.PostScript)
+}
+
+func TestLoadWithBase_OverlayConcatOnlyBaseHasOverlays(t *testing.T) {
+	dir := t.TempDir()
+
+	baseContent := `
+agent: agents/test.md
+role: fix
+overlays:
+- when: 'event.source.system == "github"'
+  pre_script: scripts/gh.sh
+`
+	childContent := `
+base: base.yaml
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "base.yaml"), []byte(baseContent), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "child.yaml"), []byte(childContent), 0o644))
+
+	h, _, err := LoadWithBase(context.Background(), filepath.Join(dir, "child.yaml"), ComposeOpts{
+		WorkspaceRoot: dir,
+		Event:         map[string]any{"source": map[string]any{"system": "github"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+}
+
+func TestLoadWithBase_OverlayConcatOnlyChildHasOverlays(t *testing.T) {
+	dir := t.TempDir()
+
+	baseContent := `
+agent: agents/test.md
+role: fix
+pre_script: scripts/base.sh
+`
+	childContent := `
+base: base.yaml
+overlays:
+- when: 'event.source.system == "github"'
+  pre_script: scripts/child-gh.sh
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "base.yaml"), []byte(baseContent), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "child.yaml"), []byte(childContent), 0o644))
+
+	h, _, err := LoadWithBase(context.Background(), filepath.Join(dir, "child.yaml"), ComposeOpts{
+		WorkspaceRoot: dir,
+		Event:         map[string]any{"source": map[string]any{"system": "github"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/child-gh.sh", h.PreScript)
+}
+
+func TestLoadWithBase_OverlayResolution(t *testing.T) {
+	dir := t.TempDir()
+
+	baseContent := `
+agent: agents/test.md
+role: fix
+pre_script: scripts/base.sh
+`
+	childContent := `
+base: base.yaml
+overlays:
+- when: 'event.source.system == "github"'
+  pre_script: scripts/gh.sh
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "base.yaml"), []byte(baseContent), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "child.yaml"), []byte(childContent), 0o644))
+
+	h, _, err := LoadWithBase(context.Background(), filepath.Join(dir, "child.yaml"), ComposeOpts{
+		WorkspaceRoot: dir,
+		Event:         map[string]any{"source": map[string]any{"system": "github"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+	assert.Nil(t, h.Overlays)
+}

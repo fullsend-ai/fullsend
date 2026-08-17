@@ -170,17 +170,17 @@ validation_loop:
 
 timeout_minutes: 10
 
-forge:
-  github:
-    pre_script: scripts/pre-triage.sh
-    post_script: scripts/post-triage.sh
-    env:
-      runner:
-        GITHUB_ISSUE_URL: ${GITHUB_ISSUE_URL}
-        GH_TOKEN: ${GH_TOKEN}
-      sandbox:
-        GITHUB_ISSUE_URL: "${GITHUB_ISSUE_URL}"
-        GH_TOKEN: "${GH_TOKEN}"
+overlays:
+- when: 'event.source.system == "github"'
+  pre_script: scripts/pre-triage.sh
+  post_script: scripts/post-triage.sh
+  env:
+    runner:
+      GITHUB_ISSUE_URL: ${GITHUB_ISSUE_URL}
+      GH_TOKEN: ${GH_TOKEN}
+    sandbox:
+      GITHUB_ISSUE_URL: "${GITHUB_ISSUE_URL}"
+      GH_TOKEN: "${GH_TOKEN}"
 ```
 
 Key patterns to note:
@@ -188,7 +188,7 @@ Key patterns to note:
 - **`policy: policies/triage.yaml`** is a per-agent policy that includes filesystem, landlock, process, and network rules (via inline `network_policies`). This agent predates the provider-based pattern — new agents can use `providers:` instead (see [Minimum viable agent](#minimum-viable-agent)).
 - **`host_files`** copy credentials from the trusted runner into the sandbox. `expand: true` resolves `${VAR}` references before copying.
 - **`validation_loop.schema`** references the JSON schema file directly — the validation script checks agent output against it.
-- **`forge.github`** scopes scripts, skills, providers, openshell, host_files, and env vars to GitHub. When running on GitLab, a `forge.gitlab` block would take effect instead.
+- **`overlays`** uses CEL `when` expressions to conditionally apply scripts, skills, providers, host_files, and env vars. Here, the overlay matches GitHub events. Multiple overlays can match a single event (e.g. one for the source system, another for the event type) — they are applied in declaration order.
 - **`common/env/gcp-vertex.env`** is referenced by relative path because both files live in the same repo. If your agent lives in a different repo, reference it by URL (see [Remote references](#referencing-resources-local-vs-remote)) or copy it locally.
 
 ## Harness field reference
@@ -273,23 +273,23 @@ api_servers:                         # Host-side REST proxies exposed to sandbox
     env:                             # Env vars for the server process
       API_KEY: "${API_KEY}"
 
-# ── Forge-specific overrides ──────────────────────────────────
-forge:
-  github:
-    pre_script: scripts/pre-gh.sh
-    post_script: scripts/post-gh.sh
-    skills: [skills/github-specific]  # Concatenated with top-level
-    providers: [providers/github.yaml] # Concatenated with top-level
-    openshell:
-      profiles: [profiles/github.yaml] # Concatenated with top-level
-    host_files:                        # Forge-specific host files
-      - src: env/github.env
-        dest: /run/secrets/forge.env
-    env:
-      runner:
-        GH_TOKEN: "${GH_TOKEN}"
-  gitlab:
-    pre_script: scripts/pre-gl.sh
+# ── Conditional overrides (CEL-guarded) ──────────────────────
+overlays:
+- when: 'event.source.system == "github"'
+  pre_script: scripts/pre-gh.sh
+  post_script: scripts/post-gh.sh
+  skills: [skills/github-specific]    # Concatenated with top-level
+  providers: [providers/github.yaml]  # Concatenated with top-level
+  openshell:
+    profiles: [profiles/github.yaml]  # Concatenated with top-level
+  host_files:                         # Overlay-specific host files
+    - src: env/github.env
+      dest: /run/secrets/forge.env
+  env:
+    runner:
+      GH_TOKEN: "${GH_TOKEN}"
+- when: 'event.source.system == "jira"'
+  pre_script: scripts/pre-jira.sh
 
 # ── Security ──────────────────────────────────────────────────
 security:
@@ -306,18 +306,25 @@ security:
 
 ### Deprecated fields
 
+> **Deprecated:** `forge` is deprecated. Use `overlays` with CEL `when`
+> expressions instead (see [ADR 0088](../../ADRs/0088-cel-guarded-overlays.md)).
+> The `forge` field still works but emits a deprecation warning at lint time.
+> Migration: each forge key becomes an overlay entry — e.g. `forge: github:`
+> becomes `overlays: - when: 'event.source.system == "github"'`.
+> `forge` and `overlays` cannot coexist in the same harness.
+
 > **Deprecated:** `runner_env` is deprecated. Use `env.runner`
 > instead. The `runner_env` field still works but emits a deprecation warning
 > at runtime. Migration: move `runner_env:` entries under `env: runner:` and
 > delete the `runner_env:` block.
 
-### Field merge rules (for `base` and `forge`)
+### Field merge rules (for `base` and `overlays`)
 
 | Field type | Behavior |
 |-----------|----------|
 | Scalars (`model`, `pre_script`, `policy`, `image`, etc.) | Child wins if non-empty |
 | `skills` | Merged with deduplication by basename (child overrides base) |
-| `providers`, `openshell.profiles` | Concatenated (base + child); also applies per-forge |
+| `providers`, `openshell.profiles` | Concatenated (base + child); also applies per-overlay |
 | `plugins`, `api_servers` | Concatenated (base + child) |
 | `host_files` | Concatenated; child overrides by `dest` |
 | `env`, `runner_env` (deprecated) | Merged; child keys win |
@@ -392,7 +399,7 @@ skills:
 timeout_minutes: 15
 ```
 
-Base chains support up to 5 levels (`MaxBaseDepth` in `internal/harness/compose.go`). Circular references are detected and rejected. Resolution order: base chain → child overrides → forge selection. See [field merge rules](#field-merge-rules-for-base-and-forge) for how each field type combines.
+Base chains support up to 5 levels (`MaxBaseDepth` in `internal/harness/compose.go`). Circular references are detected and rejected. Resolution order: base chain → child overrides → overlay resolution. See [field merge rules](#field-merge-rules-for-base-and-overlays) for how each field type combines.
 
 > **Note:** `allowed_remote_resources`, `allow_runtime_fetch`, and `max_runtime_fetches` are NOT inherited from base harnesses — the child must declare its own. This prevents a base harness from injecting arbitrary URL prefixes or enabling runtime fetching in the child.
 
@@ -460,7 +467,7 @@ env:
 
 ### What you can configure
 
-Any harness field can be overridden. The [field merge rules](#field-merge-rules-for-base-and-forge) determine how your overrides combine with the base:
+Any harness field can be overridden. The [field merge rules](#field-merge-rules-for-base-and-overlays) determine how your overrides combine with the base:
 
 - **Change model, timeout, image, scripts** — scalars replace the base value.
 - **Add skills** — your entries are merged with the base's by basename; same-named skills override the base entry. **Add plugins or host_files** — your entries are concatenated with the base's.

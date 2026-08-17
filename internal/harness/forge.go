@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/google/cel-go/common/types"
 )
 
 // ForgeConfig holds platform-specific harness configuration.
@@ -22,6 +24,16 @@ type ForgeConfig struct {
 	ValidationLoop *ValidationLoop   `yaml:"validation_loop,omitempty"`
 	RunnerEnv      map[string]string `yaml:"runner_env,omitempty"`
 	Env            *EnvConfig        `yaml:"env,omitempty"`
+}
+
+// OverlayEntry is a CEL-guarded conditional config block (ADR 0088).
+// Each entry carries a CEL expression in When (evaluated against the event
+// variable, same environment as trigger:) and the same override fields as
+// ForgeConfig. Entries whose When evaluates to true are merged into the
+// harness in declaration order.
+type OverlayEntry struct {
+	When        string `yaml:"when"`
+	ForgeConfig `yaml:",inline"`
 }
 
 var validForgeKeys = map[string]bool{
@@ -118,6 +130,133 @@ func (h *Harness) validateForge() error {
 			}
 		}
 	}
+	return nil
+}
+
+// validateOverlayForgeConfig validates a ForgeConfig embedded in an overlay
+// entry, applying the same checks as validateForge per entry.
+func validateOverlayForgeConfig(idx int, fc *ForgeConfig) error {
+	prefix := fmt.Sprintf("overlays[%d]", idx)
+	if fc.Policy != "" && IsURL(fc.Policy) {
+		if _, _, hasHash := ParseIntegrityHash(fc.Policy); !hasHash {
+			return fmt.Errorf("%s.policy URL must include #sha256=... integrity hash", prefix)
+		}
+	}
+	if fc.PreScript != "" && IsURL(fc.PreScript) {
+		return fmt.Errorf("%s.pre_script must be a local path, not a URL", prefix)
+	}
+	if fc.PostScript != "" && IsURL(fc.PostScript) {
+		return fmt.Errorf("%s.post_script must be a local path, not a URL", prefix)
+	}
+	for i, s := range fc.Skills {
+		if IsURL(s.Source) {
+			if _, _, hasHash := ParseIntegrityHash(s.Source); !hasHash {
+				return fmt.Errorf("%s.skills[%d] URL must include #sha256=... integrity hash", prefix, i)
+			}
+		}
+	}
+	if err := ValidateSkillOverrides(fc.Skills); err != nil {
+		return fmt.Errorf("%s: %w", prefix, err)
+	}
+	for i, p := range fc.Providers {
+		if IsURL(p) {
+			if _, _, hasHash := ParseIntegrityHash(p); !hasHash {
+				return fmt.Errorf("%s.providers[%d] URL must include #sha256=... integrity hash", prefix, i)
+			}
+		}
+	}
+	if fc.OpenShell != nil {
+		for i, p := range fc.OpenShell.Profiles {
+			if IsURL(p) {
+				if _, _, hasHash := ParseIntegrityHash(p); !hasHash {
+					return fmt.Errorf("%s.openshell.profiles[%d] URL must include #sha256=... integrity hash", prefix, i)
+				}
+			}
+		}
+	}
+	for i, hf := range fc.HostFiles {
+		if hf.Src == "" {
+			return fmt.Errorf("%s.host_files[%d]: src is required", prefix, i)
+		}
+		if hf.Dest == "" {
+			return fmt.Errorf("%s.host_files[%d]: dest is required", prefix, i)
+		}
+		if IsURL(hf.Src) {
+			return fmt.Errorf("%s.host_files[%d].src must be a local path, not a URL", prefix, i)
+		}
+	}
+	if fc.ValidationLoop != nil {
+		if fc.ValidationLoop.Script == "" {
+			return fmt.Errorf("%s.validation_loop.script is required when validation_loop is set", prefix)
+		}
+		if IsURL(fc.ValidationLoop.Script) {
+			return fmt.Errorf("%s.validation_loop.script must be a local path, not a URL", prefix)
+		}
+		if fc.ValidationLoop.Schema != "" && IsURL(fc.ValidationLoop.Schema) {
+			return fmt.Errorf("%s.validation_loop.schema must be a local path, not a URL", prefix)
+		}
+	}
+	return nil
+}
+
+// validateOverlays checks that the overlays section is well-formed:
+// mutual exclusion with forge, CEL expression compilation, and
+// ForgeConfig field validation per entry.
+func (h *Harness) validateOverlays() error {
+	if len(h.Overlays) == 0 {
+		return nil
+	}
+	if h.Forge != nil {
+		return fmt.Errorf("forge and overlays cannot coexist in the same harness; migrate forge entries to overlays")
+	}
+	for i, entry := range h.Overlays {
+		when := strings.TrimSpace(entry.When)
+		if when == "" {
+			return fmt.Errorf("overlays[%d].when is required", i)
+		}
+		env, err := NewTriggerEnv()
+		if err != nil {
+			return fmt.Errorf("overlays[%d]: creating CEL env: %w", i, err)
+		}
+		ast, issues := env.Compile(when)
+		if issues != nil && issues.Err() != nil {
+			return fmt.Errorf("overlays[%d].when: %w", i, issues.Err())
+		}
+		if !ast.OutputType().IsExactType(types.BoolType) {
+			return fmt.Errorf("overlays[%d].when must evaluate to bool, got %v", i, ast.OutputType())
+		}
+		fc := entry.ForgeConfig
+		if err := validateOverlayForgeConfig(i, &fc); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ResolveOverlays evaluates each overlay's When expression against event
+// data and merges matching entries into the harness in declaration order.
+// After resolution, h.Overlays is set to nil (consumed). When event is
+// nil or h.Overlays is empty, this is a no-op.
+func (h *Harness) ResolveOverlays(event map[string]any) error {
+	if len(h.Overlays) == 0 {
+		h.Overlays = nil
+		return nil
+	}
+	if event == nil {
+		h.Overlays = nil
+		return nil
+	}
+	for i, entry := range h.Overlays {
+		matched, err := EvaluateTrigger(entry.When, event)
+		if err != nil {
+			return fmt.Errorf("overlays[%d].when: %w", i, err)
+		}
+		if matched {
+			fc := entry.ForgeConfig
+			mergeForgeConfig(h, &fc)
+		}
+	}
+	h.Overlays = nil
 	return nil
 }
 

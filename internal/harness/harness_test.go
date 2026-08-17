@@ -2232,3 +2232,65 @@ func TestHasURLDirResources(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadWithOpts_OverlayResolution(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: fix
+overlays:
+- when: 'event.source.system == "github"'
+  pre_script: scripts/gh.sh
+- when: 'event.source.system == "jira"'
+  pre_script: scripts/jira.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{
+		Event: map[string]any{"source": map[string]any{"system": "github"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+	assert.Nil(t, h.Overlays)
+}
+
+func TestLoadWithOpts_OverlayNoEvent(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: fix
+overlays:
+- when: 'event.source.system == "github"'
+  pre_script: scripts/gh.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{})
+	require.NoError(t, err)
+	// No event → overlays are a no-op and consumed
+	assert.Nil(t, h.Overlays)
+}
+
+func TestLoadWithOpts_OverlayAndForgeReject(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: fix
+forge:
+  github:
+    pre_script: scripts/gh.sh
+overlays:
+- when: 'event.source.system == "github"'
+  pre_script: scripts/gh2.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	_, err := LoadWithOpts(path, LoadOpts{
+		Event: map[string]any{"source": map[string]any{"system": "github"}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forge and overlays cannot coexist")
+}
