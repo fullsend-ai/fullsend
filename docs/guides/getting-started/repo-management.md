@@ -19,7 +19,7 @@ fullsend across an organization. Individual repo owners should use
 - **fullsend CLI** installed (see [releases](https://github.com/fullsend-ai/fullsend/releases))
 - **GitHub access** — admin or write access to the target repositories
 - **`gh` CLI** authenticated with the required OAuth scopes (see [OAuth scope reference](../infrastructure/advanced-setup.md#oauth-scope-reference))
-- **GCP prerequisites** — GCP WIF provisioning (`fullsend inference provision`) and mint enrollment (`fullsend mint enroll`, GitHub only) must be completed separately before running `repos install`. When multiple repos share the same GCP project, existing inference secrets are reused automatically. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
+- **GCP prerequisites** — GCP WIF provisioning (`fullsend inference provision`) must be completed separately before running `repos install`. When multiple repos share the same GCP project, existing inference secrets are reused automatically. If you use a private or self-hosted mint, mint enrollment (`fullsend mint enroll`) is also required before install. See [Mint administration](../infrastructure/mint-administration.md) and [Advanced setup](../infrastructure/advanced-setup.md).
 
 ## Getting started
 
@@ -139,9 +139,10 @@ Install runs in three phases:
    drift (synced automatically) and scaffold ref drift (upgraded
    automatically).
 
-> **Prerequisite:** GCP infrastructure (WIF pools/providers, mint
-> enrollment) must be provisioned separately before running install.
-> See `fullsend inference provision` and `fullsend mint enroll`.
+> **Prerequisite:** GCP infrastructure (WIF pools/providers) must be
+> provisioned separately before running install.
+> See `fullsend inference provision`. If you use a private or
+> self-hosted mint, also run `fullsend mint enroll` first.
 
 > **Note:** When your token does not have direct push access to a target
 > repository, the install command creates a fork and submits the scaffold

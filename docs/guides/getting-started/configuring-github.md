@@ -8,7 +8,6 @@ The goal of this document is that you configure Fullsend for your GitHub reposit
 
 ## Prerequisites
 
-* Your org or repo is enrolled in a fullsend token mint service (see [Getting Started](README.md) step 1).
 * You have your WIF provider URL from [Getting Inference](getting-inference.md).
 * Download the latest [fullsend](https://github.com/fullsend-ai/fullsend/releases) CLI.
 * Download the latest [gh](https://cli.github.com/) CLI and authenticate with it.
