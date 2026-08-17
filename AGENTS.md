@@ -39,3 +39,11 @@ Detailed guidance lives in `docs/contributing/` and topic-specific guides under 
 | [Vouch System](docs/contributing/vouch-system.md) | Working with the contributor vouch gate or PR workflows |
 | [Tier Conventions](docs/contributing/tier-conventions.md) | Using the term "tier" in code or docs — covers the three distinct tier contexts |
 | [CI Workflows](docs/contributing/ci-workflows.md) | Adding or modifying GitHub Actions workflows under `.github/workflows/`, or adding secrets to `pull_request_target` jobs |
+
+## Deployment Status
+
+The following subsystems are not yet deployed to production and have no external consumers. Review agents should assess backward-compatibility and breaking-change findings against actual consumer impact, not theoretical API surface changes. Changes to these subsystems that modify exported types, fields, or CLI flags do not require the `!` breaking-change suffix or `BREAKING CHANGE:` trailer unless they break other code within the repository.
+
+- `internal/repos/` (repo management CLI) — Not yet deployed. No existing manifests, deployed installations, or external automation consuming the output.
+
+**Maintenance:** Remove entries when subsystems reach production deployment. Add entries when new pre-deployment subsystems are introduced.
