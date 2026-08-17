@@ -1710,3 +1710,41 @@ func TestDeleteIssueComment_MRNoteTarget_NotFound(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "could not find merge request containing this note")
 }
+
+func TestListIssueReactions_ReturnsErrNotSupported(t *testing.T) {
+	client, _ := setupTest(t)
+
+	reactions, err := client.ListIssueReactions(context.Background(), "own", "repo", 42)
+	require.ErrorIs(t, err, forge.ErrNotSupported)
+	assert.Nil(t, reactions)
+}
+
+func TestAddIssueReaction_ReturnsErrNotSupported(t *testing.T) {
+	client, _ := setupTest(t)
+
+	id, err := client.AddIssueReaction(context.Background(), "own", "repo", 42, "eyes")
+	require.ErrorIs(t, err, forge.ErrNotSupported)
+	assert.Equal(t, int64(0), id)
+}
+
+func TestDeleteIssueReaction_ReturnsErrNotSupported(t *testing.T) {
+	client, _ := setupTest(t)
+
+	err := client.DeleteIssueReaction(context.Background(), "own", "repo", 42, 789)
+	require.ErrorIs(t, err, forge.ErrNotSupported)
+}
+
+func TestAddIssueCommentReaction_ReturnsErrNotSupported(t *testing.T) {
+	client, _ := setupTest(t)
+
+	id, err := client.AddIssueCommentReaction(context.Background(), "own", "repo", 555, "eyes")
+	require.ErrorIs(t, err, forge.ErrNotSupported)
+	assert.Equal(t, int64(0), id)
+}
+
+func TestDeleteIssueCommentReaction_ReturnsErrNotSupported(t *testing.T) {
+	client, _ := setupTest(t)
+
+	err := client.DeleteIssueCommentReaction(context.Background(), "own", "repo", 555, 789)
+	require.ErrorIs(t, err, forge.ErrNotSupported)
+}

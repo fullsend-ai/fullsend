@@ -11,6 +11,7 @@ package statuscomment
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -236,8 +237,12 @@ func (n *Notifier) PostStart(ctx context.Context, description string) error {
 		id, err := n.addReaction(ctx, "eyes")
 		if err != nil {
 			// Fail open: a reaction is a nice-to-have signal, not something
-			// that should abort the agent run.
-			n.warnf("failed to add start reaction: %v", err)
+			// that should abort the agent run. Suppress the warning entirely
+			// for forges that don't support reactions (e.g. GitLab) so the
+			// config is a true silent no-op as documented.
+			if !errors.Is(err, forge.ErrNotSupported) {
+				n.warnf("failed to add start reaction: %v", err)
+			}
 		} else {
 			n.startReactionID = id
 		}
@@ -307,16 +312,22 @@ func (n *Notifier) PostCompletionWithDetail(ctx context.Context, description, st
 	}
 
 	if !postComment {
-		// Completion comment suppressed (disabled or on_failure with success) —
-		// clean up the start comment so it doesn't remain orphaned in its
-		// "Started" state. Reactions have no equivalent "orphaned" risk, so
-		// the swap can happen unconditionally here.
-		n.postCompletionReaction(ctx, status, cleanupReaction, postReaction)
+		// Completion comment suppressed (disabled or on_failure with success).
+		// Clean up the start comment first so the reaction swap never
+		// leaves a visible inconsistency (completion reaction + stale
+		// "Started" comment). This mirrors the postComment == true path,
+		// where the reaction swap happens only after the comment is
+		// successfully recorded.
 		if cleanupComment {
 			if err := n.client.DeleteIssueComment(ctx, n.owner, n.repo, n.startCommentID); err != nil {
 				n.warnf("failed to delete start comment when completion suppressed: %v", err)
+				// Don't swap the reaction — the start comment is still
+				// visible in its "Started" state, and swapping the
+				// reaction would leave contradictory signals.
+				return nil
 			}
 		}
+		n.postCompletionReaction(ctx, status, cleanupReaction, postReaction)
 		return nil
 	}
 
@@ -364,13 +375,18 @@ func (n *Notifier) PostCompletionWithDetail(ctx context.Context, description, st
 func (n *Notifier) postCompletionReaction(ctx context.Context, status string, cleanup, post bool) {
 	if cleanup {
 		if err := n.deleteReaction(ctx, n.startReactionID); err != nil {
-			n.warnf("failed to remove start reaction: %v", err)
+			if !errors.Is(err, forge.ErrNotSupported) {
+				n.warnf("failed to remove start reaction: %v", err)
+			}
+		} else {
+			n.startReactionID = 0
 		}
-		n.startReactionID = 0
 	}
 	if post {
 		if _, err := n.addReaction(ctx, reactionForStatus(status)); err != nil {
-			n.warnf("failed to add completion reaction: %v", err)
+			if !errors.Is(err, forge.ErrNotSupported) {
+				n.warnf("failed to add completion reaction: %v", err)
+			}
 		}
 	}
 }

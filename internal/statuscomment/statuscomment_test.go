@@ -1725,6 +1725,126 @@ func TestPostCompletion_ReactionNotSwappedWhenCommentFails(t *testing.T) {
 	assert.Len(t, fc.AddedReactions, 1, "no completion reaction should be posted when the comment fails")
 }
 
+// Verify that a failed start reaction delete preserves the in-memory ID
+// so a subsequent caller could retry the cleanup.
+func TestPostCompletion_ReactionDeleteFailPreservesID(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment:  config.CommentNotificationConfig{Start: "disabled", Completion: "disabled"},
+		Reaction: config.ReactionNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n := newTestNotifier(fc, cfg)
+
+	require.NoError(t, n.PostStart(context.Background(), "Working"))
+	require.NotZero(t, n.startReactionID)
+
+	fc.Errors["DeleteIssueReaction"] = fmt.Errorf("transient API error")
+
+	var warnings []string
+	n.SetWarnFunc(func(format string, args ...any) {
+		warnings = append(warnings, fmt.Sprintf(format, args...))
+	})
+
+	require.NoError(t, n.PostCompletion(context.Background(), "Working", "success"))
+
+	assert.NotZero(t, n.startReactionID, "startReactionID should be preserved when delete fails")
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "transient API error")
+}
+
+// Verify that the suppressed-completion path (cleanupComment) attempts
+// the comment delete before the reaction swap, and skips the reaction
+// swap when the delete fails.
+func TestPostCompletion_SuppressedCompletion_SkipsReactionOnDeleteFailure(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment:  config.CommentNotificationConfig{Start: "enabled", Completion: "disabled"},
+		Reaction: config.ReactionNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n := newTestNotifier(fc, cfg)
+
+	require.NoError(t, n.PostStart(context.Background(), "Working"))
+	require.NotZero(t, n.startCommentID)
+	require.NotZero(t, n.startReactionID)
+
+	fc.Errors["DeleteIssueComment"] = fmt.Errorf("forbidden")
+
+	var warnings []string
+	n.SetWarnFunc(func(format string, args ...any) {
+		warnings = append(warnings, fmt.Sprintf(format, args...))
+	})
+
+	require.NoError(t, n.PostCompletion(context.Background(), "Working", "success"))
+
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], "forbidden")
+	assert.Empty(t, fc.DeletedReactions, "start reaction should NOT be cleaned up when comment delete fails")
+	assert.Len(t, fc.AddedReactions, 1, "no completion reaction should be posted when comment delete fails")
+}
+
+// Verify that the suppressed-completion path correctly swaps the
+// reaction when there is no comment to clean up.
+func TestPostCompletion_SuppressedCompletion_SwapsReactionWhenNoComment(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment:  config.CommentNotificationConfig{Start: "disabled", Completion: "disabled"},
+		Reaction: config.ReactionNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n := newTestNotifier(fc, cfg)
+
+	require.NoError(t, n.PostStart(context.Background(), "Working"))
+	require.Zero(t, n.startCommentID, "no start comment when start disabled")
+	require.NotZero(t, n.startReactionID)
+
+	require.NoError(t, n.PostCompletion(context.Background(), "Working", "success"))
+
+	assert.Equal(t, []int64{1}, fc.DeletedReactions, "start reaction should be cleaned up")
+	require.Len(t, fc.AddedReactions, 2)
+	assert.Equal(t, "+1", fc.AddedReactions[1].Content)
+}
+
+// Verify that ErrNotSupported from reaction operations is truly silent
+// (no warnings logged), matching the docs that say GitLab reaction
+// config is "silently a no-op."
+func TestPostStart_ReactionErrNotSupported_Silent(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.Errors["AddIssueReaction"] = forge.ErrNotSupported
+	cfg := config.StatusNotificationConfig{
+		Reaction: config.ReactionNotificationConfig{Start: "enabled"},
+	}
+	n := newTestNotifier(fc, cfg)
+
+	var warnings []string
+	n.SetWarnFunc(func(format string, args ...any) {
+		warnings = append(warnings, fmt.Sprintf(format, args...))
+	})
+
+	require.NoError(t, n.PostStart(context.Background(), "Working"))
+	assert.Empty(t, warnings, "ErrNotSupported should not produce a warning")
+}
+
+func TestPostCompletion_ReactionErrNotSupported_Silent(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment:  config.CommentNotificationConfig{Start: "disabled", Completion: "disabled"},
+		Reaction: config.ReactionNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n := newTestNotifier(fc, cfg)
+
+	require.NoError(t, n.PostStart(context.Background(), "Working"))
+
+	fc.Errors["DeleteIssueReaction"] = forge.ErrNotSupported
+	fc.Errors["AddIssueReaction"] = forge.ErrNotSupported
+
+	var warnings []string
+	n.SetWarnFunc(func(format string, args ...any) {
+		warnings = append(warnings, fmt.Sprintf(format, args...))
+	})
+
+	require.NoError(t, n.PostCompletion(context.Background(), "Working", "success"))
+	assert.Empty(t, warnings, "ErrNotSupported should not produce warnings during completion")
+}
+
 // --- Comment-targeted reaction tests (slash-command triggered runs) ---
 
 func TestPostStart_ReactionTargetsTriggeringComment(t *testing.T) {

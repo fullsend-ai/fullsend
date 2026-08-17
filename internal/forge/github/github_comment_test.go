@@ -622,3 +622,103 @@ func TestDeleteIssueCommentReaction(t *testing.T) {
 	err := client.DeleteIssueCommentReaction(context.Background(), "owner", "repo", 555, 789)
 	require.NoError(t, err)
 }
+
+func TestListIssueReactions_Pagination(t *testing.T) {
+	page := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page++
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/owner/repo/issues/42/reactions", r.URL.Path)
+		assert.Equal(t, "100", r.URL.Query().Get("per_page"))
+		assert.Equal(t, strconv.Itoa(page), r.URL.Query().Get("page"))
+
+		switch page {
+		case 1:
+			// Return a full page of 100 items.
+			items := make([]map[string]any, 100)
+			for i := range items {
+				items[i] = map[string]any{
+					"id":      i + 1,
+					"content": "eyes",
+					"user":    map[string]any{"login": "bot"},
+				}
+			}
+			json.NewEncoder(w).Encode(items)
+		case 2:
+			// Short page — pagination should stop.
+			json.NewEncoder(w).Encode([]map[string]any{
+				{"id": 101, "content": "+1", "user": map[string]any{"login": "alice"}},
+			})
+		default:
+			t.Fatalf("unexpected page %d requested", page)
+		}
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	reactions, err := client.ListIssueReactions(context.Background(), "owner", "repo", 42)
+	require.NoError(t, err)
+	assert.Len(t, reactions, 101)
+	assert.Equal(t, 2, page, "should have fetched exactly 2 pages")
+
+	assert.Equal(t, "eyes", reactions[0].Content)
+	assert.Equal(t, "bot", reactions[0].User)
+	assert.Equal(t, int64(1), reactions[0].ID)
+
+	assert.Equal(t, "+1", reactions[100].Content)
+	assert.Equal(t, "alice", reactions[100].User)
+	assert.Equal(t, int64(101), reactions[100].ID)
+}
+
+func TestListIssueReactions_SinglePage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "GET", r.Method)
+		assert.Equal(t, "/repos/owner/repo/issues/10/reactions", r.URL.Path)
+		assert.Equal(t, "1", r.URL.Query().Get("page"))
+
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": 1, "content": "eyes", "user": map[string]any{"login": "bot"}},
+			{"id": 2, "content": "+1", "user": map[string]any{"login": "alice"}},
+		})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	reactions, err := client.ListIssueReactions(context.Background(), "owner", "repo", 10)
+	require.NoError(t, err)
+	require.Len(t, reactions, 2)
+	assert.Equal(t, int64(1), reactions[0].ID)
+	assert.Equal(t, "eyes", reactions[0].Content)
+	assert.Equal(t, "bot", reactions[0].User)
+	assert.Equal(t, int64(2), reactions[1].ID)
+	assert.Equal(t, "+1", reactions[1].Content)
+	assert.Equal(t, "alice", reactions[1].User)
+}
+
+func TestListIssueReactions_APIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]any{"message": "Not Found"})
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	reactions, err := client.ListIssueReactions(context.Background(), "owner", "repo", 999)
+	assert.Error(t, err)
+	assert.Nil(t, reactions)
+	assert.Contains(t, err.Error(), "list issue reactions on #999 page 1")
+}
+
+func TestListIssueReactions_DecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("not valid json"))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+	reactions, err := client.ListIssueReactions(context.Background(), "owner", "repo", 42)
+	assert.Error(t, err)
+	assert.Nil(t, reactions)
+	assert.Contains(t, err.Error(), "decode issue reactions page 1")
+}
