@@ -1,5 +1,5 @@
 ---
-# lint-workflow-size: max-lines=610
+# lint-workflow-size: max-lines=625
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -161,6 +161,15 @@ jobs:
                 /fs-prioritize)
                   if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
                     STAGE="prioritize"
+                  fi
+                  ;;
+                /fs-plan-tests)
+                  # QualityFlow custom agent. Mirrors its harness CEL trigger
+                  # (change_proposal, non-fork); fork gate is in "Resolve PR
+                  # head" below. Interim until CEL dispatch is primary (#2902).
+                  if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized \
+                    && [[ "${ISSUE_HAS_PR}" == "true" ]]; then
+                    STAGE="qualityflow"
                   fi
                   ;;
                 *)
@@ -423,7 +432,9 @@ jobs:
           set -euo pipefail
           STAGE_ROLE="$STAGE"
           case "$STAGE" in
-            code|fix) STAGE_ROLE="coder" ;;
+            # qualityflow declares "role: coder" in its harness — it commits
+            # generated tests to the PR branch, same trust level as code/fix.
+            code|fix|qualityflow) STAGE_ROLE="coder" ;;
           esac
 
           ROLES=$(yq '.defaults.roles[]' config.yaml 2>/dev/null || echo "")
@@ -477,18 +488,19 @@ jobs:
             --jq '{number, html_url,
               head: {ref: .head.ref, sha: .head.sha, repo: {full_name: .head.repo.full_name}},
               base: {ref: .base.ref, repo: {full_name: .base.repo.full_name}}}') || {
-            if [[ "${STAGE}" =~ ^(fix|review)$ ]]; then
+            if [[ "${STAGE}" =~ ^(fix|review|qualityflow)$ ]]; then
               echo "::error::Failed to fetch PR #${PR_NUMBER} head info"
               exit 1
             fi
             echo "::warning::Failed to fetch PR #${PR_NUMBER} head info — continuing without PR context"
             exit 0
           }
-          if [[ "${STAGE}" == "fix" ]]; then
+          # Mutating agents that push to the PR branch must not run on forks.
+          if [[ "${STAGE}" =~ ^(fix|qualityflow)$ ]]; then
             HEAD_REPO=$(printf '%s' "${PR_JSON}" | jq -r '.head.repo.full_name')
             BASE_REPO=$(printf '%s' "${PR_JSON}" | jq -r '.base.repo.full_name')
             if [[ "${HEAD_REPO}" != "${BASE_REPO}" ]]; then
-              echo "::error::Fork PR detected (head=${HEAD_REPO}, base=${BASE_REPO}) — fix agent blocked"
+              echo "::error::Fork PR detected (head=${HEAD_REPO}, base=${BASE_REPO}) — ${STAGE} agent blocked"
               exit 1
             fi
           fi
