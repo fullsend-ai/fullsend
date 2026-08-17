@@ -1208,8 +1208,8 @@ func TestFakeClient_AddIssueReaction(t *testing.T) {
 	assert.NotZero(t, id1)
 	assert.NotEqual(t, id1, id2)
 	require.Len(t, fc.AddedReactions, 2)
-	assert.Equal(t, ReactionRecord{Owner: "org", Repo: "repo", Number: 7, Content: "eyes"}, fc.AddedReactions[0])
-	assert.Equal(t, ReactionRecord{Owner: "org", Repo: "repo", Number: 7, Content: "+1"}, fc.AddedReactions[1])
+	assert.Equal(t, ReactionRecord{ID: id1, Owner: "org", Repo: "repo", Number: 7, Content: "eyes"}, fc.AddedReactions[0])
+	assert.Equal(t, ReactionRecord{ID: id2, Owner: "org", Repo: "repo", Number: 7, Content: "+1"}, fc.AddedReactions[1])
 }
 
 func TestFakeClient_DeleteIssueReaction(t *testing.T) {

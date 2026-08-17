@@ -1581,7 +1581,7 @@ func TestPostStart_ReactionEnabled(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Len(t, fc.AddedReactions, 1)
-	assert.Equal(t, forge.ReactionRecord{Owner: "org", Repo: "repo", Number: 7, Content: "eyes"}, fc.AddedReactions[0])
+	assert.Equal(t, forge.ReactionRecord{ID: 1, Owner: "org", Repo: "repo", Number: 7, Content: "eyes"}, fc.AddedReactions[0])
 }
 
 func TestPostStart_ReactionDisabledByDefault(t *testing.T) {

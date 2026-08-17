@@ -135,5 +135,6 @@ func reactionsEnabledInConfig(w *world.World) bool {
 	if sn == nil {
 		return false
 	}
-	return sn.Reaction.Start != "" && sn.Reaction.Start != "disabled"
+	return (sn.Reaction.Start != "" && sn.Reaction.Start != "disabled") ||
+		(sn.Reaction.Completion != "" && sn.Reaction.Completion != "disabled")
 }

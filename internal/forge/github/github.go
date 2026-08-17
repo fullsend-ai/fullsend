@@ -2855,29 +2855,35 @@ func (c *LiveClient) DeleteIssueCommentReaction(ctx context.Context, owner, repo
 
 // ListIssueReactions returns the emoji reactions on an issue or pull request.
 func (c *LiveClient) ListIssueReactions(ctx context.Context, owner, repo string, number int) ([]forge.Reaction, error) {
-	resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/reactions", owner, repo, number))
-	if err != nil {
-		return nil, fmt.Errorf("list issue reactions on #%d: %w", number, err)
-	}
-	var items []struct {
-		ID      int64  `json:"id"`
-		Content string `json:"content"`
-		User    struct {
-			Login string `json:"login"`
-		} `json:"user"`
-	}
-	if err := decodeJSON(resp, &items); err != nil {
-		return nil, fmt.Errorf("decode issue reactions: %w", err)
-	}
-	reactions := make([]forge.Reaction, len(items))
-	for i, item := range items {
-		reactions[i] = forge.Reaction{
-			ID:      item.ID,
-			Content: item.Content,
-			User:    item.User.Login,
+	var result []forge.Reaction
+
+	for page := 1; page <= 100; page++ {
+		resp, err := c.get(ctx, fmt.Sprintf("/repos/%s/%s/issues/%d/reactions?per_page=100&page=%d", owner, repo, number, page))
+		if err != nil {
+			return nil, fmt.Errorf("list issue reactions on #%d page %d: %w", number, page, err)
+		}
+		var items []struct {
+			ID      int64  `json:"id"`
+			Content string `json:"content"`
+			User    struct {
+				Login string `json:"login"`
+			} `json:"user"`
+		}
+		if err := decodeJSON(resp, &items); err != nil {
+			return nil, fmt.Errorf("decode issue reactions page %d: %w", page, err)
+		}
+		for _, item := range items {
+			result = append(result, forge.Reaction{
+				ID:      item.ID,
+				Content: item.Content,
+				User:    item.User.Login,
+			})
+		}
+		if len(items) < 100 {
+			break
 		}
 	}
-	return reactions, nil
+	return result, nil
 }
 
 // GetPullRequestInfo returns branch/repo context for a pull request.
