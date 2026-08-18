@@ -26,6 +26,9 @@ func registerReactionSteps(sc *godog.ScenarioContext) {
 // givenReactionsEnabled sets status_notifications.reaction.start and
 // .completion to "enabled" in the enrolled repo's config.yaml. This
 // causes the runner to post emoji reactions on start and completion.
+// Existing Comment settings are preserved so enabling reactions does
+// not clobber unrelated notification config from other scenarios
+// sharing the same pool-repo slot.
 func givenReactionsEnabled(w *world.World) error {
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
 	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath)
@@ -36,16 +39,17 @@ func givenReactionsEnabled(w *world.World) error {
 	if err != nil {
 		return fmt.Errorf("parsing config: %w", err)
 	}
-	cfg.SetStatusNotifications(&config.StatusNotificationConfig{
-		Comment: config.CommentNotificationConfig{
-			Start:      "enabled",
-			Completion: "enabled",
-		},
+	// Preserve any existing Comment settings from the current config.
+	sn := &config.StatusNotificationConfig{
 		Reaction: config.ReactionNotificationConfig{
 			Start:      "enabled",
 			Completion: "enabled",
 		},
-	})
+	}
+	if existing := cfg.StatusNotifications(); existing != nil {
+		sn.Comment = existing.Comment
+	}
+	cfg.SetStatusNotifications(sn)
 	merged, err := cfg.Marshal()
 	if err != nil {
 		return err
@@ -56,9 +60,11 @@ func givenReactionsEnabled(w *world.World) error {
 	return nil
 }
 
-// DisableReactionNotifications removes the status_notifications from
-// the enrolled repo's config.yaml. Exported so CleanupScenario can
-// call it during scenario teardown.
+// DisableReactionNotifications clears only the Reaction fields from
+// status_notifications in the enrolled repo's config.yaml, preserving
+// any existing Comment settings. Exported so CleanupScenario can call
+// it during scenario teardown without clobbering unrelated config on a
+// shared pool-repo slot.
 func DisableReactionNotifications(w *world.World) error {
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
 	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath)
@@ -69,7 +75,15 @@ func DisableReactionNotifications(w *world.World) error {
 	if err != nil {
 		return fmt.Errorf("parsing config: %w", err)
 	}
-	cfg.SetStatusNotifications(nil)
+	existing := cfg.StatusNotifications()
+	if existing != nil && (existing.Comment.Start != "" || existing.Comment.Completion != "") {
+		// Preserve non-default Comment settings; clear only Reaction.
+		cfg.SetStatusNotifications(&config.StatusNotificationConfig{
+			Comment: existing.Comment,
+		})
+	} else {
+		cfg.SetStatusNotifications(nil)
+	}
 	merged, err := cfg.Marshal()
 	if err != nil {
 		return err

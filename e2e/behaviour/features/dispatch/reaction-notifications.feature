@@ -7,7 +7,7 @@ Feature: Emoji reaction status notifications
   Background:
     Given the enrolled test repository
 
-  Scenario: Triage with reactions enabled posts completion reaction
+  Scenario: Triage with reactions enabled posts completion reaction and cleans up start reaction
     Given status notification reactions are enabled
     And a custom harness "reaction-ping" with:
       """
@@ -29,3 +29,4 @@ Feature: Emoji reaction status notifications
     Then the harness "reaction-ping" workflow completes successfully
     And the agent will succeed to Emit triage JSON
     And the issue has a "+1" reaction
+    And the issue does not have a "eyes" reaction
