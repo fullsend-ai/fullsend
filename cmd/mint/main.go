@@ -25,21 +25,12 @@ func buildHandler() (http.Handler, error) {
 		log.Printf("warning: ALLOWED_WORKFLOW_FILES is not set; all token requests will be rejected")
 	}
 
-	jwksClient := &http.Client{Timeout: 30 * time.Second}
-	oidcVerifier, err := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-		IssuerURL:  "https://token.actions.githubusercontent.com",
-		HTTPClient: jwksClient,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("creating OIDC verifier: %w", err)
-	}
-
 	pemAccessor, err := mintcore.NewFilesystemPEMAccessor(os.Getenv("PEM_DIR"))
 	if err != nil {
 		return nil, fmt.Errorf("initializing PEM accessor: %w", err)
 	}
 
-	handler, err := mintcore.NewHandler(oidcVerifier, pemAccessor, &http.Client{Timeout: 30 * time.Second})
+	handler, err := mintcore.NewHandler(mintcore.NewJWKSVerifierFromEnv, pemAccessor)
 	if err != nil {
 		return nil, fmt.Errorf("initializing handler: %w", err)
 	}

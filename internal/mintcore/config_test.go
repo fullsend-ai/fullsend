@@ -9,6 +9,11 @@ import (
 	"testing"
 )
 
+// fakeFactory returns a VerifierFactory that always returns the given verifier.
+func fakeFactory(v OIDCVerifier) VerifierFactory {
+	return func() (OIDCVerifier, error) { return v, nil }
+}
+
 func TestNewHandler_ReadsEnv(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"triage":"100","coder":"200"}`)
 	t.Setenv("ALLOWED_ROLES", "")
@@ -16,7 +21,7 @@ func TestNewHandler_ReadsEnv(t *testing.T) {
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
+	h, err := NewHandler(fakeFactory(&fakeOIDCVerifier{}), &fakePEMAccessor{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -37,7 +42,7 @@ func TestNewHandler_ExplicitAllowedRoles(t *testing.T) {
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
+	h, err := NewHandler(fakeFactory(&fakeOIDCVerifier{}), &fakePEMAccessor{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -57,7 +62,7 @@ func TestNewHandler_MissingRoleAppIDs(t *testing.T) {
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-	_, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
+	_, err := NewHandler(fakeFactory(&fakeOIDCVerifier{}), &fakePEMAccessor{})
 	if err != nil {
 		t.Fatalf("expected no error for empty ROLE_APP_IDS, got: %v", err)
 	}
@@ -68,7 +73,7 @@ func TestNewHandler_InvalidRoleAppIDsJSON(t *testing.T) {
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-	_, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
+	_, err := NewHandler(fakeFactory(&fakeOIDCVerifier{}), &fakePEMAccessor{})
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -83,7 +88,7 @@ func TestNewHandler_InvalidAllowedRoleFormat(t *testing.T) {
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-	_, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
+	_, err := NewHandler(fakeFactory(&fakeOIDCVerifier{}), &fakePEMAccessor{})
 	if err == nil {
 		t.Fatal("expected error for invalid role format")
 	}
@@ -98,7 +103,7 @@ func TestNewHandler_AllowedRoleNotInPermissions(t *testing.T) {
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-	_, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
+	_, err := NewHandler(fakeFactory(&fakeOIDCVerifier{}), &fakePEMAccessor{})
 	if err == nil {
 		t.Fatal("expected error for role not in RolePermissions")
 	}
@@ -113,7 +118,7 @@ func TestNewHandler_AllowedRoleNotInAppIDs(t *testing.T) {
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-	_, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
+	_, err := NewHandler(fakeFactory(&fakeOIDCVerifier{}), &fakePEMAccessor{})
 	if err == nil {
 		t.Fatal("expected error for role not in ROLE_APP_IDS")
 	}
@@ -122,18 +127,20 @@ func TestNewHandler_AllowedRoleNotInAppIDs(t *testing.T) {
 	}
 }
 
-func TestNewHandler_InjectsHTTPClient(t *testing.T) {
+func TestNewHandler_UsesMinHTTP(t *testing.T) {
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-	client := &http.Client{}
-	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, client)
+	fake := &fakeHTTPDoer{}
+	SetHTTPDoerForTest(t, fake)
+
+	h, err := NewHandler(fakeFactory(&fakeOIDCVerifier{}), &fakePEMAccessor{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
-	if h.httpClient != client {
-		t.Fatal("expected injected HTTP client")
+	if h.httpClient != fake {
+		t.Fatal("expected handler to use mintHTTP-provided HTTPDoer")
 	}
 }
 
@@ -144,7 +151,7 @@ func TestNewHandler_PerRepoWIFRepos(t *testing.T) {
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
+	h, err := NewHandler(fakeFactory(&fakeOIDCVerifier{}), &fakePEMAccessor{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -172,7 +179,7 @@ func TestNewHandler_WorkflowHostRepos(t *testing.T) {
 	t.Setenv("WORKFLOW_HOST_REPOS", "acme/workflows, Acme/Other")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
+	h, err := NewHandler(fakeFactory(&fakeOIDCVerifier{}), &fakePEMAccessor{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -194,7 +201,7 @@ func TestNewHandler_WorkflowHostReposDefault(t *testing.T) {
 	t.Setenv("WORKFLOW_HOST_REPOS", "")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
+	h, err := NewHandler(fakeFactory(&fakeOIDCVerifier{}), &fakePEMAccessor{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -212,7 +219,7 @@ func TestNewHandler_ServeHTTPWorks(t *testing.T) {
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
+	h, err := NewHandler(fakeFactory(&fakeOIDCVerifier{}), &fakePEMAccessor{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -262,7 +269,7 @@ func TestNewHandler_FullMintFlow(t *testing.T) {
 	}))
 	defer github.Close()
 
-	h, err := NewHandler(verifier, pemAccessor, github.Client())
+	h, err := NewHandler(fakeFactory(verifier), pemAccessor)
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -288,7 +295,7 @@ func TestNewHandler_LegacyAppIDsOnly(t *testing.T) {
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
+	h, err := NewHandler(fakeFactory(&fakeOIDCVerifier{}), &fakePEMAccessor{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -305,29 +312,12 @@ func TestNewHandler_DefaultGithubBaseURL(t *testing.T) {
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
+	h, err := NewHandler(fakeFactory(&fakeOIDCVerifier{}), &fakePEMAccessor{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
 	if h.githubBaseURL != "https://api.github.com" {
 		t.Fatalf("expected default github base URL, got %s", h.githubBaseURL)
-	}
-}
-
-func TestNewHandler_NilHTTPClient(t *testing.T) {
-	// Passing nil HTTP client should still work (handler stores nil,
-	// which will fail at runtime when making requests, but construction
-	// should succeed).
-	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
-	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
-	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
-
-	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, nil)
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
-	if h.httpClient != nil {
-		t.Fatal("expected nil HTTP client")
 	}
 }
 
@@ -339,7 +329,7 @@ func TestNewHandler_EmptyAllowedOrgs(t *testing.T) {
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
+	h, err := NewHandler(fakeFactory(&fakeOIDCVerifier{}), &fakePEMAccessor{})
 	if err != nil {
 		t.Fatalf("NewHandler should succeed with empty ALLOWED_ORGS: %v", err)
 	}
@@ -351,12 +341,27 @@ func TestNewHandler_EmptyAllowedOrgs(t *testing.T) {
 	}
 }
 
-func TestNewHandler_NilOIDCVerifier(t *testing.T) {
-	_, err := NewHandler(nil, &fakePEMAccessor{}, &http.Client{})
+func TestNewHandler_NilVerifierFactory(t *testing.T) {
+	_, err := NewHandler(nil, &fakePEMAccessor{})
 	if err == nil {
-		t.Fatal("expected error for nil oidcVerifier")
+		t.Fatal("expected error for nil verifierFactory")
 	}
-	if !strings.Contains(err.Error(), "oidcVerifier must not be nil") {
+	if !strings.Contains(err.Error(), "verifierFactory must not be nil") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNewHandler_VerifierFactoryError(t *testing.T) {
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+
+	failFactory := func() (OIDCVerifier, error) {
+		return nil, fmt.Errorf("verifier construction failed")
+	}
+	_, err := NewHandler(failFactory, &fakePEMAccessor{})
+	if err == nil {
+		t.Fatal("expected error when verifier factory fails")
+	}
+	if !strings.Contains(err.Error(), "creating OIDC verifier") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -367,7 +372,7 @@ func TestNewHandler_CustomRolePermissions(t *testing.T) {
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
+	h, err := NewHandler(fakeFactory(&fakeOIDCVerifier{}), &fakePEMAccessor{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -387,7 +392,7 @@ func TestNewHandler_InvalidCustomRolePermissions(t *testing.T) {
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-	_, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
+	_, err := NewHandler(fakeFactory(&fakeOIDCVerifier{}), &fakePEMAccessor{})
 	if err == nil {
 		t.Fatal("expected error for invalid CUSTOM_ROLE_PERMISSIONS JSON")
 	}
@@ -401,11 +406,9 @@ func TestNewHandler_EmptyOIDCAudience(t *testing.T) {
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("OIDC_AUDIENCE", "")
 
-	// NewHandler no longer reads OIDC_AUDIENCE — verifiers do. Verify
-	// that NewJWKSVerifier rejects an empty audience.
-	_, err := NewJWKSVerifier(JWKSVerifierConfig{
-		IssuerURL: "https://token.actions.githubusercontent.com",
-	})
+	// NewJWKSVerifierFromEnv reads OIDC_AUDIENCE via mintEnv and
+	// passes it to NewJWKSVerifier, which rejects an empty audience.
+	_, err := NewHandler(NewJWKSVerifierFromEnv, &fakePEMAccessor{})
 	if err == nil {
 		t.Fatal("expected error for empty OIDC_AUDIENCE")
 	}
@@ -422,7 +425,7 @@ func TestNewHandler_RegisterCustomRolePermissionsError(t *testing.T) {
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-	_, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
+	_, err := NewHandler(fakeFactory(&fakeOIDCVerifier{}), &fakePEMAccessor{})
 	if err == nil {
 		t.Fatal("expected error when custom role collides with built-in")
 	}

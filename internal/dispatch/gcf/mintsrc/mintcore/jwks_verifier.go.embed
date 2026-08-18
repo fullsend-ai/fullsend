@@ -47,18 +47,16 @@ type JWKSVerifier struct {
 // JWKSVerifierConfig configures a new JWKSVerifier.
 type JWKSVerifierConfig struct {
 	IssuerURL  string
+	Audience   string
 	HTTPClient HTTPDoer
 }
 
 // NewJWKSVerifier creates a verifier that validates tokens from issuerURL
-// against the OIDC audience read from the OIDC_AUDIENCE environment
-// variable (via the package-internal mintEnv accessor). Returns an error
-// if the audience is empty — misconfiguration is caught at construction
-// time, not on first Verify(). If httpClient is nil, http.DefaultClient
-// is used.
+// against the given OIDC audience. Returns an error if the audience is
+// empty — misconfiguration is caught at construction time, not on first
+// Verify(). If httpClient is nil, http.DefaultClient is used.
 func NewJWKSVerifier(opts JWKSVerifierConfig) (*JWKSVerifier, error) {
-	audience := mintEnv("OIDC_AUDIENCE")
-	if audience == "" {
+	if opts.Audience == "" {
 		return nil, errors.New("OIDC_AUDIENCE must be configured")
 	}
 	httpClient := opts.HTTPClient
@@ -67,7 +65,7 @@ func NewJWKSVerifier(opts JWKSVerifierConfig) (*JWKSVerifier, error) {
 	}
 	return &JWKSVerifier{
 		issuerURL:  opts.IssuerURL,
-		audience:   audience,
+		audience:   opts.Audience,
 		httpClient: httpClient,
 	}, nil
 }

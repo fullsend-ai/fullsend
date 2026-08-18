@@ -108,6 +108,7 @@ func TestJWKSVerifier_ValidToken(t *testing.T) {
 	s := newTestOIDCServer(t)
 	v, err := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: s.server.URL,
+		Audience:  "fullsend-mint",
 	})
 	require.NoError(t, err)
 	token := s.signJWT(t, nil, nil)
@@ -122,7 +123,7 @@ func TestJWKSVerifier_ValidToken(t *testing.T) {
 
 func TestJWKSVerifier_InvalidFormat(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
 	require.NoError(t, err)
 
 	_, err = v.Verify(t.Context(), "not-a-jwt")
@@ -131,7 +132,7 @@ func TestJWKSVerifier_InvalidFormat(t *testing.T) {
 
 func TestJWKSVerifier_WrongAlgorithm(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
 	require.NoError(t, err)
 
 	token := s.signJWT(t, map[string]interface{}{"alg": "HS256"}, nil)
@@ -142,7 +143,7 @@ func TestJWKSVerifier_WrongAlgorithm(t *testing.T) {
 
 func TestJWKSVerifier_WrongIssuer(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
 	require.NoError(t, err)
 
 	token := s.signJWT(t, nil, map[string]interface{}{"iss": "https://evil.com"})
@@ -153,7 +154,7 @@ func TestJWKSVerifier_WrongIssuer(t *testing.T) {
 
 func TestJWKSVerifier_WrongAudience(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
 	require.NoError(t, err)
 
 	token := s.signJWT(t, nil, map[string]interface{}{"aud": "wrong-audience"})
@@ -164,7 +165,7 @@ func TestJWKSVerifier_WrongAudience(t *testing.T) {
 
 func TestJWKSVerifier_ExpiredToken(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
 	require.NoError(t, err)
 
 	past := time.Now().Add(-10 * time.Minute).Unix()
@@ -179,7 +180,7 @@ func TestJWKSVerifier_ExpiredToken(t *testing.T) {
 
 func TestJWKSVerifier_FutureToken(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
 	require.NoError(t, err)
 
 	future := time.Now().Add(10 * time.Minute).Unix()
@@ -191,7 +192,7 @@ func TestJWKSVerifier_FutureToken(t *testing.T) {
 
 func TestJWKSVerifier_MissingRepository(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
 	require.NoError(t, err)
 
 	token := s.signJWT(t, nil, map[string]interface{}{"repository": ""})
@@ -202,7 +203,7 @@ func TestJWKSVerifier_MissingRepository(t *testing.T) {
 
 func TestJWKSVerifier_InvalidSignature(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
 	require.NoError(t, err)
 
 	token := s.signJWT(t, nil, nil)
@@ -215,7 +216,7 @@ func TestJWKSVerifier_InvalidSignature(t *testing.T) {
 
 func TestJWKSVerifier_UnknownKid(t *testing.T) {
 	s := newTestOIDCServer(t)
-	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: s.server.URL, Audience: "fullsend-mint"})
 	require.NoError(t, err)
 
 	token := s.signJWT(t, map[string]interface{}{"kid": "unknown-key"}, nil)
@@ -260,6 +261,7 @@ func TestJWKSVerifier_KeyRotation(t *testing.T) {
 
 	v, err := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: server.URL,
+		Audience:  "fullsend-mint",
 	})
 	require.NoError(t, err)
 
@@ -298,6 +300,7 @@ func TestJWKSVerifier_AudienceArray(t *testing.T) {
 	s := newTestOIDCServer(t)
 	v, err := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: s.server.URL,
+		Audience:  "fullsend-mint",
 	})
 	require.NoError(t, err)
 	token := s.signJWT(t, nil, map[string]interface{}{
@@ -322,7 +325,7 @@ func TestJWKSVerifier_JWKSURIOriginMismatch(t *testing.T) {
 	server = httptest.NewServer(mux)
 	defer server.Close()
 
-	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: server.URL})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: server.URL, Audience: "fullsend-mint"})
 	require.NoError(t, err)
 	err = v.refreshKeys(t.Context())
 	require.Error(t, err)
@@ -342,7 +345,7 @@ func TestJWKSVerifier_DiscoveryIssuerMismatch(t *testing.T) {
 	server = httptest.NewServer(mux)
 	defer server.Close()
 
-	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: server.URL})
+	v, err := NewJWKSVerifier(JWKSVerifierConfig{IssuerURL: server.URL, Audience: "fullsend-mint"})
 	require.NoError(t, err)
 	err = v.refreshKeys(t.Context())
 	require.Error(t, err)
@@ -353,19 +356,19 @@ func TestJWKSVerifier_DiscoveryIssuerMismatch(t *testing.T) {
 // Authorization (AuthorizeToken, ValidateWorkflowRef) is now the handler's responsibility.
 
 func TestJWKSVerifier_EmptyAudience_FailsAtConstruction(t *testing.T) {
-	t.Setenv("OIDC_AUDIENCE", "")
 	s := newTestOIDCServer(t)
 	_, err := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: s.server.URL,
+		Audience:  "",
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "OIDC_AUDIENCE must be configured")
 }
 
 func TestJWKSVerifier_EmptyAudience_FailsAtConstruction_NoIssuer(t *testing.T) {
-	t.Setenv("OIDC_AUDIENCE", "")
 	_, err := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: "https://example.com",
+		Audience:  "",
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "OIDC_AUDIENCE must be configured")
@@ -375,6 +378,7 @@ func TestJWKSVerifier_MissingIat(t *testing.T) {
 	s := newTestOIDCServer(t)
 	v, err := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: s.server.URL,
+		Audience:  "fullsend-mint",
 	})
 	require.NoError(t, err)
 	token := s.signJWT(t, nil, map[string]interface{}{"iat": 0})
@@ -419,6 +423,7 @@ func TestJWKSVerifier_StaleKeyFallback(t *testing.T) {
 
 	v, vErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: server.URL,
+		Audience:  "fullsend-mint",
 	})
 	require.NoError(t, vErr)
 
@@ -489,6 +494,7 @@ func TestJWKSVerifier_StaleKeyRejectedAfterMaxStaleness(t *testing.T) {
 
 	v, vErr := NewJWKSVerifier(JWKSVerifierConfig{
 		IssuerURL: server.URL,
+		Audience:  "fullsend-mint",
 	})
 	require.NoError(t, vErr)
 

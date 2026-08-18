@@ -39,37 +39,14 @@ func init() {
 		log.Fatalf("required environment variables not set: %s", strings.Join(missing, ", "))
 	}
 
-	perRepoWIFRepos := make(map[string]bool)
-	if raw := os.Getenv("PER_REPO_WIF_REPOS"); raw != "" {
-		for _, entry := range strings.Split(raw, ",") {
-			if trimmed := strings.TrimSpace(entry); trimmed != "" {
-				perRepoWIFRepos[strings.ToLower(trimmed)] = true
-			}
-		}
-	}
-
 	gcpProjectNum := os.Getenv("GCP_PROJECT_NUMBER")
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	wifPoolName := os.Getenv("WIF_POOL_NAME")
-	defaultWIFProvider := os.Getenv("WIF_PROVIDER_NAME")
-
-	oidcVerifier, err := mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{
-		HTTPClient:         httpClient,
-		GCPProjectNum:      gcpProjectNum,
-		WIFPoolName:        wifPoolName,
-		DefaultWIFProvider: defaultWIFProvider,
-		PerRepoWIFRepos:    perRepoWIFRepos,
-	})
-	if err != nil {
-		log.Fatalf("creating OIDC verifier: %v", err)
-	}
 
 	pemAccessor := mintcore.NewGCPSecretPEMAccessor(
 		&http.Client{Timeout: 10 * time.Second},
 		gcpProjectNum,
 	)
 
-	handler, err := mintcore.NewHandler(oidcVerifier, pemAccessor, httpClient)
+	handler, err := mintcore.NewHandler(mintcore.NewSTSVerifierFromEnv, pemAccessor)
 	if err != nil {
 		log.Fatalf("initializing handler: %v", err)
 	}

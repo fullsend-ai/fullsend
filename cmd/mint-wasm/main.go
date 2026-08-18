@@ -2,9 +2,10 @@
 // It registers two global JavaScript functions:
 //
 //   - mintcoreInitMint(getEnvCallback, fetchCallback, pemCallback) — initializes
-//     the mint handler using a JS callback for environment lookups (same
-//     pattern as PEM/fetch callbacks). Native entrypoints pass os.Getenv;
-//     the Worker passes a callback that reads CF Worker bindings by name.
+//     the mint handler using JS callbacks for environment lookups and HTTP
+//     (same pattern as the PEM callback). Native entrypoints use os.Getenv
+//     and net/http; the Worker passes callbacks that read CF Worker bindings
+//     and use the host fetch implementation.
 //
 //   - mintcoreHandleFetch(method, url, headersJSON, body) — maps a Fetch API
 //     request into an http.Request, calls Handler.ServeHTTP with a buffered
@@ -46,6 +47,10 @@ func main() {
 // The Worker passes a callback that looks up CF Worker bindings by name.
 // It is registered once via mintcore.RegisterEnv so the package-internal
 // mintEnv accessor can read Worker bindings without closure injection.
+//
+// fetchCallback is registered once via mintcore.RegisterHTTP so the
+// package-internal mintHTTP accessor can make HTTP requests through the
+// Worker's host fetch implementation.
 func initMint(_ js.Value, args []js.Value) interface{} {
 	if len(args) < 3 {
 		return "mintcoreInitMint requires 3 arguments: getEnvCallback, fetchCallback, pemCallback"
@@ -56,10 +61,12 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 	pemFn := args[2]
 
 	// Register the JS env callback so mintEnv works in the WASM build.
-	mintcore.RegisterEnv(getEnvFn)
+	if err := mintcore.RegisterEnv(getEnvFn); err != nil {
+		return fmt.Sprintf("invalid env callback: %v", err)
+	}
 
-	fetchDoer, err := mintcore.NewHostFetchDoer(fetchFn)
-	if err != nil {
+	// Register the JS fetch callback so mintHTTP works in the WASM build.
+	if err := mintcore.RegisterHTTP(fetchFn); err != nil {
 		return fmt.Sprintf("invalid fetch callback: %v", err)
 	}
 
@@ -68,15 +75,7 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 		return fmt.Sprintf("invalid PEM callback: %v", err)
 	}
 
-	verifier, err := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-		IssuerURL:  "https://token.actions.githubusercontent.com",
-		HTTPClient: fetchDoer,
-	})
-	if err != nil {
-		return fmt.Sprintf("failed to create OIDC verifier: %v", err)
-	}
-
-	h, err := mintcore.NewHandler(verifier, pemAccessor, fetchDoer)
+	h, err := mintcore.NewHandler(mintcore.NewJWKSVerifierFromEnv, pemAccessor)
 	if err != nil {
 		return fmt.Sprintf("failed to initialize handler: %v", err)
 	}

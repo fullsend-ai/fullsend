@@ -87,21 +87,36 @@ type foreignInflight struct {
 	err       error
 }
 
+// VerifierFactory constructs an OIDCVerifier using environment
+// configuration read via mintEnv and an HTTP client from mintHTTP.
+// NewHandler calls this factory once at construction time; the factory
+// owns the OIDC_AUDIENCE read so heavy verifier constructors stay free
+// of environment coupling (critical for WASM binary size).
+type VerifierFactory func() (OIDCVerifier, error)
+
 // NewHandler creates a Handler with the given dependencies.
 // Configuration variables (ROLE_APP_IDS, ALLOWED_ROLES, ALLOWED_ORGS,
 // ALLOWED_WORKFLOW_FILES, PER_REPO_WIF_REPOS, WORKFLOW_HOST_REPOS)
 // are read once at construction time via the package-internal mintEnv
 // accessor. Native builds use os.Getenv; the CF Worker WASM build
-// uses a JS callback registered via RegisterEnv.
+// uses a JS callback registered via RegisterEnv. The HTTP client for
+// GitHub API calls is obtained from the package-internal mintHTTP
+// accessor.
 //
-// The caller provides a pre-constructed OIDCVerifier. Different
+// The VerifierFactory is called to construct the OIDCVerifier. Different
 // verification strategies (STSVerifier for Cloud Function, JWKSVerifier
-// for devmint/standalone/Worker) are selected by the entrypoint. The
-// handler performs authorization (org-allowed, workflow-ref) after the
-// verifier authenticates the token.
-func NewHandler(oidcVerifier OIDCVerifier, pemAccessor PEMAccessor, httpClient HTTPDoer) (*Handler, error) {
-	if oidcVerifier == nil {
-		return nil, errors.New("oidcVerifier must not be nil")
+// for devmint/standalone/Worker) are selected by passing the appropriate
+// factory (NewJWKSVerifierFromEnv, NewSTSVerifierFromEnv). The handler
+// performs authorization (org-allowed, workflow-ref) after the verifier
+// authenticates the token.
+func NewHandler(verifierFactory VerifierFactory, pemAccessor PEMAccessor) (*Handler, error) {
+	if verifierFactory == nil {
+		return nil, errors.New("verifierFactory must not be nil")
+	}
+
+	oidcVerifier, err := verifierFactory()
+	if err != nil {
+		return nil, fmt.Errorf("creating OIDC verifier: %w", err)
 	}
 
 	// Register custom role permissions before processing ALLOWED_ROLES
@@ -130,7 +145,7 @@ func NewHandler(oidcVerifier OIDCVerifier, pemAccessor PEMAccessor, httpClient H
 	}
 
 	h := &Handler{
-		httpClient:           httpClient,
+		httpClient:           mintHTTP(),
 		pemAccessor:          pemAccessor,
 		oidcVerifier:         oidcVerifier,
 		githubBaseURL:        "https://api.github.com",

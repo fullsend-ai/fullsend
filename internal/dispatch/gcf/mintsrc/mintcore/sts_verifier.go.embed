@@ -26,6 +26,7 @@ type stsResponse struct {
 // STSVerifierConfig configures a new STSVerifier.
 type STSVerifierConfig struct {
 	HTTPClient         HTTPDoer
+	Audience           string
 	STSURL             string
 	GCPProjectNum      string
 	WIFPoolName        string
@@ -48,12 +49,10 @@ type STSVerifier struct {
 }
 
 // NewSTSVerifier creates a verifier that validates tokens via GCP STS
-// exchange. The OIDC audience is read from the OIDC_AUDIENCE environment
-// variable (via the package-internal mintEnv accessor); an empty value
+// exchange. Audience must be provided at construction time; an empty value
 // returns an error so misconfiguration is caught at startup.
 func NewSTSVerifier(opts STSVerifierConfig) (*STSVerifier, error) {
-	audience := mintEnv("OIDC_AUDIENCE")
-	if audience == "" {
+	if opts.Audience == "" {
 		return nil, errors.New("OIDC_AUDIENCE must be configured")
 	}
 	httpClient := opts.HTTPClient
@@ -75,7 +74,7 @@ func NewSTSVerifier(opts STSVerifierConfig) (*STSVerifier, error) {
 		wifPoolName:        opts.WIFPoolName,
 		defaultWIFProvider: opts.DefaultWIFProvider,
 		perRepoWIFRepos:    perRepo,
-		oidcAudience:       audience,
+		oidcAudience:       opts.Audience,
 	}, nil
 }
 

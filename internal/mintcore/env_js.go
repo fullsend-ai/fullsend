@@ -2,7 +2,10 @@
 
 package mintcore
 
-import "syscall/js"
+import (
+	"fmt"
+	"syscall/js"
+)
 
 var jsGetEnv js.Value
 
@@ -11,8 +14,15 @@ var jsGetEnv js.Value
 // mintcoreInitMint before constructing verifiers or the handler.
 //
 // The callback signature is: (key: string) => string.
-func RegisterEnv(fn js.Value) {
+func RegisterEnv(fn js.Value) error {
+	if fn.IsUndefined() || fn.IsNull() {
+		return fmt.Errorf("env callback must not be null or undefined")
+	}
+	if fn.Type() != js.TypeFunction {
+		return fmt.Errorf("env callback must be a function, got %s", fn.Type())
+	}
 	jsGetEnv = fn
+	return nil
 }
 
 // mintEnv returns the value of the environment variable named by key.
