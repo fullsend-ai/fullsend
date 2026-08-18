@@ -222,6 +222,8 @@ export default defineConfig({
           link: "/guides/",
           items: [
             { text: "Bring Your Own Agent", link: "/guides/user/bring-your-own-agent" },
+            { text: "Harness Field Reference", link: "/guides/user/harness-reference" },
+            { text: "Custom Agent Identity", link: "/guides/user/custom-agent-identity" },
             { text: "CEL Triggers Reference", link: "/guides/user/cel-triggers-reference" },
             { text: "Bugfix Workflow", link: "/guides/user/bugfix-workflow" },
             { text: "Configuring Agent Behavior", link: "/guides/user/customizing-agents" },

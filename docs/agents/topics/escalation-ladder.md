@@ -43,10 +43,10 @@ changes to the agent's identity-defining fields. Some rows need a thin
 | `AGENTS.md` | Project-wide instructions for all agents — code style, test commands, architecture rules, domain context. No harness required. | [Customizing with AGENTS.md](../../guides/user/customizing-with-agents-md.md) |
 | Repo skills (`.agents/skills/`) | Domain-specific knowledge for individual agents — linting rules, deployment checklists, label glossaries. No harness required. | [Customizing with Skills](../../guides/user/customizing-with-skills.md) |
 | Documented env vars | Per-agent tuning knobs (e.g., `REVIEW_FINDING_SEVERITY_THRESHOLD`). No harness required. | Each agent's [reference page](../) |
-| `env:` in harness | Add environment variables without changing the agent's identity. Needs a thin `base` harness. | [Harness field reference](../../guides/user/bring-your-own-agent.md#harness-field-reference) |
+| `env:` in harness | Add environment variables without changing the agent's identity. Needs a thin `base` harness. | [Harness Field Reference](../../guides/user/harness-reference.md) |
 | `skills:` in harness | Add skills via `base` composition — concatenated with the base agent's skill list. Needs a thin `base` harness. | [Configuring existing agents](../../guides/user/bring-your-own-agent.md#configuring-existing-agents) |
-| `plugins:` in harness | Add language-server plugins. Needs a thin `base` harness. | [Harness field reference](../../guides/user/bring-your-own-agent.md#harness-field-reference) |
-| `host_files:` in harness | Inject additional files into the sandbox. Needs a thin `base` harness. | [Harness field reference](../../guides/user/bring-your-own-agent.md#harness-field-reference) |
+| `plugins:` in harness | Add language-server plugins. Needs a thin `base` harness. | [Harness Field Reference](../../guides/user/harness-reference.md) |
+| `host_files:` in harness | Inject additional files into the sandbox. Needs a thin `base` harness. | [Harness Field Reference](../../guides/user/harness-reference.md) |
 | Sandbox image layers | Base your image on the default, add tools; point the harness `image:` field at it. Needs a thin `base` harness. | [Extending the sandbox image](../../guides/user/customizing-agents.md#extending-the-sandbox-image) |
 
 **Evidence to escalate:** show that no combination of these extension points

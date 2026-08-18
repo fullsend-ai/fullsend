@@ -6,6 +6,17 @@ This guide covers the end-to-end workflow for building, registering, and dispatc
 
 This guide uses the [fullsend-ai/agents](https://github.com/fullsend-ai/agents) triage agent as a running example.
 
+## Overview
+
+Building and deploying a custom agent takes four steps:
+
+1. **Create the harness and agent definition** — write a harness YAML file that defines _how_ the agent runs and a Markdown file that defines _what_ it does. See [Minimum viable agent](#minimum-viable-agent).
+2. **Add a CEL trigger** — write a trigger expression so dispatch knows when to launch your agent. See [CEL Triggers Reference](cel-triggers-reference.md).
+3. **Test locally** — run your agent with `fullsend run` before deploying to CI. See [Testing locally](#testing-locally).
+4. **Register and deploy** — add your agent to `config.yaml` so dispatch discovers it. See [Registering your agent](#registering-your-agent).
+
+To configure an _existing_ agent instead, see [Configuring existing agents](#configuring-existing-agents).
+
 ## How agents work
 
 A fullsend agent has two parts:
@@ -65,7 +76,7 @@ policy: policies/base.yaml
 providers:
   - vertex-ai
 role: my-agent
-slug: my-org-my-agent               # GitHub App identity; convention: <org>-<role> (see Advanced: custom identity)
+slug: my-org-my-agent               # GitHub App identity; convention: <org>-<role> (see Custom agent identity)
 trigger: |
   event.entity.kind == "work_item"
     && event.transition.kind == "label_changed"
@@ -189,154 +200,9 @@ Key patterns to note:
 - **`host_files`** copy credentials from the trusted runner into the sandbox. `expand: true` resolves `${VAR}` references before copying.
 - **`validation_loop.schema`** references the JSON schema file directly — the validation script checks agent output against it.
 - **`forge.github`** scopes scripts, skills, providers, openshell, host_files, and env vars to GitHub. When running on GitLab, a `forge.gitlab` block would take effect instead.
-- **`common/env/gcp-vertex.env`** is referenced by relative path because both files live in the same repo. If your agent lives in a different repo, reference it by URL (see [Remote references](#referencing-resources-local-vs-remote)) or copy it locally.
+- **`common/env/gcp-vertex.env`** is referenced by relative path because both files live in the same repo. If your agent lives in a different repo, reference it by URL (see [Harness Field Reference — Referencing resources](harness-reference.md#referencing-resources-local-vs-remote)) or copy it locally.
 
-## Harness field reference
-
-```yaml
-# ── Required ──────────────────────────────────────────────────
-agent: agents/my-agent.md           # Path to agent definition
-role: my-agent                      # Role name (lowercase letter first, then a-z, 0-9, _, -; no double hyphens)
-
-# ── Identity & metadata ──────────────────────────────────────
-slug: my-org-my-role                # GitHub App identity (convention: <org>-<role>)
-description: One-line summary       # Human-readable description
-doc: docs/agents/my-agent.md        # Source-repo-only; not resolved at runtime
-trigger: "event.entity.kind == 'work_item'"  # Optional CEL expression over NormalizedEvent (see CEL Triggers Reference)
-
-# ── Composition ───────────────────────────────────────────────
-base: harness/common-base.yaml      # Inherit from another harness (local or URL)
-
-# ── Sandbox ───────────────────────────────────────────────────
-image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
-policy: policies/base.yaml          # Sandbox policy (filesystem, landlock, process)
-model: opus                         # LLM model override
-effort: high                        # Reasoning effort (low, medium, high, xhigh, max); claude runtime only
-readonly_repo: false                # Mount repo as read-only in sandbox
-providers:                           # Network access via provider profiles
-  - vertex-ai                       # References providers/vertex-ai.yaml
-  - github                          # References providers/github.yaml
-
-# ── Skills & plugins ──────────────────────────────────────────
-skills:
-  - skills/my-skill                  # Local path or URL with #sha256=...
-plugins:
-  - plugins/gopls-lsp                # Local path or URL with #sha256=...
-openshell:                           # OpenShell sandbox profiles
-  profiles:
-    - https://example.com/profile.yaml#sha256=abc...
-
-# ── Scripts (local paths only) ────────────────────────────────
-pre_script: scripts/pre-my-agent.sh
-post_script: scripts/post-my-agent.sh
-agent_input: inputs/my-input.md     # File passed as initial input to the agent
-
-# ── Validation ────────────────────────────────────────────────
-validation_loop:
-  script: scripts/validate-output-schema.sh
-  max_iterations: 2
-  feedback_mode: stderr              # How validation feedback reaches the agent
-
-# ── Host files ────────────────────────────────────────────────
-host_files:
-  - src: env/my-agent.env            # Runner path (supports ${VAR})
-    dest: /sandbox/workspace/.env.d/my-agent.env
-    expand: true                     # Resolve ${VAR} in contents
-  - src: ${SOME_CREDENTIAL}
-    dest: /tmp/.cred.json
-    optional: true                   # Skip if missing
-
-# ── Environment ───────────────────────────────────────────────
-env:
-  runner:                            # Available to pre/post scripts
-    MY_VAR: "${MY_VAR}"
-  sandbox:                           # Available inside sandbox
-    MY_SETTING: "value"
-runner_env:                          # ⚠ Deprecated: use env.runner instead
-  MY_VAR: "${MY_VAR}"
-
-# ── Timeouts ──────────────────────────────────────────────────
-timeout_minutes: 20
-sandbox_timeout_seconds: 300         # 30-600
-
-# ── Remote resources ──────────────────────────────────────────
-allowed_remote_resources:
-  - https://github.com/my-org/agent-library/
-allow_runtime_fetch: true
-max_runtime_fetches: 10
-
-# ── API servers ───────────────────────────────────────────────
-api_servers:                         # Host-side REST proxies exposed to sandbox
-  - name: my-api
-    script: scripts/api-server.sh    # Local script that runs the server
-    port: 8080                       # Port the sandbox connects to
-    env:                             # Env vars for the server process
-      API_KEY: "${API_KEY}"
-
-# ── Forge-specific overrides ──────────────────────────────────
-forge:
-  github:
-    pre_script: scripts/pre-gh.sh
-    post_script: scripts/post-gh.sh
-    skills: [skills/github-specific]  # Concatenated with top-level
-    providers: [providers/github.yaml] # Concatenated with top-level
-    openshell:
-      profiles: [profiles/github.yaml] # Concatenated with top-level
-    host_files:                        # Forge-specific host files
-      - src: env/github.env
-        dest: /run/secrets/forge.env
-    env:
-      runner:
-        GH_TOKEN: "${GH_TOKEN}"
-  gitlab:
-    pre_script: scripts/pre-gl.sh
-
-# ── Security ──────────────────────────────────────────────────
-security:
-  fail_mode: closed                  # "closed" (default) or "open"
-```
-
-> **Naming convention:** Prefix settings that tune one agent's behavior with
-> that agent's role in caps, e.g. `REVIEW_SEVERITY_THRESHOLD` — this avoids
-> collisions when multiple agents share a sandbox or env file.
->
-> A setting meant to apply the same way across every agent (like
-> `roles` or `create_issues.allow_targets`) belongs in `config.yaml`
-> instead, not as an env var.
-
-### Deprecated fields
-
-> **Deprecated:** `runner_env` is deprecated. Use `env.runner`
-> instead. The `runner_env` field still works but emits a deprecation warning
-> at runtime. Migration: move `runner_env:` entries under `env: runner:` and
-> delete the `runner_env:` block.
-
-### Field merge rules (for `base` and `forge`)
-
-| Field type | Behavior |
-|-----------|----------|
-| Scalars (`model`, `pre_script`, `policy`, `image`, etc.) | Child wins if non-empty |
-| `skills` | Merged with deduplication by basename (child overrides base) |
-| `providers`, `openshell.profiles` | Concatenated (base + child); also applies per-forge |
-| `plugins`, `api_servers` | Concatenated (base + child) |
-| `host_files` | Concatenated; child overrides by `dest` |
-| `env`, `runner_env` (deprecated) | Merged; child keys win |
-| `validation_loop`, `security` | Child replaces entirely |
-| `allowed_remote_resources`, `allow_runtime_fetch`, `max_runtime_fetches` | NOT inherited (child must declare its own) |
-
-### Referencing resources: local vs. remote
-
-**Local paths** resolve relative to the harness file's base directory:
-```yaml
-agent: agents/triage.md              # → {base}/agents/triage.md
-```
-
-**Remote URLs** require a `#sha256=...` integrity hash:
-```yaml
-agent: https://raw.githubusercontent.com/org/repo/<sha>/agents/lint.md#sha256=abc...
-```
-
-**Scripts are local-only** — `pre_script`, `post_script`, and `validation_loop.script` must be local paths (they run on the trusted runner). Exception: scripts declared in a `base` harness fetched via URL are allowed.
+For the complete list of harness fields, see the [Harness Field Reference](harness-reference.md).
 
 ## Agent definitions
 
@@ -392,7 +258,7 @@ skills:
 timeout_minutes: 15
 ```
 
-Base chains support up to 5 levels (`MaxBaseDepth` in `internal/harness/compose.go`). Circular references are detected and rejected. Resolution order: base chain → child overrides → forge selection. See [field merge rules](#field-merge-rules-for-base-and-forge) for how each field type combines.
+Base chains support up to 5 levels (`MaxBaseDepth` in `internal/harness/compose.go`). Circular references are detected and rejected. Resolution order: base chain → child overrides → forge selection. See the [Harness Field Reference](harness-reference.md#field-merge-rules-for-base-and-forge) for how each field type combines.
 
 > **Note:** `allowed_remote_resources`, `allow_runtime_fetch`, and `max_runtime_fetches` are NOT inherited from base harnesses — the child must declare its own. This prevents a base harness from injecting arbitrary URL prefixes or enabling runtime fetching in the child.
 
@@ -460,7 +326,7 @@ env:
 
 ### What you can configure
 
-Any harness field can be overridden. The [field merge rules](#field-merge-rules-for-base-and-forge) determine how your overrides combine with the base:
+Any harness field can be overridden. The [Harness Field Reference](harness-reference.md#field-merge-rules-for-base-and-forge) describes how your overrides combine with the base:
 
 - **Change model, timeout, image, scripts** — scalars replace the base value.
 - **Add skills** — your entries are merged with the base's by basename; same-named skills override the base entry. **Add plugins or host_files** — your entries are concatenated with the base's.
@@ -594,22 +460,6 @@ repos:
 - Individual agents can be disabled with `enabled: false` — see [Disabling Agents](customizing-agents.md#disabling-agents).
 - Per-repo config is read from the **base branch**, not from PR branches.
 
-## Advanced: custom identity
-
-By default, agents authenticate using shared fullsend GitHub Apps via the `slug` field. If you need your own GitHub App — for custom permissions, compliance, or branding — you can run a **standalone mint**. Follow the [Standalone mint guide](../infrastructure/standalone-mint.md) to set one up.
-
-Once your standalone mint is running, configure your agent to use it:
-
-1. **Reference your role in the harness:**
-   ```yaml
-   role: my-role
-   slug: my-org-my-role
-   ```
-
-2. **Set `FULLSEND_MINT_URL`** in your repo to point to your standalone mint.
-
-When configured with `FALLBACK_MINT_URL`, the standalone mint serves custom roles locally while proxying unhandled roles to the hosted mint (see [Standalone mint — Fallback proxy behavior](../infrastructure/standalone-mint.md#fallback-proxy-behavior)).
-
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -628,6 +478,8 @@ When configured with `FALLBACK_MINT_URL`, the standalone mint serves custom role
 ## See also
 
 - [fullsend-ai/agents](https://github.com/fullsend-ai/agents) — reference implementation used throughout this guide
+- [Harness Field Reference](harness-reference.md) — complete harness YAML field reference, merge rules, and resource referencing
+- [Custom Agent Identity](custom-agent-identity.md) — using a standalone mint for custom GitHub App identity
 - [CEL Triggers Reference](cel-triggers-reference.md) — dispatch flow, NormalizedEvent fields, transition kinds, and trigger patterns
 - [Configuring with Skills](customizing-with-skills.md) — creating and managing skills; [authoring augmentations](customizing-with-skills.md#authoring-skills-that-augment-defaults)
 - [`author-fullsend-augmentations` skill](../../../skills/author-fullsend-augmentations/SKILL.md) — discovery-driven guide for writing skills and sub-agents that complement shipped defaults
