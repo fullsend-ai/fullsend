@@ -160,7 +160,8 @@
             "marked_ready",
             "label_changed",
             "comment_added",
-            "review_submitted"
+            "review_submitted",
+            "check_completed"
           ],
           "description": "Semantic lifecycle transition. Prefer edited/synchronized over updated; adapters MAY map reopened to opened when distinction is unnecessary."
         },
@@ -223,6 +224,41 @@
               "description": "Forge login of the reviewer (bot accounts end with [bot] on GitHub)."
             }
           }
+        },
+        "check": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "conclusion", "head_sha", "change_proposal_ids"],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "description": "Check run name as shown in the forge UI (e.g. codecov/patch)."
+            },
+            "conclusion": {
+              "type": "string",
+              "enum": [
+                "success",
+                "failure",
+                "neutral",
+                "cancelled",
+                "skipped",
+                "timed_out",
+                "action_required",
+                "stale"
+              ]
+            },
+            "head_sha": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "change_proposal_ids": {
+              "type": "array",
+              "items": { "type": "integer", "minimum": 1 },
+              "description": "All change proposals the check run is attached to; entity.id is the first."
+            }
+          }
         }
       },
       "allOf": [
@@ -249,6 +285,14 @@
           },
           "then": { "required": ["review"] },
           "else": { "properties": { "review": false } }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "check_completed" } },
+            "required": ["kind"]
+          },
+          "then": { "required": ["check"] },
+          "else": { "properties": { "check": false } }
         }
       ]
     },

@@ -84,3 +84,19 @@ func TestMapGitHubPermission_AllRoles(t *testing.T) {
 	assert.Equal(t, RoleTriage, MapGitHubPermission("triage"))
 	assert.Equal(t, RoleRead, MapGitHubPermission("read"))
 }
+
+func TestValidate_CheckCompletedRequiresCheck(t *testing.T) {
+	ev := &Event{
+		Repo:       "o/r",
+		Entity:     Entity{Kind: EntityChangeProposal, ID: 1, URL: "https://github.com/o/r/pull/1"},
+		Transition: Transition{Kind: TransitionCheckCompleted},
+		Actor:      Actor{ID: "codecov[bot]", Kind: ActorBot, Role: RoleNone},
+		State:      State{Labels: []string{}},
+		Source:     Source{System: SystemGitHub, RawType: "check_run"},
+	}
+	assert.Error(t, ev.Validate())
+	ev.Transition.Check = &Check{Name: "codecov/patch"}
+	assert.Error(t, ev.Validate())
+	ev.Transition.Check.Conclusion = "success"
+	require.NoError(t, ev.Validate())
+}
