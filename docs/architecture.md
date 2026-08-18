@@ -179,6 +179,7 @@ This is the thing that actually reasons and acts. Everything else in this docume
 **Decided (implementation):**
 
 - The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; production orgs default to Claude Code. Runtime selection is configured in `defaults.runtime` on the org `config.yaml` and resolved via `runtime.ResolveFromConfig()`. A **dummy** runtime executes scripted operations in the real OpenShell sandbox for behaviour tests (inference removed). Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `ClaudeHooksBootstrap` for sandbox tool hooks. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
+- Cost-aware model routing: Phase 1 installs Costwise hooks in the sandbox image and wires them into the generated `settings.json` behind `FULLSEND_COSTWISE=1`; Phase 2 is a native `internal/routing/` port with host-side tracking ([ADR 0090](ADRs/0090-cost-aware-model-routing.md)).
 
 ### Behaviour testing
 
