@@ -515,6 +515,21 @@ func (h *Handler) handleStatus(w http.ResponseWriter, claims *Claims) {
 }
 
 func (h *Handler) mintToken(ctx context.Context, org, role string, repos []string) (string, string, *GrantedScope, error) {
+	// Fail closed for an undeclared/unknown role. A role with no permission
+	// definition is a client authorization error, not an upstream failure.
+	// Reject it deterministically with 403 before making any GitHub API
+	// calls; otherwise the missing definition only surfaces deep inside
+	// CreateInstallationToken, whose errors are uniformly mapped to 502,
+	// turning a clean authorization denial into an opaque Bad Gateway.
+	if RolePermissionsFor(role) == nil {
+		umsg := fmt.Sprintf("role %q is not declared in .fullsend/config.yaml roles", role)
+		return "", "", nil, &mintError{
+			status:  http.StatusForbidden,
+			msg:     fmt.Sprintf("undeclared role %q: no permissions defined", role),
+			userMsg: umsg,
+		}
+	}
+
 	appID, err := h.lookupRoleAppID(role)
 	if err != nil {
 		return "", "", nil, &mintError{status: http.StatusForbidden, msg: fmt.Sprintf("looking up app ID for role %s: %v", role, err)}

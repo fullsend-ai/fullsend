@@ -591,6 +591,31 @@ func TestHandler_RoleNotAllowed(t *testing.T) {
 	}
 }
 
+// TestHandler_MintToken_UndeclaredRole verifies that requesting a token for a
+// role with no permission definition (undeclared in .fullsend/config.yaml
+// roles) is rejected with a clean 403 and a descriptive, client-safe message
+// before any GitHub API call — rather than surfacing as an opaque 502 from
+// CreateInstallationToken.
+func TestHandler_MintToken_UndeclaredRole(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{})
+
+	_, _, _, err := h.mintToken(context.Background(), "test-org", "nonexistent", []string{"repo"})
+	if err == nil {
+		t.Fatal("expected error for undeclared role, got nil")
+	}
+	me, ok := err.(*mintError)
+	if !ok {
+		t.Fatalf("expected *mintError, got %T: %v", err, err)
+	}
+	if me.status != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", me.status)
+	}
+	if !strings.Contains(me.userMsg, "nonexistent") || !strings.Contains(me.userMsg, "config.yaml") {
+		t.Fatalf("expected descriptive client-safe userMsg, got %q", me.userMsg)
+	}
+}
+
 func TestHandler_InvalidRepoName(t *testing.T) {
 	t.Setenv("ALLOWED_ROLES", "coder")
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
