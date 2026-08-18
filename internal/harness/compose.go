@@ -630,14 +630,11 @@ func mergeBaseIntoChild(base, child *Harness) {
 		child.Env.mergeEnvFrom(base.Env, false)
 	}
 
-	// Pointer structs: child replaces if non-nil, but carry forward
-	// PreflightCheck when the child overrides validation_loop without
-	// setting its own preflight_check (avoids silently dropping inherited
-	// preflight checks — see #5074).
+	// Pointer structs: validation_loop merges at field level (child fields win, base fills gaps).
 	if child.ValidationLoop == nil {
 		child.ValidationLoop = base.ValidationLoop
-	} else if child.ValidationLoop.PreflightCheck == "" && base.ValidationLoop != nil {
-		child.ValidationLoop.PreflightCheck = base.ValidationLoop.PreflightCheck
+	} else if base.ValidationLoop != nil {
+		mergeValidationLoopInto(base.ValidationLoop, child.ValidationLoop)
 	}
 	// Security: child inherits base's config if nil. Note that a base harness
 	// (even integrity-pinned) could set fail_mode: open. Child authors must
@@ -1935,6 +1932,29 @@ func mergeForgeBlocks(base, child map[string]*ForgeConfig) map[string]*ForgeConf
 	return child
 }
 
+// mergeValidationLoopInto merges base ValidationLoop fields into child.
+// Child fields take precedence; base fields fill any unset/zero values.
+func mergeValidationLoopInto(base, child *ValidationLoop) {
+	if base == nil || child == nil {
+		return
+	}
+	if child.Script == "" {
+		child.Script = base.Script
+	}
+	if child.Schema == "" {
+		child.Schema = base.Schema
+	}
+	if child.MaxIterations == 0 {
+		child.MaxIterations = base.MaxIterations
+	}
+	if child.FeedbackMode == "" {
+		child.FeedbackMode = base.FeedbackMode
+	}
+	if child.PreflightCheck == "" {
+		child.PreflightCheck = base.PreflightCheck
+	}
+}
+
 // mergeForgeConfigInto merges base ForgeConfig fields into child.
 // Similar to mergeForgeConfig in forge.go but prepends base skills and host files
 // (base + child order) rather than appending forge values to harness values.
@@ -2003,13 +2023,11 @@ func mergeForgeConfigInto(base, child *ForgeConfig) {
 		child.Env.mergeEnvFrom(base.Env, false)
 	}
 
-	// ValidationLoop: child replaces if non-nil, but carry forward
-	// PreflightCheck when the child overrides validation_loop without
-	// setting its own preflight_check (see #5074).
+	// ValidationLoop: validation_loop merges at field level (child fields win, base fills gaps).
 	if child.ValidationLoop == nil {
 		child.ValidationLoop = base.ValidationLoop
-	} else if child.ValidationLoop.PreflightCheck == "" && base.ValidationLoop != nil {
-		child.ValidationLoop.PreflightCheck = base.ValidationLoop.PreflightCheck
+	} else if base.ValidationLoop != nil {
+		mergeValidationLoopInto(base.ValidationLoop, child.ValidationLoop)
 	}
 }
 

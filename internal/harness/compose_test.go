@@ -1260,6 +1260,32 @@ func TestMergeForgeConfigInto_PreflightCheckCarryForward(t *testing.T) {
 		"PreflightCheck should be carried forward from base in forge merge")
 }
 
+func TestMergeForgeConfigInto_ValidationLoopFieldLevelMerge(t *testing.T) {
+	base := &ForgeConfig{
+		ValidationLoop: &ValidationLoop{
+			Script:         "scripts/base-validate.sh",
+			Schema:         "schemas/base.json",
+			MaxIterations:  4,
+			FeedbackMode:   "replace",
+			PreflightCheck: "python3 -c 'import jsonschema'",
+		},
+	}
+	child := &ForgeConfig{
+		ValidationLoop: &ValidationLoop{
+			Schema: "schemas/custom.json",
+		},
+	}
+
+	mergeForgeConfigInto(base, child)
+
+	require.NotNil(t, child.ValidationLoop)
+	assert.Equal(t, "scripts/base-validate.sh", child.ValidationLoop.Script)
+	assert.Equal(t, "schemas/custom.json", child.ValidationLoop.Schema)
+	assert.Equal(t, 4, child.ValidationLoop.MaxIterations)
+	assert.Equal(t, "replace", child.ValidationLoop.FeedbackMode)
+	assert.Equal(t, "python3 -c 'import jsonschema'", child.ValidationLoop.PreflightCheck)
+}
+
 func TestMergeForgeConfigInto_PolicyInherited(t *testing.T) {
 	base := &ForgeConfig{
 		Policy:    "policies/base-gitlab.yaml",
@@ -4725,6 +4751,62 @@ func TestMergeBaseIntoChild_EffortEmptyBaseNoEffect(t *testing.T) {
 	mergeBaseIntoChild(base, child)
 
 	assert.Equal(t, "max", child.Effort)
+}
+
+func TestMergeBaseIntoChild_ValidationLoopFieldLevelMerge(t *testing.T) {
+	base := &Harness{
+		ValidationLoop: &ValidationLoop{
+			Script:         "scripts/validate.sh",
+			Schema:         "schemas/base.json",
+			MaxIterations:  3,
+			FeedbackMode:   "append",
+			PreflightCheck: "python3 -c 'import jsonschema'",
+		},
+	}
+	child := &Harness{
+		ValidationLoop: &ValidationLoop{
+			Schema: "schemas/custom.json",
+		},
+	}
+
+	mergeBaseIntoChild(base, child)
+
+	require.NotNil(t, child.ValidationLoop)
+	assert.Equal(t, "scripts/validate.sh", child.ValidationLoop.Script)
+	assert.Equal(t, "schemas/custom.json", child.ValidationLoop.Schema)
+	assert.Equal(t, 3, child.ValidationLoop.MaxIterations)
+	assert.Equal(t, "append", child.ValidationLoop.FeedbackMode)
+	assert.Equal(t, "python3 -c 'import jsonschema'", child.ValidationLoop.PreflightCheck)
+}
+
+func TestMergeBaseIntoChild_ValidationLoopChildWinsOnConflict(t *testing.T) {
+	base := &Harness{
+		ValidationLoop: &ValidationLoop{
+			Script:         "scripts/base-validate.sh",
+			Schema:         "schemas/base.json",
+			MaxIterations:  3,
+			FeedbackMode:   "append",
+			PreflightCheck: "base-check",
+		},
+	}
+	child := &Harness{
+		ValidationLoop: &ValidationLoop{
+			Script:         "scripts/child-validate.sh",
+			Schema:         "schemas/child.json",
+			MaxIterations:  1,
+			FeedbackMode:   "replace",
+			PreflightCheck: "child-check",
+		},
+	}
+
+	mergeBaseIntoChild(base, child)
+
+	require.NotNil(t, child.ValidationLoop)
+	assert.Equal(t, "scripts/child-validate.sh", child.ValidationLoop.Script)
+	assert.Equal(t, "schemas/child.json", child.ValidationLoop.Schema)
+	assert.Equal(t, 1, child.ValidationLoop.MaxIterations)
+	assert.Equal(t, "replace", child.ValidationLoop.FeedbackMode)
+	assert.Equal(t, "child-check", child.ValidationLoop.PreflightCheck)
 }
 
 func TestFetchBaseSkill_FullDirectory(t *testing.T) {

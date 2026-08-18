@@ -206,6 +206,60 @@ func TestResolveForge_ValidationLoopReplace(t *testing.T) {
 	assert.Equal(t, 1, h.ValidationLoop.MaxIterations)
 }
 
+func TestResolveForge_ValidationLoopFieldLevelMerge(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		ValidationLoop: &ValidationLoop{
+			Script:         "scripts/validate-common.sh",
+			Schema:         "schemas/base.json",
+			MaxIterations:  3,
+			FeedbackMode:   "append",
+			PreflightCheck: "python3 -c 'import jsonschema'",
+		},
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				ValidationLoop: &ValidationLoop{
+					Schema: "schemas/custom.json",
+				},
+			},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "scripts/validate-common.sh", h.ValidationLoop.Script)
+	assert.Equal(t, "schemas/custom.json", h.ValidationLoop.Schema)
+	assert.Equal(t, 3, h.ValidationLoop.MaxIterations)
+	assert.Equal(t, "append", h.ValidationLoop.FeedbackMode)
+	assert.Equal(t, "python3 -c 'import jsonschema'", h.ValidationLoop.PreflightCheck)
+}
+
+func TestResolveForge_ValidationLoopMergeDoesNotMutateForgeConfig(t *testing.T) {
+	fcLoop := &ValidationLoop{
+		Schema: "schemas/custom.json",
+	}
+	fc := &ForgeConfig{
+		ValidationLoop: fcLoop,
+	}
+	h := &Harness{
+		Agent: "agents/test.md",
+		ValidationLoop: &ValidationLoop{
+			Script:        "scripts/validate.sh",
+			MaxIterations: 2,
+		},
+	}
+
+	mergeForgeConfig(h, fc)
+
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "scripts/validate.sh", h.ValidationLoop.Script)
+	assert.Equal(t, "schemas/custom.json", h.ValidationLoop.Schema)
+	assert.Equal(t, 2, h.ValidationLoop.MaxIterations)
+	// Verify fc.ValidationLoop was not mutated
+	assert.Equal(t, "", fcLoop.Script)
+	assert.Equal(t, 0, fcLoop.MaxIterations)
+}
+
 func TestResolveForge_ValidationLoopNilInherits(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",

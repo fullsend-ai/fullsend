@@ -154,7 +154,7 @@ func (h *Harness) ResolveForge(platform string) error {
 //   - OpenShell.Profiles: top-level + forge (concatenated)
 //   - HostFiles: top-level + forge (concatenated with last-writer-wins dedup by Dest)
 //   - RunnerEnv: top-level merged with forge; forge keys win
-//   - ValidationLoop: forge replaces entirely if non-nil
+//   - ValidationLoop: top-level merged with forge; forge fields win
 func mergeForgeConfig(h *Harness, fc *ForgeConfig) {
 	if fc.PreScript != "" {
 		h.PreScript = fc.PreScript
@@ -201,7 +201,13 @@ func mergeForgeConfig(h *Harness, fc *ForgeConfig) {
 	}
 
 	if fc.ValidationLoop != nil {
-		h.ValidationLoop = fc.ValidationLoop
+		if h.ValidationLoop == nil {
+			h.ValidationLoop = fc.ValidationLoop
+		} else {
+			merged := *fc.ValidationLoop
+			mergeValidationLoopInto(h.ValidationLoop, &merged)
+			h.ValidationLoop = &merged
+		}
 	}
 
 	// Env: merge sub-maps independently; forge keys win (ADR 0055)
