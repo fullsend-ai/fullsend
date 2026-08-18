@@ -7,6 +7,7 @@
 #   - acli (Atlassian CLI for Jira issue queries)
 #   - pre-commit + gitlint (repo hook runner + commit message validator)
 #   - tirith (Rust CLI for terminal security scanning hooks)
+#   - costwise (cost-aware model routing hooks; opt-in via FULLSEND_COSTWISE=1)
 #   - ONNX Runtime + ProtectAI DeBERTa-v3 model for prompt injection
 #     detection (loaded natively by fullsend via Go/hugot — no Python
 #     runtime dependency, no cold-start latency)
@@ -138,6 +139,25 @@ RUN apt-get update \
       "pre-commit==${PRECOMMIT_VERSION}" \
       "gitlint-core==${GITLINT_VERSION}" \
       "jsonschema==${JSONSCHEMA_VERSION}"
+
+# ---------------------------------------------------------------------------
+# costwise — hook-based cost-aware model routing (Phase 1, ADR 0090).
+# The Python package is pip-installed; the Claude Code hook scripts live
+# outside the package (plugins/costwise/hooks/) and import `costwise.*`, so
+# they are copied verbatim to COSTWISE_HOOKS_DIR. fullsend wires them into
+# .claude/settings.json only when FULLSEND_COSTWISE=1 (internal/security).
+# ponytail: pinned to a branch rather than a release tag — costwise has no
+# tagged release yet; move to a tag + sha256 wheel when one exists.
+ARG COSTWISE_REV=main
+ARG COSTWISE_HOOKS_DIR=/opt/costwise/hooks
+RUN git clone --depth 1 --branch "${COSTWISE_REV}" \
+      https://github.com/guyoron1/costwise.git /tmp/costwise \
+    && pip install --no-cache-dir --break-system-packages /tmp/costwise \
+    && mkdir -p "${COSTWISE_HOOKS_DIR}" \
+    && cp /tmp/costwise/plugins/costwise/hooks/*.py "${COSTWISE_HOOKS_DIR}/" \
+    && rm -rf /tmp/costwise \
+    && python3 -c "import costwise" \
+    && echo "costwise installed at rev ${COSTWISE_REV}, hooks in ${COSTWISE_HOOKS_DIR}"
 
 # ---------------------------------------------------------------------------
 # tirith — terminal security scanner for PreToolUse hooks.
