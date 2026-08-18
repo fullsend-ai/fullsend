@@ -56,3 +56,41 @@ func TestBuildPullRequestPayload_NoChangeProposal(t *testing.T) {
 	pr := buildPullRequestPayload(ev)
 	assert.Equal(t, 7, pr["number"])
 }
+
+func TestBuildEventPayload_CommentIDPropagated(t *testing.T) {
+	ev := &normevent.Event{
+		Entity: normevent.Entity{Kind: normevent.EntityWorkItem, ID: 42, URL: "https://example.com/issues/42"},
+		Transition: normevent.Transition{
+			Kind: normevent.TransitionCommentAdded,
+			Comment: &normevent.Comment{
+				ID:      12345,
+				Command: "/fs-fix",
+				Body:    "/fs-fix do the thing",
+			},
+		},
+	}
+	payload, err := buildEventPayload(ev)
+	require.NoError(t, err)
+	comment, ok := payload["comment"].(map[string]any)
+	require.True(t, ok, "payload should contain a comment map")
+	assert.Equal(t, 12345, comment["id"])
+	assert.Equal(t, "/fs-fix do the thing", comment["body"])
+}
+
+func TestBuildEventPayload_CommentIDOmittedWhenZero(t *testing.T) {
+	ev := &normevent.Event{
+		Entity: normevent.Entity{Kind: normevent.EntityWorkItem, ID: 42, URL: "https://example.com/issues/42"},
+		Transition: normevent.Transition{
+			Kind: normevent.TransitionCommentAdded,
+			Comment: &normevent.Comment{
+				Body: "just a comment",
+			},
+		},
+	}
+	payload, err := buildEventPayload(ev)
+	require.NoError(t, err)
+	comment, ok := payload["comment"].(map[string]any)
+	require.True(t, ok)
+	_, hasID := comment["id"]
+	assert.False(t, hasID, "comment.id should be omitted when zero")
+}

@@ -256,7 +256,7 @@ func (n *Notifier) PostStart(ctx context.Context, description string) error {
 // See SetTriggerCommentID.
 func (n *Notifier) addReaction(ctx context.Context, content string) (int64, error) {
 	if n.triggerCommentID != 0 {
-		return n.client.AddIssueCommentReaction(ctx, n.owner, n.repo, n.triggerCommentID, content)
+		return n.client.AddIssueCommentReaction(ctx, n.owner, n.repo, n.number, n.triggerCommentID, content)
 	}
 	return n.client.AddIssueReaction(ctx, n.owner, n.repo, n.number, content)
 }
@@ -265,7 +265,7 @@ func (n *Notifier) addReaction(ctx context.Context, content string) (int64, erro
 // comment-vs-issue targeting addReaction uses to add it.
 func (n *Notifier) deleteReaction(ctx context.Context, reactionID int64) error {
 	if n.triggerCommentID != 0 {
-		return n.client.DeleteIssueCommentReaction(ctx, n.owner, n.repo, n.triggerCommentID, reactionID)
+		return n.client.DeleteIssueCommentReaction(ctx, n.owner, n.repo, n.number, n.triggerCommentID, reactionID)
 	}
 	return n.client.DeleteIssueReaction(ctx, n.owner, n.repo, n.number, reactionID)
 }
@@ -372,12 +372,23 @@ func (n *Notifier) PostCompletionWithDetail(ctx context.Context, description, st
 // reaction around across this swap. Errors are logged, not returned: a
 // reaction is a nice-to-have signal, not something that should fail the
 // run. Assumes the caller has already refreshed n.client if needed.
+//
+// When the start-reaction delete fails with a real error (not
+// ErrNotSupported), the completion reaction is skipped to avoid leaving
+// both 👀 and 👍/😕 stacked on the same issue/comment — mirroring the
+// suppressed-completion path's treatment of failed comment deletion.
 func (n *Notifier) postCompletionReaction(ctx context.Context, status string, cleanup, post bool) {
 	if cleanup {
 		if err := n.deleteReaction(ctx, n.startReactionID); err != nil {
 			if !errors.Is(err, forge.ErrNotSupported) {
 				n.warnf("failed to remove start reaction: %v", err)
+				// Don't post the completion reaction — the start
+				// reaction is still visible, and adding a completion
+				// reaction would leave contradictory signals stacked.
+				return
 			}
+			// ErrNotSupported means the forge doesn't have reactions
+			// at all, so there's nothing stuck; fall through to post.
 		} else {
 			n.startReactionID = 0
 		}

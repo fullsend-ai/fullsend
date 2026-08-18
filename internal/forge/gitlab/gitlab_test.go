@@ -1737,7 +1737,7 @@ func TestDeleteIssueReaction_ReturnsErrNotSupported(t *testing.T) {
 func TestAddIssueCommentReaction_ReturnsErrNotSupported(t *testing.T) {
 	client, _ := setupTest(t)
 
-	id, err := client.AddIssueCommentReaction(context.Background(), "own", "repo", 555, "eyes")
+	id, err := client.AddIssueCommentReaction(context.Background(), "own", "repo", 42, 555, "eyes")
 	require.ErrorIs(t, err, forge.ErrNotSupported)
 	assert.Equal(t, int64(0), id)
 }
@@ -1745,6 +1745,6 @@ func TestAddIssueCommentReaction_ReturnsErrNotSupported(t *testing.T) {
 func TestDeleteIssueCommentReaction_ReturnsErrNotSupported(t *testing.T) {
 	client, _ := setupTest(t)
 
-	err := client.DeleteIssueCommentReaction(context.Background(), "own", "repo", 555, 789)
+	err := client.DeleteIssueCommentReaction(context.Background(), "own", "repo", 42, 555, 789)
 	require.ErrorIs(t, err, forge.ErrNotSupported)
 }

@@ -386,13 +386,20 @@ func (c *LiveClient) DeleteIssueReaction(_ context.Context, _, _ string, _ int, 
 	return forge.ErrNotSupported
 }
 
-// AddIssueCommentReaction is not yet implemented for GitLab. See AddIssueReaction.
-func (c *LiveClient) AddIssueCommentReaction(_ context.Context, _, _ string, _ int, _ string) (int64, error) {
+// AddIssueCommentReaction is not yet implemented for GitLab. The number
+// parameter (issue/MR IID) will be needed by a future implementation —
+// GitLab's note-scoped award-emoji endpoint is issue-scoped:
+// POST /projects/:id/issues/:issue_iid/notes/:note_id/award_emoji.
+// The content vocabulary also differs: GitHub uses "+1"/"-1"; GitLab
+// uses "thumbsup"/"thumbsdown". A future implementation must map between
+// the two.
+func (c *LiveClient) AddIssueCommentReaction(_ context.Context, _, _ string, _, _ int, _ string) (int64, error) {
 	return 0, forge.ErrNotSupported
 }
 
-// DeleteIssueCommentReaction is not yet implemented for GitLab. See AddIssueReaction.
-func (c *LiveClient) DeleteIssueCommentReaction(_ context.Context, _, _ string, _ int, _ int64) error {
+// DeleteIssueCommentReaction is not yet implemented for GitLab.
+// See AddIssueCommentReaction for rationale on the number parameter.
+func (c *LiveClient) DeleteIssueCommentReaction(_ context.Context, _, _ string, _, _ int, _ int64) error {
 	return forge.ErrNotSupported
 }
 

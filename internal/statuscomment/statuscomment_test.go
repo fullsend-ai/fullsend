@@ -1750,6 +1750,9 @@ func TestPostCompletion_ReactionDeleteFailPreservesID(t *testing.T) {
 	assert.NotZero(t, n.startReactionID, "startReactionID should be preserved when delete fails")
 	require.Len(t, warnings, 1)
 	assert.Contains(t, warnings[0], "transient API error")
+	// When the start-reaction delete fails, the completion reaction must
+	// NOT be posted — otherwise both 👀 and 👍/😕 end up stacked.
+	assert.Len(t, fc.AddedReactions, 1, "only the start reaction should exist; no completion reaction should be added when delete fails")
 }
 
 // Verify that the suppressed-completion path (cleanupComment) attempts

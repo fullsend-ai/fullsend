@@ -200,6 +200,33 @@ func TestLoadGHAEvent_IssueComment(t *testing.T) {
 	assert.NotNil(t, ev.State.ChangeProposal)
 }
 
+func TestLoadGHAEvent_IssueCommentID(t *testing.T) {
+	raw := map[string]any{
+		"action": "created",
+		"issue": map[string]any{
+			"number":   float64(42),
+			"html_url": "https://github.com/o/r/issues/42",
+			"user":     map[string]any{"login": "alice"},
+			"labels":   []any{},
+		},
+		"comment": map[string]any{
+			"id":   float64(98765),
+			"body": "/fs-fix do the thing",
+		},
+		"sender": map[string]any{"login": "alice", "type": "User"},
+	}
+	path := writeEventFile(t, raw)
+
+	ev, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+		EventPath:  path,
+		EventName:  "issue_comment",
+		Repository: "o/r",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, ev.Transition.Comment)
+	assert.Equal(t, 98765, ev.Transition.Comment.ID, "comment ID should be populated from webhook payload")
+}
+
 func TestLoadGHAEvent_IssueCommentEditedAndDeleted(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.CollaboratorPermissions = map[string]string{"o/r/alice": "write"}

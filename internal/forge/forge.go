@@ -626,14 +626,18 @@ type Client interface {
 	// rather than the issue/PR itself. Used when a run was triggered by a
 	// slash command, so the reaction targets the comment that invoked the
 	// agent instead of the issue/PR. See AddIssueReaction for content
-	// values. Returns forge.ErrNotSupported if the forge has no equivalent
-	// concept.
-	AddIssueCommentReaction(ctx context.Context, owner, repo string, commentID int, content string) (id int64, err error)
+	// values. number is the issue/MR number that owns the comment — unused
+	// by GitHub (comments are globally addressable by ID) but required by
+	// GitLab's note-scoped award-emoji endpoints, which are issue-scoped:
+	// POST /projects/:id/issues/:issue_iid/notes/:note_id/award_emoji.
+	// Returns forge.ErrNotSupported if the forge has no equivalent concept.
+	AddIssueCommentReaction(ctx context.Context, owner, repo string, number, commentID int, content string) (id int64, err error)
 
 	// DeleteIssueCommentReaction removes a previously added comment
-	// reaction by ID. Returns forge.ErrNotSupported if the forge has no
-	// equivalent concept.
-	DeleteIssueCommentReaction(ctx context.Context, owner, repo string, commentID int, reactionID int64) error
+	// reaction by ID. number is the issue/MR number — see
+	// AddIssueCommentReaction for rationale. Returns
+	// forge.ErrNotSupported if the forge has no equivalent concept.
+	DeleteIssueCommentReaction(ctx context.Context, owner, repo string, number, commentID int, reactionID int64) error
 
 	// ListIssueReactions returns the emoji reactions on an issue or
 	// pull request. Returns forge.ErrNotSupported if the forge has no

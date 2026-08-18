@@ -2831,7 +2831,9 @@ func (c *LiveClient) DeleteIssueReaction(ctx context.Context, owner, repo string
 }
 
 // AddIssueCommentReaction adds an emoji reaction to an issue/PR comment.
-func (c *LiveClient) AddIssueCommentReaction(ctx context.Context, owner, repo string, commentID int, content string) (int64, error) {
+// number is unused by GitHub (comments are globally addressable) but
+// required by the cross-forge interface for GitLab compatibility.
+func (c *LiveClient) AddIssueCommentReaction(ctx context.Context, owner, repo string, number, commentID int, content string) (int64, error) {
 	if !slices.Contains(validReactionContent, content) {
 		return 0, fmt.Errorf("add issue comment reaction: invalid content %q", content)
 	}
@@ -2849,7 +2851,8 @@ func (c *LiveClient) AddIssueCommentReaction(ctx context.Context, owner, repo st
 }
 
 // DeleteIssueCommentReaction removes a previously added comment reaction by ID.
-func (c *LiveClient) DeleteIssueCommentReaction(ctx context.Context, owner, repo string, commentID int, reactionID int64) error {
+// number is unused by GitHub — see AddIssueCommentReaction.
+func (c *LiveClient) DeleteIssueCommentReaction(ctx context.Context, owner, repo string, number, commentID int, reactionID int64) error {
 	return c.delete_(ctx, fmt.Sprintf("/repos/%s/%s/issues/comments/%d/reactions/%d", owner, repo, commentID, reactionID))
 }
 

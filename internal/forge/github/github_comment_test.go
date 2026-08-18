@@ -594,7 +594,7 @@ func TestAddIssueCommentReaction(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
-	id, err := client.AddIssueCommentReaction(context.Background(), "owner", "repo", 555, "eyes")
+	id, err := client.AddIssueCommentReaction(context.Background(), "owner", "repo", 42, 555, "eyes")
 	require.NoError(t, err)
 	assert.Equal(t, int64(789), id)
 }
@@ -606,7 +606,7 @@ func TestAddIssueCommentReaction_InvalidContent(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
-	_, err := client.AddIssueCommentReaction(context.Background(), "owner", "repo", 555, "bogus")
+	_, err := client.AddIssueCommentReaction(context.Background(), "owner", "repo", 42, 555, "bogus")
 	assert.Error(t, err)
 }
 
@@ -619,7 +619,7 @@ func TestDeleteIssueCommentReaction(t *testing.T) {
 	defer srv.Close()
 
 	client := newTestClient(t, srv)
-	err := client.DeleteIssueCommentReaction(context.Background(), "owner", "repo", 555, 789)
+	err := client.DeleteIssueCommentReaction(context.Background(), "owner", "repo", 42, 555, 789)
 	require.NoError(t, err)
 }
 
