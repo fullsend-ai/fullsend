@@ -93,6 +93,23 @@ defense-in-depth. When filtering removes all findings from a
 `request-changes` or `reject` verdict, the post-script downgrades the
 verdict to `comment` (applying the `requires-manual-review` label).
 
+### Skipping docs-only and test-only PRs
+
+The scaffold ships `scripts/review-scope-precheck.sh`, a harness `pre_script`
+that exits 78 (neutral skip, see the
+[pre-script output protocol](../normative/prescript-output/v1/README.md))
+when every changed file matches a docs/test pattern (`\.md$`, `^docs/`,
+`_test\.go$`, `^tests?/`, `\.txt$` — override with
+`REVIEW_SCOPE_SKIP_PATTERNS`, comma-separated ERE). It reads the file list
+from `BASE`/`HEAD` (git) or `PR_NUMBER`/`REPO_FULL_NAME` (`gh pr view`).
+Wire it with `base:` composition; note that `pre_script` is replaced, not
+chained, so this override drops the upstream input-validation pre-script:
+
+```yaml
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<ref>/harness/review.yaml
+pre_script: scripts/review-scope-precheck.sh
+```
+
 ## Source
 
 [`fullsend-ai/agents` — `harness/review.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/review.yaml)
