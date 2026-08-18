@@ -562,12 +562,12 @@ func TestStandaloneWiring(t *testing.T) {
 	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
 
-	verifierFactory := func(audience string) (mintcore.OIDCVerifier, error) {
-		return mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-			IssuerURL:  "https://token.actions.githubusercontent.com",
-			Audience:   audience,
-			HTTPClient: &http.Client{Timeout: 5 * time.Second},
-		})
+	oidcVerifier, err := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
+		IssuerURL:  "https://token.actions.githubusercontent.com",
+		HTTPClient: &http.Client{Timeout: 5 * time.Second},
+	})
+	if err != nil {
+		t.Fatalf("NewJWKSVerifier: %v", err)
 	}
 
 	pemAccessor, err := mintcore.NewFilesystemPEMAccessor(pemDir)
@@ -575,7 +575,7 @@ func TestStandaloneWiring(t *testing.T) {
 		t.Fatalf("NewFilesystemPEMAccessor: %v", err)
 	}
 
-	handler, err := mintcore.NewHandler(os.Getenv, pemAccessor, verifierFactory, &http.Client{Timeout: 5 * time.Second})
+	handler, err := mintcore.NewHandler(oidcVerifier, pemAccessor, &http.Client{Timeout: 5 * time.Second})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}

@@ -5,31 +5,18 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 )
 
-// mapGetEnv returns a getEnv function backed by a string map,
-// simulating Worker bindings or other non-os.Getenv config sources.
-func mapGetEnv(m map[string]string) func(string) string {
-	return func(key string) string { return m[key] }
-}
+func TestNewHandler_ReadsEnv(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"triage":"100","coder":"200"}`)
+	t.Setenv("ALLOWED_ROLES", "")
+	t.Setenv("ALLOWED_ORGS", "test-org")
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-// fakeFactory returns a VerifierFactory that always returns the given verifier.
-func fakeFactory(v OIDCVerifier) VerifierFactory {
-	return func(_ string) (OIDCVerifier, error) { return v, nil }
-}
-
-func TestNewHandler_CustomGetEnv(t *testing.T) {
-	bindings := map[string]string{
-		"ROLE_APP_IDS":           `{"triage":"100","coder":"200"}`,
-		"ALLOWED_ROLES":          "",
-		"ALLOWED_ORGS":           "test-org",
-		"ALLOWED_WORKFLOW_FILES": "*",
-		"OIDC_AUDIENCE":          "fullsend-mint",
-	}
-	h, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -44,14 +31,13 @@ func TestNewHandler_CustomGetEnv(t *testing.T) {
 	}
 }
 
-func TestNewHandler_CustomGetEnv_ExplicitAllowedRoles(t *testing.T) {
-	bindings := map[string]string{
-		"ROLE_APP_IDS":           `{"triage":"100","coder":"200","review":"300"}`,
-		"ALLOWED_ROLES":          "triage,coder",
-		"ALLOWED_WORKFLOW_FILES": "*",
-		"OIDC_AUDIENCE":          "fullsend-mint",
-	}
-	h, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+func TestNewHandler_ExplicitAllowedRoles(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"triage":"100","coder":"200","review":"300"}`)
+	t.Setenv("ALLOWED_ROLES", "triage,coder")
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+
+	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -66,24 +52,23 @@ func TestNewHandler_CustomGetEnv_ExplicitAllowedRoles(t *testing.T) {
 	}
 }
 
-func TestNewHandler_CustomGetEnv_MissingRoleAppIDs(t *testing.T) {
-	bindings := map[string]string{
-		"ALLOWED_WORKFLOW_FILES": "*",
-		"OIDC_AUDIENCE":          "fullsend-mint",
-	}
-	_, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+func TestNewHandler_MissingRoleAppIDs(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", "")
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+
+	_, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
 	if err != nil {
 		t.Fatalf("expected no error for empty ROLE_APP_IDS, got: %v", err)
 	}
 }
 
-func TestNewHandler_CustomGetEnv_InvalidRoleAppIDsJSON(t *testing.T) {
-	bindings := map[string]string{
-		"ROLE_APP_IDS":           "not-json",
-		"ALLOWED_WORKFLOW_FILES": "*",
-		"OIDC_AUDIENCE":          "fullsend-mint",
-	}
-	_, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+func TestNewHandler_InvalidRoleAppIDsJSON(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", "not-json")
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+
+	_, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
 	if err == nil {
 		t.Fatal("expected error for invalid JSON")
 	}
@@ -92,14 +77,13 @@ func TestNewHandler_CustomGetEnv_InvalidRoleAppIDsJSON(t *testing.T) {
 	}
 }
 
-func TestNewHandler_CustomGetEnv_InvalidAllowedRoleFormat(t *testing.T) {
-	bindings := map[string]string{
-		"ROLE_APP_IDS":           `{"coder":"200"}`,
-		"ALLOWED_ROLES":          "INVALID",
-		"ALLOWED_WORKFLOW_FILES": "*",
-		"OIDC_AUDIENCE":          "fullsend-mint",
-	}
-	_, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+func TestNewHandler_InvalidAllowedRoleFormat(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("ALLOWED_ROLES", "INVALID")
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+
+	_, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
 	if err == nil {
 		t.Fatal("expected error for invalid role format")
 	}
@@ -108,14 +92,13 @@ func TestNewHandler_CustomGetEnv_InvalidAllowedRoleFormat(t *testing.T) {
 	}
 }
 
-func TestNewHandler_CustomGetEnv_AllowedRoleNotInPermissions(t *testing.T) {
-	bindings := map[string]string{
-		"ROLE_APP_IDS":           `{"nonexistent":"100"}`,
-		"ALLOWED_ROLES":          "nonexistent",
-		"ALLOWED_WORKFLOW_FILES": "*",
-		"OIDC_AUDIENCE":          "fullsend-mint",
-	}
-	_, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+func TestNewHandler_AllowedRoleNotInPermissions(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"nonexistent":"100"}`)
+	t.Setenv("ALLOWED_ROLES", "nonexistent")
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+
+	_, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
 	if err == nil {
 		t.Fatal("expected error for role not in RolePermissions")
 	}
@@ -124,14 +107,13 @@ func TestNewHandler_CustomGetEnv_AllowedRoleNotInPermissions(t *testing.T) {
 	}
 }
 
-func TestNewHandler_CustomGetEnv_AllowedRoleNotInAppIDs(t *testing.T) {
-	bindings := map[string]string{
-		"ROLE_APP_IDS":           `{"coder":"200"}`,
-		"ALLOWED_ROLES":          "triage",
-		"ALLOWED_WORKFLOW_FILES": "*",
-		"OIDC_AUDIENCE":          "fullsend-mint",
-	}
-	_, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+func TestNewHandler_AllowedRoleNotInAppIDs(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("ALLOWED_ROLES", "triage")
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+
+	_, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
 	if err == nil {
 		t.Fatal("expected error for role not in ROLE_APP_IDS")
 	}
@@ -140,14 +122,13 @@ func TestNewHandler_CustomGetEnv_AllowedRoleNotInAppIDs(t *testing.T) {
 	}
 }
 
-func TestNewHandler_CustomGetEnv_InjectsHTTPClient(t *testing.T) {
-	bindings := map[string]string{
-		"ROLE_APP_IDS":           `{"coder":"200"}`,
-		"ALLOWED_WORKFLOW_FILES": "*",
-		"OIDC_AUDIENCE":          "fullsend-mint",
-	}
+func TestNewHandler_InjectsHTTPClient(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+
 	client := &http.Client{}
-	h, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), client)
+	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, client)
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -156,41 +137,14 @@ func TestNewHandler_CustomGetEnv_InjectsHTTPClient(t *testing.T) {
 	}
 }
 
-func TestNewHandler_CustomGetEnv_NoEnvDependency(t *testing.T) {
-	// Verify that NewHandler with a custom getEnv does not read os.Getenv
-	// by clearing ROLE_APP_IDS and ALLOWED_ROLES in the process environment.
-	t.Setenv("ROLE_APP_IDS", "")
-	t.Setenv("ALLOWED_ROLES", "")
+func TestNewHandler_PerRepoWIFRepos(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("PER_REPO_WIF_REPOS", "org/repo-a, Org/Repo-B")
+	t.Setenv("ALLOWED_ORGS", "org")
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
 
-	bindings := map[string]string{
-		"ROLE_APP_IDS":           `{"triage":"100","coder":"200"}`,
-		"ALLOWED_ROLES":          "coder",
-		"ALLOWED_WORKFLOW_FILES": "*",
-		"OIDC_AUDIENCE":          "fullsend-mint",
-	}
-	h, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
-	if err != nil {
-		t.Fatalf("NewHandler: %v", err)
-	}
-
-	// Verify the handler was configured from the bindings, not os.Getenv.
-	if !h.checkAllowedRole("coder") {
-		t.Fatal("coder should be allowed from custom getEnv")
-	}
-	if h.checkAllowedRole("triage") {
-		t.Fatal("triage should not be allowed when ALLOWED_ROLES is 'coder'")
-	}
-}
-
-func TestNewHandler_CustomGetEnv_PerRepoWIFRepos(t *testing.T) {
-	bindings := map[string]string{
-		"ROLE_APP_IDS":           `{"coder":"200"}`,
-		"PER_REPO_WIF_REPOS":     "org/repo-a, Org/Repo-B",
-		"ALLOWED_ORGS":           "org",
-		"ALLOWED_WORKFLOW_FILES": "*",
-		"OIDC_AUDIENCE":          "fullsend-mint",
-	}
-	h, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -211,15 +165,14 @@ func TestNewHandler_CustomGetEnv_PerRepoWIFRepos(t *testing.T) {
 	}
 }
 
-func TestNewHandler_CustomGetEnv_WorkflowHostRepos(t *testing.T) {
-	bindings := map[string]string{
-		"ROLE_APP_IDS":           `{"coder":"200"}`,
-		"ALLOWED_ORGS":           "org",
-		"ALLOWED_WORKFLOW_FILES": "*",
-		"WORKFLOW_HOST_REPOS":    "acme/workflows, Acme/Other",
-		"OIDC_AUDIENCE":          "fullsend-mint",
-	}
-	h, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+func TestNewHandler_WorkflowHostRepos(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("ALLOWED_ORGS", "org")
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("WORKFLOW_HOST_REPOS", "acme/workflows, Acme/Other")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+
+	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -234,14 +187,14 @@ func TestNewHandler_CustomGetEnv_WorkflowHostRepos(t *testing.T) {
 	}
 }
 
-func TestNewHandler_CustomGetEnv_WorkflowHostReposDefault(t *testing.T) {
-	bindings := map[string]string{
-		"ROLE_APP_IDS":           `{"coder":"200"}`,
-		"ALLOWED_ORGS":           "org",
-		"ALLOWED_WORKFLOW_FILES": "*",
-		"OIDC_AUDIENCE":          "fullsend-mint",
-	}
-	h, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+func TestNewHandler_WorkflowHostReposDefault(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("ALLOWED_ORGS", "org")
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("WORKFLOW_HOST_REPOS", "")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+
+	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -254,13 +207,12 @@ func TestNewHandler_CustomGetEnv_WorkflowHostReposDefault(t *testing.T) {
 	}
 }
 
-func TestNewHandler_CustomGetEnv_ServeHTTPWorks(t *testing.T) {
-	bindings := map[string]string{
-		"ROLE_APP_IDS":           `{"coder":"200"}`,
-		"ALLOWED_WORKFLOW_FILES": "*",
-		"OIDC_AUDIENCE":          "fullsend-mint",
-	}
-	h, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+func TestNewHandler_ServeHTTPWorks(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+
+	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -272,15 +224,12 @@ func TestNewHandler_CustomGetEnv_ServeHTTPWorks(t *testing.T) {
 	}
 }
 
-func TestNewHandler_CustomGetEnv_FullMintFlow(t *testing.T) {
-	// Test that a handler created with a custom getEnv can process
-	// requests the same way as one created with os.Getenv.
-	bindings := map[string]string{
-		"ROLE_APP_IDS":           `{"coder":"200"}`,
-		"ALLOWED_ORGS":           "test-org",
-		"ALLOWED_WORKFLOW_FILES": "*",
-		"OIDC_AUDIENCE":          "fullsend-mint",
-	}
+func TestNewHandler_FullMintFlow(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("ALLOWED_ORGS", "test-org")
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+
 	verifier := &fakeOIDCVerifier{
 		claims: &Claims{
 			Issuer:          "https://token.actions.githubusercontent.com",
@@ -313,7 +262,7 @@ func TestNewHandler_CustomGetEnv_FullMintFlow(t *testing.T) {
 	}))
 	defer github.Close()
 
-	h, err := NewHandler(mapGetEnv(bindings), pemAccessor, fakeFactory(verifier), github.Client())
+	h, err := NewHandler(verifier, pemAccessor, github.Client())
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -334,13 +283,12 @@ func TestNewHandler_CustomGetEnv_FullMintFlow(t *testing.T) {
 	}
 }
 
-func TestNewHandler_CustomGetEnv_LegacyAppIDsOnly(t *testing.T) {
-	bindings := map[string]string{
-		"ROLE_APP_IDS":           `{"test-org/coder":"200"}`,
-		"ALLOWED_WORKFLOW_FILES": "*",
-		"OIDC_AUDIENCE":          "fullsend-mint",
-	}
-	h, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+func TestNewHandler_LegacyAppIDsOnly(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"test-org/coder":"200"}`)
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+
+	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -352,13 +300,12 @@ func TestNewHandler_CustomGetEnv_LegacyAppIDsOnly(t *testing.T) {
 	}
 }
 
-func TestNewHandler_CustomGetEnv_DefaultGithubBaseURL(t *testing.T) {
-	bindings := map[string]string{
-		"ROLE_APP_IDS":           `{"coder":"200"}`,
-		"ALLOWED_WORKFLOW_FILES": "*",
-		"OIDC_AUDIENCE":          "fullsend-mint",
-	}
-	h, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+func TestNewHandler_DefaultGithubBaseURL(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+
+	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -367,16 +314,15 @@ func TestNewHandler_CustomGetEnv_DefaultGithubBaseURL(t *testing.T) {
 	}
 }
 
-func TestNewHandler_CustomGetEnv_NilHTTPClient(t *testing.T) {
+func TestNewHandler_NilHTTPClient(t *testing.T) {
 	// Passing nil HTTP client should still work (handler stores nil,
 	// which will fail at runtime when making requests, but construction
 	// should succeed).
-	bindings := map[string]string{
-		"ROLE_APP_IDS":           `{"coder":"200"}`,
-		"ALLOWED_WORKFLOW_FILES": "*",
-		"OIDC_AUDIENCE":          "fullsend-mint",
-	}
-	h, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), nil)
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+
+	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, nil)
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -385,15 +331,15 @@ func TestNewHandler_CustomGetEnv_NilHTTPClient(t *testing.T) {
 	}
 }
 
-func TestNewHandler_CustomGetEnv_EmptyAllowedOrgs(t *testing.T) {
+func TestNewHandler_EmptyAllowedOrgs(t *testing.T) {
 	// Verifies that an empty ALLOWED_ORGS with PER_REPO_WIF_REPOS works.
-	bindings := map[string]string{
-		"ROLE_APP_IDS":           `{"coder":"200"}`,
-		"PER_REPO_WIF_REPOS":     "test-org/my-repo",
-		"ALLOWED_WORKFLOW_FILES": "*",
-		"OIDC_AUDIENCE":          "fullsend-mint",
-	}
-	h, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("PER_REPO_WIF_REPOS", "test-org/my-repo")
+	t.Setenv("ALLOWED_ORGS", "")
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+
+	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
 	if err != nil {
 		t.Fatalf("NewHandler should succeed with empty ALLOWED_ORGS: %v", err)
 	}
@@ -405,24 +351,23 @@ func TestNewHandler_CustomGetEnv_EmptyAllowedOrgs(t *testing.T) {
 	}
 }
 
-func TestNewHandler_CustomGetEnv_NilGetEnv(t *testing.T) {
-	_, err := NewHandler(nil, &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+func TestNewHandler_NilOIDCVerifier(t *testing.T) {
+	_, err := NewHandler(nil, &fakePEMAccessor{}, &http.Client{})
 	if err == nil {
-		t.Fatal("expected error for nil getEnv")
+		t.Fatal("expected error for nil oidcVerifier")
 	}
-	if !strings.Contains(err.Error(), "getEnv must not be nil") {
+	if !strings.Contains(err.Error(), "oidcVerifier must not be nil") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestNewHandler_CustomGetEnv_CustomRolePermissions(t *testing.T) {
-	bindings := map[string]string{
-		"ROLE_APP_IDS":            `{"triage":"100","custom-role":"200"}`,
-		"CUSTOM_ROLE_PERMISSIONS": `{"custom-role":{"contents":"read","metadata":"read"}}`,
-		"ALLOWED_WORKFLOW_FILES":  "*",
-		"OIDC_AUDIENCE":           "fullsend-mint",
-	}
-	h, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+func TestNewHandler_CustomRolePermissions(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"triage":"100","custom-role":"200"}`)
+	t.Setenv("CUSTOM_ROLE_PERMISSIONS", `{"custom-role":{"contents":"read","metadata":"read"}}`)
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+
+	h, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
 	if err != nil {
 		t.Fatalf("NewHandler: %v", err)
 	}
@@ -436,14 +381,13 @@ func TestNewHandler_CustomGetEnv_CustomRolePermissions(t *testing.T) {
 	t.Cleanup(func() { RegisterCustomRolePermissions(nil) })
 }
 
-func TestNewHandler_CustomGetEnv_InvalidCustomRolePermissions(t *testing.T) {
-	bindings := map[string]string{
-		"ROLE_APP_IDS":            `{"triage":"100"}`,
-		"CUSTOM_ROLE_PERMISSIONS": "not-json",
-		"ALLOWED_WORKFLOW_FILES":  "*",
-		"OIDC_AUDIENCE":           "fullsend-mint",
-	}
-	_, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+func TestNewHandler_InvalidCustomRolePermissions(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"triage":"100"}`)
+	t.Setenv("CUSTOM_ROLE_PERMISSIONS", "not-json")
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+
+	_, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
 	if err == nil {
 		t.Fatal("expected error for invalid CUSTOM_ROLE_PERMISSIONS JSON")
 	}
@@ -452,13 +396,16 @@ func TestNewHandler_CustomGetEnv_InvalidCustomRolePermissions(t *testing.T) {
 	}
 }
 
-func TestNewHandler_CustomGetEnv_EmptyOIDCAudience(t *testing.T) {
-	bindings := map[string]string{
-		"ROLE_APP_IDS":           `{"coder":"200"}`,
-		"ALLOWED_WORKFLOW_FILES": "*",
-		// OIDC_AUDIENCE intentionally omitted → empty string.
-	}
-	_, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+func TestNewHandler_EmptyOIDCAudience(t *testing.T) {
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "")
+
+	// NewHandler no longer reads OIDC_AUDIENCE — verifiers do. Verify
+	// that NewJWKSVerifier rejects an empty audience.
+	_, err := NewJWKSVerifier(JWKSVerifierConfig{
+		IssuerURL: "https://token.actions.githubusercontent.com",
+	})
 	if err == nil {
 		t.Fatal("expected error for empty OIDC_AUDIENCE")
 	}
@@ -467,54 +414,20 @@ func TestNewHandler_CustomGetEnv_EmptyOIDCAudience(t *testing.T) {
 	}
 }
 
-func TestNewHandler_CustomGetEnv_VerifierFactoryError(t *testing.T) {
-	bindings := map[string]string{
-		"ROLE_APP_IDS":           `{"coder":"200"}`,
-		"ALLOWED_WORKFLOW_FILES": "*",
-		"OIDC_AUDIENCE":          "fullsend-mint",
-	}
-	failFactory := func(_ string) (OIDCVerifier, error) {
-		return nil, fmt.Errorf("verifier construction failed")
-	}
-	_, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, failFactory, &http.Client{})
-	if err == nil {
-		t.Fatal("expected error when verifier factory fails")
-	}
-	if !strings.Contains(err.Error(), "creating OIDC verifier") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestNewHandler_CustomGetEnv_RegisterCustomRolePermissionsError(t *testing.T) {
+func TestNewHandler_RegisterCustomRolePermissionsError(t *testing.T) {
 	// Use a built-in role name in CUSTOM_ROLE_PERMISSIONS to trigger a
 	// collision error from RegisterCustomRolePermissions.
-	bindings := map[string]string{
-		"ROLE_APP_IDS":            `{"triage":"100"}`,
-		"CUSTOM_ROLE_PERMISSIONS": `{"triage":{"contents":"read"}}`,
-		"ALLOWED_WORKFLOW_FILES":  "*",
-		"OIDC_AUDIENCE":           "fullsend-mint",
-	}
-	_, err := NewHandler(mapGetEnv(bindings), &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
+	t.Setenv("ROLE_APP_IDS", `{"triage":"100"}`)
+	t.Setenv("CUSTOM_ROLE_PERMISSIONS", `{"triage":{"contents":"read"}}`)
+	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
+	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
+
+	_, err := NewHandler(&fakeOIDCVerifier{}, &fakePEMAccessor{}, &http.Client{})
 	if err == nil {
 		t.Fatal("expected error when custom role collides with built-in")
 	}
 	if !strings.Contains(err.Error(), "registering custom role permissions") {
 		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestNewHandler_OsGetEnv(t *testing.T) {
-	// Verify that passing os.Getenv works the same as before.
-	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
-	t.Setenv("ALLOWED_WORKFLOW_FILES", "*")
-	t.Setenv("OIDC_AUDIENCE", "fullsend-mint")
-
-	h, err := NewHandler(os.Getenv, &fakePEMAccessor{}, fakeFactory(&fakeOIDCVerifier{}), &http.Client{})
-	if err != nil {
-		t.Fatalf("NewHandler with os.Getenv: %v", err)
-	}
-	if !h.checkAllowedRole("coder") {
-		t.Fatal("coder should be allowed via os.Getenv")
 	}
 }
 

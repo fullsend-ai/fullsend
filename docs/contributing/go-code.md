@@ -38,7 +38,7 @@ The `make wasm-build` target enforces these limits automatically — run it afte
 
 - **Do not pass closures or function values** (`func(string) string`, `func() error`, etc.) into structs that are compiled into the WASM binary. Closure capture pulls the entire dependency graph of the captured variables into the binary. Prefer passing resolved values (strings, ints, config structs with only data fields) instead.
 - **Avoid importing heavy packages** in `internal/mintcore/` files that are WASM-compiled. Packages like `net/http`, `crypto/x509`, or cloud SDKs carry large dependency trees. Use build tags (`//go:build js` / `//go:build !js`) to isolate platform-specific implementations.
-- **Use the `VerifierFactory` pattern** (see `internal/mintcore/`) when WASM-compiled code needs behavior that depends on runtime configuration. The factory constructs verifiers from plain data rather than captured closures, keeping the dependency graph bounded.
+- **Use the build-tagged `mintEnv` accessor** (see `internal/mintcore/env.go` and `env_js.go`) for environment variable reads. The native build delegates to `os.Getenv`; the WASM build uses a JS callback registered once during `mintcoreInitMint`. This avoids passing `func(string) string` closures through constructors.
 
 When making changes to Go code under `cmd/` or `internal/`:
 

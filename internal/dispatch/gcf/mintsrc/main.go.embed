@@ -53,15 +53,15 @@ func init() {
 	wifPoolName := os.Getenv("WIF_POOL_NAME")
 	defaultWIFProvider := os.Getenv("WIF_PROVIDER_NAME")
 
-	verifierFactory := func(audience string) (mintcore.OIDCVerifier, error) {
-		return mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{
-			HTTPClient:         httpClient,
-			Audience:           audience,
-			GCPProjectNum:      gcpProjectNum,
-			WIFPoolName:        wifPoolName,
-			DefaultWIFProvider: defaultWIFProvider,
-			PerRepoWIFRepos:    perRepoWIFRepos,
-		})
+	oidcVerifier, err := mintcore.NewSTSVerifier(mintcore.STSVerifierConfig{
+		HTTPClient:         httpClient,
+		GCPProjectNum:      gcpProjectNum,
+		WIFPoolName:        wifPoolName,
+		DefaultWIFProvider: defaultWIFProvider,
+		PerRepoWIFRepos:    perRepoWIFRepos,
+	})
+	if err != nil {
+		log.Fatalf("creating OIDC verifier: %v", err)
 	}
 
 	pemAccessor := mintcore.NewGCPSecretPEMAccessor(
@@ -69,7 +69,7 @@ func init() {
 		gcpProjectNum,
 	)
 
-	handler, err := mintcore.NewHandler(os.Getenv, pemAccessor, verifierFactory, httpClient)
+	handler, err := mintcore.NewHandler(oidcVerifier, pemAccessor, httpClient)
 	if err != nil {
 		log.Fatalf("initializing handler: %v", err)
 	}

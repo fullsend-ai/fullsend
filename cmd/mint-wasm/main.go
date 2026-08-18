@@ -43,9 +43,9 @@ func main() {
 // Returns "" on success or an error message string on failure.
 //
 // getEnvCallback is a synchronous JS function: (key: string) => string.
-// The Worker passes a callback that looks up CF Worker bindings by name,
-// matching the os.Getenv contract used by native entrypoints. Mintcore
-// decides which keys to read — the JS side does not serialize a config map.
+// The Worker passes a callback that looks up CF Worker bindings by name.
+// It is registered once via mintcore.RegisterEnv so the package-internal
+// mintEnv accessor can read Worker bindings without closure injection.
 func initMint(_ js.Value, args []js.Value) interface{} {
 	if len(args) < 3 {
 		return "mintcoreInitMint requires 3 arguments: getEnvCallback, fetchCallback, pemCallback"
@@ -55,14 +55,8 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 	fetchFn := args[1]
 	pemFn := args[2]
 
-	// Build a Go getEnv func backed by the JS callback.
-	getEnv := func(key string) string {
-		result := getEnvFn.Invoke(key)
-		if result.Type() == js.TypeString {
-			return result.String()
-		}
-		return ""
-	}
+	// Register the JS env callback so mintEnv works in the WASM build.
+	mintcore.RegisterEnv(getEnvFn)
 
 	fetchDoer, err := mintcore.NewHostFetchDoer(fetchFn)
 	if err != nil {
@@ -74,15 +68,15 @@ func initMint(_ js.Value, args []js.Value) interface{} {
 		return fmt.Sprintf("invalid PEM callback: %v", err)
 	}
 
-	verifierFactory := func(audience string) (mintcore.OIDCVerifier, error) {
-		return mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
-			IssuerURL:  "https://token.actions.githubusercontent.com",
-			Audience:   audience,
-			HTTPClient: fetchDoer,
-		})
+	verifier, err := mintcore.NewJWKSVerifier(mintcore.JWKSVerifierConfig{
+		IssuerURL:  "https://token.actions.githubusercontent.com",
+		HTTPClient: fetchDoer,
+	})
+	if err != nil {
+		return fmt.Sprintf("failed to create OIDC verifier: %v", err)
 	}
 
-	h, err := mintcore.NewHandler(getEnv, pemAccessor, verifierFactory, fetchDoer)
+	h, err := mintcore.NewHandler(verifier, pemAccessor, fetchDoer)
 	if err != nil {
 		return fmt.Sprintf("failed to initialize handler: %v", err)
 	}

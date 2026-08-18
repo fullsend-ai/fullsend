@@ -59,7 +59,6 @@ func newTestSTSVerifier(t *testing.T, stsURL string) *STSVerifier {
 	t.Helper()
 	v, err := NewSTSVerifier(STSVerifierConfig{
 		STSURL:             stsURL,
-		Audience:           "fullsend-mint",
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "fullsend-pool",
 		DefaultWIFProvider: "fullsend-provider",
@@ -153,11 +152,11 @@ func TestSTSVerifier_STSEmptyToken(t *testing.T) {
 // handler level — authorization is now the handler's responsibility.
 
 func TestNewSTSVerifier_EmptyAudience(t *testing.T) {
+	t.Setenv("OIDC_AUDIENCE", "")
 	_, err := NewSTSVerifier(STSVerifierConfig{
 		GCPProjectNum:      "123456",
 		WIFPoolName:        "pool",
 		DefaultWIFProvider: "provider",
-		// Audience intentionally omitted → empty.
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "OIDC_AUDIENCE must be configured")
@@ -165,7 +164,6 @@ func TestNewSTSVerifier_EmptyAudience(t *testing.T) {
 
 func TestSTSVerifier_ResolveWIFProvider(t *testing.T) {
 	v, err := NewSTSVerifier(STSVerifierConfig{
-		Audience:           "fullsend-mint",
 		DefaultWIFProvider: "default-provider",
 		PerRepoWIFRepos:    map[string]bool{"myorg/special-repo": true},
 	})
