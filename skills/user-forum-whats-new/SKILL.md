@@ -59,6 +59,8 @@ Do these in order. Do not draft bullets until ranking is done.
 - Last forum date = previous Tuesday (confirm from the notes file).
 - `SINCE` = that meeting's start (America/New_York 08:00 is fine).
 - `UNTIL` = this Tuesday forum (now, if running that morning).
+- `gather.sh` interprets `--since` as **08:00 America/New_York** on that
+  date and `--until` as end of that day ET (or **now** when until is today).
 - Releases published **after** the last forum are in-scope even if they
   share the calendar day (e.g. v0.36.0 shipped the afternoon of Aug 11).
 
@@ -72,8 +74,9 @@ bash skills/user-forum-whats-new/scripts/gather.sh --since YYYY-MM-DD --until YY
 
 Or from this skill directory: `bash scripts/gather.sh --since … --until …`.
 
-That prints JSON: releases (including changelog body) + merged PRs for
-`fullsend-ai/fullsend` and `fullsend-ai/agents`.
+That prints JSON: releases (full changelog body) + merged PRs for
+`fullsend-ai/fullsend` and `fullsend-ai/agents`, plus
+`window_start_utc` / `window_end_utc` for the exact bounds used.
 
 **Score Features from the release body even when their PRs merged
 before `SINCE`.** The gather window only lists PRs merged this week;
