@@ -5,7 +5,7 @@ description: >
   Tuesday-to-Tuesday recap, forum-host notes for the standing Google Doc,
   or copy-paste HTML of shipped changes for users. Also use when the
   user says what's new in Fullsend, user forum bullets, or forum agenda.
-allowed-tools: Read, Grep, Glob, WebFetch, Bash(bash skills/user-forum-whats-new/scripts/gather.sh:*), Bash(gh api:*), Bash(gh search:*), Bash(gh issue:*), Bash(gh pr:*), Bash(gh release:*)
+allowed-tools: Read, Write, Grep, Glob, WebFetch, Bash(bash skills/user-forum-whats-new/scripts/gather.sh:*), Bash(python3 skills/user-forum-whats-new/scripts/gather.py:*), Bash(gh api:*), Bash(gh search:*), Bash(gh issue:*), Bash(gh pr:*), Bash(gh release:*), Bash(xdg-open:*), Bash(open:*)
 ---
 
 # User forum What's New
@@ -59,8 +59,12 @@ Do these in order. Do not draft bullets until ranking is done.
 - Last forum date = previous Tuesday (confirm from the notes file).
 - `SINCE` = that meeting's start (America/New_York 08:00 is fine).
 - `UNTIL` = this Tuesday forum (now, if running that morning).
-- `gather.sh` interprets `--since` as **08:00 America/New_York** on that
-  date and `--until` as end of that day ET (or **now** when until is today).
+- `gather.sh` / `gather.py` interpret `--since` as **08:00 America/New_York**
+  on that date and `--until` as end of that day ET (or **now** when until is
+  today). Default `--until` is today's date in America/New_York (not the
+  host machine's local calendar).
+- Search and filter use the same UTC timestamp bounds (not bare calendar
+  dates), so ET evening after UTC midnight is not dropped.
 - Releases published **after** the last forum are in-scope even if they
   share the calendar day (e.g. v0.36.0 shipped the afternoon of Aug 11).
 
@@ -72,12 +76,11 @@ From the repository root:
 bash skills/user-forum-whats-new/scripts/gather.sh --since YYYY-MM-DD --until YYYY-MM-DD
 ```
 
-Or from this skill directory: `bash scripts/gather.sh --since … --until …`.
-
 That prints JSON: releases (full changelog body), merged PRs split into
 `merged_prs.released` and `merged_prs.on_main`, plus `window_start_utc`,
-`window_end_utc`, and `release_cutoff_utc` (latest in-window release
-publish time — PRs merged after this are on-main).
+`window_end_utc`, and `release_cutoff_utc` (per-repo map of latest
+in-window release publish times — each PR is classified against **its own
+repo's** cutoff). Unit tests: `python3 skills/user-forum-whats-new/scripts/gather_test.py`.
 
 **Score Features from the release body even when their PRs merged
 before `SINCE`.** The gather window only lists PRs merged this week;
@@ -86,8 +89,10 @@ the release that shipped after last Tuesday still counts.
 Also scan:
 
 - `#forum-fullsend-ai` announcements of things that **landed this window**
-  (a new dashboard, a new knob). Ignore “here is a team using X” when X
-  has been available for weeks.
+  (a new dashboard, a new knob). That is the user-forum channel; it is
+  distinct from `#forum-konflux-fullsend` (release announcements in
+  `.goreleaser.yml`). Ignore “here is a team using X” when X has been
+  available for weeks.
 - Docs/guide sections that landed in the window
 - Live comments / dashboards / runs that **show a change from this window**
 
@@ -196,10 +201,11 @@ Every kept bullet belongs in exactly one section.
 | **Released** | In the newest release published this window (`v0.36.0`, etc.). Also: external surfaces users can **use right now** — a live dashboard, a docs page, a skill on `main` they can invoke today. If it works when they click it, treat it as released even without a tag. |
 | **On main (next release)** | Merged to `fullsend` or `agents` `main` **after** that release was tagged. Link landing code on `main` (not the release tag). |
 
-`gather.sh` splits merged PRs using the latest in-window release
-`published_at` as the cutoff (`release_cutoff_utc` in JSON). You still
-assign bullets manually when the source is a release-body feature (PR
-merged before the window) or a live external surface.
+`gather.py` splits merged PRs using each repo's latest in-window release
+`published_at` as that repo's cutoff (`release_cutoff_utc` is a per-repo
+map in JSON). You still assign bullets manually when the source is a
+release-body feature (PR merged before the window) or a live external
+surface.
 
 Talk **Released** first, then **On main**.
 
