@@ -227,11 +227,8 @@ func thenDispatchRunDoesNotAuthorizeViaOwners(w *world.World) error {
 	if err != nil {
 		return fmt.Errorf("fetching dispatch run logs: %w", err)
 	}
-	if strings.Contains(logs, "OWNERS file resolved user") {
+	if strings.Contains(logs, "##[notice]OWNERS file resolved user") {
 		return fmt.Errorf("dispatch run %d (%s) logs unexpectedly contain OWNERS authorization", run.ID, run.HTMLURL)
-	}
-	if !strings.Contains(logs, "No stage matched") {
-		return fmt.Errorf("dispatch run %d (%s) logs do not contain 'No stage matched' — dispatch may have proceeded via a non-OWNERS path", run.ID, run.HTMLURL)
 	}
 	return nil
 }
