@@ -3,6 +3,7 @@ package security
 import (
 	_ "embed"
 	"encoding/json"
+	"os"
 
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 )
@@ -51,6 +52,15 @@ type claudeSettings struct {
 // SandboxHooksDir is the path where hook scripts are installed inside the
 // sandbox. Must match sandbox.SandboxWorkspace + "/.claude/hooks".
 const SandboxHooksDir = sandbox.SandboxWorkspace + "/.claude/hooks"
+
+// CostwiseHooksDir is where the sandbox image installs the costwise routing
+// hook scripts (see images/sandbox/Containerfile).
+const CostwiseHooksDir = "/opt/costwise/hooks"
+
+// costwiseEnabled reports whether costwise routing hooks should be wired in.
+func costwiseEnabled() bool {
+	return os.Getenv("FULLSEND_COSTWISE") == "1"
+}
 
 // GenerateClaudeSettings produces a .claude/settings.json with security hooks
 // configured according to hooks. Returns the JSON bytes.
@@ -143,6 +153,24 @@ func GenerateClaudeSettings(hooks ClaudeSandboxHooks) ([]byte, error) {
 			Matcher: "*",
 			Hooks: []hookEntry{
 				{Type: "command", Command: "python3 " + SandboxHooksDir + "/canary_posttool.py"},
+			},
+		})
+	}
+
+	// Costwise cost-aware model routing (opt-in via FULLSEND_COSTWISE=1).
+	// Hook scripts are baked into the sandbox image at CostwiseHooksDir.
+	// ponytail: env-var gate for the POC; move to harness.SandboxHooks when
+	// routing graduates past Phase 1 (see ADR 0090).
+	if costwiseEnabled() {
+		settings.Hooks["UserPromptSubmit"] = []hookMatcher{{
+			Hooks: []hookEntry{
+				{Type: "command", Command: "python3 " + CostwiseHooksDir + "/user_prompt.py"},
+			},
+		}}
+		preToolMatchers = append(preToolMatchers, hookMatcher{
+			Matcher: "Agent|Task",
+			Hooks: []hookEntry{
+				{Type: "command", Command: "python3 " + CostwiseHooksDir + "/pre_tool_use.py"},
 			},
 		})
 	}

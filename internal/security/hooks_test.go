@@ -374,3 +374,33 @@ func TestHookFiles_ContextSuppressDisabled(t *testing.T) {
 	assert.Len(t, files, 6) // both canary hooks still enabled
 	assert.NotContains(t, files, "context_suppress_posttool.py")
 }
+
+func TestGenerateClaudeSettings_CostwiseEnabled(t *testing.T) {
+	t.Setenv("FULLSEND_COSTWISE", "1")
+	h := &harness.Harness{Agent: "test.md"}
+	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
+	require.NoError(t, err)
+
+	var settings map[string]any
+	require.NoError(t, json.Unmarshal(data, &settings))
+	hooks := settings["hooks"].(map[string]any)
+
+	prompt := hooks["UserPromptSubmit"].([]any)
+	require.Len(t, prompt, 1)
+	assert.Contains(t, string(data), CostwiseHooksDir+"/user_prompt.py")
+
+	preTools := hooks["PreToolUse"].([]any)
+	assert.Len(t, preTools, 4) // tirith + ssrf + canary_pretool + costwise
+	last := preTools[3].(map[string]any)
+	assert.Equal(t, "Agent|Task", last["matcher"])
+	assert.Contains(t, string(data), CostwiseHooksDir+"/pre_tool_use.py")
+}
+
+func TestGenerateClaudeSettings_CostwiseDefaultOff(t *testing.T) {
+	t.Setenv("FULLSEND_COSTWISE", "")
+	h := &harness.Harness{Agent: "test.md"}
+	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "UserPromptSubmit")
+	assert.NotContains(t, string(data), "costwise")
+}
