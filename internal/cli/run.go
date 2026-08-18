@@ -40,6 +40,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/prescript"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
@@ -243,6 +244,7 @@ func newRunCmd() *cobra.Command {
 	var debugFilter string
 	var keepSandbox bool
 	var forgeFlag string
+	var eventFile string
 	var rFlags resolveFlags
 	var sOpts statusOpts
 
@@ -254,7 +256,7 @@ func newRunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			agentName := args[0]
 			printer := ui.New(os.Stdout)
-			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, rFlags, sOpts, printer, keepSandbox)
+			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, eventFile, rFlags, sOpts, printer, keepSandbox)
 		},
 	}
 
@@ -268,6 +270,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&debugFilter, "debug", "", `enable Claude Code debug logging with optional category filter (e.g. "api,hooks")`)
 	cmd.Flags().Lookup("debug").NoOptDefVal = "*"
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform to use (e.g. "github", "gitlab"); auto-detected from CI env vars when omitted`)
+	cmd.Flags().StringVar(&eventFile, "event-file", "", "path to a normalized event JSON file for CEL overlay resolution (ADR 0088)")
 	cmd.Flags().BoolVar(&rFlags.offline, "offline", false, "reject network fetches; only use cached remote resources")
 	cmd.Flags().IntVar(&rFlags.maxDepth, "max-depth", resolve.DefaultMaxDepth, "maximum dependency depth for transitive resolution (0 disables)")
 	cmd.Flags().IntVar(&rFlags.maxResources, "max-resources", resolve.DefaultMaxResources, "maximum total remote resources per harness")
@@ -281,7 +284,7 @@ func newRunCmd() *cobra.Command {
 	return cmd
 }
 
-func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, envFiles []string, noPostScript bool, debug string, forgeFlag string, rFlags resolveFlags, sOpts statusOpts, printer *ui.Printer, keepSandbox bool) (runErr error) {
+func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, envFiles []string, noPostScript bool, debug string, forgeFlag string, eventFile string, rFlags resolveFlags, sOpts statusOpts, printer *ui.Printer, keepSandbox bool) (runErr error) {
 	printer.Banner(Version())
 	printer.Blank()
 	printer.Header("Running agent: " + agentName)
@@ -341,6 +344,26 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// Load normalized event for CEL overlay resolution (ADR 0088).
+	// When --event-file is provided, the event is passed to ComposeOpts.Event
+	// so ResolveOverlays can evaluate overlay when expressions.
+	var eventMap map[string]any
+	if eventFile != "" {
+		eventData, readErr := os.ReadFile(eventFile)
+		if readErr != nil {
+			return fmt.Errorf("reading event file %s: %w", eventFile, readErr)
+		}
+		ev, parseErr := normevent.ParseJSON(eventData)
+		if parseErr != nil {
+			return fmt.Errorf("parsing event file %s: %w", eventFile, parseErr)
+		}
+		var mapErr error
+		eventMap, mapErr = ev.ToMap()
+		if mapErr != nil {
+			return fmt.Errorf("converting event to map: %w", mapErr)
+		}
+	}
+
 	composeOpts := harness.ComposeOpts{
 		WorkspaceRoot: absFullsendDir,
 		FetchPolicy:   policy,
@@ -349,6 +372,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		OrgAllowlist:  orgAllowlist,
 		TreeFetcher:   rFlags.treeFetcher,
 		GitToken:      composeGitToken,
+		Event:         eventMap,
+		Config:        configMapForOverlays(orgCfg),
 	}
 
 	// Resolve agent source: config agents take precedence, then agents repo
@@ -4251,4 +4276,37 @@ func checkProviderProfileIntegrity(providers []resolve.ResolvedProvider, profile
 			strings.Join(mismatches, ", "))
 	}
 	return "", nil
+}
+
+// configMapForOverlays builds the config map[string]any exposed to overlay
+// CEL when expressions as the "config" variable (ADR 0088). Extracts
+// user-facing per-repo config fields from the config reader. Returns nil
+// when cfg is nil (no config loaded).
+func configMapForOverlays(cfg config.ConfigWriter) map[string]any {
+	if cfg == nil {
+		return nil
+	}
+	pr, ok := cfg.(config.PerRepoConfigReader)
+	if !ok {
+		return nil
+	}
+	m := map[string]any{}
+	if v := pr.ConfigForge(); v != "" {
+		m["forge"] = v
+	}
+	if v := pr.ConfigTracker(); v != "" {
+		m["tracker"] = v
+	}
+	if v := pr.ConfigRuntime(); v != "" {
+		m["runtime"] = v
+	}
+	if roles := pr.ConfigRoles(); len(roles) > 0 {
+		// Convert to []any for CEL evaluation compatibility.
+		anyRoles := make([]any, len(roles))
+		for i, r := range roles {
+			anyRoles[i] = r
+		}
+		m["roles"] = anyRoles
+	}
+	return m
 }
