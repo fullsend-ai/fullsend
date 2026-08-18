@@ -184,7 +184,7 @@ timeout_minutes: 20
 # max_runtime_fetches: 10
 ```
 
-See [Configuring agent behavior — Harness YAML Structure](customizing-agents.md#harness-yaml-structure) for the full field reference (including optional `security`, `providers`, `plugins`, and runtime fetch blocks).
+See [Harness Reference](harness-reference.md) for the full field reference (including optional `security`, `providers`, `plugins`, and runtime fetch blocks).
 
 The key pattern to understand is how data flows into the sandbox through `host_files`:
 
@@ -427,7 +427,7 @@ The post-script runs on the trusted runner with full credentials, but reads outp
 
 ## Step 6: Create skills (optional)
 
-[Skills](../../glossary.md#skill) are Markdown documents mounted into the sandbox that provide domain knowledge the agent can reference. See [Configuring agent behavior — Adding a Skill](customizing-agents.md#adding-a-skill) for how to create one.
+[Skills](../../glossary.md#skill) are Markdown documents mounted into the sandbox that provide domain knowledge the agent can reference. See [Configuring Agent Behavior — Adding a skill](customizing-agents.md#adding-a-skill) for how to create one.
 
 Place your skill at `.fullsend/skills/my-skill/SKILL.md`, then reference it in both the agent frontmatter (`skills: [my-skill]`) and the harness (`skills: [skills/my-skill]`).
 
