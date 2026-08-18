@@ -74,9 +74,10 @@ bash skills/user-forum-whats-new/scripts/gather.sh --since YYYY-MM-DD --until YY
 
 Or from this skill directory: `bash scripts/gather.sh --since … --until …`.
 
-That prints JSON: releases (full changelog body) + merged PRs for
-`fullsend-ai/fullsend` and `fullsend-ai/agents`, plus
-`window_start_utc` / `window_end_utc` for the exact bounds used.
+That prints JSON: releases (full changelog body), merged PRs split into
+`merged_prs.released` and `merged_prs.on_main`, plus `window_start_utc`,
+`window_end_utc`, and `release_cutoff_utc` (latest in-window release
+publish time — PRs merged after this are on-main).
 
 **Score Features from the release body even when their PRs merged
 before `SINCE`.** The gather window only lists PRs merged this week;
@@ -181,38 +182,53 @@ seconds.
 **Drop** even a high conceptual score if the example is weak (release
 notes, vague PR).
 
-**Best of the best only.** Typically **5–8** talk-track bullets, ~4–6
-minutes. Everything else belongs in GitHub release notes — users already
-have those. Do **not** append an **Also landed** / laundry-list bullet
-of runners-up (`effort`, CLI subcommands, unknown YAML keys, etc.).
-If only 4 items survive the filters, ship 4; do not pad.
+**Best of the best only** within each section below. Everything that
+survives the filters goes in **Released** or **On main** — not a single
+flat list and not an "Also landed" dump. If only two items qualify for
+a section, ship two; do not pad with release-note filler.
 
-Label on-main items explicitly: `On main (next release)`.
+### 5. Split into Released vs On main
 
-### 5. Write HTML for Google Docs
+Every kept bullet belongs in exactly one section.
+
+| Section | What goes here |
+|---------|----------------|
+| **Released** | In the newest release published this window (`v0.36.0`, etc.). Also: external surfaces users can **use right now** — a live dashboard, a docs page, a skill on `main` they can invoke today. If it works when they click it, treat it as released even without a tag. |
+| **On main (next release)** | Merged to `fullsend` or `agents` `main` **after** that release was tagged. Link landing code on `main` (not the release tag). |
+
+`gather.sh` splits merged PRs using the latest in-window release
+`published_at` as the cutoff (`release_cutoff_utc` in JSON). You still
+assign bullets manually when the source is a release-body feature (PR
+merged before the window) or a live external surface.
+
+Talk **Released** first, then **On main**.
+
+### 6. Write HTML for Google Docs
 
 Write `/tmp/fullsend-whats-new-YYYY-MM-DD.html` (this Tuesday's date).
 
 Constraints:
 
-- Simple HTML: `h2` date, `h3` What's new in Fullsend, `ul` / `li` / `a` / `strong` / `code`
+- Simple HTML: `h2` date, `h3` What's new in Fullsend, then two subsections:
+  - `h4` **Released** — bullets for shipped / usable-now items
+  - `h4` **On main (next release)** — bullets for post-release merges
 - Arial 11pt, no fancy CSS (Google Docs paste)
 - Each bullet: **bold hook** + one spoken sentence + the example link
   (and a second link only if it is the knob/docs they need)
 - No "Versions Released:" bullet whose only links are release tags
-- No "Also landed" catch-all — leftovers stay in release notes
+- No third "Also landed" section — leftovers stay in GitHub release notes
 - Open the file (`xdg-open` on Linux, `open` on macOS) so the host can
   Select All → Copy → Paste
 
-### 6. Return to the host
+### 7. Return to the host
 
 In chat, include:
 
 1. Skill path (this directory)
 2. Window used
-3. A score table (candidate, score, example type A/B/C, keep/drop)
+3. A score table (candidate, score, bucket Released/On main, example type A/B/C, keep/drop)
 4. Path of the HTML file
-5. Talking order (one line per kept bullet)
+5. Talking order — **Released** bullets first, then **On main**
 
 Do not edit the Google Doc unless the host asks.
 
@@ -245,7 +261,9 @@ Usually **drop** unless score still clears the floor with a code example:
 | "Users already have release notes, so 4 bullets is enough" | Release notes ≠ talk track. Share the best 5–8, not a leftover dump. |
 | "No live comment, skip it" | Link the code that landed. |
 | "Link the release tag, they can drill in" | They already can. That is not this recap. |
-| "On-main isn't released, omit it" | Label it **On main (next release)** if users should know. |
+| "On-main isn't released, omit it" | Put it under **On main (next release)** — do not skip it. |
+| "It's only on main, not released" | That is the **On main** section, not a reason to drop it. |
+| "Dashboard/skill is not in a tag" | If users can click and use it today, put it under **Released**. |
 | "This is important but I can't show it" | Then it is not a What's New bullet. |
 | "Custom-skill authors might use this env/API" | If it does not change how they run agents or what they see, it is not a talk-track bullet. |
 | "Here is a real run you can click" | If they have had that capability for weeks, it is hallway info, not What's New. |
@@ -257,6 +275,7 @@ Usually **drop** unless score still clears the floor with a code example:
 
 - Any `releases/tag/` URL used as the example
 - An **Also landed** leftover dump at the end
+- A single flat bullet list with no **Released** / **On main** split
 - A bullet whose click does not show the change in <20 seconds
 - Mint-delete / Cloudflare PEM as a top item
 - "Interrupted" / "Terminated" status comments that do not say *why*

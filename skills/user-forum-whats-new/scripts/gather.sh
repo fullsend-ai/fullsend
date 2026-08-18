@@ -138,6 +138,7 @@ def in_window(iso: str, since_ts: datetime, until_ts: datetime) -> bool:
 since_ts, until_ts = window_bounds(since, until)
 
 releases = []
+release_times: list[datetime] = []
 for repo, fname in (
     ("fullsend-ai/fullsend", "rel-fullsend.json"),
     ("fullsend-ai/agents", "rel-agents.json"),
@@ -147,6 +148,9 @@ for repo, fname in (
             continue
         published = rel.get("published_at") or ""
         if in_window(published, since_ts, until_ts):
+            pub_dt = parse_iso(published)
+            if pub_dt is not None:
+                release_times.append(pub_dt)
             releases.append({
                 "repo": repo,
                 "tag": rel.get("tag_name"),
@@ -157,7 +161,12 @@ for repo, fname in (
                 "body": rel.get("body") or "",
             })
 
-prs = []
+release_cutoff: Optional[datetime] = (
+    max(release_times) if release_times else None
+)
+
+released_prs = []
+on_main_prs = []
 for repo, fname in (
     ("fullsend-ai/fullsend", "prs-fullsend.json"),
     ("fullsend-ai/agents", "prs-agents.json"),
@@ -166,21 +175,42 @@ for repo, fname in (
         merged_at = pr.get("closedAt") or ""
         if not in_window(merged_at, since_ts, until_ts):
             continue
-        prs.append({
+        entry = {
             "repo": repo,
             "number": pr.get("number"),
             "title": pr.get("title"),
             "url": pr.get("url"),
             "merged_at": merged_at,
             "author": (pr.get("author") or {}).get("login"),
-        })
+        }
+        merged_dt = parse_iso(merged_at)
+        if release_cutoff is not None and merged_dt is not None and merged_dt > release_cutoff:
+            on_main_prs.append(entry)
+        else:
+            released_prs.append(entry)
 
-print(json.dumps({
+out = {
     "since": since,
     "until": until,
     "window_start_utc": since_ts.isoformat().replace("+00:00", "Z"),
     "window_end_utc": until_ts.isoformat().replace("+00:00", "Z"),
     "releases": releases,
-    "merged_prs": prs,
-}, indent=2))
+    "merged_prs": {
+        "released": released_prs,
+        "on_main": on_main_prs,
+    },
+}
+if release_cutoff is not None:
+    out["release_cutoff_utc"] = release_cutoff.isoformat().replace("+00:00", "Z")
+else:
+    out["release_cutoff_utc"] = None
+    # No release in window — PRs merged this week are all pre-release / on-main.
+    on_main_prs.extend(released_prs)
+    released_prs.clear()
+    out["merged_prs"] = {
+        "released": released_prs,
+        "on_main": on_main_prs,
+    }
+
+print(json.dumps(out, indent=2))
 PY
