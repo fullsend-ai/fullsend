@@ -19,38 +19,38 @@ Feature: OWNERS file authorization for bash routing
     Given an OWNERS file listing the outsider as an approver
     And OWNERS authorization is enabled
     And a dummy agent that would:
-      | description          | op            | args                                               |
-      | Prove execution      | write_fixture | output/owners-ok.json, fixtures/dispatch/ok.json   |
+      | description          | op            | args                                                      |
+      | Prove execution      | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |
     When the outsider opens an issue for OWNERS auth testing
     Then the triage workflow completes successfully
     And the agent will succeed to Prove execution
-    And the triage workflow logs contain "OWNERS file resolved user"
-    And the triage workflow logs contain "as approver (requested:"
+    And the triage workflow logs contain "##[notice]OWNERS file resolved user"
+    And the triage workflow logs contain "as approver (requested: triage)"
 
   Scenario: OWNERS alias resolves to grant access
     Given an OWNERS file with alias "test-team" as approver
     And an OWNERS_ALIASES file mapping "test-team" to the outsider
     And OWNERS authorization is enabled
     And a dummy agent that would:
-      | description          | op            | args                                                  |
-      | Prove execution      | write_fixture | output/owners-alias-ok.json, fixtures/dispatch/ok.json |
+      | description          | op            | args                                                      |
+      | Prove execution      | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |
     When the outsider opens an issue for OWNERS auth testing
     Then the triage workflow completes successfully
     And the agent will succeed to Prove execution
-    And the triage workflow logs contain "OWNERS file resolved user"
-    And the triage workflow logs contain "as approver (requested:"
+    And the triage workflow logs contain "##[notice]OWNERS file resolved user"
+    And the triage workflow logs contain "as approver (requested: triage)"
 
   Scenario: OWNERS reviewer can triage
     Given an OWNERS file listing the outsider as a reviewer only
     And OWNERS authorization is enabled
     And a dummy agent that would:
-      | description          | op            | args                                               |
-      | Prove execution      | write_fixture | output/owners-rev-ok.json, fixtures/dispatch/ok.json |
+      | description          | op            | args                                                      |
+      | Prove execution      | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |
     When the outsider opens an issue for OWNERS auth testing
     Then the triage workflow completes successfully
     And the agent will succeed to Prove execution
-    And the triage workflow logs contain "OWNERS file resolved user"
-    And the triage workflow logs contain "as reviewer (requested:"
+    And the triage workflow logs contain "##[notice]OWNERS file resolved user"
+    And the triage workflow logs contain "as reviewer (requested: triage)"
 
   Scenario: OWNERS reviewer is denied write-level access
     Given an OWNERS file listing the outsider as a reviewer
@@ -64,18 +64,18 @@ Feature: OWNERS file authorization for bash routing
     And OWNERS authorization is enabled
     And a dummy agent that would:
       | description          | op            | args                                                      |
-      | Prove execution      | write_fixture | output/owners-fallback-ok.json, fixtures/dispatch/ok.json |
+      | Prove execution      | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |
     When the bot opens an issue for OWNERS auth testing
     Then the triage workflow completes successfully
     And the agent will succeed to Prove execution
-    And the triage workflow logs do not contain "OWNERS file resolved user"
+    And the triage workflow logs do not contain "##[notice]OWNERS file resolved user"
 
   Scenario: Triage dispatches without OWNERS path when not opted in
     Given an OWNERS file listing the bot as an approver
     And a dummy agent that would:
-      | description          | op            | args                                               |
-      | Prove execution      | write_fixture | output/owners-off-ok.json, fixtures/dispatch/ok.json |
+      | description          | op            | args                                                      |
+      | Prove execution      | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |
     When the bot opens an issue for OWNERS auth testing
     Then the triage workflow completes successfully
     And the agent will succeed to Prove execution
-    And the triage workflow logs do not contain "OWNERS file resolved user"
+    And the triage workflow logs do not contain "##[notice]OWNERS file resolved user"
