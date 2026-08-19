@@ -1,5 +1,5 @@
 ---
-title: "75. Harness snapshot and forge pointer correlation for agent traces"
+title: "90. Harness snapshot and forge pointer correlation for agent traces"
 status: Accepted
 relates_to:
   - operational-observability
@@ -84,11 +84,13 @@ root-span attribute mirroring — there is no usable trace context.
 - Dispatched child runs must inherit forge context via env so child snapshots
   are complete.
 - GitHub/GitLab coverage depends on CI vars or `FULLSEND_*` overrides — both
-  have in-tree `forge.Client` implementations today (`internal/forge/github`,
-  `internal/forge/gitlab`). Forgejo remains a planned target under
-  [ADR 0005](0005-forge-abstraction-layer.md) and needs a forge client before
-  this join-key behavior applies there (ADR 0005 still groups GitLab with
-  Forgejo as future work; the GitLab client landed later).
+  have in-tree `forge.Client` implementations today (see `internal/forge/github/`
+  and `internal/forge/gitlab/`). Forgejo is defined as a future forge target in
+  [ADR 0005](0005-forge-abstraction-layer.md) and needs a `forge.Client`
+  implementation before this join-key behavior applies there.
+  (Note: ADR 0005 predates the GitLab client landing and still groups GitLab
+  with Forgejo as unimplemented; the in-tree code is the authoritative source
+  for current forge support status.)
 - Implementation will be tracked in a **new** follow-up issue filed after this
   ADR merges (per repo convention). Do not cite closed #5449. Detailed field
   lists for cross-project consumers stay in the shared join contract, not
