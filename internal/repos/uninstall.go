@@ -120,8 +120,14 @@ type UninstallResult struct {
 // Uninstall tears down fullsend from the specified repos.
 //
 // It runs in a single phase: parallel per-repo cleanup (bounded by
-// MaxConcurrency) deletes the workflow file, then deletes variables and
-// secrets.
+// MaxConcurrency) deletes repo variables and secrets first, then deletes
+// the scaffold files (workflow, .fullsend/ config, vendored assets).
+// Scaffold-file deletion is delivered via a pull/merge request by default
+// (cfg.Direct == false) or pushed directly to the default branch when
+// cfg.Direct is true. For GitHub, PR-based delivery is refused with an
+// error (requiring --direct) when the repo's currently-deployed workflow
+// predates the self-dispatch exclusion for the uninstall PR's branch — see
+// deployedShimSafeForUninstallPR.
 //
 // GCP WIF cleanup is handled separately via `inference deprovision`.
 //
@@ -254,6 +260,45 @@ func mergeUniquePaths(a, b []string) []string {
 	return out
 }
 
+// deployedShimSafeForUninstallPR checks whether the repo's currently
+// deployed shim workflow already excludes ScaffoldUninstallBranch from
+// pull_request_target/pull_request_review self-dispatch (see
+// internal/scaffold/fullsend-repo/templates/shim-*.yaml). This must be
+// true before it is safe to deliver a default-mode (PR-based) uninstall:
+// pull_request_target evaluates the workflow definition from the repo's
+// currently-deployed (base-branch) copy, not the version introduced by
+// this change — so an older deployed shim without the exclusion would
+// fire a real dispatch run, with whatever secrets remain, as soon as the
+// uninstall PR is opened or updated.
+//
+// The deployed shim only gains this exclusion via a fresh scaffold render
+// (a brand-new "github setup"/"repos install", which writes the full shim
+// body) — NOT via "repos install"'s convergence/upgrade path or
+// "sync-scaffold", which only bump the @ref annotation on uses: lines via
+// regex replacement (see replaceShimRef in upgrade.go) and leave the rest
+// of the file, including this condition, untouched. So this returns false
+// for the large majority of currently-installed repos until they get a
+// fresh scaffold render — that is expected, not a bug in this check.
+//
+// Returns true when no workflow file is found at any of fc.WorkflowPaths
+// (nothing live to protect). Returns an error — rather than guessing true —
+// when a file can't be read for any reason other than not-found; callers
+// must treat that as fail-closed and require --direct rather than default
+// to the unsafe PR path.
+func deployedShimSafeForUninstallPR(ctx context.Context, client forge.Client, owner, repo string, fc ForgeConfig) (bool, error) {
+	for _, path := range fc.WorkflowPaths {
+		content, err := client.GetFileContent(ctx, owner, repo, path)
+		if err != nil {
+			if forge.IsNotFound(err) {
+				continue
+			}
+			return false, err
+		}
+		return strings.Contains(string(content), ScaffoldUninstallBranch), nil
+	}
+	return true, nil
+}
+
 // resolveVendorCleanupPaths returns the vendored asset paths (binary,
 // content, and manifest) left behind by a per-repo "github setup --vendor"
 // install, so "github uninstall owner/repo" fully reverses it. It mirrors
@@ -287,50 +332,16 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 	fullName := owner + "/" + repo
 	result := UninstallResult{Owner: owner, Repo: repo}
 
-	// Delete scaffold files. Both GitHub and GitLab return an explicit,
-	// non-empty path list from ScaffoldPathsForForge; the WorkflowPaths
-	// fallback below is defensive for any future forge that doesn't.
-	deletePaths := ScaffoldPathsForForge(cfg.Forge)
-	if len(deletePaths) == 0 {
-		deletePaths = cfg.ForgeConfig.WorkflowPaths
-	}
-
-	if cfg.Forge != ForgeGitLab {
-		vendorPaths, vendorErr := resolveVendorCleanupPaths(ctx, client, owner, repo)
-		if vendorErr != nil {
-			result.Error = fmt.Errorf("resolving vendored assets: %w", vendorErr)
-			progress(fullName, "workflow", fmt.Sprintf("Failed: %v", vendorErr))
-			return result
-		}
-		deletePaths = mergeUniquePaths(deletePaths, vendorPaths)
-	}
-
-	if direct {
-		progress(fullName, "workflow", "Deleting scaffold files")
-	} else {
-		progress(fullName, "workflow", "Creating scaffold-removal PR")
-	}
-	deleteMsg := "chore: remove fullsend workflow"
-	if cfg.Forge == ForgeGitLab {
-		deleteMsg += " [skip ci]"
-	}
-	deleteFiles := make([]forge.TreeFile, len(deletePaths))
-	for i, p := range deletePaths {
-		deleteFiles[i] = forge.TreeFile{Path: p, Delete: true}
-	}
-	committedDirect, err := deleteScaffold(ctx, owner, repo, deleteMsg, deleteFiles, direct)
-	if err != nil {
-		result.Error = fmt.Errorf("deleting scaffold files: %w", err)
-		progress(fullName, "workflow", fmt.Sprintf("Failed: %v", err))
-		return result
-	}
-	result.WorkflowDeleted = true
-	if committedDirect {
-		progress(fullName, "workflow", "Scaffold files deleted")
-	} else {
-		progress(fullName, "workflow", "Scaffold-removal PR opened; merge it to finish deleting files")
-	}
-
+	// Delete repo variables and secrets BEFORE touching scaffold files.
+	// Default-mode (PR) scaffold deletion opens a PR that, against a
+	// deployed shim predating the ScaffoldUninstallBranch self-dispatch
+	// exclusion, can trigger a live dispatch run — deleting secrets first
+	// closes the GCP/mint-credential exposure window regardless of what
+	// happens next with the scaffold files. (This does not fully close
+	// exposure via the ambient GITHUB_TOKEN permissions granted to that
+	// dispatch run — see the pre-flight check below for the primary
+	// mitigation.) If either deletion fails, scaffold deletion is skipped
+	// entirely: we can't be sure it's safe to open the PR.
 	forgeVars := UninstallVarsForForge(cfg.Forge)
 	forgeSecrets := UninstallSecretsForForge(cfg.Forge)
 
@@ -338,6 +349,7 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 	var varErr, secretErr error
 	var innerWg sync.WaitGroup
 
+	progress(fullName, "cleanup", "Deleting variables and secrets")
 	innerWg.Add(2)
 	go func() {
 		defer innerWg.Done()
@@ -378,6 +390,74 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 		result.Error = secretErr
 		progress(fullName, "secrets", fmt.Sprintf("Failed: %v", secretErr))
 		return result
+	}
+
+	// Delete scaffold files. Both GitHub and GitLab return an explicit,
+	// non-empty path list from ScaffoldPathsForForge; the WorkflowPaths
+	// fallback below is defensive for any future forge that doesn't.
+	deletePaths := ScaffoldPathsForForge(cfg.Forge)
+	if len(deletePaths) == 0 {
+		deletePaths = cfg.ForgeConfig.WorkflowPaths
+	}
+
+	if cfg.Forge != ForgeGitLab {
+		vendorPaths, vendorErr := resolveVendorCleanupPaths(ctx, client, owner, repo)
+		if vendorErr != nil {
+			result.Error = fmt.Errorf("resolving vendored assets: %w", vendorErr)
+			progress(fullName, "workflow", fmt.Sprintf("Failed: %v", vendorErr))
+			return result
+		}
+		deletePaths = mergeUniquePaths(deletePaths, vendorPaths)
+
+		// Pre-flight: refuse to open a default-mode (PR) uninstall against
+		// a repo whose deployed shim predates the ScaffoldUninstallBranch
+		// self-dispatch exclusion (see deployedShimSafeForUninstallPR).
+		// GitLab has no equivalent self-dispatch gate to protect, so this
+		// check is GitHub-only, matching the vendor-cleanup scoping above.
+		if !direct {
+			safe, safeErr := deployedShimSafeForUninstallPR(ctx, client, owner, repo, cfg.ForgeConfig)
+			if safeErr != nil {
+				result.Error = fmt.Errorf(
+					"checking deployed workflow before opening an uninstall PR: %w (pass --direct to skip this check)",
+					safeErr)
+				progress(fullName, "workflow", fmt.Sprintf("Failed: %v", result.Error))
+				return result
+			}
+			if !safe {
+				result.Error = fmt.Errorf(
+					"%s's deployed workflow predates the fullsend/scaffold-uninstall self-dispatch exclusion; "+
+						"opening a PR-based uninstall could trigger a live dispatch run before it's merged — "+
+						"pass --direct to push the removal directly to the default branch instead", fullName)
+				progress(fullName, "workflow", fmt.Sprintf("Failed: %v", result.Error))
+				return result
+			}
+		}
+	}
+
+	if direct {
+		progress(fullName, "workflow", "Deleting scaffold files")
+	} else {
+		progress(fullName, "workflow", "Creating scaffold-removal PR")
+	}
+	deleteMsg := "chore: remove fullsend workflow"
+	if cfg.Forge == ForgeGitLab {
+		deleteMsg += " [skip ci]"
+	}
+	deleteFiles := make([]forge.TreeFile, len(deletePaths))
+	for i, p := range deletePaths {
+		deleteFiles[i] = forge.TreeFile{Path: p, Delete: true}
+	}
+	committedDirect, err := deleteScaffold(ctx, owner, repo, deleteMsg, deleteFiles, direct)
+	if err != nil {
+		result.Error = fmt.Errorf("deleting scaffold files: %w", err)
+		progress(fullName, "workflow", fmt.Sprintf("Failed: %v", err))
+		return result
+	}
+	result.WorkflowDeleted = true
+	if committedDirect {
+		progress(fullName, "workflow", "Scaffold files deleted")
+	} else {
+		progress(fullName, "workflow", "Scaffold-removal PR opened; merge it to finish deleting files")
 	}
 
 	progress(fullName, "done", fmt.Sprintf("Removed: %d vars, %d secrets", varsDeleted, secretsDeleted))

@@ -61,7 +61,13 @@ func newInstalledFakeClient(repos ...string) *forge.FakeClient {
 		client.VariablesExist[r+"/FULLSEND_GCP_REGION"] = true
 		client.Secrets[r+"/FULLSEND_GCP_PROJECT_ID"] = true
 		client.Secrets[r+"/FULLSEND_GCP_WIF_PROVIDER"] = true
-		client.FileContents[r+"/.github/workflows/fullsend.yml"] = []byte("name: fullsend\n")
+		// Includes the ScaffoldUninstallBranch self-dispatch exclusion
+		// marker, simulating a repo that has already received a fresh
+		// scaffold render (see deployedShimSafeForUninstallPR) — tests
+		// that specifically exercise the pre-flight refusal path use their
+		// own FakeClient without this marker instead of this helper.
+		client.FileContents[r+"/.github/workflows/fullsend.yml"] = []byte(
+			"name: fullsend\n# excludes " + ScaffoldUninstallBranch + " from self-dispatch\n")
 	}
 	return client
 }
@@ -175,7 +181,8 @@ func TestUninstall_NonInstalledRepo(t *testing.T) {
 
 func TestUninstall_YamlExtensionFallback(t *testing.T) {
 	client := forge.NewFakeClient()
-	client.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte("name: fullsend\n")
+	client.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte(
+		"name: fullsend\n# excludes " + ScaffoldUninstallBranch + " from self-dispatch\n")
 
 	results, err := Uninstall(context.Background(), UninstallConfig{
 		Manifest:       testManifest("acme/api"),
@@ -280,11 +287,13 @@ func TestUninstall_PartialFailure(t *testing.T) {
 	}
 }
 
-func TestUninstall_WorkflowFailure_SkipsVarsAndSecrets(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte("name: fullsend\n")
-	client.VariableValues["acme/api/"+forge.PerRepoGuardVar] = "true"
-	client.VariablesExist["acme/api/"+forge.PerRepoGuardVar] = true
+// TestUninstall_ScaffoldFailure_StillDeletesVarsAndSecrets verifies that
+// variables and secrets are deleted even when scaffold-file deletion fails
+// afterward. Variables/secrets now run FIRST specifically so a failure
+// downstream (in scaffold deletion) doesn't leave credentials behind — see
+// the CRITICAL fix in uninstallRepoResources.
+func TestUninstall_ScaffoldFailure_StillDeletesVarsAndSecrets(t *testing.T) {
+	client := newInstalledFakeClient("acme/api")
 	client.Errors["DeleteFiles"] = fmt.Errorf("branch protection")
 
 	results, err := Uninstall(context.Background(), UninstallConfig{
@@ -303,11 +312,43 @@ func TestUninstall_WorkflowFailure_SkipsVarsAndSecrets(t *testing.T) {
 	if r.WorkflowDeleted {
 		t.Error("WorkflowDeleted = true, want false")
 	}
-	if len(client.DeletedVariables) != 0 {
-		t.Errorf("deleted %d variables, want 0 (workflow deletion failed)", len(client.DeletedVariables))
+	if len(client.DeletedVariables) != len(uninstallVariables) {
+		t.Errorf("deleted %d variables, want %d (vars/secrets run before scaffold deletion)",
+			len(client.DeletedVariables), len(uninstallVariables))
 	}
-	if len(client.DeletedSecrets) != 0 {
-		t.Errorf("deleted %d secrets, want 0 (workflow deletion failed)", len(client.DeletedSecrets))
+	if len(client.DeletedSecrets) != len(uninstallSecrets) {
+		t.Errorf("deleted %d secrets, want %d (vars/secrets run before scaffold deletion)",
+			len(client.DeletedSecrets), len(uninstallSecrets))
+	}
+}
+
+// TestUninstall_VarSecretFailure_SkipsScaffoldDeletion verifies that
+// scaffold-file deletion (and therefore opening any uninstall PR) is
+// skipped when variable/secret deletion fails, so a default-mode
+// (PR-based) uninstall is never attempted while we can't confirm secrets
+// are gone.
+func TestUninstall_VarSecretFailure_SkipsScaffoldDeletion(t *testing.T) {
+	client := newInstalledFakeClient("acme/api")
+	client.Errors["DeleteRepoSecret"] = fmt.Errorf("permission denied")
+
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), newFakeScaffoldDelete(client).fn(), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	r := results[0]
+	if r.Success {
+		t.Error("Success = true, want false")
+	}
+	if r.WorkflowDeleted {
+		t.Error("WorkflowDeleted = true, want false (scaffold deletion must be skipped)")
+	}
+	if len(client.DeletedFiles) != 0 {
+		t.Errorf("deleted %d scaffold files, want 0 (secret deletion failed)", len(client.DeletedFiles))
 	}
 }
 
@@ -360,8 +401,8 @@ func TestUninstall_VariableDeleteError(t *testing.T) {
 	if r.Success {
 		t.Error("Success = true, want false (variable deletion failed)")
 	}
-	if !r.WorkflowDeleted {
-		t.Error("WorkflowDeleted = false, want true")
+	if r.WorkflowDeleted {
+		t.Error("WorkflowDeleted = true, want false (scaffold deletion is skipped when var/secret deletion fails)")
 	}
 }
 
@@ -382,8 +423,8 @@ func TestUninstall_SecretDeleteError(t *testing.T) {
 	if r.Success {
 		t.Error("Success = true, want false (secret deletion failed)")
 	}
-	if !r.WorkflowDeleted {
-		t.Error("WorkflowDeleted = false, want true")
+	if r.WorkflowDeleted {
+		t.Error("WorkflowDeleted = true, want false (scaffold deletion is skipped when var/secret deletion fails)")
 	}
 }
 
@@ -650,6 +691,124 @@ func TestResolveVendorCleanupPaths_ManifestReadError(t *testing.T) {
 	_, err := resolveVendorCleanupPaths(context.Background(), client, "acme", "api")
 	if err == nil {
 		t.Fatal("resolveVendorCleanupPaths() error = nil, want non-nil")
+	}
+}
+
+func TestDeployedShimSafeForUninstallPR_HasExclusion(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"name: fullsend\n# excludes " + ScaffoldUninstallBranch + " from self-dispatch\n")
+
+	safe, err := deployedShimSafeForUninstallPR(context.Background(), client, "acme", "api", GitHubForgeConfig())
+	if err != nil {
+		t.Fatalf("deployedShimSafeForUninstallPR() error = %v", err)
+	}
+	if !safe {
+		t.Error("safe = false, want true (deployed workflow already has the exclusion)")
+	}
+}
+
+func TestDeployedShimSafeForUninstallPR_MissingExclusion(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte("name: fullsend\n")
+
+	safe, err := deployedShimSafeForUninstallPR(context.Background(), client, "acme", "api", GitHubForgeConfig())
+	if err != nil {
+		t.Fatalf("deployedShimSafeForUninstallPR() error = %v", err)
+	}
+	if safe {
+		t.Error("safe = true, want false (deployed workflow predates the exclusion)")
+	}
+}
+
+func TestDeployedShimSafeForUninstallPR_NoDeployedWorkflow(t *testing.T) {
+	client := forge.NewFakeClient()
+
+	safe, err := deployedShimSafeForUninstallPR(context.Background(), client, "acme", "api", GitHubForgeConfig())
+	if err != nil {
+		t.Fatalf("deployedShimSafeForUninstallPR() error = %v", err)
+	}
+	if !safe {
+		t.Error("safe = false, want true (no deployed workflow, nothing to protect)")
+	}
+}
+
+func TestDeployedShimSafeForUninstallPR_ReadError(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Errors["GetFileContent"] = fmt.Errorf("server error")
+
+	_, err := deployedShimSafeForUninstallPR(context.Background(), client, "acme", "api", GitHubForgeConfig())
+	if err == nil {
+		t.Fatal("deployedShimSafeForUninstallPR() error = nil, want non-nil (fail closed on read error)")
+	}
+}
+
+// TestUninstall_RefusesPRWithoutDeployedExclusion verifies the end-to-end
+// pre-flight refusal: a repo whose deployed workflow doesn't yet exclude
+// ScaffoldUninstallBranch from self-dispatch must fail default-mode
+// (PR-based) uninstall rather than silently opening an unsafe PR.
+func TestUninstall_RefusesPRWithoutDeployedExclusion(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte("name: fullsend\n")
+	client.VariableValues["acme/api/"+forge.PerRepoGuardVar] = "true"
+	client.VariablesExist["acme/api/"+forge.PerRepoGuardVar] = true
+
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		MaxConcurrency: 4,
+		// Direct intentionally left unset (false): this exercises the
+		// unsafe default-PR path against an un-migrated deployed workflow.
+	}, newTestClientFactory(client), newFakeScaffoldDelete(client).fn(), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	r := results[0]
+	if r.Success {
+		t.Error("Success = true, want false (deployed workflow predates the self-dispatch exclusion)")
+	}
+	if r.WorkflowDeleted {
+		t.Error("WorkflowDeleted = true, want false")
+	}
+	if r.Error == nil || !strings.Contains(r.Error.Error(), "--direct") {
+		t.Errorf("Error = %v, want an error mentioning --direct", r.Error)
+	}
+	if len(client.DeletedFiles) != 0 {
+		t.Errorf("deleted %d scaffold files, want 0 (PR should have been refused)", len(client.DeletedFiles))
+	}
+	// Variables/secrets are still deleted even though the PR is refused —
+	// they run before the pre-flight check.
+	if len(client.DeletedVariables) == 0 {
+		t.Error("expected variables to be deleted before the pre-flight refusal")
+	}
+}
+
+// TestUninstall_DirectBypassesPreflightCheck verifies --direct proceeds
+// even when the deployed workflow predates the self-dispatch exclusion,
+// since --direct never opens a PR in the first place.
+func TestUninstall_DirectBypassesPreflightCheck(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte("name: fullsend\n")
+	client.VariableValues["acme/api/"+forge.PerRepoGuardVar] = "true"
+	client.VariablesExist["acme/api/"+forge.PerRepoGuardVar] = true
+
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		MaxConcurrency: 4,
+		Direct:         true,
+	}, newTestClientFactory(client), newFakeScaffoldDelete(client).fn(), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	r := results[0]
+	if !r.Success {
+		t.Errorf("Success = false, want true; Error = %v", r.Error)
+	}
+	if !r.WorkflowDeleted {
+		t.Error("WorkflowDeleted = false, want true")
 	}
 }
 
