@@ -71,7 +71,7 @@ There are two paths, depending on how the repo was installed.
 fullsend github uninstall "$OWNER/$REPO"
 ```
 
-Removes the workflow file, `.fullsend/` configuration directory, and repo variables/secrets — the GitHub-side reverse of `github setup`. This does not touch GCP inference infrastructure or the manifest.
+Removes the workflow file, `.fullsend/` configuration directory, and the repo secrets/variables `github setup` created — `FULLSEND_GCP_PROJECT_ID` and `FULLSEND_GCP_WIF_PROVIDER` (secrets), and `FULLSEND_GCP_REGION`, `FULLSEND_PER_REPO_INSTALL`, and `FULLSEND_MINT_URL` (variables). This does not touch GCP inference infrastructure or the manifest.
 
 **Manifest-managed repos, one or many** — for repos tracked in a `repos.yaml` manifest (all GitLab repos, and any GitHub repos onboarded via `repos install`). This requires the manifest to already exist — see [Repo Management](repo-management.md) for creating one via `repos install` or `repos migrate`:
 
@@ -95,7 +95,7 @@ If the CLI is unavailable, you can tear down manually:
 
 **GitHub repos:**
 
-1. Delete `.github/workflows/fullsend.yaml`, the `.fullsend/` configuration directory, and repo-level secrets/variables (including `FULLSEND_MINT_URL`, if set)
+1. Delete `.github/workflows/fullsend.yaml`, the `.fullsend/` configuration directory, and the repo secrets `FULLSEND_GCP_PROJECT_ID` and `FULLSEND_GCP_WIF_PROVIDER`, plus the repo variables `FULLSEND_GCP_REGION`, `FULLSEND_PER_REPO_INSTALL`, and `FULLSEND_MINT_URL`
 2. Run `fullsend inference deprovision "$OWNER/$REPO" --project "<GCP_INFERENCE_PROJECT>"` to remove WIF access
 3. If using a self-hosted mint, run `fullsend mint unenroll "$OWNER/$REPO" --project "<MINT_GCP_PROJECT>"`
 
