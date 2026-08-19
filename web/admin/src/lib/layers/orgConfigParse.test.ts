@@ -66,43 +66,72 @@ repos: {}
   });
 
   it.each(["fullsend", "triage", "coder", "review", "fix", "retro", "prioritize", "e2e"])(
-    "accepts role %s",
+    "accepts defaults role %s",
     (role) => {
       const cfg = parseOrgConfigYaml(`version: "1"
 dispatch:
   platform: github-actions
 defaults:
   roles: [${role}]
-agents:
-  - role: ${role}
 repos: {}
 `);
       expect(validateOrgConfig(cfg)).toBeNull();
     },
   );
 
-  it("rejects invalid agent role", () => {
+  it("rejects invalid defaults role", () => {
     const cfg = parseOrgConfigYaml(`version: "1"
 dispatch:
   platform: github-actions
 defaults:
-  roles: [fullsend]
-agents:
-  - role: not-a-valid-role
+  roles: [bogus]
 repos: {}
 `);
-    expect(validateOrgConfig(cfg)).toMatch(/invalid agent role/);
+    expect(validateOrgConfig(cfg)).toMatch(/invalid role/);
   });
 
-  it("lists agents and enabled repos from config", () => {
+  it("accepts agents with source-based entries", () => {
     const cfg = parseOrgConfigYaml(`version: "1"
 dispatch:
   platform: github-actions
 defaults:
   roles: [fullsend]
 agents:
-  - role: triage
-    slug: t
+  - source: harness/triage.yaml
+  - source: https://example.com/coder.yaml#sha256=abc123
+    name: my-coder
+  - harness/review.yaml
+repos: {}
+`);
+    expect(validateOrgConfig(cfg)).toBeNull();
+    expect(agentsFromConfig(cfg)).toEqual([
+      { name: "triage" },
+      { name: "my-coder" },
+      { name: "review" },
+    ]);
+  });
+
+  it("excludes disabled agents from agentsFromConfig", () => {
+    const cfg = parseOrgConfigYaml(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [fullsend]
+agents:
+  - source: harness/triage.yaml
+  - source: harness/coder.yaml
+    enabled: false
+repos: {}
+`);
+    expect(agentsFromConfig(cfg)).toEqual([{ name: "triage" }]);
+  });
+
+  it("lists enabled repos from config", () => {
+    const cfg = parseOrgConfigYaml(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [fullsend]
 repos:
   zed:
     enabled: false
@@ -112,7 +141,6 @@ repos:
     enabled: true
 `);
     expect(validateOrgConfig(cfg)).toBeNull();
-    expect(agentsFromConfig(cfg)).toEqual([{ role: "triage" }]);
     expect(enabledReposFromConfig(cfg)).toEqual(["alpha", "beta"]);
   });
 

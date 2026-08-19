@@ -78,7 +78,7 @@ export async function analyzeOrgForOrgList(
     } else {
       exists = await gh.getRepoExists(org, CONFIG_REPO_NAME);
     }
-    let agents: { role: string }[] = [];
+    let agents: { name: string }[] = [];
     let enabledRepos: string[] = [];
     if (exists) {
       const raw = await gh.getRepoFileUtf8(org, CONFIG_REPO_NAME, CONFIG_FILE_PATH);

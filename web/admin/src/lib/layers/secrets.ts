@@ -16,7 +16,7 @@ export function variableNameForRole(role: string): string {
 export async function analyzeSecretsLayer(
   org: string,
   gh: LayerGithub,
-  agents: { role: string }[],
+  agents: { name: string }[],
 ): Promise<LayerReport> {
   const report: LayerReport = {
     name: "secrets",
@@ -30,14 +30,14 @@ export async function analyzeSecretsLayer(
   const missing: string[] = [];
 
   for (const agent of agents) {
-    const sName = secretNameForRole(agent.role);
+    const sName = secretNameForRole(agent.name);
     if (await gh.repoSecretExists(org, CONFIG_REPO_NAME, sName)) {
       present.push(sName);
     } else {
       missing.push(sName);
     }
 
-    const vName = variableNameForRole(agent.role);
+    const vName = variableNameForRole(agent.name);
     if (await gh.repoVariableExists(org, CONFIG_REPO_NAME, vName)) {
       present.push(vName);
     } else {

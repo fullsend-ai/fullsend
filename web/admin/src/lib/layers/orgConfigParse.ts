@@ -9,7 +9,7 @@ export type OrgConfigYaml = {
     max_implementation_retries?: number;
     auto_merge?: boolean;
   };
-  agents?: { role: string; name?: string; slug?: string }[];
+  agents?: (string | { source?: string; name?: string; enabled?: boolean })[];
   repos?: Record<string, { enabled?: boolean; roles?: string[] }>;
 };
 
@@ -111,12 +111,9 @@ function assertOrgConfigShape(doc: Record<string, unknown>): void {
     }
     for (let i = 0; i < doc.agents.length; i++) {
       const el = doc.agents[i];
+      if (typeof el === "string") continue;
       if (el === null || typeof el !== "object" || Array.isArray(el)) {
-        throw new Error(`parsing org config: agents[${i}] must be a mapping with a string role`);
-      }
-      const role = (el as Record<string, unknown>).role;
-      if (typeof role !== "string") {
-        throw new Error(`parsing org config: agents[${i}].role must be a string`);
+        throw new Error(`parsing org config: agents[${i}] must be a string or mapping`);
       }
     }
   }
@@ -156,17 +153,35 @@ export function validateOrgConfig(cfg: OrgConfigYaml): string | null {
       return `invalid role ${JSON.stringify(role)}: must be one of fullsend, triage, coder, review, fix, retro, prioritize, e2e`;
     }
   }
-  for (const agent of cfg.agents ?? []) {
-    if (!VALID_ROLES.has(agent.role)) {
-      return `invalid agent role ${JSON.stringify(agent.role)}: must be one of fullsend, triage, coder, review, fix, retro, prioritize, e2e`;
-    }
-  }
   return null;
 }
 
-/** Agent rows for secrets-layer analyze (mirrors `config.OrgConfig.Agents`). */
-export function agentsFromConfig(cfg: OrgConfigYaml): { role: string }[] {
-  return (cfg.agents ?? []).map((a) => ({ role: a.role }));
+function derivedAgentName(entry: string | { source?: string; name?: string; enabled?: boolean }): string {
+  if (typeof entry === "string") {
+    return sourceBaseName(entry);
+  }
+  if (entry.name) return entry.name;
+  return sourceBaseName(entry.source ?? "");
+}
+
+function sourceBaseName(src: string): string {
+  const hashIdx = src.lastIndexOf("#");
+  if (hashIdx >= 0) src = src.slice(0, hashIdx);
+  const base = src.split("/").pop() ?? "";
+  const dotIdx = base.lastIndexOf(".");
+  return dotIdx > 0 ? base.slice(0, dotIdx) : base;
+}
+
+function isAgentEnabled(entry: string | { source?: string; name?: string; enabled?: boolean }): boolean {
+  if (typeof entry === "string") return true;
+  return entry.enabled !== false;
+}
+
+/** Enabled agent names for secrets-layer analyze (mirrors `config.OrgConfig.Agents`). */
+export function agentsFromConfig(cfg: OrgConfigYaml): { name: string }[] {
+  return (cfg.agents ?? [])
+    .filter(isAgentEnabled)
+    .map((a) => ({ name: derivedAgentName(a) }));
 }
 
 /** Enabled repo names for enrollment-layer analyze (sorted). */
