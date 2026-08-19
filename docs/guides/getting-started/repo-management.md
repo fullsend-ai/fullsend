@@ -274,6 +274,15 @@ Remove a repo from the manifest and tear down its installation:
 fullsend repos uninstall acme/old-api
 ```
 
+Repo variables and secrets are deleted directly. By default, the workflow
+file and configuration are removed via a pull/merge request (mirroring
+`repos install`'s PR-by-default behavior) — pass `--direct` to push those
+removals straight to the default branch instead:
+
+```bash
+fullsend repos uninstall acme/old-api --direct
+```
+
 When targeting multiple repos (via globs or bulk lists), the command
 prompts for confirmation:
 
@@ -442,7 +451,10 @@ fullsend github uninstall "$ORG_NAME" --yolo
 
 ### Removing individual repos
 
-Remove a repo from the manifest and tear down its fullsend installation:
+Remove a repo from the manifest and tear down its fullsend installation.
+Variables and secrets are deleted directly; the workflow file and
+configuration are removed via a pull/merge request by default (pass
+`--direct` to push those removals straight to the default branch instead):
 
 ```bash
 fullsend repos uninstall acme/old-api

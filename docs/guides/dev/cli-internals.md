@@ -67,7 +67,8 @@ fullsend
 │   │   ├── --yes                            #   Skip confirmation for glob patterns
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
 │   │   ├── --manifest-only                  #   Remove from manifest without tearing down
-│   │   └── --uninstall-only                 #   Tear down without removing from manifest
+│   │   ├── --uninstall-only                 #   Tear down without removing from manifest
+│   │   └── --direct                         #   Push scaffold-file deletions directly (skip PR)
 │   ├── status                               # Compare manifest against actual repo state
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --json                           #   Emit JSON output instead of table

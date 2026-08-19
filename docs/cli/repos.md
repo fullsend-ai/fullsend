@@ -203,7 +203,9 @@ Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For 
 
 ## `repos uninstall`
 
-Tear down fullsend from the specified repos and remove them from the manifest. By default, the command tears down first (deleting workflow files, variables, and secrets), then removes successfully-torn-down repos from the manifest. Partial failures leave the manifest entry intact so the user can retry.
+Tear down fullsend from the specified repos and remove them from the manifest. By default, the command tears down first, then removes successfully-torn-down repos from the manifest. Partial failures leave the manifest entry intact so the user can retry.
+
+Teardown deletes repo variables and secrets directly (they cannot go through a PR). By default, the workflow file and configuration are removed by opening a pull/merge request, mirroring `repos install`'s PR-by-default behavior — pass `--direct` to push those removals straight to the default branch instead.
 
 GCP WIF pool/provider cleanup is handled separately via `inference deprovision`.
 
@@ -215,6 +217,7 @@ fullsend repos uninstall "acme/*" --yes
 fullsend repos uninstall acme/old-api --dry-run
 fullsend repos uninstall acme/old-api --manifest-only
 fullsend repos uninstall acme/old-api --uninstall-only
+fullsend repos uninstall acme/old-api --direct
 ```
 
 ### Modes
@@ -239,6 +242,7 @@ fullsend repos uninstall acme/old-api --uninstall-only
 | `--concurrency` | `4` | Max parallel operations (1-32) |
 | `--manifest-only` | `false` | Remove from manifest without tearing down |
 | `--uninstall-only` | `false` | Tear down without removing from manifest |
+| `--direct` | `false` | Push scaffold-file deletions directly to the default branch instead of creating a PR |
 
 ## `repos set-default`
 
