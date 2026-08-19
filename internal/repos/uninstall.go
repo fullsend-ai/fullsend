@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -101,8 +102,13 @@ type UninstallConfig struct {
 //
 // The CLI layer provides an implementation wrapping layers.CommitScaffoldFiles
 // (the same delivery mechanics ScaffoldCommitFunc uses for installs — retry
-// on non-fast-forward errors, branch-protection fallback to PR delivery, and
-// fork-based PR support for non-owner users), passing files with Delete set.
+// on non-fast-forward errors and fork-based PR support for non-owner users),
+// passing files with Delete set. Unlike installs, uninstall implementations
+// must set ScaffoldPRMetadata.DisallowPRFallback so direct delivery fails
+// hard on a protected default branch instead of falling back to a PR — a
+// silent fallback would open exactly the PR the pre-flight check in
+// uninstallRepoResources exists to prevent (--direct is the documented path
+// for repos where PR delivery is unsafe).
 type ScaffoldDeleteFunc func(ctx context.Context, owner, repo, message string,
 	files []forge.TreeFile, direct bool) (bool, error)
 
@@ -115,6 +121,15 @@ type UninstallResult struct {
 	WorkflowDeleted bool
 	VarsDeleted     int
 	SecretsDeleted  int
+
+	// ScaffoldCommittedDirect is true when the scaffold-file deletions were
+	// committed directly to the default branch (files are gone now). It is
+	// false when they were delivered via a pull/merge request that must
+	// still be merged, or when there was nothing left to delete. Callers
+	// use this — not the requested delivery mode — to decide whether the
+	// teardown is terminal (e.g. safe to remove the manifest entry) and to
+	// report the actual delivery outcome.
+	ScaffoldCommittedDirect bool
 }
 
 // Uninstall tears down fullsend from the specified repos.
@@ -127,7 +142,10 @@ type UninstallResult struct {
 // cfg.Direct is true. For GitHub, PR-based delivery is refused with an
 // error (requiring --direct) when the repo's currently-deployed workflow
 // predates the self-dispatch exclusion for the uninstall PR's branch — see
-// deployedShimSafeForUninstallPR.
+// deployedShimSafeForUninstallPR. Direct delivery in turn fails with an
+// error when branch protection blocks the push (it never falls back to a
+// PR — see ScaffoldDeleteFunc); each result records the actual delivery
+// outcome in ScaffoldCommittedDirect.
 //
 // GCP WIF cleanup is handled separately via `inference deprovision`.
 //
@@ -260,11 +278,27 @@ func mergeUniquePaths(a, b []string) []string {
 	return out
 }
 
+// uninstallExclusionCondition matches the shim templates' actual
+// self-dispatch exclusion expression for the uninstall branch:
+//
+//	github.event.pull_request.head.ref != 'fullsend/scaffold-uninstall'
+//
+// (see internal/scaffold/fullsend-repo/templates/shim-*.yaml, kept in sync
+// by TestDeployedShimSafeForUninstallPR_RealTemplates). A raw substring
+// match on the branch name alone would also be satisfied by a comment or
+// other incidental mention that provides no self-dispatch protection, so
+// the check requires the comparison expression itself. Both quote styles
+// and flexible whitespace are accepted to tolerate hand-edited shims.
+var uninstallExclusionCondition = regexp.MustCompile(
+	`github\.event\.pull_request\.head\.ref\s*!=\s*['"]` +
+		regexp.QuoteMeta(ScaffoldUninstallBranch) + `['"]`)
+
 // deployedShimSafeForUninstallPR checks whether the repo's currently
 // deployed shim workflow already excludes ScaffoldUninstallBranch from
-// pull_request_target/pull_request_review self-dispatch (see
-// internal/scaffold/fullsend-repo/templates/shim-*.yaml). This must be
-// true before it is safe to deliver a default-mode (PR-based) uninstall:
+// pull_request_target/pull_request_review self-dispatch (it must contain
+// the exclusion condition matched by uninstallExclusionCondition). This
+// must be true before it is safe to deliver a default-mode (PR-based)
+// uninstall:
 // pull_request_target evaluates the workflow definition from the repo's
 // currently-deployed (base-branch) copy, not the version introduced by
 // this change — so an older deployed shim without the exclusion would
@@ -294,7 +328,7 @@ func deployedShimSafeForUninstallPR(ctx context.Context, client forge.Client, ow
 			}
 			return false, err
 		}
-		return strings.Contains(string(content), ScaffoldUninstallBranch), nil
+		return uninstallExclusionCondition.Match(content), nil
 	}
 	return true, nil
 }
@@ -454,9 +488,16 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 		return result
 	}
 	result.WorkflowDeleted = true
-	if committedDirect {
+	result.ScaffoldCommittedDirect = committedDirect
+	switch {
+	case committedDirect:
 		progress(fullName, "workflow", "Scaffold files deleted")
-	} else {
+	case direct:
+		// Direct delivery never falls back to a PR (the delete func fails
+		// hard on branch protection — see ScaffoldDeleteFunc), so a false
+		// return in direct mode means there was nothing left to delete.
+		progress(fullName, "workflow", "Scaffold files already removed")
+	default:
 		progress(fullName, "workflow", "Scaffold-removal PR opened; merge it to finish deleting files")
 	}
 

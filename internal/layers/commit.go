@@ -17,7 +17,9 @@ import (
 // CommitScaffoldFiles delivers scaffold files to a repository. When direct is
 // false (the default), files are committed to a feature branch and delivered
 // via PR. When direct is true, files are pushed directly to the default branch,
-// falling back to a PR if branch protection blocks the push.
+// falling back to a PR if branch protection blocks the push — unless
+// meta.DisallowPRFallback is set, in which case a protected default branch is
+// a hard error (uninstall deliveries set this; see the field's doc comment).
 //
 // The meta parameter supplies the commit message, PR title/body, and branch
 // name. Pass an empty Branch to use the default ("fullsend/scaffold-install").
@@ -41,7 +43,8 @@ func CommitScaffoldFiles(ctx context.Context, client forge.Client, printer *ui.P
 
 	if direct {
 		return commitScaffoldDirect(ctx, client, printer,
-			owner, repo, defaultBranch, scaffoldBranch, commitMsg, meta.PRTitle, meta.PRBody, files, in)
+			owner, repo, defaultBranch, scaffoldBranch, commitMsg, meta.PRTitle, meta.PRBody,
+			files, meta.DisallowPRFallback, in)
 	}
 	return commitScaffoldViaPR(ctx, client, printer,
 		owner, repo, defaultBranch, scaffoldBranch, commitMsg, meta.PRTitle, meta.PRBody, files, in)
@@ -531,10 +534,15 @@ func promptUpstreamOnly(printer *ui.Printer, in io.Reader, owner, repo string) (
 }
 
 // commitScaffoldDirect pushes files directly to the default branch, falling
-// back to a PR when branch protection blocks the push.
+// back to a PR when branch protection blocks the push. When disallowPRFallback
+// is set, a protected default branch is a hard error instead: uninstall
+// deliveries must never silently downgrade to a PR, because --direct is the
+// documented path for repos where the pre-flight check in
+// repos.Uninstall deems PR delivery unsafe (see
+// repos.ScaffoldPRMetadata.DisallowPRFallback).
 func commitScaffoldDirect(ctx context.Context, client forge.Client, printer *ui.Printer,
 	owner, repo, defaultBranch, scaffoldBranch, commitMsg, prTitle, prBody string,
-	files []forge.TreeFile, in io.Reader) (bool, error) {
+	files []forge.TreeFile, disallowPRFallback bool, in io.Reader) (bool, error) {
 
 	committed, err := client.CommitFiles(ctx, owner, repo, commitMsg, files)
 	if err != nil && forge.IsNonFastForward(err) {
@@ -542,6 +550,12 @@ func commitScaffoldDirect(ctx context.Context, client forge.Client, printer *ui.
 		committed, err = client.CommitFiles(ctx, owner, repo, commitMsg, files)
 	}
 	if err != nil && forge.IsBranchProtected(err) {
+		if disallowPRFallback {
+			printer.StepFail("Default branch is protected — cannot push directly")
+			return false, fmt.Errorf("default branch %q of %s/%s is protected and PR fallback is disabled for this delivery; "+
+				"re-run without --direct to deliver via PR (subject to the uninstall PR-safety pre-flight), "+
+				"or adjust branch protection to allow the push: %w", defaultBranch, owner, repo, err)
+		}
 		printer.StepWarn("Default branch is protected — creating scaffold PR instead")
 		fallbackBody := fmt.Sprintf("The default branch (%s) has branch protection rules that prevent direct pushes.\n\n"+
 			"Merge this PR to deliver the scaffold files.", defaultBranch)

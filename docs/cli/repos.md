@@ -203,11 +203,13 @@ Requires a GitHub token via `GH_TOKEN`, `GITHUB_TOKEN`, or `gh auth token`. For 
 
 ## `repos uninstall`
 
-Tear down fullsend from the specified repos and remove them from the manifest. By default, the command tears down first, then removes successfully-torn-down repos from the manifest. Partial failures leave the manifest entry intact so the user can retry.
+Tear down fullsend from the specified repos and remove them from the manifest. By default, the command tears down first, then removes terminally-torn-down repos from the manifest. Partial failures leave the manifest entry intact so the user can retry.
 
 Teardown deletes repo variables and secrets directly (they cannot go through a PR). By default, the workflow file and configuration are removed by opening a pull/merge request, mirroring `repos install`'s PR-by-default behavior — pass `--direct` to push those removals straight to the default branch instead.
 
-**Rollout note (GitHub repos):** PR-based deletion requires the target repo's already-deployed workflow file to already exclude the uninstall PR's branch from self-dispatch (this prevents the PR from triggering a live agent run with remaining secrets before it's merged). A repo only gets that exclusion from a fresh scaffold render — a brand-new install, not a ref-only upgrade — so `repos uninstall` refuses the default PR path with an error and requires `--direct` until the repo has been re-scaffolded. `--direct` skips this safety check by never opening a PR in the first place. This check does not apply to GitLab repos.
+A repo whose scaffold removal was delivered via a PR/MR is **pending, not complete**, until that PR is merged: its manifest entry is kept and the summary reports it as pending. After merging the PR, re-run with `--manifest-only` to remove the entry. (GitLab pipeline-schedule and bot-token cleanup still runs immediately — like variables and secrets, those are credentials and triggers, and removing them early closes the exposure window.)
+
+**Rollout note (GitHub repos):** PR-based deletion requires the target repo's already-deployed workflow file to already exclude the uninstall PR's branch from self-dispatch (this prevents the PR from triggering a live agent run with remaining secrets before it's merged). A repo only gets that exclusion from a fresh scaffold render — a brand-new install, not a ref-only upgrade — so `repos uninstall` refuses the default PR path with an error and requires `--direct` until the repo has been re-scaffolded. `--direct` skips this safety check by never opening a PR in the first place, and for the same reason it never falls back to a PR: if branch protection blocks the direct push, the command fails with an error instead. This check does not apply to GitLab repos.
 
 GCP WIF pool/provider cleanup is handled separately via `inference deprovision`.
 
@@ -226,11 +228,11 @@ fullsend repos uninstall acme/old-api --direct
 
 | Flag | Teardown | Manifest removal |
 |------|----------|------------------|
-| *(default)* | Yes | Yes (only if teardown succeeds) |
+| *(default)* | Yes | Yes (only if teardown is terminal — not PR-pending) |
 | `--manifest-only` | No | Yes |
 | `--uninstall-only` | Yes | No |
 
-- **Default:** tear down + remove from manifest. Only repos whose teardown succeeds are removed from the manifest.
+- **Default:** tear down + remove from manifest. Only repos whose teardown is terminal are removed from the manifest — repos with a still-unmerged scaffold-removal PR keep their entry (merge the PR, then re-run with `--manifest-only`).
 - **`--manifest-only`:** remove the manifest entry without tearing down the installation. Use when the repo is already deleted/transferred or was never successfully installed.
 - **`--uninstall-only`:** tear down the installation but keep the manifest entry. Use for temporary teardown with intent to reinstall later.
 

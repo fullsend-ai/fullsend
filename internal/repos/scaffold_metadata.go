@@ -15,6 +15,17 @@ type ScaffoldPRMetadata struct {
 	PRTitle   string
 	PRBody    string
 	Branch    string
+
+	// DisallowPRFallback, when true, makes direct delivery fail with an
+	// error when branch protection blocks the push, instead of silently
+	// falling back to PR delivery. Uninstall flows set this: --direct is
+	// the documented escape hatch for repos whose deployed shim predates
+	// the ScaffoldUninstallBranch self-dispatch exclusion, so a silent PR
+	// fallback would open exactly the PR the uninstall pre-flight exists
+	// to prevent — and misreport the delivery as direct. The zero value
+	// preserves the fallback for install flows, where PR delivery is
+	// always safe.
+	DisallowPRFallback bool
 }
 
 const (

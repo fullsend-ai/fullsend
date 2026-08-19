@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -50,6 +51,14 @@ func (f *fakeScaffoldDelete) fn() ScaffoldDeleteFunc {
 	}
 }
 
+// testShimWithUninstallExclusion is workflow content carrying the real
+// self-dispatch exclusion condition from the shim templates, as required by
+// deployedShimSafeForUninstallPR (a bare mention of the branch name, e.g.
+// in a comment, must NOT count — see
+// TestDeployedShimSafeForUninstallPR_CommentOnlyMentionIsUnsafe).
+const testShimWithUninstallExclusion = "name: fullsend\njobs:\n  dispatch:\n    if: >-\n" +
+	"      github.event.pull_request.head.ref != '" + ScaffoldUninstallBranch + "'\n"
+
 func newInstalledFakeClient(repos ...string) *forge.FakeClient {
 	client := forge.NewFakeClient()
 	for _, r := range repos {
@@ -62,12 +71,11 @@ func newInstalledFakeClient(repos ...string) *forge.FakeClient {
 		client.Secrets[r+"/FULLSEND_GCP_PROJECT_ID"] = true
 		client.Secrets[r+"/FULLSEND_GCP_WIF_PROVIDER"] = true
 		// Includes the ScaffoldUninstallBranch self-dispatch exclusion
-		// marker, simulating a repo that has already received a fresh
+		// condition, simulating a repo that has already received a fresh
 		// scaffold render (see deployedShimSafeForUninstallPR) — tests
 		// that specifically exercise the pre-flight refusal path use their
-		// own FakeClient without this marker instead of this helper.
-		client.FileContents[r+"/.github/workflows/fullsend.yml"] = []byte(
-			"name: fullsend\n# excludes " + ScaffoldUninstallBranch + " from self-dispatch\n")
+		// own FakeClient without this condition instead of this helper.
+		client.FileContents[r+"/.github/workflows/fullsend.yml"] = []byte(testShimWithUninstallExclusion)
 	}
 	return client
 }
@@ -181,8 +189,7 @@ func TestUninstall_NonInstalledRepo(t *testing.T) {
 
 func TestUninstall_YamlExtensionFallback(t *testing.T) {
 	client := forge.NewFakeClient()
-	client.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte(
-		"name: fullsend\n# excludes " + ScaffoldUninstallBranch + " from self-dispatch\n")
+	client.FileContents["acme/api/.github/workflows/fullsend.yaml"] = []byte(testShimWithUninstallExclusion)
 
 	results, err := Uninstall(context.Background(), UninstallConfig{
 		Manifest:       testManifest("acme/api"),
@@ -696,8 +703,7 @@ func TestResolveVendorCleanupPaths_ManifestReadError(t *testing.T) {
 
 func TestDeployedShimSafeForUninstallPR_HasExclusion(t *testing.T) {
 	client := forge.NewFakeClient()
-	client.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
-		"name: fullsend\n# excludes " + ScaffoldUninstallBranch + " from self-dispatch\n")
+	client.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(testShimWithUninstallExclusion)
 
 	safe, err := deployedShimSafeForUninstallPR(context.Background(), client, "acme", "api", GitHubForgeConfig())
 	if err != nil {
@@ -705,6 +711,68 @@ func TestDeployedShimSafeForUninstallPR_HasExclusion(t *testing.T) {
 	}
 	if !safe {
 		t.Error("safe = false, want true (deployed workflow already has the exclusion)")
+	}
+}
+
+// TestDeployedShimSafeForUninstallPR_CommentOnlyMentionIsUnsafe verifies
+// that a bare mention of the uninstall branch name — here in a comment,
+// without the actual self-dispatch exclusion condition — does not satisfy
+// the pre-flight check. A raw substring match would be fooled by exactly
+// this content.
+func TestDeployedShimSafeForUninstallPR_CommentOnlyMentionIsUnsafe(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"name: fullsend\n# mentions " + ScaffoldUninstallBranch + " but has no exclusion condition\n")
+
+	safe, err := deployedShimSafeForUninstallPR(context.Background(), client, "acme", "api", GitHubForgeConfig())
+	if err != nil {
+		t.Fatalf("deployedShimSafeForUninstallPR() error = %v", err)
+	}
+	if safe {
+		t.Error("safe = true, want false (branch name in a comment is not an exclusion condition)")
+	}
+}
+
+// TestDeployedShimSafeForUninstallPR_DoubleQuotedCondition verifies the
+// matcher tolerates a hand-edited shim using double quotes and extra
+// whitespace around the comparison.
+func TestDeployedShimSafeForUninstallPR_DoubleQuotedCondition(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"name: fullsend\njobs:\n  dispatch:\n    if: github.event.pull_request.head.ref  !=  \"" +
+			ScaffoldUninstallBranch + "\"\n")
+
+	safe, err := deployedShimSafeForUninstallPR(context.Background(), client, "acme", "api", GitHubForgeConfig())
+	if err != nil {
+		t.Fatalf("deployedShimSafeForUninstallPR() error = %v", err)
+	}
+	if !safe {
+		t.Error("safe = false, want true (double-quoted exclusion condition should match)")
+	}
+}
+
+// TestDeployedShimSafeForUninstallPR_RealTemplates runs the matcher against
+// the actual shim templates that fresh scaffold renders deploy, so template
+// drift that would break the pre-flight check is caught here alongside
+// scaffold's TestShimScaffoldBranchFilter.
+func TestDeployedShimSafeForUninstallPR_RealTemplates(t *testing.T) {
+	for _, tmpl := range []string{"shim-per-repo.yaml", "shim-workflow-call.yaml"} {
+		t.Run(tmpl, func(t *testing.T) {
+			content, err := os.ReadFile("../scaffold/fullsend-repo/templates/" + tmpl)
+			if err != nil {
+				t.Fatalf("reading template: %v", err)
+			}
+			client := forge.NewFakeClient()
+			client.FileContents["acme/api/.github/workflows/fullsend.yml"] = content
+
+			safe, err := deployedShimSafeForUninstallPR(context.Background(), client, "acme", "api", GitHubForgeConfig())
+			if err != nil {
+				t.Fatalf("deployedShimSafeForUninstallPR() error = %v", err)
+			}
+			if !safe {
+				t.Errorf("safe = false, want true (%s must contain the exclusion condition the pre-flight matches)", tmpl)
+			}
+		})
 	}
 }
 
@@ -886,6 +954,72 @@ func TestUninstall_DefaultsToPRDelivery(t *testing.T) {
 	}
 	if fake.direct {
 		t.Error("direct = true, want false (PR delivery is the default)")
+	}
+}
+
+// TestUninstall_ScaffoldCommittedDirect_ThreadedToResult verifies the
+// delivery outcome reported by the ScaffoldDeleteFunc lands on the result,
+// so callers can distinguish a terminal teardown (deletions on the default
+// branch) from a PR-pending one when deciding e.g. manifest removal.
+func TestUninstall_ScaffoldCommittedDirect_ThreadedToResult(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		direct bool
+	}{
+		{"direct commit", true},
+		{"PR delivery", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := newInstalledFakeClient("acme/api")
+
+			results, err := Uninstall(context.Background(), UninstallConfig{
+				Manifest:       testManifest("acme/api"),
+				Repos:          []string{"acme/api"},
+				MaxConcurrency: 4,
+				Direct:         tc.direct,
+			}, newTestClientFactory(client), newFakeScaffoldDelete(client).fn(), nil)
+
+			if err != nil {
+				t.Fatalf("Uninstall() error = %v", err)
+			}
+			if !results[0].Success {
+				t.Fatalf("Success = false, want true; Error = %v", results[0].Error)
+			}
+			if results[0].ScaffoldCommittedDirect != tc.direct {
+				t.Errorf("ScaffoldCommittedDirect = %v, want %v", results[0].ScaffoldCommittedDirect, tc.direct)
+			}
+		})
+	}
+}
+
+// TestUninstallSingleRepo_DirectNoop_ReportsAlreadyRemoved covers the
+// direct-mode no-op: the delete func reports nothing was committed (files
+// already gone). Direct delivery never falls back to a PR, so progress must
+// say the scaffold is already removed — not that a PR was opened — and the
+// result must not read as committed-direct.
+func TestUninstallSingleRepo_DirectNoop_ReportsAlreadyRemoved(t *testing.T) {
+	client := newInstalledFakeClient("acme/api")
+	noopDelete := func(ctx context.Context, owner, repo, message string, files []forge.TreeFile, direct bool) (bool, error) {
+		return false, nil
+	}
+
+	var messages []string
+	progress := func(_, _, msg string) { messages = append(messages, msg) }
+
+	result := UninstallSingleRepo(context.Background(), client, "acme", "api", "", true, noopDelete, progress)
+
+	if !result.Success {
+		t.Fatalf("Success = false, want true; Error = %v", result.Error)
+	}
+	if result.ScaffoldCommittedDirect {
+		t.Error("ScaffoldCommittedDirect = true, want false (nothing was committed)")
+	}
+	joined := strings.Join(messages, "\n")
+	if !strings.Contains(joined, "already removed") {
+		t.Errorf("progress messages missing 'already removed'; got:\n%s", joined)
+	}
+	if strings.Contains(joined, "PR opened") {
+		t.Errorf("progress messages claim a PR was opened in direct mode; got:\n%s", joined)
 	}
 }
 

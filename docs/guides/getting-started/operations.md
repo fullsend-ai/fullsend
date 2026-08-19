@@ -71,7 +71,7 @@ To remove fullsend from a single repository:
 fullsend github uninstall "$OWNER/$REPO"
 ```
 
-This deletes the workflow file, `.fullsend/config.yaml`, `.fullsend/config.base.yaml` (including any vendored `--vendor` assets), and repo-level variables/secrets created by `fullsend github setup`. By default, file deletions are delivered via a pull request; pass `--direct` to push them straight to the default branch instead. Then run `fullsend inference deprovision "$OWNER/$REPO"` to remove WIF access — GCP infrastructure is out of scope for `github uninstall`.
+This deletes the workflow file, `.fullsend/config.yaml`, `.fullsend/config.base.yaml` (including any vendored `--vendor` assets), and repo-level variables/secrets created by `fullsend github setup`. By default, file deletions are delivered via a pull request; pass `--direct` to push them straight to the default branch instead (`--direct` never falls back to a PR — it fails with an error if branch protection blocks the push). Then run `fullsend inference deprovision "$OWNER/$REPO"` to remove WIF access — GCP infrastructure is out of scope for `github uninstall`.
 
 For multi-repo or manifest-based workflows, use `fullsend repos uninstall "$OWNER/$REPO"` instead, which also removes the entry from `repos.yaml` and supports the same `--direct` flag. If neither command is available (e.g. older CLI versions), fall back to the manual steps:
 

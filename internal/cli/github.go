@@ -1142,6 +1142,12 @@ func newScaffoldDeleteFunc(client forge.Client, printer *ui.Printer) repos.Scaff
 			PRBody: "This PR removes the fullsend workflow file, configuration, and any vendored " +
 				"assets created by `fullsend github setup`.\n\nMerge this PR to complete the uninstall.",
 			Branch: repos.ScaffoldUninstallBranch,
+			// Uninstall deliveries must never silently downgrade --direct
+			// to a PR on a protected branch: --direct is the documented
+			// path for repos whose deployed shim fails the PR-safety
+			// pre-flight, so the fallback would open exactly the PR that
+			// check exists to prevent.
+			DisallowPRFallback: true,
 		}
 		if direct {
 			printer.StepStart(fmt.Sprintf("Removing scaffold files from %s/%s (%s branch)",
@@ -1194,7 +1200,12 @@ func runGitHubUninstallPerRepo(ctx context.Context, client forge.Client, printer
 		fmt.Sprintf("Variables removed: %d", result.VarsDeleted),
 		fmt.Sprintf("Secrets removed: %d", result.SecretsDeleted),
 	}
-	if !direct && result.WorkflowDeleted {
+	// Pending note requires both the actual outcome (deletions did not land
+	// on the default branch — ScaffoldCommittedDirect is false) and PR-mode
+	// delivery having been requested: in direct mode a false outcome means
+	// there was nothing left to delete (direct delivery fails hard on branch
+	// protection rather than falling back to a PR), so no PR is pending.
+	if result.WorkflowDeleted && !result.ScaffoldCommittedDirect && !direct {
 		summary = append(summary, "Workflow file and config: pending — "+uninstallPRPendingNote(ctx, client, owner, repo))
 	}
 	printer.Summary("Uninstall complete", summary)

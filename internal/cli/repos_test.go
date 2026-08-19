@@ -988,8 +988,9 @@ func TestRunReposUninstall_DefaultsToPRDelivery(t *testing.T) {
 	// the pre-flight check in uninstallRepoResources refuses default-mode
 	// (PR) delivery and this test would need --direct instead.
 	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
-		"uses: fullsend-ai/fullsend/.github/workflows/dispatch.yml@v1.0.0\n# excludes " +
-			repos.ScaffoldUninstallBranch + " from self-dispatch\n")
+		"uses: fullsend-ai/fullsend/.github/workflows/dispatch.yml@v1.0.0\n" +
+			"jobs:\n  dispatch:\n    if: github.event.pull_request.head.ref != '" +
+			repos.ScaffoldUninstallBranch + "'\n")
 
 	err := runReposUninstall(context.Background(), &reposUninstallConfig{
 		manifest:    manifestPath,
@@ -1762,6 +1763,40 @@ func TestRunReposUninstall_RemovesFromManifest(t *testing.T) {
 	require.NotNil(t, m.GitHub)
 	assert.Equal(t, 1, len(m.GitHub.Repos), "manifest should have 1 repo after removing acme/api")
 	assert.Equal(t, "acme/web", m.GitHub.Repos[0].Name)
+}
+
+// TestRunReposUninstall_PRDelivery_KeepsManifestEntry verifies that a repo
+// whose scaffold removal was delivered via a still-unmerged PR is NOT
+// treated as terminally uninstalled: its manifest entry must be kept until
+// the PR lands (the user merges it and re-runs with --manifest-only).
+func TestRunReposUninstall_PRDelivery_KeepsManifestEntry(t *testing.T) {
+	manifestPath := writeTestManifest(t, twoRepoManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
+	// Owner fast path — see TestRunReposUninstall_DefaultsToPRDelivery.
+	fc.AuthenticatedUser = "acme"
+	// Deployed shim carries the real self-dispatch exclusion condition so
+	// the pre-flight allows default-mode (PR) delivery.
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"jobs:\n  dispatch:\n    if: github.event.pull_request.head.ref != '" +
+			repos.ScaffoldUninstallBranch + "'\n")
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		yes:         true,
+		concurrency: 4,
+		// direct intentionally unset: PR delivery leaves the teardown
+		// pending, so the manifest entry must survive.
+		testClient: fc,
+	}, []string{"acme/api"})
+	require.NoError(t, err)
+
+	require.Len(t, fc.CreatedProposals, 1, "expected a scaffold-removal PR to be opened")
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, 2, len(m.GitHub.Repos),
+		"manifest entry must be kept while the scaffold-removal PR is unmerged")
 }
 
 func TestRunReposUninstall_ManifestOnly(t *testing.T) {

@@ -1199,7 +1199,8 @@ func TestRunGitHubUninstallPerRepo_SummaryMentionsPendingPRWhenNotDirect(t *test
 	// allows PR-based delivery.
 	client.FileContents = map[string][]byte{
 		"acme/widget/.github/workflows/fullsend.yaml": []byte(
-			"name: fullsend\n# excludes " + repos.ScaffoldUninstallBranch + " from self-dispatch\n"),
+			"name: fullsend\njobs:\n  dispatch:\n    if: github.event.pull_request.head.ref != '" +
+				repos.ScaffoldUninstallBranch + "'\n"),
 	}
 	var buf strings.Builder
 	printer := ui.New(&buf)
@@ -1418,7 +1419,7 @@ func TestGitHubUninstallCmd_PerRepoYoloDefaultsToPR(t *testing.T) {
 func TestGitHubUninstallCmd_PerRepoYoloDefaultsToPR_DeployedWorkflowHasExclusion(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	srv := newPerRepoUninstallPRTestServer(t,
-		"name: fullsend\n# excludes fullsend/scaffold-uninstall from self-dispatch\n")
+		"name: fullsend\njobs:\n  dispatch:\n    if: github.event.pull_request.head.ref != 'fullsend/scaffold-uninstall'\n")
 	defer srv.Close()
 	t.Setenv("GITHUB_API_URL", srv.URL)
 

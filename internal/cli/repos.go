@@ -984,7 +984,9 @@ func newReposUninstallCmd() *cobra.Command {
 
 By default, tears down (deletes workflow files, variables, secrets) and then
 removes the repo entry from repos.yaml. The manifest entry is only removed
-if teardown succeeds.
+when teardown is complete: repos whose scaffold-file removal was delivered
+via a still-unmerged pull/merge request keep their entry — merge the PR,
+then re-run with --manifest-only to remove it.
 
 Use --manifest-only to remove from the manifest without tearing down (e.g.
 when a repo is already deleted). Use --uninstall-only to tear down without
@@ -992,8 +994,10 @@ modifying the manifest (e.g. for temporary teardown with intent to reinstall).
 
 By default, scaffold-file deletions are delivered via a pull/merge request
 (mirroring "repos install"); pass --direct to push the deletions straight to
-the default branch instead. Repo variables and secrets are always deleted
-directly (they cannot go through a PR).
+the default branch instead. --direct fails with an error when branch
+protection blocks the push — it never falls back to opening a PR. Repo
+variables and secrets are always deleted directly (they cannot go through
+a PR).
 
 GCP infrastructure (WIF) must be cleaned up separately via
 'inference deprovision'.
@@ -1087,7 +1091,13 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 	}
 
 	// Teardown phase (skipped when --manifest-only).
-	var succeededRepos []string
+	// completedRepos holds repos whose teardown is terminal (scaffold
+	// removal landed on the default branch, or there was nothing left to
+	// remove) — only these are eligible for manifest removal.
+	// pendingPRRepos holds repos whose scaffold removal was delivered via a
+	// still-unmerged pull/merge request: their teardown is not terminal, so
+	// the manifest entry is kept until the PR lands.
+	var completedRepos, pendingPRRepos []string
 	var teardownFailed int
 	if !opts.manifestOnly {
 		if err := checkAllForgeScopes(ctx, manifest, clients, printer); err != nil {
@@ -1124,6 +1134,12 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 				PRBody: "This PR removes the fullsend workflow file, configuration, and any vendored " +
 					"assets created by `fullsend repos install`.\n\nMerge this PR to complete the uninstall.",
 				Branch: repos.ScaffoldUninstallBranch,
+				// Uninstall deliveries must never silently downgrade
+				// --direct to a PR on a protected branch: --direct is the
+				// documented path for repos whose deployed shim fails the
+				// PR-safety pre-flight, so the fallback would open exactly
+				// the PR that check exists to prevent.
+				DisallowPRFallback: true,
 			}
 			return layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
 				targetRepo.DefaultBranch, meta, files, direct, nil)
@@ -1142,15 +1158,33 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 		}
 
 		for _, r := range results {
-			if r.Success {
-				succeededRepos = append(succeededRepos, r.Owner+"/"+r.Repo)
-			} else {
+			fullName := r.Owner + "/" + r.Repo
+			switch {
+			case !r.Success:
 				teardownFailed++
-				printer.StepInfo(fmt.Sprintf("  FAILED: %s/%s — %v", r.Owner, r.Repo, r.Error))
+				printer.StepInfo(fmt.Sprintf("  FAILED: %s — %v", fullName, r.Error))
+			case r.WorkflowDeleted && !r.ScaffoldCommittedDirect && !opts.direct:
+				// Scaffold removal was delivered via a PR/MR that has not
+				// merged yet — the teardown is not terminal, so keep the
+				// manifest entry until the removal actually lands.
+				pendingPRRepos = append(pendingPRRepos, fullName)
+				hint := ""
+				if !opts.uninstallOnly {
+					hint = fmt.Sprintf(" — entry kept in manifest; after merging, run 'fullsend repos uninstall %s --manifest-only' to remove it", fullName)
+				}
+				printer.StepInfo(fmt.Sprintf("  PENDING: %s — scaffold-removal PR opened, merge it to finish deleting files%s", fullName, hint))
+			default:
+				completedRepos = append(completedRepos, fullName)
 			}
 		}
 
 		// GitLab post-uninstall: clean up pipeline schedules and bot tokens.
+		// This runs even for repos whose scaffold removal is still pending
+		// MR merge: schedules and bot tokens are triggers and credentials,
+		// and removing them before the MR lands closes the same exposure
+		// window that deleting variables/secrets before the scaffold files
+		// does (see uninstallRepoResources). Deferring them would leave no
+		// CLI path to clean them up later.
 		if !opts.dryRun {
 			for _, r := range results {
 				if !r.Success {
@@ -1180,16 +1214,18 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 			}
 		}
 	} else {
-		succeededRepos = concreteRepos
+		completedRepos = concreteRepos
 	}
 
-	// Manifest removal phase (skipped when --uninstall-only).
-	if !opts.uninstallOnly && len(succeededRepos) > 0 {
+	// Manifest removal phase (skipped when --uninstall-only). Only repos
+	// whose teardown is terminal are removed; PR-pending repos keep their
+	// entry until the scaffold-removal PR merges.
+	if !opts.uninstallOnly && len(completedRepos) > 0 {
 		removeResult, _, removeErr := repos.RemoveFromManifest(repos.ManifestEditConfig{
 			Manifest:     manifest,
 			ManifestPath: opts.manifest,
 			DryRun:       opts.dryRun,
-		}, succeededRepos, progressFn)
+		}, completedRepos, progressFn)
 		if removeErr != nil {
 			return removeErr
 		}
@@ -1203,8 +1239,13 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 	}
 
 	printer.Blank()
-	uninstalled := len(succeededRepos)
-	printer.StepDone(fmt.Sprintf("Uninstall complete: %d uninstalled, %d failed", uninstalled, teardownFailed))
+	uninstalled := len(completedRepos)
+	if len(pendingPRRepos) > 0 {
+		printer.StepDone(fmt.Sprintf("Uninstall complete: %d uninstalled, %d pending PR merge, %d failed",
+			uninstalled, len(pendingPRRepos), teardownFailed))
+	} else {
+		printer.StepDone(fmt.Sprintf("Uninstall complete: %d uninstalled, %d failed", uninstalled, teardownFailed))
+	}
 
 	if teardownFailed > 0 {
 		return fmt.Errorf("%d repos failed to uninstall", teardownFailed)

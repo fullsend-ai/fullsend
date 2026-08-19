@@ -283,6 +283,12 @@ removals straight to the default branch instead:
 fullsend repos uninstall acme/old-api --direct
 ```
 
+A repo whose scaffold removal went out via a PR/MR stays pending until
+that PR is merged: its manifest entry is kept, and the summary reports it
+as pending. Merge the PR, then re-run with `--manifest-only` to remove
+the entry. `--direct` never falls back to a PR — if branch protection
+blocks the push, the command fails with an error instead.
+
 When targeting multiple repos (via globs or bulk lists), the command
 prompts for confirmation:
 
