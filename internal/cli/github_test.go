@@ -1131,6 +1131,9 @@ func TestRunGitHubUninstall_ListInstallationsError(t *testing.T) {
 
 func TestRunGitHubUninstallPerRepo_DeletesResources(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: "widget", FullName: "acme/widget", DefaultBranch: "main"},
+	}
 	// Populate the files that a per-repo install creates, so FakeClient
 	// records their deletion.
 	client.FileContents = map[string][]byte{
@@ -1141,22 +1144,20 @@ func TestRunGitHubUninstallPerRepo_DeletesResources(t *testing.T) {
 	var buf strings.Builder
 	printer := ui.New(&buf)
 
-	err := runGitHubUninstallPerRepo(context.Background(), client, printer, "acme", "widget")
+	err := runGitHubUninstallPerRepo(context.Background(), client, printer, "acme", "widget", true)
 	require.NoError(t, err)
 
-	// Verify scaffold files were deleted.
-	deletedPaths := make(map[string]bool)
-	for _, f := range client.DeletedFiles {
-		assert.Equal(t, "acme", f.Owner)
-		assert.Equal(t, "widget", f.Repo)
-		deletedPaths[f.Path] = true
-	}
-	assert.True(t, deletedPaths[".github/workflows/fullsend.yml"] || deletedPaths[".github/workflows/fullsend.yaml"],
+	// Verify scaffold files were deleted (direct mode commits deletions via
+	// CommitFiles, which removes them from FileContents rather than
+	// recording them in DeletedFiles).
+	_, workflowYmlExists := client.FileContents["acme/widget/.github/workflows/fullsend.yml"]
+	_, workflowYamlExists := client.FileContents["acme/widget/.github/workflows/fullsend.yaml"]
+	assert.False(t, workflowYmlExists || workflowYamlExists,
 		"expected workflow file to be deleted")
-	assert.True(t, deletedPaths[".fullsend/config.yaml"],
-		"expected .fullsend/config.yaml to be deleted")
-	assert.True(t, deletedPaths[".fullsend/config.base.yaml"],
-		"expected .fullsend/config.base.yaml to be deleted")
+	_, configExists := client.FileContents["acme/widget/.fullsend/config.yaml"]
+	assert.False(t, configExists, "expected .fullsend/config.yaml to be deleted")
+	_, configBaseExists := client.FileContents["acme/widget/.fullsend/config.base.yaml"]
+	assert.False(t, configBaseExists, "expected .fullsend/config.base.yaml to be deleted")
 
 	// Verify variables were deleted.
 	deletedVars := make(map[string]bool)
@@ -1187,18 +1188,24 @@ func TestRunGitHubUninstallPerRepo_DeletesResources(t *testing.T) {
 
 func TestRunGitHubUninstallPerRepo_DeleteFilesError(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: "widget", FullName: "acme/widget", DefaultBranch: "main"},
+	}
 	client.Errors = map[string]error{
-		"DeleteFiles": fmt.Errorf("permission denied"),
+		"CommitFiles": fmt.Errorf("permission denied"),
 	}
 	printer := ui.New(&discardWriter{})
 
-	err := runGitHubUninstallPerRepo(context.Background(), client, printer, "acme", "widget")
+	err := runGitHubUninstallPerRepo(context.Background(), client, printer, "acme", "widget", true)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "permission denied")
 }
 
 func TestRunGitHubUninstallPerRepo_FailedProgressUsesStepFail(t *testing.T) {
 	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: "widget", FullName: "acme/widget", DefaultBranch: "main"},
+	}
 	client.Errors = map[string]error{
 		"DeleteRepoVariable": fmt.Errorf("permission denied"),
 	}
@@ -1208,7 +1215,7 @@ func TestRunGitHubUninstallPerRepo_FailedProgressUsesStepFail(t *testing.T) {
 	var buf strings.Builder
 	printer := ui.New(&buf)
 
-	err := runGitHubUninstallPerRepo(context.Background(), client, printer, "acme", "widget")
+	err := runGitHubUninstallPerRepo(context.Background(), client, printer, "acme", "widget", true)
 	require.Error(t, err)
 
 	output := buf.String()
@@ -1216,9 +1223,10 @@ func TestRunGitHubUninstallPerRepo_FailedProgressUsesStepFail(t *testing.T) {
 }
 
 // newPerRepoUninstallTestServer returns an httptest server implementing
-// just enough of the GitHub REST API for a per-repo uninstall to succeed:
-// scaffold-file deletion via the git data API, vendor manifest/binary
-// not-found probes, and variable/secret deletion.
+// just enough of the GitHub REST API for a per-repo --direct uninstall to
+// succeed: scaffold-file deletion via the git data API against the default
+// branch, vendor manifest/binary not-found probes, and variable/secret
+// deletion.
 func newPerRepoUninstallTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1260,9 +1268,77 @@ func newPerRepoUninstallTestServer(t *testing.T) *httptest.Server {
 	}))
 }
 
-func TestGitHubUninstallCmd_PerRepoYolo(t *testing.T) {
+func TestGitHubUninstallCmd_PerRepoYoloDirect(t *testing.T) {
 	t.Setenv("GH_TOKEN", "test-token")
 	srv := newPerRepoUninstallTestServer(t)
+	defer srv.Close()
+	t.Setenv("GITHUB_API_URL", srv.URL)
+
+	cmd := newGitHubUninstallCmd()
+	cmd.SetArgs([]string{"acme/widget", "--yolo", "--direct"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+// newPerRepoUninstallPRTestServer returns an httptest server implementing
+// the default (non-direct) per-repo uninstall path: the owner pushes a
+// scaffold-removal branch and opens a PR against it, in addition to the
+// endpoints newPerRepoUninstallTestServer covers.
+func newPerRepoUninstallPRTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	const uninstallBranch = "fullsend/scaffold-uninstall"
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/contents/"):
+			// Vendor manifest / vendored binary / .gitlint probes: none present.
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/user"):
+			json.NewEncoder(w).Encode(map[string]string{"login": "acme"})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/pulls"):
+			json.NewEncoder(w).Encode([]map[string]any{})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/pulls"):
+			json.NewEncoder(w).Encode(map[string]any{"html_url": "https://github.com/acme/widget/pull/1", "number": 1})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/repos/acme/widget"):
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == http.MethodGet && (strings.HasSuffix(r.URL.Path, "/git/ref/heads/main") ||
+			strings.HasSuffix(r.URL.Path, "/git/ref/heads/"+uninstallBranch)):
+			json.NewEncoder(w).Encode(map[string]any{
+				"object": map[string]string{"sha": "base-sha"},
+			})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/refs"):
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]string{})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/git/commits/base-sha"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"tree": map[string]string{"sha": "tree-sha"},
+			})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/git/trees/tree-sha"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"truncated": false,
+				"tree": []map[string]string{
+					{"path": ".github/workflows/fullsend.yml", "mode": "100644"},
+				},
+			})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/trees"):
+			json.NewEncoder(w).Encode(map[string]string{"sha": "new-tree-sha"})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/commits"):
+			json.NewEncoder(w).Encode(map[string]string{"sha": "new-commit-sha"})
+		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/git/refs/heads/"+uninstallBranch):
+			json.NewEncoder(w).Encode(map[string]string{})
+		case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/actions/variables/"):
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/actions/secrets/"):
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+func TestGitHubUninstallCmd_PerRepoYoloDefaultsToPR(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	srv := newPerRepoUninstallPRTestServer(t)
 	defer srv.Close()
 	t.Setenv("GITHUB_API_URL", srv.URL)
 

@@ -1012,6 +1012,7 @@ func runGitHubStatus(ctx context.Context, client forge.Client, printer *ui.Print
 func newGitHubUninstallCmd() *cobra.Command {
 	var yolo bool
 	var appSet string
+	var direct bool
 
 	cmd := &cobra.Command{
 		Use:   "uninstall <org|owner/repo>",
@@ -1025,7 +1026,11 @@ Per-org mode (argument is an org name, e.g. "acme"):
 Per-repo mode (argument is owner/repo, e.g. "acme/widget"):
   Deletes the workflow file, .fullsend/config.yaml and
   .fullsend/config.base.yaml, repo variables, and repo secrets created
-  by "fullsend github setup".
+  by "fullsend github setup". By default, file deletions are delivered
+  via a pull request (mirroring "fullsend github setup"); pass --direct
+  to push the deletions straight to the default branch instead. Repo
+  variables and secrets are always deleted directly (they cannot go
+  through a PR).
 
 GCP infrastructure (WIF) must be cleaned up separately via
 'inference deprovision'.`,
@@ -1075,7 +1080,7 @@ GCP infrastructure (WIF) must be cleaned up separately via
 					}
 				}
 
-				return runGitHubUninstallPerRepo(cmd.Context(), client, printer, owner, repo)
+				return runGitHubUninstallPerRepo(cmd.Context(), client, printer, owner, repo, direct)
 			}
 
 			if !yolo {
@@ -1096,14 +1101,51 @@ GCP infrastructure (WIF) must be cleaned up separately via
 
 	cmd.Flags().BoolVar(&yolo, "yolo", false, "skip confirmation prompt")
 	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps")
+	cmd.Flags().BoolVar(&direct, "direct", false, "push scaffold-file deletions directly to the default branch instead of creating a PR (per-repo mode only)")
 
 	return cmd
 }
 
+// newScaffoldDeleteFunc returns a repos.ScaffoldDeleteFunc wrapping
+// layers.CommitScaffoldFiles, mirroring the scaffoldCommitFn closures used
+// by "github setup" and "admin install" but for file removal: files carry
+// Delete: true, and the fixed uninstall branch keeps re-runs updating the
+// same PR instead of piling up new ones.
+func newScaffoldDeleteFunc(client forge.Client, printer *ui.Printer) repos.ScaffoldDeleteFunc {
+	return func(ctx context.Context, owner, repo, message string, files []forge.TreeFile, direct bool) error {
+		targetRepo, err := client.GetRepo(ctx, owner, repo)
+		if err != nil {
+			if gh.IsPATForbiddenError(err) {
+				return handlePATForbidden(printer, owner, repo, err)
+			}
+			return fmt.Errorf("getting repo info: %w", err)
+		}
+		meta := repos.ScaffoldPRMetadata{
+			CommitMsg: message,
+			PRTitle:   "chore: remove fullsend configuration",
+			PRBody: "This PR removes the fullsend workflow file, configuration, and any vendored " +
+				"assets created by `fullsend github setup`.\n\nMerge this PR to complete the uninstall.",
+			Branch: "fullsend/scaffold-uninstall",
+		}
+		if direct {
+			printer.StepStart(fmt.Sprintf("Removing scaffold files from %s/%s (%s branch)",
+				owner, repo, targetRepo.DefaultBranch))
+		} else {
+			printer.StepStart(fmt.Sprintf("Creating uninstall PR for %s/%s (target: %s)",
+				owner, repo, targetRepo.DefaultBranch))
+		}
+		_, err = layers.CommitScaffoldFiles(ctx, client, printer,
+			owner, repo, targetRepo.DefaultBranch, meta, files, direct, os.Stdin)
+		return err
+	}
+}
+
 // runGitHubUninstallPerRepo tears down a per-repo fullsend installation,
 // reversing what "fullsend github setup owner/repo" created. It delegates
-// to the same teardown logic used by "repos uninstall".
-func runGitHubUninstallPerRepo(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string) error {
+// to the same teardown logic used by "repos uninstall". Scaffold-file
+// deletions are delivered via a PR by default; direct pushes the default
+// branch instead.
+func runGitHubUninstallPerRepo(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, direct bool) error {
 	fullName := owner + "/" + repo
 	printer.Banner(Version())
 	printer.Blank()
@@ -1121,7 +1163,7 @@ func runGitHubUninstallPerRepo(ctx context.Context, client forge.Client, printer
 		}
 	}
 
-	result := repos.UninstallSingleRepo(ctx, client, owner, repo, "", progress)
+	result := repos.UninstallSingleRepo(ctx, client, owner, repo, "", direct, newScaffoldDeleteFunc(client, printer), progress)
 
 	printer.Blank()
 	if result.Error != nil {

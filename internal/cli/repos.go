@@ -968,6 +968,7 @@ type reposUninstallConfig struct {
 	concurrency   int
 	manifestOnly  bool
 	uninstallOnly bool
+	direct        bool
 	gitlabToken   string
 
 	testClient forge.Client
@@ -989,6 +990,11 @@ Use --manifest-only to remove from the manifest without tearing down (e.g.
 when a repo is already deleted). Use --uninstall-only to tear down without
 modifying the manifest (e.g. for temporary teardown with intent to reinstall).
 
+By default, scaffold-file deletions are delivered via a pull/merge request
+(mirroring "repos install"); pass --direct to push the deletions straight to
+the default branch instead. Repo variables and secrets are always deleted
+directly (they cannot go through a PR).
+
 GCP infrastructure (WIF) must be cleaned up separately via
 'inference deprovision'.
 
@@ -1007,6 +1013,7 @@ prompt for confirmation unless --yes is set.`,
 	cmd.Flags().IntVar(&opts.concurrency, "concurrency", 4, "max parallel operations (1-32)")
 	cmd.Flags().BoolVar(&opts.manifestOnly, "manifest-only", false, "remove from manifest without tearing down")
 	cmd.Flags().BoolVar(&opts.uninstallOnly, "uninstall-only", false, "tear down without removing from manifest")
+	cmd.Flags().BoolVar(&opts.direct, "direct", false, "push scaffold-file deletions directly to the default branch instead of creating a PR")
 	cmd.MarkFlagsMutuallyExclusive("manifest-only", "uninstall-only")
 
 	return cmd
@@ -1092,6 +1099,35 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 			Repos:          concreteRepos,
 			DryRun:         opts.dryRun,
 			MaxConcurrency: opts.concurrency,
+			Direct:         opts.direct,
+		}
+
+		// Scaffold-deletion function wrapping layers.CommitScaffoldFiles,
+		// mirroring the install-side scaffoldCommitFn above but for file
+		// removal (files carry Delete: true).
+		scaffoldDeleteFn := func(ctx context.Context, owner, repo, message string, files []forge.TreeFile, direct bool) error {
+			rc, ok := manifest.ResolveConfigWithGlobs(owner, repo)
+			if !ok {
+				return fmt.Errorf("repo %s/%s not found in manifest", owner, repo)
+			}
+			fc, fcErr := clients.ConfigFor(rc.Forge)
+			if fcErr != nil {
+				return fcErr
+			}
+			targetRepo, repoErr := fc.Client.GetRepo(ctx, owner, repo)
+			if repoErr != nil {
+				return fmt.Errorf("getting repo info: %w", repoErr)
+			}
+			meta := repos.ScaffoldPRMetadata{
+				CommitMsg: message,
+				PRTitle:   "chore: remove fullsend configuration",
+				PRBody: "This PR removes the fullsend workflow file, configuration, and any vendored " +
+					"assets created by `fullsend repos install`.\n\nMerge this PR to complete the uninstall.",
+				Branch: "fullsend/scaffold-uninstall",
+			}
+			_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
+				targetRepo.DefaultBranch, meta, files, direct, nil)
+			return commitErr
 		}
 
 		printer.Blank()
@@ -1101,7 +1137,7 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 			printer.StepStart("Uninstalling fullsend from repos")
 		}
 
-		results, teardownErr := repos.Uninstall(ctx, teardownCfg, clients, progressFn)
+		results, teardownErr := repos.Uninstall(ctx, teardownCfg, clients, scaffoldDeleteFn, progressFn)
 		if teardownErr != nil {
 			return teardownErr
 		}

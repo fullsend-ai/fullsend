@@ -968,6 +968,7 @@ func TestRunReposUninstall_Success(t *testing.T) {
 		manifest:    manifestPath,
 		yes:         true,
 		concurrency: 4,
+		direct:      true,
 		testClient:  fc,
 	}, []string{"acme/api"})
 	require.NoError(t, err)
@@ -1709,6 +1710,7 @@ func TestRunReposUninstall_RemovesFromManifest(t *testing.T) {
 		manifest:    manifestPath,
 		yes:         true,
 		concurrency: 4,
+		direct:      true,
 		testClient:  fc,
 	}, []string{"acme/api"})
 	require.NoError(t, err)
@@ -1750,6 +1752,7 @@ func TestRunReposUninstall_UninstallOnly(t *testing.T) {
 		yes:           true,
 		concurrency:   4,
 		uninstallOnly: true,
+		direct:        true,
 		testClient:    fc,
 	}, []string{"acme/api"})
 	require.NoError(t, err)
@@ -1782,7 +1785,10 @@ func TestRunReposUninstall_DryRun_NoManifestChange(t *testing.T) {
 func TestRunReposUninstall_PartialFailure_OnlyRemovesSucceeded(t *testing.T) {
 	manifestPath := writeTestManifest(t, twoRepoManifestYAML)
 	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
-	fc.DeleteFilesErrors = map[string]error{
+	// Deletions are now delivered via layers.CommitScaffoldFiles, which
+	// commits through CommitFiles (direct mode) rather than the plural
+	// DeleteFiles path.
+	fc.CommitFilesErrors = map[string]error{
 		"acme/api": errors.New("simulated workflow deletion failure"),
 	}
 
@@ -1790,6 +1796,7 @@ func TestRunReposUninstall_PartialFailure_OnlyRemovesSucceeded(t *testing.T) {
 		manifest:    manifestPath,
 		yes:         true,
 		concurrency: 1,
+		direct:      true,
 		testClient:  fc,
 	}, []string{"acme/api", "acme/web"})
 	require.Error(t, err)
