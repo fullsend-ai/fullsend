@@ -391,8 +391,19 @@ func TestOTELHeadersSecretThreading(t *testing.T) {
 		}
 	}
 
+	// reusable-harness-run.yml: check the agent step.
+	t.Run("reusable-harness-run.yml", func(t *testing.T) {
+		content := string(loadRepoFile(".github/workflows/reusable-harness-run.yml")(t))
+		for secretName, forward := range forwards {
+			assert.Contains(t, content, forward,
+				"reusable-harness-run.yml must inject %s into agent env", secretName)
+		}
+	})
+
 	// reusable-dispatch.yml: check each inline stage step individually so a
 	// secret missing from one stage is not masked by its presence in others.
+	// Note: harness-run is now a workflow call to reusable-harness-run.yml,
+	// so it's tested separately above.
 	t.Run("reusable-dispatch.yml", func(t *testing.T) {
 		content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
 		stepMarkers := []string{
@@ -402,7 +413,6 @@ func TestOTELHeadersSecretThreading(t *testing.T) {
 			"Run fix agent",
 			"Run retro agent",
 			"Run prioritize agent",
-			"Run harness agent",
 		}
 		for _, marker := range stepMarkers {
 			t.Run(marker, func(t *testing.T) {
@@ -449,7 +459,18 @@ func TestOTELVariableForwarding(t *testing.T) {
 		})
 	}
 
+	// reusable-harness-run.yml: check the agent step.
+	t.Run("reusable-harness-run.yml", func(t *testing.T) {
+		content := string(loadRepoFile(".github/workflows/reusable-harness-run.yml")(t))
+		for _, v := range otelVars {
+			assert.Contains(t, content, forwardLine(v),
+				"reusable-harness-run.yml must inject %s into agent env", v)
+		}
+	})
+
 	// reusable-dispatch.yml: check each inline stage step individually.
+	// Note: harness-run is now a workflow call to reusable-harness-run.yml,
+	// so it's tested separately above.
 	t.Run("reusable-dispatch.yml", func(t *testing.T) {
 		content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
 		stepMarkers := []string{
@@ -459,7 +480,6 @@ func TestOTELVariableForwarding(t *testing.T) {
 			"Run fix agent",
 			"Run retro agent",
 			"Run prioritize agent",
-			"Run harness agent",
 		}
 		for _, marker := range stepMarkers {
 			t.Run(marker, func(t *testing.T) {
@@ -763,22 +783,31 @@ func TestReusableDispatchPRHeadSHAPassthrough(t *testing.T) {
 		})
 	}
 
+	// harness-run is now a workflow call to reusable-harness-run.yml.
+	// The reusable workflow receives the matrix and extracts pr-head-sha
+	// from matrix.event_payload internally.
 	t.Run("harness-run", func(t *testing.T) {
-		marker := "Run harness agent"
-		idx := strings.Index(s, marker)
-		require.NotEqual(t, -1, idx,
-			"workflow must contain %q step", marker)
-		section := s[idx:]
-		nextStep := strings.Index(section, "\n      - name:")
-		if nextStep > 0 {
-			section = section[:nextStep]
+		// Find the harness-run job
+		jobIdx := strings.Index(s, "  harness-run:")
+		require.NotEqual(t, -1, jobIdx, "workflow must contain harness-run job")
+
+		// Extract the job section (from start of job to next job or end)
+		section := s[jobIdx:]
+		// Look for the next job definition (starts with two spaces at beginning of line)
+		if rest := section[len("  harness-run:\n"):]; len(rest) > 0 {
+			nextJobPattern := regexp.MustCompile(`(?m)^  [a-z]`)
+			if loc := nextJobPattern.FindStringIndex(rest); loc != nil {
+				section = s[jobIdx : jobIdx+len("  harness-run:\n")+loc[0]]
+			}
 		}
-		assert.Contains(t, section, "pr-head-sha:",
-			"harness-run agent step must pass pr-head-sha to action.yml")
-		assert.Contains(t, section, ".pull_request.head.sha",
-			"harness-run pr-head-sha must be populated from event_payload")
-		assert.Contains(t, section, "matrix.event_payload",
-			"harness-run must use matrix.event_payload, not needs.route.outputs")
+
+		// Verify it's a workflow call
+		assert.Contains(t, section, "uses: ./.github/workflows/reusable-harness-run.yml",
+			"harness-run must call reusable-harness-run.yml")
+
+		// Verify matrix is passed through (which contains event_payload)
+		assert.Contains(t, section, "matrix: ${{ needs.harness-dispatch.outputs.matrix }}",
+			"harness-run must pass matrix from harness-dispatch")
 	})
 }
 

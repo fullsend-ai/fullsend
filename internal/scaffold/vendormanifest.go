@@ -138,6 +138,7 @@ var vendoredReusableWorkflows = []string{
 	"reusable-code.yml",
 	"reusable-dispatch.yml",
 	"reusable-fix.yml",
+	"reusable-harness-run.yml",
 	"reusable-prioritize.yml",
 	"reusable-retro.yml",
 	"reusable-review.yml",
