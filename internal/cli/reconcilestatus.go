@@ -148,6 +148,7 @@ func reconcileGitHubClient(cmd *cobra.Command, mintURL, role, repoName string) (
 	result, err := reconcileMintToken(cmd.Context(), mintclient.MintRequest{
 		MintURL: mintURL,
 		Role:    resolveRole(role),
+		Level:   "write",
 		Repos:   []string{repoName},
 	})
 	if err != nil {

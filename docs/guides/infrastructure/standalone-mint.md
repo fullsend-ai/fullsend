@@ -200,7 +200,9 @@ gh api -X POST /repos/myorg/my-repo/actions/variables \
 
 Custom roles require an explicit permissions map via the `CUSTOM_ROLE_PERMISSIONS` environment variable. This tells the mint what permissions to request when creating installation tokens for the role.
 
-The format is a JSON object mapping role names to permission maps:
+#### Flat format
+
+The simplest format is a JSON object mapping role names to permission maps. Flat-format roles are treated as the `read` privilege level — requesting `level: "write"` returns the same permissions:
 
 ```json
 {
@@ -218,7 +220,35 @@ The format is a JSON object mapping role names to permission maps:
 }
 ```
 
-Permission names and levels match the [GitHub App permissions API](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app). Common permission levels are `read` and `write`.
+#### Multi-level format
+
+To define distinct `read` and `write` privilege levels for a custom role, wrap the permission maps inside a `levels` key:
+
+```json
+{
+  "deployer": {
+    "levels": {
+      "read": {
+        "contents": "read",
+        "deployments": "read",
+        "metadata": "read"
+      },
+      "write": {
+        "contents": "read",
+        "deployments": "write",
+        "environments": "write",
+        "metadata": "read"
+      }
+    }
+  }
+}
+```
+
+When a token request omits the `level` field (or sets it to `"read"`), the mint returns the `read`-level permissions. Setting `level: "write"` returns the `write`-level permissions. If a multi-level role defines only a `write` level, `read` is derived by downgrading all `write` permission values to `read`.
+
+Both formats can be mixed in a single `CUSTOM_ROLE_PERMISSIONS` value — some roles flat, others multi-level. The mint auto-detects the format per role by checking for the `levels` key.
+
+Permission names and values match the [GitHub App permissions API](https://docs.github.com/en/rest/apps/apps#create-an-installation-access-token-for-an-app). Common permission values are `read` and `write`.
 
 ### Built-in roles cannot be overridden
 

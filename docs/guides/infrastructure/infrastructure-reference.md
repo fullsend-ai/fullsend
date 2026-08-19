@@ -27,7 +27,8 @@ The mint exchanges GitHub OIDC tokens for scoped GitHub App installation tokens.
 │  ┌──────────────────────────────────────────────────┐           │
 │  │ POST /v1/token                                   │           │
 │  │ Authorization: Bearer <OIDC JWT>                 │           │
-│  │ Body: { "role": "coder", "repos": ["my-repo"] }  │           │
+│  │ Body: { "role": "coder", "repos": ["my-repo"],   │           │
+│  │        "level": "write" }                        │           │
 │  └──────────┬───────────────────────────────────────┘           │
 │             │                                                   │
 │             ▼                                                   │
@@ -78,7 +79,7 @@ The mint exchanges GitHub OIDC tokens for scoped GitHub App installation tokens.
 ### Role Permissions Matrix
 
 The mint enforces minimum permission sets per role. Tokens cannot exceed these scopes.
-Custom roles can be registered via the standalone mint's `CUSTOM_ROLE_PERMISSIONS` env var — see the [standalone mint guide](standalone-mint.md#custom-role-permissions) for details.
+Each role supports two privilege levels: **write** (the full permission set shown below) and **read** (all `write` values downgraded to `read`). Token requests accept an optional `level` field; omitting it defaults to `read`. Custom roles can be registered via the standalone mint's `CUSTOM_ROLE_PERMISSIONS` env var — see the [standalone mint guide](standalone-mint.md#custom-role-permissions) for details.
 
 | Role | contents | pull_requests | issues | actions | checks | workflows | actions_variables | organization_projects | metadata |
 |------|----------|---------------|--------|---------|--------|-----------|-------------------|-----------------------|----------|
