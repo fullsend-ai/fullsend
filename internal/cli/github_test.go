@@ -3,7 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -1152,6 +1155,8 @@ func TestRunGitHubUninstallPerRepo_DeletesResources(t *testing.T) {
 		"expected workflow file to be deleted")
 	assert.True(t, deletedPaths[".fullsend/config.yaml"],
 		"expected .fullsend/config.yaml to be deleted")
+	assert.True(t, deletedPaths[".fullsend/config.base.yaml"],
+		"expected .fullsend/config.base.yaml to be deleted")
 
 	// Verify variables were deleted.
 	deletedVars := make(map[string]bool)
@@ -1190,6 +1195,99 @@ func TestRunGitHubUninstallPerRepo_DeleteFilesError(t *testing.T) {
 	err := runGitHubUninstallPerRepo(context.Background(), client, printer, "acme", "widget")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "permission denied")
+}
+
+func TestRunGitHubUninstallPerRepo_FailedProgressUsesStepFail(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Errors = map[string]error{
+		"DeleteRepoVariable": fmt.Errorf("permission denied"),
+	}
+	client.FileContents = map[string][]byte{
+		"acme/widget/.github/workflows/fullsend.yaml": []byte("name: fullsend\n"),
+	}
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runGitHubUninstallPerRepo(context.Background(), client, printer, "acme", "widget")
+	require.Error(t, err)
+
+	output := buf.String()
+	assert.Contains(t, output, "✗", "expected StepFail marker for a Failed: progress message")
+}
+
+// newPerRepoUninstallTestServer returns an httptest server implementing
+// just enough of the GitHub REST API for a per-repo uninstall to succeed:
+// scaffold-file deletion via the git data API, vendor manifest/binary
+// not-found probes, and variable/secret deletion.
+func newPerRepoUninstallTestServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/contents/"):
+			// Vendor manifest / vendored binary presence checks: not vendored.
+			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/repos/acme/widget"):
+			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/git/ref/heads/main"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"object": map[string]string{"sha": "base-sha"},
+			})
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/git/commits/base-sha"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"tree": map[string]string{"sha": "tree-sha"},
+			})
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/git/trees/tree-sha"):
+			json.NewEncoder(w).Encode(map[string]any{
+				"truncated": false,
+				"tree": []map[string]string{
+					{"path": ".github/workflows/fullsend.yml", "mode": "100644"},
+				},
+			})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/trees"):
+			json.NewEncoder(w).Encode(map[string]string{"sha": "new-tree-sha"})
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/git/commits"):
+			json.NewEncoder(w).Encode(map[string]string{"sha": "new-commit-sha"})
+		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/git/refs/heads/main"):
+			json.NewEncoder(w).Encode(map[string]string{})
+		case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/actions/variables/"):
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/actions/secrets/"):
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+func TestGitHubUninstallCmd_PerRepoYolo(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	srv := newPerRepoUninstallTestServer(t)
+	defer srv.Close()
+	t.Setenv("GITHUB_API_URL", srv.URL)
+
+	cmd := newGitHubUninstallCmd()
+	cmd.SetArgs([]string{"acme/widget", "--yolo"})
+	err := cmd.Execute()
+	require.NoError(t, err)
+}
+
+func TestGitHubUninstallCmd_InvalidRepoFormat(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newGitHubUninstallCmd()
+	cmd.SetArgs([]string{"acme/bad repo name", "--yolo"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid repo name")
+}
+
+func TestGitHubUninstallCmd_InvalidOwnerFormat(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newGitHubUninstallCmd()
+	cmd.SetArgs([]string{"bad owner/widget", "--yolo"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid owner name")
 }
 
 func TestGitHubUninstallCmd_PerRepoRejectsAppSet(t *testing.T) {

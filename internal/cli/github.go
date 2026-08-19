@@ -1023,8 +1023,12 @@ Per-org mode (argument is an org name, e.g. "acme"):
   secrets, and guides the user to delete GitHub Apps via the browser.
 
 Per-repo mode (argument is owner/repo, e.g. "acme/widget"):
-  Deletes the workflow file, .fullsend/ configuration directory,
-  repo variables, and repo secrets created by "fullsend github setup".`,
+  Deletes the workflow file, .fullsend/config.yaml and
+  .fullsend/config.base.yaml, repo variables, and repo secrets created
+  by "fullsend github setup".
+
+GCP infrastructure (WIF) must be cleaned up separately via
+'inference deprovision'.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := args[0]
@@ -1054,7 +1058,7 @@ Per-repo mode (argument is owner/repo, e.g. "acme/widget"):
 				return err
 			}
 
-			client := gh.New(token)
+			client := newGitHubLiveClient(token, "")
 			printer := ui.New(os.Stdout)
 
 			if isRepo {
@@ -1107,9 +1111,11 @@ func runGitHubUninstallPerRepo(ctx context.Context, client forge.Client, printer
 	printer.Blank()
 
 	progress := func(_, phase, msg string) {
-		switch phase {
-		case "done":
+		switch {
+		case phase == "done":
 			printer.StepDone(msg)
+		case strings.HasPrefix(msg, "Failed:"):
+			printer.StepFail(msg)
 		default:
 			printer.StepInfo(msg)
 		}
