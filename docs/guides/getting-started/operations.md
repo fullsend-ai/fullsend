@@ -63,13 +63,31 @@ This is idempotent — it provisions new repos, syncs variable drift, and upgrad
 
 ### Per-repo teardown
 
-To remove fullsend from a single repository:
+The recommended way to remove fullsend from one or more repositories is the `repos uninstall` command. It is manifest-driven and handles workflow file removal, variable/secret cleanup, and manifest entry removal in a single step:
+
+```bash
+fullsend repos uninstall "$OWNER/$REPO"
+```
+
+GCP infrastructure (WIF pool/provider) is not managed by the manifest, so clean it up separately:
+
+```bash
+fullsend inference deprovision "$OWNER/$REPO"
+```
+
+If you manage your own self-hosted mint, also run `fullsend mint unenroll "$OWNER/$REPO"` to remove the repo from the mint's allowlist. No separate unenrollment is needed for the hosted community mint. See the [standalone commands](#standalone-commands) table for details.
+
+For more options (dry-run, manifest-only, uninstall-only), see the [repos uninstall](../../cli/repos.md#repos-uninstall) CLI reference or the [Removing repos](repo-management.md#removing-repos) guide.
+
+#### Manual fallback
+
+If the CLI is unavailable, you can tear down manually:
 
 **GitHub repos:**
 
 1. Delete `.github/workflows/fullsend.yaml` and repo-level secrets/variables
 2. Run `fullsend inference deprovision "$OWNER/$REPO"` to remove WIF access
-3. Remove the `FULLSEND_MINT_URL` repository variable (if set) — no separate unenrollment is needed for the hosted community mint
+3. Remove the `FULLSEND_MINT_URL` repository variable (if set)
 
 **GitLab repos:**
 
@@ -77,8 +95,6 @@ To remove fullsend from a single repository:
 2. Delete all CI/CD variables prefixed with `FULLSEND_`
 3. Revoke the `fullsend-bot` project access token (Settings → Access Tokens)
 4. Delete fullsend pipeline schedules (`fullsend slash poll` and `fullsend event poll`)
-
-If you manage your own self-hosted mint, run `fullsend mint unenroll "$OWNER/$REPO"` to remove the repo from the mint's allowlist. See the [standalone commands](#standalone-commands) table for details.
 
 ## Standalone commands
 
