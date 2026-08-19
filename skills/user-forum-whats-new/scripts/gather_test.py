@@ -168,6 +168,113 @@ class TestClassifyPerRepo(unittest.TestCase):
         self.assertEqual(len(out["merged_prs"]["on_main"]), 1)
         self.assertIsNone(out["release_cutoff_utc"])
 
+    def test_prerelease_does_not_set_cutoff(self):
+        since_ts = parse_iso("2026-08-11T12:00:00Z")
+        until_ts = parse_iso("2026-08-18T20:00:00Z")
+        assert since_ts and until_ts
+        releases = {
+            "fullsend-ai/fullsend": [
+                {
+                    "tag_name": "v0.36.0",
+                    "published_at": "2026-08-11T18:26:33Z",
+                    "html_url": "https://example/fullsend",
+                    "name": "v0.36.0",
+                    "body": "stable",
+                    "draft": False,
+                    "prerelease": False,
+                },
+                {
+                    "tag_name": "v0.37.0-rc.1",
+                    "published_at": "2026-08-12T12:00:00Z",
+                    "html_url": "https://example/rc",
+                    "name": "v0.37.0-rc.1",
+                    "body": "rc",
+                    "draft": False,
+                    "prerelease": True,
+                },
+            ],
+            "fullsend-ai/agents": [],
+        }
+        prs = {
+            "fullsend-ai/fullsend": [
+                {
+                    "number": 1,
+                    "title": "before stable",
+                    "url": "u1",
+                    "closedAt": "2026-08-11T18:00:00Z",
+                    "author": {"login": "a"},
+                },
+                {
+                    "number": 2,
+                    "title": "after stable before rc",
+                    "url": "u2",
+                    "closedAt": "2026-08-12T06:00:00Z",
+                    "author": {"login": "a"},
+                },
+                {
+                    "number": 3,
+                    "title": "after rc",
+                    "url": "u3",
+                    "closedAt": "2026-08-12T18:00:00Z",
+                    "author": {"login": "a"},
+                },
+            ],
+            "fullsend-ai/agents": [],
+        }
+        out = classify(releases, prs, since_ts, until_ts)
+        tags = {r["tag"]: r["prerelease"] for r in out["releases"]}
+        self.assertEqual(tags["v0.36.0"], False)
+        self.assertEqual(tags["v0.37.0-rc.1"], True)
+        # Cutoff stays at stable, not the later RC.
+        self.assertEqual(
+            out["release_cutoff_utc"]["fullsend-ai/fullsend"],
+            "2026-08-11T18:26:33Z",
+        )
+        released_nums = {p["number"] for p in out["merged_prs"]["released"]}
+        on_main_nums = {p["number"] for p in out["merged_prs"]["on_main"]}
+        self.assertEqual(released_nums, {1})
+        self.assertEqual(on_main_nums, {2, 3})
+
+    def test_prerelease_only_window_has_no_cutoff(self):
+        since_ts = parse_iso("2026-08-11T12:00:00Z")
+        until_ts = parse_iso("2026-08-18T20:00:00Z")
+        assert since_ts and until_ts
+        out = classify(
+            {
+                "fullsend-ai/fullsend": [
+                    {
+                        "tag_name": "v0.37.0-rc.1",
+                        "published_at": "2026-08-12T12:00:00Z",
+                        "html_url": "https://example/rc",
+                        "name": "rc",
+                        "body": "rc",
+                        "draft": False,
+                        "prerelease": True,
+                    }
+                ],
+                "fullsend-ai/agents": [],
+            },
+            {
+                "fullsend-ai/fullsend": [
+                    {
+                        "number": 9,
+                        "title": "x",
+                        "url": "u",
+                        "closedAt": "2026-08-12T06:00:00Z",
+                        "author": {"login": "a"},
+                    }
+                ],
+                "fullsend-ai/agents": [],
+            },
+            since_ts,
+            until_ts,
+        )
+        self.assertEqual(len(out["releases"]), 1)
+        self.assertTrue(out["releases"][0]["prerelease"])
+        self.assertIsNone(out["release_cutoff_utc"])
+        self.assertEqual(out["merged_prs"]["released"], [])
+        self.assertEqual(len(out["merged_prs"]["on_main"]), 1)
+
 
 class TestBuildOutput(unittest.TestCase):
     def test_reads_tmp_files(self):
@@ -195,6 +302,16 @@ class TestHelpers(unittest.TestCase):
 
     def test_today_et_format(self):
         self.assertRegex(today_et(), r"^\d{4}-\d{2}-\d{2}$")
+
+    def test_parse_iso_malformed_returns_none(self):
+        import io
+        from contextlib import redirect_stderr
+
+        buf = io.StringIO()
+        with redirect_stderr(buf):
+            self.assertIsNone(parse_iso("not-a-timestamp"))
+            self.assertIsNone(parse_iso("2026-13-99T99:99:99Z"))
+        self.assertIn("warning: skipping malformed timestamp", buf.getvalue())
 
     def test_bad_json_warns(self):
         import io

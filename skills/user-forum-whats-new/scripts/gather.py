@@ -31,7 +31,11 @@ REPOS = (
 def parse_iso(iso: str) -> datetime | None:
     if not iso:
         return None
-    dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    try:
+        dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+    except (ValueError, TypeError) as e:
+        sys.stderr.write(f"warning: skipping malformed timestamp {iso!r}: {e}\n")
+        return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     return dt.astimezone(UTC)
@@ -86,15 +90,23 @@ def classify(
     cutoffs: dict[str, datetime] = {}
 
     for repo, rels in releases_by_repo.items():
+        if not isinstance(rels, list):
+            sys.stderr.write(f"warning: releases for {repo} are not a list; skipping\n")
+            continue
         times: list[datetime] = []
         for rel in rels:
+            if not isinstance(rel, dict):
+                continue
             if rel.get("draft"):
                 continue
             published = rel.get("published_at") or ""
             if not in_window(published, since_ts, until_ts):
                 continue
+            is_prerelease = bool(rel.get("prerelease"))
             pub_dt = parse_iso(published)
-            if pub_dt is not None:
+            # Prereleases stay visible as candidates, but never set the
+            # Released/On-main cutoff (rc timestamps must not mark PRs shipped).
+            if pub_dt is not None and not is_prerelease:
                 times.append(pub_dt)
             releases.append(
                 {
@@ -103,6 +115,7 @@ def classify(
                     "published_at": published,
                     "url": rel.get("html_url"),
                     "name": rel.get("name"),
+                    "prerelease": is_prerelease,
                     # Candidate list only — never paste this as the recap.
                     "body": rel.get("body") or "",
                 }
@@ -113,18 +126,25 @@ def classify(
     released_prs: list[dict[str, Any]] = []
     on_main_prs: list[dict[str, Any]] = []
     for repo, prs in prs_by_repo.items():
+        if not isinstance(prs, list):
+            sys.stderr.write(f"warning: PRs for {repo} are not a list; skipping\n")
+            continue
         cutoff = cutoffs.get(repo)
         for pr in prs:
+            if not isinstance(pr, dict):
+                continue
             merged_at = pr.get("closedAt") or ""
             if not in_window(merged_at, since_ts, until_ts):
                 continue
+            author = pr.get("author") or {}
+            author_login = author.get("login") if isinstance(author, dict) else None
             entry = {
                 "repo": repo,
                 "number": pr.get("number"),
                 "title": pr.get("title"),
                 "url": pr.get("url"),
                 "merged_at": merged_at,
-                "author": (pr.get("author") or {}).get("login"),
+                "author": author_login,
             }
             merged_dt = parse_iso(merged_at)
             if cutoff is None or merged_dt is None or merged_dt > cutoff:
@@ -253,8 +273,9 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("error: dates must be YYYY-MM-DD\n")
         return 2
 
+    now = datetime.now(UTC)
     try:
-        since_ts, until_ts = window_bounds(since, until)
+        since_ts, until_ts = window_bounds(since, until, now=now)
     except ValueError as e:
         sys.stderr.write(f"error: {e}\n")
         return 2
@@ -272,7 +293,7 @@ def main(argv: list[str] | None = None) -> int:
             sys.stderr.write(f"error: gh command failed: {e}\n")
             return 1
         warn_search_overflow(tmp)
-        out = build_output(since, until, tmp)
+        out = build_output(since, until, tmp, now=now)
         print(json.dumps(out, indent=2))
     return 0
 
