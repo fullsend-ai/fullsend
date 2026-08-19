@@ -65,6 +65,22 @@ repos: {}
     expect(validateOrgConfig(cfg)).toMatch(/non-negative integer/);
   });
 
+  it.each(["fullsend", "triage", "coder", "review", "fix", "retro", "prioritize", "e2e"])(
+    "accepts role %s",
+    (role) => {
+      const cfg = parseOrgConfigYaml(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [${role}]
+agents:
+  - role: ${role}
+repos: {}
+`);
+      expect(validateOrgConfig(cfg)).toBeNull();
+    },
+  );
+
   it("rejects invalid agent role", () => {
     const cfg = parseOrgConfigYaml(`version: "1"
 dispatch:
