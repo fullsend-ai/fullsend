@@ -1193,6 +1193,7 @@ func TestRunGitHubUninstallPerRepo_DeleteFilesError(t *testing.T) {
 }
 
 func TestGitHubUninstallCmd_PerRepoRejectsAppSet(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
 	cmd := newGitHubUninstallCmd()
 	cmd.SetArgs([]string{"acme/widget", "--app-set", "custom", "--yolo"})
 	err := cmd.Execute()

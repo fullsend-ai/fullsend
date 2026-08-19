@@ -1030,6 +1030,25 @@ Per-repo mode (argument is owner/repo, e.g. "acme/widget"):
 			target := args[0]
 			owner, repo, isRepo := parseTarget(target)
 
+			if isRepo {
+				if !githubOwnerPattern.MatchString(owner) {
+					return fmt.Errorf("invalid owner name %q: must contain only alphanumeric characters and hyphens", owner)
+				}
+				if !githubRepoPattern.MatchString(repo) {
+					return fmt.Errorf("invalid repo name %q: must contain only alphanumeric characters, hyphens, dots, or underscores", repo)
+				}
+				if cmd.Flags().Changed("app-set") {
+					return fmt.Errorf("--app-set is only valid for per-org uninstall (fullsend github uninstall <org>)")
+				}
+			} else {
+				if err := validateOrgName(owner); err != nil {
+					return err
+				}
+				if err := appsetup.ValidateAppSet(appSet); err != nil {
+					return fmt.Errorf("invalid --app-set: %w", err)
+				}
+			}
+
 			token, err := resolveToken()
 			if err != nil {
 				return err
@@ -1039,18 +1058,6 @@ Per-repo mode (argument is owner/repo, e.g. "acme/widget"):
 			printer := ui.New(os.Stdout)
 
 			if isRepo {
-				if !githubOwnerPattern.MatchString(owner) {
-					return fmt.Errorf("invalid owner name %q: must contain only alphanumeric characters and hyphens", owner)
-				}
-				if !githubRepoPattern.MatchString(repo) {
-					return fmt.Errorf("invalid repo name %q: must contain only alphanumeric characters, hyphens, dots, or underscores", repo)
-				}
-				for _, name := range []string{"app-set"} {
-					if cmd.Flags().Changed(name) {
-						return fmt.Errorf("--%s is only valid for per-org uninstall (fullsend github uninstall <org>)", name)
-					}
-				}
-
 				fullName := owner + "/" + repo
 				if !yolo {
 					printer.StepWarn(fmt.Sprintf("This will remove fullsend workflow files, config, variables, and secrets from %s.", fullName))
@@ -1065,13 +1072,6 @@ Per-repo mode (argument is owner/repo, e.g. "acme/widget"):
 				}
 
 				return runGitHubUninstallPerRepo(cmd.Context(), client, printer, owner, repo)
-			}
-
-			if err := validateOrgName(owner); err != nil {
-				return err
-			}
-			if err := appsetup.ValidateAppSet(appSet); err != nil {
-				return fmt.Errorf("invalid --app-set: %w", err)
 			}
 
 			if !yolo {
