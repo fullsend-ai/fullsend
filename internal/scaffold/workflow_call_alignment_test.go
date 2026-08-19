@@ -787,27 +787,21 @@ func TestReusableDispatchPRHeadSHAPassthrough(t *testing.T) {
 	// The reusable workflow receives the matrix and extracts pr-head-sha
 	// from matrix.event_payload internally.
 	t.Run("harness-run", func(t *testing.T) {
-		// Find the harness-run job
-		jobIdx := strings.Index(s, "  harness-run:")
-		require.NotEqual(t, -1, jobIdx, "workflow must contain harness-run job")
+		// Load reusable-harness-run.yml
+		harnessRunContent, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-harness-run.yml"))
+		require.NoError(t, err)
+		harnessRunStr := string(harnessRunContent)
 
-		// Extract the job section (from start of job to next job or end)
-		section := s[jobIdx:]
-		// Look for the next job definition (starts with two spaces at beginning of line)
-		if rest := section[len("  harness-run:\n"):]; len(rest) > 0 {
-			nextJobPattern := regexp.MustCompile(`(?m)^  [a-z]`)
-			if loc := nextJobPattern.FindStringIndex(rest); loc != nil {
-				section = s[jobIdx : jobIdx+len("  harness-run:\n")+loc[0]]
-			}
-		}
+		// Extract the "Run harness agent" step
+		section := extractStepSection(t, harnessRunStr, "Run harness agent")
 
-		// Verify it's a workflow call
-		assert.Contains(t, section, "uses: ./.github/workflows/reusable-harness-run.yml",
-			"harness-run must call reusable-harness-run.yml")
-
-		// Verify matrix is passed through (which contains event_payload)
-		assert.Contains(t, section, "matrix: ${{ needs.harness-dispatch.outputs.matrix }}",
-			"harness-run must pass matrix from harness-dispatch")
+		// Assert the step contains pr-head-sha passthrough from matrix.event_payload
+		assert.Contains(t, section, "pr-head-sha:",
+			"Run harness agent step must pass pr-head-sha to action.yml")
+		assert.Contains(t, section, ".pull_request.head.sha",
+			"pr-head-sha must be populated from event_payload")
+		assert.Contains(t, section, "matrix.event_payload",
+			"pr-head-sha must be extracted from matrix.event_payload")
 	})
 }
 

@@ -79,9 +79,6 @@ on:
       JIRA_USER_EMAIL:
         description: "Jira account email for Basic auth"
         required: false
-      JIRA_BASE_URL:
-        description: "Jira instance base URL (e.g., https://myteam.atlassian.net)"
-        required: false
 
 jobs:
   route:
@@ -1530,6 +1527,13 @@ jobs:
   harness-run:
     name: Harness run
     needs: harness-dispatch
+    if: needs.harness-dispatch.outputs.matrix != '' && fromJSON(needs.harness-dispatch.outputs.matrix).include[0] != null
+    permissions:
+      actions: write
+      contents: read
+      id-token: write
+      issues: write
+      pull-requests: write
     uses: ./.github/workflows/reusable-harness-run.yml
     with:
       matrix: ${{ needs.harness-dispatch.outputs.matrix }}
@@ -1547,4 +1551,3 @@ jobs:
       OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
       JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
       JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
-      JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}

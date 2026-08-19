@@ -18,6 +18,44 @@
 #     }
 #   ]
 # }
+#
+# Minimal caller example for direct invocation from custom pollers:
+#
+# jobs:
+#   my-poller:
+#     runs-on: ubuntu-24.04
+#     permissions:
+#       actions: write
+#       contents: read
+#       id-token: write
+#       issues: write
+#       pull-requests: write
+#     steps:
+#       # ... poller logic that builds matrix ...
+#
+#   harness-run:
+#     needs: my-poller
+#     uses: fullsend-ai/fullsend/.github/workflows/reusable-harness-run.yml@v0
+#     with:
+#       matrix: ${{ needs.my-poller.outputs.matrix }}
+#       mint_url: ${{ vars.FULLSEND_MINT_URL }}
+#       gcp_region: ${{ vars.GCP_REGION }}
+#       workflow_repository: fullsend-ai/fullsend
+#       workflow_sha: v0
+#     secrets:
+#       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+#       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+#       OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
+#       OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+#
+# The caller's `vars` context should define: FULLSEND_MINT_URL, GCP_REGION,
+# OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_TRACES_ENDPOINT,
+# OTEL_EXPORTER_OTLP_CERTIFICATE, OTEL_RESOURCE_ATTRIBUTES, OTEL_SDK_DISABLED,
+# and JIRA_BASE_URL (if using Jira integration).
+#
+# Authorization: matrix is caller-trusted — the mint service is the
+# authorization boundary. Agent-enablement checks in .fullsend/config.yaml
+# are not applied on the direct-call path.
 name: Harness run
 
 on:
@@ -60,7 +98,7 @@ on:
         type: string
     secrets:
       FULLSEND_GCP_WIF_PROVIDER:
-        required: false
+        required: true
       FULLSEND_GCP_PROJECT_ID:
         required: true
       OTEL_EXPORTER_OTLP_TRACES_HEADERS:
@@ -73,9 +111,6 @@ on:
       JIRA_USER_EMAIL:
         description: "Jira account email for Basic auth"
         required: false
-      JIRA_BASE_URL:
-        description: "Jira instance base URL (e.g., https://myteam.atlassian.net)"
-        required: false
 
 jobs:
   harness-run:
@@ -85,7 +120,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(inputs.matrix) }}
     concurrency:
-      group: fullsend-harness-${{ matrix.agent }}-${{ github.repository }}-${{ matrix.status_number }}
+      group: fullsend-harness-${{ matrix.agent }}-${{ matrix.status_repo }}-${{ matrix.status_number }}
       cancel-in-progress: true
     runs-on: ${{ inputs.runner_image }}
     permissions:
@@ -233,7 +268,7 @@ jobs:
           OTEL_SDK_DISABLED: ${{ vars.OTEL_SDK_DISABLED }}
           JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
           JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
-          JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
+          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
         with:
           agent: ${{ matrix.agent }}
           version: ${{ inputs.fullsend_version || inputs.workflow_sha }}
