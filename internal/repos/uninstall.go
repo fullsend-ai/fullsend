@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables, []string{"FULLSEND_GCP_REGION"})
@@ -213,18 +214,76 @@ func UninstallSingleRepo(ctx context.Context, client forge.Client, owner, repo, 
 	return result
 }
 
+// vendoredBinaryPathPerRepo mirrors layers.VendoredBinaryPathPerRepo. It is
+// duplicated here rather than imported because internal/layers imports
+// internal/repos, and importing layers here would create an import cycle.
+const vendoredBinaryPathPerRepo = ".fullsend/bin/fullsend"
+
+// mergeUniquePaths combines two path lists, dropping duplicates while
+// preserving the order of first appearance.
+func mergeUniquePaths(a, b []string) []string {
+	seen := make(map[string]struct{}, len(a)+len(b))
+	out := make([]string, 0, len(a)+len(b))
+	for _, p := range slices.Concat(a, b) {
+		if _, ok := seen[p]; ok {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
+// resolveVendorCleanupPaths returns the vendored asset paths (binary,
+// content, and manifest) left behind by a per-repo "github setup --vendor"
+// install, so "github uninstall owner/repo" fully reverses it. It mirrors
+// the presence check layers.RemoveStaleVendoredAssets performs during
+// setup: when neither a vendor manifest nor a vendored binary is present,
+// it returns an empty slice with no error (nothing to clean up).
+//
+// GitLab does not support --vendor for per-repo installs, so callers should
+// only invoke this for GitHub repos.
+func resolveVendorCleanupPaths(ctx context.Context, client forge.Client, owner, repo string) ([]string, error) {
+	const workflowPrefix = ".fullsend/"
+	manifestPath := scaffold.VendorManifestPath(workflowPrefix)
+	if _, err := client.GetFileContent(ctx, owner, repo, manifestPath); err != nil {
+		if !forge.IsNotFound(err) {
+			return nil, fmt.Errorf("checking vendor manifest: %w", err)
+		}
+		if _, err := client.GetFileContent(ctx, owner, repo, vendoredBinaryPathPerRepo); err != nil {
+			if forge.IsNotFound(err) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("checking vendored binary: %w", err)
+		}
+	}
+	return scaffold.ResolveVendoredCleanupPaths(ctx, client, owner, repo, workflowPrefix, vendoredBinaryPathPerRepo)
+}
+
 func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, progress ProgressFunc) UninstallResult {
 	owner, repo := cfg.Owner, cfg.Repo
 	client := cfg.ForgeConfig.Client
 	fullName := owner + "/" + repo
 	result := UninstallResult{Owner: owner, Repo: repo}
 
-	// Delete scaffold files. For GitHub this is just the workflow paths
-	// from ForgeConfig; for GitLab the full scaffold set is needed.
+	// Delete scaffold files. Both GitHub and GitLab return an explicit,
+	// non-empty path list from ScaffoldPathsForForge; the WorkflowPaths
+	// fallback below is defensive for any future forge that doesn't.
 	deletePaths := ScaffoldPathsForForge(cfg.Forge)
 	if len(deletePaths) == 0 {
 		deletePaths = cfg.ForgeConfig.WorkflowPaths
 	}
+
+	if cfg.Forge != ForgeGitLab {
+		vendorPaths, vendorErr := resolveVendorCleanupPaths(ctx, client, owner, repo)
+		if vendorErr != nil {
+			result.Error = fmt.Errorf("resolving vendored assets: %w", vendorErr)
+			progress(fullName, "workflow", fmt.Sprintf("Failed: %v", vendorErr))
+			return result
+		}
+		deletePaths = mergeUniquePaths(deletePaths, vendorPaths)
+	}
+
 	progress(fullName, "workflow", "Deleting scaffold files")
 	deleteMsg := "chore: remove fullsend workflow"
 	if cfg.Forge == ForgeGitLab {

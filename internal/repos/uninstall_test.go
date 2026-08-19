@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 func newInstalledFakeClient(repos ...string) *forge.FakeClient {
@@ -543,6 +544,73 @@ func TestUninstallSingleRepo_Success(t *testing.T) {
 	}
 	if result.SecretsDeleted != 2 {
 		t.Errorf("SecretsDeleted = %d, want 2", result.SecretsDeleted)
+	}
+}
+
+func TestUninstallSingleRepo_RemovesVendoredAssets(t *testing.T) {
+	client := newInstalledFakeClient("acme/api")
+
+	contentPath := ".fullsend/.defaults/action.yml"
+	binaryPath := vendoredBinaryPathPerRepo
+	manifestPath := scaffold.VendorManifestPath(".fullsend/")
+
+	manifest := scaffold.NewVendorManifest("v1.2.3", "", binaryPath, []string{contentPath})
+	manifestYAML, err := manifest.MarshalYAML()
+	if err != nil {
+		t.Fatalf("MarshalYAML() error = %v", err)
+	}
+
+	client.FileContents["acme/api/"+binaryPath] = []byte("fake-binary")
+	client.FileContents["acme/api/"+contentPath] = []byte("name: vendored\n")
+	client.FileContents["acme/api/"+manifestPath] = manifestYAML
+
+	result := UninstallSingleRepo(context.Background(), client, "acme", "api", "", nil)
+
+	if !result.Success {
+		t.Fatalf("Success = false, want true; Error = %v", result.Error)
+	}
+
+	for _, path := range []string{binaryPath, contentPath, manifestPath} {
+		if _, ok := client.FileContents["acme/api/"+path]; ok {
+			t.Errorf("vendored asset %q was not deleted", path)
+		}
+	}
+
+	found := false
+	for _, df := range client.DeletedFiles {
+		if df.Path == binaryPath {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("vendored binary path missing from DeletedFiles")
+	}
+}
+
+func TestUninstallSingleRepo_NoVendoredAssets_SkipsCleanup(t *testing.T) {
+	client := newInstalledFakeClient("acme/api")
+
+	result := UninstallSingleRepo(context.Background(), client, "acme", "api", "", nil)
+
+	if !result.Success {
+		t.Fatalf("Success = false, want true; Error = %v", result.Error)
+	}
+	// Only the fixed scaffold paths should have been deleted; no vendor
+	// manifest or binary existed, so no vendor cleanup paths are added.
+	for _, df := range client.DeletedFiles {
+		if df.Path == vendoredBinaryPathPerRepo {
+			t.Error("vendored binary path deleted when nothing was vendored")
+		}
+	}
+}
+
+func TestResolveVendorCleanupPaths_ManifestReadError(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Errors["GetFileContent"] = fmt.Errorf("server error")
+
+	_, err := resolveVendorCleanupPaths(context.Background(), client, "acme", "api")
+	if err == nil {
+		t.Fatal("resolveVendorCleanupPaths() error = nil, want non-nil")
 	}
 }
 
