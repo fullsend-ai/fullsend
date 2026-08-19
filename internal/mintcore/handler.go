@@ -433,17 +433,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else if granted.RepoSelection == "all" {
 			log.Printf("WARNING: token granted with repository_selection=all (requested specific repos: %v)", req.Repos)
 		}
-		requested, _ := RolePermissionsForLevel(req.Role, req.Level)
-		for perm, level := range granted.Permissions {
-			if reqLevel, ok := requested[perm]; !ok {
-				log.Printf("WARNING: extra permission granted: %s=%s (not requested)", perm, level)
-			} else if level != reqLevel {
-				log.Printf("WARNING: permission level mismatch: %s requested=%s granted=%s", perm, reqLevel, level)
+		requested, reqErr := RolePermissionsForLevel(req.Role, req.Level)
+		if reqErr != nil {
+			log.Printf("WARNING: failed to load requested permissions for audit: role=%s level=%s err=%v", req.Role, req.Level, reqErr)
+		} else {
+			for perm, level := range granted.Permissions {
+				if reqLevel, ok := requested[perm]; !ok {
+					log.Printf("WARNING: extra permission granted: %s=%s (not requested)", perm, level)
+				} else if level != reqLevel {
+					log.Printf("WARNING: permission level mismatch: %s requested=%s granted=%s", perm, reqLevel, level)
+				}
 			}
-		}
-		for perm, reqLevel := range requested {
-			if _, ok := granted.Permissions[perm]; !ok {
-				log.Printf("WARNING: requested permission not granted: %s=%s", perm, reqLevel)
+			for perm, reqLevel := range requested {
+				if _, ok := granted.Permissions[perm]; !ok {
+					log.Printf("WARNING: requested permission not granted: %s=%s", perm, reqLevel)
+				}
 			}
 		}
 	}

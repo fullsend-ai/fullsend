@@ -213,7 +213,7 @@ func RegisterCustomRolePermissions(perms map[string]map[string]string) error {
 		cp := make(map[string]string, len(p))
 		for k, v := range p {
 			if v != "read" && v != "write" {
-				return fmt.Errorf("custom role %q: permission %q has invalid level %q (must be read or write)", role, k, v)
+				return fmt.Errorf("custom role %q: permission %q has invalid value %q (must be read or write)", role, k, v)
 			}
 			cp[k] = v
 		}
@@ -374,6 +374,12 @@ func RolePermissionsForLevel(role, level string) (map[string]string, error) {
 						cp[k] = v
 					}
 					return cp, nil
+				}
+			}
+			// Read not defined → derive from write by downgrading.
+			if level == LevelRead {
+				if perms, ok := roleLevels[LevelWrite]; ok {
+					return deriveReadPermissions(perms), nil
 				}
 			}
 		}

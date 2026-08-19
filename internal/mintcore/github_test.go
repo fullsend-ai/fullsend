@@ -780,6 +780,31 @@ func TestRolePermissionsForLevel_CustomMultiLevel(t *testing.T) {
 	assert.Equal(t, "write", writePerms["deployments"])
 }
 
+func TestRolePermissionsForLevel_CustomWriteOnly(t *testing.T) {
+	// A custom role defined with only a write level should still work for
+	// read requests by deriving read from write (downgrading write→read).
+	t.Cleanup(func() { _ = RegisterCustomRoleLevels(nil) })
+
+	require.NoError(t, RegisterCustomRoleLevels(map[string]map[string]map[string]string{
+		"deployer-wo": {
+			LevelWrite: {"contents": "write", "metadata": "read", "deployments": "write"},
+		},
+	}))
+
+	// Write level returns the full set.
+	writePerms, err := RolePermissionsForLevel("deployer-wo", LevelWrite)
+	require.NoError(t, err)
+	assert.Equal(t, "write", writePerms["contents"])
+	assert.Equal(t, "write", writePerms["deployments"])
+
+	// Read level derives from write by downgrading.
+	readPerms, err := RolePermissionsForLevel("deployer-wo", LevelRead)
+	require.NoError(t, err)
+	assert.Equal(t, "read", readPerms["contents"])
+	assert.Equal(t, "read", readPerms["deployments"])
+	assert.Equal(t, "read", readPerms["metadata"])
+}
+
 func TestParseCustomRolePermissions_FlatFormat(t *testing.T) {
 	raw := `{"my-role": {"contents": "read", "issues": "write"}}`
 	levels, err := ParseCustomRolePermissions(raw)
