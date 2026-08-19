@@ -434,6 +434,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				log.Printf("WARNING: requested permission not granted: %s=%s", perm, reqLevel)
 			}
 		}
+		if len(granted.AppPermissions) > 0 {
+			var dropped []string
+			for perm, level := range granted.AppPermissions {
+				if _, ok := requested[perm]; !ok {
+					dropped = append(dropped, perm+":"+level)
+				}
+			}
+			if len(dropped) > 0 {
+				sort.Strings(dropped)
+				log.Printf("minted: org=%s role=%s dropped_permissions=%v",
+					callerOrg, req.Role, dropped)
+			}
+		}
 	}
 
 	resp := mintResponse{
@@ -583,6 +596,15 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 	if granted != nil {
 		granted.AppID = appID
 		granted.InstallationID = installationID
+
+		// Fetch the app's configured permissions so the handler can
+		// log which ones were dropped by role-level downscoping.
+		appPerms, appErr := GetAppPermissions(ctx, h.githubBaseURL, jwt)
+		if appErr != nil {
+			log.Printf("WARNING: could not fetch app permissions for dropped-permission logging: %v", appErr)
+		} else {
+			granted.AppPermissions = appPerms
+		}
 	}
 
 	return token, expiresAt, granted, nil
