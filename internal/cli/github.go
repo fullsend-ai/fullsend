@@ -19,6 +19,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/maputil"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
+	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -1013,18 +1014,21 @@ func newGitHubUninstallCmd() *cobra.Command {
 	var appSet string
 
 	cmd := &cobra.Command{
-		Use:   "uninstall <org>",
-		Short: "Remove fullsend GitHub configuration from an organization",
-		Long:  "Deletes the .fullsend config repo and removes org-level variables. Guides the user to delete GitHub Apps via the browser.",
-		Args:  cobra.ExactArgs(1),
+		Use:   "uninstall <org|owner/repo>",
+		Short: "Remove fullsend GitHub configuration from an organization or repository",
+		Long: `Removes fullsend from a GitHub organization or a single repository.
+
+Per-org mode (argument is an org name, e.g. "acme"):
+  Deletes the .fullsend config repo, removes org-level variables and
+  secrets, and guides the user to delete GitHub Apps via the browser.
+
+Per-repo mode (argument is owner/repo, e.g. "acme/widget"):
+  Deletes the workflow file, .fullsend/ configuration directory,
+  repo variables, and repo secrets created by "fullsend github setup".`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			org := args[0]
-			if err := validateOrgName(org); err != nil {
-				return err
-			}
-			if err := appsetup.ValidateAppSet(appSet); err != nil {
-				return fmt.Errorf("invalid --app-set: %w", err)
-			}
+			target := args[0]
+			owner, repo, isRepo := parseTarget(target)
 
 			token, err := resolveToken()
 			if err != nil {
@@ -1034,19 +1038,55 @@ func newGitHubUninstallCmd() *cobra.Command {
 			client := gh.New(token)
 			printer := ui.New(os.Stdout)
 
+			if isRepo {
+				if !githubOwnerPattern.MatchString(owner) {
+					return fmt.Errorf("invalid owner name %q: must contain only alphanumeric characters and hyphens", owner)
+				}
+				if !githubRepoPattern.MatchString(repo) {
+					return fmt.Errorf("invalid repo name %q: must contain only alphanumeric characters, hyphens, dots, or underscores", repo)
+				}
+				for _, name := range []string{"app-set"} {
+					if cmd.Flags().Changed(name) {
+						return fmt.Errorf("--%s is only valid for per-org uninstall (fullsend github uninstall <org>)", name)
+					}
+				}
+
+				fullName := owner + "/" + repo
+				if !yolo {
+					printer.StepWarn(fmt.Sprintf("This will remove fullsend workflow files, config, variables, and secrets from %s.", fullName))
+					printer.StepInfo(fmt.Sprintf("Type the repository name (%s) to confirm:", fullName))
+					var confirmation string
+					if _, err := fmt.Scanln(&confirmation); err != nil {
+						return fmt.Errorf("reading confirmation: %w", err)
+					}
+					if confirmation != fullName {
+						return fmt.Errorf("confirmation did not match; aborting uninstall")
+					}
+				}
+
+				return runGitHubUninstallPerRepo(cmd.Context(), client, printer, owner, repo)
+			}
+
+			if err := validateOrgName(owner); err != nil {
+				return err
+			}
+			if err := appsetup.ValidateAppSet(appSet); err != nil {
+				return fmt.Errorf("invalid --app-set: %w", err)
+			}
+
 			if !yolo {
-				printer.StepWarn(fmt.Sprintf("This will permanently delete the %s repo and all stored secrets for %s.", forge.ConfigRepoName, org))
-				printer.StepInfo(fmt.Sprintf("Type the organization name (%s) to confirm:", org))
+				printer.StepWarn(fmt.Sprintf("This will permanently delete the %s repo and all stored secrets for %s.", forge.ConfigRepoName, owner))
+				printer.StepInfo(fmt.Sprintf("Type the organization name (%s) to confirm:", owner))
 				var confirmation string
 				if _, err := fmt.Scanln(&confirmation); err != nil {
 					return fmt.Errorf("reading confirmation: %w", err)
 				}
-				if confirmation != org {
+				if confirmation != owner {
 					return fmt.Errorf("confirmation did not match; aborting uninstall")
 				}
 			}
 
-			return runGitHubUninstall(cmd.Context(), client, printer, org, appSet)
+			return runGitHubUninstall(cmd.Context(), client, printer, owner, appSet)
 		},
 	}
 
@@ -1054,6 +1094,45 @@ func newGitHubUninstallCmd() *cobra.Command {
 	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps")
 
 	return cmd
+}
+
+// runGitHubUninstallPerRepo tears down a per-repo fullsend installation,
+// reversing what "fullsend github setup owner/repo" created. It delegates
+// to the same teardown logic used by "repos uninstall".
+func runGitHubUninstallPerRepo(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string) error {
+	fullName := owner + "/" + repo
+	printer.Banner(Version())
+	printer.Blank()
+	printer.Header("Uninstalling fullsend from " + fullName)
+	printer.Blank()
+
+	progress := func(_, phase, msg string) {
+		switch phase {
+		case "done":
+			printer.StepDone(msg)
+		default:
+			printer.StepInfo(msg)
+		}
+	}
+
+	result := repos.UninstallSingleRepo(ctx, client, owner, repo, "", progress)
+
+	printer.Blank()
+	if result.Error != nil {
+		printer.Summary("Uninstall failed", []string{
+			fmt.Sprintf("Repository: %s", fullName),
+			fmt.Sprintf("Error: %v", result.Error),
+		})
+		return fmt.Errorf("uninstalling %s: %w", fullName, result.Error)
+	}
+
+	printer.Summary("Uninstall complete", []string{
+		fmt.Sprintf("Repository: %s", fullName),
+		fmt.Sprintf("Variables removed: %d", result.VarsDeleted),
+		fmt.Sprintf("Secrets removed: %d", result.SecretsDeleted),
+	})
+
+	return nil
 }
 
 // runGitHubUninstall tears down the GitHub-side installation.

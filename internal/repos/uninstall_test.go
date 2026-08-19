@@ -505,3 +505,57 @@ func TestUninstall_ProgressCallbacks(t *testing.T) {
 		t.Error("missing 'done' phase callback")
 	}
 }
+
+func TestScaffoldPathsForForge_GitHub(t *testing.T) {
+	paths := ScaffoldPathsForForge("")
+	if len(paths) == 0 {
+		t.Fatal("expected non-empty scaffold paths for GitHub")
+	}
+	pathSet := make(map[string]bool)
+	for _, p := range paths {
+		pathSet[p] = true
+	}
+	for _, expected := range []string{
+		".github/workflows/fullsend.yml",
+		".github/workflows/fullsend.yaml",
+		".fullsend/config.yaml",
+		".fullsend/config.base.yaml",
+	} {
+		if !pathSet[expected] {
+			t.Errorf("missing expected path %q", expected)
+		}
+	}
+}
+
+func TestUninstallSingleRepo_Success(t *testing.T) {
+	client := newInstalledFakeClient("acme/api")
+
+	result := UninstallSingleRepo(context.Background(), client, "acme", "api", "", nil)
+
+	if !result.Success {
+		t.Errorf("Success = false, want true; Error = %v", result.Error)
+	}
+	if !result.WorkflowDeleted {
+		t.Error("WorkflowDeleted = false, want true")
+	}
+	if result.VarsDeleted != 3 {
+		t.Errorf("VarsDeleted = %d, want 3", result.VarsDeleted)
+	}
+	if result.SecretsDeleted != 2 {
+		t.Errorf("SecretsDeleted = %d, want 2", result.SecretsDeleted)
+	}
+}
+
+func TestUninstallSingleRepo_DeleteFilesError(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Errors["DeleteFiles"] = fmt.Errorf("permission denied")
+
+	result := UninstallSingleRepo(context.Background(), client, "acme", "api", "", nil)
+
+	if result.Success {
+		t.Error("Success = true, want false")
+	}
+	if result.Error == nil {
+		t.Error("Error = nil, want non-nil")
+	}
+}

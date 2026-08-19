@@ -1126,6 +1126,80 @@ func TestRunGitHubUninstall_ListInstallationsError(t *testing.T) {
 	assert.Contains(t, client.DeletedRepos, "acme/.fullsend")
 }
 
+func TestRunGitHubUninstallPerRepo_DeletesResources(t *testing.T) {
+	client := forge.NewFakeClient()
+	// Populate the files that a per-repo install creates, so FakeClient
+	// records their deletion.
+	client.FileContents = map[string][]byte{
+		"acme/widget/.github/workflows/fullsend.yaml": []byte("name: fullsend\n"),
+		"acme/widget/.fullsend/config.yaml":           []byte("version: v1\n"),
+		"acme/widget/.fullsend/config.base.yaml":      []byte("version: v1\n"),
+	}
+	var buf strings.Builder
+	printer := ui.New(&buf)
+
+	err := runGitHubUninstallPerRepo(context.Background(), client, printer, "acme", "widget")
+	require.NoError(t, err)
+
+	// Verify scaffold files were deleted.
+	deletedPaths := make(map[string]bool)
+	for _, f := range client.DeletedFiles {
+		assert.Equal(t, "acme", f.Owner)
+		assert.Equal(t, "widget", f.Repo)
+		deletedPaths[f.Path] = true
+	}
+	assert.True(t, deletedPaths[".github/workflows/fullsend.yml"] || deletedPaths[".github/workflows/fullsend.yaml"],
+		"expected workflow file to be deleted")
+	assert.True(t, deletedPaths[".fullsend/config.yaml"],
+		"expected .fullsend/config.yaml to be deleted")
+
+	// Verify variables were deleted.
+	deletedVars := make(map[string]bool)
+	for _, v := range client.DeletedVariables {
+		assert.Equal(t, "acme", v.Owner)
+		assert.Equal(t, "widget", v.Repo)
+		deletedVars[v.Name] = true
+	}
+	assert.True(t, deletedVars["FULLSEND_PER_REPO_INSTALL"])
+	assert.True(t, deletedVars["FULLSEND_MINT_URL"])
+	assert.True(t, deletedVars["FULLSEND_GCP_REGION"])
+
+	// Verify secrets were deleted.
+	deletedSecrets := make(map[string]bool)
+	for _, s := range client.DeletedSecrets {
+		assert.Equal(t, "acme", s.Owner)
+		assert.Equal(t, "widget", s.Repo)
+		deletedSecrets[s.Name] = true
+	}
+	assert.True(t, deletedSecrets["FULLSEND_GCP_PROJECT_ID"])
+	assert.True(t, deletedSecrets["FULLSEND_GCP_WIF_PROVIDER"])
+
+	// Verify output contains summary.
+	output := buf.String()
+	assert.Contains(t, output, "acme/widget")
+	assert.Contains(t, output, "Uninstall complete")
+}
+
+func TestRunGitHubUninstallPerRepo_DeleteFilesError(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Errors = map[string]error{
+		"DeleteFiles": fmt.Errorf("permission denied"),
+	}
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubUninstallPerRepo(context.Background(), client, printer, "acme", "widget")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "permission denied")
+}
+
+func TestGitHubUninstallCmd_PerRepoRejectsAppSet(t *testing.T) {
+	cmd := newGitHubUninstallCmd()
+	cmd.SetArgs([]string{"acme/widget", "--app-set", "custom", "--yolo"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--app-set is only valid for per-org uninstall")
+}
+
 func TestParseTarget_MultipleSlashes(t *testing.T) {
 	owner, repo, isRepo := parseTarget("acme/widget/extra")
 	assert.Equal(t, "acme", owner)

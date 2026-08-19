@@ -37,6 +37,13 @@ var gitlabUninstallSecrets = []string{
 	"FULLSEND_GCP_WIF_PROVIDER",
 }
 
+var githubScaffoldPaths = []string{
+	".github/workflows/fullsend.yml",
+	".github/workflows/fullsend.yaml",
+	".fullsend/config.yaml",
+	".fullsend/config.base.yaml",
+}
+
 var gitlabScaffoldPaths = []string{
 	".gitlab-ci.yml",
 	".gitlab/ci/fullsend-agent.yml",
@@ -69,7 +76,7 @@ func ScaffoldPathsForForge(forgeName string) []string {
 	if forgeName == ForgeGitLab {
 		return gitlabScaffoldPaths
 	}
-	return nil
+	return githubScaffoldPaths
 }
 
 // UninstallConfig holds all inputs for a multi-repo uninstall operation.
@@ -181,6 +188,29 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 	}
 
 	return results, nil
+}
+
+// UninstallSingleRepo tears down fullsend from a single repo without
+// requiring a manifest or ForgeClientFactory. The caller provides the
+// forge client directly. This is the entry point used by
+// "github uninstall owner/repo" to reuse the same teardown logic as
+// "repos uninstall".
+func UninstallSingleRepo(ctx context.Context, client forge.Client, owner, repo, forgeName string, progress ProgressFunc) UninstallResult {
+	if progress == nil {
+		progress = func(_, _, _ string) {}
+	}
+	fc := ForgeConfigFor(forgeName)
+	fc.Client = client
+	result := uninstallRepoResources(ctx, ResolvedConfig{
+		Owner:       owner,
+		Repo:        repo,
+		Forge:       forgeName,
+		ForgeConfig: fc,
+	}, progress)
+	if result.Error == nil {
+		result.Success = true
+	}
+	return result
 }
 
 func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, progress ProgressFunc) UninstallResult {
