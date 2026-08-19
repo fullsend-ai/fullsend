@@ -60,6 +60,35 @@ Instructions the agent follows when this skill is invoked.
 Skills can reference companion scripts and data files in the same directory,
 giving agents the ability to dynamically gather information at runtime.
 
+### Always-on vs on-demand
+
+By default, a skill listed in the harness is **uploaded** and shown in the
+runtime skill list. The model opens the full `SKILL.md` with the Skill tool
+when it chooses to (`metadata.apply: on-demand`, or omit the field).
+
+To make a skill apply on every run of that harness without naming it in the
+default agent prompt, opt in via frontmatter:
+
+```markdown
+---
+name: my-behavior-rules
+description: >-
+  Hard rules for agent output on this team.
+metadata:
+  apply: always
+---
+
+Keep comments short. Prefer templates over essays.
+```
+
+Bootstrap fills a soft always-use directive with that skill’s **name** on the
+copied agent definition for the run. The model must open the skill with the
+Skill tool before relying on it — bodies are not pasted into the agent file.
+The whole skill directory is still uploaded, so companions stay on disk.
+The agent’s `tools:` must include Skill. See
+[ADR 0091](../../ADRs/0091-always-on-harness-skills.md) and the
+[activation matrix](../../ADRs/0091-skill-activation-matrix.html).
+
 ## Adding skills to your repository
 
 Place skills in `.agents/skills/` in your target repository and symlink

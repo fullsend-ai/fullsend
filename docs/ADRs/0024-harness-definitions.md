@@ -785,7 +785,10 @@ intentionally deferred to keep scope manageable:
 - **Skills loading policy
   ([#237](https://github.com/fullsend-ai/fullsend/issues/237)).** The harness
   declares an explicit `skills:` list, but how does this interact with
-  org-level and repo-level skills?
+  org-level and repo-level skills? (Load mode for skills *already* on the
+  harness list — on-demand vs `metadata.apply: always` soft Skill directive — is decided in
+  [ADR 0091](0091-always-on-harness-skills.md). Which skills are included from
+  org/repo discovery remains open here.)
 
   *Approach A (explicit + org, opt-in repo):* The harness `skills:` list is
   always loaded. Org-level skills from `.fullsend/skills/` are always included
