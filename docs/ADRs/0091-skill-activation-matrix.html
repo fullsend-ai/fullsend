@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ADR 0091 — Skill activation matrix (2026-08-21)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,560;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --ink:#18201c; --muted:#5b655e; --line:#c7d0c8;
+      --ok:#1b6b44; --ok-bg:#d6efe1; --bad:#8a2f22; --bad-bg:#f6ddd6;
+      --warn:#845812; --warn-bg:#f3e6c7; --accent:#0c585f; --paper:#f2efe6;
+      --shadow:0 16px 40px rgba(24,32,28,.08);
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:"IBM Plex Sans",sans-serif;color:var(--ink);line-height:1.55;
+      background:radial-gradient(1000px 420px at 0% -5%,#d7ebe3,transparent 55%),
+        radial-gradient(900px 380px at 100% 0%,#e8e2d4,transparent 50%),
+        linear-gradient(180deg,#f7f4ec,var(--paper))}
+    a{color:var(--accent);text-underline-offset:3px}
+    .wrap{width:min(1100px,calc(100% - 2rem));margin:0 auto;padding:2.4rem 0 4rem}
+    .hero{padding:2rem;border:1px solid var(--line);border-radius:18px;
+      background:linear-gradient(140deg,rgba(255,255,255,.78),rgba(255,255,255,.4));box-shadow:var(--shadow)}
+    .eyebrow{font-family:"IBM Plex Mono",monospace;font-size:.75rem;letter-spacing:.04em;text-transform:uppercase;color:var(--accent);margin-bottom:.7rem}
+    h1{font-family:Fraunces,Georgia,serif;font-size:clamp(1.9rem,4vw,2.6rem);line-height:1.12;margin:0 0 .8rem;max-width:22ch}
+    .lede{max-width:68ch;color:var(--muted);margin:0}
+    .score{display:grid;grid-template-columns:repeat(3,1fr);gap:.75rem;margin-top:1.4rem}
+    @media(max-width:800px){.score{grid-template-columns:1fr}}
+    .score article{border:1px solid var(--line);border-radius:12px;padding:.9rem 1rem;background:#fff}
+    .score .k{font-family:"IBM Plex Mono",monospace;font-size:.72rem;color:var(--muted);text-transform:uppercase}
+    .score strong{display:block;margin:.25rem 0 .4rem;font-size:1.05rem}
+    .badge{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:.72rem;padding:.18rem .5rem;border-radius:999px;border:1px solid transparent}
+    .ok{background:var(--ok-bg);color:var(--ok);border-color:#b5d8c5}
+    .bad{background:var(--bad-bg);color:var(--bad);border-color:#e3b6ab}
+    .warn{background:var(--warn-bg);color:var(--warn);border-color:#dfcea2}
+    section{margin-top:2rem}
+    h2{font-family:Fraunces,Georgia,serif;font-size:1.45rem;margin:0 0 .8rem}
+    h3{font-family:Fraunces,Georgia,serif;font-size:1.1rem;margin:1rem 0 .45rem}
+    .panel{border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.72);box-shadow:var(--shadow);padding:1.15rem 1.25rem}
+    .table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:#fff;box-shadow:var(--shadow)}
+    table{width:100%;border-collapse:collapse;min-width:820px;font-size:.9rem}
+    th,td{padding:.65rem .8rem;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+    th{font-family:"IBM Plex Mono",monospace;font-size:.7rem;letter-spacing:.03em;text-transform:uppercase;color:var(--muted);background:#f4f2ea;font-weight:500}
+    tr:last-child td{border-bottom:0}
+    code{font-family:"IBM Plex Mono",monospace;font-size:.88em;background:#e8eee9;padding:.1rem .35rem;border-radius:4px}
+    ul{margin:.35rem 0;padding-left:1.15rem}
+    li{margin:.35rem 0}
+    .muted{color:var(--muted)}
+    footer{margin-top:2rem;padding-top:1rem;border-top:1px solid var(--line);color:var(--muted);font-size:.88rem}
+    .verdict{font-size:1.15rem;margin:.6rem 0 0}
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <header class="hero">
+    <div class="eyebrow">ADR 0091 · playground matrix · 2026-08-21</div>
+    <h1>Always-on skills beat Quay-style listing</h1>
+    <p class="lede">
+      Nine successful triage runs on <code>fullsend-playground/python-app</code> (3 arms × 3 reps)
+      with a fixture that forces labeling. With <code>Skill</code> in triage <code>tools:</code>,
+      default forge/label skills open reliably. An additive team skill opens <strong>only</strong>
+      when marked <code>metadata.apply: always</code> (Option B). Listing it on the harness alone
+      (Quay-style) never opened it in 3/3 runs.
+    </p>
+    <div class="score">
+      <article>
+        <div class="k">1 · Baseline</div>
+        <strong>No additive skill</strong>
+        <span class="badge ok">issue-labels path 3/3</span>
+        <span class="badge ok">Skill tool 3/3</span>
+        <span class="badge bad">CAVEMAN 0/3</span>
+      </article>
+      <article>
+        <div class="k">2 · Quay listed</div>
+        <strong>Harness lists smoke-listed</strong>
+        <span class="badge ok">issue-labels path 3/3</span>
+        <span class="badge bad">additive open 0/3</span>
+        <span class="badge bad">CAVEMAN 0/3</span>
+      </article>
+      <article>
+        <div class="k">3 · Always-on</div>
+        <strong>apply: always + placeholder</strong>
+        <span class="badge ok">issue-labels path 3/3</span>
+        <span class="badge ok">smoke-always-on 3/3</span>
+        <span class="badge ok">CAVEMAN 3/3</span>
+      </article>
+    </div>
+    <p class="verdict"><strong>ADR 0091 takeaway:</strong> name skills in the agent prompt <em>or</em> mark them always-on. Harness listing alone is not enough.</p>
+  </header>
+
+  <section class="panel">
+    <h2>What we measured</h2>
+    <ul>
+      <li><strong>Skill tool present</strong> — init <code>tools</code> includes <code>Skill</code> (requires spaced frontmatter <code>Bash(...), Skill</code>).</li>
+      <li><strong>issue-labels path</strong> — Skill body <code># Issue Labels</code> / “Discover available labels” loaded (uploaded as skill name <code>github</code> from <code>skills/issue-labels/github</code>).</li>
+      <li><strong>Additive skill</strong> — Skill tool_use for <code>smoke-listed</code> or <code>smoke-always-on</code>.</li>
+      <li><strong>Behavior</strong> — triage <code>comment</code> starts with exact token <code>CAVEMAN:</code>.</li>
+    </ul>
+    <p class="muted">Fixture: unique PATCH /items silent-drop bugs (API + high impact) so labeling is warranted and duplicates are avoided. Retro insight: <code>retro.md</code> names skills in the prompt body (like <code>retro-analysis</code>) — that pattern matches why forge/label skills fire once Skill exists.</p>
+  </section>
+
+  <section>
+    <h2>Results by arm</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Arm</th><th>Rep</th><th>Issue</th><th>Run</th>
+            <th>Skill tool</th><th>Labels body</th><th>Additive open</th><th>CAVEMAN</th><th>Skill opens</th>
+          </tr>
+        </thead>
+        <tbody>
+<tr>
+      <td><code>always-on</code></td>
+      <td>1</td>
+      <td><a href="https://github.com/fullsend-playground/python-app/issues/28">#28</a></td>
+      <td><a href="https://github.com/fullsend-playground/python-app/actions/runs/32516211708">32516211708</a></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><code>smoke-always-on, github-forge, github, smoke-always-on, github-forge, github</code></td>
+    </tr>
+<tr>
+      <td><code>always-on</code></td>
+      <td>2</td>
+      <td><a href="https://github.com/fullsend-playground/python-app/issues/32">#32</a></td>
+      <td><a href="https://github.com/fullsend-playground/python-app/actions/runs/32518488943">32518488943</a></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><code>smoke-always-on, github-forge, github, smoke-always-on, github-forge, github</code></td>
+    </tr>
+<tr>
+      <td><code>always-on</code></td>
+      <td>3</td>
+      <td><a href="https://github.com/fullsend-playground/python-app/issues/33">#33</a></td>
+      <td><a href="https://github.com/fullsend-playground/python-app/actions/runs/32518844288">32518844288</a></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><code>smoke-always-on, github-forge, github, smoke-always-on, github-forge, github</code></td>
+    </tr>
+<tr>
+      <td><code>listed</code></td>
+      <td>1</td>
+      <td><a href="https://github.com/fullsend-playground/python-app/issues/34">#34</a></td>
+      <td><a href="https://github.com/fullsend-playground/python-app/actions/runs/32519258690">32519258690</a></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge bad">no</span></td>
+      <td><span class="badge bad">no</span></td>
+      <td><code>github-forge, github, github-forge, github</code></td>
+    </tr>
+<tr>
+      <td><code>listed</code></td>
+      <td>2</td>
+      <td><a href="https://github.com/fullsend-playground/python-app/issues/35">#35</a></td>
+      <td><a href="https://github.com/fullsend-playground/python-app/actions/runs/32519914084">32519914084</a></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge bad">no</span></td>
+      <td><span class="badge bad">no</span></td>
+      <td><code>github-forge, github, github-forge, github</code></td>
+    </tr>
+<tr>
+      <td><code>listed</code></td>
+      <td>3</td>
+      <td><a href="https://github.com/fullsend-playground/python-app/issues/36">#36</a></td>
+      <td><a href="https://github.com/fullsend-playground/python-app/actions/runs/32520306596">32520306596</a></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge bad">no</span></td>
+      <td><span class="badge bad">no</span></td>
+      <td><code>github-forge, github, github-forge, github</code></td>
+    </tr>
+<tr>
+      <td><code>baseline</code></td>
+      <td>1</td>
+      <td><a href="https://github.com/fullsend-playground/python-app/issues/37">#37</a></td>
+      <td><a href="https://github.com/fullsend-playground/python-app/actions/runs/32520676476">32520676476</a></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge bad">no</span></td>
+      <td><span class="badge bad">no</span></td>
+      <td><code>github-forge, github, github-forge, github</code></td>
+    </tr>
+<tr>
+      <td><code>baseline</code></td>
+      <td>2</td>
+      <td><a href="https://github.com/fullsend-playground/python-app/issues/38">#38</a></td>
+      <td><a href="https://github.com/fullsend-playground/python-app/actions/runs/32521092300">32521092300</a></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge bad">no</span></td>
+      <td><span class="badge bad">no</span></td>
+      <td><code>github-forge, github, github-forge, github</code></td>
+    </tr>
+<tr>
+      <td><code>baseline</code></td>
+      <td>3</td>
+      <td><a href="https://github.com/fullsend-playground/python-app/issues/39">#39</a></td>
+      <td><a href="https://github.com/fullsend-playground/python-app/actions/runs/32521477717">32521477717</a></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge ok">yes</span></td>
+      <td><span class="badge bad">no</span></td>
+      <td><span class="badge bad">no</span></td>
+      <td><code>github-forge, github, github-forge, github</code></td>
+    </tr>
+
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>How ADR 0091 should work</h2>
+    <ol>
+      <li><strong>Prerequisite:</strong> agent <code>tools:</code> must include <code>Skill</code> with a space after the comma (<code>Bash(gh,curl,jq), Skill</code>). Without the space, Claude boots as <code>["Bash"]</code> only — see <a href="https://github.com/fullsend-ai/agents/pull/928">agents#928</a>.</li>
+      <li><strong>Default / named skills</strong> (issue-labels via forge path, retro’s named skills): open reliably once Skill exists — same as historical pre-Jul-6 triage.</li>
+      <li><strong>Team additive skills</strong> (Quay-style harness list only): uploaded and visible, but <strong>not</strong> opened (0/3). Matches the ADR problem statement.</li>
+      <li><strong>Always-on</strong> (<code>metadata.apply: always</code> + <code>__FULLSEND_ALWAYS_ON_SKILLS__</code> fill): additive skill opened 3/3 and changed behavior (CAVEMAN comments).</li>
+    </ol>
+  </section>
+
+  <section class="panel">
+    <h2>Production lag (not leveraged yet)</h2>
+    <ul>
+      <li><a href="https://github.com/fullsend-ai/agents/pull/917">agents#917</a> merged Skill into triage/prioritize tools, but as <code>,Skill</code> without a space — live parse drops Skill.</li>
+      <li>Spacing fix: <a href="https://github.com/fullsend-ai/agents/pull/928">agents#928</a> (open).</li>
+      <li><code>fullsend-ai/.fullsend</code> <code>config.yaml</code> still pins agents at <code>816b89be</code> (Aug 19) — <strong>before</strong> #917. Org tip must move forward after #928 merges.</li>
+    </ul>
+  </section>
+
+  <footer>
+    Evidence JSON: <code>Research/2026-08-21-adr-0091-skill-activation-matrix.json</code> ·
+    Agents proof branch <code>proof/always-on-skills-placeholder</code> ·
+    Vendored playground CLI includes <code>PrepareAgentFile</code> / always-on placeholder fill.
+  </footer>
+</div>
+</body>
+</html>
