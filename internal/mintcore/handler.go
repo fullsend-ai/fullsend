@@ -18,8 +18,19 @@ const maxRepos = 500
 
 const defaultForeignCacheTTL = 60 * time.Second
 
+// defaultAppPermsCacheTTL controls how long cached GET /app results are
+// reused. App permissions change only when an admin reconfigures the
+// GitHub App, so a 5-minute TTL avoids per-request API calls while
+// keeping log accuracy high.
+const defaultAppPermsCacheTTL = 5 * time.Minute
+
 type foreignCacheEntry struct {
 	allowlist []string
+	fetchedAt time.Time
+}
+
+type appPermsCacheEntry struct {
+	perms     map[string]string
 	fetchedAt time.Time
 }
 
@@ -63,6 +74,12 @@ type Handler struct {
 	foreignInflight map[string]*foreignInflight
 	foreignCacheTTL time.Duration
 	foreignCacheMu  sync.Mutex
+
+	// appPermsCache caches GET /app results per appID so the
+	// observability-only permission check avoids a round-trip on
+	// every mint request.
+	appPermsCache   map[string]appPermsCacheEntry
+	appPermsCacheMu sync.Mutex
 
 	// perRepoWIFRepos is the set of repositories with per-repo WIF treatment.
 	// The handler uses this to decide repos scope policy (per-repo vs per-org).
@@ -141,6 +158,7 @@ func NewHandler(pemAccessor PEMAccessor, oidcVerifier OIDCVerifier) (*Handler, e
 		foreignCache:         make(map[string]foreignCacheEntry),
 		foreignInflight:      make(map[string]*foreignInflight),
 		foreignCacheTTL:      defaultForeignCacheTTL,
+		appPermsCache:        make(map[string]appPermsCacheEntry),
 		perRepoWIFRepos:      perRepoWIFRepos,
 		allowedOrgs:          ParseAllowedOrgs(mintEnv("ALLOWED_ORGS")),
 		allowedWorkflowFiles: SplitCSV(mintEnv("ALLOWED_WORKFLOW_FILES")),
@@ -597,9 +615,10 @@ func (h *Handler) mintToken(ctx context.Context, org, role string, repos []strin
 		granted.AppID = appID
 		granted.InstallationID = installationID
 
-		// Fetch the app's configured permissions so the handler can
-		// log which ones were dropped by role-level downscoping.
-		appPerms, appErr := GetAppPermissions(ctx, h.githubBaseURL, jwt)
+		// Fetch the app's configured permissions (cached per appID)
+		// so the handler can log which ones were dropped by
+		// role-level downscoping.
+		appPerms, appErr := h.cachedAppPermissions(ctx, h.githubBaseURL, jwt, appID)
 		if appErr != nil {
 			log.Printf("WARNING: could not fetch app permissions for dropped-permission logging: %v", appErr)
 		} else {
@@ -634,6 +653,41 @@ func (h *Handler) mintTokenCrossOrg(ctx context.Context, claims *Claims, targetO
 	}
 
 	return "", "", nil, &mintError{status: http.StatusForbidden, msg: "foreign caller not authorized for target org"}
+}
+
+// cachedAppPermissions returns the GitHub App's configured permissions,
+// caching the result per appID with a TTL of defaultAppPermsCacheTTL.
+// App permissions change only when an admin reconfigures the GitHub App,
+// so caching avoids a GET /app round-trip on every mint request.
+func (h *Handler) cachedAppPermissions(ctx context.Context, githubBaseURL, jwt, appID string) (map[string]string, error) {
+	h.appPermsCacheMu.Lock()
+	if entry, ok := h.appPermsCache[appID]; ok && time.Since(entry.fetchedAt) < defaultAppPermsCacheTTL {
+		perms := make(map[string]string, len(entry.perms))
+		for k, v := range entry.perms {
+			perms[k] = v
+		}
+		h.appPermsCacheMu.Unlock()
+		return perms, nil
+	}
+	h.appPermsCacheMu.Unlock()
+
+	perms, err := GetAppPermissions(ctx, githubBaseURL, jwt)
+	if err != nil {
+		return nil, err
+	}
+
+	cached := make(map[string]string, len(perms))
+	for k, v := range perms {
+		cached[k] = v
+	}
+	h.appPermsCacheMu.Lock()
+	h.appPermsCache[appID] = appPermsCacheEntry{
+		perms:     cached,
+		fetchedAt: time.Now(),
+	}
+	h.appPermsCacheMu.Unlock()
+
+	return perms, nil
 }
 
 func (h *Handler) loadForeignAllowlist(ctx context.Context, targetOrg, role string) ([]string, error) {

@@ -4082,6 +4082,101 @@ func TestHandler_DroppedPermissionsLogged(t *testing.T) {
 	}
 }
 
+func TestHandler_AppPermissionsCached(t *testing.T) {
+	// Two consecutive mint requests for the same role should only
+	// trigger one GET /app call — the second should hit the cache.
+	t.Setenv("ROLE_APP_IDS", `{"triage":"100"}`)
+
+	pemData, err := generateTestRSAKey()
+	if err != nil {
+		t.Fatalf("generating test key: %v", err)
+	}
+
+	env := newTestOIDCEnv(t, &fakePEMAccessor{
+		pems: map[string][]byte{"triage": pemData},
+	})
+
+	var appCallCount int
+	var mu sync.Mutex
+
+	github := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/app" && r.Method == http.MethodGet:
+			mu.Lock()
+			appCallCount++
+			mu.Unlock()
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"permissions": map[string]string{
+					"contents":      "read",
+					"issues":        "write",
+					"metadata":      "read",
+					"pull_requests": "write",
+				},
+			})
+		case r.URL.Path == "/repos/test-org/test-repo/installation" && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode(installationResponse{
+				ID: 12345, Account: struct {
+					Login string `json:"login"`
+				}{Login: "test-org"},
+			})
+		case strings.HasPrefix(r.URL.Path, "/app/installations/12345/access_tokens") && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(installationTokenResponse{
+				Token:     "ghs_triage_token",
+				ExpiresAt: "2026-08-19T12:00:00Z",
+				Permissions: map[string]string{
+					"contents": "read",
+					"issues":   "write",
+					"metadata": "read",
+				},
+			})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer github.Close()
+	env.handler.githubBaseURL = github.URL
+
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	// First request — should call GET /app.
+	token := env.signToken(t, nil)
+	body := `{"role":"triage","repos":["test-repo"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	env.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first request: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Second request — should use cached GET /app result.
+	token2 := env.signToken(t, nil)
+	rec2 := httptest.NewRecorder()
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req2.Header.Set("Authorization", "Bearer "+token2)
+	env.handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("second request: expected 200, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	mu.Lock()
+	count := appCallCount
+	mu.Unlock()
+	if count != 1 {
+		t.Fatalf("expected exactly 1 GET /app call (cached on second request), got %d", count)
+	}
+
+	// Both should still log dropped_permissions.
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "dropped_permissions=") {
+		t.Fatalf("expected dropped_permissions in log output, got: %s", logOutput)
+	}
+}
+
 func TestHandler_NoDroppedPermissions_ExactMatch(t *testing.T) {
 	// When the app's permissions exactly match the role's permissions,
 	// no dropped_permissions line should appear in the log.
