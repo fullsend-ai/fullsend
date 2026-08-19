@@ -60,6 +60,32 @@ Instructions the agent follows when this skill is invoked.
 Skills can reference companion scripts and data files in the same directory,
 giving agents the ability to dynamically gather information at runtime.
 
+### Always-on vs on-demand
+
+By default, a skill listed in the harness is **uploaded** and shown in the
+runtime skill list. The model opens the full `SKILL.md` with the Skill tool
+when it chooses to (`apply: on-demand`, or omit `apply`).
+
+To make a skill’s instructions apply on every run of that harness without
+naming the skill in the default agent prompt, set frontmatter:
+
+```markdown
+---
+name: my-behavior-rules
+description: >-
+  Hard rules for agent output on this team.
+apply: always
+---
+
+Keep comments short. Prefer templates over essays.
+```
+
+Fullsend bootstrap pastes that `SKILL.md` body onto the copied agent
+definition for the run. The whole skill directory is still uploaded, so
+`scripts/`, `references/`, and other companions stay on disk for the agent to
+use by path. Keep always-on bodies short; put heavy procedure in companions.
+See [ADR 0091](../../ADRs/0091-always-on-harness-skills.md).
+
 ## Adding skills to your repository
 
 Place skills in `.agents/skills/` in your target repository and symlink
