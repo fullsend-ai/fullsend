@@ -1,0 +1,225 @@
+# Reusable harness run workflow.
+# Executes harness agents according to a provided matrix.
+#
+# This workflow is called by:
+# - reusable-dispatch.yml (after harness-dispatch builds the matrix)
+# - Custom pollers in user repos (to directly invoke agents)
+#
+# The matrix input should follow the format produced by `fullsend dispatch`:
+# {
+#   "include": [
+#     {
+#       "agent": "agent-name",
+#       "source_repo": "org/repo",
+#       "role": "harness",
+#       "event_payload": "{...}",
+#       "status_repo": "org/repo",
+#       "status_number": "123"
+#     }
+#   ]
+# }
+name: Harness run
+
+on:
+  workflow_call:
+    inputs:
+      matrix:
+        description: "Matrix configuration for harness runs (JSON string produced by fullsend dispatch)"
+        required: true
+        type: string
+      install_mode:
+        description: "Installation mode: per-repo (default) or per-org"
+        required: false
+        type: string
+        default: "per-repo"
+      mint_url:
+        description: "Token mint URL for OIDC token exchange"
+        required: true
+        type: string
+      gcp_region:
+        description: "GCP region for Vertex AI"
+        required: true
+        type: string
+      fullsend_version:
+        description: "Fullsend CLI version to use"
+        required: false
+        type: string
+        default: ""
+      runner_image:
+        description: "GitHub Actions runner image for agent jobs"
+        type: string
+        required: false
+        default: "ubuntu-24.04"
+    secrets:
+      FULLSEND_GCP_WIF_PROVIDER:
+        required: false
+      FULLSEND_GCP_PROJECT_ID:
+        required: true
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS:
+        required: false
+      OTEL_EXPORTER_OTLP_HEADERS:
+        required: false
+
+jobs:
+  harness-run:
+    name: Harness run (${{ matrix.agent }})
+    if: ${{ inputs.matrix != '' && fromJSON(inputs.matrix).include[0] != null }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.matrix) }}
+    concurrency:
+      group: fullsend-harness-${{ matrix.agent }}-${{ github.repository }}-${{ matrix.status_number }}
+      cancel-in-progress: true
+    runs-on: ${{ inputs.runner_image }}
+    permissions:
+      actions: write
+      contents: read
+      id-token: write
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Checkout config repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+
+      - name: Checkout upstream defaults
+        if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: .defaults
+          fetch-depth: 1
+          sparse-checkout: |
+            .github/actions/
+            .github/scripts/
+            internal/scaffold/fullsend-repo/
+            action.yml
+
+      - name: Prepare workspace (upstream defaults + org/repo overrides)
+        env:
+          INSTALL_MODE: ${{ inputs.install_mode }}
+        run: |
+          set -euo pipefail
+          if [[ "${INSTALL_MODE}" != "per-org" && "${INSTALL_MODE}" != "per-repo" ]]; then
+            printf 'Received install_mode: %q\n' "${INSTALL_MODE}"
+            echo "::error::Invalid install_mode: must be 'per-org' or 'per-repo'"
+            exit 1
+          fi
+          SRC=".defaults/internal/scaffold/fullsend-repo"
+          LAYERED_DIRS="agents skills schemas harness plugins policies scripts env"
+          DEST=""
+          if [[ "${INSTALL_MODE}" == "per-repo" ]]; then
+            DEST=".fullsend/"
+          fi
+          for dir in ${LAYERED_DIRS}; do
+            if [[ -d "${SRC}/${dir}" ]]; then
+              mkdir -p "${DEST}${dir}"
+              cp -r "${SRC}/${dir}/." "${DEST}${dir}/"
+            fi
+          done
+          mkdir -p .github/scripts
+          cp "${SRC}/.github/scripts/setup-agent-env.sh" .github/scripts/setup-agent-env.sh
+
+      - name: Extract repo metadata
+        id: repo-parts
+        shell: bash
+        env:
+          SOURCE_REPO: ${{ matrix.source_repo }}
+        run: |
+          set -euo pipefail
+          NAME="${SOURCE_REPO#*/}"
+          echo "name=${NAME}" >> "${GITHUB_OUTPUT}"
+
+      - name: Write dispatch event payload
+        shell: bash
+        env:
+          EVENT_PAYLOAD: ${{ matrix.event_payload }}
+        run: |
+          set -euo pipefail
+          mkdir -p .fullsend/dispatch
+          printf '%s' "${EVENT_PAYLOAD}" > .fullsend/dispatch/event-payload.json
+
+      - name: Mint agent token
+        id: app-token
+        uses: ./.defaults/.github/actions/mint-token
+        with:
+          role: ${{ matrix.role }}
+          repos: ${{ steps.repo-parts.outputs.name }}
+          mint_url: ${{ inputs.mint_url }}
+
+      - name: Checkout target repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ matrix.source_repo }}
+          token: ${{ steps.app-token.outputs.token }}
+          path: target-repo
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup GCP and prepare credentials
+        uses: ./.defaults/.github/actions/setup-gcp
+        with:
+          gcp_wif_provider: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+          gcp_project_id: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
+
+      - name: Setup agent environment
+        shell: bash
+        env:
+          MATRIX_ROLE: ${{ matrix.role }}
+          GCP_PROJECT: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+          GCP_REGION: ${{ inputs.gcp_region }}
+        run: |
+          set -euo pipefail
+          ROLE_UPPER=$(echo "${MATRIX_ROLE}" | tr '[:lower:]' '[:upper:]')
+          export AGENT_PREFIX="${ROLE_UPPER}_"
+          export "${ROLE_UPPER}_TARGET_REPO_DIR=target-repo"
+          export "${ROLE_UPPER}_ANTHROPIC_VERTEX_PROJECT_ID=${GCP_PROJECT}"
+          export "${ROLE_UPPER}_CLOUD_ML_REGION=${GCP_REGION}"
+          bash .github/scripts/setup-agent-env.sh
+
+      - name: Export dispatch context env
+        id: dispatch-env
+        shell: bash
+        env:
+          EVENT_PAYLOAD: ${{ matrix.event_payload }}
+        run: |
+          set -euo pipefail
+          URL=$(printf '%s' "${EVENT_PAYLOAD}" | jq -r '.issue.html_url // .pull_request.html_url // empty')
+          if [[ -z "${URL}" ]]; then
+            echo "::error::event_payload missing issue or pull_request html_url"
+            exit 1
+          fi
+          DELIM="ISSUE_URL_$(openssl rand -hex 8)"
+          {
+            echo "issue_url<<${DELIM}"
+            printf '%s' "${URL}"
+            echo
+            echo "${DELIM}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Run harness agent
+        uses: ./.defaults/
+        env:
+          GITHUB_ISSUE_URL: ${{ steps.dispatch-env.outputs.issue_url }}
+          REPO_FULL_NAME: ${{ matrix.source_repo }}
+          OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_ENDPOINT }}
+          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${{ vars.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT }}
+          OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
+          OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+          OTEL_EXPORTER_OTLP_CERTIFICATE: ${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}
+          OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
+          OTEL_SDK_DISABLED: ${{ vars.OTEL_SDK_DISABLED }}
+        with:
+          agent: ${{ matrix.agent }}
+          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          status-repo: ${{ matrix.status_repo }}
+          status-number: ${{ matrix.status_number }}
+          mint-url: ${{ inputs.mint_url }}
+          pr-head-sha: ${{ fromJSON(matrix.event_payload).pull_request.head.sha || '' }}
