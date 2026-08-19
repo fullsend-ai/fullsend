@@ -207,6 +207,8 @@ Tear down fullsend from the specified repos and remove them from the manifest. B
 
 Teardown deletes repo variables and secrets directly (they cannot go through a PR). By default, the workflow file and configuration are removed by opening a pull/merge request, mirroring `repos install`'s PR-by-default behavior — pass `--direct` to push those removals straight to the default branch instead.
 
+**Rollout note (GitHub repos):** PR-based deletion requires the target repo's already-deployed workflow file to already exclude the uninstall PR's branch from self-dispatch (this prevents the PR from triggering a live agent run with remaining secrets before it's merged). A repo only gets that exclusion from a fresh scaffold render — a brand-new install, not a ref-only upgrade — so `repos uninstall` refuses the default PR path with an error and requires `--direct` until the repo has been re-scaffolded. `--direct` skips this safety check by never opening a PR in the first place. This check does not apply to GitLab repos.
+
 GCP WIF pool/provider cleanup is handled separately via `inference deprovision`.
 
 When multiple repos are targeted (via globs or explicit bulk lists), the command prompts for confirmation unless `--yes` is set.

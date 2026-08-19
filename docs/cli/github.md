@@ -127,7 +127,9 @@ fullsend github uninstall <owner/repo> [--yolo] [--direct]
 
 By default, file deletions are delivered via a pull request (mirroring `fullsend github setup`). Pass `--direct` to push the deletions straight to the default branch instead. Repo variables and secrets are always deleted directly — they cannot go through a PR.
 
-`--app-set` is only valid for per-org uninstall; it is rejected for per-repo targets. GCP infrastructure (WIF) must be cleaned up separately via `fullsend inference deprovision`.
+**Rollout note:** PR-based deletion requires the target repo's already-deployed workflow file to already exclude the uninstall PR's branch from self-dispatch (this prevents the PR from triggering a live agent run with remaining secrets before it's merged). A repo only gets that exclusion from a fresh scaffold render — a brand-new `fullsend github setup`/`fullsend repos install`, not a ref-only upgrade or `sync-scaffold`. Until a repo has been re-scaffolded, `github uninstall owner/repo` refuses the default PR path with an error and requires `--direct`. `--direct` skips this safety check by never opening a PR in the first place — it pushes straight to the default branch, so review it happens after the fact (or not at all) rather than before merge.
+
+`--app-set` is only valid for per-org uninstall; it is rejected for per-repo targets. `--direct` is only valid for per-repo uninstall; it is rejected for per-org targets. GCP infrastructure (WIF) must be cleaned up separately via `fullsend inference deprovision`.
 
 ## See also
 
