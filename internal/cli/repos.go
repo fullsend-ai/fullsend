@@ -1105,29 +1105,28 @@ func runReposUninstall(ctx context.Context, opts *reposUninstallConfig, repoArgs
 		// Scaffold-deletion function wrapping layers.CommitScaffoldFiles,
 		// mirroring the install-side scaffoldCommitFn above but for file
 		// removal (files carry Delete: true).
-		scaffoldDeleteFn := func(ctx context.Context, owner, repo, message string, files []forge.TreeFile, direct bool) error {
+		scaffoldDeleteFn := func(ctx context.Context, owner, repo, message string, files []forge.TreeFile, direct bool) (bool, error) {
 			rc, ok := manifest.ResolveConfigWithGlobs(owner, repo)
 			if !ok {
-				return fmt.Errorf("repo %s/%s not found in manifest", owner, repo)
+				return false, fmt.Errorf("repo %s/%s not found in manifest", owner, repo)
 			}
 			fc, fcErr := clients.ConfigFor(rc.Forge)
 			if fcErr != nil {
-				return fcErr
+				return false, fcErr
 			}
 			targetRepo, repoErr := fc.Client.GetRepo(ctx, owner, repo)
 			if repoErr != nil {
-				return fmt.Errorf("getting repo info: %w", repoErr)
+				return false, fmt.Errorf("getting repo info: %w", repoErr)
 			}
 			meta := repos.ScaffoldPRMetadata{
 				CommitMsg: message,
 				PRTitle:   "chore: remove fullsend configuration",
 				PRBody: "This PR removes the fullsend workflow file, configuration, and any vendored " +
 					"assets created by `fullsend repos install`.\n\nMerge this PR to complete the uninstall.",
-				Branch: "fullsend/scaffold-uninstall",
+				Branch: repos.ScaffoldUninstallBranch,
 			}
-			_, commitErr := layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
+			return layers.CommitScaffoldFiles(ctx, fc.Client, printer, owner, repo,
 				targetRepo.DefaultBranch, meta, files, direct, nil)
-			return commitErr
 		}
 
 		printer.Blank()

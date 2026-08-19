@@ -1056,6 +1056,9 @@ GCP infrastructure (WIF) must be cleaned up separately via
 				if err := appsetup.ValidateAppSet(appSet); err != nil {
 					return fmt.Errorf("invalid --app-set: %w", err)
 				}
+				if cmd.Flags().Changed("direct") {
+					return fmt.Errorf("--direct is only valid for per-repo uninstall (fullsend github uninstall <owner/repo>)")
+				}
 			}
 
 			token, err := resolveToken()
@@ -1069,7 +1072,11 @@ GCP infrastructure (WIF) must be cleaned up separately via
 			if isRepo {
 				fullName := owner + "/" + repo
 				if !yolo {
-					printer.StepWarn(fmt.Sprintf("This will remove fullsend workflow files, config, variables, and secrets from %s.", fullName))
+					if direct {
+						printer.StepWarn(fmt.Sprintf("This will remove fullsend workflow files, config, variables, and secrets from %s.", fullName))
+					} else {
+						printer.StepWarn(fmt.Sprintf("This will remove variables and secrets from %s now, and open a PR to remove the workflow file and config (use --direct to push those removals immediately instead).", fullName))
+					}
 					printer.StepInfo(fmt.Sprintf("Type the repository name (%s) to confirm:", fullName))
 					var confirmation string
 					if _, err := fmt.Scanln(&confirmation); err != nil {
@@ -1112,20 +1119,20 @@ GCP infrastructure (WIF) must be cleaned up separately via
 // Delete: true, and the fixed uninstall branch keeps re-runs updating the
 // same PR instead of piling up new ones.
 func newScaffoldDeleteFunc(client forge.Client, printer *ui.Printer) repos.ScaffoldDeleteFunc {
-	return func(ctx context.Context, owner, repo, message string, files []forge.TreeFile, direct bool) error {
+	return func(ctx context.Context, owner, repo, message string, files []forge.TreeFile, direct bool) (bool, error) {
 		targetRepo, err := client.GetRepo(ctx, owner, repo)
 		if err != nil {
 			if gh.IsPATForbiddenError(err) {
-				return handlePATForbidden(printer, owner, repo, err)
+				return false, handlePATForbidden(printer, owner, repo, err)
 			}
-			return fmt.Errorf("getting repo info: %w", err)
+			return false, fmt.Errorf("getting repo info: %w", err)
 		}
 		meta := repos.ScaffoldPRMetadata{
 			CommitMsg: message,
 			PRTitle:   "chore: remove fullsend configuration",
 			PRBody: "This PR removes the fullsend workflow file, configuration, and any vendored " +
 				"assets created by `fullsend github setup`.\n\nMerge this PR to complete the uninstall.",
-			Branch: "fullsend/scaffold-uninstall",
+			Branch: repos.ScaffoldUninstallBranch,
 		}
 		if direct {
 			printer.StepStart(fmt.Sprintf("Removing scaffold files from %s/%s (%s branch)",
@@ -1134,9 +1141,8 @@ func newScaffoldDeleteFunc(client forge.Client, printer *ui.Printer) repos.Scaff
 			printer.StepStart(fmt.Sprintf("Creating uninstall PR for %s/%s (target: %s)",
 				owner, repo, targetRepo.DefaultBranch))
 		}
-		_, err = layers.CommitScaffoldFiles(ctx, client, printer,
+		return layers.CommitScaffoldFiles(ctx, client, printer,
 			owner, repo, targetRepo.DefaultBranch, meta, files, direct, os.Stdin)
-		return err
 	}
 }
 

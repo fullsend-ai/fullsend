@@ -974,6 +974,41 @@ func TestRunReposUninstall_Success(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestRunReposUninstall_DefaultsToPRDelivery(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api")
+	// AuthenticatedUser must match the repo owner so commitScaffoldViaPR
+	// takes the "owner pushes directly" fast path (branch + PR on the
+	// upstream repo) instead of the non-owner fork flow, which polls
+	// GetRepo until FakeClient's unconfigured fork simulation is "ready"
+	// and would otherwise hang the test.
+	fc.AuthenticatedUser = "acme"
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		yes:         true,
+		concurrency: 4,
+		// direct intentionally left unset (false): this test verifies the
+		// default PR-delivery path end-to-end, mirroring
+		// TestGitHubUninstallCmd_PerRepoYoloDefaultsToPR's coverage of the
+		// same default for "github uninstall".
+		testClient: fc,
+	}, []string{"acme/api"})
+	require.NoError(t, err)
+
+	require.Len(t, fc.CreatedProposals, 1, "expected a scaffold-removal PR to be opened")
+	assert.Equal(t, repos.ScaffoldUninstallBranch, fc.CreatedProposals[0].Head)
+
+	require.NotEmpty(t, fc.CommittedFilesToBranch, "expected deletions committed to the uninstall branch")
+	assert.Equal(t, repos.ScaffoldUninstallBranch, fc.CommittedFilesToBranch[0].Branch)
+	assert.Empty(t, fc.CommittedFiles, "direct-to-default-branch commit should not happen when --direct is unset")
+
+	// Variables and secrets are always deleted directly, regardless of
+	// delivery mode for the scaffold files.
+	assert.NotEmpty(t, fc.DeletedVariables, "expected repo variables to be deleted directly")
+	assert.NotEmpty(t, fc.DeletedSecrets, "expected repo secrets to be deleted directly")
+}
+
 func TestRunReposUninstall_NoMatch(t *testing.T) {
 	manifestPath := writeTestManifest(t, testManifestYAML)
 	fc := newInstalledFakeClientCLI("acme/api")

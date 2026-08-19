@@ -30,7 +30,7 @@ func newFakeScaffoldDelete(client *forge.FakeClient) *fakeScaffoldDelete {
 }
 
 func (f *fakeScaffoldDelete) fn() ScaffoldDeleteFunc {
-	return func(ctx context.Context, owner, repo, message string, files []forge.TreeFile, direct bool) error {
+	return func(ctx context.Context, owner, repo, message string, files []forge.TreeFile, direct bool) (bool, error) {
 		f.mu.Lock()
 		f.called = true
 		f.direct = direct
@@ -42,7 +42,11 @@ func (f *fakeScaffoldDelete) fn() ScaffoldDeleteFunc {
 			paths[i] = tf.Path
 		}
 		_, err := f.client.DeleteFiles(ctx, owner, repo, message, paths)
-		return err
+		// Report committed-direct as equal to the requested delivery mode,
+		// mirroring what a real ScaffoldDeleteFunc implementation returns
+		// (true for a direct commit, false for PR delivery), even though
+		// this fake always applies deletions immediately via DeleteFiles.
+		return direct, err
 	}
 }
 

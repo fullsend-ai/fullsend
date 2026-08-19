@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -1280,14 +1281,32 @@ func TestGitHubUninstallCmd_PerRepoYoloDirect(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// perRepoUninstallPRTestServer wraps the httptest server for the default
+// (non-direct) per-repo uninstall path along with a counter for how many
+// times the PR-creation endpoint was hit, so tests can assert a PR was
+// actually opened rather than relying on the absence of a 404 as an
+// implicit signal.
+type perRepoUninstallPRTestServer struct {
+	*httptest.Server
+	mu           sync.Mutex
+	pullsCreated int
+}
+
+func (s *perRepoUninstallPRTestServer) PullsCreated() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pullsCreated
+}
+
 // newPerRepoUninstallPRTestServer returns an httptest server implementing
 // the default (non-direct) per-repo uninstall path: the owner pushes a
 // scaffold-removal branch and opens a PR against it, in addition to the
 // endpoints newPerRepoUninstallTestServer covers.
-func newPerRepoUninstallPRTestServer(t *testing.T) *httptest.Server {
+func newPerRepoUninstallPRTestServer(t *testing.T) *perRepoUninstallPRTestServer {
 	t.Helper()
 	const uninstallBranch = "fullsend/scaffold-uninstall"
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	wrapper := &perRepoUninstallPRTestServer{}
+	wrapper.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/contents/"):
 			// Vendor manifest / vendored binary / .gitlint probes: none present.
@@ -1297,6 +1316,9 @@ func newPerRepoUninstallPRTestServer(t *testing.T) *httptest.Server {
 		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/pulls"):
 			json.NewEncoder(w).Encode([]map[string]any{})
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/pulls"):
+			wrapper.mu.Lock()
+			wrapper.pullsCreated++
+			wrapper.mu.Unlock()
 			json.NewEncoder(w).Encode(map[string]any{"html_url": "https://github.com/acme/widget/pull/1", "number": 1})
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/repos/acme/widget"):
 			json.NewEncoder(w).Encode(map[string]string{"default_branch": "main"})
@@ -1334,6 +1356,7 @@ func newPerRepoUninstallPRTestServer(t *testing.T) *httptest.Server {
 			http.NotFound(w, r)
 		}
 	}))
+	return wrapper
 }
 
 func TestGitHubUninstallCmd_PerRepoYoloDefaultsToPR(t *testing.T) {
@@ -1346,6 +1369,8 @@ func TestGitHubUninstallCmd_PerRepoYoloDefaultsToPR(t *testing.T) {
 	cmd.SetArgs([]string{"acme/widget", "--yolo"})
 	err := cmd.Execute()
 	require.NoError(t, err)
+
+	assert.Equal(t, 1, srv.PullsCreated(), "expected exactly one PR to be created")
 }
 
 func TestGitHubUninstallCmd_InvalidRepoFormat(t *testing.T) {
@@ -1373,6 +1398,15 @@ func TestGitHubUninstallCmd_PerRepoRejectsAppSet(t *testing.T) {
 	err := cmd.Execute()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--app-set is only valid for per-org uninstall")
+}
+
+func TestGitHubUninstallCmd_PerOrgRejectsDirect(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newGitHubUninstallCmd()
+	cmd.SetArgs([]string{"acme", "--direct", "--yolo"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--direct is only valid for per-repo uninstall")
 }
 
 func TestParseTarget_MultipleSlashes(t *testing.T) {

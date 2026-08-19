@@ -94,14 +94,17 @@ type UninstallConfig struct {
 
 // ScaffoldDeleteFunc delivers scaffold-file deletions to a repository,
 // either via a direct commit to the default branch or via a pull/merge
-// request, and returns any error encountered.
+// request. The returned bool is true when the deletions were committed
+// directly to the default branch (files are gone immediately) and false
+// when they were delivered via PR (files remain until the PR is merged),
+// mirroring layers.CommitScaffoldFiles's own return value.
 //
 // The CLI layer provides an implementation wrapping layers.CommitScaffoldFiles
 // (the same delivery mechanics ScaffoldCommitFunc uses for installs — retry
 // on non-fast-forward errors, branch-protection fallback to PR delivery, and
 // fork-based PR support for non-owner users), passing files with Delete set.
 type ScaffoldDeleteFunc func(ctx context.Context, owner, repo, message string,
-	files []forge.TreeFile, direct bool) error
+	files []forge.TreeFile, direct bool) (bool, error)
 
 // UninstallResult holds the outcome of uninstalling fullsend from a single repo.
 type UninstallResult struct {
@@ -315,13 +318,18 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool
 	for i, p := range deletePaths {
 		deleteFiles[i] = forge.TreeFile{Path: p, Delete: true}
 	}
-	if err := deleteScaffold(ctx, owner, repo, deleteMsg, deleteFiles, direct); err != nil {
+	committedDirect, err := deleteScaffold(ctx, owner, repo, deleteMsg, deleteFiles, direct)
+	if err != nil {
 		result.Error = fmt.Errorf("deleting scaffold files: %w", err)
 		progress(fullName, "workflow", fmt.Sprintf("Failed: %v", err))
 		return result
 	}
 	result.WorkflowDeleted = true
-	progress(fullName, "workflow", "Scaffold files deleted")
+	if committedDirect {
+		progress(fullName, "workflow", "Scaffold files deleted")
+	} else {
+		progress(fullName, "workflow", "Scaffold-removal PR opened; merge it to finish deleting files")
+	}
 
 	forgeVars := UninstallVarsForForge(cfg.Forge)
 	forgeSecrets := UninstallSecretsForForge(cfg.Forge)
