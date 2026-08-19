@@ -167,6 +167,9 @@ func loadCustomRoles() map[string]map[string]string {
 }
 
 // validateCustomRoleLevels validates the structure of custom role levels.
+// When both read and write levels are defined, it enforces that write is a
+// superset of read — every permission in the read level must appear in the
+// write level with equal or greater access (ADR 0073 invariant: read ⊆ write).
 func validateCustomRoleLevels(levels map[string]map[string]map[string]string) error {
 	for role, roleLevels := range levels {
 		if err := ValidateRoleName(role); err != nil {
@@ -182,6 +185,21 @@ func validateCustomRoleLevels(levels map[string]map[string]map[string]string) er
 			for k, v := range perms {
 				if v != "read" && v != "write" {
 					return fmt.Errorf("custom role %q level %q: permission %q has invalid value %q (must be read or write)", role, level, k, v)
+				}
+			}
+		}
+		// Enforce write ⊇ read when both levels are defined.
+		readPerms, hasRead := roleLevels[LevelRead]
+		writePerms, hasWrite := roleLevels[LevelWrite]
+		if hasRead && hasWrite {
+			for perm, readAccess := range readPerms {
+				writeAccess, ok := writePerms[perm]
+				if !ok {
+					return fmt.Errorf("custom role %q: write level must be a superset of read level, but permission %q is missing from write", role, perm)
+				}
+				// "write" ≥ "read", so write access must be ≥ read access.
+				if readAccess == "write" && writeAccess == "read" {
+					return fmt.Errorf("custom role %q: write level must be a superset of read level, but permission %q has lower access in write (%q) than read (%q)", role, perm, writeAccess, readAccess)
 				}
 			}
 		}
@@ -269,6 +287,16 @@ func ParseCustomRolePermissions(raw string) (map[string]map[string]map[string]st
 			Levels map[string]map[string]string `json:"levels"`
 		}
 		if err := json.Unmarshal(rawVal, &multiLevel); err == nil && multiLevel.Levels != nil {
+			// Validate permission values early (defense-in-depth:
+			// RegisterCustomRoleLevels also validates, but catching
+			// errors here gives a clearer parse-time error message).
+			for level, perms := range multiLevel.Levels {
+				for k, v := range perms {
+					if v != "read" && v != "write" {
+						return nil, fmt.Errorf("role %q level %q: permission %q has invalid value %q (must be read or write)", role, level, k, v)
+					}
+				}
+			}
 			result[role] = multiLevel.Levels
 			continue
 		}

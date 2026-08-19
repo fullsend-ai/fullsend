@@ -194,6 +194,18 @@ gh api -X POST /repos/myorg/my-repo/actions/variables \
 
 > **Note:** Repository-level variables override organization-level variables in GitHub Actions. If a repo already has `FULLSEND_MINT_URL` set at the repo level, update it there — the org-level variable will be ignored for that repo.
 
+## Privilege levels
+
+Token requests accept an optional `level` field that controls the breadth of permissions granted:
+
+| Level | Behavior |
+|-------|----------|
+| `"read"` | All `write` permissions are downgraded to `read` (built-in roles); flat-format custom roles return their defined permissions |
+| `"write"` | Full canonical permission set is returned |
+| _(omitted)_ | Defaults to `"read"` |
+
+> **⚠️ Breaking change (v0.XX+):** Prior to privilege levels, omitting `level` returned write-equivalent permissions. Existing standalone mint callers that omit the `level` field will now receive **read-only** tokens. To preserve the previous behavior, update your token requests to include `"level": "write"`. The CLI `fullsend mint token` command defaults `--level` to `write` for backward compatibility, but direct HTTP callers must explicitly set the field.
+
 ## Custom role permissions
 
 ### Defining permissions

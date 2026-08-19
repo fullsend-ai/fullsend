@@ -854,6 +854,50 @@ func TestParseCustomRolePermissions_InvalidJSON(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid JSON")
 }
 
+func TestParseCustomRolePermissions_MultiLevelInvalidValue(t *testing.T) {
+	raw := `{"my-role": {"levels": {"read": {"contents": "admin"}}}}`
+	_, err := ParseCustomRolePermissions(raw)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid value")
+	assert.Contains(t, err.Error(), "my-role")
+	assert.Contains(t, err.Error(), "contents")
+}
+
+func TestRegisterCustomRoleLevels_WriteSupersetOfRead(t *testing.T) {
+	t.Cleanup(func() { _ = RegisterCustomRoleLevels(nil) })
+
+	// Valid: write is a superset of read.
+	err := RegisterCustomRoleLevels(map[string]map[string]map[string]string{
+		"deployer": {
+			LevelRead:  {"contents": "read", "metadata": "read"},
+			LevelWrite: {"contents": "write", "metadata": "read", "deployments": "write"},
+		},
+	})
+	require.NoError(t, err)
+
+	// Invalid: read has a permission missing from write.
+	err = RegisterCustomRoleLevels(map[string]map[string]map[string]string{
+		"bad-role": {
+			LevelRead:  {"contents": "read", "extra": "read"},
+			LevelWrite: {"contents": "write"},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "superset")
+	assert.Contains(t, err.Error(), "extra")
+
+	// Invalid: read has higher access than write for a permission.
+	err = RegisterCustomRoleLevels(map[string]map[string]map[string]string{
+		"bad-role2": {
+			LevelRead:  {"contents": "write"},
+			LevelWrite: {"contents": "read"},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "superset")
+	assert.Contains(t, err.Error(), "contents")
+}
+
 func TestCreateInstallationToken_ReadLevel(t *testing.T) {
 	mockGH := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]interface{}
