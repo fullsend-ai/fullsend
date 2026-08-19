@@ -1105,6 +1105,7 @@ func TestCommitScaffoldViaPR_SkipsStaleCleanupInForkPath(t *testing.T) {
 
 func TestIsKnownScaffoldBranch(t *testing.T) {
 	assert.True(t, isKnownScaffoldBranch("fullsend/scaffold-install"))
+	assert.True(t, isKnownScaffoldBranch("fullsend/scaffold-uninstall"))
 	assert.True(t, isKnownScaffoldBranch("fullsend/onboard"))
 	assert.True(t, isKnownScaffoldBranch("fullsend/bump-v0.28.0"))
 	assert.True(t, isKnownScaffoldBranch("fullsend/bump-v1.0.0-rc.1"))

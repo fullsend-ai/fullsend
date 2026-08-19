@@ -622,8 +622,12 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 }
 
 // TestShimScaffoldBranchFilter validates that both shim templates skip dispatch
-// for PRs from the fullsend/scaffold branch. Without this filter, the shim
-// fires pull_request_target on the scaffold PR, causing dispatch noise (#5470).
+// for PRs from the fullsend/scaffold-install or fullsend/scaffold-uninstall
+// branches. Without this filter, the shim fires pull_request_target on the
+// scaffold PR with live secrets and write permissions while the repo is
+// mid-install or mid-teardown, causing dispatch noise (#5470) or — for the
+// uninstall branch specifically — a real dispatch run using infrastructure
+// that is actively being torn down.
 func TestShimScaffoldBranchFilter(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -636,7 +640,9 @@ func TestShimScaffoldBranchFilter(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s := string(tc.content(t))
 			assert.Contains(t, s, "github.event.pull_request.head.ref != 'fullsend/scaffold-install'",
-				"%s dispatch job must filter scaffold branch PRs to prevent self-dispatch noise", tc.name)
+				"%s dispatch job must filter install-scaffold branch PRs to prevent self-dispatch noise", tc.name)
+			assert.Contains(t, s, "github.event.pull_request.head.ref != 'fullsend/scaffold-uninstall'",
+				"%s dispatch job must filter uninstall-scaffold branch PRs to prevent dispatch with live secrets mid-teardown", tc.name)
 		})
 	}
 }
