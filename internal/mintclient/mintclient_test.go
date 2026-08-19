@@ -598,6 +598,90 @@ func TestMintToken_DoesNotRetryOn4xx(t *testing.T) {
 	}
 }
 
+func TestMintToken_LevelPassedToMint(t *testing.T) {
+	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "oidc-jwt-value"})
+	}))
+	defer oidcServer.Close()
+
+	var gotLevel string
+	mintServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body mintRequestBody
+		json.NewDecoder(r.Body).Decode(&body)
+		gotLevel = body.Level
+		json.NewEncoder(w).Encode(MintResult{Token: "tok", ExpiresAt: "2026-01-01T00:00:00Z"})
+	}))
+	defer mintServer.Close()
+
+	origEnv := envLookup
+	envLookup = func(key string) string {
+		switch key {
+		case "ACTIONS_ID_TOKEN_REQUEST_URL":
+			return oidcServer.URL + "?dummy=1"
+		case "ACTIONS_ID_TOKEN_REQUEST_TOKEN":
+			return "test-request-token"
+		default:
+			return ""
+		}
+	}
+	defer func() { envLookup = origEnv }()
+
+	_, err := MintToken(context.Background(), MintRequest{
+		MintURL: mintServer.URL,
+		Role:    "coder",
+		Level:   "write",
+		Repos:   []string{"my-repo"},
+	})
+	if err != nil {
+		t.Fatalf("MintToken() error = %v", err)
+	}
+	if gotLevel != "write" {
+		t.Errorf("level = %q, want %q", gotLevel, "write")
+	}
+}
+
+func TestMintToken_LevelOmitted(t *testing.T) {
+	oidcServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(oidcTokenResponse{Value: "oidc-jwt-value"})
+	}))
+	defer oidcServer.Close()
+
+	var gotLevel string
+	mintServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body mintRequestBody
+		json.NewDecoder(r.Body).Decode(&body)
+		gotLevel = body.Level
+		json.NewEncoder(w).Encode(MintResult{Token: "tok", ExpiresAt: "2026-01-01T00:00:00Z"})
+	}))
+	defer mintServer.Close()
+
+	origEnv := envLookup
+	envLookup = func(key string) string {
+		switch key {
+		case "ACTIONS_ID_TOKEN_REQUEST_URL":
+			return oidcServer.URL + "?dummy=1"
+		case "ACTIONS_ID_TOKEN_REQUEST_TOKEN":
+			return "test-request-token"
+		default:
+			return ""
+		}
+	}
+	defer func() { envLookup = origEnv }()
+
+	_, err := MintToken(context.Background(), MintRequest{
+		MintURL: mintServer.URL,
+		Role:    "coder",
+		Repos:   []string{"my-repo"},
+	})
+	if err != nil {
+		t.Fatalf("MintToken() error = %v", err)
+	}
+	// Level should be empty when not specified (server defaults to "read").
+	if gotLevel != "" {
+		t.Errorf("level = %q, want empty (omitted)", gotLevel)
+	}
+}
+
 func TestMintToken_LocalhostHTTPAllowed(t *testing.T) {
 	origEnv := envLookup
 	envLookup = func(key string) string { return "" }
