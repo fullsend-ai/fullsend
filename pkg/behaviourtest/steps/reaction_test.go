@@ -20,11 +20,10 @@ func TestGivenReactionsEnabled_PreservesExistingCommentSettings(t *testing.T) {
 	scm := &fakeReactionSCM{
 		fileContent: []byte("version: \"1\"\nroles:\n  - triage\nstatus_notifications:\n  comment:\n    start: enabled\n    completion: on_failure\n"),
 	}
-	install := &fakeReactionInstall{owner: "org", repo: "repo"}
 	w := &world.World{
 		RepoOwner: "org",
 		RepoName:  "repo",
-		Install:   install,
+		Org:       "org",
 		SCM:       scm,
 	}
 
@@ -45,11 +44,10 @@ func TestGivenReactionsEnabled_NoExistingConfig(t *testing.T) {
 	scm := &fakeReactionSCM{
 		fileContent: []byte("version: \"1\"\nroles:\n  - triage\n"),
 	}
-	install := &fakeReactionInstall{owner: "org", repo: "repo"}
 	w := &world.World{
 		RepoOwner: "org",
 		RepoName:  "repo",
-		Install:   install,
+		Org:       "org",
 		SCM:       scm,
 	}
 
@@ -67,11 +65,10 @@ func TestGivenReactionsEnabled_GetFileError(t *testing.T) {
 	scm := &fakeReactionSCM{
 		getFileErr: fmt.Errorf("not found"),
 	}
-	install := &fakeReactionInstall{owner: "org", repo: "repo"}
 	w := &world.World{
 		RepoOwner: "org",
 		RepoName:  "repo",
-		Install:   install,
+		Org:       "org",
 		SCM:       scm,
 	}
 
@@ -88,11 +85,10 @@ func TestDisableReactionNotifications_PreservesCommentSettings(t *testing.T) {
 	scm := &fakeReactionSCM{
 		fileContent: []byte("version: \"1\"\nroles:\n  - triage\nstatus_notifications:\n  comment:\n    start: enabled\n    completion: on_failure\n  reaction:\n    start: enabled\n    completion: enabled\n"),
 	}
-	install := &fakeReactionInstall{owner: "org", repo: "repo"}
 	w := &world.World{
 		RepoOwner: "org",
 		RepoName:  "repo",
-		Install:   install,
+		Org:       "org",
 		SCM:       scm,
 	}
 
@@ -111,11 +107,10 @@ func TestDisableReactionNotifications_NilsWhenNoCommentSettings(t *testing.T) {
 	scm := &fakeReactionSCM{
 		fileContent: []byte("version: \"1\"\nroles:\n  - triage\nstatus_notifications:\n  reaction:\n    start: enabled\n    completion: enabled\n"),
 	}
-	install := &fakeReactionInstall{owner: "org", repo: "repo"}
 	w := &world.World{
 		RepoOwner: "org",
 		RepoName:  "repo",
-		Install:   install,
+		Org:       "org",
 		SCM:       scm,
 	}
 
@@ -133,11 +128,10 @@ func TestDisableReactionNotifications_NoExistingConfig(t *testing.T) {
 	scm := &fakeReactionSCM{
 		fileContent: []byte("version: \"1\"\nroles:\n  - triage\n"),
 	}
-	install := &fakeReactionInstall{owner: "org", repo: "repo"}
 	w := &world.World{
 		RepoOwner: "org",
 		RepoName:  "repo",
-		Install:   install,
+		Org:       "org",
 		SCM:       scm,
 	}
 
@@ -152,11 +146,10 @@ func TestDisableReactionNotifications_GetFileError(t *testing.T) {
 	scm := &fakeReactionSCM{
 		getFileErr: fmt.Errorf("not found"),
 	}
-	install := &fakeReactionInstall{owner: "org", repo: "repo"}
 	w := &world.World{
 		RepoOwner: "org",
 		RepoName:  "repo",
-		Install:   install,
+		Org:       "org",
 		SCM:       scm,
 	}
 
@@ -282,11 +275,10 @@ func TestReactionsEnabledInConfig_StartEnabled(t *testing.T) {
 	scm := &fakeReactionSCM{
 		fileContent: []byte("version: \"1\"\nroles:\n  - triage\nstatus_notifications:\n  reaction:\n    start: enabled\n"),
 	}
-	install := &fakeReactionInstall{owner: "org", repo: "repo"}
 	w := &world.World{
 		RepoOwner: "org",
 		RepoName:  "repo",
-		Install:   install,
+		Org:       "org",
 		SCM:       scm,
 	}
 
@@ -299,11 +291,10 @@ func TestReactionsEnabledInConfig_CompletionOnly(t *testing.T) {
 	scm := &fakeReactionSCM{
 		fileContent: []byte("version: \"1\"\nroles:\n  - triage\nstatus_notifications:\n  reaction:\n    completion: enabled\n"),
 	}
-	install := &fakeReactionInstall{owner: "org", repo: "repo"}
 	w := &world.World{
 		RepoOwner: "org",
 		RepoName:  "repo",
-		Install:   install,
+		Org:       "org",
 		SCM:       scm,
 	}
 
@@ -316,11 +307,10 @@ func TestReactionsEnabledInConfig_Disabled(t *testing.T) {
 	scm := &fakeReactionSCM{
 		fileContent: []byte("version: \"1\"\nroles:\n  - triage\nstatus_notifications:\n  reaction:\n    start: disabled\n    completion: disabled\n"),
 	}
-	install := &fakeReactionInstall{owner: "org", repo: "repo"}
 	w := &world.World{
 		RepoOwner: "org",
 		RepoName:  "repo",
-		Install:   install,
+		Org:       "org",
 		SCM:       scm,
 	}
 
@@ -333,11 +323,10 @@ func TestReactionsEnabledInConfig_NoNotifications(t *testing.T) {
 	scm := &fakeReactionSCM{
 		fileContent: []byte("version: \"1\"\nroles:\n  - triage\n"),
 	}
-	install := &fakeReactionInstall{owner: "org", repo: "repo"}
 	w := &world.World{
 		RepoOwner: "org",
 		RepoName:  "repo",
-		Install:   install,
+		Org:       "org",
 		SCM:       scm,
 	}
 
@@ -433,19 +422,3 @@ func (f *fakeReactionSCM) CommitFileToFork(context.Context, string, string, stri
 func (f *fakeReactionSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
 	return nil, nil
 }
-
-// fakeReactionInstall satisfies the install.State interface.
-type fakeReactionInstall struct {
-	owner string
-	repo  string
-}
-
-func (f *fakeReactionInstall) Mode() string               { return "per-repo" }
-func (f *fakeReactionInstall) TestRepo() string           { return f.repo }
-func (f *fakeReactionInstall) ConfigOwner() string        { return f.owner }
-func (f *fakeReactionInstall) ConfigRepo() string         { return f.repo }
-func (f *fakeReactionInstall) ConfigPathPrefix() string   { return ".fullsend" }
-func (f *fakeReactionInstall) TriageWorkflowRepo() string { return f.repo }
-func (f *fakeReactionInstall) TriageWorkflowFile() string { return "fullsend.yaml" }
-func (f *fakeReactionInstall) AgentWorkflowFile() string  { return "reusable-triage.yml" }
-func (f *fakeReactionInstall) AgentArtifactName() string  { return "fullsend-triage" }

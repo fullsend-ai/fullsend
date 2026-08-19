@@ -31,7 +31,7 @@ func registerReactionSteps(sc *godog.ScenarioContext) {
 // sharing the same pool-repo slot.
 func givenReactionsEnabled(w *world.World) error {
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
-	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath)
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
 	}
@@ -54,7 +54,7 @@ func givenReactionsEnabled(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath, "behaviour: enable reaction notifications", merged); err != nil {
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: enable reaction notifications", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
@@ -67,7 +67,7 @@ func givenReactionsEnabled(w *world.World) error {
 // shared pool-repo slot.
 func DisableReactionNotifications(w *world.World) error {
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
-	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath)
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
 	}
@@ -88,7 +88,7 @@ func DisableReactionNotifications(w *world.World) error {
 	if err != nil {
 		return err
 	}
-	if err := w.SCM.CommitFile(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath, "behaviour: disable reaction notifications", merged); err != nil {
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: disable reaction notifications", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
 	return nil
@@ -133,11 +133,11 @@ func thenIssueDoesNotHaveReaction(w *world.World, content string) error {
 // reactionsEnabledInConfig checks if status_notifications.reaction is
 // set in the repo config. Used by cleanup to decide whether to reset.
 func reactionsEnabledInConfig(w *world.World) bool {
-	if w.SCM == nil || w.Install == nil {
+	if w.SCM == nil || w.Org == "" || w.RepoName == "" {
 		return false
 	}
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
-	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath)
+	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
 	if err != nil {
 		return false
 	}
