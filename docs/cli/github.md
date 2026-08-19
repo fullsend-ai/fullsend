@@ -122,8 +122,10 @@ fullsend github uninstall <org> [--yolo] [--app-set <name>]
 **Per-repo mode** deletes the workflow file, `.fullsend/config.yaml`, `.fullsend/config.base.yaml` (including any vendored `--vendor` assets), repo variables, and repo secrets created by `fullsend github setup`:
 
 ```bash
-fullsend github uninstall <owner/repo> [--yolo]
+fullsend github uninstall <owner/repo> [--yolo] [--direct]
 ```
+
+By default, file deletions are delivered via a pull request (mirroring `fullsend github setup`). Pass `--direct` to push the deletions straight to the default branch instead. Repo variables and secrets are always deleted directly — they cannot go through a PR.
 
 `--app-set` is only valid for per-org uninstall; it is rejected for per-repo targets. GCP infrastructure (WIF) must be cleaned up separately via `fullsend inference deprovision`.
 
