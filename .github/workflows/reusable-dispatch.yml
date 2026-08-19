@@ -73,6 +73,15 @@ on:
         required: false
       OTEL_EXPORTER_OTLP_HEADERS:
         required: false
+      JIRA_TOKEN:
+        description: "Jira Cloud API token for Jira-based agents"
+        required: false
+      JIRA_USER_EMAIL:
+        description: "Jira account email for Basic auth"
+        required: false
+      JIRA_BASE_URL:
+        description: "Jira instance base URL (e.g., https://myteam.atlassian.net)"
+        required: false
 
 jobs:
   route:
@@ -1534,3 +1543,6 @@ jobs:
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
       OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
       OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+      JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+      JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
