@@ -2,6 +2,7 @@ package harness
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 
@@ -246,6 +247,13 @@ func (h *Harness) validateOverlays() error {
 // is empty, this is a no-op. When event is nil, an empty map is passed
 // to CEL so overlays conditioned only on runtime.forge or config can still
 // match (e.g., CLI run/lock flows that don't have an event context).
+//
+// CEL evaluation errors are treated as non-matching: the error is logged
+// and evaluation continues to the next entry. This matches the
+// MatchHarnesses pattern in harnessdispatch/enumerate.go and ensures that
+// a more-specific overlay (e.g., event.source.system == "jira" &&
+// runtime.forge == "github") that fails on key access when event is empty
+// does not prevent a broader fallback overlay from matching.
 func (h *Harness) ResolveOverlays(event map[string]any, forgePlatform string, config map[string]any) error {
 	if len(h.Overlays) == 0 {
 		h.Overlays = nil
@@ -259,7 +267,13 @@ func (h *Harness) ResolveOverlays(event map[string]any, forgePlatform string, co
 	for i, entry := range h.Overlays {
 		matched, err := EvaluateOverlay(entry.When, event, forgePlatform, config)
 		if err != nil {
-			return fmt.Errorf("overlays[%d].when: %w", i, err)
+			// Treat CEL evaluation errors as non-matching: log and
+			// continue to the next entry, matching the MatchHarnesses
+			// pattern in harnessdispatch/enumerate.go. This allows
+			// fallback overlays to match when a more-specific overlay
+			// errors (e.g., event key access on an empty event map).
+			log.Printf("harness: overlay[%d].when eval failed: %v", i, err)
+			continue
 		}
 		if matched {
 			fc := entry.ForgeConfig

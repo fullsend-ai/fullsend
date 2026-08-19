@@ -1250,3 +1250,56 @@ func TestResolveOverlays_CombinedWhenExpression(t *testing.T) {
 	require.Len(t, h.Skills, 1)
 	assert.Equal(t, "skills/jira-read", h.Skills[0].Source)
 }
+
+// TestResolveOverlays_CELErrorSkipsToFallback verifies that a CEL evaluation
+// error in an earlier overlay (e.g., accessing event.source.system when event
+// is empty) does not abort resolution — the error is logged as non-matching,
+// and a broader fallback overlay can still match. This matches the
+// MatchHarnesses pattern in harnessdispatch/enumerate.go and supports the
+// more-specific-first pattern documented in bring-your-own-agent.md.
+func TestResolveOverlays_CELErrorSkipsToFallback(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Role:      "fix",
+		PreScript: "scripts/common.sh",
+		Overlays: []OverlayEntry{
+			// More-specific overlay: references event.source.system which will
+			// error when event is empty (no such key).
+			{When: `event.source.system == "jira" && runtime.forge == "github"`, ForgeConfig: ForgeConfig{
+				PreScript: "scripts/jira-on-gh.sh",
+			}},
+			// Broader fallback: conditioned only on runtime.forge, always evaluable.
+			{When: `runtime.forge == "github"`, ForgeConfig: ForgeConfig{
+				PreScript: "scripts/gh-fallback.sh",
+			}},
+		},
+	}
+	// Empty event: event.source.system access will error on the first overlay.
+	// The fallback overlay should still match.
+	err := h.ResolveOverlays(map[string]any{}, "github", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/gh-fallback.sh", h.PreScript,
+		"fallback overlay should match when earlier overlay has a CEL eval error")
+	assert.Nil(t, h.Overlays, "overlays should be consumed after resolution")
+}
+
+// TestResolveOverlays_CELErrorAllFail verifies that when all overlays fail
+// with CEL evaluation errors, no overlay is applied and the harness retains
+// its original values.
+func TestResolveOverlays_CELErrorAllFail(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Role:      "fix",
+		PreScript: "scripts/common.sh",
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "jira"`, ForgeConfig: ForgeConfig{PreScript: "scripts/jira.sh"}},
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
+		},
+	}
+	// Empty event: both overlays will fail on event.source access.
+	err := h.ResolveOverlays(map[string]any{}, "", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/common.sh", h.PreScript,
+		"harness should retain original values when all overlays fail")
+	assert.Nil(t, h.Overlays, "overlays should be consumed even when all fail")
+}
