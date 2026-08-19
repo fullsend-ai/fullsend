@@ -50,6 +50,14 @@ on:
         type: string
         required: false
         default: "ubuntu-24.04"
+      workflow_repository:
+        description: "Repository containing the workflow (for defaults checkout)"
+        required: true
+        type: string
+      workflow_sha:
+        description: "SHA of the workflow (for defaults checkout)"
+        required: true
+        type: string
     secrets:
       FULLSEND_GCP_WIF_PROVIDER:
         required: false
@@ -98,8 +106,8 @@ jobs:
         if: hashFiles('.defaults/action.yml', '.fullsend/.defaults/action.yml') == ''
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ job.workflow_repository }}
-          ref: ${{ job.workflow_sha }}
+          repository: ${{ inputs.workflow_repository }}
+          ref: ${{ inputs.workflow_sha }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -228,7 +236,7 @@ jobs:
           JIRA_BASE_URL: ${{ secrets.JIRA_BASE_URL }}
         with:
           agent: ${{ matrix.agent }}
-          version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          version: ${{ inputs.fullsend_version || inputs.workflow_sha }}
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ matrix.status_repo }}
