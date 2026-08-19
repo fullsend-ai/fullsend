@@ -367,6 +367,10 @@ func RolePermissionsForLevel(role, level string) (map[string]string, error) {
 				return cp, nil
 			}
 			// Write not defined → fall back to read (ADR 0073).
+			// Note: for flat-format custom roles the read level may still
+			// contain "write"-valued permissions (e.g. "issues": "write").
+			// The level name describes the privilege tier, not the
+			// individual permission access values within it.
 			if level == LevelWrite {
 				if perms, ok := roleLevels[LevelRead]; ok {
 					cp := make(map[string]string, len(perms))

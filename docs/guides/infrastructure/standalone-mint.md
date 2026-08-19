@@ -333,7 +333,7 @@ jobs:
           curl -s -X POST "${{ vars.FULLSEND_MINT_URL }}/v1/token" \
             -H "Authorization: Bearer ${{ steps.oidc.outputs.token }}" \
             -H "Content-Type: application/json" \
-            -d '{"role":"scanner","repos":["${{ github.event.repository.name }}"]}'
+            -d '{"role":"scanner","level":"read","repos":["${{ github.event.repository.name }}"]}'
 ```
 
 ## Complete example
