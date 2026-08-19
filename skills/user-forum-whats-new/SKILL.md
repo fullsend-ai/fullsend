@@ -5,7 +5,7 @@ description: >
   Tuesday-to-Tuesday recap, forum-host notes for the standing Google Doc,
   or copy-paste HTML of shipped changes for users. Also use when the
   user says what's new in Fullsend, user forum bullets, or forum agenda.
-allowed-tools: Read, Write, Grep, Glob, WebFetch, Bash(bash skills/user-forum-whats-new/scripts/gather.sh:*), Bash(python3 skills/user-forum-whats-new/scripts/gather.py:*), Bash(gh api:*), Bash(gh search:*), Bash(gh issue:*), Bash(gh pr:*), Bash(gh release:*), Bash(xdg-open:*), Bash(open:*)
+allowed-tools: Read, Write, Grep, Glob, WebFetch, Bash(bash skills/user-forum-whats-new/scripts/gather.sh:*), Bash(python3 skills/user-forum-whats-new/scripts/gather.py:*), Bash(gh search:*), Bash(gh api repos/:*), Bash(gh pr view:*), Bash(gh pr diff:*), Bash(gh pr list:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh release view:*), Bash(gh release list:*), Bash(xdg-open:*), Bash(open:*)
 ---
 
 # User forum What's New
@@ -79,8 +79,11 @@ bash skills/user-forum-whats-new/scripts/gather.sh --since YYYY-MM-DD --until YY
 That prints JSON: releases (full changelog body), merged PRs split into
 `merged_prs.released` and `merged_prs.on_main`, plus `window_start_utc`,
 `window_end_utc`, and `release_cutoff_utc` (per-repo map of latest
-in-window release publish times — each PR is classified against **its own
-repo's** cutoff). Unit tests: `python3 skills/user-forum-whats-new/scripts/gather_test.py`.
+in-window **non-prerelease** release publish times — each PR is classified
+against **its own repo's** cutoff). Prerelease tags still appear in
+`releases[]` with `"prerelease": true` for candidate scanning, but they
+never set the cutoff. Unit tests:
+`python3 skills/user-forum-whats-new/scripts/gather_test.py`.
 
 **Score Features from the release body even when their PRs merged
 before `SINCE`.** The gather window only lists PRs merged this week;
@@ -201,11 +204,14 @@ Every kept bullet belongs in exactly one section.
 | **Released** | In the newest release published this window (`v0.36.0`, etc.). Also: external surfaces users can **use right now** — a live dashboard, a docs page, a skill on `main` they can invoke today. If it works when they click it, treat it as released even without a tag. |
 | **On main (next release)** | Merged to `fullsend` or `agents` `main` **after** that release was tagged. Link landing code on `main` (not the release tag). |
 
-`gather.py` splits merged PRs using each repo's latest in-window release
-`published_at` as that repo's cutoff (`release_cutoff_utc` is a per-repo
-map in JSON). You still assign bullets manually when the source is a
-release-body feature (PR merged before the window) or a live external
-surface.
+`gather.py` splits merged PRs using each repo's latest in-window
+**non-prerelease** release `published_at` as that repo's cutoff
+(`release_cutoff_utc` is a per-repo map in JSON). Prereleases (RCs, and
+any tag GitHub flags `prerelease: true`) remain in the candidate list but
+do not move the Released/On-main boundary — otherwise an RC could mark
+unshippable merges as **Released**. You still assign bullets manually when
+the source is a release-body feature (PR merged before the window) or a
+live external surface.
 
 Talk **Released** first, then **On main**.
 
