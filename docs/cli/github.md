@@ -16,7 +16,7 @@ Configure fullsend on GitHub organizations and repositories without requiring GC
 | `fullsend github set <target> <key> <value>` | Update a single config value (secret or variable) |
 | `fullsend github status <org>` | Analyze GitHub-side installation state |
 | `fullsend github sync-scaffold <org>` | Update workflow templates to current CLI version |
-| `fullsend github uninstall <org>` | Remove fullsend GitHub configuration |
+| `fullsend github uninstall <org\|owner/repo>` | Remove fullsend GitHub configuration from an org or a single repo |
 
 ## `github setup`
 
@@ -111,11 +111,21 @@ fullsend github sync-scaffold <org>
 
 ## `github uninstall`
 
-Removes fullsend GitHub configuration for an organization. Deletes the `.fullsend` config repo and associated resources.
+Removes fullsend GitHub configuration for an organization or a single repository.
+
+**Per-org mode** deletes the `.fullsend` config repo, removes org-level variables and secrets, and guides you through deleting the GitHub Apps via the browser:
 
 ```bash
 fullsend github uninstall <org> [--yolo] [--app-set <name>]
 ```
+
+**Per-repo mode** deletes the workflow file, `.fullsend/config.yaml`, `.fullsend/config.base.yaml` (including any vendored `--vendor` assets), repo variables, and repo secrets created by `fullsend github setup`:
+
+```bash
+fullsend github uninstall <owner/repo> [--yolo]
+```
+
+`--app-set` is only valid for per-org uninstall; it is rejected for per-repo targets. GCP infrastructure (WIF) must be cleaned up separately via `fullsend inference deprovision`.
 
 ## See also
 

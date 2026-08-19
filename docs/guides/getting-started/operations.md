@@ -67,6 +67,14 @@ To remove fullsend from a single repository:
 
 **GitHub repos:**
 
+```bash
+fullsend github uninstall "$OWNER/$REPO"
+```
+
+This deletes the workflow file, `.fullsend/config.yaml`, `.fullsend/config.base.yaml` (including any vendored `--vendor` assets), and repo-level variables/secrets created by `fullsend github setup`. Then run `fullsend inference deprovision "$OWNER/$REPO"` to remove WIF access — GCP infrastructure is out of scope for `github uninstall`.
+
+For multi-repo or manifest-based workflows, use `fullsend repos uninstall "$OWNER/$REPO"` instead, which also removes the entry from `repos.yaml`. If neither command is available (e.g. older CLI versions), fall back to the manual steps:
+
 1. Delete `.github/workflows/fullsend.yaml` and repo-level secrets/variables
 2. Run `fullsend inference deprovision "$OWNER/$REPO"` to remove WIF access
 3. Remove the `FULLSEND_MINT_URL` repository variable (if set) — no separate unenrollment is needed for the hosted community mint
@@ -95,7 +103,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | GitHub Maintainer | `fullsend github set <org\|owner/repo> <key> <value>` | Update a single config value (secret or variable) |
 | GitHub Maintainer | `fullsend github status <org>` | Analyze GitHub-side installation state |
 | GitHub Maintainer | `fullsend github sync-scaffold <org>` | Update workflow templates to current CLI version |
-| GitHub Maintainer | `fullsend github uninstall <org>` | Remove GitHub configuration (org-level only) |
+| GitHub Maintainer | `fullsend github uninstall <org\|owner/repo>` | Remove GitHub configuration for an org or a single repo |
 | GCP Admin (Mint) | `fullsend mint deploy` | Deploy the token mint Cloud Function |
 | GCP Admin (Mint) | `fullsend mint delete` | Tear down mint infrastructure (inverse of deploy) |
 | GCP Admin (Mint) | `fullsend mint add-role <role>` | Register a role PEM and app ID on the mint |

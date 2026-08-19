@@ -37,7 +37,7 @@ fullsend
 │   ├── unenroll     <org> [repo...]         # Disable repos from agent workflows
 │   ├── set          <target> <key> <value>  # Update a config value
 │   ├── status       <org>                   # Analyze GitHub-side state
-│   ├── uninstall    <org>                   # Remove fullsend GitHub configuration
+│   ├── uninstall    <org|owner/repo>        # Remove fullsend GitHub configuration
 │   └── sync-scaffold <org>                  # Update workflow templates
 ├── repos                                    # Manage per-repo installations via manifest
 │   ├── --gitlab-token <token>               #   GitLab access token (overrides GITLAB_TOKEN)
