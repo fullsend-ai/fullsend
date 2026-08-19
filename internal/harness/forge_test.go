@@ -1174,15 +1174,19 @@ func TestResolveOverlays_NoMatchUnchanged(t *testing.T) {
 
 func TestResolveOverlays_NilEventNoop(t *testing.T) {
 	h := &Harness{
-		Agent: "agents/test.md",
-		Role:  "fix",
+		Agent:     "agents/test.md",
+		Role:      "fix",
+		PreScript: "scripts/common.sh",
 		Overlays: []OverlayEntry{
-			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
+			{When: `runtime.forge == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
 		},
 	}
-	err := h.ResolveOverlays(nil, "", nil)
+	// Nil event is converted to empty map; overlays conditioned on runtime.forge
+	// or config can still match (ADR 0088 — overlays work in CLI paths without event).
+	err := h.ResolveOverlays(nil, "github", nil)
 	require.NoError(t, err)
-	assert.Nil(t, h.Overlays)
+	assert.Equal(t, "scripts/gh.sh", h.PreScript, "overlay should match on runtime.forge even when event is nil")
+	assert.Nil(t, h.Overlays, "overlays should be consumed after resolution")
 }
 
 func TestResolveOverlays_EmptyOverlaysNoop(t *testing.T) {

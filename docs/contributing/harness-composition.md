@@ -36,6 +36,15 @@ and update the others as needed.
 | `mergeHostFiles` | `internal/harness/compose.go` | Deduplicates host files by dest path (base + child) |
 | `mergeForgeBlocks` | `internal/harness/compose.go` | Merges `forge:` maps key-by-key across base and child |
 
+> **Note — overlay precedence exception.** When `overlays` are concatenated
+> during base composition, base entries are placed first. Because overlay
+> resolution uses first-match-wins semantics (`ResolveOverlays` stops at the
+> first matching `when` expression), base overlay entries take precedence over
+> child overlay entries with the same condition. This is an intentional
+> exception to the child-overrides-base convention used by scalar and map
+> merges, and matches the concatenation behavior for `plugins`, `providers`,
+> and `api_servers` lists.
+
 ### Validation and resolution side
 
 | Function | File | Purpose |

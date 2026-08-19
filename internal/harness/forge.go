@@ -242,16 +242,19 @@ func (h *Harness) validateOverlays() error {
 // ResolveOverlays evaluates each overlay's When expression against the
 // overlay CEL environment (event, runtime.forge, config) and merges the
 // first matching entry into the harness (first-match-wins, ADR 0088).
-// After resolution, h.Overlays is set to nil (consumed). When event is
-// nil or h.Overlays is empty, this is a no-op.
+// After resolution, h.Overlays is set to nil (consumed). When h.Overlays
+// is empty, this is a no-op. When event is nil, an empty map is passed
+// to CEL so overlays conditioned only on runtime.forge or config can still
+// match (e.g., CLI run/lock flows that don't have an event context).
 func (h *Harness) ResolveOverlays(event map[string]any, forgePlatform string, config map[string]any) error {
 	if len(h.Overlays) == 0 {
 		h.Overlays = nil
 		return nil
 	}
+	// Use empty map if event is nil so overlays conditioned on runtime.forge
+	// or config can still evaluate and match (CLI paths without event context).
 	if event == nil {
-		h.Overlays = nil
-		return nil
+		event = make(map[string]any)
 	}
 	for i, entry := range h.Overlays {
 		matched, err := EvaluateOverlay(entry.When, event, forgePlatform, config)

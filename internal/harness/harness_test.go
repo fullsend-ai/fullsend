@@ -2259,18 +2259,20 @@ func TestLoadWithOpts_OverlayNoEvent(t *testing.T) {
 	content := `
 agent: agents/test.md
 role: fix
+pre_script: scripts/common.sh
 overlays:
-- when: 'event.source.system == "github"'
+- when: 'runtime.forge == "github"'
   pre_script: scripts/gh.sh
 `
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 
-	h, err := LoadWithOpts(path, LoadOpts{})
+	h, err := LoadWithOpts(path, LoadOpts{ForgePlatform: "github"})
 	require.NoError(t, err)
-	// No event → overlays are a no-op and consumed
-	assert.Nil(t, h.Overlays)
+	// Overlays can match on runtime.forge even when event is nil (ADR 0088).
+	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+	assert.Nil(t, h.Overlays, "overlays should be consumed after resolution")
 }
 
 func TestLoadWithOpts_OverlayAndForgeReject(t *testing.T) {
