@@ -69,7 +69,7 @@ The recommended way to remove fullsend from one or more repositories is the `rep
 fullsend repos uninstall "$OWNER/$REPO"
 ```
 
-GCP infrastructure (WIF pool/provider) is not managed by the manifest, so clean it up separately:
+GCP inference infrastructure (WIF pool/provider) is not managed by the manifest, so it should be cleaned up separately by the GCP inference project admin:
 
 ```bash
 fullsend inference deprovision "$OWNER/$REPO"
