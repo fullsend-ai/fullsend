@@ -11,6 +11,41 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
+// fakeScaffoldDelete implements ScaffoldDeleteFunc for tests. It applies
+// deletions through the FakeClient's DeleteFiles (so existing DeletedFiles/
+// FileContents assertions and DeleteFiles error injection keep working
+// regardless of direct/PR mode) while recording the direct flag and
+// message it was called with, so tests can assert on delivery-mode
+// threading without simulating real branch/PR mechanics.
+type fakeScaffoldDelete struct {
+	mu      sync.Mutex
+	client  *forge.FakeClient
+	called  bool
+	direct  bool
+	message string
+}
+
+func newFakeScaffoldDelete(client *forge.FakeClient) *fakeScaffoldDelete {
+	return &fakeScaffoldDelete{client: client}
+}
+
+func (f *fakeScaffoldDelete) fn() ScaffoldDeleteFunc {
+	return func(ctx context.Context, owner, repo, message string, files []forge.TreeFile, direct bool) error {
+		f.mu.Lock()
+		f.called = true
+		f.direct = direct
+		f.message = message
+		f.mu.Unlock()
+
+		paths := make([]string, len(files))
+		for i, tf := range files {
+			paths[i] = tf.Path
+		}
+		_, err := f.client.DeleteFiles(ctx, owner, repo, message, paths)
+		return err
+	}
+}
+
 func newInstalledFakeClient(repos ...string) *forge.FakeClient {
 	client := forge.NewFakeClient()
 	for _, r := range repos {
@@ -49,7 +84,7 @@ func TestUninstall_InstalledRepo(t *testing.T) {
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), newFakeScaffoldDelete(client).fn(), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -120,7 +155,7 @@ func TestUninstall_NonInstalledRepo(t *testing.T) {
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), newFakeScaffoldDelete(client).fn(), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -142,7 +177,7 @@ func TestUninstall_YamlExtensionFallback(t *testing.T) {
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), newFakeScaffoldDelete(client).fn(), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -173,7 +208,7 @@ func TestUninstall_DryRun(t *testing.T) {
 		Repos:          []string{"acme/api"},
 		DryRun:         true,
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), newFakeScaffoldDelete(client).fn(), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -201,7 +236,7 @@ func TestUninstall_MultipleRepos(t *testing.T) {
 		Manifest:       manifest,
 		Repos:          []string{"acme/api", "acme/web", "acme/docs"},
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), newFakeScaffoldDelete(client).fn(), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -226,7 +261,7 @@ func TestUninstall_PartialFailure(t *testing.T) {
 		Manifest:       manifest,
 		Repos:          []string{"acme/api", "acme/web"},
 		MaxConcurrency: 1,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), newFakeScaffoldDelete(client).fn(), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -252,7 +287,7 @@ func TestUninstall_WorkflowFailure_SkipsVarsAndSecrets(t *testing.T) {
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), newFakeScaffoldDelete(client).fn(), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -275,7 +310,7 @@ func TestUninstall_WorkflowFailure_SkipsVarsAndSecrets(t *testing.T) {
 func TestUninstall_EmptyRepos(t *testing.T) {
 	_, err := Uninstall(context.Background(), UninstallConfig{
 		MaxConcurrency: 4,
-	}, newTestClientFactory(forge.NewFakeClient()), nil)
+	}, newTestClientFactory(forge.NewFakeClient()), nil, nil)
 
 	if err == nil {
 		t.Fatal("Uninstall() error = nil, want error for empty repos")
@@ -286,7 +321,7 @@ func TestUninstall_InvalidRepoFormat(t *testing.T) {
 	_, err := Uninstall(context.Background(), UninstallConfig{
 		Repos:          []string{"just-a-name"},
 		MaxConcurrency: 4,
-	}, newTestClientFactory(forge.NewFakeClient()), nil)
+	}, newTestClientFactory(forge.NewFakeClient()), nil, nil)
 
 	if err == nil {
 		t.Fatal("Uninstall() error = nil, want error for invalid repo format")
@@ -297,7 +332,7 @@ func TestUninstall_InvalidConcurrency(t *testing.T) {
 	_, err := Uninstall(context.Background(), UninstallConfig{
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 0,
-	}, newTestClientFactory(forge.NewFakeClient()), nil)
+	}, newTestClientFactory(forge.NewFakeClient()), nil, nil)
 
 	if err == nil {
 		t.Fatal("Uninstall() error = nil, want error for invalid concurrency")
@@ -312,7 +347,7 @@ func TestUninstall_VariableDeleteError(t *testing.T) {
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), newFakeScaffoldDelete(client).fn(), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -334,7 +369,7 @@ func TestUninstall_SecretDeleteError(t *testing.T) {
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), newFakeScaffoldDelete(client).fn(), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -386,7 +421,7 @@ func TestUninstall_GitLabRepo(t *testing.T) {
 		Manifest:       testGitLabManifest("acme/api"),
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), newFakeScaffoldDelete(client).fn(), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -423,7 +458,7 @@ func TestUninstall_GitLabCommitMessage_HasSkipCI(t *testing.T) {
 		Manifest:       testGitLabManifest("acme/api"),
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), newFakeScaffoldDelete(client).fn(), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -447,7 +482,7 @@ func TestUninstall_GitLabConfigYaml_Deleted(t *testing.T) {
 		Manifest:       testGitLabManifest("acme/api"),
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), nil)
+	}, newTestClientFactory(client), newFakeScaffoldDelete(client).fn(), nil)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -478,7 +513,7 @@ func TestUninstall_ProgressCallbacks(t *testing.T) {
 		Manifest:       testManifest("acme/api"),
 		Repos:          []string{"acme/api"},
 		MaxConcurrency: 4,
-	}, newTestClientFactory(client), progress)
+	}, newTestClientFactory(client), newFakeScaffoldDelete(client).fn(), progress)
 
 	if err != nil {
 		t.Fatalf("Uninstall() error = %v", err)
@@ -531,7 +566,7 @@ func TestScaffoldPathsForForge_GitHub(t *testing.T) {
 func TestUninstallSingleRepo_Success(t *testing.T) {
 	client := newInstalledFakeClient("acme/api")
 
-	result := UninstallSingleRepo(context.Background(), client, "acme", "api", "", nil)
+	result := UninstallSingleRepo(context.Background(), client, "acme", "api", "", true, newFakeScaffoldDelete(client).fn(), nil)
 
 	if !result.Success {
 		t.Errorf("Success = false, want true; Error = %v", result.Error)
@@ -564,7 +599,7 @@ func TestUninstallSingleRepo_RemovesVendoredAssets(t *testing.T) {
 	client.FileContents["acme/api/"+contentPath] = []byte("name: vendored\n")
 	client.FileContents["acme/api/"+manifestPath] = manifestYAML
 
-	result := UninstallSingleRepo(context.Background(), client, "acme", "api", "", nil)
+	result := UninstallSingleRepo(context.Background(), client, "acme", "api", "", true, newFakeScaffoldDelete(client).fn(), nil)
 
 	if !result.Success {
 		t.Fatalf("Success = false, want true; Error = %v", result.Error)
@@ -590,7 +625,7 @@ func TestUninstallSingleRepo_RemovesVendoredAssets(t *testing.T) {
 func TestUninstallSingleRepo_NoVendoredAssets_SkipsCleanup(t *testing.T) {
 	client := newInstalledFakeClient("acme/api")
 
-	result := UninstallSingleRepo(context.Background(), client, "acme", "api", "", nil)
+	result := UninstallSingleRepo(context.Background(), client, "acme", "api", "", true, newFakeScaffoldDelete(client).fn(), nil)
 
 	if !result.Success {
 		t.Fatalf("Success = false, want true; Error = %v", result.Error)
@@ -614,11 +649,88 @@ func TestResolveVendorCleanupPaths_ManifestReadError(t *testing.T) {
 	}
 }
 
+func TestUninstallSingleRepo_DirectFlagThreadedToDeleteFunc(t *testing.T) {
+	client := newInstalledFakeClient("acme/api")
+	fake := newFakeScaffoldDelete(client)
+
+	result := UninstallSingleRepo(context.Background(), client, "acme", "api", "", true, fake.fn(), nil)
+
+	if !result.Success {
+		t.Fatalf("Success = false, want true; Error = %v", result.Error)
+	}
+	if !fake.called {
+		t.Fatal("expected delete func to be called")
+	}
+	if !fake.direct {
+		t.Error("direct = false, want true")
+	}
+}
+
+func TestUninstallSingleRepo_DefaultsToPRDelivery(t *testing.T) {
+	client := newInstalledFakeClient("acme/api")
+	fake := newFakeScaffoldDelete(client)
+
+	result := UninstallSingleRepo(context.Background(), client, "acme", "api", "", false, fake.fn(), nil)
+
+	if !result.Success {
+		t.Fatalf("Success = false, want true; Error = %v", result.Error)
+	}
+	if !fake.called {
+		t.Fatal("expected delete func to be called")
+	}
+	if fake.direct {
+		t.Error("direct = true, want false (PR delivery is the default)")
+	}
+}
+
+func TestUninstall_DirectConfigThreadedToDeleteFunc(t *testing.T) {
+	client := newInstalledFakeClient("acme/api")
+	fake := newFakeScaffoldDelete(client)
+
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		MaxConcurrency: 4,
+		Direct:         true,
+	}, newTestClientFactory(client), fake.fn(), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	if !results[0].Success {
+		t.Errorf("Success = false, want true; Error = %v", results[0].Error)
+	}
+	if !fake.direct {
+		t.Error("direct = false, want true")
+	}
+}
+
+func TestUninstall_DefaultsToPRDelivery(t *testing.T) {
+	client := newInstalledFakeClient("acme/api")
+	fake := newFakeScaffoldDelete(client)
+
+	results, err := Uninstall(context.Background(), UninstallConfig{
+		Manifest:       testManifest("acme/api"),
+		Repos:          []string{"acme/api"},
+		MaxConcurrency: 4,
+	}, newTestClientFactory(client), fake.fn(), nil)
+
+	if err != nil {
+		t.Fatalf("Uninstall() error = %v", err)
+	}
+	if !results[0].Success {
+		t.Errorf("Success = false, want true; Error = %v", results[0].Error)
+	}
+	if fake.direct {
+		t.Error("direct = true, want false (PR delivery is the default)")
+	}
+}
+
 func TestUninstallSingleRepo_DeleteFilesError(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.Errors["DeleteFiles"] = fmt.Errorf("permission denied")
 
-	result := UninstallSingleRepo(context.Background(), client, "acme", "api", "", nil)
+	result := UninstallSingleRepo(context.Background(), client, "acme", "api", "", true, newFakeScaffoldDelete(client).fn(), nil)
 
 	if result.Success {
 		t.Error("Success = true, want false")

@@ -86,7 +86,22 @@ type UninstallConfig struct {
 	Repos          []string
 	DryRun         bool
 	MaxConcurrency int
+
+	// Direct, when true, pushes scaffold-file deletions straight to the
+	// default branch instead of delivering them via a pull/merge request.
+	Direct bool
 }
+
+// ScaffoldDeleteFunc delivers scaffold-file deletions to a repository,
+// either via a direct commit to the default branch or via a pull/merge
+// request, and returns any error encountered.
+//
+// The CLI layer provides an implementation wrapping layers.CommitScaffoldFiles
+// (the same delivery mechanics ScaffoldCommitFunc uses for installs — retry
+// on non-fast-forward errors, branch-protection fallback to PR delivery, and
+// fork-based PR support for non-owner users), passing files with Delete set.
+type ScaffoldDeleteFunc func(ctx context.Context, owner, repo, message string,
+	files []forge.TreeFile, direct bool) error
 
 // UninstallResult holds the outcome of uninstalling fullsend from a single repo.
 type UninstallResult struct {
@@ -110,6 +125,7 @@ type UninstallResult struct {
 // Does NOT modify repos.yaml — use RemoveFromManifest for that.
 func Uninstall(ctx context.Context, cfg UninstallConfig,
 	clients ForgeClientFactory,
+	deleteScaffold ScaffoldDeleteFunc,
 	progress ProgressFunc) ([]UninstallResult, error) {
 
 	if len(cfg.Repos) == 0 {
@@ -177,7 +193,7 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 				results[idx] = UninstallResult{Owner: owner, Repo: repo, Error: fcErr}
 				return
 			}
-			results[idx] = uninstallRepoResources(ctx, ResolvedConfig{Owner: owner, Repo: repo, Forge: forgeName, ForgeConfig: fc}, progress)
+			results[idx] = uninstallRepoResources(ctx, ResolvedConfig{Owner: owner, Repo: repo, Forge: forgeName, ForgeConfig: fc}, cfg.Direct, deleteScaffold, progress)
 		}(i, p.owner, p.repo)
 	}
 	wg.Wait()
@@ -196,7 +212,8 @@ func Uninstall(ctx context.Context, cfg UninstallConfig,
 // forge client directly. This is the entry point used by
 // "github uninstall owner/repo" to reuse the same teardown logic as
 // "repos uninstall".
-func UninstallSingleRepo(ctx context.Context, client forge.Client, owner, repo, forgeName string, progress ProgressFunc) UninstallResult {
+func UninstallSingleRepo(ctx context.Context, client forge.Client, owner, repo, forgeName string,
+	direct bool, deleteScaffold ScaffoldDeleteFunc, progress ProgressFunc) UninstallResult {
 	if progress == nil {
 		progress = func(_, _, _ string) {}
 	}
@@ -207,7 +224,7 @@ func UninstallSingleRepo(ctx context.Context, client forge.Client, owner, repo, 
 		Repo:        repo,
 		Forge:       forgeName,
 		ForgeConfig: fc,
-	}, progress)
+	}, direct, deleteScaffold, progress)
 	if result.Error == nil {
 		result.Success = true
 	}
@@ -260,7 +277,8 @@ func resolveVendorCleanupPaths(ctx context.Context, client forge.Client, owner, 
 	return scaffold.ResolveVendoredCleanupPaths(ctx, client, owner, repo, workflowPrefix, vendoredBinaryPathPerRepo)
 }
 
-func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, progress ProgressFunc) UninstallResult {
+func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, direct bool,
+	deleteScaffold ScaffoldDeleteFunc, progress ProgressFunc) UninstallResult {
 	owner, repo := cfg.Owner, cfg.Repo
 	client := cfg.ForgeConfig.Client
 	fullName := owner + "/" + repo
@@ -284,13 +302,20 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, progress Pr
 		deletePaths = mergeUniquePaths(deletePaths, vendorPaths)
 	}
 
-	progress(fullName, "workflow", "Deleting scaffold files")
+	if direct {
+		progress(fullName, "workflow", "Deleting scaffold files")
+	} else {
+		progress(fullName, "workflow", "Creating scaffold-removal PR")
+	}
 	deleteMsg := "chore: remove fullsend workflow"
 	if cfg.Forge == ForgeGitLab {
 		deleteMsg += " [skip ci]"
 	}
-	_, err := client.DeleteFiles(ctx, owner, repo, deleteMsg, deletePaths)
-	if err != nil {
+	deleteFiles := make([]forge.TreeFile, len(deletePaths))
+	for i, p := range deletePaths {
+		deleteFiles[i] = forge.TreeFile{Path: p, Delete: true}
+	}
+	if err := deleteScaffold(ctx, owner, repo, deleteMsg, deleteFiles, direct); err != nil {
 		result.Error = fmt.Errorf("deleting scaffold files: %w", err)
 		progress(fullName, "workflow", fmt.Sprintf("Failed: %v", err))
 		return result
