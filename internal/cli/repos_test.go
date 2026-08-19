@@ -983,6 +983,13 @@ func TestRunReposUninstall_DefaultsToPRDelivery(t *testing.T) {
 	// GetRepo until FakeClient's unconfigured fork simulation is "ready"
 	// and would otherwise hang the test.
 	fc.AuthenticatedUser = "acme"
+	// Simulate a repo that has already received a fresh scaffold render
+	// with the ScaffoldUninstallBranch self-dispatch exclusion — otherwise
+	// the pre-flight check in uninstallRepoResources refuses default-mode
+	// (PR) delivery and this test would need --direct instead.
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"uses: fullsend-ai/fullsend/.github/workflows/dispatch.yml@v1.0.0\n# excludes " +
+			repos.ScaffoldUninstallBranch + " from self-dispatch\n")
 
 	err := runReposUninstall(context.Background(), &reposUninstallConfig{
 		manifest:    manifestPath,

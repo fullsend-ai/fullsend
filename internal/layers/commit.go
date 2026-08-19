@@ -336,15 +336,25 @@ func commitBranchAndPR(ctx context.Context, client forge.Client, printer *ui.Pri
 		}
 		if branchCommitted {
 			printer.StepDone("Scaffold PR already exists — updated with new files")
-			printer.StepInfo("Merge the PR to activate fullsend workflows")
+			printer.StepInfo(scaffoldMergeHint(scaffoldBranch))
 		} else {
 			printer.StepDone("Scaffold branch and PR up to date")
 		}
 	} else {
 		printer.StepDone(fmt.Sprintf("Created PR #%d: %s", proposal.Number, proposal.URL))
-		printer.StepInfo("Merge the PR to activate fullsend workflows")
+		printer.StepInfo(scaffoldMergeHint(scaffoldBranch))
 	}
 	return false, nil
+}
+
+// scaffoldMergeHint returns the post-PR-creation hint message, worded for
+// whichever scaffold branch is being delivered: installs add files
+// ("activate"), uninstalls remove them ("complete the uninstall").
+func scaffoldMergeHint(scaffoldBranch string) string {
+	if scaffoldBranch == repos.ScaffoldUninstallBranch {
+		return "Merge the PR to complete the uninstall"
+	}
+	return "Merge the PR to activate fullsend workflows"
 }
 
 // commitViaPR creates a feature branch, commits files, and opens a PR.

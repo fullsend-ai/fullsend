@@ -1118,6 +1118,15 @@ GCP infrastructure (WIF) must be cleaned up separately via
 // by "github setup" and "admin install" but for file removal: files carry
 // Delete: true, and the fixed uninstall branch keeps re-runs updating the
 // same PR instead of piling up new ones.
+// newScaffoldDeleteFunc's underlying layers.CommitScaffoldFiles call passes
+// nil for the interactive-prompt reader (unlike the analogous
+// scaffoldCommitFn closures for "github setup"/"admin install"), matching
+// internal/cli/repos.go's scaffoldDeleteFn. Uninstall is destructive and
+// --yolo signals "don't prompt me" for the confirmation step already;
+// silently falling through to a second, different interactive prompt
+// (fork-vs-upstream, for non-owner/non-write-access callers) inside
+// commitScaffoldViaPR would hang a non-interactive (CI) invocation instead
+// of defaulting to forking automatically.
 func newScaffoldDeleteFunc(client forge.Client, printer *ui.Printer) repos.ScaffoldDeleteFunc {
 	return func(ctx context.Context, owner, repo, message string, files []forge.TreeFile, direct bool) (bool, error) {
 		targetRepo, err := client.GetRepo(ctx, owner, repo)
@@ -1142,7 +1151,7 @@ func newScaffoldDeleteFunc(client forge.Client, printer *ui.Printer) repos.Scaff
 				owner, repo, targetRepo.DefaultBranch))
 		}
 		return layers.CommitScaffoldFiles(ctx, client, printer,
-			owner, repo, targetRepo.DefaultBranch, meta, files, direct, os.Stdin)
+			owner, repo, targetRepo.DefaultBranch, meta, files, direct, nil)
 	}
 }
 
@@ -1180,13 +1189,36 @@ func runGitHubUninstallPerRepo(ctx context.Context, client forge.Client, printer
 		return fmt.Errorf("uninstalling %s: %w", fullName, result.Error)
 	}
 
-	printer.Summary("Uninstall complete", []string{
+	summary := []string{
 		fmt.Sprintf("Repository: %s", fullName),
 		fmt.Sprintf("Variables removed: %d", result.VarsDeleted),
 		fmt.Sprintf("Secrets removed: %d", result.SecretsDeleted),
-	})
+	}
+	if !direct && result.WorkflowDeleted {
+		summary = append(summary, "Workflow file and config: pending — "+uninstallPRPendingNote(ctx, client, owner, repo))
+	}
+	printer.Summary("Uninstall complete", summary)
 
 	return nil
+}
+
+// uninstallPRPendingNote returns a "merge PR #N to finish" hint for the
+// uninstall summary when scaffold-file deletion was delivered via PR
+// (result.WorkflowDeleted with !direct). A summary that only reports
+// variables/secrets removed could otherwise read as a complete teardown
+// when the workflow file and config are still present until the PR is
+// merged. Falls back to a generic hint if the PR can't be found (e.g. it
+// was merged or closed by something else between creation and this call).
+func uninstallPRPendingNote(ctx context.Context, client forge.Client, owner, repo string) string {
+	prs, err := client.ListRepoPullRequests(ctx, owner, repo)
+	if err == nil {
+		for _, pr := range prs {
+			if pr.Head == repos.ScaffoldUninstallBranch {
+				return fmt.Sprintf("merge PR #%d (%s) to finish removing the workflow file and config", pr.Number, pr.URL)
+			}
+		}
+	}
+	return fmt.Sprintf("merge the open PR on branch %q to finish removing the workflow file and config", repos.ScaffoldUninstallBranch)
 }
 
 // runGitHubUninstall tears down the GitHub-side installation.
