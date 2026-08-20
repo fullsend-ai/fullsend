@@ -309,3 +309,15 @@ func TestContentCollector_EvictsWholeOldPartsExactly(t *testing.T) {
 	assert.Equal(t, (7+33)+30+12-kept, res.DroppedBytes,
 		"evicted and budget-dropped bytes must sum exactly to original minus kept")
 }
+
+func TestTailToRuneBoundary(t *testing.T) {
+	// The fits case is production-reachable: eviction pre-trims on
+	// post-redaction content, which masking can shrink under the bound.
+	assert.Equal(t, "fits", tailToRuneBoundary("fits", 10))
+	assert.Equal(t, "fits", tailToRuneBoundary("fits", 4))
+	assert.Equal(t, "", tailToRuneBoundary("anything", 0))
+	assert.Equal(t, "défgh", tailToRuneBoundary("abcdéfgh", 6),
+		"cut landing on a rune start keeps the full tail")
+	assert.Equal(t, "fgh", tailToRuneBoundary("abcdéfgh", 4),
+		"cut landing mid-rune walks forward, never splitting the rune")
+}
