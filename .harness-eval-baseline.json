@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "findings": [
+    {
+      "rule_id": "security/no-credential-access",
+      "file": ".github/scripts/install-openshell.sh",
+      "message_hash": "560a2bc83b5930ff"
+    },
+    {
+      "rule_id": "content/broken-references",
+      "file": "skills/author-fullsend-augmentations/SKILL.md",
+      "message_hash": "a9101e872119300e"
+    },
+    {
+      "rule_id": "content/broken-references",
+      "file": "skills/author-fullsend-augmentations/SKILL.md",
+      "message_hash": "3f883e65712a9cba"
+    },
+    {
+      "rule_id": "content/broken-references",
+      "file": "skills/author-fullsend-augmentations/SKILL.md",
+      "message_hash": "25651f3ee61a47ff"
+    }
+  ]
+}
