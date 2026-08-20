@@ -212,6 +212,10 @@ permission list, not by bypassing the check.
 > harness dispatch requires write-level access — OWNERS approver or
 > GitHub write+ collaborator — because `IsAuthorized` gates all
 > harness triggers at the write level.
+>
+> v1 limitation: only repo-root flat `approvers`/`reviewers` lists are
+> read. Prow `filters:` blocks and nested per-directory OWNERS files
+> are not supported.
 
 ## Consequences
 
