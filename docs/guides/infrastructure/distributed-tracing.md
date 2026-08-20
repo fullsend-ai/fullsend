@@ -104,8 +104,12 @@ attribution is deferred along with ADR 0050's sub-agent span item.
 
 **What is not captured:** model input (`gen_ai.input.messages`) — the CLI
 passes a constant literal, so there is no meaningful input to record;
-tool results — not yet in the normalized event stream (follows via a
-parser extension); pre/post-script content.
+tool results — not in the normalized event stream today; pre/post-script
+content.
+
+> **Planned:** Tool results will join the captured content once a parser
+> extension adds them to the normalized event stream — the next change in
+> this series after [#6429](https://github.com/fullsend-ai/fullsend/pull/6429).
 
 **Redaction and size:** every part passes through the security output
 pipeline (Unicode normalization, then secret redaction) before it reaches
@@ -140,9 +144,11 @@ responsible for ensuring its backend's access controls suit the content's
 sensitivity. When enabled, spans may contain proprietary source code,
 PII, or credentials visible in agent output. The OTel specification
 recommends external storage with span references for high-volume or
-high-sensitivity production use; that pattern is a natural fit for a
-future bucket-export pipeline
-([#6410](https://github.com/fullsend-ai/fullsend/issues/6410)).
+high-sensitivity production use.
+
+> **Planned:** A bucket-export pipeline
+> ([#6410](https://github.com/fullsend-ai/fullsend/issues/6410)) is the
+> natural home for that external-storage pattern.
 
 **MLflow rendering note:** MLflow derives its trace-list Request/Response
 preview columns from the root span (capped at 1000 characters), so they stay
