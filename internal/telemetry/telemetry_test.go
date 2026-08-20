@@ -193,6 +193,66 @@ func TestSpanLimits(t *testing.T) {
 		"a valid specific var wins regardless of the generic one")
 }
 
+// TestSetup_ContentCaptureOperatorLimitWarning pins the collision warning:
+// when the Level 3 gate is on but an operator's finite attribute value
+// length limit is configured, the SDK will cut gen_ai.output.messages
+// mid-JSON (no fullsend.content.truncated marker reflects an SDK cut), so
+// Setup must say so on stderr instead of letting the contract break
+// silently. An explicit -1 (unlimited) is not a conflict.
+func TestSetup_ContentCaptureOperatorLimitWarning(t *testing.T) {
+	cases := []struct {
+		name     string
+		gate     string
+		specific string // OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT
+		generic  string // OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT
+		want     bool
+	}{
+		{"gate on with finite specific limit warns", "true", "512", "", true},
+		{"gate on with finite generic limit warns", "true", "", "8192", true},
+		{"gate on with explicit unlimited does not warn", "true", "-1", "", false},
+		{"gate on with no limit does not warn", "true", "", "", false},
+		{"gate off with finite limit does not warn", "", "512", "", false},
+		{"gate on with unparseable limit does not warn", "true", "garbage", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pinOTELEnv(t)
+			t.Setenv(ContentCaptureEnvVar, tc.gate)
+			t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", tc.specific)
+			t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", tc.generic)
+
+			pr, pw, err := os.Pipe()
+			require.NoError(t, err)
+			oldStderr := os.Stderr
+			os.Stderr = pw
+			defer func() { os.Stderr = oldStderr }()
+
+			var captured []byte
+			done := make(chan struct{})
+			go func() {
+				captured, _ = io.ReadAll(pr)
+				close(done)
+			}()
+
+			dir := t.TempDir()
+			_, cleanup := Setup(dir, "1.0.0")
+			cleanup(context.Background())
+
+			os.Stderr = oldStderr
+			pw.Close()
+			<-done
+
+			if tc.want {
+				assert.Contains(t, string(captured), "fullsend: content capture is enabled but the operator attribute value length limit",
+					"Setup must warn when the operator limit will cut content JSON mid-value")
+			} else {
+				assert.NotContains(t, string(captured), "content capture",
+					"Setup must not warn when the configuration cannot cut content JSON")
+			}
+		})
+	}
+}
+
 func TestSetup_NoopOnBadDir(t *testing.T) {
 	pinOTELEnv(t)
 	tracer, cleanup := Setup("/nonexistent/path/that/should/fail", "1.0.0")
