@@ -198,8 +198,9 @@ permission list, not by bypassing the check.
 > (and `OWNERS_ALIASES`) before falling back to the collaborator API.
 > OWNERS approvers get write-equivalent access; reviewers get
 > triage-equivalent. The sparse-checkout pins to the base branch SHA for
-> PR-scoped events (`pull_request_target`, `pull_request_review`), so PR
-> authors cannot self-authorize by modifying OWNERS in their PR.
+> PR-scoped events (`pull_request_target`, `pull_request_review`) and the
+> default-branch head otherwise, so PR authors cannot self-authorize by
+> modifying OWNERS in their PR.
 > This follows the extension path above (extending the allowed permission
 > sources in `has_repo_permission`) rather than bypassing the check.
 > OWNERS auth applies to both built-in stages (bash routing) and the
