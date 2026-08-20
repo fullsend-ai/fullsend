@@ -124,6 +124,8 @@ func mapGitHubWebhook(ctx context.Context, opts GHAEventOptions, raw map[string]
 		return mapPRReviewEvent(ev, raw, action, actorID)
 	case "issue_comment":
 		return mapIssueCommentEvent(ctx, opts, raw, action, actorID)
+	case "check_run":
+		return mapCheckRunEvent(ev, raw, action)
 	default:
 		return nil, fmt.Errorf("unsupported github event name %q", opts.EventName)
 	}
@@ -350,6 +352,46 @@ func mapIssueCommentEvent(ctx context.Context, opts GHAEventOptions, raw map[str
 		Command:     cmd,
 		Body:        truncateRunes(body, 4096),
 		Instruction: truncateRunes(instr, 4096),
+	}
+	return ev, nil
+}
+
+// mapCheckRunEvent maps a GitHub check_run event to a check_completed
+// transition on the first attached PR. Check runs with no attached PR (push to
+// default branch, fork PRs where GitHub omits pull_requests) are rejected —
+// there is no entity to route on.
+func mapCheckRunEvent(ev *normevent.Event, raw map[string]any, action string) (*normevent.Event, error) {
+	if action != "completed" {
+		return nil, fmt.Errorf("unsupported check_run action %q", action)
+	}
+	cr := nestedMap(raw, "check_run")
+	if cr == nil {
+		return nil, fmt.Errorf("check_run event missing check_run")
+	}
+	prs, _ := cr["pull_requests"].([]any)
+	var ids []int
+	for _, p := range prs {
+		if m, ok := p.(map[string]any); ok {
+			if n := intField(m, "number"); n > 0 {
+				ids = append(ids, n)
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("check_run event has no associated pull requests")
+	}
+	// ponytail: entity = first PR; the full list rides in transition.check.change_proposal_ids.
+	ev.Entity = normevent.Entity{
+		Kind: normevent.EntityChangeProposal,
+		ID:   ids[0],
+		URL:  issuePullRequestURL(stringField(cr, "html_url"), ev.Repo, ids[0]),
+	}
+	ev.Transition.Kind = normevent.TransitionCheckCompleted
+	ev.Transition.Check = &normevent.Check{
+		Name:              stringField(cr, "name"),
+		Conclusion:        stringField(cr, "conclusion"),
+		HeadSHA:           stringField(cr, "head_sha"),
+		ChangeProposalIDs: ids,
 	}
 	return ev, nil
 }

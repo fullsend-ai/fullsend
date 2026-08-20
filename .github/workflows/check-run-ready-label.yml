@@ -1,0 +1,112 @@
+# Reusable check_run → ready-tests label workflow (POC).
+#
+# When a check run whose name starts with `check_name_prefix` (default
+# `codecov/`) completes on a PR:
+#   success → add `label` (default `ready-tests`) to every associated PR
+#   failure → remove `label` and comment "coverage below patch target"
+# Other conclusions (neutral, skipped, cancelled, …) are ignored.
+#
+# Label names MUST keep the `ready-` prefix — fullsend routing (per-org shim
+# `if:` guard, per-repo CEL triggers) treats `ready-*` labels as dispatch
+# signals; `ready-tests` is the hand-off to a test-planning agent.
+#
+# Caller (in the repo where the checks run):
+#
+#   on:
+#     check_run:
+#       types: [completed]
+#   jobs:
+#     ready-tests:
+#       permissions:
+#         pull-requests: write
+#         issues: write
+#       uses: fullsend-ai/fullsend/.github/workflows/check-run-ready-label.yml@main
+#
+# Security: check name / conclusion / SHA are read via env:, never
+# interpolated into run: blocks.
+# Timeout: a handful of gh calls; callers should set timeout-minutes: 5.
+name: Check run ready label
+
+on:
+  workflow_call:
+    inputs:
+      check_name_prefix:
+        description: Only check runs whose name starts with this prefix are considered.
+        type: string
+        required: false
+        default: "codecov/"
+      label:
+        description: Label to add on success / remove on failure. Must start with `ready-`.
+        type: string
+        required: false
+        default: "ready-tests"
+      failure_comment:
+        description: PR comment posted when the check run fails.
+        type: string
+        required: false
+        default: "coverage below patch target"
+
+permissions: {}
+
+jobs:
+  label:
+    name: Apply ready label
+    if: github.event_name == 'check_run' && github.event.action == 'completed'
+    runs-on: ubuntu-24.04
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Label associated PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          CHECK_NAME: ${{ github.event.check_run.name }}
+          CONCLUSION: ${{ github.event.check_run.conclusion }}
+          HEAD_SHA: ${{ github.event.check_run.head_sha }}
+          PR_NUMBERS: ${{ join(github.event.check_run.pull_requests.*.number, ' ') }}
+          PREFIX: ${{ inputs.check_name_prefix }}
+          LABEL: ${{ inputs.label }}
+          FAILURE_COMMENT: ${{ inputs.failure_comment }}
+        run: |
+          set -euo pipefail
+
+          case "${LABEL}" in
+            ready-*) ;;
+            *) echo "::error::label must start with 'ready-' (got '${LABEL}')"; exit 1 ;;
+          esac
+
+          if [[ "${CHECK_NAME}" != "${PREFIX}"* ]]; then
+            echo "check '${CHECK_NAME}' does not match prefix '${PREFIX}'; skipping"
+            exit 0
+          fi
+
+          # check_run.pull_requests is empty for fork PRs; fall back to the
+          # commits→pulls API (same-repo + forks) so we still find the PR.
+          if [[ -z "${PR_NUMBERS// /}" ]]; then
+            PR_NUMBERS=$(gh api "repos/${GH_REPO}/commits/${HEAD_SHA}/pulls" --jq '.[].number' | tr '\n' ' ')
+          fi
+          if [[ -z "${PR_NUMBERS// /}" ]]; then
+            echo "no PR associated with ${HEAD_SHA}; skipping"
+            exit 0
+          fi
+
+          case "${CONCLUSION}" in
+            success)
+              gh label create "${LABEL}" --description "Coverage check passed; ready for test planning" --color 0E8A16 --force >/dev/null
+              for pr in ${PR_NUMBERS}; do
+                gh pr edit "${pr}" --add-label "${LABEL}"
+                echo "added ${LABEL} to #${pr}"
+              done
+              ;;
+            failure)
+              for pr in ${PR_NUMBERS}; do
+                gh pr edit "${pr}" --remove-label "${LABEL}" || true
+                gh pr comment "${pr}" --body "${FAILURE_COMMENT} (\`${CHECK_NAME}\` on ${HEAD_SHA:0:7})"
+                echo "removed ${LABEL} from #${pr}, commented"
+              done
+              ;;
+            *)
+              echo "conclusion '${CONCLUSION}' ignored"
+              ;;
+          esac

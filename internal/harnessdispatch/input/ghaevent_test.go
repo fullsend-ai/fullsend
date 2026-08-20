@@ -607,3 +607,60 @@ func writeEventFile(t *testing.T, raw map[string]any) string {
 	require.NoError(t, os.WriteFile(path, data, 0o644))
 	return path
 }
+
+func TestLoadGHAEvent_CheckRunCompleted(t *testing.T) {
+	raw := map[string]any{
+		"action": "completed",
+		"check_run": map[string]any{
+			"name":       "codecov/patch",
+			"conclusion": "success",
+			"head_sha":   "cccccccccccccccccccccccccccccccccccccccc",
+			"html_url":   "https://github.com/o/r/runs/1",
+			"pull_requests": []any{
+				map[string]any{"number": float64(7)},
+				map[string]any{"number": float64(9)},
+			},
+		},
+		"sender": map[string]any{"login": "codecov[bot]", "type": "Bot"},
+	}
+	path := writeEventFile(t, raw)
+
+	ev, err := input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+		EventPath:  path,
+		EventName:  "check_run",
+		Repository: "o/r",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, normevent.EntityChangeProposal, ev.Entity.Kind)
+	assert.Equal(t, 7, ev.Entity.ID)
+	assert.Equal(t, "https://github.com/o/r/pull/7", ev.Entity.URL)
+	assert.Equal(t, normevent.TransitionCheckCompleted, ev.Transition.Kind)
+	require.NotNil(t, ev.Transition.Check)
+	assert.Equal(t, "codecov/patch", ev.Transition.Check.Name)
+	assert.Equal(t, "success", ev.Transition.Check.Conclusion)
+	assert.Equal(t, "cccccccccccccccccccccccccccccccccccccccc", ev.Transition.Check.HeadSHA)
+	assert.Equal(t, []int{7, 9}, ev.Transition.Check.ChangeProposalIDs)
+	assert.Equal(t, normevent.ActorBot, ev.Actor.Kind)
+
+	// CEL sees it via ToMap.
+	m, err := ev.ToMap()
+	require.NoError(t, err)
+	check := m["transition"].(map[string]any)["check"].(map[string]any)
+	assert.Equal(t, "codecov/patch", check["name"])
+
+	// No PRs → no entity → rejected.
+	raw["check_run"].(map[string]any)["pull_requests"] = []any{}
+	path = writeEventFile(t, raw)
+	_, err = input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+		EventPath: path, EventName: "check_run", Repository: "o/r",
+	})
+	assert.ErrorContains(t, err, "no associated pull requests")
+
+	// Only completed is mapped.
+	raw["action"] = "created"
+	path = writeEventFile(t, raw)
+	_, err = input.LoadGHAEvent(context.Background(), input.GHAEventOptions{
+		EventPath: path, EventName: "check_run", Repository: "o/r",
+	})
+	assert.ErrorContains(t, err, "unsupported check_run action")
+}

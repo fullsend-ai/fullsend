@@ -1,0 +1,31 @@
+{
+  "repo": "acme/widgets",
+  "entity": {
+    "kind": "change_proposal",
+    "id": 42,
+    "url": "https://github.com/acme/widgets/pull/42"
+  },
+  "transition": {
+    "kind": "check_completed",
+    "check": {
+      "name": "codecov/patch",
+      "conclusion": "failure",
+      "head_sha": "cccccccccccccccccccccccccccccccccccccccc",
+      "change_proposal_ids": [42]
+    }
+  },
+  "actor": {
+    "id": "codecov[bot]",
+    "kind": "bot",
+    "role": "none",
+    "is_entity_author": false
+  },
+  "state": {
+    "labels": []
+  },
+  "source": {
+    "system": "github",
+    "raw_type": "check_run",
+    "raw_action": "completed"
+  }
+}

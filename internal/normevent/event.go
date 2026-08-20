@@ -58,6 +58,7 @@ const (
 	TransitionCommentEdited   TransitionKind = "comment_edited"
 	TransitionCommentDeleted  TransitionKind = "comment_deleted"
 	TransitionReviewSubmitted TransitionKind = "review_submitted"
+	TransitionCheckCompleted  TransitionKind = "check_completed"
 )
 
 // Transition describes what changed on the entity.
@@ -66,6 +67,16 @@ type Transition struct {
 	Label   *LabelChange   `json:"label,omitempty"`
 	Comment *Comment       `json:"comment,omitempty"`
 	Review  *Review        `json:"review,omitempty"`
+	Check   *Check         `json:"check,omitempty"`
+}
+
+// Check describes a check_completed transition (GitHub check_run completed).
+type Check struct {
+	Name       string `json:"name"`
+	Conclusion string `json:"conclusion"` // success | failure | neutral | cancelled | skipped | timed_out | action_required | stale
+	HeadSHA    string `json:"head_sha"`
+	// ChangeProposalIDs lists every change proposal the check run is attached to.
+	ChangeProposalIDs []int `json:"change_proposal_ids"`
 }
 
 // LabelChange describes a label add/remove transition.
@@ -217,6 +228,13 @@ func (e *Event) Validate() error {
 	case TransitionReviewSubmitted:
 		if e.Transition.Review == nil {
 			return fmt.Errorf("normalized event: transition.review required for review_submitted")
+		}
+	case TransitionCheckCompleted:
+		if e.Transition.Check == nil {
+			return fmt.Errorf("normalized event: transition.check required for check_completed")
+		}
+		if e.Transition.Check.Name == "" || e.Transition.Check.Conclusion == "" {
+			return fmt.Errorf("normalized event: transition.check.name and conclusion are required")
 		}
 	}
 

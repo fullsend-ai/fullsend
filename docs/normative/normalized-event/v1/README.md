@@ -83,10 +83,11 @@ Transition-specific fields are present only when required by `transition.kind`:
 
 | `transition.kind` | Required sub-object | Forbidden otherwise |
 |-------------------|---------------------|---------------------|
-| `label_changed` | `label` | `comment`, `review` |
-| `comment_added` | `comment` | `label`, `review` |
-| `review_submitted` | `review` | `label`, `comment` |
-| all other kinds | none | `label`, `comment`, `review` |
+| `label_changed` | `label` | `comment`, `review`, `check` |
+| `comment_added` | `comment` | `label`, `review`, `check` |
+| `review_submitted` | `review` | `label`, `comment`, `check` |
+| `check_completed` | `check` | `label`, `comment`, `review` |
+| all other kinds | none | `label`, `comment`, `review`, `check` |
 
 The schema enforces presence/absence of transition sub-objects via conditional
 `required` / `false` properties. Cross-field ID consistency (below) is
@@ -104,6 +105,7 @@ cross-field equality.
 | `updated` | Legacy umbrella; prefer `edited` or `synchronized` for new adapters |
 | `merged` | Change proposal merged into target branch |
 | `closed`, `marked_ready`, `label_changed`, `comment_added`, `review_submitted` | As named |
+| `check_completed` | A CI check run finished on a change proposal (GitHub `check_run` `completed`); `check` carries `name`, `conclusion`, `head_sha`, `change_proposal_ids`. Entity is the first attached change proposal; runs with no attached PR are not dispatched |
 
 ### Comment extraction
 
@@ -168,6 +170,11 @@ event.transition.kind == "review_submitted"
 event.transition.kind == "comment_added"
   && event.transition.comment.command == "/fs-fix"
   && !event.state.change_proposal.is_fork
+
+// Plan tests when a coverage check run fails on a PR
+event.transition.kind == "check_completed"
+  && event.transition.check.name.startsWith("codecov/")
+  && event.transition.check.conclusion == "failure"
 ```
 
 See [`examples/`](examples/) for matching `NormalizedEvent` fixtures.
