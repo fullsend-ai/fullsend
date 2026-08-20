@@ -193,7 +193,7 @@ permission list, not by bypassing the check.
 > Prow-based repositories (e.g., OpenShift) use OWNERS files rather than
 > GitHub collaborator roles to define contributor authority.
 > `has_repo_permission` now supports an opt-in OWNERS-file authorization
-> path: when `authorization.owners_file: true` is set in
+> path: when `owners_file` is listed in the `authorization` providers in
 > `.fullsend/config.yaml`, the function checks the repo-root `OWNERS`
 > (and `OWNERS_ALIASES`) before falling back to the collaborator API.
 > OWNERS approvers get write-equivalent access; reviewers get

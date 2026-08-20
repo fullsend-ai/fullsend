@@ -275,10 +275,10 @@ type CreateIssuesConfig struct {
 	AllowTargets AllowTargets `yaml:"allow_targets"`
 }
 
-// AuthorizationConfig controls opt-in authorization mechanisms that
-// extend the default collaborator-API permission check.
-type AuthorizationConfig struct {
-	OwnersFile bool `yaml:"owners_file,omitempty"`
+// AuthorizationProvider identifies an opt-in authorization backend
+// that supplements the default collaborator-API permission check.
+type AuthorizationProvider struct {
+	Provider string `yaml:"provider"`
 }
 
 // orgConfig is the top-level configuration for a fullsend organization.
@@ -380,6 +380,11 @@ func ValidEffortLevels() []string { return slices.Clone(validEffortLevels) }
 
 // ValidEffort reports whether level is an accepted effort value.
 func ValidEffort(level string) bool { return slices.Contains(validEffortLevels, level) }
+
+// ValidAuthorizationProviders returns the set of recognized authorization provider names.
+func ValidAuthorizationProviders() []string {
+	return []string{"owners_file"}
+}
 
 // DefaultAgentRoles returns the standard set of agent roles installed
 // when no custom roles are specified. The fix stage reuses the coder
@@ -786,9 +791,9 @@ type perRepoConfig struct {
 	// resource prefixes. MarshalYAML preserves the nil-vs-empty
 	// distinction: nil (unset) is omitted, empty (deny-all) is
 	// marshaled as `allowed_remote_resources: []`.
-	AllowedRemoteResources []string             `yaml:"allowed_remote_resources,omitempty"`
-	CreateIssues           *CreateIssuesConfig  `yaml:"create_issues,omitempty"`
-	Authorization          *AuthorizationConfig `yaml:"authorization,omitempty"`
+	AllowedRemoteResources []string                `yaml:"allowed_remote_resources,omitempty"`
+	CreateIssues           *CreateIssuesConfig     `yaml:"create_issues,omitempty"`
+	Authorization          []AuthorizationProvider `yaml:"authorization,omitempty"`
 	// Notifications backs the StatusNotifications() accessor. Named
 	// distinctly from the method (unlike CreateIssues/IssueCreationConfig)
 	// because "StatusNotifications" is the established accessor name
@@ -989,7 +994,7 @@ type perRepoConfigMarshal struct {
 	Agents                 []AgentEntry              `yaml:"agents,omitempty"`
 	AllowedRemoteResources *[]string                 `yaml:"allowed_remote_resources,omitempty"`
 	CreateIssues           *CreateIssuesConfig       `yaml:"create_issues,omitempty"`
-	Authorization          *AuthorizationConfig      `yaml:"authorization,omitempty"`
+	Authorization          []AuthorizationProvider   `yaml:"authorization,omitempty"`
 	StatusNotifications    *StatusNotificationConfig `yaml:"status_notifications,omitempty"`
 	MintURL                string                    `yaml:"mint_url,omitempty"`
 	Inference              *PerRepoInferenceConfig   `yaml:"inference,omitempty"`
@@ -1079,6 +1084,17 @@ func (c *perRepoConfig) Validate() error {
 		if !slices.Contains(validProviders, c.Inference.Provider) {
 			return fmt.Errorf("invalid inference provider %q: must be one of %s", c.Inference.Provider, strings.Join(validProviders, ", "))
 		}
+	}
+	validAuthProviders := ValidAuthorizationProviders()
+	seenProviders := make(map[string]bool, len(c.Authorization))
+	for i, p := range c.Authorization {
+		if !slices.Contains(validAuthProviders, p.Provider) {
+			return fmt.Errorf("authorization[%d]: invalid provider %q: must be one of %s", i, p.Provider, strings.Join(validAuthProviders, ", "))
+		}
+		if seenProviders[p.Provider] {
+			return fmt.Errorf("authorization[%d]: duplicate provider %q", i, p.Provider)
+		}
+		seenProviders[p.Provider] = true
 	}
 	// Validate the merged view, as ValidateAgentEntries does above: a bad
 	// key in config.base.yaml must not slip through because the overlay

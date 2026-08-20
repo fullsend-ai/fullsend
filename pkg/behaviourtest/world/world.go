@@ -92,6 +92,13 @@ type World struct {
 	OutsiderSCM   scm.Driver
 	OutsiderLogin string
 
+	// WriteSCM is an SCM driver authenticated as a GitHub User with
+	// write-level collaborator access. Used by OWNERS fallthrough
+	// scenarios that need an actor passing the collaborator API but
+	// not listed in OWNERS. Nil when TEST_ACTOR_WRITE_PAT is not set.
+	WriteSCM   scm.Driver
+	WriteLogin string
+
 	// KillSwitchActivated records whether this scenario activated the
 	// repo-level kill switch. CleanupScenario uses this to deactivate
 	// the switch so the next scenario on this slot is not affected.
@@ -121,7 +128,7 @@ type World struct {
 	AgentsOriginal   []config.AgentEntry
 
 	// OwnersAuthActivated records whether this scenario committed an
-	// OWNERS file and/or enabled authorization.owners_file in config.yaml.
+	// OWNERS file and/or added owners_file to the authorization providers in config.yaml.
 	// CleanupScenario removes both.
 	OwnersAuthActivated bool
 

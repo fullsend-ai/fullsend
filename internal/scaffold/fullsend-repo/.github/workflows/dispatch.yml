@@ -99,12 +99,12 @@ jobs:
             local username="${1:-}" min="${2:-write}" role api_err
             [[ -z "${username}" ]] && return 1
 
-            # OWNERS-file authorization (opt-in via authorization.owners_file in config.yaml).
+            # OWNERS-file authorization (opt-in via authorization providers list in config.yaml).
             # Approvers get write-equivalent access; reviewers get triage-equivalent.
             # Safe: sparse-checkout pins to base branch SHA for PR-scoped events,
             # so PR authors cannot self-authorize by adding themselves to OWNERS.
             if [[ -f "OWNERS" && -f ".fullsend/config.yaml" ]]; then
-              if [[ "$(yq '.authorization.owners_file // false' .fullsend/config.yaml)" == "true" ]]; then
+              if [[ "$(yq '(.authorization // []) | any_c(.provider == "owners_file")' .fullsend/config.yaml)" == "true" ]]; then
                 if [[ ! "${username}" =~ ^[a-zA-Z0-9-]+$ ]]; then
                   echo "::warning::OWNERS auth skipped: username '${username}' contains unexpected characters" >&2
                 else

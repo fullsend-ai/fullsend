@@ -90,12 +90,12 @@ the overlay → base → code defaults chain.
 | `models.aliases` | `map[string]string` (nested) | Per-key merge | `nil` (fleet defaults) |
 | `create_issues` | `*CreateIssuesConfig` | Replace whole object if set | `nil` |
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
-| `authorization`¹ | `object` | Overlay only (not layered) | `nil` |
+| `authorization`¹ | `[]AuthorizationProvider` | Overlay only (not layered) | `nil` |
 
-> ¹ `authorization` is part of the Go config package
-> (`AuthorizationConfig` / `AuthorizationOwnersFile()`) and is consumed
+> ¹ `authorization` is a list of authorization providers
+> (`AuthorizationProvider` / `AuthorizationOwnersFile()`) consumed
 > by both the dispatch workflow's bash/yq and `internal/harnessdispatch`.
-> However, it is intentionally **overlay-only**: `AuthorizationOwnersFile()`
+> It is intentionally **overlay-only**: `AuthorizationOwnersFile()`
 > does not fall through to the parent config, so setting it in
 > `config.base.yaml` has no effect — each repo must opt in explicitly.
 > See [#6072](https://github.com/fullsend-ai/fullsend/issues/6072) for
@@ -376,19 +376,19 @@ The `status_notifications` field uses the same replace-if-set semantics as
 - Non-nil — replaces the parent value entirely, including nested
   `comment.start`/`comment.completion` settings.
 
-### `authorization` — replace whole object if set
+### `authorization` — provider list
 
-The `authorization` field controls alternative authorization backends
-for the dispatch workflow's `has_repo_permission` check. Currently
-supports one sub-field:
+The `authorization` field is a list of authorization providers that
+supplement the default collaborator-API permission check. Native GitHub
+collaborator-API auth always runs implicitly; the list names additional
+backends. Currently one provider is supported:
 
-- `owners_file` (`bool`, default `false`) — when `true`, the dispatch
-  routing logic checks the repo-root `OWNERS` file (and `OWNERS_ALIASES`
-  if present) before falling back to the GitHub collaborator API. OWNERS
-  approvers get write-equivalent access; reviewers get
-  triage-equivalent. If the user is not listed in OWNERS, authorization
-  falls through to the collaborator API — OWNERS never blocks a
-  collaborator who isn't in the file.
+- `owners_file` — the dispatch routing logic checks the repo-root
+  `OWNERS` file (and `OWNERS_ALIASES` if present) before falling back
+  to the GitHub collaborator API. OWNERS approvers get write-equivalent
+  access; reviewers get triage-equivalent. If the user is not listed in
+  OWNERS, authorization falls through to the collaborator API — OWNERS
+  never blocks a collaborator who isn't in the file.
 
 This applies to both the bash routing path (built-in stages) and the
 Go harness-dispatch path (custom agents). A missing or malformed OWNERS
@@ -403,7 +403,7 @@ Example:
 
 ```yaml
 authorization:
-  owners_file: true
+  - provider: owners_file
 ```
 
 See [ADR 0054](../../ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)

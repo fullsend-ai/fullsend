@@ -413,7 +413,12 @@ func (c *perRepoConfig) IsOrgMode() bool { return false }
 // Intentionally no parent fallback: OWNERS auth is a per-repo opt-in that must
 // not be inheritable from config.base.yaml.
 func (c *perRepoConfig) AuthorizationOwnersFile() bool {
-	return c.Authorization != nil && c.Authorization.OwnersFile
+	for _, p := range c.Authorization {
+		if p.Provider == "owners_file" {
+			return true
+		}
+	}
+	return false
 }
 
 // ConfigRoles returns the configured agent roles. nil (key omitted)
@@ -581,18 +586,25 @@ func (c *perRepoConfig) ConfigModelAliases() map[string]string {
 func (c *perRepoConfig) SetKillSwitch(v bool) { c.KillSwitch = &v }
 
 // SetAuthorizationOwnersFile enables or disables OWNERS-file authorization.
-// Clears only OwnersFile; the struct is niled only when all fields are zero
-// so future sibling fields are not silently wiped.
 func (c *perRepoConfig) SetAuthorizationOwnersFile(v bool) {
 	if v {
-		if c.Authorization == nil {
-			c.Authorization = &AuthorizationConfig{}
+		for _, p := range c.Authorization {
+			if p.Provider == "owners_file" {
+				return
+			}
 		}
-		c.Authorization.OwnersFile = true
-	} else if c.Authorization != nil {
-		c.Authorization.OwnersFile = false
-		if *c.Authorization == (AuthorizationConfig{}) {
+		c.Authorization = append(c.Authorization, AuthorizationProvider{Provider: "owners_file"})
+	} else {
+		filtered := make([]AuthorizationProvider, 0, len(c.Authorization))
+		for _, p := range c.Authorization {
+			if p.Provider != "owners_file" {
+				filtered = append(filtered, p)
+			}
+		}
+		if len(filtered) == 0 {
 			c.Authorization = nil
+		} else {
+			c.Authorization = filtered
 		}
 	}
 }

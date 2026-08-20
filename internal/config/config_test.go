@@ -706,6 +706,34 @@ func TestPerRepoConfigValidate_Runtime(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid runtime")
 }
 
+func TestPerRepoConfigValidate_AuthorizationValidProvider(t *testing.T) {
+	cfg := &perRepoConfig{
+		Version:       "1",
+		Authorization: []AuthorizationProvider{{Provider: "owners_file"}},
+	}
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestPerRepoConfigValidate_AuthorizationInvalidProvider(t *testing.T) {
+	cfg := &perRepoConfig{
+		Version:       "1",
+		Authorization: []AuthorizationProvider{{Provider: "ldap"}},
+	}
+	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid provider")
+}
+
+func TestPerRepoConfigValidate_AuthorizationDuplicateProvider(t *testing.T) {
+	cfg := &perRepoConfig{
+		Version:       "1",
+		Authorization: []AuthorizationProvider{{Provider: "owners_file"}, {Provider: "owners_file"}},
+	}
+	err := cfg.Validate()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "duplicate provider")
+}
+
 func TestParsePerRepoConfig(t *testing.T) {
 	yamlData := `
 version: "1"
