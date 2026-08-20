@@ -298,7 +298,20 @@
             "minLength": 1,
             "maxLength": 255
           },
-          "description": "Snapshot of label names on the entity at event time."
+          "description": "Snapshot of label names on the entity at event time. Empty when a poll input driver's privacy gate does not allowlist labels (ADR 0068) — always present to satisfy this field's required status, regardless of gating."
+        },
+        "privacy_gate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["source_hash"],
+          "properties": {
+            "source_hash": {
+              "type": "string",
+              "pattern": "^[0-9a-fA-F]{64}$",
+              "description": "SHA-256 hash of the pre-gate event payload, present when a poll input driver's privacy gate (ADR 0068) applied a transformation."
+            }
+          },
+          "description": "Present only for poll-sourced events that passed through a privacy gate (ADR 0068)."
         },
         "change_proposal": {
           "type": "object",
