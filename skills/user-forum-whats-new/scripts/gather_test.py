@@ -295,6 +295,38 @@ class TestBuildOutput(unittest.TestCase):
             self.assertEqual(out["merged_prs"]["released"], [])
             self.assertEqual(out["merged_prs"]["on_main"], [])
 
+    def test_build_output_fails_closed_on_bad_json(self):
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            (tmp / "rel-fullsend.json").write_text("{not-json", encoding="utf-8")
+            (tmp / "rel-agents.json").write_text("[]", encoding="utf-8")
+            (tmp / "prs-fullsend.json").write_text("[]", encoding="utf-8")
+            (tmp / "prs-agents.json").write_text("[]", encoding="utf-8")
+            with self.assertRaises(RuntimeError) as ctx:
+                build_output(
+                    "2026-08-11",
+                    "2026-08-18",
+                    tmp,
+                    now=datetime(2026, 8, 18, 15, 0, tzinfo=UTC),
+                )
+            self.assertIn("rel-fullsend.json", str(ctx.exception))
+
+    def test_build_output_fails_closed_on_non_list(self):
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            (tmp / "rel-fullsend.json").write_text('{"message":"oops"}', encoding="utf-8")
+            (tmp / "rel-agents.json").write_text("[]", encoding="utf-8")
+            (tmp / "prs-fullsend.json").write_text("[]", encoding="utf-8")
+            (tmp / "prs-agents.json").write_text("[]", encoding="utf-8")
+            with self.assertRaises(RuntimeError) as ctx:
+                build_output(
+                    "2026-08-11",
+                    "2026-08-18",
+                    tmp,
+                    now=datetime(2026, 8, 18, 15, 0, tzinfo=UTC),
+                )
+            self.assertIn("JSON array", str(ctx.exception))
+
 
 class TestHelpers(unittest.TestCase):
     def test_search_limit_constant(self):
@@ -313,7 +345,7 @@ class TestHelpers(unittest.TestCase):
             self.assertIsNone(parse_iso("2026-13-99T99:99:99Z"))
         self.assertIn("warning: skipping malformed timestamp", buf.getvalue())
 
-    def test_bad_json_warns(self):
+    def test_optional_bad_json_warns(self):
         import io
         from contextlib import redirect_stderr
 
@@ -321,11 +353,38 @@ class TestHelpers(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp_s:
             path = Path(tmp_s) / "bad.json"
-            path.write_text("{not-json")
+            path.write_text("{not-json", encoding="utf-8")
             buf = io.StringIO()
             with redirect_stderr(buf):
-                self.assertEqual(load_json(path, []), [])
+                self.assertEqual(load_json(path), [])
             self.assertIn("warning: failed to parse bad.json", buf.getvalue())
+
+    def test_required_bad_json_raises(self):
+        from gather import load_json
+
+        with tempfile.TemporaryDirectory() as tmp_s:
+            path = Path(tmp_s) / "bad.json"
+            path.write_text("{not-json", encoding="utf-8")
+            with self.assertRaises(RuntimeError):
+                load_json(path, required=True)
+
+    def test_load_json_reads_utf8(self):
+        from gather import load_json
+
+        with tempfile.TemporaryDirectory() as tmp_s:
+            path = Path(tmp_s) / "emoji.json"
+            path.write_text('[{"title": "shipped 🚀"}]', encoding="utf-8")
+            data = load_json(path, required=True)
+            self.assertEqual(data[0]["title"], "shipped 🚀")
+
+    def test_fetch_uses_base_main(self):
+        import inspect
+
+        from gather import fetch_into
+
+        src = inspect.getsource(fetch_into)
+        self.assertIn('"--base"', src)
+        self.assertIn('"main"', src)
 
 
 if __name__ == "__main__":

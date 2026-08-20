@@ -92,13 +92,14 @@ never set the cutoff. Unit tests:
 before `SINCE`.** The gather window only lists PRs merged this week;
 the release that shipped after last Tuesday still counts.
 
-Also scan:
+Also scan (host-supplied where noted):
 
-- `#forum-fullsend-ai` announcements of things that **landed this window**
-  (a new dashboard, a new knob). That is the user-forum channel; it is
-  distinct from `#forum-konflux-fullsend` (release announcements in
-  `.goreleaser.yml`). Ignore “here is a team using X” when X has been
-  available for weeks.
+- **Ask the host** for any `#forum-fullsend-ai` highlights that **landed
+  this window** (new dashboard, new knob), or use pasted channel notes.
+  This skill cannot read Slack — do not invent channel content. That is
+  the user-forum channel; it is distinct from `#forum-konflux-fullsend`
+  (release announcements in `.goreleaser.yml`). Ignore “here is a team
+  using X” when X has been available for weeks.
 - Docs/guide sections that landed in the window
 - Live comments / dashboards / runs that **show a change from this window**
 
