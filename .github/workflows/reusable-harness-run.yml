@@ -24,24 +24,23 @@
 # jobs:
 #   my-poller:
 #     runs-on: ubuntu-24.04
+#     steps:
+#       # ... poller logic that builds matrix ...
+#
+#   harness-run:
+#     needs: my-poller
 #     permissions:
 #       actions: write
 #       contents: read
 #       id-token: write
 #       issues: write
 #       pull-requests: write
-#     steps:
-#       # ... poller logic that builds matrix ...
-#
-#   harness-run:
-#     needs: my-poller
 #     uses: fullsend-ai/fullsend/.github/workflows/reusable-harness-run.yml@v0
 #     with:
 #       matrix: ${{ needs.my-poller.outputs.matrix }}
 #       mint_url: ${{ vars.FULLSEND_MINT_URL }}
 #       gcp_region: ${{ vars.GCP_REGION }}
 #       workflow_repository: fullsend-ai/fullsend
-#       workflow_sha: v0
 #     secrets:
 #       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
 #       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
@@ -92,10 +91,6 @@ on:
         description: "Repository containing the workflow (for defaults checkout)"
         required: true
         type: string
-      workflow_sha:
-        description: "SHA of the workflow (for defaults checkout)"
-        required: true
-        type: string
     secrets:
       FULLSEND_GCP_WIF_PROVIDER:
         required: true
@@ -142,7 +137,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ inputs.workflow_repository }}
-          ref: ${{ inputs.workflow_sha }}
+          ref: ${{ job.workflow_sha }}
           path: .defaults
           fetch-depth: 1
           sparse-checkout: |
@@ -271,7 +266,7 @@ jobs:
           JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
         with:
           agent: ${{ matrix.agent }}
-          version: ${{ inputs.fullsend_version || inputs.workflow_sha }}
+          version: ${{ inputs.fullsend_version || job.workflow_sha }}
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ matrix.status_repo }}

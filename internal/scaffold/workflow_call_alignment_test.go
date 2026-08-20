@@ -394,8 +394,9 @@ func TestOTELHeadersSecretThreading(t *testing.T) {
 	// reusable-harness-run.yml: check the agent step.
 	t.Run("reusable-harness-run.yml", func(t *testing.T) {
 		content := string(loadRepoFile(".github/workflows/reusable-harness-run.yml")(t))
+		section := extractStepSection(t, content, "Run harness agent")
 		for secretName, forward := range forwards {
-			assert.Contains(t, content, forward,
+			assert.Contains(t, section, forward,
 				"reusable-harness-run.yml must inject %s into agent env", secretName)
 		}
 	})
@@ -462,8 +463,9 @@ func TestOTELVariableForwarding(t *testing.T) {
 	// reusable-harness-run.yml: check the agent step.
 	t.Run("reusable-harness-run.yml", func(t *testing.T) {
 		content := string(loadRepoFile(".github/workflows/reusable-harness-run.yml")(t))
+		section := extractStepSection(t, content, "Run harness agent")
 		for _, v := range otelVars {
-			assert.Contains(t, content, forwardLine(v),
+			assert.Contains(t, section, forwardLine(v),
 				"reusable-harness-run.yml must inject %s into agent env", v)
 		}
 	})
