@@ -88,12 +88,24 @@ def in_window(iso: str, since_ts: datetime, until_ts: datetime) -> bool:
     return since_ts <= dt <= until_ts
 
 
-def load_json(path: Path, fallback: Any) -> Any:
+def load_json(path: Path, fallback: Any = None, *, required: bool = False) -> Any:
+    """Load JSON from path as UTF-8.
+
+    When required=True (mandatory fetch outputs), parse/shape failures raise
+    RuntimeError instead of returning a quiet empty fallback.
+    """
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
     except Exception as e:
+        if required:
+            raise RuntimeError(f"failed to parse required file {path.name}: {e}") from e
         sys.stderr.write(f"warning: failed to parse {path.name}: {e}\n")
-        return fallback
+        return [] if fallback is None else fallback
+    if required and not isinstance(data, list):
+        raise RuntimeError(
+            f"required file {path.name} must be a JSON array, got {type(data).__name__}"
+        )
+    return data
 
 
 def classify(
@@ -204,6 +216,8 @@ def fetch_into(tmp: Path, since_ts: datetime, until_ts: datetime) -> None:
                     "--merged",
                     "--merged-at",
                     merged_range,
+                    "--base",
+                    "main",
                     "--limit",
                     str(SEARCH_LIMIT),
                     "--sort",
@@ -220,8 +234,9 @@ def fetch_into(tmp: Path, since_ts: datetime, until_ts: datetime) -> None:
 
 def warn_search_overflow(tmp: Path) -> None:
     for repo, _, prs_name in REPOS:
-        prs = load_json(tmp / prs_name, [])
-        if isinstance(prs, list) and len(prs) >= SEARCH_LIMIT:
+        # Same mandatory files as build_output — fail closed on corrupt payloads.
+        prs = load_json(tmp / prs_name, required=True)
+        if len(prs) >= SEARCH_LIMIT:
             sys.stderr.write(
                 f"warning: {repo} hit the search limit ({SEARCH_LIMIT}); "
                 "results may be incomplete\n"
@@ -239,8 +254,8 @@ def build_output(
     releases_by_repo: dict[str, list[dict[str, Any]]] = {}
     prs_by_repo: dict[str, list[dict[str, Any]]] = {}
     for repo, rel_name, prs_name in REPOS:
-        releases_by_repo[repo] = load_json(tmp / rel_name, [])
-        prs_by_repo[repo] = load_json(tmp / prs_name, [])
+        releases_by_repo[repo] = load_json(tmp / rel_name, required=True)
+        prs_by_repo[repo] = load_json(tmp / prs_name, required=True)
 
     classified = classify(releases_by_repo, prs_by_repo, since_ts, until_ts)
     return {
@@ -309,8 +324,12 @@ def main(argv: list[str] | None = None) -> int:
         except subprocess.CalledProcessError as e:
             sys.stderr.write(f"error: gh command failed: {e}\n")
             return 1
-        warn_search_overflow(tmp)
-        out = build_output(since, until, tmp, now=now)
+        try:
+            warn_search_overflow(tmp)
+            out = build_output(since, until, tmp, now=now)
+        except RuntimeError as e:
+            sys.stderr.write(f"error: {e}\n")
+            return 1
         print(json.dumps(out, indent=2))
     return 0
 
