@@ -45,6 +45,17 @@ If a decision turned out to be wrong, that is what supersession is for. The
 original ADR remains as a historical record of what was decided and why. For
 ongoing design narrative, use `docs/architecture.md`.
 
+**When operational details evolve:** ADRs sometimes describe operational details
+that change over time — field tables, struct definitions, merge rules, or
+configuration examples. When those details need updating, do not modify the
+ADR. Instead, extract them to a living reference document under
+`docs/contributing/` and add a link from the ADR to the new document. The ADR
+records the decision; the living doc tracks the current state. For example,
+[`docs/contributing/harness-fields.md`](../../docs/contributing/harness-fields.md)
+holds the evolving field classifications while
+[ADR-0045](../../docs/ADRs/0045-forge-portable-harness-schema.md) records the
+original schema decision.
+
 ### docs/architecture.md is always current
 
 Unlike ADRs, `docs/architecture.md` is a **living document**. It must always
@@ -204,6 +215,9 @@ If the ADR partially answers a question, add a parenthetical:
   accepted ADR -- write a new superseding ADR instead
 - You're turning an old ADR into a running changelog -- use
   `docs/architecture.md` for evolving design narrative
+- You're adding evolving operational details (field tables, struct definitions,
+  merge rules) to an accepted ADR -- extract them to a living doc under
+  `docs/contributing/` and link back
 
 ## Common Mistakes
 
@@ -219,5 +233,6 @@ If the ADR partially answers a question, add a parenthetical:
 | Substantially rewriting an accepted ADR | Write a new ADR that supersedes it |
 | Omitting cross-references to related ADRs | Link older ADRs to newer related decisions |
 | Treating old ADRs as evolving design docs | Use `docs/architecture.md` for living narrative |
+| Adding evolving operational details to an accepted ADR | Extract to a living doc under `docs/contributing/` and link back |
 | Forgetting to update architecture.md | It must always reflect current decisions |
 | Leading zeros in title number | Use `"1. Title"` not `"0001. Title"` — zero-padded numbers are only for filenames |
