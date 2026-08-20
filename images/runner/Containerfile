@@ -73,7 +73,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
 # under rootless podman container root maps to the invoking host user, so
 # bind-mounted configs and repos keep sane ownership without UID mapping.
 # registry.access.redhat.com/ubi10/ubi:latest
-FROM registry.access.redhat.com/ubi10/ubi@sha256:c9da135a3cdc105995ba8b75e7344671dac9560145bcf9ab73f42e64e441458c
+FROM registry.access.redhat.com/ubi10/ubi@sha256:145a2d6e7e224d34fbe601832e3f133c11560e15b4074fad75c449387bb105a0
 
 # NOTE: no SHELL directive — podman's default OCI image format ignores it,
 # so all RUN steps below stay POSIX-sh compatible for docker AND podman.
