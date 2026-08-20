@@ -280,7 +280,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Default level to read when omitted (ADR 0073).
+	// Default level to read when omitted (ADR 0073). This default is
+	// intentional: all mint HTTP clients in this repository already pass
+	// level explicitly when they need write, so omission means read.
 	if req.Level == "" {
 		req.Level = LevelRead
 	}

@@ -859,8 +859,31 @@ func TestParseCustomRolePermissions_MultiLevelInvalidValue(t *testing.T) {
 	_, err := ParseCustomRolePermissions(raw)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid value")
+	assert.Contains(t, err.Error(), "custom role")
 	assert.Contains(t, err.Error(), "my-role")
 	assert.Contains(t, err.Error(), "contents")
+}
+
+func TestParseCustomRolePermissions_FlatFormatInvalidValue(t *testing.T) {
+	raw := `{"my-role": {"contents": "admin"}}`
+	_, err := ParseCustomRolePermissions(raw)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid value")
+	assert.Contains(t, err.Error(), "custom role")
+	assert.Contains(t, err.Error(), "my-role")
+	assert.Contains(t, err.Error(), "contents")
+}
+
+func TestParseCustomRolePermissions_FlatFormatInvalidValueThroughRegister(t *testing.T) {
+	t.Cleanup(func() { _ = RegisterCustomRoleLevels(nil) })
+
+	// Parse a flat-format role with an invalid permission value, then
+	// confirm it is rejected at parse time — not deferred to register.
+	raw := `{"bad-flat": {"contents": "admin", "issues": "write"}}`
+	_, err := ParseCustomRolePermissions(raw)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid value")
+	assert.Contains(t, err.Error(), "bad-flat")
 }
 
 func TestRegisterCustomRoleLevels_WriteSupersetOfRead(t *testing.T) {

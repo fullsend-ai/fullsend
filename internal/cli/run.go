@@ -3430,7 +3430,7 @@ func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, owner,
 		result, err := statusMintToken(ctx, mintclient.MintRequest{
 			MintURL: mintURL,
 			Role:    canonRole,
-			Level:   "write",
+			Level:   mintcore.LevelWrite,
 			Repos:   []string{repo},
 		})
 		if err != nil {
@@ -3673,7 +3673,7 @@ func mintAgentTokenWithRetry(ctx context.Context, role, mintURL string, repos []
 		result, err := statusMintToken(ctx, mintclient.MintRequest{
 			MintURL: mintURL,
 			Role:    role,
-			Level:   "write",
+			Level:   mintcore.LevelWrite,
 			Repos:   repos,
 		})
 		if err != nil {

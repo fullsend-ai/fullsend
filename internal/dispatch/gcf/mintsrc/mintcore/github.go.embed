@@ -293,7 +293,7 @@ func ParseCustomRolePermissions(raw string) (map[string]map[string]map[string]st
 			for level, perms := range multiLevel.Levels {
 				for k, v := range perms {
 					if v != "read" && v != "write" {
-						return nil, fmt.Errorf("role %q level %q: permission %q has invalid value %q (must be read or write)", role, level, k, v)
+						return nil, fmt.Errorf("custom role %q level %q: permission %q has invalid value %q (must be read or write)", role, level, k, v)
 					}
 				}
 			}
@@ -301,10 +301,15 @@ func ParseCustomRolePermissions(raw string) (map[string]map[string]map[string]st
 			continue
 		}
 
-		// Fall back to flat format: {"permission": "level"}
+		// Fall back to flat format: {"permission": "value"}
 		var flat map[string]string
 		if err := json.Unmarshal(rawVal, &flat); err != nil {
-			return nil, fmt.Errorf("role %q: invalid format: %w", role, err)
+			return nil, fmt.Errorf("custom role %q: invalid format: %w", role, err)
+		}
+		for k, v := range flat {
+			if v != "read" && v != "write" {
+				return nil, fmt.Errorf("custom role %q: permission %q has invalid value %q (must be read or write)", role, k, v)
+			}
 		}
 		result[role] = map[string]map[string]string{LevelRead: flat}
 	}

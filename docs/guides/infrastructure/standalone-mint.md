@@ -204,7 +204,7 @@ Token requests accept an optional `level` field that controls the breadth of per
 | `"write"` | Full canonical permission set is returned |
 | _(omitted)_ | Defaults to `"read"` |
 
-> **⚠️ Breaking change (v0.XX+):** Prior to privilege levels, omitting `level` returned write-equivalent permissions. Existing standalone mint callers that omit the `level` field will now receive **read-only** tokens. To preserve the previous behavior, update your token requests to include `"level": "write"`. The CLI `fullsend mint token` command defaults `--level` to `write` for backward compatibility, but direct HTTP callers must explicitly set the field.
+> **⚠️ Breaking change (this release):** Prior to privilege levels, omitting `level` returned write-equivalent permissions. Existing standalone mint callers that omit the `level` field will now receive **read-only** tokens. To preserve the previous behavior, update your token requests to include `"level": "write"`. The CLI `fullsend mint token` command defaults `--level` to `write` for backward compatibility, but direct HTTP callers must explicitly set the field.
 
 ## Custom role permissions
 
