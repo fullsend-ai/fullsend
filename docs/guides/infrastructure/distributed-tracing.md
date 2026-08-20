@@ -125,7 +125,16 @@ sensitivity. When enabled, spans may contain proprietary source code,
 PII, or credentials visible in agent output. The OTel specification
 recommends external storage with span references for high-volume or
 high-sensitivity production use; that pattern is a natural fit for a
-future bucket-export pipeline (see issue #6410).
+future bucket-export pipeline
+([#6410](https://github.com/fullsend-ai/fullsend/issues/6410)).
+
+**MLflow rendering note:** MLflow derives its trace-list Request/Response
+preview columns from the root span (capped at 1000 bytes), so they stay
+empty for fullsend traces — content lives on the per-iteration `agent`
+spans and is visible when opening the trace's span view. Content is
+deliberately not duplicated onto the root span: duplicated span data is
+what produced the token double-count fixed by
+[#5788](https://github.com/fullsend-ai/fullsend/pull/5788).
 
 ## Span hierarchy
 
