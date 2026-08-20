@@ -824,6 +824,7 @@ func TestComputeDispatchHMAC_MatchesPython3(t *testing.T) {
 		"ORIGINATING_URL":       "https://gitlab.example.com/testgroup/testrepo/-/merge_requests/10",
 		"REPO_FULL_NAME":        "testgroup/testrepo",
 		"RESOURCE_KEY":          "mr-10",
+		"RETRO_COMMENT":         "/fs-retro check this",
 		"STAGE":                 "review",
 		"STATUS_IID":            "10",
 	}
@@ -939,6 +940,53 @@ func TestDispatch_OriginatingURLWithSubgroup(t *testing.T) {
 	}
 	if vars["REPO_FULL_NAME"] != "group/sub/project" {
 		t.Errorf("REPO_FULL_NAME: got %q, want %q", vars["REPO_FULL_NAME"], "group/sub/project")
+	}
+}
+
+func TestDispatch_IncludesRetroComment(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:         "issue_note",
+		IID:          42,
+		UpdatedAt:    time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		NoteBody:     "/fs-retro check this deployment",
+		NoteID:       100,
+		NoteAuthorID: 88,
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "retro", event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	vars := mc.pipelineCalls[0].Variables
+	if vars["RETRO_COMMENT"] != "/fs-retro check this deployment" {
+		t.Errorf("RETRO_COMMENT: got %q, want %q", vars["RETRO_COMMENT"], "/fs-retro check this deployment")
+	}
+}
+
+func TestDispatch_RetroCommentEmptyForNonNoteEvent(t *testing.T) {
+	mc := newMockClient()
+	p := newTestPoller(mc, Options{})
+
+	event := RoutableEvent{
+		Type:      "mr_event",
+		IID:       10,
+		UpdatedAt: time.Date(2025, 6, 15, 12, 0, 0, 0, time.UTC),
+		MRSource:  100,
+		MRTarget:  100,
+	}
+
+	err := p.dispatch(context.Background(), "owner", "repo", "review", event)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	vars := mc.pipelineCalls[0].Variables
+	if vars["RETRO_COMMENT"] != "" {
+		t.Errorf("RETRO_COMMENT: got %q, want empty string", vars["RETRO_COMMENT"])
 	}
 }
 

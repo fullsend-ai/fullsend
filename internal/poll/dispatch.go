@@ -63,6 +63,7 @@ func (p *Poller) dispatch(ctx context.Context, owner, repo, stage string, event 
 		"IS_FORK":           strconv.FormatBool(isFork),
 		"ORIGINATING_URL":   entityURL(p.gitlabURL, p.projectPath, event.Type, event.IID),
 		"REPO_FULL_NAME":    p.projectPath,
+		"RETRO_COMMENT":     event.NoteBody,
 	}
 	if event.MRAuthorID != 0 {
 		variables["MR_AUTHOR_ID"] = strconv.Itoa(event.MRAuthorID)
@@ -121,6 +122,7 @@ var signedDispatchKeys = []string{
 	"ORIGINATING_URL",
 	"REPO_FULL_NAME",
 	"RESOURCE_KEY",
+	"RETRO_COMMENT",
 	"STAGE",
 	"STATUS_IID",
 }
