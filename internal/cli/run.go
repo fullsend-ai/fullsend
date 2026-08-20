@@ -1513,6 +1513,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
 
 		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
+		// One collector per iteration: iteration and agent span are 1:1, so
+		// a run-scoped collector would repeat earlier iterations' content on
+		// later spans. Nil when the Level 3 gate is off; nil is inert.
+		collector := newContentCollectorIfEnabled()
 		var metrics agentruntime.RunMetrics
 		exitCode, runErr := rt.Run(agentCtx, agentruntime.RunParams{
 			SandboxName:   sandboxName,
@@ -1525,8 +1529,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			Debug:         debug,
 			Timeout:       timeout,
 			OutputPath:    filepath.Join(iterDir, "output.jsonl"),
+			OnEvent:       contentEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector),
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
+
+		// Attach content before either finalize path can end the span. A
+		// failed iteration keeps its content — that is when the transcript
+		// matters most.
+		if contentRes := collector.Result(); contentRes.OutputMessages != "" || len(contentRes.Findings) > 0 {
+			attachContent(agentSpan, contentRes)
+			if n := len(contentRes.Findings); n > 0 {
+				printer.StepWarn(fmt.Sprintf("Content capture redacted %d finding(s) from span content", n))
+			}
+		}
 
 		// Accumulate behavioral metrics across iterations.
 		aggregateRunMetrics(&aggMetrics, &metrics, iteration)
@@ -3280,7 +3295,10 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 			}
 			return nil
 		}
-		// Skip the telemetry JSONL (metadata-only, still open for append).
+		// Skip the telemetry JSONL: it is still open for append, and any
+		// Level 3 conversation content in it was already redacted at
+		// assembly (contentCollector) before reaching a span, so it needs
+		// no post-hoc sweep.
 		if path == filepath.Join(outputDir, telemetry.TelemetryFile) {
 			return nil
 		}

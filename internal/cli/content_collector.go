@@ -4,9 +4,66 @@ import (
 	"encoding/json"
 	"unicode/utf8"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/security"
+	"github.com/fullsend-ai/fullsend/internal/telemetry"
 )
+
+// maxContentBytes bounds the conversation content attached to one agent
+// span (one iteration). The collector's ordered-prefix budget enforces it;
+// the SDK attribute cap is lifted while the gate is on so it cannot cut
+// the content JSON mid-value.
+const maxContentBytes = 256 * 1024
+
+// newContentCollectorIfEnabled returns a live collector when the Level 3
+// gate is on and nil otherwise — nil is the off state and is inert at
+// every call site, so the gate needs no second check.
+func newContentCollectorIfEnabled() *contentCollector {
+	if telemetry.ContentCaptureEnabled() {
+		return newContentCollector(maxContentBytes)
+	}
+	return nil
+}
+
+// contentEventHandler tees the normalized event stream to the console
+// renderer and the collector. A nil collector returns a nil handler so
+// the runtime keeps its default renderer path — supplying any OnEvent
+// replaces that renderer, and losing it silences CI output.
+func contentEventHandler(render func(agentruntime.AgentEvent), c *contentCollector) func(agentruntime.AgentEvent) {
+	if c == nil {
+		return nil
+	}
+	return func(evt agentruntime.AgentEvent) {
+		render(evt)
+		c.Handle(evt)
+	}
+}
+
+// attachContent records assembled content and its markers on the agent
+// span. An empty result adds nothing. The content value goes through
+// stringAttr like every other dynamic attribute value (invalid UTF-8 in
+// any string fails proto-marshal of the whole OTLP batch).
+func attachContent(span trace.Span, res contentResult) {
+	attrs := make([]attribute.KeyValue, 0, 4)
+	if res.OutputMessages != "" {
+		attrs = append(attrs, stringAttr("gen_ai.output.messages", res.OutputMessages))
+	}
+	if res.Truncated {
+		attrs = append(attrs, attribute.Bool("fullsend.content.truncated", true))
+	}
+	if res.DroppedBytes > 0 {
+		attrs = append(attrs, attribute.Int("fullsend.content.dropped_bytes", res.DroppedBytes))
+	}
+	if n := len(res.Findings); n > 0 {
+		attrs = append(attrs, attribute.Int("fullsend.content.redactions", n))
+	}
+	if len(attrs) > 0 {
+		span.SetAttributes(attrs...)
+	}
+}
 
 // contentPart is one part of the assembled assistant output message,
 // shaped for the GenAI output-messages JSON schema: TextPart

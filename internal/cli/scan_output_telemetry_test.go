@@ -16,8 +16,10 @@ import (
 // TestScanOutputFiles_SkipsTelemetryArtifacts pins that the host-side output
 // redaction scan does NOT rewrite the telemetry JSONL file. It is still held
 // open for append during the scan, so an in-place rewrite would truncate it
-// under the open handle; and it is metadata-only by construction. A normal
-// output file must still be sanitized.
+// under the open handle; and any Level 3 conversation content it carries was
+// already redacted at assembly (contentCollector.Result) before reaching a
+// span, so the file needs no post-hoc sweep. A normal output file must still
+// be sanitized.
 func TestScanOutputFiles_SkipsTelemetryArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	const secret = "Token: ghp_FAKEtesttoken000000000000000000000000\n"
