@@ -10,6 +10,7 @@ import (
 	"github.com/cucumber/godog"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
 	scmgh "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/github"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
@@ -69,7 +70,7 @@ func resolveActorLogin(w *world.World, actor string) (string, error) {
 
 func commitFile(w *world.World, path, message, content string) error {
 	if err := w.SCM.CommitFile(context.Background(),
-		w.Install.ConfigOwner(), w.Install.ConfigRepo(),
+		w.Org, w.RepoName,
 		path, message, []byte(content)); err != nil {
 		return fmt.Errorf("committing %s: %w", path, err)
 	}
@@ -122,7 +123,7 @@ func givenOwnersAliasesFile(w *world.World, alias, actor string) error {
 func givenOwnersAuthEnabled(w *world.World) error {
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
 	cfgData, err := w.SCM.GetFileContent(context.Background(),
-		w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath)
+		w.Org, w.RepoName, cfgPath)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
 	}
@@ -136,7 +137,7 @@ func givenOwnersAuthEnabled(w *world.World) error {
 		return err
 	}
 	if err := w.SCM.CommitFile(context.Background(),
-		w.Install.ConfigOwner(), w.Install.ConfigRepo(),
+		w.Org, w.RepoName,
 		cfgPath, "behaviour: enable OWNERS authorization",
 		merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
@@ -205,7 +206,7 @@ func getWorkflowLogs(w *world.World) (string, error) {
 		return "", fmt.Errorf("no workflow run recorded")
 	}
 	return w.CI.GetRunLogs(context.Background(),
-		w.RepoOwner, w.Install.TriageWorkflowRepo(), w.WorkflowRun.ID)
+		w.RepoOwner, w.RepoName, w.WorkflowRun.ID)
 }
 
 func requireWriteActor(w *world.World) error {
@@ -241,7 +242,7 @@ func thenDispatchRunDoesNotAuthorizeViaOwners(w *world.World) error {
 		return err
 	}
 	logs, err := w.CI.GetRunLogs(context.Background(),
-		w.RepoOwner, w.Install.TriageWorkflowRepo(), run.ID)
+		w.RepoOwner, w.RepoName, run.ID)
 	if err != nil {
 		return fmt.Errorf("fetching dispatch run logs: %w", err)
 	}
@@ -253,8 +254,8 @@ func thenDispatchRunDoesNotAuthorizeViaOwners(w *world.World) error {
 
 func waitForDispatchRun(w *world.World) (*forge.WorkflowRun, error) {
 	ctx := context.Background()
-	repo := w.Install.TriageWorkflowRepo()
-	file := w.Install.TriageWorkflowFile()
+	repo := w.RepoName
+	file := install.PerRepoTriageWorkflow
 
 	run, err := w.CI.WaitForWorkflow(ctx, w.RepoOwner, repo, file, w.ScenarioStart, issueCommentEvent)
 	if err == nil {
@@ -272,7 +273,7 @@ func waitForDispatchRun(w *world.World) (*forge.WorkflowRun, error) {
 func disableOwnersAuth(w *world.World) error {
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
 	cfgData, err := w.SCM.GetFileContent(context.Background(),
-		w.Install.ConfigOwner(), w.Install.ConfigRepo(), cfgPath)
+		w.Org, w.RepoName, cfgPath)
 	if err != nil {
 		return fmt.Errorf("reading config: %w", err)
 	}
@@ -286,7 +287,7 @@ func disableOwnersAuth(w *world.World) error {
 		return err
 	}
 	if err := w.SCM.CommitFile(context.Background(),
-		w.Install.ConfigOwner(), w.Install.ConfigRepo(),
+		w.Org, w.RepoName,
 		cfgPath, "behaviour: disable OWNERS authorization",
 		merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
@@ -296,8 +297,8 @@ func disableOwnersAuth(w *world.World) error {
 
 func cleanupOwnersAuth(w *world.World) {
 	ctx := context.Background()
-	owner := w.Install.ConfigOwner()
-	repo := w.Install.ConfigRepo()
+	owner := w.Org
+	repo := w.RepoName
 
 	if err := disableOwnersAuth(w); err != nil {
 		worldLogf(w, "behaviour cleanup: disable OWNERS auth: %v", err)
