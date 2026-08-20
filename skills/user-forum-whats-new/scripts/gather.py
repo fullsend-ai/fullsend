@@ -15,12 +15,29 @@ import argparse
 import json
 import subprocess
 import sys
+
+if sys.version_info < (3, 11):  # noqa: UP036 — skill may run outside this repo (symlink hosts)
+    sys.stderr.write(
+        f"error: Python 3.11+ required (found {sys.version.split()[0]}); "
+        "gather.py uses datetime.UTC and zoneinfo America/New_York.\n"
+    )
+    raise SystemExit(1)
+
 from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-ET = ZoneInfo("America/New_York")
+try:
+    ET = ZoneInfo("America/New_York")
+except ZoneInfoNotFoundError as e:
+    sys.stderr.write(
+        "error: America/New_York timezone data is missing "
+        f"({e}). Install system tzdata "
+        "(e.g. tzdata / timezone-data) or `pip install tzdata`.\n"
+    )
+    raise SystemExit(1) from e
+
 SEARCH_LIMIT = 1000
 REPOS = (
     ("fullsend-ai/fullsend", "rel-fullsend.json", "prs-fullsend.json"),
