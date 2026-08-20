@@ -123,7 +123,12 @@ span (see the custom attributes below) so a consumer can always tell
 partial content from complete content. While the
 gate is on, the SDK's span attribute length cap is lifted so it cannot
 cut the content JSON mid-value — an explicit
-`OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` still wins. Backends and
+`OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` still wins. A finite explicit
+limit therefore cuts any over-limit `gen_ai.output.messages` value
+mid-JSON, in both sinks, and `fullsend.content.truncated` does not flag
+an SDK cut; fullsend warns on stderr at startup about this combination —
+raise the limit, set it to `-1`, or unset it to keep content parseable.
+Backends and
 collectors have their own ingestion limits; validate the target backend
 accepts your typical content size before relying on it.
 
