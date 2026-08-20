@@ -14,6 +14,9 @@ import (
 
 // Options configures a dispatch run.
 type Options struct {
+	// ConfigDir is the fullsend config directory (e.g. ".fullsend").
+	// Must be a direct child of the repo root; filepath.Dir is used
+	// to locate OWNERS and OWNERS_ALIASES for authorization.
 	ConfigDir string
 	Event     *normevent.Event
 
