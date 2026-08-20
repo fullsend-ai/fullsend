@@ -104,6 +104,14 @@ const MaxSpanAttrValueLen = 8192
 func spanLimits() sdktrace.SpanLimits {
 	limits := sdktrace.NewSpanLimits()
 	if limits.AttributeValueLengthLimit < 0 && !attrValueLenConfigured() {
+		if ContentCaptureEnabled() {
+			// Level 3 puts JSON-string content attributes on spans. The
+			// default cap would cut such a value mid-string and corrupt
+			// the JSON; the content collector's byte budget is the size
+			// bound, so the SDK cap stays unlimited. An operator's
+			// explicit limit env var still wins above.
+			return limits
+		}
 		limits.AttributeValueLengthLimit = MaxSpanAttrValueLen
 	}
 	return limits

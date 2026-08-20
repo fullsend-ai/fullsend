@@ -6,6 +6,32 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestSpanLimits_ContentCaptureLiftsDefaultCap(t *testing.T) {
+	cases := []struct {
+		name      string
+		gate      string
+		limitEnv  string
+		wantLimit int
+	}{
+		// Gate off: the #5944 default cap stands.
+		{"gate off keeps default", "", "", MaxSpanAttrValueLen},
+		// Gate on, no operator limit: unlimited — the SDK cap would cut the
+		// content JSON mid-value, producing invalid JSON; the collector's
+		// byte budget is the size bound instead.
+		{"gate on lifts cap", "true", "", -1},
+		// An operator's explicit limit always wins, gate or no gate.
+		{"operator limit wins over gate", "true", "512", 512},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pinOTELEnv(t)
+			t.Setenv(ContentCaptureEnvVar, tc.gate)
+			t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", tc.limitEnv)
+			assert.Equal(t, tc.wantLimit, spanLimits().AttributeValueLengthLimit)
+		})
+	}
+}
+
 func TestContentCaptureEnabled_ValueContract(t *testing.T) {
 	cases := []struct {
 		name  string

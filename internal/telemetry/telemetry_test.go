@@ -40,6 +40,7 @@ func pinOTELEnv(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
 	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
 	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
+	t.Setenv(ContentCaptureEnvVar, "")
 }
 
 func TestSetup_FileExporter(t *testing.T) {
