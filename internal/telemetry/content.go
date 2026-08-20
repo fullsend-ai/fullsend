@@ -8,8 +8,8 @@ import (
 // ContentCaptureEnvVar is the Level 3 content-capture opt-in named by
 // ADR 0050. The variable name and its value vocabulary come from the
 // OpenTelemetry GenAI instrumentation convention (documented by the
-// opentelemetry-python-contrib GenAI instrumentations); the semantic
-// conventions specification itself does not define this variable.
+// opentelemetry-python-contrib GenAI instrumentations); the pinned
+// semantic-conventions v1.37.0 release does not define this variable.
 // Fullsend's runner is the GenAI instrumentation that reads it — it is
 // never passed to the agent runtime, whose own content-logging variables
 // (OTEL_LOG_*) fullsend never sets.

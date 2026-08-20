@@ -79,8 +79,11 @@ func validateEndpoints(endpoint, tracesEndpoint string) error {
 	return nil
 }
 
-// MaxSpanAttrValueLen bounds every span attribute value recorded through
-// this provider. The SDK applies the limit to span attributes only —
+// MaxSpanAttrValueLen bounds span attribute values recorded through this
+// provider in metadata-only mode. When the Level 3 content gate is on,
+// spanLimits lifts the provider-wide cap (a capped cut would corrupt the
+// content JSON mid-value), so free-text values that relied on this cap
+// are bounded at their call sites instead (internal/cli boundedStringAttr). The SDK applies the limit to span attributes only —
 // event messages are bounded at their call site — counting characters,
 // not bytes (a multibyte value can reach four bytes per character on the
 // wire), and it repairs invalid UTF-8 only when it truncates: values at

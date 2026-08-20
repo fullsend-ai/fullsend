@@ -967,6 +967,55 @@ func TestAttachContent_EmptyResultAddsNothing(t *testing.T) {
 	assert.Empty(t, ended[0].Attributes(), "no content must mean no attributes at all")
 }
 
+func TestAttachContent_MarkersSurviveWhenAllContentDropped(t *testing.T) {
+	// A budget that drops every part must still leave its trace: the
+	// documented "a consumer can always tell partial from complete"
+	// invariant depends on the markers being attached even when no
+	// content attribute is.
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	_, span := tp.Tracer("test").Start(context.Background(), "agent")
+	attachContent(span, contentResult{Truncated: true, DroppedBytes: 9})
+	span.End()
+
+	ended := rec.Ended()
+	require.Len(t, ended, 1)
+	attrs := make(map[attribute.Key]attribute.Value)
+	for _, kv := range ended[0].Attributes() {
+		attrs[kv.Key] = kv.Value
+	}
+	assert.NotContains(t, attrs, attribute.Key("gen_ai.output.messages"))
+	assert.True(t, attrs[attribute.Key("fullsend.content.truncated")].AsBool())
+	assert.Equal(t, int64(9), attrs[attribute.Key("fullsend.content.dropped_bytes")].AsInt64())
+}
+
+func TestBoundedStringAttr_CapsAtMaxSpanAttrValueLen(t *testing.T) {
+	// With the Level 3 gate lifting the provider-wide SDK cap, free-text
+	// attributes that used to rely on it must be bounded at the call
+	// site instead.
+	v := boundedStringAttr("k", strings.Repeat("x", telemetry.MaxSpanAttrValueLen*3))
+	assert.LessOrEqual(t, len(v.Value.AsString()), telemetry.MaxSpanAttrValueLen)
+
+	small := boundedStringAttr("k", "tiny")
+	assert.Equal(t, "tiny", small.Value.AsString())
+}
+
+func TestAgentSpanEndAttrs_ModelBoundedWithoutSDKCap(t *testing.T) {
+	// gen_ai.request.model comes from the sandboxed agent's stream-json
+	// output (untrusted, bounded only by the 1 MiB line buffer); it must
+	// not depend on the SDK cap the content gate lifts.
+	m := agentruntime.RunMetrics{Model: strings.Repeat("m", telemetry.MaxSpanAttrValueLen*2)}
+	for _, kv := range agentSpanEndAttrs(1, 0, "claude", &m) {
+		if kv.Key == "gen_ai.request.model" {
+			assert.LessOrEqual(t, len(kv.Value.AsString()), telemetry.MaxSpanAttrValueLen)
+			return
+		}
+	}
+	t.Fatal("gen_ai.request.model attribute not found")
+}
+
 func TestContentEventHandler_NilCollectorKeepsDefaultRenderer(t *testing.T) {
 	assert.Nil(t, contentEventHandler(func(agentruntime.AgentEvent) {}, nil),
 		"gate off must leave OnEvent nil so the runtime's default renderer runs")
@@ -982,7 +1031,7 @@ func TestContentEventHandler_TeesToRendererAndCollector(t *testing.T) {
 	handler(agentruntime.TokensEvent{InputTokens: 1})
 
 	assert.Len(t, rendered, 2, "every event must still reach the renderer")
-	assert.Contains(t, c.Result().OutputMessages, "hello", "content events must reach the collector")
+	assert.Contains(t, c.Result("stop").OutputMessages, "hello", "content events must reach the collector")
 }
 
 func TestNewContentCollectorIfEnabled_FollowsGate(t *testing.T) {
@@ -1016,7 +1065,7 @@ func TestContentCapture_EndToEndFileSink(t *testing.T) {
 	c.Handle(agentruntime.TextEvent{Text: big})
 
 	_, span := tracer.Start(context.Background(), "agent")
-	res := c.Result()
+	res := c.Result("stop")
 	attachContent(span, res)
 	span.End()
 	cleanup(context.Background())
@@ -1059,7 +1108,7 @@ func TestContentCapture_GateOffProducesNoContent(t *testing.T) {
 	c.Handle(agentruntime.TextEvent{Text: "would-be content"}) // nil-safe no-op
 
 	_, span := tracer.Start(context.Background(), "agent")
-	attachContent(span, c.Result())
+	attachContent(span, c.Result("stop"))
 	span.End()
 	cleanup(context.Background())
 
