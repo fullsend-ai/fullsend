@@ -1118,3 +1118,16 @@ func TestContentCapture_GateOffProducesNoContent(t *testing.T) {
 	assert.NotContains(t, string(raw), "would-be content")
 	assert.NotContains(t, string(raw), "fullsend.content.")
 }
+
+func TestAgentSpanStartAttrs_AgentNameBoundedWithoutSDKCap(t *testing.T) {
+	// gen_ai.agent.name comes from the CLI argument (unbounded); like the
+	// other free-text attributes it must not depend on the SDK cap the
+	// content gate lifts.
+	for _, kv := range agentSpanStartAttrs(1, strings.Repeat("n", telemetry.MaxSpanAttrValueLen*2)) {
+		if kv.Key == "gen_ai.agent.name" {
+			assert.LessOrEqual(t, len(kv.Value.AsString()), telemetry.MaxSpanAttrValueLen)
+			return
+		}
+	}
+	t.Fatal("gen_ai.agent.name attribute not found")
+}
