@@ -1543,7 +1543,6 @@ jobs:
       fullsend_version: ${{ inputs.fullsend_version }}
       runner_image: ${{ inputs.runner_image }}
       workflow_repository: ${{ github.repository }}
-      workflow_sha: ${{ github.sha }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
