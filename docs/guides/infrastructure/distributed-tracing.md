@@ -12,10 +12,12 @@ For implementation details, see the
 |-------|-----------------|----------------------|
 | 1 | `run-telemetry.jsonl` file in the run output directory | None |
 | 2 | OTLP/HTTP export to a remote backend (metadata only) | `OTEL_EXPORTER_OTLP_*ENDPOINT` |
-| 3 | Content capture (prompts, completions, tool I/O) in spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` *(planned, not yet implemented)* |
+| 3 | Conversation content (assistant text, reasoning, tool calls) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
 
 All levels produce metadata (timing, token counts, tool names, errors).
-Level 3 adds prompt/completion content to spans.
+Level 3 adds the agent's conversation content to spans — enabled by one
+environment variable, exactly like Level 2's endpoint
+([ADR 0050](../../ADRs/0050-distributed-tracing-instrumentation.md)).
 
 ## Environment variables
 
@@ -66,15 +68,64 @@ unset OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
 | `TRACEPARENT` | W3C Trace Context parent | When present, the root span becomes `SpanKindConsumer`; when the sampled flag is unset (`-00`), OTLP export is suppressed but the local file is still written |
 | `TRACESTATE` | W3C Trace Context state | Propagated alongside `TRACEPARENT` |
 
-### Content capture (planned)
+### Content capture (Level 3)
 
-| Variable | Value | Effect |
-|----------|-------|--------|
-| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `true` | Includes prompts, completions, tool arguments, tool results, and reasoning text in spans |
+**The agent runtime's native content telemetry is never enabled.** Level 3
+content is assembled by fullsend's own runner from the same normalized
+event stream the console renders, redacted through the security pipeline
+at assembly, and attached to the per-iteration `agent` span. There is no
+second export pipeline and no redaction bypass: fullsend reads the
+variable below itself and never sets the runtime's own content-logging
+variables (`OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`,
+`OTEL_LOG_TOOL_CONTENT`, `OTEL_LOG_RAW_API_BODIES`).
 
-Content capture follows the [OTel GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-spans.md).
-When enabled, spans may contain proprietary source code, PII, or
-credentials visible in tool outputs.
+| Variable | Values that enable capture | Values that keep it off |
+|----------|---------------------------|-------------------------|
+| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `true`, `span_only`, `span_and_event` (case-insensitive) | unset, `false`, `NO_CONTENT`, `event_only`, anything unrecognized |
+
+The variable name and value vocabulary come from the OpenTelemetry GenAI
+instrumentation convention (documented by the
+[opentelemetry-python-contrib GenAI instrumentations](https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/instrumentation-genai));
+the semantic-conventions specification does not define the variable
+itself. Fullsend records content on span attributes only, so `event_only`
+stays off — honoring it on spans would contradict the operator's "only".
+An unrecognized value disables capture rather than erroring: telemetry
+never fails a run.
+
+**What is captured:** the assistant's text, its reasoning, and its tool
+calls (name plus a short summary), as a
+`gen_ai.output.messages` span attribute — a JSON string following the
+[GenAI output-messages schema](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-output-messages.json)
+(reasoning uses the schema's extensible part type). Sub-agent activity in
+the stream appears unattributed, exactly as it does in the console; nested
+attribution is deferred along with ADR 0050's sub-agent span item.
+
+**What is not captured:** model input (`gen_ai.input.messages`) — the CLI
+passes a constant literal, so there is no meaningful input to record;
+tool results — not yet in the normalized event stream (follows via a
+parser extension); pre/post-script content.
+
+**Redaction and size:** every part passes through the security output
+pipeline (Unicode normalization, then secret redaction) before it reaches
+the span; redaction hits are masked, counted on the span, and warned in
+the console. Content is bounded per iteration (256 KiB, ordered prefix);
+a cut is marked on the span (see the custom attributes below) so a
+consumer can always tell partial content from complete content. While the
+gate is on, the SDK's span attribute length cap is lifted so it cannot
+cut the content JSON mid-value — an explicit
+`OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` still wins. Backends and
+collectors have their own ingestion limits; validate the target backend
+accepts your typical content size before relying on it.
+
+**Where content goes:** content rides the span to both sinks — always to
+`run-telemetry.jsonl`, and to the OTLP endpoint whenever one is
+configured. Per ADR 0050, the organization enabling capture is
+responsible for ensuring its backend's access controls suit the content's
+sensitivity. When enabled, spans may contain proprietary source code,
+PII, or credentials visible in agent output. The OTel specification
+recommends external storage with span references for high-volume or
+high-sensitivity production use; that pattern is a natural fit for a
+future bucket-export pipeline (see issue #6410).
 
 ## Span hierarchy
 
@@ -126,6 +177,10 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 | `fullsend.prescript.skipped` | `run` | Whether the pre-script signaled a skip |
 | `fullsend.prescript.skip_reason` | `run` | Human-readable skip reason from the pre-script |
 | `fullsend.transcript_error` | `agent` | Present (`true`) when the agent exited 0 but its transcript reported an error — the span's status is Error while `exit_code` keeps the raw process exit |
+| `gen_ai.output.messages` | `agent` | Level 3 only: the iteration's conversation content as a JSON string (see Content capture) |
+| `fullsend.content.truncated` | `agent` | Level 3 only: present (`true`) when the size budget cut or dropped content |
+| `fullsend.content.dropped_bytes` | `agent` | Level 3 only: exact content bytes removed by the size budget |
+| `fullsend.content.redactions` | `agent` | Level 3 only: number of security findings masked out of the content at assembly |
 
 ### Common attributes
 

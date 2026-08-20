@@ -132,6 +132,41 @@ build the attribute slices. Start attributes: `iteration`,
 `exit_code`, `gen_ai.system`, model, token counts, `fullsend.cost_usd`,
 `fullsend.tool_calls`.
 
+### Level 3 content on agent spans
+
+When the content-capture gate is on
+(`telemetry.ContentCaptureEnabled()`), `runAgent` constructs one
+`contentCollector` per iteration — iteration and agent span are 1:1, so a
+run-scoped collector would repeat earlier iterations' content on later
+spans — and tees the runtime's normalized event stream to it through
+`RunParams.OnEvent`.
+
+**The tee trap:** supplying any `OnEvent` replaces the runtime's default
+console renderer (`internal/runtime/claude.go`), so the handler built by
+`contentEventHandler` always calls the renderer first and the collector
+second. With the gate off the collector is nil and `contentEventHandler`
+returns nil, leaving the default renderer path byte-identical to before
+Level 3 existed.
+
+The collector (`internal/cli/content_collector.go`) coalesces contiguous
+text/reasoning deltas, maps tool use to `tool_call` parts, redacts every
+part through `security.OutputPipeline()` at assembly (redaction runs
+before the size budget — truncating first could split a secret past
+recognition), enforces a 256 KiB ordered-prefix budget with exact
+dropped-byte accounting, and emits `gen_ai.output.messages` JSON
+following the GenAI output-messages schema. `attachContent` records the
+content and its marker attributes on the span before either
+`finalizeAgentSpan` path can end it, so failed iterations keep their
+content.
+
+**Consumer contract** (for eval scorers and other readers of
+`run-telemetry.jsonl`): parse the `gen_ai.output.messages` attribute as
+JSON; check `fullsend.content.truncated` / `fullsend.content.dropped_bytes`
+before treating content as complete; masked secrets appear as the
+redactor's mask tokens and are counted in `fullsend.content.redactions`.
+The attribute names and shapes are the stable contract — see the
+[Tracing reference](../infrastructure/distributed-tracing.md#content-capture-level-3).
+
 ## Trace identity and TRACEPARENT propagation
 
 `resolveTraceIdentity()` handles W3C trace context propagation in three
