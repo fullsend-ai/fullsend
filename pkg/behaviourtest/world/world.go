@@ -54,6 +54,12 @@ type World struct {
 	URLHarnessRepoOwner string
 	URLHarnessRepoName  string
 
+	// URLBaseHarnesses maps base harness names to their raw URLs (with
+	// integrity hash). Set by the "URL-sourced base harness" step and
+	// consumed by steps that create child harnesses referencing a remote
+	// base via URL.
+	URLBaseHarnesses map[string]string
+
 	// Branch-handling scenario state — set by branch step definitions.
 	// RecordedBranchSHAs maps branch name → tip SHA captured before a
 	// run so "branch X is unchanged" can re-check it afterwards.

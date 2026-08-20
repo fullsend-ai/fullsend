@@ -1,24 +1,22 @@
 # This file is managed by fullsend. Do not edit it directly.
-# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/templates/shim-workflow-call.yaml
+# Upstream: https://github.com/fullsend-ai/fullsend/blob/main/internal/scaffold/fullsend-repo/.github/workflows/fullsend.yaml
 ---
-# --- fullsend managed below - do not edit ---
-# lint-workflow-size: max-lines=280
-# fullsend shim workflow (workflow_call mode)
-# Routes events to agent workflows in .fullsend via workflow_call.
-# No secrets are needed in the enrolled repo — agents fetch scoped tokens
-# from the centralized token mint using GitHub OIDC.
+# fullsend shim workflow (per-repo installation mode)
+# Routes events to agent workflows via reusable-dispatch.yml.
+# All agent execution happens in this repo's context — no external
+# config repo is needed.
 #
 # Security: pull_request_target runs the BASE branch version of this workflow,
 # preventing PRs from modifying it to exfiltrate credentials.
 # This shim never checks out PR code, so it is not vulnerable to "pwn request"
 # attacks.
 #
-# fullsend-ai is replaced by reconcile-repos.sh at deploy time.
+# Routing: this shim forwards the raw event context to reusable-dispatch.yml,
+# which determines the stage and runs the agent inline (ADR 62).
+# Adding a new stage requires only a job in reusable-dispatch.yml — zero changes to this repo.
 #
-# Routing: this shim forwards the raw event context to dispatch.yml, which
-# determines the stage from event_type + event_action + payload fields.
-# Adding a new stage requires only a case branch in dispatch.yml — zero
-# changes to enrolled repos.
+# Concurrency: per-role cancel-in-progress groups live in reusable-dispatch.yml
+# stage jobs with -agent- suffix. Roles operate independently (#2452).
 name: fullsend
 
 on:
@@ -35,31 +33,30 @@ permissions: {}
 
 jobs:
   dispatch:
-    concurrency:
-      # Label-derived suffix for labeled events so routing labels
-      # get isolated concurrency slots (#2452).
-      group: >-
-        fullsend-dispatch-${{ github.event.issue.number || github.event.pull_request.number }}-${{
-          github.event.action == 'labeled' && format('label-{0}', github.event.label.name) || 'dispatch'
-        }}
-      cancel-in-progress: false
     if: >-
       (github.event_name != 'pull_request_target' && github.event_name != 'pull_request_review'
        || github.event.pull_request.head.ref != 'fullsend/scaffold-install')
       && (github.event_name != 'issue_comment'
        || github.event.comment.user.type != 'Bot')
-      && (
-        github.event.action != 'labeled'
-        || startsWith(github.event.label.name, 'ready-')
-      )
     permissions:
       actions: write
       id-token: write
-      contents: read
-      pull-requests: read
-    uses: fullsend-ai/.fullsend/.github/workflows/dispatch.yml@main
+      contents: write
+      issues: write
+      packages: read
+      pull-requests: write
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@main
     with:
       event_action: ${{ github.event.action }}
+      install_mode: per-repo
+      mint_url: ${{ vars.FULLSEND_MINT_URL }}
+      gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
+      runner_image: ubuntu-24.04
+    secrets:
+      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
+      OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
 
   stop-fix:
     # Job-level if: is intentionally coarse — it only screens for the

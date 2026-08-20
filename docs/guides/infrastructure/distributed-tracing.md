@@ -109,8 +109,8 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 | `gen_ai.operation.name` | `invoke_agent` | `run`, `agent` (`create_agent` on `sandbox_create`) |
 | `gen_ai.agent.name` | `triage` | `run`, `agent` |
 | `gen_ai.system` | `anthropic` | `agent` (the model vendor, from the runtime) |
-| `gen_ai.request.model` | `claude-opus-4-6` | `run` (aggregated), `agent` (resolved model) |
-| `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` | `109938` | `run` (aggregated), `agent` |
+| `gen_ai.request.model` | `claude-opus-4-6` | `agent` (resolved model) |
+| `gen_ai.usage.input_tokens` / `output_tokens` / `cache_*_input_tokens` | `109938` | `agent` |
 
 ### Fullsend-specific attributes
 

@@ -90,6 +90,7 @@ func resetScenarioWorld(w *world.World) {
 	w.ForkPRBranch = ""
 	w.URLHarnessRepoOwner = ""
 	w.URLHarnessRepoName = ""
+	w.URLBaseHarnesses = nil
 	w.RecordedBranchSHAs = nil
 	w.CreatedBranches = nil
 	w.CreatedPRNumbers = nil

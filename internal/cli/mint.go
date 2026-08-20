@@ -120,13 +120,20 @@ func parseAllowedOrgs(allowedOrgs string) []string {
 	return orgs
 }
 
-func isPublicMintAllowedOrgs(allowedOrgs string) bool {
-	return mintcore.IsPublicMint(parseAllowedOrgs(allowedOrgs))
+// isPublicMintRepos reports whether a PER_REPO_WIF_REPOS value indicates
+// public mint mode (ADR-0078: PER_REPO_WIF_REPOS=* means any repo can call the mint).
+func isPublicMintRepos(perRepoWIFRepos string) bool {
+	for _, entry := range mintcore.SplitCSV(perRepoWIFRepos) {
+		if entry == "*" {
+			return true
+		}
+	}
+	return false
 }
 
 // mintValidationMessage returns the success message after validating an existing mint.
 func mintValidationMessage(trafficEnv map[string]string, envErr error) string {
-	if envErr == nil && isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"]) {
+	if envErr == nil && isPublicMintRepos(trafficEnv["PER_REPO_WIF_REPOS"]) {
 		return "Mint validated (public mode — org registration not required)"
 	}
 	return "Mint validated and org registered"
@@ -571,7 +578,7 @@ Cloudflare mode (--platform=cloudflare):
 	cmd.Flags().StringVar(&rolesFlag, "roles", "", `comma-separated role names to bootstrap with --pem-dir
 Overrides the default set (fullsend,triage,coder,review,retro,prioritize).
 Example: --roles=fullsend,triage,coder,review,retro,prioritize,e2e`)
-	cmd.Flags().BoolVar(&public, "public", false, `deploy public mint (GCP: ALLOWED_ORGS=*; Cloudflare: PER_REPO_WIF_REPOS=*)
+	cmd.Flags().BoolVar(&public, "public", false, `deploy public mint (PER_REPO_WIF_REPOS=*)
 Mutually exclusive with --per-repo-wif-repos on Cloudflare`)
 
 	// GCP-specific flags.
@@ -678,7 +685,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 			printer.StepInfo("Would skip code deployment (--skip-deploy)")
 		}
 		if public {
-			printer.StepInfo("Would deploy public mint (ALLOWED_ORGS=*, permissive WIF)")
+			printer.StepInfo("Would deploy public mint (PER_REPO_WIF_REPOS=*, permissive WIF)")
 		}
 		if pemDir != "" {
 			if _, err := validatePEMDir(pemDir, roles); err != nil {
@@ -750,7 +757,7 @@ func runMintDeployGCP(ctx context.Context, project, region, sourceDir string, sk
 		summaryLines = append(summaryLines, fmt.Sprintf("App set: %s (PEMs bootstrapped)", appSet))
 	}
 	if public {
-		summaryLines = append(summaryLines, "Mode: public (ALLOWED_ORGS=*)")
+		summaryLines = append(summaryLines, "Mode: public (PER_REPO_WIF_REPOS=*)")
 		summaryLines = append(summaryLines, "Orgs may call this mint via upstream reusable workflows after installing shared Apps")
 	} else {
 		summaryLines = append(summaryLines, "Next: fullsend mint enroll <org> --project="+project)
@@ -1178,7 +1185,7 @@ func verifyEnrollment(ctx context.Context, printer *ui.Printer, provisioner enro
 
 	orgPresent := false
 	allowedOrgs := verifyEnvVars["ALLOWED_ORGS"]
-	if isPublicMintAllowedOrgs(allowedOrgs) {
+	if isPublicMintRepos(verifyEnvVars["PER_REPO_WIF_REPOS"]) {
 		orgPresent = true
 	} else {
 		for _, o := range strings.Split(allowedOrgs, ",") {
@@ -1190,8 +1197,8 @@ func verifyEnrollment(ctx context.Context, printer *ui.Printer, provisioner enro
 	}
 
 	if orgPresent {
-		if isPublicMintAllowedOrgs(allowedOrgs) {
-			printer.StepDone("Public mint mode (ALLOWED_ORGS=*) — all orgs allowed")
+		if isPublicMintRepos(verifyEnvVars["PER_REPO_WIF_REPOS"]) {
+			printer.StepDone("Public mint mode (PER_REPO_WIF_REPOS=*) — all orgs allowed")
 		} else {
 			orgCount := 0
 			for _, o := range strings.Split(allowedOrgs, ",") {
@@ -1245,9 +1252,9 @@ func runMintEnrollOrg(ctx context.Context, printer *ui.Printer, org, project, re
 	if err != nil {
 		return fmt.Errorf("reading mint env vars: %w", err)
 	}
-	if isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"]) {
+	if isPublicMintRepos(trafficEnv["PER_REPO_WIF_REPOS"]) {
 		printer.Blank()
-		printer.StepInfo("Mint is in public mode (ALLOWED_ORGS=*) — org registration is not required")
+		printer.StepInfo("Mint is in public mode (PER_REPO_WIF_REPOS=*) — org registration is not required")
 		printer.Blank()
 		printer.Summary("Enrollment complete", []string{
 			fmt.Sprintf("Organization: %s", org),
@@ -1341,9 +1348,9 @@ func runMintEnrollRepo(ctx context.Context, printer *ui.Printer, repoFullName, p
 	if err != nil {
 		return fmt.Errorf("reading mint env vars: %w", err)
 	}
-	if isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"]) {
+	if isPublicMintRepos(trafficEnv["PER_REPO_WIF_REPOS"]) {
 		printer.Blank()
-		printer.StepInfo("Mint is in public mode (ALLOWED_ORGS=*) — per-repo WIF registration is not supported")
+		printer.StepInfo("Mint is in public mode (PER_REPO_WIF_REPOS=*) — per-repo WIF registration is not supported")
 		printer.StepInfo("Per-repo installs use the default WIF provider and upstream reusable workflows")
 		printer.Blank()
 		printer.Summary("Enrollment complete", []string{
@@ -1519,10 +1526,10 @@ func runMintUnenrollOrg(ctx context.Context, printer *ui.Printer, org, project, 
 	if err != nil {
 		return fmt.Errorf("reading mint env vars: %w", err)
 	}
-	if isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"]) {
+	if isPublicMintRepos(trafficEnv["PER_REPO_WIF_REPOS"]) {
 		printer.Blank()
-		printer.StepInfo("Mint is in public mode (ALLOWED_ORGS=*) — individual org unenroll is not supported")
-		printer.StepInfo("To restrict access, replace ALLOWED_ORGS=* with an explicit org list")
+		printer.StepInfo("Mint is in public mode (PER_REPO_WIF_REPOS=*) — individual org unenroll is not supported")
+		printer.StepInfo("To restrict access, clear PER_REPO_WIF_REPOS=* and set an explicit org list")
 		return nil
 	}
 
@@ -1613,9 +1620,9 @@ func runMintUnenrollRepo(ctx context.Context, printer *ui.Printer, repoFullName,
 	if err != nil {
 		return fmt.Errorf("reading mint env vars: %w", err)
 	}
-	if isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"]) {
+	if isPublicMintRepos(trafficEnv["PER_REPO_WIF_REPOS"]) {
 		printer.Blank()
-		printer.StepInfo("Mint is in public mode (ALLOWED_ORGS=*) — per-repo unenroll is not supported")
+		printer.StepInfo("Mint is in public mode (PER_REPO_WIF_REPOS=*) — per-repo unenroll is not supported")
 		printer.StepInfo("Per-repo installs use the default WIF provider and upstream reusable workflows")
 		return nil
 	}
@@ -1871,11 +1878,11 @@ func runMintStatus(ctx context.Context, printer *ui.Printer, project, region, or
 	}
 	roleOnlyIDs := mintcore.RoleOnlyAppIDs(roleAppIDs)
 
-	publicMint := trafficEnv != nil && isPublicMintAllowedOrgs(trafficEnv["ALLOWED_ORGS"])
+	publicMint := trafficEnv != nil && isPublicMintRepos(trafficEnv["PER_REPO_WIF_REPOS"])
 	if publicMint {
 		printer.Blank()
 		printer.Header("Mint Mode")
-		printer.StepInfo("  Public (ALLOWED_ORGS=*)")
+		printer.StepInfo("  Public (PER_REPO_WIF_REPOS=*)")
 	}
 
 	if org != "" && !publicMint {

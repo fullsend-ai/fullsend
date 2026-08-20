@@ -3417,16 +3417,16 @@ func TestParseAllowedOrgs_SkipsPlaceholder(t *testing.T) {
 	assert.Equal(t, []string{"acme", "widget"}, orgs)
 }
 
-func TestIsPublicMintAllowedOrgs(t *testing.T) {
-	assert.True(t, isPublicMintAllowedOrgs("*"))
-	assert.True(t, isPublicMintAllowedOrgs("org1,*"))
-	assert.False(t, isPublicMintAllowedOrgs("acme,widget"))
-	assert.False(t, isPublicMintAllowedOrgs(""))
+func TestIsPublicMintRepos(t *testing.T) {
+	assert.True(t, isPublicMintRepos("*"))
+	assert.True(t, isPublicMintRepos("org/repo,*"))
+	assert.False(t, isPublicMintRepos("acme/repo,widget/repo"))
+	assert.False(t, isPublicMintRepos(""))
 }
 
 func TestMintValidationMessage(t *testing.T) {
 	assert.Equal(t, "Mint validated (public mode — org registration not required)",
-		mintValidationMessage(map[string]string{"ALLOWED_ORGS": "*"}, nil))
+		mintValidationMessage(map[string]string{"PER_REPO_WIF_REPOS": "*"}, nil))
 	assert.Equal(t, "Mint validated and org registered",
 		mintValidationMessage(map[string]string{"ALLOWED_ORGS": "acme"}, nil))
 	assert.Equal(t, "Mint validated and org registered",
@@ -3483,7 +3483,8 @@ func TestVerifyEnrollment_PublicMode(t *testing.T) {
 	printer := ui.New(out)
 	verifyEnrollment(context.Background(), printer, &fakeEnrollmentVerifier{
 		envVars: map[string]string{
-			"ALLOWED_ORGS": "*",
+			"ALLOWED_ORGS":       "*",
+			"PER_REPO_WIF_REPOS": "*",
 		},
 	}, "any-org", "my-project")
 	assert.Contains(t, out.String(), "Public mint mode")
@@ -3549,21 +3550,21 @@ func publicMintDiscoveryClient() gcf.GCFClient {
 		gcf.WithFakeFunctionInfo(&gcf.FunctionInfo{
 			URI: "https://mint.example.com",
 			EnvVars: map[string]string{
-				"ROLE_APP_IDS": `{"coder":"100","triage":"200"}`,
-				"ALLOWED_ORGS": "*",
+				"ROLE_APP_IDS":       `{"coder":"100","triage":"200"}`,
+				"PER_REPO_WIF_REPOS": "*",
 			},
 		}),
 		gcf.WithFakeTrafficEnvVars(map[string]string{
-			"ROLE_APP_IDS": `{"coder":"100","triage":"200"}`,
-			"ALLOWED_ORGS": "*",
+			"ROLE_APP_IDS":       `{"coder":"100","triage":"200"}`,
+			"PER_REPO_WIF_REPOS": "*",
 		}),
 		gcf.WithFakeRevisionInfo(&gcf.ServiceRevisionInfo{
 			TrafficRevisionShort:   "fullsend-mint-00001",
 			TrafficPercent:         100,
 			TemplateMatchesTraffic: true,
 			TrafficEnvVars: map[string]string{
-				"ROLE_APP_IDS": `{"coder":"100","triage":"200"}`,
-				"ALLOWED_ORGS": "*",
+				"ROLE_APP_IDS":       `{"coder":"100","triage":"200"}`,
+				"PER_REPO_WIF_REPOS": "*",
 			},
 		}),
 	)
@@ -3864,7 +3865,7 @@ func TestRunMintStatus_PublicMode(t *testing.T) {
 	printer := ui.New(out)
 	err := runMintStatus(context.Background(), printer, "my-project", "us-central1", "any-org")
 	require.NoError(t, err)
-	assert.Contains(t, out.String(), "Public (ALLOWED_ORGS=*)")
+	assert.Contains(t, out.String(), "Public (PER_REPO_WIF_REPOS=*)")
 	assert.Contains(t, out.String(), "public mode — all orgs")
 	assert.NotContains(t, out.String(), "not in ALLOWED_ORGS")
 }
@@ -3982,7 +3983,6 @@ func TestRunMintUnenrollRepo_PublicMode(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, out.String(), "public mode")
 	assert.Contains(t, out.String(), "per-repo unenroll is not supported")
-	assert.NotContains(t, out.String(), "PER_REPO_WIF_REPOS")
 }
 
 func TestRunMintUnenrollRepo_Success(t *testing.T) {

@@ -52,7 +52,8 @@ python3 skills/nextwork/scripts/nextwork.py [ITEMS...] [OPTIONS]
 | `--apply` | Perform trivial actions: `assign:self` first when suggested on actionable unassigned items; post exact `/fs-triage`, `/fs-code`, `/fs-review`, `/fs-fix` comments; remove orphaned `blocked` labels on **Issues** only (`remove-label:blocked`). Never steals assignment from others and never auto-merges. Requires `--confirmed`. |
 | `--take-over REFS` | Assign the listed refs (comma-separated or repeatable) to `--user` **exclusively** (adds `--user`, then removes every other assignee) on **open** items only, then classify them as owned. Skill-mediated — ask the user before using this; confirmation must cover exclusive ownership. Requires `--confirmed`. |
 | `--link-blocker DEPENDENT=BLOCKER` | Repeatable. Persist a real GitHub `blockedBy` dependency (DEPENDENT is blocked by BLOCKER, both as `owner/repo#N`). Idempotent if the link already exists. **Both sides must be open Issues** — GitHub's blocked-by relationship is issue-only on the dependent **and** the blocker (a PR cannot appear on either side). Requires `--confirmed`. |
-| `--confirmed` | Required together with `--apply` / `--take-over` / `--link-blocker`. Code-level confirmation gate so mutating flags cannot fire from a premature/misparsed first pass. Invalid alone. |
+| `--resolve-threads` | Resolve **bot-only** unresolved review threads on classified PRs using the `resolveReviewThread` GraphQL mutation. Only threads where **all** comments are from `fullsend-ai-review[bot]` are resolved; threads with any human comment are left open (they require a human decision). Requires `--confirmed`. |
+| `--confirmed` | Required together with `--apply` / `--take-over` / `--link-blocker` / `--resolve-threads`. Code-level confirmation gate so mutating flags cannot fire from a premature/misparsed first pass. Invalid alone. |
 | `--decisions-only` | Filter output to non-trivial decisions only (statuses in the "Decision?" = No/Decision column below) |
 | `--stale-hours N` | Default 6. Hours after which a **stuck in-flight** agent-status start, or a **never-started** launch label/`/fs-*` command, becomes an actionable re-trigger |
 | `--triage-stale-hours N` | Default 72. Hours after which a **completed** triage (terminal status or sticky triage result) is considered stale |
@@ -115,6 +116,9 @@ like production dispatch: first whitespace token of the first comment line.
 | `needs_review_decision` | Manual-review labels, human unresolved threads, failed CI (`FAILURE`/`ERROR`), or `mergeStateStatus=BLOCKED` under `ready-for-merge` | Decision |
 | `ready_to_merge` | `ready-for-merge` **and** `mergeStateStatus` is `CLEAN`/`UNSTABLE`, no unresolved threads, checks settled, review not still required, not yet enqueued | Decision (never auto-merged) |
 | `fix_conflicts` | `mergeStateStatus` is `DIRTY` **or** `mergeable` is `CONFLICTING` | Decision |
+| `needs_breakdown` | `needs-breakdown` label → break this issue into smaller sub-issues | Decision |
+| `needs_design` | `needs-design` label → add the missing design details | Decision |
+| `workflow_blocked` | `workflow-blocked` label → implement locally; the code agent cannot push workflow changes | Decision |
 | `human_work` | Assigned/authored, no clear automation signal — implement, un-draft, or investigate | Decision |
 
 **Side-action (orthogonal to primary status):**
@@ -161,6 +165,15 @@ like production dispatch: first whitespace token of the first comment line.
    `python3 skills/nextwork/scripts/nextwork.py --take-over owner/repo#N --confirmed ... --format json`
    and continue classifying the refreshed output — the item is now owned and
    goes through the full status catalog like anything else.
+5b. For PRs with `waiting_fix` or `needs_review_decision` where the
+   classification surfaces `unresolved_threads` (now included in JSON
+   output with `id`, `path`, `line`, `body`, and `bot_only` fields):
+   review the thread details. If bot-only threads have been addressed
+   (fix commits landed, findings resolved in code), offer to resolve
+   them: `python3 skills/nextwork/scripts/nextwork.py <args> --resolve-threads --confirmed --format json`.
+   Only bot-only threads are resolved; human threads require a human
+   decision. This resolves the threads via the `resolveReviewThread`
+   GraphQL mutation.
 6. Present the result:
    - Default: actionable items. Add blocked/waiting/assigned-elsewhere detail
      only if the user asked, or pass `--show-blocked`.
@@ -185,7 +198,7 @@ like production dispatch: first whitespace token of the first comment line.
 | 0 | Success |
 | 1 | Missing `gh` or not in a resolvable repository |
 | 2 | Invalid arguments (bad `--repo`, unparseable ref, malformed `--link-blocker` spec, mutating flags without `--confirmed`) |
-| 3 | GraphQL/API failure (including mid-walk per-item fetch failures; JSON may still list partial `items` plus `fetch_errors`) **or** any `--apply` / `--link-blocker` / `--take-over` mutation recorded as `action: error` |
+| 3 | GraphQL/API failure (including mid-walk per-item fetch failures; JSON may still list partial `items` plus `fetch_errors`) **or** any `--apply` / `--link-blocker` / `--take-over` / `--resolve-threads` mutation recorded as `action: error` |
 
 ## Limitations
 
@@ -233,6 +246,12 @@ like production dispatch: first whitespace token of the first comment line.
 - Linked-PR detection scans open PRs only when an issue reaches that check
   (after blockers / assignment / sub-issues). The scan is capped at five
   GraphQL pages (~500 PRs) per repo; beyond that, some links may be missed.
+- PR items include `unresolved_threads[]` in JSON output. Each thread has:
+  `id` (GraphQL node ID for mutations), `path` (file path), `line` (line
+  number, nullable), `body` (first comment body, truncated), `author`
+  (first commenter), `authors` (all commenters), `created_at`, and
+  `bot_only` (true when all authors are `fullsend-ai-review[bot]`).
+  `--resolve-threads` uses `id` to call `resolveReviewThread`.
 - Item GraphQL fetches use soft page caps (not full pagination): last 50
   comments, first 20 `blockedBy`, first 50 `subIssues`, first 50
   `reviewThreads`, last 20 comments per review thread (any non-bot author in
@@ -248,8 +267,9 @@ like production dispatch: first whitespace token of the first comment line.
   chain can consume `--max-visits` before other seeds are fetched.
 - Commit check rollup (`statusCheckRollup`) is not scoped to branch-protection
   required checks; wording says “commit checks,” not “required checks.”
-- `--apply` / `--link-blocker` / `--take-over` continue on per-item mutation
-  failures and record `action: error` entries instead of aborting mid-run.
-  After output, any such error (or mid-walk fetch failures in JSON
-  `fetch_errors`) yields exit code 3. Markdown output includes Applied /
-  Link blockers / Take-over sections when those result lists are non-empty.
+- `--apply` / `--link-blocker` / `--take-over` / `--resolve-threads` continue
+  on per-item mutation failures and record `action: error` entries instead of
+  aborting mid-run. After output, any such error (or mid-walk fetch failures
+  in JSON `fetch_errors`) yields exit code 3. Markdown output includes
+  Applied / Link blockers / Take-over / Resolved threads sections when those
+  result lists are non-empty.

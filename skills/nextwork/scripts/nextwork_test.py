@@ -44,6 +44,7 @@ from nextwork import (  # noqa: E402
     parse_ref,
     parse_take_over_specs,
     resolve_repo,
+    resolve_threads,
     seed_from_assigned,
     take_over,
 )
@@ -402,17 +403,16 @@ class TestNormalizeItem(unittest.TestCase):
         self.assertEqual(item["mergeable"], "MERGEABLE")
         self.assertEqual(item["merge_state_status"], "CLEAN")
         self.assertEqual(item["unresolved_review_threads"], 1)
-        self.assertEqual(
-            item["unresolved_threads"],
-            [
-                {
-                    "author": "fullsend-ai-review[bot]",
-                    "authors": ["fullsend-ai-review[bot]"],
-                    "created_at": "2024-01-02T01:00:00Z",
-                    "bot_only": True,
-                }
-            ],
-        )
+        self.assertEqual(len(item["unresolved_threads"]), 1)
+        thread = item["unresolved_threads"][0]
+        self.assertEqual(thread["author"], "fullsend-ai-review[bot]")
+        self.assertEqual(thread["authors"], ["fullsend-ai-review[bot]"])
+        self.assertEqual(thread["created_at"], "2024-01-02T01:00:00Z")
+        self.assertTrue(thread["bot_only"])
+        self.assertEqual(thread["id"], "PRRT_unresolved_1")
+        self.assertEqual(thread["path"], "internal/handler.go")
+        self.assertEqual(thread["line"], 42)
+        self.assertEqual(thread["body"], "Error return value is not checked.")
         self.assertEqual(item["checks_state"], "SUCCESS")
         self.assertEqual(item["head_committed_at"], "2024-01-02T00:30:00Z")
         self.assertIsNone(item["latest_approved_review_at"])
@@ -426,6 +426,7 @@ class TestNormalizeItem(unittest.TestCase):
         node["reviewThreads"]["nodes"][1]["comments"]["nodes"].append(
             {
                 "author": {"login": "carol"},
+                "body": "I disagree with this finding.",
                 "createdAt": "2024-01-02T02:00:00Z",
             }
         )
@@ -435,6 +436,10 @@ class TestNormalizeItem(unittest.TestCase):
         self.assertFalse(thread["bot_only"])
         self.assertEqual(thread["authors"], ["fullsend-ai-review[bot]", "carol"])
         self.assertEqual(thread["created_at"], "2024-01-02T01:00:00Z")
+        # id, path, line preserved even with human reply
+        self.assertEqual(thread["id"], "PRRT_unresolved_1")
+        self.assertEqual(thread["path"], "internal/handler.go")
+        self.assertEqual(thread["line"], 42)
 
 
 class TestClassifyIssue(unittest.TestCase):
@@ -1028,6 +1033,85 @@ class TestClassifyIssue(unittest.TestCase):
         result = classify_issue(item, "alice", 6, NOW)
         self.assertEqual(result.status, "promote_code")
         self.assertFalse(result.eliminated)
+
+    def test_needs_breakdown_actionable(self):
+        """Issue with needs-breakdown label is actionable with suggested_actions."""
+        item = make_issue(labels=["needs-breakdown"], assignees=["alice"])
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_breakdown")
+        self.assertFalse(result.eliminated)
+        self.assertEqual(result.suggested_actions, ["Break this issue into smaller sub-issues"])
+
+    def test_needs_breakdown_unassigned(self):
+        """Unassigned needs-breakdown issue is still actionable (not needs_assign)."""
+        item = make_issue(labels=["needs-breakdown"])
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_breakdown")
+        self.assertFalse(result.eliminated)
+
+    def test_needs_breakdown_with_triaged(self):
+        """needs-breakdown takes priority over triaged (would be promote_code)."""
+        item = make_issue(labels=["needs-breakdown", "triaged"], assignees=["alice"])
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_breakdown")
+        self.assertFalse(result.eliminated)
+
+    def test_needs_design_actionable(self):
+        """Issue with needs-design label is actionable with suggested_actions."""
+        item = make_issue(labels=["needs-design"], assignees=["alice"])
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_design")
+        self.assertFalse(result.eliminated)
+        self.assertEqual(result.suggested_actions, ["Add the missing design details"])
+
+    def test_needs_design_with_triaged(self):
+        """needs-design takes priority over triaged (would be promote_code)."""
+        item = make_issue(labels=["needs-design", "triaged"], assignees=["alice"])
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_design")
+        self.assertFalse(result.eliminated)
+
+    def test_workflow_blocked_actionable(self):
+        """Triaged issue with workflow-blocked is actionable with suggested_actions."""
+        item = make_issue(labels=["triaged", "workflow-blocked"], assignees=["alice"])
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "workflow_blocked")
+        self.assertFalse(result.eliminated)
+        self.assertEqual(
+            result.suggested_actions,
+            ["Implement locally; the code agent cannot push workflow changes"],
+        )
+
+    def test_workflow_blocked_without_triaged(self):
+        """workflow-blocked alone is still classified as workflow_blocked."""
+        item = make_issue(labels=["workflow-blocked"], assignees=["alice"])
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "workflow_blocked")
+        self.assertFalse(result.eliminated)
+
+    def test_blockers_win_over_needs_breakdown(self):
+        """Structured blockers take priority over needs-breakdown."""
+        item = make_issue(
+            labels=["needs-breakdown"],
+            blockers=[{"repo": "acme/widget", "number": 7}],
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "blocked_by")
+
+    def test_assigned_elsewhere_wins_over_needs_design(self):
+        """assigned_elsewhere takes priority over needs-design."""
+        item = make_issue(labels=["needs-design"], assignees=["bob"])
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "assigned_elsewhere")
+
+    def test_needs_info_wins_over_needs_breakdown(self):
+        """needs-info takes priority over needs-breakdown."""
+        item = make_issue(
+            labels=["needs-info", "needs-breakdown"],
+            author="alice",
+        )
+        result = classify_issue(item, "alice", 6, NOW)
+        self.assertEqual(result.status, "needs_info_self")
 
     def test_stale_inflight_triage_retriggers(self):
         item = make_issue(
@@ -2337,6 +2421,278 @@ class TestJsonTruncationFlag(unittest.TestCase):
         payload = json.loads(out)
         self.assertTrue(payload["truncated"])
         self.assertEqual(payload["truncated_remaining"], 3)
+
+
+class TestUnresolvedThreadsInOutput(unittest.TestCase):
+    def test_json_includes_unresolved_threads(self):
+        items = [
+            {
+                "kind": "pull",
+                "repo": "acme/widget",
+                "number": 99,
+                "title": "A PR",
+                "url": "https://github.com/acme/widget/pull/99",
+                "status": "needs_review_decision",
+                "eliminated": False,
+                "reason": "2 unresolved review conversation(s) need a human decision",
+                "suggested_actions": [],
+                "blockers": [],
+                "unresolved_threads": [
+                    {
+                        "id": "PRRT_1",
+                        "author": "fullsend-ai-review[bot]",
+                        "authors": ["fullsend-ai-review[bot]"],
+                        "path": "internal/handler.go",
+                        "line": 42,
+                        "body": "Error return value is not checked.",
+                        "created_at": "2024-01-02T01:00:00Z",
+                        "bot_only": True,
+                    },
+                    {
+                        "id": "PRRT_2",
+                        "author": "carol",
+                        "authors": ["carol"],
+                        "path": "internal/server.go",
+                        "line": 10,
+                        "body": "This function is too long.",
+                        "created_at": "2024-01-02T02:00:00Z",
+                        "bot_only": False,
+                    },
+                ],
+            }
+        ]
+        out = format_json_output(items, "acme/widget", "alice", 6, [], include_text=False)
+        payload = json.loads(out)
+        item = payload["items"][0]
+        self.assertEqual(len(item["unresolved_threads"]), 2)
+        self.assertEqual(item["unresolved_threads"][0]["id"], "PRRT_1")
+        self.assertEqual(item["unresolved_threads"][0]["path"], "internal/handler.go")
+        self.assertTrue(item["unresolved_threads"][0]["bot_only"])
+        self.assertEqual(item["unresolved_threads"][1]["path"], "internal/server.go")
+        self.assertFalse(item["unresolved_threads"][1]["bot_only"])
+
+    def test_json_omits_empty_unresolved_threads(self):
+        items = [
+            {
+                "kind": "pull",
+                "repo": "acme/widget",
+                "number": 99,
+                "title": "A PR",
+                "url": "https://github.com/acme/widget/pull/99",
+                "status": "ready_to_merge",
+                "eliminated": False,
+                "reason": "Approved and ready to merge",
+                "suggested_actions": [],
+                "blockers": [],
+                "unresolved_threads": [],
+            }
+        ]
+        out = format_json_output(items, "acme/widget", "alice", 6, [], include_text=False)
+        payload = json.loads(out)
+        self.assertNotIn("unresolved_threads", payload["items"][0])
+
+    def test_normalize_thread_without_id_omits_it(self):
+        """Threads without id/path/line fields gracefully omit them."""
+        node = load_fixture("pr_node_sample.json")
+        # Remove optional fields from the thread node
+        del node["reviewThreads"]["nodes"][1]["id"]
+        del node["reviewThreads"]["nodes"][1]["path"]
+        del node["reviewThreads"]["nodes"][1]["line"]
+        item = normalize_item("acme/widget", node, quiet=True)
+        thread = item["unresolved_threads"][0]
+        self.assertNotIn("id", thread)
+        self.assertNotIn("path", thread)
+        self.assertNotIn("line", thread)
+        # body still present from first comment
+        self.assertIn("body", thread)
+
+
+class TestResolveThreads(unittest.TestCase):
+    @patch("nextwork.gh_graphql_or_none")
+    def test_resolves_bot_only_threads(self, mock_gql):
+        mock_gql.return_value = {"resolveReviewThread": {"thread": {"isResolved": True}}}
+        items = [
+            make_pr(
+                unresolved_threads=[
+                    {
+                        "id": "PRRT_1",
+                        "author": "fullsend-ai-review[bot]",
+                        "authors": ["fullsend-ai-review[bot]"],
+                        "path": "internal/handler.go",
+                        "line": 42,
+                        "body": "Error return value is not checked.",
+                        "created_at": "2024-01-02T01:00:00Z",
+                        "bot_only": True,
+                    },
+                ],
+            ),
+        ]
+        results = resolve_threads(items)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["action"], "resolved")
+        self.assertEqual(results[0]["thread_id"], "PRRT_1")
+        self.assertEqual(results[0]["thread_path"], "internal/handler.go")
+        mock_gql.assert_called_once()
+
+    @patch("nextwork.gh_graphql_or_none")
+    def test_skips_human_threads(self, mock_gql):
+        items = [
+            make_pr(
+                unresolved_threads=[
+                    {
+                        "id": "PRRT_1",
+                        "author": "carol",
+                        "authors": ["carol"],
+                        "path": "internal/handler.go",
+                        "created_at": "2024-01-02T01:00:00Z",
+                        "bot_only": False,
+                    },
+                ],
+            ),
+        ]
+        results = resolve_threads(items)
+        self.assertEqual(results, [])
+        mock_gql.assert_not_called()
+
+    @patch("nextwork.gh_graphql_or_none")
+    def test_skips_issues(self, mock_gql):
+        items = [make_issue()]
+        results = resolve_threads(items)
+        self.assertEqual(results, [])
+        mock_gql.assert_not_called()
+
+    @patch("nextwork.gh_graphql_or_none", return_value=None)
+    def test_records_error_on_mutation_failure(self, _mock_gql):
+        items = [
+            make_pr(
+                unresolved_threads=[
+                    {
+                        "id": "PRRT_1",
+                        "author": "fullsend-ai-review[bot]",
+                        "authors": ["fullsend-ai-review[bot]"],
+                        "path": "internal/handler.go",
+                        "created_at": "2024-01-02T01:00:00Z",
+                        "bot_only": True,
+                    },
+                ],
+            ),
+        ]
+        results = resolve_threads(items)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["action"], "error")
+        self.assertIn("mutation failed", results[0]["detail"])
+
+    def test_records_error_when_thread_has_no_id(self):
+        items = [
+            make_pr(
+                unresolved_threads=[
+                    {
+                        "author": "fullsend-ai-review[bot]",
+                        "authors": ["fullsend-ai-review[bot]"],
+                        "path": "internal/handler.go",
+                        "created_at": "2024-01-02T01:00:00Z",
+                        "bot_only": True,
+                    },
+                ],
+            ),
+        ]
+        results = resolve_threads(items)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["action"], "error")
+        self.assertIn("thread id not available", results[0]["detail"])
+
+    @patch("nextwork.gh_graphql_or_none")
+    def test_resolves_only_bot_threads_in_mixed_list(self, mock_gql):
+        mock_gql.return_value = {"resolveReviewThread": {"thread": {"isResolved": True}}}
+        items = [
+            make_pr(
+                unresolved_threads=[
+                    {
+                        "id": "PRRT_1",
+                        "author": "fullsend-ai-review[bot]",
+                        "authors": ["fullsend-ai-review[bot]"],
+                        "path": "internal/handler.go",
+                        "created_at": "2024-01-02T01:00:00Z",
+                        "bot_only": True,
+                    },
+                    {
+                        "id": "PRRT_2",
+                        "author": "carol",
+                        "authors": ["carol"],
+                        "path": "internal/server.go",
+                        "created_at": "2024-01-02T02:00:00Z",
+                        "bot_only": False,
+                    },
+                ],
+            ),
+        ]
+        results = resolve_threads(items)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["action"], "resolved")
+        self.assertEqual(results[0]["thread_path"], "internal/handler.go")
+        mock_gql.assert_called_once()
+
+
+class TestResolveThreadsArgs(unittest.TestCase):
+    def test_resolve_threads_requires_confirmed(self):
+        with self.assertRaises(SystemExit) as ctx:
+            parse_args(["--resolve-threads"])
+        self.assertEqual(ctx.exception.code, 2)
+
+    def test_resolve_threads_with_confirmed_ok(self):
+        args = parse_args(["--resolve-threads", "--confirmed"])
+        self.assertTrue(args.resolve_threads)
+        self.assertTrue(args.confirmed)
+
+
+class TestResolveResultsInOutput(unittest.TestCase):
+    def test_json_includes_resolve_results(self):
+        resolve_results = [
+            {
+                "repo": "acme/widget",
+                "number": 99,
+                "thread_id": "PRRT_1",
+                "thread_path": "internal/handler.go",
+                "action": "resolved",
+                "detail": "resolved bot-only thread at internal/handler.go",
+            }
+        ]
+        out = format_json_output(
+            [],
+            "acme/widget",
+            "alice",
+            6,
+            [],
+            include_text=False,
+            resolve_results=resolve_results,
+        )
+        payload = json.loads(out)
+        self.assertEqual(len(payload["resolve_results"]), 1)
+        self.assertEqual(payload["resolve_results"][0]["action"], "resolved")
+
+    def test_markdown_includes_resolve_section(self):
+        resolve_results = [
+            {
+                "repo": "acme/widget",
+                "number": 99,
+                "thread_id": "PRRT_1",
+                "thread_path": "internal/handler.go",
+                "action": "resolved",
+                "detail": "resolved bot-only thread at internal/handler.go",
+            }
+        ]
+        out = format_markdown_output(
+            [],
+            "acme/widget",
+            "alice",
+            6,
+            [],
+            show_blocked=False,
+            resolve_results=resolve_results,
+        )
+        self.assertIn("## Resolved threads", out)
+        self.assertIn("internal/handler.go", out)
+        self.assertIn("resolved", out)
 
 
 if __name__ == "__main__":

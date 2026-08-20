@@ -113,7 +113,7 @@ The deploy command automatically detects when the deployed function is up-to-dat
 
 ### Public mint deployment
 
-Use `--public` to bootstrap a public mint: `ALLOWED_ORGS=*` on the Cloud Function and a permissive WIF provider CEL for the STS authentication path. Orgs call the mint via upstream reusable workflows in `fullsend-ai/fullsend` after installing the shared public GitHub Apps — `mint enroll` is not required.
+Use `--public` to bootstrap a public mint: `PER_REPO_WIF_REPOS=*` on the Cloud Function and a permissive WIF provider CEL for the STS authentication path. Orgs call the mint via upstream reusable workflows in `fullsend-ai/fullsend` after installing the shared public GitHub Apps — `mint enroll` is not required.
 
 ```bash
 fullsend mint deploy --project="$GCP_PROJECT" --pem-dir=/path/to/pems --public
@@ -130,7 +130,7 @@ Redeploying or upgrading an existing mint must use the same mode: `--public` for
 | `--pem-dir` | | Path to directory containing `{role}.pem` files for PEM bootstrap (GCP and Cloudflare) |
 | `--app-set` | `fullsend-ai` | App set name for PEM bootstrap (used with `--pem-dir`) |
 | `--roles` | _(default roles)_ | Comma-separated role names to bootstrap with `--pem-dir` |
-| `--public` | `false` | Deploy public mint (GCP: `ALLOWED_ORGS=*`; Cloudflare: `PER_REPO_WIF_REPOS=*`); required to redeploy an existing public mint |
+| `--public` | `false` | Deploy public mint (`PER_REPO_WIF_REPOS=*`); required to redeploy an existing public mint |
 | `--source-dir` | | Path to local mint source directory (default: checkout path when present, embedded otherwise) |
 | `--skip-deploy` | `false` | Skip code upload, reuse existing function (only update WIF/config) |
 | `--dry-run` | `false` | Preview changes without making them |
@@ -293,9 +293,9 @@ Role PEM secrets and `ROLE_APP_IDS` must already exist on the mint, created duri
 
 ### Public mint mode
 
-When the mint is configured with `ALLOWED_ORGS=*` (public mode), `mint enroll` exits successfully (exit code 0) in both public and tight modes, but only tight mode updates `ALLOWED_ORGS` and WIF. In public mode, org registration is unnecessary because all orgs are already allowed — the command discovers the mint and reports public mode without changing configuration. Scripts can call enroll in both modes without branching. `mint enroll owner/repo` also succeeds without per-repo WIF changes; per-repo installs use the default WIF provider and upstream reusable workflows.
+When the mint is configured with `PER_REPO_WIF_REPOS=*` (public mode), `mint enroll` exits successfully (exit code 0) in both public and tight modes, but only tight mode updates `ALLOWED_ORGS` and WIF. In public mode, org registration is unnecessary because all orgs are already allowed — the command discovers the mint and reports public mode without changing configuration. Scripts can call enroll in both modes without branching. `mint enroll owner/repo` also succeeds without per-repo WIF changes; per-repo installs use the default WIF provider and upstream reusable workflows.
 
-`mint unenroll` cannot remove individual orgs from a public mint. To restrict access, replace `ALLOWED_ORGS=*` with an explicit org list (config-only rollback; no PEM rotation required).
+`mint unenroll` cannot remove individual orgs from a public mint. To restrict access, clear `PER_REPO_WIF_REPOS=*` and set an explicit org list (config-only rollback; no PEM rotation required).
 
 ### Post-enrollment verification
 

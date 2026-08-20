@@ -136,7 +136,7 @@ type Config struct {
 	// Commit is the git commit SHA to stamp on the deployed mint.
 	// Embedded directly into the source code at bundle time.
 	Commit string
-	// PublicMint bootstraps ALLOWED_ORGS=* and a permissive WIF provider CEL.
+	// PublicMint bootstraps PER_REPO_WIF_REPOS=* and a permissive WIF provider CEL.
 	PublicMint bool
 }
 
@@ -466,20 +466,32 @@ func (p *Provisioner) validateMintDeployMode(ctx context.Context) error {
 	}
 	switch {
 	case p.cfg.PublicMint && !existingPublic:
-		return fmt.Errorf("cannot deploy public mint: existing mint is in tight mode (ALLOWED_ORGS does not contain *)")
+		return fmt.Errorf("cannot deploy public mint: existing mint is in tight mode (PER_REPO_WIF_REPOS does not contain *)")
 	case !p.cfg.PublicMint && existingPublic:
-		return fmt.Errorf("existing mint is in public mode (ALLOWED_ORGS=*); redeploy with --public")
+		return fmt.Errorf("existing mint is in public mode (PER_REPO_WIF_REPOS=*); redeploy with --public")
 	}
 	return nil
 }
 
-// isTrafficMintPublic reports whether the traffic-serving revision has public mint mode.
+// isTrafficMintPublic reports whether the traffic-serving revision has public
+// mint mode. Per ADR-0078, public mode is expressed as PER_REPO_WIF_REPOS=*.
 func (p *Provisioner) isTrafficMintPublic(ctx context.Context) (bool, error) {
 	trafficEnvVars, err := p.gcpAPI.GetServiceTrafficEnvVars(ctx, p.cfg.ProjectID, p.cfg.Region, functionName)
 	if err != nil {
 		return false, fmt.Errorf("reading traffic-serving env vars: %w", err)
 	}
-	return mintcore.IsPublicMint(mintcore.ParseAllowedOrgs(trafficEnvVars["ALLOWED_ORGS"])), nil
+	return isPublicMintEnv(trafficEnvVars), nil
+}
+
+// isPublicMintEnv reports whether the given env vars indicate public mint mode
+// by checking PER_REPO_WIF_REPOS for the wildcard "*" entry (ADR-0078).
+func isPublicMintEnv(envVars map[string]string) bool {
+	for _, entry := range mintcore.SplitCSV(envVars["PER_REPO_WIF_REPOS"]) {
+		if entry == "*" {
+			return true
+		}
+	}
+	return false
 }
 
 // EnsureOrgInMint validates that a mint function exists at expectedURL and
@@ -510,7 +522,7 @@ func (p *Provisioner) EnsureOrgInMint(ctx context.Context, expectedURL string, o
 		return fmt.Errorf("reading traffic-serving env vars: %w", err)
 	}
 
-	if mintcore.IsPublicMint(mintcore.ParseAllowedOrgs(trafficEnvVars["ALLOWED_ORGS"])) {
+	if isPublicMintEnv(trafficEnvVars) {
 		return nil
 	}
 
@@ -574,8 +586,8 @@ func (p *Provisioner) RegisterPerRepoWIF(ctx context.Context, repo string) error
 		return fmt.Errorf("reading traffic-serving env vars: %w", err)
 	}
 
-	if mintcore.IsPublicMint(mintcore.ParseAllowedOrgs(trafficEnvVars["ALLOWED_ORGS"])) {
-		return fmt.Errorf("per-repo WIF registration is not supported when mint is in public mode (ALLOWED_ORGS=*)")
+	if isPublicMintEnv(trafficEnvVars) {
+		return fmt.Errorf("per-repo WIF registration is not supported when mint is in public mode (PER_REPO_WIF_REPOS=*)")
 	}
 
 	repo = strings.ToLower(repo)
@@ -882,6 +894,9 @@ func (p *Provisioner) provisionSelfManaged(ctx context.Context) (map[string]stri
 		"WIF_PROVIDER_NAME":  p.cfg.WIFProvider,
 		"ALLOWED_ORGS":       strings.Join(allOrgs, ","),
 		"ROLE_APP_IDS":       roleAppIDsJSON,
+	}
+	if p.cfg.PublicMint {
+		envVars["PER_REPO_WIF_REPOS"] = "*"
 	}
 
 	// Step 6b: Code deployment — only when source hash changes.
@@ -1240,7 +1255,7 @@ func (p *Provisioner) ensureWIFPoolAndProvider(ctx context.Context, installingOr
 	var allOrgs []string
 	var attrCondition string
 	if p.cfg.PublicMint {
-		allOrgs = []string{"*"}
+		allOrgs = []string{PlaceholderOrg}
 		attrCondition = buildPublicAttributeCondition()
 	} else {
 		allOrgs = make([]string, len(installingOrgs))
@@ -1639,8 +1654,8 @@ func (p *Provisioner) RemoveOrgFromMint(ctx context.Context, org string) error {
 		return fmt.Errorf("reading traffic-serving env vars: %w", err)
 	}
 
-	if mintcore.IsPublicMint(mintcore.ParseAllowedOrgs(trafficEnvVars["ALLOWED_ORGS"])) {
-		return fmt.Errorf("cannot remove individual orgs when mint is in public mode (ALLOWED_ORGS=*); set an explicit org list instead")
+	if isPublicMintEnv(trafficEnvVars) {
+		return fmt.Errorf("cannot remove individual orgs when mint is in public mode (PER_REPO_WIF_REPOS=*); set an explicit org list instead")
 	}
 
 	updated := make(map[string]string, len(trafficEnvVars))

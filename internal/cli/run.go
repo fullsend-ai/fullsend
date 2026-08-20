@@ -953,20 +953,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			rootSpan.SetAttributes(stringAttr("fullsend.prescript.skip_reason", runSkipReason))
 		}
 		if runCount > 0 {
-			rootSpan.SetAttributes(
-				stringAttr("gen_ai.request.model", aggMetrics.Model),
-				attribute.Int("gen_ai.usage.input_tokens", aggMetrics.TokenUsage.Input),
-				attribute.Int("gen_ai.usage.output_tokens", aggMetrics.TokenUsage.Output),
-				attribute.Int("gen_ai.usage.cache_creation.input_tokens", aggMetrics.TokenUsage.CacheCreation),
-				attribute.Int("gen_ai.usage.cache_read.input_tokens", aggMetrics.TokenUsage.CacheRead),
-				attribute.Float64("fullsend.cost_usd", roundUSD(aggMetrics.TotalCostUSD)),
-				attribute.Int("fullsend.num_turns", aggMetrics.NumTurns),
-				attribute.Int("fullsend.tool_calls", aggMetrics.ToolCalls),
-				attribute.Int("fullsend.iterations", runCount),
-			)
-			if aggMetrics.TokenUsage.Reasoning > 0 {
-				rootSpan.SetAttributes(attribute.Int("gen_ai.usage.reasoning_tokens", aggMetrics.TokenUsage.Reasoning))
-			}
+			rootSpan.SetAttributes(rootSpanEndAttrs(aggMetrics, runCount)...)
 		}
 
 		finalizeRootSpan(rootSpan, runErr, exitCode, validationPassed)
@@ -2331,6 +2318,15 @@ func agentSpanStartAttrs(iteration int, agentName string) []attribute.KeyValue {
 		attribute.Int("iteration", iteration),
 		attribute.String("gen_ai.operation.name", "invoke_agent"),
 		stringAttr("gen_ai.agent.name", agentName),
+	}
+}
+
+func rootSpanEndAttrs(agg aggregateMetrics, runCount int) []attribute.KeyValue {
+	return []attribute.KeyValue{
+		attribute.Int("fullsend.num_turns", agg.NumTurns),
+		attribute.Int("fullsend.tool_calls", agg.ToolCalls),
+		attribute.Float64("fullsend.cost_usd", roundUSD(agg.TotalCostUSD)),
+		attribute.Int("fullsend.iterations", runCount),
 	}
 }
 

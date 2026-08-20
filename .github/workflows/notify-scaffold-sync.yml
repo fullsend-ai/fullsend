@@ -1,0 +1,70 @@
+# Notify the .fullsend repo to run sync-scaffold, which reconciles
+# per-repo variables across all fullsend-ai per-repo installs whenever
+# fullsend main is updated. Scaffold file convergence requires
+# fullsend_ref to be set in repos.yaml (tracked separately).
+#
+# Required setup:
+#   1. Set repository variable SYNC_CLIENT_ID to the fullsend-ai-sync App client ID.
+#   2. Set repository secret SYNC_PRIVATE_KEY to the App's PEM private key.
+#   3. Set repository secret SLACK_WEBHOOK_URL for failure notifications.
+#
+# The App needs Contents: write on fullsend-ai/.fullsend (which grants
+# repository_dispatch access). The token is scoped to .fullsend only via
+# the repositories: parameter below.
+name: Notify Scaffold Sync
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+
+permissions: {}
+
+jobs:
+  notify:
+    if: github.repository == 'fullsend-ai/fullsend' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          client-id: ${{ vars.SYNC_CLIENT_ID }}
+          private-key: ${{ secrets.SYNC_PRIVATE_KEY }}
+          owner: fullsend-ai
+          repositories: ".fullsend"
+          permission-contents: write
+
+      - name: Dispatch sync
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh api repos/fullsend-ai/.fullsend/dispatches \
+            -f event_type=fullsend-updated \
+            -f "client_payload[sha]=${COMMIT_SHA}" # traceability only; receiver builds from main HEAD
+
+  notify-failure:
+    needs: [notify]
+    if: always() && needs.notify.result != 'success' && needs.notify.result != 'skipped'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Notify Slack
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "::error::SLACK_WEBHOOK_URL secret is not configured"
+            exit 1
+          fi
+          PAYLOAD=$(jq -n --arg url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{text: ":warning: Scaffold sync dispatch to .fullsend failed — the sync itself was never started. <\($url)|View run>"}')
+          curl -fsS -X POST -H "Content-Type: application/json" -d "$PAYLOAD" "$SLACK_WEBHOOK_URL"

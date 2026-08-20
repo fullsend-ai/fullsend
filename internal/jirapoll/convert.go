@@ -6,36 +6,36 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
-// toNormalizedEvent converts a JiraEvent to a dispatch.NormalizedEvent
-// per the jira-poll-adapter.md spec.
-func (p *Poller) toNormalizedEvent(event JiraEvent) dispatch.NormalizedEvent {
-	ne := dispatch.NormalizedEvent{
+// toNormalizedEvent converts a JiraEvent to a normevent.Event for CEL trigger
+// evaluation, per the jira-poll-adapter.md spec.
+func (p *Poller) toNormalizedEvent(event JiraEvent) normevent.Event {
+	ne := normevent.Event{
 		Repo: p.opts.TargetRepo,
-		Source: dispatch.Source{
-			System:    "jira",
+		Source: normevent.Source{
+			System:    normevent.SystemJira,
 			RawType:   mapRawType(event),
 			RawAction: mapRawAction(event),
 		},
-		Entity: dispatch.Entity{
-			Kind: "work_item",
+		Entity: normevent.Entity{
+			Kind: normevent.EntityWorkItem,
 			ID:   parseIssueID(event.IssueID),
 			Key:  event.IssueKey,
 			URL:  event.IssueURL,
 		},
-		Transition: dispatch.Transition{
-			Kind: event.Type,
+		Transition: normevent.Transition{
+			Kind: normevent.TransitionKind(event.Type),
 		},
-		Actor: dispatch.Actor{
+		Actor: normevent.Actor{
 			ID:             actorID(event),
-			Kind:           actorKind(event),
-			Role:           p.resolveRole(event),
+			Kind:           normevent.ActorKind(actorKind(event)),
+			Role:           normevent.ActorRole(p.resolveRole(event)),
 			IsEntityAuthor: isEntityAuthor(event),
 		},
-		State: dispatch.State{
+		State: normevent.State{
 			Labels: event.Labels,
 		},
 	}
@@ -43,13 +43,13 @@ func (p *Poller) toNormalizedEvent(event JiraEvent) dispatch.NormalizedEvent {
 	switch event.Type {
 	case "comment_added":
 		cmd, instruction := extractCommand(event.CommentBody)
-		ne.Transition.Comment = &dispatch.TransitionComment{
+		ne.Transition.Comment = &normevent.Comment{
 			Body:        truncate(event.CommentBody, 4096),
 			Command:     cmd,
 			Instruction: truncate(instruction, 4096),
 		}
 	case "label_changed":
-		ne.Transition.Label = &dispatch.TransitionLabel{
+		ne.Transition.Label = &normevent.LabelChange{
 			Name:   event.ChangedLabel,
 			Action: event.LabelAction,
 		}

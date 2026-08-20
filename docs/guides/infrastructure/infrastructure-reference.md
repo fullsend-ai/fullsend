@@ -113,7 +113,7 @@ Mode is inferred from `ALLOWED_ORGS` — there is no separate trust-mode flag.
 - **WORKFLOW_HOST_REPOS**: Same semantics as tight mode — controls which repos may host workflows. Defaults to `fullsend-ai/fullsend` when unset
 - **mint enroll**: Succeeds without changing mint configuration (org registration is unnecessary); **mint unenroll** for individual orgs is rejected
 
-**GCF mint (STS verification) only:** The hosted Cloud Function uses `STSVerifier`, which exchanges each OIDC JWT with GCP STS against `WIF_PROVIDER_NAME`. A permissive WIF provider (CEL that does not enumerate orgs/repos) must back that env var, or STS will reject tokens from orgs outside the provider's `attributeCondition` even when `mintcore` prevalidation passes. Use `mint deploy --public` to provision `ALLOWED_ORGS=*` and permissive WIF together; tight-mode `mint deploy` (default) and `mint enroll` continue to use org-scoped WIF. Redeploys must match the mint mode (`--public` for public, omit for tight).
+**GCF mint (STS verification) only:** The hosted Cloud Function uses `STSVerifier`, which exchanges each OIDC JWT with GCP STS against `WIF_PROVIDER_NAME`. A permissive WIF provider (CEL that does not enumerate orgs/repos) must back that env var, or STS will reject tokens from orgs outside the provider's `attributeCondition` even when `mintcore` prevalidation passes. Use `mint deploy --public` to provision `PER_REPO_WIF_REPOS=*` and permissive WIF together; tight-mode `mint deploy` (default) and `mint enroll` continue to use org-scoped WIF. Redeploys must match the mint mode (`--public` for public, omit for tight).
 
 **Standalone mint (JWKS verification):** `cmd/mint` uses `JWKSVerifier` — direct GitHub JWKS signature checks with no STS or WIF. Public mode is fully determined by `ALLOWED_ORGS` and workflow provenance in `mintcore`; WIF provisioning is not applicable.
 
@@ -124,7 +124,7 @@ Mode is inferred from `ALLOWED_ORGS` — there is no separate trust-mode flag.
 A single mint instance can serve multiple orgs:
 
 - **Tight mode:** `EnsureOrgInMint()` additively appends orgs to `ALLOWED_ORGS`
-- **Public mode:** `ALLOWED_ORGS=*` — no per-org registration required; rollback to tight mode is config-only (replace `*` with an explicit org list)
+- **Public mode:** `PER_REPO_WIF_REPOS=*` — no per-org registration required; rollback to tight mode is config-only (clear `PER_REPO_WIF_REPOS=*` and set an explicit org list)
 - `ROLE_APP_IDS` maps `{role}` to GitHub App IDs (shared across all enrolled orgs)
 - Org isolation at token issuance uses the OIDC `repository_owner` claim and GitHub App installation lookup — not per-org app ID entries
 

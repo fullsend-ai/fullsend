@@ -538,8 +538,7 @@ func buildPluginConfigs(plugins []string, pluginsBase, mktBase, marketplace, ver
 
 // agentDestName returns the sandbox filename for the agent definition.
 // When agentName is non-empty it produces {name}.md; otherwise it falls
-// back to the source file's basename (the cache basename "content" has
-// no .md extension, so the fallback only works for local files).
+// back to the source file's basename.
 func agentDestName(agentName, agentPath string) string {
 	if agentName != "" {
 		return strings.TrimSuffix(agentName, ".md") + ".md"

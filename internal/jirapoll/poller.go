@@ -5,7 +5,6 @@ package jirapoll
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -14,12 +13,32 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
-	"github.com/fullsend-ai/fullsend/internal/poll"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 
 	"github.com/google/uuid"
 )
+
+// EventMatcher evaluates a normalized event against harness CEL triggers
+// and returns dispatch records for each matching harness. Implementations
+// are provided by the CLI layer (CEL-based harness dispatch) and by tests.
+type EventMatcher interface {
+	Match(ctx context.Context, event *normevent.Event) ([]DispatchRecord, error)
+}
+
+// DispatchRecord is a single dispatch output record produced by CEL trigger
+// evaluation. It mirrors harnessdispatch.ExecutionRef but is defined here to
+// keep the jirapoll package decoupled from harness internals.
+type DispatchRecord struct {
+	Agent         string `json:"agent"`
+	Role          string `json:"role"`
+	SourceRepo    string `json:"source_repo"`
+	EventType     string `json:"event_type"`
+	EventPayload  string `json:"event_payload"`
+	TriggerSource string `json:"trigger_source,omitempty"`
+	StatusRepo    string `json:"status_repo"`
+	StatusNumber  string `json:"status_number"`
+}
 
 // maxEventsPerIssue bounds how many routable events one issue can dispatch
 // in a single cycle (see the cap in processIssue). Set well above any
@@ -36,9 +55,9 @@ var validProjectKey = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}$`)
 // Poller discovers Jira events and dispatches agent stages.
 type Poller struct {
 	client              JiraClient
-	router              dispatch.EventRouter
+	matcher             EventMatcher
 	opts                Options
-	dispatches          []poll.Dispatch
+	dispatches          []DispatchRecord
 	sleepFn             func(context.Context, time.Duration) // overridable for testing
 	roleMembership      map[string]string                    // accountID → Jira project role name
 	roleGroups          map[string][]string                  // Jira role name → group IDs for per-actor resolution
@@ -58,7 +77,7 @@ func ctxSleep(ctx context.Context, d time.Duration) {
 }
 
 // New creates a Jira Poller with the given options.
-func New(client JiraClient, router dispatch.EventRouter, opts Options) *Poller {
+func New(client JiraClient, matcher EventMatcher, opts Options) *Poller {
 	if opts.M == 0 {
 		opts.M = 50
 	}
@@ -73,7 +92,7 @@ func New(client JiraClient, router dispatch.EventRouter, opts Options) *Poller {
 	}
 	return &Poller{
 		client:  client,
-		router:  router,
+		matcher: matcher,
 		opts:    opts,
 		sleepFn: ctxSleep,
 	}
@@ -461,39 +480,20 @@ func (p *Poller) processIssue(ctx context.Context, issue jira.Issue, cycleID str
 		}
 	}
 
-	// Convert, route, dispatch. A transiently failing event is skipped
-	// rather than retried: the checkpoint advances past all inspected
-	// entries regardless, which prevents the poller from stalling when a
-	// routing error persists across cycles.
+	// Convert, match harness triggers, dispatch. A transiently failing
+	// event is skipped rather than retried: the checkpoint advances past
+	// all inspected entries regardless, which prevents the poller from
+	// stalling when a routing error persists across cycles.
 	for _, event := range events {
 		ne := p.toNormalizedEvent(event)
 
-		var stages []string
-		if p.router != nil {
-			stages, err = p.router.Route(&ne)
-			if err != nil {
-				log.Printf("WARNING: routing event %s: %v", event.Key(), err)
+		if p.matcher != nil {
+			records, matchErr := p.matcher.Match(ctx, &ne)
+			if matchErr != nil {
+				log.Printf("WARNING: matching event %s: %v", event.Key(), matchErr)
 				continue
 			}
-		}
-
-		if len(stages) > 0 {
-			neJSON, err := json.Marshal(ne)
-			if err != nil {
-				log.Printf("WARNING: marshaling event payload for %s: %v", event.Key(), err)
-				continue
-			}
-			payloadB64 := base64.StdEncoding.EncodeToString(neJSON)
-
-			for _, stage := range stages {
-				p.dispatches = append(p.dispatches, poll.Dispatch{
-					Stage:           stage,
-					EventType:       event.Type,
-					ResourceKey:     fmt.Sprintf("issue-%s", event.IssueKey),
-					IID:             parseIssueID(event.IssueID),
-					EventPayloadB64: payloadB64,
-				})
-			}
+			p.dispatches = append(p.dispatches, records...)
 		}
 	}
 
@@ -527,8 +527,9 @@ func filterBotEvents(events []JiraEvent) []JiraEvent {
 	return filtered
 }
 
-// writeDispatches marshals the accumulated dispatches as a JSON array
-// and writes them to the given file path.
+// writeDispatches marshals the accumulated dispatch records as a JSON array
+// and writes them to the given file path. The output format is execution
+// refs compatible with the workflow_call shim (reusable-dispatch.yml).
 func (p *Poller) writeDispatches(path string) error {
 	dispatches := p.dispatches
 	if len(dispatches) == 0 {

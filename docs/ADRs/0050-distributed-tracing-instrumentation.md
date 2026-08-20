@@ -155,3 +155,9 @@ and agent spans in `run-telemetry.jsonl`, which became the sole Level 1
 artifact. OTLP export also changed from post-hoc directory upload to live
 span export via the OTel SDK's batch processor. The core decision (three-level
 opt-in, OTel-native, W3C propagation) is unchanged.
+
+**2026-08-18 — Remove duplicate token/cost from root span (3278b059):**
+`gen_ai.request.model` and `gen_ai.usage.*` token attributes moved to agent
+spans only; the root span keeps `fullsend.cost_usd` and `fullsend.tool_calls`
+(custom-namespaced, not auto-summed by MLflow). This prevents MLflow from
+double-counting token usage across the trace.

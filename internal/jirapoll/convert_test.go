@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
 
 func TestToNormalizedEvent_MatchesFixture(t *testing.T) {
@@ -18,7 +18,7 @@ func TestToNormalizedEvent_MatchesFixture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
-	var want dispatch.NormalizedEvent
+	var want normevent.Event
 	if err := json.Unmarshal(data, &want); err != nil {
 		t.Fatalf("unmarshal fixture: %v", err)
 	}

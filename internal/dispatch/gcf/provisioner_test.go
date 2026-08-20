@@ -742,11 +742,11 @@ func TestProvisioner_Provision_BundledMode_PublicMintSkipsPerRepoWIF(t *testing.
 	fake.functionInfo = &FunctionInfo{
 		URI: "https://fullsend-mint-shared.run.app",
 		EnvVars: map[string]string{
-			"ALLOWED_ORGS": "*",
+			"PER_REPO_WIF_REPOS": "*",
 		},
 	}
 	fake.trafficEnvVars = map[string]string{
-		"ALLOWED_ORGS": "*",
+		"PER_REPO_WIF_REPOS": "*",
 	}
 
 	p := newTestProvisioner(Config{
@@ -2267,7 +2267,7 @@ func TestProvisioner_Provision_PublicMintFirstDeploy(t *testing.T) {
 		State: "ACTIVE",
 		URI:   "https://fullsend-mint-public.run.app",
 		EnvVars: map[string]string{
-			"ALLOWED_ORGS": "*",
+			"PER_REPO_WIF_REPOS": "*",
 		},
 	}
 
@@ -2284,7 +2284,8 @@ func TestProvisioner_Provision_PublicMintFirstDeploy(t *testing.T) {
 	assert.Equal(t, "https://fullsend-mint-public.run.app", vars["FULLSEND_MINT_URL"])
 	assert.Equal(t, publicAttributeCondition, fake.lastWIFProviderConfig.AttributeCondition)
 	require.NotNil(t, fake.lastCreateFunctionEnvVars)
-	assert.Equal(t, "*", fake.lastCreateFunctionEnvVars["ALLOWED_ORGS"])
+	assert.Equal(t, PlaceholderOrg, fake.lastCreateFunctionEnvVars["ALLOWED_ORGS"])
+	assert.Equal(t, "*", fake.lastCreateFunctionEnvVars["PER_REPO_WIF_REPOS"])
 	assert.NotContains(t, fake.calls, "SetProjectIAMBinding")
 	assert.NotContains(t, fake.calls, "UpdateServiceEnvVars")
 }
@@ -2301,7 +2302,8 @@ func TestProvisioner_Provision_PublicMintRedeploy(t *testing.T) {
 		State: "ACTIVE",
 		URI:   "https://fullsend-mint-public.run.app",
 		EnvVars: map[string]string{
-			"ALLOWED_ORGS":           "*",
+			"PER_REPO_WIF_REPOS":     "*",
+			"ALLOWED_ORGS":           PlaceholderOrg,
 			"FULLSEND_SOURCE_HASH":   srcHash,
 			"ROLE_APP_IDS":           `{"coder":"12345"}`,
 			"ALLOWED_ROLES":          "coder",
@@ -2309,7 +2311,7 @@ func TestProvisioner_Provision_PublicMintRedeploy(t *testing.T) {
 		},
 	}
 	fake.trafficEnvVars = map[string]string{
-		"ALLOWED_ORGS": "*",
+		"PER_REPO_WIF_REPOS": "*",
 	}
 	fake.wifProvider = &WIFProviderInfo{
 		AttributeCondition: publicAttributeCondition,
@@ -2342,6 +2344,7 @@ func TestProvisioner_Provision_PublicIntoTightMintRejected(t *testing.T) {
 	fake.trafficEnvVars = map[string]string{
 		"ALLOWED_ORGS": PlaceholderOrg,
 	}
+	// No PER_REPO_WIF_REPOS — tight mode
 
 	p := newTestProvisioner(Config{
 		ProjectID:         "my-project",
@@ -2363,11 +2366,11 @@ func TestProvisioner_Provision_TightIntoPublicMintRejected(t *testing.T) {
 		State: "ACTIVE",
 		URI:   "https://fullsend-mint-public.run.app",
 		EnvVars: map[string]string{
-			"ALLOWED_ORGS": "*",
+			"PER_REPO_WIF_REPOS": "*",
 		},
 	}
 	fake.trafficEnvVars = map[string]string{
-		"ALLOWED_ORGS": "*",
+		"PER_REPO_WIF_REPOS": "*",
 	}
 
 	p := newTestProvisioner(Config{
@@ -2944,8 +2947,8 @@ func TestEnsureOrgInMint_PublicModeNoOp(t *testing.T) {
 	fake.functionInfo = &FunctionInfo{
 		URI: "https://mint.example.com",
 		EnvVars: map[string]string{
-			"ALLOWED_ORGS": "*",
-			"ROLE_APP_IDS": `{"coder":"100"}`,
+			"PER_REPO_WIF_REPOS": "*",
+			"ROLE_APP_IDS":       `{"coder":"100"}`,
 		},
 	}
 
@@ -2960,7 +2963,7 @@ func TestRegisterPerRepoWIF_PublicModeRejected(t *testing.T) {
 	fake.functionInfo = &FunctionInfo{
 		URI: "https://mint.example.com",
 		EnvVars: map[string]string{
-			"ALLOWED_ORGS": "*",
+			"PER_REPO_WIF_REPOS": "*",
 		},
 	}
 
@@ -2976,7 +2979,7 @@ func TestRemoveOrgFromMint_PublicModeRejected(t *testing.T) {
 	fake.functionInfo = &FunctionInfo{
 		URI: "https://mint.example.com",
 		EnvVars: map[string]string{
-			"ALLOWED_ORGS": "*",
+			"PER_REPO_WIF_REPOS": "*",
 		},
 	}
 

@@ -108,9 +108,9 @@ span is `SpanKindConsumer`. Otherwise it is `SpanKindInternal`.
 Start attributes: `fullsend.agent`, `fullsend.work_item_id`,
 `gen_ai.operation.name`, `gen_ai.agent.name`.
 
-End attributes (set in a deferred cleanup): `exit_code`, aggregated token
-usage (`gen_ai.usage.*`), `fullsend.cost_usd`, `fullsend.num_turns`,
-`fullsend.tool_calls`, `fullsend.iterations`, `gen_ai.request.model`.
+End attributes (set in a deferred cleanup): `exit_code`,
+`fullsend.cost_usd`, `fullsend.num_turns`, `fullsend.tool_calls`,
+`fullsend.iterations`.
 
 For the full attribute list (including `fullsend.security_trace_id` and
 `fullsend.prescript.*`), see the

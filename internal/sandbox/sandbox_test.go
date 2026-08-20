@@ -1293,3 +1293,25 @@ func TestBuildProviderUpdateArgs_ConfigNotExpandedForURL(t *testing.T) {
 			"URL-fetched provider config must not expand env vars on update")
 	}
 }
+
+func TestResolvedBasename(t *testing.T) {
+	t.Run("regular file", func(t *testing.T) {
+		dir := t.TempDir()
+		f := filepath.Join(dir, "hello.txt")
+		require.NoError(t, os.WriteFile(f, []byte("hi"), 0o644))
+		assert.Equal(t, "hello.txt", resolvedBasename(f))
+	})
+
+	t.Run("symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "content")
+		require.NoError(t, os.WriteFile(target, []byte("data"), 0o644))
+		link := filepath.Join(dir, "content.md")
+		require.NoError(t, os.Symlink(target, link))
+		assert.Equal(t, "content", resolvedBasename(link))
+	})
+
+	t.Run("nonexistent path", func(t *testing.T) {
+		assert.Equal(t, "gone.txt", resolvedBasename("/no/such/gone.txt"))
+	})
+}

@@ -548,6 +548,12 @@ func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent str
 						if run.Conclusion == "success" {
 							return run, nil
 						}
+						// Cancelled/skipped runs are concurrency-group
+						// noise — the superseding run will produce
+						// its own artifact. Keep polling.
+						if isConcurrencySuperseded(run.Conclusion) {
+							continue
+						}
 						return nil, fmt.Errorf("harness run for %q concluded with %q (run %d: %s)",
 							agent, run.Conclusion, run.ID, run.HTMLURL)
 					}

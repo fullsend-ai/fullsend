@@ -782,6 +782,51 @@ func TestReusableDispatchPRHeadSHAPassthrough(t *testing.T) {
 	})
 }
 
+// TestReusableDispatchStatusCommentPassthrough validates that all agent jobs in
+// reusable-dispatch.yml pass run-url, status-repo, and status-number to the
+// action, enabling status comments for every stage (#6397).
+func TestReusableDispatchStatusCommentPassthrough(t *testing.T) {
+	content, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "reusable-dispatch.yml"))
+	require.NoError(t, err)
+	s := string(content)
+
+	stages := []string{"triage", "code", "review", "fix", "retro", "prioritize"}
+	for _, stage := range stages {
+		t.Run(stage, func(t *testing.T) {
+			marker := fmt.Sprintf("Run %s agent", stage)
+			section := extractStepSection(t, s, marker)
+			assert.Contains(t, section, "run-url:",
+				"%s agent step must pass run-url to action.yml", stage)
+			assert.Contains(t, section, "status-repo:",
+				"%s agent step must pass status-repo to action.yml", stage)
+			assert.Contains(t, section, "status-number:",
+				"%s agent step must pass status-number to action.yml", stage)
+		})
+	}
+
+	t.Run("harness-run", func(t *testing.T) {
+		marker := "Run harness agent"
+		section := extractStepSection(t, s, marker)
+		assert.Contains(t, section, "run-url:",
+			"harness-run agent step must pass run-url to action.yml")
+		assert.Contains(t, section, "status-repo:",
+			"harness-run agent step must pass status-repo to action.yml")
+		assert.Contains(t, section, "status-number:",
+			"harness-run agent step must pass status-number to action.yml")
+	})
+}
+
+// TestShimPerRepoProjectNumberPassthrough validates that the per-repo shim
+// template passes project_number to reusable-dispatch.yml (#6397).
+func TestShimPerRepoProjectNumberPassthrough(t *testing.T) {
+	content := loadScaffoldFile("templates/shim-per-repo.yaml")(t)
+	s := string(content)
+	assert.Contains(t, s, "project_number:",
+		"per-repo shim must pass project_number to reusable-dispatch.yml")
+	assert.Contains(t, s, "vars.FULLSEND_PROJECT_NUMBER",
+		"per-repo shim project_number must read from vars.FULLSEND_PROJECT_NUMBER")
+}
+
 // TestShimLabeledEventFiltering validates that shim workflows use the ready-
 // prefix filter at the if: guard level and label-aware concurrency keys so
 // routing labels don't cancel each other (#2452).
@@ -796,7 +841,7 @@ func TestShimLabeledEventFiltering(t *testing.T) {
 	}
 
 	cases := []shimCase{
-		{"fullsend.yaml", loadRepoFile(".github/workflows/fullsend.yaml"), true},
+		{"fullsend.yaml", loadRepoFile(".github/workflows/fullsend.yaml"), false},
 		{"scaffold/shim-workflow-call.yaml", loadScaffoldFile("templates/shim-workflow-call.yaml"), true},
 		{"scaffold/shim-per-repo.yaml", loadScaffoldFile("templates/shim-per-repo.yaml"), false},
 	}

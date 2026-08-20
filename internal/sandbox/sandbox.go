@@ -824,7 +824,7 @@ func UploadFile(sandboxName, localPath, remotePath string) error {
 	}
 
 	if exitCode != 0 {
-		wrongPath := fmt.Sprintf("%s/%s", remotePath, filepath.Base(localPath))
+		wrongPath := fmt.Sprintf("%s/%s", remotePath, resolvedBasename(localPath))
 		_, _, exitCode, err := Exec(sandboxName, fmt.Sprintf("test -f %s", shellQuote(wrongPath)), 1*time.Second)
 		if err != nil {
 			return err
@@ -860,6 +860,16 @@ func UploadFile(sandboxName, localPath, remotePath string) error {
 		}
 	}
 	return nil
+}
+
+// resolvedBasename returns filepath.Base of the symlink-resolved path.
+// Upload resolves symlinks before handing the path to openshell, so the
+// file inside the sandbox has the resolved basename, not the symlink name.
+func resolvedBasename(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Base(resolved)
+	}
+	return filepath.Base(path)
 }
 
 // UploadDir uploads the contents of a local directory into a sandbox,

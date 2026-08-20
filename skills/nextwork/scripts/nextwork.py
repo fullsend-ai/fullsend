@@ -42,6 +42,9 @@ REF_BARE_RE = re.compile(r"^#?(\d+)$")
 # readiness; only open structured blockedBy links yield blocked_by.
 ISSUE_CONTROL_LABELS = {
     "needs-info",
+    "needs-breakdown",
+    "needs-design",
+    "workflow-blocked",
     "ready-to-code",
     "triaged",
     "duplicate",
@@ -785,6 +788,30 @@ def classify_issue(
             eliminated=True,
         )
 
+    if "needs-breakdown" in labels:
+        return Classification(
+            status="needs_breakdown",
+            reason="Needs breakdown into smaller issues",
+            eliminated=False,
+            suggested_actions=["Break this issue into smaller sub-issues"],
+        )
+
+    if "needs-design" in labels:
+        return Classification(
+            status="needs_design",
+            reason="Needs design work before code",
+            eliminated=False,
+            suggested_actions=["Add the missing design details"],
+        )
+
+    if "workflow-blocked" in labels:
+        return Classification(
+            status="workflow_blocked",
+            reason="Requires workflow changes the code agent cannot push",
+            eliminated=False,
+            suggested_actions=["Implement locally; the code agent cannot push workflow changes"],
+        )
+
     # Non-stale code wait wins over stale completed triage.
     if is_non_stale_code_wait(item, comments, stale_hours, now):
         return Classification(
@@ -1333,9 +1360,12 @@ query($owner: String!, $name: String!, $number: Int!) {
         }
         reviewThreads(first: 50) {
           nodes {
+            id
             isResolved
+            path
+            line
             comments(last: 20) {
-              nodes { author { login } createdAt }
+              nodes { author { login } body createdAt }
             }
           }
         }
@@ -1463,6 +1493,14 @@ mutation($issueId: ID!, $blockingIssueId: ID!) {
 }
 """
 
+RESOLVE_REVIEW_THREAD_MUTATION = """
+mutation($threadId: ID!) {
+  resolveReviewThread(input: {threadId: $threadId}) {
+    thread { isResolved }
+  }
+}
+"""
+
 
 # ------------------------------- Fetch / normalize -------------------------------
 
@@ -1562,14 +1600,28 @@ def normalize_item(repo: str, node: dict[str, Any], *, quiet: bool = False) -> d
             # Prefer earliest comment time as the thread launch clock.
             created_at = min(created_ats, key=created_at_key) if created_ats else None
             bot_only = bool(authors) and all(a == REVIEW_BOT_LOGIN for a in authors)
-            unresolved_threads.append(
-                {
-                    "author": authors[0] if authors else None,
-                    "authors": authors,
-                    "created_at": created_at,
-                    "bot_only": bot_only,
-                }
-            )
+            # First comment body gives context on what the finding was about.
+            first_body = ""
+            if comment_nodes:
+                first_body = (comment_nodes[0].get("body") or "")[:COMMENT_TRUNCATE_CHARS]
+            thread_entry: dict[str, Any] = {
+                "author": authors[0] if authors else None,
+                "authors": authors,
+                "created_at": created_at,
+                "bot_only": bot_only,
+            }
+            thread_id = t.get("id")
+            if thread_id:
+                thread_entry["id"] = thread_id
+            thread_path = t.get("path")
+            if thread_path:
+                thread_entry["path"] = thread_path
+            thread_line = t.get("line")
+            if thread_line is not None:
+                thread_entry["line"] = thread_line
+            if first_body:
+                thread_entry["body"] = first_body
+            unresolved_threads.append(thread_entry)
         item["unresolved_threads"] = unresolved_threads
         item["unresolved_review_threads"] = len(unresolved_threads)
         checks_state = None
@@ -2186,6 +2238,64 @@ def link_blocker(
     }
 
 
+def resolve_threads(items: list[dict[str, Any]], *, quiet: bool = False) -> list[dict[str, Any]]:
+    """Resolve bot-only unresolved review threads on classified PRs.
+
+    Only resolves threads where all comments are from the review bot
+    (``bot_only: true``). Threads with human comments are left open —
+    they require a human decision.
+    """
+    results: list[dict[str, Any]] = []
+    for item in items:
+        if item.get("kind") != "pull":
+            continue
+        threads = item.get("unresolved_threads") or []
+        for thread in threads:
+            if not thread.get("bot_only"):
+                continue
+            thread_id = thread.get("id")
+            if not thread_id:
+                results.append(
+                    {
+                        "repo": item["repo"],
+                        "number": item["number"],
+                        "thread_path": thread.get("path") or "unknown",
+                        "action": "error",
+                        "detail": "thread id not available (pre-enrichment data)",
+                    }
+                )
+                continue
+            data = gh_graphql_or_none(
+                RESOLVE_REVIEW_THREAD_MUTATION,
+                {"threadId": thread_id},
+                quiet=quiet,
+            )
+            path = thread.get("path") or "unknown"
+            if data is None:
+                results.append(
+                    {
+                        "repo": item["repo"],
+                        "number": item["number"],
+                        "thread_id": thread_id,
+                        "thread_path": path,
+                        "action": "error",
+                        "detail": "resolveReviewThread mutation failed",
+                    }
+                )
+            else:
+                results.append(
+                    {
+                        "repo": item["repo"],
+                        "number": item["number"],
+                        "thread_id": thread_id,
+                        "thread_path": path,
+                        "action": "resolved",
+                        "detail": f"resolved bot-only thread at {path}",
+                    }
+                )
+    return results
+
+
 def parse_link_blocker_spec(spec: str) -> tuple[str, str]:
     if "=" not in spec:
         raise RefError(f"--link-blocker must be DEPENDENT=BLOCKER, got: {spec!r}")
@@ -2216,6 +2326,9 @@ DECISION_STATUSES = {
     "fix_conflicts",
     "human_work",
     "close_or_plan",
+    "needs_breakdown",
+    "needs_design",
+    "workflow_blocked",
 }
 
 WAITING_PREFIX = "waiting_"
@@ -2242,6 +2355,8 @@ def item_output_dict(item: dict[str, Any], *, include_text: bool) -> dict[str, A
     if item.get("sub_issues_total"):
         out["sub_issues_total"] = item["sub_issues_total"]
         out["sub_issues_completed"] = item.get("sub_issues_completed", 0)
+    if item.get("unresolved_threads"):
+        out["unresolved_threads"] = item["unresolved_threads"]
     if include_text:
         out["body"] = item.get("body", "")[:BODY_TRUNCATE_CHARS]
         out["comments"] = [
@@ -2264,6 +2379,7 @@ def format_json_output(
     include_text: bool,
     link_results: list[dict[str, Any]] | None = None,
     take_over_results: list[dict[str, Any]] | None = None,
+    resolve_results: list[dict[str, Any]] | None = None,
     truncated_remaining: int = 0,
     fetch_errors: list[dict[str, Any]] | None = None,
 ) -> str:
@@ -2284,6 +2400,8 @@ def format_json_output(
         payload["link_results"] = link_results
     if take_over_results:
         payload["take_over_results"] = take_over_results
+    if resolve_results:
+        payload["resolve_results"] = resolve_results
     return json.dumps(payload, indent=2)
 
 
@@ -2294,13 +2412,18 @@ def _format_item_line(item: dict[str, Any]) -> str:
 
 
 def _format_mutation_line(entry: dict[str, Any]) -> str:
-    """One markdown bullet for an apply / link / take-over result row."""
+    """One markdown bullet for an apply / link / take-over / resolve result row."""
     action = entry.get("action") or "?"
     detail = entry.get("detail")
     if "dependent" in entry and "blocker" in entry:
         line = f"- {entry['dependent']} ← {entry['blocker']}: {action}"
     elif "ref" in entry:
         line = f"- {entry['ref']}: {action}"
+    elif "thread_path" in entry:
+        repo = entry.get("repo") or "?"
+        number = entry.get("number")
+        path = entry["thread_path"]
+        line = f"- #{number} ({repo}) `{path}`: {action}"
     else:
         kind = entry.get("kind") or "item"
         number = entry.get("number")
@@ -2322,6 +2445,7 @@ def format_markdown_output(
     show_blocked: bool,
     link_results: list[dict[str, Any]] | None = None,
     take_over_results: list[dict[str, Any]] | None = None,
+    resolve_results: list[dict[str, Any]] | None = None,
     truncated_remaining: int = 0,
 ) -> str:
     do_now = [i for i in items if not i["eliminated"]]
@@ -2368,6 +2492,13 @@ def format_markdown_output(
         lines.append("## Take-over")
         lines.append("")
         for entry in take_over_results:
+            lines.append(_format_mutation_line(entry))
+        lines.append("")
+
+    if resolve_results:
+        lines.append("## Resolved threads")
+        lines.append("")
+        for entry in resolve_results:
             lines.append(_format_mutation_line(entry))
         lines.append("")
 
@@ -2435,6 +2566,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Persist a real GitHub blockedBy link (repeatable). Idempotent if already linked.",
     )
     parser.add_argument(
+        "--resolve-threads",
+        action="store_true",
+        help=(
+            "Resolve bot-only unresolved review threads on classified PRs. "
+            "Only threads where all comments are from the review bot are resolved; "
+            "threads with human comments are left open. Requires --confirmed."
+        ),
+    )
+    parser.add_argument(
         "--confirmed",
         action="store_true",
         help=(
@@ -2490,17 +2630,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     if args.max_visits < 1:
         print("error: --max-visits must be at least 1", file=sys.stderr)
         sys.exit(2)
-    mutating = args.apply or bool(args.take_over) or bool(args.link_blocker)
+    mutating = args.apply or bool(args.take_over) or bool(args.link_blocker) or args.resolve_threads
     if mutating and not args.confirmed:
         print(
-            "error: --apply / --take-over / --link-blocker require --confirmed "
-            "(defense-in-depth confirmation gate)",
+            "error: --apply / --take-over / --link-blocker / --resolve-threads require "
+            "--confirmed (defense-in-depth confirmation gate)",
             file=sys.stderr,
         )
         sys.exit(2)
     if args.confirmed and not mutating:
         print(
-            "error: --confirmed is only valid with --apply / --take-over / --link-blocker",
+            "error: --confirmed is only valid with "
+            "--apply / --take-over / --link-blocker / --resolve-threads",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -2578,6 +2719,10 @@ def main(argv: list[str] | None = None) -> None:
             if (item["repo"], item["number"]) in applied_refs:
                 item["reason"] = f"{item['reason']} (applied)"
 
+    resolve_results: list[dict[str, Any]] = []
+    if args.resolve_threads:
+        resolve_results = resolve_threads(items, quiet=args.quiet)
+
     if args.decisions_only:
         items = [i for i in items if i["status"] in DECISION_STATUSES]
 
@@ -2592,6 +2737,7 @@ def main(argv: list[str] | None = None) -> None:
                 include_text=args.include_text,
                 link_results=link_results,
                 take_over_results=take_over_results,
+                resolve_results=resolve_results,
                 truncated_remaining=truncated_remaining,
                 fetch_errors=fetch_errors,
             )
@@ -2607,11 +2753,13 @@ def main(argv: list[str] | None = None) -> None:
                 show_blocked=args.show_blocked,
                 link_results=link_results,
                 take_over_results=take_over_results,
+                resolve_results=resolve_results,
                 truncated_remaining=truncated_remaining,
             )
         )
     mutation_error = any(
-        r.get("action") == "error" for r in (*applied, *link_results, *take_over_results)
+        r.get("action") == "error"
+        for r in (*applied, *link_results, *take_over_results, *resolve_results)
     )
     if fetch_errors or mutation_error:
         sys.exit(3)

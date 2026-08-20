@@ -298,6 +298,25 @@ func TestAgentSpanStartAttrs(t *testing.T) {
 	assert.Contains(t, attrs, attribute.String("gen_ai.agent.name", "code"))
 }
 
+func TestRootSpanEndAttrs(t *testing.T) {
+	agg := aggregateMetrics{
+		NumTurns:     12,
+		TotalCostUSD: 0.335349,
+		ToolCalls:    7,
+	}
+	a := rootSpanEndAttrs(agg, 3)
+	require.Len(t, a, 4)
+	assert.Contains(t, a, attribute.Int("fullsend.num_turns", 12))
+	assert.Contains(t, a, attribute.Int("fullsend.tool_calls", 7))
+	assert.Contains(t, a, attribute.Float64("fullsend.cost_usd", 0.34))
+	assert.Contains(t, a, attribute.Int("fullsend.iterations", 3))
+
+	for _, kv := range a {
+		assert.False(t, strings.HasPrefix(string(kv.Key), "gen_ai."),
+			"root span must not carry gen_ai.* attributes, found %s", kv.Key)
+	}
+}
+
 func TestAgentSpanEndAttrs(t *testing.T) {
 	var m agentruntime.RunMetrics
 	m.Model = "claude-opus-4-6"

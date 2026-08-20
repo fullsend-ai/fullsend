@@ -30,19 +30,26 @@
   "reviewThreads": {
     "nodes": [
       {
+        "id": "PRRT_resolved",
         "isResolved": true,
+        "path": "cmd/main.go",
+        "line": 10,
         "comments": {
           "nodes": []
         }
       },
       {
+        "id": "PRRT_unresolved_1",
         "isResolved": false,
+        "path": "internal/handler.go",
+        "line": 42,
         "comments": {
           "nodes": [
             {
               "author": {
                 "login": "fullsend-ai-review[bot]"
               },
+              "body": "Error return value is not checked.",
               "createdAt": "2024-01-02T01:00:00Z"
             }
           ]

@@ -2612,6 +2612,12 @@ func TestIsFullsendCachePath(t *testing.T) {
 	cachePath, err := fetch.CachePath(workspaceRoot, strings.Repeat("a", 64))
 	require.NoError(t, err)
 
+	// Build a relative cache path as dispatch produces when WorkspaceRoot
+	// is "." (filepath.Dir(".fullsend") == ".").
+	relCachePath, err := fetch.CachePath(".", strings.Repeat("b", 64))
+	require.NoError(t, err)
+	relCacheContentPath := filepath.Join(relCachePath, "content")
+
 	tests := []struct {
 		name          string
 		path          string
@@ -2625,6 +2631,19 @@ func TestIsFullsendCachePath(t *testing.T) {
 		{"absolute path outside cache root", filepath.Join(string(filepath.Separator), "etc", "passwd"), workspaceRoot, false},
 		{"absolute path under an unrelated sibling directory", filepath.Join(workspaceRoot, "other", ".fullsend-cache", "x"), workspaceRoot, false},
 		{"absolute path with cache dir name as a prefix, not a parent", filepath.Join(workspaceRoot, ".fullsend-cache-evil", "x"), workspaceRoot, false},
+		// Relative WorkspaceRoot: cache paths from CachePath(".") are
+		// relative, e.g. ".fullsend-cache/resources/sha256/<hash>".
+		// isFullsendCachePath must still recognise them.
+		{"relative cache path with relative workspace root", relCacheContentPath, ".", true},
+		{"relative non-cache path with relative workspace root", "agents/triage.md", ".", false},
+		// Edge case: cache directory itself (rel == ".") — the directory is
+		// considered part of the cache tree, matching the existing guard
+		// (rel != ".." && !HasPrefix(rel, "../")).
+		{"cache directory itself", filepath.Join(workspaceRoot, ".fullsend-cache"), workspaceRoot, true},
+		{"relative cache directory itself", ".fullsend-cache", ".", true},
+		// Exact parent traversal: p is the workspace root itself, so
+		// filepath.Rel returns ".." which the guard rejects.
+		{"workspace root is not a cache path", workspaceRoot, workspaceRoot, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -4491,6 +4510,191 @@ func TestFetchBaseFile_FetchURLError(t *testing.T) {
 	assert.Contains(t, err.Error(), "fetching")
 }
 
+func TestFetchBaseFile_PreservesExtension(t *testing.T) {
+	tests := []struct {
+		name       string
+		relPath    string
+		wantSuffix string
+	}{
+		{"yaml extension", "profiles/vertex-ai.yaml", "content.yaml"},
+		{"yml extension", "profiles/vertex-ai.yml", "content.yml"},
+		{"no extension", "scripts/setup", "content"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name+" cache hit", func(t *testing.T) {
+			dir := t.TempDir()
+			cacheDir := filepath.Join(dir, "cache")
+
+			content := []byte("# test content")
+			fileURL := "https://example.com/" + tc.relPath
+			require.NoError(t, fetch.CachePut(cacheDir, fileURL, content))
+			hash := fetch.ComputeSHA256(content)
+			require.NoError(t, urlIndexPut(cacheDir, fileURL, hash))
+
+			_, cachePath, err := fetchBaseFile(context.Background(), "test", "https://example.com/",
+				tc.relPath, []string{"https://example.com/"}, ComposeOpts{
+					WorkspaceRoot: cacheDir,
+				}, "resource", false)
+			require.NoError(t, err)
+			assert.True(t, strings.HasSuffix(cachePath, tc.wantSuffix),
+				"cache path %q should end with %q", cachePath, tc.wantSuffix)
+
+			got, err := os.ReadFile(cachePath)
+			require.NoError(t, err)
+			assert.Equal(t, content, got, "content should be readable via returned path")
+		})
+
+		t.Run(tc.name+" fresh fetch", func(t *testing.T) {
+			content := []byte("# fresh content")
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Write(content)
+			}))
+			t.Cleanup(server.Close)
+
+			policy := fetch.NewTestPolicy(
+				server.Client().Transport.(*http.Transport).TLSClientConfig,
+				[]string{"127.0.0.1"},
+				[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+			)
+
+			dir := t.TempDir()
+			cacheDir := filepath.Join(dir, "cache")
+
+			_, cachePath, err := fetchBaseFile(context.Background(), "test", server.URL+"/",
+				tc.relPath, []string{server.URL + "/"}, ComposeOpts{
+					WorkspaceRoot: cacheDir,
+					FetchPolicy:   policy,
+				}, "resource", false)
+			require.NoError(t, err)
+			assert.True(t, strings.HasSuffix(cachePath, tc.wantSuffix),
+				"cache path %q should end with %q", cachePath, tc.wantSuffix)
+
+			got, err := os.ReadFile(cachePath)
+			require.NoError(t, err)
+			assert.Equal(t, content, got, "content should be readable via returned path")
+		})
+	}
+}
+
+func TestFetchBaseFile_SymlinkError(t *testing.T) {
+	t.Run("cache hit", func(t *testing.T) {
+		dir := t.TempDir()
+		cacheDir := filepath.Join(dir, "cache")
+
+		content := []byte("# test content")
+		relPath := "profiles/vertex-ai.yaml"
+		fileURL := "https://example.com/" + relPath
+		require.NoError(t, fetch.CachePut(cacheDir, fileURL, content))
+		hash := fetch.ComputeSHA256(content)
+		require.NoError(t, urlIndexPut(cacheDir, fileURL, hash))
+
+		hashDir, err := fetch.CachePath(cacheDir, hash)
+		require.NoError(t, err)
+		require.NoError(t, os.Chmod(hashDir, 0o555))
+		t.Cleanup(func() { os.Chmod(hashDir, 0o755) })
+
+		_, _, err = fetchBaseFile(context.Background(), "test", "https://example.com/",
+			relPath, []string{"https://example.com/"}, ComposeOpts{
+				WorkspaceRoot: cacheDir,
+			}, "resource", false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "creating extension symlink")
+	})
+
+	t.Run("fresh fetch", func(t *testing.T) {
+		content := []byte("# fresh content")
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write(content)
+		}))
+		t.Cleanup(server.Close)
+
+		policy := fetch.NewTestPolicy(
+			server.Client().Transport.(*http.Transport).TLSClientConfig,
+			[]string{"127.0.0.1"},
+			[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+		)
+
+		dir := t.TempDir()
+		cacheDir := filepath.Join(dir, "cache")
+
+		relPath := "profiles/vertex-ai.yaml"
+		hash := fetch.ComputeSHA256(content)
+		hashDir, cpErr := fetch.CachePath(cacheDir, hash)
+		require.NoError(t, cpErr)
+
+		// Pre-populate content so CachePut succeeds, then delete the
+		// URL index so urlIndexLookup misses and the fresh-fetch path
+		// is taken. Place a directory at the symlink target so
+		// os.Rename in CacheNamedSymlink fails with EISDIR.
+		require.NoError(t, fetch.CachePut(cacheDir, server.URL+"/"+relPath, content))
+		os.Remove(urlIndexPath(cacheDir))
+		require.NoError(t, os.MkdirAll(filepath.Join(hashDir, "content.yaml", "blocker"), 0o755))
+
+		_, _, err := fetchBaseFile(context.Background(), "test", server.URL+"/",
+			relPath, []string{server.URL + "/"}, ComposeOpts{
+				WorkspaceRoot: cacheDir,
+				FetchPolicy:   policy,
+			}, "resource", false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "creating extension symlink")
+	})
+}
+
+// TestLoadWithBase_URLBase_ProfilesPassValidateWithRelativeWorkspace verifies
+// that cached profile paths pass Validate() even when WorkspaceRoot is
+// relative — the scenario from #6348 where "content" (no extension) caused
+// Validate to reject openshell.profiles entries.
+func TestLoadWithBase_URLBase_ProfilesPassValidateWithRelativeWorkspace(t *testing.T) {
+	profileContent := []byte("id: claude-code\nnetwork:\n  egress:\n    - host: api.example.com\n")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+openshell:
+  profiles:
+  - profiles/claude-code.yaml
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/profiles/claude-code.yaml": profileContent,
+	})
+
+	hash := computeHash(baseContent)
+
+	// Use a relative workspace root to reproduce the scenario where
+	// cache paths are relative and Validate() checks the extension.
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	tmpDir := t.TempDir()
+	require.NoError(t, os.Chdir(tmpDir))
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	relCache := "rel-cache"
+	require.NoError(t, os.MkdirAll(relCache, 0o755))
+
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+	childYAML := fmt.Sprintf("role: test\nbase: %s\n", baseURL)
+	childPath := filepath.Join(tmpDir, "child.yaml")
+	require.NoError(t, os.WriteFile(childPath, []byte(childYAML), 0o644))
+
+	h, _, err := LoadWithBase(context.Background(), childPath, ComposeOpts{
+		WorkspaceRoot: relCache,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+	})
+	require.NoError(t, err, "LoadWithBase should not fail — cached profile path should pass Validate()")
+
+	require.Len(t, h.OpenShellProfiles(), 1)
+	profilePath := h.OpenShellProfiles()[0]
+	assert.True(t, strings.HasSuffix(profilePath, ".yaml"),
+		"profile cache path %q should preserve .yaml extension", profilePath)
+
+	got, readErr := os.ReadFile(profilePath)
+	require.NoError(t, readErr)
+	assert.Equal(t, profileContent, got)
+}
+
 func TestFetchBaseSkill_CacheHit_AuditError(t *testing.T) {
 	dir := t.TempDir()
 	cacheDir := filepath.Join(dir, "cache")
@@ -5725,6 +5929,88 @@ role: review
 		"agent should be an absolute cache path from base resolution, got %q", h.Agent)
 	assert.True(t, filepath.IsAbs(h.PreScript),
 		"pre_script should be an absolute cache path from base resolution, got %q", h.PreScript)
+}
+
+func TestLoadWithBase_SourceURL_WithBase_RelativeWorkspaceRoot(t *testing.T) {
+	// Regression: dispatch sets WorkspaceRoot to filepath.Dir(configDir),
+	// which is "." when configDir is ".fullsend". CachePath then returns
+	// relative paths like ".fullsend-cache/resources/sha256/<hash>/content".
+	// The post-merge SourceURL resolution must skip these relative cache
+	// paths instead of trying to fetch them from the SourceURL host (which
+	// produced a 404 in CI for the remote-child variant).
+
+	agentContent := []byte("# base agent (resolved to cache path by base composition)")
+
+	baseContent := []byte(`
+agent: agents/base.md
+role: review
+model: opus
+`)
+	baseHash := computeHash(baseContent)
+
+	// t.Chdir changes the process's working directory to a temp dir and
+	// restores it when the test finishes. This lets us pass "." as the
+	// relative WorkspaceRoot — the same value dispatch produces.
+	dir := t.TempDir()
+	t.Chdir(dir)
+
+	// Track requests to detect spurious fetches of cache paths.
+	var requestedPaths []string
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestedPaths = append(requestedPaths, r.URL.Path)
+		switch r.URL.Path {
+		case "/base.yaml":
+			w.Write(baseContent)
+		case "/agents/base.md":
+			w.Write(agentContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	policy := fetch.NewTestPolicy(
+		server.Client().Transport.(*http.Transport).TLSClientConfig,
+		[]string{"127.0.0.1"},
+		[]string{server.Listener.Addr().String()[len("127.0.0.1:"):]},
+	)
+
+	baseURL := server.URL + "/base.yaml#sha256=" + baseHash
+
+	// URL-sourced child referencing a URL base. The child declares no
+	// agent — it inherits from the base. This matches the remote-child
+	// variant that failed in CI.
+	childHarness := fmt.Sprintf(`
+base: %s
+role: review
+`, baseURL)
+
+	harnessPath := writeTestHarness(t, dir, "review.yaml", childHarness)
+	sourceURL := server.URL + "/harness/review.yaml"
+	allowlist := []string{server.URL + "/"}
+
+	// Key: pass "." as WorkspaceRoot, simulating dispatch where
+	// WorkspaceRoot = filepath.Dir(".fullsend") = ".". Cache paths will
+	// be relative (e.g. ".fullsend-cache/resources/sha256/<hash>/content")
+	// and isFullsendCachePath must still recognise them.
+	h, _, err := LoadWithBase(context.Background(), harnessPath, ComposeOpts{
+		WorkspaceRoot:      ".",
+		FetchPolicy:        policy,
+		OrgAllowlist:       allowlist,
+		SourceURL:          sourceURL,
+		allowSelfAllowlist: true,
+	})
+	require.NoError(t, err)
+
+	// The agent field should be a cache path (not re-fetched from the SourceURL).
+	assert.Contains(t, h.Agent, ".fullsend-cache",
+		"agent should be a cache path from base resolution, got %q", h.Agent)
+
+	// Verify that no request tried to fetch a .fullsend-cache path from the server.
+	for _, p := range requestedPaths {
+		assert.NotContains(t, p, ".fullsend-cache",
+			"server should not have received a request for a cache path, got %q", p)
+	}
 }
 
 func TestLoadWithBase_SourceURL_WithBase_ResolvesChildScripts(t *testing.T) {

@@ -38,7 +38,7 @@ fullsend mint deploy \
 
 The CLI automatically detects when the deployed function source is up-to-date (same source hash) and skips code redeployment, only updating WIF infrastructure and org registration.
 
-Use `--public` to deploy a **public mint** (`ALLOWED_ORGS=*` with permissive WIF). Public mints accept any org that calls upstream reusable workflows in `fullsend-ai/fullsend`; org enrollment is not required. Unlike standalone JWKS mints, GCF-hosted public mints still need permissive WIF for the STS exchange path.
+Use `--public` to deploy a **public mint** (`PER_REPO_WIF_REPOS=*` with permissive WIF). Public mints accept any org that calls upstream reusable workflows in `fullsend-ai/fullsend`; org enrollment is not required. Unlike standalone JWKS mints, GCF-hosted public mints still need permissive WIF for the STS exchange path.
 
 Redeploying an existing mint must match its mode: pass `--public` for public mints, omit it for tight mints. Mode conversion (tight ↔ public) is rejected at deploy time.
 
@@ -106,7 +106,7 @@ Example: `--per-repo-wif-repos=` clears `PER_REPO_WIF_REPOS` without requiring `
 | `--pem-dir` | | Directory containing `{role}.pem` files for PEM bootstrap |
 | `--app-set` | `fullsend-ai` | App set name for PEM bootstrap |
 | `--roles` | _(default roles)_ | Comma-separated role names to bootstrap with `--pem-dir`. Overrides the default set. Example: `--roles=fullsend,triage,coder,review,retro,prioritize,e2e` |
-| `--public` | `false` | Deploy public mint (GCP: `ALLOWED_ORGS=*`; Cloudflare: `PER_REPO_WIF_REPOS=*`). Mutually exclusive with `--per-repo-wif-repos` on Cloudflare |
+| `--public` | `false` | Deploy public mint (`PER_REPO_WIF_REPOS=*`). Mutually exclusive with `--per-repo-wif-repos` on Cloudflare |
 | `--source-dir` | | Path to local mint source (default: checkout path when present, embedded otherwise) |
 | `--dry-run` | `false` | Preview changes without making them |
 | `--skip-deploy` | `false` | Skip code upload, reuse existing function (GCP only) |

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"regexp"
@@ -12,7 +13,9 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
+	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
 	"github.com/fullsend-ai/fullsend/internal/jirapoll"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/poll"
 )
 
@@ -132,9 +135,9 @@ func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRe
 		return fmt.Errorf("create Jira client: %w", err)
 	}
 
-	router, err := buildRouter(args.fullsendDir)
+	matcher, err := newCELMatcher(cmd.Context(), args.fullsendDir)
 	if err != nil {
-		return fmt.Errorf("build event router: %w", err)
+		return fmt.Errorf("build CEL matcher: %w", err)
 	}
 
 	opts := jirapoll.Options{
@@ -145,7 +148,7 @@ func runJiraPoll(cmd *cobra.Command, jiraURL, jiraProject, jqlOverride, targetRe
 		OutputPath:  args.outputPath,
 	}
 
-	poller := jirapoll.New(jiraClient, router, opts)
+	poller := jirapoll.New(jiraClient, matcher, opts)
 	return poller.Run(cmd.Context())
 }
 
@@ -224,6 +227,7 @@ func buildJiraClient(jiraURL string) (*jira.LiveClient, error) {
 
 // buildRouter constructs a HarnessRouter from config-registered agents
 // and the known first-party agents available via agents-repo fallback.
+// Used by the GitLab poll path which still uses hardcoded routing.
 func buildRouter(fullsendDir string) (*dispatch.HarnessRouter, error) {
 	cfg, err := config.LoadConfig(fullsendDir, config.LoadOpts{MissingOK: true})
 	if err != nil {
@@ -253,4 +257,60 @@ func buildRouter(fullsendDir string) (*dispatch.HarnessRouter, error) {
 	}
 
 	return dispatch.NewHarnessRouter(names), nil
+}
+
+// celMatcher evaluates events against harness CEL triggers, replacing
+// the hardcoded HarnessRouter for the Jira poll path. Candidates are
+// loaded once at construction and reused for every event in the cycle.
+type celMatcher struct {
+	candidates []harnessdispatch.TriggeredHarness
+}
+
+// newCELMatcher loads harness files with CEL triggers from the config
+// directory and returns a matcher that evaluates events against them.
+func newCELMatcher(ctx context.Context, fullsendDir string) (*celMatcher, error) {
+	cfg, err := config.LoadConfig(fullsendDir, config.LoadOpts{MissingOK: true})
+	if err != nil {
+		return nil, fmt.Errorf("load config: %w", err)
+	}
+	if cfg.IsKillSwitchActive() {
+		// Kill switch active: return a matcher with no candidates so all
+		// events are silently dropped (no dispatches).
+		return &celMatcher{}, nil
+	}
+	candidates, err := harnessdispatch.ListTriggeredHarnesses(ctx, fullsendDir, cfg, nil)
+	if err != nil {
+		return nil, fmt.Errorf("list triggered harnesses: %w", err)
+	}
+	return &celMatcher{candidates: candidates}, nil
+}
+
+// Match evaluates the event against all CEL trigger candidates and returns
+// dispatch records for each matching harness.
+func (m *celMatcher) Match(_ context.Context, event *normevent.Event) ([]jirapoll.DispatchRecord, error) {
+	if !harnessdispatch.IsAuthorized(event) {
+		return nil, nil
+	}
+	matched, err := harnessdispatch.MatchHarnesses(m.candidates, event)
+	if err != nil {
+		return nil, err
+	}
+	var records []jirapoll.DispatchRecord
+	for _, h := range matched {
+		ref, err := harnessdispatch.ProjectExecutionRef(h.Name, h.Harness.Role, event)
+		if err != nil {
+			return nil, fmt.Errorf("build execution ref for %s: %w", h.Name, err)
+		}
+		records = append(records, jirapoll.DispatchRecord{
+			Agent:         ref.Agent,
+			Role:          ref.Role,
+			SourceRepo:    ref.SourceRepo,
+			EventType:     ref.EventType,
+			EventPayload:  ref.EventPayload,
+			TriggerSource: ref.TriggerSource,
+			StatusRepo:    ref.StatusRepo,
+			StatusNumber:  ref.StatusNumber,
+		})
+	}
+	return records, nil
 }

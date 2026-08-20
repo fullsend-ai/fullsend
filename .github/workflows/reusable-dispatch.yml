@@ -1350,6 +1350,9 @@ jobs:
           agent: prioritize
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          status-repo: ${{ github.repository }}
+          status-number: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
           mint-url: ${{ inputs.mint_url }}
 
   harness-dispatch:

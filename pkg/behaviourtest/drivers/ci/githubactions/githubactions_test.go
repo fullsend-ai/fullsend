@@ -633,6 +633,108 @@ func TestWaitForHarnessAgent_CancelledDoesNotTriggerFailFast(t *testing.T) {
 	assert.Equal(t, 99, run.ID)
 }
 
+// settlingArtifactsClient wraps FakeClient so the repository artifact
+// list changes after the first poll, simulating a cancelled run's
+// artifact appearing before the superseding success run uploads its own.
+type settlingArtifactsClient struct {
+	*forge.FakeClient
+	mu         sync.Mutex
+	callsLeft  int
+	beforeArts []forge.RepositoryArtifact
+	afterArts  []forge.RepositoryArtifact
+}
+
+func (c *settlingArtifactsClient) ListRepositoryArtifacts(_ context.Context, _, _ string, _ int) ([]forge.RepositoryArtifact, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.callsLeft > 0 {
+		c.callsLeft--
+		return append([]forge.RepositoryArtifact(nil), c.beforeArts...), nil
+	}
+	return append([]forge.RepositoryArtifact(nil), c.afterArts...), nil
+}
+
+// TestWaitForHarnessAgent_SkipsCancelledRunArtifact verifies the fix for
+// #6387: when the only available artifact belongs to a concurrency-
+// cancelled run, WaitForHarnessAgent should skip it and keep polling
+// until the superseding run's artifact appears.
+func TestWaitForHarnessAgent_SkipsCancelledRunArtifact(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fake := forge.NewFakeClient()
+	// Two runs: cancelled run A (100) and success run B (200).
+	fake.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/cancelled": {
+			ID: 100, Status: "completed", Conclusion: "cancelled",
+			CreatedAt: "2026-01-02T00:00:00Z",
+			HTMLURL:   "https://github.com/org/repo/actions/runs/100",
+		},
+		"org/repo/success": {
+			ID: 200, Status: "completed", Conclusion: "success",
+			CreatedAt: "2026-01-02T00:01:00Z",
+		},
+	}
+
+	client := &settlingArtifactsClient{
+		FakeClient: fake,
+		callsLeft:  1,
+		// First poll: only the cancelled run's artifact.
+		beforeArts: []forge.RepositoryArtifact{
+			{ID: 10, Name: "fullsend-review", CreatedAt: "2026-01-02T00:00:30Z", WorkflowRunID: 100},
+		},
+		// Second poll: success run's artifact also available (higher ID).
+		afterArts: []forge.RepositoryArtifact{
+			{ID: 10, Name: "fullsend-review", CreatedAt: "2026-01-02T00:00:30Z", WorkflowRunID: 100},
+			{ID: 20, Name: "fullsend-review", CreatedAt: "2026-01-02T00:02:00Z", WorkflowRunID: 200},
+		},
+	}
+
+	d := &Driver{Client: client, afterFunc: instantAfter}
+	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "review", after)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, 200, run.ID)
+}
+
+// TestWaitForHarnessAgent_SkipsSkippedRunArtifact mirrors the cancelled
+// case but for a "skipped" conclusion, which is also concurrency noise.
+func TestWaitForHarnessAgent_SkipsSkippedRunArtifact(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	fake := forge.NewFakeClient()
+	fake.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/skipped": {
+			ID: 100, Status: "completed", Conclusion: "skipped",
+			CreatedAt: "2026-01-02T00:00:00Z",
+			HTMLURL:   "https://github.com/org/repo/actions/runs/100",
+		},
+		"org/repo/success": {
+			ID: 200, Status: "completed", Conclusion: "success",
+			CreatedAt: "2026-01-02T00:01:00Z",
+		},
+	}
+
+	client := &settlingArtifactsClient{
+		FakeClient: fake,
+		callsLeft:  1,
+		beforeArts: []forge.RepositoryArtifact{
+			{ID: 10, Name: "fullsend-review", CreatedAt: "2026-01-02T00:00:30Z", WorkflowRunID: 100},
+		},
+		afterArts: []forge.RepositoryArtifact{
+			{ID: 10, Name: "fullsend-review", CreatedAt: "2026-01-02T00:00:30Z", WorkflowRunID: 100},
+			{ID: 20, Name: "fullsend-review", CreatedAt: "2026-01-02T00:02:00Z", WorkflowRunID: 200},
+		},
+	}
+
+	d := &Driver{Client: client, afterFunc: instantAfter}
+	run, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "review", after)
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, 200, run.ID)
+}
+
 func TestWaitForHarnessAgent_IgnoresRunsBeforeTriggerTime(t *testing.T) {
 	t.Parallel()
 

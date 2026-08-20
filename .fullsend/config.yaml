@@ -1,0 +1,33 @@
+# fullsend per-repo configuration
+# https://github.com/fullsend-ai/fullsend
+#
+# This file configures fullsend for per-repo installation mode.
+# See ADR 0033 for details.
+version: "1"
+runtime: claude
+roles:
+    - fullsend
+    - triage
+    - coder
+    - review
+    - retro
+    - prioritize
+agents:
+    - source: https://raw.githubusercontent.com/fullsend-ai/agents/ee30be6030f8e6fbe4ba5fc5638eb483dbffeb84/harness/triage.yaml#sha256=5943b5cb543289c6f49adbedec48c7a6c6a9def2414e99e32ab28fbddd04ef41
+    - source: https://raw.githubusercontent.com/fullsend-ai/agents/ee30be6030f8e6fbe4ba5fc5638eb483dbffeb84/harness/code.yaml#sha256=195193a356e61e9a5180ea56ee1313c7901df9ef74b15b0ca9205f32787f5042
+    - source: https://raw.githubusercontent.com/fullsend-ai/agents/ee30be6030f8e6fbe4ba5fc5638eb483dbffeb84/harness/fix.yaml#sha256=f95bfe44d6602a1ce9d8983aa88151f11c788af0e5dcce03811e92fb45a80513
+    - source: https://raw.githubusercontent.com/fullsend-ai/agents/ee30be6030f8e6fbe4ba5fc5638eb483dbffeb84/harness/review.yaml#sha256=f4255898011e3c171dab074479da9509b2c6c38c2aabc7f32f9a0a1f7ef5c183
+    - source: https://raw.githubusercontent.com/fullsend-ai/agents/ee30be6030f8e6fbe4ba5fc5638eb483dbffeb84/harness/retro.yaml#sha256=35c67a40611f86e126b72e6f5b901585ebe6298494bb327cf09015b549ee44fc
+    - source: https://raw.githubusercontent.com/fullsend-ai/agents/ee30be6030f8e6fbe4ba5fc5638eb483dbffeb84/harness/prioritize.yaml#sha256=026fdd71a4779cbf2155f27f1846065fa20add11e42493013beabbc32cbcea6a
+    - source: https://raw.githubusercontent.com/fullsend-ai/agents/ee30be6030f8e6fbe4ba5fc5638eb483dbffeb84/harness/scribe.yaml#sha256=3ac49476b414857058fa1142b77a64d93b3595551642fe9319456168f98bc749
+    - source: https://raw.githubusercontent.com/redhat-community-ai-tools/qualityflow-fullsend/f6311b4f30ee5c23c597dba07bccc8ac0aa991be/harness/qualityflow.yaml#sha256=c0a51b2f75172aebd577fd38c8012a7c566a84f84812ebd9aa4cc07ad3b2220e
+allowed_remote_resources:
+    - https://raw.githubusercontent.com/fullsend-ai/fullsend/
+    - https://raw.githubusercontent.com/fullsend-ai/agents/
+    - https://raw.githubusercontent.com/redhat-community-ai-tools/qualityflow-fullsend/
+create_issues:
+    allow_targets:
+        orgs:
+            - fullsend-ai
+        repos:
+            - fullsend-ai/fullsend
