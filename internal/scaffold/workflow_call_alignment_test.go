@@ -174,7 +174,7 @@ func extractStepSection(t *testing.T, content, marker string) string {
 // reusableWorkflowRef extracts the reusable workflow filename from a uses: reference.
 // Handles both "fullsend-ai/fullsend/.github/workflows/reusable-foo.yml@v0"
 // and "./.github/workflows/reusable-foo.yml".
-var reusableWorkflowRef = regexp.MustCompile(`reusable-[a-z]+\.yml`)
+var reusableWorkflowRef = regexp.MustCompile(`reusable-[a-z-]+\.yml`)
 
 // callerPair defines a caller → reusable workflow relationship to validate.
 type callerPair struct {
