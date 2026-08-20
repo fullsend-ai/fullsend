@@ -1542,7 +1542,6 @@ jobs:
       gcp_region: ${{ inputs.gcp_region }}
       fullsend_version: ${{ inputs.fullsend_version }}
       runner_image: ${{ inputs.runner_image }}
-      workflow_repository: ${{ github.repository }}
     secrets:
       FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
       FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
