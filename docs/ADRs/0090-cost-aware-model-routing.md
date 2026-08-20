@@ -58,6 +58,47 @@ detection (false downgrade → bump tier), budget limits, and fails open.
 fullsend already generates the sandbox `settings.json` for its security
 hooks (`internal/security/hooks.go`), so the integration surface exists.
 
+
+A second, model-controlled dataset exists from 2026-07-26: the stock
+**code agent** run on 13 real `fullsend-ai/agents` issues, once per model
+(haiku / sonnet / opus), 39 trials, via a standalone workflow on
+`guyoron1/agents` (Vertex AI, mint bypassed, `--no-post-script`). All 39
+trials completed and produced `metrics.json` + `code-result.json` +
+transcripts (artifacts `routing-trial-<issue>-<model>-<run_id>`).
+
+| Issue (fullsend-ai/agents) | haiku turns / $ | sonnet turns / $ | opus turns / $ |
+|---|---|---|---|
+| #311 flag unregistered public exports | 41 / $0.32 | 70 / $1.45 | 60 / $2.10 |
+| #314 verify API assumptions vs docs | 70 / $0.57 | 61 / $1.05 | 52 / $1.41 |
+| #315 cross-method semantic tracing | 61 / $0.46 | 81 / $1.21 | 52 / $1.65 |
+| #316 authorization flow analysis | 53 / $0.38 | 80 / $1.21 | 53 / $1.63 |
+| #334 sibling-PR file overlap | 49 / $0.43 | 60 / $1.40 | 53 / $1.69 |
+| #337 pre-flight PR state check | 67 / $0.57 | 74 / $1.48 | 49 / $1.34 |
+| #340 coding agent should use a fork | 25 / $0.20 | 24 / $0.37 | 13 / $0.33 |
+| #342 preserve human changes on force-push | 86 / $0.75 | 76 / $1.77 | 71 / $4.30 |
+| #344 yq/jq expression validation | 61 / $0.45 | 74 / $1.56 | 58 / $2.22 |
+| #347 path construction from untrusted input | 66 / $0.46 | 77 / $1.71 | 53 / $1.66 |
+| #360 scaffold changes not trivial | 69 / $0.54 | 63 / $1.13 | 52 / $2.07 |
+| #362 subset/superset issue coordination | 60 / $0.59 | 95 / $1.87 | 50 / $2.09 |
+| #365 cross-repo label failure warning | 23 / $0.25 | 32 / $0.46 | 16 / $0.39 |
+
+What the grid shows for routing policy:
+
+- **Cost spread**: haiku $0.20–0.75/issue, sonnet $0.37–1.87, opus
+  $0.33–4.30; median opus:haiku ratio ≈ 3.6×, worst case (#342) 5.7×.
+- **No-op detection is model-insensitive**: on #340 and #365 every model
+  independently concluded no code change was needed and stopped early
+  (13–32 turns). "Assess cheap, escalate on evidence of work" would have
+  produced identical outcomes at haiku cost (cf. #2842).
+- **Turn counts do not track model tier**: haiku used fewer turns than
+  sonnet on 8/13 issues; cost differences are dominated by per-token
+  price, not wandering.
+- **Limitation**: the grid measures cost and completion, not output
+  quality — every trial drafted a PR body, but no quality judgment pass
+  has been run over the 13×3 outputs. Transcripts are retained for that
+  follow-up, which is the gate before turning any of this into a routing
+  default.
+
 ## Options
 
 1. **Change harness defaults only** (`triage → haiku`, `review → sonnet`).
