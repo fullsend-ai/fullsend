@@ -22,7 +22,7 @@ func TestAuthorizationOwnersFileRoundTrip(t *testing.T) {
 		require.NoError(t, err)
 		s := string(out)
 		assert.Contains(t, s, "authorization:")
-		assert.Contains(t, s, "owners_file: true")
+		assert.Contains(t, s, "provider: owners_file")
 		assert.Contains(t, s, "runtime: claude")
 	})
 
@@ -35,7 +35,7 @@ func TestAuthorizationOwnersFileRoundTrip(t *testing.T) {
 		cfg.SetAuthorizationOwnersFile(true)
 		out, err := cfg.Marshal()
 		require.NoError(t, err)
-		assert.Contains(t, string(out), "owners_file: true")
+		assert.Contains(t, string(out), "provider: owners_file")
 	})
 
 	t.Run("disable removes authorization block", func(t *testing.T) {
@@ -52,12 +52,13 @@ func TestAuthorizationOwnersFileRoundTrip(t *testing.T) {
 
 	t.Run("parse existing authorization from YAML", func(t *testing.T) {
 		t.Parallel()
-		input := []byte("version: \"1\"\nauthorization:\n  owners_file: true\n")
+		input := []byte("version: \"1\"\nauthorization:\n  - provider: owners_file\n")
 		cfg, err := config.ParsePerRepoConfigWriter(input)
 		require.NoError(t, err)
+		assert.True(t, cfg.AuthorizationOwnersFile())
 		out, err := cfg.Marshal()
 		require.NoError(t, err)
-		assert.Contains(t, string(out), "owners_file: true")
+		assert.Contains(t, string(out), "provider: owners_file")
 	})
 
 	t.Run("disable when never enabled is no-op", func(t *testing.T) {
@@ -85,6 +86,6 @@ func TestAuthorizationOwnersFileRoundTrip(t *testing.T) {
 		assert.Contains(t, s, "runtime: claude")
 		assert.Contains(t, s, "kill_switch: false")
 		assert.Contains(t, s, "- coder")
-		assert.Contains(t, s, "owners_file: true")
+		assert.Contains(t, s, "provider: owners_file")
 	})
 }

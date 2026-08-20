@@ -33,7 +33,7 @@ func registerOwnersSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^the triage workflow logs do not contain "([^"]+)"$`, func(ctx context.Context, needle string) (context.Context, error) {
 		return ctx, thenWorkflowLogsDoNotContain(world.FromContext(ctx), needle)
 	})
-	sc.Step(`^the (bot|outsider) opens an issue for OWNERS auth testing$`, func(ctx context.Context, actor string) (context.Context, error) {
+	sc.Step(`^the (bot|outsider|write actor) opens an issue for OWNERS auth testing$`, func(ctx context.Context, actor string) (context.Context, error) {
 		return ctx, whenIssueOpenedForOwnersAuth(world.FromContext(ctx), actor)
 	})
 	sc.Step(`^the outsider posts "([^"]+)" on the issue$`, func(ctx context.Context, command string) (context.Context, error) {
@@ -57,6 +57,11 @@ func resolveActorLogin(w *world.World, actor string) (string, error) {
 			return "", err
 		}
 		return w.OutsiderLogin, nil
+	case "write actor":
+		if err := requireWriteActor(w); err != nil {
+			return "", err
+		}
+		return w.WriteLogin, nil
 	default:
 		return "", fmt.Errorf("unknown actor %q", actor)
 	}
@@ -145,11 +150,17 @@ func whenIssueOpenedForOwnersAuth(w *world.World, actor string) error {
 		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before creating issues")
 	}
 	scmDriver := w.SCM
-	if actor == "outsider" {
+	switch actor {
+	case "outsider":
 		if err := requireOutsider(w); err != nil {
 			return err
 		}
 		scmDriver = w.OutsiderSCM
+	case "write actor":
+		if err := requireWriteActor(w); err != nil {
+			return err
+		}
+		scmDriver = w.WriteSCM
 	}
 	w.ScenarioStart = time.Now().Add(-issueOpenDrainSkewBuffer)
 	w.TriageTriggerEvent = issueOpenEvent
@@ -195,6 +206,13 @@ func getWorkflowLogs(w *world.World) (string, error) {
 	}
 	return w.CI.GetRunLogs(context.Background(),
 		w.RepoOwner, w.Install.TriageWorkflowRepo(), w.WorkflowRun.ID)
+}
+
+func requireWriteActor(w *world.World) error {
+	if w.WriteSCM == nil {
+		return fmt.Errorf("TEST_ACTOR_WRITE_PAT not set")
+	}
+	return nil
 }
 
 func requireOutsider(w *world.World) error {

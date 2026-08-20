@@ -1,16 +1,16 @@
 Feature: OWNERS file authorization for bash routing
 
   Verify that the OWNERS-file authorization path fires when
-  authorization.owners_file is enabled in config.yaml. Scenarios
+  owners_file is in the authorization providers list in config.yaml. Scenarios
   trigger via issues.opened, which unconditionally calls
   is_event_actor_authorized and exercises has_repo_permission.
 
-  Bot scenarios confirm the OWNERS code path is reached (via audit
-  log); the bot has collaborator access so the API fallback would
-  also grant. The outsider identity (TEST_ACTOR_OUTSIDER_PAT) has
-  no collaborator access, so authorization succeeds only through
-  OWNERS — the denial scenario verifies a reviewer cannot escalate
-  to write-level access.
+  The outsider identity (TEST_ACTOR_OUTSIDER_PAT) has no collaborator
+  access, so authorization succeeds only through OWNERS — the denial
+  scenario verifies a reviewer cannot escalate to write-level access.
+  The write actor (TEST_ACTOR_WRITE_PAT) has write-level collaborator
+  access and is NOT in OWNERS, so fallthrough scenarios verify that
+  OWNERS misses correctly fall back to the collaborator API.
 
   Background:
     Given the enrolled test repository
@@ -65,17 +65,17 @@ Feature: OWNERS file authorization for bash routing
     And a dummy agent that would:
       | description          | op            | args                                                      |
       | Prove execution      | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |
-    When the bot opens an issue for OWNERS auth testing
+    When the write actor opens an issue for OWNERS auth testing
     Then the triage workflow completes successfully
     And the agent will succeed to Prove execution
     And the triage workflow logs do not contain "##[notice]OWNERS file resolved user"
 
   Scenario: Triage dispatches without OWNERS path when not opted in
-    Given an OWNERS file listing the bot as an approver
+    Given an OWNERS file listing the outsider as an approver
     And a dummy agent that would:
       | description          | op            | args                                                      |
       | Prove execution      | write_fixture | output/agent-result.json, fixtures/triage/sufficient.json |
-    When the bot opens an issue for OWNERS auth testing
+    When the write actor opens an issue for OWNERS auth testing
     Then the triage workflow completes successfully
     And the agent will succeed to Prove execution
     And the triage workflow logs do not contain "##[notice]OWNERS file resolved user"
