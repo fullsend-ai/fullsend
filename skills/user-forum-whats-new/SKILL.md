@@ -5,7 +5,7 @@ description: >
   Tuesday-to-Tuesday recap, forum-host notes for the standing Google Doc,
   or copy-paste HTML of shipped changes for users. Also use when the
   user says what's new in Fullsend, user forum bullets, or forum agenda.
-allowed-tools: Read, Write, Grep, Glob, WebFetch, Bash(bash skills/user-forum-whats-new/scripts/gather.sh:*), Bash(python3 skills/user-forum-whats-new/scripts/gather.py:*), Bash(gh search:*), Bash(gh api repos/:*), Bash(gh pr view:*), Bash(gh pr diff:*), Bash(gh pr list:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh release view:*), Bash(gh release list:*), Bash(xdg-open:*), Bash(open:*)
+allowed-tools: Read, Write, Grep, Glob, WebFetch, Bash(bash skills/user-forum-whats-new/scripts/gather.sh:*), Bash(python3 skills/user-forum-whats-new/scripts/gather.py:*), Bash(gh search:*), Bash(gh pr view:*), Bash(gh pr diff:*), Bash(gh pr list:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh release view:*), Bash(gh release list:*), Bash(xdg-open:*), Bash(open:*)
 ---
 
 # User forum What's New
@@ -36,7 +36,10 @@ To use it from other workspaces:
 ln -s /path/to/fullsend/skills/user-forum-whats-new ~/.cursor/skills/user-forum-whats-new
 ```
 
-Needs `gh` (authenticated) and `python3`.
+Needs `gh` (authenticated) and **Python 3.11+** (uses `datetime.UTC`)
+with IANA tz data (system tzdb or the `tzdata` package). GitHub API
+calls go through `gather.py` only — do not grant bare `gh api` in
+`allowed-tools` (any path prefix is write-capable via `--method`/`-X`).
 
 ## When
 
