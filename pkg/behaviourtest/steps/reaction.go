@@ -57,6 +57,7 @@ func givenReactionsEnabled(w *world.World) error {
 	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: enable reaction notifications", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
+	w.ReactionsEnabled = true
 	return nil
 }
 

@@ -209,7 +209,7 @@ func CleanupScenario(w *world.World) {
 	// --- Reaction notification cleanup ---
 	// Disable reaction notifications so the next scenario on this slot
 	// is not affected by sticky config state.
-	if reactionsEnabledInConfig(w) {
+	if w.ReactionsEnabled {
 		if err := DisableReactionNotifications(w); err != nil {
 			worldLogf(w, "behaviour cleanup: disable reaction notifications: %v", err)
 		}
