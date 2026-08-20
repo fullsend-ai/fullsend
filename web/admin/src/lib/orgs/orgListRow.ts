@@ -9,7 +9,7 @@ import {
 import { CONFIG_FILE_PATH, CONFIG_REPO_NAME } from "../layers/constants";
 import { createLayerGithub } from "../layers/githubClient";
 import {
-  agentsFromConfig,
+  rolesFromConfig,
   enabledReposFromConfig,
   OrgConfigYamlLimitError,
   parseOrgConfigYaml,
@@ -78,7 +78,7 @@ export async function analyzeOrgForOrgList(
     } else {
       exists = await gh.getRepoExists(org, CONFIG_REPO_NAME);
     }
-    let agents: { name: string }[] = [];
+    let agents: { role: string }[] = [];
     let enabledRepos: string[] = [];
     if (exists) {
       const raw = await gh.getRepoFileUtf8(org, CONFIG_REPO_NAME, CONFIG_FILE_PATH);
@@ -86,7 +86,7 @@ export async function analyzeOrgForOrgList(
         try {
           const cfg = parseOrgConfigYaml(raw);
           if (validateOrgConfig(cfg) === null) {
-            agents = agentsFromConfig(cfg);
+            agents = rolesFromConfig(cfg);
             enabledRepos = enabledReposFromConfig(cfg);
           }
         } catch (e) {

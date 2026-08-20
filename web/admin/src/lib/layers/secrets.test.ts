@@ -27,7 +27,7 @@ describe("analyzeSecretsLayer", () => {
         secrets: new Set(["FULLSEND_TRIAGE_APP_PRIVATE_KEY"]),
         variables: new Set(["FULLSEND_TRIAGE_CLIENT_ID"]),
       }),
-      [{ name: "triage" }],
+      [{ role: "triage" }],
     );
     expect(r.status).toBe("installed");
     expect(r.details).toContain("FULLSEND_TRIAGE_APP_PRIVATE_KEY exists");
@@ -35,7 +35,7 @@ describe("analyzeSecretsLayer", () => {
   });
 
   it("not_installed when nothing present", async () => {
-    const r = await analyzeSecretsLayer("acme", mockGh({}), [{ name: "fullsend" }]);
+    const r = await analyzeSecretsLayer("acme", mockGh({}), [{ role: "fullsend" }]);
     expect(r.status).toBe("not_installed");
     expect(r.wouldInstall).toEqual([
       "create FULLSEND_FULLSEND_APP_PRIVATE_KEY",
@@ -50,7 +50,7 @@ describe("analyzeSecretsLayer", () => {
         secrets: new Set(["FULLSEND_FULLSEND_APP_PRIVATE_KEY"]),
         variables: new Set(),
       }),
-      [{ name: "fullsend" }],
+      [{ role: "fullsend" }],
     );
     expect(r.status).toBe("degraded");
     expect(r.wouldFix).toContain("create missing FULLSEND_FULLSEND_CLIENT_ID");

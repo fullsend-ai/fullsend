@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  agentsFromConfig,
+  rolesFromConfig,
   enabledReposFromConfig,
   MAX_ORG_CONFIG_YAML_DEPTH,
   MAX_ORG_CONFIG_YAML_UTF8_BYTES,
@@ -90,28 +90,7 @@ repos: {}
     expect(validateOrgConfig(cfg)).toMatch(/invalid role/);
   });
 
-  it("accepts agents with source-based entries", () => {
-    const cfg = parseOrgConfigYaml(`version: "1"
-dispatch:
-  platform: github-actions
-defaults:
-  roles: [fullsend]
-agents:
-  - source: harness/triage.yaml
-  - source: https://example.com/coder.yaml#sha256=abc123
-    name: my-coder
-  - harness/review.yaml
-repos: {}
-`);
-    expect(validateOrgConfig(cfg)).toBeNull();
-    expect(agentsFromConfig(cfg)).toEqual([
-      { name: "triage" },
-      { name: "my-coder" },
-      { name: "review" },
-    ]);
-  });
-
-  it("excludes disabled agents from agentsFromConfig", () => {
+  it("parses agents with source-based entries without error", () => {
     const cfg = parseOrgConfigYaml(`version: "1"
 dispatch:
   platform: github-actions
@@ -120,10 +99,31 @@ defaults:
 agents:
   - source: harness/triage.yaml
   - source: harness/coder.yaml
-    enabled: false
+    name: my-coder
+  - harness/review.yaml
 repos: {}
 `);
-    expect(agentsFromConfig(cfg)).toEqual([{ name: "triage" }]);
+    expect(validateOrgConfig(cfg)).toBeNull();
+  });
+
+  it("rolesFromConfig returns defaults.roles as role objects", () => {
+    const cfg = parseOrgConfigYaml(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage, coder]
+repos: {}
+`);
+    expect(rolesFromConfig(cfg)).toEqual([{ role: "triage" }, { role: "coder" }]);
+  });
+
+  it("rolesFromConfig returns empty array when no defaults.roles", () => {
+    const cfg = parseOrgConfigYaml(`version: "1"
+dispatch:
+  platform: github-actions
+repos: {}
+`);
+    expect(rolesFromConfig(cfg)).toEqual([]);
   });
 
   it("lists enabled repos from config", () => {

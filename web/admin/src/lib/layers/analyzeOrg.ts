@@ -10,8 +10,8 @@ import { analyzeWorkflowsLayer } from "./workflows";
 export type AnalyzeOrgLayersInput = {
   org: string;
   gh: LayerGithub;
-  /** Agent names from org config (drives secret/variable names). */
-  agents: { name: string }[];
+  /** Roles from org config (drives secret/variable names). */
+  agents: { role: string }[];
   /** Repos with `enabled: true` in config (drives enrollment checks). */
   enabledRepos: string[];
 };

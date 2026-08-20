@@ -44,7 +44,7 @@ describe("analyzeOrgLayers", () => {
     const { reports, rollup } = await analyzeOrgLayers({
       org: "acme",
       gh: fullStackMock(),
-      agents: [{ name: "fullsend" }],
+      agents: [{ role: "fullsend" }],
       enabledRepos: ["r1"],
     });
     expect(reports).toHaveLength(5);

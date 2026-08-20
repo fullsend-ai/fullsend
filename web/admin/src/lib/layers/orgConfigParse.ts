@@ -156,32 +156,9 @@ export function validateOrgConfig(cfg: OrgConfigYaml): string | null {
   return null;
 }
 
-function derivedAgentName(entry: string | { source?: string; name?: string; enabled?: boolean }): string {
-  if (typeof entry === "string") {
-    return sourceBaseName(entry);
-  }
-  if (entry.name) return entry.name;
-  return sourceBaseName(entry.source ?? "");
-}
-
-function sourceBaseName(src: string): string {
-  const hashIdx = src.lastIndexOf("#");
-  if (hashIdx >= 0) src = src.slice(0, hashIdx);
-  const base = src.split("/").pop() ?? "";
-  const dotIdx = base.lastIndexOf(".");
-  return dotIdx > 0 ? base.slice(0, dotIdx) : base;
-}
-
-function isAgentEnabled(entry: string | { source?: string; name?: string; enabled?: boolean }): boolean {
-  if (typeof entry === "string") return true;
-  return entry.enabled !== false;
-}
-
-/** Enabled agent names for secrets-layer analyze (mirrors `config.OrgConfig.Agents`). */
-export function agentsFromConfig(cfg: OrgConfigYaml): { name: string }[] {
-  return (cfg.agents ?? [])
-    .filter(isAgentEnabled)
-    .map((a) => ({ name: derivedAgentName(a) }));
+/** Roles for secrets-layer analyze — Go keys secrets by role, not agent name. */
+export function rolesFromConfig(cfg: OrgConfigYaml): { role: string }[] {
+  return (cfg.defaults?.roles ?? []).map((r) => ({ role: r }));
 }
 
 /** Enabled repo names for enrollment-layer analyze (sorted). */
