@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1302,4 +1303,40 @@ func TestResolveOverlays_CELErrorAllFail(t *testing.T) {
 	assert.Equal(t, "scripts/common.sh", h.PreScript,
 		"harness should retain original values when all overlays fail")
 	assert.Nil(t, h.Overlays, "overlays should be consumed even when all fail")
+}
+
+// --- BuildConfigMap tests ---
+
+func TestBuildConfigMap_NilConfig(t *testing.T) {
+	t.Parallel()
+	assert.Nil(t, BuildConfigMap(nil))
+}
+
+func TestBuildConfigMap_PerRepoConfig(t *testing.T) {
+	t.Parallel()
+	cfg := config.NewPerRepoConfig([]string{"triage", "code"}, "org/repo")
+	pr, ok := cfg.(config.PerRepoConfigReader)
+	require.True(t, ok)
+	// Set per-repo specific fields via the writer interface.
+	if w, ok := cfg.(config.PerRepoConfigWriter); ok {
+		w.SetRuntime("claude")
+	}
+	_ = pr // verify type assertion works
+
+	m := BuildConfigMap(cfg)
+	require.NotNil(t, m)
+	assert.Equal(t, "claude", m["runtime"])
+	roles, ok := m["roles"].([]any)
+	require.True(t, ok)
+	assert.Contains(t, roles, "triage")
+	assert.Contains(t, roles, "code")
+}
+
+func TestBuildConfigMap_OrgConfig(t *testing.T) {
+	t.Parallel()
+	// Org configs don't implement PerRepoConfigReader, so the map
+	// should be nil (no per-repo fields to expose).
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	m := BuildConfigMap(orgCfg)
+	assert.Nil(t, m)
 }

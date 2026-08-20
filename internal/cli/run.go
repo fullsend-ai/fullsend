@@ -373,7 +373,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		TreeFetcher:   rFlags.treeFetcher,
 		GitToken:      composeGitToken,
 		Event:         eventMap,
-		Config:        configMapForOverlays(orgCfg),
+		Config:        harness.BuildConfigMap(orgCfg),
 	}
 
 	// Resolve agent source: config agents take precedence, then agents repo
@@ -4276,37 +4276,4 @@ func checkProviderProfileIntegrity(providers []resolve.ResolvedProvider, profile
 			strings.Join(mismatches, ", "))
 	}
 	return "", nil
-}
-
-// configMapForOverlays builds the config map[string]any exposed to overlay
-// CEL when expressions as the "config" variable (ADR 0088). Extracts
-// user-facing per-repo config fields from the config reader. Returns nil
-// when cfg is nil (no config loaded).
-func configMapForOverlays(cfg config.ConfigWriter) map[string]any {
-	if cfg == nil {
-		return nil
-	}
-	pr, ok := cfg.(config.PerRepoConfigReader)
-	if !ok {
-		return nil
-	}
-	m := map[string]any{}
-	if v := pr.ConfigForge(); v != "" {
-		m["forge"] = v
-	}
-	if v := pr.ConfigTracker(); v != "" {
-		m["tracker"] = v
-	}
-	if v := pr.ConfigRuntime(); v != "" {
-		m["runtime"] = v
-	}
-	if roles := pr.ConfigRoles(); len(roles) > 0 {
-		// Convert to []any for CEL evaluation compatibility.
-		anyRoles := make([]any, len(roles))
-		for i, r := range roles {
-			anyRoles[i] = r
-		}
-		m["roles"] = anyRoles
-	}
-	return m
 }

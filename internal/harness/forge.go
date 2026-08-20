@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/google/cel-go/common/types"
 )
 
@@ -387,4 +388,41 @@ func forgeKeyList(m map[string]*ForgeConfig) string {
 		keys = append(keys, k)
 	}
 	return strings.Join(keys, ", ")
+}
+
+// BuildConfigMap extracts user-facing per-repo config fields for overlay
+// CEL evaluation (ADR 0088). The returned map is exposed to overlay when
+// expressions as the "config" variable. Returns nil when cfg is nil or
+// does not implement PerRepoConfigReader (e.g. org-mode configs).
+//
+// Both the CLI (run, lock) and harnessdispatch (enumerate) call sites use
+// this single implementation to ensure overlay CEL resolution sees the
+// same config shape regardless of the call path.
+func BuildConfigMap(cfg config.ConfigReader) map[string]any {
+	if cfg == nil {
+		return nil
+	}
+	pr, ok := cfg.(config.PerRepoConfigReader)
+	if !ok {
+		return nil
+	}
+	m := map[string]any{}
+	if v := pr.ConfigForge(); v != "" {
+		m["forge"] = v
+	}
+	if v := pr.ConfigTracker(); v != "" {
+		m["tracker"] = v
+	}
+	if v := pr.ConfigRuntime(); v != "" {
+		m["runtime"] = v
+	}
+	if roles := pr.ConfigRoles(); len(roles) > 0 {
+		// Convert to []any for CEL evaluation compatibility.
+		anyRoles := make([]any, len(roles))
+		for i, r := range roles {
+			anyRoles[i] = r
+		}
+		m["roles"] = anyRoles
+	}
+	return m
 }

@@ -229,7 +229,7 @@ func lockOneAgent(ctx context.Context, agentName, absFullsendDir, forgeFlag stri
 			OrgAllowlist:  orgAllowlist,
 			TreeFetcher:   rFlags.treeFetcher,
 			GitToken:      composeGitToken,
-			Config:        configMapForOverlays(orgCfg),
+			Config:        harness.BuildConfigMap(orgCfg),
 		})
 		if loadErr != nil {
 			printer.StepFail(fmt.Sprintf("Failed to load harness (forge: %s)", platform))

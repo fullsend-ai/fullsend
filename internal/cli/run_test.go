@@ -5600,40 +5600,6 @@ func TestGenerateSandboxName_AgentSlug(t *testing.T) {
 	}
 }
 
-func TestConfigMapForOverlays_NilConfig(t *testing.T) {
-	t.Parallel()
-	assert.Nil(t, configMapForOverlays(nil))
-}
-
-func TestConfigMapForOverlays_PerRepoConfig(t *testing.T) {
-	t.Parallel()
-	cfg := config.NewPerRepoConfig([]string{"triage", "code"}, "org/repo")
-	pr, ok := cfg.(config.PerRepoConfigReader)
-	require.True(t, ok)
-	// Set per-repo specific fields via the writer interface.
-	if w, ok := cfg.(config.PerRepoConfigWriter); ok {
-		w.SetRuntime("claude")
-	}
-	_ = pr // verify type assertion works
-
-	m := configMapForOverlays(cfg)
-	require.NotNil(t, m)
-	assert.Equal(t, "claude", m["runtime"])
-	roles, ok := m["roles"].([]any)
-	require.True(t, ok)
-	assert.Contains(t, roles, "triage")
-	assert.Contains(t, roles, "code")
-}
-
-func TestConfigMapForOverlays_OrgConfig(t *testing.T) {
-	t.Parallel()
-	// Org configs don't implement PerRepoConfigReader, so the map
-	// should be nil (no per-repo fields to expose).
-	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
-	m := configMapForOverlays(orgCfg)
-	assert.Nil(t, m)
-}
-
 func TestRunCommand_HasEventFileFlag(t *testing.T) {
 	cmd := newRunCmd()
 	flag := cmd.Flags().Lookup("event-file")

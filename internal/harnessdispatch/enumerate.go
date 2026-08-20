@@ -46,7 +46,7 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 		WorkspaceRoot: filepath.Dir(configDir),
 		OrgAllowlist:  allowlist,
 		FetchPolicy:   policy,
-		Config:        buildConfigMap(cfg),
+		Config:        harness.BuildConfigMap(cfg),
 	}
 
 	var out []TriggeredHarness
@@ -104,34 +104,4 @@ func MergedConfigAgents(configDir string) ([]config.AgentEntry, error) {
 		return nil, err
 	}
 	return cfg.AgentEntries(), nil
-}
-
-// buildConfigMap extracts user-facing per-repo config fields for overlay
-// CEL evaluation (ADR 0088). Returns nil when cfg is nil.
-func buildConfigMap(cfg config.ConfigReader) map[string]any {
-	if cfg == nil {
-		return nil
-	}
-	pr, ok := cfg.(config.PerRepoConfigReader)
-	if !ok {
-		return nil
-	}
-	m := map[string]any{}
-	if v := pr.ConfigForge(); v != "" {
-		m["forge"] = v
-	}
-	if v := pr.ConfigTracker(); v != "" {
-		m["tracker"] = v
-	}
-	if v := pr.ConfigRuntime(); v != "" {
-		m["runtime"] = v
-	}
-	if roles := pr.ConfigRoles(); len(roles) > 0 {
-		anyRoles := make([]any, len(roles))
-		for i, r := range roles {
-			anyRoles[i] = r
-		}
-		m["roles"] = anyRoles
-	}
-	return m
 }
