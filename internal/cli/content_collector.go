@@ -125,10 +125,16 @@ type contentCollector struct {
 	parts    []contentPart
 	total    int
 	// evicted counts bytes of old parts discarded during accumulation.
-	// The budget keeps an ordered suffix, so content older than the last
-	// maxBytes is guaranteed to drop at Result; evicting it early keeps
-	// memory bounded on long sessions without changing the outcome.
+	// Eviction keeps memory bounded on long sessions by approximating the
+	// Result budget on sizes as accumulated — pre-redaction — so it can
+	// drop content the post-redaction suffix budget would have kept.
+	// Discarded content is always redacted first: its findings land in
+	// findings below, and no cut ever runs on raw bytes.
 	evicted int
+	// findings raised while redacting content during eviction; merged
+	// into the contentResult at Result so eviction-time redactions are
+	// counted exactly like assembly-time ones.
+	findings []security.Finding
 }
 
 func newContentCollector(maxBytes int) *contentCollector {
@@ -169,24 +175,38 @@ func (c *contentCollector) appendText(kind, text string) {
 }
 
 // evictOverflow discards accumulated content that the suffix budget
-// already guarantees will drop, keeping memory bounded. Whole old parts
-// go first; a single over-double-budget part has its head pre-trimmed.
-// Every evicted byte is counted so Result's accounting stays exact.
+// would drop anyway, keeping memory bounded. Whole old parts go first; a
+// single over-double-budget part has its head pre-trimmed. The
+// redaction-before-truncation invariant holds here exactly as at Result:
+// evicted parts are scanned before discard so their findings still
+// count, and a pre-trim redacts first — cutting raw bytes could split a
+// secret at the boundary so the redactor no longer recognizes the
+// surviving fragment. Eviction decisions use pre-redaction sizes, so
+// eviction approximates the Result budget and can drop content the
+// post-redaction budget would have kept. Every evicted byte is counted
+// so Result's accounting stays exact.
 func (c *contentCollector) evictOverflow() {
 	for len(c.parts) > 1 {
 		head := partSize(c.parts[0])
 		if c.total-head < c.maxBytes {
 			break
 		}
+		c.redact(c.parts[0].Content, &c.findings)
+		c.redact(c.parts[0].Name, &c.findings)
+		c.redact(c.parts[0].Summary, &c.findings)
 		c.evicted += head
 		c.total -= head
 		c.parts = c.parts[1:]
 	}
 	if len(c.parts) == 1 && c.parts[0].Type != "tool_call" && c.total > 2*c.maxBytes {
-		kept := tailToRuneBoundary(c.parts[0].Content, c.maxBytes)
-		c.evicted += len(c.parts[0].Content) - len(kept)
-		c.total -= len(c.parts[0].Content) - len(kept)
-		c.parts[0].Content = kept
+		p := &c.parts[0]
+		before := len(p.Content)
+		p.Content = c.redact(p.Content, &c.findings)
+		c.total -= before - len(p.Content)
+		kept := tailToRuneBoundary(p.Content, c.maxBytes)
+		c.evicted += len(p.Content) - len(kept)
+		c.total -= len(p.Content) - len(kept)
+		p.Content = kept
 	}
 }
 
@@ -200,13 +220,20 @@ func (c *contentCollector) Result(finishReason string) contentResult {
 		return contentResult{}
 	}
 
-	res := contentResult{DroppedBytes: c.evicted, Truncated: c.evicted > 0}
+	res := contentResult{
+		DroppedBytes: c.evicted,
+		Truncated:    c.evicted > 0,
+		// Findings raised while redacting evicted content count exactly
+		// like assembly-time ones — a consumer must see every redaction,
+		// including ones inside content the budget dropped.
+		Findings: append([]security.Finding(nil), c.findings...),
+	}
 
 	redacted := make([]contentPart, 0, len(c.parts))
 	for _, p := range c.parts {
-		p.Content = c.redact(p.Content, &res)
-		p.Name = c.redact(p.Name, &res)
-		p.Summary = c.redact(p.Summary, &res)
+		p.Content = c.redact(p.Content, &res.Findings)
+		p.Name = c.redact(p.Name, &res.Findings)
+		p.Summary = c.redact(p.Summary, &res.Findings)
 		if partSize(p) == 0 {
 			continue // sanitized away entirely; the finding is recorded
 		}
@@ -263,12 +290,12 @@ func (c *contentCollector) Result(finishReason string) contentResult {
 // nothing changed — but also when sanitization removed everything (an
 // all-invisible-bytes input), so an empty Sanitized WITH findings means
 // fully redacted, not unchanged.
-func (c *contentCollector) redact(text string, res *contentResult) string {
+func (c *contentCollector) redact(text string, findings *[]security.Finding) string {
 	if text == "" {
 		return text
 	}
 	scanned := c.pipeline.Scan(text)
-	res.Findings = append(res.Findings, scanned.Findings...)
+	*findings = append(*findings, scanned.Findings...)
 	if scanned.Sanitized != "" {
 		return scanned.Sanitized
 	}

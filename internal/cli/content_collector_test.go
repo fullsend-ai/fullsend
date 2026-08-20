@@ -232,6 +232,53 @@ func TestContentCollector_MidRuneTailCutWalksForward(t *testing.T) {
 	assert.Equal(t, 9-len(kept), res.DroppedBytes)
 }
 
+func TestContentCollector_PreTrimRedactsBeforeCutting(t *testing.T) {
+	// A secret straddling the eviction pre-trim boundary must be redacted
+	// BEFORE the head cut: trimming raw bytes first would split the secret
+	// so the redactor no longer recognizes the surviving fragment. With
+	// maxBytes=100 the deltas below total 250 (>2*100), and a raw-first
+	// trim would keep a 30-byte tail of the token verbatim.
+	// The tail after the secret uses "! " — characters outside the token
+	// alphabet — so the greedy token pattern cannot swallow it.
+	secret := "ghp_" + strings.Repeat("a", 36)
+	tail := strings.Repeat("! ", 35)
+	c := newContentCollector(100)
+	c.Handle(agentruntime.TextEvent{Text: strings.Repeat("x", 140)})
+	c.Handle(agentruntime.TextEvent{Text: secret})
+	c.Handle(agentruntime.TextEvent{Text: tail})
+
+	res := c.Result("stop")
+	assert.NotContains(t, res.OutputMessages, strings.Repeat("a", 10),
+		"no fragment of a boundary-straddling secret may survive the pre-trim")
+	assert.NotEmpty(t, res.Findings,
+		"the pre-trim redaction hit must surface as a security finding")
+
+	msgs := decodeOutputMessages(t, res.OutputMessages)
+	kept := partAt(t, msgs, 0)["content"].(string)
+	assert.True(t, strings.HasSuffix(kept, tail),
+		"the ending must still survive the pre-trim")
+}
+
+func TestContentCollector_EvictedPartsAreStillScanned(t *testing.T) {
+	// Whole parts evicted during accumulation never reach Result's redact
+	// pass, but their findings must still be counted —
+	// fullsend.content.redactions is documented to include findings from
+	// parts the size budget later dropped.
+	secret := "ghp_" + strings.Repeat("c", 36)
+	c := newContentCollector(30)
+	c.Handle(agentruntime.TextEvent{Text: "leak: " + secret})
+	c.Handle(agentruntime.ThinkingEvent{Text: strings.Repeat("z", 30)})
+	c.Handle(agentruntime.TextEvent{Text: "the end"})
+
+	require.LessOrEqual(t, len(c.parts), 2,
+		"the secret-bearing part must have been evicted during accumulation")
+
+	res := c.Result("stop")
+	assert.NotContains(t, res.OutputMessages, secret)
+	assert.NotEmpty(t, res.Findings,
+		"findings inside evicted parts must still be counted")
+}
+
 func TestContentCollector_EvictsWholeOldPartsExactly(t *testing.T) {
 	// Long sessions must not accumulate unbounded content: parts older
 	// than the suffix budget are evicted during Handle, and every
