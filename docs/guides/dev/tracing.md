@@ -152,9 +152,11 @@ The collector (`internal/cli/content_collector.go`) coalesces contiguous
 text/reasoning deltas, maps tool use to `tool_call` parts, redacts every
 part through `security.OutputPipeline()` at assembly (redaction runs
 before the size budget — truncating first could split a secret past
-recognition), enforces a 256 KiB ordered-prefix budget with exact
-dropped-byte accounting, and emits `gen_ai.output.messages` JSON
-following the GenAI output-messages schema. `attachContent` records the
+recognition), enforces a 256 KiB ordered-suffix budget (the ending survives — the
+final answer is what consumers judge) with exact dropped-byte accounting
+across content, tool names, and summaries, and emits
+`gen_ai.output.messages` JSON following the GenAI output-messages schema,
+including the schema-required `finish_reason` from the iteration outcome. `attachContent` records the
 content and its marker attributes on the span before either
 `finalizeAgentSpan` path can end it, so failed iterations keep their
 content.
@@ -164,7 +166,7 @@ content.
 JSON; check `fullsend.content.truncated` / `fullsend.content.dropped_bytes`
 before treating content as complete; masked secrets appear as the
 redactor's mask tokens and are counted in `fullsend.content.redactions`.
-The attribute names and shapes are the stable contract — see the
+The attribute names and shapes above are the consumption contract — see the
 [Tracing reference](../infrastructure/distributed-tracing.md#content-capture-level-3).
 
 ## Trace identity and TRACEPARENT propagation
