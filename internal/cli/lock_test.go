@@ -2147,6 +2147,188 @@ func TestResolveFromLock_ForgeScopedSkillNoMutation(t *testing.T) {
 	assert.Equal(t, mergedPath, h.Skills[0].Source)
 }
 
+func TestResolveFromLock_OverlayScopedSkillNoMutation(t *testing.T) {
+	// Overlay-scoped skills are locked under overlays[N].skills[M]
+	// (see resolveBaseResources). Their paths were already merged into
+	// h.Skills by ResolveForge during LoadWithBase, so resolveFromLock must
+	// verify the cache entry but leave h.Skills alone — appending would
+	// duplicate the skill under the cache's internal tree name.
+	skillMD := []byte("---\nname: pr-review\n---\n")
+	skillFiles := map[string][]byte{"SKILL.md": skillMD}
+	treeHash := fetch.ComputeTreeHash(skillFiles)
+
+	root := t.TempDir()
+	skillFileURL := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/skills/pr-review/SKILL.md"
+	_, err := fetch.CachePutDir(root, skillFileURL, skillFiles)
+	require.NoError(t, err)
+	treePath, _, err := fetch.CacheGetDir(root, treeHash)
+	require.NoError(t, err)
+	mergedPath, err := fetch.CacheNamedSymlink(treePath, "pr-review")
+	require.NoError(t, err)
+	require.True(t, filepath.IsAbs(mergedPath),
+		"merged path must live in the cache, not the test working directory")
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "overlays[0].skills[0]",
+				URL:    skillFileURL,
+				SHA256: treeHash,
+				Type:   "directory",
+				Files: []lock.FileEntry{
+					{Path: "SKILL.md", SHA256: fetch.ComputeSHA256(skillMD)},
+				},
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Skills:                 []harness.SkillEntry{{Source: mergedPath}},
+		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+
+	require.Len(t, h.Skills, 1, "overlay-scoped skill lock entries must not append to h.Skills")
+	assert.Equal(t, mergedPath, h.Skills[0].Source)
+}
+
+func TestResolveFromLock_OverlayScriptNoMutation(t *testing.T) {
+	// Overlay scripts (pre_script, post_script, validation_loop.script) are
+	// resolved during LoadWithBase and already set in the harness, so
+	// resolveFromLock must verify the cache entry but not mutate the harness.
+	script := []byte("#!/bin/bash\necho overlay\n")
+	scriptHash := fetch.ComputeSHA256(script)
+
+	root := t.TempDir()
+	scriptURL := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/overlays/pre.sh"
+	require.NoError(t, fetch.CachePut(root, scriptURL, script))
+
+	cachePath, err := fetch.CachePath(root, scriptHash)
+	require.NoError(t, err)
+	cachePath = filepath.Join(cachePath, "content")
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "overlays[0].pre_script",
+				URL:    scriptURL,
+				SHA256: scriptHash,
+				Type:   "file",
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		PreScript:              cachePath,
+		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+
+	// PreScript should remain unchanged — overlay scripts are already resolved
+	assert.Equal(t, cachePath, h.PreScript)
+	// Should not be appended to Skills
+	assert.Len(t, h.Skills, 0)
+}
+
+func TestResolveFromLock_OverlayProviderParsed(t *testing.T) {
+	// Overlay providers must be parsed and added to ResolvedProvider list,
+	// not incorrectly appended as skills.
+	providerYAML := []byte("name: test\ntype: openai\n")
+	providerHash := fetch.ComputeSHA256(providerYAML)
+
+	root := t.TempDir()
+	providerURL := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/overlays/provider.yaml"
+	require.NoError(t, fetch.CachePut(root, providerURL, providerYAML))
+
+	cachePath, err := fetch.CachePath(root, providerHash)
+	require.NoError(t, err)
+	cachePath = filepath.Join(cachePath, "content")
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "overlays[0].providers[0]",
+				URL:    providerURL,
+				SHA256: providerHash,
+				Type:   "file",
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent:                  "agents/code.md",
+		Providers:              []string{providerURL},
+		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+
+	// Should be in ResolvedProvider list
+	require.Len(t, lockResult.Providers, 1)
+	assert.Equal(t, "test", lockResult.Providers[0].Def.Name)
+	assert.Equal(t, "openai", lockResult.Providers[0].Def.Type)
+	assert.Equal(t, cachePath, lockResult.Providers[0].LocalPath)
+
+	// Should not be appended to Skills
+	assert.Len(t, h.Skills, 0)
+}
+
+func TestResolveFromLock_OverlayProfileParsed(t *testing.T) {
+	// Overlay profiles must be parsed and added to ResolvedProfile list,
+	// not incorrectly appended as skills.
+	profileYAML := []byte("id: test-profile\nshell: bash\n")
+	profileHash := fetch.ComputeSHA256(profileYAML)
+
+	root := t.TempDir()
+	profileURL := "https://raw.githubusercontent.com/fullsend-ai/agents/abc123/overlays/profile.yaml"
+	require.NoError(t, fetch.CachePut(root, profileURL, profileYAML))
+
+	entry := &lock.HarnessLock{
+		Dependencies: []lock.DependencyEntry{
+			{
+				Field:  "overlays[0].openshell.profiles[0]",
+				URL:    profileURL,
+				SHA256: profileHash,
+				Type:   "file",
+			},
+		},
+	}
+
+	h := &harness.Harness{
+		Agent: "agents/code.md",
+		OpenShell: &harness.OpenShellConfig{
+			Profiles: []string{profileURL},
+		},
+		AllowedRemoteResources: []string{"https://raw.githubusercontent.com/fullsend-ai/"},
+	}
+
+	printer := ui.New(os.Stdout)
+	lockResult, err := resolveFromLock(h, entry, root, printer)
+	require.NoError(t, err)
+	require.Len(t, lockResult.Deps, 1)
+
+	// Should be in ResolvedProfile list
+	require.Len(t, lockResult.Profiles, 1)
+	assert.Equal(t, "test-profile", lockResult.Profiles[0].ID)
+	assert.True(t, lockResult.Profiles[0].FromURL)
+
+	// Should not be appended to Skills
+	assert.Len(t, h.Skills, 0)
+}
+
 func TestResolveFromLock_SkillRepoRootURLRejected(t *testing.T) {
 	// A skills[N] lock entry whose URL is a forge repo root has no directory
 	// segment to name the skill after; resolveFromLock must surface the

@@ -826,7 +826,8 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			continue
 		}
 		if strings.HasPrefix(lockDep.Field, "openshell.profiles[") ||
-			(strings.HasPrefix(lockDep.Field, "forge.") && strings.Contains(lockDep.Field, ".openshell.profiles[")) {
+			(strings.HasPrefix(lockDep.Field, "forge.") && strings.Contains(lockDep.Field, ".openshell.profiles[")) ||
+			(strings.HasPrefix(lockDep.Field, "overlays[") && strings.Contains(lockDep.Field, ".openshell.profiles[")) {
 			id, err := resolve.ParseProfileID(cachedContent)
 			if err != nil {
 				return resolve.ResolveResult{}, fmt.Errorf("cached profile %s: %w", lockDep.Field, err)
@@ -841,7 +842,8 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			dep.LocalPath = namedPath
 			profiles = append(profiles, resolve.ResolvedProfile{ID: id, LocalPath: localPath, FromURL: true})
 		} else if strings.HasPrefix(lockDep.Field, "providers[") ||
-			(strings.HasPrefix(lockDep.Field, "forge.") && strings.Contains(lockDep.Field, ".providers[")) {
+			(strings.HasPrefix(lockDep.Field, "forge.") && strings.Contains(lockDep.Field, ".providers[")) ||
+			(strings.HasPrefix(lockDep.Field, "overlays[") && strings.Contains(lockDep.Field, ".providers[")) {
 			var def harness.ProviderDef
 			if err := yaml.Unmarshal(cachedContent, &def); err != nil {
 				return resolve.ResolveResult{}, fmt.Errorf("parsing cached provider %s: %w", lockDep.Field, err)
@@ -931,6 +933,14 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			// Same as forge pre_script above.
 		case strings.HasPrefix(m.field, "forge.") && strings.HasSuffix(m.field, ".validation_loop.script"):
 			// Same as forge pre_script above.
+		case strings.HasPrefix(m.field, "overlays[") && strings.HasSuffix(m.field, ".pre_script"):
+			// Overlay scripts are resolved before overlay promotion; the field
+			// name is informational — the actual path was already set during
+			// LoadWithBase. This entry exists for cache verification.
+		case strings.HasPrefix(m.field, "overlays[") && strings.HasSuffix(m.field, ".post_script"):
+			// Same as overlay pre_script above.
+		case strings.HasPrefix(m.field, "overlays[") && strings.HasSuffix(m.field, ".validation_loop.script"):
+			// Same as overlay pre_script above.
 		case m.field == "validation_loop.schema":
 			if h.ValidationLoop != nil {
 				h.ValidationLoop.Schema = m.localPath
@@ -939,6 +949,10 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			// Same as forge pre_script above.
 		case strings.HasPrefix(m.field, "forge.") && strings.HasSuffix(m.field, ".policy"):
 			// Same as forge pre_script above.
+		case strings.HasPrefix(m.field, "overlays[") && strings.HasSuffix(m.field, ".validation_loop.schema"):
+			// Same as overlay pre_script above.
+		case strings.HasPrefix(m.field, "overlays[") && strings.HasSuffix(m.field, ".policy"):
+			// Same as overlay pre_script above.
 		case strings.HasPrefix(m.field, "openshell.profiles["):
 			// Profiles don't mutate harness fields — they're consumed via
 			// the ResolvedProfile list built above.
@@ -963,6 +977,14 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 			// would duplicate the skill under the cache's internal tree name.
 		case strings.HasPrefix(m.field, "forge.") && strings.Contains(m.field, ".providers["):
 		case strings.HasPrefix(m.field, "forge.") && strings.Contains(m.field, ".openshell.profiles["):
+		case strings.HasPrefix(m.field, "overlays[") && strings.Contains(m.field, ".skills["):
+			// Overlay-scoped skills are resolved during LoadWithBase and merged
+			// into h.Skills by ResolveForge before resolveFromLock runs; the
+			// correctly named path is already in place. This entry exists for
+			// cache verification only — appending it via the default case
+			// would duplicate the skill under the cache's internal tree name.
+		case strings.HasPrefix(m.field, "overlays[") && strings.Contains(m.field, ".providers["):
+		case strings.HasPrefix(m.field, "overlays[") && strings.Contains(m.field, ".openshell.profiles["):
 		case strings.Contains(m.field, ".overrides["):
 			// Override file entries are resolved by ResolveHarness and cached
 			// as individual files. Map the cache path back to the override
@@ -1079,11 +1101,13 @@ func resolveFromLock(h *harness.Harness, entry *lock.HarnessLock, workspaceRoot 
 // directory tree whose local basename must be derived from the recorded URL:
 // skills[N] and plugins[N] slots, plus forge-scoped skills
 // (forge.<platform>.skills[N], see resolveBaseResources in
-// internal/harness/compose.go). ForgeConfig has no plugins field.
+// internal/harness/compose.go), plus overlay-scoped skills
+// (overlays[N].skills[M]). ForgeConfig has no plugins field.
 func isTreeLockField(field string) bool {
 	return strings.HasPrefix(field, "skills[") ||
 		strings.HasPrefix(field, "plugins[") ||
-		(strings.HasPrefix(field, "forge.") && strings.Contains(field, ".skills["))
+		(strings.HasPrefix(field, "forge.") && strings.Contains(field, ".skills[")) ||
+		(strings.HasPrefix(field, "overlays[") && strings.Contains(field, ".skills["))
 }
 
 // lockTreeDirName derives the local directory basename for a tree lock
@@ -1119,6 +1143,9 @@ func isScriptLockField(field string) bool {
 	case field == "pre_script" || field == "post_script" || field == "validation_loop.script":
 		return true
 	case strings.HasPrefix(field, "forge.") &&
+		(strings.HasSuffix(field, ".pre_script") || strings.HasSuffix(field, ".post_script") || strings.HasSuffix(field, ".validation_loop.script")):
+		return true
+	case strings.HasPrefix(field, "overlays[") &&
 		(strings.HasSuffix(field, ".pre_script") || strings.HasSuffix(field, ".post_script") || strings.HasSuffix(field, ".validation_loop.script")):
 		return true
 	default:
