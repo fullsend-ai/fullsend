@@ -52,7 +52,7 @@ and update the others as needed.
 | `validateForge` | `internal/harness/forge.go` | Validates `forge:` block keys and `ForgeConfig` field values |
 | `validateOverlays` | `internal/harness/forge.go` | Validates `overlays:` entries — CEL `when` expressions and `ForgeConfig` field values; enforces mutual exclusion with `forge:` |
 | `ResolveForge` | `internal/harness/forge.go` | Merges the selected forge platform's config into the harness and nils the forge map |
-| `ResolveOverlays` | `internal/harness/forge.go` | Evaluates overlay `when` expressions against event/runtime/config CEL environment; merges the first matching entry (first-match-wins) and nils the overlays list |
+| `ResolveOverlays` | `internal/harness/forge.go` | Evaluates overlay `when` expressions against event/runtime/config CEL environment; merges the first matching entry (first-match-wins) and nils the overlays list. When event is nil (CLI flows without event context), an empty map is substituted so overlays conditioned on `runtime.forge` or `config` can still match. Use `has(event.source)` to guard event field access in `when` expressions. |
 
 ### How they correspond
 

@@ -126,6 +126,11 @@ warning when `forge:` is present, recommending migration to
 
 ### Resolution pipeline
 
+> **Update (2026-08-21):** The empty-event semantics described below have
+> evolved since this ADR was written. See
+> [Harness Field Reference](../contributing/harness-fields.md) for the
+> current behavior (nil event → empty map substitution).
+
 `LoadWithOpts` and `LoadWithBase` gain `Event normevent.Event` and
 `Config map[string]any` fields in their options structs. The pipeline
 becomes:
@@ -139,8 +144,6 @@ ResolveForge(platform) → ResolveOverlays(event, config) → Validate
 against the CEL environment (see below). The first entry whose
 `when` returns true is merged; remaining entries are skipped. Like
 `ResolveForge`, it nils out the field after resolution (consumed).
-When `Event` is nil, `ResolveOverlays` is a no-op (no entries
-match), paralleling `ResolveForge` when `ForgePlatform` is empty.
 
 ### CEL environment
 

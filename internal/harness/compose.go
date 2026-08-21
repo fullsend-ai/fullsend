@@ -77,7 +77,9 @@ type ComposeOpts struct {
 	SourceURL string
 
 	// Event is the normalized event data for CEL overlay resolution (ADR 0088).
-	// If nil, ResolveOverlays is a no-op.
+	// When nil, ResolveOverlays substitutes an empty map so overlays conditioned
+	// on runtime.forge or config can still evaluate and match (CLI flows without
+	// event context).
 	Event map[string]any
 
 	// Config is the per-repo config (from config.yaml) exposed to overlay
