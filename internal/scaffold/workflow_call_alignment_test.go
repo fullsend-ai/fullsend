@@ -431,6 +431,10 @@ func TestOTELVariableForwarding(t *testing.T) {
 		"OTEL_EXPORTER_OTLP_CERTIFICATE",
 		"OTEL_RESOURCE_ATTRIBUTES",
 		"OTEL_SDK_DISABLED",
+		// Level 3 content-capture gate: a non-secret toggle, forwarded on
+		// the vars channel exactly like OTEL_SDK_DISABLED so orgs on managed
+		// workflows can enable it (ADR 0050 Level 3).
+		"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT",
 	}
 
 	forwardLine := func(v string) string {
