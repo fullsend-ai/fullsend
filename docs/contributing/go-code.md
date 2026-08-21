@@ -175,6 +175,31 @@ This applies to all `require` functions (`require.NoError`, `require.Equal`, `re
 
 Stubs that implement an interface with no-ops or stateless pass-throughs hold no mutable state, so the race detector has nothing to detect. Even stubs that use `atomic.Int64` counters are invisible to `-race` because atomics are correctly synchronized by definition. The point of a race test is to exercise the **real type's fields** — only a real constructor backed by a thread-safe fake can trigger the detector on unsynchronized production code.
 
+## Context-aware blocking
+
+Functions that accept `context.Context` must not use `time.Sleep` or other
+unconditionally-blocking calls. Use `select` to respect cancellation:
+
+```go
+// Good — respects context cancellation.
+select {
+case <-ctx.Done():
+    return ctx.Err()
+case <-time.After(backoff):
+}
+
+// Bad — blocks unconditionally, ignores cancellation.
+time.Sleep(backoff)
+```
+
+This applies to retry loops, polling intervals, and any deliberate delay.
+For retry patterns specifically, check whether the package already provides
+an injectable sleep function (e.g., `sandbox.RetrySleepFn`) for testability.
+
+For blocking syscalls like `syscall.Flock(LOCK_EX)` that cannot be
+interrupted, add a comment documenting the worst-case blocking duration
+and why it is acceptable.
+
 ## Error handling and naming conventions
 
 ### Use typed constants over string literals
