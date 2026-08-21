@@ -140,9 +140,13 @@ func (h *Harness) validateForge() error {
 // validateOverlayForgeConfig validates a ForgeConfig embedded in an overlay
 // entry, applying the same checks as validateForge per entry. OverlayEntry
 // embeds ForgeConfig via yaml:",inline" (see OverlayEntry), so overlay
-// entries carry the same override fields as forge platform blocks. The
-// "ForgeConfig" name is a legacy artifact from the forge feature being
-// deprecated in favor of overlays (ADR 0088).
+// entries carry the same override fields as forge platform blocks.
+//
+// Naming: The function references "ForgeConfig" rather than "OverlayEntry"
+// because it validates the ForgeConfig fields embedded in each overlay entry.
+// The ForgeConfig type name is a legacy artifact from the original forge
+// feature (ADR 0088 deprecated forge in favor of overlays), but the name
+// remains accurate: this function validates ForgeConfig fields.
 func validateOverlayForgeConfig(idx int, fc *ForgeConfig) error {
 	prefix := fmt.Sprintf("overlays[%d]", idx)
 	if fc.Policy != "" && IsURL(fc.Policy) {
@@ -215,6 +219,11 @@ func (h *Harness) validateOverlays() error {
 		return nil
 	}
 	if h.Forge != nil {
+		// This error includes remediation advice ("migrate forge entries to
+		// overlays") unlike other validation errors because it's a migration
+		// error guiding users from the deprecated forge feature to overlays
+		// (ADR 0088). The remediation is brief, actionable, and appropriate
+		// for a one-time migration scenario.
 		return fmt.Errorf("forge and overlays cannot coexist in the same harness; migrate forge entries to overlays")
 	}
 	for i, entry := range h.Overlays {
