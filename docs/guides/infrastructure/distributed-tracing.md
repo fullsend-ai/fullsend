@@ -16,8 +16,7 @@ For implementation details, see the
 
 All levels produce metadata (timing, token counts, tool names, errors).
 Level 3 adds the agent's conversation content to spans — enabled by one
-environment variable, exactly like Level 2's endpoint
-([ADR 0050](../../ADRs/0050-distributed-tracing-instrumentation.md)).
+environment variable, exactly like Level 2's endpoint.
 
 ## Environment variables
 
@@ -70,93 +69,48 @@ unset OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
 
 ### Content capture (Level 3)
 
-**The agent runtime's native content telemetry is never enabled.** Level 3
-content is assembled by fullsend's own runner from the same normalized
-event stream the console renders, redacted through the security pipeline
-at assembly, and attached to the per-iteration `agent` span. There is no
-second export pipeline and no redaction bypass: fullsend reads the
-variable below itself and never sets the runtime's own content-logging
-variables (`OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`,
-`OTEL_LOG_TOOL_CONTENT`, `OTEL_LOG_TOOL_DETAILS`, `OTEL_LOG_RAW_API_BODIES`).
+Fullsend assembles Level 3 content from the normalized event stream the
+console renders, redacts it through the security output pipeline, and
+attaches it to the per-iteration `agent` span. The agent runtime's own
+content-logging variables (`OTEL_LOG_USER_PROMPTS`,
+`OTEL_LOG_ASSISTANT_RESPONSES`, etc.) are never set.
 
 | Variable | Values that enable capture | Values that keep it off |
 |----------|---------------------------|-------------------------|
 | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `true`, `span_only`, `span_and_event` (case-insensitive) | unset, `false`, `NO_CONTENT`, `event_only`, anything unrecognized |
 
-The variable name and value vocabulary come from the OpenTelemetry GenAI
-instrumentation convention (documented by the
-[opentelemetry-python-contrib GenAI instrumentations](https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/instrumentation-genai));
-the pinned semantic-conventions v1.37.0 release does not define the
-variable itself. Fullsend records content on span attributes only, so `event_only`
-stays off — honoring it on spans would contradict the operator's "only".
-An unrecognized value disables capture rather than erroring: telemetry
-never fails a run.
+The variable name and accepted values follow the
+[OpenTelemetry GenAI instrumentation convention](https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/instrumentation-genai).
+Fullsend records content on span attributes only, so `event_only` stays
+off. An unrecognized value disables capture; telemetry never fails a run.
 
-**What is captured:** the assistant's text, its reasoning, and its tool
-calls (name plus a short summary), as a
-`gen_ai.output.messages` span attribute — one assistant message carrying
-the schema-required `finish_reason` (`stop` for a clean exit, `error` for
-a failed iteration), as a JSON string following the
+**Captured:** assistant text, reasoning, and tool calls (name plus short
+summary) — including any sub-agent activity, unattributed — as the
+`gen_ai.output.messages` span attribute: a JSON string following the
 [GenAI output-messages schema](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-output-messages.json)
-(reasoning uses the schema's extensible part type). Sub-agent activity in
-the stream appears unattributed, exactly as it does in the console; nested
-attribution is deferred along with ADR 0050's sub-agent span item.
+with a `finish_reason` of `stop` or `error`.
 
-**What is not captured:** model input (`gen_ai.input.messages`) — the CLI
-passes a constant literal, so there is no meaningful input to record;
-tool results — not in the normalized event stream today; pre/post-script
-content.
+**Not captured:** model input (`gen_ai.input.messages` — the CLI passes a
+constant literal) and pre/post-script content.
 
-> **Planned:** Tool results will join the captured content once a parser
-> extension adds them to the normalized event stream — the next change in
-> this series after [#6429](https://github.com/fullsend-ai/fullsend/pull/6429).
+> **Planned:** Tool results, once a parser extension adds them to the
+> normalized event stream — the next change after
+> [#6429](https://github.com/fullsend-ai/fullsend/pull/6429).
 
-**Redaction and size:** every part passes through the security output
-pipeline (Unicode normalization, then secret redaction) before it reaches
-the span; redaction hits are masked, counted on the span, and warned in
-the console. Content is bounded per iteration: 256 KiB of raw part bytes
-before JSON encoding (the encoded attribute is larger by escaping
-overhead), kept as an ordered **suffix** — the iteration's ending, the
-final answer, is what consumers judge, so overflow drops the oldest
-content first. The bound is a constant in v1, sized well above what
-text, reasoning, and tool-call summaries produce (full-transcript
-measurements that exceed it are dominated by tool results, which are not
-captured yet) and validated whole against the pilot backend; it will be
-revisited when tool results join the stream. Any cut is marked on the
-span (see the custom attributes below) so a consumer can always tell
-partial content from complete content. While the
-gate is on, the SDK's span attribute length cap is lifted so it cannot
-cut the content JSON mid-value — an explicit
-`OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` still wins. A finite explicit
-limit therefore cuts any over-limit `gen_ai.output.messages` value
-mid-JSON, in both sinks, and `fullsend.content.truncated` does not flag
-an SDK cut; fullsend warns on stderr at startup about this combination —
-raise the limit, set it to `-1`, or unset it to keep content parseable.
-Backends and
-collectors have their own ingestion limits; validate the target backend
-accepts your typical content size before relying on it.
+**Redaction and size:** every part passes through security redaction
+(Unicode normalization, then secret masking) before reaching the span.
+Content is bounded at 256 KiB per iteration, kept as an ordered suffix;
+overflow drops the oldest content first. Truncation is marked via
+`fullsend.content.truncated`. The SDK's span attribute length cap is
+lifted while capture is on; an explicit
+`OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` still wins and will cut content
+mid-JSON — fullsend warns on stderr at startup.
 
-**Where content goes:** content rides the span to both sinks — always to
-`run-telemetry.jsonl`, and to the OTLP endpoint whenever one is
-configured (subject to the `TRACEPARENT` unsampled-flag suppression
-above, which applies to all spans). Per ADR 0050, the organization enabling capture is
-responsible for ensuring its backend's access controls suit the content's
-sensitivity. When enabled, spans may contain proprietary source code,
-PII, or credentials visible in agent output. The OTel specification
-recommends external storage with span references for high-volume or
-high-sensitivity production use.
-
-> **Planned:** A bucket-export pipeline
-> ([#6410](https://github.com/fullsend-ai/fullsend/issues/6410)) is the
-> natural home for that external-storage pattern.
-
-**MLflow rendering note:** MLflow derives its trace-list Request/Response
-preview columns from the root span (capped at 1000 characters), so they stay
-empty for fullsend traces — content lives on the per-iteration `agent`
-spans and is visible when opening the trace's span view. Content is
-deliberately not duplicated onto the root span: duplicated span data is
-what produced the token double-count fixed by
-[#5788](https://github.com/fullsend-ai/fullsend/pull/5788).
+**Sinks:** content rides the span to both `run-telemetry.jsonl` and the
+OTLP endpoint (when configured). Spans may contain proprietary source
+code, PII, or credentials; the organization enabling capture is
+responsible for its backend's access controls. For how MLflow displays
+the content, see [Tracing with MLflow](../user/tracing-with-mlflow.md).
 
 ## Span hierarchy
 

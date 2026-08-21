@@ -80,6 +80,16 @@ excludes cache-creation and cache-read tokens, which dominate agent-run cost.
 The authoritative cost figure is the runtime-reported `fullsend.cost_usd`
 attribute on `agent` spans (also in `run-telemetry.jsonl`).
 
+## Level 3 content
+
+With content capture enabled (see
+[How To Emit Traces](how-to-emit-traces.md#capture-conversation-content)),
+the conversation lives on each `agent` span as `gen_ai.output.messages`:
+open the trace and select the span to read it. The trace list's
+Request/Response preview columns derive from the root span only (capped
+at 1000 characters), so they stay empty for fullsend traces — content is
+deliberately not duplicated onto the root span.
+
 ## Local development
 
 Start a local MLflow instance and point the exporter at it:
