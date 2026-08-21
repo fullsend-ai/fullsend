@@ -104,7 +104,7 @@ See [Bring Your Own Agent](guides/user/bring-your-own-agent.md), [ADR 0058](ADRs
 
 ### Configured Default Agent
 
-A [default agent](#default-agent) whose behavior was adjusted **without** changing identity-defining harness fields. Allowed paths include documented [extension points](#extension-point), [additive skills](#additive-skill), [skill overrides](#skill-override) that do not replace identity fields, [AGENTS.md](#agentsmd), env vars, plugins, host files, sandbox image layers, and policy composition. The system prompt (`agent:`), [pre-script](#pre-script) / [post-script](#post-script), and validation loop stay those of the default. The slug normally stays too — treat a slug change as [derived](#derived-agent) unless that agent's own docs recommend a specific slug override for a stated purpose. Still recognizably the same agent (for example "our triage, with team skills").
+A [default agent](#default-agent) whose behavior was adjusted **without** changing identity-defining harness fields. Allowed paths include documented [extension points](#extension-point), [additive skills](#additive-skill), [skill overrides](#skill-override), [AGENTS.md](#agentsmd), env vars, plugins, host files, sandbox image layers, and policy composition. The system prompt (`agent:`), [pre-script](#pre-script) / [post-script](#post-script), and validation loop stay those of the default. The slug normally stays too — treat a slug change as [derived](#derived-agent) unless that agent's own docs recommend a specific slug override for a stated purpose. Still recognizably the same agent (for example "our triage, with team skills").
 See [Default, derived, and custom agents](agents/topics/default-vs-custom.md).
 
 ### Custom Agent
@@ -246,7 +246,7 @@ See [ADR 0002](ADRs/0002-initial-fullsend-design.md).
 
 ### Repo Skill
 
-A [skill](#skill) committed under the target repo (typically `.agents/skills/`, often symlinked as `.claude/skills`). Discovered for agents on that repo. Novel names are [additive](#additive-skill). A repo skill whose **name matches** a [built-in skill](#built-in-skill) is shadowed — built-ins are installed at a higher-precedence config layer than repo skills, so the built-in wins on collision. That silent shadowing is **not** a [skill override](#skill-override); use [base composition](#base-composition) (same basename on the child harness `skills:` list) or see that entry.
+A [skill](#skill) committed under the target repo (typically `.agents/skills/`, often symlinked as `.claude/skills`). Discovered for agents on that repo. Novel names are [additive](#additive-skill). A repo skill whose **name matches** a [built-in skill](#built-in-skill) is shadowed — repo skills do not participate in [base composition](#base-composition)'s dedup-by-basename merge, so the built-in wins on collision. That silent shadowing is not a [skill override](#skill-override); use base composition (same basename on the child harness `skills:` list) or see that entry.
 See [Configuring with skills](guides/user/customizing-with-skills.md).
 
 ### Rework Rate
