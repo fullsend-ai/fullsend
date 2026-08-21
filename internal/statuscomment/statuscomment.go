@@ -321,9 +321,11 @@ func (n *Notifier) PostCompletionWithDetail(ctx context.Context, description, st
 		if cleanupComment {
 			if err := n.client.DeleteIssueComment(ctx, n.owner, n.repo, n.startCommentID); err != nil {
 				n.warnf("failed to delete start comment when completion suppressed: %v", err)
-				// Don't swap the reaction — the start comment is still
-				// visible in its "Started" state, and swapping the
-				// reaction would leave contradictory signals.
+				// The start comment is still visible in its "Started"
+				// state. Clean up the start reaction (without adding a
+				// completion reaction) so the orphaned comment doesn't
+				// keep a stale 👀 forever.
+				n.postCompletionReaction(ctx, status, cleanupReaction, false)
 				return nil
 			}
 		}
@@ -380,15 +382,21 @@ func (n *Notifier) PostCompletionWithDetail(ctx context.Context, description, st
 func (n *Notifier) postCompletionReaction(ctx context.Context, status string, cleanup, post bool) {
 	if cleanup {
 		if err := n.deleteReaction(ctx, n.startReactionID); err != nil {
-			if !errors.Is(err, forge.ErrNotSupported) {
+			if errors.Is(err, forge.ErrNotSupported) {
+				// ErrNotSupported means the forge doesn't have reactions
+				// at all, so there's nothing stuck; fall through to post.
+			} else if errors.Is(err, forge.ErrNotFound) {
+				// 404 means the reaction is already gone (desired state).
+				// Clear the ID and fall through to add the completion
+				// reaction — the start reaction is not stuck.
+				n.startReactionID = 0
+			} else {
 				n.warnf("failed to remove start reaction: %v", err)
 				// Don't post the completion reaction — the start
 				// reaction is still visible, and adding a completion
 				// reaction would leave contradictory signals stacked.
 				return
 			}
-			// ErrNotSupported means the forge doesn't have reactions
-			// at all, so there's nothing stuck; fall through to post.
 		} else {
 			n.startReactionID = 0
 		}

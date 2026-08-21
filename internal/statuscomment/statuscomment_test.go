@@ -1756,8 +1756,9 @@ func TestPostCompletion_ReactionDeleteFailPreservesID(t *testing.T) {
 }
 
 // Verify that the suppressed-completion path (cleanupComment) attempts
-// the comment delete before the reaction swap, and skips the reaction
-// swap when the delete fails.
+// the comment delete before the reaction swap, and when the delete fails,
+// it still cleans up the start reaction (without posting the completion
+// reaction) to avoid permanently orphaning the 👀.
 func TestPostCompletion_SuppressedCompletion_SkipsReactionOnDeleteFailure(t *testing.T) {
 	fc := forge.NewFakeClient()
 	cfg := config.StatusNotificationConfig{
@@ -1781,7 +1782,7 @@ func TestPostCompletion_SuppressedCompletion_SkipsReactionOnDeleteFailure(t *tes
 
 	require.Len(t, warnings, 1)
 	assert.Contains(t, warnings[0], "forbidden")
-	assert.Empty(t, fc.DeletedReactions, "start reaction should NOT be cleaned up when comment delete fails")
+	assert.Len(t, fc.DeletedReactions, 1, "start reaction SHOULD be cleaned up even when comment delete fails")
 	assert.Len(t, fc.AddedReactions, 1, "no completion reaction should be posted when comment delete fails")
 }
 

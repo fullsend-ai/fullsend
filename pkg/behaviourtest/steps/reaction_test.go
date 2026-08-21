@@ -251,7 +251,7 @@ func TestThenIssueDoesNotHaveReaction_Present(t *testing.T) {
 
 	err := thenIssueDoesNotHaveReaction(w, "eyes")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unexpectedly has \"eyes\"")
+	assert.Contains(t, err.Error(), "unexpectedly has bot \"eyes\" reaction")
 }
 
 func TestThenIssueDoesNotHaveReaction_NoIssue(t *testing.T) {
@@ -353,6 +353,7 @@ type fakeReactionSCM struct {
 	committedContent []byte
 	commitFileErr    error
 	reactions        []forge.Reaction
+	botUser          string
 }
 
 func (f *fakeReactionSCM) GetFileContent(_ context.Context, _, _, _ string) ([]byte, error) {
@@ -367,6 +368,15 @@ func (f *fakeReactionSCM) CommitFile(_ context.Context, _, _, _, _ string, conte
 
 func (f *fakeReactionSCM) ListIssueReactions(_ context.Context, _, _ string, _ int) ([]forge.Reaction, error) {
 	return f.reactions, nil
+}
+
+// GetBotUser implements the optional botUserProvider interface for
+// reaction filtering in tests.
+func (f *fakeReactionSCM) GetBotUser() string {
+	if f.botUser == "" {
+		return "bot" // default for tests that don't set it explicitly
+	}
+	return f.botUser
 }
 
 // Unused scm.Driver methods — required for interface satisfaction.

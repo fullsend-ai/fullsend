@@ -182,7 +182,7 @@ The composite action accepts five optional inputs for status notifications:
 | `status-comment-id` | ID of the comment that triggered a slash-command run; when set, reactions target that comment instead of the issue/PR |
 | `mint-url` | URL of the token mint service used to obtain fresh tokens for posting comments |
 
-All reusable workflows pass these inputs automatically.
+All reusable workflows pass these inputs automatically (except prioritize).
 
 ### GitLab CI
 

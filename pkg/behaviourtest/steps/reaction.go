@@ -8,6 +8,7 @@ import (
 	"github.com/cucumber/godog"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/github"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -57,7 +58,6 @@ func givenReactionsEnabled(w *world.World) error {
 	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: enable reaction notifications", merged); err != nil {
 		return fmt.Errorf("updating config: %w", err)
 	}
-	w.ReactionsEnabled = true
 	return nil
 }
 
@@ -99,36 +99,78 @@ func thenIssueHasReaction(w *world.World, content string) error {
 	if w.IssueNumber == 0 {
 		return fmt.Errorf("no issue created")
 	}
+
+	// Get the bot user login to filter reactions — on shared test repos,
+	// leftover reactions from other runs or humans can cause false positives.
+	botLogin, err := getBotLogin(w)
+	if err != nil {
+		return fmt.Errorf("getting bot login: %w", err)
+	}
+
 	reactions, err := w.SCM.ListIssueReactions(context.Background(), w.RepoOwner, w.RepoName, w.IssueNumber)
 	if err != nil {
 		return fmt.Errorf("listing reactions: %w", err)
 	}
 	for _, r := range reactions {
-		if r.Content == content {
+		if r.User == botLogin && r.Content == content {
 			return nil
 		}
 	}
 	var found []string
 	for _, r := range reactions {
-		found = append(found, r.Content)
+		if r.User == botLogin {
+			found = append(found, r.Content)
+		}
 	}
-	return fmt.Errorf("issue #%d reactions %v do not include %q", w.IssueNumber, found, content)
+	return fmt.Errorf("issue #%d bot reactions %v do not include %q", w.IssueNumber, found, content)
 }
 
 func thenIssueDoesNotHaveReaction(w *world.World, content string) error {
 	if w.IssueNumber == 0 {
 		return fmt.Errorf("no issue created")
 	}
+
+	// Get the bot user login to filter reactions — on shared test repos,
+	// leftover reactions from other runs or humans can cause false negatives.
+	botLogin, err := getBotLogin(w)
+	if err != nil {
+		return fmt.Errorf("getting bot login: %w", err)
+	}
+
 	reactions, err := w.SCM.ListIssueReactions(context.Background(), w.RepoOwner, w.RepoName, w.IssueNumber)
 	if err != nil {
 		return fmt.Errorf("listing reactions: %w", err)
 	}
 	for _, r := range reactions {
-		if r.Content == content {
-			return fmt.Errorf("issue #%d unexpectedly has %q reaction", w.IssueNumber, content)
+		if r.User == botLogin && r.Content == content {
+			return fmt.Errorf("issue #%d unexpectedly has bot %q reaction", w.IssueNumber, content)
 		}
 	}
 	return nil
+}
+
+// botUserProvider is an optional interface that test SCM fakes can
+// implement to provide the bot user login for reaction filtering.
+type botUserProvider interface {
+	GetBotUser() string
+}
+
+// getBotLogin returns the authenticated user's login from the SCM driver's
+// underlying forge.Client (for github.Driver) or from the optional
+// botUserProvider interface (for test fakes). Used to filter reactions by
+// the bot user in assertion helpers.
+func getBotLogin(w *world.World) (string, error) {
+	// Try test fake interface first — avoids import cycle if a fake
+	// implements this helper.
+	if bup, ok := w.SCM.(botUserProvider); ok {
+		return bup.GetBotUser(), nil
+	}
+	// Type-assert to *github.Driver to access the underlying Client.
+	ghDriver, ok := w.SCM.(*github.Driver)
+	if !ok {
+		return "", fmt.Errorf("SCM driver is not *github.Driver (got %T)", w.SCM)
+	}
+	return ghDriver.Client.GetAuthenticatedUser(context.Background())
 }
 
 // reactionsEnabledInConfig checks if status_notifications.reaction is
