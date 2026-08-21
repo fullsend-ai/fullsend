@@ -72,7 +72,7 @@ func buildEventPayload(event *normevent.Event) (map[string]any, error) {
 		c := map[string]any{
 			"body": event.Transition.Comment.Body,
 		}
-		if event.Transition.Comment.ID != 0 {
+		if event.Transition.Comment.ID != "" {
 			c["id"] = event.Transition.Comment.ID
 		}
 		out["comment"] = c

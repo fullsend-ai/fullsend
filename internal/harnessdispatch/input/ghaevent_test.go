@@ -224,7 +224,7 @@ func TestLoadGHAEvent_IssueCommentID(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NotNil(t, ev.Transition.Comment)
-	assert.Equal(t, 98765, ev.Transition.Comment.ID, "comment ID should be populated from webhook payload")
+	assert.Equal(t, "98765", ev.Transition.Comment.ID, "comment ID should be populated from webhook payload")
 }
 
 func TestLoadGHAEvent_IssueCommentEditedAndDeleted(t *testing.T) {

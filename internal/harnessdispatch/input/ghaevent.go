@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -347,7 +348,7 @@ func mapIssueCommentEvent(ctx context.Context, opts GHAEventOptions, raw map[str
 		return nil, fmt.Errorf("unsupported issue_comment action %q", action)
 	}
 	ev.Transition.Comment = &normevent.Comment{
-		ID:          intField(comment, "id"),
+		ID:          strconv.Itoa(intField(comment, "id")),
 		Command:     cmd,
 		Body:        truncateRunes(body, 4096),
 		Instruction: truncateRunes(instr, 4096),

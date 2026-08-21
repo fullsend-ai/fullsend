@@ -998,6 +998,10 @@ func (f *fakeRetryCleanupSCM) AddComment(context.Context, string, string, int, s
 	return nil, nil
 }
 
+func (f *fakeRetryCleanupSCM) ListIssueReactions(context.Context, string, string, int) ([]forge.Reaction, error) {
+	return nil, nil
+}
+
 func (f *fakeRetryCleanupSCM) GetIssue(context.Context, string, string, int) (*forge.Issue, error) {
 	return nil, nil
 }

@@ -63,7 +63,7 @@ func TestBuildEventPayload_CommentIDPropagated(t *testing.T) {
 		Transition: normevent.Transition{
 			Kind: normevent.TransitionCommentAdded,
 			Comment: &normevent.Comment{
-				ID:      12345,
+				ID:      "12345",
 				Command: "/fs-fix",
 				Body:    "/fs-fix do the thing",
 			},
@@ -73,7 +73,7 @@ func TestBuildEventPayload_CommentIDPropagated(t *testing.T) {
 	require.NoError(t, err)
 	comment, ok := payload["comment"].(map[string]any)
 	require.True(t, ok, "payload should contain a comment map")
-	assert.Equal(t, 12345, comment["id"])
+	assert.Equal(t, "12345", comment["id"])
 	assert.Equal(t, "/fs-fix do the thing", comment["body"])
 }
 
