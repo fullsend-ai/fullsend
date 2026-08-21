@@ -2451,3 +2451,142 @@ func TestResolveHarness_ProviderOutsideWorkspace(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "outside workspace root")
 }
+
+func TestResolveHarness_PolicyURL_OrgAllowlist(t *testing.T) {
+	policyContent := []byte("sandbox policy yaml")
+	policyHash := fetch.ComputeSHA256(policyContent)
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(policyContent)
+	}))
+
+	root := t.TempDir()
+	policyURL := fmt.Sprintf("%s/policies/readonly.yaml#sha256=%s", srv.URL, policyHash)
+	// No harness-level AllowedRemoteResources — only org-level.
+	h := &harness.Harness{
+		Agent:  "/local/agents/test.md",
+		Policy: policyURL,
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Deps, 1)
+	assert.Equal(t, policyHash, result.Deps[0].SHA256)
+
+	got, err := os.ReadFile(h.Policy)
+	require.NoError(t, err)
+	assert.Equal(t, policyContent, got)
+}
+
+func TestResolveHarness_AgentURL_OrgAllowlist(t *testing.T) {
+	agentContent := []byte("You are a coding agent.")
+	agentHash := fetch.ComputeSHA256(agentContent)
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(agentContent)
+	}))
+
+	root := t.TempDir()
+	agentURL := fmt.Sprintf("%s/agents/code.md#sha256=%s", srv.URL, agentHash)
+	// No harness-level AllowedRemoteResources — only org-level.
+	h := &harness.Harness{
+		Agent: agentURL,
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{srv.URL + "/"},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Deps, 1)
+	assert.Equal(t, agentHash, result.Deps[0].SHA256)
+	assert.False(t, harness.IsURL(h.Agent))
+}
+
+func TestResolveHarness_SkillDirURL_OrgAllowlist(t *testing.T) {
+	reg := newSkillRegistry()
+	skillHash := reg.register("skills/review", map[string][]byte{
+		"SKILL.md": []byte("# Review Skill"),
+	})
+
+	root := t.TempDir()
+	// No harness-level AllowedRemoteResources — only org-level.
+	h := &harness.Harness{
+		Agent:  "/local/agents/test.md",
+		Skills: []harness.SkillEntry{{Source: forgeSkillURL("skills/review", skillHash)}},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		TreeFetcher:   reg.fetcher(),
+		OrgAllowlist:  []string{testForgeBase},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Deps, 1)
+	assert.Equal(t, "directory", result.Deps[0].Type)
+}
+
+func TestResolveHarness_URLNotInEitherAllowlist(t *testing.T) {
+	agentContent := []byte("agent")
+	agentHash := fetch.ComputeSHA256(agentContent)
+
+	srv, policy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(agentContent)
+	}))
+
+	agentURL := fmt.Sprintf("%s/agents/code.md#sha256=%s", srv.URL, agentHash)
+	h := &harness.Harness{
+		Agent:                  agentURL,
+		AllowedRemoteResources: []string{"https://other-domain.com/"},
+	}
+
+	_, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: t.TempDir(),
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{"https://another-domain.com/"},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
+}
+
+func TestResolveHarness_MixedAllowlists(t *testing.T) {
+	agentContent := []byte("agent prompt")
+	agentHash := fetch.ComputeSHA256(agentContent)
+	policyContent := []byte("policy yaml")
+	policyHash := fetch.ComputeSHA256(policyContent)
+
+	srv, fetchPolicy := newTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/agents/code.md":
+			w.Write(agentContent)
+		case "/policies/ro.yaml":
+			w.Write(policyContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	root := t.TempDir()
+	// Agent URL covered by harness-level allowlist, policy URL covered
+	// by org-level allowlist only.
+	h := &harness.Harness{
+		Agent:                  fmt.Sprintf("%s/agents/code.md#sha256=%s", srv.URL, agentHash),
+		Policy:                 fmt.Sprintf("%s/policies/ro.yaml#sha256=%s", srv.URL, policyHash),
+		AllowedRemoteResources: []string{srv.URL + "/agents/"},
+	}
+
+	result, err := ResolveHarness(context.Background(), h, ResolveOpts{
+		WorkspaceRoot: root,
+		FetchPolicy:   fetchPolicy,
+		OrgAllowlist:  []string{srv.URL + "/policies/"},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Deps, 2)
+	assert.Equal(t, "agent", result.Deps[0].Field)
+	assert.Equal(t, "policy", result.Deps[1].Field)
+}
