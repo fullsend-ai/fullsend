@@ -929,10 +929,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var aggMetrics aggregateMetrics
 	tracer, tracingCleanup := telemetry.Setup(runDir, Version())
 	tid := resolveTraceIdentity(ctx, tracer, os.Getenv("TRACEPARENT"), os.Getenv("TRACESTATE"), []attribute.KeyValue{
-		stringAttr("fullsend.agent", agentName),
-		stringAttr("fullsend.work_item_id", workItemID),
+		boundedStringAttr("fullsend.agent", agentName),
+		boundedStringAttr("fullsend.work_item_id", workItemID),
 		attribute.String("gen_ai.operation.name", "invoke_agent"),
-		stringAttr("gen_ai.agent.name", agentName),
+		boundedStringAttr("gen_ai.agent.name", agentName),
 	})
 	ctx = tid.Ctx
 	rootSpan := tid.RootSpan
@@ -962,7 +962,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			rootSpan.SetAttributes(attribute.Bool("fullsend.prescript.skipped", runSkipped))
 		}
 		if runSkipped && runSkipReason != "" {
-			rootSpan.SetAttributes(stringAttr("fullsend.prescript.skip_reason", runSkipReason))
+			rootSpan.SetAttributes(boundedStringAttr("fullsend.prescript.skip_reason", runSkipReason))
 		}
 		if runCount > 0 {
 			rootSpan.SetAttributes(rootSpanEndAttrs(aggMetrics, runCount)...)
@@ -1513,6 +1513,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
 
 		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
+		// One collector per iteration: iteration and agent span are 1:1, so
+		// a run-scoped collector would repeat earlier iterations' content on
+		// later spans. Nil when the Level 3 gate is off; nil is inert.
+		collector := newContentCollectorIfEnabled()
 		var metrics agentruntime.RunMetrics
 		exitCode, runErr := rt.Run(agentCtx, agentruntime.RunParams{
 			SandboxName:   sandboxName,
@@ -1525,13 +1529,29 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			Debug:         debug,
 			Timeout:       timeout,
 			OutputPath:    filepath.Join(iterDir, "output.jsonl"),
+			OnEvent:       contentEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector),
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
+
+		// Attach content immediately before each finalize path ends the
+		// span, carrying the schema-required finish_reason from the
+		// iteration outcome. A failed iteration keeps its content — that
+		// is when the transcript matters most. attachContent no-ops on an
+		// empty result and attaches markers even when the budget dropped
+		// every part.
+		attachIterationContent := func(finishReason string) {
+			res := collector.Result(finishReason)
+			attachContent(agentSpan, res)
+			if n := len(res.Findings); n > 0 {
+				printer.StepWarn(fmt.Sprintf("Content capture redacted %d finding(s) from span content", n))
+			}
+		}
 
 		// Accumulate behavioral metrics across iterations.
 		aggregateRunMetrics(&aggMetrics, &metrics, iteration)
 
 		if runErr != nil {
+			attachIterationContent("error")
 			finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, rt.System(), &metrics, "")
 			printer.StepFail("Agent execution failed")
 			// Record the real exit code (rt.Run returns -1 when the agent never
@@ -1569,6 +1589,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 
+		// finish_reason reflects how the generation ended: a clean exit is
+		// "stop"; a non-zero exit or a transcript-reported error is "error"
+		// (both are schema enum values). Budget cuts are NOT "length" —
+		// that enum value means a model-side length stop, and telemetry
+		// cuts are marked by fullsend.content.truncated instead.
+		contentFinishReason := "stop"
+		if exitCode != 0 || transcriptErrMsg != "" {
+			contentFinishReason = "error"
+		}
+		attachIterationContent(contentFinishReason)
 		finalizeAgentSpan(agentSpan, nil, iteration, exitCode, rt.System(), &metrics, transcriptErrMsg)
 
 		printer.Blank()
@@ -2339,7 +2369,7 @@ func agentSpanStartAttrs(iteration int, agentName string) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.Int("iteration", iteration),
 		attribute.String("gen_ai.operation.name", "invoke_agent"),
-		stringAttr("gen_ai.agent.name", agentName),
+		boundedStringAttr("gen_ai.agent.name", agentName),
 	}
 }
 
@@ -2357,7 +2387,7 @@ func agentSpanEndAttrs(iteration, exitCode int, system string, m *agentruntime.R
 		attribute.Int("iteration", iteration),
 		attribute.Int("exit_code", exitCode),
 		stringAttr("gen_ai.system", system),
-		stringAttr("gen_ai.request.model", m.Model),
+		boundedStringAttr("gen_ai.request.model", m.Model),
 		attribute.Int("gen_ai.usage.input_tokens", m.InputTokens),
 		attribute.Int("gen_ai.usage.output_tokens", m.OutputTokens),
 		attribute.Int("gen_ai.usage.cache_creation.input_tokens", m.CacheCreationInputTokens),
@@ -2515,6 +2545,16 @@ func truncateStatusMsgTo(s string, n int) string {
 // use attribute.String directly.
 func stringAttr(key, val string) attribute.KeyValue {
 	return attribute.String(key, strings.ToValidUTF8(val, ""))
+}
+
+// boundedStringAttr is stringAttr plus a byte bound. Free-text attribute
+// values that historically relied on the provider-wide SDK cap must use
+// this: the Level 3 content gate lifts that cap (telemetry.spanLimits), so
+// values from pre-script output, sandbox stream-json, or the environment
+// would otherwise ride to the exporter unbounded and can get an oversized
+// batch rejected whole.
+func boundedStringAttr(key, val string) attribute.KeyValue {
+	return stringAttr(key, truncateStatusMsgTo(val, telemetry.MaxSpanAttrValueLen))
 }
 
 // finalizeRootSpan records the run outcome on the root span and ends it:
@@ -3280,7 +3320,10 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 			}
 			return nil
 		}
-		// Skip the telemetry JSONL (metadata-only, still open for append).
+		// Skip the telemetry JSONL: it is still open for append, and any
+		// Level 3 conversation content in it was already redacted at
+		// assembly (contentCollector) before reaching a span, so it needs
+		// no post-hoc sweep.
 		if path == filepath.Join(outputDir, telemetry.TelemetryFile) {
 			return nil
 		}
