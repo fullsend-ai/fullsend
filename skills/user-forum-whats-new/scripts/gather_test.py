@@ -18,6 +18,7 @@ from gather import (  # noqa: E402
     classify,
     in_window,
     parse_iso,
+    search_merged_at_range,
     to_z,
     today_et,
     window_bounds,
@@ -334,6 +335,19 @@ class TestHelpers(unittest.TestCase):
 
     def test_today_et_format(self):
         self.assertRegex(today_et(), r"^\d{4}-\d{2}-\d{2}$")
+
+    def test_to_z_uses_seconds_precision(self):
+        dt = datetime(2026, 8, 18, 14, 30, 45, 123456, tzinfo=UTC)
+        self.assertEqual(to_z(dt), "2026-08-18T14:30:45Z")
+        self.assertNotIn(".", to_z(dt))
+
+    def test_merged_at_range_documented_form(self):
+        since = datetime(2026, 8, 11, 12, 0, 0, tzinfo=UTC)
+        until = datetime(2026, 8, 18, 14, 30, 45, 987654, tzinfo=UTC)
+        self.assertEqual(
+            search_merged_at_range(since, until),
+            "2026-08-11T12:00:00Z..2026-08-18T14:30:45Z",
+        )
 
     def test_parse_iso_malformed_returns_none(self):
         import io

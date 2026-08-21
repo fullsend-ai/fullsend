@@ -27,14 +27,11 @@ Canonical directory (this skill):
 `skills/user-forum-whats-new/` in the `fullsend-ai/fullsend` repo.
 
 Anyone with a checkout already has it: `.cursor/skills` and
-`.claude/skills` in this repo symlink to `skills/`. Invoke by asking
-for the user-forum What's New recap, or `@skills/user-forum-whats-new`.
-
-To use it from other workspaces:
-
-```bash
-ln -s /path/to/fullsend/skills/user-forum-whats-new ~/.cursor/skills/user-forum-whats-new
-```
+`.claude/skills` in this repo symlink to `skills/`. Invoke from a
+**fullsend checkout** by asking for the user-forum What's New recap, or
+`@skills/user-forum-whats-new`. Run `gather.sh` from the repository root
+so the `allowed-tools` path grants match
+(`bash skills/user-forum-whats-new/scripts/gather.sh ...`).
 
 Needs `gh` (authenticated) and **Python 3.11+** (uses `datetime.UTC`)
 with IANA tz data (system tzdb or the `tzdata` package). GitHub API
