@@ -268,11 +268,17 @@ func (h *Harness) ResolveOverlays(event map[string]any, forgePlatform string, co
 	for i, entry := range h.Overlays {
 		matched, err := EvaluateOverlay(entry.When, event, forgePlatform, config)
 		if err != nil {
-			// Treat CEL evaluation errors as non-matching: log and
-			// continue to the next entry, matching the MatchHarnesses
-			// pattern in harnessdispatch/enumerate.go. This allows
-			// fallback overlays to match when a more-specific overlay
-			// errors (e.g., event key access on an empty event map).
+			// Intentional exception to the harness package's return-errors
+			// convention: CEL evaluation errors are logged and treated as
+			// non-matching, allowing evaluation to continue to the next
+			// entry. This matches the MatchHarnesses pattern in
+			// harnessdispatch/enumerate.go and enables fallback overlays
+			// to match when a more-specific overlay errors (e.g.,
+			// "event.source.system == 'jira'" fails with "no such key:
+			// source" when event is empty). Validation catches malformed
+			// CEL expressions at load time; runtime errors here are
+			// typically data-dependent (missing event keys) and should
+			// not prevent the harness from loading.
 			log.Printf("harness: overlay[%d].when eval failed: %v", i, err)
 			continue
 		}
@@ -395,6 +401,10 @@ func forgeKeyList(m map[string]*ForgeConfig) string {
 // expressions as the "config" variable. Returns nil when cfg is nil or
 // does not implement PerRepoConfigReader (e.g. org-mode configs).
 //
+// All safe per-repo config fields are exposed. Sensitive fields (mint_url,
+// inference provider details) are excluded. Per PR #6285 review feedback,
+// the 4-key whitelist was expanded to expose the full non-sensitive config.
+//
 // Both the CLI (run, lock) and harnessdispatch (enumerate) call sites use
 // this single implementation to ensure overlay CEL resolution sees the
 // same config shape regardless of the call path.
@@ -407,6 +417,8 @@ func BuildConfigMap(cfg config.ConfigReader) map[string]any {
 		return nil
 	}
 	m := map[string]any{}
+
+	// Core platform fields
 	if v := pr.ConfigForge(); v != "" {
 		m["forge"] = v
 	}
@@ -424,5 +436,81 @@ func BuildConfigMap(cfg config.ConfigReader) map[string]any {
 		}
 		m["roles"] = anyRoles
 	}
+
+	// Operational fields
+	if v := pr.ConfigVersion(); v != "" {
+		m["version"] = v
+	}
+	if pr.IsKillSwitchActive() {
+		m["kill_switch"] = true
+	}
+
+	// Agent entries (convert to CEL-compatible map slice)
+	if agents := pr.AgentEntries(); len(agents) > 0 {
+		anyAgents := make([]any, len(agents))
+		for i, a := range agents {
+			agentMap := map[string]any{
+				"source": a.Source,
+			}
+			if a.Name != "" {
+				agentMap["name"] = a.Name
+			}
+			if a.Enabled != nil {
+				agentMap["enabled"] = *a.Enabled
+			}
+			anyAgents[i] = agentMap
+		}
+		m["agents"] = anyAgents
+	}
+
+	// Security policies
+	if arr := pr.AllowedResources(); len(arr) > 0 {
+		anyArr := make([]any, len(arr))
+		for i, r := range arr {
+			anyArr[i] = r
+		}
+		m["allowed_remote_resources"] = anyArr
+	}
+
+	// Issue creation config
+	if ci := pr.IssueCreationConfig(); ci != nil {
+		ciMap := map[string]any{}
+		if len(ci.AllowTargets.Orgs) > 0 {
+			anyOrgs := make([]any, len(ci.AllowTargets.Orgs))
+			for i, o := range ci.AllowTargets.Orgs {
+				anyOrgs[i] = o
+			}
+			ciMap["allow_orgs"] = anyOrgs
+		}
+		if len(ci.AllowTargets.Repos) > 0 {
+			anyRepos := make([]any, len(ci.AllowTargets.Repos))
+			for i, r := range ci.AllowTargets.Repos {
+				anyRepos[i] = r
+			}
+			ciMap["allow_repos"] = anyRepos
+		}
+		if len(ciMap) > 0 {
+			m["create_issues"] = ciMap
+		}
+	}
+
+	// Status notifications config
+	if sn := pr.StatusNotifications(); sn != nil {
+		snMap := map[string]any{}
+		if sn.Comment.Start != "" {
+			snMap["start"] = sn.Comment.Start
+		}
+		if sn.Comment.Completion != "" {
+			snMap["completion"] = sn.Comment.Completion
+		}
+		if len(snMap) > 0 {
+			m["status_notifications"] = snMap
+		}
+	}
+
+	// Note: mint_url and inference.* fields are intentionally excluded
+	// (contain credential URLs and GCP project identifiers that should not
+	// be exposed to harness CEL expressions).
+
 	return m
 }

@@ -1340,3 +1340,55 @@ func TestBuildConfigMap_OrgConfig(t *testing.T) {
 	m := BuildConfigMap(orgCfg)
 	assert.Nil(t, m)
 }
+
+func TestBuildConfigMap_AllFields(t *testing.T) {
+	t.Parallel()
+	// Test that BuildConfigMap exposes all non-sensitive per-repo config
+	// fields (PR #6285: removed 4-key whitelist).
+	cfg := config.NewPerRepoConfig([]string{"triage"}, "org/repo")
+
+	// Set fields via writer interface
+	if w, ok := cfg.(config.PerRepoConfigWriter); ok {
+		w.SetRuntime("claude")
+		w.SetKillSwitch(true)
+		w.SetAgents([]config.AgentEntry{
+			{Name: "my-agent", Source: "https://example.com/agent.yaml"},
+		})
+		w.SetAllowedRemoteResources([]string{"https://example.com/*"})
+	}
+
+	m := BuildConfigMap(cfg)
+	require.NotNil(t, m)
+
+	// Core fields
+	assert.Equal(t, "claude", m["runtime"])
+	roles, ok := m["roles"].([]any)
+	require.True(t, ok)
+	assert.Contains(t, roles, "triage")
+
+	// Operational fields
+	assert.Equal(t, "1", m["version"])
+	assert.Equal(t, true, m["kill_switch"])
+
+	// Agent entries
+	agents, ok := m["agents"].([]any)
+	require.True(t, ok)
+	require.Len(t, agents, 1)
+	agentMap, ok := agents[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "my-agent", agentMap["name"])
+	assert.Equal(t, "https://example.com/agent.yaml", agentMap["source"])
+
+	// Security policies
+	arr, ok := m["allowed_remote_resources"].([]any)
+	require.True(t, ok)
+	assert.Contains(t, arr, "https://example.com/*")
+
+	// Issue creation config (set by NewPerRepoConfig with targetRepo)
+	ci, ok := m["create_issues"].(map[string]any)
+	require.True(t, ok)
+	repos, ok := ci["allow_repos"].([]any)
+	require.True(t, ok)
+	assert.Contains(t, repos, "org/repo")
+	assert.Contains(t, repos, "fullsend-ai/fullsend")
+}
