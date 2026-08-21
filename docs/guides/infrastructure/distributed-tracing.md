@@ -258,6 +258,7 @@ that hosts the fullsend caller workflows:
 | `OTEL_EXPORTER_OTLP_CERTIFICATE` | Variable | No | Path to a PEM CA bundle for backends behind a private CA. Commit the bundle into the config repo (e.g. `.fullsend/otel-ca.pem`) and set the variable to that checkout-relative path. |
 | `OTEL_RESOURCE_ATTRIBUTES` | Variable | No | Static `k=v,k=v` trace tags. The value is used verbatim; `${{ github.* }}` expressions evaluate only in workflow YAML, not in variables. |
 | `OTEL_SDK_DISABLED` | Variable | No | Set to `true` to disable all telemetry, including the local file exporter. |
+| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | Variable | No | Set to `true` to attach conversation content to `agent` spans (Level 3; see Content capture). |
 
 Installations scaffolded before OTEL support was added must also forward the
 secrets (add `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and
@@ -277,6 +278,7 @@ env:
   OTEL_EXPORTER_OTLP_HEADERS: "${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}"
   OTEL_RESOURCE_ATTRIBUTES: "${{ vars.OTEL_RESOURCE_ATTRIBUTES }}"
   OTEL_SDK_DISABLED: "${{ vars.OTEL_SDK_DISABLED }}"
+  OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: "${{ vars.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT }}"
   OTEL_EXPORTER_OTLP_CERTIFICATE: "${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}"
 ```
 
