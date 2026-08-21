@@ -59,7 +59,17 @@ def parse_iso(iso: str) -> datetime | None:
 
 
 def to_z(dt: datetime) -> str:
-    return dt.astimezone(UTC).isoformat().replace("+00:00", "Z")
+    """UTC timestamp for GitHub search / JSON — seconds precision, Z suffix.
+
+    GitHub search documents YYYY-MM-DDTHH:MM:SS+00:00 (not fractional
+    seconds). Keep Z; both Z and +00:00 are accepted today.
+    """
+    return dt.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def search_merged_at_range(since_ts: datetime, until_ts: datetime) -> str:
+    """Documented --merged-at range for gh search prs."""
+    return f"{to_z(since_ts)}..{to_z(until_ts)}"
 
 
 def window_bounds(
@@ -192,7 +202,7 @@ def classify(
 
 
 def fetch_into(tmp: Path, since_ts: datetime, until_ts: datetime) -> None:
-    merged_range = f"{to_z(since_ts)}..{to_z(until_ts)}"
+    merged_range = search_merged_at_range(since_ts, until_ts)
     for repo, rel_name, prs_name in REPOS:
         with (tmp / rel_name).open("w", encoding="utf-8") as out:
             subprocess.run(
