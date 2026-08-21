@@ -3142,6 +3142,26 @@ roles:
 	assert.Equal(t, "gitlab", p)
 }
 
+func TestDetectForgePlatform_InvalidConfigForge(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITLAB_CI", "")
+
+	yamlData := `
+version: "1"
+forge: gihub
+roles:
+  - triage
+`
+	cfg, err := config.ParsePerRepoConfig([]byte(yamlData))
+	require.NoError(t, err)
+
+	_, err = detectForgePlatform("", cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config.forge")
+	assert.Contains(t, err.Error(), "gihub")
+	assert.Contains(t, err.Error(), "not a valid forge platform")
+}
+
 func TestRunCommand_HasForgeFlag(t *testing.T) {
 	cmd := newRunCmd()
 	flag := cmd.Flags().Lookup("forge")

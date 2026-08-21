@@ -2338,3 +2338,83 @@ overlays:
 	require.NoError(t, err)
 	assert.Equal(t, "scripts/jira.sh", h.PreScript)
 }
+
+func TestLoadWithOpts_ForgeDeprecationWarningAfterResolve(t *testing.T) {
+	// Verify that the forge deprecation warning is reachable even after
+	// ResolveForge nils out h.Forge (the hadForgeBeforeResolve flag).
+	content := `
+agent: agents/test.md
+role: fix
+forge:
+  github:
+    pre_script: scripts/gh.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{
+		ForgePlatform: "github",
+	})
+	require.NoError(t, err)
+	// forge should have been resolved (nilled)
+	assert.Nil(t, h.Forge)
+	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+
+	// Lint should still emit the deprecation warning
+	diags := h.Lint()
+	var found bool
+	for _, d := range diags {
+		if d.Field == "forge" && d.Severity == SeverityWarning {
+			found = true
+			assert.Contains(t, d.Message, "deprecated")
+		}
+	}
+	assert.True(t, found, "expected forge deprecation warning from Lint() after ResolveForge")
+}
+
+func TestLoadWithOpts_NoForgeNoDeprecationWarning(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: fix
+overlays:
+- when: 'runtime.forge == "github"'
+  pre_script: scripts/gh.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{
+		ForgePlatform: "github",
+		Event:         map[string]any{},
+	})
+	require.NoError(t, err)
+
+	diags := h.Lint()
+	for _, d := range diags {
+		assert.NotEqual(t, "forge", d.Field, "should not have forge deprecation warning for overlays-only harness")
+	}
+}
+
+func TestLoadWithOpts_OverlayNilEvent(t *testing.T) {
+	// Overlays conditioned on runtime.forge should still match when
+	// event is nil (CLI run/lock flows without event context).
+	content := `
+agent: agents/test.md
+role: fix
+overlays:
+- when: 'runtime.forge == "github"'
+  pre_script: scripts/gh.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{
+		ForgePlatform: "github",
+		// Event is nil — simulates CLI flow without --event-file
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+}

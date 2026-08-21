@@ -81,7 +81,7 @@ field type follows specific merge semantics. The same rules apply during
 | `api_servers`    | Concatenated (base + child)                          | Absent (nil) = inherit |
 | `env`            | Sub-maps (`runner`, `sandbox`) merged independently; forge/child keys win (ADR-0055) | Absent (nil) = inherit |
 | `security`       | Child replaces base entirely (if non-nil)            | Absent (nil) = inherit |
-| `overlays` *(planned)* | Concatenated (base + child); first-match-wins at resolution (ADR-0088, not yet implemented) | Absent (nil) = inherit |
+| `overlays`       | Concatenated (base + child); first-match-wins at resolution (ADR-0088) | Absent (nil) = inherit |
 
 ## `ForgeConfig` struct
 
@@ -148,7 +148,7 @@ Overlay `when` expressions are evaluated with:
 ### Mutual exclusion
 
 `forge:` and `overlays:` must not coexist in the same harness (post-merge).
-`forge:` is deprecated; new harnesses should use `overlays:` once implemented.
+`forge:` is deprecated; new harnesses should use `overlays:` instead.
 
 ## Related
 

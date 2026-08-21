@@ -8437,3 +8437,342 @@ overlays:
 	assert.Equal(t, "scripts/gh.sh", h.PreScript)
 	assert.Nil(t, h.Overlays)
 }
+
+func TestLoadWithBase_URLBase_OverlayScriptsFetched(t *testing.T) {
+	overlayPre := []byte("#!/bin/bash\necho overlay-pre")
+	overlayPost := []byte("#!/bin/bash\necho overlay-post")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+overlays:
+- when: 'runtime.forge == "github"'
+  pre_script: scripts/overlay-pre.sh
+  post_script: scripts/overlay-post.sh
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/scripts/overlay-pre.sh":  overlayPre,
+		"/scripts/overlay-post.sh": overlayPost,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		ForgePlatform: "github",
+		Event:         map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// After overlay resolution, scripts are promoted to top level
+	assert.True(t, filepath.IsAbs(h.PreScript))
+	assert.True(t, filepath.IsAbs(h.PostScript))
+
+	preContent, err := os.ReadFile(h.PreScript)
+	require.NoError(t, err)
+	assert.Equal(t, overlayPre, preContent)
+
+	postContent, err := os.ReadFile(h.PostScript)
+	require.NoError(t, err)
+	assert.Equal(t, overlayPost, postContent)
+
+	// Should have deps for: base, overlay pre_script, overlay post_script, agent
+	var overlayDeps int
+	for _, d := range deps {
+		if strings.HasPrefix(d.Field, "overlays[") {
+			overlayDeps++
+		}
+	}
+	assert.GreaterOrEqual(t, overlayDeps, 2, "expected at least 2 overlay script deps")
+}
+
+func TestLoadWithBase_URLBase_OverlayPolicyFetched(t *testing.T) {
+	policyContent := []byte("# test policy")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+overlays:
+- when: 'runtime.forge == "github"'
+  policy: policies/overlay-sandbox.yaml
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/policies/overlay-sandbox.yaml": policyContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		ForgePlatform: "github",
+		Event:         map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// After overlay resolution, policy is promoted to top level
+	assert.True(t, filepath.IsAbs(h.Policy))
+
+	var foundPolicyDep bool
+	for _, d := range deps {
+		if strings.HasPrefix(d.Field, "overlays[") && strings.HasSuffix(d.Field, ".policy") {
+			foundPolicyDep = true
+		}
+	}
+	assert.True(t, foundPolicyDep, "expected overlay policy dep")
+}
+
+func TestLoadWithBase_URLBase_OverlaySkillsFetchedFromBase(t *testing.T) {
+	skillContent := []byte("# Overlay skill\nThis is an overlay-specific skill.")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+overlays:
+- when: 'runtime.forge == "github"'
+  skills:
+    - skills/overlay-skill
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/skills/overlay-skill/SKILL.md": skillContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: `+baseURL+`
+allowed_remote_resources:
+  - `+server.URL+`/
+`)
+
+	// The test server URL is not a raw.githubusercontent.com URL, so skill
+	// directory resolution errors out (same as TestLoadWithBase_URLBase_ForgeSkillsFetchedFromBase).
+	// This confirms resolveBaseResources now iterates overlay-level skills.
+	_, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		ForgePlatform: "github",
+		Event:         map[string]any{},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a raw.githubusercontent.com URL")
+	assert.Contains(t, err.Error(), "overlays[0].skills[0]")
+}
+
+func TestLoadWithBase_URLBase_OverlayProvidersFetched(t *testing.T) {
+	providerContent := []byte("name: test-provider\ntype: openai")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+overlays:
+- when: 'runtime.forge == "github"'
+  providers:
+    - providers/overlay-provider.yaml
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/providers/overlay-provider.yaml": providerContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		ForgePlatform: "github",
+		Event:         map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// After overlay resolution, providers are merged to top level
+	assert.GreaterOrEqual(t, len(h.Providers), 1, "expected at least 1 provider after overlay resolution")
+
+	var foundProviderDep bool
+	for _, d := range deps {
+		if strings.HasPrefix(d.Field, "overlays[") && strings.Contains(d.Field, ".providers[") {
+			foundProviderDep = true
+		}
+	}
+	assert.True(t, foundProviderDep, "expected overlay provider dep")
+}
+
+func TestLoadWithBase_URLBase_OverlayHostFilesFetched(t *testing.T) {
+	envContent := []byte("KEY=value")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+overlays:
+- when: 'runtime.forge == "github"'
+  host_files:
+    - src: env/overlay.env
+      dest: /run/secrets/overlay.env
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/env/overlay.env": envContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		ForgePlatform: "github",
+		Event:         map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// After overlay resolution, host files are merged to top level
+	assert.GreaterOrEqual(t, len(h.HostFiles), 1, "expected at least 1 host file after overlay resolution")
+
+	var foundHostFileDep bool
+	for _, d := range deps {
+		if strings.HasPrefix(d.Field, "overlays[") && strings.Contains(d.Field, ".host_files[") {
+			foundHostFileDep = true
+		}
+	}
+	assert.True(t, foundHostFileDep, "expected overlay host file dep")
+}
+
+func TestLoadWithBase_URLBase_OverlayProfilesFetched(t *testing.T) {
+	profileContent := []byte("id: test-profile\nshell: bash")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+overlays:
+- when: 'runtime.forge == "github"'
+  openshell:
+    profiles:
+      - profiles/overlay-profile.yaml
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/profiles/overlay-profile.yaml": profileContent,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		ForgePlatform: "github",
+		Event:         map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// After overlay resolution, profiles are merged to top level
+	assert.NotNil(t, h.OpenShell, "expected openshell config after overlay resolution")
+	if h.OpenShell != nil {
+		assert.GreaterOrEqual(t, len(h.OpenShell.Profiles), 1, "expected at least 1 profile after overlay resolution")
+	}
+}
+
+func TestLoadWithBase_URLBase_OverlayValidationLoopFetched(t *testing.T) {
+	valScript := []byte("#!/bin/bash\necho validate")
+
+	baseContent := []byte(`
+agent: agents/triage.md
+role: test
+overlays:
+- when: 'runtime.forge == "github"'
+  validation_loop:
+    script: scripts/overlay-validate.sh
+`)
+
+	server, policy := setupScriptTestServer(t, baseContent, map[string][]byte{
+		"/scripts/overlay-validate.sh": valScript,
+	})
+
+	hash := computeHash(baseContent)
+	dir := t.TempDir()
+	cacheDir := filepath.Join(dir, "cache")
+	baseURL := server.URL + "/harness/triage.yaml#sha256=" + hash
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+agent: agents/child.md
+role: test
+base: `+baseURL+`
+`)
+
+	h, deps, err := LoadWithBase(context.Background(), path, ComposeOpts{
+		WorkspaceRoot: cacheDir,
+		FetchPolicy:   policy,
+		OrgAllowlist:  []string{server.URL + "/"},
+		ForgePlatform: "github",
+		Event:         map[string]any{},
+	})
+	require.NoError(t, err)
+
+	// After overlay resolution, validation loop is promoted to top level
+	require.NotNil(t, h.ValidationLoop)
+	assert.True(t, filepath.IsAbs(h.ValidationLoop.Script))
+
+	var foundValDep bool
+	for _, d := range deps {
+		if strings.HasPrefix(d.Field, "overlays[") && strings.Contains(d.Field, "validation_loop") {
+			foundValDep = true
+		}
+	}
+	assert.True(t, foundValDep, "expected overlay validation_loop dep")
+}

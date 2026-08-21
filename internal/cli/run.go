@@ -3479,6 +3479,9 @@ func detectForgePlatform(flag string, cfg config.ConfigReader) (string, error) {
 	if cfg != nil {
 		if pr, ok := cfg.(config.PerRepoConfigReader); ok {
 			if forge := pr.ConfigForge(); forge != "" {
+				if !harness.ValidForgePlatform(forge) {
+					return "", fmt.Errorf("config.forge: %q is not a valid forge platform (valid: %s)", forge, harness.ForgeKeyList())
+				}
 				return forge, nil
 			}
 		}
