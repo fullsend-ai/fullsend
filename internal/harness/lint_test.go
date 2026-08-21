@@ -97,6 +97,7 @@ func TestLint_ForgeDeprecationWarning(t *testing.T) {
 		Forge: map[string]*ForgeConfig{
 			"github": {PreScript: "scripts/gh.sh"},
 		},
+		hadForgeBeforeResolve: true, // simulate LoadWithOpts capturing this
 	}
 	diags := h.Lint()
 	var found bool

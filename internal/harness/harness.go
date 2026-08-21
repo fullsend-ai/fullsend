@@ -335,6 +335,9 @@ type Harness struct {
 	Forge                  map[string]*ForgeConfig `yaml:"forge,omitempty"`
 	Overlays               []OverlayEntry          `yaml:"overlays,omitempty"` // CEL-guarded conditional config (ADR 0088)
 	Trigger                string                  `yaml:"trigger,omitempty"`  // optional CEL boolean over normevent (ADR 0061)
+
+	// Runtime-only fields (not serialized to YAML)
+	hadForgeBeforeResolve bool `yaml:"-"` // true if Forge was non-nil before ResolveForge; used by Lint()
 }
 
 // Load reads a harness YAML file from path, unmarshals it, and validates it.
@@ -381,6 +384,11 @@ func LoadWithOpts(path string, opts LoadOpts) (*Harness, error) {
 	if err := h.validateOverlays(); err != nil {
 		return nil, fmt.Errorf("invalid harness: %w", err)
 	}
+
+	// Capture whether forge was present before ResolveForge nils it out,
+	// so Lint() can emit the deprecation warning even when the forge
+	// platform is set (which is always the case in CI).
+	h.hadForgeBeforeResolve = h.Forge != nil
 
 	if err := h.ResolveForge(opts.ForgePlatform); err != nil {
 		return nil, fmt.Errorf("resolving forge config: %w", err)

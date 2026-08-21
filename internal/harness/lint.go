@@ -71,7 +71,7 @@ func (h *Harness) Lint() []Diagnostic {
 		}
 	}
 
-	if h.Forge != nil {
+	if h.hadForgeBeforeResolve {
 		diags = append(diags, Diagnostic{
 			Severity: SeverityWarning,
 			Field:    "forge",
