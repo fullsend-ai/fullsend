@@ -256,6 +256,11 @@ least one new measurement row is appended (including `label: skip`). No
 file is written when telemetry/manifest is missing, no traces match, or
 every candidate row is already in the ledger.
 
-> **Planned:** portable OTLP score export (same `OTEL_*` as traces) is the
-> ADR 0087 remote contract and is not wired yet. Until it lands, consume the
-> JSONL artifact (or your own pipeline) for remote dashboards.
+When `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`
+is set, newly written scores also export as OTLP span events
+(`fullsend.eval_measure` + `gen_ai.evaluation.result`) on the same
+`trace_id`. Export is fail-open and does not rewrite `run-telemetry.jsonl`.
+The idempotency ledger keys local rows; a remote OTLP failure after a
+successful local write will not retry that row on the next run (remote is
+best-effort once). Re-export offline by clearing the ledger or pointing at
+a fresh out dir.

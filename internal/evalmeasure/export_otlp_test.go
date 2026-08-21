@@ -73,9 +73,17 @@ func (s *scoreOTLPSink) allSpans() []*coltracepb.ExportTraceServiceRequest {
 	return out
 }
 
-func TestExportOTLPScores_NoopWithoutEndpoint(t *testing.T) {
+func clearOTLPEnv(t *testing.T) {
+	t.Helper()
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "")
+	t.Setenv("OTEL_SDK_DISABLED", "")
+}
+
+func TestExportOTLPScores_NoopWithoutEndpoint(t *testing.T) {
+	clearOTLPEnv(t)
 	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
 		Name: "trace_fitness", TraceID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", SpanID: "bbbbbbbbbbbbbbbb",
 	}})
@@ -84,9 +92,8 @@ func TestExportOTLPScores_NoopWithoutEndpoint(t *testing.T) {
 
 func TestExportOTLPScores_EmitsGenAIEvaluationEvent(t *testing.T) {
 	sink := newScoreOTLPSink(t)
+	clearOTLPEnv(t)
 	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", sink.srv.URL+"/v1/traces")
-	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
-	t.Setenv("OTEL_SDK_DISABLED", "")
 
 	orig := newScoreOTLPExporter
 	t.Cleanup(func() { newScoreOTLPExporter = orig })
@@ -157,6 +164,7 @@ func TestExportOTLPScores_EmitsGenAIEvaluationEvent(t *testing.T) {
 
 func TestExportOTLPScores_InvalidTraceID(t *testing.T) {
 	sink := newScoreOTLPSink(t)
+	clearOTLPEnv(t)
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
 	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
 		Name: "trace_fitness", TraceID: "not-a-trace", SpanID: "77f8c0902eaeedcb",
@@ -166,6 +174,7 @@ func TestExportOTLPScores_InvalidTraceID(t *testing.T) {
 
 func TestExportOTLPScores_InvalidSpanIDHex(t *testing.T) {
 	sink := newScoreOTLPSink(t)
+	clearOTLPEnv(t)
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
 	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
 		Name:    "trace_fitness",
@@ -177,6 +186,7 @@ func TestExportOTLPScores_InvalidSpanIDHex(t *testing.T) {
 
 func TestExportOTLPScores_DisabledSDK(t *testing.T) {
 	sink := newScoreOTLPSink(t)
+	clearOTLPEnv(t)
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
 	t.Setenv("OTEL_SDK_DISABLED", "true")
 	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
@@ -186,16 +196,55 @@ func TestExportOTLPScores_DisabledSDK(t *testing.T) {
 	assert.Empty(t, sink.allSpans())
 }
 
-func TestExportOTLPScores_FailLabel(t *testing.T) {
+func TestExportOTLPScores_EmptySpanIDSkipped(t *testing.T) {
 	sink := newScoreOTLPSink(t)
+	clearOTLPEnv(t)
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
 	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
-		Name: "trace_fitness", Label: LabelFail, Explanation: "nope",
+		Name: "trace_fitness", Label: LabelSkip, TraceID: "84d470ba2451ffeccfe09022d9b2aebd", SpanID: "",
+	}})
+	require.NoError(t, err)
+	assert.Empty(t, sink.allSpans())
+}
+
+func TestExportOTLPScores_ZeroTraceID(t *testing.T) {
+	sink := newScoreOTLPSink(t)
+	clearOTLPEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
+	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
+		Name: "trace_fitness", TraceID: "00000000000000000000000000000000", SpanID: "77f8c0902eaeedcb",
+	}})
+	require.Error(t, err)
+}
+
+func TestExportOTLPScores_SkipOmitsScoreValue(t *testing.T) {
+	sink := newScoreOTLPSink(t)
+	clearOTLPEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
+	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
+		Name: "trace_fitness", Label: LabelSkip, Explanation: "no run span",
 		TraceID: "84d470ba2451ffeccfe09022d9b2aebd", SpanID: "77f8c0902eaeedcb",
 		Agent: "review", Version: "em-001@1", Value: 0,
 	}})
 	require.NoError(t, err)
-	require.NotEmpty(t, sink.allSpans())
+	reqs := sink.allSpans()
+	require.NotEmpty(t, reqs)
+	for _, req := range reqs {
+		for _, rs := range req.GetResourceSpans() {
+			for _, ss := range rs.GetScopeSpans() {
+				for _, sp := range ss.GetSpans() {
+					for _, ev := range sp.GetEvents() {
+						if ev.GetName() != EventGenAIEvaluationResult {
+							continue
+						}
+						for _, kv := range ev.GetAttributes() {
+							assert.NotEqual(t, AttrGenAIEvaluationScoreValue, kv.GetKey(), "skip must omit score.value")
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 func TestMeasureAndExport_OTLPFailOpen(t *testing.T) {
@@ -207,6 +256,7 @@ func TestMeasureAndExport_OTLPFailOpen(t *testing.T) {
 	require.NoError(t, os.WriteFile(telem, raw, 0o644))
 	reg := filepath.Join("testdata", "sample-registry.yaml")
 
+	clearOTLPEnv(t)
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1") // closed port
 	results, stats, err := MeasureAndExport(context.Background(), telem, reg, dir)
 	require.NoError(t, err)
