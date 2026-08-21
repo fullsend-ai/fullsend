@@ -24,8 +24,10 @@ func MeasureFile(telemetryPath, registryPath, outDir string) ([]EvaluationResult
 	return r, err
 }
 
-// MeasureAndExport is MeasureFile with an explicit context (reserved for
-// future portable OTLP score export on the same OTEL_* path as ADR 0050).
+// MeasureAndExport is MeasureFile with an explicit context used for portable
+// OTLP score export (same OTEL_EXPORTER_OTLP_* path as ADR 0050). Local
+// JSONL/ledger always win; OTLP failures are recorded on ParseStats and
+// never fail the measure.
 func MeasureAndExport(ctx context.Context, telemetryPath, registryPath, outDir string) ([]EvaluationResult, ParseStats, error) {
 	var stats ParseStats
 	if err := ctx.Err(); err != nil {
@@ -75,6 +77,11 @@ func MeasureAndExport(ctx context.Context, telemetryPath, registryPath, outDir s
 			if hook != nil {
 				hook()
 			}
+		}
+	}
+	if len(all) > 0 {
+		if err := ExportOTLPScores(ctx, all); err != nil {
+			stats.RemoteExportWarning = err.Error()
 		}
 	}
 	// Partial parse with traces already scored is success: scores are data.

@@ -917,3 +917,17 @@ func TestParentSampledProcessor_AllowsSampledTrace(t *testing.T) {
 
 	assert.ElementsMatch(t, []string{"root", "child"}, spy.ended)
 }
+
+func TestOTLPEnabledAndValidate(t *testing.T) {
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+	assert.False(t, OTLPEnabled())
+	require.NoError(t, ValidateOTLPEndpoints())
+
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:4318")
+	assert.True(t, OTLPEnabled())
+	require.NoError(t, ValidateOTLPEndpoints())
+
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "not-a-url")
+	require.Error(t, ValidateOTLPEndpoints())
+}

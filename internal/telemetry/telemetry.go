@@ -40,12 +40,35 @@ const scopeName = "github.com/fullsend-ai/fullsend/internal/telemetry"
 // newOTLPExporter is a seam over exporter construction for tests.
 // The SDK reads OTEL_EXPORTER_OTLP_*ENDPOINT from the environment.
 var newOTLPExporter = func(ctx context.Context) (sdktrace.SpanExporter, error) {
+	return NewOTLPExporter(ctx)
+}
+
+// OTLPEnabled reports whether an OTLP traces endpoint is configured via
+// OTEL_EXPORTER_OTLP_ENDPOINT or OTEL_EXPORTER_OTLP_TRACES_ENDPOINT.
+func OTLPEnabled() bool {
+	return strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")) != "" ||
+		strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")) != ""
+}
+
+// NewOTLPExporter builds the HTTP OTLP span exporter from OTEL_* env
+// (same path Setup uses for agent traces). Callers must validate endpoints
+// first with ValidateOTLPEndpoints when they want fail-closed setup.
+func NewOTLPExporter(ctx context.Context) (sdktrace.SpanExporter, error) {
 	retryOption := otlptracehttp.WithRetry(otlptracehttp.RetryConfig{
 		Enabled:         true,
 		InitialInterval: 250 * time.Millisecond,
 		MaxInterval:     2 * time.Second,
 	})
 	return otlptracehttp.New(ctx, retryOption)
+}
+
+// ValidateOTLPEndpoints checks the OTEL endpoint env vars that the SDK
+// will use for traces export.
+func ValidateOTLPEndpoints() error {
+	return validateEndpoints(
+		strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")),
+		strings.TrimSpace(os.Getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")),
+	)
 }
 
 func validateEndpoints(endpoint, tracesEndpoint string) error {
