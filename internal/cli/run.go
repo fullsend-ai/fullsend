@@ -312,12 +312,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// 1. Resolve and load harness.
 	harnessStart := time.Now()
 
-	forgePlatform, err := detectForgePlatform(forgeFlag)
-	if err != nil {
-		printer.StepFail("Invalid --forge flag")
-		return err
-	}
-
 	policy := fetch.DefaultPolicy
 	policy.Offline = rFlags.offline
 
@@ -328,6 +322,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// tryLoadOrgConfig but not surfaced as a distinct error here.
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
 	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
+
+	// Detect forge platform after config is loaded so config.forge can be consulted (ADR 0088).
+	forgePlatform, err := detectForgePlatform(forgeFlag, orgCfg)
+	if err != nil {
+		printer.StepFail("Invalid --forge flag")
+		return err
+	}
 	// Fallback for absent config; EnsureDefaultAllowedRemoteResources
 	// handles the omitted-field case when a config is present.
 	orgAllowlist := config.DefaultAllowedRemoteResources()
@@ -3461,15 +3462,26 @@ func sandboxArch() string {
 	return runtime.GOARCH
 }
 
-// detectForgePlatform determines the forge platform from the CLI flag or CI
-// environment variables. Precedence: explicit flag > GITHUB_ACTIONS > GITLAB_CI.
+// detectForgePlatform determines the forge platform from the CLI flag, config,
+// or CI environment variables. Precedence (per ADR 0088):
+//  1. explicit --forge flag
+//  2. config.forge (from config.yaml)
+//  3. CI environment variables (GITHUB_ACTIONS > GITLAB_CI)
+//
 // Returns an error if the flag value is not a recognized forge key.
-func detectForgePlatform(flag string) (string, error) {
+func detectForgePlatform(flag string, cfg config.ConfigReader) (string, error) {
 	if flag != "" {
 		if !harness.ValidForgePlatform(flag) {
 			return "", fmt.Errorf("--forge: %q is not a valid forge platform (valid: %s)", flag, harness.ForgeKeyList())
 		}
 		return flag, nil
+	}
+	if cfg != nil {
+		if pr, ok := cfg.(config.PerRepoConfigReader); ok {
+			if forge := pr.ConfigForge(); forge != "" {
+				return forge, nil
+			}
+		}
 	}
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
 		return "github", nil
