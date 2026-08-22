@@ -29,6 +29,7 @@ var executableFiles = map[string]struct{}{
 	"scripts/prepare-sandbox-credentials.sh": {},
 	"scripts/reconcile-repos.sh":             {},
 	"scripts/resolve-precommit-tools.py":     {},
+	"scripts/review-scope-precheck.sh":       {},
 	"scripts/setup-prioritize.sh":            {},
 	"scripts/validate-source-repo.sh":        {},
 }
