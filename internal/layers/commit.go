@@ -164,7 +164,7 @@ func forkAndCommit(ctx context.Context, client forge.Client, printer *ui.Printer
 	}
 	printer.StepDone(fmt.Sprintf("Fork created: %s/%s", forkOwner, forkRepo))
 
-	if err := waitForFork(ctx, client, printer, forkOwner, forkRepo); err != nil {
+	if err := waitForFork(ctx, client, printer, forkOwner, forkRepo, realClock{}, forkWaitTimeout); err != nil {
 		return false, err
 	}
 
@@ -396,18 +396,25 @@ func commitViaPR(ctx context.Context, client forge.Client, printer *ui.Printer,
 	return false, nil
 }
 
+// Fork wait timing constants.
+const (
+	forkWaitInitialInterval = 3 * time.Second  // first poll delay
+	forkWaitMaxInterval     = 30 * time.Second // backoff cap
+	forkWaitTimeout         = 5 * time.Minute  // overall deadline
+)
+
 // waitForFork polls GetRepo until the fork is ready or the timeout expires.
 // GitHub fork creation is async (202 Accepted) and can take up to several
-// minutes for large repos.
+// minutes for large repos. Polling uses exponential backoff starting at
+// forkWaitInitialInterval and doubling up to forkWaitMaxInterval.
+//
+// The clk and timeout parameters allow tests to inject a fake clock and
+// shorter deadline without wall-clock delays.
 func waitForFork(ctx context.Context, client forge.Client, printer *ui.Printer,
-	forkOwner, forkRepo string) error {
-
-	const (
-		pollInterval = 3 * time.Second
-		timeout      = 2 * time.Minute
-	)
+	forkOwner, forkRepo string, clk clock, timeout time.Duration) error {
 
 	deadline := time.Now().Add(timeout)
+	interval := forkWaitInitialInterval
 	printer.StepStart(fmt.Sprintf("Waiting for fork %s/%s to be ready", forkOwner, forkRepo))
 
 	for {
@@ -425,7 +432,14 @@ func waitForFork(ctx context.Context, client forge.Client, printer *ui.Printer,
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(pollInterval):
+		case <-clk.After(interval):
+		}
+		// Exponential backoff: double the interval up to the cap.
+		if interval < forkWaitMaxInterval {
+			interval *= 2
+			if interval > forkWaitMaxInterval {
+				interval = forkWaitMaxInterval
+			}
 		}
 	}
 }
