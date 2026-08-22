@@ -58,7 +58,10 @@ of `codecov/patch` failures on first push.
 
 ### Step-by-step
 
-1. **Identify changed Go files** (excluding tests and generated code):
+1. **Identify changed Go files** (excluding tests and generated code).
+   **Stage new files first** (`git add`) — `git diff --name-only` only
+   sees tracked or staged files, so an unstaged new file would be
+   invisible and the check would silently skip it.
 
    ```bash
    git diff --name-only main -- '*.go' | grep -v '_test.go'
