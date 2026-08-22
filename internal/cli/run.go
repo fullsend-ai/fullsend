@@ -129,10 +129,11 @@ type resolveFlags struct {
 
 // statusOpts holds the optional status notification parameters for a run.
 type statusOpts struct {
-	runURL     string
-	statusRepo string
-	statusNum  int
-	mintURL    string
+	runURL        string
+	statusRepo    string
+	statusNum     int
+	statusComment int
+	mintURL       string
 }
 
 // aggregateMetrics holds accumulated behavioral metrics across retry iterations.
@@ -274,6 +275,7 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&sOpts.runURL, "run-url", "", "URL of the CI/CD run for status comments")
 	cmd.Flags().StringVar(&sOpts.statusRepo, "status-repo", "", "repository (owner/repo) for status comments")
 	cmd.Flags().IntVar(&sOpts.statusNum, "status-number", 0, "issue/PR number for status comments")
+	cmd.Flags().IntVar(&sOpts.statusComment, "status-comment-id", 0, "ID of the triggering comment, for comment-scoped reactions on slash-command runs (optional)")
 	cmd.Flags().StringVar(&sOpts.mintURL, "mint-url", "", "mint service URL for on-demand status tokens (default: $FULLSEND_MINT_URL)")
 	_ = cmd.MarkFlagRequired("fullsend-dir")
 	_ = cmd.MarkFlagRequired("target-repo")
@@ -3538,6 +3540,9 @@ func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, owner,
 	n.SetWarnFunc(func(format string, args ...any) {
 		printer.StepWarn(fmt.Sprintf(format, args...))
 	})
+	if sOpts.statusComment != 0 {
+		n.SetTriggerCommentID(sOpts.statusComment)
+	}
 
 	canonRole := resolveRole(role)
 	n.SetClientFactory(func(ctx context.Context) (forge.Client, error) {

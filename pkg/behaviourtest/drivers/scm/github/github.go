@@ -74,6 +74,10 @@ func (d *Driver) ListComments(ctx context.Context, owner, repo string, number in
 	return d.Client.ListIssueComments(ctx, owner, repo, number)
 }
 
+func (d *Driver) ListIssueReactions(ctx context.Context, owner, repo string, number int) ([]forge.Reaction, error) {
+	return d.Client.ListIssueReactions(ctx, owner, repo, number)
+}
+
 func (d *Driver) SubmitPullRequestReview(ctx context.Context, owner, repo string, number int, event string) error {
 	sha, err := d.Client.GetPullRequestHeadSHA(ctx, owner, repo, number)
 	if err != nil {

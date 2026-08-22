@@ -215,7 +215,7 @@ contract):
 | `event_action` | `source.raw_action` when present |
 | `event_payload.issue` | `entity` when `entity.kind == "work_item"`: `{number: entity.id, html_url: entity.url}` |
 | `event_payload.pull_request` | See below |
-| `event_payload.comment` | `transition.comment` when present: `{body: transition.comment.body}` |
+| `event_payload.comment` | `transition.comment` when present: `{id: transition.comment.id, body: transition.comment.body}` (id omitted when unknown) |
 | `trigger_source` (fix agent only) | See below |
 | `status-repo` | `repo` |
 | `status-number` | `entity.id` |

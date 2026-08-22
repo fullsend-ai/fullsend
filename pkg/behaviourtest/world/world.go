@@ -89,6 +89,11 @@ type World struct {
 	// the switch so the next scenario on this slot is not affected.
 	KillSwitchActivated bool
 
+	// ReactionsEnabled records whether this scenario enabled reaction
+	// notifications. CleanupScenario uses this to disable reactions
+	// so the next scenario on this slot is not affected.
+	ReactionsEnabled bool
+
 	// Jira mock state — set by the "Given a mock Jira server" step.
 	JiraMockServer *httptest.Server
 	JiraMockState  *jiramock.State

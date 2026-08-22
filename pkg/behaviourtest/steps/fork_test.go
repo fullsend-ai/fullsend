@@ -560,3 +560,6 @@ func (f *fakeForkSCM) GetBranchRef(context.Context, string, string, string) (str
 	}
 	return "abc123", nil
 }
+func (f *fakeForkSCM) ListIssueReactions(context.Context, string, string, int) ([]forge.Reaction, error) {
+	return nil, nil
+}
