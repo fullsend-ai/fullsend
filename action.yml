@@ -14,7 +14,7 @@ inputs:
     required: true
   version:
     description: >-
-      Release tag, version or long-form SHA: use latest, v0.0.1, 0.0.1 or a 40-char commit SHA.
+      Release tag, version or long-form SHA: use latest, v0.0.1 or a 40-char commit SHA.
     default: latest
   fullsend-dir:
     description: Path to fullsend config directory (default GITHUB_WORKSPACE).
@@ -64,264 +64,56 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Detect install method
-      id: detect
+    - name: Require Linux runner
+      if: runner.os != 'Linux'
       shell: bash
-      env:
-        VERSION: ${{ inputs.version }}
-        GH_TOKEN: ${{ inputs.github_token }}
       run: |
-        set -euo pipefail
+        echo "::error::fullsend action requires a Linux runner (got ${{ runner.os }})"
+        exit 1
 
-        # retry_curl: retry a curl command up to MAX_ATTEMPTS times with exponential backoff.
-        # Usage: retry_curl [curl args...]
-        retry_curl() {
-          local max_attempts=3
-          local attempt=1
-          local delay=5
-          while true; do
-            if curl "$@"; then
-              return 0
-            fi
-            if (( attempt >= max_attempts )); then
-              echo "::error::API request failed after ${max_attempts} attempts" >&2
-              return 1
-            fi
-            echo "::warning::API attempt ${attempt}/${max_attempts} failed, retrying in ${delay}s..." >&2
-            sleep "${delay}"
-            (( attempt++ ))
-            (( delay *= 3 ))
-          done
-        }
-
-        # Use vendored binary if present (placed by fullsend admin install --vendor).
-        # Per-org mode stores it at bin/fullsend (in .fullsend config repo);
-        # per-repo mode stores it at .fullsend/bin/fullsend (in the target repo).
-        # GitHub Contents API does not preserve the executable bit, so check -f not -x.
-        VENDORED=""
-        if [[ -f "${GITHUB_WORKSPACE}/.fullsend/bin/fullsend" ]]; then
-          VENDORED="${GITHUB_WORKSPACE}/.fullsend/bin/fullsend"
-        elif [[ -f "${GITHUB_WORKSPACE}/bin/fullsend" ]]; then
-          VENDORED="${GITHUB_WORKSPACE}/bin/fullsend"
-        fi
-        if [[ -n "${VENDORED}" ]]; then
-          echo "Using vendored binary: ${VENDORED#"${GITHUB_WORKSPACE}/"}"
-          echo "install-method=vendored" >> "${GITHUB_OUTPUT}"
-          echo "vendored-path=${VENDORED}" >> "${GITHUB_OUTPUT}"
-          exit 0
-        fi
-
-        VERSION="$(printf '%s' "${VERSION:-latest}" | tr -d '[:space:]')"
-        VERSION="${VERSION:-latest}"
-
-        # Resolve 'latest' to the actual tag before checking the release API.
-        if [[ "${VERSION}" == "latest" ]]; then
-          TAG="$(retry_curl -fsSL \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            "https://api.github.com/repos/fullsend-ai/fullsend/releases/latest" | jq -r '.tag_name')"
-          if [[ -z "${TAG}" || "${TAG}" == "null" ]]; then
-            echo "::error::Could not resolve latest release tag"
-            exit 1
-          fi
-          VERSION="${TAG}"
-        fi
-
-        # Resolve a full commit SHA to its release tag (if any).
-        # Dereference annotated tag objects first: job.workflow_sha may be
-        # a tag object SHA; the /tags listing returns peeled commit SHAs.
-        if [[ "${VERSION}" =~ ^[0-9a-f]{40}$ ]]; then
-          commit_sha=$(retry_curl -fsSL \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            "https://api.github.com/repos/fullsend-ai/fullsend/git/tags/${VERSION}" 2>/dev/null \
-            | jq -r '.object.sha // empty') || true
-          if [[ -n "${commit_sha}" ]]; then
-            echo "Dereferenced annotated tag object ${VERSION:0:12} to commit ${commit_sha:0:12}"
-            VERSION="${commit_sha}"
-          fi
-
-          TAG=""
-          page=1
-          max_pages=50
-          while :; do
-            if (( page > max_pages )); then
-              echo "::warning::Tag lookup reached ${max_pages} pages without a match; skipping SHA-to-tag resolution"
-              break
-            fi
-            resp=$(retry_curl -fsSL \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              "https://api.github.com/repos/fullsend-ai/fullsend/tags?per_page=100&page=${page}") \
-              || { echo "::warning::Tag lookup failed on page ${page}; skipping SHA-to-tag resolution"; break; }
-            match=$(echo "${resp}" | jq -r --arg sha "${VERSION}" \
-              '.[] | select(.commit.sha == $sha) | .name' \
-              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1) || true
-            if [[ -n "${match}" ]]; then
-              TAG="${match}"
-              break
-            fi
-            count=$(echo "${resp}" | jq 'length')
-            if [[ "${count}" -lt 100 ]]; then
-              break
-            fi
-            (( page++ ))
-          done
-          if [[ -n "${TAG}" ]]; then
-            echo "SHA ${VERSION} maps to release tag ${TAG}"
-            VERSION="${TAG}"
-          fi
-        fi
-
-        if [[ "${VERSION}" == v* ]]; then
-          VERSION_URL="${VERSION}"
-          VERSION_ASSET="${VERSION#v}"
-        else
-          VERSION_URL="v${VERSION}"
-          VERSION_ASSET="${VERSION}"
-        fi
-
-        HTTP_STATUS="$(retry_curl -sL -o /dev/null -w "%{http_code}" \
-          -H "Accept: application/vnd.github+json" \
-          -H "Authorization: Bearer ${GH_TOKEN}" \
-          "https://api.github.com/repos/fullsend-ai/fullsend/releases/tags/${VERSION_URL}")"
-
-        if [[ "${HTTP_STATUS}" == "200" ]]; then
-          echo "Found release ${VERSION_URL}; downloading pre-built binary"
-          echo "install-method=release" >> "${GITHUB_OUTPUT}"
-          echo "version-url=${VERSION_URL}" >> "${GITHUB_OUTPUT}"
-          echo "version-asset=${VERSION_ASSET}" >> "${GITHUB_OUTPUT}"
-        elif [[ "${HTTP_STATUS}" == "404" ]]; then
-          echo "No release found for ${VERSION_URL}; building from source at ref: ${VERSION}"
-          echo "install-method=source" >> "${GITHUB_OUTPUT}"
-          echo "source-ref=${VERSION}" >> "${GITHUB_OUTPUT}"
-        else
-          echo "::error::Unexpected HTTP ${HTTP_STATUS} checking release ${VERSION_URL}; cannot proceed"
-          exit 1
-        fi
-
-    - name: Install vendored binary
-      if: steps.detect.outputs.install-method == 'vendored'
-      shell: bash
-      env:
-        VENDORED: ${{ steps.detect.outputs.vendored-path }}
-      run: |
-        set -euo pipefail
-        mkdir -p "${RUNNER_TEMP}/fullsend"
-        cp "${VENDORED}" "${RUNNER_TEMP}/fullsend/fullsend"
-        chmod +x "${RUNNER_TEMP}/fullsend/fullsend"
-        echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
-
-    - name: Download release binary
-      id: download-release
-      if: steps.detect.outputs.install-method == 'release'
-      continue-on-error: true
-      shell: bash
-      env:
-        VERSION_URL: ${{ steps.detect.outputs.version-url }}
-        VERSION_ASSET: ${{ steps.detect.outputs.version-asset }}
-        RUNNER_OS: ${{ runner.os }}
-        RUNNER_ARCH: ${{ runner.arch }}
-        GH_TOKEN: ${{ inputs.github_token }}
-      run: |
-        set -euo pipefail
-
-        # retry_curl: retry a curl command up to MAX_ATTEMPTS times with exponential backoff.
-        # Usage: retry_curl [curl args...]
-        retry_curl() {
-          local max_attempts=3
-          local attempt=1
-          local delay=5
-          while true; do
-            if curl "$@"; then
-              return 0
-            fi
-            if (( attempt >= max_attempts )); then
-              echo "::error::Download failed after ${max_attempts} attempts" >&2
-              return 1
-            fi
-            echo "::warning::Download attempt ${attempt}/${max_attempts} failed, retrying in ${delay}s..." >&2
-            sleep "${delay}"
-            (( attempt++ ))
-            (( delay *= 3 ))
-          done
-        }
-
-        # This action requires Linux (podman, systemd, cgroups v2 steps below).
-        if [[ "${RUNNER_OS}" != "Linux" ]]; then
-          echo "::error::Unsupported runner OS: ${RUNNER_OS} (this action requires Linux)"
-          exit 1
-        fi
-        os=linux
-
-        case "${RUNNER_ARCH}" in
-          X64)   arch=amd64 ;;
-          ARM64) arch=arm64 ;;
-          *)
-            echo "::error::Unsupported runner architecture: ${RUNNER_ARCH} (expected X64 or ARM64)"
-            exit 1
-            ;;
-        esac
-
-        ASSET_NAME="fullsend_${VERSION_ASSET}_${os}_${arch}.tar.gz"
-        URL="https://github.com/fullsend-ai/fullsend/releases/download/${VERSION_URL}/${ASSET_NAME}"
-
-        echo "Downloading from: ${URL}"
-        retry_curl -fsSL "${URL}" -o "/tmp/${ASSET_NAME}"
-        mkdir -p "${RUNNER_TEMP}/fullsend"
-        tar -xzf "/tmp/${ASSET_NAME}" -C "${RUNNER_TEMP}/fullsend"
-        echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
-
-    - name: Clone fullsend at ref for source build
-      if: steps.detect.outputs.install-method == 'source' || steps.download-release.outcome == 'failure'
-      shell: bash
-      env:
-        SOURCE_REF: ${{ steps.detect.outputs.source-ref || steps.detect.outputs.version-url }}
-        GH_TOKEN: ${{ inputs.github_token }}
-        DOWNLOAD_OUTCOME: ${{ steps.download-release.outcome }}
-      run: |
-        set -euo pipefail
-        if [[ "${DOWNLOAD_OUTCOME}" == "failure" ]]; then
-          echo "::warning::Release download failed; falling back to source build"
-        fi
-        echo "::add-mask::${GH_TOKEN}"
-        SRC="${RUNNER_TEMP}/fullsend-src"
-        REMOTE="https://x-access-token:${GH_TOKEN}@github.com/fullsend-ai/fullsend.git"
-        echo "Cloning fullsend at ref: ${SOURCE_REF}"
-        git init "${SRC}"
-        git -C "${SRC}" remote add origin "${REMOTE}"
-        # Shallow fetch works for branch/tag refs but not bare commit SHAs (GitHub disallows
-        # unadvertised SHA fetches). Fall back to a full clone when shallow fetch fails.
-        if ! git -C "${SRC}" fetch --depth 1 origin "${SOURCE_REF}"; then
-          echo "Shallow fetch failed (ref may be a commit SHA); falling back to full clone"
-          rm -rf "${SRC}"
-          git clone "${REMOTE}" "${SRC}"
-          git -C "${SRC}" checkout "${SOURCE_REF}"
-        else
-          git -C "${SRC}" checkout FETCH_HEAD
-        fi
-
-    - name: Set up Go for source build
-      if: steps.detect.outputs.install-method == 'source' || steps.download-release.outcome == 'failure'
-      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+    - name: Checkout install-fullsend-cli action
+      if: hashFiles('.defaults/.github/actions/install-fullsend-cli/action.yml') == ''
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       with:
-        go-version-file: ${{ runner.temp }}/fullsend-src/go.mod
-        cache-dependency-path: ${{ runner.temp }}/fullsend-src/go.sum
+        repository: ${{ job.workflow_repository || github.repository }}
+        ref: ${{ job.workflow_sha || github.sha }}
+        path: .defaults
+        fetch-depth: 1
+        sparse-checkout: |
+          .github/actions/install-fullsend-cli/
 
-    - name: Build fullsend from source
-      if: steps.detect.outputs.install-method == 'source' || steps.download-release.outcome == 'failure'
+    # Decide Fullsend CLI mode: vendored/upstream
+    - name: Decide if Fullsend CLI mode is vendored or upstream
+      id: cli-mode
       shell: bash
       run: |
         set -euo pipefail
-        mkdir -p "${RUNNER_TEMP}/fullsend"
-        cd "${RUNNER_TEMP}/fullsend-src"
-        make go-build
-        cp bin/fullsend "${RUNNER_TEMP}/fullsend/fullsend"
-        echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
+        path=""
+        if [[ -f "${GITHUB_WORKSPACE}/.fullsend/bin/fullsend" ]]; then
+          path="${GITHUB_WORKSPACE}/.fullsend/bin/fullsend"
+        elif [[ -f "${GITHUB_WORKSPACE}/bin/fullsend" ]]; then
+          path="${GITHUB_WORKSPACE}/bin/fullsend"
+        fi
 
-    - name: Print fullsend version
-      shell: bash
-      run: fullsend --version
+        mode="upstream"
+        if [[ "${path}" != "" ]]; then
+          mode="vendored"
+        fi
+
+        echo "path=${path}" >> "${GITHUB_OUTPUT}"
+        echo "mode=${mode}" >> "${GITHUB_OUTPUT}"
+
+    # Some of the vars on this call will be ignored depending on the mode passed
+    # that is fine.
+    - name: Install Fullsend CLI with mode
+      uses: ./.defaults/.github/actions/install-fullsend-cli
+      with:
+        mode: ${{ steps.cli-mode.outputs.mode }}
+        vendored_path: ${{ steps.cli-mode.outputs.path }}
+        repository: ${{ job.workflow_repository }}
+        sha: ${{ job.workflow_sha }}
+        github_token: ${{ inputs.github_token }}
+        version: ${{ inputs.version }}
 
     - name: Install Podman
       shell: bash

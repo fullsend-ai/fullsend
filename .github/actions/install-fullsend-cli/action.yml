@@ -1,29 +1,76 @@
 name: Install fullsend CLI
 description: >-
-  Install fullsend for harness-dispatch: copy a vendored repo binary or build
-  from the reusable workflow repository at workflow_sha.
+  Composite action that puts the fullsend binary on PATH. Supports three
+  install strategies depending on the caller's context:
+
+  1. Vendored — the calling repo ships its own binary at a known path
+     (`.fullsend/bin/fullsend` or `bin/fullsend`). The action copies it
+     to `$RUNNER_TEMP/fullsend/` and marks it executable.
+
+  2. Release download — the caller requests a specific version (`latest`,
+     a semver tag, or a 40-char SHA that resolves to a tagged release).
+     The action downloads the matching pre-built tarball from GitHub
+     Releases.
+
+  3. Source build — no matching release exists (tip-of-branch SHA, or the
+     release download failed). The action clones the repository at the
+     given SHA, sets up Go, and runs `make go-build`.
+
+  The root `action.yml` decides which mode to use and passes it here; other
+  callers (CI jobs, reusable workflows) can call this action directly.
+
+  Examples:
+
+    # Vendored binary: the calling repo ships its own pre-built binary
+    # Only the variable `vendored_path` is used. Fails if it does not exist.
+    - uses: ./.github/actions/install-fullsend-cli
+      with:
+        mode: vendored
+        vendored_path: .fullsend/bin/fullsend
+
+    # Latest release: resolves the most recent GitHub Release tag,
+    # then downloads the appropriate tarball.
+    - uses: ./.github/actions/install-fullsend-cli
+      with:
+        mode: upstream
+        version: latest
+        repository: fullsend-ai/fullsend
+
+    # Specific release tag: downloads the tarball for that tag.
+    # Accepts with or without the leading "v" (e.g. 0.32.0 becomes v0.32.0).
+    - uses: ./.github/actions/install-fullsend-cli
+      with:
+        mode: upstream
+        version: v0.32.0
+        repository: fullsend-ai/fullsend
+
+    # Explicit SHA: downloads the tarball if the SHA matches a release,
+    # otherwise it builds from source at that SHA.
+    - uses: ./.github/actions/install-fullsend-cli
+      with:
+        mode: upstream
+        sha: abc0123456789abcdef0123456789abcdef012345
+        repository: fullsend-ai/fullsend
 
 inputs:
   mode:
-    description: Install mode — vendored (caller binary) or upstream (build at workflow_sha).
+    description: Install mode — vendored (caller binary) or upstream (build at sha).
     required: true
   vendored_path:
     description: Path to vendored binary in the caller checkout (vendored mode only).
     default: .fullsend/bin/fullsend
-  workflow_repository:
-    description: Reusable workflow repository (owner/name) for upstream builds.
+  repository:
+    description: Repository (owner/name) where the Fullsend CLI is published or its code resides.
     default: ${{ github.repository }}
-  workflow_sha:
-    description: Commit SHA to build when mode is upstream.
+  sha:
+    description: Commit SHA to build from inputs.repository when mode is upstream.
     default: ${{ github.sha }}
+  version:
+    description: Version of the Fullsend CLI to be used.
+    default: ""
   github_token:
     description: Token for cloning the workflow repository.
     default: ${{ github.token }}
-
-outputs:
-  fullsend-path:
-    description: Absolute path to the installed fullsend binary.
-    value: ${{ steps.install-vendored.outputs.fullsend-path || steps.install-release.outputs.fullsend-path || steps.install-upstream.outputs.fullsend-path }}
 
 runs:
   using: composite
@@ -44,15 +91,15 @@ runs:
         cp "${VENDORED}" "${RUNNER_TEMP}/fullsend/fullsend"
         chmod +x "${RUNNER_TEMP}/fullsend/fullsend"
         echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
-        echo "fullsend-path=${RUNNER_TEMP}/fullsend/fullsend" >> "${GITHUB_OUTPUT}"
 
     - name: Resolve SHA to release tag
       id: resolve-tag
       if: inputs.mode == 'upstream'
       shell: bash
       env:
-        WORKFLOW_REPOSITORY: ${{ inputs.workflow_repository }}
-        WORKFLOW_SHA: ${{ inputs.workflow_sha }}
+        REPOSITORY: ${{ inputs.repository }}
+        SHA: ${{ inputs.sha }}
+        VERSION: ${{ inputs.version }}
         GH_TOKEN: ${{ inputs.github_token }}
       run: |
         set -euo pipefail
@@ -77,31 +124,64 @@ runs:
           done
         }
 
-        if [[ -z "${WORKFLOW_SHA}" ]]; then
-          echo "::warning::workflow_sha is empty (job.workflow_sha is unavailable on GitHub Enterprise Server); falling back to latest release"
-          TAG=$(retry gh api "repos/${WORKFLOW_REPOSITORY}/releases/latest" --jq '.tag_name') || true
-          if [[ -z "${TAG}" ]]; then
-            echo "::error::Could not resolve latest release tag for ${WORKFLOW_REPOSITORY}"
+        # GitHub Enterprise Server case
+        if [[ "${SHA}" == "" && "${VERSION}" == "" ]]; then
+          echo "::warning::SHA is empty (job.SHA is unavailable on GitHub Enterprise Server) and there is no version, falling back to latest release."
+          VERSION="latest"
+        fi
+
+        # Resolve 'latest' to the actual tag before checking the release API
+        if [[ "${VERSION}" == "latest" ]]; then
+          echo "::debug::Version received is latest, resolving it to a real tag"
+          TAG=$(retry gh api "repos/${REPOSITORY}/releases/latest" --jq '.tag_name') || {
+            echo "::error::Could not resolve latest release tag"
+            exit 1
+          }
+
+          if [[ "${TAG}" == "" ]]; then
+            echo "::error::Could not resolve latest release tag"
             exit 1
           fi
+
           echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
-          echo "Resolved empty workflow_sha to latest release ${TAG}"
           exit 0
         fi
 
-        # Dereference annotated tag objects to their commit SHA.
-        # job.workflow_sha may be a tag object SHA when the caller ref is
-        # an annotated tag; the /tags API returns peeled commit SHAs.
-        RESOLVE_SHA="${WORKFLOW_SHA}"
-        if commit_sha=$(retry gh api "repos/${WORKFLOW_REPOSITORY}/git/tags/${WORKFLOW_SHA}" --jq '.object.sha' 2>/dev/null); then
+        # If version resembles semver, set it as tag
+        if [[ "${VERSION}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$ ]]; then
+          echo "::debug::Version '${VERSION}' resembles semver, passing it as a tag."
+
+          # If not leading v, set it as our tags contain leading v
+          if [[ ! "${VERSION}" =~ ^v ]]; then
+            VERSION="v${VERSION}"
+          fi
+
+          echo "tag=${VERSION}" >> "${GITHUB_OUTPUT}"
+          exit 0
+        fi
+
+        # If version does not resemble a long-form SHA, set it as tag
+        if [[ -n "${VERSION}" &&  ! "${VERSION}" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "::debug::Version '${VERSION}' is not latest and it does not resemble a long-form SHA, passing it as a tag"
+          echo "tag=${VERSION}" >> "${GITHUB_OUTPUT}"
+          exit 0
+        fi
+
+        echo "::debug::Version received is a long-form SHA, overriding workflow sha"
+        if [[ -n "${VERSION}" ]]; then SHA="${VERSION}"; fi
+        echo "sha=${SHA}" >> "${GITHUB_OUTPUT}"
+
+        # Try to find the correct SHA by assuming the SHA received is from an annotated tag
+        RESOLVE_SHA="${SHA}"
+        if commit_sha=$(retry gh api "repos/${REPOSITORY}/git/tags/${SHA}" --jq '.object.sha' 2>/dev/null); then
           if [[ -n "${commit_sha}" ]]; then
-            echo "Dereferenced annotated tag object ${WORKFLOW_SHA:0:12} to commit ${commit_sha:0:12}"
+            echo "Dereferenced annotated tag object ${SHA:0:12} to commit ${commit_sha:0:12}"
             RESOLVE_SHA="${commit_sha}"
           fi
         fi
 
         TAG=""
-        if tags_json=$(retry gh api --paginate "repos/${WORKFLOW_REPOSITORY}/tags?per_page=100"); then
+        if tags_json=$(retry gh api --paginate "repos/${REPOSITORY}/tags?per_page=100"); then
           TAG=$(echo "${tags_json}" \
             | jq -r --arg sha "${RESOLVE_SHA}" '.[] | select(.commit.sha == $sha) | .name' \
             | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1) || true
@@ -109,10 +189,11 @@ runs:
           echo "::warning::Tag lookup API failed after retries; skipping SHA-to-tag resolution"
         fi
         echo "tag=${TAG}" >> "${GITHUB_OUTPUT}"
+
         if [[ -n "${TAG}" ]]; then
-          echo "SHA ${WORKFLOW_SHA} maps to release tag ${TAG}"
+          echo "SHA ${SHA} maps to release tag ${TAG}"
         else
-          echo "No release tag for SHA ${WORKFLOW_SHA}, will build from source"
+          echo "No release tag for SHA ${SHA}, will build from source"
         fi
 
     - name: Download pre-built binary from release
@@ -121,7 +202,7 @@ runs:
       continue-on-error: true
       shell: bash
       env:
-        WORKFLOW_REPOSITORY: ${{ inputs.workflow_repository }}
+        REPOSITORY: ${{ inputs.repository }}
         TAG: ${{ steps.resolve-tag.outputs.tag }}
         GH_TOKEN: ${{ inputs.github_token }}
         RUNNER_OS: ${{ runner.os }}
@@ -140,8 +221,6 @@ runs:
           done
         }
 
-        VERSION="${TAG#v}"
-
         os="$(echo "${RUNNER_OS}" | tr '[:upper:]' '[:lower:]')"
         case "${os}" in
           macos) os=darwin ;;
@@ -154,22 +233,21 @@ runs:
           arm64|aarch64) arch=arm64 ;;
         esac
 
-        ASSET="fullsend_${VERSION}_${os}_${arch}.tar.gz"
+        ASSET="fullsend_${TAG#v}_${os}_${arch}.tar.gz"
         mkdir -p "${RUNNER_TEMP}/fullsend"
         echo "Downloading ${ASSET} from release ${TAG}"
-        retry gh release download "${TAG}" -R "${WORKFLOW_REPOSITORY}" -p "${ASSET}" -D "${RUNNER_TEMP}/fullsend" --clobber
+        retry gh release download "${TAG}" -R "${REPOSITORY}" -p "${ASSET}" -D "${RUNNER_TEMP}/fullsend" --clobber
         tar -xzf "${RUNNER_TEMP}/fullsend/${ASSET}" -C "${RUNNER_TEMP}/fullsend"
         rm -f "${RUNNER_TEMP}/fullsend/${ASSET}"
         chmod +x "${RUNNER_TEMP}/fullsend/fullsend"
         echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
-        echo "fullsend-path=${RUNNER_TEMP}/fullsend/fullsend" >> "${GITHUB_OUTPUT}"
 
-    - name: Clone fullsend at workflow SHA for source build
+    - name: Clone fullsend at resolved SHA for source build
       if: inputs.mode == 'upstream' && (steps.resolve-tag.outputs.tag == '' || steps.install-release.outcome == 'failure')
       shell: bash
       env:
-        WORKFLOW_REPOSITORY: ${{ inputs.workflow_repository }}
-        WORKFLOW_SHA: ${{ inputs.workflow_sha }}
+        REPOSITORY: ${{ inputs.repository }}
+        SHA: ${{ steps.resolve-tag.outputs.sha || inputs.sha }}
         GH_TOKEN: ${{ inputs.github_token }}
         INSTALL_RELEASE_OUTCOME: ${{ steps.install-release.outcome }}
       run: |
@@ -179,15 +257,15 @@ runs:
         fi
         echo "::add-mask::${GH_TOKEN}"
         SRC="${RUNNER_TEMP}/fullsend-src"
-        REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${WORKFLOW_REPOSITORY}.git"
-        echo "Cloning ${WORKFLOW_REPOSITORY} at ref: ${WORKFLOW_SHA}"
+        REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+        echo "Cloning ${REPOSITORY} at ref: ${SHA}"
         git init "${SRC}"
         git -C "${SRC}" remote add origin "${REMOTE}"
-        if ! git -C "${SRC}" fetch --depth 1 origin "${WORKFLOW_SHA}"; then
+        if ! git -C "${SRC}" fetch --depth 1 origin "${SHA}"; then
           echo "Shallow fetch failed (ref may be a commit SHA); falling back to full clone"
           rm -rf "${SRC}"
           git clone "${REMOTE}" "${SRC}"
-          git -C "${SRC}" checkout "${WORKFLOW_SHA}"
+          git -C "${SRC}" checkout "${SHA}"
         else
           git -C "${SRC}" checkout FETCH_HEAD
         fi
@@ -210,7 +288,6 @@ runs:
         make go-build
         cp bin/fullsend "${RUNNER_TEMP}/fullsend/fullsend"
         echo "${RUNNER_TEMP}/fullsend" >> "${GITHUB_PATH}"
-        echo "fullsend-path=${RUNNER_TEMP}/fullsend/fullsend" >> "${GITHUB_OUTPUT}"
 
     - name: Print fullsend version
       shell: bash
