@@ -4,7 +4,7 @@ Conventions for GitHub Actions workflows under `.github/workflows/`. Follow thes
 
 ## Concurrency groups
 
-- Use `${{ github.workflow }}` as the workflow identifier — never duplicate the workflow name as a hardcoded string prefix.
+- Use `${{ github.workflow }}` as the workflow identifier — never duplicate the workflow name as a hardcoded string prefix (see [exception for `workflow_call`-only workflows](#reusable-workflow-concurrency) below).
 - Standard pattern for branch/PR workflows:
   ```yaml
   concurrency:
@@ -19,9 +19,15 @@ Conventions for GitHub Actions workflows under `.github/workflows/`. Follow thes
           && format('{0}-{1}', github.workflow, github.event.pull_request.number)
           || format('{0}-{1}', github.workflow, github.ref) }}
   ```
+- <a id="reusable-workflow-concurrency"></a>**Exception — `workflow_call`-only workflows:** workflows whose *only* trigger is `workflow_call` must use a hardcoded role-specific prefix with `inputs.*`-based suffixes instead of `${{ github.workflow }}`, because in `workflow_call` context `github.workflow` resolves to the *caller's* workflow name, not the reusable workflow's own name. Using it would produce incorrect concurrency scoping and could cancel the caller's runs. The suffix should derive from `inputs.*` (not `github.event.*`), since the caller's event context may not match the underlying PR/issue. See `reusable-code.yml` for the canonical pattern:
+  ```yaml
+  concurrency:
+    group: fullsend-code-agent-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number || fromJSON(inputs.event_payload).pull_request.number }}
+  ```
+  Hybrid workflows that combine `workflow_call` with direct triggers like `pull_request_target` or `push` (e.g., `e2e.yml`, `functional-tests.yml`) may still use `${{ github.workflow }}` in the branch of their concurrency expression that handles direct triggers — the `workflow_call` invocations in these cases come from a thin caller that shares the same concurrency intent.
 - Never cancel in-progress runs on the default branch (`refs/heads/main`). Gate `cancel-in-progress` when the workflow triggers on `push` to `main`.
 
-**Why:** A hardcoded prefix like `my-workflow-${{ github.workflow }}` is redundant — `github.workflow` already resolves to the workflow `name:` field. The duplication creates a confusing group key and wastes characters.
+**Why:** A hardcoded prefix like `my-workflow-${{ github.workflow }}` is redundant — `github.workflow` already resolves to the workflow `name:` field. The duplication creates a confusing group key and wastes characters. The reusable-workflow exception exists because GitHub resolves `github.workflow` from the caller's context, so a reusable workflow using it would share a concurrency group with its caller.
 
 ## Timeout policy
 
