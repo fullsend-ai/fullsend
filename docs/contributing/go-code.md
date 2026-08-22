@@ -233,6 +233,40 @@ This matches the pattern in `internal/cli/tracker_client.go` and `internal/cli/f
 
 When multiple code paths produce errors for the same condition across different forges or providers, ensure they mention the same remediation options. For example, if one "no token found" error suggests both the environment variable and the `--token` flag, other forge-specific token errors should do the same — so users see consistent guidance regardless of which code path triggers.
 
+## Go pitfalls
+
+### `Timeout() bool` interface and `context.DeadlineExceeded`
+
+`context.DeadlineExceeded` implements `interface{ Timeout() bool }` and returns `true`. This means any timeout detection that uses an interface type assertion will incorrectly classify context deadline errors as timeouts:
+
+```go
+// WRONG — matches context.DeadlineExceeded, which is not a transient
+// network timeout but an intentional cancellation by the caller.
+var te interface{ Timeout() bool }
+if errors.As(err, &te) && te.Timeout() {
+    return true // retries context deadlines — incorrect
+}
+```
+
+Context deadline and cancellation errors represent intentional cancellation by the caller (e.g., a request timeout set by the application, a user-initiated cancel). They should never be classified as transient or retried — the caller chose to stop waiting, and retrying re-creates the same deadline.
+
+**Always guard against context errors before checking `Timeout()`:**
+
+```go
+// CORRECT — context errors are excluded before the Timeout() check.
+if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+    return false
+}
+var te interface{ Timeout() bool }
+if errors.As(err, &te) && te.Timeout() {
+    return true // only matches genuine network timeouts (e.g. net/http.Client.Timeout)
+}
+```
+
+See [`forge.IsTransient`](../../internal/forge/forge.go) for the canonical example of the correct pattern.
+
+**When reviewing PRs:** Flag any `Timeout() bool` interface assertion without a preceding `errors.Is(err, context.DeadlineExceeded)` guard as a medium-severity finding. The fix is to add the context-error check before the `Timeout()` check.
+
 ## Running the fullsend CLI
 
 **Audience:** contributors and agents working from a **repo checkout**. Do not
