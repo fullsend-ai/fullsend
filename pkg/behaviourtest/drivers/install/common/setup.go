@@ -9,6 +9,25 @@ import (
 // CLIRunnerFunc is the signature for running a fullsend CLI command.
 type CLIRunnerFunc = func(binary, token string, args ...string) (string, error)
 
+// GitHubSetupOpts configures how RunGitHubSetupWithOpts invokes
+// `fullsend github setup`. Zero value gives the vendored-mode defaults
+// used by NewRepoPoolCFMintPreviews.
+type GitHubSetupOpts struct {
+	// Vendor controls whether --vendor is passed. When false,
+	// FullsendRef must be set so the shim references a remote ref
+	// instead of a vendored binary.
+	Vendor bool
+
+	// FullsendRef is passed as --fullsend-ref when non-empty. Used in
+	// non-vendored mode to pin the reusable workflow ref (e.g. "main").
+	FullsendRef string
+}
+
+// DefaultGitHubSetupOpts returns vendored-mode defaults.
+func DefaultGitHubSetupOpts() GitHubSetupOpts {
+	return GitHubSetupOpts{Vendor: true}
+}
+
 // RunGitHubSetup runs fullsend github setup for the given target with the
 // provided mint URL. If gcpProjectID is non-empty, inference provisioning
 // is performed first and the resulting WIF provider is threaded to setup.
@@ -17,12 +36,29 @@ func RunGitHubSetup(
 	runCLI CLIRunnerFunc,
 	logf func(string, ...any),
 ) error {
+	return RunGitHubSetupWithOpts(binary, token, target, mintURL, gcpProjectID, DefaultGitHubSetupOpts(), runCLI, logf)
+}
+
+// RunGitHubSetupWithOpts is like RunGitHubSetup but accepts GitHubSetupOpts
+// to control vendoring and fullsend-ref behaviour.
+func RunGitHubSetupWithOpts(
+	binary, token, target, mintURL, gcpProjectID string,
+	opts GitHubSetupOpts,
+	runCLI CLIRunnerFunc,
+	logf func(string, ...any),
+) error {
 	args := []string{
 		"github", "setup", target,
-		"--vendor", "--direct",
+		"--direct",
 		"--skip-app-setup",
 		"--mint-url", mintURL,
 		"--runtime", "dummy",
+	}
+	if opts.Vendor {
+		args = append(args, "--vendor")
+	}
+	if opts.FullsendRef != "" {
+		args = append(args, "--fullsend-ref", opts.FullsendRef)
 	}
 	if project := strings.TrimSpace(gcpProjectID); project != "" {
 		wifProvider, err := ProvisionInference(binary, token, target, project, runCLI, logf)
