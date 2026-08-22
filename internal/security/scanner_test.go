@@ -1,6 +1,7 @@
 package security
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -233,6 +234,49 @@ func TestSecretRedactor(t *testing.T) {
 		assert.False(t, result.Safe)
 		assert.True(t, hasFinding(result, "json_field"))
 		assert.NotContains(t, result.Sanitized, "my-super-secret-pass-1234")
+	})
+
+	t.Run("auth header no false positive on conceptual discussion", func(t *testing.T) {
+		// Short technical references like "token_value" should not trigger
+		// the auth_header pattern — they are not real secrets.
+		input := `{"approach": "use Authorization: Bearer token_value to authenticate"}`
+		result := r.Scan(input)
+		assert.True(t, result.Safe || !hasFinding(result, "auth_header"),
+			"short technical reference should not trigger auth_header pattern")
+	})
+
+	t.Run("auth header preserves JSON structure", func(t *testing.T) {
+		// Even when the auth_header pattern fires, the output must
+		// remain valid JSON — the capture group must not consume the
+		// closing quote of a JSON string value.
+		input := `{"analysis": "Set Authorization: Bearer ghp_FAKEtesttoken000000000000000000000000 header"}`
+		result := r.Scan(input)
+		// The token is long enough to match and has a known prefix,
+		// so it should be redacted by the prefix pattern.
+		assert.False(t, result.Safe)
+		// Regardless of which pattern fires, the output must be valid JSON.
+		assert.True(t, json.Valid([]byte(result.Sanitized)),
+			"output is not valid JSON: %s", result.Sanitized)
+	})
+
+	t.Run("auth header still detects real secrets", func(t *testing.T) {
+		// A real auth header with a long token should still be detected.
+		input := "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.payload.signature"
+		result := r.Scan(input)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "auth_header"))
+		assert.NotContains(t, result.Sanitized, "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9")
+	})
+
+	t.Run("auth header does not eat past JSON closing quote", func(t *testing.T) {
+		// Regression test: \S{8,} previously consumed the closing " of
+		// a JSON string, breaking JSON validity after mask().
+		input := `{"value": "X-Api-Key: testvalue_testvalue_testvalue_1"}`
+		result := r.Scan(input)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "auth_header"))
+		assert.True(t, json.Valid([]byte(result.Sanitized)),
+			"output is not valid JSON: %s", result.Sanitized)
 	})
 }
 
