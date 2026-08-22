@@ -21,6 +21,7 @@ func newMintTokenCmd() *cobra.Command {
 		repos    string
 		mintURL  string
 		audience string
+		level    string
 	)
 
 	cmd := &cobra.Command{
@@ -60,9 +61,14 @@ Prints the token to stdout for capture in shell scripts.`,
 				return fmt.Errorf("invalid role: %w", err)
 			}
 
+			if !mintcore.ValidLevel(level) {
+				return fmt.Errorf("invalid --level %q: must be %q or %q", level, mintcore.LevelRead, mintcore.LevelWrite)
+			}
+
 			result, err := mintclient.MintToken(cmd.Context(), mintclient.MintRequest{
 				MintURL:  mintURL,
 				Role:     role,
+				Level:    level,
 				Repos:    filtered,
 				Audience: audience,
 			})
@@ -87,6 +93,7 @@ Prints the token to stdout for capture in shell scripts.`,
 	cmd.Flags().StringVar(&repos, "repos", "", "comma-separated repo names to scope the token to")
 	cmd.Flags().StringVar(&mintURL, "mint-url", "", "mint service URL (default: $FULLSEND_MINT_URL)")
 	cmd.Flags().StringVar(&audience, "audience", mintconsts.OIDCAudience, "OIDC audience claim")
+	cmd.Flags().StringVar(&level, "level", mintcore.LevelWrite, "privilege level: \"read\" or \"write\" (default \"write\" for backward compatibility; the server defaults omitted levels to \"read\")")
 	_ = cmd.MarkFlagRequired("role")
 	_ = cmd.MarkFlagRequired("repos")
 
