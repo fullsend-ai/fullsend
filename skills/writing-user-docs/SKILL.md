@@ -1,18 +1,20 @@
 ---
 name: writing-user-docs
 description: >-
-  Use when writing, editing, or adding user-facing documentation under
-  docs/guides/. Use when creating admin guides (install, configure, manage) or
-  user guides (workflows, interactions, interventions) for fullsend.
+  Use when writing, editing, or adding documentation under docs/guides/.
+  Use when creating getting-started or infrastructure guides (install,
+  configure, operate), user guides (workflows, interactions, interventions),
+  or dev guides (developing and testing fullsend itself).
 ---
 
 # Writing User Documentation
 
 ## Overview
 
-User docs are task-oriented guides for two audiences: **administrators** who
-install and manage fullsend, and **developers** who work in enrolled repos.
-Structure and rules are decided in
+User docs are task-oriented guides organized by audience: **org maintainers**
+who onboard organizations, **platform operators** who deploy and manage the
+GCP infrastructure, **developers** who work in enrolled repos, and
+**contributors** working on fullsend itself. Structure and rules are decided in
 [ADR 0023](../../docs/ADRs/0023-user-documentation-structure.md).
 
 ## Directory Layout
@@ -20,15 +22,23 @@ Structure and rules are decided in
 ```
 docs/guides/
 ├── README.md              # Index — update when adding guides
-├── admin/                 # Org administrators
-│   └── installing-fullsend.md
-└── user/                  # Developers in enrolled repos
-    └── bugfix-workflow.md
+├── getting-started/       # Org maintainers onboarding orgs and repos
+│   └── configuring-github.md
+├── infrastructure/        # Platform operators managing GCP infra (mint, WIF)
+│   └── mint-administration.md
+├── user/                  # Developers in enrolled repos
+│   └── bugfix-workflow.md
+└── dev/                   # Contributors developing fullsend itself
+    └── e2e-testing.md
 ```
+
+Layout per ADR 0023's **Revision (2026-05)**, which split the original
+`admin/` directory into `getting-started/` and `infrastructure/`. See
+[docs/guides/README.md](../../docs/guides/README.md) for the full index.
 
 ## Writing Rules
 
-1. **One audience, one task.** Each guide targets admin or user, not both.
+1. **One audience, one task.** Each guide targets a single audience.
 2. **Prerequisites first.** State what the reader needs before step 1.
 3. **Steps, not prose.** Numbered steps for procedures. Command first, then
    explain — not the reverse.
@@ -54,7 +64,8 @@ drafting or editing guides. Key principles:
 
 ## Checklist
 
-- [ ] File is in the correct directory (`admin/` or `user/`)
+- [ ] File is in the correct directory (`getting-started/`, `infrastructure/`,
+      `user/`, or `dev/`)
 - [ ] Prerequisites section exists and is complete
 - [ ] Procedures use numbered steps
 - [ ] Commands appear before their explanations
@@ -67,7 +78,7 @@ drafting or editing guides. Key principles:
 
 | Mistake | Fix |
 |---------|-----|
-| Mixing admin and user content | Split into two guides |
+| Mixing content for different audiences | Split into separate guides |
 | Explaining architecture inline | Link to `docs/architecture.md` |
 | Documenting planned features as current | Add `> **Planned:**` callout |
 | Forgetting to update the index | Edit `docs/guides/README.md` |
