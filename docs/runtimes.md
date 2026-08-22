@@ -72,6 +72,7 @@ Harness keys are runtime-neutral in the YAML but each runtime owns their transla
 | `skills` | `CLAUDE_CONFIG_DIR/skills/` | — | ignored | Agent Skills spec (`SKILL.md`) is portable; destination is `rt.ConfigDir() + "/skills"` (also used by the runtime fetch service) |
 | `security.sandbox_hooks` | `SandboxHooksBootstrap` → hooks.json via `--settings` | ✗ (stub) | ignored | See [Sandbox hook contract](#sandbox-hook-contract) |
 | `--debug` (CLI flag) | `--debug-file`, artifact `claude-debug.log` | — | no-op | Implement `DebugLogNamer` to name the artifact |
+| `validation_loop.feedback_mode` | `RunParams.Prompt` replaces the positional prompt on a retry iteration | ✗ (stub) | ignored | **Required of every runtime.** Honour `RunParams.Prompt`, falling back to `runtime.DefaultAgentPrompt` when empty. A runtime that ignores it makes `feedback_mode: append` a silent no-op, indistinguishable from the blind retries it exists to remove (#1050) |
 
 ## Sandbox workspace layout
 

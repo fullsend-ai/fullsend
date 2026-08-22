@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -2558,6 +2559,131 @@ func TestValidationFailMessage_FallsBackWhenWhitespaceOnly(t *testing.T) {
 func TestValidationFailMessage_TrimsOutput(t *testing.T) {
 	msg := validationFailMessage([]byte("  some output\n"), fmt.Errorf("exit status 1"))
 	assert.Equal(t, "some output", msg)
+}
+
+func TestBuildFeedbackPrompt_Empty(t *testing.T) {
+	prompt := buildFeedbackPrompt("")
+	assert.Equal(t, "Run the agent task", prompt)
+}
+
+func TestBuildFeedbackPrompt_WithFeedback(t *testing.T) {
+	prompt := buildFeedbackPrompt("FAIL: Additional properties are not allowed")
+	assert.Contains(t, prompt, "Run the agent task")
+	assert.Contains(t, prompt, "FAIL: Additional properties are not allowed")
+	assert.Contains(t, prompt, "Fix the issues described above")
+	assert.Contains(t, prompt, "previous iteration")
+}
+
+func TestBuildFeedbackPrompt_Truncation(t *testing.T) {
+	long := strings.Repeat("x", maxFeedbackBytes+100)
+	prompt := buildFeedbackPrompt(long)
+	assert.Contains(t, prompt, "[truncated]")
+	// The total prompt should be bounded: the injected feedback should be
+	// truncated to maxFeedbackBytes plus the "[truncated]" suffix.
+	assert.True(t, len(prompt) < maxFeedbackBytes+500,
+		"prompt length %d should be bounded", len(prompt))
+}
+
+func TestWriteValidationFeedback_WritesFile(t *testing.T) {
+	dir := t.TempDir()
+	printer := ui.New(io.Discard)
+	feedback := writeValidationFeedback(dir, []byte("ruff check failed\n"), fmt.Errorf("exit status 1"), nil, printer)
+	assert.Equal(t, "ruff check failed", feedback)
+
+	data, err := os.ReadFile(filepath.Join(dir, validationFeedbackFile))
+	require.NoError(t, err)
+	assert.Equal(t, "ruff check failed", string(data))
+}
+
+func TestWriteValidationFeedback_FallsBackToError(t *testing.T) {
+	dir := t.TempDir()
+	printer := ui.New(io.Discard)
+	feedback := writeValidationFeedback(dir, nil, fmt.Errorf("permission denied"), nil, printer)
+	assert.Equal(t, "permission denied", feedback)
+}
+
+func TestTruncateUTF8_KeepsRunesIntact(t *testing.T) {
+	// A byte-slice truncation at this boundary would split the 3-byte rune
+	// and leave invalid UTF-8 in the middle of the agent prompt.
+	s := strings.Repeat("a", maxFeedbackBytes-1) + "\u4e16\u754c"
+	got := truncateUTF8(s, maxFeedbackBytes)
+	assert.True(t, utf8.ValidString(got), "truncated feedback must stay valid UTF-8")
+	assert.Contains(t, got, "[truncated]")
+}
+
+func TestTruncateUTF8_ShortInputUnchanged(t *testing.T) {
+	assert.Equal(t, "short", truncateUTF8("short", maxFeedbackBytes))
+	assert.NotContains(t, truncateUTF8("short", maxFeedbackBytes), "[truncated]")
+}
+
+func TestRedactFeedback_RedactsRunnerCredentialLiterals(t *testing.T) {
+	// The validation script runs with the full runner env, which for the code
+	// and fix harnesses includes PUSH_TOKEN \u2014 a credential that must never
+	// enter the sandbox. Feedback becomes the next iteration's prompt.
+	runnerEnv := map[string]string{
+		"PUSH_TOKEN":    "s3cret-push-value-1234",
+		"GH_TOKEN":      "s3cret-gh-value-5678",
+		"TARGET_BRANCH": "main",
+	}
+	out := redactFeedback(
+		"fatal: could not read from https://x-access-token:s3cret-push-value-1234@github.com/o/r\n"+
+			"also token s3cret-gh-value-5678 on branch main", runnerEnv)
+
+	assert.NotContains(t, out, "s3cret-push-value-1234")
+	assert.NotContains(t, out, "s3cret-gh-value-5678")
+	assert.Contains(t, out, "[REDACTED:PUSH_TOKEN]")
+	assert.Contains(t, out, "[REDACTED:GH_TOKEN]")
+	// Non-credential values must survive \u2014 the agent needs to read the
+	// diagnostics, and "main" is not a secret.
+	assert.Contains(t, out, "main")
+}
+
+func TestRedactFeedback_SkipsShortAndNonSensitiveValues(t *testing.T) {
+	runnerEnv := map[string]string{
+		"PUSH_TOKEN":    "abc",
+		"TARGET_BRANCH": "release-candidate",
+	}
+	out := redactFeedback("branch release-candidate failed, abc lines", runnerEnv)
+	assert.Contains(t, out, "release-candidate")
+	assert.Contains(t, out, "abc lines")
+	assert.NotContains(t, out, "[REDACTED")
+}
+
+func TestRedactFeedback_CatchesPatternedSecretNotInEnv(t *testing.T) {
+	// A credential the runner never held (baked into a fixture, printed by a
+	// pre-commit hook) still must not reach the sandbox. Built at runtime so
+	// no token-shaped literal lives in the source.
+	leaked := "PATTERN" + strings.Repeat("a", 36)
+	leaked = strings.Replace(leaked, "PATTERN", "g"+"hp_", 1)
+	out := redactFeedback("leaked "+leaked+" here", nil)
+	assert.NotContains(t, out, leaked)
+	// Guard against a vacuous pass: the surrounding diagnostics must survive.
+	assert.Contains(t, out, "leaked ")
+	assert.Contains(t, out, " here")
+}
+
+func TestWriteValidationFeedback_RedactsBeforeWritingFile(t *testing.T) {
+	// The run directory is uploaded as a CI artifact, so the audit copy must
+	// carry the same redacted text the agent sees.
+	dir := t.TempDir()
+	printer := ui.New(io.Discard)
+	runnerEnv := map[string]string{"PUSH_TOKEN": "s3cret-push-value-1234"}
+	feedback := writeValidationFeedback(dir, []byte("token s3cret-push-value-1234 rejected"), fmt.Errorf("exit status 1"), runnerEnv, printer)
+
+	assert.NotContains(t, feedback, "s3cret-push-value-1234")
+	data, err := os.ReadFile(filepath.Join(dir, validationFeedbackFile))
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "s3cret-push-value-1234")
+	assert.Contains(t, string(data), "[REDACTED:PUSH_TOKEN]")
+}
+
+func TestSensitiveEnvKey(t *testing.T) {
+	for _, k := range []string{"PUSH_TOKEN", "GH_TOKEN", "GITLAB_TOKEN", "MY_SECRET", "DB_PASSWORD", "SIGNING_KEY", "GCP_CREDENTIALS"} {
+		assert.True(t, sensitiveEnvKey(k), "%s should be treated as sensitive", k)
+	}
+	for _, k := range []string{"TARGET_BRANCH", "REPO_FULL_NAME", "ISSUE_NUMBER", "KEYCHAIN"} {
+		assert.False(t, sensitiveEnvKey(k), "%s should not be treated as sensitive", k)
+	}
 }
 
 func TestValidationEnv_IncludesSchemaWhenSet(t *testing.T) {

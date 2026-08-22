@@ -1,6 +1,7 @@
 package harness
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -80,6 +81,45 @@ validation_loop:
 	_, err := Load(path)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "validation_loop.script is required")
+}
+
+func TestLoad_ValidationLoopFeedbackModeValid(t *testing.T) {
+	for _, mode := range []string{"", "none", "append"} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			y := fmt.Sprintf(`
+agent: agents/test.md
+role: test
+validation_loop:
+  script: validate.sh
+  feedback_mode: %s
+`, mode)
+			dir := t.TempDir()
+			path := filepath.Join(dir, "ok.yaml")
+			require.NoError(t, os.WriteFile(path, []byte(y), 0o644))
+
+			h, err := Load(path)
+			require.NoError(t, err)
+			assert.Equal(t, mode, h.ValidationLoop.FeedbackMode)
+		})
+	}
+}
+
+func TestLoad_ValidationLoopFeedbackModeInvalid(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+validation_loop:
+  script: validate.sh
+  feedback_mode: bogus
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bad.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	_, err := Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `validation_loop.feedback_mode must be "none" or "append"`)
+	assert.Contains(t, err.Error(), `"bogus"`)
 }
 
 func TestLoad_HostFiles(t *testing.T) {

@@ -481,6 +481,14 @@ func (h *Harness) Validate() error {
 	if h.ValidationLoop != nil && h.ValidationLoop.Script == "" {
 		return fmt.Errorf("validation_loop.script is required when validation_loop is set")
 	}
+	if h.ValidationLoop != nil {
+		switch h.ValidationLoop.FeedbackMode {
+		case "", "none", "append":
+			// valid
+		default:
+			return fmt.Errorf("validation_loop.feedback_mode must be \"none\" or \"append\", got %q", h.ValidationLoop.FeedbackMode)
+		}
+	}
 	if err := h.validateSecurity(); err != nil {
 		return err
 	}
