@@ -42,6 +42,8 @@ jobs:
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           submodules: true
+          fetch-tags: true
+          fetch-depth: 0
 
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
@@ -54,6 +56,8 @@ jobs:
 
       - name: Build documentation site
         run: npm run docs:build
+        env:
+          VPL_MVB_BRANCH: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Prepare deploy bundle
         run: |

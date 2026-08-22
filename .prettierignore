@@ -8,5 +8,8 @@ cloudflare_site/
 *.py
 hack/
 internal/
-docs/
+docs/*
+!docs/.vitepress/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
 web/public/

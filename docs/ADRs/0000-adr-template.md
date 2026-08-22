@@ -13,7 +13,7 @@ Date: YYYY-MM-DD
 
 ## Status
 
-{Accepted | Deprecated | Superseded}
+`{Accepted | Deprecated | Superseded}`
 
 <!-- ADRs are point-in-time records, but not fully frozen after acceptance.
      Minor annotations are welcome: cross-references to related ADRs, short
