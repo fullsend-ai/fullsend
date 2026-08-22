@@ -230,6 +230,10 @@ func TestMergeChangeProposal_ContextCancelledDuringPoll(t *testing.T) {
 	defer cancel()
 
 	client := newTestClient(t, srv)
+	// Use real time.After so the poll actually blocks long enough for
+	// the context deadline to fire — noWaitAfter would resolve the
+	// deadline channel immediately, preventing the cancellation test.
+	client.afterFunc = time.After
 	err := client.MergeChangeProposal(ctx, "org", "repo", 7)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
