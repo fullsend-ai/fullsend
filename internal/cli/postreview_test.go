@@ -1227,7 +1227,7 @@ func TestSubmitFormalReview_422FallbackRetriesWithoutInlineComments(t *testing.T
 	review := fc.CreatedReviews[0]
 	assert.Equal(t, "REQUEST_CHANGES", review.Event)
 	assert.Empty(t, review.Comments, "fallback retry should have no inline comments")
-	assert.Contains(t, review.Body, "inline comments could not be posted")
+	assert.Contains(t, review.Body, "review comments could not be posted")
 	assert.Contains(t, review.Body, "internal/service.go:42")
 	assert.Contains(t, review.Body, "Nil pointer dereference")
 
@@ -1486,9 +1486,98 @@ func TestSubmitFormalReview_FileLevelFailureDoesNotBlockMainReview(t *testing.T)
 			{Path: "internal/service.go", Patch: "@@ -30,20 +30,25 @@ func main() {"},
 		},
 	}
-	// First call (file-level) fails, second call (main review) succeeds.
+	// File-level review fails with a non-422 error: no fallback retry, and
+	// the main review still goes out.
+	fc.CreateReviewErrSeq = []error{
+		fmt.Errorf("server error"),
+		nil,
+	}
+
+	var out bytes.Buffer
+	printer := ui.New(&out)
+
+	findings := []ReviewFinding{
+		{Severity: "high", Category: "bug", File: "internal/service.go", Line: 999, Description: "Out of hunk."},
+	}
+
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "request-changes", "abc123", "", findings, false, printer)
+	require.NoError(t, err)
+
+	output := out.String()
+	assert.Contains(t, output, "File-level comments failed")
+	assert.NotContains(t, output, "retrying without comments", "non-422 errors should not trigger the fallback")
+	assert.Contains(t, output, "Review submitted")
+
+	// Only the main review succeeded; the file-level review errored.
+	require.Len(t, fc.CreatedReviews, 1)
+	assert.Equal(t, "REQUEST_CHANGES", fc.CreatedReviews[0].Event)
+}
+
+func TestSubmitFormalReview_FileLevel422FallsBackToReviewBody(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			{Path: "internal/service.go", Patch: "@@ -30,20 +30,25 @@ func main() {"},
+		},
+	}
+	// File-level review 422s; its fallback (body only) and the main review
+	// both succeed.
+	fc.CreateReviewErrSeq = []error{
+		&gh.APIError{
+			StatusCode: http.StatusUnprocessableEntity,
+			Message:    "Validation Failed",
+			Errors: []gh.APIErrorDetail{
+				{Resource: "PullRequestReviewComment", Field: "path", Code: "invalid", Message: "path must be part of the diff"},
+			},
+		},
+		nil,
+		nil,
+	}
+
+	var out bytes.Buffer
+	printer := ui.New(&out)
+
+	findings := []ReviewFinding{
+		{Severity: "high", Category: "bug", File: "internal/service.go", Line: 999, Description: "Out of hunk."},
+	}
+
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "request-changes", "abc123", "", findings, false, printer)
+	require.NoError(t, err)
+
+	output := out.String()
+	assert.Contains(t, output, "File-level comments failed with 422")
+	// The qodo finding: structured API error details and the rejected
+	// comments must be logged, not just the formatted error string.
+	assert.Contains(t, output, "API error detail:")
+	assert.Contains(t, output, "path must be part of the diff")
+	assert.Contains(t, output, "internal/service.go (file-level)")
+
+	// Fallback COMMENT review carries the finding in its body, then the
+	// main review follows.
+	require.Len(t, fc.CreatedReviews, 2)
+	fallback := fc.CreatedReviews[0]
+	assert.Equal(t, "COMMENT", fallback.Event)
+	assert.Empty(t, fallback.Comments, "fallback retry should carry no comments")
+	assert.Contains(t, fallback.Body, "review comments could not be posted")
+	assert.Contains(t, fallback.Body, "internal/service.go")
+	assert.Contains(t, fallback.Body, "Out of hunk.")
+	assert.Equal(t, "REQUEST_CHANGES", fc.CreatedReviews[1].Event)
+}
+
+func TestSubmitFormalReview_FileLevelFallbackFailureDoesNotBlockMainReview(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			{Path: "internal/service.go", Patch: "@@ -30,20 +30,25 @@ func main() {"},
+		},
+	}
+	// Both the file-level review and its fallback fail; the main review
+	// must still be submitted.
 	fc.CreateReviewErrSeq = []error{
 		&gh.APIError{StatusCode: http.StatusUnprocessableEntity, Message: "Validation Failed"},
+		fmt.Errorf("server error"),
 		nil,
 	}
 
@@ -1506,9 +1595,46 @@ func TestSubmitFormalReview_FileLevelFailureDoesNotBlockMainReview(t *testing.T)
 	assert.Contains(t, output, "File-level comments failed")
 	assert.Contains(t, output, "Review submitted")
 
-	// Only the main review succeeded; the file-level review errored.
 	require.Len(t, fc.CreatedReviews, 1)
 	assert.Equal(t, "REQUEST_CHANGES", fc.CreatedReviews[0].Event)
+}
+
+func TestSubmitFormalReview_CommentVerdictOnlyFileLevelFindings(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.AuthenticatedUser = "fullsend-bot"
+	fc.PRFileDiffs = map[string][]forge.PullRequestFileDiff{
+		"acme/repo/1": {
+			{Path: "internal/service.go", Patch: "@@ -30,20 +30,25 @@ func main() {"},
+		},
+	}
+
+	var out bytes.Buffer
+	printer := ui.New(&out)
+
+	// Every finding falls outside the diff hunk, so there are no inline
+	// comments left to attach to a COMMENT verdict.
+	findings := []ReviewFinding{
+		{Severity: "low", Category: "style", File: "internal/service.go", Line: 999, Description: "Out of hunk."},
+		{Severity: "low", Category: "style", File: "internal/service.go", Line: 1200, Description: "Also out of hunk."},
+	}
+
+	err := submitFormalReview(context.Background(), fc, "acme", "repo", 1, "comment", "abc123", "", findings, false, printer)
+	require.NoError(t, err)
+
+	output := out.String()
+	assert.Contains(t, output, "Skipping formal COMMENT review")
+
+	// Exactly one review: the file-level COMMENT review. The main review
+	// is skipped because no inline comments remain.
+	require.Len(t, fc.CreatedReviews, 1)
+	review := fc.CreatedReviews[0]
+	assert.Equal(t, "COMMENT", review.Event)
+	assert.Empty(t, review.Body, "file-level review carries comments, not a body")
+	require.Len(t, review.Comments, 2)
+	for _, c := range review.Comments {
+		assert.Equal(t, 0, c.Line, "file-level comments carry no line")
+		assert.Equal(t, "internal/service.go", c.Path)
+	}
 }
 
 func TestBuildFallbackReviewBody(t *testing.T) {
@@ -1520,7 +1646,7 @@ func TestBuildFallbackReviewBody(t *testing.T) {
 		body := buildFallbackReviewBody("See review.", comments)
 		assert.Contains(t, body, "See review.")
 		assert.Contains(t, body, "---")
-		assert.Contains(t, body, "inline comments could not be posted")
+		assert.Contains(t, body, "review comments could not be posted")
 		assert.Contains(t, body, "`a.go:10`")
 		assert.Contains(t, body, "Bug here")
 		assert.Contains(t, body, "`b.go`")
@@ -1533,7 +1659,7 @@ func TestBuildFallbackReviewBody(t *testing.T) {
 		}
 		body := buildFallbackReviewBody("", comments)
 		assert.NotContains(t, body, "---", "no separator when original body is empty")
-		assert.Contains(t, body, "inline comments could not be posted")
+		assert.Contains(t, body, "review comments could not be posted")
 		assert.Contains(t, body, "`a.go:5`")
 	})
 
