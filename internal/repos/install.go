@@ -67,6 +67,11 @@ type InstallConfig struct {
 	// over org config fields into the per-repo config.
 	PerRepoConfig config.PerRepoConfigWriter
 
+	// Runtime, when set, is written as the per-repo `runtime:` of the
+	// generated config (`fullsend admin install <owner>/<repo> --runtime`).
+	// Empty keeps the code default; ignored when PerRepoConfig is set.
+	Runtime string
+
 	VendorBinary bool
 
 	// ReviewAppClientID is the OAuth client ID of the review agent's
@@ -277,7 +282,11 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 	if cfg.PerRepoConfig != nil {
 		perRepoCfg = cfg.PerRepoConfig
 	} else {
-		perRepoCfg = config.NewPerRepoConfig(cfg.Roles, cfg.Owner+"/"+cfg.Repo)
+		generated := config.NewPerRepoConfig(cfg.Roles, cfg.Owner+"/"+cfg.Repo)
+		if cfg.Runtime != "" {
+			generated.SetRuntime(cfg.Runtime)
+		}
+		perRepoCfg = generated
 	}
 	if err := perRepoCfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)

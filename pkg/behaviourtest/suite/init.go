@@ -96,6 +96,8 @@ func resetScenarioWorld(w *world.World) {
 	w.CreatedPRNumbers = nil
 	w.LeasedRepoName = ""
 	w.KillSwitchActivated = false
+	w.RuntimeOverridden = false
+	w.RuntimeOriginal = ""
 	w.JiraMockServer = nil
 	w.JiraMockState = nil
 	w.JiraConfigDir = ""

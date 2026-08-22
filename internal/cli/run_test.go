@@ -4089,6 +4089,7 @@ func TestWriteMetricsJSON(t *testing.T) {
 		TotalCostUSD: 0.58,
 		Iterations:   2,
 		ToolCalls:    34,
+		Runtime:      "pi",
 	}
 	m.TokenUsage.Input = 18000
 	m.TokenUsage.Output = 5200
@@ -4109,6 +4110,9 @@ func TestWriteMetricsJSON(t *testing.T) {
 
 	if got.NumTurns != 12 {
 		t.Errorf("num_turns = %d, want 12", got.NumTurns)
+	}
+	if got.Runtime != "pi" {
+		t.Errorf("runtime = %q, want pi (behaviour tests assert it)", got.Runtime)
 	}
 	if got.TotalCostUSD != 0.58 {
 		t.Errorf("total_cost_usd = %f, want 0.58", got.TotalCostUSD)

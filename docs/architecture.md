@@ -179,9 +179,40 @@ The agent itself in execution — the LLM, its tool-use loop, and the interface 
 
 This is the thing that actually reasons and acts. Everything else in this document exists to support, constrain, or coordinate it.
 
+The runner talks to every runtime through one contract, so the harness, sandbox, hook scripts and credentials are shared; only the in-sandbox config directory and the way hooks are wired differ per runtime:
+
+```mermaid
+flowchart TB
+  subgraph RUNNER["fullsend run — runner host"]
+    direction LR
+    CFG[".fullsend/config.yaml\nruntime: claude | pi | dummy"]
+    RT["runtime.Runtime\nBootstrap · Run (+ TranscriptHandler)"]
+    HOOKS["security.HookPlan\nruntime-neutral scripts (ADR 0090)"]
+    CFG --> RT
+  end
+  subgraph SANDBOX["OpenShell sandbox — same image, policy and egress"]
+    direction LR
+    CC["Claude Code\nclaude -p --agent\nhooks via --settings"]
+    PI["pi\npi --print --mode json\nhooks via fullsend-hooks.js"]
+    DM["dummy\nscripted ops\n(behaviour tests)"]
+  end
+  RT -->|"/sandbox/claude-config"| CC
+  RT -->|"/sandbox/pi-config"| PI
+  RT --> DM
+  HOOKS -.-> CC
+  HOOKS -.-> PI
+  VX["Vertex AI — *.googleapis.com\nWIF: OIDC token → STS"]
+  CC --> VX
+  PI -->|"same credential path"| VX
+  classDef opt fill:#e3e9fb,stroke:#2d5be3,color:#1b2230;
+  classDef def fill:#eceee8,stroke:#a9afa4,color:#1b2230;
+  class PI opt;
+  class CC,DM def;
+```
+
 **Decided (implementation):**
 
-- The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; production orgs default to Claude Code. Runtime selection is configured in `defaults.runtime` on the org `config.yaml` and resolved via `runtime.ResolveFromConfig()`. A **dummy** runtime executes scripted operations in the real OpenShell sandbox for behaviour tests (inference removed). Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `SandboxHooksBootstrap` for the runtime-neutral sandbox tool hooks ([ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md)); runtimes declare further capabilities through small optional interfaces (`DebugLogNamer`, `ContextBridger`) rather than `Name()` checks in the runner. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
+- The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; production orgs default to Claude Code, with [pi](https://github.com/earendil-works/pi) available as an opt-in second runtime (`runtime: pi`, Claude-on-Vertex through the same WIF credential path). Runtime selection is configured in `defaults.runtime` on the org `config.yaml` and resolved via `runtime.ResolveFromConfig()`. A **dummy** runtime executes scripted operations in the real OpenShell sandbox for behaviour tests (inference removed). Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `SandboxHooksBootstrap` for the runtime-neutral sandbox tool hooks ([ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md)); runtimes declare further capabilities through small optional interfaces (`DebugLogNamer`, `ContextBridger`) rather than `Name()` checks in the runner. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
 
 ### Behaviour testing
 
@@ -785,12 +816,50 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
 | Agent runner | GitHub Actions job → `fullsend run` CLI (via `fullsend-ai/fullsend@<version>` composite action) | |
 | Harness store | YAML files in `.fullsend/harness/` (e.g. `code.yaml`, `triage.yaml`) | |
 | Sandbox | OpenShell with per-agent L7 network policies (endpoint + binary restrictions) | |
-| Agent runtime | Claude Code (`claude --agent --dangerously-skip-permissions`) | |
+| Agent runtime | Claude Code (`claude --agent --dangerously-skip-permissions`); pi (`pi --print --mode json`) as an opt-in second runtime | [runtimes.md](runtimes.md) |
 | Sandbox image | `ghcr.io/fullsend-ai/fullsend-code:latest` (pre-built with tools, runtimes, security scanners) | |
 | Credential isolation | Read-only GitHub App token inside sandbox; write token only in post-script | [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md) |
 | Validation | Host-side schema validation script with retry loop | [ADR 0022](ADRs/0022-harness-level-output-schema-enforcement.md) |
 | Post-script | `post-code.sh` (in `fullsend-ai/agents`): protected-path check, gitleaks scan, pre-commit, push, PR creation | |
 | Observability | JSONL transcript extraction, security findings, trace ID correlation | [ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md) |
+
+### Two runtimes inside the same sandbox
+
+The OpenShell box above is drawn for Claude Code. With `runtime: pi` the outer layers are identical — same dispatch, same sandbox creation, same policy, same scans, same extraction — and only the innermost box changes. The diagram shows the two side by side; the amber step is pi's integrity check on its hook adapter, which has no Claude Code equivalent because Claude loads hooks from a runner-owned `--settings` file.
+
+```mermaid
+flowchart TB
+  subgraph SB["OpenShell sandbox (per run — only a short-lived OIDC token + WIF config enter, ADR 0017/0025)"]
+    direction LR
+    subgraph CL["runtime: claude"]
+      direction TB
+      C1["/sandbox/claude-config\nagents/ · skills/ · hooks/ · hooks.json"]
+      C2["claude -p --agent code\n--settings hooks.json\n--dangerously-skip-permissions"]
+      C1 --> C2
+    end
+    subgraph PL["runtime: pi"]
+      direction TB
+      P1["/sandbox/pi-config\nAPPEND_SYSTEM.md · settings.json · skills/\nhooks/ · fullsend-hooks.js · fullsend-manifest.json"]
+      P0{"shell guard, before .env:\nadapter present and SHA-256 = embedded copy?\nmanifest present?"}
+      P2["pi --print --mode json --no-approve\n--no-extensions [-e anthropic-vertex, on Vertex] -e fullsend-hooks.js\n--tools … --model anthropic-vertex/… #lt;/dev/null"]
+      PX["exit 97 — never runs unhooked\n(Run refuses earlier, exit -1, if the manifest has no hook plan)"]
+      P1 --> P0
+      P0 -- yes --> P2
+      P0 -- no --> PX
+    end
+  end
+  OUT["extracted: output/ · transcripts/ · debug log\nhost-written: metrics.json (runtime: …)"]
+  C2 --> OUT
+  P2 --> OUT
+  classDef guard fill:#fbf0d6,stroke:#d98e04,color:#1b2230;
+  classDef bad fill:#f8e1de,stroke:#c0392b,color:#1b2230;
+  classDef opt fill:#e3e9fb,stroke:#2d5be3,color:#1b2230;
+  class P0 guard;
+  class PX bad;
+  class P1,P2 opt;
+```
+
+See [runtimes.md](runtimes.md) for the control-by-control security matrix, the config-key mapping and how to select a runtime per repo.
 
 ## Repository layout (design workspace vs. web delivery)
 

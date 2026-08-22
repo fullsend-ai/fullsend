@@ -17,6 +17,7 @@ func TestDebugLogNameFor(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, "claude-debug.log", DebugLogNameFor(ClaudeRuntime{}))
 	assert.Equal(t, DefaultDebugLogName, DebugLogNameFor(OpenCodeRuntime{}))
+	assert.Equal(t, piDebugLogFile, DebugLogNameFor(PiRuntime{}))
 	assert.Equal(t, DefaultDebugLogName, DebugLogNameFor(DummyRuntime{}))
 	assert.Equal(t, "other.log", DebugLogNameFor(namedDebugLog{name: "other.log"}))
 	// An empty name falls back to the default rather than producing "".
@@ -37,5 +38,6 @@ func TestWantsClaudeMDBridge(t *testing.T) {
 	t.Parallel()
 	assert.True(t, WantsClaudeMDBridge(ClaudeRuntime{}))
 	assert.False(t, WantsClaudeMDBridge(OpenCodeRuntime{}))
+	assert.False(t, WantsClaudeMDBridge(PiRuntime{}))
 	assert.False(t, WantsClaudeMDBridge(DummyRuntime{}))
 }

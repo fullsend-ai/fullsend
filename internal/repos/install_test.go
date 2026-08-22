@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -592,6 +593,35 @@ func TestInstall_SecretWriteFailure(t *testing.T) {
 	_, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
 	if err == nil {
 		t.Fatal("expected error from secret write failure")
+	}
+}
+
+// TestBuildScaffoldFiles_Runtime covers `admin install <owner>/<repo>
+// --runtime`: the value lands in the generated per-repo config and is
+// validated the same way as the org path (#6464).
+func TestBuildScaffoldFiles_Runtime(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Runtime = "pi"
+	files, err := BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles() returned error: %v", err)
+	}
+	var found bool
+	for _, f := range files {
+		if f.Path == ".fullsend/config.yaml" {
+			found = true
+			if !strings.Contains(string(f.Content), "runtime: pi") {
+				t.Errorf("config.yaml missing runtime: pi:\n%s", f.Content)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected .fullsend/config.yaml in scaffold files")
+	}
+
+	cfg.Runtime = "bogus"
+	if _, err := BuildScaffoldFiles(cfg); err == nil || !strings.Contains(err.Error(), "invalid runtime") {
+		t.Fatalf("expected invalid runtime error, got %v", err)
 	}
 }
 

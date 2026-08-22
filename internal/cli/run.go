@@ -149,6 +149,9 @@ type aggregateMetrics struct {
 	Iterations int    `json:"iterations"`
 	ToolCalls  int    `json:"tool_calls"`
 	Model      string `json:"model,omitempty"`
+	// Runtime is the backend that ran the iterations (claude, pi, dummy),
+	// so artifacts record which runtime a per-repo `runtime:` selected.
+	Runtime string `json:"runtime,omitempty"`
 }
 
 func writeMetricsJSON(dir string, m aggregateMetrics) error {
@@ -1200,6 +1203,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	fmt.Fprintf(os.Stderr, "runtime: selected %q from %s\n", backend.Runtime.Name(), configSource)
 	rt := backend.Runtime
+	aggMetrics.Runtime = rt.Name()
 	tx := backend.Transcripts
 
 	// 6. Start runtime fetch service (Phase 4, ADR-0038).

@@ -26,6 +26,19 @@ const (
 	SandboxWorkspace = "/sandbox/workspace" //nolint:gosec // not a credential
 	// SandboxClaudeConfig is the Claude config directory inside the sandbox.
 	SandboxClaudeConfig = "/sandbox/claude-config" //nolint:gosec // not a credential
+	// SandboxPiConfig is the pi config directory inside the sandbox.
+	// Exported as PI_CODING_AGENT_DIR. Outside the cloned repo tree, like
+	// SandboxClaudeConfig, so repo contents cannot pre-seed it and workspace
+	// resets do not clear it. It is not a permission boundary: the agent
+	// process runs as the same user, and pi loads extensions from
+	// <dir>/extensions/, so Bootstrap must pass --no-extensions plus the
+	// runner-supplied adapter explicitly.
+	SandboxPiConfig = "/sandbox/pi-config" //nolint:gosec // not a credential
+	// SandboxPiExtensionsDir holds runner-vetted pi extensions baked into the
+	// sandbox image (images/sandbox/Containerfile), root-owned and outside
+	// PI_CODING_AGENT_DIR so pi never auto-loads them; PiRuntime.Run passes
+	// each one explicitly with -e.
+	SandboxPiExtensionsDir = "/opt/pi-extensions"
 
 	readyTimeout    = 120 * time.Second
 	readyPoll       = 2 * time.Second

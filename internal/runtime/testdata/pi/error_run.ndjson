@@ -1,0 +1,8 @@
+{"type":"session","version":3,"id":"ses_pi_err456","timestamp":"2026-08-14T12:00:00.000Z","cwd":"/tmp"}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"tool_execution_start","toolCallId":"call_err","toolName":"edit","args":{"path":"/nonexistent"}}
+{"type":"tool_execution_end","toolCallId":"call_err","toolName":"edit","result":{"content":[{"type":"text","text":"file not found"}]},"isError":true}
+{"type":"message_end","message":{"role":"assistant","content":[],"model":"claude-sonnet-4-20250514","provider":"anthropic","api":"anthropic-messages","usage":{"input":50,"output":10,"cacheRead":40,"cacheWrite":5,"totalTokens":60,"cost":{"input":0.003,"output":0.002,"cacheRead":0,"cacheWrite":0,"total":0.005}},"stopReason":"error","errorMessage":"quota exhausted","timestamp":1723456781000}}
+{"type":"agent_end","messages":[{"role":"assistant","content":[],"model":"claude-sonnet-4-20250514","provider":"anthropic","api":"anthropic-messages","usage":{"input":50,"output":10,"cacheRead":40,"cacheWrite":5,"totalTokens":60,"cost":{"input":0.003,"output":0.002,"cacheRead":0,"cacheWrite":0,"total":0.005}},"stopReason":"error","errorMessage":"quota exhausted","timestamp":1723456781000}],"willRetry":false}
+{"type":"agent_settled"}

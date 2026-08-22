@@ -2,10 +2,12 @@ Feature: Sandbox security hooks are loaded via --settings
 
   Security hooks (SSRF, canary, secret redaction, etc.) are installed under
   the runner-owned claude-config/ directory and wired via the --settings flag
-  so Claude Code loads them regardless of its working directory. This scenario
-  verifies that at least one blocking PreToolUse hook fires end-to-end —
-  catching the "silently not loaded" class of regression where hook wiring
-  exists but the CLI never reads it.
+  so Claude Code loads them regardless of its working directory. Under the
+  dummy runtime no hook scripts are installed, so what this scenario proves
+  end-to-end is that a disallowed fetch from inside the sandbox is blocked
+  (the sandbox egress boundary) and that the run survives it; the hook
+  adapter itself is exercised by features/runtime/pi.feature on a real
+  runtime (capability-gated) and by unit tests.
 
   Scenario: SSRF PreToolUse hook blocks a disallowed URL
     Given the enrolled test repository

@@ -189,9 +189,10 @@ func ValidProviders() []string {
 	return []string{"vertex"}
 }
 
-// ValidRuntimes returns the set of recognized agent runtimes.
+// ValidRuntimes returns the set of recognized agent runtimes. "pi" is
+// opt-in per org/repo (#6464); "dummy" is for behaviour test orgs only.
 func ValidRuntimes() []string {
-	return []string{"claude", "dummy"}
+	return []string{"claude", "pi", "dummy"}
 }
 
 // DefaultAgentRoles returns the standard set of agent roles installed

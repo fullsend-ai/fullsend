@@ -11,8 +11,9 @@ text is returned. PostToolUse hooks cannot block — they sanitize only.
 Critical findings (tag characters) are logged to findings.jsonl for the
 post-script to act on.
 
-Protocol: reads JSON from stdin, writes JSON to stdout with modified
-tool_result if findings detected. Always exits 0.
+Protocol: reads JSON from stdin (``tool_response`` preferred, ``tool_result``
+fallback). Writes ``hookSpecificOutput.updatedToolOutput`` (and ``tool_result``)
+when findings are detected. Always exits 0.
 """
 
 from __future__ import annotations
@@ -23,6 +24,8 @@ import re
 import sys
 import unicodedata
 from datetime import UTC, datetime
+
+import hook_io
 
 FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 MAX_DECODED_LOG = 200
@@ -76,6 +79,14 @@ _CHECKS: list[tuple[str, str, re.Pattern]] = [
 ]
 
 
+# Variation selectors to strip: any run of two or more, or a selector that
+# does not follow a non-ASCII character (nothing for it to select).
+_VS_STRIP_RE = re.compile("(?:[\ufe00-\ufe0f]{2,}|(?<![^\x00-\x7f])[\ufe00-\ufe0f])")
+_SUPP_VS_STRIP_RE = re.compile(
+    "(?:[\U000e0100-\U000e01ef]{2,}|(?<![^\x00-\x7f])[\U000e0100-\U000e01ef])"
+)
+
+
 def log_finding(name: str, severity: str, detail: str, action: str) -> None:
     trace_id = os.environ.get("FULLSEND_TRACE_ID", "")
     finding = {
@@ -108,6 +119,11 @@ def scan_text(text: str) -> tuple[str, list[dict]]:
     result = text
 
     for name, severity, pattern in _CHECKS:
+        if name == "variation_selector":
+            # Smuggling needs runs of selectors; one selector after a
+            # non-ASCII character is ordinary text (emoji presentation "⚠️",
+            # CJK/Mongolian variants) that an Edit must still match on disk.
+            pattern = _VS_STRIP_RE
         matches = pattern.findall(result)
         if not matches:
             continue
@@ -132,43 +148,52 @@ def scan_text(text: str) -> tuple[str, list[dict]]:
 
         result = pattern.sub("", result)
 
-    # Supplementary variation selectors (VS17-VS256, U+E0100-U+E01EF).
-    supp_vs = [c for c in result if 0xE0100 <= ord(c) <= 0xE01EF]
-    if supp_vs:
+    # Supplementary variation selectors (VS17-VS256, U+E0100-U+E01EF): same
+    # rule as the BMP ones — one selector after a non-ASCII base character is
+    # an ideographic variation sequence (Japanese IVS), a run or an orphan is
+    # smuggling.
+    supp_matches = _SUPP_VS_STRIP_RE.findall(result)
+    if supp_matches:
         findings.append(
             {
                 "name": "variation_selector",
                 "severity": "medium",
-                "detail": (f"{len(supp_vs)} supplementary variation selector character(s) removed"),
+                "detail": (
+                    f"{sum(len(m) for m in supp_matches)} supplementary variation selector "
+                    "character(s) removed"
+                ),
             }
         )
-        result = "".join(c for c in result if not (0xE0100 <= ord(c) <= 0xE01EF))
+        result = _SUPP_VS_STRIP_RE.sub("", result)
 
-    # NFKC normalization (fullwidth -> ASCII, compatibility decomposition).
+    # Compatibility characters (fullwidth, ligatures, vulgar fractions) are
+    # reported but kept: NFKC-rewriting a Read result hands the agent file
+    # content that is not on disk (CJK punctuation, "ﬁ" → "fi"), and every
+    # Edit it then composes misses. Detection that depends on the normalized
+    # form (canary, secret patterns) runs on a normalized *copy* in the chain
+    # driver. The one rewrite kept is the escape-reassembly case below.
     nfkc = unicodedata.normalize("NFKC", result)
     if nfkc != result:
-        orig_chars = list(result)
-        nfkc_chars = list(nfkc)
-        min_len = min(len(orig_chars), len(nfkc_chars))
-        diff_count = sum(1 for i in range(min_len) if orig_chars[i] != nfkc_chars[i])
-        diff_count += abs(len(orig_chars) - len(nfkc_chars))
-        diff_count = max(diff_count, 1)
+        diff_count = sum(1 for a, b in zip(result, nfkc, strict=False) if a != b)
+        diff_count += abs(len(result) - len(nfkc))
         findings.append(
             {
                 "name": "fullwidth",
-                "severity": "high",
-                "detail": f"NFKC normalization applied ({diff_count} characters affected)",
+                "severity": "medium",
+                "detail": (
+                    f"{max(diff_count, 1)} compatibility (fullwidth/NFKC) character(s) "
+                    "detected; text kept, normalized copy used for detection"
+                ),
             }
         )
-        result = nfkc
 
-        # Second pass: NFKC can reconstruct escape sequences from fullwidth
-        # characters (e.g. fullwidth [ + ESC → valid CSI). Re-check ANSI/OSC.
+        # NFKC can reconstruct escape sequences from fullwidth characters
+        # (ESC + fullwidth "[" → a valid CSI once normalized downstream).
         for name, severity, pattern in _CHECKS:
             if name not in ("ansi_escape", "osc_escape"):
                 continue
-            matches = pattern.findall(result)
-            if not matches:
+            matches = pattern.findall(nfkc)
+            if not matches or "\x1b" not in result:
                 continue
             total_chars = sum(len(m) for m in matches)
             findings.append(
@@ -176,11 +201,15 @@ def scan_text(text: str) -> tuple[str, list[dict]]:
                     "name": name,
                     "severity": severity,
                     "detail": (
-                        f"{total_chars} {name.replace('_', ' ')} character(s) removed (post-NFKC)"
+                        f"{total_chars} {name.replace('_', ' ')} character(s) "
+                        "removed (reassembled by NFKC; field normalized)"
                     ),
                 }
             )
-            result = pattern.sub("", result)
+            # Attack case only: emit the normalized field with the sequence
+            # removed (the fullwidth form was a delivery vehicle, not content).
+            result = pattern.sub("", nfkc)
+            nfkc = result
 
     return result, findings
 
@@ -213,44 +242,61 @@ def main() -> None:
     if not isinstance(hook_input, dict):
         sys.exit(0)
 
-    tool_result = hook_input.get("tool_result", "")
-    if not tool_result or not isinstance(tool_result, str):
-        sys.exit(0)
+    original = hook_io.payload(hook_input)
+    findings: list[dict] = []
 
-    try:
-        sanitized, findings = scan_text(tool_result)
-    except Exception as e:
-        log_finding(
-            "scan_error",
-            "high",
-            f"Unicode scan failed (passing original): {type(e).__name__}",
-            "warn",
-        )
-        sys.exit(0)
+    def _sanitize_field(text: str) -> str:
+        if not text:
+            return text
+        try:
+            sanitized, field_findings = scan_text(text)
+        except Exception as e:
+            log_finding(
+                "scan_error",
+                "high",
+                f"Unicode scan failed (passing original): {type(e).__name__}",
+                "warn",
+            )
+            return text
+        findings.extend(field_findings)
+        return sanitized
 
+    # Identifier fields (paths, URLs, commands) are scanned by other hooks but
+    # never rewritten here: NFKC would hand Claude a path that does not exist.
+    updated = hook_io.transform_strings(
+        original, _sanitize_field, skip_keys=hook_io.IDENTIFIER_KEYS
+    )
     if not findings:
         sys.exit(0)
 
     for f in findings:
-        action = "sanitize"
-        if f["severity"] == "critical":
-            action = "critical_sanitize"
+        action = "critical_sanitize" if f["severity"] == "critical" else "sanitize"
         log_finding(f["name"], f["severity"], f["detail"], action)
 
-    # PostToolUse hooks always exit 0 — they sanitize, never block.
-    # Critical findings (tag chars) are stripped from tool_result and logged
-    # to findings.jsonl for the post-script to escalate.
-    json.dump(
-        {
-            "tool_result": sanitized,
-            "metadata": {
-                "unicode_findings": len(findings),
-                "categories": [f["name"] for f in findings],
+    if updated == original:
+        # Detection-only findings (compatibility characters kept): report,
+        # but never emit a no-op rewrite that could clobber another hook's.
+        json.dump(
+            {
+                "metadata": {
+                    "unicode_findings": len(findings),
+                    "categories": [f["name"] for f in findings],
+                }
             },
-        },
-        sys.stdout,
-    )
+            sys.stdout,
+        )
+        sys.exit(0)
 
+    # PostToolUse hooks always exit 0 — they sanitize, never block.
+    # Critical findings (tag chars) are stripped and logged to findings.jsonl
+    # for the post-script to escalate.
+    hook_io.emit_updated(
+        updated,
+        metadata={
+            "unicode_findings": len(findings),
+            "categories": [f["name"] for f in findings],
+        },
+    )
     sys.exit(0)
 
 

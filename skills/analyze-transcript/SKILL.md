@@ -105,8 +105,9 @@ Downloaded artifacts have this structure:
       openshell-gateway.log    # Gateway-side events
     iteration-1/
       transcripts/
-        <agent>-<session-id>.jsonl   # Main agent transcript
-        <agent>-agent-*.jsonl        # Subagent transcripts
+        <agent>-<session-id>.jsonl   # Main agent transcript (Claude Code)
+        <agent>-agent-*.jsonl        # Subagent transcripts (Claude Code)
+        <agent>-<timestamp>_<id>.jsonl  # pi session file (runtime: pi); same subcommands apply
 ```
 
 Find transcripts and logs:

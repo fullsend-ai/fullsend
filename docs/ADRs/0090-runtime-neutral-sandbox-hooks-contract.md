@@ -90,3 +90,9 @@ feature:
   column per runtime and become part of a runtime PR's definition of done.
 - ACP proxies (#587) or tool proxies (#5243) can later supersede per-runtime
   adapters without changing the scripts or the plan.
+
+> **Done ([#6357](https://github.com/fullsend-ai/fullsend/issues/6357)):**
+> PostToolUse contract v2 — scripts read `tool_response` (fallback
+> `tool_result`), replace via `hookSpecificOutput.updatedToolOutput`, and
+> enforce unicode → canary → suppress → redact in `posttool_chain.py`. See
+> [runtimes.md](../runtimes.md#sandbox-hook-contract).

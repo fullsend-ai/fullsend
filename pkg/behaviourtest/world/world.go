@@ -89,6 +89,13 @@ type World struct {
 	// the switch so the next scenario on this slot is not affected.
 	KillSwitchActivated bool
 
+	// RuntimeOverridden records that this scenario changed the repo's
+	// `runtime:` in .fullsend/config.yaml; RuntimeOriginal is the value
+	// to restore. CleanupScenario reverts it so the slot's next scenario
+	// runs the install default (dummy) again.
+	RuntimeOverridden bool
+	RuntimeOriginal   string
+
 	// Jira mock state — set by the "Given a mock Jira server" step.
 	JiraMockServer *httptest.Server
 	JiraMockState  *jiramock.State

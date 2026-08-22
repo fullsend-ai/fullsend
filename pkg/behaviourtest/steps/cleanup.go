@@ -206,6 +206,17 @@ func CleanupScenario(w *world.World) {
 		}
 	}
 
+	// --- Runtime override cleanup ---
+	// Restore the install-time runtime so a later scenario on this slot
+	// does not silently run under pi (or whatever this one selected).
+	if w.RuntimeOverridden {
+		if err := cleanupRetry(w.Logf, "restore runtime", func() error {
+			return RestoreRuntime(w)
+		}); err != nil {
+			worldLogf(w, "behaviour cleanup: restore runtime: %v", err)
+		}
+	}
+
 	// --- Dummy script cleanup ---
 	if len(w.DummyOps) > 0 {
 		if w.Org == "" || w.RepoName == "" {

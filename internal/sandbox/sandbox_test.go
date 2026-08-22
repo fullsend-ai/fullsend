@@ -32,6 +32,7 @@ func TestEnsureAvailable_OpenshellNotInPath(t *testing.T) {
 func TestConstants(t *testing.T) {
 	assert.Equal(t, "/sandbox/workspace", SandboxWorkspace)
 	assert.Equal(t, "/sandbox/claude-config", SandboxClaudeConfig)
+	assert.Equal(t, "/sandbox/pi-config", SandboxPiConfig)
 }
 
 func TestBuildProviderArgs_BareKeyCredentials(t *testing.T) {

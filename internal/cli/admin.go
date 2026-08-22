@@ -178,6 +178,9 @@ type perRepoInstallConfig struct {
 	FullsendBinary       string
 	FullsendSource       string
 	Direct               bool
+	// Runtime is the --runtime value when the flag was given; empty keeps
+	// the per-repo config's code default.
+	Runtime string
 
 	// Testing overrides — when non-nil, used instead of resolving from
 	// the environment. Not set by CLI flag parsing.
@@ -334,8 +337,16 @@ Inference authentication:
 				if perRepoMintProject == "" {
 					perRepoMintProject = inferenceProject
 				}
+				perRepoRuntime := ""
+				if cmd.Flags().Changed("runtime") {
+					if !slices.Contains(config.ValidRuntimes(), runtimeName) {
+						return fmt.Errorf("invalid --runtime %q: must be one of %s", runtimeName, strings.Join(config.ValidRuntimes(), ", "))
+					}
+					perRepoRuntime = runtimeName
+				}
 				return runPerRepoInstall(cmd.Context(), perRepoInstallConfig{
 					RepoFullName:         arg,
+					Runtime:              perRepoRuntime,
 					Agents:               perRepoAgents,
 					MintURL:              mintURL,
 					InferenceRegion:      inferenceRegion,
@@ -616,7 +627,7 @@ Inference authentication:
 	cmd.Flags().BoolVar(&skipMintCheck, "skip-mint-check", false, "skip mint validation, GCP provisioning, and app setup; requires --mint-url")
 	cmd.Flags().BoolVar(&publicApps, "public", false, "create public (unlisted) GitHub Apps installable by other orgs")
 	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps (e.g., myorg creates myorg-fullsend, myorg-coder)")
-	cmd.Flags().StringVar(&runtimeName, "runtime", "claude", "agent runtime for fullsend run (claude or dummy; dummy is for behaviour test orgs only)")
+	cmd.Flags().StringVar(&runtimeName, "runtime", "claude", "agent runtime for fullsend run (claude, pi or dummy; dummy is for behaviour test orgs only)")
 	// Shared flags.
 	cmd.Flags().StringVar(&mintURL, "mint-url", DefaultMintURL, "token mint URL for OIDC token exchange (default: hosted public mint)")
 	cmd.Flags().BoolVar(&direct, "direct", false, "push scaffold files directly to the default branch instead of creating a PR")
@@ -851,8 +862,8 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			printer.StepInfo(fmt.Sprintf("  Repo restriction: %s/%s", owner, repo))
 			printer.Blank()
 		}
-		// BuildScaffoldFiles only reads Owner, Repo, Roles, VendorBinary,
-		// UpstreamRef, UpstreamTag. Extra fields are included to stay aligned
+		// BuildScaffoldFiles only reads Owner, Repo, Roles, Runtime,
+		// VendorBinary, UpstreamRef, UpstreamTag. Extra fields are included to stay aligned
 		// with the non-dry-run installCfg; Skip* flags are omitted because
 		// they control Install() flow, not scaffold file generation.
 		dryRunFiles, dryRunErr := repos.BuildScaffoldFiles(repos.InstallConfig{
@@ -860,6 +871,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			Repo:             repo,
 			Forge:            repos.ForgeGitHub,
 			Roles:            roles,
+			Runtime:          c.Runtime,
 			MintURL:          mintDisplay,
 			InferenceProject: inferenceProject,
 			InferenceRegion:  inferenceRegion,
@@ -1083,6 +1095,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		Repo:                  repo,
 		Forge:                 repos.ForgeGitHub,
 		Roles:                 roles,
+		Runtime:               c.Runtime,
 		MintURL:               mintURL,
 		InferenceProject:      inferenceProject,
 		InferenceRegion:       inferenceRegion,

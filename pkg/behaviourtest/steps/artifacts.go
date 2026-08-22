@@ -36,7 +36,18 @@ func ensureTriageWorkflowComplete(w *world.World) error {
 	return nil
 }
 
+// ensureArtifacts downloads the agent artifact of a dummy-runtime run,
+// recognised by behaviour-results.json.
 func ensureArtifacts(w *world.World) error {
+	return ensureRunArtifacts(w, "behaviour-results.json")
+}
+
+// ensureRunArtifacts downloads the agent artifact for the scenario's
+// workflow run into w.ArtifactDir. marker names a file that must be
+// present for the download to count (behaviour-results.json for the
+// dummy runtime; metrics.json for any runtime), so a partial or wrong
+// artifact is retried rather than accepted.
+func ensureRunArtifacts(w *world.World, marker string) error {
 	if w.ArtifactDir != "" {
 		return nil
 	}
@@ -51,12 +62,18 @@ func ensureArtifacts(w *world.World) error {
 	if err != nil {
 		return err
 	}
+	// The agent workflow uploads `fullsend-<agent>`; follow the harness
+	// this scenario dispatched rather than assuming the triage stage.
+	artifactName := install.PerRepoAgentArtifact
+	if w.DispatchAgent != "" {
+		artifactName = "fullsend-" + w.DispatchAgent
+	}
 
 	tryDownloadRun := func(runID int) error {
-		if err := w.CI.DownloadNamedArtifactFromRun(ctx, w.Org, w.RepoName, runID, install.PerRepoAgentArtifact, dest); err != nil {
+		if err := w.CI.DownloadNamedArtifactFromRun(ctx, w.Org, w.RepoName, runID, artifactName, dest); err != nil {
 			return err
 		}
-		if _, findErr := artifacts.FindBehaviourResults(dest); findErr != nil {
+		if _, findErr := artifacts.FindOutputFile(dest, marker); findErr != nil {
 			return findErr
 		}
 		return nil
@@ -89,11 +106,11 @@ func ensureArtifacts(w *world.World) error {
 		}
 	}
 
-	if err := w.CI.DownloadNamedArtifactAfter(ctx, w.Org, w.RepoName, install.PerRepoAgentArtifact, w.ScenarioStart, dest); err != nil {
+	if err := w.CI.DownloadNamedArtifactAfter(ctx, w.Org, w.RepoName, artifactName, w.ScenarioStart, dest); err != nil {
 		_ = os.RemoveAll(dest)
 		return err
 	}
-	if _, err := artifacts.FindBehaviourResults(dest); err != nil {
+	if _, err := artifacts.FindOutputFile(dest, marker); err != nil {
 		_ = os.RemoveAll(dest)
 		return err
 	}

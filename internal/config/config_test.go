@@ -406,6 +406,7 @@ func TestValidProviders(t *testing.T) {
 func TestValidRuntimes(t *testing.T) {
 	runtimes := ValidRuntimes()
 	assert.Contains(t, runtimes, "claude")
+	assert.Contains(t, runtimes, "pi")
 	assert.Contains(t, runtimes, "dummy")
 	assert.NotContains(t, runtimes, "opencode", "opencode is resolved via runtime.Resolve() but not user-selectable until implemented")
 }
@@ -420,6 +421,9 @@ func TestOrgConfigValidateRuntime(t *testing.T) {
 		},
 	}
 	require.NoError(t, cfg.Validate())
+
+	cfg.Defaults.Runtime = "pi"
+	require.NoError(t, cfg.Validate(), "pi is user-selectable (#6464)")
 
 	// opencode is resolvable via runtime.Resolve() but not in ValidRuntimes(),
 	// so config validation must reject it until the runtime is implemented.
@@ -674,6 +678,9 @@ func TestPerRepoConfigValidate_Runtime(t *testing.T) {
 		Runtime: "dummy",
 	}
 	assert.NoError(t, cfg.Validate())
+
+	cfg.Runtime = "pi"
+	assert.NoError(t, cfg.Validate(), "pi is user-selectable (#6464)")
 
 	// opencode is resolvable via runtime.Resolve() but not in ValidRuntimes(),
 	// so config validation must reject it until the runtime is implemented.

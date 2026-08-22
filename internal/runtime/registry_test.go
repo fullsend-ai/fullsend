@@ -26,6 +26,11 @@ func TestResolve(t *testing.T) {
 	_, isOC := oc.Transcripts.(OpenCodeRuntime)
 	assert.True(t, isOC, "Transcripts should be OpenCodeRuntime")
 
+	pb, err := Resolve("pi")
+	require.NoError(t, err)
+	assert.Equal(t, "pi", pb.Runtime.Name())
+	assert.IsType(t, PiRuntime{}, pb.Transcripts)
+
 	_, err = Resolve("unknown")
 	require.Error(t, err)
 }
@@ -71,6 +76,13 @@ func TestResolveFromPerRepoConfig(t *testing.T) {
 	ocBackend, err := ResolveFromPerRepoConfig(ocCfg)
 	require.NoError(t, err)
 	assert.Equal(t, "opencode", ocBackend.Runtime.Name())
+
+	// pi is user-selectable (#6464).
+	piCfg := config.NewPerRepoConfig(nil, "")
+	piCfg.SetRuntime("pi")
+	piBackend, err := ResolveFromPerRepoConfig(piCfg)
+	require.NoError(t, err)
+	assert.Equal(t, "pi", piBackend.Runtime.Name())
 
 	invalidCfg := config.NewPerRepoConfig(nil, "")
 	invalidCfg.SetRuntime("invalid")

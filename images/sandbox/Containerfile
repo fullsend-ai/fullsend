@@ -2,6 +2,9 @@
 #
 # Pre-installs all runtime dependencies needed by any fullsend agent:
 #   - Claude Code (npm, version-pinned via CLAUDE_CODE_VERSION ARG)
+#   - pi (npm, version-pinned via PI_VERSION ARG; opt-in runtime, see
+#     #6464) + the pi-anthropic-vertex extension
+#     (tag + SHA256 pinned under /opt/pi-extensions)
 #   - jq (JSON parsing in agent scripts and skills)
 #   - gitleaks (secret scanner, SHA256-verified)
 #   - acli (Atlassian CLI for Jira issue queries)
@@ -51,6 +54,85 @@ RUN apt-get update \
 # a customManagers regex entry in renovate.json.
 ARG CLAUDE_CODE_VERSION=2.1.234
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+
+# ---------------------------------------------------------------------------
+# Install pi (earendil-works/pi) — pinned version, same supply-chain rationale
+# as Claude Code above. --ignore-scripts is the upstream-recommended install
+# (the package ships an npm-shrinkwrap.json; no postinstall needed). Stub
+# runtime for now — see #6464; the runtime is not user-selectable until
+# implemented, but the binary ships now so the Bootstrap/Run work and any
+# in-sandbox fixture capture run against a pinned, reviewed version
+# (internal/runtime/testdata/pi/regen.sh reads the pin from this file).
+#
+# To update: bump PI_VERSION; renovate tracks this ARG via a customManagers
+# regex entry in renovate.json. pi releases ~weekly minors and has changed
+# its --mode json wire shape within a minor before (0.84.0) — the pi stream
+# parser fixtures must be re-verified when this pin moves.
+ARG PI_VERSION=0.84.2
+RUN node -e "process.exit(process.versions.node.split('.').map(Number).reduce((a,b,i)=>a!==0?a:(b-[22,19,0][i]),0)>=0?0:1)" \
+        || (echo "pi ${PI_VERSION} requires Node >=22.19.0, base image has $(node --version)" >&2 && exit 1) \
+    && npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION}
+
+# pi is present in every sandbox regardless of runtime selection (PiRuntime
+# is a stub, not yet reachable via config — see internal/runtime/pi.go), so
+# an agent invoking the `pi` binary ad-hoc via Bash would otherwise get none
+# of PiRuntime.EnvExports()'s defaults. Bake them at image level too. These
+# are hygiene defaults (no startup network traffic, runner-owned paths), not
+# a security boundary — a process can override its own environment; the
+# sandbox egress policy and credential placeholders are the boundary.
+# PI_CODING_AGENT_DIR must match sandbox.SandboxPiConfig
+# (internal/sandbox/sandbox.go; guarded by TestSandboxImagePiDefaults).
+ENV PI_CODING_AGENT_DIR="/sandbox/pi-config" \
+    PI_CODING_AGENT_SESSION_DIR="/sandbox/pi-config/sessions" \
+    PI_OFFLINE="1" \
+    PI_SKIP_VERSION_CHECK="1" \
+    PI_TELEMETRY="0"
+
+# ---------------------------------------------------------------------------
+# pi-anthropic-vertex — interim Claude-on-Vertex provider for pi
+# (github.com/twoGiants/pi-anthropic-vertex, MIT; a ~300-line entry point
+# plus ~220 lines mirrored from pi's streamSimple helpers: registers an
+# "anthropic-vertex" provider that delegates streaming to pi's built-in
+# Anthropic provider through an AnthropicVertex client). pi's own
+# google-vertex provider is Gemini-only and the upstream anthropic-vertex
+# provider (earendil-works/pi#5262) is still open; swap to it once it ships
+# in a pinned pi release. Reviewed at v0.1.13 (#6464).
+#
+# Pinned by git tag + SHA256 of the GitHub tag tarball (tag v0.1.13 is commit
+# d3c9d10d). Installed under PI_EXTENSIONS_DIR (sandbox.SandboxPiExtensionsDir),
+# root-owned and outside PI_CODING_AGENT_DIR, so pi never auto-loads it —
+# PiRuntime.Run passes it explicitly with -e. Dependencies come from the
+# vendored package-lock.json: --omit=peer mirrors pi's own package installer,
+# because the extension's peer deps are pi itself, which the extension loader
+# resolves to the running pi through module aliases (a local copy would be
+# the wrong version); --ignore-scripts as for the pi install above (no
+# install scripts in the pruned tree).
+#
+# To update (also re-run on every PI_VERSION bump): pick a tag from
+# https://github.com/twoGiants/pi-anthropic-vertex/tags, check its pi
+# compatibility (sync/compat.json upstream; v0.1.13 was synced against pi
+# 0.81.1 and its mirrored thinking/max-tokens mapping can lag the pinned
+# PI_VERSION), confirm the extension's package.json "overrides" pin of
+# @anthropic-ai/sdk matches the version in pi's packages/ai/package.json
+# (the Vertex client is cast to pi's Anthropic client type), then set
+# PI_ANTHROPIC_VERTEX_VERSION and refresh PI_ANTHROPIC_VERTEX_SHA256 from
+#   sha256sum <(curl -fsSL https://github.com/twoGiants/pi-anthropic-vertex/archive/refs/tags/v<ver>.tar.gz)
+ARG PI_ANTHROPIC_VERTEX_VERSION=0.1.13
+ARG PI_ANTHROPIC_VERTEX_SHA256=6b465c374734b0ae98e7c48d58f935bcfb12760c509475df2c82785a463c7249
+ARG PI_EXTENSIONS_DIR=/opt/pi-extensions
+RUN curl -fsSL --retry 3 --retry-delay 5 \
+      "https://github.com/twoGiants/pi-anthropic-vertex/archive/refs/tags/v${PI_ANTHROPIC_VERTEX_VERSION}.tar.gz" \
+      -o /tmp/pi-anthropic-vertex.tar.gz \
+    && echo "${PI_ANTHROPIC_VERTEX_SHA256}  /tmp/pi-anthropic-vertex.tar.gz" | sha256sum -c - \
+    && mkdir -p "${PI_EXTENSIONS_DIR}/anthropic-vertex" \
+    && tar xzf /tmp/pi-anthropic-vertex.tar.gz -C "${PI_EXTENSIONS_DIR}/anthropic-vertex" --strip-components=1 \
+    && rm /tmp/pi-anthropic-vertex.tar.gz \
+    && cd "${PI_EXTENSIONS_DIR}/anthropic-vertex" \
+    && rm -rf .github .pi .vscode sync PLAN.md AGENTS.md \
+    && npm ci --omit=dev --omit=peer --ignore-scripts --no-audit --no-fund \
+    && find node_modules -type d -empty -delete \
+    && npm cache clean --force \
+    && chmod -R a+rX,a-w "${PI_EXTENSIONS_DIR}"
 
 # ---------------------------------------------------------------------------
 # ONNX Runtime + ProtectAI DeBERTa-v3 model for ML-based prompt injection
