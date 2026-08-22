@@ -1,5 +1,5 @@
 ---
-# lint-workflow-size: max-lines=610
+# lint-workflow-size: max-lines=680
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -30,6 +30,18 @@ jobs:
     outputs:
       dispatched_count: ${{ steps.dispatch.outputs.dispatched_count }}
     steps:
+      - name: Checkout config and OWNERS files
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ (github.event_name == 'pull_request_target' || github.event_name == 'pull_request_review') && github.event.pull_request.base.sha || github.sha }}
+          persist-credentials: false
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+          sparse-checkout: |
+            .fullsend/config.yaml
+            /OWNERS
+            /OWNERS_ALIASES
+          sparse-checkout-cone-mode: false
+
       - name: Determine stage
         id: route
         env:
@@ -58,11 +70,63 @@ jobs:
           STAGE=""
           TRIGGER_SOURCE=""
 
+          # Check direct membership or alias membership in an OWNERS list.
+          # Used by has_repo_permission when OWNERS-file auth is enabled.
+          # yq errors are intentionally suppressed (&>/dev/null): a parse
+          # failure or missing key means "no match", falling through to
+          # the collaborator API — not a fail-open gate.
+          _owners_has_user() {
+            local key="${1}" user="${2}"
+            if yq -e ".${key}[] | select((. | downcase) == \"${user}\")" OWNERS &>/dev/null; then
+              return 0
+            fi
+            if [[ -f "OWNERS_ALIASES" ]]; then
+              local entry
+              while IFS= read -r entry; do
+                [[ -z "${entry}" ]] && continue
+                [[ ! "${entry}" =~ ^[a-zA-Z0-9_-]+$ ]] && continue
+                if yq -e ".aliases.\"${entry}\"[] | select((. | downcase) == \"${user}\")" OWNERS_ALIASES &>/dev/null; then
+                  return 0
+                fi
+              done < <(yq ".${key}[]" OWNERS 2>/dev/null)
+            fi
+            return 1
+          }
+
           # Collaborator role_name vs min (write|triage). See #5223 / ADR 0054.
           # API resolves org membership regardless of visibility (gh-aw-mcpg#2862).
           has_repo_permission() {
             local username="${1:-}" min="${2:-write}" role api_err
             [[ -z "${username}" ]] && return 1
+
+            # OWNERS-file authorization (opt-in via authorization providers list in config.yaml).
+            # Approvers get write-equivalent access; reviewers get triage-equivalent.
+            # Safe: sparse-checkout pins to base branch SHA for PR-scoped events,
+            # so PR authors cannot self-authorize by adding themselves to OWNERS.
+            if [[ -f "OWNERS" && -f ".fullsend/config.yaml" ]]; then
+              if [[ "$(yq '(.authorization // []) | any_c(.provider == "owners_file")' .fullsend/config.yaml)" == "true" ]]; then
+                if [[ ! "${username}" =~ ^[a-zA-Z0-9-]+$ ]]; then
+                  echo "::warning::OWNERS auth skipped: username '${username}' contains unexpected characters" >&2
+                else
+                  local lc_user="${username,,}"
+                  case "${min}" in
+                    write|triage)
+                      if _owners_has_user approvers "${lc_user}"; then
+                        echo "::notice::OWNERS file resolved user '${username}' as approver (requested: ${min})"
+                        return 0
+                      fi
+                      ;;&
+                    triage)
+                      if _owners_has_user reviewers "${lc_user}"; then
+                        echo "::notice::OWNERS file resolved user '${username}' as reviewer (requested: ${min})"
+                        return 0
+                      fi
+                      ;;
+                  esac
+                fi
+              fi
+            fi
+
             api_err=$(mktemp) || {
               echo "::warning::Failed to create temp file for permission check of ${username}" >&2
               return 1

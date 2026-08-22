@@ -828,3 +828,27 @@ inference:
 `
 	assert.True(t, IsPerRepoYAML([]byte(yamlData)))
 }
+
+// --- AuthorizationOwnersFile: intentionally no parent fallback ---
+
+func TestPerRepoConfig_AuthorizationOwnersFile_NoFallback(t *testing.T) {
+	t.Run("returns false when unset", func(t *testing.T) {
+		cfg := &perRepoConfig{}
+		assert.False(t, cfg.AuthorizationOwnersFile())
+	})
+
+	t.Run("does not fall through to parent", func(t *testing.T) {
+		parent := &perRepoConfig{
+			Authorization: []AuthorizationProvider{{Provider: "owners_file"}},
+		}
+		child := &perRepoConfig{parent: parent}
+		assert.False(t, child.AuthorizationOwnersFile())
+	})
+
+	t.Run("returns true when set locally", func(t *testing.T) {
+		cfg := &perRepoConfig{
+			Authorization: []AuthorizationProvider{{Provider: "owners_file"}},
+		}
+		assert.True(t, cfg.AuthorizationOwnersFile())
+	})
+}

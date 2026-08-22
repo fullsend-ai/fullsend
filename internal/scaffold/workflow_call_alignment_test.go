@@ -617,6 +617,62 @@ func TestDispatchPerStageAuthorization(t *testing.T) {
 
 			// Retro on PR close remains intentionally ungated (documented)
 			assert.Regexp(t, `(?s)closed\)\s*\n\s+# Intentional ungated:.*\n\s+STAGE="retro"`, s)
+
+			// OWNERS role→permission mapping: approvers in write|triage arm,
+			// reviewers in triage-only arm, connected by ;;&  (pattern-retest).
+			// A ;& (unconditional fallthrough) would silently give reviewers
+			// write-level access — this assertion catches that.
+			assert.Regexp(t, `(?s)write\|triage\).*_owners_has_user approvers`, s,
+				"OWNERS approvers must be checked in the write|triage case arm")
+			assert.Regexp(t, `(?s);;&\s*\n\s+triage\).*_owners_has_user reviewers`, s,
+				"OWNERS reviewers must be in the triage-only arm after ;;&  (not ;&)")
+			assert.Contains(t, s, `lc_user="${username,,}"`,
+				"OWNERS username comparison must be case-insensitive")
+			assert.Contains(t, s, `_owners_has_user approvers "${lc_user}"`,
+				"OWNERS approver check must use lowercased lc_user, not original username")
+			assert.Contains(t, s, `_owners_has_user reviewers "${lc_user}"`,
+				"OWNERS reviewer check must use lowercased lc_user, not original username")
+			assert.Regexp(t, `::notice::OWNERS file resolved user '\$\{username\}'`, s,
+				"OWNERS audit log must use original username casing, not lc_user")
+		})
+	}
+}
+
+// TestOwnersCheckoutRefPin validates that every checkout step whose
+// sparse-checkout includes OWNERS files pins to base branch SHA for
+// pull_request_review events. Without this, a PR author can add
+// themselves to OWNERS in their branch and self-authorize on the
+// pull_request_review dispatch path.
+func TestOwnersCheckoutRefPin(t *testing.T) {
+	cases := []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
+		{"scaffold/dispatch.yml", loadScaffoldFile(".github/workflows/dispatch.yml")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := string(tc.content(t))
+			// Split into sections by checkout step boundary. Each section
+			// starting with "uses: actions/checkout@" contains one step's
+			// with: block up to the next step or job boundary.
+			sections := regexp.MustCompile(`(?m)^[ \t]*- name:`).Split(s, -1)
+
+			var ownersCheckouts int
+			for _, section := range sections {
+				if !strings.Contains(section, "actions/checkout@") {
+					continue
+				}
+				if !strings.Contains(section, "OWNERS") {
+					continue
+				}
+				ownersCheckouts++
+				assert.Contains(t, section, "pull_request_review",
+					"checkout that sparse-checks-out OWNERS must pin ref for pull_request_review events")
+			}
+			require.NotZero(t, ownersCheckouts,
+				"should find at least one checkout step with OWNERS in sparse-checkout")
 		})
 	}
 }

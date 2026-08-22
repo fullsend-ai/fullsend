@@ -189,6 +189,35 @@ permission list, not by bypassing the check.
 > any closer can trigger read-only lifecycle accounting. This follows
 > the extension path above rather than bypassing the check.
 
+> **Note (2026-08-10, [#6042](https://github.com/fullsend-ai/fullsend/issues/6042)):**
+> Prow-based repositories (e.g., OpenShift) use OWNERS files rather than
+> GitHub collaborator roles to define contributor authority.
+> `has_repo_permission` now supports an opt-in OWNERS-file authorization
+> path: when `owners_file` is listed in the `authorization` providers in
+> `.fullsend/config.yaml`, the function checks the repo-root `OWNERS`
+> (and `OWNERS_ALIASES`) before falling back to the collaborator API.
+> OWNERS approvers get write-equivalent access; reviewers get
+> triage-equivalent. The sparse-checkout pins to the base branch SHA for
+> PR-scoped events (`pull_request_target`, `pull_request_review`) and the
+> default-branch head otherwise, so PR authors cannot self-authorize by
+> modifying OWNERS in their PR.
+> This follows the extension path above (extending the allowed permission
+> sources in `has_repo_permission`) rather than bypassing the check.
+> OWNERS auth applies to both built-in stages (bash routing) and the
+> harness/custom-agent dispatch path (`internal/harnessdispatch`), where
+> `owners.Resolve` computes an effective role for the `IsAuthorized`
+> gate without mutating the original event.
+>
+> OWNERS reviewer access (triage-equivalent) applies to built-in
+> bash-routed stages only (e.g. `/fs-triage`, `/fs-review`). Custom
+> harness dispatch requires write-level access — OWNERS approver or
+> GitHub write+ collaborator — because `IsAuthorized` gates all
+> harness triggers at the write level.
+>
+> v1 limitation: only repo-root flat `approvers`/`reviewers` lists are
+> read. Prow `filters:` blocks and nested per-directory OWNERS files
+> are not supported.
+
 ## Consequences
 
 - All dispatch paths require write-level repository permission,

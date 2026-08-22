@@ -84,10 +84,29 @@ type World struct {
 	// Nil when no driver is configured.
 	Driver install.Driver
 
+	// OutsiderSCM is an SCM driver authenticated as fstest-outsider, a
+	// GitHub User with no collaborator access. Used by the OWNERS
+	// write-denial E2E scenario. Nil when TEST_ACTOR_OUTSIDER_PAT is
+	// not set. Shared across scenarios, never reset.
+	OutsiderSCM   scm.Driver
+	OutsiderLogin string
+
+	// WriteSCM is an SCM driver authenticated as a GitHub User with
+	// write-level collaborator access. Used by OWNERS fallthrough
+	// scenarios that need an actor passing the collaborator API but
+	// not listed in OWNERS. Nil when TEST_ACTOR_WRITE_PAT is not set.
+	WriteSCM   scm.Driver
+	WriteLogin string
+
 	// KillSwitchActivated records whether this scenario activated the
 	// repo-level kill switch. CleanupScenario uses this to deactivate
 	// the switch so the next scenario on this slot is not affected.
 	KillSwitchActivated bool
+
+	// OwnersAuthActivated records whether this scenario committed an
+	// OWNERS file and/or added owners_file to the authorization providers in config.yaml.
+	// CleanupScenario removes both.
+	OwnersAuthActivated bool
 
 	// Jira mock state — set by the "Given a mock Jira server" step.
 	JiraMockServer *httptest.Server
