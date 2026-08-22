@@ -22,6 +22,12 @@ type RunMetrics struct {
 	Model                    string  `json:"model"`
 }
 
+// DefaultAgentPrompt is the prompt handed to the agent CLI when RunParams
+// does not override it. It is deliberately content-free: the actual task
+// comes from the agent definition selected with --agent, so every runtime
+// adapter can pass the same string.
+const DefaultAgentPrompt = "Run the agent task"
+
 // RunParams configures a single agent invocation inside the sandbox.
 type RunParams struct {
 	SandboxName   string
@@ -38,6 +44,17 @@ type RunParams struct {
 	Timeout           time.Duration
 	OutputPath        string           // if set, tee stream-json stdout to this file
 	OnEvent           func(AgentEvent) // if non-nil, called with normalized events during Run
+	// Prompt overrides DefaultAgentPrompt. The validation loop sets it on a
+	// retry iteration to inject the previous iteration's failure so the agent
+	// can self-correct instead of re-running blindly. See #1050, #6494.
+	//
+	// Every Runtime implementation MUST honour this field, falling back to
+	// DefaultAgentPrompt when it is empty. A runtime that ignores it turns
+	// validation_loop.feedback_mode into a silent no-op for every harness
+	// that selects that runtime, which is indistinguishable from the blind
+	// retries this field exists to remove. Runtime support is tracked in the
+	// key support matrix in docs/runtimes.md.
+	Prompt string
 }
 
 // TranscriptError holds extracted error information from a runtime transcript.

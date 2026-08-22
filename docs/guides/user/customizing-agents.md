@@ -87,7 +87,10 @@ openshell:                       # Openshell provider profiles (local paths or U
 validation_loop:                     # script is required; these sub-fields are optional
   script: scripts/validate-output-schema.sh
   schema: schemas/result.schema.json  # JSON Schema file for output validation (optional)
-  feedback_mode: stderr          # "stderr", "stdout", or "exit_code" (optional)
+  max_iterations: 2              # Agent re-runs on validation failure (optional, default 1)
+  feedback_mode: append          # "none" (default) or "append": on a retry
+                                 # iteration, append the previous failure to
+                                 # the agent prompt so it can self-correct
 
 allowed_remote_resources:        # URL prefixes allowed for remote skills/agents/plugins/policies
   - https://github.com/org/       # Omit field: first-party defaults apply automatically

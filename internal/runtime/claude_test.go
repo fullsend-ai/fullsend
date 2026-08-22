@@ -202,6 +202,39 @@ func TestBuildRunCommand_HooksSettingsEscapesQuotes(t *testing.T) {
 	assert.Contains(t, cmd, `--settings '/sandbox/path'\''with'\''quotes/hooks.json'`)
 }
 
+func TestBuildRunCommand_DefaultPrompt(t *testing.T) {
+	cmd := testRunCommand("agent", "", "/sandbox/workspace/repo", nil, "")
+	assert.Contains(t, cmd, "'Run the agent task'")
+}
+
+func TestBuildRunCommand_CustomPrompt(t *testing.T) {
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName: "agent",
+		RepoDir:       "/sandbox/workspace/repo",
+		Prompt:        "Run the agent task\n\nThe previous iteration failed.",
+	})
+	assert.Contains(t, cmd, "The previous iteration failed.")
+	assert.NotContains(t, cmd, "'Run the agent task'")
+}
+
+func TestBuildRunCommand_PromptEscapesQuotes(t *testing.T) {
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName: "agent",
+		RepoDir:       "/sandbox/workspace/repo",
+		Prompt:        "Fix the 'error' in the code",
+	})
+	assert.Contains(t, cmd, `'Fix the '\''error'\'' in the code'`)
+}
+
+func TestBuildRunCommand_EmptyPromptUsesDefault(t *testing.T) {
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName: "agent",
+		RepoDir:       "/sandbox/workspace/repo",
+		Prompt:        "",
+	})
+	assert.Contains(t, cmd, "'Run the agent task'")
+}
+
 func TestBuildRunCommand_DebugDisabled(t *testing.T) {
 	cmd := testRunCommand("agent", "", "/sandbox/workspace/repo", nil, "")
 	assert.NotContains(t, cmd, "--debug-file")

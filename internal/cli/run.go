@@ -75,6 +75,16 @@ const (
 	// maxSandboxNameLen is the maximum length of an OpenShell sandbox name.
 	// OpenShell enforces this at creation time.
 	maxSandboxNameLen = 19
+
+	// validationFeedbackFile is the filename written to an iteration directory
+	// with the validation script's output when feedback_mode is set. The next
+	// iteration reads this to construct a prompt that includes the error.
+	validationFeedbackFile = "validation-feedback.txt"
+
+	// maxFeedbackBytes caps the validation output injected into the agent prompt
+	// to avoid exceeding command-line or context limits. 10 KiB is enough for
+	// lint/type-check diagnostics without overwhelming the model's context.
+	maxFeedbackBytes = 10 * 1024
 )
 
 // preflightCheckTimeout bounds the execution time for a validation_loop
@@ -1484,6 +1494,12 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		oidcWg.Wait()
 	}()
 
+	// validationFeedback holds the previous iteration's validation failure
+	// output. When feedback_mode is "append" and this is non-empty, it is
+	// injected into the agent prompt so the agent can self-correct. See #1050.
+	var validationFeedback string
+	feedbackEnabled := h.ValidationLoop != nil && h.ValidationLoop.FeedbackMode == "append"
+
 	for iteration := 1; iteration <= maxIterations; iteration++ {
 		runCount = iteration
 		transcriptErrorOverride = false
@@ -1506,6 +1522,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			if clearErr := rt.ClearIterationArtifacts(sandboxName); clearErr != nil {
 				printer.StepWarn("Failed to clear sandbox output: " + clearErr.Error())
 			}
+		}
+
+		// Build the agent prompt. On retry iterations with feedback_mode:
+		// append, the previous validation failure is injected so the agent
+		// can self-correct instead of re-running blindly (#1050, #6494).
+		agentPrompt := ""
+		if iteration > 1 && feedbackEnabled && validationFeedback != "" {
+			agentPrompt = buildFeedbackPrompt(validationFeedback)
+			printer.StepInfo("Injecting validation feedback into agent prompt")
 		}
 
 		// 9a. Run agent.
@@ -1534,6 +1559,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			HooksSettingsPath: hooksSettings,
 			Timeout:           timeout,
 			OutputPath:        filepath.Join(iterDir, "output.jsonl"),
+			Prompt:            agentPrompt,
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
 
@@ -1702,6 +1728,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 
 		printer.StepFail("Validation failed: " + validationFailMessage(valOut, valErr))
+
+		// Save feedback for the next iteration. The file is written on every
+		// validation failure for the audit trail; only feedback_mode: append
+		// carries it into the next iteration's prompt.
+		feedback := writeValidationFeedback(iterDir, valOut, valErr, h.RunnerEnv, printer)
+		if feedbackEnabled {
+			validationFeedback = feedback
+		}
+
 		if iteration < maxIterations {
 			printer.StepInfo(fmt.Sprintf("Will retry (%d iterations remaining)", maxIterations-iteration))
 		}
@@ -2259,6 +2294,115 @@ func validationFailMessage(output []byte, execErr error) string {
 		return msg
 	}
 	return execErr.Error()
+}
+
+// buildFeedbackPrompt constructs the agent prompt for a retry iteration,
+// appending the previous iteration's validation failure output so the agent
+// can self-correct. The feedback is truncated to maxFeedbackBytes to avoid
+// exceeding command-line or context limits. See #1050, #6494.
+//
+// The caller is responsible for redacting the feedback (redactFeedback)
+// before it reaches this function — the prompt crosses into the sandbox.
+func buildFeedbackPrompt(feedback string) string {
+	if feedback == "" {
+		return agentruntime.DefaultAgentPrompt
+	}
+	feedback = truncateUTF8(feedback, maxFeedbackBytes)
+	return agentruntime.DefaultAgentPrompt + "\n\n" +
+		"The previous iteration's output failed validation. " +
+		"Here is the validation error:\n\n" +
+		feedback + "\n\n" +
+		"Fix the issues described above and try again."
+}
+
+// truncateUTF8 caps s at max bytes without splitting a multi-byte rune,
+// appending a marker when anything was dropped. A byte-slice truncation
+// would leave invalid UTF-8 in the middle of the agent prompt.
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "\n[truncated]"
+}
+
+// sensitiveEnvKey reports whether a runner env key is expected to hold a
+// credential whose literal value must never be echoed into the sandbox.
+// The explicit names are the ones the fleet harnesses set (code.yaml,
+// fix.yaml); the suffix match catches repo-defined additions.
+func sensitiveEnvKey(key string) bool {
+	switch key {
+	case "PUSH_TOKEN", "GH_TOKEN", "GITLAB_TOKEN", "GITHUB_TOKEN", "FULLSEND_FETCH_TOKEN":
+		return true
+	}
+	for _, suffix := range []string{"_TOKEN", "_SECRET", "_PASSWORD", "_KEY", "_CREDENTIALS"} {
+		if strings.HasSuffix(key, suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// minRedactableSecretLen is the shortest literal value worth substring-
+// replacing. Below this, a credential value is as likely to be a common
+// word ("main", "true") whose blanket replacement would mangle the
+// diagnostics the agent needs to read.
+const minRedactableSecretLen = 8
+
+// redactFeedback strips credentials from validation output before it is
+// injected into the agent prompt.
+//
+// This is a trust boundary, not defense in depth. The validation script runs
+// on the runner with the full runner environment (validationEnv passes
+// h.RunnerEnv verbatim), which for the code and fix harnesses includes
+// PUSH_TOKEN — the push credential that, per harness/code.yaml, "never enters
+// the sandbox". Its combined output then becomes the next iteration's prompt
+// inside the sandbox and is recorded in the agent transcript. A validation
+// script that fails while echoing its environment (set -x over a tokenized
+// remote, a git error embedding credentials in a URL) would otherwise hand the
+// agent a credential it is specifically not allowed to hold. #6494 widens the
+// exposure further by routing pre-commit output — arbitrary repo hook code —
+// through this same path.
+//
+// Two passes, because neither alone is sufficient: literal replacement of
+// known credential values from the runner env catches opaque tokens with no
+// recognizable shape, and the shared SecretRedactor catches credentials that
+// never passed through our env (a key baked into a fixture, a hook printing
+// its own).
+func redactFeedback(feedback string, runnerEnv map[string]string) string {
+	for key, value := range runnerEnv {
+		if len(value) < minRedactableSecretLen || !sensitiveEnvKey(key) {
+			continue
+		}
+		feedback = strings.ReplaceAll(feedback, value, "[REDACTED:"+key+"]")
+	}
+	// ScanResult.Sanitized is empty when the scanner changed nothing, so the
+	// original text is the fallback — not an empty prompt.
+	if res := security.NewSecretRedactor().Scan(feedback); res.Sanitized != "" {
+		return res.Sanitized
+	}
+	return feedback
+}
+
+// writeValidationFeedback writes the validation failure output to a file in
+// the iteration directory for the audit trail, and returns the redacted
+// feedback string for prompt injection. The file is written on every
+// validation failure, not only when feedback_mode is set, so a run that
+// failed without feedback enabled can still be diagnosed after the fact.
+// It holds the same redacted text that would reach the agent — the run
+// directory is uploaded as a CI artifact, so it is not a place for
+// credentials either. The write is best-effort: failures are logged but do
+// not block the retry loop.
+func writeValidationFeedback(iterDir string, valOut []byte, valErr error, runnerEnv map[string]string, printer *ui.Printer) string {
+	feedback := redactFeedback(validationFailMessage(valOut, valErr), runnerEnv)
+	feedbackPath := filepath.Join(iterDir, validationFeedbackFile)
+	if err := os.WriteFile(feedbackPath, []byte(feedback), 0o600); err != nil {
+		printer.StepWarn("Failed to write validation feedback: " + err.Error())
+	}
+	return feedback
 }
 
 // postScriptRepoEnv computes the REPO_DIR and FULLSEND_VALIDATED_ITERATION_DIR

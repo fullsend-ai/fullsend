@@ -235,7 +235,9 @@ agent_input: inputs/my-input.md     # File passed as initial input to the agent
 validation_loop:
   script: scripts/validate-output-schema.sh
   max_iterations: 2
-  feedback_mode: stderr              # How validation feedback reaches the agent
+  feedback_mode: append              # "none" (default) or "append" — append the
+                                     # previous iteration's validation failure to
+                                     # the agent prompt on retry
 
 # ── Host files ────────────────────────────────────────────────
 host_files:

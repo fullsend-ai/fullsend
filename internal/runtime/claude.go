@@ -333,10 +333,14 @@ func buildRunCommand(params RunParams) string {
 		parts = append(parts, fmt.Sprintf("--plugin-dir '%s'", strings.ReplaceAll(pd, "'", "'\\''")))
 	}
 
+	prompt := DefaultAgentPrompt
+	if params.Prompt != "" {
+		prompt = params.Prompt
+	}
 	parts = append(parts,
 		fmt.Sprintf("--agent '%s'", safe),
 		"--dangerously-skip-permissions",
-		"'Run the agent task'",
+		fmt.Sprintf("'%s'", strings.ReplaceAll(prompt, "'", "'\\''")),
 	)
 
 	return strings.Join(parts, " ")
