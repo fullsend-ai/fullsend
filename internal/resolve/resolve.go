@@ -217,6 +217,14 @@ type ResolveOpts struct {
 	// Empty means unauthenticated (sufficient for public repos).
 	GitToken string
 
+	// OrgAllowlist is the allowed_remote_resources from config.yaml (org-level
+	// allowlist). When set, URLs that are not in the harness-level
+	// AllowedRemoteResources are checked against this list as a fallback.
+	// This makes org-level trust apply uniformly to all URL resolution
+	// (policy, agent, skills, plugins, profiles, providers), not just
+	// base: composition.
+	OrgAllowlist []string
+
 	// MaxDepth controls transitive dependency resolution depth.
 	// 0 disables transitive resolution (Phase 1 behavior).
 	// <0 uses DefaultMaxDepth (10).
@@ -562,6 +570,9 @@ func resolveFileURL(ctx context.Context, field, rawURL string, h *harness.Harnes
 
 	allowedBy := h.MatchingAllowedPrefix(cleanURL)
 	if allowedBy == "" {
+		allowedBy = harness.MatchingAllowedPrefixInList(cleanURL, opts.OrgAllowlist)
+	}
+	if allowedBy == "" {
 		return Dependency{}, "", fmt.Errorf("%s: URL %q is not in allowed_remote_resources", field, cleanURL)
 	}
 
@@ -666,6 +677,9 @@ func resolveSkillDirURL(ctx context.Context, field, rawURL string, h *harness.Ha
 	state.resourceCount++
 
 	allowedBy := h.MatchingAllowedPrefix(cleanURL)
+	if allowedBy == "" {
+		allowedBy = harness.MatchingAllowedPrefixInList(cleanURL, opts.OrgAllowlist)
+	}
 	if allowedBy == "" {
 		return Dependency{}, "", fmt.Errorf("%s: URL %q is not in allowed_remote_resources", field, cleanURL)
 	}

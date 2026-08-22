@@ -446,7 +446,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 					printer.StepWarn(fmt.Sprintf("Harness has changed since lock file was generated. Run 'fullsend lock %s --fullsend-dir %s' to update.", agentName, fullsendDir))
 				} else {
 					printer.StepStart("Using pinned dependencies from lock file")
-					lockResult, lockResolveErr := resolveFromLock(h, entry, absFullsendDir, printer)
+					lockResult, lockResolveErr := resolveFromLock(h, entry, absFullsendDir, orgAllowlist, printer)
 					if lockResolveErr != nil {
 						printer.StepFail("Lock file resolution failed: " + lockResolveErr.Error())
 						printer.StepWarn("Falling back to normal resolution")
@@ -474,6 +474,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 				WorkspaceRoot: absFullsendDir,
 				FetchPolicy:   policy,
 				AuditLogPath:  filepath.Join(absFullsendDir, ".fullsend-cache", "fetch-audit.jsonl"),
+				OrgAllowlist:  orgAllowlist,
 				MaxDepth:      rFlags.maxDepth,
 				MaxResources:  rFlags.maxResources,
 				TreeFetcher:   rFlags.treeFetcher,
