@@ -60,7 +60,7 @@ finalized, this is a no-op.`,
 			}
 			owner, repoName := parts[0], parts[1]
 
-			forgePlatform, err := detectForgePlatform(forgeFlag)
+			forgePlatform, err := detectForgePlatform(forgeFlag, nil)
 			if err != nil {
 				return err
 			}

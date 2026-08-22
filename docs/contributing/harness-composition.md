@@ -30,11 +30,29 @@ and update the others as needed.
 | Function | File | Purpose |
 |----------|------|---------|
 | `mergeBaseIntoChild` | `internal/harness/compose.go` | Merges base harness fields into child during `base:` composition |
-| `mergeForgeConfig` | `internal/harness/forge.go` | Applies `forge.<platform>` overrides onto top-level harness fields |
+| `mergeForgeConfig` | `internal/harness/forge.go` | Applies `forge.<platform>` or overlay overrides onto top-level harness fields |
 | `mergeForgeConfigInto` | `internal/harness/compose.go` | Merges base `ForgeConfig` fields into child `ForgeConfig` during `base:` composition |
 | `mergeSkills` | `internal/harness/compose.go` | Deduplicates skills by basename (base + child); merges file-level override maps when both define the same basename (child keys win) |
 | `mergeHostFiles` | `internal/harness/compose.go` | Deduplicates host files by dest path (base + child) |
 | `mergeForgeBlocks` | `internal/harness/compose.go` | Merges `forge:` maps key-by-key across base and child |
+
+> **Note — overlay precedence exception.** When `overlays` are concatenated
+> during base composition, base entries are placed first. Because overlay
+> resolution uses first-match-wins semantics (`ResolveOverlays` stops at the
+> first matching `when` expression), base overlay entries take precedence over
+> child overlay entries with the same condition. This is an intentional
+> exception to the child-overrides-base convention used by scalar and map
+> merges, and matches the concatenation behavior for `plugins`, `providers`,
+> and `api_servers` lists.
+
+### Validation and resolution side
+
+| Function | File | Purpose |
+|----------|------|---------|
+| `validateForge` | `internal/harness/forge.go` | Validates `forge:` block keys and `ForgeConfig` field values |
+| `validateOverlays` | `internal/harness/forge.go` | Validates `overlays:` entries — CEL `when` expressions and `ForgeConfig` field values; enforces mutual exclusion with `forge:` |
+| `ResolveForge` | `internal/harness/forge.go` | Merges the selected forge platform's config into the harness and nils the forge map |
+| `ResolveOverlays` | `internal/harness/forge.go` | Evaluates overlay `when` expressions against event/runtime/config CEL environment; merges the first matching entry (first-match-wins) and nils the overlays list. When event is nil (CLI flows without event context), an empty map is substituted so overlays conditioned on `runtime.forge` or `config` can still match. Use `has(event.source)` to guard event field access in `when` expressions. |
 
 ### How they correspond
 
@@ -99,5 +117,7 @@ matching `_test.go` file.
   current overlay mechanism
 - [ADR-0064](../ADRs/0064-deprecate-customized-directory-overlay.md):
   Deprecate customized directory overlay
+- [ADR-0088](../ADRs/0088-cel-guarded-overlays.md): CEL-guarded overlays —
+  generalizes forge-specific config with CEL expressions
 - Issue #5579: Harness field integration pipeline (complementary
   checklist covering the broader field addition workflow)

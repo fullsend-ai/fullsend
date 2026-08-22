@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1003,4 +1004,613 @@ pre_script: scripts/pre.sh
 
 	assert.Nil(t, h.Forge)
 	assert.Equal(t, "scripts/pre.sh", h.PreScript)
+}
+
+// --- Overlay tests ---
+
+func TestValidateOverlays_EmptyWhenRejected(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: "", ForgeConfig: ForgeConfig{PreScript: "scripts/pre.sh"}},
+		},
+	}
+	err := h.validateOverlays()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlays[0].when is required")
+}
+
+func TestValidateOverlays_NonBoolCELRejected(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: "event.source.system", ForgeConfig: ForgeConfig{PreScript: "scripts/pre.sh"}},
+		},
+	}
+	err := h.validateOverlays()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must evaluate to bool")
+}
+
+func TestValidateOverlays_ValidCELAccepted(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/pre.sh"}},
+		},
+	}
+	err := h.validateOverlays()
+	require.NoError(t, err)
+}
+
+func TestValidateOverlays_RuntimeForgeAccepted(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: `runtime.forge == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/pre.sh"}},
+		},
+	}
+	err := h.validateOverlays()
+	require.NoError(t, err)
+}
+
+func TestValidateOverlays_ConfigVariableAccepted(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: `config.tracker == "jira" && runtime.forge == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/pre.sh"}},
+		},
+	}
+	err := h.validateOverlays()
+	require.NoError(t, err)
+}
+
+func TestValidateOverlays_InvalidScriptPathRejected(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "https://example.com/pre.sh"}},
+		},
+	}
+	err := h.validateOverlays()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlays[0].pre_script must be a local path, not a URL")
+}
+
+func TestValidateOverlays_MutualExclusionWithForge(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Forge: map[string]*ForgeConfig{
+			"github": {PreScript: "scripts/pre-gh.sh"},
+		},
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/pre.sh"}},
+		},
+	}
+	err := h.validateOverlays()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forge and overlays cannot coexist")
+}
+
+func TestValidateOverlays_NoOverlaysIsNoop(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+	}
+	err := h.validateOverlays()
+	require.NoError(t, err)
+}
+
+func TestResolveOverlays_SingleMatch(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Role:      "fix",
+		PreScript: "scripts/common.sh",
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
+		},
+	}
+	event := map[string]any{"source": map[string]any{"system": "github"}}
+	err := h.ResolveOverlays(event, "", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+	assert.Nil(t, h.Overlays)
+}
+
+func TestResolveOverlays_FirstMatchWins(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "a.sh"}},
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "b.sh"}},
+		},
+	}
+	event := map[string]any{"source": map[string]any{"system": "github"}}
+	err := h.ResolveOverlays(event, "", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "a.sh", h.PreScript, "first-match-wins: first entry should be applied")
+}
+
+func TestResolveOverlays_FirstMatchWinsSkipsLater(t *testing.T) {
+	h := &Harness{
+		Agent:  "agents/test.md",
+		Role:   "fix",
+		Skills: []SkillEntry{{Source: "skills/base"}},
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{Skills: []SkillEntry{{Source: "skills/gh"}}}},
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{Skills: []SkillEntry{{Source: "skills/extra"}}}},
+		},
+	}
+	event := map[string]any{"source": map[string]any{"system": "github"}}
+	err := h.ResolveOverlays(event, "", nil)
+	require.NoError(t, err)
+	require.Len(t, h.Skills, 2, "only first matching overlay should be applied")
+	assert.Equal(t, "skills/base", h.Skills[0].Source)
+	assert.Equal(t, "skills/gh", h.Skills[1].Source)
+}
+
+func TestResolveOverlays_NoMatchUnchanged(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Role:      "fix",
+		PreScript: "scripts/common.sh",
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "jira"`, ForgeConfig: ForgeConfig{PreScript: "scripts/jira.sh"}},
+		},
+	}
+	event := map[string]any{"source": map[string]any{"system": "github"}}
+	err := h.ResolveOverlays(event, "", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/common.sh", h.PreScript)
+	assert.Nil(t, h.Overlays)
+}
+
+func TestResolveOverlays_NilEventNoop(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Role:      "fix",
+		PreScript: "scripts/common.sh",
+		Overlays: []OverlayEntry{
+			{When: `runtime.forge == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
+		},
+	}
+	// Nil event is converted to empty map; overlays conditioned on runtime.forge
+	// or config can still match (ADR 0088 — overlays work in CLI paths without event).
+	err := h.ResolveOverlays(nil, "github", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/gh.sh", h.PreScript, "overlay should match on runtime.forge even when event is nil")
+	assert.Nil(t, h.Overlays, "overlays should be consumed after resolution")
+}
+
+func TestResolveOverlays_EmptyOverlaysNoop(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Role:      "fix",
+		PreScript: "scripts/common.sh",
+	}
+	err := h.ResolveOverlays(map[string]any{"source": map[string]any{"system": "github"}}, "", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/common.sh", h.PreScript)
+}
+
+func TestResolveOverlays_RuntimeForge(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: `runtime.forge == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
+			{When: `runtime.forge == "gitlab"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gl.sh"}},
+		},
+	}
+	event := map[string]any{"source": map[string]any{"system": "jira"}}
+	err := h.ResolveOverlays(event, "github", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+}
+
+func TestResolveOverlays_ConfigVariable(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: `config.tracker == "jira"`, ForgeConfig: ForgeConfig{PreScript: "scripts/jira.sh"}},
+			{When: `config.tracker == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
+		},
+	}
+	event := map[string]any{"source": map[string]any{"system": "jira"}}
+	config := map[string]any{"tracker": "jira"}
+	err := h.ResolveOverlays(event, "github", config)
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/jira.sh", h.PreScript)
+}
+
+func TestResolveOverlays_CombinedWhenExpression(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "jira" && runtime.forge == "github"`, ForgeConfig: ForgeConfig{
+				PreScript: "scripts/jira-on-gh.sh",
+				Skills:    []SkillEntry{{Source: "skills/jira-read"}},
+			}},
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
+		},
+	}
+	event := map[string]any{"source": map[string]any{"system": "jira"}}
+	err := h.ResolveOverlays(event, "github", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/jira-on-gh.sh", h.PreScript)
+	require.Len(t, h.Skills, 1)
+	assert.Equal(t, "skills/jira-read", h.Skills[0].Source)
+}
+
+// TestResolveOverlays_CELErrorSkipsToFallback verifies that a CEL evaluation
+// error in an earlier overlay (e.g., accessing event.source.system when event
+// is empty) does not abort resolution — the error is logged as non-matching,
+// and a broader fallback overlay can still match. This matches the
+// MatchHarnesses pattern in harnessdispatch/enumerate.go and supports the
+// more-specific-first pattern documented in bring-your-own-agent.md.
+func TestResolveOverlays_CELErrorSkipsToFallback(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Role:      "fix",
+		PreScript: "scripts/common.sh",
+		Overlays: []OverlayEntry{
+			// More-specific overlay: references event.source.system which will
+			// error when event is empty (no such key).
+			{When: `event.source.system == "jira" && runtime.forge == "github"`, ForgeConfig: ForgeConfig{
+				PreScript: "scripts/jira-on-gh.sh",
+			}},
+			// Broader fallback: conditioned only on runtime.forge, always evaluable.
+			{When: `runtime.forge == "github"`, ForgeConfig: ForgeConfig{
+				PreScript: "scripts/gh-fallback.sh",
+			}},
+		},
+	}
+	// Empty event: event.source.system access will error on the first overlay.
+	// The fallback overlay should still match.
+	err := h.ResolveOverlays(map[string]any{}, "github", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/gh-fallback.sh", h.PreScript,
+		"fallback overlay should match when earlier overlay has a CEL eval error")
+	assert.Nil(t, h.Overlays, "overlays should be consumed after resolution")
+}
+
+// TestResolveOverlays_CELErrorAllFail verifies that when all overlays fail
+// with CEL evaluation errors, no overlay is applied and the harness retains
+// its original values.
+func TestResolveOverlays_CELErrorAllFail(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Role:      "fix",
+		PreScript: "scripts/common.sh",
+		Overlays: []OverlayEntry{
+			{When: `event.source.system == "jira"`, ForgeConfig: ForgeConfig{PreScript: "scripts/jira.sh"}},
+			{When: `event.source.system == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
+		},
+	}
+	// Empty event: both overlays will fail on event.source access.
+	err := h.ResolveOverlays(map[string]any{}, "", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/common.sh", h.PreScript,
+		"harness should retain original values when all overlays fail")
+	assert.Nil(t, h.Overlays, "overlays should be consumed even when all fail")
+}
+
+// --- BuildConfigMap tests ---
+
+func TestBuildConfigMap_NilConfig(t *testing.T) {
+	t.Parallel()
+	assert.Nil(t, BuildConfigMap(nil))
+}
+
+func TestBuildConfigMap_PerRepoConfig(t *testing.T) {
+	t.Parallel()
+	cfg := config.NewPerRepoConfig([]string{"triage", "code"}, "org/repo")
+	pr, ok := cfg.(config.PerRepoConfigReader)
+	require.True(t, ok)
+	// Set per-repo specific fields via the writer interface.
+	if w, ok := cfg.(config.PerRepoConfigWriter); ok {
+		w.SetRuntime("claude")
+	}
+	_ = pr // verify type assertion works
+
+	m := BuildConfigMap(cfg)
+	require.NotNil(t, m)
+	assert.Equal(t, "claude", m["runtime"])
+	roles, ok := m["roles"].([]any)
+	require.True(t, ok)
+	assert.Contains(t, roles, "triage")
+	assert.Contains(t, roles, "code")
+}
+
+func TestBuildConfigMap_OrgConfig(t *testing.T) {
+	t.Parallel()
+	// Org configs don't implement PerRepoConfigReader, so the map
+	// should be nil (no per-repo fields to expose).
+	orgCfg := config.NewOrgConfig(nil, nil, nil, "", "")
+	m := BuildConfigMap(orgCfg)
+	assert.Nil(t, m)
+}
+
+func TestBuildConfigMap_AllFields(t *testing.T) {
+	t.Parallel()
+	// Test that BuildConfigMap exposes all non-sensitive per-repo config
+	// fields (PR #6285: removed 4-key whitelist).
+	cfg := config.NewPerRepoConfig([]string{"triage"}, "org/repo")
+
+	// Set fields via writer interface
+	if w, ok := cfg.(config.PerRepoConfigWriter); ok {
+		w.SetRuntime("claude")
+		w.SetKillSwitch(true)
+		w.SetAgents([]config.AgentEntry{
+			{Name: "my-agent", Source: "https://example.com/agent.yaml"},
+		})
+		w.SetAllowedRemoteResources([]string{"https://example.com/*"})
+	}
+
+	m := BuildConfigMap(cfg)
+	require.NotNil(t, m)
+
+	// Core fields
+	assert.Equal(t, "claude", m["runtime"])
+	roles, ok := m["roles"].([]any)
+	require.True(t, ok)
+	assert.Contains(t, roles, "triage")
+
+	// Operational fields
+	assert.Equal(t, "1", m["version"])
+	assert.Equal(t, true, m["kill_switch"])
+
+	// Agent entries
+	agents, ok := m["agents"].([]any)
+	require.True(t, ok)
+	require.Len(t, agents, 1)
+	agentMap, ok := agents[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "my-agent", agentMap["name"])
+	assert.Equal(t, "https://example.com/agent.yaml", agentMap["source"])
+
+	// Security policies
+	arr, ok := m["allowed_remote_resources"].([]any)
+	require.True(t, ok)
+	assert.Contains(t, arr, "https://example.com/*")
+
+	// Issue creation config (set by NewPerRepoConfig with targetRepo)
+	ci, ok := m["create_issues"].(map[string]any)
+	require.True(t, ok)
+	repos, ok := ci["allow_repos"].([]any)
+	require.True(t, ok)
+	assert.Contains(t, repos, "org/repo")
+	assert.Contains(t, repos, "fullsend-ai/fullsend")
+}
+
+func TestBuildConfigMap_ForgeAndTracker(t *testing.T) {
+	t.Parallel()
+	yamlData := []byte(`
+version: "1"
+forge: github
+tracker: jira
+roles:
+  - triage
+`)
+	cfg, err := config.ParsePerRepoConfig(yamlData)
+	require.NoError(t, err)
+
+	m := BuildConfigMap(cfg)
+	require.NotNil(t, m)
+	assert.Equal(t, "github", m["forge"])
+	assert.Equal(t, "jira", m["tracker"])
+}
+
+func TestBuildConfigMap_EmptyFieldsOmitted(t *testing.T) {
+	t.Parallel()
+	// Config with only roles (no forge, tracker) — empty fields
+	// should not appear in the map. Runtime defaults to "claude".
+	yamlData := []byte(`
+version: "1"
+roles:
+  - code
+`)
+	cfg, err := config.ParsePerRepoConfig(yamlData)
+	require.NoError(t, err)
+
+	m := BuildConfigMap(cfg)
+	require.NotNil(t, m)
+	_, hasForge := m["forge"]
+	assert.False(t, hasForge, "forge should not be in map when empty")
+	_, hasTracker := m["tracker"]
+	assert.False(t, hasTracker, "tracker should not be in map when empty")
+	// Runtime defaults to "claude" so it should be present
+	assert.Equal(t, "claude", m["runtime"])
+}
+
+// --- validateOverlayForgeConfig coverage ---
+
+func TestValidateOverlayForgeConfig_PolicyURLWithoutHash(t *testing.T) {
+	fc := &ForgeConfig{
+		Policy: "https://example.com/policy.yaml",
+	}
+	err := validateOverlayForgeConfig(0, fc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlays[0].policy URL must include #sha256=")
+}
+
+func TestValidateOverlayForgeConfig_PolicyURLWithHash(t *testing.T) {
+	fc := &ForgeConfig{
+		Policy: "https://example.com/policy.yaml#sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+	}
+	err := validateOverlayForgeConfig(0, fc)
+	require.NoError(t, err)
+}
+
+func TestValidateOverlayForgeConfig_PolicyLocalPath(t *testing.T) {
+	fc := &ForgeConfig{
+		Policy: "policies/sandbox.yaml",
+	}
+	err := validateOverlayForgeConfig(0, fc)
+	require.NoError(t, err)
+}
+
+func TestValidateOverlayForgeConfig_PostScriptURL(t *testing.T) {
+	fc := &ForgeConfig{
+		PostScript: "https://example.com/post.sh",
+	}
+	err := validateOverlayForgeConfig(0, fc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlays[0].post_script must be a local path, not a URL")
+}
+
+func TestValidateOverlayForgeConfig_SkillURLWithoutHash(t *testing.T) {
+	fc := &ForgeConfig{
+		Skills: []SkillEntry{{Source: "https://example.com/skill"}},
+	}
+	err := validateOverlayForgeConfig(0, fc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlays[0].skills[0] URL must include #sha256=")
+}
+
+func TestValidateOverlayForgeConfig_SkillURLWithHash(t *testing.T) {
+	fc := &ForgeConfig{
+		Skills: []SkillEntry{{Source: "https://example.com/skill#sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}},
+	}
+	err := validateOverlayForgeConfig(0, fc)
+	require.NoError(t, err)
+}
+
+func TestValidateOverlayForgeConfig_ProviderURLWithoutHash(t *testing.T) {
+	fc := &ForgeConfig{
+		Providers: []string{"https://example.com/provider.yaml"},
+	}
+	err := validateOverlayForgeConfig(0, fc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlays[0].providers[0] URL must include #sha256=")
+}
+
+func TestValidateOverlayForgeConfig_ProviderURLWithHash(t *testing.T) {
+	fc := &ForgeConfig{
+		Providers: []string{"https://example.com/provider.yaml#sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+	}
+	err := validateOverlayForgeConfig(0, fc)
+	require.NoError(t, err)
+}
+
+func TestValidateOverlayForgeConfig_OpenShellProfileURLWithoutHash(t *testing.T) {
+	fc := &ForgeConfig{
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"https://example.com/profile.yaml"},
+		},
+	}
+	err := validateOverlayForgeConfig(0, fc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlays[0].openshell.profiles[0] URL must include #sha256=")
+}
+
+func TestValidateOverlayForgeConfig_OpenShellProfileWithHash(t *testing.T) {
+	fc := &ForgeConfig{
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"https://example.com/profile.yaml#sha256=e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"},
+		},
+	}
+	err := validateOverlayForgeConfig(0, fc)
+	require.NoError(t, err)
+}
+
+func TestValidateOverlayForgeConfig_HostFileMissingSrc(t *testing.T) {
+	fc := &ForgeConfig{
+		HostFiles: []HostFile{{Src: "", Dest: "/run/secrets/token"}},
+	}
+	err := validateOverlayForgeConfig(0, fc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlays[0].host_files[0]: src is required")
+}
+
+func TestValidateOverlayForgeConfig_HostFileMissingDest(t *testing.T) {
+	fc := &ForgeConfig{
+		HostFiles: []HostFile{{Src: "env/token.env", Dest: ""}},
+	}
+	err := validateOverlayForgeConfig(0, fc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlays[0].host_files[0]: dest is required")
+}
+
+func TestValidateOverlayForgeConfig_HostFileURLSrc(t *testing.T) {
+	fc := &ForgeConfig{
+		HostFiles: []HostFile{{Src: "https://example.com/token.env", Dest: "/run/secrets/token"}},
+	}
+	err := validateOverlayForgeConfig(0, fc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlays[0].host_files[0].src must be a local path, not a URL")
+}
+
+func TestValidateOverlayForgeConfig_HostFileValid(t *testing.T) {
+	fc := &ForgeConfig{
+		HostFiles: []HostFile{{Src: "env/token.env", Dest: "/run/secrets/token"}},
+	}
+	err := validateOverlayForgeConfig(0, fc)
+	require.NoError(t, err)
+}
+
+func TestValidateOverlayForgeConfig_ValidationLoopMissingScript(t *testing.T) {
+	fc := &ForgeConfig{
+		ValidationLoop: &ValidationLoop{Script: ""},
+	}
+	err := validateOverlayForgeConfig(0, fc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlays[0].validation_loop.script is required when validation_loop is set")
+}
+
+func TestValidateOverlayForgeConfig_ValidationLoopScriptURL(t *testing.T) {
+	fc := &ForgeConfig{
+		ValidationLoop: &ValidationLoop{Script: "https://example.com/validate.sh"},
+	}
+	err := validateOverlayForgeConfig(0, fc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlays[0].validation_loop.script must be a local path, not a URL")
+}
+
+func TestValidateOverlayForgeConfig_ValidationLoopSchemaURL(t *testing.T) {
+	fc := &ForgeConfig{
+		ValidationLoop: &ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "https://example.com/schema.json",
+		},
+	}
+	err := validateOverlayForgeConfig(0, fc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlays[0].validation_loop.schema must be a local path, not a URL")
+}
+
+func TestValidateOverlayForgeConfig_ValidationLoopValid(t *testing.T) {
+	fc := &ForgeConfig{
+		ValidationLoop: &ValidationLoop{
+			Script: "scripts/validate.sh",
+			Schema: "schemas/output.json",
+		},
+	}
+	err := validateOverlayForgeConfig(0, fc)
+	require.NoError(t, err)
+}
+
+func TestValidateOverlayForgeConfig_EmptyForgeConfig(t *testing.T) {
+	fc := &ForgeConfig{}
+	err := validateOverlayForgeConfig(0, fc)
+	require.NoError(t, err)
+}
+
+func TestValidateOverlayForgeConfig_SecondIndex(t *testing.T) {
+	fc := &ForgeConfig{
+		PreScript: "https://example.com/pre.sh",
+	}
+	err := validateOverlayForgeConfig(1, fc)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "overlays[1].pre_script must be a local path, not a URL")
 }

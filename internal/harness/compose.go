@@ -76,6 +76,16 @@ type ComposeOpts struct {
 	// for no-base harnesses.
 	SourceURL string
 
+	// Event is the normalized event data for CEL overlay resolution (ADR 0088).
+	// When nil, ResolveOverlays substitutes an empty map so overlays conditioned
+	// on runtime.forge or config can still evaluate and match (CLI flows without
+	// event context).
+	Event map[string]any
+
+	// Config is the per-repo config (from config.yaml) exposed to overlay
+	// CEL when expressions as the config variable (ADR 0088).
+	Config map[string]any
+
 	// allowSelfAllowlist permits using the child harness's own AllowedRemoteResources
 	// when OrgAllowlist is empty. This is for testing only; production callers should
 	// always provide OrgAllowlist from config.yaml. Unexported to prevent misuse.
@@ -89,10 +99,10 @@ type ComposeOpts struct {
 //
 // Pipeline:
 //  1. LoadRaw(path) — preserves forge map
-//  2. If base absent: resolve URL-sourced resources → ResolveForge → Validate → return
+//  2. If base absent: resolve URL-sourced resources → ResolveForge → ResolveOverlays → Validate → return
 //  3. If base present: loadBaseChain recursively, then mergeBaseIntoChild
 //  4. Resolve remaining URL-sourced resources and scripts (child's own relative paths)
-//  5. ResolveForge once on final merged result
+//  5. ResolveForge and ResolveOverlays once on final merged result
 //  6. Validate
 //
 // When base is absent, this behaves identically to LoadWithOpts.
@@ -151,8 +161,14 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		if err := child.validateForge(); err != nil {
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
 		}
+		if err := child.validateOverlays(); err != nil {
+			return nil, nil, fmt.Errorf("invalid harness: %w", err)
+		}
 		if err := child.ResolveForge(opts.ForgePlatform); err != nil {
 			return nil, nil, fmt.Errorf("resolving forge config: %w", err)
+		}
+		if err := child.ResolveOverlays(opts.Event, opts.ForgePlatform, opts.Config); err != nil {
+			return nil, nil, fmt.Errorf("resolving overlays: %w", err)
 		}
 		if err := child.Validate(); err != nil {
 			return nil, nil, fmt.Errorf("invalid harness: %w", err)
@@ -244,12 +260,18 @@ func LoadWithBase(ctx context.Context, path string, opts ComposeOpts) (*Harness,
 		deps = append(deps, pluginDeps...)
 	}
 
-	// ResolveForge once on the merged result
+	// ResolveForge and ResolveOverlays once on the merged result
 	if err := child.validateForge(); err != nil {
+		return nil, nil, fmt.Errorf("invalid harness: %w", err)
+	}
+	if err := child.validateOverlays(); err != nil {
 		return nil, nil, fmt.Errorf("invalid harness: %w", err)
 	}
 	if err := child.ResolveForge(opts.ForgePlatform); err != nil {
 		return nil, nil, fmt.Errorf("resolving forge config: %w", err)
+	}
+	if err := child.ResolveOverlays(opts.Event, opts.ForgePlatform, opts.Config); err != nil {
+		return nil, nil, fmt.Errorf("resolving overlays: %w", err)
 	}
 	if err := child.Validate(); err != nil {
 		return nil, nil, fmt.Errorf("invalid harness: %w", err)
@@ -650,6 +672,17 @@ func mergeBaseIntoChild(base, child *Harness) {
 	if base.Forge != nil {
 		child.Forge = mergeForgeBlocks(base.Forge, child.Forge)
 	}
+
+	// Overlays: concatenated (base first, child appended) — same as plugins,
+	// providers, api_servers. Declaration order matters: ResolveOverlays uses
+	// first-match-wins semantics, so base entries (placed first) take
+	// precedence over child entries with the same when condition.
+	if base.Overlays != nil {
+		merged := make([]OverlayEntry, 0, len(base.Overlays)+len(child.Overlays))
+		merged = append(merged, base.Overlays...)
+		merged = append(merged, child.Overlays...)
+		child.Overlays = merged
+	}
 }
 
 // isFullsendCachePath reports whether p is a path already inside fullsend's
@@ -824,6 +857,70 @@ func resolveBaseScripts(ctx context.Context, base *Harness, baseURL string, allo
 		}
 	}
 
+	// Overlay-level scripts: same fetch treatment as forge-level scripts.
+	// Each overlay entry embeds a ForgeConfig whose script, policy, and
+	// validation_loop fields may contain relative paths from the base URL.
+	for i := range base.Overlays {
+		oc := &base.Overlays[i].ForgeConfig
+		overlayScripts := []struct {
+			name string
+			ptr  *string
+		}{
+			{fmt.Sprintf("overlays[%d].pre_script", i), &oc.PreScript},
+			{fmt.Sprintf("overlays[%d].post_script", i), &oc.PostScript},
+		}
+		for _, f := range overlayScripts {
+			if *f.ptr == "" || IsURL(*f.ptr) || isFullsendCachePath(*f.ptr, opts.WorkspaceRoot) {
+				continue
+			}
+			if err := validateBaseRelPath(f.name, *f.ptr); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseScriptOrDir(ctx, f.name, baseURLDir, *f.ptr, allowlist, opts)
+			if err != nil {
+				return nil, err
+			}
+			*f.ptr = cachePath
+			deps = append(deps, dep)
+		}
+		if oc.Policy != "" && !IsURL(oc.Policy) && !isFullsendCachePath(oc.Policy, opts.WorkspaceRoot) {
+			fieldName := fmt.Sprintf("overlays[%d].policy", i)
+			if err := validateBaseRelPath(fieldName, oc.Policy); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, oc.Policy, allowlist, opts, "resource", false)
+			if err != nil {
+				return nil, err
+			}
+			oc.Policy = cachePath
+			deps = append(deps, dep)
+		}
+		if oc.ValidationLoop != nil && oc.ValidationLoop.Script != "" && !IsURL(oc.ValidationLoop.Script) && !isFullsendCachePath(oc.ValidationLoop.Script, opts.WorkspaceRoot) {
+			fieldName := fmt.Sprintf("overlays[%d].validation_loop.script", i)
+			if err := validateBaseRelPath(fieldName, oc.ValidationLoop.Script); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseScriptOrDir(ctx, fieldName, baseURLDir, oc.ValidationLoop.Script, allowlist, opts)
+			if err != nil {
+				return nil, err
+			}
+			oc.ValidationLoop.Script = cachePath
+			deps = append(deps, dep)
+		}
+		if oc.ValidationLoop != nil && oc.ValidationLoop.Schema != "" && !IsURL(oc.ValidationLoop.Schema) && !isFullsendCachePath(oc.ValidationLoop.Schema, opts.WorkspaceRoot) {
+			fieldName := fmt.Sprintf("overlays[%d].validation_loop.schema", i)
+			if err := validateBaseRelPath(fieldName, oc.ValidationLoop.Schema); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, oc.ValidationLoop.Schema, allowlist, opts, "resource", false)
+			if err != nil {
+				return nil, err
+			}
+			oc.ValidationLoop.Schema = cachePath
+			deps = append(deps, dep)
+		}
+	}
+
 	// agent_input is a directory at runtime (uploaded recursively) and cannot
 	// be fetched as a single file from a URL. Clear it so it doesn't resolve
 	// against the child's local directory where it won't exist.
@@ -947,6 +1044,42 @@ func resolveBaseResources(ctx context.Context, base *Harness, baseURL string, al
 		}
 	}
 
+	// Overlay-specific skills: same fetch treatment as forge-specific skills.
+	for i := range base.Overlays {
+		oc := &base.Overlays[i].ForgeConfig
+		for j, skill := range oc.Skills {
+			if skill.Source != "" && !IsURL(skill.Source) && !isFullsendCachePath(skill.Source, opts.WorkspaceRoot) {
+				fieldName := fmt.Sprintf("overlays[%d].skills[%d]", i, j)
+				if err := validateBaseRelPath(fieldName, skill.Source); err != nil {
+					return nil, err
+				}
+				dep, localDir, err := fetchBaseSkill(ctx, fieldName, baseURLDir, skill.Source, allowlist, opts)
+				if err != nil {
+					return nil, err
+				}
+				oc.Skills[j].Source = localDir
+				deps = append(deps, dep)
+			}
+
+			for key, val := range skill.Overrides {
+				if val == nil || *val == "" || IsURL(*val) || isFullsendCachePath(*val, opts.WorkspaceRoot) {
+					continue
+				}
+				overrideField := fmt.Sprintf("overlays[%d].skills[%d].overrides[%s]", i, j, key)
+				if err := validateBaseRelPath(overrideField, *val); err != nil {
+					return nil, err
+				}
+				dep, cachePath, err := fetchBaseFile(ctx, overrideField, baseURLDir, *val, allowlist, opts, "resource", false)
+				if err != nil {
+					return nil, err
+				}
+				resolved := cachePath
+				oc.Skills[j].Overrides[key] = &resolved
+				deps = append(deps, dep)
+			}
+		}
+	}
+
 	return deps, nil
 }
 
@@ -1008,6 +1141,28 @@ func resolveBaseHostFiles(ctx context.Context, base *Harness, baseURL string, al
 		}
 	}
 
+	// Overlay-specific host_files: same fetch treatment as forge-specific
+	// host_files. Entries with ${VAR} expansion are left unchanged.
+	for i := range base.Overlays {
+		oc := &base.Overlays[i].ForgeConfig
+		for j := range oc.HostFiles {
+			src := oc.HostFiles[j].Src
+			if src == "" || strings.Contains(src, "${") || IsURL(src) || isFullsendCachePath(src, opts.WorkspaceRoot) {
+				continue
+			}
+			fieldName := fmt.Sprintf("overlays[%d].host_files[%d].src", i, j)
+			if err := validateBaseRelPath(fieldName, src); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, src, allowlist, opts, "resource", false)
+			if err != nil {
+				return nil, err
+			}
+			oc.HostFiles[j].Src = cachePath
+			deps = append(deps, dep)
+		}
+	}
+
 	return deps, nil
 }
 
@@ -1022,7 +1177,14 @@ func resolveBaseProfiles(ctx context.Context, base *Harness, baseURL string, all
 	if fc := base.Forge[opts.ForgePlatform]; fc != nil && fc.OpenShell != nil && len(fc.OpenShell.Profiles) > 0 {
 		hasForge = true
 	}
-	if !hasTopLevel && !hasForge {
+	hasOverlay := false
+	for _, oe := range base.Overlays {
+		if oe.OpenShell != nil && len(oe.OpenShell.Profiles) > 0 {
+			hasOverlay = true
+			break
+		}
+	}
+	if !hasTopLevel && !hasForge && !hasOverlay {
 		return nil, nil
 	}
 
@@ -1071,6 +1233,29 @@ func resolveBaseProfiles(ctx context.Context, base *Harness, baseURL string, all
 		}
 	}
 
+	// Overlay-specific profiles: same fetch treatment as forge-specific profiles.
+	for i := range base.Overlays {
+		oc := &base.Overlays[i].ForgeConfig
+		if oc.OpenShell == nil {
+			continue
+		}
+		for j, p := range oc.OpenShell.Profiles {
+			if p == "" || IsURL(p) || isFullsendCachePath(p, opts.WorkspaceRoot) {
+				continue
+			}
+			fieldName := fmt.Sprintf("overlays[%d].openshell.profiles[%d]", i, j)
+			if err := validateBaseRelPath(fieldName, p); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, p, allowlist, opts, "resource", false)
+			if err != nil {
+				return nil, err
+			}
+			oc.OpenShell.Profiles[j] = cachePath
+			deps = append(deps, dep)
+		}
+	}
+
 	return deps, nil
 }
 
@@ -1085,7 +1270,14 @@ func resolveBaseProviders(ctx context.Context, base *Harness, baseURL string, al
 	if fc := base.Forge[opts.ForgePlatform]; fc != nil && len(fc.Providers) > 0 {
 		hasForge = true
 	}
-	if !hasTopLevel && !hasForge {
+	hasOverlay := false
+	for _, oe := range base.Overlays {
+		if len(oe.Providers) > 0 {
+			hasOverlay = true
+			break
+		}
+	}
+	if !hasTopLevel && !hasForge && !hasOverlay {
 		return nil, nil
 	}
 
@@ -1134,6 +1326,29 @@ func resolveBaseProviders(ctx context.Context, base *Harness, baseURL string, al
 				return nil, err
 			}
 			fc.Providers[i] = cachePath
+			deps = append(deps, dep)
+		}
+	}
+
+	// Overlay-specific providers: same fetch treatment as forge-specific providers.
+	for i := range base.Overlays {
+		oc := &base.Overlays[i].ForgeConfig
+		for j, p := range oc.Providers {
+			if p == "" || IsURL(p) || isFullsendCachePath(p, opts.WorkspaceRoot) {
+				continue
+			}
+			if !IsProviderPath(p) {
+				continue
+			}
+			fieldName := fmt.Sprintf("overlays[%d].providers[%d]", i, j)
+			if err := validateBaseRelPath(fieldName, p); err != nil {
+				return nil, err
+			}
+			dep, cachePath, err := fetchBaseFile(ctx, fieldName, baseURLDir, p, allowlist, opts, "resource", false)
+			if err != nil {
+				return nil, err
+			}
+			oc.Providers[j] = cachePath
 			deps = append(deps, dep)
 		}
 	}

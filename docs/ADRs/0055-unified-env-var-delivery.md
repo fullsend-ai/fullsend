@@ -78,8 +78,10 @@ env:
   environment, same as `runner_env` and `expand: true` host_files today.
 
 The `env:` field can appear at the top level and inside `forge.<platform>`
-blocks, replacing `runner_env` at both levels
-([ADR 0045](0045-forge-portable-harness-schema.md)).
+blocks (or `overlays:` entries), replacing `runner_env` at both levels
+([ADR 0045](0045-forge-portable-harness-schema.md)). `forge:` is deprecated
+in favor of CEL-guarded `overlays:` — see
+[ADR 0088](0088-cel-guarded-overlays.md).
 
 Go struct:
 
