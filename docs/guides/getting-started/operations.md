@@ -64,13 +64,41 @@ This is idempotent — it provisions new repos, syncs variable drift, and upgrad
 
 ### Per-repo teardown
 
-To remove fullsend from a single repository:
+There are two paths, depending on how the repo was installed.
+
+**Single GitHub repo, no manifest** — for repos installed directly with `fullsend github setup owner/repo`:
+
+```bash
+fullsend github uninstall "$OWNER/$REPO"
+```
+
+Removes the workflow file, `.fullsend/` configuration directory, and the repo secrets/variables `github setup` created — `FULLSEND_GCP_PROJECT_ID` and `FULLSEND_GCP_WIF_PROVIDER` (secrets), and `FULLSEND_GCP_REGION`, `FULLSEND_PER_REPO_INSTALL`, and `FULLSEND_MINT_URL` (variables). This does not touch GCP inference infrastructure or the manifest.
+
+**Manifest-managed repos, one or many** — for repos tracked in a `repos.yaml` manifest (all GitLab repos, and any GitHub repos onboarded via `repos install`). This requires the manifest to already exist — see [Repo Management](repo-management.md) for creating one via `repos install` or `repos migrate`:
+
+```bash
+fullsend repos uninstall "$OWNER/$REPO"
+```
+
+Handles workflow file removal, variable/secret cleanup, and manifest entry removal for the matched repo(s) in a single step. GitLab repos have no single-repo equivalent to `github uninstall`, so always use this manifest-driven path for GitLab. For more options (dry-run, manifest-only, uninstall-only), see the [repos uninstall](../../cli/repos.md#repos-uninstall) CLI reference or the [Removing repos](repo-management.md#removing-repos) guide.
+
+**Both paths leave GCP inference infrastructure untouched.** WIF pool/provider access is cleaned up separately by the GCP inference project admin:
+
+```bash
+fullsend inference deprovision "$OWNER/$REPO" --project "<GCP_INFERENCE_PROJECT>"
+```
+
+If you manage your own self-hosted mint, also run `fullsend mint unenroll "$OWNER/$REPO" --project "<MINT_GCP_PROJECT>"` to remove the repo from the mint's allowlist — `--project` here is the mint's own hosting project, not the inference project. No separate unenrollment is needed for the hosted community mint. See the [standalone commands](#standalone-commands) table for details.
+
+#### Without the CLI
+
+If the CLI is unavailable, you can tear down manually:
 
 **GitHub repos:**
 
-1. Delete `.github/workflows/fullsend.yaml` and repo-level secrets/variables
-2. Run `fullsend inference deprovision "$OWNER/$REPO"` to remove WIF access
-3. Remove the `FULLSEND_MINT_URL` repository variable (if set) — no separate unenrollment is needed for the hosted community mint
+1. Delete `.github/workflows/fullsend.yaml`, the `.fullsend/` configuration directory, and the repo secrets `FULLSEND_GCP_PROJECT_ID` and `FULLSEND_GCP_WIF_PROVIDER`, plus the repo variables `FULLSEND_GCP_REGION`, `FULLSEND_PER_REPO_INSTALL`, and `FULLSEND_MINT_URL`
+2. Run `fullsend inference deprovision "$OWNER/$REPO" --project "<GCP_INFERENCE_PROJECT>"` to remove WIF access
+3. If using a self-hosted mint, run `fullsend mint unenroll "$OWNER/$REPO" --project "<MINT_GCP_PROJECT>"`
 
 **GitLab repos:**
 
@@ -78,8 +106,8 @@ To remove fullsend from a single repository:
 2. Delete all CI/CD variables prefixed with `FULLSEND_`
 3. Revoke the `fullsend-bot` project access token (Settings → Access Tokens)
 4. Delete fullsend pipeline schedules (`fullsend slash poll` and `fullsend event poll`)
-
-If you manage your own self-hosted mint, run `fullsend mint unenroll "$OWNER/$REPO"` to remove the repo from the mint's allowlist. See the [standalone commands](#standalone-commands) table for details.
+5. Run `fullsend inference deprovision "$OWNER/$REPO" --project "<GCP_INFERENCE_PROJECT>"` to remove WIF access
+6. If using a self-hosted mint, run `fullsend mint unenroll "$OWNER/$REPO" --project "<MINT_GCP_PROJECT>"`
 
 ## Standalone commands
 
@@ -96,7 +124,7 @@ For organizations that separate GCP and GitHub responsibilities across teams, fu
 | GitHub Maintainer | `fullsend github set <org\|owner/repo> <key> <value>` | Update a single config value (secret or variable) |
 | GitHub Maintainer | `fullsend github status <org>` | Analyze GitHub-side installation state |
 | GitHub Maintainer | `fullsend github sync-scaffold <org>` | Update workflow templates to current CLI version |
-| GitHub Maintainer | `fullsend github uninstall <org>` | Remove GitHub configuration (org-level only) |
+| GitHub Maintainer | `fullsend github uninstall <org\|owner/repo>` | Remove GitHub configuration for an org or a single repo (no manifest) |
 | GCP Admin (Mint) | `fullsend mint deploy` | Deploy the token mint Cloud Function |
 | GCP Admin (Mint) | `fullsend mint delete` | Tear down mint infrastructure (inverse of deploy) |
 | GCP Admin (Mint) | `fullsend mint add-role <role>` | Register a role PEM and app ID on the mint |
