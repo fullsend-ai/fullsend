@@ -43,6 +43,13 @@ const (
 	// concurrent ImportProfile processes deleting and reimporting profiles.
 	providerRetries      = 3
 	providerRetryBackoff = 500 * time.Millisecond
+
+	// updateRetries is the number of times updateProvider retries on
+	// optimistic concurrency ("provider was modified concurrently") errors.
+	// Each retry re-invokes openshell which re-reads the current
+	// resource_version, resolving the conflict.
+	updateRetries          = 3
+	updateRetryBaseBackoff = 100 * time.Millisecond
 )
 
 // RetrySleepFn is the function called between retry attempts in
@@ -343,6 +350,18 @@ func isUnsupportedProviderErr(err error) bool {
 	return err != nil && strings.Contains(strings.ToLower(err.Error()), "unsupported provider type or profile")
 }
 
+// isConcurrentModificationErr reports whether err contains the openshell
+// error message indicating a resource_version conflict from concurrent
+// provider updates.
+//
+// NOTE: This matches literal text from the openshell CLI's stderr output.
+// If openshell changes its error wording in a future version, this check
+// will silently stop matching and retries will no longer trigger. Update
+// the substring if the upstream message changes.
+func isConcurrentModificationErr(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "provider was modified concurrently")
+}
+
 // tryCreateProvider performs a single attempt to create (or update) a
 // provider via openshell. Extracted from EnsureProvider to support retry.
 func tryCreateProvider(ctx context.Context, name string, args, extraEnv, secrets []string, credentials, config map[string]string, fromURL bool) error {
@@ -368,22 +387,48 @@ func tryCreateProvider(ctx context.Context, name string, args, extraEnv, secrets
 	return nil
 }
 
-// updateProvider runs openshell provider update for an already-existing provider.
+// updateProvider runs openshell provider update for an already-existing
+// provider. Concurrent modification errors (resource_version conflicts)
+// are retried with jittered exponential backoff. Each retry re-invokes
+// openshell, which re-reads the current resource_version.
 func updateProvider(ctx context.Context, name string, credentials, config map[string]string, extraEnv, secrets []string, fromURL bool) error {
 	args := buildProviderUpdateArgs(name, credentials, config, fromURL)
-	ctx, cancel := context.WithTimeout(ctx, providerTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "openshell", args...)
-	cmd.Env = append(os.Environ(), extraEnv...)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
+
+	var lastErr error
+	for attempt := range updateRetries {
+		updateCtx, cancel := context.WithTimeout(ctx, providerTimeout)
+		cmd := exec.CommandContext(updateCtx, "openshell", args...)
+		cmd.Env = append(os.Environ(), extraEnv...)
+		out, err := cmd.CombinedOutput()
+		cancel()
+
+		if err == nil {
+			return nil
+		}
+
 		outStr := string(out)
 		for _, s := range secrets {
 			outStr = strings.ReplaceAll(outStr, s, "***")
 		}
-		return fmt.Errorf("provider update %q failed: %w (output: %s)", name, err, outStr)
+		lastErr = fmt.Errorf("provider update %q failed: %w (output: %s)", name, err, outStr)
+
+		if !isConcurrentModificationErr(lastErr) {
+			return lastErr
+		}
+
+		// Retry with jittered exponential backoff: base * 2^attempt ± jitter.
+		if attempt < updateRetries-1 {
+			backoff := updateRetryBaseBackoff << attempt // 100ms, 200ms, 400ms
+			// Add up to 50% jitter to reduce collision probability.
+			jitter := time.Duration(rand.Int64N(int64(backoff) / 2))
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff + jitter):
+			}
+		}
 	}
-	return nil
+	return fmt.Errorf("retries exhausted after %d attempts: %w", updateRetries, lastErr)
 }
 
 // buildProviderUpdateArgs constructs CLI args for openshell provider update.
