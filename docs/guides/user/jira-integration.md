@@ -84,7 +84,11 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  contents: write
+  id-token: write
+  issues: write
+  packages: read
+  pull-requests: write
 
 jobs:
   poll:
@@ -92,6 +96,8 @@ jobs:
     concurrency:
       group: fullsend-jira-poll
       cancel-in-progress: false
+    outputs:
+      matrix: ${{ steps.build-matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
 
@@ -107,67 +113,56 @@ jobs:
           JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
           JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
           JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+          TARGET_REPO: ${{ github.repository }}
         run: |
           fullsend poll \
             --input-driver jira-poll \
             --jira-url "${JIRA_BASE_URL}" \
             --jira-project PROJ \
-            --target-repo "${{ github.repository }}" \
+            --target-repo "${TARGET_REPO}" \
             --output dispatches.json \
             --fullsend-dir .fullsend
 
-      - name: Dispatch agent workflows
-        env:
-          GH_TOKEN: ${{ github.token }}
-          JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+      - name: Build dispatch matrix
+        id: build-matrix
         run: |
           set -euo pipefail
-
           if ! jq -e 'length > 0' dispatches.json > /dev/null 2>&1; then
-            echo "No dispatches to process."
+            echo "No dispatches."
+            echo 'matrix={"include":[]}' >> "${GITHUB_OUTPUT}"
             exit 0
           fi
+          MATRIX=$(jq -c '{include: .}' dispatches.json)
+          DELIM="MATRIX_$(openssl rand -hex 8)"
+          {
+            echo "matrix<<${DELIM}"
+            printf '%s' "${MATRIX}"
+            echo
+            echo "${DELIM}"
+          } >> "${GITHUB_OUTPUT}"
 
-          dispatched=0
-          count=$(jq 'length' dispatches.json)
-
-          for i in $(seq 0 $((count - 1))); do
-            record=$(jq -c ".[$i]" dispatches.json)
-            AGENT=$(echo "$record" | jq -r '.agent')
-            EVENT_TYPE=$(echo "$record" | jq -r '.event_type')
-            SOURCE_REPO=$(echo "$record" | jq -r '.source_repo')
-            EVENT_PAYLOAD=$(echo "$record" | jq -r '.event_payload')
-            STATUS_NUMBER=$(echo "$record" | jq -r '.status_number')
-
-            # Find the workflow file for this agent by scanning for the
-            # "# fullsend-stage: <agent>" marker in workflow files.
-            WORKFLOW_NAME=""
-            for wf in .github/workflows/*.yml .github/workflows/*.yaml; do
-              [[ -f "$wf" ]] || continue
-              if grep -qxF "# fullsend-stage: ${AGENT}" "$wf"; then
-                WORKFLOW_NAME=$(basename "$wf")
-                break
-              fi
-            done
-            if [[ -z "$WORKFLOW_NAME" ]]; then
-              echo "::warning::No workflow found for agent ${AGENT}, skipping"
-              continue
-            fi
-
-            echo "Dispatching ${WORKFLOW_NAME} (${AGENT}) for status_number=${STATUS_NUMBER}"
-            gh workflow run "$WORKFLOW_NAME" \
-              -f event_type="$EVENT_TYPE" \
-              -f source_repo="$SOURCE_REPO" \
-              -f event_payload="$EVENT_PAYLOAD"
-
-            dispatched=$((dispatched + 1))
-          done
-
-          echo "::notice::Dispatched ${dispatched} agent workflow(s)"
+  harness:
+    name: Harness
+    needs: poll
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v0
+    with:
+      matrix: ${{ needs.poll.outputs.matrix }}
+      mint_url: ${{ vars.FULLSEND_MINT_URL }}
+      gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
+      jira_base_url: ${{ vars.JIRA_BASE_URL }}
+    secrets:
+      FULLSEND_GCP_WIF_PROVIDER: ${{ secrets.FULLSEND_GCP_WIF_PROVIDER }}
+      FULLSEND_GCP_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_TRACES_HEADERS }}
+      OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
+      JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+      JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
 ```
 
 2. Replace `PROJ` with your Jira project key.
 3. Commit and push the workflow file.
+
+**How this works:** The `poll` job queries Jira and builds a dispatch matrix in the format expected by `reusable-dispatch.yml`. When the `matrix` input is provided, `reusable-dispatch.yml` skips its routing and dispatch steps and goes directly to running harness agents with the pre-computed matrix. This approach maintains ADR 62's inlining decision (no version skew) while enabling custom pollers to reuse fullsend's harness infrastructure. See [Custom Poller Example](custom-poller-example.md) for more details on this pattern.
 
 **`concurrency.cancel-in-progress: false`** ensures overlapping poll cycles queue rather than cancel each other, which is the primary defense against concurrent runs — the GitHub Actions concurrency group means only one poll cycle for this workflow ever runs at a time in the common case. The poller's own Jira entity-property locking is a secondary guard for cases outside that group (e.g. a manually triggered run overlapping a scheduled one): it re-checks for a live lock immediately before writing, narrowing the race to the jitter window between that check and the write, but Jira entity properties have no compare-and-swap, so a lock created in that narrow window can still be clobbered by a genuinely concurrent poller. Treat the GHA concurrency group as the real safety mechanism, not the lock.
 
