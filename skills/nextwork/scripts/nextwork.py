@@ -262,11 +262,11 @@ _LAUNCH_SPEC: dict[str, dict[str, str]] = {
     },
 }
 
-REVIEW_BOT_LOGIN = "fullsend-ai-review[bot]"
-CODER_BOT_LOGIN = "fullsend-ai-coder[bot]"
-TRIAGE_BOT_LOGIN = "fullsend-ai-triage[bot]"
-RETRO_BOT_LOGIN = "fullsend-ai-retro[bot]"
-PRIORITIZE_BOT_LOGIN = "fullsend-ai-prioritize[bot]"
+REVIEW_BOT_LOGIN = "fullsend-ai-review"
+CODER_BOT_LOGIN = "fullsend-ai-coder"
+TRIAGE_BOT_LOGIN = "fullsend-ai-triage"
+RETRO_BOT_LOGIN = "fullsend-ai-retro"
+PRIORITIZE_BOT_LOGIN = "fullsend-ai-prioritize"
 # Only trust agent-status / sticky result markers from these bot logins.
 FULLSEND_AGENT_BOTS = frozenset(
     {

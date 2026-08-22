@@ -41,6 +41,11 @@ type MigrateConfig struct {
 	UpstreamTag string
 	// CLIVersion is the current CLI version, used for manifest ref defaults.
 	CLIVersion string
+
+	// ReviewAppClientID is the OAuth client ID of the review agent's
+	// GitHub App. When set, it is written as FULLSEND_REVIEW_CLIENT_ID
+	// on each migrated repo.
+	ReviewAppClientID string
 }
 
 // MigrateRepoResult holds the outcome of migrating a single repo.
@@ -378,19 +383,20 @@ func migrateRepo(ctx context.Context, cfg MigrateConfig, dr DiscoveredRepo,
 	}
 
 	installCfg := InstallConfig{
-		Owner:            dr.Owner,
-		Repo:             dr.Repo,
-		Forge:            ForgeGitHub,
-		Roles:            roles,
-		MintURL:          mintURL,
-		InferenceProject: cfg.Project,
-		InferenceRegion:  inferenceRegion,
-		UpstreamRef:      ref,
-		UpstreamTag:      cfg.UpstreamTag,
-		SkipGuardCheck:   true,
-		WIFProvider:      wifProvider,
-		Direct:           cfg.Direct,
-		PerRepoConfig:    perRepoCfg,
+		Owner:             dr.Owner,
+		Repo:              dr.Repo,
+		Forge:             ForgeGitHub,
+		Roles:             roles,
+		MintURL:           mintURL,
+		InferenceProject:  cfg.Project,
+		InferenceRegion:   inferenceRegion,
+		UpstreamRef:       ref,
+		UpstreamTag:       cfg.UpstreamTag,
+		SkipGuardCheck:    true,
+		WIFProvider:       wifProvider,
+		ReviewAppClientID: cfg.ReviewAppClientID,
+		Direct:            cfg.Direct,
+		PerRepoConfig:     perRepoCfg,
 	}
 
 	installResult, installErr := Install(ctx, installCfg, fc.Client, commitScaffold, progress)

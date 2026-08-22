@@ -260,7 +260,7 @@ fullsend repos set-default github.mint_url ""   # removes the key
 | `github.mint_mode` | `public` or `private` | Controls the default mint URL: `public` defaults to `https://mint.fullsend.sh`; `private` requires an explicit `mint_url` (default: `public`) |
 | `github.fullsend_ref` | ref string | Git ref to pin in scaffold workflow YAML |
 | `gitlab.url` | URL | GitLab instance URL |
-| `gitlab.fullsend_ref` | ref string | Git ref to pin in scaffold dispatch file |
+| `gitlab.fullsend_ref` | ref string | Git ref to pin in scaffold CI template files |
 | `gitlab.runner_tags` | comma-separated tags | CI runner tags for routing agent jobs |
 
 ### Flags

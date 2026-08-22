@@ -43,6 +43,12 @@ type BatchInstallConfig struct {
 	// InferenceRegion is the GCP region for inference. Install-time-only,
 	// not stored in the manifest.
 	InferenceRegion string
+
+	// ReviewAppClientID is the OAuth client ID of the review agent's
+	// GitHub App. Resolved by the CLI via GetAppClientID and written as
+	// FULLSEND_REVIEW_CLIENT_ID on each installed repo so that
+	// pre-fetch-prior-review.sh can validate prior-review provenance.
+	ReviewAppClientID string
 }
 
 // BatchInstallResult holds the outcome of a multi-repo install operation.
@@ -412,20 +418,21 @@ func BatchInstall(ctx context.Context, cfg BatchInstallConfig,
 			}
 
 			installCfg := InstallConfig{
-				Owner:            dr.repo.Owner,
-				Repo:             dr.repo.Repo,
-				Forge:            dr.resolved.Forge,
-				Roles:            roles,
-				MintURL:          dr.resolved.MintURL,
-				InferenceProject: cfg.InferenceProject,
-				InferenceRegion:  cfg.InferenceRegion,
-				UpstreamRef:      ref,
-				UpstreamTag:      tag,
-				SkipGuardCheck:   true,
-				WIFProvider:      wifProvider,
-				RunnerTags:       gitlabRunnerTags(cfg.Manifest),
-				Direct:           cfg.Direct,
-				ReuseSecrets:     dr.secretsExist,
+				Owner:             dr.repo.Owner,
+				Repo:              dr.repo.Repo,
+				Forge:             dr.resolved.Forge,
+				Roles:             roles,
+				MintURL:           dr.resolved.MintURL,
+				InferenceProject:  cfg.InferenceProject,
+				InferenceRegion:   cfg.InferenceRegion,
+				UpstreamRef:       ref,
+				UpstreamTag:       tag,
+				SkipGuardCheck:    true,
+				WIFProvider:       wifProvider,
+				ReviewAppClientID: cfg.ReviewAppClientID,
+				RunnerTags:        gitlabRunnerTags(cfg.Manifest),
+				Direct:            cfg.Direct,
+				ReuseSecrets:      dr.secretsExist,
 			}
 
 			// When the manifest pins to a different version than the

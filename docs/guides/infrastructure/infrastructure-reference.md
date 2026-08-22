@@ -250,6 +250,7 @@ Secrets and variables are deployed at different scopes depending on the installa
 - `FULLSEND_MINT_URL`
 - `FULLSEND_GCP_REGION` (install-time only, not managed by sync)
 - `FULLSEND_PER_REPO_INSTALL` — Flag indicating per-repo mode (set to "true")
+- `FULLSEND_REVIEW_CLIENT_ID` — OAuth client ID of the review agent's GitHub App (best-effort, conditional on successful lookup)
 
 #### GitLab
 

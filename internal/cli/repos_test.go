@@ -11,6 +11,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/repos"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -942,6 +943,9 @@ func newInstalledFakeClientCLI(repoNames ...string) *forge.FakeClient {
 		fc.Secrets[r+"/FULLSEND_GCP_PROJECT_ID"] = true
 		fc.Secrets[r+"/FULLSEND_GCP_WIF_PROVIDER"] = true
 		fc.FileContents[r+"/.github/workflows/fullsend.yml"] = []byte("uses: fullsend-ai/fullsend/.github/workflows/dispatch.yml@v1.0.0")
+		for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+			fc.FileContents[r+"/"+tcPath] = []byte("uses: fullsend-ai/fullsend/.github/workflows/reusable-prioritize.yml@v1.0.0")
+		}
 	}
 	return fc
 }

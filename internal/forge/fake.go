@@ -206,6 +206,10 @@ type FakeClient struct {
 	// Key is "owner/repo", checked before the generic Errors map.
 	DeleteFilesErrors map[string]error
 
+	// GetFileContentErrors injects per-path errors for GetFileContent.
+	// Key is "owner/repo/path", checked before the generic Errors map.
+	GetFileContentErrors map[string]error
+
 	// Issue comments for ListIssueComments / UpdateIssueComment.
 	IssueComments map[string][]IssueComment // key: "owner/repo/number"
 	OpenIssues    map[string][]Issue        // key: "owner/repo"
@@ -564,11 +568,15 @@ func (f *FakeClient) GetFileContent(_ context.Context, owner, repo, path string)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	key := owner + "/" + repo + "/" + path
+	if f.GetFileContentErrors != nil {
+		if e, ok := f.GetFileContentErrors[key]; ok {
+			return nil, e
+		}
+	}
 	if e := f.err("GetFileContent"); e != nil {
 		return nil, e
 	}
-
-	key := owner + "/" + repo + "/" + path
 	data, ok := f.FileContents[key]
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrNotFound, key)

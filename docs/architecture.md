@@ -169,7 +169,7 @@ repo baseline and overrides)
 
 **Open questions:**
 
-- Does the harness live inside the sandbox (configuring the agent from within its isolation boundary) or outside it (preparing the environment before the agent starts)? (Tool permissions are injected as a host-managed `.claude/settings.json` — configured outside, enforced inside; see [ADR 0027](ADRs/0027-allowed-and-disallowed-tools-for-agents.md). General harness placement remains open.)
+- Does the harness live inside the sandbox (configuring the agent from within its isolation boundary) or outside it (preparing the environment before the agent starts)? (Security hooks are injected as a runner-owned `hooks.json` loaded via `--settings`; see [ADR 0027](ADRs/0027-allowed-and-disallowed-tools-for-agents.md). General harness placement remains open.)
 - How is codebase context assembled? (See [codebase-context.md](problems/codebase-context.md).)
 - How do we version and test harness configurations? (See [testing-agents.md](problems/testing-agents.md).) (Functional tests now test the full pipeline including harness-assembled configuration — [ADR 0052](ADRs/0052-functional-tests-for-agent-pipelines.md). Harness versioning remains open.)
 
@@ -181,7 +181,7 @@ This is the thing that actually reasons and acts. Everything else in this docume
 
 **Decided (implementation):**
 
-- The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; production orgs default to Claude Code. Runtime selection is configured in `defaults.runtime` on the org `config.yaml` and resolved via `runtime.ResolveFromConfig()`. A **dummy** runtime executes scripted operations in the real OpenShell sandbox for behaviour tests (inference removed). Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `ClaudeHooksBootstrap` for sandbox tool hooks. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
+- The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; production orgs default to Claude Code. Runtime selection is configured in `defaults.runtime` on the org `config.yaml` and resolved via `runtime.ResolveFromConfig()`. A **dummy** runtime executes scripted operations in the real OpenShell sandbox for behaviour tests (inference removed). Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `SandboxHooksBootstrap` for the runtime-neutral sandbox tool hooks ([ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md)); runtimes declare further capabilities through small optional interfaces (`DebugLogNamer`, `ContextBridger`) rather than `Name()` checks in the runner. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
 
 ### Behaviour testing
 
@@ -192,7 +192,7 @@ End-to-end **behaviour tests** use the shared framework in `pkg/behaviourtest/` 
 - Is the runtime a single model call, a loop (plan-act-observe), or something more structured?
 - How does the runtime interact with the sandbox boundaries — does it know what it can't do, or does it just hit walls? (For tool access: both — prose instructions inform the runtime, and `permissions.deny` hard-blocks execution; see [ADR 0027](ADRs/0027-allowed-and-disallowed-tools-for-agents.md). Broader sandbox interaction remains open.)
 - How do we swap model providers or versions without changing the rest of the stack?
-- What is the interface between the harness and the runtime? (A system prompt? A configuration file? An API contract?)
+- What is the interface between the harness and the runtime? (A system prompt? A configuration file? An API contract?) (Partially decided: the runner-side contract is `runtime.Runtime` + `BootstrapInput`, the runtime-neutral sandbox tool-hook contract in [ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md), and optional capability interfaces; how the harness prompt/config reaches a non-Claude runtime remains open.)
 
 ## Agent Identity Provider
 

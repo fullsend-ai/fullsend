@@ -1075,6 +1075,9 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		return err
 	}
 
+	// Resolve review app client ID for provenance validation.
+	reviewAppClientID := resolveReviewAppClientID(ctx, client, c.AppSet)
+
 	installCfg := repos.InstallConfig{
 		Owner:                 owner,
 		Repo:                  repo,
@@ -1088,6 +1091,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		SkipAppSetup:          true,
 		SkipGuardCheck:        true,
 		WIFProvider:           inferenceWIFProvider,
+		ReviewAppClientID:     reviewAppClientID,
 		VendorBinary:          vendor,
 		Direct:                c.Direct,
 		SkipScaffoldAndConfig: vendor,

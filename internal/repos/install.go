@@ -69,6 +69,12 @@ type InstallConfig struct {
 
 	VendorBinary bool
 
+	// ReviewAppClientID is the OAuth client ID of the review agent's
+	// GitHub App. When set, it is written as the FULLSEND_REVIEW_CLIENT_ID
+	// repo variable so that pre-fetch-prior-review.sh can validate
+	// provenance of prior review comments.
+	ReviewAppClientID string
+
 	// RunnerTags is a list of GitLab CI runner tags to embed in scaffold
 	// pipeline YAML so that agent jobs are routed to specific runners.
 	RunnerTags []string
@@ -321,6 +327,9 @@ func installVarsForForge(cfg InstallConfig, mintURL string) (map[string]string, 
 		if cfg.InferenceRegion != "" {
 			vars["FULLSEND_GCP_REGION"] = cfg.InferenceRegion
 		}
+		if cfg.ReviewAppClientID != "" {
+			vars["FULLSEND_REVIEW_CLIENT_ID"] = cfg.ReviewAppClientID
+		}
 		return vars, nil
 	case ForgeGitLab:
 		now := time.Now().UTC().Format(time.RFC3339)
@@ -400,6 +409,19 @@ func checkInstallComponents(ctx context.Context, client forge.Client, owner, rep
 	}
 	if !workflowFound {
 		return false, nil
+	}
+
+	// Per-repo thin callers (GitHub only).
+	if forgeName == ForgeGitHub || forgeName == "" {
+		for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+			_, tcErr := client.GetFileContent(ctx, owner, repo, tcPath)
+			if tcErr != nil {
+				if forge.IsNotFound(tcErr) {
+					return false, nil
+				}
+				return false, fmt.Errorf("checking thin caller %s: %w", tcPath, tcErr)
+			}
+		}
 	}
 
 	// Variables (forge-specific).

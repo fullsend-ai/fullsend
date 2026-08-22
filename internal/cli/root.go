@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -19,15 +20,28 @@ func CommitSHA() string {
 	return commitSHA
 }
 
-// resolveUpstreamRef returns the SHA and version tag for pinning scaffold
-// workflow refs. Release builds (commitSHA is a real SHA) return the SHA
-// and the corresponding version tag. Dev builds return empty strings,
-// causing the render layer to fall back to config.DefaultUpstreamRef.
-func resolveUpstreamRef() (ref, tag string) {
+// resolveBuildVersion returns the commit SHA and normalized version tag
+// from build-time ldflags. Release builds (commitSHA is a real SHA)
+// return ("abc123def", "v0.42.0"). Dev builds return ("", "").
+// This is the single source of truth for CLI version resolution — both
+// scaffold pinning (resolveUpstreamRef) and agents-repo pinning
+// (resolveAgentsRef) derive their values from it.
+func resolveBuildVersion() (sha, tag string) {
 	if commitSHA != "" && commitSHA != "dev" {
-		return commitSHA, "v" + version
+		v := strings.TrimPrefix(version, "v")
+		if v == "" || v == "dev" {
+			return "", ""
+		}
+		return commitSHA, "v" + v
 	}
 	return "", ""
+}
+
+// resolveUpstreamRef returns the SHA and version tag for pinning scaffold
+// workflow refs. Delegates to resolveBuildVersion; dev builds return empty
+// strings, causing the render layer to fall back to config.DefaultUpstreamRef.
+func resolveUpstreamRef() (ref, tag string) {
+	return resolveBuildVersion()
 }
 
 func newRootCmd() *cobra.Command {

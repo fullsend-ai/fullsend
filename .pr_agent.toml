@@ -1,0 +1,18 @@
+# Qodo PR-Agent repo-level configuration.
+# Only override settings that differ from defaults — see
+# https://github.com/qodo-ai/pr-agent/blob/main/pr_agent/settings/configuration.toml
+
+[pr_reviewer]
+extra_instructions = """\
+Do not enforce convention-pack rules TC-001 and TC-002. \
+Those rules mandate stdlib testing only (no testify), but this project \
+uses testify/assert and testify/require extensively (72 % of test files). \
+Flagging testify usage is a false positive here.\
+"""
+
+[pr_code_suggestions]
+extra_instructions = """\
+Do not suggest replacing testify assertions with stdlib testing. \
+This project uses testify/assert and testify/require as its standard \
+Go test assertion library.\
+"""

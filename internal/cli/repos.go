@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/fullsend-ai/fullsend/internal/appsetup"
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/dispatch/gcf"
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -158,17 +159,24 @@ func runReposMigrate(cmd *cobra.Command, org string, cfg *reposMigrateConfig) er
 		printer.StepStart(fmt.Sprintf("Migrating %s from per-org to per-repo install", org))
 	}
 
+	// Resolve the review app client ID for provenance validation.
+	var reviewAppClientID string
+	if fc, fcErr := clients.ConfigFor(repos.ForgeGitHub); fcErr == nil {
+		reviewAppClientID = resolveReviewAppClientID(ctx, fc.Client, appsetup.DefaultAppSet)
+	}
+
 	migrateCfg := repos.MigrateConfig{
-		Org:            org,
-		Project:        cfg.project,
-		RepoFilter:     cfg.repoFilter,
-		DryRun:         cfg.dryRun,
-		Direct:         cfg.direct,
-		MaxConcurrency: cfg.concurrency,
-		ManifestPath:   cfg.manifest,
-		UpstreamRef:    upstreamRef,
-		UpstreamTag:    upstreamTag,
-		CLIVersion:     version,
+		Org:               org,
+		Project:           cfg.project,
+		RepoFilter:        cfg.repoFilter,
+		DryRun:            cfg.dryRun,
+		Direct:            cfg.direct,
+		MaxConcurrency:    cfg.concurrency,
+		ManifestPath:      cfg.manifest,
+		UpstreamRef:       upstreamRef,
+		UpstreamTag:       upstreamTag,
+		CLIVersion:        version,
+		ReviewAppClientID: reviewAppClientID,
 	}
 
 	result, err := repos.Migrate(ctx, migrateCfg, clients, provisioner, scaffoldCommitFn, progressFn)
@@ -686,6 +694,13 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		return commitErr
 	}
 
+	// Resolve the review app client ID for provenance validation.
+	// Best-effort: a missing client ID does not block installation.
+	var reviewAppClientID string
+	if fc, fcErr := clients.ConfigFor(repos.ForgeGitHub); fcErr == nil {
+		reviewAppClientID = resolveReviewAppClientID(ctx, fc.Client, appsetup.DefaultAppSet)
+	}
+
 	// Phase 1: provision repos not yet installed.
 	cfg := repos.BatchInstallConfig{
 		Manifest:               manifest,
@@ -699,6 +714,7 @@ func runReposInstall(ctx context.Context, opts *reposInstallConfig) error {
 		InferenceProject:       opts.inferenceProject,
 		InferenceProjectNumber: opts.inferenceProjectNumber,
 		InferenceRegion:        opts.inferenceRegion,
+		ReviewAppClientID:      reviewAppClientID,
 	}
 
 	progressFn := func(repo, phase, msg string) {

@@ -48,6 +48,9 @@ func RenderTemplate(path string, content []byte, opts RenderOptions) ([]byte, er
 			return nil, err
 		}
 		out = strings.ReplaceAll(out, "__REUSABLE_WORKFLOW__", reusableWorkflowUses(stage, opts))
+		if opts.PerRepo {
+			out = strings.ReplaceAll(out, "install_mode: per-org", "install_mode: per-repo")
+		}
 	case path == "templates/shim-per-repo.yaml":
 		out = strings.ReplaceAll(out, "__REUSABLE_DISPATCH__", reusableDispatchUses(opts))
 	}

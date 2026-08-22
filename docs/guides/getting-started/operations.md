@@ -23,6 +23,7 @@ fullsend github set "$OWNER/$REPO" FULLSEND_GCP_REGION global
 |-----|-------------|-------------|---------------|
 | `FULLSEND_GCP_REGION` | Repo variable | GCP region for Agent Platform inference | `global` |
 | `FULLSEND_PER_REPO_INSTALL` | Repo variable | Set to `true` for per-repo installations (auto-set by installer) | `true` |
+| `FULLSEND_REVIEW_CLIENT_ID` | Repo variable | OAuth client ID of the review agent's GitHub App (best-effort, auto-set by installer) | `Iv23li1nIorNLIQy6NWK` |
 | `FULLSEND_GCP_PROJECT_ID` | Repo secret | GCP project ID where Agent Platform is enabled | `my-gcp-project` |
 | `FULLSEND_GCP_WIF_PROVIDER` | Repo secret | Full WIF provider resource name for OIDC authentication | `projects/123456789/locations/global/...` |
 
@@ -67,7 +68,7 @@ To remove fullsend from a single repository:
 
 **GitHub repos:**
 
-1. Delete `.github/workflows/fullsend.yaml` and repo-level secrets/variables
+1. Delete `.github/workflows/fullsend.yaml`, `.github/workflows/prioritize.yml`, and repo-level secrets/variables
 2. Run `fullsend inference deprovision "$OWNER/$REPO"` to remove WIF access
 3. Remove the `FULLSEND_MINT_URL` repository variable (if set) — no separate unenrollment is needed for the hosted community mint
 

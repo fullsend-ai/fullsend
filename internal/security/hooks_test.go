@@ -11,9 +11,9 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/harness"
 )
 
-func TestGenerateClaudeSettings_AllDefaults(t *testing.T) {
+func TestGenerateHooksConfig_AllDefaults(t *testing.T) {
 	h := &harness.Harness{Agent: "test.md"}
-	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -42,7 +42,7 @@ func TestGenerateClaudeSettings_AllDefaults(t *testing.T) {
 	assert.Len(t, canaryHooks, 1)
 }
 
-func TestGenerateClaudeSettings_TirithDisabled(t *testing.T) {
+func TestGenerateHooksConfig_TirithDisabled(t *testing.T) {
 	disabled := false
 	h := &harness.Harness{
 		Agent: "test.md",
@@ -52,7 +52,7 @@ func TestGenerateClaudeSettings_TirithDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -63,7 +63,7 @@ func TestGenerateClaudeSettings_TirithDisabled(t *testing.T) {
 	assert.Len(t, preTools, 2) // ssrf + canary_pretool
 }
 
-func TestGenerateClaudeSettings_AllHooksDisabled(t *testing.T) {
+func TestGenerateHooksConfig_AllHooksDisabled(t *testing.T) {
 	disabled := false
 	h := &harness.Harness{
 		Agent: "test.md",
@@ -80,7 +80,7 @@ func TestGenerateClaudeSettings_AllHooksDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -93,7 +93,7 @@ func TestGenerateClaudeSettings_AllHooksDisabled(t *testing.T) {
 
 func TestHookFiles_AllDefaults(t *testing.T) {
 	h := &harness.Harness{Agent: "test.md"}
-	files := HookFiles(ClaudeSandboxHooksFromHarness(h))
+	files := HookFiles(SandboxHookConfigFromHarness(h))
 	assert.Len(t, files, 7) // 5 existing + canary_pretool + canary_posttool (tool_allowlist disabled by default)
 	assert.Contains(t, files, "tirith_check.py")
 	assert.Contains(t, files, "ssrf_pretool.py")
@@ -120,7 +120,7 @@ func TestHookFiles_SSRFDisabled(t *testing.T) {
 			},
 		},
 	}
-	files := HookFiles(ClaudeSandboxHooksFromHarness(h))
+	files := HookFiles(SandboxHookConfigFromHarness(h))
 	assert.Len(t, files, 6) // both canary hooks still enabled
 	assert.NotContains(t, files, "ssrf_pretool.py")
 }
@@ -135,7 +135,7 @@ func TestHookFiles_UnicodeDisabled(t *testing.T) {
 			},
 		},
 	}
-	files := HookFiles(ClaudeSandboxHooksFromHarness(h))
+	files := HookFiles(SandboxHookConfigFromHarness(h))
 	assert.Len(t, files, 6) // both canary hooks still enabled
 	assert.NotContains(t, files, "unicode_posttool.py")
 }
@@ -151,7 +151,7 @@ func TestEmbeddedHooksNotEmpty(t *testing.T) {
 	assert.NotEmpty(t, ToolAllowlistPreToolHook)
 }
 
-func TestGenerateClaudeSettings_UnicodeDisabled(t *testing.T) {
+func TestGenerateHooksConfig_UnicodeDisabled(t *testing.T) {
 	disabled := false
 	h := &harness.Harness{
 		Agent: "test.md",
@@ -161,7 +161,7 @@ func TestGenerateClaudeSettings_UnicodeDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -177,7 +177,7 @@ func TestGenerateClaudeSettings_UnicodeDisabled(t *testing.T) {
 	assert.Len(t, chainedHooks, 2) // context_suppress + secret_redact
 }
 
-func TestGenerateClaudeSettings_SecretRedactDisabled(t *testing.T) {
+func TestGenerateHooksConfig_SecretRedactDisabled(t *testing.T) {
 	disabled := false
 	h := &harness.Harness{
 		Agent: "test.md",
@@ -187,7 +187,7 @@ func TestGenerateClaudeSettings_SecretRedactDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -203,7 +203,7 @@ func TestGenerateClaudeSettings_SecretRedactDisabled(t *testing.T) {
 	assert.Len(t, chainedHooks, 2) // context_suppress + unicode
 }
 
-func TestGenerateClaudeSettings_ContextSuppressDisabled(t *testing.T) {
+func TestGenerateHooksConfig_ContextSuppressDisabled(t *testing.T) {
 	disabled := false
 	h := &harness.Harness{
 		Agent: "test.md",
@@ -213,7 +213,7 @@ func TestGenerateClaudeSettings_ContextSuppressDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -229,9 +229,9 @@ func TestGenerateClaudeSettings_ContextSuppressDisabled(t *testing.T) {
 	assert.Len(t, chainedHooks, 2) // unicode + secret_redact
 }
 
-func TestGenerateClaudeSettings_PostToolSanitizeHookOrder(t *testing.T) {
+func TestGenerateHooksConfig_PostToolSanitizeHookOrder(t *testing.T) {
 	h := &harness.Harness{Agent: "test.md"}
-	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -265,7 +265,7 @@ func TestGenerateClaudeSettings_PostToolSanitizeHookOrder(t *testing.T) {
 	assert.Less(t, unicodeIdx, redactIdx, "unicode must run before secret_redact")
 }
 
-func TestGenerateClaudeSettings_CanaryPostToolDisabled(t *testing.T) {
+func TestGenerateHooksConfig_CanaryPostToolDisabled(t *testing.T) {
 	disabled := false
 	h := &harness.Harness{
 		Agent: "test.md",
@@ -275,7 +275,7 @@ func TestGenerateClaudeSettings_CanaryPostToolDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -293,7 +293,7 @@ func TestGenerateClaudeSettings_CanaryPostToolDisabled(t *testing.T) {
 	assert.Len(t, preTools, 3) // tirith + ssrf + canary_pretool
 }
 
-func TestGenerateClaudeSettings_CanaryPreToolDisabled(t *testing.T) {
+func TestGenerateHooksConfig_CanaryPreToolDisabled(t *testing.T) {
 	disabled := false
 	h := &harness.Harness{
 		Agent: "test.md",
@@ -303,7 +303,7 @@ func TestGenerateClaudeSettings_CanaryPreToolDisabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -318,7 +318,7 @@ func TestGenerateClaudeSettings_CanaryPreToolDisabled(t *testing.T) {
 	assert.Len(t, postTools, 2) // chain + canary_posttool
 }
 
-func TestGenerateClaudeSettings_ToolAllowlistEnabled(t *testing.T) {
+func TestGenerateHooksConfig_ToolAllowlistEnabled(t *testing.T) {
 	enabled := true
 	h := &harness.Harness{
 		Agent: "test.md",
@@ -328,7 +328,7 @@ func TestGenerateClaudeSettings_ToolAllowlistEnabled(t *testing.T) {
 			},
 		},
 	}
-	data, err := GenerateClaudeSettings(ClaudeSandboxHooksFromHarness(h))
+	data, err := GenerateHooksConfig(SandboxHookConfigFromHarness(h))
 	require.NoError(t, err)
 
 	var settings map[string]any
@@ -355,7 +355,7 @@ func TestHookFiles_ToolAllowlistEnabled(t *testing.T) {
 			},
 		},
 	}
-	files := HookFiles(ClaudeSandboxHooksFromHarness(h))
+	files := HookFiles(SandboxHookConfigFromHarness(h))
 	assert.Len(t, files, 8) // 7 default + tool_allowlist
 	assert.Contains(t, files, "tool_allowlist_pretool.py")
 }
@@ -370,7 +370,116 @@ func TestHookFiles_ContextSuppressDisabled(t *testing.T) {
 			},
 		},
 	}
-	files := HookFiles(ClaudeSandboxHooksFromHarness(h))
+	files := HookFiles(SandboxHookConfigFromHarness(h))
 	assert.Len(t, files, 6) // both canary hooks still enabled
 	assert.NotContains(t, files, "context_suppress_posttool.py")
+}
+
+func TestHookPlan_DefaultsAndOrder(t *testing.T) {
+	plan := HookPlan(SandboxHookConfigFromHarness(&harness.Harness{}))
+
+	var pre, post []HookGroup
+	for _, g := range plan {
+		switch g.Phase {
+		case HookPhasePreToolUse:
+			pre = append(pre, g)
+		case HookPhasePostToolUse:
+			post = append(post, g)
+		default:
+			t.Fatalf("unexpected phase %q", g.Phase)
+		}
+	}
+
+	// Defaults: tirith, ssrf, canary pre-tool on; tool allowlist off.
+	require.Len(t, pre, 3)
+	assert.Equal(t, []string{"Bash"}, pre[0].Tools)
+	assert.Equal(t, []string{"tirith_check.py"}, pre[0].Scripts)
+	assert.Equal(t, []string{"Bash", "WebFetch"}, pre[1].Tools)
+	assert.Equal(t, []string{"ssrf_pretool.py"}, pre[1].Scripts)
+	assert.Equal(t, []string{AllTools}, pre[2].Tools)
+	assert.Equal(t, []string{"canary_pretool.py"}, pre[2].Scripts)
+
+	// Post-tool chain order is an invariant: suppress → unicode → redact.
+	require.Len(t, post, 2)
+	assert.Equal(t, []string{"Bash", "WebFetch", "Read"}, post[0].Tools)
+	assert.Equal(t, []string{
+		"context_suppress_posttool.py", "unicode_posttool.py", "secret_redact_posttool.py",
+	}, post[0].Scripts)
+	assert.Equal(t, []string{AllTools}, post[1].Tools)
+	assert.Equal(t, []string{"canary_posttool.py"}, post[1].Scripts)
+
+	// Every script the plan references is shipped by HookFiles, and vice versa.
+	files := HookFiles(SandboxHookConfigFromHarness(&harness.Harness{}))
+	seen := map[string]bool{}
+	for _, g := range plan {
+		for _, s := range g.Scripts {
+			assert.Contains(t, files, s)
+			seen[s] = true
+		}
+	}
+	for name := range files {
+		assert.True(t, seen[name], "HookFiles ships %s but HookPlan never runs it", name)
+	}
+}
+
+func TestHookPlan_CoversHookFiles_AllEnabled(t *testing.T) {
+	on := true
+	h := &harness.Harness{Security: &harness.SecurityConfig{SandboxHooks: &harness.SandboxHooks{
+		ToolAllowlistPreTool: &harness.ToolAllowlistConfig{Enabled: &on},
+	}}}
+	cfg := SandboxHookConfigFromHarness(h)
+	plan := HookPlan(cfg)
+	files := HookFiles(cfg)
+
+	// With the opt-in allowlist enabled, every shipped script must be scheduled
+	// exactly once and every scheduled script must be shipped — the "cannot
+	// diverge" invariant between HookFiles, HookPlan and GenerateHooksConfig.
+	seen := map[string]int{}
+	for _, g := range plan {
+		for _, s := range g.Scripts {
+			assert.Contains(t, files, s)
+			seen[s]++
+		}
+	}
+	for name := range files {
+		assert.Equal(t, 1, seen[name], "script %s scheduled %d times", name, seen[name])
+	}
+	assert.Contains(t, seen, "tool_allowlist_pretool.py")
+
+	settings, err := GenerateHooksConfig(cfg)
+	require.NoError(t, err)
+	for name := range files {
+		assert.Contains(t, string(settings), SandboxHooksDir+"/"+name)
+	}
+}
+
+func TestHookPlan_AllDisabled(t *testing.T) {
+	off := false
+	h := &harness.Harness{Security: &harness.SecurityConfig{SandboxHooks: &harness.SandboxHooks{
+		Tirith:                  &harness.TirithConfig{Enabled: &off},
+		SSRFPreTool:             &off,
+		CanaryPreTool:           &off,
+		CanaryPostTool:          &off,
+		SecretRedactPostTool:    &off,
+		UnicodePostTool:         &off,
+		ContextSuppressPostTool: &off,
+		ToolAllowlistPreTool:    &harness.ToolAllowlistConfig{Enabled: &off},
+	}}}
+	assert.Empty(t, HookPlan(SandboxHookConfigFromHarness(h)))
+	assert.Empty(t, HookFiles(SandboxHookConfigFromHarness(h)))
+}
+
+func TestSandboxHookConfig_Tirith(t *testing.T) {
+	// Unset harness → Tirith required, no fail-on override.
+	cfg := SandboxHookConfigFromHarness(nil)
+	assert.True(t, cfg.TirithRequired())
+	assert.Empty(t, cfg.TirithFailOn())
+
+	off := false
+	h := &harness.Harness{Security: &harness.SecurityConfig{SandboxHooks: &harness.SandboxHooks{
+		Tirith: &harness.TirithConfig{Enabled: &off, FailOn: "medium"},
+	}}}
+	cfg = SandboxHookConfigFromHarness(h)
+	assert.False(t, cfg.TirithRequired())
+	assert.Equal(t, "medium", cfg.TirithFailOn())
 }

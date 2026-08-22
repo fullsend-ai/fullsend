@@ -3,6 +3,7 @@ package security
 import (
 	_ "embed"
 	"encoding/json"
+	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 )
@@ -43,42 +44,68 @@ type hookMatcher struct {
 	Hooks   []hookEntry `json:"hooks"`
 }
 
-// claudeSettings represents the .claude/settings.json structure.
-type claudeSettings struct {
+// hooksConfig represents the hooks.json structure for Claude Code hook wiring.
+type hooksConfig struct {
 	Hooks map[string][]hookMatcher `json:"hooks"`
 }
 
-// SandboxHooksDir is the path where hook scripts are installed inside the
-// sandbox. Must match sandbox.SandboxWorkspace + "/.claude/hooks".
-const SandboxHooksDir = sandbox.SandboxWorkspace + "/.claude/hooks"
+// SandboxHooksDir is the directory where hook scripts are installed inside
+// the sandbox. Co-located with SandboxHooksSettings under the runner-owned
+// config directory so they are outside the agent-writable workspace tree.
+const SandboxHooksDir = sandbox.SandboxClaudeConfig + "/hooks"
 
-// GenerateClaudeSettings produces a .claude/settings.json with security hooks
-// configured according to hooks. Returns the JSON bytes.
-func GenerateClaudeSettings(hooks ClaudeSandboxHooks) ([]byte, error) {
-	settings := claudeSettings{
-		Hooks: make(map[string][]hookMatcher),
-	}
+// SandboxHooksSettings is the path where the hook wiring hooks.json is
+// written inside the sandbox. buildRunCommand passes this via --settings so
+// Claude Code loads the hooks regardless of its working directory.
+const SandboxHooksSettings = sandbox.SandboxClaudeConfig + "/hooks.json"
 
-	var preToolMatchers []hookMatcher
-	var postToolMatchers []hookMatcher
+// HookPhase identifies when a sandbox hook group runs relative to a tool call.
+// The names match Claude Code's settings.json event names; other runtimes map
+// them onto their own hook/plugin/extension events (e.g. OpenCode
+// tool.execute.before/after, pi tool_call/tool_result).
+type HookPhase string
+
+const (
+	// HookPhasePreToolUse runs before the tool executes and may block it.
+	HookPhasePreToolUse HookPhase = "PreToolUse"
+	// HookPhasePostToolUse runs after the tool executes and may rewrite its result.
+	HookPhasePostToolUse HookPhase = "PostToolUse"
+)
+
+// HookGroup is one ordered chain of hook scripts bound to a set of tools.
+// Tools are Claude Code tool names ("Bash", "Read", "WebFetch", ...); "*"
+// means every tool. Scripts are filenames from HookFiles, run sequentially in
+// the listed order — ordering is load-bearing for PostToolUse chains (see
+// HookPlan). Runtimes that use different tool names translate before matching.
+type HookGroup struct {
+	Phase   HookPhase
+	Tools   []string
+	Scripts []string
+}
+
+// AllTools is the wildcard tool matcher.
+const AllTools = "*"
+
+// HookPlan returns the runtime-neutral wiring for the enabled sandbox hooks:
+// which scripts run in which phase, for which tools, in what order. It is the
+// single source of truth consumed by GenerateHooksConfig (Claude Code) and
+// by any other runtime's hook adapter, so the two cannot diverge.
+func HookPlan(hooks SandboxHookConfig) []HookGroup {
+	var plan []HookGroup
 
 	// Tirith PreToolUse hook (Bash commands).
 	if tirithEnabled(hooks) {
-		preToolMatchers = append(preToolMatchers, hookMatcher{
-			Matcher: "Bash",
-			Hooks: []hookEntry{
-				{Type: "command", Command: "python3 " + SandboxHooksDir + "/tirith_check.py"},
-			},
+		plan = append(plan, HookGroup{
+			Phase: HookPhasePreToolUse, Tools: []string{"Bash"},
+			Scripts: []string{"tirith_check.py"},
 		})
 	}
 
 	// SSRF PreToolUse hook (Bash + WebFetch).
 	if ssrfPreToolEnabled(hooks) {
-		preToolMatchers = append(preToolMatchers, hookMatcher{
-			Matcher: "Bash|WebFetch",
-			Hooks: []hookEntry{
-				{Type: "command", Command: "python3 " + SandboxHooksDir + "/ssrf_pretool.py"},
-			},
+		plan = append(plan, HookGroup{
+			Phase: HookPhasePreToolUse, Tools: []string{"Bash", "WebFetch"},
+			Scripts: []string{"ssrf_pretool.py"},
 		})
 	}
 
@@ -87,78 +114,89 @@ func GenerateClaudeSettings(hooks ClaudeSandboxHooks) ([]byte, error) {
 	// Uses * to cover MCP tools (issue comments, PR bodies, etc.)
 	// in addition to Bash and WebFetch.
 	if canaryPreToolEnabled(hooks) {
-		preToolMatchers = append(preToolMatchers, hookMatcher{
-			Matcher: "*",
-			Hooks: []hookEntry{
-				{Type: "command", Command: "python3 " + SandboxHooksDir + "/canary_pretool.py"},
-			},
+		plan = append(plan, HookGroup{
+			Phase: HookPhasePreToolUse, Tools: []string{AllTools},
+			Scripts: []string{"canary_pretool.py"},
 		})
 	}
 
 	// Tool allowlist PreToolUse hook (all tools). Disabled by default.
 	if toolAllowlistPreToolEnabled(hooks) {
-		preToolMatchers = append(preToolMatchers, hookMatcher{
-			Matcher: "*",
-			Hooks: []hookEntry{
-				{Type: "command", Command: "python3 " + SandboxHooksDir + "/tool_allowlist_pretool.py"},
-			},
+		plan = append(plan, HookGroup{
+			Phase: HookPhasePreToolUse, Tools: []string{AllTools},
+			Scripts: []string{"tool_allowlist_pretool.py"},
 		})
 	}
 
-	// PostToolUse hooks for Bash|WebFetch|Read. Combined into a single matcher
-	// so Claude Code chains them sequentially (separate matchers run in parallel
-	// on the original result, which would cause modifications to conflict).
-	// Order: context suppress (compacts verbose success output) → unicode normalize
-	// → secret redact. Suppressing first avoids scanning text we'd discard.
-	// Invariant: unicode normalization must run before secret redaction so
-	// zero-width characters cannot break prefix regexes and reconstruct secrets.
-	var postToolHooks []hookEntry
+	// PostToolUse hooks for Bash|WebFetch|Read. Combined into a single group
+	// so adapters chain them sequentially, each feeding its modified result to
+	// the next. Order: context suppress (compacts verbose success output) →
+	// unicode normalize → secret redact. Suppressing first avoids scanning
+	// text we'd discard. Invariant: unicode normalization must run before
+	// secret redaction so zero-width characters cannot break prefix regexes
+	// and reconstruct secrets.
+	// NOTE: Claude Code runs all matching hooks in parallel and does not
+	// pipe one hook's output into the next, and its PostToolUse payload uses
+	// `tool_response` rather than the `tool_result` these scripts read — so
+	// under Claude Code this chain is not effective today (fullsend#6357).
+	// The ordering here is the contract adapters must meet.
+	var postScripts []string
 	if contextSuppressPostToolEnabled(hooks) {
-		postToolHooks = append(postToolHooks, hookEntry{
-			Type: "command", Command: "python3 " + SandboxHooksDir + "/context_suppress_posttool.py",
-		})
+		postScripts = append(postScripts, "context_suppress_posttool.py")
 	}
 	if unicodePostToolEnabled(hooks) {
-		postToolHooks = append(postToolHooks, hookEntry{
-			Type: "command", Command: "python3 " + SandboxHooksDir + "/unicode_posttool.py",
-		})
+		postScripts = append(postScripts, "unicode_posttool.py")
 	}
 	if secretRedactPostToolEnabled(hooks) {
-		postToolHooks = append(postToolHooks, hookEntry{
-			Type: "command", Command: "python3 " + SandboxHooksDir + "/secret_redact_posttool.py",
-		})
+		postScripts = append(postScripts, "secret_redact_posttool.py")
 	}
-	if len(postToolHooks) > 0 {
-		postToolMatchers = append(postToolMatchers, hookMatcher{
-			Matcher: "Bash|WebFetch|Read",
-			Hooks:   postToolHooks,
+	if len(postScripts) > 0 {
+		plan = append(plan, HookGroup{
+			Phase: HookPhasePostToolUse, Tools: []string{"Bash", "WebFetch", "Read"},
+			Scripts: postScripts,
 		})
 	}
 
-	// Canary PostToolUse hook (all tools). Separate matcher from the
+	// Canary PostToolUse hook (all tools). Separate group from the
 	// Bash|WebFetch|Read chain because canary must catch leaks from any
 	// tool including MCP tools.
 	if canaryPostToolEnabled(hooks) {
-		postToolMatchers = append(postToolMatchers, hookMatcher{
-			Matcher: "*",
-			Hooks: []hookEntry{
-				{Type: "command", Command: "python3 " + SandboxHooksDir + "/canary_posttool.py"},
-			},
+		plan = append(plan, HookGroup{
+			Phase: HookPhasePostToolUse, Tools: []string{AllTools},
+			Scripts: []string{"canary_posttool.py"},
 		})
 	}
 
-	if len(preToolMatchers) > 0 {
-		settings.Hooks["PreToolUse"] = preToolMatchers
-	}
-	if len(postToolMatchers) > 0 {
-		settings.Hooks["PostToolUse"] = postToolMatchers
+	return plan
+}
+
+// GenerateHooksConfig produces the hooks.json Claude Code hook wiring,
+// loaded via --settings in buildRunCommand. Returns the JSON bytes. The
+// wiring comes from HookPlan; this function only renders it in Claude Code's
+// settings format.
+func GenerateHooksConfig(hooks SandboxHookConfig) ([]byte, error) {
+	cfg := hooksConfig{
+		Hooks: make(map[string][]hookMatcher),
 	}
 
-	return json.MarshalIndent(settings, "", "  ")
+	for _, g := range HookPlan(hooks) {
+		entries := make([]hookEntry, 0, len(g.Scripts))
+		for _, script := range g.Scripts {
+			entries = append(entries, hookEntry{
+				Type: "command", Command: "python3 " + SandboxHooksDir + "/" + script,
+			})
+		}
+		cfg.Hooks[string(g.Phase)] = append(cfg.Hooks[string(g.Phase)], hookMatcher{
+			Matcher: strings.Join(g.Tools, "|"),
+			Hooks:   entries,
+		})
+	}
+
+	return json.MarshalIndent(cfg, "", "  ")
 }
 
 // HookFiles returns a map of filename -> content for all enabled hook scripts.
-func HookFiles(hooks ClaudeSandboxHooks) map[string][]byte {
+func HookFiles(hooks SandboxHookConfig) map[string][]byte {
 	files := make(map[string][]byte)
 
 	if tirithEnabled(hooks) {
@@ -197,7 +235,7 @@ func boolDefault(b *bool, def bool) bool {
 	return *b
 }
 
-func tirithEnabled(hooks ClaudeSandboxHooks) bool {
+func tirithEnabled(hooks SandboxHookConfig) bool {
 	sh := hooks.sandboxHooks()
 	if sh == nil || sh.Tirith == nil {
 		return true // default: enabled
@@ -205,7 +243,7 @@ func tirithEnabled(hooks ClaudeSandboxHooks) bool {
 	return boolDefault(sh.Tirith.Enabled, true)
 }
 
-func ssrfPreToolEnabled(hooks ClaudeSandboxHooks) bool {
+func ssrfPreToolEnabled(hooks SandboxHookConfig) bool {
 	sh := hooks.sandboxHooks()
 	if sh == nil {
 		return true
@@ -213,7 +251,7 @@ func ssrfPreToolEnabled(hooks ClaudeSandboxHooks) bool {
 	return boolDefault(sh.SSRFPreTool, true)
 }
 
-func secretRedactPostToolEnabled(hooks ClaudeSandboxHooks) bool {
+func secretRedactPostToolEnabled(hooks SandboxHookConfig) bool {
 	sh := hooks.sandboxHooks()
 	if sh == nil {
 		return true
@@ -221,7 +259,7 @@ func secretRedactPostToolEnabled(hooks ClaudeSandboxHooks) bool {
 	return boolDefault(sh.SecretRedactPostTool, true)
 }
 
-func unicodePostToolEnabled(hooks ClaudeSandboxHooks) bool {
+func unicodePostToolEnabled(hooks SandboxHookConfig) bool {
 	sh := hooks.sandboxHooks()
 	if sh == nil {
 		return true
@@ -229,7 +267,7 @@ func unicodePostToolEnabled(hooks ClaudeSandboxHooks) bool {
 	return boolDefault(sh.UnicodePostTool, true)
 }
 
-func contextSuppressPostToolEnabled(hooks ClaudeSandboxHooks) bool {
+func contextSuppressPostToolEnabled(hooks SandboxHookConfig) bool {
 	sh := hooks.sandboxHooks()
 	if sh == nil {
 		return true
@@ -237,7 +275,7 @@ func contextSuppressPostToolEnabled(hooks ClaudeSandboxHooks) bool {
 	return boolDefault(sh.ContextSuppressPostTool, true)
 }
 
-func canaryPreToolEnabled(hooks ClaudeSandboxHooks) bool {
+func canaryPreToolEnabled(hooks SandboxHookConfig) bool {
 	sh := hooks.sandboxHooks()
 	if sh == nil {
 		return true // default: enabled
@@ -245,7 +283,7 @@ func canaryPreToolEnabled(hooks ClaudeSandboxHooks) bool {
 	return boolDefault(sh.CanaryPreTool, true)
 }
 
-func canaryPostToolEnabled(hooks ClaudeSandboxHooks) bool {
+func canaryPostToolEnabled(hooks SandboxHookConfig) bool {
 	sh := hooks.sandboxHooks()
 	if sh == nil {
 		return true // default: enabled
@@ -253,7 +291,7 @@ func canaryPostToolEnabled(hooks ClaudeSandboxHooks) bool {
 	return boolDefault(sh.CanaryPostTool, true)
 }
 
-func toolAllowlistPreToolEnabled(hooks ClaudeSandboxHooks) bool {
+func toolAllowlistPreToolEnabled(hooks SandboxHookConfig) bool {
 	sh := hooks.sandboxHooks()
 	if sh == nil {
 		return false // default: disabled (opt-in)

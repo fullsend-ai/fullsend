@@ -396,6 +396,14 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		forge.PerRepoGuardVar: "true",
 	}
 
+	// Resolve the review app's client ID so pre-fetch-prior-review.sh
+	// can validate provenance of prior review comments. Best-effort:
+	// a missing client ID degrades incremental reviews but does not
+	// block installation.
+	if reviewClientID := resolveReviewAppClientID(ctx, client, cfg.appSet); reviewClientID != "" {
+		repoVars["FULLSEND_REVIEW_CLIENT_ID"] = reviewClientID
+	}
+
 	repoSecrets := make(map[string]string)
 	if !reuseProject {
 		repoSecrets["FULLSEND_GCP_PROJECT_ID"] = cfg.inferenceProject
@@ -785,6 +793,7 @@ type configKeyInfo struct {
 // configKeyMapping maps config key names to their storage type.
 var configKeyMapping = map[string]configKeyInfo{
 	"FULLSEND_GCP_REGION":       {storage: storageVariable},
+	"FULLSEND_REVIEW_CLIENT_ID": {storage: storageVariable},
 	forge.PerRepoGuardVar:       {storage: storageVariable},
 	"FULLSEND_GCP_PROJECT_ID":   {storage: storageSecret},
 	"FULLSEND_GCP_WIF_PROVIDER": {storage: storageSecret},
@@ -803,6 +812,7 @@ Org-scope variables (like FULLSEND_MINT_URL) are managed by
 
 Valid keys:
   FULLSEND_GCP_REGION         repo variable   GCP region for inference
+  FULLSEND_REVIEW_CLIENT_ID   repo variable   review app OAuth client ID
   FULLSEND_PER_REPO_INSTALL   repo variable   per-repo install marker
   FULLSEND_GCP_PROJECT_ID     repo secret     GCP project for inference
   FULLSEND_GCP_WIF_PROVIDER   repo secret     WIF provider resource name`,
@@ -1255,4 +1265,21 @@ func runGitHubSyncScaffold(ctx context.Context, client forge.Client, printer *ui
 	printer.Blank()
 	printer.StepDone("Scaffold sync complete for " + org)
 	return nil
+}
+
+// resolveReviewAppClientID attempts to look up the review agent's OAuth
+// client ID via the GitHub API. Returns the client ID on success, or
+// an empty string if the lookup fails (best-effort — a missing client ID
+// degrades incremental reviews but does not block installation).
+func resolveReviewAppClientID(ctx context.Context, client forge.Client, appSet string) string {
+	ghExt, ok := client.(forge.GitHubExtensions)
+	if !ok {
+		return ""
+	}
+	slug := appsetup.AppSlug(appSet, "review")
+	clientID, err := ghExt.GetAppClientID(ctx, slug)
+	if err != nil {
+		return ""
+	}
+	return clientID
 }

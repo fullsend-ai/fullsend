@@ -24,6 +24,90 @@ stages:
   variables:
     FULLSEND_FORGE: "gitlab"
     CODE_ALLOWED_TARGET_BRANCHES: ''
+  before_script:
+    - |
+      set -euo pipefail
+      # CI_DEBUG_TRACE guard — must run before any token-bearing
+      # commands to prevent secret leakage via debug trace logging.
+      if [ "${CI_DEBUG_TRACE:-}" = "true" ]; then
+        echo "ERROR: CI_DEBUG_TRACE enabled — aborting to protect secrets"
+        exit 1
+      fi
+      # Install fullsend CLI at the version pinned during
+      # `fullsend repos install`. Mirrors the GitHub Actions
+      # install-fullsend-cli action (#6445).
+      FULLSEND_VERSION="__FULLSEND_VERSION__"
+      FULLSEND_REPO="fullsend-ai/fullsend"
+      # Resolve "latest" to the actual release tag.
+      if [ "${FULLSEND_VERSION}" = "latest" ]; then
+        # Use GITHUB_TOKEN when available to avoid GitHub API rate
+        # limits (60 req/hr unauthenticated vs 5000 authenticated).
+        FS_AUTH_HEADER=""
+        if [ -n "${GITHUB_TOKEN:-}" ]; then
+          FS_AUTH_HEADER="Authorization: token ${GITHUB_TOKEN}"
+        fi
+        if ! FS_RELEASE_JSON=$(curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
+          ${FS_AUTH_HEADER:+-H "${FS_AUTH_HEADER}"} \
+          "https://api.github.com/repos/${FULLSEND_REPO}/releases/latest"); then
+          echo "ERROR: Failed to fetch latest release from GitHub API"
+          exit 1
+        fi
+        FULLSEND_VERSION=$(printf '%s' "${FS_RELEASE_JSON}" | jq -r '.tag_name')
+        if [ -z "${FULLSEND_VERSION}" ] || [ "${FULLSEND_VERSION}" = "null" ]; then
+          echo "ERROR: Could not resolve latest fullsend release tag"
+          exit 1
+        fi
+      fi
+      case "${FULLSEND_VERSION}" in
+        v*)
+          # Release version — download pre-built binary with checksum
+          # verification from GitHub Releases.
+          FS_VER="${FULLSEND_VERSION#v}"
+          FS_ARCH="$(uname -m)"
+          case "${FS_ARCH}" in
+            x86_64)  FS_ARCH="amd64" ;;
+            aarch64) FS_ARCH="arm64" ;;
+            *)       echo "ERROR: unsupported architecture: ${FS_ARCH} (supported: x86_64, aarch64)"; exit 1 ;;
+          esac
+          FS_BASE="https://github.com/${FULLSEND_REPO}/releases/download/${FULLSEND_VERSION}"
+          curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
+            "${FS_BASE}/fullsend_${FS_VER}_linux_${FS_ARCH}.tar.gz" \
+            -o /tmp/fullsend.tar.gz
+          curl -fsSL --retry 3 --retry-delay 2 --retry-all-errors \
+            "${FS_BASE}/checksums.txt" -o /tmp/checksums.txt
+          FS_CHECKSUM_LINE=$(grep "fullsend_${FS_VER}_linux_${FS_ARCH}.tar.gz$" /tmp/checksums.txt || true)
+          if [ -z "${FS_CHECKSUM_LINE}" ]; then
+            echo "ERROR: checksum entry not found for fullsend_${FS_VER}_linux_${FS_ARCH}.tar.gz"
+            exit 1
+          fi
+          echo "${FS_CHECKSUM_LINE}" \
+            | sed "s|fullsend_${FS_VER}_linux_${FS_ARCH}.tar.gz|/tmp/fullsend.tar.gz|" \
+            | sha256sum -c -
+          tar xzf /tmp/fullsend.tar.gz -C /usr/local/bin fullsend
+          rm -f /tmp/fullsend.tar.gz /tmp/checksums.txt
+          ;;
+        *)
+          # Untagged SHA — clone and build from source (Go toolchain
+          # is in the runner base image for this purpose).
+          if ! command -v go >/dev/null 2>&1; then
+            echo "ERROR: Go 1.20+ toolchain not found — required for source builds (non-release refs)"
+            echo "Use a runner image with Go 1.20+ installed or pin to a release version tag"
+            exit 1
+          fi
+          export GOPATH="${RUNNER_TEMP:-/tmp}/go"
+          export GOCACHE="${RUNNER_TEMP:-/tmp}/go-cache"
+          FSSRC=$(mktemp -d)
+          git init "${FSSRC}"
+          git -C "${FSSRC}" remote add origin "https://github.com/${FULLSEND_REPO}.git"
+          git -C "${FSSRC}" fetch --depth 1 origin "${FULLSEND_VERSION}"
+          git -C "${FSSRC}" checkout FETCH_HEAD
+          CGO_ENABLED=0 go build -C "${FSSRC}" \
+            -ldflags "-X github.com/fullsend-ai/fullsend/internal/cli.version=${FULLSEND_VERSION}" \
+            -o /usr/local/bin/fullsend ./cmd/fullsend/
+          rm -rf "${FSSRC}"
+          ;;
+      esac
+      fullsend --version
   script:
     - |
       set -euo pipefail
@@ -262,9 +346,14 @@ stages:
         fi
       fi
 
-      # Harness environment variables — export the forge token and entity
-      # URL in the format that harnesses expect.
+      # Harness environment variables — export the forge token, runner
+      # temp directory, and entity URL in the format that harnesses expect.
       export GITLAB_TOKEN="${FULLSEND_FORGE_TOKEN}"
+
+      # RUNNER_TEMP — GitHub Actions sets this automatically; GitLab CI
+      # does not. Harnesses that use ${RUNNER_TEMP} in host_files paths
+      # (e.g. the scribe harness) need it to resolve correctly.
+      export RUNNER_TEMP="${RUNNER_TEMP:-/tmp}"
 
       # Construct the entity URL for the harness. EVENT_TYPE values from
       # the poller use prefixed forms: issue_note, issue_label (→ issue

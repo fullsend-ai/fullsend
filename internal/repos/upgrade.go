@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 // UpgradeConfig holds configuration for a batch upgrade operation.
@@ -264,6 +265,23 @@ func upgradeRepo(ctx context.Context,
 			}
 		}
 		_, changed := replaceShimRef(content, dryRef, dryTag, fc, resolvedCfg.Forge)
+		if !changed && (resolvedCfg.Forge == ForgeGitHub || resolvedCfg.Forge == "") {
+			for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+				tcContent, tcErr := client.GetFileContent(ctx, owner, repo, tcPath)
+				if tcErr != nil {
+					if forge.IsNotFound(tcErr) {
+						continue
+					}
+					result.Error = fmt.Errorf("reading thin caller %s: %w", tcPath, tcErr)
+					return result
+				}
+				_, tcChanged := replaceShimRef(tcContent, dryRef, dryTag, fc, resolvedCfg.Forge)
+				if tcChanged {
+					changed = true
+					break
+				}
+			}
+		}
 		if !changed {
 			result.Skipped = true
 			result.SkipReason = skipReasonForNoChange(currentRef, targetRef)
@@ -286,57 +304,94 @@ func upgradeRepo(ctx context.Context,
 	// Determine the new workflow content based on pinning style.
 	// Only SHA-pinned repos get SHA resolution; non-SHA-pinned repos
 	// keep their string ref format during upgrade.
-	var newContent []byte
-	var changed bool
+	var newRef, newTag string
 	if isSHARef(targetRef) {
-		// Target ref is already a SHA — write it directly.
-		newContent, changed = replaceShimRef(content, targetRef, "", fc, resolvedCfg.Forge)
+		// Target is already a SHA — write it directly.
+		newRef = targetRef
 	} else if isSHARef(currentRef) {
-		// Current ref is SHA-pinned — resolve target to SHA to
-		// preserve pinning. SHA resolution targets
-		// fullsend-ai/fullsend (always GitHub).
+		// Current ref is SHA-pinned — resolve the target tag to a SHA
+		// so the repo stays pinned (preserves SHA pinning style).
 		var sha string
 		if resolver != nil {
 			sha = resolver.Resolve(ctx, targetRef)
 		}
 		if sha != "" && sha != targetRef {
-			// Resolution succeeded — write @<sha> with annotation.
-			newContent, changed = replaceShimRef(content, sha, targetRef, fc, resolvedCfg.Forge)
+			newRef, newTag = sha, targetRef
 		} else if resolvedCfg.Forge == ForgeGitHub || resolvedCfg.Forge == "" {
-			// Resolver did not resolve — fall back to direct tag
-			// lookup for GitHub repos.
+			// Resolver unavailable or returned identity — fall back to
+			// direct tag lookup on GitHub.
 			sha, err = client.GetRef(ctx, shimOwner, shimRepo, "tags/"+targetRef)
 			if err != nil {
 				result.Error = fmt.Errorf("resolving ref %s to SHA: %w", targetRef, err)
 				return result
 			}
-			newContent, changed = replaceShimRef(content, sha, targetRef, fc, resolvedCfg.Forge)
+			newRef, newTag = sha, targetRef
 		} else {
-			// Non-GitHub forge and resolution failed — cannot
-			// preserve SHA pinning. Log a warning and write the
-			// target ref as a string.
 			progress(repoFullName, "warning",
 				fmt.Sprintf("Cannot preserve SHA pinning on %s forge; writing %s as tag ref", resolvedCfg.Forge, targetRef))
-			newContent, changed = replaceShimRef(content, targetRef, "", fc, resolvedCfg.Forge)
+			newRef = targetRef
 		}
 	} else {
-		// Not SHA-pinned — write the target ref string directly,
-		// preserving the repo's non-pinned format.
-		newContent, changed = replaceShimRef(content, targetRef, "", fc, resolvedCfg.Forge)
+		// Neither ref is a SHA — write the target tag string directly.
+		newRef = targetRef
 	}
-	if !changed {
+
+	var newContent []byte
+	var changed bool
+	newContent, changed = replaceShimRef(content, newRef, newTag, fc, resolvedCfg.Forge)
+
+	var files []forge.TreeFile
+	if changed {
+		files = append(files, forge.TreeFile{
+			Path:    workflowPath,
+			Content: newContent,
+			Mode:    "100644",
+		})
+	}
+
+	// GitLab repos have additional CI template files (agent, poll) that
+	// must be converged alongside the dispatch shim. The commit API's
+	// blob-SHA comparison makes this idempotent — unchanged files are
+	// skipped automatically.
+	if resolvedCfg.Forge == ForgeGitLab {
+		templateFiles, tplErr := collectGitLabUpgradeTemplates(
+			gitlabRunnerTags(cfg.Manifest), targetRef,
+		)
+		if tplErr != nil {
+			result.Error = fmt.Errorf("collecting GitLab CI templates: %w", tplErr)
+			return result
+		}
+		files = append(files, templateFiles...)
+	}
+
+	if resolvedCfg.Forge == ForgeGitHub || resolvedCfg.Forge == "" {
+		for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+			tcContent, tcErr := client.GetFileContent(ctx, owner, repo, tcPath)
+			if tcErr != nil {
+				if forge.IsNotFound(tcErr) {
+					continue
+				}
+				result.Error = fmt.Errorf("reading thin caller %s: %w", tcPath, tcErr)
+				return result
+			}
+			tcNew, tcChanged := replaceShimRef(tcContent, newRef, newTag, fc, resolvedCfg.Forge)
+			if tcChanged {
+				files = append(files, forge.TreeFile{
+					Path:    tcPath,
+					Content: tcNew,
+					Mode:    "100644",
+				})
+			}
+		}
+	}
+
+	if len(files) == 0 {
 		result.Skipped = true
 		result.SkipReason = skipReasonForNoChange(currentRef, targetRef)
 		return result
 	}
 
 	progress(repoFullName, "upgrade", fmt.Sprintf("Upgrading %s → %s", currentRef, targetRef))
-
-	files := []forge.TreeFile{{
-		Path:    workflowPath,
-		Content: newContent,
-		Mode:    "100644",
-	}}
 
 	if err := commitFn(ctx, owner, repo, files, cfg.Direct); err != nil {
 		result.Error = fmt.Errorf("committing upgrade: %w", err)
@@ -346,6 +401,33 @@ func upgradeRepo(ctx context.Context,
 	result.Upgraded = true
 	progress(repoFullName, "done", fmt.Sprintf("Upgraded %s → %s", currentRef, targetRef))
 	return result
+}
+
+// collectGitLabUpgradeTemplates collects the GitLab CI template files
+// (agent, poll) for inclusion in an upgrade commit. The dispatch file
+// is excluded because the upgrade path handles it separately via
+// replaceShimRef. The targetRef is used as the fullsend version
+// embedded in the before_script install block.
+func collectGitLabUpgradeTemplates(runnerTags []string, targetRef string) ([]forge.TreeFile, error) {
+	installFiles, err := scaffold.CollectGitLabPerRepoInstallFiles(runnerTags, targetRef, "")
+	if err != nil {
+		return nil, err
+	}
+	var files []forge.TreeFile
+	for _, f := range installFiles {
+		// Skip the dispatch file — upgrade handles it via replaceShimRef.
+		// Skip the root pipeline file — users may have customized it
+		// (e.g. adding workflow:rules for push events).
+		if f.Path == ".gitlab/ci/fullsend-dispatch.yml" || f.Path == ".gitlab-ci.yml" {
+			continue
+		}
+		files = append(files, forge.TreeFile{
+			Path:    f.Path,
+			Content: f.Content,
+			Mode:    f.Mode,
+		})
+	}
+	return files, nil
 }
 
 // readWorkflowContent tries each known shim workflow path and returns
