@@ -251,6 +251,7 @@ jobs:
             if [[ -n "${COMMENT_BODY}" ]]; then
               # Strip the /fs-fix prefix to get the instruction.
               INSTRUCTION="${COMMENT_BODY#/fs-fix}"
+              INSTRUCTION="$(printf '%s\n' "${INSTRUCTION}" | sed 's/^[.,;:!?]*//')"
               INSTRUCTION="${INSTRUCTION#"${INSTRUCTION%%[![:space:]]*}"}"
             fi
             if [[ -z "${INSTRUCTION}" && -n "${INPUT_INSTRUCTION}" ]]; then

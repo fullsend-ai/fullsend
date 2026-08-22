@@ -432,7 +432,7 @@ func extractCommentCommand(body string) (command, instruction string) {
 	if len(fields) == 0 {
 		return "", ""
 	}
-	command = fields[0]
+	command = strings.TrimRight(fields[0], ".,;:!?")
 	if len(fields) > 1 {
 		instruction = strings.TrimSpace(strings.Join(fields[1:], " "))
 	}

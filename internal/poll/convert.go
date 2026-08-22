@@ -197,10 +197,11 @@ func extractCommand(body string) (command, instruction string) {
 		return "", ""
 	}
 
-	command = tokens[0]
+	raw := tokens[0]
+	command = strings.TrimRight(raw, ".,;:!?")
 
-	// Instruction is everything after the command token in the full body.
-	after := strings.TrimSpace(trimmed[len(command):])
+	// Instruction is everything after the raw token in the full body.
+	after := strings.TrimSpace(trimmed[len(raw):])
 	return command, after
 }
 

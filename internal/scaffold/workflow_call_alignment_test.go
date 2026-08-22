@@ -560,6 +560,29 @@ func TestReusableDispatchWorkflowContent(t *testing.T) {
 	assert.Regexp(t, `(?s)ready-for-review"\s*\]\];\s*then\s*\n\s+if \[\[ "\$\{ISSUE_IS_PR\}"`, s)
 }
 
+// TestDispatchPunctuationStrip ensures both dispatch files strip trailing
+// punctuation clusters (not just a single char) from COMMAND and SECOND_WORD.
+// See #5582.
+func TestDispatchPunctuationStrip(t *testing.T) {
+	type workflowCase struct {
+		name    string
+		content func(t *testing.T) []byte
+	}
+	cases := []workflowCase{
+		{"reusable-dispatch.yml", loadRepoFile(".github/workflows/reusable-dispatch.yml")},
+		{"scaffold/dispatch.yml", loadScaffoldFile(".github/workflows/dispatch.yml")},
+	}
+	for _, wc := range cases {
+		t.Run(wc.name, func(t *testing.T) {
+			s := string(wc.content(t))
+			assert.Contains(t, s, `sed 's/[.,;:!?]*$//'`,
+				"COMMAND/SECOND_WORD must strip punctuation clusters via sed with * quantifier")
+			assert.NotContains(t, s, `sed 's/[.,;:!?]$//'`,
+				"single-char strip (without *) should not appear — it misses clusters like ...")
+		})
+	}
+}
+
 // TestDispatchPerStageAuthorization ensures triage-role users can trigger
 // observation stages (triage/review) but not mutation stages (code/fix).
 // See #5223 and ADR 0054.
