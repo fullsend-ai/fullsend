@@ -35,7 +35,7 @@ A custom agent is composed of six parts:
   skills/          # Knowledge documents mounted into the sandbox
 ```
 
-Register agents in `config.yaml` with a local `source:` path. For agents that extend a default, use `base:` composition to inherit from the upstream harness and override only what differs. See [Bring Your Own Agent](bring-your-own-agent.md) for the config-driven approach and [Configuring agent behavior](customizing-agents.md) for harness field reference.
+Register agents in `config.yaml` with a local `source:` path. For agents that extend a default, use `base:` composition to inherit from the upstream harness and override only what differs. See [Bring Your Own Agent](bring-your-own-agent.md) for the config-driven approach and [Harness Field Reference](harness-reference.md) for the complete harness YAML reference.
 
 The key security invariant: agents run inside an untrusted [sandbox](../../glossary.md#sandbox) with no credentials. Pre-scripts fetch data *before* the sandbox starts; post-scripts act on agent output *after* the sandbox exits. Agents never have direct write access to external systems. See the [security threat model](../../problems/security-threat-model.md) for the full trust model.
 

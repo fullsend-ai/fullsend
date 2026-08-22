@@ -39,6 +39,8 @@ Guides for developers working in repositories where fullsend is active.
 - [Configuring with AGENTS.md](user/customizing-with-agents-md.md) — Guide agents using your repo's AGENTS.md file
 - [Configuring with skills](user/customizing-with-skills.md) — Extend built-in agent skills; [authoring augmentations](user/customizing-with-skills.md#authoring-skills-that-augment-defaults)
 - [Bring Your Own Agent](user/bring-your-own-agent.md) — Add a custom agent or configure an existing one; [tuning with augmentation skills](user/bring-your-own-agent.md#tuning-agents-with-augmentation-skills)
+- [Harness Field Reference](user/harness-reference.md) — Complete harness YAML field reference, merge rules, and resource referencing
+- [Custom Agent Identity](user/custom-agent-identity.md) — Using a standalone mint for custom GitHub App identity
 - [CEL Triggers Reference](user/cel-triggers-reference.md) — Dispatch flow, NormalizedEvent fields, transition kinds, and trigger patterns
 - [How to emit traces](user/how-to-emit-traces.md) — Configure a repository or organization to send OpenTelemetry traces to a remote backend
 - [Tracing with MLflow](user/tracing-with-mlflow.md) — MLflow-specific setup: experiment routing, Basic auth encoding, org-level organization, and cost column caveats
