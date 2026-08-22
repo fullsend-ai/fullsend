@@ -230,6 +230,7 @@ openshell:                           # OpenShell sandbox profiles
 pre_script: scripts/pre-my-agent.sh
 post_script: scripts/post-my-agent.sh
 agent_input: inputs/my-input.md     # File passed as initial input to the agent
+preflight_check: which jq           # Optional: host-dependency check run before sandbox creation
 
 # ── Validation ────────────────────────────────────────────────
 validation_loop:

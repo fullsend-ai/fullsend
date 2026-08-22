@@ -223,6 +223,34 @@ func TestResolveForge_ValidationLoopNilInherits(t *testing.T) {
 	assert.Equal(t, "scripts/validate.sh", h.ValidationLoop.Script)
 }
 
+func TestResolveForge_PreflightCheckOverride(t *testing.T) {
+	h := &Harness{
+		Agent:          "agents/test.md",
+		PreflightCheck: "which jq",
+		Forge: map[string]*ForgeConfig{
+			"github": {
+				PreflightCheck: "which gh",
+			},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	assert.Equal(t, "which gh", h.PreflightCheck)
+}
+
+func TestResolveForge_PreflightCheckNotOverriddenWhenEmpty(t *testing.T) {
+	h := &Harness{
+		Agent:          "agents/test.md",
+		PreflightCheck: "which jq",
+		Forge: map[string]*ForgeConfig{
+			"github": {},
+		},
+	}
+
+	require.NoError(t, h.ResolveForge("github"))
+	assert.Equal(t, "which jq", h.PreflightCheck)
+}
+
 func TestResolveForge_NoForgeSection(t *testing.T) {
 	h := &Harness{
 		Agent:     "agents/test.md",

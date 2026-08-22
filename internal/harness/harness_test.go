@@ -1043,6 +1043,71 @@ validation_loop:
 	assert.Empty(t, h.ValidationLoop.PreflightCheck)
 }
 
+func TestLoad_TopLevelPreflightCheck(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+preflight_check: "which jq && which python3"
+pre_script: scripts/pre.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "which jq && which python3", h.PreflightCheck)
+}
+
+func TestLoad_TopLevelPreflightCheckWithValidationLoop(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: test
+preflight_check: "which jq"
+validation_loop:
+  script: scripts/validate.sh
+  preflight_check: "python3 -c 'import jsonschema'"
+  max_iterations: 2
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, "which jq", h.PreflightCheck)
+	require.NotNil(t, h.ValidationLoop)
+	assert.Equal(t, "python3 -c 'import jsonschema'", h.ValidationLoop.PreflightCheck)
+}
+
+func TestValidateRunnerEnvWith_ChecksTopLevelPreflightCheck(t *testing.T) {
+	h := &Harness{
+		Agent:          "agents/test.md",
+		Role:           "test",
+		PreflightCheck: "test -d ${MISSING_DIR}",
+	}
+	lookup := func(key string) (string, bool) { return "", false }
+	err := h.ValidateRunnerEnvWith(lookup)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "MISSING_DIR")
+	assert.Contains(t, err.Error(), "preflight_check")
+}
+
+func TestValidateRunnerEnvWith_TopLevelPreflightCheckVarSet(t *testing.T) {
+	h := &Harness{
+		Agent:          "agents/test.md",
+		Role:           "test",
+		PreflightCheck: "test -d ${FULLSEND_DIR}",
+	}
+	lookup := func(key string) (string, bool) {
+		if key == "FULLSEND_DIR" {
+			return "/opt/fullsend", true
+		}
+		return "", false
+	}
+	require.NoError(t, h.ValidateRunnerEnvWith(lookup))
+}
+
 func TestValidateFilesExist_BareProviderNameSkipped(t *testing.T) {
 	dir := t.TempDir()
 	agentFile := filepath.Join(dir, "agent.md")

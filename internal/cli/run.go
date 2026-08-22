@@ -77,9 +77,13 @@ const (
 	maxSandboxNameLen = 19
 )
 
-// preflightCheckTimeout bounds the execution time for a validation_loop
-// preflight_check command. Mirrors the preflightGitHubTimeout pattern —
-// these are fast host-side dependency checks that should never hang. A var
+// preflightCheckTimeout bounds the execution time for preflight_check
+// commands (both top-level and validation_loop). Mirrors the
+// preflightGitHubTimeout pattern — these are fast host-side dependency
+// checks that should never hang. The top-level check may combine lookups
+// for multiple scripts (pre_script, post_script, validation_loop) into one
+// command, but each lookup (e.g. `which`, `--version`) is still expected to
+// resolve near-instantly, so the same bound applies to both fields. A var
 // (not const) so tests can shrink it to genuinely exercise deadline expiry
 // without waiting out the real duration.
 var preflightCheckTimeout = 30 * time.Second
@@ -607,6 +611,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if h.ValidationLoop != nil && strings.Contains(h.ValidationLoop.PreflightCheck, "${") {
 		h.ValidationLoop.PreflightCheck = os.Expand(h.ValidationLoop.PreflightCheck, expander)
 	}
+	if strings.Contains(h.PreflightCheck, "${") {
+		h.PreflightCheck = os.Expand(h.PreflightCheck, expander)
+	}
 
 	if err := h.ValidateFilesExist(); err != nil {
 		printer.StepFail("File validation failed")
@@ -750,25 +757,21 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	// 1d. Preflight dependency check for host-side scripts.
-	// When a validation_loop declares a preflight_check command, run it now
-	// to catch missing host dependencies (e.g. python3-jsonschema) before
-	// sandbox creation — not after the agent has already finished. See #5074.
-	if h.ValidationLoop != nil && h.ValidationLoop.PreflightCheck != "" {
-		printer.StepStart("Preflight: checking validation_loop dependencies")
-		preflightCtx, preflightCancel := context.WithTimeout(ctx, preflightCheckTimeout)
-		defer preflightCancel()
-		preflightCmd := exec.CommandContext(preflightCtx, "sh", "-c", h.ValidationLoop.PreflightCheck)
-		// Use childScriptEnv to strip OIDC credential vars (#5832).
-		preflightCmd.Env = childScriptEnv(h.RunnerEnv, "")
-		preflightOut, preflightErr := preflightCmd.CombinedOutput()
-		if preflightErr != nil {
-			printer.StepFail("Preflight dependency check failed")
-			if preflightCtx.Err() == context.DeadlineExceeded {
-				return fmt.Errorf("validation_loop.preflight_check timed out after %s: %s", preflightCheckTimeout, h.ValidationLoop.PreflightCheck)
-			}
-			return fmt.Errorf("validation_loop.preflight_check failed: %s\n%s\nInstall the missing dependency before running this agent", h.ValidationLoop.PreflightCheck, validationFailMessage(preflightOut, preflightErr))
+	// Top-level preflight_check covers all scripts (pre_script, post_script,
+	// validation_loop). When configured, run it first. See #5074, #5568.
+	if h.PreflightCheck != "" {
+		if err := runPreflightCheck(ctx, printer, h.RunnerEnv, "harness", "preflight_check", h.PreflightCheck); err != nil {
+			return err
 		}
-		printer.StepDone("Preflight dependency check passed")
+	}
+
+	// When a validation_loop declares its own preflight_check command, run
+	// it after the top-level check. This preserves backward compatibility
+	// with harnesses that only set validation_loop.preflight_check.
+	if h.ValidationLoop != nil && h.ValidationLoop.PreflightCheck != "" {
+		if err := runPreflightCheck(ctx, printer, h.RunnerEnv, "validation_loop", "validation_loop.preflight_check", h.ValidationLoop.PreflightCheck); err != nil {
+			return err
+		}
 	}
 
 	// 2. Check openshell availability.
@@ -2259,6 +2262,30 @@ func validationFailMessage(output []byte, execErr error) string {
 		return msg
 	}
 	return execErr.Error()
+}
+
+// runPreflightCheck executes a single preflight_check command (either the
+// top-level harness field or validation_loop's own field) and reports
+// progress via printer. label distinguishes the two checks in step
+// messages (e.g. "harness" vs "validation_loop"); fieldName is used to
+// prefix the returned error so callers/tests can tell which field failed.
+func runPreflightCheck(ctx context.Context, printer *ui.Printer, runnerEnv map[string]string, label, fieldName, cmd string) error {
+	printer.StepStart(fmt.Sprintf("Preflight: checking %s dependencies", label))
+	preflightCtx, preflightCancel := context.WithTimeout(ctx, preflightCheckTimeout)
+	defer preflightCancel()
+	preflightCmd := exec.CommandContext(preflightCtx, "sh", "-c", cmd)
+	// Use childScriptEnv to strip OIDC credential vars (#5832).
+	preflightCmd.Env = childScriptEnv(runnerEnv, "")
+	preflightOut, preflightErr := preflightCmd.CombinedOutput()
+	if preflightErr != nil {
+		printer.StepFail(fmt.Sprintf("Preflight: %s dependency check failed", label))
+		if preflightCtx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("%s timed out after %s: %s", fieldName, preflightCheckTimeout, cmd)
+		}
+		return fmt.Errorf("%s failed: %s\n%s\nInstall the missing dependency before running this agent", fieldName, cmd, validationFailMessage(preflightOut, preflightErr))
+	}
+	printer.StepDone(fmt.Sprintf("Preflight: %s dependencies OK", label))
+	return nil
 }
 
 // postScriptRepoEnv computes the REPO_DIR and FULLSEND_VALIDATED_ITERATION_DIR

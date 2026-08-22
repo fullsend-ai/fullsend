@@ -253,6 +253,7 @@ compatibility.
 |--------------------|----------------------------------------------------|
 | `pre_script`       | Scripts often call forge-specific CLIs (gh, glab)  |
 | `post_script`      | Push, PR/MR creation is forge-specific             |
+| `preflight_check`  | Host dependency checks may differ per forge (e.g., gh vs glab) |
 | `skills`           | Some skills wrap forge-specific APIs               |
 | `runner_env`       | Token names and event URLs differ per forge        |
 | `validation_loop`  | Validation scripts may call forge-specific tools   |
@@ -481,6 +482,7 @@ operational config file.
 type ForgeConfig struct {
     PreScript      string            `yaml:"pre_script,omitempty"`
     PostScript     string            `yaml:"post_script,omitempty"`
+    PreflightCheck string            `yaml:"preflight_check,omitempty"` // added in #5568
     Policy         string            `yaml:"policy,omitempty"`
     Skills         []SkillEntry      `yaml:"skills,omitempty"` // updated from []string in #6159
     Providers      []string          `yaml:"providers,omitempty"`

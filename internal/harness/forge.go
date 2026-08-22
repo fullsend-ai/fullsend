@@ -14,6 +14,7 @@ import (
 type ForgeConfig struct {
 	PreScript      string            `yaml:"pre_script,omitempty"`
 	PostScript     string            `yaml:"post_script,omitempty"`
+	PreflightCheck string            `yaml:"preflight_check,omitempty"` // shell command to validate host deps before sandbox creation
 	Policy         string            `yaml:"policy,omitempty"`
 	Skills         []SkillEntry      `yaml:"skills,omitempty"` // SkillEntry (not string) to support file-level overrides
 	Providers      []string          `yaml:"providers,omitempty"`
@@ -165,6 +166,9 @@ func mergeForgeConfig(h *Harness, fc *ForgeConfig) {
 	}
 	if fc.PostScript != "" {
 		h.PostScript = fc.PostScript
+	}
+	if fc.PreflightCheck != "" {
+		h.PreflightCheck = fc.PreflightCheck
 	}
 	if fc.Policy != "" {
 		h.Policy = fc.Policy
