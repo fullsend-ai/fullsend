@@ -249,9 +249,9 @@ authentication mechanism.
 After each managed agent run, `fullsend eval-measure` scores
 `run-telemetry.jsonl` in the same job (fail-open). Scores land in
 `eval-measurements.jsonl` beside telemetry when at least one new score is
-produced (tool-agnostic artifact). Portable
-remote export will reuse the same `OTEL_EXPORTER_OTLP_*` configuration as
-agent traces when implemented.
+produced (tool-agnostic artifact). When `OTEL_EXPORTER_OTLP_*` is set, those
+scores also export as `gen_ai.evaluation.result` span events on the same
+TraceID (fail-open; does not rewrite `run-telemetry.jsonl`).
 
 Today's scorers (starting with EM-001) read the Level 1/2 **metadata**
 contract of `run-telemetry.jsonl` — span tree and attributes, not prompt or

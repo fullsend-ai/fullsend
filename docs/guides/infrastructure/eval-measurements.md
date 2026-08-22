@@ -28,7 +28,7 @@ computed from that trace (`eval-measurements.jsonl`). The step is
 Fullsend does not pick an observability product for scores. The portable
 contract is a local JSONL artifact next to telemetry; remote export reuses
 the same OpenTelemetry (`OTEL_EXPORTER_OTLP_*`) configuration as agent
-traces when implemented.
+traces.
 
 OTLP (OpenTelemetry Protocol) is the wire format that carries spans and
 scores to any compatible backend — Phoenix, MLflow, Jaeger, etc.
@@ -42,21 +42,22 @@ fullsend run
 fullsend eval-measure   (same GHA job, fail-open, after run)
   └─ writes  output/<runDir>/eval-measurements.jsonl when at least one
        new score is produced (+ eval-measure-ledger.txt for idempotency)
+  └─ if OTEL_EXPORTER_OTLP_* set → OTLP export of scores as
+       gen_ai.evaluation.result span events on the same TraceID
+       (fail-open; local JSONL always wins)
 ```
-
-> **Planned:** portable remote score export via the same `OTEL_EXPORTER_OTLP_*`
-> path as agent traces. Not yet implemented.
 
 | Artifact | When | Purpose |
 |---|---|---|
 | `run-telemetry.jsonl` | Every run | OTLP JSON TracesData lines (local source of truth for spans) |
 | `eval-measurements.jsonl` | Every measured run | One JSON object per score (`name`, `label`, `value`, `explanation`, `trace_id`, …). On `label: skip`, `value` is unused (serialized as `0`; ignore it). |
 | Remote agent spans | OTEL configured | Same spans the local file holds |
-| Remote scores *(planned)* | OTEL configured | Scores on the OTLP path — any OTLP backend |
+| Remote scores | OTEL configured | Child span `fullsend.eval_measure` + event `gen_ai.evaluation.result` (GenAI semconv) correlated by `trace_id` / parent `span_id` |
 
 Orgs choose Phoenix, MLflow, Jaeger, or another collector independently.
 Fullsend does not forward vendor-specific score credentials in managed
-workflows.
+workflows. Scores are not rewritten into `run-telemetry.jsonl` (derived
+products must not mutate primary facts).
 
 ## Measurements vs functional evals
 
@@ -255,6 +256,11 @@ least one new measurement row is appended (including `label: skip`). No
 file is written when telemetry/manifest is missing, no traces match, or
 every candidate row is already in the ledger.
 
-> **Planned:** portable OTLP score export (same `OTEL_*` as traces) is the
-> ADR 0087 remote contract and is not wired yet. Until it lands, consume the
-> JSONL artifact (or your own pipeline) for remote dashboards.
+When `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`
+is set, newly written scores also export as OTLP span events
+(`fullsend.eval_measure` + `gen_ai.evaluation.result`) on the same
+`trace_id`. Export is fail-open and does not rewrite `run-telemetry.jsonl`.
+The idempotency ledger keys local rows; a remote OTLP failure after a
+successful local write will not retry that row on the next run (remote is
+best-effort once). Re-export offline by clearing the ledger or pointing at
+a fresh out dir.
