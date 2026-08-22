@@ -588,6 +588,51 @@ func TestCommitScaffoldDirect_FallbackPreservesIn(t *testing.T) {
 	assert.Equal(t, "acme/widget/fullsend/scaffold-install", client.CreatedBranches[0])
 }
 
+// TestCommitScaffoldDirect_DisallowPRFallback_FailsHard verifies that when
+// meta.DisallowPRFallback is set (as uninstall deliveries do), a protected
+// default branch is a hard error: no branch is created and no PR is opened.
+// Silently downgrading to a PR would open exactly the PR the uninstall
+// pre-flight check exists to prevent.
+func TestCommitScaffoldDirect_DisallowPRFallback_FailsHard(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Errors = map[string]error{
+		"CommitFiles": fmt.Errorf("%w: github api: 422", forge.ErrBranchProtected),
+	}
+	printer, buf := newTestPrinter()
+
+	meta := testMeta("msg", "title", "body", repos.ScaffoldUninstallBranch)
+	meta.DisallowPRFallback = true
+
+	_, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", meta, testFiles, true, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "protected")
+	assert.Contains(t, err.Error(), "PR fallback is disabled")
+	assert.ErrorIs(t, err, forge.ErrBranchProtected)
+
+	assert.Empty(t, client.CreatedBranches, "no branch may be created when PR fallback is disabled")
+	assert.Empty(t, client.CreatedProposals, "no PR may be opened when PR fallback is disabled")
+	assert.Contains(t, buf.String(), "cannot push directly")
+}
+
+// TestCommitScaffoldDirect_DisallowPRFallback_DirectSuccessUnaffected
+// verifies the flag changes nothing when the direct push succeeds.
+func TestCommitScaffoldDirect_DisallowPRFallback_DirectSuccessUnaffected(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	printer, _ := newTestPrinter()
+
+	meta := testMeta("msg", "title", "body", repos.ScaffoldUninstallBranch)
+	meta.DisallowPRFallback = true
+
+	committed, err := CommitScaffoldFiles(context.Background(), client, printer,
+		"acme", "widget", "main", meta, testFiles, true, nil)
+	require.NoError(t, err)
+	assert.True(t, committed)
+	assert.Empty(t, client.CreatedProposals)
+}
+
 func TestCommitScaffoldDirect_NonFastForwardRetrySucceeds(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.AuthenticatedUser = "acme"
@@ -1105,6 +1150,7 @@ func TestCommitScaffoldViaPR_SkipsStaleCleanupInForkPath(t *testing.T) {
 
 func TestIsKnownScaffoldBranch(t *testing.T) {
 	assert.True(t, isKnownScaffoldBranch("fullsend/scaffold-install"))
+	assert.True(t, isKnownScaffoldBranch("fullsend/scaffold-uninstall"))
 	assert.True(t, isKnownScaffoldBranch("fullsend/onboard"))
 	assert.True(t, isKnownScaffoldBranch("fullsend/bump-v0.28.0"))
 	assert.True(t, isKnownScaffoldBranch("fullsend/bump-v1.0.0-rc.1"))

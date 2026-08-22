@@ -16,7 +16,7 @@ Configure fullsend on GitHub organizations and repositories without requiring GC
 | `fullsend github set <target> <key> <value>` | Update a single config value (secret or variable) |
 | `fullsend github status <org>` | Analyze GitHub-side installation state |
 | `fullsend github sync-scaffold <org>` | Update workflow templates to current CLI version |
-| `fullsend github uninstall <org>` | Remove fullsend GitHub configuration |
+| `fullsend github uninstall <org\|owner/repo>` | Remove fullsend GitHub configuration from an org or a single repo |
 
 ## `github setup`
 
@@ -111,11 +111,25 @@ fullsend github sync-scaffold <org>
 
 ## `github uninstall`
 
-Removes fullsend GitHub configuration for an organization. Deletes the `.fullsend` config repo and associated resources.
+Removes fullsend GitHub configuration for an organization or a single repository.
+
+**Per-org mode** deletes the `.fullsend` config repo, removes org-level variables and secrets, and guides you through deleting the GitHub Apps via the browser:
 
 ```bash
 fullsend github uninstall <org> [--yolo] [--app-set <name>]
 ```
+
+**Per-repo mode** deletes the workflow file, `.fullsend/config.yaml`, `.fullsend/config.base.yaml` (including any vendored `--vendor` assets), repo variables, and repo secrets created by `fullsend github setup`:
+
+```bash
+fullsend github uninstall <owner/repo> [--yolo] [--direct]
+```
+
+By default, file deletions are delivered via a pull request (mirroring `fullsend github setup`). Pass `--direct` to push the deletions straight to the default branch instead. Repo variables and secrets are always deleted directly — they cannot go through a PR.
+
+**Rollout note:** PR-based deletion requires the target repo's already-deployed workflow file to already exclude the uninstall PR's branch from self-dispatch (this prevents the PR from triggering a live agent run with remaining secrets before it's merged). A repo only gets that exclusion from a fresh scaffold render — a brand-new `fullsend github setup`/`fullsend repos install`, not a ref-only upgrade or `sync-scaffold`. Until a repo has been re-scaffolded, `github uninstall owner/repo` refuses the default PR path with an error and requires `--direct`. `--direct` skips this safety check by never opening a PR in the first place — it pushes straight to the default branch, so review it happens after the fact (or not at all) rather than before merge. Because "never opening a PR" is exactly what makes `--direct` safe here, it does not fall back to a PR when branch protection blocks the push — it fails with an error instead. For a protected default branch, either re-run without `--direct` (which works once the repo passes the safety check above) or temporarily allow the push.
+
+`--app-set` is only valid for per-org uninstall; it is rejected for per-repo targets. `--direct` is only valid for per-repo uninstall; it is rejected for per-org targets. GCP infrastructure (WIF) must be cleaned up separately via `fullsend inference deprovision`.
 
 ## See also
 

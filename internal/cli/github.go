@@ -19,6 +19,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/maputil"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
+	"github.com/fullsend-ai/fullsend/internal/repos"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
@@ -1021,19 +1022,53 @@ func runGitHubStatus(ctx context.Context, client forge.Client, printer *ui.Print
 func newGitHubUninstallCmd() *cobra.Command {
 	var yolo bool
 	var appSet string
+	var direct bool
 
 	cmd := &cobra.Command{
-		Use:   "uninstall <org>",
-		Short: "Remove fullsend GitHub configuration from an organization",
-		Long:  "Deletes the .fullsend config repo and removes org-level variables. Guides the user to delete GitHub Apps via the browser.",
-		Args:  cobra.ExactArgs(1),
+		Use:   "uninstall <org|owner/repo>",
+		Short: "Remove fullsend GitHub configuration from an organization or repository",
+		Long: `Removes fullsend from a GitHub organization or a single repository.
+
+Per-org mode (argument is an org name, e.g. "acme"):
+  Deletes the .fullsend config repo, removes org-level variables and
+  secrets, and guides the user to delete GitHub Apps via the browser.
+
+Per-repo mode (argument is owner/repo, e.g. "acme/widget"):
+  Deletes the workflow file, .fullsend/config.yaml and
+  .fullsend/config.base.yaml, repo variables, and repo secrets created
+  by "fullsend github setup". By default, file deletions are delivered
+  via a pull request (mirroring "fullsend github setup"); pass --direct
+  to push the deletions straight to the default branch instead. Repo
+  variables and secrets are always deleted directly (they cannot go
+  through a PR).
+
+GCP infrastructure (WIF) must be cleaned up separately via
+'inference deprovision'.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			org := args[0]
-			if err := validateOrgName(org); err != nil {
-				return err
-			}
-			if err := appsetup.ValidateAppSet(appSet); err != nil {
-				return fmt.Errorf("invalid --app-set: %w", err)
+			target := args[0]
+			owner, repo, isRepo := parseTarget(target)
+
+			if isRepo {
+				if !githubOwnerPattern.MatchString(owner) {
+					return fmt.Errorf("invalid owner name %q: must contain only alphanumeric characters and hyphens", owner)
+				}
+				if !githubRepoPattern.MatchString(repo) {
+					return fmt.Errorf("invalid repo name %q: must contain only alphanumeric characters, hyphens, dots, or underscores", repo)
+				}
+				if cmd.Flags().Changed("app-set") {
+					return fmt.Errorf("--app-set is only valid for per-org uninstall (fullsend github uninstall <org>)")
+				}
+			} else {
+				if err := validateOrgName(owner); err != nil {
+					return err
+				}
+				if err := appsetup.ValidateAppSet(appSet); err != nil {
+					return fmt.Errorf("invalid --app-set: %w", err)
+				}
+				if cmd.Flags().Changed("direct") {
+					return fmt.Errorf("--direct is only valid for per-repo uninstall (fullsend github uninstall <owner/repo>)")
+				}
 			}
 
 			token, err := resolveToken()
@@ -1041,29 +1076,170 @@ func newGitHubUninstallCmd() *cobra.Command {
 				return err
 			}
 
-			client := gh.New(token)
+			client := newGitHubLiveClient(token, "")
 			printer := ui.New(os.Stdout)
 
+			if isRepo {
+				fullName := owner + "/" + repo
+				if !yolo {
+					if direct {
+						printer.StepWarn(fmt.Sprintf("This will remove fullsend workflow files, config, variables, and secrets from %s.", fullName))
+					} else {
+						printer.StepWarn(fmt.Sprintf("This will remove variables and secrets from %s now, and open a PR to remove the workflow file and config (use --direct to push those removals immediately instead).", fullName))
+					}
+					printer.StepInfo(fmt.Sprintf("Type the repository name (%s) to confirm:", fullName))
+					var confirmation string
+					if _, err := fmt.Scanln(&confirmation); err != nil {
+						return fmt.Errorf("reading confirmation: %w", err)
+					}
+					if confirmation != fullName {
+						return fmt.Errorf("confirmation did not match; aborting uninstall")
+					}
+				}
+
+				return runGitHubUninstallPerRepo(cmd.Context(), client, printer, owner, repo, direct)
+			}
+
 			if !yolo {
-				printer.StepWarn(fmt.Sprintf("This will permanently delete the %s repo and all stored secrets for %s.", forge.ConfigRepoName, org))
-				printer.StepInfo(fmt.Sprintf("Type the organization name (%s) to confirm:", org))
+				printer.StepWarn(fmt.Sprintf("This will permanently delete the %s repo and all stored secrets for %s.", forge.ConfigRepoName, owner))
+				printer.StepInfo(fmt.Sprintf("Type the organization name (%s) to confirm:", owner))
 				var confirmation string
 				if _, err := fmt.Scanln(&confirmation); err != nil {
 					return fmt.Errorf("reading confirmation: %w", err)
 				}
-				if confirmation != org {
+				if confirmation != owner {
 					return fmt.Errorf("confirmation did not match; aborting uninstall")
 				}
 			}
 
-			return runGitHubUninstall(cmd.Context(), client, printer, org, appSet)
+			return runGitHubUninstall(cmd.Context(), client, printer, owner, appSet)
 		},
 	}
 
 	cmd.Flags().BoolVar(&yolo, "yolo", false, "skip confirmation prompt")
 	cmd.Flags().StringVar(&appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps")
+	cmd.Flags().BoolVar(&direct, "direct", false, "push scaffold-file deletions directly to the default branch instead of creating a PR (per-repo mode only)")
 
 	return cmd
+}
+
+// newScaffoldDeleteFunc returns a repos.ScaffoldDeleteFunc wrapping
+// layers.CommitScaffoldFiles, mirroring the scaffoldCommitFn closures used
+// by "github setup" and "admin install" but for file removal: files carry
+// Delete: true, and the fixed uninstall branch keeps re-runs updating the
+// same PR instead of piling up new ones.
+// newScaffoldDeleteFunc's underlying layers.CommitScaffoldFiles call passes
+// nil for the interactive-prompt reader (unlike the analogous
+// scaffoldCommitFn closures for "github setup"/"admin install"), matching
+// internal/cli/repos.go's scaffoldDeleteFn. Uninstall is destructive and
+// --yolo signals "don't prompt me" for the confirmation step already;
+// silently falling through to a second, different interactive prompt
+// (fork-vs-upstream, for non-owner/non-write-access callers) inside
+// commitScaffoldViaPR would hang a non-interactive (CI) invocation instead
+// of defaulting to forking automatically.
+func newScaffoldDeleteFunc(client forge.Client, printer *ui.Printer) repos.ScaffoldDeleteFunc {
+	return func(ctx context.Context, owner, repo, message string, files []forge.TreeFile, direct bool) (bool, error) {
+		targetRepo, err := client.GetRepo(ctx, owner, repo)
+		if err != nil {
+			if gh.IsPATForbiddenError(err) {
+				return false, handlePATForbidden(printer, owner, repo, err)
+			}
+			return false, fmt.Errorf("getting repo info: %w", err)
+		}
+		meta := repos.ScaffoldPRMetadata{
+			CommitMsg: message,
+			PRTitle:   "chore: remove fullsend configuration",
+			PRBody: "This PR removes the fullsend workflow file, configuration, and any vendored " +
+				"assets created by `fullsend github setup`.\n\nMerge this PR to complete the uninstall.",
+			Branch: repos.ScaffoldUninstallBranch,
+			// Uninstall deliveries must never silently downgrade --direct
+			// to a PR on a protected branch: --direct is the documented
+			// path for repos whose deployed shim fails the PR-safety
+			// pre-flight, so the fallback would open exactly the PR that
+			// check exists to prevent.
+			DisallowPRFallback: true,
+		}
+		if direct {
+			printer.StepStart(fmt.Sprintf("Removing scaffold files from %s/%s (%s branch)",
+				owner, repo, targetRepo.DefaultBranch))
+		} else {
+			printer.StepStart(fmt.Sprintf("Creating uninstall PR for %s/%s (target: %s)",
+				owner, repo, targetRepo.DefaultBranch))
+		}
+		return layers.CommitScaffoldFiles(ctx, client, printer,
+			owner, repo, targetRepo.DefaultBranch, meta, files, direct, nil)
+	}
+}
+
+// runGitHubUninstallPerRepo tears down a per-repo fullsend installation,
+// reversing what "fullsend github setup owner/repo" created. It delegates
+// to the same teardown logic used by "repos uninstall". Scaffold-file
+// deletions are delivered via a PR by default; direct pushes the default
+// branch instead.
+func runGitHubUninstallPerRepo(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string, direct bool) error {
+	fullName := owner + "/" + repo
+	printer.Banner(Version())
+	printer.Blank()
+	printer.Header("Uninstalling fullsend from " + fullName)
+	printer.Blank()
+
+	progress := func(_, phase, msg string) {
+		switch {
+		case phase == "done":
+			printer.StepDone(msg)
+		case strings.HasPrefix(msg, "Failed:"):
+			printer.StepFail(msg)
+		default:
+			printer.StepInfo(msg)
+		}
+	}
+
+	result := repos.UninstallSingleRepo(ctx, client, owner, repo, "", direct, newScaffoldDeleteFunc(client, printer), progress)
+
+	printer.Blank()
+	if result.Error != nil {
+		printer.Summary("Uninstall failed", []string{
+			fmt.Sprintf("Repository: %s", fullName),
+			fmt.Sprintf("Error: %v", result.Error),
+		})
+		return fmt.Errorf("uninstalling %s: %w", fullName, result.Error)
+	}
+
+	summary := []string{
+		fmt.Sprintf("Repository: %s", fullName),
+		fmt.Sprintf("Variables removed: %d", result.VarsDeleted),
+		fmt.Sprintf("Secrets removed: %d", result.SecretsDeleted),
+	}
+	// Pending note requires both the actual outcome (deletions did not land
+	// on the default branch — ScaffoldCommittedDirect is false) and PR-mode
+	// delivery having been requested: in direct mode a false outcome means
+	// there was nothing left to delete (direct delivery fails hard on branch
+	// protection rather than falling back to a PR), so no PR is pending.
+	if result.WorkflowDeleted && !result.ScaffoldCommittedDirect && !direct {
+		summary = append(summary, "Workflow file and config: pending — "+uninstallPRPendingNote(ctx, client, owner, repo))
+	}
+	printer.Summary("Uninstall complete", summary)
+
+	return nil
+}
+
+// uninstallPRPendingNote returns a "merge PR #N to finish" hint for the
+// uninstall summary when scaffold-file deletion was delivered via PR
+// (result.WorkflowDeleted with !direct). A summary that only reports
+// variables/secrets removed could otherwise read as a complete teardown
+// when the workflow file and config are still present until the PR is
+// merged. Falls back to a generic hint if the PR can't be found (e.g. it
+// was merged or closed by something else between creation and this call).
+func uninstallPRPendingNote(ctx context.Context, client forge.Client, owner, repo string) string {
+	prs, err := client.ListRepoPullRequests(ctx, owner, repo)
+	if err == nil {
+		for _, pr := range prs {
+			if pr.Head == repos.ScaffoldUninstallBranch {
+				return fmt.Sprintf("merge PR #%d (%s) to finish removing the workflow file and config", pr.Number, pr.URL)
+			}
+		}
+	}
+	return fmt.Sprintf("merge the open PR on branch %q to finish removing the workflow file and config", repos.ScaffoldUninstallBranch)
 }
 
 // runGitHubUninstall tears down the GitHub-side installation.

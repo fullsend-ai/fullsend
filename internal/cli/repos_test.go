@@ -968,9 +968,53 @@ func TestRunReposUninstall_Success(t *testing.T) {
 		manifest:    manifestPath,
 		yes:         true,
 		concurrency: 4,
+		direct:      true,
 		testClient:  fc,
 	}, []string{"acme/api"})
 	require.NoError(t, err)
+}
+
+func TestRunReposUninstall_DefaultsToPRDelivery(t *testing.T) {
+	manifestPath := writeTestManifest(t, testManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api")
+	// AuthenticatedUser must match the repo owner so commitScaffoldViaPR
+	// takes the "owner pushes directly" fast path (branch + PR on the
+	// upstream repo) instead of the non-owner fork flow, which polls
+	// GetRepo until FakeClient's unconfigured fork simulation is "ready"
+	// and would otherwise hang the test.
+	fc.AuthenticatedUser = "acme"
+	// Simulate a repo that has already received a fresh scaffold render
+	// with the ScaffoldUninstallBranch self-dispatch exclusion — otherwise
+	// the pre-flight check in uninstallRepoResources refuses default-mode
+	// (PR) delivery and this test would need --direct instead.
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"uses: fullsend-ai/fullsend/.github/workflows/dispatch.yml@v1.0.0\n" +
+			"jobs:\n  dispatch:\n    if: github.event.pull_request.head.ref != '" +
+			repos.ScaffoldUninstallBranch + "'\n")
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		yes:         true,
+		concurrency: 4,
+		// direct intentionally left unset (false): this test verifies the
+		// default PR-delivery path end-to-end, mirroring
+		// TestGitHubUninstallCmd_PerRepoYoloDefaultsToPR's coverage of the
+		// same default for "github uninstall".
+		testClient: fc,
+	}, []string{"acme/api"})
+	require.NoError(t, err)
+
+	require.Len(t, fc.CreatedProposals, 1, "expected a scaffold-removal PR to be opened")
+	assert.Equal(t, repos.ScaffoldUninstallBranch, fc.CreatedProposals[0].Head)
+
+	require.NotEmpty(t, fc.CommittedFilesToBranch, "expected deletions committed to the uninstall branch")
+	assert.Equal(t, repos.ScaffoldUninstallBranch, fc.CommittedFilesToBranch[0].Branch)
+	assert.Empty(t, fc.CommittedFiles, "direct-to-default-branch commit should not happen when --direct is unset")
+
+	// Variables and secrets are always deleted directly, regardless of
+	// delivery mode for the scaffold files.
+	assert.NotEmpty(t, fc.DeletedVariables, "expected repo variables to be deleted directly")
+	assert.NotEmpty(t, fc.DeletedSecrets, "expected repo secrets to be deleted directly")
 }
 
 func TestRunReposUninstall_NoMatch(t *testing.T) {
@@ -1709,6 +1753,7 @@ func TestRunReposUninstall_RemovesFromManifest(t *testing.T) {
 		manifest:    manifestPath,
 		yes:         true,
 		concurrency: 4,
+		direct:      true,
 		testClient:  fc,
 	}, []string{"acme/api"})
 	require.NoError(t, err)
@@ -1718,6 +1763,40 @@ func TestRunReposUninstall_RemovesFromManifest(t *testing.T) {
 	require.NotNil(t, m.GitHub)
 	assert.Equal(t, 1, len(m.GitHub.Repos), "manifest should have 1 repo after removing acme/api")
 	assert.Equal(t, "acme/web", m.GitHub.Repos[0].Name)
+}
+
+// TestRunReposUninstall_PRDelivery_KeepsManifestEntry verifies that a repo
+// whose scaffold removal was delivered via a still-unmerged PR is NOT
+// treated as terminally uninstalled: its manifest entry must be kept until
+// the PR lands (the user merges it and re-runs with --manifest-only).
+func TestRunReposUninstall_PRDelivery_KeepsManifestEntry(t *testing.T) {
+	manifestPath := writeTestManifest(t, twoRepoManifestYAML)
+	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
+	// Owner fast path — see TestRunReposUninstall_DefaultsToPRDelivery.
+	fc.AuthenticatedUser = "acme"
+	// Deployed shim carries the real self-dispatch exclusion condition so
+	// the pre-flight allows default-mode (PR) delivery.
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(
+		"jobs:\n  dispatch:\n    if: github.event.pull_request.head.ref != '" +
+			repos.ScaffoldUninstallBranch + "'\n")
+
+	err := runReposUninstall(context.Background(), &reposUninstallConfig{
+		manifest:    manifestPath,
+		yes:         true,
+		concurrency: 4,
+		// direct intentionally unset: PR delivery leaves the teardown
+		// pending, so the manifest entry must survive.
+		testClient: fc,
+	}, []string{"acme/api"})
+	require.NoError(t, err)
+
+	require.Len(t, fc.CreatedProposals, 1, "expected a scaffold-removal PR to be opened")
+
+	m, loadErr := repos.LoadManifest(context.Background(), manifestPath)
+	require.NoError(t, loadErr)
+	require.NotNil(t, m.GitHub)
+	assert.Equal(t, 2, len(m.GitHub.Repos),
+		"manifest entry must be kept while the scaffold-removal PR is unmerged")
 }
 
 func TestRunReposUninstall_ManifestOnly(t *testing.T) {
@@ -1750,6 +1829,7 @@ func TestRunReposUninstall_UninstallOnly(t *testing.T) {
 		yes:           true,
 		concurrency:   4,
 		uninstallOnly: true,
+		direct:        true,
 		testClient:    fc,
 	}, []string{"acme/api"})
 	require.NoError(t, err)
@@ -1782,7 +1862,10 @@ func TestRunReposUninstall_DryRun_NoManifestChange(t *testing.T) {
 func TestRunReposUninstall_PartialFailure_OnlyRemovesSucceeded(t *testing.T) {
 	manifestPath := writeTestManifest(t, twoRepoManifestYAML)
 	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
-	fc.DeleteFilesErrors = map[string]error{
+	// Deletions are now delivered via layers.CommitScaffoldFiles, which
+	// commits through CommitFiles (direct mode) rather than the plural
+	// DeleteFiles path.
+	fc.CommitFilesErrors = map[string]error{
 		"acme/api": errors.New("simulated workflow deletion failure"),
 	}
 
@@ -1790,6 +1873,7 @@ func TestRunReposUninstall_PartialFailure_OnlyRemovesSucceeded(t *testing.T) {
 		manifest:    manifestPath,
 		yes:         true,
 		concurrency: 1,
+		direct:      true,
 		testClient:  fc,
 	}, []string{"acme/api", "acme/web"})
 	require.Error(t, err)

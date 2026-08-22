@@ -15,6 +15,17 @@ type ScaffoldPRMetadata struct {
 	PRTitle   string
 	PRBody    string
 	Branch    string
+
+	// DisallowPRFallback, when true, makes direct delivery fail with an
+	// error when branch protection blocks the push, instead of silently
+	// falling back to PR delivery. Uninstall flows set this: --direct is
+	// the documented escape hatch for repos whose deployed shim predates
+	// the ScaffoldUninstallBranch self-dispatch exclusion, so a silent PR
+	// fallback would open exactly the PR the uninstall pre-flight exists
+	// to prevent — and misreport the delivery as direct. The zero value
+	// preserves the fallback for install flows, where PR delivery is
+	// always safe.
+	DisallowPRFallback bool
 }
 
 const (
@@ -24,7 +35,25 @@ const (
 		"Merge this PR to activate fullsend workflows."
 
 	// DefaultScaffoldBranch is the branch name for fresh installations.
+	// This value is also hardcoded (it cannot import a Go constant) in the
+	// pull_request_target/pull_request_review self-dispatch exclusion in
+	// internal/scaffold/fullsend-repo/templates/shim-per-repo.yaml and
+	// shim-workflow-call.yaml, and covered by TestShimScaffoldBranchFilter
+	// in internal/scaffold/workflow_call_alignment_test.go. Keep all three
+	// in sync if this value ever changes.
 	DefaultScaffoldBranch = "fullsend/scaffold-install"
+
+	// ScaffoldUninstallBranch is the branch name for per-repo uninstall PRs
+	// (scaffold-file deletions delivered via PR instead of --direct). Like
+	// DefaultScaffoldBranch, this value is hardcoded in the shim templates'
+	// self-dispatch exclusion and covered by TestShimScaffoldBranchFilter —
+	// keep all three in sync if this value ever changes. It must NOT be
+	// merged into DefaultScaffoldBranch: reusing the install branch would
+	// let an uninstall run silently commit deletions onto an unrelated,
+	// still-open install PR on that branch (closeStaleScaffoldPRs treats
+	// same-branch PRs as "ours" and skips them, so it would not be closed
+	// first).
+	ScaffoldUninstallBranch = "fullsend/scaffold-uninstall"
 
 	// ScaffoldBumpBranchPrefix is the branch prefix for version upgrades.
 	ScaffoldBumpBranchPrefix = "fullsend/bump-"

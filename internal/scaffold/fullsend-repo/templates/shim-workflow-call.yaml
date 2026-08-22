@@ -43,7 +43,8 @@ jobs:
       cancel-in-progress: false
     if: >-
       (github.event_name != 'pull_request_target' && github.event_name != 'pull_request_review'
-       || github.event.pull_request.head.ref != 'fullsend/scaffold-install')
+       || (github.event.pull_request.head.ref != 'fullsend/scaffold-install'
+           && github.event.pull_request.head.ref != 'fullsend/scaffold-uninstall'))
       && (github.event_name != 'issue_comment'
        || github.event.comment.user.type != 'Bot')
       && (

@@ -206,6 +206,11 @@ type FakeClient struct {
 	// Key is "owner/repo", checked before the generic Errors map.
 	DeleteFilesErrors map[string]error
 
+	// CommitFilesErrors injects per-repo errors for CommitFiles.
+	// Key is "owner/repo", checked before CommitFilesErrSeq and the
+	// generic Errors map.
+	CommitFilesErrors map[string]error
+
 	// Issue comments for ListIssueComments / UpdateIssueComment.
 	IssueComments map[string][]IssueComment // key: "owner/repo/number"
 	OpenIssues    map[string][]Issue        // key: "owner/repo"
@@ -682,6 +687,9 @@ func (f *FakeClient) CommitFiles(_ context.Context, owner, repo, message string,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	if e, ok := f.CommitFilesErrors[owner+"/"+repo]; ok {
+		return false, e
+	}
 	if len(f.CommitFilesErrSeq) > 0 {
 		e := f.CommitFilesErrSeq[0]
 		f.CommitFilesErrSeq = f.CommitFilesErrSeq[1:]
