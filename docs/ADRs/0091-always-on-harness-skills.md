@@ -97,15 +97,10 @@ This is orthogonal to ADR 0024’s open question on which skills are *included*
 
 ## Evidence
 
-Playground matrix (9 triage runs, Skill in `tools:`): harness listing alone did
-not open an additive skill (0/3); `metadata.apply: always` opened it and applied
-its marker (3/3). Full report:
-[0091-skill-activation-matrix.html](0091-skill-activation-matrix.html).
-
-Related: [agents#914](https://github.com/fullsend-ai/agents/issues/914),
-[agents#917](https://github.com/fullsend-ai/agents/pull/917),
-[agents#928](https://github.com/fullsend-ai/agents/pull/928),
-[discussion #5182](https://github.com/fullsend-ai/fullsend/discussions/5182).
+Nine playground triage runs (3 setups × 3): harness listing alone never opened
+the team skill (0/3); `metadata.apply: always` opened it and changed behavior
+every time (3/3). Report (kept in the public playground, not this repo):
+[skill activation matrix](https://github.com/fullsend-playground/python-app/blob/main/docs/adr-0091-skill-activation-matrix.html).
 
 ## Consequences
 
