@@ -1034,7 +1034,29 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return nil
 	}
 
-	// 4a. Create sandbox.
+	// 4a. Resolve the agent runtime before sandbox creation so that an
+	// invalid runtime: value in org or per-repo config fails immediately
+	// — before any sandbox is created or torn down.
+	var backend agentruntime.Backend
+	orgConfigPath = filepath.Join(absFullsendDir, "config.yaml")
+	backend, configSource, backendErr := backendFromConfigFile(orgConfigPath)
+	if backendErr != nil {
+		switch {
+		case errors.Is(backendErr, errParsingConfigRuntime):
+			printer.StepFail("Failed to parse config.yaml")
+		case errors.Is(backendErr, errResolvingRuntime):
+			printer.StepFail("Failed to resolve runtime")
+		default:
+			printer.StepFail("Failed to load config.yaml")
+		}
+		return backendErr
+	}
+	fmt.Fprintf(os.Stderr, "runtime: selected %q from %s\n", backend.Runtime.Name(), configSource)
+	rt := backend.Runtime
+	aggMetrics.Runtime = rt.Name()
+	tx := backend.Transcripts
+
+	// 4b. Create sandbox.
 	createStart := time.Now()
 	printer.StepStart("Creating sandbox: " + sandboxName)
 	_, sandboxSpan := tracer.Start(ctx, "sandbox_create", trace.WithAttributes(
@@ -1193,28 +1215,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 	repoName := filepath.Base(hostRepositoryDir)
 	remoteRepositoryDir := fmt.Sprintf("%s/%s", sandbox.SandboxWorkspace, repoName)
-
-	// 5b. Resolve the agent runtime. Done before the fetch service starts so
-	// runtime-owned paths (skill destination) come from the runtime, not from
-	// Claude-specific constants.
-	var backend agentruntime.Backend
-	orgConfigPath = filepath.Join(absFullsendDir, "config.yaml")
-	backend, configSource, backendErr := backendFromConfigFile(orgConfigPath)
-	if backendErr != nil {
-		switch {
-		case errors.Is(backendErr, errParsingConfigRuntime):
-			printer.StepFail("Failed to parse config.yaml")
-		case errors.Is(backendErr, errResolvingRuntime):
-			printer.StepFail("Failed to resolve runtime")
-		default:
-			printer.StepFail("Failed to load config.yaml")
-		}
-		return backendErr
-	}
-	fmt.Fprintf(os.Stderr, "runtime: selected %q from %s\n", backend.Runtime.Name(), configSource)
-	rt := backend.Runtime
-	aggMetrics.Runtime = rt.Name()
-	tx := backend.Transcripts
 
 	// 6. Start runtime fetch service (Phase 4, ADR-0038).
 	var fetchEnvVal fetchServiceEnv
