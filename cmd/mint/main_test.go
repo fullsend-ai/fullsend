@@ -480,7 +480,7 @@ func TestBuildHandler(t *testing.T) {
 		if err == nil {
 			t.Fatal("expected error for invalid permission level")
 		}
-		if !strings.Contains(err.Error(), "invalid level") {
+		if !strings.Contains(err.Error(), "invalid value") {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})

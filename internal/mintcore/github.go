@@ -66,52 +66,145 @@ type GrantedScope struct {
 	InstallationID int64
 }
 
-// canonicalRolePermissions defines the minimum GitHub App permissions per agent role.
-// Tokens are always downscoped to these permissions regardless of what the
-// App itself has configured. Unexported to prevent mutation; use
-// RolePermissions() to get a copy.
-var canonicalRolePermissions = map[string]map[string]string{
-	"triage":     {"contents": "read", "issues": "write", "metadata": "read"},
-	"scribe":     {"contents": "read", "issues": "write", "metadata": "read"},
-	"coder":      {"contents": "write", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
-	"review":     {"contents": "read", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
-	"fix":        {"contents": "write", "pull_requests": "write", "issues": "write", "metadata": "read"},
-	"retro":      {"actions": "read", "contents": "read", "pull_requests": "write", "issues": "write", "metadata": "read"},
-	"prioritize": {"contents": "read", "issues": "write", "organization_projects": "write", "metadata": "read"},
-	"fullsend":   {"actions": "write", "actions_variables": "read", "contents": "write", "pull_requests": "write", "workflows": "write", "metadata": "read"},
+// Level constants for the two mandatory privilege level names.
+// Every role (built-in and custom) must define at least these two
+// levels. Custom roles may define additional named levels.
+const (
+	LevelRead  = "read"
+	LevelWrite = "write"
+)
+
+// canonicalRolePermissions defines the minimum GitHub App permissions per
+// agent role, organized by privilege level. Tokens are always downscoped
+// to these permissions regardless of what the App itself has configured.
+// Unexported to prevent mutation; use RolePermissionsForLevel() to get
+// a copy.
+//
+// Every built-in role statically defines both "read" and "write" levels.
+// The "write" level is the canonical ceiling; the "read" level has the
+// same keys with every "write" GitHub permission value rewritten to "read".
+// Both are baked into the table as data — no derivation at mint time.
+var canonicalRolePermissions = map[string]map[string]map[string]string{
+	"triage": {
+		LevelWrite: {"contents": "read", "issues": "write", "metadata": "read"},
+		LevelRead:  {"contents": "read", "issues": "read", "metadata": "read"},
+	},
+	"scribe": {
+		LevelWrite: {"contents": "read", "issues": "write", "metadata": "read"},
+		LevelRead:  {"contents": "read", "issues": "read", "metadata": "read"},
+	},
+	"coder": {
+		LevelWrite: {"contents": "write", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
+		LevelRead:  {"contents": "read", "pull_requests": "read", "issues": "read", "checks": "read", "metadata": "read"},
+	},
+	"review": {
+		LevelWrite: {"contents": "read", "pull_requests": "write", "issues": "write", "checks": "read", "metadata": "read"},
+		LevelRead:  {"contents": "read", "pull_requests": "read", "issues": "read", "checks": "read", "metadata": "read"},
+	},
+	"fix": {
+		LevelWrite: {"contents": "write", "pull_requests": "write", "issues": "write", "metadata": "read"},
+		LevelRead:  {"contents": "read", "pull_requests": "read", "issues": "read", "metadata": "read"},
+	},
+	"retro": {
+		LevelWrite: {"actions": "read", "contents": "read", "pull_requests": "write", "issues": "write", "metadata": "read"},
+		LevelRead:  {"actions": "read", "contents": "read", "pull_requests": "read", "issues": "read", "metadata": "read"},
+	},
+	"prioritize": {
+		LevelWrite: {"contents": "read", "issues": "write", "organization_projects": "write", "metadata": "read"},
+		LevelRead:  {"contents": "read", "issues": "read", "organization_projects": "read", "metadata": "read"},
+	},
+	"fullsend": {
+		LevelWrite: {"actions": "write", "actions_variables": "read", "contents": "write", "pull_requests": "write", "workflows": "write", "metadata": "read"},
+		LevelRead:  {"actions": "read", "actions_variables": "read", "contents": "read", "pull_requests": "read", "workflows": "read", "metadata": "read"},
+	},
 	"e2e": {
-		"actions": "write", "actions_variables": "write", "administration": "write",
-		"contents": "write", "issues": "write", "members": "write", "metadata": "read",
-		"organization_actions_variables": "write", "organization_administration": "write",
-		"pull_requests": "write", "secrets": "write", "workflows": "write",
+		LevelWrite: {
+			"actions": "write", "actions_variables": "write", "administration": "write",
+			"contents": "write", "issues": "write", "members": "write", "metadata": "read",
+			"organization_actions_variables": "write", "organization_administration": "write",
+			"pull_requests": "write", "secrets": "write", "workflows": "write",
+		},
+		LevelRead: {
+			"actions": "read", "actions_variables": "read", "administration": "read",
+			"contents": "read", "issues": "read", "members": "read", "metadata": "read",
+			"organization_actions_variables": "read", "organization_administration": "read",
+			"pull_requests": "read", "secrets": "read", "workflows": "read",
+		},
 	},
 }
 
-// customRoles stores user-defined role permissions. Written once at startup
-// via RegisterCustomRolePermissions, read concurrently by request handlers.
-// Lives in mintcore (not cmd/mint) so that RolePermissionsFor, HasRole, and
-// RolePermissions return a unified view — callers like CreateInstallationToken
-// need not distinguish built-in from custom roles.
-var customRoles atomic.Value // holds map[string]map[string]string
+// customRoleLevels stores user-defined role permissions organized by level.
+// Written once at startup via RegisterCustomRolePermissions or
+// RegisterCustomRoleLevels, read concurrently by request handlers.
+// Lives in mintcore (not cmd/mint) so that HasRole and
+// RolePermissionsForLevel return a unified view — callers like
+// CreateInstallationToken need not distinguish built-in from custom roles.
+//
+// Structure: role → level → permission → access.
+// Flat-format custom roles are stored with both "read" and "write" levels
+// containing the same permission map. Multi-level roles have explicit
+// entries for each level; extra named levels beyond read/write are allowed.
+var customRoleLevels atomic.Value // holds map[string]map[string]map[string]string
 
-func loadCustomRoles() map[string]map[string]string {
-	v := customRoles.Load()
+func loadCustomRoleLevels() map[string]map[string]map[string]string {
+	v := customRoleLevels.Load()
 	if v == nil {
 		return nil
 	}
-	return v.(map[string]map[string]string)
+	return v.(map[string]map[string]map[string]string)
+}
+
+// validateCustomRoleLevels validates the structure of custom role levels.
+// Every role must define at least the mandatory "read" and "write" levels.
+// Extra named levels are allowed (non-empty, except the reserved JSON
+// discriminator key "levels"). No write-superset-of-read enforcement —
+// level contents are the operator's responsibility.
+func validateCustomRoleLevels(levels map[string]map[string]map[string]string) error {
+	for role, roleLevels := range levels {
+		if err := ValidateRoleName(role); err != nil {
+			return fmt.Errorf("custom role name invalid: %w", err)
+		}
+		if _, ok := canonicalRolePermissions[role]; ok {
+			return fmt.Errorf("custom role %q collides with built-in role", role)
+		}
+		// Mandatory levels.
+		if _, ok := roleLevels[LevelRead]; !ok {
+			return fmt.Errorf("custom role %q: missing mandatory level %q", role, LevelRead)
+		}
+		if _, ok := roleLevels[LevelWrite]; !ok {
+			return fmt.Errorf("custom role %q: missing mandatory level %q", role, LevelWrite)
+		}
+		for level, perms := range roleLevels {
+			if level == "" {
+				return fmt.Errorf("custom role %q: level name must not be empty", role)
+			}
+			if level == "levels" {
+				return fmt.Errorf("custom role %q: %q is a reserved key and cannot be used as a level name", role, level)
+			}
+			for k, v := range perms {
+				if v != "read" && v != "write" {
+					return fmt.Errorf("custom role %q level %q: permission %q has invalid value %q (must be read or write)", role, level, k, v)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // RegisterCustomRolePermissions adds user-defined role permissions that are
 // checked alongside the canonical built-in permissions. Pass nil to clear.
 // Returns an error if any custom role name collides with a built-in role.
 // Used by cmd/mint (standalone mint) only; the GCF mint uses canonical roles.
+//
+// The given flat permission map is stored as both the "read" and "write"
+// levels for the role. Both levels return the same GitHub permission values
+// — the level name selects the tier, not the individual access values.
 func RegisterCustomRolePermissions(perms map[string]map[string]string) error {
 	if perms == nil {
-		customRoles.Store(map[string]map[string]string(nil))
+		customRoleLevels.Store(map[string]map[string]map[string]string(nil))
 		return nil
 	}
-	safe := make(map[string]map[string]string, len(perms))
+	safe := make(map[string]map[string]map[string]string, len(perms))
 	for role, p := range perms {
 		if err := ValidateRoleName(role); err != nil {
 			return fmt.Errorf("custom role name invalid: %w", err)
@@ -119,64 +212,157 @@ func RegisterCustomRolePermissions(perms map[string]map[string]string) error {
 		if _, ok := canonicalRolePermissions[role]; ok {
 			return fmt.Errorf("custom role %q collides with built-in role", role)
 		}
-		cp := make(map[string]string, len(p))
+		cpRead := make(map[string]string, len(p))
+		cpWrite := make(map[string]string, len(p))
 		for k, v := range p {
 			if v != "read" && v != "write" {
-				return fmt.Errorf("custom role %q: permission %q has invalid level %q (must be read or write)", role, k, v)
+				return fmt.Errorf("custom role %q: permission %q has invalid value %q (must be read or write)", role, k, v)
 			}
-			cp[k] = v
+			cpRead[k] = v
+			cpWrite[k] = v
 		}
-		safe[role] = cp
+		safe[role] = map[string]map[string]string{LevelRead: cpRead, LevelWrite: cpWrite}
 	}
-	customRoles.Store(safe)
+	customRoleLevels.Store(safe)
 	return nil
 }
 
-// RolePermissions returns a deep copy of the combined canonical and custom
-// role-to-permissions map. Custom roles are included alongside canonical ones.
-func RolePermissions() map[string]map[string]string {
-	out := make(map[string]map[string]string, len(canonicalRolePermissions))
-	for role, perms := range canonicalRolePermissions {
-		cp := make(map[string]string, len(perms))
-		for k, v := range perms {
-			cp[k] = v
-		}
-		out[role] = cp
+// RegisterCustomRoleLevels adds user-defined role permissions with explicit
+// level support. Each role maps level names to permission sets. Pass nil to
+// clear. Returns an error if any custom role collides with a built-in role.
+func RegisterCustomRoleLevels(levels map[string]map[string]map[string]string) error {
+	if levels == nil {
+		customRoleLevels.Store(map[string]map[string]map[string]string(nil))
+		return nil
 	}
-	if custom := loadCustomRoles(); len(custom) > 0 {
-		for role, perms := range custom {
+	if err := validateCustomRoleLevels(levels); err != nil {
+		return err
+	}
+	// Deep copy to prevent caller mutation.
+	safe := make(map[string]map[string]map[string]string, len(levels))
+	for role, roleLevels := range levels {
+		safeLevels := make(map[string]map[string]string, len(roleLevels))
+		for level, perms := range roleLevels {
 			cp := make(map[string]string, len(perms))
 			for k, v := range perms {
 				cp[k] = v
 			}
-			out[role] = cp
+			safeLevels[level] = cp
 		}
+		safe[role] = safeLevels
 	}
-	return out
+	customRoleLevels.Store(safe)
+	return nil
 }
 
-// RolePermissionsFor returns the permissions for a specific role, or nil if
-// the role is not defined. Canonical roles are checked first (avoids atomic
-// load on the hot path), then custom roles. Name collisions are rejected at
-// registration time so lookups are unambiguous. The returned map is a copy.
-func RolePermissionsFor(role string) map[string]string {
-	if perms, ok := canonicalRolePermissions[role]; ok {
-		cp := make(map[string]string, len(perms))
-		for k, v := range perms {
-			cp[k] = v
-		}
-		return cp
+// ParseCustomRolePermissions parses a CUSTOM_ROLE_PERMISSIONS JSON value,
+// auto-detecting flat vs multi-level format per role. Returns the unified
+// level structure.
+//
+// Flat format (role → permissions): the given map is stored as both the
+// "read" and "write" levels for the role. Both levels return the same
+// GitHub permission values.
+//
+// Multi-level format (role → {"levels": {level → permissions}}): the
+// levels object is used as-is. Extra named levels beyond read/write are
+// allowed; the mandatory read and write levels are enforced at
+// registration time by validateCustomRoleLevels.
+//
+// Mixed format within a single value is allowed.
+func ParseCustomRolePermissions(raw string) (map[string]map[string]map[string]string, error) {
+	var roles map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &roles); err != nil {
+		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
-	if custom := loadCustomRoles(); custom != nil {
-		if perms, ok := custom[role]; ok {
+
+	result := make(map[string]map[string]map[string]string, len(roles))
+	for role, rawVal := range roles {
+		// Try multi-level format: {"levels": {"read": {...}, "write": {...}}}
+		var multiLevel struct {
+			Levels map[string]map[string]string `json:"levels"`
+		}
+		if err := json.Unmarshal(rawVal, &multiLevel); err == nil && multiLevel.Levels != nil {
+			// Validate permission values early (defense-in-depth:
+			// RegisterCustomRoleLevels also validates, but catching
+			// errors here gives a clearer parse-time error message).
+			for level, perms := range multiLevel.Levels {
+				for k, v := range perms {
+					if v != "read" && v != "write" {
+						return nil, fmt.Errorf("custom role %q level %q: permission %q has invalid value %q (must be read or write)", role, level, k, v)
+					}
+				}
+			}
+			result[role] = multiLevel.Levels
+			continue
+		}
+
+		// Fall back to flat format: {"permission": "value"}.
+		// Store the same map under both mandatory levels so that
+		// read and write are ordinary lookups — no derivation needed.
+		var flat map[string]string
+		if err := json.Unmarshal(rawVal, &flat); err != nil {
+			return nil, fmt.Errorf("custom role %q: invalid format: %w", role, err)
+		}
+		for k, v := range flat {
+			if v != "read" && v != "write" {
+				return nil, fmt.Errorf("custom role %q: permission %q has invalid value %q (must be read or write)", role, k, v)
+			}
+		}
+		// Deep-copy for the second level to avoid aliasing.
+		flatCopy := make(map[string]string, len(flat))
+		for k, v := range flat {
+			flatCopy[k] = v
+		}
+		result[role] = map[string]map[string]string{LevelRead: flat, LevelWrite: flatCopy}
+	}
+
+	return result, nil
+}
+
+// RolePermissionsForLevel returns the permissions for a role at the given
+// privilege level. Levels are keys on the role — the lookup is a simple
+// table index with no derivation or fallback.
+//
+// When level is empty it defaults to LevelRead (the API default for
+// omitted levels). The function checks canonical (built-in) roles first
+// (avoids atomic load on the hot path), then custom roles. Returns a
+// copy of the stored permission map.
+//
+// Errors:
+//   - unknown role → "no permissions defined for role %q"
+//   - known role, missing level → "role %q has no level %q"
+func RolePermissionsForLevel(role, level string) (map[string]string, error) {
+	if level == "" {
+		level = LevelRead
+	}
+
+	// Check built-in roles first.
+	if roleLevels, ok := canonicalRolePermissions[role]; ok {
+		if perms, ok := roleLevels[level]; ok {
 			cp := make(map[string]string, len(perms))
 			for k, v := range perms {
 				cp[k] = v
 			}
-			return cp
+			return cp, nil
+		}
+		return nil, fmt.Errorf("role %q has no level %q", role, level)
+	}
+
+	// Check custom roles.
+	if custom := loadCustomRoleLevels(); custom != nil {
+		if roleLevels, ok := custom[role]; ok {
+			if perms, ok := roleLevels[level]; ok {
+				cp := make(map[string]string, len(perms))
+				for k, v := range perms {
+					cp[k] = v
+				}
+				return cp, nil
+			}
+			return nil, fmt.Errorf("role %q has no level %q", role, level)
 		}
 	}
-	return nil
+
+	return nil, fmt.Errorf("no permissions defined for role %q", role)
 }
 
 // HasRole reports whether the given role has a permissions entry,
@@ -186,7 +372,7 @@ func HasRole(role string) bool {
 	if _, ok := canonicalRolePermissions[role]; ok {
 		return true
 	}
-	if custom := loadCustomRoles(); custom != nil {
+	if custom := loadCustomRoleLevels(); custom != nil {
 		if _, ok := custom[role]; ok {
 			return true
 		}
@@ -570,11 +756,14 @@ func ReadForeignAllowlistFromRepo(ctx context.Context, githubBaseURL, jwt string
 }
 
 // CreateInstallationToken exchanges a JWT for an installation access token,
-// scoped to the given repos and role-specific permissions.
-func CreateInstallationToken(ctx context.Context, githubBaseURL, jwt string, installationID int64, role string, repos []string) (string, string, *GrantedScope, error) {
-	perms := RolePermissionsFor(role)
-	if perms == nil {
-		return "", "", nil, fmt.Errorf("no permissions defined for role %q", role)
+// scoped to the given repos and role-specific permissions at the requested
+// privilege level. When level is empty, RolePermissionsForLevel defaults to
+// LevelRead. The level selects a key on the role's permission table — there
+// is no derivation or fallback.
+func CreateInstallationToken(ctx context.Context, githubBaseURL, jwt string, installationID int64, role, level string, repos []string) (string, string, *GrantedScope, error) {
+	perms, err := RolePermissionsForLevel(role, level)
+	if err != nil {
+		return "", "", nil, err
 	}
 	tokenReqBody := map[string]interface{}{
 		"permissions": perms,

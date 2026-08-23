@@ -332,7 +332,7 @@ jobs:
           TOKEN=$(curl -sSf --retry 5 --retry-delay 5 --retry-all-errors \
             -H "Authorization: Bearer $OIDC_TOKEN" \
             -H "Content-Type: application/json" \
-            -d '{"role":"fullsend","repos":[".fullsend"]}' \
+            -d '{"role":"fullsend","level":"write","repos":[".fullsend"]}' \
             "${MINT_URL}/v1/token" | jq -r '.token')
           if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
             echo "::error::Token mint returned no token"
