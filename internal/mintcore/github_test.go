@@ -318,6 +318,17 @@ func TestHasRole(t *testing.T) {
 	assert.False(t, HasRole("nonexistent"))
 }
 
+func TestValidateLevelName(t *testing.T) {
+	// Valid level names.
+	for _, name := range []string{"", "read", "write", "admin", "deploy-ro", "a", "abcdefghijklmnopqrstuvwxyz012345"} {
+		assert.NoError(t, ValidateLevelName(name), "expected valid: %q", name)
+	}
+	// Invalid level names.
+	for _, name := range []string{"Write", "READ", "1read", "-read", "re ad", "re.ad", "abcdefghijklmnopqrstuvwxyz0123456", "UPPER"} {
+		assert.Error(t, ValidateLevelName(name), "expected invalid: %q", name)
+	}
+}
+
 func TestBuiltInRoles_IncludesScribe(t *testing.T) {
 	roles := BuiltInRoles()
 	assert.Contains(t, roles, "scribe")
@@ -1009,6 +1020,42 @@ func TestRegisterCustomRoleLevels_ReservedLevelName(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reserved key")
+}
+
+func TestRegisterCustomRoleLevels_InvalidLevelName(t *testing.T) {
+	t.Cleanup(func() { _ = RegisterCustomRoleLevels(nil) })
+
+	cases := []struct {
+		name  string
+		level string
+	}{
+		{"uppercase", "Write"},
+		{"starts-with-digit", "1read"},
+		{"starts-with-dash", "-read"},
+		{"too-long", "abcdefghijklmnopqrstuvwxyz0123456"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := RegisterCustomRoleLevels(map[string]map[string]map[string]string{
+				"testrole": {
+					LevelRead:  {"contents": "read"},
+					LevelWrite: {"contents": "write"},
+					tc.level:   {"contents": "read"},
+				},
+			})
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid level name")
+		})
+	}
+}
+
+func TestParseCustomRolePermissions_InvalidLevelName(t *testing.T) {
+	// Multi-level format with an invalid level name should fail at parse time.
+	raw := `{"my-role": {"levels": {"read": {"contents": "read"}, "write": {"contents": "write"}, "Write": {"contents": "write"}}}}`
+	_, err := ParseCustomRolePermissions(raw)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid level name")
 }
 
 func TestCreateInstallationToken_ReadLevel(t *testing.T) {

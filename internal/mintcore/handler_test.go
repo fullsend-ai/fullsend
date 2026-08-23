@@ -3974,8 +3974,9 @@ func TestHandler_OrgLevelForeignDoesNotAuthorizeRepoScoped(t *testing.T) {
 }
 
 func TestHandler_LevelDefault(t *testing.T) {
-	// When level is omitted, it defaults to "read" and the token should use
-	// read-level (downgraded) permissions.
+	// When level is omitted, the handler defaults to "write" for backward
+	// compatibility — existing HTTP clients that do not send a level field
+	// keep receiving write-level tokens.
 	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
 
 	pemData, err := generateTestRSAKey()
@@ -4003,7 +4004,7 @@ func TestHandler_LevelDefault(t *testing.T) {
 			capturedPerms = body["permissions"].(map[string]interface{})
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(installationTokenResponse{
-				Token:     "ghs_read_default",
+				Token:     "ghs_write_default",
 				ExpiresAt: "2026-08-19T12:00:00Z",
 			})
 		default:
@@ -4024,12 +4025,12 @@ func TestHandler_LevelDefault(t *testing.T) {
 		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
-	// Verify that read-level permissions were requested (all "read").
-	if capturedPerms["contents"] != "read" {
-		t.Fatalf("expected contents=read (read level default), got %v", capturedPerms["contents"])
+	// Verify that write-level permissions were requested (omitted defaults to write).
+	if capturedPerms["contents"] != "write" {
+		t.Fatalf("expected contents=write (write level default), got %v", capturedPerms["contents"])
 	}
-	if capturedPerms["pull_requests"] != "read" {
-		t.Fatalf("expected pull_requests=read (read level default), got %v", capturedPerms["pull_requests"])
+	if capturedPerms["pull_requests"] != "write" {
+		t.Fatalf("expected pull_requests=write (write level default), got %v", capturedPerms["pull_requests"])
 	}
 }
 
@@ -4114,6 +4115,80 @@ func TestHandler_LevelUnknown(t *testing.T) {
 	}
 	var resp map[string]string
 	json.NewDecoder(rec.Body).Decode(&resp)
+	if !strings.Contains(resp["error"], "has no level") {
+		t.Fatalf("expected 'has no level' error, got: %s", resp["error"])
+	}
+}
+
+func TestHandler_LevelInvalidFormat(t *testing.T) {
+	// Invalid level identifiers (uppercase, too long, starting with digit or
+	// dash) must be rejected with 400 before the role+level lookup runs.
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{
+		claims: &Claims{
+			RepositoryOwner: "test-org",
+			Repository:      "test-org/test-repo",
+			JobWorkflowRef:  "test-org/.fullsend/.github/workflows/code.yml@refs/heads/main",
+		},
+	})
+
+	cases := []struct {
+		name  string
+		level string
+	}{
+		{"uppercase", "Write"},
+		{"starts-with-digit", "1read"},
+		{"starts-with-dash", "-read"},
+		{"too-long", "abcdefghijklmnopqrstuvwxyz0123456"}, // 33 chars
+		{"contains-space", "re ad"},
+		{"contains-dot", "re.ad"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := fmt.Sprintf(`{"role":"coder","level":%q,"repos":["test-repo"]}`, tc.level)
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+			req.Header.Set("Authorization", "Bearer test-token")
+			h.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400 for level %q, got %d: %s", tc.level, rec.Code, rec.Body.String())
+			}
+			var resp map[string]string
+			json.NewDecoder(rec.Body).Decode(&resp)
+			if !strings.Contains(resp["error"], "invalid level format") {
+				t.Fatalf("expected 'invalid level format' error for level %q, got: %s", tc.level, resp["error"])
+			}
+		})
+	}
+}
+
+func TestHandler_LevelValidCustomName(t *testing.T) {
+	// Extra named levels that match the pattern should pass format
+	// validation and only fail on the role+level lookup (not format check).
+	t.Setenv("ROLE_APP_IDS", `{"coder":"200"}`)
+	h := mustNewHandler(t, &fakePEMAccessor{}, &fakeOIDCVerifier{
+		claims: &Claims{
+			RepositoryOwner: "test-org",
+			Repository:      "test-org/test-repo",
+			JobWorkflowRef:  "test-org/.fullsend/.github/workflows/code.yml@refs/heads/main",
+		},
+	})
+
+	// "deploy-ro" matches the level pattern but coder has no such level.
+	body := `{"role":"coder","level":"deploy-ro","repos":["test-repo"]}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/v1/token", strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer test-token")
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]string
+	json.NewDecoder(rec.Body).Decode(&resp)
+	// Should fail on role+level lookup, not format validation.
 	if !strings.Contains(resp["error"], "has no level") {
 		t.Fatalf("expected 'has no level' error, got: %s", resp["error"])
 	}

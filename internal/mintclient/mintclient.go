@@ -30,7 +30,7 @@ const defaultAudience = mintconsts.OIDCAudience
 type MintRequest struct {
 	MintURL   string
 	Role      string
-	Level     string   // optional: privilege level ("read" or "write"); defaults to "read" when empty
+	Level     string   // optional: privilege level ("read" or "write"); server defaults to "write" when empty
 	Repos     []string // required: specific repo names, or ["*"] for installation-wide token
 	TargetOrg string   // optional: cross-org mint when set and differs from caller org
 	Audience  string

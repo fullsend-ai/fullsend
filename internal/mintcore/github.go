@@ -175,8 +175,8 @@ func validateCustomRoleLevels(levels map[string]map[string]map[string]string) er
 			return fmt.Errorf("custom role %q: missing mandatory level %q", role, LevelWrite)
 		}
 		for level, perms := range roleLevels {
-			if level == "" {
-				return fmt.Errorf("custom role %q: level name must not be empty", role)
+			if err := ValidateLevelName(level); err != nil {
+				return fmt.Errorf("custom role %q: %w", role, err)
 			}
 			if level == "levels" {
 				return fmt.Errorf("custom role %q: %q is a reserved key and cannot be used as a level name", role, level)
@@ -286,6 +286,9 @@ func ParseCustomRolePermissions(raw string) (map[string]map[string]map[string]st
 			// RegisterCustomRoleLevels also validates, but catching
 			// errors here gives a clearer parse-time error message).
 			for level, perms := range multiLevel.Levels {
+				if err := ValidateLevelName(level); err != nil {
+					return nil, fmt.Errorf("custom role %q: %w", role, err)
+				}
 				for k, v := range perms {
 					if v != "read" && v != "write" {
 						return nil, fmt.Errorf("custom role %q level %q: permission %q has invalid value %q (must be read or write)", role, level, k, v)
@@ -323,10 +326,12 @@ func ParseCustomRolePermissions(raw string) (map[string]map[string]map[string]st
 // privilege level. Levels are keys on the role — the lookup is a simple
 // table index with no derivation or fallback.
 //
-// When level is empty it defaults to LevelRead (the API default for
-// omitted levels). The function checks canonical (built-in) roles first
-// (avoids atomic load on the hot path), then custom roles. Returns a
-// copy of the stored permission map.
+// When level is empty it defaults to LevelRead as a safe library-level
+// fallback. Note: the HTTP handler defaults omitted levels to LevelWrite
+// (temporary compatibility default) before calling this function.
+// The function checks canonical (built-in) roles first (avoids atomic
+// load on the hot path), then custom roles. Returns a copy of the stored
+// permission map.
 //
 // Errors:
 //   - unknown role → "no permissions defined for role %q"
@@ -757,9 +762,10 @@ func ReadForeignAllowlistFromRepo(ctx context.Context, githubBaseURL, jwt string
 
 // CreateInstallationToken exchanges a JWT for an installation access token,
 // scoped to the given repos and role-specific permissions at the requested
-// privilege level. When level is empty, RolePermissionsForLevel defaults to
-// LevelRead. The level selects a key on the role's permission table — there
-// is no derivation or fallback.
+// privilege level. When level is empty, RolePermissionsForLevel defaults
+// to LevelRead (library-level fallback); the HTTP handler applies a
+// different default before calling this. The level selects a key on the
+// role's permission table — there is no derivation or fallback.
 func CreateInstallationToken(ctx context.Context, githubBaseURL, jwt string, installationID int64, role, level string, repos []string) (string, string, *GrantedScope, error) {
 	perms, err := RolePermissionsForLevel(role, level)
 	if err != nil {

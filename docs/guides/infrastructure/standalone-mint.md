@@ -202,10 +202,12 @@ Levels are keys on each role. The mint looks up the requested level and returns 
 |-------|----------|
 | `"read"` | Returns the `read`-level permission map (built-in roles: all values `"read"`) |
 | `"write"` | Returns the `write`-level permission map (built-in roles: the canonical ceiling) |
-| _(omitted)_ | Defaults to `"read"` |
+| _(omitted)_ | Defaults to `"write"` (temporary compatibility default — a future release will change to `"read"`) |
 | _(custom)_ | Custom roles may define extra named levels; the mint looks them up the same way |
 
-> **⚠️ Breaking change (this release):** Prior to privilege levels, omitting `level` returned write-equivalent permissions. Existing standalone mint callers that omit the `level` field will now receive **read-only** tokens. To preserve the previous behavior, update your token requests to include `"level": "write"`. The CLI `fullsend mint token` command defaults `--level` to `write` for backward compatibility, but direct HTTP callers must explicitly set the field.
+Level names must match `^[a-z][a-z0-9_-]{0,31}$` (starts with a lowercase letter, max 32 characters). Invalid names are rejected with HTTP 400.
+
+> **Temporary compatibility default:** Omitting `level` currently defaults to `"write"` so existing HTTP clients keep receiving write-level tokens. A future PR will migrate the default to `"read"`. Callers that need read-only tokens should pass `"level": "read"` explicitly.
 
 ## Custom role permissions
 

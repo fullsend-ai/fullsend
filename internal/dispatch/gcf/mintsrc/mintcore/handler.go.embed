@@ -262,11 +262,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Default level to read when omitted (ADR 0073). This default is
-	// intentional: all mint HTTP clients in this repository already pass
-	// level explicitly when they need write, so omission means read.
+	// Default level to write when omitted — temporary compatibility default
+	// so existing HTTP clients that do not send a level field keep receiving
+	// write-level tokens. A future PR will migrate the default to read once
+	// all callers have been updated. See ADR 0073.
 	if req.Level == "" {
-		req.Level = LevelRead
+		req.Level = LevelWrite
+	}
+
+	if err := ValidateLevelName(req.Level); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid level format")
+		return
 	}
 
 	if len(req.Repos) == 0 {

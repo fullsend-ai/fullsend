@@ -331,7 +331,7 @@ fullsend mint token \
 | `--repos` | | Comma-separated repository names |
 | `--mint-url` | `$FULLSEND_MINT_URL` | Mint service URL |
 | `--audience` | `fullsend-mint` | OIDC audience |
-| `--level` | `write` | Privilege level name (e.g. `read`, `write`). Defaults to `write` for backward compatibility; the server defaults omitted levels to `read`. The value is passed through to the mint — if the role does not define the requested level, the mint returns an error |
+| `--level` | `write` | Privilege level name (e.g. `read`, `write`). Both the CLI and server default to `write` when omitted (temporary compatibility default). The value is passed through to the mint — if the role does not define the requested level, the mint returns an error |
 
 ## See also
 
