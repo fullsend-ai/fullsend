@@ -50,7 +50,7 @@ Shared pool, CLI, and cleanup helpers used by both admin e2e and behaviour tests
 In GitHub Actions, tests mint a cross-org installation token via the mint service:
 
 1. Workflow requests a GHA OIDC token (`id-token: write`)
-2. `mintclient.MintToken` POSTs to `{FULLSEND_MINT_URL or hosted default}/v1/token` with `{role: "e2e", target_org: "<pool org>", repos: ["*"]}` (`repos: ["*"]` is required for installation-wide cross-org access)
+2. `mintclient.MintToken` POSTs to `{FULLSEND_MINT_URL or hosted default}/v1/token` with `{role: "e2e", level: "write", target_org: "<pool org>", repos: ["*"]}` (`repos: ["*"]` is required for installation-wide cross-org access; `level: "write"` requests full write permissions)
 3. Mint verifies the caller against `FULLSEND_FOREIGN_E2E_REPOS` on the target org ([ADR 0060](../../ADRs/0060-cross-org-mint-authorization-via-org-variables.md))
 
 Required repository secrets:

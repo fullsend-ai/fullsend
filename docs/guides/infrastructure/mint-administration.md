@@ -430,7 +430,12 @@ fullsend mint token --role triage --repos my-repo --mint-url "$FULLSEND_MINT_URL
 
 # Mint a token scoped to multiple repos
 fullsend mint token --role coder --repos repo-a,repo-b --mint-url "$FULLSEND_MINT_URL"
+
+# Mint a read-only token (explicit level)
+fullsend mint token --role triage --repos my-repo --level read --mint-url "$FULLSEND_MINT_URL"
 ```
+
+The `--level` flag selects the privilege level for the minted token: `read` returns read-only permissions, `write` returns the full permission set. Both the CLI and the server default to `write` when omitted (temporary compatibility default — a future release will change the server default to `read`).
 
 The command prints the token to stdout for shell capture. When running in GitHub Actions (`GITHUB_ACTIONS=true`), it also emits `::add-mask::` to stderr to prevent the token from appearing in logs.
 
