@@ -15,7 +15,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
+	"github.com/fullsend-ai/fullsend/internal/security"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
@@ -177,6 +179,62 @@ func TestBuildRunCommand_NoPlugins(t *testing.T) {
 	assert.NotContains(t, cmd, "--plugin-dir")
 }
 
+func TestBuildRunCommand_WithHooksSettings(t *testing.T) {
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName:     "agent",
+		RepoDir:           "/sandbox/workspace/repo",
+		HooksSettingsPath: "/sandbox/claude-config/hooks.json",
+	})
+	assert.Contains(t, cmd, "--settings '/sandbox/claude-config/hooks.json'")
+}
+
+func TestBuildRunCommand_WithoutHooksSettings(t *testing.T) {
+	cmd := testRunCommand("agent", "", "/sandbox/workspace/repo", nil, "")
+	assert.NotContains(t, cmd, "--settings")
+}
+
+func TestBuildRunCommand_HooksSettingsEscapesQuotes(t *testing.T) {
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName:     "agent",
+		RepoDir:           "/sandbox/workspace/repo",
+		HooksSettingsPath: "/sandbox/path'with'quotes/hooks.json",
+	})
+	assert.Contains(t, cmd, `--settings '/sandbox/path'\''with'\''quotes/hooks.json'`)
+}
+
+func TestBuildRunCommand_DefaultPrompt(t *testing.T) {
+	cmd := testRunCommand("agent", "", "/sandbox/workspace/repo", nil, "")
+	assert.Contains(t, cmd, "'Run the agent task'")
+}
+
+func TestBuildRunCommand_CustomPrompt(t *testing.T) {
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName: "agent",
+		RepoDir:       "/sandbox/workspace/repo",
+		Prompt:        "Run the agent task\n\nThe previous iteration failed.",
+	})
+	assert.Contains(t, cmd, "The previous iteration failed.")
+	assert.NotContains(t, cmd, "'Run the agent task'")
+}
+
+func TestBuildRunCommand_PromptEscapesQuotes(t *testing.T) {
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName: "agent",
+		RepoDir:       "/sandbox/workspace/repo",
+		Prompt:        "Fix the 'error' in the code",
+	})
+	assert.Contains(t, cmd, `'Fix the '\''error'\'' in the code'`)
+}
+
+func TestBuildRunCommand_EmptyPromptUsesDefault(t *testing.T) {
+	cmd := buildRunCommand(RunParams{
+		AgentBaseName: "agent",
+		RepoDir:       "/sandbox/workspace/repo",
+		Prompt:        "",
+	})
+	assert.Contains(t, cmd, "'Run the agent task'")
+}
+
 func TestBuildRunCommand_DebugDisabled(t *testing.T) {
 	cmd := testRunCommand("agent", "", "/sandbox/workspace/repo", nil, "")
 	assert.NotContains(t, cmd, "--debug-file")
@@ -209,6 +267,18 @@ func TestBuildRunCommand_NoDoubleSpaces(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			cmd := testRunCommandWithEffort(tc.agentName, tc.model, tc.effort, "/sandbox/workspace/repo", tc.pluginDirs, tc.debug)
+			assert.NotContains(t, cmd, "  ", "command should not contain double spaces")
+		})
+		t.Run(tc.name+" with hooks settings", func(t *testing.T) {
+			cmd := buildRunCommand(RunParams{
+				AgentBaseName:     tc.agentName,
+				Model:             tc.model,
+				Effort:            tc.effort,
+				RepoDir:           "/sandbox/workspace/repo",
+				PluginDirs:        tc.pluginDirs,
+				Debug:             tc.debug,
+				HooksSettingsPath: "/sandbox/claude-config/hooks.json",
+			})
 			assert.NotContains(t, cmd, "  ", "command should not contain double spaces")
 		})
 	}
@@ -795,4 +865,77 @@ func TestClaudeRuntimeSystem(t *testing.T) {
 	// Code runs Anthropic models. Sourcing it from the runtime (not hardcoding
 	// in the CLI) keeps telemetry runtime-agnostic per ADR 0050.
 	assert.Equal(t, "anthropic", ClaudeRuntime{}.System())
+}
+
+// TestInstallClaudeHooks_HappyPath verifies that installClaudeHooks writes
+// hook scripts and the hooks.json wiring to the runner-owned config
+// directory. Uses a stub openshell so sandbox.Exec/Upload succeed without a
+// real sandbox.
+func TestInstallClaudeHooks_HappyPath(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	stubDir := t.TempDir()
+	script := "#!/bin/sh\necho \"$@\" >> '" + logPath + "'\nexit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", stubDir)
+
+	hooks := security.SandboxHookConfig{} // default hooks (all enabled)
+	require.NoError(t, installClaudeHooks("test-sandbox", hooks))
+
+	logBytes, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	log := string(logBytes)
+	assert.Contains(t, log, security.SandboxHooksDir+"/tirith_check.py")
+	assert.Contains(t, log, security.SandboxHooksSettings)
+}
+
+// TestInstallClaudeHooks_SettingsUploadError verifies that installClaudeHooks
+// returns a descriptive error when the hooks.json wiring upload fails.
+func TestInstallClaudeHooks_SettingsUploadError(t *testing.T) {
+	stubDir := t.TempDir()
+	// Stub that succeeds for all operations except the hooks.json upload.
+	script := "#!/bin/sh\ncase \"$*\" in *hooks.json*) exit 1 ;; esac\nexit 0\n"
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", stubDir)
+
+	hooks := security.SandboxHookConfig{}
+	err := installClaudeHooks("test-sandbox", hooks)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "copying hooks.json to sandbox")
+}
+
+// TestInstallClaudeHooks_OpenshellNotInPath verifies that installClaudeHooks
+// fails fast when openshell is not available.
+func TestInstallClaudeHooks_OpenshellNotInPath(t *testing.T) {
+	t.Setenv("PATH", "")
+
+	hooks := security.SandboxHookConfig{}
+	err := installClaudeHooks("test-sandbox", hooks)
+	require.Error(t, err)
+}
+
+// TestInstallClaudeHooks_TempFileError covers the temp-file creation failure
+// branch: with every hook disabled, installHookScripts performs no uploads,
+// so the first CreateTemp call is the one for hooks.json — pointing TMPDIR at
+// a regular file makes it fail.
+func TestInstallClaudeHooks_TempFileError(t *testing.T) {
+	stubDir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(stubDir, "openshell"), []byte("#!/bin/sh\nexit 0\n"), 0o755))
+	t.Setenv("PATH", stubDir)
+	notADir := filepath.Join(t.TempDir(), "file")
+	require.NoError(t, os.WriteFile(notADir, []byte("x"), 0o644))
+	t.Setenv("TMPDIR", notADir)
+
+	off := false
+	h := &harness.Harness{Security: &harness.SecurityConfig{SandboxHooks: &harness.SandboxHooks{
+		Tirith:                  &harness.TirithConfig{Enabled: &off},
+		SSRFPreTool:             &off,
+		CanaryPreTool:           &off,
+		CanaryPostTool:          &off,
+		SecretRedactPostTool:    &off,
+		UnicodePostTool:         &off,
+		ContextSuppressPostTool: &off,
+	}}}
+	err := installClaudeHooks("test-sandbox", security.SandboxHookConfigFromHarness(h))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "creating temp hooks file")
 }

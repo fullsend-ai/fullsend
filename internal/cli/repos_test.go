@@ -11,6 +11,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/repos"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/internal/ui"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -841,11 +842,14 @@ func TestRunReposInstall_DryRun(t *testing.T) {
 	fc := newInstallFakeClient("acme/api")
 
 	err := runReposInstall(context.Background(), &reposInstallConfig{
-		manifest:    manifestPath,
-		concurrency: 4,
-		dryRun:      true,
-		roles:       []string{"triage"},
-		testClient:  fc,
+		manifest:               manifestPath,
+		concurrency:            4,
+		dryRun:                 true,
+		roles:                  []string{"triage"},
+		inferenceProject:       "inf-proj",
+		inferenceProjectNumber: "123456789",
+		inferenceRegion:        "us-central1",
+		testClient:             fc,
 	})
 	require.NoError(t, err)
 }
@@ -929,6 +933,11 @@ func TestReposUninstallCmd_RequiresArgs(t *testing.T) {
 func newInstalledFakeClientCLI(repoNames ...string) *forge.FakeClient {
 	fc := forge.NewFakeClient()
 	fc.InstallationToken = true
+	// Simulate a GitHub App bot identity with write access to each repo.
+	// Without this, commitScaffoldViaPR falls into the fork path and
+	// waitForFork polls a fake that never reports ready (#6489).
+	fc.AuthenticatedUser = "fullsend-app[bot]"
+	fc.CollaboratorPermissions = make(map[string]string)
 	for _, r := range repoNames {
 		parts := strings.SplitN(r, "/", 2)
 		fc.Repos = append(fc.Repos, forge.Repository{
@@ -936,12 +945,16 @@ func newInstalledFakeClientCLI(repoNames ...string) *forge.FakeClient {
 			Name:          parts[1],
 			DefaultBranch: "main",
 		})
+		fc.CollaboratorPermissions[r+"/fullsend-app[bot]"] = "write"
 		fc.VariableValues[r+"/FULLSEND_PER_REPO_INSTALL"] = "true"
 		fc.VariableValues[r+"/FULLSEND_MINT_URL"] = "https://mint.example.com"
 		fc.VariableValues[r+"/FULLSEND_GCP_REGION"] = "us-central1"
 		fc.Secrets[r+"/FULLSEND_GCP_PROJECT_ID"] = true
 		fc.Secrets[r+"/FULLSEND_GCP_WIF_PROVIDER"] = true
 		fc.FileContents[r+"/.github/workflows/fullsend.yml"] = []byte("uses: fullsend-ai/fullsend/.github/workflows/dispatch.yml@v1.0.0")
+		for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+			fc.FileContents[r+"/"+tcPath] = []byte("uses: fullsend-ai/fullsend/.github/workflows/reusable-prioritize.yml@v1.0.0")
+		}
 	}
 	return fc
 }
@@ -1406,9 +1419,9 @@ func TestRunReposInstall_DerivesProjectNumber(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify derived values. runReposInstall sets these on opts before
-	// constructing BatchInstallConfig (which copies them verbatim), so
+	// constructing ConvergeConfig (which copies them verbatim), so
 	// asserting here confirms the derivation logic. The require.NoError
-	// above also provides indirect coverage: BatchInstall's all-or-nothing
+	// above also provides indirect coverage: Converge's all-or-nothing
 	// validation would fail if the values were missing or empty.
 	assert.Equal(t, "987654321", opts.inferenceProjectNumber,
 		"project number should be auto-derived from testProjectNumberFn")
@@ -1656,7 +1669,7 @@ func TestRunReposInstall_AllowedRemoteResources(t *testing.T) {
 	assert.Equal(t, []string{"https://example.com/harness.yaml"}, m.GitHub.Repos[1].AllowedRemoteResources)
 }
 
-func TestRunReposInstall_SyncFailureSkipsUpgrade(t *testing.T) {
+func TestRunReposInstall_SyncFailureReportsError(t *testing.T) {
 	manifestPath := writeTestManifest(t, twoRepoManifestYAML)
 	fc := newInstalledFakeClientCLI("acme/api", "acme/web")
 	// Drift a variable so sync attempts a write.
@@ -1673,8 +1686,7 @@ func TestRunReposInstall_SyncFailureSkipsUpgrade(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "repos failed")
-	assert.Empty(t, fc.CommittedFiles, "upgrade should not commit files for sync-failed repos")
-	assert.Empty(t, fc.CreatedProposals, "upgrade should not create PRs for sync-failed repos")
+	assert.Empty(t, fc.CommittedFiles, "scaffold should not be committed when variable sync fails")
 }
 
 // --- repos uninstall mode tests ---

@@ -61,7 +61,7 @@ type ServiceConfig struct {
 	SandboxName   string
 	MaxFetches    int      // 0 → DefaultMaxFetches (10)
 	Uploader      Uploader // nil → skip upload step
-	SkillDestDir  string   // "" → /sandbox/claude-config/skills
+	SkillDestDir  string   // "" → /sandbox/claude-config/skills (legacy Claude default; the runner always passes rt.ConfigDir()+"/skills")
 }
 
 // Service handles runtime skill fetch requests from agents running in sandboxes.

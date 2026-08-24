@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -769,9 +770,128 @@ func TestWaitForFork_FailsOnNonNotFoundError(t *testing.T) {
 	}
 	printer, _ := newTestPrinter()
 
-	err := waitForFork(context.Background(), client, printer, "contributor", "widget")
+	err := waitForFork(context.Background(), client, printer,
+		"contributor", "widget", realClock{}, forkWaitTimeout)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "authentication failed")
+}
+
+func TestWaitForFork_ImmediateSuccess(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Repos = append(client.Repos, forge.Repository{
+		FullName: "contributor/widget", DefaultBranch: "main",
+	})
+	printer, buf := newTestPrinter()
+	clk := &recordingClock{}
+
+	err := waitForFork(context.Background(), client, printer,
+		"contributor", "widget", clk, forkWaitTimeout)
+	require.NoError(t, err)
+	assert.Contains(t, buf.String(), "Fork is ready")
+	assert.Empty(t, clk.intervals, "should not poll when fork is immediately available")
+}
+
+// recordingClock records the duration passed to each After call and
+// resolves the returned channel immediately so the polling loop runs
+// without wall-clock delays.
+type recordingClock struct {
+	intervals []time.Duration
+	// addRepoAfter, when > 0, adds the named repo to client after that
+	// many After() calls so subsequent GetRepo calls succeed.
+	addRepoAfter int
+	callCount    int
+	client       *forge.FakeClient
+	repoFullName string
+}
+
+func (c *recordingClock) After(d time.Duration) <-chan time.Time {
+	c.intervals = append(c.intervals, d)
+	c.callCount++
+	if c.addRepoAfter > 0 && c.callCount == c.addRepoAfter {
+		c.client.Repos = append(c.client.Repos, forge.Repository{
+			FullName:      c.repoFullName,
+			DefaultBranch: "main",
+		})
+	}
+	ch := make(chan time.Time, 1)
+	ch <- time.Time{}
+	return ch
+}
+
+func TestWaitForFork_ExponentialBackoff(t *testing.T) {
+	client := forge.NewFakeClient()
+	printer, _ := newTestPrinter()
+	clk := &recordingClock{
+		addRepoAfter: 4,
+		client:       client,
+		repoFullName: "contributor/widget",
+	}
+
+	err := waitForFork(context.Background(), client, printer,
+		"contributor", "widget", clk, forkWaitTimeout)
+	require.NoError(t, err)
+
+	// Verify exponential backoff: 3s → 6s → 12s → 24s.
+	require.Len(t, clk.intervals, 4)
+	assert.Equal(t, 3*time.Second, clk.intervals[0])
+	assert.Equal(t, 6*time.Second, clk.intervals[1])
+	assert.Equal(t, 12*time.Second, clk.intervals[2])
+	assert.Equal(t, 24*time.Second, clk.intervals[3])
+}
+
+func TestWaitForFork_BackoffCapsAtMax(t *testing.T) {
+	client := forge.NewFakeClient()
+	printer, _ := newTestPrinter()
+	clk := &recordingClock{
+		addRepoAfter: 7,
+		client:       client,
+		repoFullName: "contributor/widget",
+	}
+
+	err := waitForFork(context.Background(), client, printer,
+		"contributor", "widget", clk, forkWaitTimeout)
+	require.NoError(t, err)
+
+	// After 3s → 6s → 12s → 24s → 30s (capped) → 30s → 30s.
+	require.Len(t, clk.intervals, 7)
+	assert.Equal(t, 3*time.Second, clk.intervals[0])
+	assert.Equal(t, 6*time.Second, clk.intervals[1])
+	assert.Equal(t, 12*time.Second, clk.intervals[2])
+	assert.Equal(t, 24*time.Second, clk.intervals[3])
+	assert.Equal(t, forkWaitMaxInterval, clk.intervals[4], "should cap at max interval")
+	assert.Equal(t, forkWaitMaxInterval, clk.intervals[5], "should stay at cap")
+	assert.Equal(t, forkWaitMaxInterval, clk.intervals[6], "should stay at cap")
+}
+
+// blockingClock never resolves After, forcing the select to pick
+// ctx.Done() instead.
+type blockingClock struct{}
+
+func (blockingClock) After(time.Duration) <-chan time.Time {
+	return make(chan time.Time) // blocks forever
+}
+
+func TestWaitForFork_ContextCancellation(t *testing.T) {
+	client := forge.NewFakeClient()
+	printer, _ := newTestPrinter()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately so ctx.Done() fires in the select
+
+	err := waitForFork(ctx, client, printer,
+		"contributor", "widget", blockingClock{}, forkWaitTimeout)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+func TestWaitForFork_Timeout(t *testing.T) {
+	client := forge.NewFakeClient()
+	printer, buf := newTestPrinter()
+
+	err := waitForFork(context.Background(), client, printer,
+		"contributor", "widget", fakeClock{}, 50*time.Millisecond)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not ready after")
+	assert.Contains(t, buf.String(), "Timed out")
 }
 
 func TestPromptForkChoice_EOFWithPartialData(t *testing.T) {

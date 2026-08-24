@@ -206,6 +206,44 @@ func CleanupScenario(w *world.World) {
 		}
 	}
 
+	// --- Runtime override cleanup ---
+	// Restore the install-time runtime so a later scenario on this slot
+	// does not silently run under pi (or whatever this one selected).
+	if w.RuntimeOverridden {
+		if err := cleanupRetry(w.Logf, "restore runtime", func() error {
+			return RestoreRuntime(w)
+		}); err != nil {
+			worldLogf(w, "behaviour cleanup: restore runtime: %v", err)
+		}
+	}
+
+	// --- Allowed remote resources cleanup ---
+	// Restore the pre-scenario allowed_remote_resources so a later
+	// scenario on this slot does not inherit a leftover URL prefix.
+	// Without this, an allowlist-negative scenario that reuses a slot
+	// after a positive URL scenario sees the stale prefix and the
+	// config validates when it should fail.
+	if w.AllowedResourcesOverridden {
+		if err := cleanupRetry(w.Logf, "restore allowed_remote_resources", func() error {
+			return RestoreAllowedResources(w)
+		}); err != nil {
+			worldLogf(w, "behaviour cleanup: restore allowed_remote_resources: %v", err)
+		}
+	}
+
+	// --- Agents cleanup ---
+	// Restore the pre-scenario agents list so a later scenario on this
+	// slot does not inherit custom agent entries (local or URL-sourced)
+	// from the previous lessee. Without this, harness registrations
+	// accumulate on the config overlay for the rest of the run.
+	if w.AgentsOverridden {
+		if err := cleanupRetry(w.Logf, "restore agents", func() error {
+			return RestoreAgents(w)
+		}); err != nil {
+			worldLogf(w, "behaviour cleanup: restore agents: %v", err)
+		}
+	}
+
 	// --- Dummy script cleanup ---
 	if len(w.DummyOps) > 0 {
 		if w.Org == "" || w.RepoName == "" {

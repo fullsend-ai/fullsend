@@ -22,19 +22,43 @@ type RunMetrics struct {
 	Model                    string  `json:"model"`
 }
 
+// DefaultAgentPrompt is the prompt handed to the agent CLI when RunParams
+// does not override it. It is deliberately content-free: the actual task
+// comes from the agent definition selected with --agent, so every runtime
+// adapter can pass the same string.
+const DefaultAgentPrompt = "Run the agent task"
+
 // RunParams configures a single agent invocation inside the sandbox.
 type RunParams struct {
 	SandboxName   string
 	AgentBaseName string
 	Model         string
 	Effort        string
-	RepoDir       string
-	FullsendDir   string
-	PluginDirs    []string
-	Debug         string
-	Timeout       time.Duration
-	OutputPath    string           // if set, tee stream-json stdout to this file
-	OnEvent       func(AgentEvent) // if non-nil, called with normalized events during Run
+	// FallbackModels is the ordered overload/retirement fallback chain
+	// (FULLSEND_FALLBACK_MODELS). Claude Code passes it as --fallback-model;
+	// runtimes without the capability ignore it with a warning.
+	FallbackModels []string
+	RepoDir        string
+	FullsendDir    string
+	PluginDirs     []string
+	Debug          string
+	// HooksSettingsPath, if set, is passed as --settings so Claude Code
+	// loads the runner's hook wiring regardless of its working directory.
+	HooksSettingsPath string
+	Timeout           time.Duration
+	OutputPath        string           // if set, tee stream-json stdout to this file
+	OnEvent           func(AgentEvent) // if non-nil, called with normalized events during Run
+	// Prompt overrides DefaultAgentPrompt. The validation loop sets it on a
+	// retry iteration to inject the previous iteration's failure so the agent
+	// can self-correct instead of re-running blindly. See #1050, #6494.
+	//
+	// Every Runtime implementation MUST honour this field, falling back to
+	// DefaultAgentPrompt when it is empty. A runtime that ignores it turns
+	// validation_loop.feedback_mode into a silent no-op for every harness
+	// that selects that runtime, which is indistinguishable from the blind
+	// retries this field exists to remove. Runtime support is tracked in the
+	// key support matrix in docs/runtimes.md.
+	Prompt string
 }
 
 // TranscriptError holds extracted error information from a runtime transcript.
@@ -87,4 +111,50 @@ type Backend struct {
 func Default() Backend {
 	r := ClaudeRuntime{}
 	return Backend{Runtime: r, Transcripts: r}
+}
+
+// DebugLogNamer is an optional extension a runtime or TranscriptHandler
+// implements to name the local debug-log artifact the runner writes per
+// iteration (e.g. "claude-debug.log"). Runtimes without it get
+// DefaultDebugLogName.
+type DebugLogNamer interface {
+	DebugLogName() string
+}
+
+// DefaultDebugLogName is the local debug-log filename for runtimes that do
+// not implement DebugLogNamer.
+const DefaultDebugLogName = "agent-debug.log"
+
+// DebugLogNameFor returns the debug-log filename from the first candidate
+// that implements DebugLogNamer with a non-empty name (callers pass the
+// Backend's Runtime and TranscriptHandler), falling back to
+// DefaultDebugLogName.
+func DebugLogNameFor(candidates ...any) string {
+	for _, v := range candidates {
+		if n, ok := v.(DebugLogNamer); ok {
+			if name := n.DebugLogName(); name != "" {
+				return name
+			}
+		}
+	}
+	return DefaultDebugLogName
+}
+
+// ContextBridger is an optional Runtime extension for runtimes that only
+// auto-load CLAUDE.md (not AGENTS.md) into their system context. When it
+// reports true and the target repo has AGENTS.md but no CLAUDE.md, the runner
+// injects a minimal CLAUDE.md pointer so the agent is not context-blind.
+// Runtimes that read AGENTS.md natively should not implement it (or return
+// false).
+type ContextBridger interface {
+	NeedsClaudeMDBridge() bool
+}
+
+// WantsClaudeMDBridge reports whether rt wants the CLAUDE.md→AGENTS.md
+// bridge file; false for runtimes that do not implement ContextBridger.
+func WantsClaudeMDBridge(rt Runtime) bool {
+	if b, ok := rt.(ContextBridger); ok {
+		return b.NeedsClaudeMDBridge()
+	}
+	return false
 }

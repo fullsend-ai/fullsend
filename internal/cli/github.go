@@ -188,7 +188,7 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	cmd.Flags().BoolVar(&cfg.enrollNone, "enroll-none", false, "skip repository enrollment without prompting")
 	cmd.Flags().BoolVar(&cfg.dryRun, "dry-run", false, "print actions without making changes")
 	cmd.Flags().BoolVar(&cfg.direct, "direct", false, "push scaffold files directly to the default branch instead of creating a PR")
-	cmd.Flags().StringVar(&cfg.runtime, "runtime", "", "agent runtime for per-repo config (e.g. claude, dummy)")
+	cmd.Flags().StringVar(&cfg.runtime, "runtime", "", "agent runtime for per-repo config (claude or pi; dummy is for behaviour-test installs only). Prompted on a terminal when omitted")
 	addVendorFlags(cmd, &cfg.vendor, &cfg.fullsendBinary, &cfg.fullsendSource)
 	cmd.Flags().StringVar(&cfg.configPreset, "config", "", "local file path or HTTPS URL to a vendor preset (committed as .fullsend/config.base.yaml)")
 	cmd.Flags().StringVar(&cfg.configHash, "config-hash", "", "SHA-256 hex digest to validate the preset content")
@@ -288,6 +288,19 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 			printer.StepFail("Preset YAML validation failed")
 			return yamlErr
 		}
+	}
+
+	// Runtime: --runtime wins; otherwise ask once on an interactive
+	// terminal (Enter keeps claude). Presets carry their own value.
+	if cfg.runtime == "" && presetData == nil && !cfg.dryRun {
+		choice, err := promptRuntime(printer, os.Stdin, stdinIsInteractive())
+		if err != nil {
+			return err
+		}
+		cfg.runtime = choice
+	}
+	if cfg.runtime == "pi" {
+		printer.StepWarn("runtime pi needs a sandbox image that carries pi (fullsend-sandbox/fullsend-code built from fullsend main after #6467); harnesses pinning an older image will fail at preflight")
 	}
 
 	// --- Build config files ---
@@ -396,6 +409,14 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		forge.PerRepoGuardVar: "true",
 	}
 
+	// Resolve the review app's client ID so pre-fetch-prior-review.sh
+	// can validate provenance of prior review comments. Best-effort:
+	// a missing client ID degrades incremental reviews but does not
+	// block installation.
+	if reviewClientID := resolveReviewAppClientID(ctx, client, cfg.appSet); reviewClientID != "" {
+		repoVars["FULLSEND_REVIEW_CLIENT_ID"] = reviewClientID
+	}
+
 	repoSecrets := make(map[string]string)
 	if !reuseProject {
 		repoSecrets["FULLSEND_GCP_PROJECT_ID"] = cfg.inferenceProject
@@ -472,7 +493,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 	}
 
-	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets, scaffoldOptions{direct: cfg.direct, signOffTrailer: signOffTrailer}); err != nil {
+	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets, scaffoldOptions{direct: cfg.direct, signOffTrailer: signOffTrailer, runtime: cfg.runtime}); err != nil {
 		return err
 	}
 
@@ -785,6 +806,7 @@ type configKeyInfo struct {
 // configKeyMapping maps config key names to their storage type.
 var configKeyMapping = map[string]configKeyInfo{
 	"FULLSEND_GCP_REGION":       {storage: storageVariable},
+	"FULLSEND_REVIEW_CLIENT_ID": {storage: storageVariable},
 	forge.PerRepoGuardVar:       {storage: storageVariable},
 	"FULLSEND_GCP_PROJECT_ID":   {storage: storageSecret},
 	"FULLSEND_GCP_WIF_PROVIDER": {storage: storageSecret},
@@ -803,6 +825,7 @@ Org-scope variables (like FULLSEND_MINT_URL) are managed by
 
 Valid keys:
   FULLSEND_GCP_REGION         repo variable   GCP region for inference
+  FULLSEND_REVIEW_CLIENT_ID   repo variable   review app OAuth client ID
   FULLSEND_PER_REPO_INSTALL   repo variable   per-repo install marker
   FULLSEND_GCP_PROJECT_ID     repo secret     GCP project for inference
   FULLSEND_GCP_WIF_PROVIDER   repo secret     WIF provider resource name`,
@@ -1255,4 +1278,21 @@ func runGitHubSyncScaffold(ctx context.Context, client forge.Client, printer *ui
 	printer.Blank()
 	printer.StepDone("Scaffold sync complete for " + org)
 	return nil
+}
+
+// resolveReviewAppClientID attempts to look up the review agent's OAuth
+// client ID via the GitHub API. Returns the client ID on success, or
+// an empty string if the lookup fails (best-effort — a missing client ID
+// degrades incremental reviews but does not block installation).
+func resolveReviewAppClientID(ctx context.Context, client forge.Client, appSet string) string {
+	ghExt, ok := client.(forge.GitHubExtensions)
+	if !ok {
+		return ""
+	}
+	slug := appsetup.AppSlug(appSet, "review")
+	clientID, err := ghExt.GetAppClientID(ctx, slug)
+	if err != nil {
+		return ""
+	}
+	return clientID
 }

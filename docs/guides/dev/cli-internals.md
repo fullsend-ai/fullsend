@@ -48,7 +48,7 @@ fullsend
 │   │   ├── --direct                         #   Push scaffold to default branch (skip PR)
 │   │   ├── --concurrency <int>              #   Parallel limit (1-32, default: 4)
 │   │   └── -f, --manifest <path>            #   Output path for repos.yaml (default: repos.yaml)
-│   ├── install      [repos...]              # Converge repos to desired state (provision, sync, upgrade)
+│   ├── install      [repos...]              # Converge repos to desired state (provision, repair drift, upgrade)
 │   │   ├── -f, --manifest <path>            #   Path or URL to repos.yaml (default: repos.yaml)
 │   │   ├── --dry-run                        #   Preview without making changes
 │   │   ├── --concurrency <int>              #   Max parallel operations (1-32, default: 4)
@@ -93,7 +93,7 @@ fullsend
 │   ├── --env-file <path>                    #   Load env vars from dotenv file (repeatable)
 │   ├── --forge <platform>                   #   Forge platform (github, gitlab); auto-detected from CI env
 │   ├── --no-post-script                     #   Skip post-script execution
-│   ├── --debug [filter]                     #   Enable Claude Code debug logging
+│   ├── --debug [filter]                     #   Enable agent runtime debug logging
 │   ├── --offline                            #   Reject network fetches
 │   ├── --max-depth <int>                    #   Max transitive dependency depth (0 disables)
 │   ├── --max-resources <int>                #   Max total remote resources per harness
@@ -276,6 +276,7 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │    Variables (managed by sync):                            │ │
 │  │              FULLSEND_GCP_REGION                           │ │
 │  │              FULLSEND_MINT_URL                             │ │
+│  │              FULLSEND_REVIEW_CLIENT_ID (best-effort)       │ │
 │  │                                                            │ │
 │  │  ┌──────────────────────────────────────────┐              │ │
 │  │  │ Per-org:  secrets → .fullsend config repo│              │ │
@@ -313,7 +314,7 @@ Both modes call the same functions (`runAppSetup`, `gcf.NewProvisioner`, `Provis
 | **2. App setup** | `runAppSetup()` → PEMs + App IDs | All 7 roles by default | Excludes "fullsend" role |
 | **3. Mint** | `gcf.Provision()` or `EnsureOrgInMint()` | — | — (use `mint enroll` separately) |
 | **4. WIF** | `ProvisionWIF()` | Org-wide provider ID | `mintcore.BuildRepoProviderID()` (repo-scoped, GitHub only; GitLab uses shared `gitlab-oidc` provider) |
-| **5. Scaffold** | `repos.BuildScaffoldFiles()` (via `scaffold.CollectPerRepoInstallFiles()`) | Creates `.fullsend` repo, pushes workflows + optional binary | Writes `.fullsend/` dir + shim workflow + optional binary in target repo (committed after secrets in per-repo, see #6122) |
+| **5. Scaffold** | `repos.BuildScaffoldFiles()` (via `scaffold.CollectPerRepoInstallFiles()`) | Creates `.fullsend` repo, pushes workflows + optional binary | Writes `.fullsend/` dir + shim workflow + thin caller workflows + optional binary in target repo (committed after secrets in per-repo, see #6122) |
 | **6. Secrets** | Same secret names, same API calls | Config repo + org variable | Target repo + `PER_REPO_GUARD` (written before scaffold commit in per-repo, see #6122) |
 | **7. Enrollment** | — | `EnrollmentLayer` enables repos | No-op (self-contained) |
 
@@ -429,11 +430,12 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │  ┌──────────────────────────────────────────┐                   │
 │  │ Exec() — Run agent in sandbox            │                   │
 │  │                                          │                   │
-│  │ Command built by buildClaudeCommand():   │                   │
+│  │ Command built by buildRunCommand():      │                   │
 │  │  cd {repoDir} &&                         │                   │
 │  │  . {envFile} &&                          │                   │
 │  │  claude --print --verbose                │                   │
 │  │    --output-format stream-json           │                   │
+│  │    [--settings {hooksSettingsPath}]      │                   │
 │  │    --model {model}                       │                   │
 │  │    --effort {effort}                     │                   │
 │  │    --agent {agent}                       │                   │
@@ -514,8 +516,10 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 ### Sandbox Constants
 
 ```go
-SandboxWorkspace    = "/sandbox/workspace"
-SandboxClaudeConfig = "/sandbox/claude-config"
+SandboxWorkspace       = "/sandbox/workspace"
+SandboxClaudeConfig    = "/sandbox/claude-config"
+SandboxPiConfig        = "/sandbox/pi-config"
+SandboxPiExtensionsDir = "/usr/local/share/pi-extensions"   // image-baked, read-only pi extensions (loaded only via -e)
 ```
 
 For sandbox workspace layout, agent rule layering, and security scanning

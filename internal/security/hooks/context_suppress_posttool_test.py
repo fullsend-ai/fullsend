@@ -25,11 +25,11 @@ def run_hook(hook_input: dict) -> dict | None:
     return json.loads(result.stdout)
 
 
-def make_input(command: str, tool_result: str) -> dict:
+def make_input(command: str, tool_result: str, *, key: str = "tool_result") -> dict:
     return {
         "tool_name": "Bash",
         "tool_input": {"command": command},
-        "tool_result": tool_result,
+        key: tool_result,
     }
 
 
@@ -39,6 +39,14 @@ def make_input(command: str, tool_result: str) -> dict:
 class TestScanSecrets:
     def test_no_findings(self):
         out = run_hook(make_input("scan-secrets foo.go bar.go", "No leaks found\n"))
+        assert out is not None
+        assert out["tool_result"] == "scan-secrets: passed (no findings)"
+        assert out["hookSpecificOutput"]["updatedToolOutput"] == out["tool_result"]
+
+    def test_tool_response_payload(self):
+        out = run_hook(
+            make_input("scan-secrets foo.go bar.go", "No leaks found\n", key="tool_response")
+        )
         assert out is not None
         assert out["tool_result"] == "scan-secrets: passed (no findings)"
 
@@ -131,10 +139,11 @@ class TestPreCommit:
         out = run_hook(make_input("pre-commit run --files foo.go bar.go", output))
         assert out is None  # mixed → passthrough
 
-    def test_empty_output(self):
+    def test_empty_output_is_not_a_pass(self):
+        # A hook whose interpreter is missing from PATH prints nothing, and
+        # Claude Code's Bash result carries no exit code: silence is not proof.
         out = run_hook(make_input("pre-commit run --files foo.go", ""))
-        assert out is not None
-        assert "passed" in out["tool_result"]
+        assert out is None
 
     def test_failure_exit_code(self):
         out = run_hook(
@@ -247,83 +256,55 @@ class TestMakeTest:
         assert out is None  # "bypass"/"password" contain "pass" but are not the word "pass"
 
 
-# --- go vet / go build ---
+# --- silence is not evidence ---
 
 
-class TestGoVetBuild:
-    def test_go_vet_clean(self):
-        out = run_hook(make_input("go vet ./...", ""))
-        assert out is not None
-        assert out["tool_result"] == "go vet: clean"
+class TestSilenceIsNotEvidence:
+    """Tools whose clean run prints nothing are never condensed: an empty
+    result already costs no context, and a silent failure (missing
+    interpreter, wrong PATH) would otherwise be reported as clean."""
 
-    def test_go_vet_with_errors(self):
-        out = run_hook(make_input("go vet ./...", "foo.go:12: unreachable code\n"))
+    def test_go_vet_and_build_pass_through(self):
+        assert run_hook(make_input("go vet ./...", "")) is None
+        assert run_hook(make_input("go build ./...", "")) is None
+        assert run_hook(make_input("go vet ./...", "foo.go:12: unreachable code\n")) is None
+
+    def test_linters_pass_through(self):
+        for cmd in (
+            "golangci-lint run ./...",
+            "eslint src/",
+            "ruff check .",
+            "ruff format --check .",
+            "make lint",
+        ):
+            assert run_hook(make_input(cmd, "")) is None, cmd
+        assert run_hook(make_input("make lint", "all checks passed\n")) is None
+
+    def test_gitlint_passes_through(self):
+        assert run_hook(make_input("gitlint --commit HEAD", "")) is None
+        assert (
+            run_hook(make_input("gitlint --commit HEAD", "1: T1 Title exceeds max length\n"))
+            is None
+        )
+
+
+# --- mention is not invocation ---
+
+
+class TestMentionIsNotInvocation:
+    def test_grep_for_a_tool_name_keeps_its_hits(self):
+        out = run_hook(make_input("grep -n scan-secrets hooks.py", "12: scan-secrets\n"))
         assert out is None
 
-    def test_go_build_clean(self):
-        out = run_hook(make_input("go build ./...", ""))
-        assert out is not None
-        assert out["tool_result"] == "go build: clean"
+    def test_runner_prefixes_still_dispatch(self):
+        import context_suppress_posttool as cs
 
-    def test_go_build_with_errors(self):
-        out = run_hook(make_input("go build ./...", "foo.go:5:3: undefined: bar\n"))
-        assert out is None
-
-
-# --- linters ---
-
-
-class TestLinters:
-    def test_golangci_lint_clean(self):
-        out = run_hook(make_input("golangci-lint run ./...", ""))
-        assert out is not None
-        assert "golangci-lint: clean" in out["tool_result"]
-
-    def test_golangci_lint_errors(self):
-        out = run_hook(make_input("golangci-lint run", "foo.go:5: error: unused\n"))
-        assert out is None
-
-    def test_eslint_clean(self):
-        out = run_hook(make_input("eslint src/", ""))
-        assert out is not None
-        assert "eslint: clean" in out["tool_result"]
-
-    def test_ruff_check_clean(self):
-        out = run_hook(make_input("ruff check .", ""))
-        assert out is not None
-        assert "ruff: clean" in out["tool_result"]
-
-    def test_ruff_format_clean(self):
-        out = run_hook(make_input("ruff format --check .", ""))
-        assert out is not None
-        assert "ruff-format: clean" in out["tool_result"]
-
-    def test_make_lint_clean(self):
-        out = run_hook(make_input("make lint", ""))
-        assert out is not None
-        assert "lint: clean" in out["tool_result"]
-
-    def test_make_lint_nonempty_passthrough(self):
-        out = run_hook(make_input("make lint", "all checks passed\n"))
-        assert out is None
-
-    def test_make_lint_failure(self):
-        out = run_hook(make_input("make lint", "golangci-lint: error in foo.go\n"))
-        assert out is None
-
-
-# --- gitlint ---
-
-
-class TestGitlint:
-    def test_pass(self):
-        out = run_hook(make_input("gitlint --commit HEAD", ""))
-        assert out is not None
-        assert out["tool_result"] == "gitlint: passed"
-
-    def test_failure(self):
-        out = run_hook(make_input("gitlint --commit HEAD", "1: T1 Title exceeds max length\n"))
-        assert out is None
+        assert cs.select_summarizer("uvx pytest -q") is cs.suppress_pytest
+        assert cs.select_summarizer("python3 -m pytest") is cs.suppress_pytest
+        assert cs.select_summarizer("./bin/go test ./...") is cs.suppress_go_test
+        assert cs.select_summarizer("pnpm run test") is cs.suppress_npm_test
+        assert cs.select_summarizer("echo go test ./...") is None
+        assert cs.select_summarizer("cat go-test.log") is None
 
 
 # --- passthrough cases ---
@@ -376,3 +357,155 @@ class TestPassthrough:
     def test_exit_code_prefix_always_passthrough(self):
         out = run_hook(make_input("go test ./...", "Exit code 2\nFAIL something\n"))
         assert out is None
+
+    def test_interrupted_bash_object_passthrough(self):
+        out = run_hook(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "go test ./..."},
+                "tool_response": {
+                    "stdout": "ok\tgithub.com/fullsend-ai/fullsend\t0.1s",
+                    "stderr": "",
+                    "interrupted": True,
+                    "isImage": False,
+                },
+            }
+        )
+        assert out is None
+
+    def test_bash_object_success_clears_stderr(self):
+        out = run_hook(
+            {
+                "tool_name": "Bash",
+                "tool_input": {"command": "go test ./..."},
+                "tool_response": {
+                    "stdout": "ok\tgithub.com/fullsend-ai/fullsend\t0.12s\n",
+                    "stderr": "warning: verbose compiler noise\n",
+                    "interrupted": False,
+                    "isImage": False,
+                },
+            }
+        )
+        assert out is not None
+        updated = out["hookSpecificOutput"]["updatedToolOutput"]
+        assert "packages passed" in updated["stdout"]
+        assert updated["stderr"] == ""
+        assert updated["interrupted"] is False
+
+
+# --- command shapes ---
+
+
+class TestCommandShapes:
+    """One summary can only speak for one verification command."""
+
+    GO_OK = "ok  \tgithub.com/org/repo/internal/foo\t0.5s\n"
+
+    def test_two_suites_not_condensed(self):
+        out = run_hook(
+            make_input("uvx pytest -q; go test ./...", "3 failed, 2 passed in 1.2s\n" + self.GO_OK)
+        )
+        assert out is None
+
+    def test_setup_prefix_still_condensed(self):
+        out = run_hook(make_input("cd /r && GOFLAGS=-mod=mod go test ./... 2>&1", self.GO_OK))
+        assert out is not None
+        assert "packages passed" in out["tool_result"]
+
+    def test_pipeline_not_condensed(self):
+        assert run_hook(make_input("go test ./... | tail -5", self.GO_OK)) is None
+
+    def test_exit_status_echo_not_condensed(self):
+        assert run_hook(make_input("go test ./...; echo EXIT=$?", self.GO_OK + "EXIT=0\n")) is None
+
+    def test_substitution_not_condensed(self):
+        assert run_hook(make_input("go test $(go list ./...)", self.GO_OK)) is None
+
+    def test_failure_count_never_condensed(self):
+        out = run_hook(make_input("go test ./...", self.GO_OK + "3 failed in 1s\n"))
+        assert out is None
+
+    def test_panic_never_condensed(self):
+        out = run_hook(make_input("go test ./...", "panic: boom\n" + self.GO_OK))
+        assert out is None
+
+    def test_pytest_quiet_summary(self):
+        out = run_hook(make_input("pytest -q", "....\n4 passed in 0.31s\n"))
+        assert out is not None
+        assert out["tool_result"] == "tests: 4 passed (0.31s)"
+
+    def test_select_summarizer(self):
+        import context_suppress_posttool as cs
+
+        assert cs.select_summarizer("cd x && go test ./...") is cs.suppress_go_test
+        assert cs.select_summarizer("export A=1; go test ./...") is cs.suppress_go_test
+        assert cs.select_summarizer("pytest; go test ./...") is None
+        assert cs.select_summarizer("go test ./... || true") is None
+        assert cs.select_summarizer("ls") is None
+
+
+class TestPytestQuietFailure:
+    def test_summarizer_itself_refuses_quiet_failure(self):
+        import context_suppress_posttool as cs
+
+        assert cs.suppress_pytest("3 failed, 2 passed in 1.2s\n") is None
+        assert cs.suppress_pytest("2 passed in 1.2s\n") == "tests: 2 passed (1.2s)"
+
+
+class TestCommandShapesRoundTwo:
+    GO_OK = "ok  \tgithub.com/org/repo/internal/foo\t0.5s\n"
+
+    def test_quoted_pipe_is_not_a_pipeline(self):
+        out = run_hook(make_input("go test ./... -run 'TestA|TestB'", self.GO_OK))
+        assert out is not None
+
+    def test_comment_and_continuation(self):
+        assert run_hook(make_input("# run the suite\ngo test ./...", self.GO_OK)) is not None
+        assert run_hook(make_input("go test \\\n  ./...", self.GO_OK)) is not None
+
+    def test_two_tools_still_not_condensed(self):
+        assert run_hook(make_input("go test ./... && go vet ./...", self.GO_OK)) is None
+
+    def test_pytest_summary_echoes_all_counts(self):
+        out = run_hook(make_input("pytest -q", "2 passed, 1 xfailed in 0.3s\n"))
+        assert out is not None
+        assert out["tool_result"] == "tests: 2 passed, 1 xfailed (0.3s)"
+
+
+class TestQuotedRegions:
+    GO_OK = "ok  \tgithub.com/org/repo/internal/foo\t0.5s\n"
+
+    def test_escaped_quote_does_not_swallow_a_pipe(self):
+        assert run_hook(make_input('go test ./... -run "A\\\\" | tee "log"', self.GO_OK)) is None
+
+    def test_double_quoted_pipe_is_not_a_pipeline(self):
+        assert run_hook(make_input('go test ./... -run "A|B"', self.GO_OK)) is not None
+
+    def test_lowercase_error_line_not_condensed(self):
+        assert (
+            run_hook(make_input("pytest -q", "5 passed in 0.1s\nerror: something broke\n")) is None
+        )
+
+
+class TestCommandWrappers:
+    GO_OK = "ok  \tgithub.com/org/repo/internal/foo\t0.5s\n"
+
+    def test_wrappers_still_dispatch(self):
+        for cmd in (
+            "sudo go test ./...",
+            "timeout 60 go test ./...",
+            "env GOFLAGS=-mod=mod go test ./...",
+            "mise exec -- go test ./...",
+            "sudo timeout 90 go test ./...",
+        ):
+            assert run_hook(make_input(cmd, self.GO_OK)) is not None, cmd
+
+    def test_versioned_python_module_invocation(self):
+        out = run_hook(make_input("python3.12 -m pytest", "4 passed in 0.3s\n"))
+        assert out is not None
+        assert "4 passed" in out["tool_result"]
+
+    def test_mention_after_a_wrapper_is_still_not_an_invocation(self):
+        assert (
+            run_hook(make_input("sudo grep -n scan-secrets hooks.py", "12: scan-secrets\n")) is None
+        )

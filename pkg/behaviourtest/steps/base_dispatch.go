@@ -141,6 +141,12 @@ func givenURLSourcedBaseHarness(w *world.World, name, doc string) error {
 	}
 	w.URLBaseHarnesses[name] = rawURL
 
+	// Snapshot the current allowed_remote_resources before any modification
+	// so CleanupScenario can restore it when the slot is reused.
+	if err := snapshotAllowedResources(w); err != nil {
+		return fmt.Errorf("snapshotting allowed_remote_resources: %w", err)
+	}
+
 	// Add hosting repo URL prefix to allowed_remote_resources so
 	// LoadWithBase can fetch the base at dispatch time.
 	urlPrefix := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/", hostOwner, hostRepo)
@@ -216,6 +222,11 @@ func givenCustomHarnessWithURLBase(w *world.World, name, baseName, doc string) e
 // update boilerplate shared by givenCustomHarnessWithLocalBase and
 // givenCustomHarnessWithURLBase.
 func registerLocalAgentConfig(ctx context.Context, w *world.World, name, commitMsg string) error {
+	// Snapshot agents before modification so CleanupScenario can restore.
+	if err := snapshotAgents(w); err != nil {
+		return fmt.Errorf("snapshotting agents: %w", err)
+	}
+
 	cfgPath := path.Join(".fullsend", "config.yaml")
 	cfgData, err := w.SCM.GetFileContent(ctx, w.Org, w.RepoName, cfgPath)
 	if err != nil {

@@ -88,8 +88,10 @@ parts:
 13. **Security scanning** — layered prompt injection defenses enforced by
     default and built into the `fullsend` CLI. Host-side scanners run before
     sandbox creation (context injection detection, SSRF validation, unicode
-    normalization, secret redaction, ML-based LLM Guard). Sandbox-side
-    pre/post-tool hooks are installed into the Claude configuration during
+    normalization, secret redaction, ML-based LLM Guard — as of #6522 the
+    ML scanner ships only in the runner image, not in release binaries).
+    Sandbox-side pre/post-tool hooks are installed into the Claude
+    configuration during
     bootstrap (Tirith terminal security, SSRF pre-tool checks, secret
     redaction post-tool). Omitting the `security` block enables all scanners
     with fail-closed semantics. Individual scanners can be toggled off
@@ -431,7 +433,7 @@ security:
     context_injection: true
     ssrf_validator: true
     secret_redactor: true
-    llm_guard:
+    llm_guard:                       # validated but never read; see #6522
       enabled: true
       threshold: 0.92
       match_type: sentence           # "sentence" or "full"
@@ -741,7 +743,8 @@ in [#234](https://github.com/fullsend-ai/fullsend/issues/234).
 - **Security scanning is per-harness, enforced by default, with no global kill
   switch.** Layered prompt injection defenses — host-side scanners (unicode
   normalization, context injection detection, SSRF validation, secret
-  redaction, ML-based LLM Guard) and sandbox-side hooks (Tirith terminal
+  redaction, ML-based LLM Guard — as of #6522 the ML scanner ships only in
+  the runner image, not in release binaries) and sandbox-side hooks (Tirith terminal
   security, SSRF pre-tool, secret redaction post-tool) — are built into the
   `fullsend` CLI and enabled with fail-closed semantics by default. Individual
   scanners can be toggled off per-harness for development, but there is no

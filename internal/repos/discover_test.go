@@ -419,8 +419,7 @@ repos:
 func TestDiscoverRepo_GitLabForge_UsesGitLabPaths(t *testing.T) {
 	fc := forge.NewFakeClient()
 	setRepoVars(fc, "acme", "api", map[string]string{
-		forge.PerRepoGuardVar: "true",
-		"FULLSEND_MINT_URL":   "https://mint.example.com",
+		"FULLSEND_LAST_POLL_AT_FAST": "2026-01-01T00:00:00Z",
 	})
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte(
 		"  ref: v2.5.0\n")

@@ -39,6 +39,14 @@ func validEffortLevel(level string) bool {
 	return slices.Contains(validEffortLevels, level)
 }
 
+// ValidEffort reports whether level is an accepted effort value; exported so
+// per-run overrides (--effort, FULLSEND_EFFORT) are validated the same way
+// as the harness field.
+func ValidEffort(level string) bool { return validEffortLevel(level) }
+
+// ValidEffortLevels returns the accepted effort values, in documentation order.
+func ValidEffortLevels() []string { return slices.Clone(validEffortLevels) }
+
 // ValidPluginBasename reports whether name matches the allowed plugin name pattern.
 func ValidPluginBasename(name string) bool {
 	return validPluginName.MatchString(name)
@@ -160,9 +168,15 @@ type HostScanners struct {
 	LLMGuard          *LLMGuardConfig `yaml:"llm_guard,omitempty"`
 }
 
-// LLMGuardConfig configures the LLM Guard ML-based prompt injection scanner.
-// Runs in Path A (GHA workflow pre-step) and Path B (sandbox) when the base
-// sandbox image includes the pre-installed LLM Guard and DeBERTa-v3 model.
+// LLMGuardConfig configures the ML-based prompt injection scanner. As of
+// #6522 the scanner ships enabled only in the runner image; the release
+// binaries are built CGO_ENABLED=0 with no -tags ORT, so it is compiled out
+// of those. Neither Path A (scanRepoContextFiles) nor Path B (fullsend scan
+// context) ever called it; the sole call site is `fullsend scan input`.
+//
+// These fields are validated but never read: the scanner is constructed with
+// zero values and hardcodes 0.92/sentence, and the call is gated on
+// MLScanAvailable() rather than on Enabled. See #6506.
 type LLMGuardConfig struct {
 	Enabled   *bool   `yaml:"enabled,omitempty"`    // default: true
 	Threshold float64 `yaml:"threshold,omitempty"`  // default: 0.92
@@ -480,6 +494,14 @@ func (h *Harness) Validate() error {
 	}
 	if h.ValidationLoop != nil && h.ValidationLoop.Script == "" {
 		return fmt.Errorf("validation_loop.script is required when validation_loop is set")
+	}
+	if h.ValidationLoop != nil {
+		switch h.ValidationLoop.FeedbackMode {
+		case "", "none", "append":
+			// valid
+		default:
+			return fmt.Errorf("validation_loop.feedback_mode must be \"none\" or \"append\", got %q", h.ValidationLoop.FeedbackMode)
+		}
 	}
 	if err := h.validateSecurity(); err != nil {
 		return err

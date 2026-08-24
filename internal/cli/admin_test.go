@@ -2224,14 +2224,6 @@ func TestRunPerRepoInstall_SuccessfulNonVendor(t *testing.T) {
 
 	err := runPerRepoInstall(context.Background(), cfg)
 	require.NoError(t, err)
-
-	var foundGuard bool
-	for _, v := range client.Variables {
-		if v.Name == forge.PerRepoGuardVar && v.Value == "true" {
-			foundGuard = true
-		}
-	}
-	assert.True(t, foundGuard, "expected guard variable to be set")
 }
 
 func TestRunPerRepoInstall_WithWIFProvisioning(t *testing.T) {
@@ -2271,10 +2263,10 @@ func TestRunPerRepoInstall_WIFProvisioningError(t *testing.T) {
 	assert.Contains(t, err.Error(), "provisioning WIF")
 }
 
-func TestRunPerRepoInstall_GuardAlreadyInstalled(t *testing.T) {
+func TestRunPerRepoInstall_AlreadyInstalledUpgrade(t *testing.T) {
 	client := forge.NewFakeClient()
 	client.VariableValues = map[string]string{
-		"acme/widget/" + forge.PerRepoGuardVar: "true",
+		"acme/widget/FULLSEND_MINT_URL": "https://mint.example.com/v1/token",
 	}
 	client.Repos = []forge.Repository{
 		{Name: "widget", FullName: "acme/widget", DefaultBranch: "main"},
@@ -2312,40 +2304,6 @@ func TestRunPerRepoInstall_ScaffoldCommitError(t *testing.T) {
 	err := runPerRepoInstall(context.Background(), cfg)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "getting repo info")
-}
-
-func TestRunPerRepoInstall_GuardValueFalse(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.VariableValues = map[string]string{
-		"acme/widget/" + forge.PerRepoGuardVar: "false",
-	}
-	client.Repos = []forge.Repository{
-		{Name: "widget", FullName: "acme/widget", DefaultBranch: "main"},
-	}
-
-	cfg := perRepoTestBase()
-	cfg.testClient = client
-	cfg.Direct = true
-
-	err := runPerRepoInstall(context.Background(), cfg)
-	require.NoError(t, err)
-}
-
-func TestRunPerRepoInstall_GuardValueUnexpected(t *testing.T) {
-	client := forge.NewFakeClient()
-	client.VariableValues = map[string]string{
-		"acme/widget/" + forge.PerRepoGuardVar: "maybe",
-	}
-	client.Repos = []forge.Repository{
-		{Name: "widget", FullName: "acme/widget", DefaultBranch: "main"},
-	}
-
-	cfg := perRepoTestBase()
-	cfg.testClient = client
-	cfg.Direct = true
-
-	err := runPerRepoInstall(context.Background(), cfg)
-	require.NoError(t, err)
 }
 
 func TestFilterSlugsByAppSet(t *testing.T) {
@@ -2688,7 +2646,6 @@ func TestApplyPerRepoScaffold(t *testing.T) {
 	repoVars := map[string]string{
 		"FULLSEND_MINT_URL":   "https://mint.example.run.app",
 		"FULLSEND_GCP_REGION": "global",
-		forge.PerRepoGuardVar: "true",
 	}
 	repoSecrets := map[string]string{
 		"FULLSEND_GCP_PROJECT_ID":   "my-project",
@@ -2712,7 +2669,6 @@ func TestApplyPerRepoScaffold(t *testing.T) {
 	}
 	assert.Equal(t, "https://mint.example.run.app", varNames["FULLSEND_MINT_URL"])
 	assert.Equal(t, "global", varNames["FULLSEND_GCP_REGION"])
-	assert.Equal(t, "true", varNames[forge.PerRepoGuardVar])
 
 	secretNames := make(map[string]string)
 	for _, s := range client.CreatedSecrets {

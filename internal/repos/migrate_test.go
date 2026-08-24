@@ -59,7 +59,7 @@ func (p *fakeProvisioner) Provision(_ context.Context, owner, repo string) (stri
 	return p.provisionResults[key], nil
 }
 
-func nopScaffoldCommit(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool) error {
+func nopScaffoldCommit(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool, _ bool) error {
 	return nil
 }
 
@@ -732,7 +732,7 @@ repos:
 // the last set of files committed for each repo.
 func capturingScaffoldCommit(captured *map[string][]forge.TreeFile) ScaffoldCommitFunc {
 	var mu sync.Mutex
-	return func(_ context.Context, owner, repo string, files []forge.TreeFile, _ bool) error {
+	return func(_ context.Context, owner, repo string, files []forge.TreeFile, _ bool, _ bool) error {
 		mu.Lock()
 		defer mu.Unlock()
 		(*captured)[owner+"/"+repo] = files

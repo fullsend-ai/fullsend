@@ -561,6 +561,7 @@ func TestGitHubSetCmd_SetsRepoSecret(t *testing.T) {
 func TestConfigKeyMapping_AllKeys(t *testing.T) {
 	expectedKeys := []string{
 		"FULLSEND_GCP_REGION",
+		"FULLSEND_REVIEW_CLIENT_ID",
 		forge.PerRepoGuardVar,
 		"FULLSEND_GCP_PROJECT_ID",
 		"FULLSEND_GCP_WIF_PROVIDER",
@@ -571,6 +572,9 @@ func TestConfigKeyMapping_AllKeys(t *testing.T) {
 	}
 	info := configKeyMapping[forge.PerRepoGuardVar]
 	assert.Equal(t, storageVariable, info.storage)
+
+	reviewInfo := configKeyMapping["FULLSEND_REVIEW_CLIENT_ID"]
+	assert.Equal(t, storageVariable, reviewInfo.storage)
 }
 
 func TestGitHubSetCmd_ValidatesWIFProvider(t *testing.T) {
@@ -950,6 +954,109 @@ func TestRunGitHubSetupPerRepo(t *testing.T) {
 	}
 	assert.Equal(t, "my-project", secretNames["FULLSEND_GCP_PROJECT_ID"])
 	assert.Contains(t, secretNames, "FULLSEND_GCP_WIF_PROVIDER")
+}
+
+func TestRunGitHubSetupPerRepo_WritesReviewClientID(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+
+	// Configure GetAppClientID to return the review app's client ID.
+	client.AppClientIDs = map[string]string{
+		"fullsend-ai-review": "Iv23li1nIorNLIQy6NWK",
+	}
+
+	err := runGitHubSetupPerRepo(context.Background(), client, ui.New(&discardWriter{}), githubSetupConfig{
+		target:               "acme/widget",
+		mintURL:              "https://mint-test-abc123.run.app",
+		inferenceProject:     "my-project",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		inferenceRegion:      "global",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		appSet:               "fullsend-ai",
+		changedFlags: map[string]bool{
+			"mint-url":               true,
+			"inference-project":      true,
+			"inference-wif-provider": true,
+			"inference-region":       true,
+		},
+	})
+	require.NoError(t, err)
+
+	varNames := make(map[string]string)
+	for _, v := range client.Variables {
+		varNames[v.Name] = v.Value
+	}
+	assert.Equal(t, "Iv23li1nIorNLIQy6NWK", varNames["FULLSEND_REVIEW_CLIENT_ID"])
+}
+
+func TestRunGitHubSetupPerRepo_SkipsReviewClientIDOnLookupFailure(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	// No AppClientIDs configured → GetAppClientID returns ErrNotFound.
+
+	err := runGitHubSetupPerRepo(context.Background(), client, ui.New(&discardWriter{}), githubSetupConfig{
+		target:               "acme/widget",
+		mintURL:              "https://mint-test-abc123.run.app",
+		inferenceProject:     "my-project",
+		inferenceWIFProvider: "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		inferenceRegion:      "global",
+		agents:               strings.Join(config.PerRepoDefaultRoles(), ","),
+		appSet:               "fullsend-ai",
+		changedFlags: map[string]bool{
+			"mint-url":               true,
+			"inference-project":      true,
+			"inference-wif-provider": true,
+			"inference-region":       true,
+		},
+	})
+	require.NoError(t, err)
+
+	// Verify that FULLSEND_REVIEW_CLIENT_ID was NOT set (lookup failed).
+	for _, v := range client.Variables {
+		if v.Name == "FULLSEND_REVIEW_CLIENT_ID" {
+			t.Error("FULLSEND_REVIEW_CLIENT_ID should not be set when GetAppClientID fails")
+		}
+	}
+}
+
+func TestResolveReviewAppClientID_Success(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AppClientIDs = map[string]string{
+		"fullsend-ai-review": "Iv23li1nIorNLIQy6NWK",
+	}
+	got := resolveReviewAppClientID(context.Background(), client, "fullsend-ai")
+	assert.Equal(t, "Iv23li1nIorNLIQy6NWK", got)
+}
+
+func TestResolveReviewAppClientID_CustomAppSet(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.AppClientIDs = map[string]string{
+		"custom-review": "Iv1.custom123",
+	}
+	got := resolveReviewAppClientID(context.Background(), client, "custom")
+	assert.Equal(t, "Iv1.custom123", got)
+}
+
+func TestResolveReviewAppClientID_AppNotFound(t *testing.T) {
+	client := forge.NewFakeClient()
+	// No AppClientIDs configured.
+	got := resolveReviewAppClientID(context.Background(), client, "fullsend-ai")
+	assert.Equal(t, "", got)
+}
+
+func TestResolveReviewAppClientID_APIError(t *testing.T) {
+	client := forge.NewFakeClient()
+	client.Errors = map[string]error{
+		"GetAppClientID": fmt.Errorf("rate limit exceeded"),
+	}
+	got := resolveReviewAppClientID(context.Background(), client, "fullsend-ai")
+	assert.Equal(t, "", got)
 }
 
 // newSignoffTestSetup returns a pre-configured fake client and base config

@@ -8,7 +8,7 @@ import (
 )
 
 // DefaultInferencePool is the WIF pool name used for inference workload
-// identity federation. Shared by repos (batch_install) and gcf (provisioner).
+// identity federation. Shared by repos (converge) and gcf (provisioner).
 const DefaultInferencePool = "fullsend-inference"
 
 // BuildRepoProviderID generates a GCP WIF provider ID scoped to a single repo.

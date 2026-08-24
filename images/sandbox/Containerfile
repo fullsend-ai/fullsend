@@ -2,14 +2,14 @@
 #
 # Pre-installs all runtime dependencies needed by any fullsend agent:
 #   - Claude Code (npm, version-pinned via CLAUDE_CODE_VERSION ARG)
+#   - pi (npm, version-pinned via PI_VERSION ARG; opt-in runtime, see
+#     #6464) + the pi-anthropic-vertex extension
+#     (tag + SHA256 pinned under /usr/local/share/pi-extensions)
 #   - jq (JSON parsing in agent scripts and skills)
 #   - gitleaks (secret scanner, SHA256-verified)
 #   - acli (Atlassian CLI for Jira issue queries)
 #   - pre-commit + gitlint (repo hook runner + commit message validator)
 #   - tirith (Rust CLI for terminal security scanning hooks)
-#   - ONNX Runtime + ProtectAI DeBERTa-v3 model for prompt injection
-#     detection (loaded natively by fullsend via Go/hugot — no Python
-#     runtime dependency, no cold-start latency)
 #
 # Must extend the OpenShell base image — the sandbox supervisor is
 # side-loaded at runtime.
@@ -53,54 +53,99 @@ ARG CLAUDE_CODE_VERSION=2.1.234
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
 # ---------------------------------------------------------------------------
-# ONNX Runtime + ProtectAI DeBERTa-v3 model for ML-based prompt injection
-# scanning. The fullsend binary loads the model directly via Go (hugot +
-# onnxruntime) — no Python, no cold-start latency.
+# Install pi (earendil-works/pi) — pinned version, same supply-chain rationale
+# as Claude Code above. --ignore-scripts is the upstream-recommended install
+# (the package ships an npm-shrinkwrap.json; no postinstall needed). Stub
+# runtime for now — see #6464; the runtime is not user-selectable until
+# implemented, but the binary ships now so the Bootstrap/Run work and any
+# in-sandbox fixture capture run against a pinned, reviewed version
+# (internal/runtime/testdata/pi/regen.sh reads the pin from this file).
 #
-# Download ProtectAI DeBERTa-v3 ONNX model files directly via curl.
-# The model is loaded at runtime by Go/onnxruntime — no Python dependency.
-ARG PROTECTAI_MODEL_REV=e6535ca4ce3ba852083e75ec585d7c8aeb4be4c5
-ARG PROTECTAI_MODEL_DIR=/opt/fullsend/models/protectai-deberta-v3/onnx
-ARG PROTECTAI_MODEL_ONNX_SHA256=f0ea7f239f765aedbde7c9e163a7cb38a79c5b8853d3f76db5152172047b228c
-ARG PROTECTAI_CONFIG_SHA256=3093743035223c46b1497a72e939e56fa0a50afbd7bafbf7eb8aad060b8d23f8
-ARG PROTECTAI_TOKENIZER_SHA256=752fe5f0d5678ad563e1bd2ecc1ddf7a3ba7e2024d0ac1dba1a72975e26dff2f
-ARG PROTECTAI_SPECIAL_TOKENS_SHA256=b2f1b2f15f29a6b6d9d6ea4eca1675d2c231a71477f151d48f79cc83a625ba21
-ARG PROTECTAI_TOKENIZER_CONFIG_SHA256=77d3dd1a9c30397a06545251ed9274bd92e4a85feb98497eeed50c920f962274
-RUN mkdir -p "${PROTECTAI_MODEL_DIR}" \
-    && for f in model.onnx config.json tokenizer.json special_tokens_map.json tokenizer_config.json; do \
-         curl -fsSL --retry 3 --retry-delay 5 \
-           "https://huggingface.co/protectai/deberta-v3-base-prompt-injection-v2/resolve/${PROTECTAI_MODEL_REV}/onnx/${f}" \
-           -o "${PROTECTAI_MODEL_DIR}/${f}"; \
-       done \
-    && echo "${PROTECTAI_MODEL_ONNX_SHA256}  ${PROTECTAI_MODEL_DIR}/model.onnx" | sha256sum -c - \
-    && echo "${PROTECTAI_CONFIG_SHA256}  ${PROTECTAI_MODEL_DIR}/config.json" | sha256sum -c - \
-    && echo "${PROTECTAI_TOKENIZER_SHA256}  ${PROTECTAI_MODEL_DIR}/tokenizer.json" | sha256sum -c - \
-    && echo "${PROTECTAI_SPECIAL_TOKENS_SHA256}  ${PROTECTAI_MODEL_DIR}/special_tokens_map.json" | sha256sum -c - \
-    && echo "${PROTECTAI_TOKENIZER_CONFIG_SHA256}  ${PROTECTAI_MODEL_DIR}/tokenizer_config.json" | sha256sum -c - \
-    && echo "ProtectAI DeBERTa-v3 model downloaded at rev ${PROTECTAI_MODEL_REV} (all files SHA256-verified)"
+# To update: bump PI_VERSION; renovate tracks this ARG via a customManagers
+# regex entry in renovate.json. pi releases ~weekly minors and has changed
+# its --mode json wire shape within a minor before (0.84.0) — the pi stream
+# parser fixtures must be re-verified when this pin moves.
+ARG PI_VERSION=0.84.2
+RUN node -e "process.exit(process.versions.node.split('.').map(Number).reduce((a,b,i)=>a!==0?a:(b-[22,19,0][i]),0)>=0?0:1)" \
+        || (echo "pi ${PI_VERSION} requires Node >=22.19.0, base image has $(node --version)" >&2 && exit 1) \
+    && npm install -g --ignore-scripts @earendil-works/pi-coding-agent@${PI_VERSION}
+
+# pi is present in every sandbox regardless of runtime selection (PiRuntime
+# is a stub, not yet reachable via config — see internal/runtime/pi.go), so
+# an agent invoking the `pi` binary ad-hoc via Bash would otherwise get none
+# of PiRuntime.EnvExports()'s defaults. Bake them at image level too. These
+# are hygiene defaults (no startup network traffic, runner-owned paths), not
+# a security boundary — a process can override its own environment; the
+# sandbox egress policy and credential placeholders are the boundary.
+# PI_CODING_AGENT_DIR must match sandbox.SandboxPiConfig
+# (internal/sandbox/sandbox.go; guarded by TestSandboxImagePiDefaults).
+ENV PI_CODING_AGENT_DIR="/sandbox/pi-config" \
+    PI_CODING_AGENT_SESSION_DIR="/sandbox/pi-config/sessions" \
+    PI_OFFLINE="1" \
+    PI_SKIP_VERSION_CHECK="1" \
+    PI_TELEMETRY="0"
 
 # ---------------------------------------------------------------------------
-# ONNX Runtime shared library — loaded by hugot at runtime.
-# Pinned version for supply chain safety.
-# To update: bump ORT_VERSION and ORT_SHA256_{AMD64,ARM64} from:
-#   https://github.com/microsoft/onnxruntime/releases
-ARG ORT_VERSION=1.24.1
-ARG ORT_SHA256_AMD64=9142552248b735920f9390027e4512a2cacf8946a1ffcbe9071a5c210531026f
-ARG ORT_SHA256_ARM64=0f56edd68f7602df790b68b874a46b115add037e88385c6c842bb763b39b9f89
-RUN case "$TARGETARCH" in \
-      amd64) ORT_ARCH="x64";     ORT_SHA="$ORT_SHA256_AMD64" ;; \
-      arm64) ORT_ARCH="aarch64"; ORT_SHA="$ORT_SHA256_ARM64" ;; \
-      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
-    esac \
-    && curl -fsSL \
-      "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}.tgz" \
-      -o /tmp/ort.tgz \
-    && echo "${ORT_SHA}  /tmp/ort.tgz" | sha256sum -c - \
-    && tar xzf /tmp/ort.tgz -C /tmp/ \
-    && cp "/tmp/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}/lib/libonnxruntime.so.${ORT_VERSION}" /usr/lib/ \
-    && ln -sf "/usr/lib/libonnxruntime.so.${ORT_VERSION}" /usr/lib/libonnxruntime.so \
-    && /sbin/ldconfig \
-    && rm -rf /tmp/ort.tgz "/tmp/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}"
+# pi-anthropic-vertex — interim Claude-on-Vertex provider for pi
+# (github.com/twoGiants/pi-anthropic-vertex, MIT; a ~300-line entry point
+# plus ~220 lines mirrored from pi's streamSimple helpers: registers an
+# "anthropic-vertex" provider that delegates streaming to pi's built-in
+# Anthropic provider through an AnthropicVertex client). pi's own
+# google-vertex provider is Gemini-only and the upstream anthropic-vertex
+# provider (earendil-works/pi#5262) is still open; swap to it once it ships
+# in a pinned pi release. Reviewed at v0.1.13 (#6464).
+#
+# Pinned by git tag + SHA256 of the GitHub tag tarball (tag v0.1.13 is commit
+# d3c9d10d). Installed under PI_EXTENSIONS_DIR (sandbox.SandboxPiExtensionsDir),
+# root-owned and outside PI_CODING_AGENT_DIR, so pi never auto-loads it —
+# PiRuntime.Run passes it explicitly with -e. Dependencies come from the
+# vendored package-lock.json: --omit=peer mirrors pi's own package installer,
+# because the extension's peer deps are pi itself, which the extension loader
+# resolves to the running pi through module aliases (a local copy would be
+# the wrong version); --ignore-scripts as for the pi install above (no
+# install scripts in the pruned tree).
+#
+# To update (also re-run on every PI_VERSION bump): pick a tag from
+# https://github.com/twoGiants/pi-anthropic-vertex/tags, check its pi
+# compatibility (sync/compat.json upstream; v0.1.13 was synced against pi
+# 0.81.1 and its mirrored thinking/max-tokens mapping can lag the pinned
+# PI_VERSION), confirm the extension's package.json "overrides" pin of
+# @anthropic-ai/sdk matches the version in pi's packages/ai/package.json
+# (the Vertex client is cast to pi's Anthropic client type), then set
+# PI_ANTHROPIC_VERTEX_VERSION and refresh PI_ANTHROPIC_VERTEX_SHA256 from
+#   sha256sum <(curl -fsSL https://github.com/twoGiants/pi-anthropic-vertex/archive/refs/tags/v<ver>.tar.gz)
+ARG PI_ANTHROPIC_VERTEX_VERSION=0.1.13
+ARG PI_ANTHROPIC_VERTEX_SHA256=6b465c374734b0ae98e7c48d58f935bcfb12760c509475df2c82785a463c7249
+ARG PI_EXTENSIONS_DIR=/usr/local/share/pi-extensions
+RUN curl -fsSL --retry 3 --retry-delay 5 \
+      "https://github.com/twoGiants/pi-anthropic-vertex/archive/refs/tags/v${PI_ANTHROPIC_VERTEX_VERSION}.tar.gz" \
+      -o /tmp/pi-anthropic-vertex.tar.gz \
+    && echo "${PI_ANTHROPIC_VERTEX_SHA256}  /tmp/pi-anthropic-vertex.tar.gz" | sha256sum -c - \
+    && mkdir -p "${PI_EXTENSIONS_DIR}/anthropic-vertex" \
+    && tar xzf /tmp/pi-anthropic-vertex.tar.gz -C "${PI_EXTENSIONS_DIR}/anthropic-vertex" --strip-components=1 \
+    && rm /tmp/pi-anthropic-vertex.tar.gz \
+    && cd "${PI_EXTENSIONS_DIR}/anthropic-vertex" \
+    && rm -rf .github .pi .vscode sync PLAN.md AGENTS.md \
+    && npm ci --omit=dev --omit=peer --ignore-scripts --no-audit --no-fund \
+    && find node_modules -type d -empty -delete \
+    && npm cache clean --force \
+    && chmod -R a+rX,a-w "${PI_EXTENSIONS_DIR}"
+
+# ---------------------------------------------------------------------------
+# ProtectAI DeBERTa-v3 ONNX model and ONNX Runtime — REMOVED (#6522).
+#
+# The model's only consumer is security.RunMLScan, called solely from
+# `fullsend scan input` (internal/cli/scan.go:110) which runs host-side,
+# not in the sandbox. The sandbox-side `fullsend scan context` uses only
+# NewContextInjectionScanner and NewUnicodeNormalizer — no ML pass.
+# Carrying ~770 MB of model + runtime in the highest-frequency sandbox
+# image added no security value.
+#
+# It now lives in the runner image (images/runner/Containerfile), which
+# is the host side of `fullsend run` and is where the consuming command
+# actually executes. That image also builds the binary with
+# CGO_ENABLED=1 -tags ORT so the scanner is compiled in. Do not add the
+# model back here: nothing in this image can load it.
 
 # ---------------------------------------------------------------------------
 # gitleaks — secret scanner used by scan-secrets and post-scripts.

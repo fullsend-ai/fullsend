@@ -33,12 +33,15 @@
 # Published to: ghcr.io/fullsend-ai/fullsend-runner
 
 # ---------------------------------------------------------------------------
-# Build stage — compile the fullsend binary. Runs on the build platform and
-# cross-compiles for TARGETARCH so multi-arch builds avoid QEMU-emulated
-# Go compilation. UBI images pull anonymously from
-# registry.access.redhat.com — no Red Hat subscription required.
+# Build stage — compile the fullsend binary. Runs natively for each target
+# arch (under QEMU in CI) rather than cross-compiling from the build
+# platform: the binary is built with cgo for the ONNX Runtime scanner (see
+# below), which the previous CGO_ENABLED=0 build did not need. That costs
+# build time, which is tolerable here — the runner image is built only on
+# version tags and on changes to images/runner/. UBI images pull anonymously
+# from registry.access.redhat.com — no Red Hat subscription required.
 # registry.access.redhat.com/ubi10/go-toolset:latest
-FROM --platform=$BUILDPLATFORM registry.access.redhat.com/ubi10/go-toolset@sha256:a7e505b797c95c8e618a364de3a8c0383882935a12a1222a376d667c65d119b8 AS build
+FROM registry.access.redhat.com/ubi10/go-toolset@sha256:a7e505b797c95c8e618a364de3a8c0383882935a12a1222a376d667c65d119b8 AS build
 
 USER 0
 WORKDIR /src
@@ -50,12 +53,39 @@ RUN go mod download
 COPY . .
 
 ARG TARGETARCH
+
+# libtokenizers.a — link-time dependency of hugot's ORT backend. Pinned to
+# the daulet/tokenizers version already in go.mod, with per-arch SHA256.
+# To update: bump TOKENIZERS_VERSION with the go.mod entry and refresh the
+# checksums from the release assets:
+#   https://github.com/daulet/tokenizers/releases
+ARG TOKENIZERS_VERSION=v1.27.0
+ARG TOKENIZERS_SHA256_AMD64=72556cdca798dd4ea7cdaba308e5f0d68a8cb93b67c96edf485b7a0edd7b07f4
+ARG TOKENIZERS_SHA256_ARM64=e96545ad05930c26f51f63d932ee6d3bbd32bbed149e102c5290d587a2293067
+RUN case "$TARGETARCH" in \
+      amd64) TOK_SHA="$TOKENIZERS_SHA256_AMD64" ;; \
+      arm64) TOK_SHA="$TOKENIZERS_SHA256_ARM64" ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL --retry 3 --retry-delay 5 \
+      "https://github.com/daulet/tokenizers/releases/download/${TOKENIZERS_VERSION}/libtokenizers.linux-${TARGETARCH}.tar.gz" \
+      -o /tmp/tokenizers.tar.gz \
+    && echo "${TOK_SHA}  /tmp/tokenizers.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/tokenizers.tar.gz -C /usr/lib/ \
+    && rm /tmp/tokenizers.tar.gz \
+    && test -f /usr/lib/libtokenizers.a
+
 # Version metadata injected by CI; mirrors the ldflags in .goreleaser.yml so
 # `fullsend --version` inside the image reports the release version.
+#
+# Built with CGO_ENABLED=1 -tags ORT so the ML injection scanner is compiled
+# in. The release tarballs (.goreleaser.yml) stay CGO_ENABLED=0 and untagged
+# — a ~9 MB static CLI — because the model this links against is ~740 MB and
+# belongs in an image, not a tarball (#6522).
 ARG FULLSEND_VERSION=dev
 ARG FULLSEND_COMMIT=unknown
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
-    go build -trimpath \
+RUN CGO_ENABLED=1 CGO_LDFLAGS="-L/usr/lib" GOOS=linux GOARCH=${TARGETARCH} \
+    go build -trimpath -tags ORT \
       -ldflags "-s -w -X github.com/fullsend-ai/fullsend/internal/cli.version=${FULLSEND_VERSION} -X github.com/fullsend-ai/fullsend/internal/cli.commitSHA=${FULLSEND_COMMIT}" \
       -o /out/fullsend ./cmd/fullsend/
 
@@ -82,7 +112,9 @@ FROM registry.access.redhat.com/ubi10/ubi@sha256:c9da135a3cdc105995ba8b75e734467
 ARG TARGETARCH
 
 # ---------------------------------------------------------------------------
-# Base packages. python3 + pip back the validation loop
+# Base packages. libstdc++ is a runtime dependency of the cgo/ONNX Runtime
+# binary built above — listed explicitly rather than relied on transitively,
+# so the dependency is reviewable here. python3 + pip back the validation loop
 # (validate-output-schema.sh); git/jq/curl are used throughout the CLI and
 # scaffold scripts; openssh-clients covers ssh git remotes; gzip and
 # findutils back the tar.gz extraction steps below. --allowerasing lets
@@ -94,6 +126,7 @@ RUN dnf install -y --allowerasing --setopt=install_weak_deps=False \
       git \
       gzip \
       jq \
+      libstdc++ \
       openssh-clients \
       python3 \
       python3-pip \
@@ -247,6 +280,61 @@ RUN pip install --no-cache-dir --break-system-packages \
 
 # ---------------------------------------------------------------------------
 # fullsend CLI, built in the build stage from this repo's source.
+# ---------------------------------------------------------------------------
+# ONNX Runtime shared library — dlopen'd by hugot at runtime from the
+# ORT_LIB_PATH default (/usr/lib). Pinned + SHA256-verified.
+#
+# Must be >= 1.28: onnxruntime_go v1.32.0 requests ORT C API version 28, and
+# older runtimes refuse with "requested API version [28] is not available".
+# To update: bump ORT_VERSION and ORT_SHA256_{AMD64,ARM64} from:
+#   https://github.com/microsoft/onnxruntime/releases
+ARG ORT_VERSION=1.28.1
+ARG ORT_SHA256_AMD64=2529aef968d0ad0603365054bc46ebefa7f0fe3bc12f28c5f729c99ddffe2a81
+ARG ORT_SHA256_ARM64=53bab9a5c6ae198b7be75663b780c64caa388d30257fac458c71fbff0a82e98e
+RUN case "$TARGETARCH" in \
+      amd64) ORT_ARCH="x64";     ORT_SHA="$ORT_SHA256_AMD64" ;; \
+      arm64) ORT_ARCH="aarch64"; ORT_SHA="$ORT_SHA256_ARM64" ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL --retry 3 --retry-delay 5 \
+      "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}.tgz" \
+      -o /tmp/ort.tgz \
+    && echo "${ORT_SHA}  /tmp/ort.tgz" | sha256sum -c - \
+    && tar xzf /tmp/ort.tgz -C /tmp/ \
+    && cp "/tmp/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}/lib/libonnxruntime.so.${ORT_VERSION}" /usr/lib/ \
+    && ln -sf "/usr/lib/libonnxruntime.so.${ORT_VERSION}" /usr/lib/libonnxruntime.so \
+    && ln -sf "/usr/lib/libonnxruntime.so.${ORT_VERSION}" /usr/lib/libonnxruntime.so.1 \
+    && /sbin/ldconfig \
+    && rm -rf /tmp/ort.tgz "/tmp/onnxruntime-linux-${ORT_ARCH}-${ORT_VERSION}"
+
+# ---------------------------------------------------------------------------
+# ProtectAI DeBERTa-v3 ONNX model, loaded by the ORT-enabled binary from the
+# MODEL_PATH default. /opt is fine here: this image is the host side of
+# `fullsend run`, not a sandbox, so the landlock filesystem policy that
+# forbids /opt inside sandbox images (#6504/#6505) does not apply — the
+# gcloud SDK above already lives under /opt for the same reason.
+#
+# To update: bump PROTECTAI_MODEL_REV and refresh the per-file checksums from
+#   https://huggingface.co/protectai/deberta-v3-base-prompt-injection-v2
+ARG PROTECTAI_MODEL_REV=e6535ca4ce3ba852083e75ec585d7c8aeb4be4c5
+ARG PROTECTAI_MODEL_DIR=/opt/fullsend/models/protectai-deberta-v3/onnx
+ARG PROTECTAI_MODEL_ONNX_SHA256=f0ea7f239f765aedbde7c9e163a7cb38a79c5b8853d3f76db5152172047b228c
+ARG PROTECTAI_CONFIG_SHA256=3093743035223c46b1497a72e939e56fa0a50afbd7bafbf7eb8aad060b8d23f8
+ARG PROTECTAI_TOKENIZER_SHA256=752fe5f0d5678ad563e1bd2ecc1ddf7a3ba7e2024d0ac1dba1a72975e26dff2f
+ARG PROTECTAI_SPECIAL_TOKENS_SHA256=b2f1b2f15f29a6b6d9d6ea4eca1675d2c231a71477f151d48f79cc83a625ba21
+ARG PROTECTAI_TOKENIZER_CONFIG_SHA256=77d3dd1a9c30397a06545251ed9274bd92e4a85feb98497eeed50c920f962274
+RUN mkdir -p "${PROTECTAI_MODEL_DIR}" \
+    && for f in model.onnx config.json tokenizer.json special_tokens_map.json tokenizer_config.json; do \
+         curl -fsSL --retry 3 --retry-delay 5 \
+           "https://huggingface.co/protectai/deberta-v3-base-prompt-injection-v2/resolve/${PROTECTAI_MODEL_REV}/onnx/${f}" \
+           -o "${PROTECTAI_MODEL_DIR}/${f}"; \
+       done \
+    && echo "${PROTECTAI_MODEL_ONNX_SHA256}  ${PROTECTAI_MODEL_DIR}/model.onnx" | sha256sum -c - \
+    && echo "${PROTECTAI_CONFIG_SHA256}  ${PROTECTAI_MODEL_DIR}/config.json" | sha256sum -c - \
+    && echo "${PROTECTAI_TOKENIZER_SHA256}  ${PROTECTAI_MODEL_DIR}/tokenizer.json" | sha256sum -c - \
+    && echo "${PROTECTAI_SPECIAL_TOKENS_SHA256}  ${PROTECTAI_MODEL_DIR}/special_tokens_map.json" | sha256sum -c - \
+    && echo "${PROTECTAI_TOKENIZER_CONFIG_SHA256}  ${PROTECTAI_MODEL_DIR}/tokenizer_config.json" | sha256sum -c -
+
 COPY --from=build /out/fullsend /usr/local/bin/fullsend
 
 ENV PATH="/usr/local/go/bin:${PATH}"

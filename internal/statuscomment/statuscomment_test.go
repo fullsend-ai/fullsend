@@ -1567,3 +1567,104 @@ func TestParagraphBreak_BetweenStatusAndMetadata(t *testing.T) {
 			"interrupted body should use paragraph break before metadata line")
 	})
 }
+
+func TestBuildRunInfoFooter_DifferentModels(t *testing.T) {
+	// When requested != reported, show arrow format.
+	info := &RunInfo{
+		Runtime:        "pi",
+		RequestedModel: "haiku",
+		ReportedModel:  "gemini-2.5-pro",
+		Effort:         "medium",
+		CostUSD:        0.42,
+	}
+	footer := BuildRunInfoFooter(info)
+	assert.Equal(t, "Runtime: pi · Model: haiku → gemini-2.5-pro · Effort: medium · Cost: $0.42", footer)
+}
+
+func TestBuildRunInfoFooter_SameModel(t *testing.T) {
+	// When requested == reported, show single value.
+	info := &RunInfo{
+		Runtime:        "claude",
+		RequestedModel: "sonnet",
+		ReportedModel:  "sonnet",
+		Effort:         "high",
+		CostUSD:        1.23,
+	}
+	footer := BuildRunInfoFooter(info)
+	assert.Equal(t, "Runtime: claude · Model: sonnet · Effort: high · Cost: $1.23", footer)
+}
+
+func TestBuildRunInfoFooter_UnknownFieldsOmitted(t *testing.T) {
+	// Unknown fields omitted.
+	info := &RunInfo{
+		Runtime:        "pi",
+		RequestedModel: "haiku",
+	}
+	footer := BuildRunInfoFooter(info)
+	assert.Equal(t, "Runtime: pi · Model: haiku", footer)
+}
+
+func TestBuildRunInfoFooter_NilReturnsEmpty(t *testing.T) {
+	assert.Equal(t, "", BuildRunInfoFooter(nil))
+}
+
+func TestBuildRunInfoFooter_AllFieldsEmpty(t *testing.T) {
+	info := &RunInfo{}
+	assert.Equal(t, "", BuildRunInfoFooter(info))
+}
+
+func TestCompletionBody_IncludesRunInfoFooter(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n := newTestNotifier(fc, cfg)
+
+	err := n.PostStart(context.Background(), "Code")
+	require.NoError(t, err)
+
+	n.SetRunInfo(RunInfo{
+		Runtime:        "claude",
+		RequestedModel: "sonnet",
+		ReportedModel:  "sonnet",
+		Effort:         "high",
+		CostUSD:        1.50,
+	})
+
+	completionTime := fixedTime().Add(7 * time.Minute)
+	n.now = func() time.Time { return completionTime }
+
+	err = n.PostCompletion(context.Background(), "Code", "success")
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	body := fc.UpdatedComments[0].Body
+	assert.Contains(t, body, "Runtime: claude · Model: sonnet · Effort: high · Cost: $1.50")
+}
+
+func TestCompletionBody_RunInfoFooterWithModelDiff(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n := newTestNotifier(fc, cfg)
+
+	err := n.PostStart(context.Background(), "Code")
+	require.NoError(t, err)
+
+	n.SetRunInfo(RunInfo{
+		Runtime:        "pi",
+		RequestedModel: "haiku",
+		ReportedModel:  "gemini-2.5-pro",
+		Effort:         "medium",
+		CostUSD:        0.42,
+	})
+
+	n.now = func() time.Time { return fixedTime().Add(7 * time.Minute) }
+	err = n.PostCompletion(context.Background(), "Code", "success")
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	body := fc.UpdatedComments[0].Body
+	assert.Contains(t, body, "Runtime: pi · Model: haiku → gemini-2.5-pro · Effort: medium · Cost: $0.42")
+}

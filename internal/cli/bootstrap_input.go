@@ -16,7 +16,7 @@ type harnessBootstrap struct {
 
 type harnessBootstrapWithHooks struct {
 	*harnessBootstrap
-	hooks security.ClaudeSandboxHooks
+	hooks security.SandboxHookConfig
 }
 
 func (b *harnessBootstrap) SandboxName() string  { return b.sandboxName }
@@ -25,7 +25,7 @@ func (b *harnessBootstrap) AgentName() string    { return b.agentName }
 func (b *harnessBootstrap) SkillDirs() []string  { return b.skillDirs }
 func (b *harnessBootstrap) PluginDirs() []string { return b.pluginDirs }
 
-func (b *harnessBootstrapWithHooks) ClaudeSandboxHooks() security.ClaudeSandboxHooks {
+func (b *harnessBootstrapWithHooks) SandboxHookConfig() security.SandboxHookConfig {
 	return b.hooks
 }
 
@@ -42,6 +42,6 @@ func newHarnessBootstrap(h *harness.Harness, sandboxName, agentName string) runt
 	}
 	return &harnessBootstrapWithHooks{
 		harnessBootstrap: base,
-		hooks:            security.ClaudeSandboxHooksFromHarness(h),
+		hooks:            security.SandboxHookConfigFromHarness(h),
 	}
 }

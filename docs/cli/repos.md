@@ -77,7 +77,7 @@ fullsend repos migrate <org> --project <gcp-project>
 
 ## `repos install`
 
-Converge repos to the desired state defined in a manifest. This is the primary command for managing per-repo installations — it handles adding repos to the manifest, provisioning new repos, syncing variable drift, and upgrading scaffold refs.
+Converge repos to the desired state defined in a manifest. This is the primary command for managing per-repo installations — it handles adding repos to the manifest, provisioning new repos, repairing component drift (workflow, thin callers, variables, secrets), and upgrading scaffold refs.
 
 When the manifest file does not exist and positional repo arguments are
 provided, `repos install` bootstraps a new manifest (`version: 1`),
@@ -85,11 +85,10 @@ adds the specified repos, and writes the file. The `--forge` flag is
 required in this case. This enables a greenfield setup without running
 `repos migrate` or manually creating the YAML first.
 
-Runs in three phases:
+Runs in two phases:
 
-1. **Manifest add** — repos specified as positional arguments that are not already in the manifest are added (`--forge` is required when the target platform cannot be inferred). Per-repo overrides (`--inference-region`, `--fullsend-ref`, `--mint-url`, `--allowed-remote-resources`) are written to the manifest entry.
-2. **Provision** — repos in the manifest that are not yet provisioned are installed (scaffold files, variables, secrets). Repos with a guard variable set but other components missing are repaired automatically.
-3. **Convergence** — repos that are already installed are checked for variable drift (synced automatically) and scaffold ref drift (upgraded automatically).
+1. **Manifest add** — repos specified as positional arguments that are not already in the manifest are added (`--forge` is required when the target platform cannot be inferred). Per-repo overrides (`--inference-region`, `--fullsend-ref`, `--mint-url`, `--allowed-remote-resources`, `--runtime`) are written to the manifest entry.
+2. **Converge** — all manifest repos are converged through a unified probe → diff → apply pipeline. Repos with no components are freshly installed (scaffold files, variables, secrets). Repos with existing components are checked for drift (workflow, thin callers, variables, secrets — repaired automatically) and scaffold ref drift (upgraded automatically).
 
 ```bash
 fullsend repos install -f repos.yaml
@@ -118,6 +117,7 @@ When repos are specified as positional arguments, only those repos are processed
 | `--fullsend-ref` | | Per-repo fullsend workflow ref override |
 | `--mint-url` | | Per-repo mint URL override |
 | `--allowed-remote-resources` | | Per-repo allowed remote resources override |
+| `--runtime` | | Agent runtime (`claude`, `pi`) recorded for repos this command adds; existing entries keep their `runtime` / `defaults.runtime` |
 | `--gitlab-bot-token` | | GitLab bot PAT for free-tier instances that don't support project access tokens (env: `FULLSEND_GITLAB_BOT_TOKEN`) |
 
 ### GitLab bot token
@@ -132,7 +132,7 @@ fullsend repos install group/project --forge gitlab --gitlab-bot-token glpat-xxx
 
 ### Common workflows
 
-Converge all repos from a manifest (provision new, sync drift, upgrade refs):
+Converge all repos from a manifest (provision new, repair component drift, upgrade refs):
 
 ```bash
 fullsend repos install -f repos.yaml
@@ -255,12 +255,13 @@ fullsend repos set-default github.mint_url ""   # removes the key
 | Key | Type | Description |
 |-----|------|-------------|
 | `defaults.allowed_remote_resources` | comma-separated URLs | HTTPS URLs agents may fetch at runtime |
+| `defaults.runtime` | `claude` or `pi` | Agent runtime written as each repo's `runtime:` at install; a per-entry `runtime` overrides it (`none` stops the chain) |
 | `github.url` | URL | GitHub instance URL (default: `https://github.com`) |
 | `github.mint_url` | URL | Token mint service URL (defaults to `https://mint.fullsend.sh` in public mode) |
 | `github.mint_mode` | `public` or `private` | Controls the default mint URL: `public` defaults to `https://mint.fullsend.sh`; `private` requires an explicit `mint_url` (default: `public`) |
 | `github.fullsend_ref` | ref string | Git ref to pin in scaffold workflow YAML |
 | `gitlab.url` | URL | GitLab instance URL |
-| `gitlab.fullsend_ref` | ref string | Git ref to pin in scaffold dispatch file |
+| `gitlab.fullsend_ref` | ref string | Git ref to pin in scaffold CI template files |
 | `gitlab.runner_tags` | comma-separated tags | CI runner tags for routing agent jobs |
 
 ### Flags

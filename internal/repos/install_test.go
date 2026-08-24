@@ -3,14 +3,23 @@ package repos
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
 // noopProgress is a no-op progress callback for tests.
 func noopProgress(_, _, _ string) {}
+
+func addThinCallerFiles(fc *forge.FakeClient, owner, repo string) {
+	fullName := owner + "/" + repo
+	for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+		fc.FileContents[fullName+"/"+tcPath] = []byte("name: thin-caller")
+	}
+}
 
 type fakeScaffoldCommit struct {
 	mu     sync.Mutex
@@ -19,7 +28,7 @@ type fakeScaffoldCommit struct {
 }
 
 func (f *fakeScaffoldCommit) fn() ScaffoldCommitFunc {
-	return func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool) error {
+	return func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool, _ bool) error {
 		f.mu.Lock()
 		f.called = true
 		f.mu.Unlock()
@@ -44,7 +53,6 @@ func baseCfg() InstallConfig {
 		InferenceRegion:  "us-central1",
 		WIFProvider:      fakeWIFProvider,
 		Direct:           true,
-		SkipGuardCheck:   true,
 	}
 }
 
@@ -72,14 +80,11 @@ func TestInstall_FreshInstall_Direct(t *testing.T) {
 	if !result.Success {
 		t.Error("expected Success=true")
 	}
-	if result.AlreadyInstalled {
-		t.Error("expected AlreadyInstalled=false for fresh install")
-	}
 	if !sc.called {
 		t.Error("expected scaffold commit function to be called")
 	}
 
-	// Verify repository variables were set.
+	// Verify repository variables were set (guard + mint URL + region).
 	if len(fc.Variables) != 3 {
 		t.Errorf("expected 3 variables, got %d", len(fc.Variables))
 	}
@@ -92,9 +97,6 @@ func TestInstall_FreshInstall_Direct(t *testing.T) {
 	}
 	if varMap["FULLSEND_GCP_REGION"] != "us-central1" {
 		t.Errorf("FULLSEND_GCP_REGION = %q, want %q", varMap["FULLSEND_GCP_REGION"], "us-central1")
-	}
-	if varMap[forge.PerRepoGuardVar] != "true" {
-		t.Errorf("%s = %q, want %q", forge.PerRepoGuardVar, varMap[forge.PerRepoGuardVar], "true")
 	}
 
 	// Verify repository secrets were set.
@@ -139,88 +141,25 @@ func TestInstall_FreshInstall_PR(t *testing.T) {
 }
 
 // markFullyInstalled sets all per-repo installation components on a
-// FakeClient: guard variable, workflow file, variables, and secrets.
+// FakeClient: workflow file, variables, and secrets.
 func markFullyInstalled(fc *forge.FakeClient, owner, repo string) {
 	fullName := owner + "/" + repo
-	fc.VariableValues[fullName+"/"+forge.PerRepoGuardVar] = "true"
 	fc.VariableValues[fullName+"/FULLSEND_MINT_URL"] = "https://mint.example.com"
 	fc.VariableValues[fullName+"/FULLSEND_GCP_REGION"] = "us-central1"
 	fc.FileContents[fullName+"/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
+	addThinCallerFiles(fc, owner, repo)
 	fc.Secrets[fullName+"/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets[fullName+"/FULLSEND_GCP_WIF_PROVIDER"] = true
 }
 
-func TestInstall_AlreadyInstalled_GuardTrue(t *testing.T) {
-	fc := newFakeClientWithRepo()
-	markFullyInstalled(fc, "acme", "widgets")
-
-	cfg := baseCfg()
-	cfg.SkipGuardCheck = false // enable guard check
-
-	sc := &fakeScaffoldCommit{}
-	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("Install() returned error: %v", err)
-	}
-
-	if !result.AlreadyInstalled {
-		t.Error("expected AlreadyInstalled=true")
-	}
-	if !result.Success {
-		t.Error("expected Success=true")
-	}
-
-	// Verify NO writes occurred.
-	if sc.called {
-		t.Error("expected scaffold commit NOT to be called for already-installed repo")
-	}
-	if len(fc.Variables) != 0 {
-		t.Error("expected no variable writes for already-installed repo")
-	}
-	if len(fc.CreatedSecrets) != 0 {
-		t.Error("expected no secret writes for already-installed repo")
-	}
-}
-
-func TestInstall_SkipGuardCheck_ProceedsEvenWithGuardTrue(t *testing.T) {
-	fc := newFakeClientWithRepo()
-	fc.VariableValues["acme/widgets/"+forge.PerRepoGuardVar] = "true"
-
-	cfg := baseCfg()
-	cfg.SkipGuardCheck = true // CLI path: always proceed
-
-	sc := &fakeScaffoldCommit{}
-	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("Install() returned error: %v", err)
-	}
-
-	if result.AlreadyInstalled {
-		t.Error("expected AlreadyInstalled=false when SkipGuardCheck=true")
-	}
-	if !result.Success {
-		t.Error("expected Success=true")
-	}
-
-	// Verify writes DID occur.
-	if !sc.called {
-		t.Error("expected scaffold commit to be called when guard check is skipped")
-	}
-	if len(fc.Variables) == 0 {
-		t.Error("expected variables to be written when guard check is skipped")
-	}
-}
-
 func TestInstall_PartialInstall_MissingWorkflow(t *testing.T) {
 	fc := newFakeClientWithRepo()
-	fc.VariableValues["acme/widgets/"+forge.PerRepoGuardVar] = "true"
 	fc.VariableValues["acme/widgets/FULLSEND_MINT_URL"] = "https://mint.example.com"
 	fc.VariableValues["acme/widgets/FULLSEND_GCP_REGION"] = "us-central1"
 	fc.Secrets["acme/widgets/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme/widgets/FULLSEND_GCP_WIF_PROVIDER"] = true
 
 	cfg := baseCfg()
-	cfg.SkipGuardCheck = false
 
 	sc := &fakeScaffoldCommit{}
 	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
@@ -228,9 +167,6 @@ func TestInstall_PartialInstall_MissingWorkflow(t *testing.T) {
 		t.Fatalf("Install() returned error: %v", err)
 	}
 
-	if result.AlreadyInstalled {
-		t.Error("expected AlreadyInstalled=false for partial install (missing workflow)")
-	}
 	if !result.Success {
 		t.Error("expected Success=true (repair)")
 	}
@@ -241,13 +177,12 @@ func TestInstall_PartialInstall_MissingWorkflow(t *testing.T) {
 
 func TestInstall_PartialInstall_MissingVariables(t *testing.T) {
 	fc := newFakeClientWithRepo()
-	fc.VariableValues["acme/widgets/"+forge.PerRepoGuardVar] = "true"
 	fc.FileContents["acme/widgets/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
+	addThinCallerFiles(fc, "acme", "widgets")
 	fc.Secrets["acme/widgets/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme/widgets/FULLSEND_GCP_WIF_PROVIDER"] = true
 
 	cfg := baseCfg()
-	cfg.SkipGuardCheck = false
 
 	sc := &fakeScaffoldCommit{}
 	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
@@ -255,9 +190,6 @@ func TestInstall_PartialInstall_MissingVariables(t *testing.T) {
 		t.Fatalf("Install() returned error: %v", err)
 	}
 
-	if result.AlreadyInstalled {
-		t.Error("expected AlreadyInstalled=false for partial install (missing variables)")
-	}
 	if !result.Success {
 		t.Error("expected Success=true (repair)")
 	}
@@ -265,13 +197,12 @@ func TestInstall_PartialInstall_MissingVariables(t *testing.T) {
 
 func TestInstall_PartialInstall_MissingSecrets(t *testing.T) {
 	fc := newFakeClientWithRepo()
-	fc.VariableValues["acme/widgets/"+forge.PerRepoGuardVar] = "true"
 	fc.VariableValues["acme/widgets/FULLSEND_MINT_URL"] = "https://mint.example.com"
 	fc.VariableValues["acme/widgets/FULLSEND_GCP_REGION"] = "us-central1"
 	fc.FileContents["acme/widgets/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
+	addThinCallerFiles(fc, "acme", "widgets")
 
 	cfg := baseCfg()
-	cfg.SkipGuardCheck = false
 
 	sc := &fakeScaffoldCommit{}
 	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
@@ -279,9 +210,6 @@ func TestInstall_PartialInstall_MissingSecrets(t *testing.T) {
 		t.Fatalf("Install() returned error: %v", err)
 	}
 
-	if result.AlreadyInstalled {
-		t.Error("expected AlreadyInstalled=false for partial install (missing secrets)")
-	}
 	if !result.Success {
 		t.Error("expected Success=true (repair)")
 	}
@@ -289,10 +217,8 @@ func TestInstall_PartialInstall_MissingSecrets(t *testing.T) {
 
 func TestInstall_PartialInstall_GuardOnlySet(t *testing.T) {
 	fc := newFakeClientWithRepo()
-	fc.VariableValues["acme/widgets/"+forge.PerRepoGuardVar] = "true"
 
 	cfg := baseCfg()
-	cfg.SkipGuardCheck = false
 
 	sc := &fakeScaffoldCommit{}
 	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
@@ -300,9 +226,6 @@ func TestInstall_PartialInstall_GuardOnlySet(t *testing.T) {
 		t.Fatalf("Install() returned error: %v", err)
 	}
 
-	if result.AlreadyInstalled {
-		t.Error("expected AlreadyInstalled=false for partial install (guard only)")
-	}
 	if !result.Success {
 		t.Error("expected Success=true (repair)")
 	}
@@ -314,32 +237,6 @@ func TestInstall_PartialInstall_GuardOnlySet(t *testing.T) {
 	}
 	if len(fc.CreatedSecrets) == 0 {
 		t.Error("expected secrets to be written during repair")
-	}
-}
-
-func TestInstall_PartialInstall_WorkflowYmlExtension(t *testing.T) {
-	fc := newFakeClientWithRepo()
-	fc.VariableValues["acme/widgets/"+forge.PerRepoGuardVar] = "true"
-	fc.VariableValues["acme/widgets/FULLSEND_MINT_URL"] = "https://mint.example.com"
-	fc.VariableValues["acme/widgets/FULLSEND_GCP_REGION"] = "us-central1"
-	fc.FileContents["acme/widgets/.github/workflows/fullsend.yml"] = []byte("name: fullsend")
-	fc.Secrets["acme/widgets/FULLSEND_GCP_PROJECT_ID"] = true
-	fc.Secrets["acme/widgets/FULLSEND_GCP_WIF_PROVIDER"] = true
-
-	cfg := baseCfg()
-	cfg.SkipGuardCheck = false
-
-	sc := &fakeScaffoldCommit{}
-	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("Install() returned error: %v", err)
-	}
-
-	if !result.AlreadyInstalled {
-		t.Error("expected AlreadyInstalled=true (fully installed with .yml extension)")
-	}
-	if sc.called {
-		t.Error("expected scaffold commit NOT to be called for fully-installed repo")
 	}
 }
 
@@ -436,31 +333,6 @@ func TestInstall_ProgressCallbackPhases(t *testing.T) {
 	}
 }
 
-func TestInstall_GuardCheckError_FailsClosed(t *testing.T) {
-	fc := newFakeClientWithRepo()
-	fc.Errors["GetRepoVariable"] = fmt.Errorf("API rate limit")
-
-	cfg := baseCfg()
-	cfg.SkipGuardCheck = false
-
-	sc := &fakeScaffoldCommit{}
-	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
-	if err == nil {
-		t.Fatal("expected error when guard check fails (fail closed)")
-	}
-
-	if result == nil {
-		t.Fatal("expected non-nil result on guard check failure")
-	}
-
-	if sc.called {
-		t.Error("expected scaffold commit NOT to be called after guard check failure")
-	}
-	if len(fc.Variables) != 0 {
-		t.Error("expected no variable writes after guard check failure")
-	}
-}
-
 func TestInstall_SkipScaffoldAndConfig(t *testing.T) {
 	fc := newFakeClientWithRepo()
 	cfg := baseCfg()
@@ -515,9 +387,9 @@ func TestInstall_VarsAndSecretsBeforeCommit(t *testing.T) {
 	var callOrder []string
 	sc := &fakeScaffoldCommit{}
 	origFn := sc.fn()
-	commitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool) error {
+	commitFn := func(ctx context.Context, owner, repo string, files []forge.TreeFile, direct bool, installed bool) error {
 		callOrder = append(callOrder, "commit")
-		return origFn(ctx, owner, repo, files, direct)
+		return origFn(ctx, owner, repo, files, direct, installed)
 	}
 	progress := func(_, phase, msg string) {
 		if phase == "vars" && msg == "Configuring repository variables" {
@@ -580,6 +452,35 @@ func TestInstall_SecretWriteFailure(t *testing.T) {
 	_, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
 	if err == nil {
 		t.Fatal("expected error from secret write failure")
+	}
+}
+
+// TestBuildScaffoldFiles_Runtime covers `admin install <owner>/<repo>
+// --runtime`: the value lands in the generated per-repo config and is
+// validated the same way as the org path (#6464).
+func TestBuildScaffoldFiles_Runtime(t *testing.T) {
+	cfg := baseCfg()
+	cfg.Runtime = "pi"
+	files, err := BuildScaffoldFiles(cfg)
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles() returned error: %v", err)
+	}
+	var found bool
+	for _, f := range files {
+		if f.Path == ".fullsend/config.yaml" {
+			found = true
+			if !strings.Contains(string(f.Content), "runtime: pi") {
+				t.Errorf("config.yaml missing runtime: pi:\n%s", f.Content)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected .fullsend/config.yaml in scaffold files")
+	}
+
+	cfg.Runtime = "bogus"
+	if _, err := BuildScaffoldFiles(cfg); err == nil || !strings.Contains(err.Error(), "invalid runtime") {
+		t.Fatalf("expected invalid runtime error, got %v", err)
 	}
 }
 
@@ -654,29 +555,11 @@ func TestInstall_NilProgress(t *testing.T) {
 	}
 }
 
-func TestInstall_CheckInstallComponents_Error(t *testing.T) {
-	fc := newFakeClientWithRepo()
-	fc.VariableValues["acme/widgets/"+forge.PerRepoGuardVar] = "true"
-	fc.Errors["GetFileContent"] = fmt.Errorf("API error")
-
-	cfg := baseCfg()
-	cfg.SkipGuardCheck = false
-
-	sc := &fakeScaffoldCommit{}
-	_, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
-	if err == nil {
-		t.Fatal("expected error when checkInstallComponents fails")
-	}
-	if sc.called {
-		t.Error("expected scaffold commit NOT to be called after component check failure")
-	}
-}
-
 func TestCheckInstallComponents_WorkflowCheckError(t *testing.T) {
 	fc := newFakeClientWithRepo()
 	fc.Errors["GetFileContent"] = fmt.Errorf("API error")
 
-	installed, err := checkInstallComponents(context.Background(), fc, "acme", "widgets", ForgeGitHub, defaultForgeConfig)
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "widgets", ForgeGitHub, defaultForgeConfig, nil)
 	if err == nil {
 		t.Fatal("expected error from workflow file check")
 	}
@@ -688,9 +571,10 @@ func TestCheckInstallComponents_WorkflowCheckError(t *testing.T) {
 func TestCheckInstallComponents_VariableCheckError(t *testing.T) {
 	fc := newFakeClientWithRepo()
 	fc.FileContents["acme/widgets/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
+	addThinCallerFiles(fc, "acme", "widgets")
 	fc.Errors["GetRepoVariable"] = fmt.Errorf("API rate limit")
 
-	installed, err := checkInstallComponents(context.Background(), fc, "acme", "widgets", ForgeGitHub, defaultForgeConfig)
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "widgets", ForgeGitHub, defaultForgeConfig, nil)
 	if err == nil {
 		t.Fatal("expected error from variable check")
 	}
@@ -702,11 +586,12 @@ func TestCheckInstallComponents_VariableCheckError(t *testing.T) {
 func TestCheckInstallComponents_SecretCheckError(t *testing.T) {
 	fc := newFakeClientWithRepo()
 	fc.FileContents["acme/widgets/.github/workflows/fullsend.yaml"] = []byte("name: fullsend")
+	addThinCallerFiles(fc, "acme", "widgets")
 	fc.VariableValues["acme/widgets/FULLSEND_MINT_URL"] = "https://mint.example.com"
 	fc.VariableValues["acme/widgets/FULLSEND_GCP_REGION"] = "us-central1"
 	fc.Errors["RepoSecretExists"] = fmt.Errorf("API error")
 
-	installed, err := checkInstallComponents(context.Background(), fc, "acme", "widgets", ForgeGitHub, defaultForgeConfig)
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "widgets", ForgeGitHub, defaultForgeConfig, nil)
 	if err == nil {
 		t.Fatal("expected error from secret check")
 	}
@@ -718,9 +603,11 @@ func TestCheckInstallComponents_SecretCheckError(t *testing.T) {
 func TestCheckInstallComponents_GitLab_MissingSecrets(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
-	fc.VariableValues["acme/api/FULLSEND_FORGE"] = "gitlab"
+	fc.VariableValues["acme/api/FULLSEND_LAST_POLL_AT_FAST"] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/FULLSEND_LAST_POLL_AT_FULL"] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/FULLSEND_LABEL_STATE"] = "{}"
 
-	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -732,11 +619,13 @@ func TestCheckInstallComponents_GitLab_MissingSecrets(t *testing.T) {
 func TestCheckInstallComponents_GitLab_FullyInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
-	fc.VariableValues["acme/api/FULLSEND_FORGE"] = "gitlab"
+	fc.VariableValues["acme/api/FULLSEND_LAST_POLL_AT_FAST"] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/FULLSEND_LAST_POLL_AT_FULL"] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/FULLSEND_LABEL_STATE"] = "{}"
 	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
 
-	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig())
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -748,9 +637,10 @@ func TestCheckInstallComponents_GitLab_FullyInstalled(t *testing.T) {
 func TestCheckInstallComponents_GitHub_MissingSecrets(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(shimWorkflow)
+	addThinCallerFiles(fc, "acme", "api")
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
 
-	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig)
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -762,16 +652,33 @@ func TestCheckInstallComponents_GitHub_MissingSecrets(t *testing.T) {
 func TestCheckInstallComponents_GitHub_WithSecrets(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(shimWorkflow)
+	addThinCallerFiles(fc, "acme", "api")
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
 	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
 
-	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig)
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !installed {
 		t.Error("expected installed=true when all components are present")
+	}
+}
+
+func TestCheckInstallComponents_GitHub_MissingThinCaller(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte(shimWorkflow)
+	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
+	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
+
+	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if installed {
+		t.Error("expected installed=false when thin caller is missing")
 	}
 }
 
@@ -784,22 +691,17 @@ func TestInstallVarsForForge_GitLab(t *testing.T) {
 		t.Fatalf("installVarsForForge(GitLab) error = %v", err)
 	}
 	requiredKeys := []string{
-		"FULLSEND_FORGE",
 		"FULLSEND_LAST_POLL_AT_FAST",
 		"FULLSEND_LAST_POLL_AT_FULL",
 		"FULLSEND_LABEL_STATE",
-		forge.PerRepoGuardVar,
 	}
 	for _, k := range requiredKeys {
 		if _, ok := vars[k]; !ok {
 			t.Errorf("missing required GitLab variable %q", k)
 		}
 	}
-	if vars["FULLSEND_FORGE"] != "gitlab" {
-		t.Errorf("FULLSEND_FORGE = %q, want %q", vars["FULLSEND_FORGE"], "gitlab")
-	}
-	// GitLab vars should NOT include GitHub-specific vars.
-	for _, k := range []string{"FULLSEND_MINT_URL", "FULLSEND_GCP_REGION"} {
+	// GitLab vars should NOT include GitHub-specific or dead marker vars.
+	for _, k := range []string{"FULLSEND_MINT_URL", "FULLSEND_GCP_REGION", "FULLSEND_FORGE"} {
 		if _, ok := vars[k]; ok {
 			t.Errorf("GitLab vars should not include %q", k)
 		}
@@ -830,6 +732,56 @@ func TestInstallVarsForForge_GitHub_IncludesRegion(t *testing.T) {
 	}
 	if v, ok := vars["FULLSEND_GCP_REGION"]; !ok || v != "us-central1" {
 		t.Errorf("FULLSEND_GCP_REGION = %q, want %q", v, "us-central1")
+	}
+}
+
+func TestInstallVarsForForge_GitHub_IncludesReviewClientID(t *testing.T) {
+	cfg := InstallConfig{
+		Forge:             ForgeGitHub,
+		ReviewAppClientID: "Iv23li1nIorNLIQy6NWK",
+	}
+	vars, err := installVarsForForge(cfg, "https://mint.example.com")
+	if err != nil {
+		t.Fatalf("installVarsForForge(GitHub) error = %v", err)
+	}
+	if v, ok := vars["FULLSEND_REVIEW_CLIENT_ID"]; !ok || v != "Iv23li1nIorNLIQy6NWK" {
+		t.Errorf("FULLSEND_REVIEW_CLIENT_ID = %q, want %q", v, "Iv23li1nIorNLIQy6NWK")
+	}
+}
+
+func TestInstallVarsForForge_GitHub_OmitsEmptyReviewClientID(t *testing.T) {
+	cfg := InstallConfig{
+		Forge: ForgeGitHub,
+	}
+	vars, err := installVarsForForge(cfg, "https://mint.example.com")
+	if err != nil {
+		t.Fatalf("installVarsForForge(GitHub) error = %v", err)
+	}
+	if _, ok := vars["FULLSEND_REVIEW_CLIENT_ID"]; ok {
+		t.Error("FULLSEND_REVIEW_CLIENT_ID should not be set when ReviewAppClientID is empty")
+	}
+}
+
+func TestInstall_FreshInstall_WritesReviewClientID(t *testing.T) {
+	fc := newFakeClientWithRepo()
+	cfg := baseCfg()
+	cfg.ReviewAppClientID = "Iv23li1nIorNLIQy6NWK"
+	sc := &fakeScaffoldCommit{}
+
+	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Install() returned error: %v", err)
+	}
+	if !result.Success {
+		t.Error("expected Success=true")
+	}
+
+	varMap := make(map[string]string)
+	for _, v := range fc.Variables {
+		varMap[v.Name] = v.Value
+	}
+	if v, ok := varMap["FULLSEND_REVIEW_CLIENT_ID"]; !ok || v != "Iv23li1nIorNLIQy6NWK" {
+		t.Errorf("FULLSEND_REVIEW_CLIENT_ID = %q, want %q", v, "Iv23li1nIorNLIQy6NWK")
 	}
 }
 
@@ -894,7 +846,6 @@ func TestInstall_InvalidInferenceProject(t *testing.T) {
 	fc := newFakeClientWithRepo()
 	cfg := baseCfg()
 	cfg.InferenceProject = "x"
-	cfg.SkipGuardCheck = true
 
 	sc := &fakeScaffoldCommit{}
 	_, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
@@ -910,7 +861,6 @@ func TestInstall_InvalidInferenceRegion(t *testing.T) {
 	fc := newFakeClientWithRepo()
 	cfg := baseCfg()
 	cfg.InferenceRegion = "AB"
-	cfg.SkipGuardCheck = true
 
 	sc := &fakeScaffoldCommit{}
 	_, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
@@ -938,12 +888,11 @@ func TestBuildScaffoldFiles_UnsupportedForge(t *testing.T) {
 func TestInstall_FreshInstall_GitLab(t *testing.T) {
 	fc := newFakeClientWithRepo()
 	cfg := InstallConfig{
-		Owner:          "acme",
-		Repo:           "widgets",
-		Forge:          ForgeGitLab,
-		Roles:          []string{"triage"},
-		Direct:         true,
-		SkipGuardCheck: true,
+		Owner:  "acme",
+		Repo:   "widgets",
+		Forge:  ForgeGitLab,
+		Roles:  []string{"triage"},
+		Direct: true,
 	}
 	sc := &fakeScaffoldCommit{}
 	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
@@ -960,11 +909,10 @@ func TestInstall_FreshInstall_GitLab(t *testing.T) {
 	for _, v := range fc.Variables {
 		varMap[v.Name] = v.Value
 	}
-	if varMap["FULLSEND_FORGE"] != "gitlab" {
-		t.Errorf("FULLSEND_FORGE = %q, want %q", varMap["FULLSEND_FORGE"], "gitlab")
-	}
-	if _, ok := varMap["FULLSEND_MINT_URL"]; ok {
-		t.Error("GitLab should not set FULLSEND_MINT_URL")
+	for _, k := range []string{"FULLSEND_FORGE", "FULLSEND_MINT_URL"} {
+		if _, ok := varMap[k]; ok {
+			t.Errorf("GitLab should not set %s", k)
+		}
 	}
 	if len(fc.CreatedSecrets) != 0 {
 		t.Errorf("expected 0 secrets for GitLab, got %d", len(fc.CreatedSecrets))
@@ -974,13 +922,12 @@ func TestInstall_FreshInstall_GitLab(t *testing.T) {
 func TestInstall_GitLab_SkipsWIFValidation(t *testing.T) {
 	fc := newFakeClientWithRepo()
 	cfg := InstallConfig{
-		Owner:          "acme",
-		Repo:           "widgets",
-		Forge:          ForgeGitLab,
-		Roles:          []string{"triage"},
-		Direct:         true,
-		SkipGuardCheck: true,
-		WIFProvider:    "",
+		Owner:       "acme",
+		Repo:        "widgets",
+		Forge:       ForgeGitLab,
+		Roles:       []string{"triage"},
+		Direct:      true,
+		WIFProvider: "",
 	}
 	sc := &fakeScaffoldCommit{}
 	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
@@ -992,46 +939,15 @@ func TestInstall_GitLab_SkipsWIFValidation(t *testing.T) {
 	}
 }
 
-func TestInstall_GitLab_AlreadyInstalled(t *testing.T) {
-	fc := newFakeClientWithRepo()
-	fullName := "acme/widgets"
-	fc.VariableValues[fullName+"/"+forge.PerRepoGuardVar] = "true"
-	fc.VariableValues[fullName+"/FULLSEND_FORGE"] = "gitlab"
-	fc.FileContents[fullName+"/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
-	fc.Secrets[fullName+"/FULLSEND_GCP_PROJECT_ID"] = true
-	fc.Secrets[fullName+"/FULLSEND_GCP_WIF_PROVIDER"] = true
-
-	cfg := InstallConfig{
-		Owner:          "acme",
-		Repo:           "widgets",
-		Forge:          ForgeGitLab,
-		Roles:          []string{"triage"},
-		Direct:         true,
-		SkipGuardCheck: false,
-	}
-	sc := &fakeScaffoldCommit{}
-	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
-	if err != nil {
-		t.Fatalf("Install(GitLab already installed) error: %v", err)
-	}
-	if !result.AlreadyInstalled {
-		t.Error("expected AlreadyInstalled=true")
-	}
-	if sc.called {
-		t.Error("expected scaffold commit NOT to be called")
-	}
-}
-
 func TestInstall_GitLab_ReuseSecrets(t *testing.T) {
 	fc := newFakeClientWithRepo()
 	cfg := InstallConfig{
-		Owner:          "acme",
-		Repo:           "widgets",
-		Forge:          ForgeGitLab,
-		Roles:          []string{"triage"},
-		Direct:         true,
-		SkipGuardCheck: true,
-		ReuseSecrets:   true,
+		Owner:        "acme",
+		Repo:         "widgets",
+		Forge:        ForgeGitLab,
+		Roles:        []string{"triage"},
+		Direct:       true,
+		ReuseSecrets: true,
 	}
 	sc := &fakeScaffoldCommit{}
 	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
@@ -1120,7 +1036,6 @@ func TestInstall_GitLab_WithInference(t *testing.T) {
 		InferenceRegion:  "us-central1",
 		WIFProvider:      fakeWIFProvider,
 		Direct:           true,
-		SkipGuardCheck:   true,
 	}
 	sc := &fakeScaffoldCommit{}
 	result, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)
@@ -1166,7 +1081,6 @@ func TestInstall_GitLab_WithInference_EmptyWIFProvider_Rejected(t *testing.T) {
 		InferenceRegion:  "us-central1",
 		WIFProvider:      "", // must be set when inference is configured
 		Direct:           true,
-		SkipGuardCheck:   true,
 	}
 	sc := &fakeScaffoldCommit{}
 	_, err := Install(context.Background(), cfg, fc, sc.fn(), noopProgress)

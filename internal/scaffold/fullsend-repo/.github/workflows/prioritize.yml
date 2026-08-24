@@ -20,6 +20,10 @@ on:
       event_payload:
         required: true
         type: string
+      project_number:
+        description: GitHub Projects V2 project number for RICE scoring
+        required: false
+        type: string
 
 concurrency:
   group: fullsend-prioritize-${{ inputs.source_repo }}-${{ fromJSON(inputs.event_payload).issue.number }}
@@ -34,7 +38,7 @@ jobs:
       event_payload: ${{ inputs.event_payload }}
       mint_url: ${{ vars.FULLSEND_MINT_URL }}
       gcp_region: ${{ vars.FULLSEND_GCP_REGION }}
-      project_number: ${{ vars.FULLSEND_PROJECT_NUMBER }}
+      project_number: ${{ inputs.project_number || vars.FULLSEND_PROJECT_NUMBER }}
       install_mode: per-org
       runner_image: __GH_RUNNER__
     secrets:

@@ -15,9 +15,13 @@ sys.path.insert(0, os.path.dirname(__file__))
 from nextwork import (  # noqa: E402
     ASSIGN_SELF,
     DECISION_STATUSES,
+    FULLSEND_AGENT_BOTS,
     REMOVE_BLOCKED_LABEL,
+    REVIEW_BOT_LOGIN,
     GhFetcher,
     RefError,
+    _is_agent_bot_comment,
+    _is_trusted_fs_commenter,
     agent_terminal_succeeded,
     apply_trivial_actions,
     build_pr_links_by_issue,
@@ -47,6 +51,7 @@ from nextwork import (  # noqa: E402
     resolve_threads,
     seed_from_assigned,
     take_over,
+    thread_is_bot_only,
 )
 
 NOW = datetime(2024, 1, 10, tzinfo=UTC)  # 8 days after 2024-01-02T00:00:00Z
@@ -76,6 +81,57 @@ class TestCommentCommand(unittest.TestCase):
         self.assertEqual(comment_command("not a command"), "not")
         self.assertEqual(comment_command(""), "")
         self.assertEqual(comment_command("line1\n/fs-code"), "line1")
+
+
+class TestBotLoginMatching(unittest.TestCase):
+    """Verify bot-login constants match GraphQL-sourced logins (no [bot] suffix)."""
+
+    def test_constants_have_no_bot_suffix(self):
+        self.assertEqual(REVIEW_BOT_LOGIN, "fullsend-ai-review")
+        for login in FULLSEND_AGENT_BOTS:
+            self.assertNotIn("[bot]", login)
+
+    def test_thread_is_bot_only_graphql_login(self):
+        thread = {"authors": ["fullsend-ai-review"]}
+        self.assertTrue(thread_is_bot_only(thread))
+
+    def test_thread_is_bot_only_via_author_field(self):
+        thread = {"author": "fullsend-ai-review"}
+        self.assertTrue(thread_is_bot_only(thread))
+
+    def test_thread_is_bot_only_mixed_authors(self):
+        thread = {"authors": ["fullsend-ai-review", "human-dev"]}
+        self.assertFalse(thread_is_bot_only(thread))
+
+    def test_thread_is_bot_only_human_only(self):
+        thread = {"authors": ["human-dev"]}
+        self.assertFalse(thread_is_bot_only(thread))
+
+    def test_thread_is_bot_only_cached_field(self):
+        thread = {"bot_only": True}
+        self.assertTrue(thread_is_bot_only(thread))
+
+    def test_is_agent_bot_comment_graphql_login(self):
+        for login in FULLSEND_AGENT_BOTS:
+            with self.subTest(login=login):
+                comment = {"author": login}
+                self.assertTrue(_is_agent_bot_comment(comment))
+
+    def test_is_agent_bot_comment_rejects_human(self):
+        comment = {"author": "alice"}
+        self.assertFalse(_is_agent_bot_comment(comment))
+
+    def test_is_trusted_fs_commenter_bot(self):
+        comment = {"author": "fullsend-ai-coder"}
+        self.assertTrue(_is_trusted_fs_commenter(comment))
+
+    def test_is_trusted_fs_commenter_member(self):
+        comment = {"author": "alice", "author_association": "MEMBER"}
+        self.assertTrue(_is_trusted_fs_commenter(comment))
+
+    def test_is_trusted_fs_commenter_rejects_none_assoc(self):
+        comment = {"author": "drive-by", "author_association": "NONE"}
+        self.assertFalse(_is_trusted_fs_commenter(comment))
 
 
 def load_fixture(name: str):
@@ -156,15 +212,19 @@ def make_pr(**overrides):
 
 
 def agent_comment(body, created_at, *, author=None):
-    """Build a comment dict with a trusted fullsend bot author for marker tests."""
+    """Build a comment dict with a trusted fullsend bot author for marker tests.
+
+    Uses GraphQL-style logins (no ``[bot]`` suffix) — these are what
+    ``normalize_item`` extracts from the ``author { login }`` field.
+    """
     if author is None:
         lower = body.lower()
         if "triage" in lower or "fullsend:triage-agent" in lower:
-            author = "fullsend-ai-triage[bot]"
+            author = "fullsend-ai-triage"
         elif "fix" in lower or "code" in lower:
-            author = "fullsend-ai-coder[bot]"
+            author = "fullsend-ai-coder"
         else:
-            author = "fullsend-ai-review[bot]"
+            author = "fullsend-ai-review"
     return {"author": author, "body": body, "created_at": created_at}
 
 
@@ -405,8 +465,8 @@ class TestNormalizeItem(unittest.TestCase):
         self.assertEqual(item["unresolved_review_threads"], 1)
         self.assertEqual(len(item["unresolved_threads"]), 1)
         thread = item["unresolved_threads"][0]
-        self.assertEqual(thread["author"], "fullsend-ai-review[bot]")
-        self.assertEqual(thread["authors"], ["fullsend-ai-review[bot]"])
+        self.assertEqual(thread["author"], "fullsend-ai-review")
+        self.assertEqual(thread["authors"], ["fullsend-ai-review"])
         self.assertEqual(thread["created_at"], "2024-01-02T01:00:00Z")
         self.assertTrue(thread["bot_only"])
         self.assertEqual(thread["id"], "PRRT_unresolved_1")
@@ -434,7 +494,7 @@ class TestNormalizeItem(unittest.TestCase):
         self.assertEqual(item["unresolved_review_threads"], 1)
         thread = item["unresolved_threads"][0]
         self.assertFalse(thread["bot_only"])
-        self.assertEqual(thread["authors"], ["fullsend-ai-review[bot]", "carol"])
+        self.assertEqual(thread["authors"], ["fullsend-ai-review", "carol"])
         self.assertEqual(thread["created_at"], "2024-01-02T01:00:00Z")
         # id, path, line preserved even with human reply
         self.assertEqual(thread["id"], "PRRT_unresolved_1")
@@ -628,7 +688,7 @@ class TestClassifyIssue(unittest.TestCase):
             comments=[
                 trusted_fs_comment("/fs-triage", "2024-01-09T22:00:00Z"),
                 {
-                    "author": "fullsend-ai-triage[bot]",
+                    "author": "fullsend-ai-triage",
                     "body": (
                         "<!-- fullsend:agent-status:run-1 -->\n"
                         "<!-- fullsend:status:terminal -->\n"
@@ -1024,7 +1084,7 @@ class TestClassifyIssue(unittest.TestCase):
             comments=[
                 trusted_fs_comment("/fs-triage", "2024-01-09T22:00:00Z"),
                 {
-                    "author": "fullsend-ai-triage[bot]",
+                    "author": "fullsend-ai-triage",
                     "body": ("<!-- fullsend:triage-agent -->\n## Triage Summary\n\nDone."),
                     "created_at": "2024-01-09T22:05:00Z",
                 },
@@ -1238,7 +1298,7 @@ class TestClassifyPr(unittest.TestCase):
             review_decision="REVIEW_REQUIRED",
             comments=[
                 {
-                    "author": "fullsend-ai-review[bot]",
+                    "author": "fullsend-ai-review",
                     "body": (
                         "<!-- fullsend:agent-status:30004814427 -->\n"
                         "🤖 Review · Started 11:54 AM UTC\n"
@@ -1274,11 +1334,11 @@ class TestClassifyPr(unittest.TestCase):
 
     def test_waiting_fix_bot_author(self):
         item = make_pr(
-            author="fullsend-ai-coder[bot]",
+            author="fullsend-ai-coder",
             review_decision="CHANGES_REQUESTED",
             updated_at="2024-01-09T23:00:00Z",
             unresolved_threads=[
-                {"author": "fullsend-ai-review[bot]", "created_at": "2024-01-09T23:00:00Z"}
+                {"author": "fullsend-ai-review", "created_at": "2024-01-09T23:00:00Z"}
             ],
         )
         result = classify_pr(item, "alice", 6, NOW)
@@ -1287,13 +1347,13 @@ class TestClassifyPr(unittest.TestCase):
 
     def test_bot_thread_with_human_reply_needs_decision(self):
         item = make_pr(
-            author="fullsend-ai-coder[bot]",
+            author="fullsend-ai-coder",
             review_decision="CHANGES_REQUESTED",
             updated_at="2024-01-09T23:00:00Z",
             unresolved_threads=[
                 {
-                    "author": "fullsend-ai-review[bot]",
-                    "authors": ["fullsend-ai-review[bot]", "carol"],
+                    "author": "fullsend-ai-review",
+                    "authors": ["fullsend-ai-review", "carol"],
                     "created_at": "2024-01-09T23:00:00Z",
                     "bot_only": False,
                 }
@@ -1305,11 +1365,11 @@ class TestClassifyPr(unittest.TestCase):
 
     def test_trigger_fix_stale_bot_author(self):
         item = make_pr(
-            author="fullsend-ai-coder[bot]",
+            author="fullsend-ai-coder",
             review_decision="CHANGES_REQUESTED",
             updated_at="2024-01-01T00:00:00Z",
             unresolved_threads=[
-                {"author": "fullsend-ai-review[bot]", "created_at": "2024-01-01T00:00:00Z"}
+                {"author": "fullsend-ai-review", "created_at": "2024-01-01T00:00:00Z"}
             ],
         )
         result = classify_pr(item, "alice", 6, NOW)
@@ -1348,11 +1408,11 @@ class TestClassifyPr(unittest.TestCase):
 
     def test_fullsend_no_fix_with_review_bot_threads(self):
         item = make_pr(
-            author="fullsend-ai-coder[bot]",
+            author="fullsend-ai-coder",
             labels=["fullsend-no-fix"],
             review_decision="CHANGES_REQUESTED",
             unresolved_threads=[
-                {"author": "fullsend-ai-review[bot]", "created_at": "2024-01-09T23:00:00Z"}
+                {"author": "fullsend-ai-review", "created_at": "2024-01-09T23:00:00Z"}
             ],
         )
         result = classify_pr(item, "alice", 6, NOW)
@@ -1409,7 +1469,7 @@ class TestClassifyPr(unittest.TestCase):
     def test_mixed_review_threads_need_decision(self):
         item = make_pr(
             unresolved_threads=[
-                {"author": "fullsend-ai-review[bot]", "created_at": "2024-01-09T23:00:00Z"},
+                {"author": "fullsend-ai-review", "created_at": "2024-01-09T23:00:00Z"},
                 {"author": "carol", "created_at": "2024-01-09T23:30:00Z"},
             ]
         )

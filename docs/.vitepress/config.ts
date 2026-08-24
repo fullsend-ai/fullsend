@@ -185,6 +185,7 @@ export default defineConfig({
             { text: "fullsend inference", link: "/cli/inference" },
             { text: "fullsend mint", link: "/cli/mint" },
             { text: "fullsend repos", link: "/cli/repos" },
+            { text: "fullsend run", link: "/cli/run" },
           ],
         },
       ],
@@ -195,11 +196,16 @@ export default defineConfig({
           link: "/guides/getting-started/",
           items: [
             { text: "Getting Inference", link: "/guides/getting-started/getting-inference" },
+            { text: "Choose a Runtime", link: "/guides/getting-started/choosing-a-runtime" },
             { text: "Configuring GitHub", link: "/guides/getting-started/configuring-github" },
             { text: "Per-Org Mode", link: "/guides/getting-started/org-mode" },
             { text: "Repo Management", link: "/guides/getting-started/repo-management" },
             { text: "Operations", link: "/guides/getting-started/operations" },
           ],
+        },
+        {
+          text: "Runtimes",
+          link: "/runtimes",
         },
         {
           text: "Agents",
@@ -244,7 +250,6 @@ export default defineConfig({
           items: [
             { text: "Vision", link: "/vision" },
             { text: "Architecture", link: "/architecture" },
-            { text: "Runtimes", link: "/runtimes" },
             { text: "Glossary", link: "/glossary" },
           ],
         },

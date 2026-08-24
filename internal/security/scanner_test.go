@@ -1,6 +1,7 @@
 package security
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -233,6 +234,102 @@ func TestSecretRedactor(t *testing.T) {
 		assert.False(t, result.Safe)
 		assert.True(t, hasFinding(result, "json_field"))
 		assert.NotContains(t, result.Sanitized, "my-super-secret-pass-1234")
+	})
+
+	t.Run("auth header no false positive on conceptual discussion", func(t *testing.T) {
+		// Short technical references like "token_value" should not trigger
+		// the auth_header pattern — they are not real secrets.
+		input := `{"approach": "use Authorization: Bearer token_value to authenticate"}`
+		result := r.Scan(input)
+		assert.True(t, result.Safe || !hasFinding(result, "auth_header"),
+			"short technical reference should not trigger auth_header pattern")
+	})
+
+	t.Run("auth header preserves JSON structure", func(t *testing.T) {
+		// Even when the auth_header pattern fires, the output must
+		// remain valid JSON — the capture group must not consume the
+		// closing quote of a JSON string value.
+		input := `{"analysis": "Set Authorization: Bearer ghp_FAKEtesttoken000000000000000000000000 header"}`
+		result := r.Scan(input)
+		// The token is long enough to match and has a known prefix,
+		// so it should be redacted by the prefix pattern.
+		assert.False(t, result.Safe)
+		// Regardless of which pattern fires, the output must be valid JSON.
+		assert.True(t, json.Valid([]byte(result.Sanitized)),
+			"output is not valid JSON: %s", result.Sanitized)
+	})
+
+	t.Run("auth header still detects real secrets", func(t *testing.T) {
+		// A real auth header with a long token should still be detected.
+		input := "Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.payload.signature"
+		result := r.Scan(input)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "auth_header"))
+		assert.NotContains(t, result.Sanitized, "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9")
+	})
+
+	t.Run("env assignment YAML flow list preserves bracket", func(t *testing.T) {
+		// Regression: [^\s'"]{8,} previously consumed ] in YAML flow sequences.
+		// The closing bracket must survive redaction.
+		input := "items: [export API_TOKEN=abcdefghijklmnop]"
+		result := r.Scan(input)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "env_assignment"))
+		assert.NotContains(t, result.Sanitized, "abcdefghijklmnop")
+		assert.Contains(t, result.Sanitized, "]",
+			"YAML flow closing bracket must not be consumed by env_assignment capture")
+	})
+
+	t.Run("env assignment YAML flow map preserves brace", func(t *testing.T) {
+		// Regression: [^\s'"]{8,} previously consumed } in YAML flow mappings.
+		// The closing brace must survive redaction.
+		input := "{cmd: export API_TOKEN=abcdefghijklmnop}"
+		result := r.Scan(input)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "env_assignment"))
+		assert.NotContains(t, result.Sanitized, "abcdefghijklmnop")
+		assert.Contains(t, result.Sanitized, "}",
+			"YAML flow closing brace must not be consumed by env_assignment capture")
+	})
+
+	t.Run("db connection truncated URL does not span JSON fields", func(t *testing.T) {
+		// Regression: (.{4,}) previously spanned past " into sibling JSON
+		// fields when the URL was truncated (no @ before the closing quote)
+		// and a later field contained @.
+		input := `{"url":"postgres://user:secret_value_12","email":"admin@example.com"}`
+		result := r.Scan(input)
+		// The bounded capture should stop at the closing ", so the
+		// db_connection_password pattern should NOT match (no @ reachable
+		// within the bounded charset).
+		assert.True(t, json.Valid([]byte(result.Sanitized)) || result.Sanitized == "",
+			"output must be valid JSON if modified: %s", result.Sanitized)
+		// The email field must survive intact.
+		if result.Sanitized != "" {
+			assert.Contains(t, result.Sanitized, "admin@example.com",
+				"sibling JSON field must not be swallowed by db_connection_password")
+		}
+	})
+
+	t.Run("db connection well-formed URL in JSON still redacts", func(t *testing.T) {
+		// A complete postgres://user:password@host URL inside JSON must
+		// still be detected — the @ is inside the bounded charset.
+		input := `{"db":"postgres://admin:hunter2_hunter2@db.example.com:5432/app"}`
+		result := r.Scan(input)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "db_connection_password"))
+		assert.True(t, json.Valid([]byte(result.Sanitized)),
+			"output must be valid JSON: %s", result.Sanitized)
+	})
+
+	t.Run("auth header does not eat past JSON closing quote", func(t *testing.T) {
+		// Regression test: \S{8,} previously consumed the closing " of
+		// a JSON string, breaking JSON validity after mask().
+		input := `{"value": "X-Api-Key: testvalue_testvalue_testvalue_1"}`
+		result := r.Scan(input)
+		assert.False(t, result.Safe)
+		assert.True(t, hasFinding(result, "auth_header"))
+		assert.True(t, json.Valid([]byte(result.Sanitized)),
+			"output is not valid JSON: %s", result.Sanitized)
 	})
 }
 

@@ -112,6 +112,8 @@ fetched content before committing.
 > because the preset provides its own configuration. `--config` is only
 > valid for per-repo mode.
 
+This is where the agent runtime is selected: on a terminal, `fullsend github setup` asks once (press Enter to keep `claude`, the stable default); `--runtime` sets it explicitly. `pi` is experimental and meant for the enablement pilot — see [Choose a Runtime](choosing-a-runtime.md) for what the runtimes are and how to change the selection after setup.
+
 ## Testing Fullsend
 
 After installing open a new issue or comment `/fs-triage` in an open issue. Then visit the

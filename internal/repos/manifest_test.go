@@ -1842,3 +1842,35 @@ func TestIsValidGCPProjectID(t *testing.T) {
 	assert.False(t, IsValidGCPProjectID("a-project-id-that-is-way-too-long-for-gcp"))
 	assert.False(t, IsValidGCPProjectID("my-project-"))
 }
+
+func TestManifest_RuntimeResolvesAndValidates(t *testing.T) {
+	t.Parallel()
+	m := &Manifest{
+		Version:  1,
+		Defaults: DefaultsConfig{Runtime: "pi"},
+		GitHub: &PlatformConfig{Repos: []RepoEntry{
+			{Name: "acme/a"},
+			{Name: "acme/b", Runtime: "claude"},
+			{Name: "acme/c", Runtime: NoneSentinel},
+		}},
+	}
+	require.NoError(t, m.Validate())
+
+	rc, ok := m.ResolveConfig("acme", "a")
+	require.True(t, ok)
+	assert.Equal(t, "pi", rc.Runtime, "entry inherits defaults.runtime")
+	rc, _ = m.ResolveConfig("acme", "b")
+	assert.Equal(t, "claude", rc.Runtime, "entry overrides the default")
+	rc, _ = m.ResolveConfig("acme", "c")
+	assert.Equal(t, "", rc.Runtime, "none stops the chain: code default")
+
+	bad := &Manifest{Version: 1, Defaults: DefaultsConfig{Runtime: "opencode"}}
+	err := bad.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `defaults.runtime "opencode" is not a valid runtime`)
+
+	bad = &Manifest{Version: 1, GitHub: &PlatformConfig{Repos: []RepoEntry{{Name: "acme/x", Runtime: "nope"}}}}
+	err = bad.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `github.repos[acme/x].runtime "nope"`)
+}

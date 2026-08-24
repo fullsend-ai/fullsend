@@ -6,7 +6,7 @@
   "state": "OPEN",
   "isDraft": false,
   "author": {
-    "login": "fullsend-ai-coder[bot]"
+    "login": "fullsend-ai-coder"
   },
   "assignees": {
     "nodes": []
@@ -47,7 +47,7 @@
           "nodes": [
             {
               "author": {
-                "login": "fullsend-ai-review[bot]"
+                "login": "fullsend-ai-review"
               },
               "body": "Error return value is not checked.",
               "createdAt": "2024-01-02T01:00:00Z"

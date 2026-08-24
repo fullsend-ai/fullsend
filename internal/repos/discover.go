@@ -44,7 +44,7 @@ func discoverRepo(ctx context.Context, client forge.Client,
 	progress(fullName, "discover", "reading variables")
 
 	fc := ForgeConfigFor(forgeName)
-	state, err := ProbeRepoState(ctx, client, owner, repo, fc)
+	state, err := ProbeRepoState(ctx, client, owner, repo, forgeName, fc)
 	if err != nil && !state.Installed {
 		return DiscoveredRepo{}, err
 	}
@@ -166,9 +166,6 @@ func buildManifest(repos []DiscoveredRepo, cfg manifestConfig) (*Manifest, []str
 	}
 	if forgeName == ForgeGitLab {
 		gitlabURL := cfg.ForgeURL
-		if gitlabURL == "" {
-			todos = append(todos, "gitlab.url: set the GitLab instance URL (e.g. https://gitlab.example.com)")
-		}
 
 		fullsendRef := cfg.FullsendRef
 		if fullsendRef == "" {

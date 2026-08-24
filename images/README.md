@@ -16,7 +16,7 @@ ghcr.io/nvidia/openshell-community/sandboxes/base  (upstream, multi-arch)
 
 | Image | Directory | Description |
 |-------|-----------|-------------|
-| `fullsend-sandbox` | [`images/sandbox/`](sandbox/) | Base sandbox with Claude Code, jq, acli, gitleaks, tirith, pre-commit, gitlint, and the ProtectAI DeBERTa-v3 ONNX model for prompt injection detection. |
+| `fullsend-sandbox` | [`images/sandbox/`](sandbox/) | Base sandbox with Claude Code, jq, acli, gitleaks, tirith, pre-commit, and gitlint. |
 | `fullsend-code` | [`images/code/`](code/) | Extends `fullsend-sandbox` with Go toolchain and scan-secrets wrapper. Used by the code-implementation agent. |
 
 Both images are built for **linux/amd64** and **linux/arm64**.
@@ -33,6 +33,12 @@ It reproduces the environment the composite action assembles in CI so local
 runs behave identically (#5183). It also carries the `gcloud` CLI — not a
 fullsend dependency, but needed for the GCP credential bootstrap in the
 local-run guide.
+
+It is the only artifact that ships the ML prompt-injection scanner: its
+`fullsend` binary is built `CGO_ENABLED=1 -tags ORT` and the image carries
+the ProtectAI DeBERTa-v3 model plus the ONNX Runtime library (#6522). The
+release tarballs stay `CGO_ENABLED=0` and untagged — a ~9 MB static CLI —
+because the model is ~740 MB and belongs in an image, not a tarball.
 
 Podman, the `openshell-gateway` service, and the sandbox supervisor image
 stay on the host — the containerized CLI talks to the host gateway over the
@@ -128,12 +134,15 @@ Every binary downloaded during the build is **version-pinned** and
 | Tool | Pinning | Verification |
 |------|---------|-------------|
 | OpenShell base image | Manifest list digest (`@sha256:...`) | Immutable OCI content hash |
-| ONNX Runtime | `ORT_VERSION` + `ORT_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
+| ONNX Runtime (runner) | `ORT_VERSION` + `ORT_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
+| ProtectAI DeBERTa model (runner) | `PROTECTAI_MODEL_REV` + per-file SHA256 | `sha256sum -c` |
+| libtokenizers (runner) | `TOKENIZERS_VERSION` + `TOKENIZERS_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | Gitleaks | `GITLEAKS_VERSION` + `GITLEAKS_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | Tirith | `TIRITH_VERSION` + `TIRITH_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | Go toolchain | `GO_VERSION` + `GO_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
-| ProtectAI DeBERTa model | `PROTECTAI_MODEL_REV` + per-file SHA256 | `sha256sum -c` |
 | Claude Code | `CLAUDE_CODE_VERSION` ARG + npm version pin | npm registry integrity check |
+| pi (opt-in runtime, #6464) | `PI_VERSION` ARG + npm version pin (`--ignore-scripts`; package ships `npm-shrinkwrap.json`) | npm registry integrity check |
+| pi-anthropic-vertex extension (#6464) | `PI_ANTHROPIC_VERTEX_VERSION` (git tag) + `PI_ANTHROPIC_VERTEX_SHA256` of the GitHub tag tarball; deps via `npm ci --omit=dev --omit=peer --ignore-scripts` from the vendored `package-lock.json` (29 packages; that lockfile is **not** renovate-managed, so advisories in it surface only when the tag is bumped — run `npm audit --omit=dev --omit=peer` in the extension dir when reviewing a bump) | `sha256sum -c` + npm registry integrity check |
 | acli | `ACLI_VERSION` + `ACLI_SHA256_{AMD64,ARM64}` | `sha256sum -c` |
 | pre-commit, gitlint, pyyaml | pip version pins | pip integrity check |
 | UBI 10 base + go-toolset builder (runner) | Manifest list digest (`@sha256:...`) | Immutable OCI content hash (anonymous pull, no subscription) |

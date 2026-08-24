@@ -171,7 +171,7 @@ nav{
 }
 .hero-actions{display:flex;gap:0.75rem;flex-wrap:wrap;margin-bottom:2.5rem}
 .hero-stats{
-  display:flex;gap:2rem;
+  display:flex;flex-wrap:wrap;gap:1rem 2rem;
   padding-top:1.5rem;
   border-top:1px solid var(--border);
 }
@@ -567,11 +567,11 @@ footer{
   <div class="hero-text">
     <div class="hero-badge">Open source &middot; Agentic SDLC &middot; Beyond Git</div>
     <h1>Ship code on<br/><span class="accent">autopilot.</span></h1>
-    <p class="hero-sub">The autonomous development lifecycle (ADLC) platform. Fullsend deploys purpose-built agents across your GitHub repos that triage issues, write code, review PRs, fix findings, and ship to production&mdash;continuously.</p>
+    <p class="hero-sub">The autonomous development lifecycle (ADLC) platform. Fullsend deploys purpose-built agents across your GitHub and GitLab repos that triage issues, write code, review PRs, fix findings, and ship to production&mdash;continuously.</p>
     <div class="hero-highlights">
       <span>Agentic SDLC</span>
       <span>Multi-agent pipeline</span>
-      <span>GitHub-native</span>
+      <span>GitHub &amp; GitLab</span>
       <span>Self-host supported</span>
       <span>OpenShell Sandbox</span>
     </div>
@@ -583,6 +583,10 @@ footer{
       </a>
     </div>
     <div class="hero-stats">
+      <div class="hero-stat">
+        <span class="hero-stat-value">Multi-runtime</span>
+        <span class="hero-stat-label">Claude Code &middot; pi</span>
+      </div>
       <div class="hero-stat">
         <span class="hero-stat-value">6 Agents</span>
         <span class="hero-stat-label">E2E SDLC coverage</span>
@@ -815,7 +819,7 @@ footer{
       <div class="principle-card">
         <div class="principle-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6V4m0 2a2 2 0 1 0 0 4m0-4a2 2 0 1 1 0 4m-6 8a2 2 0 1 0 0-4m0 4a2 2 0 1 1 0-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 1 0 0-4m0 4a2 2 0 1 1 0-4m0 4v2m0-6V4"/></svg></div>
         <div class="principle-title">Fully customizable</div>
-        <div class="principle-desc">Choose your LLM provider, set agent behavior per repo, define policies, and configure which agents run and when.</div>
+        <div class="principle-desc">Choose your LLM provider and agent runtime, set agent behavior per repo, define policies, and configure which agents run and when.</div>
       </div>
       <div class="principle-card">
         <div class="principle-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></div>

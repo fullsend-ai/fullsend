@@ -173,19 +173,22 @@ func (s *ONNXGuardScanner) maxSentenceScore(ctx context.Context, sents []string)
 			return 0, err
 		}
 
+		// A missing INJECTION entry means the model classified the text as
+		// SAFE, which contributes 0 to max — not an error. The pipeline is
+		// built with pipelines.WithSingleLabel() (see initMLScanner), so only
+		// the top-scoring label is returned; every SAFE verdict therefore
+		// arrives with no INJECTION entry. Treating that as a failure made
+		// the scanner emit a fail-closed "high" finding on all clean input.
+		// A model that genuinely lacks the label is already rejected at
+		// construction time by validateLabels.
 		for _, outputs := range result.ClassificationOutputs {
-			found := false
 			for _, o := range outputs {
 				if o.Label == "INJECTION" {
-					found = true
 					if float64(o.Score) > max {
 						max = float64(o.Score)
 					}
 					break
 				}
-			}
-			if !found {
-				return 0, fmt.Errorf("INJECTION label not found in pipeline output")
 			}
 		}
 

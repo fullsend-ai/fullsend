@@ -26,6 +26,11 @@ func TestResolve(t *testing.T) {
 	_, isOC := oc.Transcripts.(OpenCodeRuntime)
 	assert.True(t, isOC, "Transcripts should be OpenCodeRuntime")
 
+	pb, err := Resolve("pi")
+	require.NoError(t, err)
+	assert.Equal(t, "pi", pb.Runtime.Name())
+	assert.IsType(t, PiRuntime{}, pb.Transcripts)
+
 	_, err = Resolve("unknown")
 	require.Error(t, err)
 }
@@ -64,16 +69,56 @@ func TestResolveFromPerRepoConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", dummyBackend.Runtime.Name())
 
-	// opencode is not in ValidRuntimes() but is resolvable via Resolve().
-	// A hand-written config bypassing validation can reach the stub.
-	ocCfg := config.NewPerRepoConfig(nil, "")
-	ocCfg.SetRuntime("opencode")
-	ocBackend, err := ResolveFromPerRepoConfig(ocCfg)
+	// pi is user-selectable (#6464).
+	piCfg := config.NewPerRepoConfig(nil, "")
+	piCfg.SetRuntime("pi")
+	piBackend, err := ResolveFromPerRepoConfig(piCfg)
 	require.NoError(t, err)
-	assert.Equal(t, "opencode", ocBackend.Runtime.Name())
+	assert.Equal(t, "pi", piBackend.Runtime.Name())
 
 	invalidCfg := config.NewPerRepoConfig(nil, "")
 	invalidCfg.SetRuntime("invalid")
 	_, err = ResolveFromPerRepoConfig(invalidCfg)
 	require.Error(t, err)
+}
+
+func TestResolveFromPerRepoConfig_RejectsStubRuntimes(t *testing.T) {
+	t.Parallel()
+
+	// Stub runtimes like "opencode" are resolvable via Resolve() for
+	// dev/testing, but must be rejected when coming through config.
+	for _, name := range []string{"opencode"} {
+		ocCfg := config.NewPerRepoConfig(nil, "")
+		ocCfg.SetRuntime(name)
+		_, err := ResolveFromPerRepoConfig(ocCfg)
+		require.Error(t, err, "stub runtime %q should fail via config path", name)
+		assert.Contains(t, err.Error(), "invalid runtime")
+	}
+
+	// Direct Resolve() still works for dev/testing.
+	rt, err := Resolve("opencode")
+	require.NoError(t, err)
+	assert.Equal(t, "opencode", rt.Runtime.Name())
+}
+
+func TestResolveFromConfig_RejectsStubRuntimes(t *testing.T) {
+	t.Parallel()
+
+	// Org config with a stub runtime should fail at resolution time.
+	cfg, parseErr := config.ParseOrgConfig([]byte(`version: "1"
+dispatch:
+  platform: github-actions
+defaults:
+  roles: [triage]
+  runtime: opencode
+repos: {}
+`))
+	// ParseOrgConfig calls Validate() which also rejects "opencode",
+	// so this may fail at parse time.  If parsing succeeds (e.g. because
+	// Validate() is not called), ResolveFromConfig must still reject it.
+	if parseErr == nil {
+		_, err := ResolveFromConfig(cfg)
+		require.Error(t, err, "stub runtime %q should fail via org config path", "opencode")
+		assert.Contains(t, err.Error(), "invalid runtime")
+	}
 }

@@ -53,7 +53,7 @@ fullsend github setup <owner/repo> \
 | `--app-set` | `fullsend-ai` | App set name prefix for GitHub Apps |
 | `--agents` | `fullsend,triage,coder,review,retro,prioritize` | Agent roles to provision |
 | `--direct` | `false` | Push scaffold directly instead of creating a PR |
-| `--runtime` | `claude` | Agent runtime backend (`claude` or `dummy`; `dummy` is for behaviour test orgs only) |
+| `--runtime` | `claude` | Agent runtime backend (`claude`, `pi` or `dummy`; `dummy` is for behaviour test orgs only — see [runtimes.md](../runtimes.md)) |
 | `--config` | | Local file path or HTTPS URL to a vendor preset (committed as `.fullsend/config.base.yaml`; per-repo only) |
 | `--config-hash` | | SHA-256 hex digest to validate the preset content (requires `--config`) |
 

@@ -12,6 +12,7 @@ Feature: Manual triage via ready-for-triage label
     And an issue
     When the issue is labeled "ready-for-triage"
     Then the triage workflow completes successfully
+    And the run selected the "dummy" runtime
     And the agent will fail to Search for foo
     And the agent will succeed to Emit triage JSON
     And the issue has label "ready-to-code"

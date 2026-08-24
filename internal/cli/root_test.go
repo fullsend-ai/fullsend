@@ -29,6 +29,34 @@ func TestRootCommand_SilencesUsageOnError(t *testing.T) {
 	assert.True(t, cmd.SilenceErrors)
 }
 
+func TestResolveBuildVersion(t *testing.T) {
+	tests := []struct {
+		name    string
+		sha     string
+		ver     string
+		wantSHA string
+		wantTag string
+	}{
+		{"dev build", "dev", "dev", "", ""},
+		{"empty SHA", "", "dev", "", ""},
+		{"release without v prefix", "abc123def456", "0.19.0", "abc123def456", "v0.19.0"},
+		{"release with v prefix", "abc123def456", "v0.19.0", "abc123def456", "v0.19.0"},
+		{"real SHA, dev version", "abc123def456", "dev", "", ""},
+		{"real SHA, empty version", "abc123def456", "", "", ""},
+		{"real SHA, bare v prefix", "abc123def456", "v", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			origSHA, origVer := commitSHA, version
+			t.Cleanup(func() { commitSHA, version = origSHA, origVer })
+			commitSHA, version = tt.sha, tt.ver
+			sha, tag := resolveBuildVersion()
+			assert.Equal(t, tt.wantSHA, sha)
+			assert.Equal(t, tt.wantTag, tag)
+		})
+	}
+}
+
 func TestResolveUpstreamRef(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -40,6 +68,8 @@ func TestResolveUpstreamRef(t *testing.T) {
 		{"dev build", "dev", "dev", "", ""},
 		{"empty SHA", "", "dev", "", ""},
 		{"release", "abc123def456", "0.19.0", "abc123def456", "v0.19.0"},
+		{"release with v prefix", "abc123def456", "v0.19.0", "abc123def456", "v0.19.0"},
+		{"real SHA, dev version", "abc123def456", "dev", "", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

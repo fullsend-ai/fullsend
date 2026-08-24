@@ -189,9 +189,10 @@ func ValidProviders() []string {
 	return []string{"vertex"}
 }
 
-// ValidRuntimes returns the set of recognized agent runtimes.
+// ValidRuntimes returns the set of recognized agent runtimes. "pi" is
+// opt-in per org/repo (#6464); "dummy" is for behaviour test orgs only.
 func ValidRuntimes() []string {
-	return []string{"claude", "dummy"}
+	return []string{"claude", "pi", "dummy"}
 }
 
 // DefaultAgentRoles returns the standard set of agent roles installed
@@ -563,6 +564,10 @@ const perRepoConfigHeader = `# fullsend per-repo configuration
 #
 # This file configures fullsend for per-repo installation mode.
 # See ADR 0033 for details.
+#
+# The "runtime" key selects which agent runtime runs the agents, claude
+# (default when unset) or pi. For one run, the 'fullsend run --runtime'
+# flag wins, then FULLSEND_RUNTIME, then this file. See docs/runtimes.md.
 `
 
 // NewPerRepoConfig creates a new perRepoConfig with the given roles.

@@ -9,9 +9,10 @@ import (
 	"sync"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
-var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables, []string{"FULLSEND_GCP_REGION"})
+var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables, []string{"FULLSEND_GCP_REGION", "FULLSEND_REVIEW_CLIENT_ID"})
 
 var uninstallSecrets = requiredSecrets
 
@@ -189,11 +190,15 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, progress Pr
 	fullName := owner + "/" + repo
 	result := UninstallResult{Owner: owner, Repo: repo}
 
-	// Delete scaffold files. For GitHub this is just the workflow paths
-	// from ForgeConfig; for GitLab the full scaffold set is needed.
+	// Delete scaffold files. For GitHub this is the workflow paths from
+	// ForgeConfig plus any per-repo thin callers; for GitLab the full
+	// scaffold set is needed.
 	deletePaths := ScaffoldPathsForForge(cfg.Forge)
 	if len(deletePaths) == 0 {
 		deletePaths = cfg.ForgeConfig.WorkflowPaths
+	}
+	if cfg.Forge == ForgeGitHub || cfg.Forge == "" {
+		deletePaths = slices.Concat(deletePaths, scaffold.PerRepoThinCallerPaths())
 	}
 	progress(fullName, "workflow", "Deleting scaffold files")
 	deleteMsg := "chore: remove fullsend workflow"

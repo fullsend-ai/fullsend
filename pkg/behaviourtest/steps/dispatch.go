@@ -117,6 +117,11 @@ func givenDisabledCustomHarness(w *world.World, name, doc string) error {
 		return err
 	}
 
+	// Snapshot agents before modification so CleanupScenario can restore.
+	if err := snapshotAgents(w); err != nil {
+		return fmt.Errorf("snapshotting agents: %w", err)
+	}
+
 	cfgPath := filepath.Join(".fullsend", "config.yaml")
 	cfgData, err := w.SCM.GetFileContent(context.Background(), w.Org, w.RepoName, cfgPath)
 	if err != nil {
@@ -169,6 +174,11 @@ func givenCustomHarness(w *world.World, name, doc string) error {
 
 	if err := commitLocalHarnessResources(context.Background(), w, name, doc); err != nil {
 		return err
+	}
+
+	// Snapshot agents before modification so CleanupScenario can restore.
+	if err := snapshotAgents(w); err != nil {
+		return fmt.Errorf("snapshotting agents: %w", err)
 	}
 
 	cfgPath := filepath.Join(".fullsend", "config.yaml")

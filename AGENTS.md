@@ -28,6 +28,7 @@ Detailed guidance lives in `docs/contributing/` and topic-specific guides under 
 | File | When to read |
 |------|-------------|
 | [Go Code](docs/contributing/go-code.md) | Changing Go code under `cmd/` or `internal/` — covers mint sync, coverage, vet, e2e tests, concurrency testing, suite-timeout policy, WASM binary size constraints, and preferring `go run` for the CLI |
+| [Mintcore Architecture](docs/contributing/mintcore.md) | Changing `internal/mintcore/`, `cmd/mint-wasm/`, `cmd/mint/`, or `internal/mint/` — covers platform accessors, load-site construction, and WASM-safe wiring |
 | [Behaviour Testing](docs/guides/dev/behaviour-testing.md) | Modifying behaviour test repo provisioning, fork handling, or workflow dispatch — covers forge API constraints (`auto_init`, fork name derivation, Actions readiness, CI timeout budgeting) |
 | [Workflow Contracts](docs/contributing/workflow-contracts.md) | Changing GHA reusable workflows — covers dispatch sync, secret/input threading across installation-mode chains, and review rules |
 | [Shell Scripting](docs/contributing/shell-scripting.md) | Writing or reviewing shell scripts — covers `gh api --paginate` pitfalls, jq patterns, and stdout contamination in command substitution |

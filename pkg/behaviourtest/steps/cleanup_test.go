@@ -719,6 +719,118 @@ func TestCleanupScenario_DeactivateKillSwitch_Error(t *testing.T) {
 	assert.Contains(t, logged[0], "deactivate kill switch")
 }
 
+// --- Allowed remote resources cleanup tests ---
+
+func TestCleanupScenario_RestoresAllowedResources(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{
+		fileContent: []byte("version: \"1\"\nallowed_remote_resources:\n  - \"https://raw.githubusercontent.com/org/host/\"\nroles:\n  - triage\n"),
+	}
+	w := &world.World{
+		Org:                        "org",
+		RepoOwner:                  "org",
+		RepoName:                   "repo",
+		AllowedResourcesOverridden: true,
+		AllowedResourcesOriginal:   []string{"https://raw.githubusercontent.com/fullsend-ai/fullsend/"},
+		SCM:                        scmDriver,
+	}
+	CleanupScenario(w)
+	assert.True(t, scmDriver.commitFileCalled, "should commit config to restore allowed_remote_resources")
+}
+
+func TestCleanupScenario_SkipsAllowedResourcesWhenNotOverridden(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{}
+	w := &world.World{
+		RepoOwner:                  "org",
+		RepoName:                   "repo",
+		AllowedResourcesOverridden: false,
+		SCM:                        scmDriver,
+	}
+	CleanupScenario(w)
+	assert.False(t, scmDriver.commitFileCalled, "should not commit when allowed resources were not overridden")
+}
+
+func TestCleanupScenario_RestoreAllowedResources_Error(t *testing.T) {
+	t.Parallel()
+
+	var logged []string
+	scmDriver := &fakeCleanupSCM{
+		fileContent:   []byte("version: \"1\"\nallowed_remote_resources:\n  - \"https://example.com/\"\nroles:\n  - triage\n"),
+		commitFileErr: fmt.Errorf("commit failed"),
+	}
+	w := &world.World{
+		Org:                        "org",
+		RepoOwner:                  "org",
+		RepoName:                   "repo",
+		AllowedResourcesOverridden: true,
+		AllowedResourcesOriginal:   []string{},
+		SCM:                        scmDriver,
+		Logf:                       func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+	CleanupScenario(w)
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], "restore allowed_remote_resources")
+}
+
+// --- Agents cleanup tests ---
+
+func TestCleanupScenario_RestoresAgents(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{
+		fileContent: []byte("version: \"1\"\nagents:\n  - name: custom\n    source: harness/custom.yaml\nroles:\n  - triage\n"),
+	}
+	w := &world.World{
+		Org:              "org",
+		RepoOwner:        "org",
+		RepoName:         "repo",
+		AgentsOverridden: true,
+		AgentsOriginal:   nil, // restore to empty (install-time default)
+		SCM:              scmDriver,
+	}
+	CleanupScenario(w)
+	assert.True(t, scmDriver.commitFileCalled, "should commit config to restore agents")
+}
+
+func TestCleanupScenario_SkipsAgentsWhenNotOverridden(t *testing.T) {
+	t.Parallel()
+
+	scmDriver := &fakeCleanupSCM{}
+	w := &world.World{
+		RepoOwner:        "org",
+		RepoName:         "repo",
+		AgentsOverridden: false,
+		SCM:              scmDriver,
+	}
+	CleanupScenario(w)
+	assert.False(t, scmDriver.commitFileCalled, "should not commit when agents were not overridden")
+}
+
+func TestCleanupScenario_RestoreAgents_Error(t *testing.T) {
+	t.Parallel()
+
+	var logged []string
+	scmDriver := &fakeCleanupSCM{
+		fileContent:   []byte("version: \"1\"\nagents:\n  - name: custom\n    source: harness/custom.yaml\nroles:\n  - triage\n"),
+		commitFileErr: fmt.Errorf("commit failed"),
+	}
+	w := &world.World{
+		Org:              "org",
+		RepoOwner:        "org",
+		RepoName:         "repo",
+		AgentsOverridden: true,
+		AgentsOriginal:   nil,
+		SCM:              scmDriver,
+		Logf:             func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) },
+	}
+	CleanupScenario(w)
+	require.Len(t, logged, 1)
+	assert.Contains(t, logged[0], "restore agents")
+}
+
 func TestCleanupScenario_BranchScenarioSweep(t *testing.T) {
 	t.Parallel()
 

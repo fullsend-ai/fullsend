@@ -87,7 +87,10 @@ openshell:                       # Openshell provider profiles (local paths or U
 validation_loop:                     # script is required; these sub-fields are optional
   script: scripts/validate-output-schema.sh
   schema: schemas/result.schema.json  # JSON Schema file for output validation (optional)
-  feedback_mode: stderr          # "stderr", "stdout", or "exit_code" (optional)
+  max_iterations: 2              # Agent re-runs on validation failure (optional, default 1)
+  feedback_mode: append          # "none" (default) or "append": on a retry
+                                 # iteration, append the previous failure to
+                                 # the agent prompt so it can self-correct
 
 allowed_remote_resources:        # URL prefixes allowed for remote skills/agents/plugins/policies
   - https://github.com/org/       # Omit field: first-party defaults apply automatically
@@ -97,13 +100,17 @@ allow_runtime_fetch: true         # Opt-in to runtime skill fetching (default: f
 max_runtime_fetches: 10           # Max runtime fetch requests per run (1–1000, default: 10)
 
 security:                        # Security is enabled by default with fail_mode: closed
-  enabled: true                  # All scanners enabled by default
+  enabled: true                  # All scanners enabled by default (llm_guard: see note below)
   fail_mode: closed              # "closed" (reject on failure) or "open" (warn only)
   host_scanners:
     unicode_normalizer: true
     context_injection: true
     ssrf_validator: true
     secret_redactor: true
+    # llm_guard is parsed and validated but never read (#6522). Changing
+    # these values, or setting enabled: false, has no effect: the scanner
+    # hardcodes 0.92/sentence and ignores enabled — and it runs only in the
+    # runner image anyway.
     llm_guard:
       enabled: true
       threshold: 0.92

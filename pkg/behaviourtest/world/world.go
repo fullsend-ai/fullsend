@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci"
@@ -88,6 +89,29 @@ type World struct {
 	// repo-level kill switch. CleanupScenario uses this to deactivate
 	// the switch so the next scenario on this slot is not affected.
 	KillSwitchActivated bool
+
+	// RuntimeOverridden records that this scenario changed the repo's
+	// `runtime:` in .fullsend/config.yaml; RuntimeOriginal is the value
+	// to restore. CleanupScenario reverts it so the slot's next scenario
+	// runs the install default (dummy) again.
+	RuntimeOverridden bool
+	RuntimeOriginal   string
+
+	// AllowedResourcesOverridden records that this scenario modified
+	// allowed_remote_resources in config.yaml; AllowedResourcesOriginal
+	// holds the pre-scenario value. CleanupScenario restores it so the
+	// next scenario on this slot does not inherit a leftover allowlist
+	// entry — which would let an allowlist-negative scenario pass
+	// incorrectly on a reused pool slot.
+	AllowedResourcesOverridden bool
+	AllowedResourcesOriginal   []string
+
+	// AgentsOverridden records that this scenario modified the agents
+	// list in config.yaml; AgentsOriginal holds the pre-scenario value.
+	// CleanupScenario restores it so the next scenario on this slot
+	// does not inherit custom agent entries from the previous lessee.
+	AgentsOverridden bool
+	AgentsOriginal   []config.AgentEntry
 
 	// Jira mock state — set by the "Given a mock Jira server" step.
 	JiraMockServer *httptest.Server

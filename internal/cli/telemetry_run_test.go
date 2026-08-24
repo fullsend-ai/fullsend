@@ -348,11 +348,12 @@ func TestAgentSpanEndAttrs(t *testing.T) {
 	m.TotalCostUSD = 0.335349
 	m.ToolCalls.Store(11)
 
-	a := agentSpanEndAttrs(2, 0, "anthropic", &m)
+	a := agentSpanEndAttrs(2, 0, "anthropic", "claude", &m)
 	assert.Contains(t, a, attribute.Int("iteration", 2))
 	assert.Contains(t, a, attribute.Int("exit_code", 0))
 	assert.Contains(t, a, attribute.String("gen_ai.system", "anthropic"))
 	assert.Contains(t, a, attribute.String("gen_ai.request.model", "claude-opus-4-6"))
+	assert.Contains(t, a, attribute.String("fullsend.runtime", "claude"))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.input_tokens", 11))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.output_tokens", 1505))
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.cache_creation.input_tokens", 38832))
@@ -372,7 +373,7 @@ func TestAgentSpanEndAttrs_WithReasoningTokens(t *testing.T) {
 	m.OutputTokens = 50
 	m.ReasoningTokens = 42
 
-	a := agentSpanEndAttrs(1, 0, "anthropic", &m)
+	a := agentSpanEndAttrs(1, 0, "anthropic", "claude", &m)
 	assert.Contains(t, a, attribute.Int("gen_ai.usage.reasoning_tokens", 42),
 		"reasoning_tokens attribute should be present when non-zero")
 }
@@ -597,7 +598,7 @@ func TestFinalizeAgentSpan(t *testing.T) {
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 		_, span := tp.Tracer("test").Start(context.Background(), "agent")
 		m := &agentruntime.RunMetrics{Model: "claude-opus-4-6"}
-		finalizeAgentSpan(span, runErr, 1, exitCode, "gcp.vertex_ai", m, transcriptErr)
+		finalizeAgentSpan(span, runErr, 1, exitCode, "gcp.vertex_ai", "claude", m, transcriptErr)
 		ended := rec.Ended()
 		require.Len(t, ended, 1, "span must be ended exactly once")
 		return tracetest.SpanStubFromReadOnlySpan(ended[0])
@@ -675,7 +676,7 @@ func TestFinalizeAgentSpan(t *testing.T) {
 		tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
 		_, span := tp.Tracer("test").Start(context.Background(), "agent")
 		m := &agentruntime.RunMetrics{Model: "claude-\xff\xfeopus"}
-		finalizeAgentSpan(span, nil, 1, 0, "gcp.vertex_ai", m, "")
+		finalizeAgentSpan(span, nil, 1, 0, "gcp.vertex_ai", "claude", m, "")
 		ended := rec.Ended()
 		require.Len(t, ended, 1)
 		s := tracetest.SpanStubFromReadOnlySpan(ended[0])

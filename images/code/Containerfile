@@ -5,8 +5,8 @@
 #   - lychee (markdown link checker for pre-commit hooks)
 #   - scan-secrets (gitleaks wrapper for code-implementation skill)
 #
-# The base image already provides Claude Code, jq, gitleaks, tirith,
-# pre-commit, gitlint, and the ProtectAI DeBERTa-v3 ONNX model.
+# The base image already provides Claude Code, pi (pinned; stub runtime,
+# #6464), jq, gitleaks, tirith, pre-commit, and gitlint.
 # See images/sandbox/Containerfile in fullsend-ai/fullsend for the base definition.
 #
 # This image is built AUTOMATICALLY by .github/workflows/sandbox-image.yml

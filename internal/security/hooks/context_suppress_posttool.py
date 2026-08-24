@@ -2,14 +2,16 @@
 """Claude Code PostToolUse hook for context suppression.
 
 Intercepts Bash tool results from verification commands (scan-secrets,
-pre-commit, go test, linters, etc.) and replaces verbose success output
-with compact one-line summaries. Failures pass through unchanged so the
-agent can act on them.
+gitleaks, pre-commit, go test, pytest, npm test, make test) and replaces
+verbose success output with compact one-line summaries. Failures pass
+through unchanged so the agent can act on them.
 
-Principle: success is silent, failure is loud.
+Principles: success is silent, failure is loud — and a summary is only ever
+built from positive evidence the tool printed, never inferred from silence.
 
-Protocol: reads JSON from stdin, writes JSON to stdout with compacted
-tool_result when suppression applies. Exit code 0 always (never blocks).
+Protocol: reads JSON from stdin (``tool_response`` preferred, ``tool_result``
+fallback). Writes ``hookSpecificOutput.updatedToolOutput`` (and ``tool_result``)
+when suppression applies. Exit code 0 always (never blocks).
 """
 
 from __future__ import annotations
@@ -20,26 +22,39 @@ import re
 import sys
 from datetime import UTC, datetime
 
+import hook_io
+
 FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 MAX_INPUT_BYTES = 10 * 1024 * 1024  # 10 MB
 
 # --- Command pattern matchers ---
+#
+# Anchored at the start of a command segment (after any VAR=... prefix and an
+# optional runner such as ``uvx``/``npx``/``uv run``): a command that merely
+# mentions a tool (``grep -n scan-secrets hooks.py``) must not have its
+# output replaced by that tool's summary.
+#
+# Only tools whose successful run prints positive evidence are listed.
+# Silence is never condensed into "passed": a linter or ``go vet`` that prints
+# nothing because its interpreter is missing looks identical to a clean run,
+# and Claude Code's Bash result carries no exit code to tell them apart.
 
-_SCAN_SECRETS_RE = re.compile(r"\bscan-secrets\b")
-_GITLEAKS_RE = re.compile(r"\bgitleaks\s+detect\b")
-_PRECOMMIT_RE = re.compile(r"\bpre-commit\s+run\b")
-_GO_TEST_RE = re.compile(r"\bgo\s+test\b")
-_MAKE_TEST_RE = re.compile(r"\bmake\s+(?:test|check)\b")
-_NPM_TEST_RE = re.compile(r"\bnpm\s+test\b")
-_PYTEST_RE = re.compile(r"\bpytest\b")
-_GO_VET_RE = re.compile(r"\bgo\s+vet\b")
-_GO_BUILD_RE = re.compile(r"\bgo\s+build\b")
-_MAKE_LINT_RE = re.compile(r"\bmake\s+lint\b")
-_GOLANGCI_RE = re.compile(r"\bgolangci-lint\s+run\b")
-_ESLINT_RE = re.compile(r"\beslint\b")
-_RUFF_RE = re.compile(r"\bruff\s+(?:check|format)\b")
-_RUFF_FORMAT_RE = re.compile(r"\bruff\s+format\b")
-_GITLINT_RE = re.compile(r"\bgitlint\b")
+# Wrappers that run the real command: ``sudo go test``, ``timeout 60 go test``,
+# ``env FOO=1 go test``, ``mise exec -- go test``, ``uvx pytest``. Repeatable,
+# since wrappers stack (``sudo timeout 60 go test``).
+_CMD_PREFIX = (
+    r"^(?:(?:uvx|npx|bunx|time|sudo|nice|stdbuf|command|timeout\s+[\d.]+[smhd]?"
+    r"|env(?:\s+[A-Za-z_][A-Za-z0-9_]*=\S*)*|uv\s+run|poetry\s+run|pipenv\s+run"
+    r"|mise\s+exec(?:\s+--)?|rye\s+run|pdm\s+run|hatch\s+run)\s+)*(?:\S*/)?"
+)
+
+_SCAN_SECRETS_RE = re.compile(_CMD_PREFIX + r"scan-secrets\b")
+_GITLEAKS_RE = re.compile(_CMD_PREFIX + r"gitleaks\s+detect\b")
+_PRECOMMIT_RE = re.compile(_CMD_PREFIX + r"pre-commit\s+run\b")
+_GO_TEST_RE = re.compile(_CMD_PREFIX + r"go\s+test\b")
+_MAKE_TEST_RE = re.compile(_CMD_PREFIX + r"make\s+(?:test|check)\b")
+_NPM_TEST_RE = re.compile(_CMD_PREFIX + r"(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b")
+_PYTEST_RE = re.compile(_CMD_PREFIX + r"(?:pytest\b|python3?(?:\.\d+)?\s+-m\s+pytest\b)")
 
 # pre-commit output patterns
 _PRECOMMIT_HOOK_LINE_RE = re.compile(
@@ -56,8 +71,37 @@ _GO_TEST_OK_RE = re.compile(r"^ok\s+\S+\s+([\d.]+)s", re.MULTILINE)
 _GO_TEST_FAIL_RE = re.compile(r"^FAIL\s+", re.MULTILINE)
 
 # pytest output patterns
-_PYTEST_SUMMARY_RE = re.compile(r"=+\s+(\d+)\s+passed.*?in\s+([\d.]+)s\s+=+", re.MULTILINE)
-_PYTEST_FAIL_RE = re.compile(r"=+\s+.*?(\d+)\s+(?:failed|error)", re.MULTILINE)
+_PYTEST_SUMMARY_RE = re.compile(
+    r"((\d+)\s+passed(?:,\s*\d+\s+(?:skipped|deselected|xfailed|xpassed|warnings?))*)"
+    r"\s+in\s+([\d.]+)s",
+    re.MULTILINE,
+)
+
+# Output that reports a failure is never condensed, whatever the command
+# summarizer would make of the rest of it: a line-leading FAIL/ERROR/panic
+# marker or a "<n> failed" style count.
+_FAILURE_LINE_RE = re.compile(
+    r"^(?:FAIL\b|FAILED\b|ERROR\b|[Ee]rror:|--- FAIL|panic:|Traceback|fatal:)", re.MULTILINE
+)
+_FAILURE_COUNT_RE = re.compile(
+    r"\b[1-9]\d*\s+(?:failed|failing|failures?|errors?)\b", re.IGNORECASE
+)
+
+# Command shapes that are not summarized: a pipeline (``| tail`` can cut the
+# FAIL line the summarizer keys on), ``||``, command substitution, and any
+# compound whose segments are not exactly one verification command plus
+# benign setup (cd/export/source...). ``pytest; go test`` ran two suites and
+# one summary cannot speak for both; ``go test; echo $?`` hides the status.
+_PIPE_OR_SUBSHELL_RE = re.compile(r"\||`|\$\(")
+_SEGMENT_SPLIT_RE = re.compile(r"\r?\n|&&|;")
+_ENV_PREFIX_RE = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)+")
+_BENIGN_SEGMENT_RE = re.compile(
+    r"^(?:cd|pushd|popd|export|unset|set|source|\.|true|ulimit|umask)(?:\s|$)|^#"
+)
+_QUOTED_RE = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
+_CONTINUATION_RE = re.compile(r"\\\r?\n")
+
+_PYTEST_FAIL_RE = re.compile(r"\b(\d+)\s+(?:failed|errors?)\b", re.IGNORECASE)
 
 
 def log_suppression(command: str, summary: str) -> None:
@@ -98,8 +142,8 @@ def suppress_gitleaks(output: str) -> str | None:
 def suppress_precommit(output: str) -> str | None:
     hook_results = _PRECOMMIT_HOOK_LINE_RE.findall(output)
     if not hook_results:
-        if not output.strip():
-            return "pre-commit: passed"
+        # No per-hook lines: either nothing ran (an interpreter missing from
+        # PATH is silent) or the output is not pre-commit's. Never "passed".
         return None
 
     statuses = [status for _, status in hook_results]
@@ -144,9 +188,8 @@ def suppress_pytest(output: str) -> str | None:
 
     match = _PYTEST_SUMMARY_RE.search(output)
     if match:
-        passed = match.group(1)
-        duration = match.group(2)
-        return f"tests: {passed} passed ({duration}s)"
+        # Echo the whole count list ("2 passed, 1 xfailed"), not only "passed".
+        return f"tests: {match.group(1)} ({match.group(3)}s)"
 
     return None
 
@@ -176,77 +219,56 @@ def suppress_make_test(output: str) -> str | None:
     return None
 
 
-def suppress_go_vet(output: str) -> str | None:
-    if not output.strip():
-        return "go vet: clean"
+def reports_failure(output: str) -> bool:
+    return bool(_FAILURE_LINE_RE.search(output) or _FAILURE_COUNT_RE.search(output))
+
+
+def _summarizer_for(segment: str):
+    """Return the summarizer for one command segment, "benign" for setup
+    commands, or None for anything else."""
+    seg = _ENV_PREFIX_RE.sub("", segment.strip())
+    if not seg or _BENIGN_SEGMENT_RE.match(seg):
+        return "benign"
+    for pattern, fn in _SUMMARIZERS:
+        if pattern.search(seg):
+            return fn
     return None
 
 
-def suppress_go_build(output: str) -> str | None:
-    if not output.strip():
-        return "go build: clean"
-    return None
+_SUMMARIZERS = [
+    (_SCAN_SECRETS_RE, suppress_scan_secrets),
+    (_GITLEAKS_RE, suppress_gitleaks),
+    (_PRECOMMIT_RE, suppress_precommit),
+    (_GO_TEST_RE, suppress_go_test),
+    (_PYTEST_RE, suppress_pytest),
+    (_NPM_TEST_RE, suppress_npm_test),
+    (_MAKE_TEST_RE, suppress_make_test),
+]
 
 
-def suppress_linter(name: str, output: str) -> str | None:
-    if not output.strip():
-        return f"{name}: clean"
-    return None
-
-
-def suppress_gitlint(output: str) -> str | None:
-    if not output.strip():
-        return "gitlint: passed"
-    return None
+def select_summarizer(command: str):
+    """Pick the single verification command in ``command``, or None."""
+    command = _CONTINUATION_RE.sub(" ", command)
+    # ``-run 'TestA|TestB'`` is a regex, not a pipeline: judge shape with the
+    # quoted regions blanked out.
+    unquoted = _QUOTED_RE.sub("''", command)
+    if _PIPE_OR_SUBSHELL_RE.search(unquoted):
+        return None
+    chosen = []
+    for segment in _SEGMENT_SPLIT_RE.split(unquoted):
+        fn = _summarizer_for(segment)
+        if fn is None:
+            return None
+        if fn != "benign":
+            chosen.append(fn)
+    return chosen[0] if len(chosen) == 1 else None
 
 
 def try_suppress(command: str, output: str) -> str | None:
-    if _SCAN_SECRETS_RE.search(command):
-        return suppress_scan_secrets(output)
-
-    if _GITLEAKS_RE.search(command):
-        return suppress_gitleaks(output)
-
-    if _PRECOMMIT_RE.search(command):
-        return suppress_precommit(output)
-
-    if _GO_TEST_RE.search(command):
-        return suppress_go_test(output)
-
-    if _PYTEST_RE.search(command):
-        return suppress_pytest(output)
-
-    if _NPM_TEST_RE.search(command):
-        return suppress_npm_test(output)
-
-    if _MAKE_TEST_RE.search(command):
-        return suppress_make_test(output)
-
-    if _GO_VET_RE.search(command):
-        return suppress_go_vet(output)
-
-    if _GO_BUILD_RE.search(command):
-        return suppress_go_build(output)
-
-    if _GOLANGCI_RE.search(command):
-        return suppress_linter("golangci-lint", output)
-
-    if _ESLINT_RE.search(command):
-        return suppress_linter("eslint", output)
-
-    if _RUFF_FORMAT_RE.search(command):
-        return suppress_linter("ruff-format", output)
-
-    if _RUFF_RE.search(command):
-        return suppress_linter("ruff", output)
-
-    if _MAKE_LINT_RE.search(command):
-        return suppress_linter("lint", output)
-
-    if _GITLINT_RE.search(command):
-        return suppress_gitlint(output)
-
-    return None
+    fn = select_summarizer(command)
+    if fn is None or reports_failure(output):
+        return None
+    return fn(output)
 
 
 def main() -> None:
@@ -275,20 +297,23 @@ def main() -> None:
     if not command:
         sys.exit(0)
 
-    tool_result = hook_input.get("tool_result", "")
-    if not isinstance(tool_result, str):
+    original = hook_io.payload(hook_input)
+    text = hook_io.scan_text(original)
+
+    # Failures pass through: v1 adapters prefix ``Exit code``. Under Claude Code
+    # a failed tool call fires PostToolUseFailure and never reaches here, and
+    # ``interrupted`` marks a cancelled tool rather than a non-zero exit.
+    if hook_io.looks_failed(original, text):
         sys.exit(0)
 
-    # Non-zero exit code: always pass through full output for agent to act on.
-    if tool_result.startswith("Exit code"):
-        sys.exit(0)
-
-    summary = try_suppress(command, tool_result)
+    summary = try_suppress(command, text)
     if summary is None:
         sys.exit(0)
 
     log_suppression(command, summary)
-    json.dump({"tool_result": summary}, sys.stdout)
+    if not hook_io.has_text_slot(original):
+        sys.exit(0)
+    hook_io.emit_updated(hook_io.apply_text(original, summary))
     sys.exit(0)
 
 

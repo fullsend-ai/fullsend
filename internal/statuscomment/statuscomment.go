@@ -55,6 +55,17 @@ var now = time.Now
 // API operation so the underlying token is never stale.
 type ClientFactory func(ctx context.Context) (forge.Client, error)
 
+// RunInfo holds optional runtime/model metadata surfaced in the terminal
+// status comment footer. All fields are optional — omitted fields are
+// excluded from the rendered line.
+type RunInfo struct {
+	Runtime        string  // e.g. "claude", "pi"
+	RequestedModel string  // model the harness/agent asked for
+	ReportedModel  string  // model the provider actually used
+	Effort         string  // e.g. "medium", "high"
+	CostUSD        float64 // total cost; zero means unknown
+}
+
 // Notifier manages status comment lifecycle for a single agent run.
 type Notifier struct {
 	client        forge.Client
@@ -70,6 +81,7 @@ type Notifier struct {
 	startTime      time.Time
 	now            func() time.Time
 	warnf          func(string, ...any)
+	runInfo        *RunInfo
 }
 
 // New creates a Notifier. The runID is embedded in the HTML marker comment
@@ -95,6 +107,12 @@ func New(client forge.Client, cfg config.StatusNotificationConfig,
 // errors during fail-open operations). Defaults to a no-op.
 func (n *Notifier) SetWarnFunc(f func(string, ...any)) {
 	n.warnf = f
+}
+
+// SetRunInfo sets optional runtime/model metadata rendered in the
+// terminal status comment footer.
+func (n *Notifier) SetRunInfo(info RunInfo) {
+	n.runInfo = &info
 }
 
 // SetClientFactory sets a factory that mints a fresh forge.Client before
@@ -313,7 +331,43 @@ func (n *Notifier) buildCompletionBody(description, status, detail string, compl
 		b.WriteString("\n\n")
 		b.WriteString(line2)
 	}
+
+	if footer := BuildRunInfoFooter(n.runInfo); footer != "" {
+		b.WriteString("\n\n")
+		b.WriteString(footer)
+	}
 	return b.String()
+}
+
+// BuildRunInfoFooter renders the optional runtime/model/effort/cost line
+// for the terminal status comment. Unknown fields are omitted.
+func BuildRunInfoFooter(info *RunInfo) string {
+	if info == nil {
+		return ""
+	}
+	var parts []string
+	if info.Runtime != "" {
+		parts = append(parts, "Runtime: "+info.Runtime)
+	}
+	if info.RequestedModel != "" {
+		if info.ReportedModel != "" && info.ReportedModel != info.RequestedModel {
+			parts = append(parts, fmt.Sprintf("Model: %s → %s", info.RequestedModel, info.ReportedModel))
+		} else {
+			parts = append(parts, "Model: "+info.RequestedModel)
+		}
+	} else if info.ReportedModel != "" {
+		parts = append(parts, "Model: "+info.ReportedModel)
+	}
+	if info.Effort != "" {
+		parts = append(parts, "Effort: "+info.Effort)
+	}
+	if info.CostUSD > 0 {
+		parts = append(parts, fmt.Sprintf("Cost: $%.2f", info.CostUSD))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " · ")
 }
 
 func (n *Notifier) buildSecondLine() string {

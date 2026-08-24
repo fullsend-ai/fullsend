@@ -11,7 +11,7 @@
 dispatch:
   stage: dispatch
   image:
-    name: ghcr.io/fullsend-ai/fullsend-runner:latest
+    name: ghcr.io/fullsend-ai/fullsend-runner:dev
     entrypoint: [""]
   tags: __RUNNER_TAGS__
   rules:

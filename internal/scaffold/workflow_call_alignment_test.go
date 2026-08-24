@@ -827,6 +827,21 @@ func TestShimPerRepoProjectNumberPassthrough(t *testing.T) {
 		"per-repo shim project_number must read from vars.FULLSEND_PROJECT_NUMBER")
 }
 
+// TestPrioritizeThinCallerThreadsProjectNumber validates that the prioritize
+// thin caller template accepts project_number as a workflow_dispatch input
+// and forwards it to the reusable workflow using an input-first fallback
+// expression (#6490).
+func TestPrioritizeThinCallerThreadsProjectNumber(t *testing.T) {
+	content := loadScaffoldFile(".github/workflows/prioritize.yml")(t)
+	s := string(content)
+	assert.Contains(t, s, "project_number:",
+		"prioritize thin caller must declare project_number input")
+	assert.Contains(t, s, "inputs.project_number",
+		"prioritize thin caller must forward inputs.project_number to the reusable workflow")
+	assert.Contains(t, s, "inputs.project_number || vars.FULLSEND_PROJECT_NUMBER",
+		"prioritize thin caller must fall back to vars.FULLSEND_PROJECT_NUMBER when input is empty")
+}
+
 // TestShimLabeledEventFiltering validates that shim workflows use the ready-
 // prefix filter at the if: guard level and label-aware concurrency keys so
 // routing labels don't cancel each other (#2452).

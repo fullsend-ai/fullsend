@@ -30,6 +30,13 @@ func (ClaudeRuntime) ConfigDir() string { return sandbox.SandboxClaudeConfig }
 
 func (ClaudeRuntime) WorkspaceDir() string { return sandbox.SandboxWorkspace }
 
+// DebugLogName implements DebugLogNamer: the local artifact for --debug output.
+func (ClaudeRuntime) DebugLogName() string { return claudeDebugLog }
+
+// NeedsClaudeMDBridge implements ContextBridger. Claude Code auto-loads
+// CLAUDE.md but not AGENTS.md, so AGENTS.md-only repos need the pointer file.
+func (ClaudeRuntime) NeedsClaudeMDBridge() bool { return true }
+
 func (r ClaudeRuntime) EnvExports() []string {
 	return []string{fmt.Sprintf("export CLAUDE_CONFIG_DIR=%s", r.ConfigDir())}
 }
@@ -85,11 +92,11 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 		}
 	}
 
-	hooksInput, ok := input.(ClaudeHooksBootstrap)
+	hooksInput, ok := input.(SandboxHooksBootstrap)
 	if !ok {
 		return nil
 	}
-	return installClaudeHooks(sandboxName, hooksInput.ClaudeSandboxHooks())
+	return installClaudeHooks(sandboxName, hooksInput.SandboxHookConfig())
 }
 
 func (ClaudeRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printer, start time.Time, metrics *RunMetrics) (int, error) {
@@ -303,6 +310,10 @@ func buildRunCommand(params RunParams) string {
 		"--output-format stream-json",
 	}
 
+	if params.HooksSettingsPath != "" {
+		parts = append(parts, fmt.Sprintf("--settings '%s'", strings.ReplaceAll(params.HooksSettingsPath, "'", "'\\''")))
+	}
+
 	if params.Debug != "" {
 		parts = append(parts, fmt.Sprintf("--debug-file '%s/%s'", sandbox.SandboxWorkspace, claudeDebugLog))
 		if params.Debug != "*" {
@@ -318,96 +329,64 @@ func buildRunCommand(params RunParams) string {
 		parts = append(parts, fmt.Sprintf("--effort '%s'", strings.ReplaceAll(params.Effort, "'", "'\\''")))
 	}
 
+	if len(params.FallbackModels) > 0 {
+		// Claude Code accepts a comma-separated chain tried in order when the
+		// primary model is overloaded or retired.
+		parts = append(parts, fmt.Sprintf("--fallback-model '%s'", strings.ReplaceAll(strings.Join(params.FallbackModels, ","), "'", "'\\''")))
+	}
+
 	for _, pd := range params.PluginDirs {
 		parts = append(parts, fmt.Sprintf("--plugin-dir '%s'", strings.ReplaceAll(pd, "'", "'\\''")))
 	}
 
+	prompt := DefaultAgentPrompt
+	if params.Prompt != "" {
+		prompt = params.Prompt
+	}
 	parts = append(parts,
 		fmt.Sprintf("--agent '%s'", safe),
 		"--dangerously-skip-permissions",
-		"'Run the agent task'",
+		fmt.Sprintf("'%s'", strings.ReplaceAll(prompt, "'", "'\\''")),
 	)
 
 	return strings.Join(parts, " ")
 }
 
-// Claude Code reads two settings.json files in the sandbox:
+// Claude Code reads settings from two separate files in the sandbox:
 //   - {CLAUDE_CONFIG_DIR}/settings.json — plugin marketplace state (bootstrapPlugins)
-//   - {SandboxWorkspace}/.claude/settings.json — security Pre/PostToolUse hooks (here)
+//   - {CLAUDE_CONFIG_DIR}/hooks.json    — security Pre/PostToolUse hooks (here)
 //
-// Keep these paths separate; merging them would mix plugin config with hook wiring.
-func installClaudeHooks(sandboxName string, hooks security.ClaudeSandboxHooks) error {
-	hooksDir := sandbox.SandboxWorkspace + "/.claude/hooks"
-	mkdirCmd := fmt.Sprintf("mkdir -p %s %s/.claude", hooksDir, sandbox.SandboxWorkspace)
-	if _, _, _, err := sandbox.Exec(sandboxName, mkdirCmd, 10*time.Second); err != nil {
-		return fmt.Errorf("creating Claude hooks dir: %w", err)
+// The hooks file is loaded via --settings in buildRunCommand, which takes
+// precedence over project/local settings. Hook scripts and wiring are
+// co-located under the runner-owned config directory, outside the
+// agent-writable workspace tree (#6358).
+func installClaudeHooks(sandboxName string, hooks security.SandboxHookConfig) error {
+	// security.SandboxHooksDir is the directory the generated hooks.json
+	// commands point at; installHookScripts creates it.
+	if err := installHookScripts(sandboxName, security.SandboxHooksDir, hooks); err != nil {
+		return err
 	}
 
-	hookFiles := security.HookFiles(hooks)
-	for name, content := range hookFiles {
-		tmpFile, err := os.CreateTemp("", "fullsend-hook-*")
-		if err != nil {
-			return fmt.Errorf("creating temp file for hook %s: %w", name, err)
-		}
-		if _, err := tmpFile.Write(content); err != nil {
-			tmpFile.Close()
-			os.Remove(tmpFile.Name())
-			return fmt.Errorf("writing hook %s: %w", name, err)
-		}
-		tmpFile.Close()
-
-		remotePath := fmt.Sprintf("%s/.claude/hooks/%s", sandbox.SandboxWorkspace, name)
-		if err := sandbox.Upload(sandboxName, tmpFile.Name(), remotePath); err != nil {
-			os.Remove(tmpFile.Name())
-			return fmt.Errorf("copying hook %s to sandbox: %w", name, err)
-		}
-		os.Remove(tmpFile.Name())
-
-		chmodCmd := fmt.Sprintf("chmod +x %s", remotePath)
-		if _, _, _, err := sandbox.Exec(sandboxName, chmodCmd, 10*time.Second); err != nil {
-			return fmt.Errorf("chmod hook %s: %w", name, err)
-		}
-	}
-
-	settingsJSON, err := security.GenerateClaudeSettings(hooks)
+	hooksJSON, err := security.GenerateHooksConfig(hooks)
 	if err != nil {
-		return fmt.Errorf("generating claude settings: %w", err)
+		return fmt.Errorf("generating hooks config: %w", err)
 	}
 
-	tmpSettings, err := os.CreateTemp("", "fullsend-settings-*.json")
+	tmpDir, err := os.MkdirTemp("", "fullsend-hooks-")
 	if err != nil {
-		return fmt.Errorf("creating temp settings file: %w", err)
+		return fmt.Errorf("creating temp hooks file: %w", err)
 	}
-	if _, err := tmpSettings.Write(settingsJSON); err != nil {
-		tmpSettings.Close()
-		os.Remove(tmpSettings.Name())
-		return fmt.Errorf("writing settings: %w", err)
-	}
-	tmpSettings.Close()
-
-	remoteSettings := fmt.Sprintf("%s/.claude/settings.json", sandbox.SandboxWorkspace)
-	if err := sandbox.Upload(sandboxName, tmpSettings.Name(), remoteSettings); err != nil {
-		os.Remove(tmpSettings.Name())
-		return fmt.Errorf("copying settings.json to sandbox: %w", err)
-	}
-	os.Remove(tmpSettings.Name())
-
-	if failOn := hooks.TirithFailOn(); failOn != "" {
-		escapedFailOn := strings.ReplaceAll(failOn, "'", "'\\''")
-		envCmd := fmt.Sprintf("echo 'export TIRITH_FAIL_ON=%s' >> %s/.env",
-			escapedFailOn, sandbox.SandboxWorkspace)
-		if _, _, _, err := sandbox.Exec(sandboxName, envCmd, 10*time.Second); err != nil {
-			return fmt.Errorf("setting TIRITH_FAIL_ON: %w", err)
-		}
-	}
-	if hooks.TirithRequired() {
-		envCmd := fmt.Sprintf("echo 'export TIRITH_REQUIRED=1' >> %s/.env", sandbox.SandboxWorkspace)
-		if _, _, _, err := sandbox.Exec(sandboxName, envCmd, 10*time.Second); err != nil {
-			return fmt.Errorf("setting TIRITH_REQUIRED: %w", err)
-		}
+	defer os.RemoveAll(tmpDir)
+	tmpPath := filepath.Join(tmpDir, "hooks.json")
+	if err := os.WriteFile(tmpPath, hooksJSON, 0o600); err != nil {
+		return fmt.Errorf("writing hooks config: %w", err)
 	}
 
-	return nil
+	if err := sandbox.Upload(sandboxName, tmpPath, security.SandboxHooksSettings); err != nil {
+		return fmt.Errorf("copying hooks.json to sandbox: %w", err)
+	}
+
+	return appendHookEnv(sandboxName, hooks)
 }
 
 func bootstrapPlugins(sandboxName, configDir string, plugins []string) error {
@@ -550,4 +529,6 @@ func agentDestName(agentName, agentPath string) string {
 var (
 	_ Runtime           = ClaudeRuntime{}
 	_ TranscriptHandler = ClaudeRuntime{}
+	_ DebugLogNamer     = ClaudeRuntime{}
+	_ ContextBridger    = ClaudeRuntime{}
 )

@@ -240,7 +240,7 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.Contains(t, s, "unexpected pipeline source")
 	assert.Contains(t, s, "rejecting forged dispatch")
 	// Generic runner image, not agent-specific
-	assert.Contains(t, s, "fullsend-runner:latest")
+	assert.Contains(t, s, "fullsend-runner:dev")
 	assert.NotContains(t, s, "fullsend-code:latest")
 	// Resource group parameterized by STAGE
 	assert.Contains(t, s, `fullsend-${STAGE}-${RESOURCE_KEY}`)
@@ -261,6 +261,29 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	// Harness passthrough variables must be declared so os.Expand doesn't
 	// reject unset variables during harness env validation (#6273).
 	assert.Contains(t, s, "CODE_ALLOWED_TARGET_BRANCHES")
+	// RUNNER_TEMP must be exported with /tmp fallback so harness host_files
+	// paths that reference ${RUNNER_TEMP} resolve on GitLab CI (#6460).
+	assert.Contains(t, s, `export RUNNER_TEMP="${RUNNER_TEMP:-/tmp}"`)
+	// Runtime CLI install via before_script (#6445)
+	assert.Contains(t, s, "before_script:")
+	// CI_DEBUG_TRACE guard must be in before_script, before token-bearing commands
+	assert.Contains(t, s, "CI_DEBUG_TRACE")
+	assert.Contains(t, s, "__FULLSEND_VERSION__")
+	assert.Contains(t, s, "fullsend-ai/fullsend")
+	assert.Contains(t, s, "fullsend --version")
+	// Release path downloads pre-built binary with checksum verification
+	assert.Contains(t, s, "github.com/${FULLSEND_REPO}/releases/download")
+	assert.Contains(t, s, "checksums.txt")
+	assert.Contains(t, s, "sha256sum -c")
+	// Source-build path clones and builds from source (direct go build, no make)
+	assert.Contains(t, s, "go build")
+	assert.Contains(t, s, "./cmd/fullsend/")
+	// Source-build path sets GOPATH and GOCACHE so go build works on
+	// non-root runners where /root/go is not writable (#6477).
+	assert.Contains(t, s, `export GOPATH="${RUNNER_TEMP:-/tmp}/go"`)
+	assert.Contains(t, s, `export GOCACHE="${RUNNER_TEMP:-/tmp}/go-cache"`)
+	// "latest" resolution via GitHub API
+	assert.Contains(t, s, "releases/latest")
 }
 
 func TestGitLabAgentTemplateFixReviewBodyPreFetch(t *testing.T) {
@@ -419,6 +442,18 @@ func TestGitLabPollContent(t *testing.T) {
 	// No dotenv gating
 	assert.NotContains(t, s, "dispatch.env")
 	assert.NotContains(t, s, "HAS_DISPATCHES")
+	// Runtime CLI install via before_script (#6445)
+	assert.Contains(t, s, "before_script:")
+	assert.Contains(t, s, "__FULLSEND_VERSION__")
+	assert.Contains(t, s, "fullsend-ai/fullsend")
+	assert.Contains(t, s, "fullsend --version")
+	assert.Contains(t, s, "checksums.txt")
+	assert.Contains(t, s, "sha256sum -c")
+	assert.Contains(t, s, "releases/latest")
+	// Source-build path sets GOPATH and GOCACHE so go build works on
+	// non-root runners where /root/go is not writable (#6477).
+	assert.Contains(t, s, `export GOPATH="${RUNNER_TEMP:-/tmp}/go"`)
+	assert.Contains(t, s, `export GOCACHE="${RUNNER_TEMP:-/tmp}/go-cache"`)
 }
 
 func TestGitLabRootPipelineContent(t *testing.T) {
@@ -574,6 +609,59 @@ func TestFormatVersionMarker(t *testing.T) {
 	assert.Equal(t, "# fullsend-ref: abc123", FormatVersionMarker("abc123", "abc123"))
 }
 
+func TestResolveFullsendVersion(t *testing.T) {
+	assert.Equal(t, "latest", ResolveFullsendVersion("", ""))
+	assert.Equal(t, "v0.42.0", ResolveFullsendVersion("abc123", "v0.42.0"))
+	assert.Equal(t, "v0.42.0", ResolveFullsendVersion("", "v0.42.0"))
+	assert.Equal(t, "abc123", ResolveFullsendVersion("abc123", ""))
+}
+
+func TestCollectGitLabPerRepoInstallFiles_VersionPlaceholderReplaced(t *testing.T) {
+	files, err := CollectGitLabPerRepoInstallFiles(nil, "abc123def", "v0.42.0")
+	require.NoError(t, err)
+
+	for _, f := range files {
+		s := string(f.Content)
+		assert.NotContains(t, s, "__FULLSEND_VERSION__",
+			"%s should have __FULLSEND_VERSION__ replaced", f.Path)
+	}
+
+	// Agent and poll templates should contain the rendered version
+	for _, f := range files {
+		if f.Path == ".gitlab/ci/fullsend-agent.yml" || f.Path == ".gitlab/ci/fullsend-poll.yml" {
+			s := string(f.Content)
+			assert.Contains(t, s, `FULLSEND_VERSION="v0.42.0"`,
+				"%s should contain the rendered version tag", f.Path)
+		}
+	}
+}
+
+func TestCollectGitLabPerRepoInstallFiles_SHAFallbackWhenNoTag(t *testing.T) {
+	files, err := CollectGitLabPerRepoInstallFiles(nil, "abc123def", "")
+	require.NoError(t, err)
+
+	for _, f := range files {
+		if f.Path == ".gitlab/ci/fullsend-agent.yml" || f.Path == ".gitlab/ci/fullsend-poll.yml" {
+			s := string(f.Content)
+			assert.Contains(t, s, `FULLSEND_VERSION="abc123def"`,
+				"%s should contain the SHA when no tag is available", f.Path)
+		}
+	}
+}
+
+func TestCollectGitLabPerRepoInstallFiles_LatestWhenNoVersion(t *testing.T) {
+	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	require.NoError(t, err)
+
+	for _, f := range files {
+		if f.Path == ".gitlab/ci/fullsend-agent.yml" || f.Path == ".gitlab/ci/fullsend-poll.yml" {
+			s := string(f.Content)
+			assert.Contains(t, s, `FULLSEND_VERSION="latest"`,
+				"%s should fall back to latest when no ref/tag provided", f.Path)
+		}
+	}
+}
+
 func TestInsertAfterDocStart(t *testing.T) {
 	t.Run("with document start", func(t *testing.T) {
 		result := InsertAfterDocStart("---\ncontent", "# marker")
@@ -585,11 +673,26 @@ func TestInsertAfterDocStart(t *testing.T) {
 	})
 }
 
+func TestGitLabAgentTemplateRunnerTempBeforeRun(t *testing.T) {
+	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-agent.yml")
+	require.NoError(t, err)
+	s := string(content)
+
+	exportIdx := strings.Index(s, "export RUNNER_TEMP=")
+	require.Greater(t, exportIdx, 0, "RUNNER_TEMP export must exist")
+
+	runIdx := strings.Index(s, "fullsend run")
+	require.Greater(t, runIdx, 0, "fullsend run must exist")
+
+	assert.Less(t, exportIdx, runIdx,
+		"RUNNER_TEMP must be exported before fullsend run is invoked")
+}
+
 // TestGitLabAgentTemplateHarnessPassthroughVars validates that harness
 // passthrough variables declared in the GitHub reusable workflows are also
 // present in the GitLab agent template's variables: section. When a harness
 // YAML uses ${VAR} passthrough syntax, the harness engine's os.Expand rejects
-// unset variables. GitHub workflows set these to ” in their env: blocks; the
+// unset variables. GitHub workflows set these to " in their env: blocks; the
 // GitLab template must do the same or the agent aborts at env validation (#6273).
 func TestGitLabAgentTemplateHarnessPassthroughVars(t *testing.T) {
 	// Variables that GitHub reusable workflows set for harness passthrough.

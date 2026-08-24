@@ -8,11 +8,18 @@
 # second workflow_call hop. Standalone reusable-{stage}.yml files are kept for
 # per-org mode until it's removed (ADR 44).
 #
+# Pre-computed matrix: The optional `matrix` input allows custom pollers in
+# external repos to skip the dispatch step and directly invoke harness agents.
+# When provided, the harness-dispatch job is skipped, and harness-run uses the
+# caller-provided matrix. This enables reuse without extracting separate workflows
+# while preserving ADR 62's inlining decision.
+#
 # Concurrency: each stage job declares a per-role cancel-in-progress group
 # (fullsend-{stage}-…). Roles operate independently — review dispatches do
 # not cancel triage, code, fix, etc.
 #
 # Flow: shim (per-repo) → reusable-dispatch.yml (route + inlined stage logic)
+# Or: custom poller → reusable-dispatch.yml (pre-computed matrix → harness-run)
 # Nesting: 2 levels of workflow_call (previously 3 before inlining)
 #
 # Security: all user-controlled inputs (comment body, labels, usernames)
@@ -23,9 +30,10 @@ on:
   workflow_call:
     inputs:
       event_action:
-        description: "The event action (github.event.action) forwarded by the shim"
-        required: true
+        description: "The event action (github.event.action) forwarded by the shim. Not required when matrix is provided."
+        required: false
         type: string
+        default: ""
       install_mode:
         description: "Installation mode: per-repo (default) or per-org"
         required: false
@@ -59,6 +67,16 @@ on:
         type: string
         required: false
         default: "ubuntu-24.04"
+      matrix:
+        description: "Pre-computed harness matrix (skips harness-dispatch if provided). Enables custom pollers to invoke harness agents directly. Format matches fullsend dispatch --output-driver gha-matrix."
+        required: false
+        type: string
+        default: ""
+      jira_base_url:
+        description: "Jira instance base URL (e.g., https://mysite.atlassian.net) for Jira-based agents"
+        required: false
+        type: string
+        default: ""
     secrets:
       FULLSEND_GCP_WIF_PROVIDER:
         required: false
@@ -73,10 +91,17 @@ on:
         required: false
       OTEL_EXPORTER_OTLP_HEADERS:
         required: false
+      JIRA_TOKEN:
+        description: "Jira Cloud API token for Jira-based agents"
+        required: false
+      JIRA_USER_EMAIL:
+        description: "Jira account email for Basic auth"
+        required: false
 
 jobs:
   route:
     name: Route
+    if: ${{ inputs.matrix == '' }}
     runs-on: ${{ inputs.runner_image }}
     permissions:
       contents: read
@@ -87,6 +112,12 @@ jobs:
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
     steps:
+      - name: Validate event_action
+        if: ${{ inputs.event_action == '' }}
+        run: |
+          echo "::error::event_action is required when matrix is not provided"
+          exit 1
+
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -640,6 +671,9 @@ jobs:
           TRIAGE_TARGET_REPO_DIR: target-repo
           TRIAGE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           TRIAGE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, TRIAGE_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run triage agent
@@ -755,6 +789,9 @@ jobs:
           CODE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           CODE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
           CODE_ISSUE_NUMBER: ${{ fromJSON(needs.route.outputs.event_payload).issue.number }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, CODE_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run code agent
@@ -877,6 +914,9 @@ jobs:
           REVIEW_TARGET_REPO_DIR: target-repo
           REVIEW_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           REVIEW_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, REVIEW_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run review agent
@@ -1143,6 +1183,9 @@ jobs:
           FIX_HUMAN_INSTRUCTION: ${{ steps.context.outputs.instruction }}
           FIX_FIX_ITERATION: ${{ steps.context.outputs.iteration }}
           FIX_REPO_FULL_NAME: ${{ github.repository }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, FIX_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run fix agent
@@ -1246,6 +1289,9 @@ jobs:
           RETRO_TARGET_REPO_DIR: target-repo
           RETRO_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           RETRO_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, RETRO_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Run retro agent
@@ -1329,6 +1375,9 @@ jobs:
           PRIORITIZE_PROJECT_NUMBER: ${{ inputs.project_number }}
           PRIORITIZE_ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           PRIORITIZE_CLOUD_ML_REGION: ${{ inputs.gcp_region }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, PRIORITIZE_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: bash .github/scripts/setup-agent-env.sh
 
       - name: Create empty target-repo directory
@@ -1357,6 +1406,7 @@ jobs:
 
   harness-dispatch:
     name: Harness dispatch
+    if: ${{ inputs.matrix == '' }}
     runs-on: ${{ inputs.runner_image }}
     permissions:
       actions: write
@@ -1365,6 +1415,12 @@ jobs:
     outputs:
       matrix: ${{ steps.dispatch.outputs.matrix }}
     steps:
+      - name: Validate event_action
+        if: ${{ inputs.event_action == '' }}
+        run: |
+          echo "::error::event_action is required when matrix is not provided"
+          exit 1
+
       - name: Checkout caller repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1509,13 +1565,13 @@ jobs:
 
   harness-run:
     name: Harness run (${{ matrix.agent }})
-    needs: harness-dispatch
-    if: ${{ needs.harness-dispatch.outputs.matrix != '' && fromJSON(needs.harness-dispatch.outputs.matrix).include[0] != null }}
+    needs: [harness-dispatch]
+    if: ${{ !cancelled() && ((inputs.matrix != '' && fromJSON(inputs.matrix).include[0] != null) || (needs.harness-dispatch.outputs.matrix != '' && fromJSON(needs.harness-dispatch.outputs.matrix).include[0] != null)) }}
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.harness-dispatch.outputs.matrix) }}
+      matrix: ${{ fromJSON(inputs.matrix != '' && inputs.matrix || (needs.harness-dispatch.outputs.matrix != '' && needs.harness-dispatch.outputs.matrix || '{"include":[]}')) }}
     concurrency:
-      group: fullsend-harness-${{ matrix.agent }}-${{ github.repository }}-${{ matrix.status_number }}
+      group: fullsend-harness-${{ matrix.agent }}-${{ github.repository }}-${{ matrix.status_repo }}-${{ matrix.status_number }}
       cancel-in-progress: true
     runs-on: ${{ inputs.runner_image }}
     permissions:
@@ -1620,6 +1676,9 @@ jobs:
           MATRIX_ROLE: ${{ matrix.role }}
           GCP_PROJECT: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
           GCP_REGION: ${{ inputs.gcp_region }}
+          # Per-run runtime/model/effort overrides from repository variables
+          # (FULLSEND_MODEL, <ROLE>_FULLSEND_MODEL, ...); see docs/runtimes.md.
+          FULLSEND_REPO_VARS: ${{ toJSON(vars) }}
         run: |
           set -euo pipefail
           ROLE_UPPER=$(echo "${MATRIX_ROLE}" | tr '[:lower:]' '[:upper:]')
@@ -1661,6 +1720,9 @@ jobs:
           OTEL_EXPORTER_OTLP_CERTIFICATE: ${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}
           OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
           OTEL_SDK_DISABLED: ${{ vars.OTEL_SDK_DISABLED }}
+          JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+          JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+          JIRA_BASE_URL: ${{ inputs.jira_base_url || vars.JIRA_BASE_URL }}
         with:
           agent: ${{ matrix.agent }}
           version: ${{ inputs.fullsend_version || job.workflow_sha }}

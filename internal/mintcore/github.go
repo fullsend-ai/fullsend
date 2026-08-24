@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net/http"
 	"sort"
 	"strings"
@@ -204,12 +205,63 @@ func BuiltInRoles() []string {
 	return roles
 }
 
+// zeroSlice overwrites every byte in b with zero.
+func zeroSlice(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
+}
+
+// zeroBigInt overwrites the internal word buffer of n with zeros.
+// Bits() shares the underlying array with the big.Int, so writing
+// through the returned slice zeros the actual backing memory.
+// This is best-effort: the Go runtime may retain prior copies of the
+// backing array if the big.Int was resized during arithmetic.
+func zeroBigInt(n *big.Int) {
+	if n == nil {
+		return
+	}
+	words := n.Bits()
+	for i := range words {
+		words[i] = 0
+	}
+	n.SetInt64(0)
+}
+
+// zeroRSAKey zeros the private components of an RSA key.
+// Covers D, Primes, and Precomputed values. The Go runtime and GC may
+// retain copies of big.Int backing arrays, so full scrubbing is not
+// possible — this is defense-in-depth to reduce the window for memory
+// disclosure.
+func zeroRSAKey(key *rsa.PrivateKey) {
+	if key == nil {
+		return
+	}
+	zeroBigInt(key.D)
+	for _, p := range key.Primes {
+		zeroBigInt(p)
+	}
+	zeroBigInt(key.Precomputed.Dp)
+	zeroBigInt(key.Precomputed.Dq)
+	zeroBigInt(key.Precomputed.Qinv)
+	for i := range key.Precomputed.CRTValues {
+		zeroBigInt(key.Precomputed.CRTValues[i].Exp)
+		zeroBigInt(key.Precomputed.CRTValues[i].Coeff)
+		zeroBigInt(key.Precomputed.CRTValues[i].R)
+	}
+}
+
 // GenerateAppJWT creates a signed RS256 JWT for GitHub App authentication.
 func GenerateAppJWT(appID string, pemData []byte) (string, error) {
 	block, _ := pem.Decode(pemData)
 	if block == nil {
 		return "", fmt.Errorf("failed to decode PEM block")
 	}
+	// Zero the DER bytes produced by pem.Decode once signing is done.
+	// block.Bytes may be a sub-slice of pemData (already zeroed by the
+	// caller's defer) or an independent copy — zero it either way so
+	// raw key material does not linger in heap memory.
+	defer zeroSlice(block.Bytes)
 
 	key, err := x509.ParsePKCS1PrivateKey(block.Bytes)
 	if err != nil {
@@ -223,6 +275,11 @@ func GenerateAppJWT(appID string, pemData []byte) (string, error) {
 			return "", fmt.Errorf("PKCS8 key is not RSA")
 		}
 	}
+	// Best-effort zeroing of RSA private key internals. Go's GC may
+	// have already copied big.Int backing arrays during parsing or
+	// signing, so this cannot guarantee full scrubbing — but it
+	// reduces the window for memory disclosure.
+	defer zeroRSAKey(key)
 
 	now := time.Now()
 	header := map[string]string{"alg": "RS256", "typ": "JWT"}

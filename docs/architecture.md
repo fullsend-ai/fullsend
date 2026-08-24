@@ -169,7 +169,7 @@ repo baseline and overrides)
 
 **Open questions:**
 
-- Does the harness live inside the sandbox (configuring the agent from within its isolation boundary) or outside it (preparing the environment before the agent starts)? (Tool permissions are injected as a host-managed `.claude/settings.json` — configured outside, enforced inside; see [ADR 0027](ADRs/0027-allowed-and-disallowed-tools-for-agents.md). General harness placement remains open.)
+- Does the harness live inside the sandbox (configuring the agent from within its isolation boundary) or outside it (preparing the environment before the agent starts)? (Security hooks are injected as a runner-owned `hooks.json` loaded via `--settings`; see [ADR 0027](ADRs/0027-allowed-and-disallowed-tools-for-agents.md). General harness placement remains open.)
 - How is codebase context assembled? (See [codebase-context.md](problems/codebase-context.md).)
 - How do we version and test harness configurations? (See [testing-agents.md](problems/testing-agents.md).) (Functional tests now test the full pipeline including harness-assembled configuration — [ADR 0052](ADRs/0052-functional-tests-for-agent-pipelines.md). Harness versioning remains open.)
 
@@ -179,9 +179,40 @@ The agent itself in execution — the LLM, its tool-use loop, and the interface 
 
 This is the thing that actually reasons and acts. Everything else in this document exists to support, constrain, or coordinate it.
 
+The runner talks to every runtime through one contract, so the harness, sandbox, hook scripts and credentials are shared; only the in-sandbox config directory and the way hooks are wired differ per runtime:
+
+```mermaid
+flowchart TB
+  subgraph RUNNER["fullsend run — runner host"]
+    direction LR
+    CFG[".fullsend/config.yaml\nruntime: claude | pi | dummy"]
+    RT["runtime.Runtime\nBootstrap · Run (+ TranscriptHandler)"]
+    HOOKS["security.HookPlan\nruntime-neutral scripts (ADR 0090)"]
+    CFG --> RT
+  end
+  subgraph SANDBOX["OpenShell sandbox — same image, policy and egress"]
+    direction LR
+    CC["Claude Code\nclaude -p --agent\nhooks via --settings"]
+    PI["pi\npi --print --mode json\nhooks via fullsend-hooks.js"]
+    DM["dummy\nscripted ops\n(behaviour tests)"]
+  end
+  RT -->|"/sandbox/claude-config"| CC
+  RT -->|"/sandbox/pi-config"| PI
+  RT --> DM
+  HOOKS -.-> CC
+  HOOKS -.-> PI
+  VX["Vertex AI — *.googleapis.com\nWIF: OIDC token → STS"]
+  CC --> VX
+  PI -->|"same credential path"| VX
+  classDef opt fill:#e3e9fb,stroke:#2d5be3,color:#1b2230;
+  classDef def fill:#eceee8,stroke:#a9afa4,color:#1b2230;
+  class PI opt;
+  class CC,DM def;
+```
+
 **Decided (implementation):**
 
-- The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; production orgs default to Claude Code. Runtime selection is configured in `defaults.runtime` on the org `config.yaml` and resolved via `runtime.ResolveFromConfig()`. A **dummy** runtime executes scripted operations in the real OpenShell sandbox for behaviour tests (inference removed). Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `ClaudeHooksBootstrap` for sandbox tool hooks. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
+- The `fullsend run` runner delegates in-sandbox agent execution to a `runtime.Runtime` interface; production orgs default to Claude Code, with [pi](https://github.com/earendil-works/pi) available as an opt-in second runtime (`runtime: pi`, Claude-on-Vertex through the same WIF credential path). Runtime selection is configured in `defaults.runtime` on the org `config.yaml` and resolved via `runtime.ResolveFromConfig()`. A **dummy** runtime executes scripted operations in the real OpenShell sandbox for behaviour tests (inference removed). Bootstrap uses a portable `BootstrapInput` interface with optional extensions such as `SandboxHooksBootstrap` for the runtime-neutral sandbox tool hooks ([ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md)); runtimes declare further capabilities through small optional interfaces (`DebugLogNamer`, `ContextBridger`) rather than `Name()` checks in the runner. Transcript and debug artifact handling use a separate `TranscriptHandler` interface. See [runtimes.md](runtimes.md) for the per-runtime security feature matrix required when adding a new backend.
 
 ### Behaviour testing
 
@@ -192,7 +223,7 @@ End-to-end **behaviour tests** use the shared framework in `pkg/behaviourtest/` 
 - Is the runtime a single model call, a loop (plan-act-observe), or something more structured?
 - How does the runtime interact with the sandbox boundaries — does it know what it can't do, or does it just hit walls? (For tool access: both — prose instructions inform the runtime, and `permissions.deny` hard-blocks execution; see [ADR 0027](ADRs/0027-allowed-and-disallowed-tools-for-agents.md). Broader sandbox interaction remains open.)
 - How do we swap model providers or versions without changing the rest of the stack?
-- What is the interface between the harness and the runtime? (A system prompt? A configuration file? An API contract?)
+- What is the interface between the harness and the runtime? (A system prompt? A configuration file? An API contract?) (Partially decided: the runner-side contract is `runtime.Runtime` + `BootstrapInput`, the runtime-neutral sandbox tool-hook contract in [ADR 0090](ADRs/0090-runtime-neutral-sandbox-hooks-contract.md), and optional capability interfaces; how the harness prompt/config reaches a non-Claude runtime remains open.)
 
 ## Agent Identity Provider
 
@@ -208,7 +239,7 @@ Identity is not the same as trust. An agent's identity lets it authenticate to e
 - Cross-org mint authorization: workflows may request tokens for a different org via optional `target_org` when the target org installs the role App and sets `FULLSEND_FOREIGN_<role>_REPOS` ([ADR 0060](ADRs/0060-cross-org-mint-authorization-via-org-variables.md)). Repo-level `FULLSEND_FOREIGN_<role>_REPOS` variables enable per-repo foreign grants (scoped to the specific target repo) and intra-org cross-repo access for per-repo callers, with disjoint authorization boundaries from org-level grants — repo-level for repo-scoped requests, org-level for installation-wide requests ([ADR 0083](ADRs/0083-repo-level-foreign-allow-list.md)).
 - Mint `repos` scope: foreign mints with `repos: ["*"]` require an org-level FOREIGN grant; foreign mints with specific repos require per-repo FOREIGN grants on each requested repo (org-level grants are not consulted for repo-scoped requests). Per-repo callers (repo in `PER_REPO_WIF_REPOS`) must list exactly the requesting repository unless authorized by repo-level FOREIGN grants for other repos. Per-org callers (org in `ALLOWED_ORGS`, repo not in `PER_REPO_WIF_REPOS`) get org-mode shapes: `.fullsend` callers may use any non-empty validated list; other callers may use `[.fullsend]` or `{self,.fullsend}`. Same-org installation-wide tokens are denied ([ADR 0077](ADRs/0077-mint-repos-scope-hardening.md), simplified in [ADR 0078](ADRs/0078-simplified-mint-authorization-policy.md)).
 - Workflow-host allow-list: `WORKFLOW_HOST_REPOS` controls which repos may host workflows calling the mint for per-repo and public-mode callers (default: `fullsend-ai/fullsend`). Per-org callers hard-wire to `{org}/.fullsend` and upstream. Public mode is not special-cased — it uses the same per-repo validation path with `WORKFLOW_HOST_REPOS` and the basename allowlist. This separates caller enrollment from workflow-host trust ([ADR 0082](ADRs/0082-workflow-host-allow-list.md)).
-- Standalone mint deployment: `cmd/mint/` provides a self-contained HTTP server that uses direct JWKS verification and filesystem PEM storage instead of GCP infrastructure. It shares the `internal/mintcore/` library with the GCF mint and adds support for custom role permissions and a fallback proxy to an upstream mint. Custom role permissions live in mintcore (not `cmd/mint/`) so that `RolePermissionsFor`, `HasRole`, and `CreateInstallationToken` return a unified view without callers needing to distinguish built-in from custom roles. The GCF mint never calls `RegisterCustomRolePermissions`, so the code is inert there. See the [standalone mint guide](guides/infrastructure/standalone-mint.md).
+- Standalone mint deployment: `cmd/mint/` provides a self-contained HTTP server that uses direct JWKS verification and filesystem PEM storage instead of GCP infrastructure. It shares the `internal/mintcore/` library with the GCF mint and adds support for custom role permissions and a fallback proxy to an upstream mint. Custom role permissions live in mintcore (not `cmd/mint/`) so that `RolePermissionsFor`, `HasRole`, and `CreateInstallationToken` return a unified view without callers needing to distinguish built-in from custom roles. The GCF mint never calls `RegisterCustomRolePermissions`, so the code is inert there. See the [standalone mint guide](guides/infrastructure/standalone-mint.md). For mintcore internals (platform accessors, load-site construction, WASM constraints), see the [mintcore contributor guide](contributing/mintcore.md).
 - Hosted public community mint: steady-state deployment on Cloudflare Workers (JWKS + WAF + single ops console), with interim GCP Cloud Function acceptable until the Worker port is production-ready. Trust policy (`ALLOWED_ORGS=*`, upstream-only workflow provenance) is in [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); deployment, edge security, monitoring, and phasing are in [ADR 0068](ADRs/0068-public-community-mint-architecture.md). Enrollment is installing the shared Apps—no per-org mint env registration ([#1145](https://github.com/fullsend-ai/fullsend/issues/1145)).
 - Named privilege levels: each role defines ordered named levels (`read`, `write`), where each level's permissions are a superset of preceding levels. `read` for built-in roles is derived by downgrading `*:write` permissions to their `read` counterparts. The mint API accepts an optional `level` field (default `read`); omitting it produces narrower tokens than the current behavior. `write` is defined as the current max permission set for each built-in role. `CUSTOM_ROLE_PERMISSIONS` auto-detects a multi-level JSON shape alongside the existing flat format, with mixed format supported per role. The harness `privilege_levels` flag maps run-stages to levels; omitting it defaults to `write`, preserving backward compatibility for existing harness configurations ([ADR 0073](ADRs/0073-named-mint-privilege-levels.md)).
 
@@ -783,12 +814,50 @@ GitHub event ──► SHIM WORKFLOW (fullsend.yml in enrolled repo)
 | Agent runner | GitHub Actions job → `fullsend run` CLI (via `fullsend-ai/fullsend@<version>` composite action) | |
 | Harness store | YAML files in `.fullsend/harness/` (e.g. `code.yaml`, `triage.yaml`) | |
 | Sandbox | OpenShell with per-agent L7 network policies (endpoint + binary restrictions) | |
-| Agent runtime | Claude Code (`claude --agent --dangerously-skip-permissions`) | |
+| Agent runtime | Claude Code (`claude --agent --dangerously-skip-permissions`); pi (`pi --print --mode json`) as an opt-in second runtime | [runtimes.md](runtimes.md) |
 | Sandbox image | `ghcr.io/fullsend-ai/fullsend-code:latest` (pre-built with tools, runtimes, security scanners) | |
 | Credential isolation | Read-only GitHub App token inside sandbox; write token only in post-script | [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md) |
 | Validation | Host-side schema validation script with retry loop | [ADR 0022](ADRs/0022-harness-level-output-schema-enforcement.md) |
 | Post-script | `post-code.sh` (in `fullsend-ai/agents`): protected-path check, gitleaks scan, pre-commit, push, PR creation | |
 | Observability | JSONL transcript extraction, security findings, trace ID correlation | [ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md) |
+
+### Two runtimes inside the same sandbox
+
+The OpenShell box above is drawn for Claude Code. With `runtime: pi` the outer layers are identical — same dispatch, same sandbox creation, same policy, same scans, same extraction — and only the innermost box changes. The diagram shows the two side by side; the amber step is pi's integrity check on its hook adapter, which has no Claude Code equivalent because Claude loads hooks from a runner-owned `--settings` file.
+
+```mermaid
+flowchart TB
+  subgraph SB["OpenShell sandbox (per run — only a short-lived OIDC token + WIF config enter, ADR 0017/0025)"]
+    direction LR
+    subgraph CL["runtime: claude"]
+      direction TB
+      C1["/sandbox/claude-config\nagents/ · skills/ · hooks/ · hooks.json"]
+      C2["claude -p --agent code\n--settings hooks.json\n--dangerously-skip-permissions"]
+      C1 --> C2
+    end
+    subgraph PL["runtime: pi"]
+      direction TB
+      P1["/sandbox/pi-config\nAPPEND_SYSTEM.md · settings.json · skills/\nhooks/ · fullsend-hooks.js · fullsend-manifest.json"]
+      P0{"shell guard, before .env:\nadapter present and SHA-256 = embedded copy?\nmanifest present?"}
+      P2["pi --print --mode json --no-approve\n--no-extensions [-e anthropic-vertex, on Vertex] -e fullsend-hooks.js\n--tools … --model anthropic-vertex/… #lt;/dev/null"]
+      PX["exit 97 — never runs unhooked\n(Run refuses earlier, exit -1, if the manifest has no hook plan)"]
+      P1 --> P0
+      P0 -- yes --> P2
+      P0 -- no --> PX
+    end
+  end
+  OUT["extracted: output/ · transcripts/ · debug log\nhost-written: metrics.json (runtime: …)"]
+  C2 --> OUT
+  P2 --> OUT
+  classDef guard fill:#fbf0d6,stroke:#d98e04,color:#1b2230;
+  classDef bad fill:#f8e1de,stroke:#c0392b,color:#1b2230;
+  classDef opt fill:#e3e9fb,stroke:#2d5be3,color:#1b2230;
+  class P0 guard;
+  class PX bad;
+  class P1,P2 opt;
+```
+
+See [runtimes.md](runtimes.md) for the control-by-control security matrix, the config-key mapping and how to select a runtime per repo.
 
 ## Repository layout (design workspace vs. web delivery)
 

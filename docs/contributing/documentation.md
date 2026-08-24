@@ -83,7 +83,7 @@ The `admin` command group's `install`/`uninstall`/`analyze`/`enable`/`disable` s
 
 | Category | Files |
 |----------|-------|
-| CLI reference | _(no dedicated page)_ |
+| CLI reference | `docs/cli/run.md` |
 | Guides | `docs/guides/user/running-agents-locally.md`, `docs/guides/user/building-custom-agents.md`, `docs/guides/dev/cli-internals.md` |
 | ADRs | `docs/ADRs/0036-agent-execution-sandbox.md` |
 | Contributing | `docs/contributing/sandbox-topology.md` |

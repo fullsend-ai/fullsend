@@ -347,13 +347,24 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 	// Findings whose file is in the PR diff but whose line falls
 	// outside any diff hunk are posted as file-level comments so
 	// they remain visible on the PR code.
-	inlineComments, fileFiltered, fileLevelFallback := findingsToReviewComments(findings, diffHunks)
+	inlineComments, fileLevelComments, fileFiltered := findingsToReviewComments(findings, diffHunks)
 
 	if fileFiltered > 0 {
 		printer.StepWarn(fmt.Sprintf("%d inline comment(s) omitted (file not in PR diff) — findings still count toward verdict", fileFiltered))
 	}
-	if fileLevelFallback > 0 {
-		printer.StepInfo(fmt.Sprintf("%d finding(s) posted as file-level comment(s) (line outside diff hunk)", fileLevelFallback))
+	if len(fileLevelComments) > 0 {
+		printer.StepInfo(fmt.Sprintf("%d finding(s) posted as file-level comment(s) (line outside diff hunk)", len(fileLevelComments)))
+	}
+
+	// Post file-level comments in a separate COMMENT review so a rejected
+	// file-level comment cannot take the main review's inline comments
+	// down with it. GitHub validates every comment in a review batch
+	// together, so one invalid entry fails the whole submission — the
+	// linked issues show that happening for out-of-hunk inline comments.
+	// Isolating file-level comments is defense in depth against the same
+	// class of failure, not a fix for an observed file-level rejection.
+	if len(fileLevelComments) > 0 {
+		postFileLevelComments(ctx, client, owner, repo, pr, commitSHA, fileLevelComments, printer)
 	}
 
 	// COMMENT verdicts skip the formal review unless there are inline-
@@ -400,6 +411,37 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 	return nil
 }
 
+// postFileLevelComments submits file-level review comments in their own
+// COMMENT review, isolated from the main review batch. It is best-effort:
+// every failure path logs and returns so the caller's main review still
+// proceeds. On a 422 the comment bodies are retried inside a plain review
+// body — mirroring the main review's fallback — so the findings stay
+// visible on the review itself rather than only in the sticky comment.
+func postFileLevelComments(ctx context.Context, client forge.Client, owner, repo string, pr int, commitSHA string, comments []forge.ReviewComment, printer *ui.Printer) {
+	err := client.CreatePullRequestReview(ctx, owner, repo, pr, "COMMENT", "", commitSHA, comments)
+	if err == nil {
+		printer.StepDone(fmt.Sprintf("Posted %d file-level comment(s)", len(comments)))
+		return
+	}
+
+	if is422Error(err) {
+		printer.StepWarn(fmt.Sprintf("File-level comments failed with 422 (%d comment(s)), retrying without comments", len(comments)))
+		logRejectedComments(comments, err, printer)
+
+		fallbackBody := buildFallbackReviewBody("", comments)
+		if retryErr := client.CreatePullRequestReview(ctx, owner, repo, pr, "COMMENT", fallbackBody, commitSHA, nil); retryErr != nil {
+			logAPIErrorDetails(retryErr, printer)
+			printer.StepWarn(fmt.Sprintf("File-level comments failed (%v), findings remain in sticky comment", retryErr))
+			return
+		}
+		printer.StepDone("File-level comments posted in review body (comments omitted due to 422)")
+		return
+	}
+
+	logAPIErrorDetails(err, printer)
+	printer.StepWarn(fmt.Sprintf("File-level comments failed (%v), findings remain in sticky comment", err))
+}
+
 // findingsToReviewComments converts review findings with file and line
 // locations into inline review comments. Findings without a file path
 // or line number are omitted — they remain in the sticky comment body.
@@ -413,12 +455,11 @@ func submitFormalReview(ctx context.Context, client forge.Client, owner, repo st
 // patches) skip line-level filtering — the file is known to be in the
 // diff but hunk coverage is unavailable.
 //
-// Returns the comments, count of findings dropped because their file
-// was not in the diff, and count of findings that fell back to
-// file-level comments.
-func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][2]int) ([]forge.ReviewComment, int, int) {
-	var comments []forge.ReviewComment
-	var fileFiltered, fileLevelFallback int
+// Returns inline comments (with line numbers), file-level comments
+// (Line=0, posted separately to avoid poisoning the review batch),
+// and the count of findings dropped because their file was not in
+// the diff.
+func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][2]int) (inline []forge.ReviewComment, fileLevel []forge.ReviewComment, fileFiltered int) {
 	for _, f := range findings {
 		if f.File == "" || f.Line <= 0 {
 			continue
@@ -430,27 +471,21 @@ func findingsToReviewComments(findings []ReviewFinding, diffHunks map[string][][
 				continue
 			}
 			if len(hunks) > 0 && !lineInHunks(f.Line, hunks) {
-				// Fall back to file-level comments so findings
-				// remain visible on the PR even when the exact
-				// line is outside the changed region. Include the
-				// original line number in the body since file-level
-				// comments have no line annotation in the UI.
 				body := fmt.Sprintf("_Line %d_ · %s", f.Line, formatFindingComment(f))
-				comments = append(comments, forge.ReviewComment{
+				fileLevel = append(fileLevel, forge.ReviewComment{
 					Path: f.File,
 					Body: body,
 				})
-				fileLevelFallback++
 				continue
 			}
 		}
-		comments = append(comments, forge.ReviewComment{
+		inline = append(inline, forge.ReviewComment{
 			Path: f.File,
 			Line: f.Line,
 			Body: formatFindingComment(f),
 		})
 	}
-	return comments, fileFiltered, fileLevelFallback
+	return inline, fileLevel, fileFiltered
 }
 
 // formatFindingComment renders a single review finding as a Markdown
@@ -511,10 +546,11 @@ func logRejectedComments(comments []forge.ReviewComment, err error, printer *ui.
 	}
 }
 
-// buildFallbackReviewBody constructs a review body that embeds inline
-// comment content as markdown, used when GitHub rejects inline comments
-// with a 422 error. The original review body (if any) is preserved as
-// a prefix.
+// buildFallbackReviewBody constructs a review body that embeds review
+// comment content as markdown, used when GitHub rejects the comments of
+// a review with a 422 error. It serves both the main review's inline
+// comments and the isolated file-level review. The original review body
+// (if any) is preserved as a prefix.
 func buildFallbackReviewBody(originalBody string, comments []forge.ReviewComment) string {
 	var b strings.Builder
 	if originalBody != "" {
@@ -524,7 +560,7 @@ func buildFallbackReviewBody(originalBody string, comments []forge.ReviewComment
 		if b.Len() > 0 {
 			b.WriteString("\n\n---\n\n")
 		}
-		b.WriteString("**Note:** The following inline comments could not be posted on the diff (GitHub returned 422) and are included here instead:\n\n")
+		b.WriteString("**Note:** The following review comments could not be posted on the diff (GitHub returned 422) and are included here instead:\n\n")
 		for _, c := range comments {
 			if c.Line > 0 {
 				fmt.Fprintf(&b, "- **`%s:%d`**: %s\n", c.Path, c.Line, c.Body)

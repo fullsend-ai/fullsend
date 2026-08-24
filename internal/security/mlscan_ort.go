@@ -75,12 +75,16 @@ func MLScanAvailable() bool { return true }
 // RunMLScan runs the ONNX-based prompt injection scanner. Initializes the
 // model session on first call (lazy singleton).
 //
-// When required is false (Path A / CLI pre-step), initialization failures
-// are fail-open: returns Safe=true with a stderr warning.
+// The only caller today is `fullsend scan input` (internal/cli/scan.go),
+// which passes required=false. Neither Path A (scanRepoContextFiles) nor
+// Path B (fullsend scan context) calls this at all — see docs/runtimes.md.
 //
-// When required is true (sandbox / Path B), initialization failures are
-// fail-closed: returns Safe=false with a critical finding, since a missing
-// or broken scanner inside the sandbox indicates possible tampering.
+// When required is false, initialization failures are fail-open: returns
+// Safe=true with a stderr warning.
+//
+// When required is true, initialization failures are fail-closed: returns
+// Safe=false with a critical finding, on the assumption that a missing or
+// broken scanner where one is mandatory indicates possible tampering.
 func RunMLScan(text string, required bool) ScanResult {
 	mlScannerOnce.Do(initMLScanner)
 
