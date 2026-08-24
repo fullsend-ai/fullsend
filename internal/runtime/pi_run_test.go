@@ -32,6 +32,25 @@ func TestTranslatePiModel(t *testing.T) {
 	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("xai/grok-4.6"), "xai/ is normalised to xai-vertex/xai/")
 	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("xai-vertex/xai/grok-4.6"), "already-normalised three-segment spec passes through")
 
+	// Case-insensitive, because the gate in buildPiRunCommand is: a spec that
+	// escapes normalisation reaches pi's built-in xai provider with
+	// XAI_API_KEY still set, which is the failure #6571 exists to close.
+	for _, spec := range []string{"XAI/grok-4.6", "Xai/grok-4.6", "xAI/grok-4.6"} {
+		assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel(spec), "case-varied short form is still normalised: %s", spec)
+	}
+	for _, spec := range []string{"XAI-VERTEX/xai/grok-4.6", "Xai-Vertex/XAI/grok-4.6"} {
+		assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel(spec), "case-varied long form is canonicalised: %s", spec)
+	}
+
+	// A bare id under FULLSEND_PI_PROVIDER=xai-vertex must still get the
+	// publisher segment. Harness `model:` cannot contain a slash
+	// (validModelName), so this is the only way a harness reaches Grok --
+	// and the two-segment "xai-vertex/grok-4.6" is a model the extension
+	// does not register, which pi silently substitutes a fallback for.
+	t.Setenv(piProviderEnv, piXaiVertexProvider)
+	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("grok-4.6"), "bare id gets the publisher segment too")
+	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("xai/grok-4.6"), "short form is unaffected by the provider env")
+
 	t.Setenv(piProviderEnv, "anthropic")
 	assert.Equal(t, "anthropic/claude-opus-4-6", translatePiModel("opus"))
 
@@ -210,11 +229,37 @@ func TestBuildPiRunCommand_XaiVertex(t *testing.T) {
 	assert.Contains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/xai-vertex'")
 	assert.Contains(t, cmd, "&& unset XAI_API_KEY")
 
-	// Case-insensitive provider match (pi matches case-insensitively).
-	params.Model = "Xai-Vertex/xai/grok-4.6"
+	// Case variants must all reach the gate. A short form that escapes
+	// normalisation would load no extension and leave XAI_API_KEY set,
+	// silently sending traffic to xAI's native API instead of Vertex.
+	for _, spec := range []string{"Xai-Vertex/xai/grok-4.6", "XAI/grok-4.6", "Xai/grok-4.6"} {
+		params.Model = spec
+		cmd = buildPiRunCommand(params, m)
+		assert.Contains(t, cmd, "--model 'xai-vertex/xai/grok-4.6'", "canonical spec for %s", spec)
+		assert.Contains(t, cmd, "&& unset XAI_API_KEY", "XAI_API_KEY unset for %s", spec)
+		assert.Contains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/xai-vertex'", "extension loaded for %s", spec)
+	}
+
+	// unset must run after the agent-writable .env is sourced, or the .env
+	// could re-export XAI_API_KEY after we cleared it.
+	params.Model = "xai/grok-4.6"
 	cmd = buildPiRunCommand(params, m)
-	assert.Contains(t, cmd, "&& unset XAI_API_KEY")
-	assert.Contains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/xai-vertex'")
+	assert.Less(t, strings.Index(cmd, ". '"+sandbox.SandboxWorkspace+"/.env'"), strings.Index(cmd, "&& unset XAI_API_KEY"),
+		"XAI_API_KEY is unset after .env is sourced")
+}
+
+// TestTranslatePiModel_XaiVertexBareIDFromHarness covers the harness path:
+// validModelName forbids "/" in harness `model:`, so a harness selecting
+// this provider must use a bare id plus FULLSEND_PI_PROVIDER.
+func TestTranslatePiModel_XaiVertexBareIDFromHarness(t *testing.T) {
+	t.Setenv(piProviderEnv, piXaiVertexProvider)
+	for _, bare := range []string{"grok-4.6", "grok-4.5"} {
+		spec := translatePiModel(bare)
+		assert.Equal(t, "xai-vertex/xai/"+bare, spec)
+		provider, _, _ := strings.Cut(spec, "/")
+		assert.True(t, strings.EqualFold(provider, piXaiVertexProvider), "gate must fire for %s", bare)
+		assert.Equal(t, "xai/"+bare, piBareModelID(spec), "wire id keeps the publisher segment")
+	}
 }
 
 func TestBuildPiRunCommand_DirectProviderKeepsAnthropicEnv(t *testing.T) {

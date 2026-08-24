@@ -50,11 +50,19 @@ const piXaiVertexProvider = "xai-vertex"
 // --model value: aliases map to catalog ids, bare ids get the provider
 // prefix, provider/id passes through.
 //
-// Special case: a model spec starting with "xai/" (e.g. "xai/grok-4.6")
-// is normalised to the three-segment "xai-vertex/xai/grok-4.6" form so
-// the provider gate in buildPiRunCommand fires correctly. Without this,
-// strings.Cut yields provider "xai", the gate never fires, and the run
-// falls through to pi's built-in xai provider which requires XAI_API_KEY.
+// Special case: the xai-vertex extension's model ids carry a publisher
+// segment ("xai/grok-4.6") because pi sends Model.id on the wire verbatim
+// and Vertex wants the publisher-qualified name. Both the short "xai/..."
+// spec and a bare id under FULLSEND_PI_PROVIDER=xai-vertex are normalised
+// to the three-segment "xai-vertex/xai/..." form. Without that, strings.Cut
+// yields provider "xai" (or a two-segment spec the extension does not
+// register), the gate in buildPiRunCommand never fires, and the run falls
+// through to pi's built-in xai provider which requires XAI_API_KEY.
+//
+// Matching is case-insensitive throughout, because the gate uses
+// strings.EqualFold for the same reason: pi resolves provider prefixes
+// case-insensitively, so "XAI/grok-4.6" must not slip past normalisation
+// and reach the built-in provider with XAI_API_KEY still set.
 func translatePiModel(model string) string {
 	provider := strings.TrimSpace(os.Getenv(piProviderEnv))
 	if provider == "" {
@@ -64,10 +72,8 @@ func translatePiModel(model string) string {
 	if model == "" {
 		model = piDefaultModel
 	}
-	// Normalise "xai/<model>" to "xai-vertex/xai/<model>" before the
-	// passthrough check so the provider gate sees "xai-vertex".
-	if strings.HasPrefix(model, "xai/") {
-		model = piXaiVertexProvider + "/" + model
+	if spec, ok := normaliseXaiVertexModel(provider, model); ok {
+		return spec
 	}
 	if strings.Contains(model, "/") {
 		return model
@@ -76,6 +82,38 @@ func translatePiModel(model string) string {
 		model = id
 	}
 	return provider + "/" + model
+}
+
+// normaliseXaiVertexModel renders the canonical three-segment spec for the
+// xai-vertex provider, or reports false when the input is not for it.
+//
+// Three inputs reach this provider, and all must land on the same spec:
+//
+//	"xai/grok-4.6"             (any case)  -> "xai-vertex/xai/grok-4.6"
+//	"xai-vertex/xai/grok-4.6"  (any case)  -> "xai-vertex/xai/grok-4.6"
+//	"grok-4.6" with FULLSEND_PI_PROVIDER=xai-vertex -> "xai-vertex/xai/grok-4.6"
+//
+// The third matters because harness `model:` cannot contain a slash
+// (validModelName), so selecting this provider from a harness means a bare
+// id plus the provider env var. Left alone it would render the two-segment
+// "xai-vertex/grok-4.6", which the extension does not register — pi then
+// substitutes a fallback model with the wrong wire id and only warns.
+func normaliseXaiVertexModel(provider, model string) (string, bool) {
+	const wirePrefix = "xai/"
+	head, rest, hasSlash := strings.Cut(model, "/")
+	switch {
+	case hasSlash && strings.EqualFold(head, piXaiVertexProvider):
+		// Already three-segment; re-render so the provider segment is canonical.
+		if inner, id, ok := strings.Cut(rest, "/"); ok && strings.EqualFold(inner, "xai") {
+			return piXaiVertexProvider + "/" + wirePrefix + id, true
+		}
+		return piXaiVertexProvider + "/" + wirePrefix + rest, true
+	case hasSlash && strings.EqualFold(head, "xai"):
+		return piXaiVertexProvider + "/" + wirePrefix + rest, true
+	case !hasSlash && strings.EqualFold(provider, piXaiVertexProvider):
+		return piXaiVertexProvider + "/" + wirePrefix + model, true
+	}
+	return "", false
 }
 
 // piBareModelID strips the provider prefix from a pi model spec.

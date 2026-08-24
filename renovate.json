@@ -136,6 +136,17 @@
     },
     {
       "customType": "regex",
+      "description": "Track the pi-xai-vertex extension tag pinned in the sandbox image (#6571). PI_XAI_VERTEX_SHA256 must be refreshed manually (sha256sum of the GitHub tag tarball) — the sandbox-image PR build fails on checksum mismatch until it is. Unlike pi-anthropic-vertex this extension mirrors no pi internals, so there is no sync/compat.json to re-check; confirm its peerDependencies floor still covers PI_VERSION instead.",
+      "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
+      "matchStrings": [
+        "ARG PI_XAI_VERTEX_VERSION=(?<currentValue>\\d+\\.\\d+\\.\\d+)"
+      ],
+      "depNameTemplate": "fullsend-ai/pi-xai-vertex",
+      "datasourceTemplate": "github-tags",
+      "extractVersionTemplate": "^v(?<version>.*)$"
+    },
+    {
+      "customType": "regex",
       "description": "Track pi CLI version pin in the sandbox image (#6464). Bumps must re-verify the pi stream parser fixtures — the --mode json wire shape changed within a minor before (0.84.0).",
       "managerFilePatterns": ["/^images/sandbox/Containerfile$/"],
       "matchStrings": [
