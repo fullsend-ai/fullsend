@@ -270,10 +270,10 @@ Both per-org and per-repo modes share the same core pipeline. The code follows t
 │  │ Phase 6: Set secrets & variables                           │ │
 │  │                                                            │ │
 │  │  Both modes write the same credential set:                 │ │
-│  │    Secrets (install-time only, not managed by sync):       │ │
+│  │    Secrets (install-time only, not managed by convergence):│ │
 │  │              FULLSEND_GCP_PROJECT_ID                       │ │
 │  │              FULLSEND_GCP_WIF_PROVIDER                     │ │
-│  │    Variables (managed by sync):                            │ │
+│  │    Variables (managed by convergence):                     │ │
 │  │              FULLSEND_GCP_REGION                           │ │
 │  │              FULLSEND_MINT_URL                             │ │
 │  │              FULLSEND_REVIEW_CLIENT_ID (best-effort)       │ │
