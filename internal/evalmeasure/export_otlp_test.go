@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -80,13 +81,14 @@ func clearOTLPEnv(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "")
 	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "")
 	t.Setenv("OTEL_SDK_DISABLED", "")
+	t.Setenv("TRACEPARENT", "")
 }
 
 func TestExportOTLPScores_NoopWithoutEndpoint(t *testing.T) {
 	clearOTLPEnv(t)
 	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
 		Name: "trace_fitness", TraceID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", SpanID: "bbbbbbbbbbbbbbbb",
-	}})
+	}}, "test-1.2.3")
 	require.NoError(t, err)
 }
 
@@ -111,7 +113,7 @@ func TestExportOTLPScores_EmitsGenAIEvaluationEvent(t *testing.T) {
 		Agent:       "review",
 		Version:     "em-001@1",
 		Value:       1.0,
-	}})
+	}}, "test-1.2.3")
 	require.NoError(t, err)
 
 	reqs := sink.allSpans()
@@ -121,8 +123,17 @@ func TestExportOTLPScores_EmitsGenAIEvaluationEvent(t *testing.T) {
 	var spanName string
 	var parentHex string
 	var traceHex string
+	var svcName, svcVer string
 	for _, req := range reqs {
 		for _, rs := range req.GetResourceSpans() {
+			for _, kv := range rs.GetResource().GetAttributes() {
+				switch kv.GetKey() {
+				case "service.name":
+					svcName = kv.GetValue().GetStringValue()
+				case "service.version":
+					svcVer = kv.GetValue().GetStringValue()
+				}
+			}
 			for _, ss := range rs.GetScopeSpans() {
 				for _, sp := range ss.GetSpans() {
 					spanName = sp.GetName()
@@ -160,6 +171,8 @@ func TestExportOTLPScores_EmitsGenAIEvaluationEvent(t *testing.T) {
 	assert.Equal(t, spanNameEvalMeasure, spanName)
 	assert.Equal(t, "84d470ba2451ffeccfe09022d9b2aebd", traceHex)
 	assert.Equal(t, "77f8c0902eaeedcb", parentHex)
+	assert.Equal(t, "fullsend", svcName)
+	assert.Equal(t, "test-1.2.3", svcVer)
 }
 
 func TestExportOTLPScores_InvalidTraceID(t *testing.T) {
@@ -168,7 +181,7 @@ func TestExportOTLPScores_InvalidTraceID(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
 	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
 		Name: "trace_fitness", TraceID: "not-a-trace", SpanID: "77f8c0902eaeedcb",
-	}})
+	}}, "test-1.2.3")
 	require.Error(t, err)
 }
 
@@ -180,7 +193,7 @@ func TestExportOTLPScores_InvalidSpanIDHex(t *testing.T) {
 		Name:    "trace_fitness",
 		TraceID: "84d470ba2451ffeccfe09022d9b2aebd",
 		SpanID:  "zzzzzzzzzzzzzzzz",
-	}})
+	}}, "test-1.2.3")
 	require.Error(t, err)
 }
 
@@ -191,7 +204,7 @@ func TestExportOTLPScores_DisabledSDK(t *testing.T) {
 	t.Setenv("OTEL_SDK_DISABLED", "true")
 	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
 		Name: "trace_fitness", TraceID: "84d470ba2451ffeccfe09022d9b2aebd", SpanID: "77f8c0902eaeedcb",
-	}})
+	}}, "test-1.2.3")
 	require.NoError(t, err)
 	assert.Empty(t, sink.allSpans())
 }
@@ -202,7 +215,7 @@ func TestExportOTLPScores_EmptySpanIDSkipped(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
 	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
 		Name: "trace_fitness", Label: LabelSkip, TraceID: "84d470ba2451ffeccfe09022d9b2aebd", SpanID: "",
-	}})
+	}}, "test-1.2.3")
 	require.NoError(t, err)
 	assert.Empty(t, sink.allSpans())
 }
@@ -213,7 +226,7 @@ func TestExportOTLPScores_ZeroTraceID(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
 	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
 		Name: "trace_fitness", TraceID: "00000000000000000000000000000000", SpanID: "77f8c0902eaeedcb",
-	}})
+	}}, "test-1.2.3")
 	require.Error(t, err)
 }
 
@@ -225,7 +238,7 @@ func TestExportOTLPScores_SkipOmitsScoreValue(t *testing.T) {
 		Name: "trace_fitness", Label: LabelSkip, Explanation: "no run span",
 		TraceID: "84d470ba2451ffeccfe09022d9b2aebd", SpanID: "77f8c0902eaeedcb",
 		Agent: "review", Version: "em-001@1", Value: 0,
-	}})
+	}}, "test-1.2.3")
 	require.NoError(t, err)
 	reqs := sink.allSpans()
 	require.NotEmpty(t, reqs)
@@ -258,12 +271,65 @@ func TestMeasureAndExport_OTLPFailOpen(t *testing.T) {
 
 	clearOTLPEnv(t)
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://127.0.0.1:1") // closed port
-	results, stats, err := MeasureAndExport(context.Background(), telem, reg, dir)
+	results, stats, err := MeasureAndExport(context.Background(), telem, reg, dir, "test-1.2.3")
 	require.NoError(t, err)
 	require.NotEmpty(t, results)
 	_, statErr := os.Stat(filepath.Join(dir, MeasurementsFile))
 	require.NoError(t, statErr)
 	require.NotEmpty(t, stats.RemoteExportWarning, "expected OTLP failure warning with local JSONL kept")
+}
+
+func TestExportOTLPScores_UnsampledTRACEPARENTNoop(t *testing.T) {
+	sink := newScoreOTLPSink(t)
+	clearOTLPEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
+	// W3C TRACEPARENT with sampled flag cleared (-00).
+	t.Setenv("TRACEPARENT", "00-84d470ba2451ffeccfe09022d9b2aebd-77f8c0902eaeedcb-00")
+	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
+		Name: "trace_fitness", Label: LabelPass, TraceID: "84d470ba2451ffeccfe09022d9b2aebd",
+		SpanID: "77f8c0902eaeedcb", Value: 1, Version: "em-001@1",
+	}}, "test-1.2.3")
+	require.NoError(t, err)
+	assert.Empty(t, sink.allSpans(), "unsampled inbound TRACEPARENT must suppress OTLP score export")
+}
+
+func TestExportOTLPScores_TruncatesLongExplanation(t *testing.T) {
+	sink := newScoreOTLPSink(t)
+	clearOTLPEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
+	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
+	huge := strings.Repeat("x", telemetry.MaxSpanAttrValueLen+500)
+	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
+		Name: "trace_fitness", Label: LabelPass, Explanation: huge,
+		TraceID: "84d470ba2451ffeccfe09022d9b2aebd", SpanID: "77f8c0902eaeedcb",
+		Version: "em-001@1", Value: 1,
+	}}, "test-1.2.3")
+	require.NoError(t, err)
+	reqs := sink.allSpans()
+	require.NotEmpty(t, reqs)
+	var got string
+	for _, req := range reqs {
+		for _, rs := range req.GetResourceSpans() {
+			for _, ss := range rs.GetScopeSpans() {
+				for _, sp := range ss.GetSpans() {
+					for _, ev := range sp.GetEvents() {
+						if ev.GetName() != EventGenAIEvaluationResult {
+							continue
+						}
+						for _, kv := range ev.GetAttributes() {
+							if kv.GetKey() == AttrGenAIEvaluationExplanation {
+								got = kv.GetValue().GetStringValue()
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	require.NotEmpty(t, got)
+	assert.LessOrEqual(t, len(got), telemetry.MaxSpanAttrValueLen)
+	assert.Less(t, len(got), len(huge))
 }
 
 func hexOf(b []byte) string {

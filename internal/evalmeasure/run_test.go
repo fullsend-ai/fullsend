@@ -91,6 +91,7 @@ func TestMeasureAndExport_CancelledContext(t *testing.T) {
 		filepath.Join("testdata", "complete.jsonl"),
 		filepath.Join("testdata", "sample-registry.yaml"),
 		t.TempDir(),
+		"",
 	)
 	require.Error(t, err)
 }
@@ -121,7 +122,7 @@ func TestMeasureAndExport_KeepsFirstWhenSecondPersistFails(t *testing.T) {
 		require.NoError(t, os.Remove(meas))
 		require.NoError(t, os.Mkdir(meas, 0o755))
 	})
-	results, _, err := MeasureAndExport(ctx, telem, filepath.Join("testdata", "sample-registry.yaml"), out)
+	results, _, err := MeasureAndExport(ctx, telem, filepath.Join("testdata", "sample-registry.yaml"), out, "")
 	require.Error(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", results[0].TraceID)
@@ -151,7 +152,7 @@ func TestMeasureAndExport_ScoresPartialFileDespiteParseError(t *testing.T) {
 	require.NoError(t, f.Close())
 
 	out := t.TempDir()
-	results, stats, err := MeasureAndExport(context.Background(), telem, filepath.Join("testdata", "sample-registry.yaml"), out)
+	results, stats, err := MeasureAndExport(context.Background(), telem, filepath.Join("testdata", "sample-registry.yaml"), out, "")
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, LabelPass, results[0].Label)

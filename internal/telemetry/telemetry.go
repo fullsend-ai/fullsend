@@ -141,6 +141,13 @@ func validateEndpoints(endpoint, tracesEndpoint string) error {
 // there, including -1 (unlimited), is honored as-is.
 const MaxSpanAttrValueLen = 8192
 
+// SpanLimits returns the SDK span limits used by Setup (default 8KiB
+// attribute value length unless OTEL_*_ATTRIBUTE_VALUE_LENGTH_LIMIT is set).
+// Shared by score export so post-hoc evaluation events honor the same bound.
+func SpanLimits() sdktrace.SpanLimits {
+	return spanLimits()
+}
+
 // spanLimits returns the SDK span limits. NewSpanLimits collapses "env
 // unset" and an explicit "-1" (the OTel sentinel for unlimited) to the
 // same struct value, so the env vars are consulted directly: the

@@ -76,7 +76,7 @@ func main() {
 	_ = os.Unsetenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
 	_ = os.Unsetenv("OTEL_SDK_DISABLED")
 
-	results, stats, err := evalmeasure.MeasureAndExport(context.Background(), telem, reg, out)
+	results, stats, err := evalmeasure.MeasureAndExport(context.Background(), telem, reg, out, "dev")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "measure failed: %v\n", err)
 		os.Exit(1)

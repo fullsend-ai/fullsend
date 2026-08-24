@@ -117,7 +117,7 @@ func runEvalMeasure(ctx context.Context, printer *ui.Printer, opts evalMeasureOp
 
 	var all []evalmeasure.EvaluationResult
 	for _, p := range telemPaths {
-		results, stats, err := evalmeasure.MeasureAndExport(ctx, p, registry, opts.outDir)
+		results, stats, err := evalmeasure.MeasureAndExport(ctx, p, registry, opts.outDir, Version())
 		if stats.Incomplete != "" {
 			printer.StepWarn(fmt.Sprintf("%s: telemetry parse incomplete (%s); scored available traces", p, stats.Incomplete))
 		}

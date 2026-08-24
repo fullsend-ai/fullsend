@@ -85,10 +85,9 @@ rewrite primary facts, and they are [fail-open](../glossary.md#fail-open).
 
 Scores land in a tool-agnostic `eval-measurements.jsonl` (plus a
 small idempotency ledger) next to `run-telemetry.jsonl` whenever at least
-one new measurement row is produced (including `label: skip`). Remote score
-export uses the same `OTEL_EXPORTER_OTLP_*` configuration as ADR 0050
-(`gen_ai.evaluation.result` span events; fail-open) — no vendor-specific
-score adapters in core. `fullsend` owns the parser, scorers,
+one new measurement row is produced (including `label: skip`). Remote score export
+will use the same `OTEL_EXPORTER_OTLP_*` configuration as ADR 0050 — no
+vendor-specific score adapters in core. `fullsend` owns the parser, scorers,
 CLI, and GHA step; `fullsend-ai/agents` owns per-agent measurement manifests
 (`eval/measurements/<agent>.yaml`) that declare which scorers to enable.
 Stock-agent defaults resolve from `agents@v0` at runtime; local files are for
@@ -99,6 +98,11 @@ jobs. Tracking: [#6384](https://github.com/fullsend-ai/fullsend/issues/6384).
 Until that release lands, GHA/GitLab `eval-measure` wiring is provisional
 (clean skip when the remote manifest is missing). Local `FULLSEND_DIR`
 manifests are exercised in unit tests today.
+
+> **Implemented ([#6459](https://github.com/fullsend-ai/fullsend/pull/6459)):**
+> portable remote score export now ships via the shared OTEL path as
+> `gen_ai.evaluation.result` span events (fail-open). Decision text above
+> is unchanged; this note records delivery only.
 
 The first scorer is `trace_fitness` (catalog id `em-001`) — span-tree and
 attribute fitness so later scorers can trust the trace. EM-001 reads
@@ -137,7 +141,7 @@ Entirely new signal → new `em-NNN` (and usually a new `scorer` string).
   fetch from public `agents@v0` even without `GH_TOKEN` (rate-limited); a
   token is recommended on shared runners.
 - Core stays tool-agnostic: no product-specific score env vars in managed
-  workflows; remote scores follow the shared OTEL path.
+  workflows; remote scores follow OTEL when that path lands.
 - Functional scenarios (gate) and eval measurements (trend) stay separate;
   retro can recommend either a manifest scorer or a scenario fixture.
 - Level 1/2 metadata scorers (EM-001) are the foundation; Level 3 content

@@ -44,7 +44,8 @@ fullsend eval-measure   (same GHA job, fail-open, after run)
        new score is produced (+ eval-measure-ledger.txt for idempotency)
   └─ if OTEL_EXPORTER_OTLP_* set → OTLP export of scores as
        gen_ai.evaluation.result span events on the same TraceID
-       (fail-open; local JSONL always wins)
+       (the W3C Trace ID shared with the agent run — fail-open;
+       local JSONL always wins)
 ```
 
 | Artifact | When | Purpose |
@@ -52,12 +53,14 @@ fullsend eval-measure   (same GHA job, fail-open, after run)
 | `run-telemetry.jsonl` | Every run | OTLP JSON TracesData lines (local source of truth for spans) |
 | `eval-measurements.jsonl` | Every measured run | One JSON object per score (`name`, `label`, `value`, `explanation`, `trace_id`, …). On `label: skip`, `value` is unused (serialized as `0`; ignore it). |
 | Remote agent spans | OTEL configured | Same spans the local file holds |
-| Remote scores | OTEL configured | Child span `fullsend.eval_measure` + event `gen_ai.evaluation.result` (GenAI semconv) correlated by `trace_id` / parent `span_id` |
+| Remote scores | OTEL configured | Child span `fullsend.eval_measure` + event `gen_ai.evaluation.result` ([OpenTelemetry GenAI semconv](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-events/)) correlated by TraceID / parent span ID |
 
 Orgs choose Phoenix, MLflow, Jaeger, or another collector independently.
-Fullsend does not forward vendor-specific score credentials in managed
-workflows. Scores are not rewritten into `run-telemetry.jsonl` (derived
-products must not mutate primary facts).
+Any OTLP backend can **correlate** scores to the agent run by TraceID.
+Vendor score UIs (for example MLflow Assessments panels) may still need a
+collector or side consumer that maps the evaluation event — fullsend does
+not call those product APIs. Scores are not rewritten into
+`run-telemetry.jsonl` (derived products must not mutate primary facts).
 
 ## Measurements vs functional evals
 

@@ -20,15 +20,16 @@ func WithPersistHook(ctx context.Context, fn func()) context.Context {
 // MeasureFile parses telemetry, scores with the manifest, and writes local
 // eval-measurements.jsonl. Idempotent per ledger.
 func MeasureFile(telemetryPath, registryPath, outDir string) ([]EvaluationResult, error) {
-	r, _, err := MeasureAndExport(context.Background(), telemetryPath, registryPath, outDir)
+	r, _, err := MeasureAndExport(context.Background(), telemetryPath, registryPath, outDir, "")
 	return r, err
 }
 
 // MeasureAndExport is MeasureFile with an explicit context used for portable
 // OTLP score export (same OTEL_EXPORTER_OTLP_* path as ADR 0050). Local
 // JSONL/ledger always win; OTLP failures are recorded on ParseStats and
-// never fail the measure.
-func MeasureAndExport(ctx context.Context, telemetryPath, registryPath, outDir string) ([]EvaluationResult, ParseStats, error) {
+// never fail the measure. serviceVersion should match telemetry.Setup
+// (CLI Version()) so remote score resources share agent-trace identity.
+func MeasureAndExport(ctx context.Context, telemetryPath, registryPath, outDir, serviceVersion string) ([]EvaluationResult, ParseStats, error) {
 	var stats ParseStats
 	if err := ctx.Err(); err != nil {
 		return nil, stats, err
@@ -80,7 +81,7 @@ func MeasureAndExport(ctx context.Context, telemetryPath, registryPath, outDir s
 		}
 	}
 	if len(all) > 0 {
-		if err := ExportOTLPScores(ctx, all); err != nil {
+		if err := ExportOTLPScores(ctx, all, serviceVersion); err != nil {
 			stats.RemoteExportWarning = err.Error()
 		}
 	}

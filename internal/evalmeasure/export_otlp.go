@@ -18,9 +18,21 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/telemetry"
 )
 
-// GenAI evaluation event / attribute names (OpenTelemetry GenAI semconv).
-// Scores travel as span events so any OTLP backend (Phoenix, MLflow collector,
-// Jaeger, Arize, …) can correlate them to the agent trace without a vendor API.
+// GenAI evaluation event / attribute names.
+//
+// Attribute names follow OpenTelemetry GenAI semantic conventions
+// (semantic-conventions-genai, evaluation events — pin consulted for this
+// ship: https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-events/
+// and the gen_ai.evaluation.* attribute registry). Semconv remains
+// unstable across minor versions (see gen_ai.system → gen_ai.provider.name);
+// bump measurement versions when attribute names change.
+//
+// Post-hoc attach: the scored GenAI operation span is already flushed, so
+// we emit a short child span (fullsend.eval_measure) remote-parented to
+// that SpanID and AddEvent the evaluation result. Any OTLP backend can
+// correlate by TraceID; vendor score UIs (Assessments panels, etc.) may
+// still need a collector/consumer mapping — fullsend does not call those
+// APIs.
 const (
 	EventGenAIEvaluationResult = "gen_ai.evaluation.result"
 
@@ -48,10 +60,13 @@ var newScoreOTLPExporter = func(ctx context.Context) (sdktrace.SpanExporter, err
 // ExportOTLPScores emits each measurement as a short child span on the same
 // TraceID (remote-parented to the scored SpanID) with a
 // gen_ai.evaluation.result event. Uses the same OTEL_EXPORTER_OTLP_* env as
-// ADR 0050 agent traces. No-op when OTEL is unset or OTEL_SDK_DISABLED=true.
-// Fail-open: returns an error for the caller to warn on; never writes primary
-// telemetry files. Rows with empty/zero IDs are skipped (not errors).
-func ExportOTLPScores(ctx context.Context, results []EvaluationResult) error {
+// ADR 0050 agent traces. serviceVersion must match telemetry.Setup's version
+// (CLI Version()) so resource identity stays aligned with agent spans.
+// No-op when OTEL is unset, OTEL_SDK_DISABLED=true, or inbound TRACEPARENT
+// is explicitly unsampled (-00), matching parentSampledProcessor on agent
+// export. Fail-open: returns an error for the caller to warn on; never
+// writes primary telemetry files. Rows with empty/zero IDs are skipped.
+func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVersion string) error {
 	if len(results) == 0 {
 		return nil
 	}
@@ -59,6 +74,11 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult) error {
 		return nil
 	}
 	if !telemetry.OTLPEnabled() {
+		return nil
+	}
+	if inboundTRACEPARENTUnsampled() {
+		// Same job as fullsend run: if the inbound parent was unsampled,
+		// agent OTLP was suppressed — do not orphan score spans on that TraceID.
 		return nil
 	}
 	if err := telemetry.ValidateOTLPEndpoints(); err != nil {
@@ -76,8 +96,9 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult) error {
 
 	// Batch so N scores share one (or few) HTTP exports under the budget.
 	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithResource(telemetry.BuildResource("eval-measure")),
+		sdktrace.WithResource(telemetry.BuildResource(serviceVersion)),
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithRawSpanLimits(telemetry.SpanLimits()),
 		sdktrace.WithSpanProcessor(sdktrace.NewBatchSpanProcessor(capExp)),
 	)
 	defer func() {
@@ -103,6 +124,25 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult) error {
 		errs = append(errs, fmt.Errorf("otlp export: %w", expErr))
 	}
 	return errors.Join(errs...)
+}
+
+// inboundTRACEPARENTUnsampled reports whether TRACEPARENT is present and
+// carries the W3C sampled flag cleared (…-00). Empty/malformed TRACEPARENT
+// is treated as "no inbound parent" (export proceeds).
+func inboundTRACEPARENTUnsampled() bool {
+	tp := strings.TrimSpace(os.Getenv("TRACEPARENT"))
+	if tp == "" {
+		return false
+	}
+	parts := strings.Split(tp, "-")
+	if len(parts) != 4 {
+		return false
+	}
+	flags, err := hex.DecodeString(parts[3])
+	if err != nil || len(flags) != 1 {
+		return false
+	}
+	return flags[0]&0x01 == 0
 }
 
 // capturingExporter records the first ExportSpans error so fail-open callers
@@ -166,7 +206,10 @@ func exportOneScore(ctx context.Context, tr trace.Tracer, r EvaluationResult) er
 	eventAttrs := []attribute.KeyValue{
 		attribute.String(AttrGenAIEvaluationName, r.Name),
 		attribute.String(AttrGenAIEvaluationScoreLabel, r.Label),
-		attribute.String(AttrGenAIEvaluationExplanation, r.Explanation),
+		// Event attribute values are not truncated by SpanLimits (SDK
+		// applies AttributeValueLengthLimit to span attrs only); bound
+		// explanation at the call site like agent exception messages.
+		attribute.String(AttrGenAIEvaluationExplanation, truncateRunes(r.Explanation, telemetry.MaxSpanAttrValueLen)),
 		attribute.String(AttrFullsendMeasurementVersion, r.Version),
 	}
 	// Skip rows leave Value unused (serialized as 0 in JSONL); do not publish
@@ -181,6 +224,20 @@ func exportOneScore(ctx context.Context, tr trace.Tracer, r EvaluationResult) er
 	// backends that key off span status.
 	span.SetStatus(codes.Ok, "")
 	return nil
+}
+
+func truncateRunes(s string, max int) string {
+	if max < 0 {
+		return s
+	}
+	n := 0
+	for i := range s {
+		if n == max {
+			return s[:i]
+		}
+		n++
+	}
+	return s
 }
 
 func parseTraceID(hexID string) (trace.TraceID, error) {
