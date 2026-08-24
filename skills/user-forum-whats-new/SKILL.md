@@ -60,9 +60,12 @@ Do these in order. Do not draft bullets until ranking is done.
 - `SINCE` = that meeting's start (America/New_York 08:00 is fine).
 - `UNTIL` = this Tuesday forum (now, if running that morning).
 - `gather.sh` / `gather.py` interpret `--since` as **08:00 America/New_York**
-  on that date and `--until` as end of that day ET (or **now** when until is
-  today). Default `--until` is today's date in America/New_York (not the
-  host machine's local calendar).
+  on that date and `--until` as end of that day ET, **clamped to now** when
+  that end-of-day is still in the future (not only when until is "today" —
+  a future `--until` also clamps). JSON includes `until_clamped: true/false`
+  so you can see when the requested calendar day was truncated. Default
+  `--until` is today's date in America/New_York (not the host machine's
+  local calendar).
 - Search and filter use the same UTC timestamp bounds (not bare calendar
   dates), so ET evening after UTC midnight is not dropped.
 - Releases published **after** the last forum are in-scope even if they
@@ -78,9 +81,9 @@ bash skills/user-forum-whats-new/scripts/gather.sh --since YYYY-MM-DD --until YY
 
 That prints JSON: releases (full changelog body), merged PRs split into
 `merged_prs.released` and `merged_prs.on_main`, plus `window_start_utc`,
-`window_end_utc`, and `release_cutoff_utc` (per-repo map of latest
-in-window **non-prerelease** release publish times — each PR is classified
-against **its own repo's** cutoff). Prerelease tags still appear in
+`window_end_utc`, `until_clamped`, and `release_cutoff_utc` (per-repo map of
+latest in-window **non-prerelease** release publish times — each PR is
+classified against **its own repo's** cutoff). Prerelease tags still appear in
 `releases[]` with `"prerelease": true` for candidate scanning, but they
 never set the cutoff. Unit tests:
 `python3 skills/user-forum-whats-new/scripts/gather_test.py`.
