@@ -24,24 +24,28 @@ func TestPiRuntimeMetadata(t *testing.T) {
 	// Config dir must be outside the agent-writable workspace tree.
 	assert.False(t, strings.HasPrefix(rt.ConfigDir(), sandbox.SandboxWorkspace))
 	assert.Equal(t, sandbox.SandboxPiExtensionsDir+"/anthropic-vertex", piVertexExtensionPath)
+	assert.Equal(t, sandbox.SandboxPiExtensionsDir+"/xai-vertex", piXaiVertexExtensionPath)
 }
 
-// TestPiExtensionPathWithinSandboxPolicy asserts that piVertexExtensionPath
-// sits under a prefix the sandbox filesystem policy allows (read_only list in
-// /etc/openshell/policy.yaml). This guards against the class of bug in #6504
-// where the extension was installed under /opt, which landlock denied.
-func TestPiExtensionPathWithinSandboxPolicy(t *testing.T) {
+// TestPiExtensionPathsWithinSandboxPolicy asserts that all pi extension
+// paths sit under a prefix the sandbox filesystem policy allows (read_only
+// list in /etc/openshell/policy.yaml). This guards against the class of
+// bug in #6504 where an extension was installed under /opt, which landlock
+// denied.
+func TestPiExtensionPathsWithinSandboxPolicy(t *testing.T) {
 	t.Parallel()
 	allowedPrefixes := []string{"/usr", "/lib", "/app", "/etc", "/var/log"}
-	var matched bool
-	for _, prefix := range allowedPrefixes {
-		if strings.HasPrefix(piVertexExtensionPath, prefix) {
-			matched = true
-			break
+	for _, extPath := range []string{piVertexExtensionPath, piXaiVertexExtensionPath} {
+		var matched bool
+		for _, prefix := range allowedPrefixes {
+			if strings.HasPrefix(extPath, prefix) {
+				matched = true
+				break
+			}
 		}
-	}
-	if !matched {
-		t.Errorf("piVertexExtensionPath %q is not under any sandbox policy-allowed read_only prefix %v", piVertexExtensionPath, allowedPrefixes)
+		if !matched {
+			t.Errorf("extension path %q is not under any sandbox policy-allowed read_only prefix %v", extPath, allowedPrefixes)
+		}
 	}
 }
 

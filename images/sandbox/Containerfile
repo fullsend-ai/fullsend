@@ -129,7 +129,42 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
     && npm ci --omit=dev --omit=peer --ignore-scripts --no-audit --no-fund \
     && find node_modules -type d -empty -delete \
     && npm cache clean --force \
-    && chmod -R a+rX,a-w "${PI_EXTENSIONS_DIR}"
+    && chmod -R a+rX,a-w "${PI_EXTENSIONS_DIR}/anthropic-vertex"
+
+# ---------------------------------------------------------------------------
+# pi-xai-vertex — Grok-on-Vertex provider for pi
+# (github.com/fullsend-ai/pi-xai-vertex, MIT). Grok on Vertex speaks the
+# OpenAI-completions protocol; neither pi's built-in xai provider (requires
+# XAI_API_KEY for xAI's native API) nor google-vertex (Gemini-only) covers
+# it. Registers provider "xai-vertex". Unlike the Anthropic extension it
+# mirrors no pi internals, so it cannot drift against a pi release and needs
+# no sync tracking. Auth is ADC via google-auth-library — the same path
+# the anthropic-vertex extension uses (#6571).
+#
+# Pinned by git tag + SHA256 of the GitHub tag tarball. Installed under
+# PI_EXTENSIONS_DIR (sandbox.SandboxPiExtensionsDir), root-owned and outside
+# PI_CODING_AGENT_DIR, so pi never auto-loads it — PiRuntime.Run passes it
+# explicitly with -e.
+#
+# To update: pick a tag from
+# https://github.com/fullsend-ai/pi-xai-vertex/tags, then refresh the
+# SHA256 from:
+#   sha256sum <(curl -fsSL https://github.com/fullsend-ai/pi-xai-vertex/archive/refs/tags/v<ver>.tar.gz)
+ARG PI_XAI_VERTEX_VERSION=0.1.0
+ARG PI_XAI_VERTEX_SHA256=35626db1fc62c1afcfe8cc591d832127289b7050cdff1ca370808a2411c1a2ce
+RUN curl -fsSL --retry 3 --retry-delay 5 \
+      "https://github.com/fullsend-ai/pi-xai-vertex/archive/refs/tags/v${PI_XAI_VERTEX_VERSION}.tar.gz" \
+      -o /tmp/pi-xai-vertex.tar.gz \
+    && echo "${PI_XAI_VERTEX_SHA256}  /tmp/pi-xai-vertex.tar.gz" | sha256sum -c - \
+    && mkdir -p "${PI_EXTENSIONS_DIR}/xai-vertex" \
+    && tar xzf /tmp/pi-xai-vertex.tar.gz -C "${PI_EXTENSIONS_DIR}/xai-vertex" --strip-components=1 \
+    && rm /tmp/pi-xai-vertex.tar.gz \
+    && cd "${PI_EXTENSIONS_DIR}/xai-vertex" \
+    && rm -rf .github .pi .vscode PLAN.md AGENTS.md \
+    && npm ci --omit=dev --omit=peer --ignore-scripts --no-audit --no-fund \
+    && find node_modules -type d -empty -delete \
+    && npm cache clean --force \
+    && chmod -R a+rX,a-w "${PI_EXTENSIONS_DIR}/xai-vertex"
 
 # ---------------------------------------------------------------------------
 # ProtectAI DeBERTa-v3 ONNX model and ONNX Runtime — REMOVED (#6522).

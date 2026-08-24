@@ -40,10 +40,21 @@ var piModelAliases = map[string]string{
 	"haiku":  "claude-haiku-4-5",
 }
 
+// piXaiVertexProvider is the provider prefix for the xai-vertex extension.
+// Used by translatePiModel to normalise short-form xai/ specs and by
+// buildPiRunCommand to gate the extension loading and env hygiene.
+const piXaiVertexProvider = "xai-vertex"
+
 // translatePiModel resolves the harness/agent model (already overridden by
 // the CLI when --model/FULLSEND_MODEL/FULLSEND_PI_MODEL apply) into pi's
 // --model value: aliases map to catalog ids, bare ids get the provider
 // prefix, provider/id passes through.
+//
+// Special case: a model spec starting with "xai/" (e.g. "xai/grok-4.6")
+// is normalised to the three-segment "xai-vertex/xai/grok-4.6" form so
+// the provider gate in buildPiRunCommand fires correctly. Without this,
+// strings.Cut yields provider "xai", the gate never fires, and the run
+// falls through to pi's built-in xai provider which requires XAI_API_KEY.
 func translatePiModel(model string) string {
 	provider := strings.TrimSpace(os.Getenv(piProviderEnv))
 	if provider == "" {
@@ -52,6 +63,11 @@ func translatePiModel(model string) string {
 	model = strings.TrimSpace(model)
 	if model == "" {
 		model = piDefaultModel
+	}
+	// Normalise "xai/<model>" to "xai-vertex/xai/<model>" before the
+	// passthrough check so the provider gate sees "xai-vertex".
+	if strings.HasPrefix(model, "xai/") {
+		model = piXaiVertexProvider + "/" + model
 	}
 	if strings.Contains(model, "/") {
 		return model
@@ -63,9 +79,12 @@ func translatePiModel(model string) string {
 }
 
 // piBareModelID strips the provider prefix from a pi model spec.
+// It removes only the first segment (the provider) so that three-segment
+// specs like "xai-vertex/xai/grok-4.6" return "xai/grok-4.6" (the wire
+// model id) rather than just "grok-4.6".
 func piBareModelID(spec string) string {
-	if i := strings.LastIndexByte(spec, '/'); i >= 0 {
-		return spec[i+1:]
+	if _, after, ok := strings.Cut(spec, "/"); ok {
+		return after
 	}
 	return spec
 }
@@ -146,6 +165,7 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 	// skipped.
 	provider, _, _ := strings.Cut(modelSpec, "/")
 	vertex := strings.EqualFold(provider, piDefaultProvider)
+	xaiVertex := strings.EqualFold(provider, piXaiVertexProvider)
 	if vertex {
 		// Claude-on-Vertex: the bundled Anthropic SDK would send a stray
 		// ANTHROPIC_API_KEY to Google as X-Api-Key and honour
@@ -157,6 +177,17 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 		parts = append(parts,
 			"&& unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_VERTEX_BASE_URL",
 			`&& export GOOGLE_CLOUD_PROJECT="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}"`,
+		)
+	}
+	if xaiVertex {
+		// Grok-on-Vertex: unset XAI_API_KEY so pi's built-in xai provider
+		// (which requires the key for xAI's native API) cannot shadow this
+		// extension. Pin XAI_VERTEX_PROJECT_ID to the fleet's Vertex project
+		// so the extension does not fall back to an ambient
+		// GOOGLE_CLOUD_PROJECT that may point to a different project.
+		parts = append(parts,
+			"&& unset XAI_API_KEY",
+			`&& export XAI_VERTEX_PROJECT_ID="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}"`,
 		)
 	}
 	parts = append(parts,
@@ -173,6 +204,9 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 		// The interim Claude-on-Vertex provider is only needed for the
 		// anthropic-vertex model spec; other providers get pi's built-ins.
 		parts = append(parts, "-e "+shellQuote(piVertexExtensionPath))
+	}
+	if xaiVertex {
+		parts = append(parts, "-e "+shellQuote(piXaiVertexExtensionPath))
 	}
 	if hooksEnabled {
 		parts = append(parts, "-e "+shellQuote(hooksExt))

@@ -27,6 +27,11 @@ func TestTranslatePiModel(t *testing.T) {
 	assert.Equal(t, "anthropic-vertex/claude-opus-4-8", translatePiModel("claude-opus-4-8"), "bare ids get the provider prefix")
 	assert.Equal(t, "anthropic/claude-sonnet-4-6", translatePiModel("anthropic/claude-sonnet-4-6"), "provider/id passes through")
 
+	// xai/ normalisation: "xai/grok-4.6" becomes "xai-vertex/xai/grok-4.6"
+	// so the provider gate in buildPiRunCommand fires correctly.
+	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("xai/grok-4.6"), "xai/ is normalised to xai-vertex/xai/")
+	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("xai-vertex/xai/grok-4.6"), "already-normalised three-segment spec passes through")
+
 	t.Setenv(piProviderEnv, "anthropic")
 	assert.Equal(t, "anthropic/claude-opus-4-6", translatePiModel("opus"))
 
@@ -171,6 +176,45 @@ func TestPiHooksGuard(t *testing.T) {
 	require.ErrorAs(t, err, &exitErr, string(out2))
 	assert.Equal(t, piHooksMissingExit, exitErr.ExitCode(), "shadowed sha256sum")
 	assert.NotContains(t, string(out2), "RAN")
+}
+
+func TestPiBareModelID(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "claude-opus-4-6", piBareModelID("anthropic-vertex/claude-opus-4-6"), "two-segment: strips provider")
+	assert.Equal(t, "xai/grok-4.6", piBareModelID("xai-vertex/xai/grok-4.6"), "three-segment: strips only the provider, keeps wire model id")
+	assert.Equal(t, "grok-4.6", piBareModelID("grok-4.6"), "no provider: returns as-is")
+	assert.Equal(t, "claude-sonnet-4-6", piBareModelID("anthropic/claude-sonnet-4-6"), "direct anthropic: strips provider")
+}
+
+func TestBuildPiRunCommand_XaiVertex(t *testing.T) {
+	t.Setenv("FULLSEND_PI_MODEL", "")
+	t.Setenv(piProviderEnv, "")
+	m := &piManifest{AgentName: "triage", Model: "opus", Tools: []string{"bash"}}
+	params := piTestParams()
+
+	// Short form: xai/grok-4.6 is normalised to xai-vertex/xai/grok-4.6.
+	params.Model = "xai/grok-4.6"
+	cmd := buildPiRunCommand(params, m)
+
+	assert.Contains(t, cmd, "--model 'xai-vertex/xai/grok-4.6'", "normalised model spec")
+	assert.Contains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/xai-vertex'", "xai-vertex extension is loaded")
+	assert.Contains(t, cmd, "&& unset XAI_API_KEY", "XAI_API_KEY is unset")
+	assert.Contains(t, cmd, `&& export XAI_VERTEX_PROJECT_ID="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}"`, "project is pinned")
+	assert.NotContains(t, cmd, "unset ANTHROPIC_API_KEY", "anthropic env hygiene does not fire for xai-vertex")
+	assert.NotContains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/anthropic-vertex'", "anthropic-vertex extension is not loaded")
+
+	// Long form: xai-vertex/xai/grok-4.6 passes through.
+	params.Model = "xai-vertex/xai/grok-4.6"
+	cmd = buildPiRunCommand(params, m)
+	assert.Contains(t, cmd, "--model 'xai-vertex/xai/grok-4.6'")
+	assert.Contains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/xai-vertex'")
+	assert.Contains(t, cmd, "&& unset XAI_API_KEY")
+
+	// Case-insensitive provider match (pi matches case-insensitively).
+	params.Model = "Xai-Vertex/xai/grok-4.6"
+	cmd = buildPiRunCommand(params, m)
+	assert.Contains(t, cmd, "&& unset XAI_API_KEY")
+	assert.Contains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/xai-vertex'")
 }
 
 func TestBuildPiRunCommand_DirectProviderKeepsAnthropicEnv(t *testing.T) {
