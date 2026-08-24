@@ -150,8 +150,8 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
 # https://github.com/fullsend-ai/pi-xai-vertex/tags, then refresh the
 # SHA256 from:
 #   sha256sum <(curl -fsSL https://github.com/fullsend-ai/pi-xai-vertex/archive/refs/tags/v<ver>.tar.gz)
-ARG PI_XAI_VERTEX_VERSION=0.1.0
-ARG PI_XAI_VERTEX_SHA256=35626db1fc62c1afcfe8cc591d832127289b7050cdff1ca370808a2411c1a2ce
+ARG PI_XAI_VERTEX_VERSION=0.2.0
+ARG PI_XAI_VERTEX_SHA256=b00c67a2a9c0b51df40718c761b405546ebc8f1d849656f6858869fe7058c0ca
 RUN curl -fsSL --retry 3 --retry-delay 5 \
       "https://github.com/fullsend-ai/pi-xai-vertex/archive/refs/tags/v${PI_XAI_VERTEX_VERSION}.tar.gz" \
       -o /tmp/pi-xai-vertex.tar.gz \
