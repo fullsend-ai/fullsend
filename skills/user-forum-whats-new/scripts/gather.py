@@ -2,8 +2,8 @@
 """Gather What's New candidates for the Fullsend user forum.
 
 Dates are forum Tuesdays in America/New_York. --since is 08:00 ET that
-morning; --until is end of that day ET, or now (UTC) when until is today
-(or the until day is still in progress).
+morning; --until is end of that day ET, clamped to now when that end is
+still in the future (until_clamped in JSON).
 
 Merged PRs are classified per repo against that repo's latest in-window
 release publish time (released vs on_main).
@@ -33,8 +33,8 @@ try:
 except ZoneInfoNotFoundError as e:
     sys.stderr.write(
         "error: America/New_York timezone data is missing "
-        f"({e}). Install system tzdata "
-        "(e.g. tzdata / timezone-data) or `pip install tzdata`.\n"
+        f"({e}). Install your distro's IANA timezone data package "
+        "(commonly `tzdata`) or `pip install tzdata`.\n"
     )
     raise SystemExit(1) from e
 
@@ -77,18 +77,25 @@ def window_bounds(
     until_day: str,
     *,
     now: datetime | None = None,
-) -> tuple[datetime, datetime]:
-    """Return (since_ts, until_ts) in UTC for the forum window."""
+) -> tuple[datetime, datetime, bool]:
+    """Return (since_ts, until_ts, until_clamped) in UTC for the forum window.
+
+    until_ts is always min(ET end-of-day for until_day, now). That clamps
+    any future --until (not only "today") so the gather never pretends to
+    cover time that has not happened yet. until_clamped is True when that
+    min chose now instead of the calendar end-of-day.
+    """
     since_d = date.fromisoformat(since_day)
     until_d = date.fromisoformat(until_day)
     since_ts = datetime.combine(since_d, time(8, 0), tzinfo=ET).astimezone(UTC)
     until_end_et = datetime.combine(until_d, time(23, 59, 59, 999999), tzinfo=ET).astimezone(UTC)
     now_utc = now if now is not None else datetime.now(UTC)
     now_utc = now_utc.replace(tzinfo=UTC) if now_utc.tzinfo is None else now_utc.astimezone(UTC)
-    until_ts = min(until_end_et, now_utc)
+    until_clamped = until_end_et > now_utc
+    until_ts = now_utc if until_clamped else until_end_et
     if until_ts < since_ts:
         raise ValueError(f"until ({until_day}) is before since ({since_day})")
-    return since_ts, until_ts
+    return since_ts, until_ts, until_clamped
 
 
 def in_window(iso: str, since_ts: datetime, until_ts: datetime) -> bool:
@@ -96,6 +103,20 @@ def in_window(iso: str, since_ts: datetime, until_ts: datetime) -> bool:
     if dt is None:
         return False
     return since_ts <= dt <= until_ts
+
+
+def flatten_gh_slurp(data: Any) -> list[Any]:
+    """Normalize `gh api --paginate --slurp` output to a flat object list.
+
+    --slurp wraps each page in an outer array, so multi-page (and some
+    single-page) responses arrive as [[obj, ...], ...]. Flat [obj, ...] is
+    also accepted.
+    """
+    if not isinstance(data, list):
+        raise RuntimeError(f"expected JSON array from gh, got {type(data).__name__}")
+    if data and all(isinstance(x, list) for x in data):
+        return [item for page in data for item in page]
+    return data
 
 
 def load_json(path: Path, fallback: Any = None, *, required: bool = False) -> Any:
@@ -210,6 +231,7 @@ def fetch_into(tmp: Path, since_ts: datetime, until_ts: datetime) -> None:
                     "gh",
                     "api",
                     "--paginate",
+                    "--slurp",
                     f"repos/{repo}/releases?per_page=100",
                 ],
                 check=True,
@@ -260,17 +282,18 @@ def build_output(
     *,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    since_ts, until_ts = window_bounds(since, until, now=now)
+    since_ts, until_ts, until_clamped = window_bounds(since, until, now=now)
     releases_by_repo: dict[str, list[dict[str, Any]]] = {}
     prs_by_repo: dict[str, list[dict[str, Any]]] = {}
     for repo, rel_name, prs_name in REPOS:
-        releases_by_repo[repo] = load_json(tmp / rel_name, required=True)
+        releases_by_repo[repo] = flatten_gh_slurp(load_json(tmp / rel_name, required=True))
         prs_by_repo[repo] = load_json(tmp / prs_name, required=True)
 
     classified = classify(releases_by_repo, prs_by_repo, since_ts, until_ts)
     return {
         "since": since,
         "until": until,
+        "until_clamped": until_clamped,
         "window_start_utc": to_z(since_ts),
         "window_end_utc": to_z(until_ts),
         **classified,
@@ -295,7 +318,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             "End date (YYYY-MM-DD, America/New_York calendar); "
-            "defaults to today in America/New_York"
+            "defaults to today in America/New_York. Window end is "
+            "min(ET end-of-day, now) — future dates are clamped to now "
+            "(see until_clamped in JSON output)."
         ),
     )
     return p.parse_args(argv)
@@ -317,7 +342,7 @@ def main(argv: list[str] | None = None) -> int:
 
     now = datetime.now(UTC)
     try:
-        since_ts, until_ts = window_bounds(since, until, now=now)
+        since_ts, until_ts, _until_clamped = window_bounds(since, until, now=now)
     except ValueError as e:
         sys.stderr.write(f"error: {e}\n")
         return 2

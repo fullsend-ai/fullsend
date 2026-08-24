@@ -16,6 +16,7 @@ from gather import (  # noqa: E402
     SEARCH_LIMIT,
     build_output,
     classify,
+    flatten_gh_slurp,
     in_window,
     parse_iso,
     search_merged_at_range,
@@ -28,7 +29,7 @@ from gather import (  # noqa: E402
 class TestWindowBounds(unittest.TestCase):
     def test_since_is_08_et(self):
         # 2026-08-11 is EDT (UTC-4): 08:00 ET = 12:00 UTC
-        since_ts, _ = window_bounds(
+        since_ts, _, _ = window_bounds(
             "2026-08-11",
             "2026-08-18",
             now=datetime(2026, 8, 18, 20, 0, tzinfo=UTC),
@@ -37,18 +38,26 @@ class TestWindowBounds(unittest.TestCase):
 
     def test_until_clamps_to_now_when_today(self):
         now = datetime(2026, 8, 18, 14, 30, tzinfo=UTC)
-        _, until_ts = window_bounds("2026-08-11", "2026-08-18", now=now)
+        _, until_ts, clamped = window_bounds("2026-08-11", "2026-08-18", now=now)
         self.assertEqual(until_ts, now)
+        self.assertTrue(clamped)
 
     def test_until_end_of_day_et_for_past_day(self):
         # 2026-08-17 23:59:59.999999 EDT = 2026-08-18 03:59:59.999999Z
         now = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
-        _, until_ts = window_bounds("2026-08-11", "2026-08-17", now=now)
+        _, until_ts, clamped = window_bounds("2026-08-11", "2026-08-17", now=now)
+        self.assertFalse(clamped)
         self.assertEqual(until_ts.year, 2026)
         self.assertEqual(until_ts.month, 8)
         self.assertEqual(until_ts.day, 18)
         self.assertEqual(until_ts.hour, 3)
         self.assertEqual(until_ts.minute, 59)
+
+    def test_future_until_clamps_to_now(self):
+        now = datetime(2026, 8, 18, 14, 30, tzinfo=UTC)
+        _, until_ts, clamped = window_bounds("2026-08-11", "2026-12-31", now=now)
+        self.assertEqual(until_ts, now)
+        self.assertTrue(clamped)
 
     def test_rejects_inverted_window(self):
         with self.assertRaises(ValueError):
@@ -57,7 +66,7 @@ class TestWindowBounds(unittest.TestCase):
 
 class TestInWindow(unittest.TestCase):
     def setUp(self):
-        self.since_ts, self.until_ts = window_bounds(
+        self.since_ts, self.until_ts, _ = window_bounds(
             "2026-08-11",
             "2026-08-18",
             now=datetime(2026, 8, 18, 20, 0, tzinfo=UTC),
@@ -72,7 +81,7 @@ class TestInWindow(unittest.TestCase):
 
     def test_et_evening_after_utc_midnight_included_for_past_until(self):
         # Upper bound for until=2026-08-17 includes 2026-08-18T00..03:59Z
-        since_ts, until_ts = window_bounds(
+        since_ts, until_ts, _ = window_bounds(
             "2026-08-11",
             "2026-08-17",
             now=datetime(2026, 8, 20, 12, 0, tzinfo=UTC),
@@ -293,8 +302,27 @@ class TestBuildOutput(unittest.TestCase):
             )
             self.assertEqual(out["since"], "2026-08-11")
             self.assertEqual(out["window_start_utc"], "2026-08-11T12:00:00Z")
+            self.assertTrue(out["until_clamped"])
             self.assertEqual(out["merged_prs"]["released"], [])
             self.assertEqual(out["merged_prs"]["on_main"], [])
+
+    def test_build_output_until_clamped_false_for_past_until(self):
+        with tempfile.TemporaryDirectory() as tmp_s:
+            tmp = Path(tmp_s)
+            for name in (
+                "rel-fullsend.json",
+                "rel-agents.json",
+                "prs-fullsend.json",
+                "prs-agents.json",
+            ):
+                (tmp / name).write_text("[]", encoding="utf-8")
+            out = build_output(
+                "2026-08-11",
+                "2026-08-17",
+                tmp,
+                now=datetime(2026, 8, 20, 12, 0, tzinfo=UTC),
+            )
+            self.assertFalse(out["until_clamped"])
 
     def test_build_output_fails_closed_on_bad_json(self):
         with tempfile.TemporaryDirectory() as tmp_s:
@@ -399,6 +427,25 @@ class TestHelpers(unittest.TestCase):
         src = inspect.getsource(fetch_into)
         self.assertIn('"--base"', src)
         self.assertIn('"main"', src)
+
+    def test_fetch_releases_uses_slurp(self):
+        import inspect
+
+        from gather import fetch_into
+
+        src = inspect.getsource(fetch_into)
+        self.assertIn('"--slurp"', src)
+        self.assertIn('"--paginate"', src)
+
+    def test_flatten_gh_slurp_pages(self):
+        flat = [{"tag_name": "v1"}, {"tag_name": "v2"}]
+        self.assertEqual(flatten_gh_slurp(flat), flat)
+        nested = [[{"tag_name": "v1"}], [{"tag_name": "v2"}, {"tag_name": "v3"}]]
+        self.assertEqual(
+            flatten_gh_slurp(nested),
+            [{"tag_name": "v1"}, {"tag_name": "v2"}, {"tag_name": "v3"}],
+        )
+        self.assertEqual(flatten_gh_slurp([]), [])
 
 
 if __name__ == "__main__":
