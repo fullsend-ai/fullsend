@@ -53,7 +53,7 @@ fullsend eval-measure   (same GHA job, fail-open, after run)
 | `run-telemetry.jsonl` | Every run | OTLP JSON TracesData lines (local source of truth for spans) |
 | `eval-measurements.jsonl` | Every measured run | One JSON object per score (`name`, `label`, `value`, `explanation`, `trace_id`, …). On `label: skip`, `value` is unused (serialized as `0`; ignore it). |
 | Remote agent spans | OTEL configured | Same spans the local file holds |
-| Remote scores | OTEL configured | Child span `fullsend.eval_measure` + event `gen_ai.evaluation.result` ([OpenTelemetry GenAI semconv](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-events/)) correlated by TraceID / parent span ID |
+| Remote scores | OTEL configured | Child span `fullsend.eval_measure` + event `gen_ai.evaluation.result` ([GenAI evaluation event — semantic-conventions-genai](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/reference/reports/gen-ai-evaluation-result-event.md); low-stability / reference) correlated by TraceID / parent span ID |
 
 Orgs choose Phoenix, MLflow, Jaeger, or another collector independently.
 Any OTLP backend can **correlate** scores to the agent run by TraceID.
@@ -267,3 +267,11 @@ The idempotency ledger keys local rows; a remote OTLP failure after a
 successful local write will not retry that row on the next run (remote is
 best-effort once). Re-export offline by clearing the ledger or pointing at
 a fresh out dir.
+
+Managed measure assumes one platform `run-telemetry.jsonl` per runDir (each
+`fullsend run` creates a unique `output/fs-<slug>-<hash>/`). If inbound
+`TRACEPARENT` is present and unsampled, score export skips only rows whose
+`trace_id` matches that parent TraceID (same orphan-avoidance rule as agent
+`parentSampledProcessor`); other TraceIDs in the batch still export.
+Cross-run cost/correlation rollup is out of scope here (see hierarchical
+work-graph IDs).

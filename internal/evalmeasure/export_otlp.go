@@ -12,6 +12,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
@@ -21,10 +22,11 @@ import (
 // GenAI evaluation event / attribute names.
 //
 // Attribute names follow OpenTelemetry GenAI semantic conventions
-// (semantic-conventions-genai, evaluation events — pin consulted for this
-// ship: https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-events/
-// and the gen_ai.evaluation.* attribute registry). Semconv remains
-// unstable across minor versions (see gen_ai.system → gen_ai.provider.name);
+// (pin consulted for this ship:
+// https://github.com/open-telemetry/semantic-conventions-genai/blob/main/reference/reports/gen-ai-evaluation-result-event.md
+// — GenAI events moved out of the main semconv docs site; treat as
+// low-stability / reference-implementation). Semconv remains unstable
+// across minor versions (see gen_ai.system → gen_ai.provider.name);
 // bump measurement versions when attribute names change.
 //
 // Post-hoc attach: the scored GenAI operation span is already flushed, so
@@ -51,8 +53,11 @@ const (
 )
 
 // newScoreOTLPExporter is a test seam. Production uses a retry-bounded
-// exporter so Simple/Batch export cannot retry forever (unlike live agent
-// Setup, which may leave MaxElapsedTime at the SDK default).
+// exporter so Simple/Batch export cannot retry forever. Live agent Setup's
+// NewOTLPExporter sets InitialInterval/MaxInterval but leaves
+// MaxElapsedTime at 0, which the otlptracehttp retry loop treats as "never
+// give up on elapsed time" (bounded only by shutdown ctx cancellation) —
+// scores intentionally stay tighter.
 var newScoreOTLPExporter = func(ctx context.Context) (sdktrace.SpanExporter, error) {
 	return telemetry.NewOTLPExporterBounded(ctx, otlpRetryBudget)
 }
@@ -62,10 +67,13 @@ var newScoreOTLPExporter = func(ctx context.Context) (sdktrace.SpanExporter, err
 // gen_ai.evaluation.result event. Uses the same OTEL_EXPORTER_OTLP_* env as
 // ADR 0050 agent traces. serviceVersion must match telemetry.Setup's version
 // (CLI Version()) so resource identity stays aligned with agent spans.
-// No-op when OTEL is unset, OTEL_SDK_DISABLED=true, or inbound TRACEPARENT
-// is explicitly unsampled (-00), matching parentSampledProcessor on agent
-// export. Fail-open: returns an error for the caller to warn on; never
-// writes primary telemetry files. Rows with empty/zero IDs are skipped.
+// No-op when OTEL is unset or OTEL_SDK_DISABLED=true. Per-score: when inbound
+// TRACEPARENT is valid and unsampled, scores whose TraceID equals that
+// parent TraceID are skipped (same rule as parentSampledProcessor — avoid
+// orphaning score spans on a TraceID that never left the box). Other
+// TraceIDs in the batch are unaffected. Fail-open: returns an error for the
+// caller to warn on; never writes primary telemetry files. Rows with
+// empty/zero IDs are skipped.
 func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVersion string) error {
 	if len(results) == 0 {
 		return nil
@@ -74,11 +82,6 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVe
 		return nil
 	}
 	if !telemetry.OTLPEnabled() {
-		return nil
-	}
-	if inboundTRACEPARENTUnsampled() {
-		// Same job as fullsend run: if the inbound parent was unsampled,
-		// agent OTLP was suppressed — do not orphan score spans on that TraceID.
 		return nil
 	}
 	if err := telemetry.ValidateOTLPEndpoints(); err != nil {
@@ -107,9 +110,15 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVe
 		_ = tp.Shutdown(shutCtx)
 	}()
 
+	suppressTID, suppressUnsampled := inboundUnsampledTRACEPARENT()
 	tr := tp.Tracer(otlpScopeName)
 	var errs []error
 	for _, r := range results {
+		if suppressUnsampled && scoreTraceIDEquals(r.TraceID, suppressTID) {
+			// Inbound parent for this TraceID was unsampled — agent OTLP
+			// suppressed; do not orphan a score span on that TraceID.
+			continue
+		}
 		if err := exportOneScore(ctx, tr, r); err != nil {
 			errs = append(errs, err)
 		}
@@ -126,27 +135,38 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVe
 	return errors.Join(errs...)
 }
 
-// inboundTRACEPARENTUnsampled reports whether TRACEPARENT is present and
-// carries the W3C sampled flag cleared (…-00). Empty/malformed TRACEPARENT
-// is treated as "no inbound parent" (export proceeds).
-func inboundTRACEPARENTUnsampled() bool {
+// inboundUnsampledTRACEPARENT parses TRACEPARENT with the same W3C
+// TraceContext propagator as fullsend run. When the inbound parent is valid,
+// remote, and unsampled, it returns that TraceID and true. Empty/malformed
+// or sampled TRACEPARENT → false (export proceeds for all scores).
+func inboundUnsampledTRACEPARENT() (trace.TraceID, bool) {
 	tp := strings.TrimSpace(os.Getenv("TRACEPARENT"))
 	if tp == "" {
-		return false
+		return trace.TraceID{}, false
 	}
-	parts := strings.Split(tp, "-")
-	if len(parts) != 4 {
-		return false
+	ctx := propagation.TraceContext{}.Extract(context.Background(), propagation.MapCarrier{
+		"traceparent": tp,
+		"tracestate":  strings.TrimSpace(os.Getenv("TRACESTATE")),
+	})
+	sc := trace.SpanContextFromContext(ctx)
+	if !sc.IsValid() || !sc.IsRemote() || sc.IsSampled() {
+		return trace.TraceID{}, false
 	}
-	flags, err := hex.DecodeString(parts[3])
-	if err != nil || len(flags) != 1 {
-		return false
-	}
-	return flags[0]&0x01 == 0
+	return sc.TraceID(), true
 }
 
-// capturingExporter records the first ExportSpans error so fail-open callers
-// can warn. Mutex covers BatchSpanProcessor (async export goroutine).
+func scoreTraceIDEquals(hexID string, want trace.TraceID) bool {
+	got, err := parseTraceID(hexID)
+	if err != nil {
+		return false
+	}
+	return got == want
+}
+
+// capturingExporter tracks the latest ExportSpans error so fail-open callers
+// can warn. A later successful ExportSpans clears a prior transient failure
+// (avoids false "remote export failed" after data actually landed). Mutex
+// covers BatchSpanProcessor's async export goroutine.
 type capturingExporter struct {
 	base sdktrace.SpanExporter
 	mu   sync.Mutex
@@ -155,13 +175,9 @@ type capturingExporter struct {
 
 func (c *capturingExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
 	err := c.base.ExportSpans(ctx, spans)
-	if err != nil {
-		c.mu.Lock()
-		if c.err == nil {
-			c.err = err
-		}
-		c.mu.Unlock()
-	}
+	c.mu.Lock()
+	c.err = err
+	c.mu.Unlock()
 	return err
 }
 

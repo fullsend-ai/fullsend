@@ -293,6 +293,54 @@ func TestExportOTLPScores_UnsampledTRACEPARENTNoop(t *testing.T) {
 	assert.Empty(t, sink.allSpans(), "unsampled inbound TRACEPARENT must suppress OTLP score export")
 }
 
+func TestExportOTLPScores_UnsampledTRACEPARENTOtherTraceIDExports(t *testing.T) {
+	sink := newScoreOTLPSink(t)
+	clearOTLPEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
+	// Unsampled parent for TraceID A must not suppress scores for TraceID B.
+	t.Setenv("TRACEPARENT", "00-84d470ba2451ffeccfe09022d9b2aebd-77f8c0902eaeedcb-00")
+	orig := newScoreOTLPExporter
+	t.Cleanup(func() { newScoreOTLPExporter = orig })
+	newScoreOTLPExporter = func(ctx context.Context) (sdktrace.SpanExporter, error) {
+		return telemetry.NewOTLPExporter(ctx)
+	}
+	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
+		Name: "trace_fitness", Label: LabelPass, TraceID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		SpanID: "bbbbbbbbbbbbbbbb", Value: 1, Version: "em-001@1",
+	}}, "test-1.2.3")
+	require.NoError(t, err)
+	assert.NotEmpty(t, sink.allSpans(), "unrelated TraceID must still export under TraceID-scoped gate")
+}
+
+func TestCapturingExporter_ClearsErrorOnLaterSuccess(t *testing.T) {
+	seq := &seqExporter{errs: []error{assert.AnError, nil}}
+	cap := &capturingExporter{base: seq}
+	require.Error(t, cap.ExportSpans(context.Background(), nil))
+	cap.mu.Lock()
+	require.Error(t, cap.err)
+	cap.mu.Unlock()
+	require.NoError(t, cap.ExportSpans(context.Background(), nil))
+	cap.mu.Lock()
+	assert.NoError(t, cap.err, "successful ExportSpans must clear prior latch")
+	cap.mu.Unlock()
+}
+
+type seqExporter struct {
+	errs []error
+	i    int
+}
+
+func (s *seqExporter) ExportSpans(context.Context, []sdktrace.ReadOnlySpan) error {
+	if s.i >= len(s.errs) {
+		return nil
+	}
+	err := s.errs[s.i]
+	s.i++
+	return err
+}
+
+func (s *seqExporter) Shutdown(context.Context) error { return nil }
+
 func TestExportOTLPScores_TruncatesLongExplanation(t *testing.T) {
 	sink := newScoreOTLPSink(t)
 	clearOTLPEnv(t)

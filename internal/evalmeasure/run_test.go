@@ -9,6 +9,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
+	"github.com/fullsend-ai/fullsend/internal/telemetry"
 )
 
 func TestLoadRegistryAndScoreTrace(t *testing.T) {
@@ -27,6 +30,7 @@ func TestLoadRegistryAndScoreTrace(t *testing.T) {
 }
 
 func TestMeasureFile_Idempotent(t *testing.T) {
+	clearOTLPEnv(t)
 	out := t.TempDir()
 	telemetry := filepath.Join("testdata", "complete.jsonl")
 	registry := filepath.Join("testdata", "sample-registry.yaml")
@@ -45,6 +49,7 @@ func TestMeasureFile_Idempotent(t *testing.T) {
 }
 
 func TestMeasureFile_AppendBeforeLedger(t *testing.T) {
+	clearOTLPEnv(t)
 	out := t.TempDir()
 	telemetry := filepath.Join("testdata", "complete.jsonl")
 	registry := filepath.Join("testdata", "sample-registry.yaml")
@@ -66,6 +71,7 @@ func TestMeasureFile_AppendBeforeLedger(t *testing.T) {
 }
 
 func TestMeasureFile_BadRegistry(t *testing.T) {
+	clearOTLPEnv(t)
 	_, err := MeasureFile(
 		filepath.Join("testdata", "complete.jsonl"),
 		filepath.Join(t.TempDir(), "missing.yaml"),
@@ -75,6 +81,7 @@ func TestMeasureFile_BadRegistry(t *testing.T) {
 }
 
 func TestMeasureFile_BadTelemetry(t *testing.T) {
+	clearOTLPEnv(t)
 	_, err := MeasureFile(
 		filepath.Join(t.TempDir(), "missing.jsonl"),
 		filepath.Join("testdata", "sample-registry.yaml"),
@@ -84,6 +91,7 @@ func TestMeasureFile_BadTelemetry(t *testing.T) {
 }
 
 func TestMeasureAndExport_CancelledContext(t *testing.T) {
+	clearOTLPEnv(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	_, _, err := MeasureAndExport(
@@ -115,6 +123,15 @@ func writeTwoTraceTelemetry(t *testing.T, completePath string) string {
 }
 
 func TestMeasureAndExport_KeepsFirstWhenSecondPersistFails(t *testing.T) {
+	sink := newScoreOTLPSink(t)
+	clearOTLPEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", sink.srv.URL+"/v1/traces")
+	orig := newScoreOTLPExporter
+	t.Cleanup(func() { newScoreOTLPExporter = orig })
+	newScoreOTLPExporter = func(ctx context.Context) (sdktrace.SpanExporter, error) {
+		return telemetry.NewOTLPExporter(ctx)
+	}
+
 	out := t.TempDir()
 	telem := writeTwoTraceTelemetry(t, filepath.Join("testdata", "complete.jsonl"))
 	ctx := WithPersistHook(context.Background(), func() {
@@ -122,14 +139,17 @@ func TestMeasureAndExport_KeepsFirstWhenSecondPersistFails(t *testing.T) {
 		require.NoError(t, os.Remove(meas))
 		require.NoError(t, os.Mkdir(meas, 0o755))
 	})
-	results, _, err := MeasureAndExport(ctx, telem, filepath.Join("testdata", "sample-registry.yaml"), out, "")
+	results, stats, err := MeasureAndExport(ctx, telem, filepath.Join("testdata", "sample-registry.yaml"), out, "test-1.2.3")
 	require.Error(t, err)
 	require.Len(t, results, 1)
 	assert.Equal(t, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", results[0].TraceID)
 	assert.Contains(t, err.Error(), "append measurements")
+	assert.Empty(t, stats.RemoteExportWarning, "persisted prefix must still attempt OTLP export")
+	require.NotEmpty(t, sink.allSpans(), "first persisted row must be OTLP-exported before mid-loop return")
 }
 
 func TestMeasureAndExport_ScoresPartialFileDespiteParseError(t *testing.T) {
+	clearOTLPEnv(t)
 	// Oversized line after a good line: ParseTelemetryFile keeps the good
 	// trace and returns sc.Err(); MeasureAndExport still scores it and
 	// treats the partial parse as success (scores are data).
@@ -161,6 +181,7 @@ func TestMeasureAndExport_ScoresPartialFileDespiteParseError(t *testing.T) {
 }
 
 func TestMeasureFile_PrescriptSkippedRecordsSkip(t *testing.T) {
+	clearOTLPEnv(t)
 	out := t.TempDir()
 	results, err := MeasureFile(
 		filepath.Join("testdata", "prescript-skipped.jsonl"),
@@ -179,6 +200,7 @@ func TestMeasureFile_PrescriptSkippedRecordsSkip(t *testing.T) {
 }
 
 func TestMeasureFile_EmptyIdentityPersistsFailRow(t *testing.T) {
+	clearOTLPEnv(t)
 	dir := t.TempDir()
 	telem := filepath.Join(dir, "run-telemetry.jsonl")
 	// Minimal OTLP line: run span with no agent identity.

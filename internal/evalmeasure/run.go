@@ -56,23 +56,38 @@ func MeasureAndExport(ctx context.Context, telemetryPath, registryPath, outDir, 
 	var all []EvaluationResult
 	hook, _ := ctx.Value(persistHookKey{}).(func())
 
+	// Fail-open OTLP for any rows already persisted+ledgered, including when
+	// a later row hits a mid-loop persist error (do not silently drop remote
+	// export for the successful prefix).
+	exportScored := func() {
+		if len(all) == 0 {
+			return
+		}
+		if err := ExportOTLPScores(ctx, all, serviceVersion); err != nil {
+			stats.RemoteExportWarning = err.Error()
+		}
+	}
+
 	for _, tr := range traces {
 		results := ScoreTrace(tr, reg)
 		for _, r := range results {
 			done, err := AlreadyScored(ledgerPath, r.TraceID, r.Name, r.Version)
 			if err != nil {
+				exportScored()
 				return all, stats, fmt.Errorf("check ledger: %w", err)
 			}
 			if done {
 				continue
 			}
 			if err := AppendMeasurements(measPath, []EvaluationResult{r}); err != nil {
+				exportScored()
 				return all, stats, fmt.Errorf("append measurements: %w", err)
 			}
 			// Only count rows that landed in eval-measurements.jsonl so
 			// CLI stdout matches disk on a later ledger/write error.
 			all = append(all, r)
 			if err := RecordScored(ledgerPath, r.TraceID, r.Name, r.Version); err != nil {
+				exportScored()
 				return all, stats, fmt.Errorf("record scored: %w", err)
 			}
 			if hook != nil {
@@ -80,11 +95,7 @@ func MeasureAndExport(ctx context.Context, telemetryPath, registryPath, outDir, 
 			}
 		}
 	}
-	if len(all) > 0 {
-		if err := ExportOTLPScores(ctx, all, serviceVersion); err != nil {
-			stats.RemoteExportWarning = err.Error()
-		}
-	}
+	exportScored()
 	// Partial parse with traces already scored is success: scores are data.
 	// stats.Incomplete (if set) lets the CLI warn without failing the job.
 	return all, stats, nil
