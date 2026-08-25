@@ -73,18 +73,21 @@ func attachContent(span trace.Span, res contentResult) {
 // contentPart is one part of the assembled assistant output message,
 // shaped for the GenAI output-messages JSON schema: TextPart
 // ({type:"text",content}), the schema's GenericPart extension point
-// ({type:"reasoning",content}), and ToolCallRequestPart
-// ({type:"tool_call",name}+summary). A tool summary is not the tool's
-// arguments, so no arguments field is ever fabricated from it.
+// ({type:"reasoning",content}), ToolCallRequestPart
+// ({type:"tool_call",id,name}+summary), and ToolCallResponsePart
+// ({type:"tool_call_response",id,response}). A tool summary is not the
+// tool's arguments, so no arguments field is ever fabricated from it.
 type contentPart struct {
-	Type    string `json:"type"`
-	Content string `json:"content,omitempty"`
-	Name    string `json:"name,omitempty"`
-	Summary string `json:"summary,omitempty"`
+	Type     string `json:"type"`
+	Content  string `json:"content,omitempty"`
+	ID       string `json:"id,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Summary  string `json:"summary,omitempty"`
+	Response string `json:"response,omitempty"`
 }
 
 func partSize(p contentPart) int {
-	return len(p.Content) + len(p.Name) + len(p.Summary)
+	return len(p.Content) + len(p.Name) + len(p.Summary) + len(p.Response)
 }
 
 // contentMessage is one message in the gen_ai.output.messages array.
@@ -102,7 +105,7 @@ type contentResult struct {
 	// when the iteration produced no content.
 	OutputMessages string
 	// DroppedBytes counts raw content bytes removed by the size budget
-	// (content, tool name, and summary bytes alike).
+	// (content, tool name, summary, and tool response bytes alike).
 	DroppedBytes int
 	// Truncated reports whether the budget cut or dropped anything.
 	Truncated bool
@@ -143,8 +146,8 @@ func newContentCollector(maxBytes int) *contentCollector {
 
 // Handle consumes one normalized event. Contiguous text and reasoning
 // deltas of the same kind coalesce into a single part (the Claude parser
-// emits per-delta); tool calls are discrete parts. All other event kinds
-// carry no conversation content and are ignored.
+// emits per-delta); tool calls and tool results are discrete parts. All
+// other event kinds carry no conversation content and are ignored.
 func (c *contentCollector) Handle(evt agentruntime.AgentEvent) {
 	if c == nil {
 		return
@@ -155,8 +158,14 @@ func (c *contentCollector) Handle(evt agentruntime.AgentEvent) {
 	case agentruntime.ThinkingEvent:
 		c.appendText("reasoning", e.Text)
 	case agentruntime.ToolUseEvent:
-		c.parts = append(c.parts, contentPart{Type: "tool_call", Name: e.Name, Summary: e.Summary})
-		c.total += len(e.Name) + len(e.Summary)
+		p := contentPart{Type: "tool_call", ID: e.ID, Name: e.Name, Summary: e.Summary}
+		c.parts = append(c.parts, p)
+		c.total += partSize(p)
+		c.evictOverflow()
+	case agentruntime.ToolResultEvent:
+		p := contentPart{Type: "tool_call_response", ID: e.ID, Response: e.Result}
+		c.parts = append(c.parts, p)
+		c.total += partSize(p)
 		c.evictOverflow()
 	}
 }
@@ -194,20 +203,33 @@ func (c *contentCollector) evictOverflow() {
 		c.redact(c.parts[0].Content, &c.findings)
 		c.redact(c.parts[0].Name, &c.findings)
 		c.redact(c.parts[0].Summary, &c.findings)
+		c.redact(c.parts[0].Response, &c.findings)
 		c.evicted += head
 		c.total -= head
 		c.parts = c.parts[1:]
 	}
 	if len(c.parts) == 1 && c.parts[0].Type != "tool_call" && c.total > 2*c.maxBytes {
-		p := &c.parts[0]
-		before := len(p.Content)
-		p.Content = c.redact(p.Content, &c.findings)
-		c.total -= before - len(p.Content)
-		kept := tailToRuneBoundary(p.Content, c.maxBytes)
-		c.evicted += len(p.Content) - len(kept)
-		c.total -= len(p.Content) - len(kept)
-		p.Content = kept
+		bulk := bulkField(&c.parts[0])
+		before := len(*bulk)
+		*bulk = c.redact(*bulk, &c.findings)
+		c.total -= before - len(*bulk)
+		kept := tailToRuneBoundary(*bulk, c.maxBytes)
+		c.evicted += len(*bulk) - len(kept)
+		c.total -= len(*bulk) - len(kept)
+		*bulk = kept
 	}
+}
+
+// bulkField returns the part's dominant content-bearing field, the one
+// size cuts operate on: response for tool_call_response parts, content
+// for text and reasoning. tool_call parts have no bulk field — a partial
+// name or summary would misrepresent the call, so they are never cut,
+// only dropped whole.
+func bulkField(p *contentPart) *string {
+	if p.Type == "tool_call_response" {
+		return &p.Response
+	}
+	return &p.Content
 }
 
 // Result assembles the redacted, size-bounded output messages for one
@@ -234,6 +256,7 @@ func (c *contentCollector) Result(finishReason string) contentResult {
 		p.Content = c.redact(p.Content, &res.Findings)
 		p.Name = c.redact(p.Name, &res.Findings)
 		p.Summary = c.redact(p.Summary, &res.Findings)
+		p.Response = c.redact(p.Response, &res.Findings)
 		if partSize(p) == 0 {
 			continue // sanitized away entirely; the finding is recorded
 		}
@@ -258,10 +281,11 @@ func (c *contentCollector) Result(finishReason string) contentResult {
 		}
 		res.Truncated = true
 		if !full && p.Type != "tool_call" && remaining > 0 {
-			tail := tailToRuneBoundary(p.Content, remaining)
+			bulk := bulkField(&p)
+			tail := tailToRuneBoundary(*bulk, remaining)
 			res.DroppedBytes += size - len(tail)
 			if tail != "" {
-				p.Content = tail
+				*bulk = tail
 				kept = append(kept, p)
 			}
 		} else {

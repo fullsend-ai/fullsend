@@ -30,6 +30,10 @@ func decodeOutputMessages(t *testing.T, raw string) []map[string]any {
 			part, ok := p.(map[string]any)
 			require.True(t, ok)
 			require.Contains(t, part, "type", "schema requires type on every part")
+			if part["type"] == "tool_call_response" {
+				require.Contains(t, part, "response",
+					"the schema's ToolCallResponsePart.required is [\"type\",\"response\"] — the key must be present even for an empty result")
+			}
 		}
 	}
 	return msgs
@@ -89,6 +93,39 @@ func TestContentCollector_ToolUseBecomesToolCallPart(t *testing.T) {
 		"a summary is not the tool's arguments; do not fabricate them")
 }
 
+func TestContentCollector_ToolCallPartCarriesID(t *testing.T) {
+	c := newContentCollector(4096)
+	c.Handle(agentruntime.ToolUseEvent{ID: "toolu_09qrs", Name: "Read", Summary: "/src/main.go"})
+
+	msgs := decodeOutputMessages(t, c.Result("stop").OutputMessages)
+	part := partAt(t, msgs, 0)
+	assert.Equal(t, "toolu_09qrs", part["id"],
+		"tool_call parts carry the id that correlates them with tool_call_response parts")
+}
+
+func TestContentCollector_IDlessToolCallOmitsIDKey(t *testing.T) {
+	// Runtimes without wire-format call ids (and the assistant fallback
+	// path before ids existed) emit ID-less events; the schema's id is
+	// optional, so the key is omitted rather than serialized empty.
+	c := newContentCollector(4096)
+	c.Handle(agentruntime.ToolUseEvent{Name: "Bash", Summary: "ls"})
+
+	msgs := decodeOutputMessages(t, c.Result("stop").OutputMessages)
+	assert.NotContains(t, partAt(t, msgs, 0), "id")
+}
+
+func TestContentCollector_ToolResultBecomesToolCallResponsePart(t *testing.T) {
+	c := newContentCollector(4096)
+	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_01abc", Result: "main.go\nutil.go\n"})
+
+	msgs := decodeOutputMessages(t, c.Result("stop").OutputMessages)
+	part := partAt(t, msgs, 0)
+	assert.Equal(t, "tool_call_response", part["type"])
+	assert.Equal(t, "toolu_01abc", part["id"])
+	assert.Equal(t, "main.go\nutil.go\n", part["response"],
+		"the schema's result field is named response, not result")
+}
+
 func TestContentCollector_RedactsSecretsAndSurfacesFindings(t *testing.T) {
 	secret := "ghp_" + strings.Repeat("a", 36)
 	c := newContentCollector(4096)
@@ -109,6 +146,42 @@ func TestContentCollector_RedactsToolCallNameAndSummary(t *testing.T) {
 	res := c.Result("stop")
 	assert.NotContains(t, res.OutputMessages, secret,
 		"tool_call name and summary are captured content and must be redacted")
+}
+
+func TestContentCollector_RedactsToolResultResponse(t *testing.T) {
+	// Tool results are the highest-secret-density field in the stream —
+	// they carry file contents and command output verbatim.
+	secret := "ghp_" + strings.Repeat("d", 36)
+	c := newContentCollector(4096)
+	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_06sec", Result: "config dump: " + secret})
+
+	res := c.Result("stop")
+	assert.NotContains(t, res.OutputMessages, secret,
+		"a secret inside a tool result must not survive assembly")
+	assert.NotEmpty(t, res.Findings)
+}
+
+func TestContentCollector_EmptyToolResultProducesNoPart(t *testing.T) {
+	// An empty result carries no content-bearing bytes; like text
+	// sanitized to empty, it produces no part — which also means no
+	// tool_call_response part ever omits its schema-required response key.
+	c := newContentCollector(4096)
+	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_07empty", Result: ""})
+
+	assert.Empty(t, c.Result("stop").OutputMessages)
+}
+
+func TestContentCollector_ToolResultsStayDiscrete(t *testing.T) {
+	// Unlike text/reasoning deltas, tool results never coalesce.
+	c := newContentCollector(4096)
+	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_a", Result: "one"})
+	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_b", Result: "two"})
+
+	msgs := decodeOutputMessages(t, c.Result("stop").OutputMessages)
+	parts := msgs[0]["parts"].([]any)
+	require.Len(t, parts, 2)
+	assert.Equal(t, "toolu_a", parts[0].(map[string]any)["id"])
+	assert.Equal(t, "toolu_b", parts[1].(map[string]any)["id"])
 }
 
 func TestContentCollector_PreservesCleanText(t *testing.T) {
@@ -277,6 +350,88 @@ func TestContentCollector_EvictedPartsAreStillScanned(t *testing.T) {
 	assert.NotContains(t, res.OutputMessages, secret)
 	assert.NotEmpty(t, res.Findings,
 		"findings inside evicted parts must still be counted")
+}
+
+func TestContentCollector_EvictedToolResultsAreStillScanned(t *testing.T) {
+	// Response bytes in parts evicted during accumulation must be scanned
+	// exactly like Content/Name/Summary — findings count even when the
+	// budget drops the part.
+	secret := "ghp_" + strings.Repeat("e", 36)
+	c := newContentCollector(30)
+	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_ev", Result: "leak: " + secret})
+	c.Handle(agentruntime.ThinkingEvent{Text: strings.Repeat("z", 30)})
+	c.Handle(agentruntime.TextEvent{Text: "the end"})
+
+	require.LessOrEqual(t, len(c.parts), 2,
+		"the secret-bearing tool result must have been evicted during accumulation")
+
+	res := c.Result("stop")
+	assert.NotContains(t, res.OutputMessages, secret)
+	assert.NotEmpty(t, res.Findings,
+		"findings inside evicted tool results must still be counted")
+}
+
+func TestContentCollector_BoundaryToolResultKeepsResponseTail(t *testing.T) {
+	// A tool_call_response at the suffix boundary is tail-cut on its
+	// response — like text, and unlike tool_call (whose name+summary
+	// would be misrepresented by a cut). The id survives the trim.
+	c := newContentCollector(20)
+	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_cut", Result: "0123456789ABCDEFGHIJ"})
+	c.Handle(agentruntime.TextEvent{Text: "final"})
+
+	res := c.Result("stop")
+	require.True(t, res.Truncated)
+	assert.Equal(t, 5, res.DroppedBytes,
+		"exactly the response bytes beyond the budget are dropped")
+
+	msgs := decodeOutputMessages(t, res.OutputMessages)
+	part := partAt(t, msgs, 0)
+	assert.Equal(t, "tool_call_response", part["type"])
+	assert.Equal(t, "toolu_cut", part["id"])
+	assert.Equal(t, "56789ABCDEFGHIJ", part["response"])
+	assert.Equal(t, "final", partAt(t, msgs, 1)["content"])
+}
+
+func TestContentCollector_DroppedToolResultCountsResponseBytes(t *testing.T) {
+	// When no budget remains at the boundary, the whole response part
+	// drops and its response bytes land in DroppedBytes exactly.
+	c := newContentCollector(5)
+	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_drop", Result: "0123456789"})
+	c.Handle(agentruntime.TextEvent{Text: "final"})
+
+	res := c.Result("stop")
+	require.True(t, res.Truncated)
+	assert.Equal(t, 10, res.DroppedBytes)
+	msgs := decodeOutputMessages(t, res.OutputMessages)
+	require.Len(t, msgs[0]["parts"].([]any), 1)
+	assert.Equal(t, "final", partAt(t, msgs, 0)["content"])
+}
+
+func TestContentCollector_PreTrimRedactsGiantToolResult(t *testing.T) {
+	// The over-double-budget pre-trim must operate on a lone
+	// tool_call_response's response field with the same
+	// redact-before-cut invariant as text content.
+	secret := "ghp_" + strings.Repeat("f", 36)
+	tail := strings.Repeat("! ", 35)
+	c := newContentCollector(100)
+	c.Handle(agentruntime.ToolResultEvent{
+		ID:     "toolu_giant",
+		Result: strings.Repeat("x", 140) + secret + tail,
+	})
+
+	require.LessOrEqual(t, c.total, 2*c.maxBytes,
+		"a lone giant tool result must be pre-trimmed to bound memory")
+
+	res := c.Result("stop")
+	assert.NotContains(t, res.OutputMessages, strings.Repeat("f", 10),
+		"no fragment of a boundary-straddling secret may survive the pre-trim")
+	assert.NotEmpty(t, res.Findings)
+
+	msgs := decodeOutputMessages(t, res.OutputMessages)
+	part := partAt(t, msgs, 0)
+	assert.Equal(t, "toolu_giant", part["id"])
+	assert.True(t, strings.HasSuffix(part["response"].(string), tail),
+		"the response ending must survive the pre-trim")
 }
 
 func TestContentCollector_EvictsWholeOldPartsExactly(t *testing.T) {
