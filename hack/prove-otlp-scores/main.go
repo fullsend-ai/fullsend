@@ -90,6 +90,11 @@ func main() {
 	_ = os.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", srv.URL)
 	_ = os.Unsetenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
 	_ = os.Unsetenv("OTEL_SDK_DISABLED")
+	// Clear ambient W3C parents so an unsampled TRACEPARENT from a prior
+	// fullsend run in this shell cannot suppress every score and make the
+	// prove tool report a false FAIL.
+	_ = os.Unsetenv("TRACEPARENT")
+	_ = os.Unsetenv("TRACESTATE")
 
 	results, stats, err := evalmeasure.MeasureAndExport(context.Background(), telem, reg, out, "dev")
 	if err != nil {

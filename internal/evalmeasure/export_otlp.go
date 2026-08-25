@@ -74,8 +74,10 @@ var newScoreOTLPExporter = func(ctx context.Context) (sdktrace.SpanExporter, err
 // orphaning score spans on a TraceID that never left the box). Other
 // TraceIDs in the batch are unaffected. Fail-open: returns an error for the
 // caller to warn on; never writes primary telemetry files. Rows with
-// empty/zero IDs are skipped. Partial ID failures report "N/M scores
-// exported" so operators can tell partial from total failure.
+// empty/zero IDs are skipped. Pure ID failures report "N/M scores
+// exported" so operators can tell partial from total failure; a
+// ForceFlush/export transport error uses a distinct "failed for all N"
+// message (row construction is not treated as delivery).
 func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVersion string) (err error) {
 	if len(results) == 0 {
 		return nil
@@ -137,7 +139,8 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVe
 			errs = append(errs, err)
 		}
 	}
-	if flushErr := tp.ForceFlush(ctx); flushErr != nil {
+	var flushErr error
+	if flushErr = tp.ForceFlush(ctx); flushErr != nil {
 		errs = append(errs, flushErr)
 	}
 	capExp.mu.Lock()
@@ -148,6 +151,11 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVe
 	}
 	if len(errs) == 0 {
 		return nil
+	}
+	// Transport failure: nothing is known to have landed — do not claim N/M
+	// success from spans that were only constructed locally.
+	if flushErr != nil || expErr != nil {
+		return fmt.Errorf("otlp export failed for all %d scores: %w", attempted, errors.Join(errs...))
 	}
 	exported := attempted - failed
 	return fmt.Errorf("%d/%d scores exported; %d failed: %w", exported, attempted, failed, errors.Join(errs...))

@@ -556,6 +556,8 @@ func TestRunEvalMeasure_OTLPFailWarns(t *testing.T) {
 	assert.False(t, skipped)
 	require.NotEmpty(t, results)
 	assert.Contains(t, buf.String(), "OTLP score export failed")
+	assert.Contains(t, buf.String(), "otlp export failed for all",
+		"transport failure must not claim N/M row-construction success")
 	_, statErr := os.Stat(filepath.Join(out, evalmeasure.MeasurementsFile))
 	require.NoError(t, statErr, "local JSONL must still be written")
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -139,8 +140,8 @@ func TestExportOTLPScores_EmitsGenAIEvaluationEvent(t *testing.T) {
 			for _, ss := range rs.GetScopeSpans() {
 				for _, sp := range ss.GetSpans() {
 					spanName = sp.GetName()
-					traceHex = hexOf(sp.GetTraceId())
-					parentHex = hexOf(sp.GetParentSpanId())
+					traceHex = hex.EncodeToString(sp.GetTraceId())
+					parentHex = hex.EncodeToString(sp.GetParentSpanId())
 					for _, ev := range sp.GetEvents() {
 						if ev.GetName() != EventGenAIEvaluationResult {
 							continue
@@ -279,6 +280,8 @@ func TestMeasureAndExport_OTLPFailOpen(t *testing.T) {
 	_, statErr := os.Stat(filepath.Join(dir, MeasurementsFile))
 	require.NoError(t, statErr)
 	require.NotEmpty(t, stats.RemoteExportWarning, "expected OTLP failure warning with local JSONL kept")
+	assert.Contains(t, stats.RemoteExportWarning, "otlp export failed for all",
+		"transport failure must not claim N/M row-construction success")
 }
 
 func TestExportOTLPScores_UnsampledTRACEPARENTNoop(t *testing.T) {
@@ -293,6 +296,25 @@ func TestExportOTLPScores_UnsampledTRACEPARENTNoop(t *testing.T) {
 	}}, "test-1.2.3")
 	require.NoError(t, err)
 	assert.Empty(t, sink.allSpans(), "unsampled inbound TRACEPARENT must suppress OTLP score export")
+}
+
+func TestExportOTLPScores_SampledTRACEPARENTExports(t *testing.T) {
+	sink := newScoreOTLPSink(t)
+	clearOTLPEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
+	// Sampled inbound parent (-01): common dispatched-pipeline path.
+	t.Setenv("TRACEPARENT", "00-84d470ba2451ffeccfe09022d9b2aebd-77f8c0902eaeedcb-01")
+	orig := newScoreOTLPExporter
+	t.Cleanup(func() { newScoreOTLPExporter = orig })
+	newScoreOTLPExporter = func(ctx context.Context) (sdktrace.SpanExporter, error) {
+		return telemetry.NewOTLPExporter(ctx)
+	}
+	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
+		Name: "trace_fitness", Label: LabelPass, TraceID: "84d470ba2451ffeccfe09022d9b2aebd",
+		SpanID: "77f8c0902eaeedcb", Value: 1, Version: "em-001@1",
+	}}, "test-1.2.3")
+	require.NoError(t, err)
+	assert.NotEmpty(t, sink.allSpans(), "sampled TRACEPARENT must not suppress score export")
 }
 
 func TestExportOTLPScores_UnsampledTRACEPARENTOtherTraceIDExports(t *testing.T) {
@@ -438,14 +460,4 @@ func explanationFromSink(t *testing.T, sink *scoreOTLPSink) string {
 		}
 	}
 	return ""
-}
-
-func hexOf(b []byte) string {
-	const hexdigits = "0123456789abcdef"
-	out := make([]byte, len(b)*2)
-	for i, v := range b {
-		out[i*2] = hexdigits[v>>4]
-		out[i*2+1] = hexdigits[v&0x0f]
-	}
-	return string(out)
 }
