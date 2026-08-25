@@ -86,6 +86,7 @@ type userContentItem struct {
 	Type      string          `json:"type"`
 	ToolUseID string          `json:"tool_use_id"`
 	Content   json.RawMessage `json:"content"`
+	IsError   bool            `json:"is_error"`
 }
 
 // systemEvent is Claude Code's initial "system"/"init" event, which carries the
@@ -425,8 +426,9 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 					continue
 				}
 				onEvent(ToolResultEvent{
-					ID:     item.ToolUseID,
-					Result: toolResultText(item.Content),
+					ID:      item.ToolUseID,
+					Result:  toolResultText(item.Content),
+					IsError: item.IsError,
 				})
 			}
 		}

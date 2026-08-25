@@ -436,6 +436,46 @@ func TestContentCollector_PreTrimRedactsGiantToolResult(t *testing.T) {
 		"the response ending must survive the pre-trim")
 }
 
+func TestContentCollector_ErrorToolResultCarriesErrorKey(t *testing.T) {
+	// A failed call's part carries is_error; successful parts omit the
+	// key. additionalProperties permits the sibling, same latitude as
+	// tool_call's summary.
+	c := newContentCollector(4096)
+	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_err", Result: "exit 1", IsError: true})
+	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_ok", Result: "done"})
+
+	msgs := decodeOutputMessages(t, c.Result("stop").OutputMessages)
+	failed := partAt(t, msgs, 0)
+	assert.Equal(t, true, failed["is_error"])
+	assert.NotContains(t, partAt(t, msgs, 1), "is_error")
+}
+
+func TestContentCollector_CutPartsCarryTruncatedMarker(t *testing.T) {
+	// Every cut part says so: a scorer must not read a fragment as a
+	// whole result. The marker is structural (outside the accounting)
+	// and absent on untouched parts.
+	c := newContentCollector(maxContentBytes)
+	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_big", Result: strings.Repeat("a", maxToolResultBytes+100)})
+	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_ok", Result: "small"})
+
+	msgs := decodeOutputMessages(t, c.Result("stop").OutputMessages)
+	assert.Equal(t, true, partAt(t, msgs, 0)["fullsend.truncated"],
+		"a cap-cut response must be marked")
+	assert.NotContains(t, partAt(t, msgs, 1), "fullsend.truncated")
+}
+
+func TestContentCollector_BoundaryTrimMarksPart(t *testing.T) {
+	c := newContentCollector(20)
+	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_cut", Result: "0123456789ABCDEFGHIJ"})
+	c.Handle(agentruntime.TextEvent{Text: "final"})
+
+	msgs := decodeOutputMessages(t, c.Result("stop").OutputMessages)
+	assert.Equal(t, true, partAt(t, msgs, 0)["fullsend.truncated"],
+		"a boundary-trimmed part must be marked")
+	assert.NotContains(t, partAt(t, msgs, 1), "fullsend.truncated",
+		"the intact ending stays unmarked")
+}
+
 func TestContentCollector_IDBytesCountTowardBudget(t *testing.T) {
 	// Ids are serialized into the attribute, so they count toward the
 	// budget like every other part byte — uncounted ids would let the

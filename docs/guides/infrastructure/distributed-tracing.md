@@ -102,7 +102,10 @@ feedback, a natural input-capture follow-up.
 (Unicode normalization, then secret masking) before reaching the span.
 Content is bounded at 256 KiB per iteration — each tool result at 8 KiB —
 kept as an ordered suffix; overflow drops the oldest content first.
-Truncation is marked via `fullsend.content.truncated`. The SDK's span attribute length cap is
+Truncation is marked via `fullsend.content.truncated` on the span and
+`fullsend.truncated` on each cut part. One earlier boundary exists:
+stream lines beyond 1 MiB are skipped whole by the parser, so a tool
+result that large is absent rather than truncated. The SDK's span attribute length cap is
 lifted while capture is on; an explicit
 `OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` still wins and will cut content
 mid-JSON — fullsend warns on stderr at startup.

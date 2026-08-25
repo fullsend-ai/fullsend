@@ -920,6 +920,19 @@ func TestParseClaudeStreamToolResultNonTextContent(t *testing.T) {
 	}
 }
 
+func TestParseClaudeStreamToolResultIsError(t *testing.T) {
+	// Failed tool calls carry is_error on the wire; the event surfaces it
+	// so consumers can tell an errored call from a successful one.
+	input := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_09err","content":"command not found","is_error":true}]}}`
+	results := collectToolResults(t, input)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 tool result event, got %d", len(results))
+	}
+	if !results[0].IsError {
+		t.Errorf("expected IsError=true for an is_error tool_result")
+	}
+}
+
 func TestParseClaudeStreamToolResultEmptyContent(t *testing.T) {
 	// A tool_result with empty content still marks completion; the event
 	// is emitted with its ID and an empty Result.

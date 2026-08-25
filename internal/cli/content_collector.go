@@ -105,6 +105,12 @@ type contentPart struct {
 	Name     string `json:"name,omitempty"`
 	Summary  string `json:"summary,omitempty"`
 	Response string `json:"response,omitempty"`
+	// IsError mirrors the wire's is_error on failed tool calls;
+	// Truncated marks a part whose bulk field was cut, so a consumer
+	// never reads a fragment as a whole result. Both are structural
+	// booleans of fixed serialized size, outside the byte accounting.
+	IsError   bool `json:"is_error,omitempty"`
+	Truncated bool `json:"fullsend.truncated,omitempty"`
 }
 
 // contentBytes counts a part's content-bearing bytes. A part with none
@@ -133,6 +139,15 @@ func boundedID(id string) string {
 
 // contentMessage is one message in the gen_ai.output.messages array.
 // finish_reason is REQUIRED by the schema's OutputMessage definition.
+//
+// The whole iteration is deliberately shaped as ONE assistant message:
+// parts keep stream order, and the iteration has exactly one meaningful
+// finish_reason. The GenAI convention's worked example instead places
+// client-executed tool results under a role:"tool" message in
+// gen_ai.input.messages; splitting this record that way would
+// interleave many messages, each requiring a finish_reason with no
+// per-message meaning. The deviation is schema-valid —
+// ToolCallResponsePart is admitted in output messages.
 type contentMessage struct {
 	Role         string        `json:"role"`
 	Parts        []contentPart `json:"parts"`
@@ -201,7 +216,7 @@ func (c *contentCollector) Handle(evt agentruntime.AgentEvent) {
 	case agentruntime.ToolUseEvent:
 		c.appendPart(contentPart{Type: "tool_call", ID: boundedID(e.ID), Name: e.Name, Summary: e.Summary})
 	case agentruntime.ToolResultEvent:
-		p := contentPart{Type: "tool_call_response", ID: boundedID(e.ID), Response: e.Result}
+		p := contentPart{Type: "tool_call_response", ID: boundedID(e.ID), Response: e.Result, IsError: e.IsError}
 		if len(p.Response) > maxToolResultBytes {
 			// Redact before the cap cut — the same invariant as every
 			// other cut: trimming raw bytes first could split a secret at
@@ -210,6 +225,7 @@ func (c *contentCollector) Handle(evt agentruntime.AgentEvent) {
 			kept := tailToRuneBoundary(p.Response, maxToolResultBytes)
 			c.evicted += len(p.Response) - len(kept)
 			p.Response = kept
+			p.Truncated = true
 		}
 		c.appendPart(p)
 	}
@@ -275,6 +291,9 @@ func (c *contentCollector) evictOverflow() {
 		kept := tailToRuneBoundary(*bulk, c.maxBytes)
 		c.evicted += len(*bulk) - len(kept)
 		c.total -= len(*bulk) - len(kept)
+		if len(kept) < len(*bulk) {
+			c.parts[0].Truncated = true
+		}
 		*bulk = kept
 	}
 }
@@ -349,6 +368,7 @@ func (c *contentCollector) Result(finishReason string) contentResult {
 			res.DroppedBytes += size - nonBulk - len(tail)
 			if tail != "" {
 				*bulk = tail
+				p.Truncated = true
 				kept = append(kept, p)
 			}
 		} else {
