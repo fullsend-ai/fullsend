@@ -108,7 +108,7 @@ jobs:
       issues: read
       pull-requests: read
     outputs:
-      stage: ${{ steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
+      stage: ${{ steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && steps.pr-check.outputs.skipped != 'true' && steps.docs-lockfile-check.outputs.skipped != 'true' && steps.route.outputs.stage || '' }}
       trigger_source: ${{ steps.route.outputs.trigger_source }}
       event_payload: ${{ steps.payload.outputs.event_payload }}
     steps:
@@ -151,6 +151,7 @@ jobs:
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
           PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_IS_DRAFT: ${{ github.event.pull_request.draft && 'true' || 'false' }}
           ORG_NAME: ${{ github.repository_owner }}
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -273,7 +274,7 @@ jobs:
                     STAGE="code"
                   fi
                 elif [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
-                  if [[ "${ISSUE_IS_PR}" == "true" ]]; then
+                  if [[ "${ISSUE_IS_PR}" == "true" ]] && ! has_label "fullsend-no-review"; then
                     STAGE="review"
                   fi
                 fi
@@ -283,12 +284,19 @@ jobs:
             pull_request_target)
               case "${EVENT_ACTION}" in
                 opened|synchronize|ready_for_review)
-                  if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]] || is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
-                    STAGE="review"
+                  # Drafts don't get an automatic review on open/sync — the
+                  # review fires once the PR is marked ready (ADR 0096).
+                  # fullsend-no-review blocks automatic dispatch only, mirroring
+                  # the fullsend-no-fix label (ADR 0034); an explicit /fs-review
+                  # comment still works on drafts and labeled PRs alike.
+                  if [[ "${EVENT_ACTION}" == "ready_for_review" || "${PR_IS_DRAFT}" != "true" ]] && ! has_label "fullsend-no-review" "${PR_LABELS}"; then
+                    if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]] || is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
+                      STAGE="review"
+                    fi
                   fi
                   ;;
                 labeled)
-                  if [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
+                  if [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]] && ! has_label "fullsend-no-review" "${PR_LABELS}"; then
                     STAGE="review"
                   fi
                   ;;
@@ -509,6 +517,60 @@ jobs:
             echo "::notice::Stage '$STAGE' skipped — agent '$STAGE' is disabled in config"
             echo "skipped=true" >> "${GITHUB_OUTPUT}"
             exit 0
+          fi
+
+      - name: Check docs/lockfile-only diff
+        id: docs-lockfile-check
+        if: steps.route.outputs.stage == 'review' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true' && github.event_name != 'issue_comment'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          # Skip review when every changed file is documentation prose
+          # (ADR 0096). An explicit /fs-review comment bypasses this check
+          # entirely (the issue_comment guard above), matching the draft and
+          # label bypasses.
+          #
+          # The pattern is deliberately narrow. `case` globs match `/`, so
+          # `docs/*` would swallow every TypeScript file under
+          # docs/.vitepress/ and the normative event schema, and a bare
+          # `*.md` would swallow skills/*/SKILL.md, AGENTS.md and CLAUDE.md —
+          # markdown that is executable agent instruction, not prose. ADRs are
+          # excluded because a new ADR is among the things most worth
+          # reviewing. Lockfiles are not skippable either: npm resolves from
+          # package-lock.json, so a lockfile-only diff can repoint a
+          # transitive dependency without touching package.json.
+          if [[ -z "${PR_NUMBER}" || "${PR_NUMBER}" == "null" ]]; then
+            exit 0
+          fi
+          FILES=$(gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}/files" --paginate -F per_page=100 --jq '.[].filename') || {
+            echo "::warning::Failed to fetch changed files for PR #${PR_NUMBER} — not skipping review"
+            exit 0
+          }
+          [[ -z "${FILES}" ]] && exit 0
+          # GitHub caps this endpoint at 3000 files and stops paginating
+          # without erroring, so a larger PR would look docs-only from a
+          # truncated head. Never skip on a truncated listing.
+          if [[ "$(wc -l <<< "${FILES}")" -ge 3000 ]]; then
+            echo "::notice::PR #${PR_NUMBER} file list may be truncated — not skipping review"
+            exit 0
+          fi
+          skippable=true
+          while IFS= read -r f; do
+            [[ -z "$f" ]] && continue
+            case "$f" in
+              docs/ADRs/*) skippable=false; break ;;
+              docs/*.md) ;;
+              *) skippable=false; break ;;
+            esac
+          done <<< "${FILES}"
+          if [[ "${skippable}" == "true" ]]; then
+            echo "::notice::Skipping review — PR #${PR_NUMBER} only touches documentation prose under docs/"
+            echo "### fullsend review skipped" >> "${GITHUB_STEP_SUMMARY}"
+            echo "PR #${PR_NUMBER} only touches documentation prose (\`docs/**/*.md\`, excluding ADRs) — no review dispatched." >> "${GITHUB_STEP_SUMMARY}"
+            echo "skipped=true" >> "${GITHUB_OUTPUT}"
           fi
 
       - name: Resolve PR head for issue_comment events

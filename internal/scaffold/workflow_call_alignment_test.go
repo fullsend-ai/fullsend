@@ -588,6 +588,86 @@ func TestDispatchPunctuationStrip(t *testing.T) {
 	}
 }
 
+// TestReviewRoutingSkips validates the review-routing hygiene skips (ADR
+// 0096): drafts don't trigger an automatic review on open/sync, and the
+// fullsend-no-review label blocks automatic (but not explicit /fs-review)
+// dispatch. Both dispatch workflows must stay in sync per
+// docs/contributing/workflow-contracts.md.
+func TestReviewRoutingSkips(t *testing.T) {
+	type workflowCase struct {
+		name    string
+		content func(t *testing.T) []byte
+	}
+
+	cases := []workflowCase{
+		{
+			"reusable-dispatch.yml",
+			loadRepoFile(".github/workflows/reusable-dispatch.yml"),
+		},
+		{
+			"scaffold/dispatch.yml",
+			loadScaffoldFile(".github/workflows/dispatch.yml"),
+		},
+	}
+
+	for _, wc := range cases {
+		t.Run(wc.name, func(t *testing.T) {
+			s := string(wc.content(t))
+
+			assert.Contains(t, s, `PR_IS_DRAFT: ${{ github.event.pull_request.draft && 'true' || 'false' }}`,
+				"must expose draft status to the routing step")
+
+			// Draft skip: opened/synchronize require non-draft OR ready_for_review;
+			// ready_for_review itself is never gated on draft status.
+			assert.Regexp(t, `(?s)if \[\[ "\$\{EVENT_ACTION\}" == "ready_for_review" \|\| "\$\{PR_IS_DRAFT\}" != "true" \]\] && ! has_label "fullsend-no-review" "\$\{PR_LABELS\}"; then\s*\n\s+if \[\[ "\$\{PR_USER_LOGIN\}"`, s,
+				"opened/synchronize/ready_for_review must skip drafts (except ready_for_review) and fullsend-no-review before routing to review")
+
+			// fullsend-no-review must also gate the labeled (ready-for-review) path...
+			assert.Regexp(t, `(?s)labeled\)\s*\n\s+if \[\[ "\$\{TRIGGERING_LABEL\}" == "ready-for-review" \]\] && ! has_label "fullsend-no-review" "\$\{PR_LABELS\}"; then\s*\n\s+STAGE="review"`, s,
+				"pull_request_target labeled ready-for-review must check fullsend-no-review")
+
+			// ...and the issues-event ready-for-review path (bot handoff via label).
+			assert.Regexp(t, `(?s)ready-for-review"\s*\]\];\s*then\s*\n\s+if \[\[ "\$\{ISSUE_(IS_PR|HAS_PR)\}" == "true" \]\] && ! has_label "fullsend-no-review"; then\s*\n\s+STAGE="review"`, s,
+				"issues labeled ready-for-review must check fullsend-no-review")
+
+			// The /fs-review comment escape hatch must remain ungated by the label
+			// (mirrors /fs-fix's fullsend-no-fix bypass) — only automatic triggers skip.
+			assert.Regexp(t, `(?s)/fs-review\)\s*\n\s+if \[\[ "\$\{ISSUE_(IS_PR|HAS_PR)\}" == "true" \]\]; then\s*\n\s+if \[\[ "\$\{COMMENT_USER_TYPE\}" != "Bot" \]\] && is_authorized triage; then`, s,
+				"/fs-review must remain unaffected by fullsend-no-review")
+		})
+	}
+}
+
+// TestReviewRoutingDocsSkip validates the documentation-prose skip step
+// (ADR 0096) in the per-repo reusable-dispatch.yml. Deliberately not
+// mirrored into the deprecated per-org scaffold/dispatch.yml (ADR 0044);
+// the ADR records that as follow-up.
+func TestReviewRoutingDocsSkip(t *testing.T) {
+	s := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+
+	assert.Contains(t, s, "id: docs-lockfile-check")
+	assert.Contains(t, s, "steps.docs-lockfile-check.outputs.skipped != 'true'",
+		"job-level stage output must account for the docs skip")
+	assert.Contains(t, s, `if: steps.route.outputs.stage == 'review' && steps.role-check.outputs.skipped != 'true' && steps.agent-check.outputs.skipped != 'true'`,
+		"docs-lockfile-check must only run for the review stage once role/agent gates pass")
+	assert.Contains(t, s, `gh api "repos/${SOURCE_REPO}/pulls/${PR_NUMBER}/files" --paginate`,
+		"docs-lockfile-check step must fetch the full PR file list via gh api")
+
+	// `case` globs match `/`, so these patterns are the difference between
+	// skipping prose and silently skipping executable agent instructions,
+	// the normative event schema, or a dependency bump.
+	assert.Contains(t, s, "docs/ADRs/*) skippable=false; break ;;",
+		"ADRs must never be treated as skippable prose")
+	assert.Contains(t, s, "docs/*.md) ;;",
+		"only markdown under docs/ is skippable")
+	assert.NotContains(t, s, `*.md|docs/*`,
+		"a bare *.md swallows skills/*/SKILL.md and AGENTS.md; docs/* swallows docs/.vitepress TypeScript")
+	assert.NotContains(t, s, "package-lock.json|yarn.lock",
+		"lockfile-only diffs can repoint dependencies and must still be reviewed")
+	assert.Contains(t, s, `GITHUB_STEP_SUMMARY`,
+		"skip must be recorded in the job summary, not just the log")
+}
+
 // TestDispatchPerStageAuthorization ensures triage-role users can trigger
 // observation stages (triage/review) but not mutation stages (code/fix).
 // See #5223 and ADR 0054.
