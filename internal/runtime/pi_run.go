@@ -851,6 +851,7 @@ type piRunResult struct {
 	execErr    error // non-nil only for infrastructure failures (not model errors)
 	modelSpec  string
 	guardErr   error // non-nil when a security guard tripped
+	stallErr   error // non-nil (ErrStalled) when the watchdog killed the attempt
 	// held is the attempt's events withheld from the handler while it could
 	// still be abandoned for a fallback; the loop replays them when this
 	// attempt turns out to be the final one.
@@ -917,6 +918,12 @@ func (r PiRuntime) piExecModel(ctx context.Context, params RunParams, m *piManif
 	}
 	defer cancel()
 
+	// cancel is the sandbox command's own cancel (a context derived inside
+	// ExecStreamReader) — the same kill the global timeout uses. The
+	// watchdog never touches ctx, which the caller owns.
+	stall := startStallWatchdog(params.StallTimeout, printer, cancel)
+	defer stall.stop()
+
 	var reader io.Reader = stdout
 	if params.OutputPath != "" {
 		f, ferr := os.Create(params.OutputPath)
@@ -930,6 +937,7 @@ func (r PiRuntime) piExecModel(ctx context.Context, params RunParams, m *piManif
 
 	var lastResult *ResultEvent
 	wrappedHandler := func(evt AgentEvent) {
+		stall.note()
 		switch e := evt.(type) {
 		case ResultEvent:
 			// Capture the result but do NOT forward it here; the
@@ -950,11 +958,18 @@ func (r PiRuntime) piExecModel(ctx context.Context, params RunParams, m *piManif
 		cancel()
 		io.Copy(io.Discard, reader)
 	}
+	// The stream is over, so no further event can arrive: disarm before Wait
+	// so a slow reap is never mistaken for a stall.
+	stall.stop()
 
 	waitErr := execCmd.Wait()
 	exitCode := -1
 	if execCmd.ProcessState != nil {
 		exitCode = execCmd.ProcessState.ExitCode()
+	}
+	// A stall is the cause of whatever Wait reports, so it is checked first.
+	if stallErr := stall.stalledErr(); stallErr != nil {
+		return piRunResult{exitCode: exitCode, stallErr: stallErr, modelSpec: modelSpec}
 	}
 	if waitErr != nil && execCmd.ProcessState == nil {
 		return piRunResult{exitCode: exitCode, execErr: fmt.Errorf("openshell exec failed: %w", waitErr), modelSpec: modelSpec}
@@ -995,7 +1010,7 @@ const piMinAttemptTimeout = time.Second
 // failures, non-zero exits, other stream errors and attempts where the
 // model already answered are final.
 func piShouldFallBack(res piRunResult) bool {
-	if res.execErr != nil || res.guardErr != nil || res.answered || res.exitCode != 0 {
+	if res.execErr != nil || res.guardErr != nil || res.stallErr != nil || res.answered || res.exitCode != 0 {
 		return false
 	}
 	return res.lastResult != nil && res.lastResult.IsError && isVertexModelUnavailable(res.lastResult.ErrorMessage)
@@ -1151,6 +1166,10 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		metricsHandler(*result.lastResult)
 	}
 
+	// A stall is the cause of whatever Wait reported, so it is checked first.
+	if result.stallErr != nil {
+		return result.exitCode, result.stallErr
+	}
 	// Return infrastructure/security errors.
 	if result.execErr != nil {
 		return result.exitCode, result.execErr
