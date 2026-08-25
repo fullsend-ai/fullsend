@@ -4873,7 +4873,7 @@ func TestAggregateRunMetrics_PartialCancelledRun(t *testing.T) {
 	}
 	m.ToolCalls.Store(10)
 
-	aggregateRunMetrics(&agg, &m, 1)
+	aggregateRunMetrics(&agg, &m, 1, 0)
 
 	if agg.TokenUsage.Input != 599 {
 		t.Errorf("token_usage.input = %d, want 599", agg.TokenUsage.Input)
@@ -4921,7 +4921,7 @@ func TestAggregateRunMetrics_MultiIterationCancel(t *testing.T) {
 		Model:                    "claude-opus-4-6",
 	}
 	m1.ToolCalls.Store(8)
-	aggregateRunMetrics(&agg, &m1, 1)
+	aggregateRunMetrics(&agg, &m1, 1, 0)
 
 	// Iteration 2: cancelled — TokensEvent only (no ResultEvent).
 	m2 := agentruntime.RunMetrics{
@@ -4932,7 +4932,7 @@ func TestAggregateRunMetrics_MultiIterationCancel(t *testing.T) {
 		Model:                    "claude-opus-4-6",
 	}
 	m2.ToolCalls.Store(3)
-	aggregateRunMetrics(&agg, &m2, 2)
+	aggregateRunMetrics(&agg, &m2, 2, 0)
 
 	// Token usage must reflect both iterations.
 	if agg.TokenUsage.Input != 10_599 {
@@ -5045,7 +5045,7 @@ func TestWriteMetricsJSON_MultiIterationCancelRoundTrip(t *testing.T) {
 		Model:                    "claude-opus-4-6",
 	}
 	m1.ToolCalls.Store(8)
-	aggregateRunMetrics(&agg, &m1, 1)
+	aggregateRunMetrics(&agg, &m1, 1, 0)
 
 	// Iteration 2: cancelled (partial tokens only).
 	m2 := agentruntime.RunMetrics{
@@ -5054,7 +5054,7 @@ func TestWriteMetricsJSON_MultiIterationCancelRoundTrip(t *testing.T) {
 		Model:        "claude-opus-4-6",
 	}
 	m2.ToolCalls.Store(3)
-	aggregateRunMetrics(&agg, &m2, 2)
+	aggregateRunMetrics(&agg, &m2, 2, 0)
 
 	if err := writeMetricsJSON(dir, agg); err != nil {
 		t.Fatalf("writeMetricsJSON: %v", err)
@@ -5087,6 +5087,71 @@ func TestWriteMetricsJSON_MultiIterationCancelRoundTrip(t *testing.T) {
 	if got.ToolCalls != 11 {
 		t.Errorf("tool_calls = %d, want 11", got.ToolCalls)
 	}
+}
+
+func TestWriteMetricsJSON_OverBudgetMarker(t *testing.T) {
+	dir := t.TempDir()
+	m := aggregateMetrics{TotalCostUSD: 6, OverBudget: true}
+
+	require.NoError(t, writeMetricsJSON(dir, m))
+
+	data, err := os.ReadFile(filepath.Join(dir, "metrics.json"))
+	require.NoError(t, err)
+	assert.Contains(t, string(data), `"over_budget": true`)
+
+	var got aggregateMetrics
+	require.NoError(t, json.Unmarshal(data, &got))
+	assert.True(t, got.OverBudget)
+}
+
+func TestExceedsCostBudget(t *testing.T) {
+	tests := []struct {
+		name         string
+		totalCostUSD float64
+		maxCostUSD   float64
+		want         bool
+	}{
+		{"zero cap means unlimited", 1000, 0, false},
+		{"under cap", 1.23, 5, false},
+		{"exactly at cap is not over", 5, 5, false},
+		{"over cap", 5.01, 5, true},
+		{"zero cost never trips", 0, 5, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, exceedsCostBudget(tt.totalCostUSD, tt.maxCostUSD))
+		})
+	}
+}
+
+// TestRunAgent_DoesNotCancelTheRunContext guards a regression that reported
+// every run as "cancelled" on the PR.
+//
+// The budget halt was once implemented as `ctx, budgetCancel :=
+// context.WithCancel(ctx)` at runAgent's body scope. That reassigns the ctx
+// the status-comment defer closes over, and defers run LIFO, so budgetCancel
+// fired before the notifier — which then read ctx.Err() != nil and posted
+// "cancelled" for successful runs. The halt is a plain flag now; this test
+// pins that by rejecting any context cancellation at that scope.
+//
+// It reads the source because the failure is invisible at the package
+// boundary: the run still succeeds, only the reported status is wrong, and
+// .codecov.yml excludes run.go from patch coverage.
+func TestRunAgent_DoesNotCancelTheRunContext(t *testing.T) {
+	src, err := os.ReadFile("run.go")
+	require.NoError(t, err)
+
+	start := bytes.Index(src, []byte("func runAgent("))
+	require.Positive(t, start, "runAgent not found in run.go")
+	body := src[start:]
+
+	// Body-scope (one-tab) cancellation of the run's own ctx. A derived
+	// context on its own variable is fine — the status defer closes over
+	// `ctx`, so only rebinding that name breaks it.
+	assert.NotContains(t, string(body), "\n\tctx, cancel := context.WithCancel(ctx)",
+		"rebinding ctx at runAgent's body scope makes the status defer report 'cancelled'")
+	assert.NotContains(t, string(body), "\n\tctx, budgetCancel := context.WithCancel(ctx)",
+		"rebinding ctx at runAgent's body scope makes the status defer report 'cancelled'")
 }
 
 // --- mintAgentToken tests ---

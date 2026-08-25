@@ -755,6 +755,23 @@ func TestValidate_NegativeTimeout(t *testing.T) {
 	assert.Contains(t, err.Error(), "timeout_minutes must be non-negative")
 }
 
+func TestValidate_NegativeMaxCostUSD(t *testing.T) {
+	h := &Harness{Agent: "agents/test.md", Role: "test", MaxCostUSD: -0.01}
+	err := h.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "max_cost_usd must be non-negative")
+}
+
+func TestValidate_MaxCostUSDZeroAllowed(t *testing.T) {
+	h := &Harness{Agent: "agents/test.md", Role: "test", MaxCostUSD: 0}
+	require.NoError(t, h.Validate())
+}
+
+func TestValidate_MaxCostUSDPositiveAllowed(t *testing.T) {
+	h := &Harness{Agent: "agents/test.md", Role: "test", MaxCostUSD: 5.25}
+	require.NoError(t, h.Validate())
+}
+
 func TestValidate_NegativeSandboxTimeout(t *testing.T) {
 	h := &Harness{Agent: "agents/test.md", Role: "test", SandboxTimeoutSeconds: -1}
 	err := h.Validate()
