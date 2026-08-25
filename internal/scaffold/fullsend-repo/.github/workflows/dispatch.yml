@@ -1,5 +1,5 @@
 ---
-# lint-workflow-size: max-lines=612
+# lint-workflow-size: max-lines=620
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -50,6 +50,7 @@ jobs:
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_BASE_REPO: ${{ github.event.pull_request.base.repo.full_name }}
           PR_USER_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_IS_DRAFT: ${{ github.event.pull_request.draft && 'true' || 'false' }}
           ORG_NAME: ${{ github.repository_owner }}
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -175,7 +176,7 @@ jobs:
                     STAGE="code"
                   fi
                 elif [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
-                  if [[ "${ISSUE_HAS_PR}" == "true" ]]; then
+                  if [[ "${ISSUE_HAS_PR}" == "true" ]] && ! has_label "fullsend-no-review"; then
                     STAGE="review"
                   fi
                 fi
@@ -185,12 +186,19 @@ jobs:
             pull_request_target)
               case "${EVENT_ACTION}" in
                 opened|synchronize|ready_for_review)
-                  if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]] || is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
-                    STAGE="review"
+                  # Drafts don't get an automatic review on open/sync — the
+                  # review fires once the PR is marked ready (ADR 0096).
+                  # fullsend-no-review blocks automatic dispatch only, mirroring
+                  # the fullsend-no-fix label (ADR 0034); an explicit /fs-review
+                  # comment still works on drafts and labeled PRs alike.
+                  if [[ "${EVENT_ACTION}" == "ready_for_review" || "${PR_IS_DRAFT}" != "true" ]] && ! has_label "fullsend-no-review" "${PR_LABELS}"; then
+                    if [[ "${PR_USER_LOGIN}" =~ \[bot\]$ ]] || is_event_actor_authorized "${PR_USER_LOGIN}" triage; then
+                      STAGE="review"
+                    fi
                   fi
                   ;;
                 labeled)
-                  if [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]]; then
+                  if [[ "${TRIGGERING_LABEL}" == "ready-for-review" ]] && ! has_label "fullsend-no-review" "${PR_LABELS}"; then
                     STAGE="review"
                   fi
                   ;;
