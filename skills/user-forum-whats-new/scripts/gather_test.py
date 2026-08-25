@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+import io
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -62,8 +65,22 @@ class TestWindowBounds(unittest.TestCase):
         self.assertTrue(clamped)
 
     def test_rejects_inverted_window(self):
-        with self.assertRaises(ValueError):
-            window_bounds("2026-08-18", "2026-08-11")
+        with self.assertRaises(ValueError) as ctx:
+            window_bounds(
+                "2026-08-18",
+                "2026-08-11",
+                now=datetime(2026, 8, 20, 12, 0, tzinfo=UTC),
+            )
+        self.assertIn("is before since", str(ctx.exception))
+
+    def test_same_day_before_08_et_says_not_started(self):
+        # 2026-08-18 07:00 EDT = 11:00 UTC; since 08:00 ET = 12:00 UTC
+        now = datetime(2026, 8, 18, 11, 0, tzinfo=UTC)
+        with self.assertRaises(ValueError) as ctx:
+            window_bounds("2026-08-18", "2026-08-18", now=now)
+        self.assertIn("window has not started yet", str(ctx.exception))
+        self.assertIn("2026-08-18", str(ctx.exception))
+        self.assertNotIn("is before since", str(ctx.exception))
 
 
 class TestInWindow(unittest.TestCase):
@@ -436,24 +453,67 @@ class TestHelpers(unittest.TestCase):
             data = load_json(path, required=True)
             self.assertEqual(data[0]["title"], "shipped 🚀")
 
-    def test_fetch_uses_base_main(self):
-        import inspect
-
+    def test_fetch_into_argv_and_timeout(self):
         from gather import fetch_into
 
-        src = inspect.getsource(fetch_into)
-        self.assertIn('"--base"', src)
-        self.assertIn('"main"', src)
+        since_ts = parse_iso("2026-08-11T12:00:00Z")
+        until_ts = parse_iso("2026-08-18T20:00:00Z")
+        assert since_ts and until_ts
+        merged = search_merged_at_range(since_ts, until_ts)
+        calls: list[list[str]] = []
 
-    def test_fetch_releases_uses_slurp(self):
-        import inspect
+        def fake_run(cmd, **kwargs):
+            calls.append(list(cmd))
+            self.assertTrue(kwargs.get("check"))
+            self.assertEqual(kwargs.get("timeout"), GH_TIMEOUT_SEC)
+            self.assertIsNotNone(kwargs.get("stdout"))
+            return MagicMock(returncode=0)
 
-        from gather import fetch_into
+        with (
+            tempfile.TemporaryDirectory() as tmp_s,
+            patch("gather.subprocess.run", side_effect=fake_run),
+        ):
+            fetch_into(Path(tmp_s), since_ts, until_ts)
 
-        src = inspect.getsource(fetch_into)
-        self.assertIn('"--slurp"', src)
-        self.assertIn('"--paginate"', src)
-        self.assertIn("timeout=GH_TIMEOUT_SEC", src)
+        self.assertEqual(len(calls), 4)
+        rel_cmds = [c for c in calls if c[1] == "api"]
+        search_cmds = [c for c in calls if c[1] == "search"]
+        self.assertEqual(len(rel_cmds), 2)
+        self.assertEqual(len(search_cmds), 2)
+        for cmd in rel_cmds:
+            self.assertIn("--paginate", cmd)
+            self.assertIn("--slurp", cmd)
+            self.assertTrue(any(a.startswith("repos/") and "/releases" in a for a in cmd))
+        for cmd in search_cmds:
+            self.assertEqual(cmd[cmd.index("--base") + 1], "main")
+            self.assertEqual(cmd[cmd.index("--merged-at") + 1], merged)
+            self.assertEqual(cmd[cmd.index("--limit") + 1], str(SEARCH_LIMIT))
+
+    def test_main_maps_gh_timeout(self):
+        from gather import main
+
+        with (
+            patch(
+                "gather.fetch_into",
+                side_effect=subprocess.TimeoutExpired(cmd=["gh"], timeout=GH_TIMEOUT_SEC),
+            ),
+            patch("sys.stderr", new_callable=io.StringIO) as err,
+        ):
+            code = main(["--since", "2026-08-11", "--until", "2026-08-18"])
+        self.assertEqual(code, 1)
+        self.assertIn("timed out", err.getvalue())
+
+    def test_main_maps_gh_called_process_error(self):
+        from gather import main
+
+        err_proc = subprocess.CalledProcessError(1, ["gh", "api"])
+        with (
+            patch("gather.fetch_into", side_effect=err_proc),
+            patch("sys.stderr", new_callable=io.StringIO) as err,
+        ):
+            code = main(["--since", "2026-08-11", "--until", "2026-08-18"])
+        self.assertEqual(code, 1)
+        self.assertIn("gh command failed", err.getvalue())
 
     def test_flatten_gh_slurp_pages(self):
         flat = [{"tag_name": "v1"}, {"tag_name": "v2"}]
