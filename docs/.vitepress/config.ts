@@ -208,8 +208,8 @@ export default defineConfig({
           collapsed: true,
           link: "/runtimes",
           items: [
-            { text: "Running Claude Code", link: "/runtimes/claude" },
-            { text: "Running pi", link: "/runtimes/pi" },
+            { text: "Claude Code", link: "/runtimes/claude" },
+            { text: "Pi", link: "/runtimes/pi" },
           ],
         },
         {

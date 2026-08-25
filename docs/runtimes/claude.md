@@ -1,4 +1,4 @@
-# Running Claude Code
+# Claude Code
 
 [Claude Code](https://claude.com/claude-code) is fullsend's default runtime. Every role is supported,
 and nothing needs configuring to use it — this page is the operational detail once you are on it.
@@ -73,5 +73,5 @@ marker passes through untouched.
 ## See also
 
 - [Agent runtimes](../runtimes.md) — choosing and selecting a runtime
-- [Running pi](pi.md) — the second runtime, for Grok and Gemini
+- [Pi](pi.md) — the second runtime, for Grok and Gemini
 - [Running agents locally](../guides/user/running-agents-locally.md) — local runs

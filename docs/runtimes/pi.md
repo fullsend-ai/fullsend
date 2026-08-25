@@ -1,4 +1,4 @@
-# Running pi
+# Pi
 
 [pi](https://github.com/earendil-works/pi) is fullsend's second agent runtime, opt-in per org or
 repo. It reaches models Claude Code cannot — **Grok** and **Gemini** alongside Claude — through the

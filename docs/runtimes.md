@@ -97,7 +97,7 @@ On Claude Code, pass an alias (`opus`, `sonnet`, `haiku`, `fable`) or a model id
 
 On pi, a model is `provider/id` — aliases and bare ids still work, and the provider comes from
 `FULLSEND_PI_PROVIDER` (default `anthropic-vertex`). pi reaches Claude, Gemini **and** Grok, each
-through its own provider; see [Running pi › Models and providers](runtimes/pi.md#models-and-providers).
+through its own provider; see [Pi › Models and providers](runtimes/pi.md#models-and-providers).
 
 Because harness `model:` cannot contain `/` (`validModelName` is `^[a-zA-Z0-9_.@-]+$`), a harness
 selects a pi provider with a bare `model:` plus `FULLSEND_PI_PROVIDER`.
@@ -136,8 +136,8 @@ Full per-key detail, including the exact `--tools` mapping and allowlist parsing
 
 ## Related docs
 
-- [Running Claude Code](runtimes/claude.md) — models, fallback chains, behaviour notes
-- [Running pi](runtimes/pi.md) — models and providers, behaviour differences, troubleshooting
+- [Claude Code](runtimes/claude.md) — models, fallback chains, behaviour notes
+- [Pi](runtimes/pi.md) — models and providers, behaviour differences, troubleshooting
 - [Implementing an agent runtime](contributing/runtime-implementation.md) — security matrix, interfaces, hook contract, sandbox layout
 - [Running agents locally](guides/user/running-agents-locally.md) — step-by-step local runs
 - [architecture.md](architecture.md) — where the runtime sits
