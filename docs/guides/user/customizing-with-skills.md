@@ -86,7 +86,7 @@ copied agent definition for the run. The model must open the skill with the
 Skill tool before relying on it — bodies are not pasted into the agent file.
 The whole skill directory is still uploaded, so companions stay on disk.
 The agent’s `tools:` must include Skill. See
-[ADR 0091](../../ADRs/0091-always-on-harness-skills.md) and the
+[ADR 0092](../../ADRs/0092-always-on-harness-skills.md) and the
 [activation matrix](https://github.com/fullsend-playground/python-app/blob/main/docs/adr-0091-skill-activation-matrix.html).
 
 ## Adding skills to your repository

@@ -171,12 +171,12 @@ repo baseline and overrides)
   always-use directive on the copied agent definition; the model opens each
   via the Skill tool. Teams add behavior modifiers via harness `skills:`
   without naming them in default prompts
-  ([ADR 0091](ADRs/0091-always-on-harness-skills.md)).
+  ([ADR 0092](ADRs/0092-always-on-harness-skills.md)).
 
 **Open questions:**
 
 - Does the harness live inside the sandbox (configuring the agent from within its isolation boundary) or outside it (preparing the environment before the agent starts)? (Security hooks are injected as a runner-owned `hooks.json` loaded via `--settings`; see [ADR 0027](ADRs/0027-allowed-and-disallowed-tools-for-agents.md). General harness placement remains open.)
-- How is codebase context assembled? (See [codebase-context.md](problems/codebase-context.md). Always-on vs on-demand skill load mode for harness-listed skills is decided in [ADR 0091](ADRs/0091-always-on-harness-skills.md).)
+- How is codebase context assembled? (See [codebase-context.md](problems/codebase-context.md). Always-on vs on-demand skill load mode for harness-listed skills is decided in [ADR 0092](ADRs/0092-always-on-harness-skills.md).)
 - How do we version and test harness configurations? (See [testing-agents.md](problems/testing-agents.md).) (Functional tests now test the full pipeline including harness-assembled configuration — [ADR 0052](ADRs/0052-functional-tests-for-agent-pipelines.md). Harness versioning remains open.)
 
 ## Agent Runtime
