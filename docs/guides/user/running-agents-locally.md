@@ -282,7 +282,7 @@ config-registered agent to a local harness directory.
 
 > For background on the pi runtime, its security posture, and known
 > constraints, see [Agent runtimes — Pi-specific known
-> constraints](../../runtimes.md#running-pi).
+> constraints](../../runtimes/pi.md).
 
 ### Prerequisites (pi-specific)
 

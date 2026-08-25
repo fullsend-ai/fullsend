@@ -205,7 +205,9 @@ export default defineConfig({
         },
         {
           text: "Runtimes",
+          collapsed: true,
           link: "/runtimes",
+          items: [{ text: "Running pi", link: "/runtimes/pi" }],
         },
         {
           text: "Agents",
@@ -335,7 +337,7 @@ export default defineConfig({
       provider: "local",
       options: {
         scopes: [
-          { label: "Guides", prefixes: ["/docs/guides/", "/docs/agents/", "/docs/cli/"] },
+          { label: "Guides", prefixes: ["/docs/guides/", "/docs/agents/", "/docs/cli/", "/docs/runtimes"] },
           {
             label: "Design Docs",
             prefixes: ["/docs/problems/", "/docs/ADRs/", "/docs/normative/", "/docs/spikes/"],

@@ -210,7 +210,7 @@ The `dummy` runtime executes a YAML script of operations inside the real sandbox
 
 ## pi runtime internals (#6464)
 
-User-facing pi behaviour is in [runtimes.md](../runtimes.md#running-pi). This section keeps the
+User-facing pi behaviour is in [Running pi](../runtimes/pi.md). This section keeps the
 verification provenance: what was checked against pi's source, on which version, and what must be
 re-checked on a `PI_VERSION` or extension bump.
 
