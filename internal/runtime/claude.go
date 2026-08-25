@@ -504,6 +504,13 @@ func (r ClaudeRuntime) runAttempt(ctx context.Context, params RunParams, mayFall
 	}
 	defer cancel()
 
+	// cancel is the sandbox command's own cancel (a context derived inside
+	// ExecStreamReader) — the same kill the global timeout uses. The
+	// watchdog never touches ctx, which the caller owns. It arms per
+	// attempt, so a fallback attempt starts with a fresh silence clock.
+	stall := startStallWatchdog(params.StallTimeout, printer, cancel)
+	defer stall.stop()
+
 	var reader io.Reader = stdout
 	if params.OutputPath != "" {
 		f, ferr := os.Create(params.OutputPath)
@@ -518,6 +525,7 @@ func (r ClaudeRuntime) runAttempt(ctx context.Context, params RunParams, mayFall
 	var lastResult *ResultEvent
 	sessionID := ""
 	onEvent := func(evt AgentEvent) {
+		stall.note()
 		switch e := evt.(type) {
 		case ResultEvent:
 			lastResult = &e
@@ -535,11 +543,20 @@ func (r ClaudeRuntime) runAttempt(ctx context.Context, params RunParams, mayFall
 		cancel()
 		io.Copy(io.Discard, reader)
 	}
+	// The stream is over, so no further event can arrive: disarm before Wait
+	// so a slow reap is never mistaken for a stall.
+	stall.stop()
 
 	waitErr := execCmd.Wait()
 	exitCode := -1
 	if execCmd.ProcessState != nil {
 		exitCode = execCmd.ProcessState.ExitCode()
+	}
+
+	// A stall is the cause of whatever Wait reports, so it is checked first.
+	// It travels as execErr, which claudeShouldFallBack never retries.
+	if stallErr := stall.stalledErr(); stallErr != nil {
+		return claudeAttemptResult{exitCode: exitCode, execErr: stallErr, lastResult: lastResult, sessionID: sessionID}
 	}
 
 	if waitErr != nil && execCmd.ProcessState == nil {

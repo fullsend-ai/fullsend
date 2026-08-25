@@ -1,10 +1,12 @@
 package cli
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -169,6 +171,47 @@ func TestResolveBackend_OverrideWinsOverConfig(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "pi", backend.Runtime.Name())
 	assert.Equal(t, sourceFlagRuntime, source)
+}
+
+func TestResolveStallTimeout(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		env     string
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "unset uses the default", want: defaultStallTimeout},
+		{name: "explicit duration", env: "90s", want: 90 * time.Second},
+		{name: "surrounding space is trimmed", env: " 2m ", want: 2 * time.Minute},
+		{name: "zero disables the watchdog", env: "0", want: 0},
+		{name: "malformed value keeps the default and reports", env: "ten minutes", want: defaultStallTimeout, wantErr: true},
+		{name: "bare number is not a duration", env: "600", want: defaultStallTimeout, wantErr: true},
+		{name: "negative is rejected", env: "-1m", want: defaultStallTimeout, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveStallTimeout(envMap(map[string]string{envStallTimeout: tc.env}))
+			assert.Equal(t, tc.want, got)
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), envStallTimeout)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}
+
+func TestAggregateMetrics_StalledOmittedWhenFalse(t *testing.T) {
+	t.Parallel()
+	clean, err := json.Marshal(aggregateMetrics{})
+	require.NoError(t, err)
+	assert.NotContains(t, string(clean), "stalled")
+
+	stalled, err := json.Marshal(aggregateMetrics{Stalled: true})
+	require.NoError(t, err)
+	assert.Contains(t, string(stalled), `"stalled":true`)
 }
 
 func TestModelOverrideSource(t *testing.T) {

@@ -130,6 +130,12 @@ Progress display depends on the selected runtime. See
 [Claude Workflow progress](../runtimes/claude.md#live-claude-workflow-progress)
 for Claude background tasks, agent lifecycle metadata and display limits.
 
+## Stall watchdog
+
+The global run timeout is wall-clock, so a wedged agent looks exactly like a thinking one until it expires — and the run is billed for the difference. The watchdog watches the runtime event stream instead: after half of `FULLSEND_STALL_TIMEOUT` without a single agent event it warns once (`::warning::no agent events for 5m0s` in CI), and after the full duration it terminates the sandbox command — the same kill the global timeout uses. The run then fails with `agent stalled` and records `"stalled": true` in `metrics.json`.
+
+`FULLSEND_STALL_TIMEOUT` takes a Go duration and defaults to `10m`; `0` disables the watchdog. The default is generous on purpose: Claude Code's `stream-json` emits an event per assistant message and per completed tool call, so a single long tool call (a full test suite, a slow clone) is legitimately silent for minutes. Repos that know their event cadence can tune it down. A value that is not a duration is reported on stderr and ignored, and the default applies.
+
 ## Output artifacts
 
 Each run produces artifacts in the output directory. Relative `--output-dir`
@@ -162,6 +168,7 @@ depend on the process cwd.
 | `per_model_usage` | Per-model breakdown, present only when a runtime reports one (today: `pi` with the `Agent` tool enabled, `claude` when Claude Code's result carries `modelUsage`, and `codex` for an agent with registered sub-agent roles or a spawn in its stream). See below |
 | `fallback_from` | Models the run moved off, in the order tried, before `model` took over: models the Vertex project did not serve, and on `claude` any model Claude Code's own `--fallback-model` handling left, for example on overload (`claude` and `pi`; see [Claude Code](../runtimes/claude.md#models)). Absent when the first model ran |
 | `fallback_reasons` | Why the run moved off each `fallback_from` entry, at the same index: `not_served` when the runner retried because the Vertex project does not serve the model, `claude_code:<trigger>` when Claude Code switched models itself (its `model_fallback` trigger, for example `claude_code:last_resort`). Absent when the first model ran |
+| `stalled` | Present (`true`) only when the run was killed by the stall watchdog |
 
 #### Per-model usage
 
