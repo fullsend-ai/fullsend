@@ -46,8 +46,9 @@ const (
 
 	spanNameEvalMeasure = "fullsend.eval_measure"
 	otlpScopeName       = "github.com/fullsend-ai/fullsend/internal/evalmeasure"
-	// Score export is post-hoc and fail-open: bound total wall time so a
-	// flaky collector cannot hang the agent job until GHA timeout.
+	// Score export is post-hoc and fail-open: bound total wall time for
+	// exporter create + span emit + ForceFlush + Shutdown so a flaky
+	// collector cannot hang the agent job until GHA timeout.
 	otlpExportBudget = 15 * time.Second
 	otlpRetryBudget  = 5 * time.Second
 )
@@ -73,8 +74,9 @@ var newScoreOTLPExporter = func(ctx context.Context) (sdktrace.SpanExporter, err
 // orphaning score spans on a TraceID that never left the box). Other
 // TraceIDs in the batch are unaffected. Fail-open: returns an error for the
 // caller to warn on; never writes primary telemetry files. Rows with
-// empty/zero IDs are skipped.
-func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVersion string) error {
+// empty/zero IDs are skipped. Partial ID failures report "N/M scores
+// exported" so operators can tell partial from total failure.
+func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVersion string) (err error) {
 	if len(results) == 0 {
 		return nil
 	}
@@ -104,27 +106,39 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVe
 		sdktrace.WithRawSpanLimits(telemetry.SpanLimits()),
 		sdktrace.WithSpanProcessor(sdktrace.NewBatchSpanProcessor(capExp)),
 	)
+	// Shutdown shares the same export budget (remaining deadline on ctx),
+	// not an extra Background timeout stacked on top.
 	defer func() {
-		shutCtx, shutCancel := context.WithTimeout(context.Background(), otlpRetryBudget)
-		defer shutCancel()
-		_ = tp.Shutdown(shutCtx)
+		if shutErr := tp.Shutdown(ctx); shutErr != nil {
+			err = errors.Join(err, fmt.Errorf("otlp shutdown: %w", shutErr))
+		}
 	}()
 
 	suppressTID, suppressUnsampled := inboundUnsampledTRACEPARENT()
 	tr := tp.Tracer(otlpScopeName)
-	var errs []error
+	var (
+		errs      []error
+		attempted int
+		failed    int
+	)
 	for _, r := range results {
 		if suppressUnsampled && scoreTraceIDEquals(r.TraceID, suppressTID) {
 			// Inbound parent for this TraceID was unsampled — agent OTLP
 			// suppressed; do not orphan a score span on that TraceID.
 			continue
 		}
+		if strings.TrimSpace(r.TraceID) == "" || strings.TrimSpace(r.SpanID) == "" {
+			// Same silent skip as exportOneScore (no parent to correlate).
+			continue
+		}
+		attempted++
 		if err := exportOneScore(ctx, tr, r); err != nil {
+			failed++
 			errs = append(errs, err)
 		}
 	}
-	if err := tp.ForceFlush(ctx); err != nil {
-		errs = append(errs, err)
+	if flushErr := tp.ForceFlush(ctx); flushErr != nil {
+		errs = append(errs, flushErr)
 	}
 	capExp.mu.Lock()
 	expErr := capExp.err
@@ -132,7 +146,11 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVe
 	if expErr != nil {
 		errs = append(errs, fmt.Errorf("otlp export: %w", expErr))
 	}
-	return errors.Join(errs...)
+	if len(errs) == 0 {
+		return nil
+	}
+	exported := attempted - failed
+	return fmt.Errorf("%d/%d scores exported; %d failed: %w", exported, attempted, failed, errors.Join(errs...))
 }
 
 // inboundUnsampledTRACEPARENT parses TRACEPARENT with the same W3C
@@ -224,8 +242,9 @@ func exportOneScore(ctx context.Context, tr trace.Tracer, r EvaluationResult) er
 		attribute.String(AttrGenAIEvaluationScoreLabel, r.Label),
 		// Event attribute values are not truncated by SpanLimits (SDK
 		// applies AttributeValueLengthLimit to span attrs only); bound
-		// explanation at the call site like agent exception messages.
-		attribute.String(AttrGenAIEvaluationExplanation, truncateRunes(r.Explanation, telemetry.MaxSpanAttrValueLen)),
+		// explanation at the call site using the same effective limit
+		// SpanLimits() applies for span attrs (honors OTEL_* overrides).
+		attribute.String(AttrGenAIEvaluationExplanation, truncateRunes(r.Explanation, eventAttrValueLenLimit())),
 		attribute.String(AttrFullsendMeasurementVersion, r.Version),
 	}
 	// Skip rows leave Value unused (serialized as 0 in JSONL); do not publish
@@ -254,6 +273,14 @@ func truncateRunes(s string, max int) string {
 		n++
 	}
 	return s
+}
+
+// eventAttrValueLenLimit mirrors telemetry.SpanLimits().AttributeValueLengthLimit
+// so event explanations honor the same OTEL_* override as agent span attrs.
+// SpanLimits already maps an unset env to MaxSpanAttrValueLen; a configured
+// negative sentinel means unlimited (truncateRunes no-ops).
+func eventAttrValueLenLimit() int {
+	return telemetry.SpanLimits().AttributeValueLengthLimit
 }
 
 func parseTraceID(hexID string) (trace.TraceID, error) {

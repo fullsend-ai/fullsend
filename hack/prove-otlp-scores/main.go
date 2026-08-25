@@ -26,14 +26,29 @@ import (
 func main() {
 	if len(os.Args) < 3 {
 		fmt.Fprintf(os.Stderr, "usage: %s <run-telemetry.jsonl> <registry.yaml> [out-dir]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  out-dir defaults to a fresh temp dir (never the telemetry file's directory).\n")
 		os.Exit(2)
 	}
 	telem := os.Args[1]
 	reg := os.Args[2]
-	out := filepath.Dir(telem)
+	out := ""
 	if len(os.Args) > 3 {
 		out = os.Args[3]
+	} else {
+		tmp, err := os.MkdirTemp("", "prove-otlp-scores-*")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "temp out-dir: %v\n", err)
+			os.Exit(1)
+		}
+		out = tmp
+		fmt.Fprintf(os.Stderr, "using temp out-dir %s\n", out)
 	}
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "out-dir: %v\n", err)
+		os.Exit(1)
+	}
+	// Only wipe ledger/measurements inside the chosen out-dir (temp by
+	// default), never beside a live run-telemetry.jsonl by accident.
 	_ = os.Remove(filepath.Join(out, evalmeasure.LedgerFile))
 	_ = os.Remove(filepath.Join(out, evalmeasure.MeasurementsFile))
 
@@ -82,13 +97,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	events := extractEvents(reqs)
+	mu.Lock()
+	reqsCopy := append([]*coltracepb.ExportTraceServiceRequest(nil), reqs...)
+	nReqs := len(reqs)
+	mu.Unlock()
+
+	events := extractEvents(reqsCopy)
 	report := map[string]any{
 		"endpoint":              srv.URL,
+		"out_dir":               out,
 		"scores_written":        len(results),
 		"remote_export_warning": stats.RemoteExportWarning,
 		"results":               results,
-		"otlp_requests":         len(reqs),
+		"otlp_requests":         nReqs,
 		"events":                events,
 	}
 	enc := json.NewEncoder(os.Stdout)
@@ -99,7 +120,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "FAIL: no scores written\n")
 		os.Exit(1)
 	}
-	if len(reqs) == 0 {
+	if nReqs == 0 {
 		fmt.Fprintf(os.Stderr, "FAIL: no OTLP requests received\n")
 		os.Exit(1)
 	}

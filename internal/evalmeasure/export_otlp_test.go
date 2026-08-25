@@ -82,6 +82,8 @@ func clearOTLPEnv(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", "")
 	t.Setenv("OTEL_SDK_DISABLED", "")
 	t.Setenv("TRACEPARENT", "")
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
+	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
 }
 
 func TestExportOTLPScores_NoopWithoutEndpoint(t *testing.T) {
@@ -345,8 +347,11 @@ func TestExportOTLPScores_TruncatesLongExplanation(t *testing.T) {
 	sink := newScoreOTLPSink(t)
 	clearOTLPEnv(t)
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
-	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
-	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
+	orig := newScoreOTLPExporter
+	t.Cleanup(func() { newScoreOTLPExporter = orig })
+	newScoreOTLPExporter = func(ctx context.Context) (sdktrace.SpanExporter, error) {
+		return telemetry.NewOTLPExporter(ctx)
+	}
 	huge := strings.Repeat("x", telemetry.MaxSpanAttrValueLen+500)
 	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
 		Name: "trace_fitness", Label: LabelPass, Explanation: huge,
@@ -354,9 +359,66 @@ func TestExportOTLPScores_TruncatesLongExplanation(t *testing.T) {
 		Version: "em-001@1", Value: 1,
 	}}, "test-1.2.3")
 	require.NoError(t, err)
+	got := explanationFromSink(t, sink)
+	require.NotEmpty(t, got)
+	assert.LessOrEqual(t, len(got), telemetry.MaxSpanAttrValueLen)
+	assert.Less(t, len(got), len(huge))
+}
+
+func TestExportOTLPScores_HonorsOTELAttrValueLimit(t *testing.T) {
+	sink := newScoreOTLPSink(t)
+	clearOTLPEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "64")
+	orig := newScoreOTLPExporter
+	t.Cleanup(func() { newScoreOTLPExporter = orig })
+	newScoreOTLPExporter = func(ctx context.Context) (sdktrace.SpanExporter, error) {
+		return telemetry.NewOTLPExporter(ctx)
+	}
+	huge := strings.Repeat("y", 200)
+	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
+		Name: "trace_fitness", Label: LabelPass, Explanation: huge,
+		TraceID: "84d470ba2451ffeccfe09022d9b2aebd", SpanID: "77f8c0902eaeedcb",
+		Version: "em-001@1", Value: 1,
+	}}, "test-1.2.3")
+	require.NoError(t, err)
+	got := explanationFromSink(t, sink)
+	require.NotEmpty(t, got)
+	assert.LessOrEqual(t, len([]rune(got)), 64)
+	assert.Equal(t, 64, len([]rune(got)))
+}
+
+func TestExportOTLPScores_PartialIDFailureReportsCounts(t *testing.T) {
+	sink := newScoreOTLPSink(t)
+	clearOTLPEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
+	orig := newScoreOTLPExporter
+	t.Cleanup(func() { newScoreOTLPExporter = orig })
+	newScoreOTLPExporter = func(ctx context.Context) (sdktrace.SpanExporter, error) {
+		return telemetry.NewOTLPExporter(ctx)
+	}
+	err := ExportOTLPScores(context.Background(), []EvaluationResult{
+		{
+			Name: "trace_fitness", Label: LabelPass,
+			TraceID: "84d470ba2451ffeccfe09022d9b2aebd", SpanID: "77f8c0902eaeedcb",
+			Version: "em-001@1", Value: 1,
+		},
+		{
+			Name: "trace_fitness", Label: LabelPass,
+			TraceID: "not-a-valid-trace-id", SpanID: "77f8c0902eaeedcb",
+			Version: "em-001@1", Value: 1,
+		},
+	}, "test-1.2.3")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "1/2 scores exported")
+	assert.Contains(t, err.Error(), "1 failed")
+	assert.NotEmpty(t, sink.allSpans(), "good row must still export")
+}
+
+func explanationFromSink(t *testing.T, sink *scoreOTLPSink) string {
+	t.Helper()
 	reqs := sink.allSpans()
 	require.NotEmpty(t, reqs)
-	var got string
 	for _, req := range reqs {
 		for _, rs := range req.GetResourceSpans() {
 			for _, ss := range rs.GetScopeSpans() {
@@ -367,7 +429,7 @@ func TestExportOTLPScores_TruncatesLongExplanation(t *testing.T) {
 						}
 						for _, kv := range ev.GetAttributes() {
 							if kv.GetKey() == AttrGenAIEvaluationExplanation {
-								got = kv.GetValue().GetStringValue()
+								return kv.GetValue().GetStringValue()
 							}
 						}
 					}
@@ -375,9 +437,7 @@ func TestExportOTLPScores_TruncatesLongExplanation(t *testing.T) {
 			}
 		}
 	}
-	require.NotEmpty(t, got)
-	assert.LessOrEqual(t, len(got), telemetry.MaxSpanAttrValueLen)
-	assert.Less(t, len(got), len(huge))
+	return ""
 }
 
 func hexOf(b []byte) string {
