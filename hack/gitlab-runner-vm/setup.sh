@@ -40,7 +40,7 @@ if [ -f "${_openshell_version_sh}" ]; then
   # shellcheck source=../../.github/scripts/openshell-version.sh
   source "${_openshell_version_sh}"
 fi
-OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.0.83}"
+OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.0.111}"
 
 EXECUTOR_DIR="${HOME}/gitlab-runner-executor"
 BUILDS_DIR="${HOME}/builds"
