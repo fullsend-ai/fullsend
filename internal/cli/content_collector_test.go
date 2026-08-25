@@ -476,6 +476,88 @@ func TestContentCollector_BoundaryTrimMarksPart(t *testing.T) {
 		"the intact ending stays unmarked")
 }
 
+func TestContentCollector_BareOAuthTokenInResultRedacted(t *testing.T) {
+	// Tool results carry raw command stdout; a bare GCP bearer token —
+	// the credential class WIF-provisioned runs actually handle — must
+	// not survive to the span.
+	token := "ya29.a0AfB_byDEMOtoken1234567890abcdefghij"
+	c := newContentCollector(4096)
+	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_gcp", Result: "access token: " + token})
+
+	res := c.Result("stop")
+	assert.NotContains(t, res.OutputMessages, "a0AfB_byDEMO")
+	assert.NotEmpty(t, res.Findings)
+}
+
+func TestContentCollector_RedactionUnderCapDoesNotMarkTruncated(t *testing.T) {
+	// Redaction can shrink an over-cap response below the cap; nothing
+	// is cut then, so neither the part marker nor the span truncation
+	// state may fire. The 40-byte secret masks to 7, shrinking an
+	// 8,212-byte response to 8,179 — under the 8,192 cap.
+	secret := "ghp_" + strings.Repeat("j", 36)
+	c := newContentCollector(maxContentBytes)
+	c.Handle(agentruntime.ToolResultEvent{
+		ID:     "toolu_shrink",
+		Result: strings.Repeat("x", maxToolResultBytes+20-len(secret)) + secret,
+	})
+
+	res := c.Result("stop")
+	assert.False(t, res.Truncated, "nothing was cut — redaction shrink is not truncation")
+	assert.Zero(t, res.DroppedBytes)
+	assert.NotEmpty(t, res.Findings)
+	msgs := decodeOutputMessages(t, res.OutputMessages)
+	assert.NotContains(t, partAt(t, msgs, 0), "fullsend.truncated")
+}
+
+func TestContentCollector_CappedResultScannedOnce(t *testing.T) {
+	// The cap path already scans the response; Result must not scan the
+	// same bytes again — a re-scan re-matches masked db-URL passwords
+	// (supe... still fits the 4+-char capture) and double-counts the
+	// finding.
+	c := newContentCollector(maxContentBytes)
+	c.Handle(agentruntime.ToolResultEvent{
+		ID:     "toolu_db",
+		Result: strings.Repeat("x", maxToolResultBytes) + " postgres://user:supersecret@host",
+	})
+
+	res := c.Result("stop")
+	assert.NotContains(t, res.OutputMessages, "supersecret")
+	assert.Len(t, res.Findings, 1,
+		"one secret must yield exactly one finding, not one per scan")
+}
+
+func TestContentCollector_CoalescedAfterPreTrimStillScanned(t *testing.T) {
+	// The pre-trim marks its part's bulk as scanned; deltas that coalesce
+	// into that part afterwards are NOT scanned yet, so the flag must
+	// clear on coalesce or the appended bytes reach the span raw — the
+	// tail-kept suffix keeps exactly the newest bytes.
+	secret := "ghp_" + strings.Repeat("k", 36)
+	c := newContentCollector(1024)
+	c.Handle(agentruntime.TextEvent{Text: strings.Repeat("x", 3000)})
+	c.Handle(agentruntime.TextEvent{Text: " leak: " + secret})
+
+	res := c.Result("stop")
+	assert.NotContains(t, res.OutputMessages, secret,
+		"bytes coalesced after a pre-trim must still be redacted")
+	assert.NotEmpty(t, res.Findings)
+}
+
+func TestContentCollector_ErroredEmptyResultKept(t *testing.T) {
+	// A failed call with empty output is signal, not absence: the part
+	// survives with is_error and its schema-required response key, even
+	// empty. Successful empty results still produce no part.
+	c := newContentCollector(4096)
+	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_errempty", Result: "", IsError: true})
+
+	msgs := decodeOutputMessages(t, c.Result("stop").OutputMessages)
+	part := partAt(t, msgs, 0)
+	assert.Equal(t, "tool_call_response", part["type"])
+	assert.Equal(t, true, part["is_error"])
+	assert.Equal(t, "", part["response"],
+		"the schema-required response key is present even when empty")
+	assert.Equal(t, "toolu_errempty", part["id"])
+}
+
 func TestContentCollector_EmptyTailDropChargesWholePart(t *testing.T) {
 	// When the boundary window lands inside a trailing multi-byte rune,
 	// the tail is empty and the part drops whole — id included — so the

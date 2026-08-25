@@ -30,16 +30,19 @@ const maxContentBytes = 256 * 1024
 const maxToolIDBytes = 256
 
 // maxToolResultBytes bounds one tool result's response within the
-// suffix budget. Measured on three real review-agent runs (2026-08-25,
-// main thread): uncapped results total 222-389KB per iteration —
-// overflowing maxContentBytes on two of three runs — while an 8KiB cap
-// kept those runs at 127-255KB with 78-89% of results untouched (p50
-// 2-3.5KB, p90 9-19KB). The cap lowers eviction pressure; it does not
-// prevent it — a heavier iteration still overflows the total budget
-// and evicts oldest-first, marked via the truncated and dropped-bytes
-// attributes. A capped response keeps its tail, extending the budget's
-// ordered-suffix policy to individual results; no consumer requirement
-// has confirmed either direction yet.
+// suffix budget. Measured on three real review-agent MAIN-THREAD
+// transcripts (2026-08-25): uncapped results total 222-389KB per
+// iteration — overflowing maxContentBytes on two of three runs — while
+// an 8KiB cap kept those runs at 127-255KB with 78-89% of results
+// untouched (p50 2-3.5KB, p90 9-19KB). The live stream this collector
+// consumes also interleaves sub-agent results, so those figures are a
+// lower bound on production volume and the eviction-pressure reduction
+// is a lower-bound claim. The cap lowers eviction pressure; it does
+// not prevent it — a heavier iteration still overflows the total
+// budget and evicts oldest-first, marked via the truncated and
+// dropped-bytes attributes. A capped response keeps its tail, extending
+// the budget's ordered-suffix policy to individual results; no consumer
+// requirement has confirmed either direction yet.
 const maxToolResultBytes = 8 * 1024
 
 // newContentCollectorIfEnabled returns a live collector when the Level 3
@@ -105,18 +108,51 @@ type contentPart struct {
 	Name     string `json:"name,omitempty"`
 	Summary  string `json:"summary,omitempty"`
 	Response string `json:"response,omitempty"`
-	// IsError mirrors the wire's is_error on failed tool calls;
-	// Truncated marks a part whose bulk field was cut, so a consumer
-	// never reads a fragment as a whole result. Both are structural
-	// booleans of fixed serialized size, outside the byte accounting.
+	// IsError mirrors the wire's is_error on failed tool calls; it is
+	// content-bearing (an errored empty result is signal, not absence)
+	// and accounts a fixed footprint. Truncated marks a part whose bulk
+	// field was cut, so a consumer never reads a fragment as a whole
+	// result; it is set only by the collector's own cuts and stays
+	// outside the accounting.
 	IsError   bool `json:"is_error,omitempty"`
 	Truncated bool `json:"fullsend.truncated,omitempty"`
+	// bulkScanned records that the bulk field was already redacted at
+	// accumulation (per-result cap or pre-trim), so Result must not scan
+	// those bytes again — a re-scan can re-match masked values and
+	// double-count findings.
+	bulkScanned bool
+}
+
+// isErrorFootprint is the serialized cost of `"is_error":true,` — the
+// bytes an errored-empty part contributes to the attribute.
+const isErrorFootprint = 16
+
+// MarshalJSON emits the schema-REQUIRED response key on
+// tool_call_response parts even when the response is empty; omitempty
+// on the shared struct would drop it.
+func (p contentPart) MarshalJSON() ([]byte, error) {
+	type alias contentPart
+	if p.Type != "tool_call_response" {
+		return json.Marshal(alias(p))
+	}
+	a := alias(p)
+	a.Response = "" // serialized by the outer field below instead
+	return json.Marshal(struct {
+		alias
+		Response string `json:"response"`
+	}{a, p.Response})
 }
 
 // contentBytes counts a part's content-bearing bytes. A part with none
-// contributes nothing to the output and is never kept.
+// contributes nothing to the output and is never kept. An error flag is
+// content: a failed call with empty output must survive, so it counts
+// its serialized footprint.
 func contentBytes(p contentPart) int {
-	return len(p.Content) + len(p.Name) + len(p.Summary) + len(p.Response)
+	n := len(p.Content) + len(p.Name) + len(p.Summary) + len(p.Response)
+	if p.IsError {
+		n += isErrorFootprint
+	}
+	return n
 }
 
 // partSize is the part's budget footprint: content-bearing bytes plus
@@ -220,12 +256,16 @@ func (c *contentCollector) Handle(evt agentruntime.AgentEvent) {
 		if len(p.Response) > maxToolResultBytes {
 			// Redact before the cap cut — the same invariant as every
 			// other cut: trimming raw bytes first could split a secret at
-			// the boundary past recognition.
+			// the boundary past recognition. Redaction alone can shrink
+			// the response under the cap; that is not a cut.
 			p.Response = c.redact(p.Response, &c.findings)
+			p.bulkScanned = true
 			kept := tailToRuneBoundary(p.Response, maxToolResultBytes)
 			c.evicted += len(p.Response) - len(kept)
+			if len(kept) < len(p.Response) {
+				p.Truncated = true
+			}
 			p.Response = kept
-			p.Truncated = true
 		}
 		c.appendPart(p)
 	}
@@ -250,6 +290,10 @@ func (c *contentCollector) appendText(kind, text string) {
 	}
 	if n := len(c.parts); n > 0 && c.parts[n-1].Type == kind {
 		c.parts[n-1].Content += text
+		// The appended bytes are unscanned; a secret can straddle the
+		// old/new boundary, so the WHOLE field must rescan — clear the
+		// pre-trim's scanned flag rather than tracking a prefix.
+		c.parts[n-1].bulkScanned = false
 	} else {
 		c.parts = append(c.parts, contentPart{Type: kind, Content: text})
 	}
@@ -274,11 +318,20 @@ func (c *contentCollector) evictOverflow() {
 		if c.total-head < c.maxBytes {
 			break
 		}
-		c.redact(c.parts[0].Content, &c.findings)
-		c.redact(c.parts[0].Name, &c.findings)
-		c.redact(c.parts[0].Summary, &c.findings)
-		c.redact(c.parts[0].Response, &c.findings)
-		c.redact(c.parts[0].ID, &c.findings)
+		hp := &c.parts[0]
+		hb := bulkField(hp)
+		if !hp.bulkScanned {
+			c.redact(*hb, &c.findings)
+		}
+		if hb != &hp.Content {
+			c.redact(hp.Content, &c.findings)
+		}
+		if hb != &hp.Response {
+			c.redact(hp.Response, &c.findings)
+		}
+		c.redact(hp.Name, &c.findings)
+		c.redact(hp.Summary, &c.findings)
+		c.redact(hp.ID, &c.findings)
 		c.evicted += head
 		c.total -= head
 		c.parts = c.parts[1:]
@@ -286,7 +339,12 @@ func (c *contentCollector) evictOverflow() {
 	if len(c.parts) == 1 && c.parts[0].Type != "tool_call" && c.total > 2*c.maxBytes {
 		bulk := bulkField(&c.parts[0])
 		before := len(*bulk)
+		// Deliberately unconditional: a re-fired pre-trim means bytes
+		// coalesced since the last scan, and a straddling secret needs
+		// the whole field visible — redact-before-cut outranks avoiding
+		// a rare re-match of already-masked values.
 		*bulk = c.redact(*bulk, &c.findings)
+		c.parts[0].bulkScanned = true
 		c.total -= before - len(*bulk)
 		kept := tailToRuneBoundary(*bulk, c.maxBytes)
 		c.evicted += len(*bulk) - len(kept)
@@ -331,10 +389,18 @@ func (c *contentCollector) Result(finishReason string) contentResult {
 
 	redacted := make([]contentPart, 0, len(c.parts))
 	for _, p := range c.parts {
-		p.Content = c.redact(p.Content, &res.Findings)
+		bulk := bulkField(&p)
+		if !p.bulkScanned {
+			*bulk = c.redact(*bulk, &res.Findings)
+		}
+		if bulk != &p.Content {
+			p.Content = c.redact(p.Content, &res.Findings)
+		}
+		if bulk != &p.Response {
+			p.Response = c.redact(p.Response, &res.Findings)
+		}
 		p.Name = c.redact(p.Name, &res.Findings)
 		p.Summary = c.redact(p.Summary, &res.Findings)
-		p.Response = c.redact(p.Response, &res.Findings)
 		p.ID = c.redactID(p.ID, &res.Findings)
 		if contentBytes(p) == 0 {
 			continue // sanitized away entirely; the finding is recorded

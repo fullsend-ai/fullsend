@@ -120,7 +120,8 @@ to a backend like MLflow, Jaeger, Grafana Tempo, etc.
 ## Capture conversation content
 
 Set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` to add the agent's
-text, reasoning, tool calls, and tool results to each `agent` span, in the
+text, reasoning, tool calls, and tool results — when the runtime's stream
+provides them; Claude runs do — to each `agent` span, in the
 local file and
 at the endpoint. Content is redacted for secrets and bounded per iteration,
 but may still contain proprietary code or PII — make sure your backend's
