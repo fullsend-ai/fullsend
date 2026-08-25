@@ -14,12 +14,23 @@ import (
 
 // maxContentBytes bounds the conversation content attached to one agent
 // span (one iteration), measured on the raw part bytes before JSON
-// encoding. The value is far above what text+reasoning+tool-call
-// summaries produce in practice (the full-transcript mean of ~369K chars
-// includes tool results, which are not captured yet) and was accepted
-// whole by the pilot backend in live validation. Revisit when tool
-// results join the stream.
+// encoding. A 255KB attribute was accepted whole by the pilot backend in
+// live validation; larger is unproven, so the total stays put and tool
+// results are bounded per part instead.
 const maxContentBytes = 256 * 1024
+
+// maxToolResultBytes bounds one tool result's response within the
+// suffix budget. Measured on three real review-agent runs (2026-08-25,
+// main thread): uncapped results total 222-389KB per iteration —
+// overflowing maxContentBytes on two of three runs — while an 8KiB cap
+// kept those runs at 127-255KB with 78-89% of results untouched (p50
+// 2-3.5KB, p90 9-19KB). The cap lowers eviction pressure; it does not
+// prevent it — a heavier iteration still overflows the total budget
+// and evicts oldest-first, marked via the truncated and dropped-bytes
+// attributes. A capped response keeps its tail, extending the budget's
+// ordered-suffix policy to individual results; no consumer requirement
+// has confirmed either direction yet.
+const maxToolResultBytes = 8 * 1024
 
 // newContentCollectorIfEnabled returns a live collector when the Level 3
 // gate is on and nil otherwise — nil is the off state and is inert at
@@ -164,6 +175,15 @@ func (c *contentCollector) Handle(evt agentruntime.AgentEvent) {
 		c.evictOverflow()
 	case agentruntime.ToolResultEvent:
 		p := contentPart{Type: "tool_call_response", ID: e.ID, Response: e.Result}
+		if len(p.Response) > maxToolResultBytes {
+			// Redact before the cap cut — the same invariant as every
+			// other cut: trimming raw bytes first could split a secret at
+			// the boundary past recognition.
+			p.Response = c.redact(p.Response, &c.findings)
+			kept := tailToRuneBoundary(p.Response, maxToolResultBytes)
+			c.evicted += len(p.Response) - len(kept)
+			p.Response = kept
+		}
 		c.parts = append(c.parts, p)
 		c.total += partSize(p)
 		c.evictOverflow()

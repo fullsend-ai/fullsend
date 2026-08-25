@@ -434,6 +434,61 @@ func TestContentCollector_PreTrimRedactsGiantToolResult(t *testing.T) {
 		"the response ending must survive the pre-trim")
 }
 
+func TestContentCollector_CapsOversizedToolResult(t *testing.T) {
+	// A single tool result larger than maxToolResultBytes keeps only its
+	// tail — measured on real review runs, uncapped results overflow the
+	// total budget and evict whole older parts; the cap lowers that
+	// pressure. Capped bytes land in DroppedBytes exactly.
+	c := newContentCollector(maxContentBytes)
+	oversized := strings.Repeat("a", maxToolResultBytes) + strings.Repeat("b", 100)
+	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_cap", Result: oversized})
+
+	res := c.Result("stop")
+	require.True(t, res.Truncated)
+	assert.Equal(t, 100, res.DroppedBytes,
+		"exactly the bytes beyond the per-result cap are dropped")
+
+	msgs := decodeOutputMessages(t, res.OutputMessages)
+	part := partAt(t, msgs, 0)
+	response := part["response"].(string)
+	assert.Len(t, response, maxToolResultBytes)
+	assert.True(t, strings.HasSuffix(response, strings.Repeat("b", 100)),
+		"the cap keeps the tail — the budget's suffix policy extended per-result")
+	assert.Equal(t, "toolu_cap", part["id"])
+}
+
+func TestContentCollector_CapRedactsBeforeCutting(t *testing.T) {
+	// The redaction-before-truncation invariant applies to the per-result
+	// cap exactly as to every other cut: a secret straddling the cap
+	// boundary must be redacted before the head is discarded.
+	// The cap keeps the tail, so the head-cut point for this 8262-byte
+	// result lands at byte 70 — inside the secret spanning [50:90]. A
+	// raw-first cut would keep an unrecognizable 20-byte fragment.
+	secret := "ghp_" + strings.Repeat("g", 36)
+	c := newContentCollector(maxContentBytes)
+	c.Handle(agentruntime.ToolResultEvent{
+		ID:     "toolu_capsec",
+		Result: strings.Repeat("x", 50) + secret + strings.Repeat("! ", 4086),
+	})
+
+	res := c.Result("stop")
+	assert.NotContains(t, res.OutputMessages, strings.Repeat("g", 10),
+		"no fragment of a cap-straddling secret may survive")
+	assert.NotEmpty(t, res.Findings)
+}
+
+func TestContentCollector_SubCapToolResultUntouched(t *testing.T) {
+	c := newContentCollector(maxContentBytes)
+	within := strings.Repeat("c", maxToolResultBytes)
+	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_fit", Result: within})
+
+	res := c.Result("stop")
+	assert.False(t, res.Truncated)
+	assert.Zero(t, res.DroppedBytes)
+	msgs := decodeOutputMessages(t, res.OutputMessages)
+	assert.Equal(t, within, partAt(t, msgs, 0)["response"])
+}
+
 func TestContentCollector_EvictsWholeOldPartsExactly(t *testing.T) {
 	// Long sessions must not accumulate unbounded content: parts older
 	// than the suffix budget are evicted during Handle, and every
