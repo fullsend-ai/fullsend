@@ -363,15 +363,18 @@ func (c *contentCollector) Result(finishReason string) contentResult {
 		// Bytes the part carries besides its bulk field (its id, for
 		// tool_call_response parts) must fit before any bulk tail can.
 		nonBulk := size - len(*bulk)
+		tail := ""
 		if !full && p.Type != "tool_call" && remaining > nonBulk {
-			tail := tailToRuneBoundary(*bulk, remaining-nonBulk)
+			tail = tailToRuneBoundary(*bulk, remaining-nonBulk)
+		}
+		if tail != "" {
 			res.DroppedBytes += size - nonBulk - len(tail)
-			if tail != "" {
-				*bulk = tail
-				p.Truncated = true
-				kept = append(kept, p)
-			}
+			*bulk = tail
+			p.Truncated = true
+			kept = append(kept, p)
 		} else {
+			// The part drops whole — every byte it carried is charged,
+			// id included (an empty rune-boundary tail lands here too).
 			res.DroppedBytes += size
 		}
 		full = true

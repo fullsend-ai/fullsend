@@ -476,6 +476,26 @@ func TestContentCollector_BoundaryTrimMarksPart(t *testing.T) {
 		"the intact ending stays unmarked")
 }
 
+func TestContentCollector_EmptyTailDropChargesWholePart(t *testing.T) {
+	// When the boundary window lands inside a trailing multi-byte rune,
+	// the tail is empty and the part drops whole — id included — so the
+	// whole part must be charged, not just its response bytes. Budget 16:
+	// "final" (5) leaves 11; the id (9) leaves a 2-byte window inside €.
+	c := newContentCollector(16)
+	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_cut", Result: "0123456789ABCDEFG€"})
+	c.Handle(agentruntime.TextEvent{Text: "final"})
+
+	res := c.Result("stop")
+	require.True(t, res.Truncated)
+	assert.Equal(t, 29, res.DroppedBytes,
+		"a whole-dropped part is charged in full: 20 response + 9 id bytes")
+
+	msgs := decodeOutputMessages(t, res.OutputMessages)
+	parts := msgs[0]["parts"].([]any)
+	require.Len(t, parts, 1)
+	assert.Equal(t, "final", parts[0].(map[string]any)["content"])
+}
+
 func TestContentCollector_IDBytesCountTowardBudget(t *testing.T) {
 	// Ids are serialized into the attribute, so they count toward the
 	// budget like every other part byte — uncounted ids would let the
@@ -526,12 +546,10 @@ func TestContentCollector_ZeroContentPartsDoNotAccumulate(t *testing.T) {
 }
 
 func TestContentCollector_OversizedIDDropped(t *testing.T) {
-	// Ids ride outside the size accounting as structural bytes, which is
-	// only safe while they stay structural-sized: the stream decodes ids
-	// unbounded and Level 3 lifts the SDK attribute cap, so an id beyond
-	// any legitimate format is treated as malformed and dropped — never
-	// truncated, since a truncated id could falsely collide. The part
-	// itself survives, uncorrelated.
+	// The stream decodes ids unbounded and Level 3 lifts the SDK
+	// attribute cap, so an id beyond any legitimate format is treated as
+	// malformed and dropped — never truncated, since a truncated id
+	// could falsely collide. The part itself survives, uncorrelated.
 	huge := strings.Repeat("x", maxToolIDBytes+1)
 	c := newContentCollector(4096)
 	c.Handle(agentruntime.ToolUseEvent{ID: huge, Name: "Bash", Summary: "ls"})
