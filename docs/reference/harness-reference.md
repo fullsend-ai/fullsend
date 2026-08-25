@@ -89,6 +89,9 @@ runner_env:                          # ⚠ Deprecated: use env.runner instead
 timeout_minutes: 20                  # Per-iteration budget (default 30); exported to
                                      # the sandbox as FULLSEND_TIMEOUT_MINUTES
 sandbox_timeout_seconds: 300         # 30-600
+max_cost_usd: 5.00                   # Hard cost cap in USD, checked against aggregated
+                                     # total_cost_usd across validation_loop retries
+                                     # (default: 0 = unlimited)
 
 # ── Remote resources ──────────────────────────────────────────
 allowed_remote_resources:
@@ -413,6 +416,8 @@ A pi-format entry must also satisfy pi's own loader rule:
 `plugins` is a top-level field only: a `plugins:` key under `forge:` or `overlays:` is silently ignored. Walkthrough for the pi side: [Pi § Plugins (pi extensions)](../runtimes/pi.md#plugins-pi-extensions). Rationale and run-time mechanics: [Runtime Implementation § Pi extensions](../contributing/runtime-implementation.md#pi-extensions-adr-0094).
 
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
+
+**`max_cost_usd`** — Hard cost cap in USD, checked against the run's aggregated `total_cost_usd` (summed across `validation_loop` retries). `0` (default) means unlimited. Claude Code only reports cost once, in the final result event of a completed iteration, so this halts the run before starting another (already over-budget) iteration — it cannot interrupt one long iteration still in progress. `metrics.json` records `over_budget: true` when this cap stopped the run, distinguishing "halted at budget" from a crash.
 
 **`api_servers`** — Planned host-side HTTP servers outside the sandbox, exposed to it via port forwarding; server startup is not yet implemented. The intended design would keep API credentials on the trusted runner rather than inside the sandbox.
 
