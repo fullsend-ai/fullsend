@@ -18,6 +18,7 @@ Before creating a scheduled workflow, you need:
 1. **A registered agent** in your `.fullsend/` directory. See [Bring Your Own Agent](bring-your-own-agent.md) for the full walkthrough.
 2. **Repository variables and secrets** configured for fullsend (see [Prerequisites](#variables-and-secrets) below).
 3. **GCP Workload Identity Federation** provisioned for your repo — run [`fullsend inference provision`](../../cli/inference.md) first.
+4. **A tracking issue** in your repository. The harness requires an `issue.html_url` in the event payload — create a dedicated issue (e.g., "Nightly agent tracking") and note its number.
 
 ## Example workflow
 
@@ -61,18 +62,25 @@ jobs:
         id: matrix
         env:
           REPO: ${{ github.repository }}
+          # Create a tracking issue and set its number here (see Prerequisites).
+          ISSUE_NUMBER: "42"
+          DRY_RUN: ${{ inputs.dry_run || 'true' }}
         run: |
           # Replace "my-nightly-agent" with your agent's name
           # (the name field from your harness YAML, or the filename
           # used with `fullsend agent add --name <name>`).
+          ISSUE_URL="https://github.com/${REPO}/issues/${ISSUE_NUMBER}"
           MATRIX=$(jq -n -c \
             --arg agent "my-nightly-agent" \
             --arg repo "$REPO" \
+            --arg url "$ISSUE_URL" \
+            --arg num "$ISSUE_NUMBER" \
+            --arg dry "$DRY_RUN" \
             '{include: [{
                 agent: $agent,
                 source_repo: $repo,
                 role: "harness",
-                event_payload: "{}",
+                event_payload: ({issue: {html_url: $url, number: ($num | tonumber)}, dry_run: ($dry == "true")} | tojson),
                 status_repo: "",
                 status_number: ""
               }]}')
@@ -99,7 +107,7 @@ jobs:
       OTEL_EXPORTER_OTLP_HEADERS: ${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}
 ```
 
-Replace `my-nightly-agent` with the name of the agent you registered via `fullsend agent add --name <name>`.
+Replace `my-nightly-agent` with the name of the agent you registered via `fullsend agent add --name <name>`, and `"42"` with the number of your tracking issue.
 
 ## How it works
 
@@ -129,22 +137,28 @@ By default, the example above sets `status_repo` and `status_number` to empty st
         id: matrix
         env:
           REPO: ${{ github.repository }}
+          ISSUE_NUMBER: "42"
+          DRY_RUN: ${{ inputs.dry_run || 'true' }}
         run: |
+          ISSUE_URL="https://github.com/${REPO}/issues/${ISSUE_NUMBER}"
           MATRIX=$(jq -n -c \
             --arg agent "my-nightly-agent" \
             --arg repo "$REPO" \
+            --arg url "$ISSUE_URL" \
+            --arg num "$ISSUE_NUMBER" \
+            --arg dry "$DRY_RUN" \
             '{include: [{
                 agent: $agent,
                 source_repo: $repo,
                 role: "harness",
-                event_payload: "{}",
+                event_payload: ({issue: {html_url: $url, number: ($num | tonumber)}, dry_run: ($dry == "true")} | tojson),
                 status_repo: $repo,
-                status_number: "42"
+                status_number: $num
               }]}')
           # ... (same DELIM / GITHUB_OUTPUT logic as above)
 ```
 
-Replace `"42"` with the issue number where the agent should post status updates.
+The `status_repo` and `status_number` fields tell the harness where to post status comments. Here they reference the same tracking issue used in the event payload.
 
 ## Running multiple agents
 
@@ -155,12 +169,18 @@ To run several agents on the same schedule, add entries to the `include` array:
         id: matrix
         env:
           REPO: ${{ github.repository }}
+          ISSUE_NUMBER: "42"
         run: |
+          ISSUE_URL="https://github.com/${REPO}/issues/${ISSUE_NUMBER}"
+          PAYLOAD=$(jq -n -c \
+            --arg url "$ISSUE_URL" --arg num "$ISSUE_NUMBER" \
+            '{issue: {html_url: $url, number: ($num | tonumber)}}')
           MATRIX=$(jq -n -c \
             --arg repo "$REPO" \
+            --arg payload "$PAYLOAD" \
             '{include: [
-                {agent: "nightly-scan", source_repo: $repo, role: "harness", event_payload: "{}", status_repo: "", status_number: ""},
-                {agent: "dep-audit",    source_repo: $repo, role: "harness", event_payload: "{}", status_repo: "", status_number: ""}
+                {agent: "nightly-scan", source_repo: $repo, role: "harness", event_payload: $payload, status_repo: "", status_number: ""},
+                {agent: "dep-audit",    source_repo: $repo, role: "harness", event_payload: $payload, status_repo: "", status_number: ""}
               ]}')
           DELIM="MATRIX_$(openssl rand -hex 8)"
           {
@@ -178,15 +198,15 @@ Each agent runs as a separate matrix job in parallel.
 Your repository needs these variables and secrets configured (same as event-triggered agents):
 
 **Variables:**
-- `FULLSEND_MINT_URL` — Token mint service URL
-- `FULLSEND_GCP_REGION` — GCP region for Vertex AI
-- `OTEL_EXPORTER_OTLP_ENDPOINT` — [OpenTelemetry](../../glossary.md#otel-primary-facts) endpoint (optional)
+- `FULLSEND_MINT_URL` - Token mint service URL
+- `FULLSEND_GCP_REGION` - GCP region for Vertex AI
+- `OTEL_EXPORTER_OTLP_ENDPOINT` - [OpenTelemetry](../../glossary.md#otel-primary-facts) endpoint (optional)
 
 **Secrets:**
-- `FULLSEND_GCP_WIF_PROVIDER` — GCP Workload Identity Federation (WIF) provider
-- `FULLSEND_GCP_PROJECT_ID` — GCP project ID
-- `OTEL_EXPORTER_OTLP_TRACES_HEADERS` — [OTEL](../../glossary.md#otel-primary-facts) auth headers (optional)
-- `OTEL_EXPORTER_OTLP_HEADERS` — OTEL headers (optional)
+- `FULLSEND_GCP_WIF_PROVIDER` - GCP Workload Identity Federation (WIF) provider
+- `FULLSEND_GCP_PROJECT_ID` - GCP project ID
+- `OTEL_EXPORTER_OTLP_TRACES_HEADERS` - [OTEL](../../glossary.md#otel-primary-facts) auth headers (optional)
+- `OTEL_EXPORTER_OTLP_HEADERS` - OTEL headers (optional)
 
 ## Permissions
 
@@ -194,7 +214,7 @@ The top-level `permissions:` block must grant the maximum permissions required b
 
 ## Tips
 
-- **Test first with `workflow_dispatch`:** use the manual trigger to verify your agent runs before relying on the cron schedule. The `dry_run` input is a convention — your agent reads it from the event payload and decides whether to apply changes.
+- **Test first with `workflow_dispatch`:** use the manual trigger to verify your agent runs before relying on the cron schedule. The `dry_run` input is wired into `event_payload` (as `dry_run: true/false`) via the `DRY_RUN` env variable in the `build-matrix` step. Your agent reads it from the event payload file (`.fullsend/dispatch/event-payload.json`) inside the sandbox. To add other `workflow_dispatch` inputs, include them in the `jq` command that constructs the payload.
 - **Cron syntax:** GitHub Actions uses UTC. `"0 2 * * *"` means 2:00 AM UTC daily. See [GitHub's cron docs](https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#schedule) for syntax.
 - **Concurrency:** if your nightly runs overlap (e.g., the agent takes longer than 24 hours), add a `concurrency` group to the `build-matrix` job to prevent duplicates.
 
