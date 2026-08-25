@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
@@ -18,6 +19,7 @@ const (
 	envModel          = "FULLSEND_MODEL"
 	envEffort         = "FULLSEND_EFFORT"
 	envFallbackModels = "FULLSEND_FALLBACK_MODELS"
+	envStallTimeout   = "FULLSEND_STALL_TIMEOUT"
 	// envPiModel is the pre-#6526 pi-only model override, kept as an alias of
 	// FULLSEND_MODEL for pi runs. FULLSEND_PI_PROVIDER stays pi-only (it is
 	// the provider prefix for bare ids, not a model choice).
@@ -125,6 +127,35 @@ func resolveRunOverrides(flags runOverrideFlags, getenv func(string) string, run
 		}
 	}
 	return o, nil
+}
+
+// defaultStallTimeout is how long the runtime event stream may stay silent
+// before the run is killed as stalled. Claude Code's stream-json emits one
+// event per assistant message and completed tool call — fullsend does not
+// request partial messages — so a single long tool call (a full test suite,
+// a slow clone) is legitimately silent for minutes. The default is
+// deliberately generous; repos that know their event cadence can tune it
+// down with FULLSEND_STALL_TIMEOUT.
+const defaultStallTimeout = 10 * time.Minute
+
+// resolveStallTimeout returns the event-inactivity timeout for the run:
+// FULLSEND_STALL_TIMEOUT when it parses as a non-negative Go duration ("0"
+// disables the watchdog), the default when it is unset. A malformed value
+// returns the default plus an error, so the caller can say so instead of
+// silently running without the watchdog it thinks it configured.
+func resolveStallTimeout(getenv func(string) string) (time.Duration, error) {
+	raw := strings.TrimSpace(getenv(envStallTimeout))
+	if raw == "" {
+		return defaultStallTimeout, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return defaultStallTimeout, fmt.Errorf("%s=%q is not a duration (e.g. 10m, 0 to disable): %w", envStallTimeout, raw, err)
+	}
+	if d < 0 {
+		return defaultStallTimeout, fmt.Errorf("%s=%q must not be negative (0 disables the watchdog)", envStallTimeout, raw)
+	}
+	return d, nil
 }
 
 // validateRuntimeName mirrors the config validation so a flag/env override

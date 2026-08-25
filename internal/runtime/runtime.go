@@ -80,8 +80,15 @@ type RunParams struct {
 	// loads the runner's hook wiring regardless of its working directory.
 	HooksSettingsPath string
 	Timeout           time.Duration
-	OutputPath        string           // if set, tee stream-json stdout to this file
-	OnEvent           func(AgentEvent) // if non-nil, called with normalized events during Run
+	// StallTimeout terminates the run when the event stream stays silent for
+	// this long. Timeout is wall-clock and cannot tell a wedged agent from a
+	// thinking one, so without this a wedge is billed for the full window.
+	// Zero disables the watchdog. The CLI resolves it from
+	// FULLSEND_STALL_TIMEOUT and passes it here — runtimes do not read env
+	// themselves (#6526). Runtimes that stream no events ignore it.
+	StallTimeout time.Duration
+	OutputPath   string           // if set, tee stream-json stdout to this file
+	OnEvent      func(AgentEvent) // if non-nil, called with normalized events during Run
 	// Prompt overrides DefaultAgentPrompt. The validation loop sets it on a
 	// retry iteration to inject the previous iteration's failure so the agent
 	// can self-correct instead of re-running blindly. See #1050, #6494.
