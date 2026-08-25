@@ -17,12 +17,19 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 #   $1 — is_bot value (true/false/null)
 #   $2 — login value
 #   $3 — comma-separated labels (optional)
+#   $4 — reviews API response body (optional, default "[]"); the literal
+#        string "FAIL" makes the mock reviews call exit 1, simulating an
+#        API error
+#   $5 — issues/comments API response body, for marker search (optional,
+#        default "[]")
 build_mock() {
   local is_bot="$1" login="$2" labels="${3:-}"
+  local reviews_json="${4:-[]}" comments_json="${5:-[]}"
   local mock_bin="${TMPDIR}/bin"
 
   rm -rf "${mock_bin}"
   mkdir -p "${mock_bin}"
+  rm -f "${TMPDIR}/posted-comment-body.txt" "${TMPDIR}/reviews-fail"
 
   local labels_json="[]"
   if [[ -n "${labels}" ]]; then
@@ -38,6 +45,13 @@ build_mock() {
 
   printf '%s' "${json}" > "${TMPDIR}/pr-json.txt"
   printf '%s' "${TMPDIR}/pr-json.txt" > "${TMPDIR}/pr-json-path"
+
+  if [[ "${reviews_json}" == "FAIL" ]]; then
+    : > "${TMPDIR}/reviews-fail"
+  else
+    printf '%s' "${reviews_json}" > "${TMPDIR}/reviews-json.txt"
+  fi
+  printf '%s' "${comments_json}" > "${TMPDIR}/comments-json.txt"
 
   cat > "${mock_bin}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
@@ -66,6 +80,25 @@ if [[ "$1" == "pr" && "$2" == "view" ]]; then
   cat "${PR_JSON_FILE}"
   exit 0
 fi
+if [[ "$1" == "api" ]]; then
+  if [[ "$2" == "-X" && "$3" == "POST" && "$4" == *"/comments" ]]; then
+    cat > "${MOCK_DIR}/posted-comment-body.txt"
+    echo '{"id": 999}'
+    exit 0
+  fi
+  if [[ "$2" == *"/reviews" ]]; then
+    if [[ -f "${MOCK_DIR}/reviews-fail" ]]; then
+      echo "mock gh: simulated reviews API failure" >&2
+      exit 1
+    fi
+    cat "${MOCK_DIR}/reviews-json.txt"
+    exit 0
+  fi
+  if [[ "$2" == *"/comments" ]]; then
+    cat "${MOCK_DIR}/comments-json.txt"
+    exit 0
+  fi
+fi
 echo "unexpected gh call: $*" >&2
 exit 1
 MOCKEOF
@@ -77,17 +110,25 @@ MOCKEOF
 
 # run_test runs the eligibility script with mocked PR data and asserts exit code
 # and (optionally) annotation text.
-#   $1 — test name
-#   $2 — expected exit code
-#   $3 — is_bot value
-#   $4 — login value
-#   $5 — trigger source
-#   $6 — labels (optional, comma-separated)
-#   $7 — expected annotation substring (optional)
+#   $1  — test name
+#   $2  — expected exit code
+#   $3  — is_bot value
+#   $4  — login value
+#   $5  — trigger source
+#   $6  — labels (optional, comma-separated)
+#   $7  — expected annotation substring (optional)
+#   $8  — reviews API response body (optional, default "[]"; "FAIL"
+#         simulates an API error)
+#   $9  — issues/comments API response body (optional, default "[]")
+#   $10 — REVIEW_MAX_FIX_CYCLES value to set (optional; empty leaves the
+#         script's own default in effect)
+#   $11 — "yes"/"no" to assert whether a fix-cycle-cap comment was (not)
+#         posted (optional)
 run_test() {
   local name="$1" expected_exit="$2" is_bot="$3" login="$4" trigger="$5" labels="${6:-}" expected_annotation="${7:-}"
+  local reviews_json="${8:-[]}" comments_json="${9:-[]}" cap_env="${10:-}" expect_post="${11:-}"
   local mock_bin
-  mock_bin=$(build_mock "${is_bot}" "${login}" "${labels}")
+  mock_bin=$(build_mock "${is_bot}" "${login}" "${labels}" "${reviews_json}" "${comments_json}")
 
   local actual_exit=0 output
   output=$(PATH="${mock_bin}:${PATH}" \
@@ -95,6 +136,7 @@ run_test() {
     PR_NUM="123" \
     SOURCE_REPO="org/repo" \
     GH_TOKEN="fake" \
+    REVIEW_MAX_FIX_CYCLES="${cap_env}" \
     bash "${SCRIPT}" 2>&1) || actual_exit=$?
 
   if [[ "${actual_exit}" -ne "${expected_exit}" ]]; then
@@ -105,6 +147,18 @@ run_test() {
 
   if [[ -n "${expected_annotation}" ]] && [[ "${output}" != *"${expected_annotation}"* ]]; then
     echo "FAIL: ${name} — expected annotation '${expected_annotation}' not found in output"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ "${expect_post}" == "yes" && ! -f "${TMPDIR}/posted-comment-body.txt" ]]; then
+    echo "FAIL: ${name} — expected a fix-cycle-cap comment to be posted, but none was"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ "${expect_post}" == "no" && -f "${TMPDIR}/posted-comment-body.txt" ]]; then
+    echo "FAIL: ${name} — expected no fix-cycle-cap comment, but one was posted"
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -155,6 +209,42 @@ run_test "false is_bot coder login without label skipped" 1 "false" "app/fullsen
 
 # is_bot=false with coder login and label proceeds (exit 0)
 run_test "false is_bot coder login with label proceeds" 0 "false" "app/fullsend-ai-coder" "review-bot[bot]" "fullsend-fix"
+
+echo ""
+echo "=== fix-cycle cap tests ==="
+
+REVIEWS_UNDER_CAP='[{"state":"CHANGES_REQUESTED","user":{"login":"org-review[bot]"}},{"state":"CHANGES_REQUESTED","user":{"login":"org-review[bot]"}}]'
+REVIEWS_AT_CAP='[{"state":"CHANGES_REQUESTED","user":{"login":"org-review[bot]"}},{"state":"CHANGES_REQUESTED","user":{"login":"org-review[bot]"}},{"state":"CHANGES_REQUESTED","user":{"login":"org-review[bot]"}}]'
+COMMENTS_WITH_MARKER='[{"id":55,"body":"<!-- fullsend-fix-cycle-cap -->\nOld message"}]'
+
+# Under the default cap (3): proceeds, no comment
+run_test "under cap proceeds" 0 "true" "app/fullsend-ai-coder" "review-bot[bot]" "" "" \
+  "${REVIEWS_UNDER_CAP}" "[]" "" "no"
+
+# At the default cap: blocked, warning emitted, comment posted
+run_test "at cap exits 1 and posts comment" 1 "true" "app/fullsend-ai-coder" "review-bot[bot]" "" \
+  "automated fix cycles" "${REVIEWS_AT_CAP}" "[]" "" "yes"
+
+# Marker already present: still blocked, but no second comment
+run_test "marker present skips second comment" 1 "true" "app/fullsend-ai-coder" "review-bot[bot]" "" \
+  "" "${REVIEWS_AT_CAP}" "${COMMENTS_WITH_MARKER}" "" "no"
+
+# Human trigger bypasses the cap entirely (existing :16 early-exit)
+run_test "human trigger ignores cap" 0 "false" "some-user" "human-user" "" \
+  "" "${REVIEWS_AT_CAP}" "[]" "" "no"
+
+# 0 disables the cap even when the count would otherwise trip it
+run_test "cap 0 disables" 0 "true" "app/fullsend-ai-coder" "review-bot[bot]" "" \
+  "" "${REVIEWS_AT_CAP}" "[]" "0" "no"
+
+# Reviews API failure: proceed, warn, do not block
+run_test "reviews API failure proceeds with warning" 0 "true" "app/fullsend-ai-coder" "review-bot[bot]" "" \
+  "Could not count review cycles" "FAIL" "[]" "" "no"
+
+# Non-numeric cap value: warns and falls back to the default (3), which the
+# at-cap review count above should still trip
+run_test "non-numeric cap warns and uses default" 1 "true" "app/fullsend-ai-coder" "review-bot[bot]" "" \
+  "REVIEW_MAX_FIX_CYCLES is not a number" "${REVIEWS_AT_CAP}" "[]" "abc" "yes"
 
 # gh pr view failure (network error / invalid token) emits ::error:: and exits 1
 run_test_gh_failure() {

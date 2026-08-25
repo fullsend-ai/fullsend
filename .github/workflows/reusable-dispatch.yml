@@ -1121,6 +1121,7 @@ jobs:
           TRIGGER_SOURCE: ${{ needs.route.outputs.trigger_source }}
           PR_NUM: ${{ steps.context.outputs.pr_number }}
           SOURCE_REPO: ${{ github.repository }}
+          REVIEW_MAX_FIX_CYCLES: ${{ vars.REVIEW_MAX_FIX_CYCLES }}
         run: bash .defaults/.github/scripts/check-fix-eligibility.sh
 
       - name: Checkout target repository at PR HEAD
