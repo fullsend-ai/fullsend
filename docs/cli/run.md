@@ -58,6 +58,12 @@ fullsend run triage --fullsend-dir . --target-repo ../repo \
   --runtime pi --model google-vertex/gemini-2.5-flash --effort medium
 ```
 
+## Stall watchdog
+
+The global run timeout is wall-clock, so a wedged agent looks exactly like a thinking one until it expires — and the run is billed for the difference. The watchdog watches the runtime event stream instead: after half of `FULLSEND_STALL_TIMEOUT` without a single agent event it warns once (`::warning::no agent events for 5m0s` in CI), and after the full duration it terminates the sandbox command — the same kill the global timeout uses. The run then fails with `agent stalled` and records `"stalled": true` in `metrics.json`.
+
+`FULLSEND_STALL_TIMEOUT` takes a Go duration and defaults to `10m`; `0` disables the watchdog. The default is generous on purpose: Claude Code's `stream-json` emits an event per assistant message and per completed tool call, so a single long tool call (a full test suite, a slow clone) is legitimately silent for minutes. Repos that know their event cadence can tune it down. A value that is not a duration is reported on stderr and ignored, and the default applies.
+
 ## Output artifacts
 
 Each run produces artifacts in the output directory:
@@ -81,6 +87,7 @@ Each run produces artifacts in the output directory:
 | `total_cost_usd` | Total inference cost in USD, as reported by the runtime (raw floating-point aggregate across all iterations; no fullsend-side pricing-table fallback). See [Cost data contract](../guides/infrastructure/distributed-tracing.md#cost-data-contract) |
 | `num_turns` | Number of conversation turns |
 | `iterations` | Number of retry iterations |
+| `stalled` | Present (`true`) only when the run was killed by the stall watchdog |
 
 ## OpenAI credentials on pi and codex
 

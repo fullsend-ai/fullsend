@@ -193,6 +193,10 @@ type aggregateMetrics struct {
 	// "FULLSEND_MODEL", "FULLSEND_PI_MODEL", "FULLSEND_CODEX_MODEL",
 	// "harness", "default") so a silent override is visible after the fact.
 	OverrideSource string `json:"override_source,omitempty"`
+	// Stalled records that the run was killed by the stall watchdog — the
+	// event stream went silent for FULLSEND_STALL_TIMEOUT — rather than
+	// failing on its own. Omitted when false.
+	Stalled bool `json:"stalled,omitempty"`
 }
 
 func writeMetricsJSON(dir string, m aggregateMetrics) error {
@@ -1993,6 +1997,11 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		timeout = 30 * time.Minute
 	}
 
+	stallTimeout, stallErr := resolveStallTimeout(os.Getenv)
+	if stallErr != nil {
+		printer.StepWarn(fmt.Sprintf("Stall watchdog: %v; using %s", stallErr, stallTimeout))
+	}
+
 	maxIterations := 1
 	if h.ValidationLoop != nil && h.ValidationLoop.MaxIterations > 0 {
 		maxIterations = h.ValidationLoop.MaxIterations
@@ -2127,6 +2136,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			Debug:             debug,
 			HooksSettingsPath: hooksSettings,
 			Timeout:           timeout,
+			StallTimeout:      stallTimeout,
 			OutputPath:        filepath.Join(iterDir, "output.jsonl"),
 			Prompt:            agentPrompt,
 			Forge:             forgePlatform,
@@ -2155,6 +2165,14 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		if runErr != nil {
 			attachIterationContent("error")
 			finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, rt.System(), rt.Name(), &metrics, "")
+			if errors.Is(runErr, agentruntime.ErrStalled) {
+				// A wedged agent, killed on evidence of silence rather than
+				// billed for the rest of the global timeout. Recorded in
+				// metrics.json so the cheap failure is also a legible one.
+				aggMetrics.Stalled = true
+				printer.StepFail(fmt.Sprintf(
+					"Agent produced no events for %s and was terminated as stalled (FULLSEND_STALL_TIMEOUT, 0 disables)", stallTimeout))
+			}
 			printer.StepFail("Agent execution failed")
 			// Record the real exit code (rt.Run returns -1 when the agent never
 			// started) so the telemetry summary reports the failure faithfully
