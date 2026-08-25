@@ -890,6 +890,36 @@ func TestParseClaudeStreamUserTextContentIgnored(t *testing.T) {
 	}
 }
 
+func TestParseClaudeStreamUserMalformedShapesIgnored(t *testing.T) {
+	// Defensive branches: a user line whose message is not an object, and
+	// one whose content is a plain string (a real wire shape for user
+	// turns) carry no tool_result blocks — both are skipped without error.
+	lines := []string{
+		`{"type":"user","message":5}`,
+		`{"type":"user","message":{"role":"user","content":"just text, not an array"}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events for malformed/plain user lines, got %d: %#v", len(events), events)
+	}
+}
+
+func TestParseClaudeStreamToolResultNonTextContent(t *testing.T) {
+	// A tool_result whose content is neither a string nor a block array
+	// (e.g. an object) flattens to empty; the event still carries the ID.
+	input := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_08obj","content":{"unexpected":true}}]}}`
+	results := collectToolResults(t, input)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 tool result event, got %d", len(results))
+	}
+	if results[0].ID != "toolu_08obj" {
+		t.Errorf("expected ID toolu_08obj, got %q", results[0].ID)
+	}
+	if results[0].Result != "" {
+		t.Errorf("expected empty result for non-text content, got %q", results[0].Result)
+	}
+}
+
 func TestParseClaudeStreamToolResultEmptyContent(t *testing.T) {
 	// A tool_result with empty content still marks completion; the event
 	// is emitted with its ID and an empty Result.
