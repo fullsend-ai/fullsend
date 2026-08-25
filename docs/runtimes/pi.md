@@ -73,7 +73,7 @@ endpoints answer `FAILED_PRECONDITION` — so region variables are deliberately 
 runtime](../guides/user/running-agents-locally.md#run-a-minimal-agent-on-the-pi-runtime) — no fleet repo
 required.
 
-### Behaviour differences worth knowing
+## Behaviour differences worth knowing
 
 - **No permission system.** pi's posture is "run in a container". The sandbox, its egress policy and
   credential placeholders are the boundary ([ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md));
@@ -88,7 +88,7 @@ required.
 - **Fast release cadence** (~weekly minors, with wire-format changes inside a minor) — versions are
   pinned exactly and the stream-parser fixtures are tied to the pinned version.
 
-### Not yet exercised
+## Not yet exercised
 
 `runtime: pi` is selectable and has been run end to end, but no **fleet lifecycle** run on Vertex is
 recorded yet. Pilot on a disposable org with `triage`/`prioritize` before `code`/`fix`. `review` and

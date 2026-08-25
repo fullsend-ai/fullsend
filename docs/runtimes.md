@@ -6,7 +6,7 @@ sandbox, the credentials, and the verdict.
 
 | Runtime | Use it for | Status |
 |---|---|---|
-| **`claude`** | Production agent runs (Claude Code) | Default |
+| **[`claude`](runtimes/claude.md)** | Production agent runs (Claude Code) | Default |
 | **[`pi`](runtimes/pi.md)** | Second runtime, opt-in per org/repo — Claude, Grok and Gemini | Supported for `triage`, `prioritize`, `code`, `fix` |
 | `dummy` | Behaviour tests — scripted ops, no inference | Internal |
 | `opencode` | Not yet functional | Stub |
@@ -136,6 +136,7 @@ Full per-key detail, including the exact `--tools` mapping and allowlist parsing
 
 ## Related docs
 
+- [Running Claude Code](runtimes/claude.md) — models, fallback chains, behaviour notes
 - [Running pi](runtimes/pi.md) — models and providers, behaviour differences, troubleshooting
 - [Implementing an agent runtime](contributing/runtime-implementation.md) — security matrix, interfaces, hook contract, sandbox layout
 - [Running agents locally](guides/user/running-agents-locally.md) — step-by-step local runs

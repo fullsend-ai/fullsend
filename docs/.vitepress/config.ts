@@ -207,7 +207,10 @@ export default defineConfig({
           text: "Runtimes",
           collapsed: true,
           link: "/runtimes",
-          items: [{ text: "Running pi", link: "/runtimes/pi" }],
+          items: [
+            { text: "Running Claude Code", link: "/runtimes/claude" },
+            { text: "Running pi", link: "/runtimes/pi" },
+          ],
         },
         {
           text: "Agents",
