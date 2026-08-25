@@ -2,10 +2,10 @@
 name: user-forum-whats-new
 description: >
   Use when preparing the Fullsend user forum "What's New" agenda, a
-  Tuesday-to-Tuesday recap, forum-host notes for the standing Google Doc,
-  or copy-paste HTML of shipped changes for users. Also use when the
-  user says what's new in Fullsend, user forum bullets, or forum agenda.
-allowed-tools: Read, Write, Grep, Glob, WebFetch, Bash(bash skills/user-forum-whats-new/scripts/gather.sh:*), Bash(python3 skills/user-forum-whats-new/scripts/gather.py:*), Bash(gh search:*), Bash(gh pr view:*), Bash(gh pr diff:*), Bash(gh pr list:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh release view:*), Bash(gh release list:*), Bash(xdg-open:*), Bash(open:*)
+  Tuesday-to-Tuesday recap, forum-host talk-track notes, or copy-paste
+  HTML of shipped changes for users. Also use when the user says what's
+  new in Fullsend, user forum bullets, or forum agenda.
+allowed-tools: Read, Write, Grep, Glob, WebFetch, Bash(bash skills/user-forum-whats-new/scripts/gather.sh:*), Bash(python3 skills/user-forum-whats-new/scripts/gather.py:*), Bash(gh search:*), Bash(gh pr view:*), Bash(gh pr diff:*), Bash(gh pr list:*), Bash(gh issue view:*), Bash(gh issue list:*), Bash(gh release view:*), Bash(gh release list:*), Bash(xdg-open /tmp/fullsend-whats-new-*:*), Bash(open /tmp/fullsend-whats-new-*:*)
 ---
 
 # User forum What's New
@@ -21,6 +21,9 @@ better when they exist; code is a valid fallback, not a last resort you
 skip.
 
 ## Where this lives
+
+This is **org forum-host tooling** (not a sandbox agent skill). It is
+intentionally not cross-linked from BYOA / customizing-with-skills guides.
 
 Canonical directory (this skill):
 
@@ -38,6 +41,10 @@ with IANA tz data (system tzdb or the `tzdata` package). GitHub API
 calls go through `gather.py` only — do not grant bare `gh api` in
 `allowed-tools` (any path prefix is write-capable via `--method`/`-X`).
 
+`Write` is granted only so step 6 can drop the paste-ready HTML under
+`/tmp/fullsend-whats-new-YYYY-MM-DD.html` (Google Docs paste). Openers
+are scoped to that `/tmp` path prefix.
+
 ## When
 
 Tuesday morning before the forum (or when the host asks). Window is
@@ -47,12 +54,9 @@ The **fullsend-user-forum-host** role rotates: a different teammate often
 pulls this skill down locally each week with no local copy of last week's
 gather JSON. Do not rely on persisting `window_end_utc` across machines.
 
-Standing agenda:
-[Notes — fullsend community meeting](https://docs.google.com/document/d/1kXRvb7QJIlv4MoSnTzIM5uthURckhN0Duy8JFar5roQ)
-
-Local copy of past What's New (optional, if the host keeps one):
-use it only to confirm the last forum date. The standing Google Doc is
-canonical.
+Org hosts usually keep a standing forum notes doc (auth-walled, not linked
+from this public skill). Confirm last forum date from that doc or from
+your local notes if you keep a copy — do not invent a URL here.
 
 ## Workflow
 
@@ -60,7 +64,7 @@ Do these in order. Do not draft bullets until ranking is done.
 
 ### 1. Resolve the window
 
-- Last forum date = previous Tuesday (confirm from the notes file).
+- Last forum date = previous Tuesday (confirm from your org's forum notes).
 - `SINCE` = that meeting's start (America/New_York 08:00 is fine).
 - `UNTIL` = this Tuesday forum (now, if running that morning).
 - `gather.sh` / `gather.py` interpret `--since` as **08:00 America/New_York**
@@ -72,13 +76,15 @@ Do these in order. Do not draft bullets until ranking is done.
   both claim the same timestamp. It does **not** remove late-run overlap —
   if last week's host ran at 10:00 ET with `--until` clamped to then, the
   08:00–10:00 band can still appear in both weeks' gather JSON. Hosts
-  rotate and usually have no local previous gather; **dedupe against last
-  week's bullets in the standing Google Doc** (canonical shared artifact),
-  not against a file on disk. JSON includes `until_clamped: true/false` so
-  you can see when the requested calendar day was truncated. Default
-  `--until` is today's date in America/New_York (not the host machine's
-  local calendar). Dates must be strict `YYYY-MM-DD` (ISO week-dates like
-  `2026-W33-2` are rejected).
+  rotate and usually have no local previous gather; **ask the host to paste
+  last week's What's New bullets** (from the standing forum notes if they
+  have access) and drop duplicates before ranking. JSON includes
+  `until_clamped: true/false` so you can see when the requested calendar day
+  was truncated. Default `--until` is today's date in America/New_York (not
+  the host machine's local calendar). Dates must be strict `YYYY-MM-DD`
+  (ISO week-dates like `2026-W33-2` are rejected). If `--since` 08:00 ET is
+  still in the future, gather errors with a clear "window has not started"
+  message — wait until after that instant.
 - Search and filter use the same UTC timestamp bounds (not bare calendar
   dates), so ET evening after UTC midnight is not dropped.
 - Releases published **after** the last forum are in-scope even if they
@@ -107,6 +113,8 @@ the release that shipped after last Tuesday still counts.
 
 Also scan (host-supplied where noted):
 
+- **Ask the host** to paste last week's What's New bullets (from the org
+  forum notes if they have them) so you can drop late-run duplicates.
 - **Ask the host** for any `#forum-fullsend-ai` highlights that **landed
   this window** (new dashboard, new knob), or use pasted channel notes.
   This skill cannot read Slack — do not invent channel content. That is
@@ -259,7 +267,7 @@ In chat, include:
 4. Path of the HTML file
 5. Talking order — **Released** bullets first, then **On main**
 
-Do not edit the Google Doc unless the host asks.
+Do not edit the org's standing forum notes unless the host asks.
 
 ## Audience (who is in the room)
 

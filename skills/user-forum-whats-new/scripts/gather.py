@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gather What's New candidates for the Fullsend user forum.
+"""Gather What's New candidates for the Fullsend user forum (stdlib only).
 
 Dates are forum Tuesdays in America/New_York. --since is 08:00 ET that
 morning; --until is end of that day ET, clamped to now when that end is
@@ -21,7 +21,7 @@ if sys.version_info < (3, 11):  # noqa: UP036 — skill may run outside this rep
         f"error: Python 3.11+ required (found {sys.version.split()[0]}); "
         "gather.py uses datetime.UTC and zoneinfo America/New_York.\n"
     )
-    raise SystemExit(1)
+    sys.exit(1)
 
 from datetime import UTC, date, datetime, time
 from pathlib import Path
@@ -36,7 +36,7 @@ except ZoneInfoNotFoundError as e:
         f"({e}). Install your distro's IANA timezone data package "
         "(commonly `tzdata`) or `pip install tzdata`.\n"
     )
-    raise SystemExit(1) from e
+    sys.exit(1)
 
 SEARCH_LIMIT = 1000
 # Fail fast on hung gh network / credential prompts (four calls in fetch_into).
@@ -101,7 +101,7 @@ def window_bounds(
     Half-open filtering (see in_window) only removes the exact 08:00 ET
     shared boundary. If last week's host ran late (until=now mid-morning),
     a short post-08:00 band can still appear in both weeks' JSON — hosts
-    dedupe against last week's bullets in the standing Google Doc.
+    dedupe against last week's bullets (host-supplied paste).
     """
     since_d = parse_ymd(since_day)
     until_d = parse_ymd(until_day)
@@ -109,6 +109,8 @@ def window_bounds(
     until_end_et = datetime.combine(until_d, time(23, 59, 59, 999999), tzinfo=ET).astimezone(UTC)
     now_utc = now if now is not None else datetime.now(UTC)
     now_utc = now_utc.replace(tzinfo=UTC) if now_utc.tzinfo is None else now_utc.astimezone(UTC)
+    if since_ts > now_utc:
+        raise ValueError(f"window has not started yet: 08:00 ET on {since_day} is in the future")
     until_clamped = until_end_et > now_utc
     until_ts = now_utc if until_clamped else until_end_et
     if until_ts < since_ts:
