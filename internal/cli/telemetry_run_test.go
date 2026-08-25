@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
@@ -397,7 +398,7 @@ func TestAggregateRunMetrics(t *testing.T) {
 		"anthropic-vertex/claude-opus-4-6":   {Requests: 1, InputTokens: 10, CostUSD: 0.06},
 		"anthropic-vertex/claude-sonnet-4-6": {Requests: 2, InputTokens: 4, CostUSD: 0.04},
 	}
-	aggregateRunMetrics(&agg, &m1, 1)
+	aggregateRunMetrics(&agg, &m1, 1, 30*time.Second)
 
 	var m2 agentruntime.RunMetrics
 	m2.NumTurns, m2.TotalCostUSD = 2, 0.05
@@ -408,10 +409,11 @@ func TestAggregateRunMetrics(t *testing.T) {
 	m2.PerModelUsage = map[string]agentruntime.ModelUsage{
 		"anthropic-vertex/claude-opus-4-6": {Requests: 1, InputTokens: 4, CostUSD: 0.05},
 	}
-	aggregateRunMetrics(&agg, &m2, 2)
+	aggregateRunMetrics(&agg, &m2, 2, 45*time.Second)
 
 	assert.Equal(t, 7, agg.NumTurns)
 	assert.InDelta(t, 0.15, agg.TotalCostUSD, 1e-9)
+	assert.InDelta(t, 75.0, agg.DurationSeconds, 1e-9, "duration sums across iterations")
 	assert.Equal(t, 14, agg.TokenUsage.Input)
 	assert.Equal(t, 140, agg.TokenUsage.Output)
 	assert.Equal(t, 40, agg.TokenUsage.Reasoning)
@@ -428,7 +430,7 @@ func TestAggregateRunMetrics(t *testing.T) {
 	var noSubagents aggregateMetrics
 	var m3 agentruntime.RunMetrics
 	m3.TotalCostUSD = 0.01
-	aggregateRunMetrics(&noSubagents, &m3, 1)
+	aggregateRunMetrics(&noSubagents, &m3, 1, 0)
 	assert.Nil(t, noSubagents.PerModelUsage, "runtimes without sub-agents add no breakdown key to metrics.json")
 }
 
@@ -448,7 +450,7 @@ func TestAggregateRunMetrics_MixedIterations(t *testing.T) {
 		"anthropic-vertex/claude-opus-4-6":   {Requests: 1, InputTokens: 100, OutputTokens: 10, CostUSD: 0.10},
 		"anthropic-vertex/claude-sonnet-4-6": {Requests: 2, InputTokens: 200, OutputTokens: 20, CostUSD: 0.20},
 	}
-	aggregateRunMetrics(&agg, &m1, 1)
+	aggregateRunMetrics(&agg, &m1, 1, 0)
 
 	// Iteration 2 is a retry that dispatched nothing — but its own tokens
 	// are still in the totals, so they must be in the breakdown too.
@@ -458,7 +460,7 @@ func TestAggregateRunMetrics_MixedIterations(t *testing.T) {
 	m2.PerModelUsage = map[string]agentruntime.ModelUsage{
 		"anthropic-vertex/claude-opus-4-6": {Requests: 1, InputTokens: 70, OutputTokens: 7, CostUSD: 0.07},
 	}
-	aggregateRunMetrics(&agg, &m2, 2)
+	aggregateRunMetrics(&agg, &m2, 2, 0)
 
 	var sum agentruntime.ModelUsage
 	for _, u := range agg.PerModelUsage {

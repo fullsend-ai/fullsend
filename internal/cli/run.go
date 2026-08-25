@@ -163,9 +163,10 @@ type statusOpts struct {
 
 // aggregateMetrics holds accumulated behavioral metrics across retry iterations.
 type aggregateMetrics struct {
-	NumTurns     int     `json:"num_turns"`
-	TotalCostUSD float64 `json:"total_cost_usd"`
-	TokenUsage   struct {
+	NumTurns        int     `json:"num_turns"`
+	TotalCostUSD    float64 `json:"total_cost_usd"`
+	DurationSeconds float64 `json:"duration_seconds,omitempty"`
+	TokenUsage      struct {
 		Input         int `json:"input"`
 		Output        int `json:"output"`
 		Reasoning     int `json:"reasoning"`
@@ -201,6 +202,14 @@ type aggregateMetrics struct {
 	// breakdown summing to the totals across a retry. A run on a runtime
 	// without sub-agents keeps metrics.json as it was.
 	PerModelUsage map[string]agentruntime.ModelUsage `json:"per_model_usage,omitempty"`
+	// OverBudget is set when max_cost_usd was exceeded and the run loop
+	// halted further iterations early. It records why the run stopped
+	// retrying; it does not imply the run succeeded. A harness with a
+	// validation_loop only reaches the halt after an iteration failed
+	// validation, so over_budget commonly accompanies a non-nil run error
+	// — callers should read it as "do not blame the model for stopping
+	// here", not as a success signal.
+	OverBudget bool `json:"over_budget,omitempty"`
 }
 
 func writeMetricsJSON(dir string, m aggregateMetrics) error {
@@ -2138,6 +2147,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	}
 
 	for iteration := 1; iteration <= maxIterations; iteration++ {
+		// Claude Code reports total_cost_usd only in the final result event
+		// of a completed iteration, so max_cost_usd cannot interrupt work
+		// already in flight — it stops the loop from starting more. Checked
+		// here rather than only at the bottom of the loop because a
+		// mid-iteration `continue` would otherwise skip past the break and
+		// buy another iteration the budget has already refused.
+		if aggMetrics.OverBudget {
+			break
+		}
+
 		runCount = iteration
 		transcriptErrorOverride = false
 
@@ -2250,7 +2269,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 
 		// Accumulate behavioral metrics across iterations.
-		aggregateRunMetrics(&aggMetrics, &metrics, iteration)
+		aggregateRunMetrics(&aggMetrics, &metrics, iteration, time.Since(agentStart))
 
 		if runErr != nil {
 			attachIterationContent("error")
@@ -2268,6 +2287,19 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			return fmt.Errorf("running agent (iteration %d): %w", iteration, runErr)
 		}
 		lastExitCode = exitCode
+
+		// Budget check: mark the run over budget as soon as the aggregate
+		// cost is known to have crossed the cap, so metrics.json carries
+		// the marker even if this turns out to be the last iteration
+		// anyway (single-iteration harnesses, or validation already
+		// passing). The flag alone stops the loop — see the guard at the
+		// top. Cancelling the run's context here instead would reassign
+		// the ctx that the status-comment defer closes over, making every
+		// run report "cancelled".
+		if !aggMetrics.OverBudget && exceedsCostBudget(aggMetrics.TotalCostUSD, h.MaxCostUSD) {
+			aggMetrics.OverBudget = true
+			printer.StepWarn(fmt.Sprintf("Over max_cost_usd budget ($%.4f > $%.4f) — halting further iterations", aggMetrics.TotalCostUSD, h.MaxCostUSD))
+		}
 
 		// Check the tee'd output.jsonl for is_error:true result events.
 		// Claude Code may exit 0 on API/infrastructure failures (e.g.,
@@ -2470,6 +2502,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 		if iteration < maxIterations {
 			printer.StepInfo(fmt.Sprintf("Will retry (%d iterations remaining)", maxIterations-iteration))
+		}
+		if aggMetrics.OverBudget {
+			printer.StepInfo("Skipping remaining retries: over max_cost_usd budget")
+			break
 		}
 	}
 
@@ -3453,10 +3489,14 @@ func agentSpanEndAttrs(iteration, exitCode int, system, runtimeName string, m *a
 
 // aggregateRunMetrics folds one iteration's metrics into the cross-iteration
 // aggregate: tokens/cost/turns/tool calls are summed; the last non-empty model
-// wins. iteration records the highest iteration reached.
-func aggregateRunMetrics(agg *aggregateMetrics, m *agentruntime.RunMetrics, iteration int) {
+// wins. iteration records the highest iteration reached. duration is the
+// iteration's wall-clock time (agent start to rt.Run return), summed across
+// iterations so the aggregate reflects total agent time, not sandbox/setup
+// overhead.
+func aggregateRunMetrics(agg *aggregateMetrics, m *agentruntime.RunMetrics, iteration int, duration time.Duration) {
 	agg.NumTurns += m.NumTurns
 	agg.TotalCostUSD += m.TotalCostUSD
+	agg.DurationSeconds += duration.Seconds()
 	agg.TokenUsage.Input += m.InputTokens
 	agg.TokenUsage.Output += m.OutputTokens
 	agg.TokenUsage.Reasoning += m.ReasoningTokens
@@ -3477,6 +3517,12 @@ func aggregateRunMetrics(agg *aggregateMetrics, m *agentruntime.RunMetrics, iter
 		entry.Add(u)
 		agg.PerModelUsage[spec] = entry
 	}
+}
+
+// exceedsCostBudget reports whether totalCostUSD has crossed the harness's
+// max_cost_usd cap. A zero (or unset) cap means unlimited, so it never trips.
+func exceedsCostBudget(totalCostUSD, maxCostUSD float64) bool {
+	return maxCostUSD > 0 && totalCostUSD > maxCostUSD
 }
 
 // resolveWorkItemID returns a stable cross-run correlation key for the work
