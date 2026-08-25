@@ -1,5 +1,5 @@
 ---
-title: "91. Always-on harness skills via soft Skill directive"
+title: "92. Always-on harness skills via soft Skill directive"
 status: Accepted
 relates_to:
   - agent-architecture
@@ -14,7 +14,7 @@ topics:
   - security
 ---
 
-# 91. Always-on harness skills via soft Skill directive
+# 92. Always-on harness skills via soft Skill directive
 
 Date: 2026-08-19
 

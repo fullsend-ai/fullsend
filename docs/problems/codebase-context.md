@@ -65,7 +65,7 @@ Cross-repo API review processes (e.g., CODEOWNERS on API files across repos) pro
 ## Open questions
 
 - How do we validate that CLAUDE.md files remain under 60 lines and don't accumulate cruft? Should there be CI enforcement or periodic human review?
-- What's the right balance between CLAUDE.md (always-loaded) and BOOKMARKS.md (on-demand)? How do agents know to check BOOKMARKS.md for a given task? (Harness skill load mode — Skill-tool on-demand vs `metadata.apply: always` soft name directive — is decided in [ADR 0091](../ADRs/0091-always-on-harness-skills.md). CLAUDE.md vs BOOKMARKS.md balance remains open.)
+- What's the right balance between CLAUDE.md (always-loaded) and BOOKMARKS.md (on-demand)? How do agents know to check BOOKMARKS.md for a given task? (Harness skill load mode — Skill-tool on-demand vs `metadata.apply: always` soft name directive — is decided in [ADR 0092](../ADRs/0092-always-on-harness-skills.md). CLAUDE.md vs BOOKMARKS.md balance remains open.)
 - How do we handle context for repos that aren't pure services (e.g., shared libraries, test tooling, helper apps)? The service-oriented frontmatter may not fit.
 - Can agents contribute to BOOKMARKS.md when they discover useful references, or should that always be human-curated?
 - What's the context loading strategy for multi-repo changes? Does the agent load context from all affected repos at once, or does it switch context as it moves between repos?
