@@ -8,7 +8,7 @@ This is a living document. PRs that introduce new terminology should add to this
 
 When someone says they "customized an agent," ask which of these they mean — colloquial **"customized agent"** is ambiguous; prefer a precise term below.
 
-**Agent identity** (pick the most specific classification that applies — these are categories, not ordered steps):
+**Agent classification** (pick the most specific that applies — these are categories, not ordered steps):
 
 - [Default agent](#default-agent) — unmodified shipped agent
 - [Configured default agent](#configured-default-agent) — same identity; allowed configuration only
@@ -96,7 +96,7 @@ See [Configuring with skills](guides/user/customizing-with-skills.md#built-in-sk
 
 ### BYOA
 
-**Bring Your Own Agent** — the platform capability to register, compose, and run agents and harness config you own (agent registration, `base:` [base composition](#base-composition), org/repo config). BYOA covers [configured default](#configured-default-agent), [derived](#derived-agent), and [custom](#custom-agent) agents. Saying "we use BYOA" does **not** mean "we built a custom agent"; many BYOA users only add skills or env on a default harness.
+**Bring Your Own Agent** — the platform capability to register, compose, and run agents and harness config you own (config.yaml registration and `base:` [base composition](#base-composition)). BYOA covers [configured default](#configured-default-agent), [derived](#derived-agent), and [custom](#custom-agent) agents. Saying "we use BYOA" does **not** mean "we built a custom agent"; many BYOA users only add skills or env on a default harness.
 See [Bring Your Own Agent](guides/user/bring-your-own-agent.md), [ADR 0058](ADRs/0058-agent-registration.md), and [ADR 0045](ADRs/0045-forge-portable-harness-schema.md).
 
 ## C
