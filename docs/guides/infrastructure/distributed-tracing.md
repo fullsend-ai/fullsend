@@ -84,26 +84,25 @@ The variable name and accepted values follow the
 Fullsend records content on span attributes only, so `event_only` stays
 off. An unrecognized value disables capture; telemetry never fails a run.
 
-**Captured:** assistant text, reasoning, and tool calls (name plus short
-summary) — including any sub-agent activity, unattributed — as the
-`gen_ai.output.messages` span attribute: a JSON string following the
+**Captured:** assistant text, reasoning, tool calls (name plus short
+summary), and tool results — including any sub-agent activity,
+unattributed — as the `gen_ai.output.messages` span attribute: a JSON
+string following the
 [GenAI output-messages schema](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-output-messages.json)
-with a `finish_reason` of `stop` or `error`.
+with a `finish_reason` of `stop` or `error`. Tool calls and their
+results share a correlating `id` when the runtime's stream provides one
+(Claude runs do).
 
 **Not captured:** model input (`gen_ai.input.messages`) and
 pre/post-script content. First-iteration runs have no meaningful
 runner-side input; retry iterations carry the injected validation
 feedback, a natural input-capture follow-up.
 
-> **Planned:** Tool results, once a parser extension adds them to the
-> normalized event stream — the next change after
-> [#6429](https://github.com/fullsend-ai/fullsend/pull/6429).
-
 **Redaction and size:** every part passes through security redaction
 (Unicode normalization, then secret masking) before reaching the span.
-Content is bounded at 256 KiB per iteration, kept as an ordered suffix;
-overflow drops the oldest content first. Truncation is marked via
-`fullsend.content.truncated`. The SDK's span attribute length cap is
+Content is bounded at 256 KiB per iteration — each tool result at 8 KiB —
+kept as an ordered suffix; overflow drops the oldest content first.
+Truncation is marked via `fullsend.content.truncated`. The SDK's span attribute length cap is
 lifted while capture is on; an explicit
 `OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` still wins and will cut content
 mid-JSON — fullsend warns on stderr at startup.

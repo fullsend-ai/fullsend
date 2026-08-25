@@ -149,12 +149,16 @@ returns nil, leaving the default renderer path byte-identical to before
 Level 3 existed.
 
 The collector (`internal/cli/content_collector.go`) coalesces contiguous
-text/reasoning deltas, maps tool use to `tool_call` parts, redacts every
+text/reasoning deltas, maps tool use to `tool_call` parts and tool
+results to `tool_call_response` parts (correlated by `id` when the
+runtime's stream provides one; the schema's required result field is
+`response`), redacts every
 part through `security.OutputPipeline()` at assembly (redaction runs
 before the size budget — truncating first could split a secret past
 recognition), enforces a 256 KiB ordered-suffix budget (the ending survives — the
-final answer is what consumers judge) with exact dropped-byte accounting
-across content, tool names, and summaries, and emits
+final answer is what consumers judge) plus an 8 KiB per-tool-result
+bound (tail-kept, redacted before the cut), with exact dropped-byte
+accounting across content, tool names, summaries, and responses, and emits
 `gen_ai.output.messages` JSON following the GenAI output-messages schema,
 including the schema-required `finish_reason` from the iteration outcome. `attachContent` records the
 content and its marker attributes on the span before either
