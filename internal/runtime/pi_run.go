@@ -220,12 +220,22 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 	if xaiVertex {
 		// Grok-on-Vertex: unset XAI_API_KEY so pi's built-in xai provider
 		// (which requires the key for xAI's native API) cannot shadow this
-		// extension. Pin XAI_VERTEX_PROJECT_ID to the fleet's Vertex project
-		// so the extension does not fall back to an ambient
-		// GOOGLE_CLOUD_PROJECT that may point to a different project.
+		// extension.
+		//
+		// Default XAI_VERTEX_PROJECT_ID to the fleet's Vertex project so the
+		// extension does not fall back to an ambient GOOGLE_CLOUD_PROJECT that
+		// may point somewhere else -- but only when the runner has not set it.
+		// Each Vertex provider resolves its own project variable
+		// (XAI_VERTEX_PROJECT_ID, ANTHROPIC_VERTEX_PROJECT_ID,
+		// GOOGLE_CLOUD_PROJECT), so pi happily serves Grok, Claude and Gemini
+		// from different projects in one process; overriding an explicit value
+		// here would collapse that and leave no way to point Grok at its own
+		// project. That matters when Grok is enabled in Model Garden for a
+		// different project than Claude -- the call then fails 403
+		// PERMISSION_DENIED with nothing to tune.
 		parts = append(parts,
 			"&& unset XAI_API_KEY",
-			`&& export XAI_VERTEX_PROJECT_ID="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}"`,
+			`&& export XAI_VERTEX_PROJECT_ID="${XAI_VERTEX_PROJECT_ID:-${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}}"`,
 		)
 	}
 	parts = append(parts,

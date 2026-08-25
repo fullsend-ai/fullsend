@@ -218,7 +218,8 @@ func TestBuildPiRunCommand_XaiVertex(t *testing.T) {
 	assert.Contains(t, cmd, "--model 'xai-vertex/xai/grok-4.6'", "normalised model spec")
 	assert.Contains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/xai-vertex'", "xai-vertex extension is loaded")
 	assert.Contains(t, cmd, "&& unset XAI_API_KEY", "XAI_API_KEY is unset")
-	assert.Contains(t, cmd, `&& export XAI_VERTEX_PROJECT_ID="${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}"`, "project is pinned")
+	assert.Contains(t, cmd, `&& export XAI_VERTEX_PROJECT_ID="${XAI_VERTEX_PROJECT_ID:-${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}}"`,
+		"project defaults to the fleet's Vertex project but does not override an explicit XAI_VERTEX_PROJECT_ID")
 	assert.NotContains(t, cmd, "unset ANTHROPIC_API_KEY", "anthropic env hygiene does not fire for xai-vertex")
 	assert.NotContains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/anthropic-vertex'", "anthropic-vertex extension is not loaded")
 
