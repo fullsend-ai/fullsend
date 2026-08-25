@@ -1,5 +1,5 @@
 ---
-# lint-workflow-size: max-lines=610
+# lint-workflow-size: max-lines=612
 # Dispatcher workflow that routes events to agent workflows based on stage.
 # Routing logic determines the stage from event context — the shim only
 # forwards the raw event.  Adding a new stage requires only a case branch
@@ -113,7 +113,7 @@ jobs:
           # Extract the first word of the comment as the command
           COMMAND=""
           if [[ -n "${COMMENT_BODY:-}" ]]; then
-            COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $1}')"
+            COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $1}' | sed 's/[.,;:!?]*$//')"
           fi
 
           case "${EVENT_NAME}" in
@@ -149,7 +149,7 @@ jobs:
                 /fs-retro|/fullsend)
                   if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
                     if [[ "${COMMAND}" == "/fullsend" ]]; then
-                      SECOND_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}')"
+                      SECOND_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}' | sed 's/[.,;:!?]*$//')"
                       if [[ "${SECOND_WORD}" == "retro" ]]; then
                         STAGE="retro"
                       fi
@@ -521,7 +521,7 @@ jobs:
             pull_request: (.pull_request // null | if . then {number, html_url,
               head: {ref: .head.ref, sha: .head.sha, repo: {full_name: .head.repo.full_name}},
               base: {ref: .base.ref, repo: {full_name: .base.repo.full_name}}} else null end),
-            comment: (.comment // null | if . then {body: .body[:4096]} else null end)
+            comment: (.comment // null | if . then {id, body: .body[:4096]} else null end)
           }' "$GITHUB_EVENT_PATH")
 
           # For issue_comment events on PRs, the raw event has no top-level

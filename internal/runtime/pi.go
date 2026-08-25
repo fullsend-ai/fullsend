@@ -35,6 +35,21 @@ type PiRuntime struct{}
 // once #5262 ships in a pinned pi release.
 const piVertexExtensionPath = sandbox.SandboxPiExtensionsDir + "/anthropic-vertex"
 
+// piXaiVertexExtensionPath is the Grok-on-Vertex provider for pi
+// (fullsend-ai/pi-xai-vertex, pinned in the sandbox image by
+// PI_XAI_VERTEX_VERSION). Grok on Vertex speaks the OpenAI-completions
+// protocol, which neither pi's built-in xai provider (requires XAI_API_KEY
+// for xAI's native API) nor google-vertex (Gemini-only) covers. Run loads
+// it with `-e` alongside `--no-extensions`; it registers provider
+// "xai-vertex". Project comes from XAI_VERTEX_PROJECT_ID,
+// GOOGLE_CLOUD_PROJECT, or ANTHROPIC_VERTEX_PROJECT_ID (first set wins; Run
+// pins XAI_VERTEX_PROJECT_ID to ANTHROPIC_VERTEX_PROJECT_ID so both Vertex
+// providers hit the same GCP project). Credentials come from
+// google-auth-library reading GOOGLE_APPLICATION_CREDENTIALS — the same ADC
+// path the anthropic-vertex extension uses. Run unsets XAI_API_KEY so pi's
+// built-in xai provider cannot shadow this one (#6571).
+const piXaiVertexExtensionPath = sandbox.SandboxPiExtensionsDir + "/xai-vertex"
+
 func (PiRuntime) Name() string { return "pi" }
 
 // System returns the OTEL GenAI gen_ai.system value. Pi is multi-provider

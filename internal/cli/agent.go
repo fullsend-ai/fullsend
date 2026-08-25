@@ -35,6 +35,7 @@ func newAgentCmd() *cobra.Command {
 	cmd.AddCommand(newAgentListCmd())
 	cmd.AddCommand(newAgentUpdateCmd())
 	cmd.AddCommand(newAgentRemoveCmd())
+	cmd.AddCommand(newAgentSetCmd())
 	return cmd
 }
 
@@ -141,6 +142,102 @@ func newAgentRemoveCmd() *cobra.Command {
 	return cmd
 }
 
+func newAgentSetCmd() *cobra.Command {
+	var fullsendDir, runtimeName, model, effort string
+
+	cmd := &cobra.Command{
+		Use:   "set <name>",
+		Short: "Set an agent's runtime, model or effort in config (per-repo)",
+		Long: `Sets runtime, model and/or effort for one agent in .fullsend/config.yaml.
+The agent is a built-in one (triage, code, review, fix, retro, prioritize)
+or a custom agents: entry by name. For a built-in agent without an entry a
+name-only entry is added. Only the flags given change; pass an empty value
+(--model "") to clear a setting. Per-repo configs only.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			printer := ui.New(os.Stdout)
+			return runAgentSet(fullsendDir, args[0], agentSetFlags{
+				runtime: runtimeName, model: model, effort: effort,
+				runtimeSet: cmd.Flags().Changed("runtime"),
+				modelSet:   cmd.Flags().Changed("model"),
+				effortSet:  cmd.Flags().Changed("effort"),
+			}, printer)
+		},
+	}
+	cmd.Flags().StringVar(&fullsendDir, "fullsend-dir", "", "path to the .fullsend configuration directory")
+	cmd.Flags().StringVar(&runtimeName, "runtime", "", "agent runtime for this agent (claude or pi); \"\" clears it")
+	cmd.Flags().StringVar(&model, "model", "", "model for this agent (alias, model id, or provider/id on pi); \"\" clears it")
+	cmd.Flags().StringVar(&effort, "effort", "", "effort level for this agent (low, medium, high, xhigh, max); \"\" clears it")
+	_ = cmd.MarkFlagRequired("fullsend-dir")
+	return cmd
+}
+
+// agentSetFlags carries `agent set` flag values and whether each was given.
+type agentSetFlags struct {
+	runtime, model, effort          string
+	runtimeSet, modelSet, effortSet bool
+}
+
+// runAgentSet upserts runtime/model/effort for one agent on the overlay
+// config.yaml and validates the result the way `fullsend run` will.
+func runAgentSet(fullsendDir, agentName string, f agentSetFlags, printer *ui.Printer) error {
+	if !f.runtimeSet && !f.modelSet && !f.effortSet {
+		return fmt.Errorf("nothing to set: pass at least one of --runtime, --model, --effort")
+	}
+	absDir, err := filepath.Abs(fullsendDir)
+	if err != nil {
+		return fmt.Errorf("resolving fullsend dir: %w", err)
+	}
+	configPath := filepath.Join(absDir, config.OverlayConfigFile)
+	cfg, err := loadAgentConfig(configPath)
+	if err != nil {
+		return err
+	}
+	w, ok := cfg.(config.PerRepoConfigWriter)
+	if !ok {
+		return fmt.Errorf("agent set applies to per-repo configs; %s is an org config", configPath)
+	}
+
+	// Start from the current effective values so an unset flag keeps them.
+	current, _ := config.AgentSettingsFor(cfg.AgentEntries(), agentName)
+	runtimeName, model, effort := current.Runtime, current.Model, current.Effort
+	if f.runtimeSet {
+		runtimeName = f.runtime
+	}
+	if f.modelSet {
+		model = f.model
+	}
+	if f.effortSet {
+		effort = f.effort
+	}
+	// Only the overlay's own entries are written; an agent registered in
+	// config.base.yaml gets an overlay entry that merges onto it by name.
+	local := config.UpsertAgentSettings(append([]config.AgentEntry(nil), localAgentEntries(cfg)...), agentName, runtimeName, model, effort)
+	w.SetAgents(local)
+
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("config validation failed: %w", err)
+	}
+	data, err := cfg.Marshal()
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(configPath, data, 0o644); err != nil {
+		return fmt.Errorf("writing config: %w", err)
+	}
+	printer.StepDone(fmt.Sprintf("Set agent %q: runtime=%q model=%q effort=%q (empty = inherit)", agentName, runtimeName, model, effort))
+	return nil
+}
+
+// localAgentEntries returns the entries the overlay itself declares (the
+// parent chain's entries are not rewritten into config.yaml).
+func localAgentEntries(cfg config.ConfigReader) []config.AgentEntry {
+	if local, ok := cfg.(interface{ LocalAgentEntries() []config.AgentEntry }); ok {
+		return local.LocalAgentEntries()
+	}
+	return cfg.AgentEntries()
+}
+
 func runAgentAdd(ctx context.Context, source, name, fullsendDir string, forgeClient forge.Client, printer *ui.Printer) error {
 	absDir, err := filepath.Abs(fullsendDir)
 	if err != nil {
@@ -237,6 +334,22 @@ func runAgentList(fullsendDir string, printer *ui.Printer) error {
 		displaySource := a.Source
 		if cleanURL, _, hasHash := urlutil.ParseIntegrityHash(a.Source); hasHash {
 			displaySource = cleanURL
+		}
+		if displaySource == "" {
+			displaySource = "(built-in)"
+		}
+		if a.HasSettings() {
+			var settings []string
+			if a.Runtime != "" {
+				settings = append(settings, "runtime="+a.Runtime)
+			}
+			if a.Model != "" {
+				settings = append(settings, "model="+a.Model)
+			}
+			if a.Effort != "" {
+				settings = append(settings, "effort="+a.Effort)
+			}
+			displaySource += "  [" + strings.Join(settings, " ") + "]"
 		}
 		printer.Raw(fmt.Sprintf("%-*s  %s\n", maxName, a.DerivedName(), displaySource))
 	}

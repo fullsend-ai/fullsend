@@ -1145,3 +1145,6 @@ func (f *fakeURLSCM) CommitFileToFork(context.Context, string, string, string, s
 func (f *fakeURLSCM) CreateForkChangeProposal(context.Context, string, string, string, string, string, string, string, string) (*forge.ChangeProposal, error) {
 	return nil, nil
 }
+func (f *fakeURLSCM) ListIssueReactions(context.Context, string, string, int) ([]forge.Reaction, error) {
+	return nil, nil
+}

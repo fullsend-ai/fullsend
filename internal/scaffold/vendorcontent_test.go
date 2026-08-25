@@ -69,8 +69,18 @@ func TestIsVendoredReusableWorkflow(t *testing.T) {
 
 func TestIsVendoredDefaultsInfra(t *testing.T) {
 	assert.True(t, isVendoredDefaultsInfra("action.yml"))
-	assert.True(t, isVendoredDefaultsInfra(".github/actions/foo/action.yml"))
-	assert.True(t, isVendoredDefaultsInfra(".github/scripts/run.sh"))
+	// Actions ship only via the explicit allowlist — an action that no
+	// vendored reusable workflow executes must NOT ship.
+	assert.True(t, isVendoredDefaultsInfra(".github/actions/mint-token/action.yml"))
+	assert.True(t, isVendoredDefaultsInfra(".github/actions/setup-gcp/action.yml"))
+	assert.False(t, isVendoredDefaultsInfra(".github/actions/check-e2e-authorization/action.yml"))
+	assert.False(t, isVendoredDefaultsInfra(".github/actions/foo/action.yml"))
+	// Scripts ship only via the explicit allowlist — an arbitrary file
+	// under .github/scripts/ must NOT be vendored to consumer repos.
+	assert.True(t, isVendoredDefaultsInfra(".github/scripts/check-fix-eligibility.sh"))
+	assert.True(t, isVendoredDefaultsInfra(".github/scripts/install-podman.sh"))
+	assert.False(t, isVendoredDefaultsInfra(".github/scripts/run.sh"))
+	assert.False(t, isVendoredDefaultsInfra(".github/scripts/check-fix-eligibility-test.sh"))
 	assert.False(t, isVendoredDefaultsInfra(".github/workflows/reusable-triage.yml"))
 }
 
@@ -88,4 +98,19 @@ func TestWalkVendoredUpstreamFromRoot_SkipsSymlink(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Empty(t, seen, "symlinks should be skipped")
+}
+
+// The layered scripts layer ships to consumer repos; its *-test.sh /
+// *-test.py self-tests run in fullsend CI only and must stay out.
+func TestWalkLayeredContent_ExcludesTestFiles(t *testing.T) {
+	var paths []string
+	require.NoError(t, WalkLayeredContent(func(path string, _ []byte) error {
+		paths = append(paths, path)
+		return nil
+	}))
+	assert.Contains(t, paths, "scripts/pre-fetch-prior-review.sh")
+	assert.Contains(t, paths, "scripts/reconcile-repos.sh")
+	for _, p := range paths {
+		assert.False(t, isLayeredRepoTestFile(p), "test file shipped in layered content: %s", p)
+	}
 }

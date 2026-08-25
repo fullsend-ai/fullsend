@@ -90,6 +90,39 @@ func TestLint_EnvSandboxWithHostFilesNoOverlap(t *testing.T) {
 	assert.Empty(t, diags)
 }
 
+func TestLint_ForgeDeprecationWarning(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Forge: map[string]*ForgeConfig{
+			"github": {PreScript: "scripts/gh.sh"},
+		},
+		hadForgeBeforeResolve: true, // simulate LoadWithOpts capturing this
+	}
+	diags := h.Lint()
+	var found bool
+	for _, d := range diags {
+		if d.Field == "forge" {
+			found = true
+			assert.Equal(t, SeverityWarning, d.Severity)
+			assert.Contains(t, d.Message, "deprecated")
+			assert.Contains(t, d.Message, "overlays")
+		}
+	}
+	assert.True(t, found, "expected forge deprecation warning")
+}
+
+func TestLint_NoForgeNoDeprecationWarning(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+	}
+	diags := h.Lint()
+	for _, d := range diags {
+		assert.NotEqual(t, "forge", d.Field, "should not have forge warning")
+	}
+}
+
 func TestDiagnostic_String(t *testing.T) {
 	t.Run("warning", func(t *testing.T) {
 		d := Diagnostic{Severity: SeverityWarning, Field: "role", Message: "msg"}

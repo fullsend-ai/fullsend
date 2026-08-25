@@ -1197,6 +1197,70 @@ func TestFakeClient_AddIssueLabels(t *testing.T) {
 	require.Error(t, fc.AddIssueLabels(context.Background(), "org", "repo", 999, "x"))
 }
 
+func TestFakeClient_AddIssueReaction(t *testing.T) {
+	fc := NewFakeClient()
+
+	id1, err := fc.AddIssueReaction(context.Background(), "org", "repo", 7, "eyes")
+	require.NoError(t, err)
+	id2, err := fc.AddIssueReaction(context.Background(), "org", "repo", 7, "+1")
+	require.NoError(t, err)
+
+	assert.NotZero(t, id1)
+	assert.NotEqual(t, id1, id2)
+	require.Len(t, fc.AddedReactions, 2)
+	assert.Equal(t, ReactionRecord{ID: id1, Owner: "org", Repo: "repo", Number: 7, Content: "eyes"}, fc.AddedReactions[0])
+	assert.Equal(t, ReactionRecord{ID: id2, Owner: "org", Repo: "repo", Number: 7, Content: "+1"}, fc.AddedReactions[1])
+}
+
+func TestFakeClient_DeleteIssueReaction(t *testing.T) {
+	fc := NewFakeClient()
+	id, err := fc.AddIssueReaction(context.Background(), "org", "repo", 7, "eyes")
+	require.NoError(t, err)
+
+	require.NoError(t, fc.DeleteIssueReaction(context.Background(), "org", "repo", 7, id))
+	assert.Equal(t, []int64{id}, fc.DeletedReactions)
+}
+
+func TestFakeClient_ReactionErrorInjection(t *testing.T) {
+	fc := NewFakeClient()
+	fc.Errors = map[string]error{"AddIssueReaction": errors.New("boom")}
+
+	_, err := fc.AddIssueReaction(context.Background(), "org", "repo", 7, "eyes")
+	assert.Error(t, err)
+}
+
+func TestFakeClient_AddIssueCommentReaction(t *testing.T) {
+	fc := NewFakeClient()
+
+	id1, err := fc.AddIssueCommentReaction(context.Background(), "org", "repo", 555, "eyes")
+	require.NoError(t, err)
+	id2, err := fc.AddIssueCommentReaction(context.Background(), "org", "repo", 555, "+1")
+	require.NoError(t, err)
+
+	assert.NotZero(t, id1)
+	assert.NotEqual(t, id1, id2)
+	require.Len(t, fc.AddedCommentReactions, 2)
+	assert.Equal(t, CommentReactionRecord{Owner: "org", Repo: "repo", CommentID: 555, Content: "eyes"}, fc.AddedCommentReactions[0])
+	assert.Equal(t, CommentReactionRecord{Owner: "org", Repo: "repo", CommentID: 555, Content: "+1"}, fc.AddedCommentReactions[1])
+}
+
+func TestFakeClient_DeleteIssueCommentReaction(t *testing.T) {
+	fc := NewFakeClient()
+	id, err := fc.AddIssueCommentReaction(context.Background(), "org", "repo", 555, "eyes")
+	require.NoError(t, err)
+
+	require.NoError(t, fc.DeleteIssueCommentReaction(context.Background(), "org", "repo", 555, id))
+	assert.Equal(t, []int64{id}, fc.DeletedCommentReactions)
+}
+
+func TestFakeClient_CommentReactionErrorInjection(t *testing.T) {
+	fc := NewFakeClient()
+	fc.Errors = map[string]error{"AddIssueCommentReaction": errors.New("boom")}
+
+	_, err := fc.AddIssueCommentReaction(context.Background(), "org", "repo", 555, "eyes")
+	assert.Error(t, err)
+}
+
 func TestFakeClient_ListRecentWorkflowRuns(t *testing.T) {
 	fc := NewFakeClient()
 	fc.RecentWorkflowRuns = map[string][]WorkflowRun{

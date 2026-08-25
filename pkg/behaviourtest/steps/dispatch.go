@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
+	"github.com/fullsend-ai/fullsend/internal/scaffold"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -227,8 +228,10 @@ func commitLocalHarnessResources(ctx context.Context, w *world.World, harnessNam
 		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before harness operations")
 	}
 	var h struct {
-		Agent  string `yaml:"agent"`
-		Policy string `yaml:"policy"`
+		Agent     string   `yaml:"agent"`
+		Policy    string   `yaml:"policy"`
+		Profiles  []string `yaml:"profiles"`
+		Providers []string `yaml:"providers"`
 	}
 	if err := yaml.Unmarshal([]byte(doc), &h); err != nil {
 		return fmt.Errorf("parsing harness YAML for resource paths: %w", err)
@@ -253,6 +256,33 @@ func commitLocalHarnessResources(ctx context.Context, w *world.World, harnessNam
 			fmt.Sprintf("behaviour: add policy resource for %s", harnessName),
 			[]byte(minimalPolicy)); err != nil {
 			return fmt.Errorf("committing policy resource %s: %w", policyPath, err)
+		}
+	}
+
+	// Relative profiles/providers entries grant the sandbox network egress
+	// (ADR-0065), so a placeholder would not do: commit the real files the
+	// per-repo scaffold embeds (e.g. profiles/fullsend-vertex-ai.yaml,
+	// providers/vertex-ai.yaml). The scaffold install ships only .gitkeeps
+	// for these directories, and a local harness resolves them relative to
+	// .fullsend/, so a scenario that needs a real model must reference them
+	// and they must exist. Entries the scaffold does not carry are an error.
+	for _, group := range []struct {
+		field string
+		paths []string
+	}{{"profiles", h.Profiles}, {"providers", h.Providers}} {
+		for _, rel := range group.paths {
+			if rel == "" || strings.HasPrefix(rel, "/") || strings.HasPrefix(rel, "https://") {
+				continue
+			}
+			data, err := scaffold.FullsendRepoFile(rel)
+			if err != nil {
+				return fmt.Errorf("%s entry %q for %s is not a file the per-repo scaffold ships: %w", group.field, rel, harnessName, err)
+			}
+			dest := filepath.Join(".fullsend", rel)
+			if err := w.SCM.CommitFile(ctx, owner, repo, dest,
+				fmt.Sprintf("behaviour: add %s resource for %s", group.field, harnessName), data); err != nil {
+				return fmt.Errorf("committing %s resource %s: %w", group.field, dest, err)
+			}
 		}
 	}
 

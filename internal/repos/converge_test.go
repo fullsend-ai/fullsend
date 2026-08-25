@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -22,6 +23,30 @@ func newConvergeManifest(repos ...string) *Manifest {
 			FullsendRef: "v1.0.0",
 			Repos:       entries,
 		},
+	}
+}
+
+// populateScaffoldContent generates scaffold files from BuildScaffoldFiles
+// and installs them into the fake client. This ensures the fake content
+// matches what the drift check expects, so tests that assert "already
+// current" do not get false content-drift actions.
+func populateScaffoldContent(t testing.TB, fc *forge.FakeClient, owner, repo, ref, mintURL string) {
+	t.Helper()
+	files, err := BuildScaffoldFiles(InstallConfig{
+		Owner:       owner,
+		Repo:        repo,
+		Forge:       ForgeGitHub,
+		Roles:       []string{"triage"},
+		MintURL:     mintURL,
+		UpstreamRef: ref,
+		UpstreamTag: ref,
+	})
+	if err != nil {
+		t.Fatalf("populateScaffoldContent: BuildScaffoldFiles: %v", err)
+	}
+	fullName := owner + "/" + repo
+	for _, f := range files {
+		fc.FileContents[fullName+"/"+f.Path] = f.Content
 	}
 }
 
@@ -64,8 +89,9 @@ func TestConverge_AlreadyInstalledNoChange(t *testing.T) {
 	fc := newFakeClientForBatch(repoNames...)
 	markFullyInstalled(fc, "acme", "api")
 
-	// Set workflow content with the same ref as manifest.
-	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = makeWorkflow("v1.0.0")
+	// Populate scaffold content from the real template so content
+	// drift detection does not produce false positives.
+	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
 
 	m := newConvergeManifest(repoNames...)
 	sc := &fakeScaffoldCommit{}
@@ -135,8 +161,8 @@ func TestConverge_MixedFreshAndInstalled(t *testing.T) {
 	fc := newFakeClientForBatch(repoNames...)
 	markFullyInstalled(fc, "acme", "web")
 
-	// Set workflow content with the same ref as manifest.
-	fc.FileContents["acme/web/.github/workflows/fullsend.yaml"] = makeWorkflow("v1.0.0")
+	// Populate scaffold content from the real template.
+	populateScaffoldContent(t, fc, "acme", "web", "v1.0.0", "https://mint.example.com")
 
 	m := newConvergeManifest(repoNames...)
 	sc := &fakeScaffoldCommit{}
@@ -616,10 +642,8 @@ func TestConverge_DryRunNoRefChange(t *testing.T) {
 	fc := newFakeClientForBatch(repoNames...)
 	markFullyInstalled(fc, "acme", "api")
 
-	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = makeWorkflow("v1.0.0")
-	for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
-		fc.FileContents["acme/api/"+tcPath] = makeWorkflow("v1.0.0")
-	}
+	// Populate scaffold content from the real template.
+	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
 
 	m := newConvergeManifest(repoNames...)
 	sc := &fakeScaffoldCommit{}
@@ -746,10 +770,9 @@ func TestConverge_VariableDriftWithScaffoldMatch(t *testing.T) {
 	markFullyInstalled(fc, "acme", "api")
 
 	fc.VariableValues["acme/api/FULLSEND_MINT_URL"] = "https://old-mint.example.com"
-	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = makeWorkflow("v1.0.0")
-	for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
-		fc.FileContents["acme/api/"+tcPath] = makeWorkflow("v1.0.0")
-	}
+	// Populate scaffold content from the real template so only
+	// variable drift is detected.
+	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
 
 	m := newConvergeManifest(repoNames...)
 	sc := &fakeScaffoldCommit{}
@@ -867,6 +890,47 @@ func TestResolveTargetRef(t *testing.T) {
 			t.Errorf("ref = %q, want empty", rr.ref)
 		}
 	})
+
+	t.Run("branch ref not SHA-pinned", func(t *testing.T) {
+		// When fullsendRef is a branch name (not semver), the ref
+		// should be used as-is — not resolved to a SHA. Resolving
+		// branch refs creates a non-idempotent convergence loop
+		// because each commit shifts the branch HEAD. See #6553.
+		sha := "abc123def456789012345678901234567890abcd"
+		fc := forge.NewFakeClient()
+		fc.Refs["fullsend-ai/fullsend/heads/main"] = sha
+		resolver := NewRefResolver(fc)
+
+		rr := resolveTargetRef(context.Background(), "main", "", "", resolver)
+		if rr.ref != "main" {
+			t.Errorf("ref = %q, want %q (branch should not be SHA-pinned)", rr.ref, "main")
+		}
+		if rr.tag != "" {
+			t.Errorf("tag = %q, want empty (branch refs have no tag annotation)", rr.tag)
+		}
+		if rr.manifestRef != "main" {
+			t.Errorf("manifestRef = %q, want %q", rr.manifestRef, "main")
+		}
+	})
+
+	t.Run("semver ref SHA-pinned via resolver", func(t *testing.T) {
+		// Semver tags should still be resolved to SHA for pinning.
+		sha := "abc123def456789012345678901234567890abcd"
+		fc := forge.NewFakeClient()
+		fc.Refs["fullsend-ai/fullsend/tags/v2.0.0"] = sha
+		resolver := NewRefResolver(fc)
+
+		rr := resolveTargetRef(context.Background(), "v2.0.0", "", "", resolver)
+		if rr.ref != sha {
+			t.Errorf("ref = %q, want %q (semver tag should be SHA-pinned)", rr.ref, sha)
+		}
+		if rr.tag != "v2.0.0" {
+			t.Errorf("tag = %q, want %q", rr.tag, "v2.0.0")
+		}
+		if rr.manifestRef != "v2.0.0" {
+			t.Errorf("manifestRef = %q, want %q", rr.manifestRef, "v2.0.0")
+		}
+	})
 }
 
 func TestDefaultRoles(t *testing.T) {
@@ -926,11 +990,9 @@ func TestConverge_SameRefNoCommit(t *testing.T) {
 	fc := newFakeClientForBatch(repoNames...)
 	markFullyInstalled(fc, "acme", "api")
 
-	// Workflow already at v1.0.0, manifest also v1.0.0 — no upgrade needed.
-	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = makeWorkflow("v1.0.0")
-	for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
-		fc.FileContents["acme/api/"+tcPath] = makeWorkflow("v1.0.0")
-	}
+	// Populate scaffold content from the real template so no content
+	// drift is detected.
+	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
 
 	m := newConvergeManifest(repoNames...)
 
@@ -1851,5 +1913,319 @@ func TestConverge_GitLab_SeedsMissingPollVariables(t *testing.T) {
 	}
 	if val := fc.VariableValues["acme/api/FULLSEND_LABEL_STATE"]; val != "{}" {
 		t.Errorf("FULLSEND_LABEL_STATE = %q, want %q", val, "{}")
+	}
+}
+
+// TestConverge_BranchRefIdempotent verifies that convergence with a
+// branch fullsend_ref (e.g. "main") is idempotent: the second run
+// reports "already current" with zero scaffold writes. This is the
+// core regression test for #6553.
+func TestConverge_BranchRefIdempotent(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+
+	// Populate scaffold content from the real template at "main" ref.
+	populateScaffoldContent(t, fc, "acme", "api", "main", "https://mint.example.com")
+
+	m := newConvergeManifest(repoNames...)
+	m.GitHub.FullsendRef = "main"
+
+	committed := false
+	commitFn := func(_ context.Context, _, _ string, _ []forge.TreeFile, _ bool, _ bool) error {
+		committed = true
+		return nil
+	}
+	cfg := convergeCfgWithDefaults(m)
+	cfg.Force = true
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	current := result.AlreadyCurrent()
+	if len(current) != 1 {
+		t.Errorf("expected 1 already current, got %d", len(current))
+		for _, r := range result.Results {
+			for _, a := range r.Actions {
+				t.Logf("  action: %s %s: %s", a.Component, a.Action, a.Detail)
+			}
+		}
+	}
+	if committed {
+		t.Error("should not commit when branch ref already matches")
+	}
+}
+
+// TestConverge_BranchRefSHAPinnedIsUpgraded verifies that when a repo
+// has files SHA-pinned to a branch (e.g. @SHA # main from a previous
+// install), converging with fullsend_ref="main" upgrades them to the
+// plain branch ref (@main). This tests the transition path from the
+// old SHA-pinning behaviour to the idempotent branch-ref form.
+func TestConverge_BranchRefSHAPinnedIsUpgraded(t *testing.T) {
+	sha := "abc123def456789012345678901234567890abcd"
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+
+	// Files are SHA-pinned with a "main" tag annotation.
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = makeWorkflowSHAPinned(sha, "main")
+	for _, tcPath := range scaffold.PerRepoThinCallerPaths() {
+		fc.FileContents["acme/api/"+tcPath] = makeWorkflowSHAPinned(sha, "main")
+	}
+
+	m := newConvergeManifest(repoNames...)
+	m.GitHub.FullsendRef = "main"
+
+	var committedFiles []forge.TreeFile
+	commitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+	cfg := convergeCfgWithDefaults(m)
+	cfg.Force = true
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	convergedRepos := result.Converged()
+	if len(convergedRepos) != 1 {
+		t.Fatalf("expected 1 converged repo, got %d", len(convergedRepos))
+	}
+
+	// Verify committed files contain "main" (not SHA-pinned).
+	for _, f := range committedFiles {
+		content := string(f.Content)
+		if strings.Contains(content, sha) {
+			t.Errorf("file %s should not contain old SHA %s after branch-ref upgrade", f.Path, sha[:12])
+		}
+		if !strings.Contains(content, "@main") {
+			t.Errorf("file %s should contain @main after branch-ref upgrade", f.Path)
+		}
+	}
+}
+
+// TestConverge_BranchRefConsistentAcrossBatch verifies that all repos
+// in a batch with fullsend_ref="main" receive the same ref form —
+// not a mix of @SHA and @main. This is validation criterion 2 from
+// #6553.
+func TestConverge_BranchRefConsistentAcrossBatch(t *testing.T) {
+	repoNames := []string{"acme/api", "acme/web", "acme/docs", "acme/infra"}
+	fc := newFakeClientForBatch(repoNames...)
+
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "main",
+			Repos: []RepoEntry{
+				{Name: "acme/api"},
+				{Name: "acme/web"},
+				{Name: "acme/docs"},
+				{Name: "acme/infra"},
+			},
+		},
+	}
+
+	// Track all committed scaffold files per repo.
+	type commitRecord struct {
+		owner string
+		repo  string
+		files []forge.TreeFile
+	}
+	var commits []commitRecord
+	var commitMu sync.Mutex
+	commitFn := func(_ context.Context, owner, repo string, files []forge.TreeFile, _ bool, _ bool) error {
+		commitMu.Lock()
+		commits = append(commits, commitRecord{owner: owner, repo: repo, files: files})
+		commitMu.Unlock()
+		return nil
+	}
+
+	cfg := convergeCfgWithDefaults(m)
+	cfg.Force = true
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	installed := result.Installed()
+	if len(installed) != 4 {
+		t.Fatalf("expected 4 installed, got %d", len(installed))
+	}
+
+	// Verify all committed files use branch ref "main", not SHA-pinned.
+	for _, c := range commits {
+		for _, f := range c.files {
+			content := string(f.Content)
+			if strings.Contains(content, "fullsend-ai/fullsend/") && strings.Contains(content, "@") {
+				// Check that the ref is @main, not @SHA.
+				if !strings.Contains(content, "@main") {
+					t.Errorf("%s/%s file %s uses a non-main ref — expected @main for branch-ref install",
+						c.owner, c.repo, f.Path)
+				}
+			}
+		}
+	}
+}
+
+// TestConverge_RepairsStaleContent verifies that converge detects and
+// repairs scaffold files whose content differs from the current
+// template, even when the file is present and the ref matches. This
+// is the core regression test for #6576.
+func TestConverge_RepairsStaleContent(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+
+	// Populate correct scaffold content, then mutate the workflow
+	// to simulate a template change between releases.
+	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = makeWorkflow("v1.0.0")
+
+	m := newConvergeManifest(repoNames...)
+
+	var committedFiles []forge.TreeFile
+	commitFn := func(_ context.Context, _, _ string, files []forge.TreeFile, _ bool, _ bool) error {
+		committedFiles = files
+		return nil
+	}
+	cfg := convergeCfgWithDefaults(m)
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), commitFn, noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	convergedRepos := result.Converged()
+	if len(convergedRepos) != 1 {
+		t.Fatalf("expected 1 converged repo (stale content repaired), got %d", len(convergedRepos))
+	}
+
+	// Verify a content-drift update action was reported.
+	var hasContentUpdate bool
+	for _, a := range convergedRepos[0].Actions {
+		if a.Action == "update" && strings.Contains(a.Detail, "content differs") {
+			hasContentUpdate = true
+		}
+	}
+	if !hasContentUpdate {
+		t.Error("expected content drift update action")
+		for _, a := range convergedRepos[0].Actions {
+			t.Logf("  action: %s %s: %s", a.Component, a.Action, a.Detail)
+		}
+	}
+
+	// Verify commit was called with the repaired files.
+	if len(committedFiles) == 0 {
+		t.Fatal("expected commit for stale content repair")
+	}
+
+	// Verify the committed workflow has the correct template content
+	// (not the stale makeWorkflow content).
+	var foundWorkflow bool
+	for _, f := range committedFiles {
+		if f.Path == ".github/workflows/fullsend.yaml" {
+			foundWorkflow = true
+			if strings.Contains(string(f.Content), "install_mode: per-repo") &&
+				!strings.Contains(string(f.Content), "permissions:") {
+				t.Error("committed workflow looks like stale makeWorkflow() content, not the full template")
+			}
+		}
+	}
+	if !foundWorkflow {
+		t.Error("expected workflow file in committed files")
+	}
+}
+
+// TestConverge_RepairsStaleContent_DryRun verifies that dry-run mode
+// reports content drift without making mutations.
+func TestConverge_RepairsStaleContent_DryRun(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+
+	// Install correct scaffold, then stale the workflow.
+	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
+	fc.FileContents["acme/api/.github/workflows/fullsend.yaml"] = makeWorkflow("v1.0.0")
+
+	m := newConvergeManifest(repoNames...)
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+	cfg.DryRun = true
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	convergedRepos := result.Converged()
+	if len(convergedRepos) != 1 {
+		t.Fatalf("expected 1 converged repo in dry-run, got %d", len(convergedRepos))
+	}
+
+	var hasContentDrift bool
+	for _, a := range convergedRepos[0].Actions {
+		if a.Action == "update" && strings.Contains(a.Detail, "content differs") {
+			hasContentDrift = true
+		}
+	}
+	if !hasContentDrift {
+		t.Error("expected content drift action in dry-run")
+	}
+	if sc.called {
+		t.Error("scaffold commit should not be called in dry-run mode")
+	}
+}
+
+// TestConverge_StaticVariableValueCheck verifies that converge checks
+// values (not just presence) for all static variables, including
+// FULLSEND_GCP_REGION and FULLSEND_REVIEW_CLIENT_ID.
+func TestConverge_StaticVariableValueCheck(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+
+	// Install correct scaffold content.
+	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
+
+	// Set GCP_REGION to a wrong value — should be detected as drift.
+	fc.VariableValues["acme/api/FULLSEND_GCP_REGION"] = "europe-west1"
+
+	m := newConvergeManifest(repoNames...)
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), noopProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	convergedRepos := result.Converged()
+	if len(convergedRepos) != 1 {
+		t.Fatalf("expected 1 converged repo (region drift), got %d", len(convergedRepos))
+	}
+
+	var hasRegionUpdate bool
+	for _, a := range convergedRepos[0].Actions {
+		if a.Component == "var:FULLSEND_GCP_REGION" && a.Action == "update" {
+			hasRegionUpdate = true
+		}
+	}
+	if !hasRegionUpdate {
+		t.Error("expected update action for drifted FULLSEND_GCP_REGION")
+		for _, a := range convergedRepos[0].Actions {
+			t.Logf("  action: %s %s: %s", a.Component, a.Action, a.Detail)
+		}
+	}
+
+	// Verify the variable was updated on the forge.
+	val := fc.VariableValues["acme/api/FULLSEND_GCP_REGION"]
+	if val != "us-central1" {
+		t.Errorf("FULLSEND_GCP_REGION = %q, want %q", val, "us-central1")
 	}
 }

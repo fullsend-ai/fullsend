@@ -62,7 +62,7 @@ func TestVendorDryRunMessage(t *testing.T) {
 
 func TestAppendVendorTreeFiles_Disabled(t *testing.T) {
 	files := []forge.TreeFile{{Path: "shim.yaml", Content: []byte("x")}}
-	out, count, err := appendVendorTreeFiles(ui.New(nil), "org", "my-repo", files, false, "", "")
+	out, count, err := appendVendorTreeFiles(context.Background(), forge.NewFakeClient(), ui.New(nil), "org", "my-repo", files, false, "", "")
 	require.NoError(t, err)
 	assert.Equal(t, files, out)
 	assert.Equal(t, 0, count)
@@ -77,7 +77,7 @@ func TestAppendVendorTreeFiles_Enabled(t *testing.T) {
 
 	files := []forge.TreeFile{{Path: "shim.yaml", Content: []byte("x")}}
 	var buf strings.Builder
-	out, count, err := appendVendorTreeFiles(ui.New(&buf), "org", "my-repo", files, true, exe, "")
+	out, count, err := appendVendorTreeFiles(context.Background(), forge.NewFakeClient(), ui.New(&buf), "org", "my-repo", files, true, exe, "")
 	require.NoError(t, err)
 	assert.Greater(t, len(out), len(files))
 	assert.Greater(t, count, 0)
@@ -93,7 +93,7 @@ func TestMakeVendorCollectFunc(t *testing.T) {
 	var buf strings.Builder
 	fn := makeVendorCollectFunc(exe, "")
 	require.NotNil(t, fn)
-	files, count, err := fn(context.Background(), ui.New(&buf), "org", "my-repo")
+	files, count, err := fn(context.Background(), forge.NewFakeClient(), ui.New(&buf), "org", "my-repo")
 	require.NoError(t, err)
 	assert.NotEmpty(t, files)
 	assert.Greater(t, count, 0)
@@ -101,7 +101,7 @@ func TestMakeVendorCollectFunc(t *testing.T) {
 
 func TestMakeVendorCollectFunc_InvalidBinary(t *testing.T) {
 	fn := makeVendorCollectFunc("/nonexistent/fullsend", "")
-	_, _, err := fn(context.Background(), ui.New(&strings.Builder{}), "org", "my-repo")
+	_, _, err := fn(context.Background(), forge.NewFakeClient(), ui.New(&strings.Builder{}), "org", "my-repo")
 	require.Error(t, err)
 }
 
@@ -195,7 +195,7 @@ func TestPrepareVendorFiles_ExplicitBinary(t *testing.T) {
 	exe, err := os.Executable()
 	require.NoError(t, err)
 
-	bundle, cleanup, err := prepareVendorFiles(ui.New(&strings.Builder{}), "org", "my-repo", exe, "")
+	bundle, cleanup, err := prepareVendorFiles(context.Background(), forge.NewFakeClient(), ui.New(&strings.Builder{}), "org", "my-repo", exe, "")
 	require.NoError(t, err)
 	t.Cleanup(cleanup)
 	assert.Greater(t, bundle.assetCount, 0)
@@ -203,7 +203,7 @@ func TestPrepareVendorFiles_ExplicitBinary(t *testing.T) {
 }
 
 func TestPrepareVendorFiles_InvalidExplicitBinary(t *testing.T) {
-	_, cleanup, err := prepareVendorFiles(ui.New(&strings.Builder{}), "org", "my-repo", "/nonexistent/fullsend", "")
+	_, cleanup, err := prepareVendorFiles(context.Background(), forge.NewFakeClient(), ui.New(&strings.Builder{}), "org", "my-repo", "/nonexistent/fullsend", "")
 	require.Error(t, err)
 	cleanup()
 	assert.Contains(t, err.Error(), "validating --fullsend-binary")

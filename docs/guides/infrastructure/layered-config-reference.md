@@ -87,6 +87,32 @@ the overlay → base → code defaults chain.
 | `create_issues` | `*CreateIssuesConfig` | Replace whole object if set | `nil` |
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
 
+### Per-agent `runtime`, `model`, `effort` on `agents:` entries
+
+An `agents:` entry may set `runtime`, `model` and `effort` for that agent. An
+enabled entry without `source:` is an *override-only* entry that tunes a
+built-in agent by name (or, in an overlay, a custom agent registered in the
+base layer). The keyed merge by `DerivedName()` carries the three settings
+field by field: the overlay's non-empty value wins, an empty value inherits
+the parent's. There is no way to unset a parent's value from the overlay
+short of restating the entry.
+
+```yaml
+# config.base.yaml (preset)
+agents:
+  - source: harness/lint.yaml   # name derived from the file: lint
+    model: opus
+# config.yaml (overlay)
+agents:
+  - name: lint          # merges onto the base entry: source kept, effort added
+    effort: medium
+  - name: code          # built-in agent tuned by name
+    runtime: claude
+```
+
+Precedence at run time: flag > env var > the agent's entry > repo-wide
+`runtime:` / harness default.
+
 ### Scalar override fields
 
 **`version`**, **`runtime`**, and **`kill_switch`** use simple scalar

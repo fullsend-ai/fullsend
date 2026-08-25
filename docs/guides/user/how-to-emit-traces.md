@@ -110,6 +110,18 @@ to a backend like MLflow, Jaeger, Grafana Tempo, etc.
      --org <org> --repos repo1,repo2,repo3
    ```
 
+## Capture conversation content
+
+Set `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` to add the agent's
+text, reasoning, and tool calls to each `agent` span, in the local file and
+at the endpoint. Content is redacted for secrets and bounded per iteration,
+but may still contain proprietary code or PII — make sure your backend's
+access controls fit before enabling it.
+
+```bash
+gh variable set OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT --body "true" --repo <owner/repo>
+```
+
 ## Disable trace export
 
 Remove the endpoint variable and header secret from the repository or

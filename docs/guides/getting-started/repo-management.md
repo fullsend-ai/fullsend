@@ -149,10 +149,10 @@ Install runs in two phases:
 2. **Convergence** — every repo flows through a single probe → diff →
    apply pipeline. New repos are fully provisioned (scaffold files,
    variables, secrets). Already-installed repos are checked for
-   component drift (workflow, thin callers, variables, secrets) and
-   scaffold ref drift. Missing or drifted components are repaired
-   automatically; ref updates are committed as PRs (or direct pushes
-   with `--direct`).
+   component drift (workflow, thin callers, variables, secrets),
+   scaffold content drift, and scaffold ref drift. Missing or drifted
+   components are repaired automatically; ref updates are committed as
+   PRs (or direct pushes with `--direct`).
 
 > **Prerequisite:** GCP WIF provisioning (`fullsend inference provision`)
 > must be completed before running install. For self-managed mints,
@@ -212,8 +212,8 @@ fullsend repos status -f repos.yaml --json
 ### Detecting and reconciling configuration drift
 
 Run `repos install` to detect and fix component drift (workflow, thin
-callers, variables, secrets) and scaffold ref drift across all manifest
-repos:
+callers, variables, secrets), scaffold ref drift, and scaffold content
+drift across all manifest repos:
 
 ```bash
 fullsend repos install -f repos.yaml
@@ -226,9 +226,10 @@ fullsend repos install -f repos.yaml --dry-run
 ```
 
 The convergence phase checks all components (workflow, thin callers,
-variables, secrets) and scaffold workflow refs against the manifest.
-Missing or drifted components are repaired automatically; ref updates
-are committed as PRs (or direct pushes with `--direct`).
+variables, secrets), scaffold content drift, and scaffold workflow refs
+against the manifest. Missing or drifted components are repaired
+automatically; ref updates are committed as PRs (or direct pushes with
+`--direct`).
 
 Use `repos status` for a read-only drift report (no changes applied):
 
@@ -330,9 +331,11 @@ fullsend repos install -f repos.yaml --direct
 ```
 
 Repos that are already SHA-pinned (`@<sha> # <ref>`) preserve their
-pinning style during upgrades — the target ref is resolved to a commit
-SHA and written as `@<sha> # <ref>`. Non-SHA-pinned repos keep their
-string ref format (e.g., `@v2.3.0`).
+pinning style during upgrades when the target ref is a semver tag — the
+tag is resolved to a commit SHA and written as `@<sha> # <ref>`. When
+the target ref is a branch name (e.g., `main`), the branch name is
+written directly (`@main`) to ensure idempotent convergence. Non-SHA-pinned
+repos keep their string ref format (e.g., `@v2.3.0`).
 
 Downgrades are blocked unless `--force` is set. When both the current
 and target refs are semver tags, the guard uses version comparison. When

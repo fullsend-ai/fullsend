@@ -185,6 +185,7 @@ jobs:
           OTEL_EXPORTER_OTLP_CERTIFICATE: ${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}
           OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
           OTEL_SDK_DISABLED: ${{ vars.OTEL_SDK_DISABLED }}
+          OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: ${{ vars.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT }}
         with:
           agent: review
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -192,4 +193,5 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           status-repo: ${{ inputs.source_repo }}
           status-number: ${{ fromJSON(inputs.event_payload).pull_request.number || fromJSON(inputs.event_payload).issue.number }}
+          status-comment-id: ${{ fromJSON(inputs.event_payload).comment.id }}
           mint-url: ${{ inputs.mint_url }}

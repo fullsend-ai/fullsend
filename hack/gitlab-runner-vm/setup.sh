@@ -74,6 +74,36 @@ if ! [[ "${GITLAB_RUNNER_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 
 # --------------------------------------------------------------------------
+# 0. Fix Fedora repo config for egress-restricted environments
+# --------------------------------------------------------------------------
+fix_fedora_repos() {
+  info "Checking Fedora repo config for metalink usage"
+
+  # Fedora repos ship with metalink= enabled by default. The metalink
+  # response from mirrors.fedoraproject.org redirects to third-party mirror
+  # hosts (e.g. mirror.math.princeton.edu, d2lzkl7pfhq30w.cloudfront.net)
+  # that are not in the TenantEgress allowlist. Switch to baseurl= pointing
+  # at dl.fedoraproject.org which is already in the allowlist.
+  #
+  # Standard Fedora repo files have baseurl= commented out and metalink=
+  # active. This function comments out metalink= and uncomments baseurl=.
+  local changed=0
+  for repo_file in /etc/yum.repos.d/fedora*.repo; do
+    [ -f "${repo_file}" ] || continue
+    if grep -q '^metalink=' "${repo_file}"; then
+      sudo sed -i -e 's/^metalink=/#metalink=/' -e 's/^#baseurl=/baseurl=/' "${repo_file}"
+      changed=1
+    fi
+  done
+
+  if [ "${changed}" -eq 1 ]; then
+    ok "switched Fedora repos from metalink to baseurl"
+  else
+    ok "Fedora repos already using baseurl"
+  fi
+}
+
+# --------------------------------------------------------------------------
 # 0a. Install internal CA certificates (internal GitLab instances often use
 #     a private CA that is not in the default Fedora trust store)
 # --------------------------------------------------------------------------
@@ -808,6 +838,7 @@ echo "Runner image: ${RUNNER_IMAGE}"
 echo "OpenShell:    ${OPENSHELL_VERSION}"
 echo ""
 
+fix_fedora_repos
 install_gitlab_runner
 install_ca_certs
 register_runner

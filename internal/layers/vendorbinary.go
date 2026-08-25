@@ -15,7 +15,7 @@ type VendorFunc func(ctx context.Context, client forge.Client, printer *ui.Print
 
 // VendorCollectFunc gathers vendored tree files without committing.
 // Used to combine scaffold and vendor assets in a single CommitFiles call.
-type VendorCollectFunc func(ctx context.Context, printer *ui.Printer, owner, repo string) ([]forge.TreeFile, int, error)
+type VendorCollectFunc func(ctx context.Context, client forge.Client, printer *ui.Printer, owner, repo string) ([]forge.TreeFile, int, error)
 
 // VendorBinaryLayer manages vendored binary and content assets.
 // The type name retains "Binary" from when the layer only uploaded the CLI

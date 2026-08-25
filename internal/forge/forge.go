@@ -251,6 +251,14 @@ type IssueComment struct {
 	CreatedAt string
 }
 
+// Reaction represents an emoji reaction on an issue, pull request,
+// or comment.
+type Reaction struct {
+	ID      int64
+	Content string // e.g. "+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes"
+	User    string // login of the user who added the reaction
+}
+
 // PullRequestReview represents a formal review on a pull request.
 type PullRequestReview struct {
 	ID          int
@@ -599,6 +607,38 @@ type Client interface {
 	UpdateIssueComment(ctx context.Context, owner, repo string, commentID int, body string) error
 	DeleteIssueComment(ctx context.Context, owner, repo string, commentID int) error
 	MinimizeComment(ctx context.Context, nodeID, reason string) error
+
+	// AddIssueReaction adds an emoji reaction to an issue or pull request.
+	// content must be one of the values accepted by the forge: on GitHub,
+	// "+1", "-1", "laugh", "confused", "heart", "hooray", "rocket", "eyes".
+	// It returns the reaction's ID, used to remove it later via
+	// DeleteIssueReaction. Unlike comments, reactions do not generate
+	// GitHub notifications, making them useful for low-noise status
+	// signaling. Returns forge.ErrNotSupported if the forge has no
+	// equivalent concept.
+	AddIssueReaction(ctx context.Context, owner, repo string, number int, content string) (id int64, err error)
+
+	// DeleteIssueReaction removes a previously added reaction by ID.
+	// Returns forge.ErrNotSupported if the forge has no equivalent concept.
+	DeleteIssueReaction(ctx context.Context, owner, repo string, number int, reactionID int64) error
+
+	// AddIssueCommentReaction adds an emoji reaction to a specific comment,
+	// rather than the issue/PR itself. Used when a run was triggered by a
+	// slash command, so the reaction targets the comment that invoked the
+	// agent instead of the issue/PR. See AddIssueReaction for content
+	// values. Returns forge.ErrNotSupported if the forge has no equivalent
+	// concept.
+	AddIssueCommentReaction(ctx context.Context, owner, repo string, commentID int, content string) (id int64, err error)
+
+	// DeleteIssueCommentReaction removes a previously added comment
+	// reaction by ID. Returns forge.ErrNotSupported if the forge has no
+	// equivalent concept.
+	DeleteIssueCommentReaction(ctx context.Context, owner, repo string, commentID int, reactionID int64) error
+
+	// ListIssueReactions returns the emoji reactions on an issue or
+	// pull request. Returns forge.ErrNotSupported if the forge has no
+	// equivalent concept.
+	ListIssueReactions(ctx context.Context, owner, repo string, number int) ([]Reaction, error)
 
 	// Pull request operations
 	GetPullRequestInfo(ctx context.Context, owner, repo string, number int) (*PullRequestInfo, error)

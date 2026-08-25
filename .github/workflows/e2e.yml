@@ -42,6 +42,7 @@ on:
       - 'action.yml'
       - '.github/actions/check-e2e-authorization/**'
       - 'scripts/check-e2e-authorization.sh'
+      - 'scripts/redact-behaviour-artifacts.sh'
   pull_request_target:
     # labeled / ok-to-test is handled by e2e-ok-to-test.yml via workflow_call.
     types: [opened, synchronize, reopened]
@@ -236,7 +237,7 @@ jobs:
             }
           fi
           # pkg/e2etest: shared pool/CLI/cleanup; pkg/behaviourtest: framework; e2e/admin: admin-only helpers
-          if echo "$FILES" | grep -qE '^e2e/behaviour/|^e2e/admin/|^pkg/e2etest/|^pkg/behaviourtest/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/|^internal/layers/|^internal/scaffold/fullsend-repo/|^internal/forge/|^internal/harness/|^internal/harnessdispatch/|^internal/normevent/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^Makefile$|^\.github/scripts/redact-behaviour-artifacts\.sh$|^\.github/workflows/e2e\.yml$|^\.github/workflows/e2e-ok-to-test\.yml$|^\.github/workflows/reusable-dispatch\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
+          if echo "$FILES" | grep -qE '^e2e/behaviour/|^e2e/admin/|^pkg/e2etest/|^pkg/behaviourtest/|^internal/runtime/|^internal/sandbox/|^internal/config/|^internal/cli/|^internal/layers/|^internal/scaffold/fullsend-repo/|^internal/forge/|^internal/harness/|^internal/harnessdispatch/|^internal/normevent/|^internal/dispatch/|^internal/security/hooks/|^internal/mintclient/|^cmd/fullsend/|^go\.(mod|sum)$|^Makefile$|^scripts/redact-behaviour-artifacts\.sh$|^\.github/workflows/e2e\.yml$|^\.github/workflows/e2e-ok-to-test\.yml$|^\.github/workflows/reusable-dispatch\.yml$|^\.github/actions/check-e2e-authorization/|^scripts/check-e2e-authorization\.sh$'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No behaviour-relevant files changed — skipping behaviour tests"
@@ -298,7 +299,7 @@ jobs:
         with:
           # Base-branch script only — PR head must not control artifact redaction (#5221).
           ref: ${{ github.sha }}
-          sparse-checkout: .github/scripts/redact-behaviour-artifacts.sh
+          sparse-checkout: scripts/redact-behaviour-artifacts.sh
           path: base-scripts
           persist-credentials: false
 
@@ -341,7 +342,7 @@ jobs:
             E2E_GCP_PROJECT_ID="${E2E_GCP_PROJECT_ID}" \
             E2E_GCP_WIF_PROVIDER="${E2E_GCP_WIF_PROVIDER}" \
             E2E_GCP_SERVICE_ACCOUNT="${E2E_GCP_SERVICE_ACCOUNT}" \
-            /usr/bin/bash "${{ github.workspace }}/base-scripts/.github/scripts/redact-behaviour-artifacts.sh"
+            /usr/bin/bash "${{ github.workspace }}/base-scripts/scripts/redact-behaviour-artifacts.sh"
 
       - name: Upload behaviour debug artifacts
         if: failure() && steps.changes.outputs.relevant != 'false' && steps.redact.outcome == 'success'

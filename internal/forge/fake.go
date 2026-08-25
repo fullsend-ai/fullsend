@@ -85,6 +85,21 @@ type MinimizedCommentRecord struct {
 	Reason string
 }
 
+// ReactionRecord records an AddIssueReaction call.
+type ReactionRecord struct {
+	ID          int64
+	Owner, Repo string
+	Number      int
+	Content     string
+}
+
+// CommentReactionRecord records an AddIssueCommentReaction call.
+type CommentReactionRecord struct {
+	Owner, Repo string
+	CommentID   int
+	Content     string
+}
+
 // ReviewRecord records a pull request review creation call.
 type ReviewRecord struct {
 	Owner, Repo string
@@ -258,38 +273,42 @@ type FakeClient struct {
 	Annotations []Annotation
 
 	// Call recorders
-	CreatedRepos           []Repository
-	CreatedFiles           []FileRecord
-	CreatedBranches        []string // "owner/repo/branch"
-	CreatedBranchSHAs      []BranchSHARecord
-	DeletedRefs            []string // "owner/repo/refPath"
-	CreatedProposals       []ChangeProposal
-	DeletedRepos           []string // "owner/repo"
-	DeletedFiles           []FileRecord
-	CreatedSecrets         []SecretRecord
-	DeletedSecrets         []SecretRecord
-	Variables              []VariableRecord
-	DeletedVariables       []VariableRecord
-	DeletedOrgSecrets      []string // "org/name"
-	CreatedOrgSecrets      []OrgSecretRecord
-	CreatedOrgVariables    []OrgVariableRecord
-	DeletedOrgVariables    []string // "org/name"
-	CreatedIssues          []CreatedIssueRecord
-	UpdatedComments        []UpdatedCommentRecord
-	MinimizedComments      []MinimizedCommentRecord
-	CreatedReviews         []ReviewRecord
-	DismissedReviews       []DismissedReviewRecord
-	CommittedFiles         []CommitFilesRecord
-	CommittedFilesToBranch []CommitFilesToBranchRecord
-	CreatedForks           []string // "owner/repo"
-	ClosedProposals        []int    // PR numbers
-	DeletedComments        []int    // comment IDs
-	CreatedPipelines       []Pipeline
-	PipelineCalls          []PipelineCallRecord
-	CreatedSchedules       []PipelineSchedule
-	DeletedScheduleIDs     []int64
-	UpdatedVariables       []VariableRecord
-	CreatedProtectedVars   []VariableRecord
+	CreatedRepos            []Repository
+	CreatedFiles            []FileRecord
+	CreatedBranches         []string // "owner/repo/branch"
+	CreatedBranchSHAs       []BranchSHARecord
+	DeletedRefs             []string // "owner/repo/refPath"
+	CreatedProposals        []ChangeProposal
+	DeletedRepos            []string // "owner/repo"
+	DeletedFiles            []FileRecord
+	CreatedSecrets          []SecretRecord
+	DeletedSecrets          []SecretRecord
+	Variables               []VariableRecord
+	DeletedVariables        []VariableRecord
+	DeletedOrgSecrets       []string // "org/name"
+	CreatedOrgSecrets       []OrgSecretRecord
+	CreatedOrgVariables     []OrgVariableRecord
+	DeletedOrgVariables     []string // "org/name"
+	CreatedIssues           []CreatedIssueRecord
+	UpdatedComments         []UpdatedCommentRecord
+	MinimizedComments       []MinimizedCommentRecord
+	AddedReactions          []ReactionRecord
+	DeletedReactions        []int64
+	AddedCommentReactions   []CommentReactionRecord
+	DeletedCommentReactions []int64
+	CreatedReviews          []ReviewRecord
+	DismissedReviews        []DismissedReviewRecord
+	CommittedFiles          []CommitFilesRecord
+	CommittedFilesToBranch  []CommitFilesToBranchRecord
+	CreatedForks            []string // "owner/repo"
+	ClosedProposals         []int    // PR numbers
+	DeletedComments         []int    // comment IDs
+	CreatedPipelines        []Pipeline
+	PipelineCalls           []PipelineCallRecord
+	CreatedSchedules        []PipelineSchedule
+	DeletedScheduleIDs      []int64
+	UpdatedVariables        []VariableRecord
+	CreatedProtectedVars    []VariableRecord
 
 	// CommitAncestry maps "owner/repo/base/head" to a comparison status
 	// string ("ahead", "behind", "identical", "diverged") for CompareCommits.
@@ -299,6 +318,7 @@ type FakeClient struct {
 	proposalCounter int
 	commentCounter  int
 	issueCounter    int
+	reactionCounter int64
 }
 
 // err checks for an injected error for the given method name.
@@ -1431,6 +1451,81 @@ func (f *FakeClient) MinimizeComment(_ context.Context, nodeID, reason string) e
 		Reason: reason,
 	})
 	return nil
+}
+
+func (f *FakeClient) AddIssueReaction(_ context.Context, owner, repo string, number int, content string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("AddIssueReaction"); e != nil {
+		return 0, e
+	}
+	f.reactionCounter++
+	f.AddedReactions = append(f.AddedReactions, ReactionRecord{
+		ID:      f.reactionCounter,
+		Owner:   owner,
+		Repo:    repo,
+		Number:  number,
+		Content: content,
+	})
+	return f.reactionCounter, nil
+}
+
+func (f *FakeClient) DeleteIssueReaction(_ context.Context, _, _ string, _ int, reactionID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("DeleteIssueReaction"); e != nil {
+		return e
+	}
+	f.DeletedReactions = append(f.DeletedReactions, reactionID)
+	return nil
+}
+
+func (f *FakeClient) AddIssueCommentReaction(_ context.Context, owner, repo string, commentID int, content string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("AddIssueCommentReaction"); e != nil {
+		return 0, e
+	}
+	f.reactionCounter++
+	f.AddedCommentReactions = append(f.AddedCommentReactions, CommentReactionRecord{
+		Owner:     owner,
+		Repo:      repo,
+		CommentID: commentID,
+		Content:   content,
+	})
+	return f.reactionCounter, nil
+}
+
+func (f *FakeClient) DeleteIssueCommentReaction(_ context.Context, _, _ string, _ int, reactionID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("DeleteIssueCommentReaction"); e != nil {
+		return e
+	}
+	f.DeletedCommentReactions = append(f.DeletedCommentReactions, reactionID)
+	return nil
+}
+
+func (f *FakeClient) ListIssueReactions(_ context.Context, owner, repo string, number int) ([]Reaction, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if e := f.err("ListIssueReactions"); e != nil {
+		return nil, e
+	}
+	deleted := make(map[int64]bool, len(f.DeletedReactions))
+	for _, id := range f.DeletedReactions {
+		deleted[id] = true
+	}
+	var reactions []Reaction
+	for _, r := range f.AddedReactions {
+		if r.Owner == owner && r.Repo == repo && r.Number == number && !deleted[r.ID] {
+			reactions = append(reactions, Reaction{
+				Content: r.Content,
+				User:    f.AuthenticatedUser,
+			})
+		}
+	}
+	return reactions, nil
 }
 
 func (f *FakeClient) GetPullRequestInfo(_ context.Context, owner, repo string, number int) (*PullRequestInfo, error) {

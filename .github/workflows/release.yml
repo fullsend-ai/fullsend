@@ -54,9 +54,25 @@ jobs:
 
   validate-agents:
     needs: release
+    # Permission contract of the called workflow. GitHub validates this at
+    # parse time, before any job runs or `if:` is evaluated — a called
+    # workflow may only downgrade the caller's grants, so every permission
+    # any of its jobs declares must be granted here even when that job is
+    # skipped for this event (missing grants fail the whole run as
+    # startup_failure; see #6512, run 32615313246):
+    #   contents: read       — checkouts
+    #   id-token: write      — GCP WIF auth in functional-tests
+    #   pull-requests: write — gate job (pull_request_target only; skipped
+    #                          on tag pushes, but still validated)
+    #   checks: read         — functional-tests-complete roll-up on agents
+    #                          main (not used by the pinned gate yet;
+    #                          granted now so a pin bump cannot
+    #                          reintroduce the startup failure)
     permissions:
       contents: read
       id-token: write
+      pull-requests: write
+      checks: read
     uses: fullsend-ai/agents/.github/workflows/functional-tests.yml@a8566cd5305fe094b96588690118022967ad0061 # main
     with:
       fullsend_ref: ${{ github.ref_name }}
@@ -68,12 +84,54 @@ jobs:
       # tests to read eval repos and record eval run results.
       EVAL_GH_TOKEN: ${{ secrets.EVAL_GH_TOKEN }}
 
+  resolve-agents:
+    # Resolve the agents tree to tag exactly once, when the release starts.
+    # tag-agents previously re-resolved agents main at tag time, so anything
+    # merged into agents while the gate ran was tagged unvalidated (#6512).
+    # Until the agents gate exposes the SHA it checked out as a
+    # workflow_call output, validate-agents still exercises the pinned
+    # gate's agents tree; this at least makes the tagged tree deterministic
+    # from the moment the release begins.
+    needs: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      agents_sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve agents main
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          SHA=$(gh api repos/fullsend-ai/agents/git/ref/heads/main --jq '.object.sha')
+          if [[ ! "${SHA}" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "::error::Could not resolve fullsend-ai/agents main to a commit SHA"
+            exit 1
+          fi
+          echo "Resolved fullsend-ai/agents main to ${SHA}"
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Gate pin drift check (informational)
+        # Loud, not blocking: a stale pin means validate-agents exercises an
+        # older agents tree than the one being tagged. Bumping the pin is a
+        # maintainer decision (#6512), so this only annotates the run.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/check-agents-gate-pin.sh
+
   tag-agents:
     # Sync the version tag to fullsend-ai/agents. Runs for all tags
     # including pre-releases — agents' own release.yml handles
     # pre-release semantics. Only runs after agents functional tests
-    # pass against the release tag.
-    needs: [release, validate-agents]
+    # pass against the release tag. Tags the SHA resolve-agents captured
+    # at release start — never re-resolves main here (#6512).
+    needs: [release, validate-agents, resolve-agents]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -90,8 +148,13 @@ jobs:
       - name: Push tag to fullsend-ai/agents
         env:
           GH_TOKEN: ${{ steps.agents-token.outputs.token }}
+          AGENTS_SHA: ${{ needs.resolve-agents.outputs.agents_sha }}
         run: |
           set -euo pipefail
+          if [[ ! "${AGENTS_SHA}" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "::error::resolve-agents output is not a commit SHA: ${AGENTS_SHA//::/}"
+            exit 1
+          fi
           TAG="${GITHUB_REF_NAME}"
 
           HTTP_CODE=$(gh api "repos/fullsend-ai/agents/git/ref/tags/${TAG}" \
@@ -104,18 +167,19 @@ jobs:
             exit 1
           fi
 
-          AGENTS_SHA=$(gh api repos/fullsend-ai/agents/git/ref/heads/main --jq '.object.sha')
           gh api repos/fullsend-ai/agents/git/refs \
             -f ref="refs/tags/${TAG}" \
             -f sha="${AGENTS_SHA}"
           echo "Created tag ${TAG} on fullsend-ai/agents at ${AGENTS_SHA}"
 
   notify-agents-sync-failure:
-    needs: [release, validate-agents, tag-agents]
+    needs: [release, validate-agents, resolve-agents, tag-agents]
     if: >-
       always()
       && needs.release.result == 'success'
-      && (needs.validate-agents.result == 'failure' || needs.tag-agents.result == 'failure')
+      && (needs.validate-agents.result == 'failure'
+          || needs.resolve-agents.result == 'failure'
+          || needs.tag-agents.result == 'failure')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

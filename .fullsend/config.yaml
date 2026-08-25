@@ -22,3 +22,7 @@ create_issues:
             - fullsend-ai
         repos:
             - fullsend-ai/fullsend
+status_notifications:
+  reaction:
+    start: enabled
+    completion: enabled

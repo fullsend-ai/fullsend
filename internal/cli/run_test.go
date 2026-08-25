@@ -194,7 +194,7 @@ func TestRunAgent_HarnessLoadPipeline(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -224,7 +224,7 @@ func TestRunAgent_YMLFallback(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -237,7 +237,7 @@ func TestRunAgent_HarnessNotFound(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "nonexistent", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "nonexistent", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
@@ -269,7 +269,7 @@ func TestRunAgent_HarnessLoadWithOrgConfig(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -299,7 +299,7 @@ func TestRunAgent_PerRepoConfig(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -562,7 +562,7 @@ func TestRunAgent_MalformedOrgConfig(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
@@ -589,7 +589,7 @@ func TestRunAgent_MalformedOrgConfigWithURLRefs(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
@@ -611,7 +611,7 @@ func TestRunAgent_URLRefsNoOrgConfig(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
@@ -653,7 +653,7 @@ func TestRunAgent_WithURLBase(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -709,7 +709,7 @@ openshell:
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	// The test will fail after the orchestration block (e.g. during
 	// bootstrapCommon or pre-script setup), but it must NOT fail at
 	// the gateway check or provider/profile steps.
@@ -745,7 +745,7 @@ func TestRunAgent_URLBaseNoAllowlist(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not in allowed_remote_resources")
 }
@@ -774,7 +774,7 @@ func TestRunAgent_URLBaseMalformedOrgConfig(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no config and agents-repo fallback unavailable")
 }
@@ -886,7 +886,7 @@ func TestRunAgent_ConfigAgentLocalPath(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "custom", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "custom", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -922,7 +922,7 @@ func TestRunAgent_ConfigAgentURL(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "triage", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "triage", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -956,7 +956,7 @@ func TestRunAgent_ConfigAgentOverridesScaffold(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -978,7 +978,7 @@ func TestRunAgent_AgentNotInConfig(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not in config and agents-repo fallback unavailable")
 }
@@ -998,7 +998,7 @@ func TestRunAgent_UnknownAgentName(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "nonexistent", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "nonexistent", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not in config and agents-repo fallback unavailable")
 }
@@ -3318,17 +3318,17 @@ func TestPRHeadSHAFromEventPath_NoInputs(t *testing.T) {
 // --- detectForgePlatform tests ---
 
 func TestDetectForgePlatform_ExplicitFlag(t *testing.T) {
-	p, err := detectForgePlatform("github")
+	p, err := detectForgePlatform("github", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "github", p)
 
-	p, err = detectForgePlatform("gitlab")
+	p, err = detectForgePlatform("gitlab", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "gitlab", p)
 }
 
 func TestDetectForgePlatform_InvalidFlag(t *testing.T) {
-	_, err := detectForgePlatform("bitbucket")
+	_, err := detectForgePlatform("bitbucket", nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not a valid forge platform")
 }
@@ -3337,7 +3337,7 @@ func TestDetectForgePlatform_GitHubActions(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv("GITLAB_CI", "")
 
-	p, err := detectForgePlatform("")
+	p, err := detectForgePlatform("", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "github", p)
 }
@@ -3346,7 +3346,7 @@ func TestDetectForgePlatform_GitLabCI(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "")
 	t.Setenv("GITLAB_CI", "true")
 
-	p, err := detectForgePlatform("")
+	p, err := detectForgePlatform("", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "gitlab", p)
 }
@@ -3355,7 +3355,7 @@ func TestDetectForgePlatform_NoEnv(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "")
 	t.Setenv("GITLAB_CI", "")
 
-	p, err := detectForgePlatform("")
+	p, err := detectForgePlatform("", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "", p)
 }
@@ -3363,7 +3363,7 @@ func TestDetectForgePlatform_NoEnv(t *testing.T) {
 func TestDetectForgePlatform_FlagOverridesEnv(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "true")
 
-	p, err := detectForgePlatform("gitlab")
+	p, err := detectForgePlatform("gitlab", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "gitlab", p)
 }
@@ -3372,9 +3372,83 @@ func TestDetectForgePlatform_GitHubPrecedesGitLab(t *testing.T) {
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv("GITLAB_CI", "true")
 
-	p, err := detectForgePlatform("")
+	p, err := detectForgePlatform("", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "github", p)
+}
+
+func TestDetectForgePlatform_ConfigForge(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GITLAB_CI", "")
+
+	yamlData := `
+version: "1"
+forge: github
+roles:
+  - triage
+`
+	cfg, err := config.ParsePerRepoConfig([]byte(yamlData))
+	require.NoError(t, err)
+
+	p, err := detectForgePlatform("", cfg)
+	require.NoError(t, err)
+	assert.Equal(t, "github", p)
+}
+
+func TestDetectForgePlatform_FlagOverridesConfig(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "")
+	t.Setenv("GITLAB_CI", "")
+
+	yamlData := `
+version: "1"
+forge: github
+roles:
+  - triage
+`
+	cfg, err := config.ParsePerRepoConfig([]byte(yamlData))
+	require.NoError(t, err)
+
+	p, err := detectForgePlatform("gitlab", cfg)
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab", p)
+}
+
+func TestDetectForgePlatform_ConfigOverridesEnv(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITLAB_CI", "")
+
+	yamlData := `
+version: "1"
+forge: gitlab
+roles:
+  - triage
+`
+	cfg, err := config.ParsePerRepoConfig([]byte(yamlData))
+	require.NoError(t, err)
+
+	p, err := detectForgePlatform("", cfg)
+	require.NoError(t, err)
+	assert.Equal(t, "gitlab", p)
+}
+
+func TestDetectForgePlatform_InvalidConfigForge(t *testing.T) {
+	t.Setenv("GITHUB_ACTIONS", "true")
+	t.Setenv("GITLAB_CI", "")
+
+	yamlData := `
+version: "1"
+forge: gihub
+roles:
+  - triage
+`
+	cfg, err := config.ParsePerRepoConfig([]byte(yamlData))
+	require.NoError(t, err)
+
+	_, err = detectForgePlatform("", cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config.forge")
+	assert.Contains(t, err.Error(), "gihub")
+	assert.Contains(t, err.Error(), "not a valid forge platform")
 }
 
 func TestRunCommand_HasForgeFlag(t *testing.T) {
@@ -3521,7 +3595,7 @@ func TestRunAgent_PreflightCheck_Passing(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	// Must pass the preflight guard and reach the openshell check.
 	assert.Contains(t, err.Error(), "openshell")
@@ -3536,7 +3610,7 @@ func TestRunAgent_PreflightCheck_Failing(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "preflight_check failed")
 }
@@ -3550,7 +3624,7 @@ func TestRunAgent_PreflightCheck_NoCheckConfigured(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -3582,7 +3656,7 @@ func TestRunAgent_PreflightCheck_NilValidationLoop(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
 }
@@ -3603,7 +3677,7 @@ func TestRunAgent_PreflightCheck_Timeout(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(io.Discard)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "timed out")
 }
@@ -4353,7 +4427,7 @@ func TestRunAgent_ErrorOnMissingRole(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(&buf)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid harness: role field is required")
@@ -4998,7 +5072,7 @@ func TestRunAgent_FallsBackToFULLSEND_MINT_URL(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(&buf)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "openshell")
@@ -5041,7 +5115,7 @@ func TestRunAgent_WarnsWhenNoMintURL(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(&buf)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 
 	require.Error(t, err)
 	assert.Contains(t, buf.String(), "skipping token minting")
@@ -5083,7 +5157,7 @@ func TestRunAgent_MintTokenError(t *testing.T) {
 	rFlags := resolveFlags{maxDepth: 10, maxResources: 50}
 	printer := ui.New(&buf)
 	repoDir := t.TempDir()
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, statusOpts{}, printer, false, runOverrideFlags{})
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "agent token minting failed")
@@ -5134,7 +5208,7 @@ func TestRunAgent_StatusNotifierSetup(t *testing.T) {
 		statusNum:  42,
 		mintURL:    "https://mint.example.com",
 	}
-	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", rFlags, sOpts, printer, false, runOverrideFlags{})
+	err := runAgent(context.Background(), "code", dir, "", repoDir, "", nil, false, "", "", "", rFlags, sOpts, printer, false, runOverrideFlags{})
 
 	// Will error downstream (openshell not available), but status notifier setup should succeed
 	require.Error(t, err)
@@ -5154,7 +5228,7 @@ repos:
   widget:
     enabled: true
 `)
-	backend, err := resolveBackendFromConfigData(data)
+	backend, err := resolveBackendFromConfigData(data, "")
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", backend.Runtime.Name())
 }
@@ -5167,7 +5241,7 @@ func TestResolveBackendFromConfigData_PerRepoConfig(t *testing.T) {
 	data, err := cfg.Marshal()
 	require.NoError(t, err)
 
-	backend, err := resolveBackendFromConfigData(data)
+	backend, err := resolveBackendFromConfigData(data, "")
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", backend.Runtime.Name())
 }
@@ -5175,7 +5249,7 @@ func TestResolveBackendFromConfigData_PerRepoConfig(t *testing.T) {
 func TestResolveBackendFromConfigData_Invalid(t *testing.T) {
 	t.Parallel()
 
-	_, err := resolveBackendFromConfigData([]byte("not: [valid: yaml"))
+	_, err := resolveBackendFromConfigData([]byte("not: [valid: yaml"), "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parsing config for runtime selection")
 }
@@ -5193,7 +5267,7 @@ repos:
   widget:
     enabled: true
 `)
-	_, err := resolveBackendFromConfigData(data)
+	_, err := resolveBackendFromConfigData(data, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolving runtime")
 }
@@ -5215,7 +5289,7 @@ func TestIsOrgConfigData(t *testing.T) {
 func TestBackendFromConfigFile_MissingUsesDefault(t *testing.T) {
 	t.Parallel()
 
-	backend, source, err := backendFromConfigFile(filepath.Join(t.TempDir(), "missing.yaml"))
+	backend, source, err := backendFromConfigFile(filepath.Join(t.TempDir(), "missing.yaml"), "")
 	require.NoError(t, err)
 	assert.Equal(t, "default (config not found)", source)
 	assert.Equal(t, "claude", backend.Runtime.Name())
@@ -5232,7 +5306,7 @@ func TestBackendFromConfigFile_PerRepoConfig(t *testing.T) {
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, data, 0o644))
 
-	backend, _, err := backendFromConfigFile(path)
+	backend, _, err := backendFromConfigFile(path, "")
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", backend.Runtime.Name())
 }
@@ -5248,7 +5322,7 @@ func TestBackendFromConfigFile_PerRepoNestedConfig(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".fullsend"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".fullsend", "config.yaml"), data, 0o644))
 
-	backend, source, err := backendFromConfigFile(filepath.Join(dir, "config.yaml"))
+	backend, source, err := backendFromConfigFile(filepath.Join(dir, "config.yaml"), "")
 	require.NoError(t, err)
 	assert.Contains(t, source, ".fullsend")
 	assert.Equal(t, "dummy", backend.Runtime.Name())
@@ -5263,7 +5337,7 @@ func TestBackendFromConfigFile_ReadError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.Mkdir(path, 0o755))
 
-	_, _, err := backendFromConfigFile(path)
+	_, _, err := backendFromConfigFile(path, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading config.yaml for runtime selection")
 }
@@ -5285,7 +5359,7 @@ repos:
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, data, 0o644))
 
-	_, _, err := backendFromConfigFile(path)
+	_, _, err := backendFromConfigFile(path, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolving runtime")
 }
@@ -5891,4 +5965,50 @@ func TestGenerateSandboxName_AgentSlug(t *testing.T) {
 				"sandbox name %q should be exactly %d chars", name, maxSandboxNameLen)
 		})
 	}
+}
+
+func TestRunCommand_HasEventFileFlag(t *testing.T) {
+	cmd := newRunCmd()
+	flag := cmd.Flags().Lookup("event-file")
+	require.NotNil(t, flag)
+	assert.Equal(t, "", flag.DefValue)
+}
+
+func TestResolveAgentSource_OverrideOnlyEntryUsesAgentsRepoFallback(t *testing.T) {
+	dir := t.TempDir()
+	printer := ui.New(io.Discard)
+	cfg, err := config.ParsePerRepoConfig([]byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - name: triage
+    runtime: pi
+    model: sonnet
+`))
+	require.NoError(t, err)
+
+	// A name-only entry registers no harness: the built-in resolves through
+	// the agents-repo fallback, and without a client that is reported —
+	// never "read .fullsend: is a directory" from an empty source path.
+	_, _, err = resolveAgentSource(context.Background(), dir, "triage", nil, cfg, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config entry has no source")
+	assert.Contains(t, err.Error(), "agents-repo fallback unavailable")
+	assert.NotContains(t, err.Error(), "is a directory")
+
+	// A sourced entry next to it resolves locally as before.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "lint.yaml"), []byte("agent: agents/lint.md\nrole: triage\nslug: x-lint\n"), 0o644))
+	cfg, err = config.ParsePerRepoConfig([]byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - name: triage
+    model: sonnet
+  - source: harness/lint.yaml
+    model: haiku
+`))
+	require.NoError(t, err)
+	path, deps, err := resolveAgentSource(context.Background(), dir, "lint", nil, cfg, harness.ComposeOpts{}, printer)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dir, "harness", "lint.yaml"), path)
+	assert.Nil(t, deps)
 }

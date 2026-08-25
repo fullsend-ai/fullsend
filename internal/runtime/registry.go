@@ -59,6 +59,36 @@ func ResolveFromPerRepoConfig(cfg config.PerRepoConfigReader) (Backend, error) {
 	return Resolve(rt)
 }
 
+// ResolveForAgent selects the runtime backend for one agent: the agents:
+// entry's runtime when set, else repoRuntime (the repo-wide runtime: key,
+// "claude" when empty). The boolean reports whether the per-agent entry
+// decided. Both values are validated against [config.ValidRuntimes] so an
+// agents: entry cannot activate a stub runtime any more than the repo-wide
+// key can.
+func ResolveForAgent(agents []config.AgentEntry, repoRuntime, agent string) (Backend, bool, error) {
+	if agent != "" {
+		if entry, ok := config.AgentSettingsFor(agents, agent); ok && entry.Runtime != "" {
+			if err := validateConfigRuntime(entry.Runtime); err != nil {
+				return Backend{}, false, fmt.Errorf("agents.%s: %w", entry.DerivedName(), err)
+			}
+			backend, err := Resolve(entry.Runtime)
+			if err != nil {
+				return Backend{}, false, err
+			}
+			return backend, true, nil
+		}
+	}
+	rt := repoRuntime
+	if rt == "" {
+		rt = "claude"
+	}
+	if err := validateConfigRuntime(rt); err != nil {
+		return Backend{}, false, err
+	}
+	backend, err := Resolve(rt)
+	return backend, false, err
+}
+
 // validateConfigRuntime checks that rt is in the set of user-facing
 // runtimes allowed in config files.  Stub runtimes (e.g. "opencode")
 // are intentionally excluded from [config.ValidRuntimes] so they

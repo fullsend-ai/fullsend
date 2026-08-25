@@ -125,6 +125,9 @@ func WalkLayeredContent(fn func(path string, content []byte) error) error {
 		if !IsLayeredPath(path) && path != ".github/scripts/setup-agent-env.sh" {
 			return nil
 		}
+		if isLayeredRepoTestFile(path) {
+			return nil
+		}
 		return fn(path, data)
 	})
 }

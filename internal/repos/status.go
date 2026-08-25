@@ -137,6 +137,16 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 		refResolver = NewRefResolver(ghFC.Client)
 	}
 
+	// Build the drift config from the manifest. InferenceRegion and
+	// ReviewAppClientID are CLI flags on the install command and are
+	// not available in the status path, so value drift for
+	// FULLSEND_GCP_REGION and FULLSEND_REVIEW_CLIENT_ID can only be
+	// detected by repos install, not repos status. RunnerTags come
+	// from the manifest's GitLab platform section.
+	dcfg := DriftConfig{
+		RunnerTags: gitlabRunnerTags(manifest),
+	}
+
 	results := make([]RepoStatus, len(resolved))
 	sem := make(chan struct{}, maxConcurrency)
 	var wg sync.WaitGroup
@@ -164,7 +174,7 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 				return
 			}
 			cfg.ForgeConfig = fc
-			status := checkRepoStatus(ctx, cfg, refResolver)
+			status := checkRepoStatus(ctx, cfg, dcfg, refResolver)
 			results[idx] = status
 		}(i, rr)
 	}
@@ -188,7 +198,7 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 	return &StatusResult{Repos: results, Summary: summary, Warnings: warnings}, nil
 }
 
-func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, resolver *RefResolver) RepoStatus {
+func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, resolver *RefResolver) RepoStatus {
 	owner := cfg.Owner
 	repo := cfg.Repo
 	client := cfg.ForgeConfig.Client
@@ -201,10 +211,18 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, resolver *RefResol
 		ExpectedMintURL: cfg.MintURL,
 	}
 
-	// Probe all components to determine installation state and drift.
-	expectedVars := map[string]string{}
-	if cfg.MintURL != "" {
-		expectedVars["FULLSEND_MINT_URL"] = cfg.MintURL
+	// Build expected values for all static variables using the same
+	// function as the converge path, so variable classification
+	// (static vs dynamic) cannot diverge between the two paths.
+	expectedVars, varValErr := staticExpectedVarValues(InstallConfig{
+		Forge:             cfg.Forge,
+		MintURL:           cfg.MintURL,
+		InferenceRegion:   dcfg.InferenceRegion,
+		ReviewAppClientID: dcfg.ReviewAppClientID,
+	}, cfg.MintURL)
+	if varValErr != nil {
+		status.Error = fmt.Sprintf("building expected variable values for %s/%s: %v", owner, repo, varValErr)
+		return status
 	}
 	components, probeErr := ProbeComponents(ctx, client, owner, repo, cfg.Forge, fc, expectedVars)
 	if probeErr != nil {
@@ -271,6 +289,17 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, resolver *RefResol
 				Actual:   status.CurrentRef,
 			})
 		}
+	}
+
+	// Content drift: compare installed scaffold content against expected
+	// template output. This catches template changes (new jobs, permissions,
+	// restructured thin callers) that are invisible to the ref-string and
+	// presence checks above. Refs are normalized before comparison so that
+	// ref-format differences do not produce false content-drift reports —
+	// ref drift is already detected separately.
+	checkScaffoldContentDrift(ctx, client, cfg, dcfg, resolver, &status)
+	if status.Error != "" {
+		return status
 	}
 
 	// Read display-only variable not covered by required vars.
@@ -352,4 +381,68 @@ func filterRepos(repos []ResolvedRepo, filter []string) ([]ResolvedRepo, []strin
 	}
 
 	return result, unmatched, nil
+}
+
+// checkScaffoldContentDrift compares installed scaffold file content
+// against expected template output and appends content drift entries to
+// status.Drifts for any mismatches. Uses the shared CheckFileContentDrift
+// function so that status and converge apply the same comparison logic.
+//
+// The refResolver is used to fetch remote scaffold templates when
+// fullsend_ref pins a version that differs from the running binary,
+// ensuring the baseline matches the pinned version's templates.
+func checkScaffoldContentDrift(ctx context.Context, client forge.Client, cfg ResolvedConfig, dcfg DriftConfig, refResolver *RefResolver, status *RepoStatus) {
+	expectedFiles, err := ExpectedScaffoldContent(ctx, cfg, dcfg, refResolver)
+	if err != nil {
+		status.Error = fmt.Sprintf("rendering expected scaffold for %s/%s: %v", cfg.Owner, cfg.Repo, err)
+		return
+	}
+	if expectedFiles == nil {
+		return
+	}
+
+	drifted, driftErr := CheckFileContentDrift(ctx, client, cfg.Owner, cfg.Repo, cfg.ForgeConfig, cfg.Forge, expectedFiles)
+	if driftErr != nil {
+		status.Error = fmt.Sprintf("checking scaffold content drift for %s/%s: %v", cfg.Owner, cfg.Repo, driftErr)
+		return
+	}
+
+	for _, d := range drifted {
+		status.Drifts = append(status.Drifts, Drift{
+			Field:    d.InstalledPath,
+			Expected: "current template",
+			Actual:   "installed content differs",
+		})
+	}
+
+	// Orphan detection: check for managed scaffold files that exist on
+	// the forge but are no longer produced by the current template.
+	orphanFiles, orphanErr := CheckOrphanFiles(ctx, client, cfg.Owner, cfg.Repo, cfg.ForgeConfig, cfg.Forge, expectedFiles)
+	if orphanErr != nil {
+		status.Error = fmt.Sprintf("checking orphan files for %s/%s: %v", cfg.Owner, cfg.Repo, orphanErr)
+		return
+	}
+	for _, o := range orphanFiles {
+		status.Drifts = append(status.Drifts, Drift{
+			Field:    o.Path,
+			Expected: "absent",
+			Actual:   "orphan file (no longer in template)",
+		})
+	}
+
+	// Orphan variable detection: check for FULLSEND_-prefixed variables
+	// on the forge that are not in the managed variable set.
+	installCfg := driftInstallConfig(cfg, dcfg)
+	orphanVars, orphanVarErr := CheckOrphanVars(ctx, client, cfg.Owner, cfg.Repo, installCfg, cfg.MintURL)
+	if orphanVarErr != nil {
+		status.Error = fmt.Sprintf("checking orphan variables for %s/%s: %v", cfg.Owner, cfg.Repo, orphanVarErr)
+		return
+	}
+	for _, o := range orphanVars {
+		status.Drifts = append(status.Drifts, Drift{
+			Field:    o.Name,
+			Expected: "absent",
+			Actual:   "orphan variable (not in managed set)",
+		})
+	}
 }

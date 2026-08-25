@@ -4,7 +4,7 @@ sidebar_label: fullsend agent
 
 # fullsend agent
 
-Manage agent registrations in fullsend config. Add, list, update, and remove agents.
+Manage agent registrations in fullsend config. Add, list, set (runtime, model, effort), update, and remove agents.
 
 `agent add` and `agent update` fetch remote content and resolve GitHub URLs. Authentication is via `gh` CLI or `GH_TOKEN` environment variable.
 
@@ -15,6 +15,7 @@ Manage agent registrations in fullsend config. Add, list, update, and remove age
 | `fullsend agent add <url-or-path>` | Register an agent in config |
 | `fullsend agent list` | List registered agents |
 | `fullsend agent update <name> [sha]` | Update a URL agent to a new commit SHA |
+| `fullsend agent set <name>` | Set an agent's runtime, model or effort |
 | `fullsend agent remove <name>` | Remove an agent from config |
 
 ## `agent add`
@@ -74,6 +75,31 @@ fullsend agent update triage a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2 --fullsend
 | `--fullsend-dir` | | Path to the `.fullsend` configuration directory (required) |
 
 Only URL agents can be updated — local path agents have nothing to pin. Non-GitHub URL agents require an explicit SHA argument. The integrity hash is recomputed by fetching the content at the new SHA.
+
+## `agent set`
+
+Sets `runtime`, `model` and/or `effort` for one agent in `.fullsend/config.yaml` (per-repo
+configs). A built-in agent (`triage`, `code`, `review`, `fix`, `retro`, `prioritize`) without an
+entry gets a name-only entry; a custom agent's settings land on its `source:` entry (or, for an
+agent registered in `config.base.yaml`, on a name-only overlay entry that merges onto it). Only the
+flags given change; pass an empty value (`--model ""`) to clear a setting. The result is validated
+before it is written.
+
+```bash
+fullsend agent set code --fullsend-dir .fullsend --runtime claude --model sonnet --effort high
+fullsend agent set triage --fullsend-dir .fullsend --model xai-vertex/xai/grok-4.6
+```
+
+### Flags
+
+| Flag | Description |
+|------|-------------|
+| `--fullsend-dir` | Path to the `.fullsend` configuration directory (required) |
+| `--runtime` | Agent runtime for this agent (`claude` or `pi`) |
+| `--model` | Model for this agent — an alias, a model id, or `provider/id` on pi |
+| `--effort` | Effort level for this agent (`low`, `medium`, `high`, `xhigh`, `max`) |
+
+See [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort) for precedence.
 
 ## `agent remove`
 

@@ -141,5 +141,7 @@ func RuntimeSection(runtime string) string {
 		fmt.Sprintf("Agents in this repository run on **%s**", runtime) +
 		" (`runtime:` in `.fullsend/config.yaml`). To change it later, edit that key, " +
 		"re-run `fullsend github setup <owner/repo> --runtime <claude|pi>`, or override a " +
-		"single run with `fullsend run --runtime`. See https://github.com/fullsend-ai/fullsend/blob/main/docs/runtimes.md."
+		"single run with `fullsend run --runtime`. To put one agent on another runtime or model, " +
+		"set runtime/model/effort on its `agents:` entry in the same file (`fullsend agent set <name> --runtime pi`). " +
+		"See https://github.com/fullsend-ai/fullsend/blob/main/docs/runtimes.md."
 }

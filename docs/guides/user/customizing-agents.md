@@ -444,6 +444,39 @@ When `status_notifications` is omitted entirely, both start and completion comme
 
 In `enabled` mode (the default), a hard crash or cancellation that happens before the agent could post anything at all is also surfaced after the fact: a post-job cleanup step synthesizes an "Interrupted" comment so the run doesn't silently vanish.
 
+### Reactions
+
+As an alternative (or supplement) to comments, agents can signal status with emoji reactions. Reactions don't generate a GitHub notification, so they're a lower-noise way to show that an agent is working on something and how it turned out.
+
+```yaml
+defaults:
+  status_notifications:
+    reaction:
+      start: enabled       # "enabled" | "disabled" (default)
+      completion: enabled  # "enabled" | "on_failure" | "disabled" (default)
+```
+
+Unlike comments, reactions default to `disabled` — they're an opt-in addition, not a default-on behavior. When `start` is enabled, a 👀 reaction is added when the agent begins.
+
+At completion, the start reaction (if any) is removed, and — depending on `completion` — replaced with an outcome reaction:
+
+| Value | Behavior |
+|-------|----------|
+| `enabled` | Always add a completion reaction: 👍 on success, 😕 on failure/cancelled/skipped |
+| `on_failure` | Add a 😕 reaction only on failure/cancelled/skipped; leave no reaction on success |
+| `disabled` | Never add a completion reaction (default) |
+
+👎 is deliberately avoided for failures — it overloads GitHub's native up/down-vote convention, so a routine agent failure could be misread as the bot disliking the issue.
+
+Because reactions carry no notification cost, `on_failure` here simply means "leave no reaction on success," with no start-suppression workaround needed.
+
+**Where the reaction lands:** for runs triggered by an issue or PR event, the reaction is added to the issue/PR itself. For runs triggered by a slash command comment (e.g. `/fs-fix`), the reaction is added to the triggering comment instead, so it's clear which command the reaction is responding to.
+
+**Known limitations:**
+
+- Reactions are currently GitHub-only. Enabling `reaction.*` on a GitLab-backed repo is silently a no-op today ([#5998](https://github.com/fullsend-ai/fullsend/issues/5998)).
+- If a run is hard-killed before it can post its completion reaction, the start reaction (👀) can be left behind indefinitely — unlike status comments, there's no out-of-process reconciler for orphaned reactions yet.
+
 ## Disabling Agents
 
 To disable an agent (including built-in scaffold agents) without removing

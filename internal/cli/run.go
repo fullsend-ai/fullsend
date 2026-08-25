@@ -40,6 +40,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/lock"
 	"github.com/fullsend-ai/fullsend/internal/mintclient"
 	"github.com/fullsend-ai/fullsend/internal/mintcore"
+	"github.com/fullsend-ai/fullsend/internal/normevent"
 	"github.com/fullsend-ai/fullsend/internal/prescript"
 	"github.com/fullsend-ai/fullsend/internal/resolve"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
@@ -105,14 +106,13 @@ var defaultAgentsRepoURLPrefix = "https://raw.githubusercontent.com/fullsend-ai/
 // This is a transitional mechanism to support agent extraction. It will
 // be removed once all users have migrated to config-driven agent
 // registration (ADR 0058 Phase 5).
-var defaultAgentsRepoKnownAgents = map[string]bool{
-	"triage":     true,
-	"code":       true,
-	"fix":        true,
-	"review":     true,
-	"retro":      true,
-	"prioritize": true,
-}
+var defaultAgentsRepoKnownAgents = func() map[string]bool {
+	known := make(map[string]bool, len(config.ValidAgentNames()))
+	for _, name := range config.ValidAgentNames() {
+		known[name] = true
+	}
+	return known
+}()
 
 // statusMintToken is the test seam for minting tokens. Shared by both
 // setupStatusNotifier (status comment tokens) and mintAgentToken (agent
@@ -139,10 +139,11 @@ type resolveFlags struct {
 
 // statusOpts holds the optional status notification parameters for a run.
 type statusOpts struct {
-	runURL     string
-	statusRepo string
-	statusNum  int
-	mintURL    string
+	runURL        string
+	statusRepo    string
+	statusNum     int
+	statusComment int
+	mintURL       string
 }
 
 // aggregateMetrics holds accumulated behavioral metrics across retry iterations.
@@ -191,27 +192,44 @@ var (
 	errResolvingRuntime     = errors.New("resolving runtime")
 )
 
-func resolveBackendFromConfigData(orgConfigData []byte) (agentruntime.Backend, error) {
-	if isOrgConfigData(orgConfigData) {
-		orgCfg, orgErr := config.ParseOrgConfig(orgConfigData)
+// resolveBackendFromConfigData selects the runtime for agentName from raw
+// config.yaml bytes (org or per-repo). Only the single file is consulted;
+// backendFromConfigFile is the layered (config.base.yaml-aware) entry point.
+func resolveBackendFromConfigData(configData []byte, agentName string) (agentruntime.Backend, error) {
+	if isOrgConfigData(configData) {
+		orgCfg, orgErr := config.ParseOrgConfig(configData)
 		if orgErr != nil {
 			return agentruntime.Backend{}, fmt.Errorf("%w: %w", errParsingConfigRuntime, orgErr)
 		}
-		backend, resolveErr := agentruntime.ResolveFromConfig(orgCfg)
-		if resolveErr != nil {
-			return agentruntime.Backend{}, fmt.Errorf("%w: %w", errResolvingRuntime, resolveErr)
-		}
-		return backend, nil
+		backend, _, err := resolveBackendForAgent(orgCfg.AgentEntries(), orgCfg.OrgRepoDefaults().Runtime, agentName)
+		return backend, err
 	}
-	perRepoCfg, perRepoErr := config.ParsePerRepoConfig(orgConfigData)
+	perRepoCfg, perRepoErr := config.ParsePerRepoConfig(configData)
 	if perRepoErr != nil {
 		return agentruntime.Backend{}, fmt.Errorf("%w: %w", errParsingConfigRuntime, perRepoErr)
 	}
-	backend, resolveErr := agentruntime.ResolveFromPerRepoConfig(perRepoCfg)
+	backend, _, err := resolveBackendForAgent(perRepoCfg.AgentEntries(), perRepoCfg.ConfigRuntime(), agentName)
+	return backend, err
+}
+
+// resolveBackendForAgent applies the agents: entry's runtime for agentName
+// (validated like the repo-wide key) before falling back to repoRuntime.
+// The boolean reports whether the per-agent entry was the source.
+func resolveBackendForAgent(agents []config.AgentEntry, repoRuntime, agentName string) (agentruntime.Backend, bool, error) {
+	backend, perAgent, resolveErr := agentruntime.ResolveForAgent(agents, repoRuntime, agentName)
 	if resolveErr != nil {
-		return agentruntime.Backend{}, fmt.Errorf("%w: %w", errResolvingRuntime, resolveErr)
+		return agentruntime.Backend{}, false, fmt.Errorf("%w: %w", errResolvingRuntime, resolveErr)
 	}
-	return backend, nil
+	return backend, perAgent, nil
+}
+
+// agentSettingsSource is the source label for a value that came from the
+// agents: entry for agentName in the config file at path; it appears in the
+// plan block, the stderr selection line and metrics.json next to the
+// flag/env labels. path is the effective (overlay) config file: an entry
+// merged from config.base.yaml is reported through it.
+func agentSettingsSource(configPath, agentName string) string {
+	return fmt.Sprintf("%s agents.%s", configPath, agentName)
 }
 
 func isOrgConfigData(data []byte) bool {
@@ -237,27 +255,158 @@ func isOrgConfigData(data []byte) bool {
 	return probe.Dispatch != nil || probe.Defaults != nil || len(probe.Repos) > 0
 }
 
-func backendFromConfigFile(path string) (agentruntime.Backend, string, error) {
+// runConfig is the config file consulted by `fullsend run` for runtime
+// selection and per-agent settings: the file at the requested path, or the
+// sibling .fullsend/config.yaml when that is absent. Per-repo configs are
+// loaded layered (config.yaml over config.base.yaml, ADR 0069) so a preset
+// base can carry runtime: or agents: entries; org configs keep their raw
+// bytes and are parsed by resolveBackendFromConfigData.
+type runConfig struct {
+	// source is the file the values came from, or "" when none exists.
+	source string
+	// perRepo is the layered per-repo config; nil for org configs and
+	// when no file exists.
+	perRepo config.PerRepoConfigReader
+	// orgData holds the raw bytes of an org-mode config; nil otherwise.
+	orgData []byte
+}
+
+// loadRunConfig reads the config for `fullsend run` (see runConfig). A
+// missing file is not an error: the zero runConfig means "use defaults".
+func loadRunConfig(path string) (runConfig, error) {
 	data, readErr := os.ReadFile(path)
 	source := path
 	if readErr != nil && os.IsNotExist(readErr) {
-		alt := filepath.Join(filepath.Dir(path), ".fullsend", "config.yaml")
+		alt := filepath.Join(filepath.Dir(path), ".fullsend", config.OverlayConfigFile)
 		data, readErr = os.ReadFile(alt)
 		if readErr == nil {
 			source = alt
 		}
 	}
-	if readErr == nil {
-		backend, resolveErr := resolveBackendFromConfigData(data)
+	if readErr != nil {
+		if !os.IsNotExist(readErr) {
+			return runConfig{source: source}, fmt.Errorf("reading config.yaml for runtime selection: %w", readErr)
+		}
+		// No overlay anywhere: a base-only directory (config.base.yaml
+		// without config.yaml) still counts, next to the requested path
+		// or under the sibling .fullsend/.
+		for _, dir := range []string{filepath.Dir(path), filepath.Join(filepath.Dir(path), ".fullsend")} {
+			base := filepath.Join(dir, config.BaseConfigFile)
+			if _, statErr := os.Stat(base); statErr != nil {
+				continue
+			}
+			cfg, loadErr := config.LoadConfig(dir, config.LoadOpts{MissingOK: false})
+			if loadErr != nil {
+				return runConfig{source: base}, fmt.Errorf("%w: %w", errParsingConfigRuntime, loadErr)
+			}
+			if perRepoCfg, ok := cfg.(config.PerRepoConfigReader); ok {
+				return runConfig{source: base, perRepo: perRepoCfg}, nil
+			}
+		}
+		return runConfig{}, nil
+	}
+	if isOrgConfigData(data) {
+		return runConfig{source: source, orgData: data}, nil
+	}
+	cfg, loadErr := config.LoadConfig(filepath.Dir(source), config.LoadOpts{MissingOK: false})
+	if loadErr != nil {
+		return runConfig{source: source}, fmt.Errorf("%w: %w", errParsingConfigRuntime, loadErr)
+	}
+	perRepoCfg, ok := cfg.(config.PerRepoConfigReader)
+	if !ok {
+		// Header said per-repo but the keys say org: parse as org.
+		return runConfig{source: source, orgData: data}, nil
+	}
+	return runConfig{source: source, perRepo: perRepoCfg}, nil
+}
+
+// backendFromConfigFile selects the runtime for agentName from the config
+// file at path (see loadRunConfig for which file and layering). The
+// returned source names the file, suffixed with agents.<agent>
+// when the per-agent entry decided, or the built-in default when no file
+// exists.
+func backendFromConfigFile(path, agentName string) (agentruntime.Backend, string, error) {
+	rc, err := loadRunConfig(path)
+	if err != nil {
+		return agentruntime.Backend{}, rc.source, err
+	}
+	return rc.backend(agentName)
+}
+
+// backend resolves the runtime for agentName from the loaded config.
+func (rc runConfig) backend(agentName string) (agentruntime.Backend, string, error) {
+	switch {
+	case rc.orgData != nil:
+		backend, resolveErr := resolveBackendFromConfigData(rc.orgData, agentName)
 		if resolveErr != nil {
-			return agentruntime.Backend{}, source, resolveErr
+			return agentruntime.Backend{}, rc.source, resolveErr
+		}
+		return backend, rc.source, nil
+	case rc.perRepo != nil:
+		backend, perAgent, resolveErr := resolveBackendForAgent(rc.perRepo.AgentEntries(), rc.perRepo.ConfigRuntime(), agentName)
+		if resolveErr != nil {
+			return agentruntime.Backend{}, rc.source, resolveErr
+		}
+		source := rc.source
+		if perAgent {
+			source = agentSettingsSource(rc.source, agentName)
 		}
 		return backend, source, nil
-	}
-	if os.IsNotExist(readErr) {
+	default:
 		return agentruntime.Default(), "default (config not found)", nil
 	}
-	return agentruntime.Backend{}, source, fmt.Errorf("reading config.yaml for runtime selection: %w", readErr)
+}
+
+// agentSettings returns the effective agents: entry for agentName from the
+// loaded config, after validating every entry, so a mistyped entry (a
+// name-only entry for "coder") fails the run instead of silently running
+// the agent without its settings. `fullsend run` never calls Validate() on
+// the config it loads, so this is where those values get checked. Missing
+// files carry no entries.
+func (rc runConfig) agentSettings(agentName string) (config.AgentEntry, bool, error) {
+	var (
+		agents    []config.AgentEntry
+		allowlist []string
+	)
+	switch {
+	case rc.perRepo != nil:
+		agents, allowlist = rc.perRepo.AgentEntries(), rc.perRepo.AllowedResources()
+	case rc.orgData != nil:
+		orgCfg, err := config.ParseOrgConfig(rc.orgData)
+		if err != nil {
+			return config.AgentEntry{}, false, fmt.Errorf("%w: %w", errParsingConfigRuntime, err)
+		}
+		agents, allowlist = orgCfg.AgentEntries(), orgCfg.AllowedResources()
+	default:
+		return config.AgentEntry{}, false, nil
+	}
+	if len(agents) == 0 {
+		return config.AgentEntry{}, false, nil
+	}
+	if err := config.ValidateAgentEntries(agents, config.EnsureDefaultAllowedRemoteResources(allowlist)); err != nil {
+		return config.AgentEntry{}, false, fmt.Errorf("%s: %w", rc.source, err)
+	}
+	entry, found := config.AgentSettingsFor(agents, agentName)
+	if !found || !entry.HasSettings() {
+		return config.AgentEntry{}, false, nil
+	}
+	return entry, true, nil
+}
+
+// applyAgentSettings applies the agents: entry's model/effort for the
+// running agent to the composed harness, beneath the per-run flag/env
+// overrides (which stay in charge when set). The entry was validated by
+// agentSettings; the runtime part is applied by backendFromConfigFile.
+func applyAgentSettings(h *harness.Harness, o *runOverrides, entry config.AgentEntry, agentName, configPath string) {
+	source := agentSettingsSource(configPath, agentName)
+	if o.model == "" && entry.Model != "" {
+		h.Model = entry.Model
+		o.modelSource = source
+	}
+	if o.effort == "" && entry.Effort != "" {
+		h.Effort = entry.Effort
+		o.effortSource = source
+	}
 }
 
 func newRunCmd() *cobra.Command {
@@ -270,6 +419,7 @@ func newRunCmd() *cobra.Command {
 	var debugFilter string
 	var keepSandbox bool
 	var forgeFlag string
+	var eventFile string
 	var rFlags resolveFlags
 	var sOpts statusOpts
 	var oFlags runOverrideFlags
@@ -282,7 +432,7 @@ func newRunCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			agentName := args[0]
 			printer := ui.New(os.Stdout)
-			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, rFlags, sOpts, printer, keepSandbox, oFlags)
+			return runAgent(cmd.Context(), agentName, fullsendDir, outputBase, targetRepo, fullsendBinary, envFiles, noPostScript, debugFilter, forgeFlag, eventFile, rFlags, sOpts, printer, keepSandbox, oFlags)
 		},
 	}
 
@@ -296,12 +446,14 @@ func newRunCmd() *cobra.Command {
 	cmd.Flags().StringVar(&debugFilter, "debug", "", `enable agent runtime debug logging with optional category filter (e.g. "api,hooks")`)
 	cmd.Flags().Lookup("debug").NoOptDefVal = "*"
 	cmd.Flags().StringVar(&forgeFlag, "forge", "", `forge platform to use (e.g. "github", "gitlab"); auto-detected from CI env vars when omitted`)
+	cmd.Flags().StringVar(&eventFile, "event-file", "", "path to a normalized event JSON file for CEL overlay resolution (ADR 0088)")
 	cmd.Flags().BoolVar(&rFlags.offline, "offline", false, "reject network fetches; only use cached remote resources")
 	cmd.Flags().IntVar(&rFlags.maxDepth, "max-depth", resolve.DefaultMaxDepth, "maximum dependency depth for transitive resolution (0 disables)")
 	cmd.Flags().IntVar(&rFlags.maxResources, "max-resources", resolve.DefaultMaxResources, "maximum total remote resources per harness")
 	cmd.Flags().StringVar(&sOpts.runURL, "run-url", "", "URL of the CI/CD run for status comments")
 	cmd.Flags().StringVar(&sOpts.statusRepo, "status-repo", "", "repository (owner/repo) for status comments")
 	cmd.Flags().IntVar(&sOpts.statusNum, "status-number", 0, "issue/PR number for status comments")
+	cmd.Flags().IntVar(&sOpts.statusComment, "status-comment-id", 0, "ID of the triggering comment, for comment-scoped reactions on slash-command runs (optional)")
 	cmd.Flags().StringVar(&sOpts.mintURL, "mint-url", "", "mint service URL for on-demand status tokens (default: $FULLSEND_MINT_URL)")
 	cmd.Flags().StringVar(&oFlags.runtime, "runtime", "", "override the agent runtime from config.yaml for this run (claude, pi or dummy; also $FULLSEND_RUNTIME)")
 	cmd.Flags().StringVar(&oFlags.model, "model", "", "override the harness/agent model for this run (alias such as opus/sonnet/haiku, a model id, or provider/id on pi; also $FULLSEND_MODEL)")
@@ -312,7 +464,7 @@ func newRunCmd() *cobra.Command {
 	return cmd
 }
 
-func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, envFiles []string, noPostScript bool, debug string, forgeFlag string, rFlags resolveFlags, sOpts statusOpts, printer *ui.Printer, keepSandbox bool, oFlags runOverrideFlags) (runErr error) {
+func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRepo, fullsendBinary string, envFiles []string, noPostScript bool, debug string, forgeFlag string, eventFile string, rFlags resolveFlags, sOpts statusOpts, printer *ui.Printer, keepSandbox bool, oFlags runOverrideFlags) (runErr error) {
 	printer.Banner(Version())
 	printer.Blank()
 	printer.Header("Running agent: " + agentName)
@@ -340,12 +492,6 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// 1. Resolve and load harness.
 	harnessStart := time.Now()
 
-	forgePlatform, err := detectForgePlatform(forgeFlag)
-	if err != nil {
-		printer.StepFail("Invalid --forge flag")
-		return err
-	}
-
 	policy := fetch.DefaultPolicy
 	policy.Offline = rFlags.offline
 
@@ -356,6 +502,13 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	// tryLoadOrgConfig but not surfaced as a distinct error here.
 	orgConfigPath := filepath.Join(absFullsendDir, "config.yaml")
 	orgCfg := tryLoadOrgConfig(orgConfigPath, printer)
+
+	// Detect forge platform after config is loaded so config.forge can be consulted (ADR 0088).
+	forgePlatform, err := detectForgePlatform(forgeFlag, orgCfg)
+	if err != nil {
+		printer.StepFail("Invalid --forge flag")
+		return err
+	}
 	// Fallback for absent config; EnsureDefaultAllowedRemoteResources
 	// handles the omitted-field case when a config is present.
 	orgAllowlist := config.DefaultAllowedRemoteResources()
@@ -372,6 +525,26 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		}
 	}
 
+	// Load normalized event for CEL overlay resolution (ADR 0088).
+	// When --event-file is provided, the event is passed to ComposeOpts.Event
+	// so ResolveOverlays can evaluate overlay when expressions.
+	var eventMap map[string]any
+	if eventFile != "" {
+		eventData, readErr := os.ReadFile(eventFile)
+		if readErr != nil {
+			return fmt.Errorf("reading event file %s: %w", eventFile, readErr)
+		}
+		ev, parseErr := normevent.ParseJSON(eventData)
+		if parseErr != nil {
+			return fmt.Errorf("parsing event file %s: %w", eventFile, parseErr)
+		}
+		var mapErr error
+		eventMap, mapErr = ev.ToMap()
+		if mapErr != nil {
+			return fmt.Errorf("converting event to map: %w", mapErr)
+		}
+	}
+
 	composeOpts := harness.ComposeOpts{
 		WorkspaceRoot: absFullsendDir,
 		FetchPolicy:   policy,
@@ -380,6 +553,8 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		OrgAllowlist:  orgAllowlist,
 		TreeFetcher:   rFlags.treeFetcher,
 		GitToken:      composeGitToken,
+		Event:         eventMap,
+		Config:        harness.BuildConfigMap(orgCfg),
 	}
 
 	// Resolve agent source: config agents take precedence, then agents repo
@@ -686,10 +861,22 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		printer.StepFail(err.Error())
 		return err
 	}
+	// The config file is loaded once here and serves runtime selection, the
+	// FULLSEND_PI_MODEL gate and the agents: settings application below.
+	runCfg, runCfgErr := loadRunConfig(orgConfigPath)
+	if runCfgErr != nil {
+		if errors.Is(runCfgErr, errParsingConfigRuntime) {
+			printer.StepFail("Failed to parse config.yaml")
+		} else {
+			printer.StepFail("Failed to load config.yaml")
+		}
+		return runCfgErr
+	}
 	if overrides.runtime == "" {
 		// The pi-only FULLSEND_PI_MODEL alias depends on which runtime the
-		// config selects; resolve the config runtime first, then re-run.
-		if b, _, e := backendFromConfigFile(orgConfigPath); e == nil {
+		// config selects; resolve the config runtime first (including
+		// the agents: entry's runtime), then re-run.
+		if b, _, e := runCfg.backend(agentName); e == nil {
 			overrides, err = resolveRunOverrides(oFlags, os.Getenv, b.Runtime.Name())
 			if err != nil {
 				printer.StepFail(err.Error())
@@ -697,7 +884,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 	}
-	runtimeBackend, runtimeConfigSource, runtimeErr := resolveBackend(overrides, orgConfigPath)
+	runtimeBackend, runtimeConfigSource, runtimeErr := resolveBackendFrom(overrides, runCfg, agentName)
 	if runtimeErr != nil {
 		switch {
 		case errors.Is(runtimeErr, errParsingConfigRuntime):
@@ -710,14 +897,33 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		return runtimeErr
 	}
 
+	// Apply the agents: entry's model/effort for this agent to the composed
+	// harness: flag > env > agents: entry > harness. The same loaded config
+	// object decided the runtime above, so all three settings of an entry
+	// come from one place.
+	entry, entryFound, entryErr := runCfg.agentSettings(agentName)
+	if entryErr != nil {
+		printer.StepFail(entryErr.Error())
+		return entryErr
+	}
+	if entryFound {
+		applyAgentSettings(h, &overrides, entry, agentName, runCfg.source)
+	}
+
 	// Apply the model/effort overrides to the composed harness so every
 	// consumer (plan, runtime, metrics, status comment) sees one value.
 	if overrides.model != "" {
 		h.Model = overrides.model
 	}
+	// provider/id is pi's model form; Claude Code takes an alias or an
+	// Anthropic model id. The syntax is accepted for every runtime (ids are
+	// not a closed set), so flag the likely mismatch instead of rejecting it.
+	if runtimeBackend.Runtime.Name() == "claude" && strings.Contains(h.Model, "/") {
+		printer.StepWarn(fmt.Sprintf("model %q has a provider/id form, which is pi's; Claude Code expects an alias (opus, sonnet, ...) or an Anthropic model id", h.Model))
+	}
 	if overrides.effort != "" {
-		if !harness.ValidEffort(overrides.effort) {
-			err := fmt.Errorf("%s: invalid effort %q: must be one of %s", overrides.effortSource, overrides.effort, strings.Join(harness.ValidEffortLevels(), ", "))
+		if !config.ValidEffort(overrides.effort) {
+			err := fmt.Errorf("%s: invalid effort %q: must be one of %s", overrides.effortSource, overrides.effort, strings.Join(config.ValidEffortLevels(), ", "))
 			printer.StepFail(err.Error())
 			return err
 		}
@@ -823,6 +1029,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 					status = "cancelled"
 				} else if runErr != nil {
 					status = "failure"
+					detail = runErr.Error()
 				} else if runSkipped {
 					status = "skipped"
 					detail = runSkipReason
@@ -1018,10 +1225,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	var runCount int
 	tracer, tracingCleanup := telemetry.Setup(runDir, Version())
 	tid := resolveTraceIdentity(ctx, tracer, os.Getenv("TRACEPARENT"), os.Getenv("TRACESTATE"), []attribute.KeyValue{
-		stringAttr("fullsend.agent", agentName),
-		stringAttr("fullsend.work_item_id", workItemID),
+		boundedStringAttr("fullsend.agent", agentName),
+		boundedStringAttr("fullsend.work_item_id", workItemID),
 		attribute.String("gen_ai.operation.name", "invoke_agent"),
-		stringAttr("gen_ai.agent.name", agentName),
+		boundedStringAttr("gen_ai.agent.name", agentName),
 	})
 	ctx = tid.Ctx
 	rootSpan := tid.RootSpan
@@ -1051,7 +1258,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			rootSpan.SetAttributes(attribute.Bool("fullsend.prescript.skipped", runSkipped))
 		}
 		if runSkipped && runSkipReason != "" {
-			rootSpan.SetAttributes(stringAttr("fullsend.prescript.skip_reason", runSkipReason))
+			rootSpan.SetAttributes(boundedStringAttr("fullsend.prescript.skip_reason", runSkipReason))
 		}
 		if runCount > 0 {
 			rootSpan.SetAttributes(rootSpanEndAttrs(aggMetrics, runCount)...)
@@ -1622,6 +1829,10 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 		go runHeartbeat(printer, agentStart, timeout, heartbeatDone)
 
 		agentCtx, agentSpan := tracer.Start(ctx, "agent", trace.WithAttributes(agentSpanStartAttrs(iteration, agentName)...))
+		// One collector per iteration: iteration and agent span are 1:1, so
+		// a run-scoped collector would repeat earlier iterations' content on
+		// later spans. Nil when the Level 3 gate is off; nil is inert.
+		collector := newContentCollectorIfEnabled()
 		var metrics agentruntime.RunMetrics
 		hooksSettings := ""
 		if h.SecurityEnabled() {
@@ -1641,13 +1852,29 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			Timeout:           timeout,
 			OutputPath:        filepath.Join(iterDir, "output.jsonl"),
 			Prompt:            agentPrompt,
+			OnEvent:           contentEventHandler(agentruntime.NewEventRenderer(printer).Handle, collector),
 		}, printer, agentStart, &metrics)
 		close(heartbeatDone)
+
+		// Attach content immediately before each finalize path ends the
+		// span, carrying the schema-required finish_reason from the
+		// iteration outcome. A failed iteration keeps its content — that
+		// is when the transcript matters most. attachContent no-ops on an
+		// empty result and attaches markers even when the budget dropped
+		// every part.
+		attachIterationContent := func(finishReason string) {
+			res := collector.Result(finishReason)
+			attachContent(agentSpan, res)
+			if n := len(res.Findings); n > 0 {
+				printer.StepWarn(fmt.Sprintf("Content capture redacted %d finding(s) from span content", n))
+			}
+		}
 
 		// Accumulate behavioral metrics across iterations.
 		aggregateRunMetrics(&aggMetrics, &metrics, iteration)
 
 		if runErr != nil {
+			attachIterationContent("error")
 			finalizeAgentSpan(agentSpan, runErr, iteration, exitCode, rt.System(), rt.Name(), &metrics, "")
 			printer.StepFail("Agent execution failed")
 			// Record the real exit code (rt.Run returns -1 when the agent never
@@ -1685,6 +1912,16 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			}
 		}
 
+		// finish_reason reflects how the generation ended: a clean exit is
+		// "stop"; a non-zero exit or a transcript-reported error is "error"
+		// (both are schema enum values). Budget cuts are NOT "length" —
+		// that enum value means a model-side length stop, and telemetry
+		// cuts are marked by fullsend.content.truncated instead.
+		contentFinishReason := "stop"
+		if exitCode != 0 || transcriptErrMsg != "" {
+			contentFinishReason = "error"
+		}
+		attachIterationContent(contentFinishReason)
 		finalizeAgentSpan(agentSpan, nil, iteration, exitCode, rt.System(), rt.Name(), &metrics, transcriptErrMsg)
 
 		printer.Blank()
@@ -2660,7 +2897,7 @@ func agentSpanStartAttrs(iteration int, agentName string) []attribute.KeyValue {
 	return []attribute.KeyValue{
 		attribute.Int("iteration", iteration),
 		attribute.String("gen_ai.operation.name", "invoke_agent"),
-		stringAttr("gen_ai.agent.name", agentName),
+		boundedStringAttr("gen_ai.agent.name", agentName),
 	}
 }
 
@@ -2678,7 +2915,7 @@ func agentSpanEndAttrs(iteration, exitCode int, system, runtimeName string, m *a
 		attribute.Int("iteration", iteration),
 		attribute.Int("exit_code", exitCode),
 		stringAttr("gen_ai.system", system),
-		stringAttr("gen_ai.request.model", m.Model),
+		boundedStringAttr("gen_ai.request.model", m.Model),
 		stringAttr("fullsend.runtime", runtimeName),
 		attribute.Int("gen_ai.usage.input_tokens", m.InputTokens),
 		attribute.Int("gen_ai.usage.output_tokens", m.OutputTokens),
@@ -2837,6 +3074,16 @@ func truncateStatusMsgTo(s string, n int) string {
 // use attribute.String directly.
 func stringAttr(key, val string) attribute.KeyValue {
 	return attribute.String(key, strings.ToValidUTF8(val, ""))
+}
+
+// boundedStringAttr is stringAttr plus a byte bound. Free-text attribute
+// values that historically relied on the provider-wide SDK cap must use
+// this: the Level 3 content gate lifts that cap (telemetry.spanLimits), so
+// values from pre-script output, sandbox stream-json, or the environment
+// would otherwise ride to the exporter unbounded and can get an oversized
+// batch rejected whole.
+func boundedStringAttr(key, val string) attribute.KeyValue {
+	return stringAttr(key, truncateStatusMsgTo(val, telemetry.MaxSpanAttrValueLen))
 }
 
 // finalizeRootSpan records the run outcome on the root span and ends it:
@@ -3602,7 +3849,10 @@ func scanOutputFiles(outputDir, traceID string, printer *ui.Printer) error {
 			}
 			return nil
 		}
-		// Skip the telemetry JSONL (metadata-only, still open for append).
+		// Skip the telemetry JSONL: it is still open for append, and any
+		// Level 3 conversation content in it was already redacted at
+		// assembly (contentCollector) before reaching a span, so it needs
+		// no post-hoc sweep.
 		if path == filepath.Join(outputDir, telemetry.TelemetryFile) {
 			return nil
 		}
@@ -3758,15 +4008,29 @@ func sandboxArch() string {
 	return runtime.GOARCH
 }
 
-// detectForgePlatform determines the forge platform from the CLI flag or CI
-// environment variables. Precedence: explicit flag > GITHUB_ACTIONS > GITLAB_CI.
+// detectForgePlatform determines the forge platform from the CLI flag, config,
+// or CI environment variables. Precedence (per ADR 0088):
+//  1. explicit --forge flag
+//  2. config.forge (from config.yaml)
+//  3. CI environment variables (GITHUB_ACTIONS > GITLAB_CI)
+//
 // Returns an error if the flag value is not a recognized forge key.
-func detectForgePlatform(flag string) (string, error) {
+func detectForgePlatform(flag string, cfg config.ConfigReader) (string, error) {
 	if flag != "" {
 		if !harness.ValidForgePlatform(flag) {
 			return "", fmt.Errorf("--forge: %q is not a valid forge platform (valid: %s)", flag, harness.ForgeKeyList())
 		}
 		return flag, nil
+	}
+	if cfg != nil {
+		if pr, ok := cfg.(config.PerRepoConfigReader); ok {
+			if forge := pr.ConfigForge(); forge != "" {
+				if !harness.ValidForgePlatform(forge) {
+					return "", fmt.Errorf("config.forge: %q is not a valid forge platform (valid: %s)", forge, harness.ForgeKeyList())
+				}
+				return forge, nil
+			}
+		}
 	}
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
 		return "github", nil
@@ -3849,6 +4113,9 @@ func setupStatusNotifierGitHub(notifyCfg config.StatusNotificationConfig, owner,
 	n.SetWarnFunc(func(format string, args ...any) {
 		printer.StepWarn(fmt.Sprintf(format, args...))
 	})
+	if sOpts.statusComment != 0 {
+		n.SetTriggerCommentID(sOpts.statusComment)
+	}
 
 	canonRole := resolveRole(role)
 	n.SetClientFactory(func(ctx context.Context) (forge.Client, error) {
@@ -4194,6 +4461,15 @@ func resolveAgentSource(ctx context.Context, fullsendDir, agentName string, forg
 			return path, deps, nil
 		}
 		return "", nil, fmt.Errorf("resolving agent %q: not in config and agents-repo fallback unavailable", agentName)
+	}
+	if entry.Source == "" {
+		// An override-only entry tunes a built-in agent (runtime/model/
+		// effort) but registers no harness: the built-in still comes from
+		// the agents repo, exactly as if the entry were absent.
+		if path, deps, ok := tryAgentsRepoFallback(ctx, agentName, forgeClient, composeOpts, printer); ok {
+			return path, deps, nil
+		}
+		return "", nil, fmt.Errorf("resolving agent %q: config entry has no source (it only sets runtime/model/effort) and agents-repo fallback unavailable", agentName)
 	}
 
 	if harness.IsURL(entry.Source) {

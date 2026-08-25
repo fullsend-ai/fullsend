@@ -146,19 +146,15 @@ var vendoredReusableWorkflows = []string{
 
 var vendoredDefaultsInfraPaths = []string{
 	"action.yml",
-	".github/actions/check-e2e-authorization/action.yml",
 	".github/actions/install-fullsend-cli/action.yml",
 	".github/actions/mint-token/action.yml",
 	".github/actions/prepare-workspace/action.yml",
 	".github/actions/setup-gcp/action.yml",
 	".github/actions/validate-enrollment/action.yml",
-	".github/scripts/check-fix-eligibility-test.sh",
 	".github/scripts/check-fix-eligibility.sh",
 	".github/scripts/install-openshell.sh",
 	".github/scripts/install-podman.sh",
 	".github/scripts/openshell-version.sh",
-	".github/scripts/redact-behaviour-artifacts-test.sh",
-	".github/scripts/redact-behaviour-artifacts.sh",
 }
 
 // enumerateVendoredPaths returns embed-derived paths for a current --vendor install layout.
@@ -229,6 +225,34 @@ func enumerateLegacyFlatVendoredPaths(workflowPrefix string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// StaleVendoredPaths returns manifest-recorded content paths that are not
+// part of the new vendored set, so a re-vendor can delete them in the same
+// commit instead of leaving untracked orphans in consumer repos (e.g. a
+// script removed from the vendoredDefaultsScripts allowlist). Only safe
+// vendored repo paths are returned; the binary and the manifest itself are
+// tracked separately and never appear in manifest.Paths.
+func StaleVendoredPaths(manifest *VendorManifest, current []string) []string {
+	if manifest == nil {
+		return nil
+	}
+	keep := make(map[string]struct{}, len(current))
+	for _, p := range current {
+		keep[p] = struct{}{}
+	}
+	var stale []string
+	for _, p := range manifest.Paths {
+		if _, ok := keep[p]; ok {
+			continue
+		}
+		if !isSafeVendoredRepoPath(p) {
+			continue
+		}
+		stale = append(stale, p)
+	}
+	sort.Strings(stale)
+	return stale
 }
 
 // ReadVendorManifest loads the manifest from a repo when present.

@@ -81,7 +81,7 @@ field type follows specific merge semantics. The same rules apply during
 | `api_servers`    | Concatenated (base + child)                          | Absent (nil) = inherit |
 | `env`            | Sub-maps (`runner`, `sandbox`) merged independently; forge/child keys win (ADR-0055) | Absent (nil) = inherit |
 | `security`       | Child replaces base entirely (if non-nil)            | Absent (nil) = inherit |
-| `overlays` *(planned)* | Concatenated (base + child); first-match-wins at resolution (ADR-0088, not yet implemented) | Absent (nil) = inherit |
+| `overlays`       | Concatenated (base + child); first-match-wins at resolution (ADR-0088) | Absent (nil) = inherit |
 
 ## `ForgeConfig` struct
 
@@ -115,28 +115,29 @@ The current forge resolution pipeline is:
 Unmarshal → validateForge → ResolveForge(platform) → Validate
 ```
 
-## Overlay resolution (planned — ADR-0088)
+## Overlay resolution (ADR-0088)
 
-> **Note:** This section describes planned behavior from
-> [ADR-0088](../ADRs/0088-cel-guarded-overlays.md). The overlay feature
-> has not been implemented yet. The current implementation uses `forge:`
-> blocks only.
+`overlays:` is the successor to deprecated `forge:` blocks. Each overlay
+entry has a `when:` CEL expression and the same override fields as
+`ForgeConfig`. The first entry whose `when` evaluates to true is merged;
+remaining entries are skipped (first-match-wins).
 
-`overlays:` is the planned successor to `forge:` blocks. Each overlay
-entry will have a `when:` CEL expression and the same override fields as
-`ForgeConfig`. The first entry whose `when` evaluates to true will be
-merged; remaining entries will be skipped.
-
-### Planned resolution pipeline
+### Resolution pipeline
 
 ```
 Unmarshal → validateForge → validateOverlays →
-ResolveForge(platform) → ResolveOverlays(event, config) → Validate
+ResolveForge(platform) → ResolveOverlays(event, forgePlatform, config) → Validate
 ```
 
-### Planned CEL environment
+When `event` is nil (CLI flows without event context like `fullsend run`
+or `fullsend lock`), `ResolveOverlays` substitutes an empty map so
+overlays conditioned on `runtime.forge` or `config` can still evaluate
+and match. Overlays that reference `event` fields should use `has()` to
+guard field access (e.g., `has(event.source) && event.source.system == "jira"`).
 
-Overlay `when` expressions will be evaluated with:
+### CEL environment
+
+Overlay `when` expressions are evaluated with:
 
 | Variable | Type | Source |
 |---|---|---|
@@ -147,7 +148,7 @@ Overlay `when` expressions will be evaluated with:
 ### Mutual exclusion
 
 `forge:` and `overlays:` must not coexist in the same harness (post-merge).
-`forge:` is deprecated; new harnesses should use `overlays:` once implemented.
+`forge:` is deprecated; new harnesses should use `overlays:` instead.
 
 ## Related
 

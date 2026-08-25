@@ -136,6 +136,9 @@ func walkLayeredFromRoot(layeredRoot string, fn func(path string, content []byte
 		if !IsLayeredPath(rel) && rel != ".github/scripts/setup-agent-env.sh" {
 			return nil
 		}
+		if isLayeredRepoTestFile(rel) {
+			return nil
+		}
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {
 			return fmt.Errorf("reading %s: %w", rel, readErr)
@@ -152,17 +155,60 @@ func isVendoredReusableWorkflow(path string) bool {
 	return strings.HasPrefix(base, "reusable-") && strings.HasSuffix(base, ".yml")
 }
 
+// vendoredDefaultsScripts is the explicit allowlist of .github/scripts/
+// files that ship to consumer repos. Everything here is executed in user
+// repos: check-fix-eligibility.sh directly by the vendored reusable
+// workflows, the other three by the root composite action (action.yml,
+// invoked as ./.defaults/ with GITHUB_ACTION_PATH resolving into the
+// vendored tree).
+//
+// .github/scripts/ also hosts repo-local CI tooling and *-test.sh files
+// that must NOT ship to consumers. The directory prefix alone is
+// deliberately not sufficient for vendoring — add new user-facing scripts
+// here explicitly. Scripts whose path is a cross-repo contract
+// (openshell-version.sh and install-openshell.sh are read from a fullsend
+// checkout by the agents functional-tests gate, hack/gitlab-runner-vm,
+// and scripts/renovate/update-openshell-sha.sh) must stay at their
+// current path regardless of whether they are listed.
+var vendoredDefaultsScripts = map[string]bool{
+	".github/scripts/check-fix-eligibility.sh": true,
+	".github/scripts/install-openshell.sh":     true,
+	".github/scripts/install-podman.sh":        true,
+	".github/scripts/openshell-version.sh":     true,
+}
+
+// vendoredDefaultsActions is the explicit allowlist of .github/actions/
+// directories that ship to consumer repos — each is executed from
+// ./.defaults/ by the vendored reusable workflows. Like the scripts list,
+// the directory prefix alone is deliberately not sufficient:
+// check-e2e-authorization lives beside these but is repo-CI only (e2e and
+// functional-tests) and runs scripts/check-e2e-authorization.sh, which
+// does not ship — vendoring it gave consumers a broken, unused action.
+var vendoredDefaultsActions = map[string]bool{
+	".github/actions/install-fullsend-cli/": true,
+	".github/actions/mint-token/":           true,
+	".github/actions/prepare-workspace/":    true,
+	".github/actions/setup-gcp/":            true,
+	".github/actions/validate-enrollment/":  true,
+}
+
 func isVendoredDefaultsInfra(path string) bool {
 	if path == "action.yml" {
 		return true
 	}
-	if strings.HasPrefix(path, ".github/actions/") {
-		return true
+	for prefix := range vendoredDefaultsActions {
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
 	}
-	if strings.HasPrefix(path, ".github/scripts/") {
-		return true
-	}
-	return false
+	return vendoredDefaultsScripts[path]
+}
+
+// isLayeredRepoTestFile reports whether a layered-content path is a
+// *-test.sh / *-test.py self-test. Those run in fullsend CI
+// (make script-test) and must not ship to consumer repos with the layer.
+func isLayeredRepoTestFile(path string) bool {
+	return strings.HasSuffix(path, "-test.sh") || strings.HasSuffix(path, "-test.py")
 }
 
 func vendoredInfraFileMode(path string) string {

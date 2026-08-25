@@ -673,9 +673,25 @@ func TestValidate_ModelValid(t *testing.T) {
 		"claude-sonnet-4-6@default",
 		"claude-sonnet-4-6@20250514",
 		"claude-opus-4-1@20250805",
+		"google-vertex/gemini-3.7-flash",
+		"xai-vertex/xai/grok-4.6",
+		"anthropic-vertex/claude-opus-4-6",
 	} {
 		h := &Harness{Agent: "agents/test.md", Role: "test", Model: model}
 		require.NoError(t, h.Validate(), "model %q should be valid", model)
+	}
+}
+
+func TestValidate_ModelInvalid_MalformedSlash(t *testing.T) {
+	for _, model := range []string{
+		"/leading",
+		"trailing/",
+		"a//b",
+	} {
+		h := &Harness{Agent: "agents/test.md", Role: "test", Model: model}
+		err := h.Validate()
+		require.Error(t, err, "model %q should be invalid", model)
+		assert.Contains(t, err.Error(), "invalid characters")
 	}
 }
 
@@ -2271,4 +2287,190 @@ func TestHasURLDirResources(t *testing.T) {
 			assert.Equal(t, tt.want, h.HasURLDirResources())
 		})
 	}
+}
+
+func TestLoadWithOpts_OverlayResolution(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: fix
+overlays:
+- when: 'event.source.system == "github"'
+  pre_script: scripts/gh.sh
+- when: 'event.source.system == "jira"'
+  pre_script: scripts/jira.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{
+		Event: map[string]any{"source": map[string]any{"system": "github"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+	assert.Nil(t, h.Overlays)
+}
+
+func TestLoadWithOpts_OverlayNoEvent(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: fix
+pre_script: scripts/common.sh
+overlays:
+- when: 'runtime.forge == "github"'
+  pre_script: scripts/gh.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{ForgePlatform: "github"})
+	require.NoError(t, err)
+	// Overlays can match on runtime.forge even when event is nil (ADR 0088).
+	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+	assert.Nil(t, h.Overlays, "overlays should be consumed after resolution")
+}
+
+func TestLoadWithOpts_OverlayAndForgeReject(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: fix
+forge:
+  github:
+    pre_script: scripts/gh.sh
+overlays:
+- when: 'event.source.system == "github"'
+  pre_script: scripts/gh2.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	_, err := LoadWithOpts(path, LoadOpts{
+		Event: map[string]any{"source": map[string]any{"system": "github"}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "forge and overlays cannot coexist")
+}
+
+func TestLoadWithOpts_OverlayWithRuntimeForge(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: fix
+overlays:
+- when: 'runtime.forge == "github"'
+  pre_script: scripts/gh.sh
+- when: 'runtime.forge == "gitlab"'
+  pre_script: scripts/gl.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{
+		ForgePlatform: "github",
+		Event:         map[string]any{"source": map[string]any{"system": "jira"}},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+}
+
+func TestLoadWithOpts_OverlayWithConfig(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: fix
+overlays:
+- when: 'config.tracker == "jira"'
+  pre_script: scripts/jira.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{
+		Event:  map[string]any{"source": map[string]any{"system": "jira"}},
+		Config: map[string]any{"tracker": "jira"},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/jira.sh", h.PreScript)
+}
+
+func TestLoadWithOpts_ForgeDeprecationWarningAfterResolve(t *testing.T) {
+	// Verify that the forge deprecation warning is reachable even after
+	// ResolveForge nils out h.Forge (the hadForgeBeforeResolve flag).
+	content := `
+agent: agents/test.md
+role: fix
+forge:
+  github:
+    pre_script: scripts/gh.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{
+		ForgePlatform: "github",
+	})
+	require.NoError(t, err)
+	// forge should have been resolved (nilled)
+	assert.Nil(t, h.Forge)
+	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+
+	// Lint should still emit the deprecation warning
+	diags := h.Lint()
+	var found bool
+	for _, d := range diags {
+		if d.Field == "forge" && d.Severity == SeverityWarning {
+			found = true
+			assert.Contains(t, d.Message, "deprecated")
+		}
+	}
+	assert.True(t, found, "expected forge deprecation warning from Lint() after ResolveForge")
+}
+
+func TestLoadWithOpts_NoForgeNoDeprecationWarning(t *testing.T) {
+	content := `
+agent: agents/test.md
+role: fix
+overlays:
+- when: 'runtime.forge == "github"'
+  pre_script: scripts/gh.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{
+		ForgePlatform: "github",
+		Event:         map[string]any{},
+	})
+	require.NoError(t, err)
+
+	diags := h.Lint()
+	for _, d := range diags {
+		assert.NotEqual(t, "forge", d.Field, "should not have forge deprecation warning for overlays-only harness")
+	}
+}
+
+func TestLoadWithOpts_OverlayNilEvent(t *testing.T) {
+	// Overlays conditioned on runtime.forge should still match when
+	// event is nil (CLI run/lock flows without event context).
+	content := `
+agent: agents/test.md
+role: fix
+overlays:
+- when: 'runtime.forge == "github"'
+  pre_script: scripts/gh.sh
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+
+	h, err := LoadWithOpts(path, LoadOpts{
+		ForgePlatform: "github",
+		// Event is nil — simulates CLI flow without --event-file
+	})
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/gh.sh", h.PreScript)
 }

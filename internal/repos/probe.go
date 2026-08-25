@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/fullsend-ai/fullsend/internal/forge"
@@ -116,7 +117,9 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 	}
 
 	// Required variables (forge-specific list).
+	probedVars := make(map[string]bool)
 	for _, varName := range requiredVarsForForge(forgeName) {
+		probedVars[varName] = true
 		val, exists, err := client.GetRepoVariable(ctx, owner, repo, varName)
 		if err != nil {
 			return nil, fmt.Errorf("checking variable %s: %w", varName, err)
@@ -134,6 +137,38 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 			}
 		}
 		results = append(results, cs)
+	}
+
+	// Additional static variables from expectedVarValues that are not
+	// in the required list. These are optional install-time variables
+	// (e.g., FULLSEND_GCP_REGION, FULLSEND_REVIEW_CLIENT_ID) that
+	// should be value-checked when expected values are provided.
+	// Sort keys for deterministic ordering of ComponentStatus entries.
+	var extraVarNames []string
+	for varName := range expectedVarValues {
+		if !probedVars[varName] && expectedVarValues[varName] != "" {
+			extraVarNames = append(extraVarNames, varName)
+		}
+	}
+	sort.Strings(extraVarNames)
+	for _, varName := range extraVarNames {
+		expected := expectedVarValues[varName]
+		val, exists, err := client.GetRepoVariable(ctx, owner, repo, varName)
+		if err != nil {
+			return nil, fmt.Errorf("checking variable %s: %w", varName, err)
+		}
+		// Only report drift when the variable is present — these
+		// are optional, so absence is not a problem (the repo may
+		// have been installed without the corresponding flag).
+		if exists {
+			results = append(results, ComponentStatus{
+				Name:     "var:" + varName,
+				Present:  true,
+				Expected: expected,
+				Actual:   val,
+				Match:    val == expected,
+			})
+		}
 	}
 
 	// Required secrets (existence check only — values cannot be read back).

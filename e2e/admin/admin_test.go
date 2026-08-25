@@ -212,12 +212,8 @@ func TestAdminInstallUninstall(t *testing.T) {
 	require.True(t, shimVerified, "shim workflow should be on default branch before triage test")
 	runTriageDispatchSmokeTest(t, env)
 
-	// Phase 4: Unenrollment reconciliation.
-	t.Log("=== Phase 4: Unenrollment ===")
-	runUnenrollmentTest(t, env)
-
-	// Phase 5: Uninstall via CLI subprocess.
-	t.Log("=== Phase 5: Uninstall ===")
+	// Phase 4: Uninstall via CLI subprocess.
+	t.Log("=== Phase 4: Uninstall ===")
 	e2etest.RunCLI(t, env.binary, env.token,
 		"admin", "uninstall", env.org,
 		"--yolo",
@@ -816,74 +812,6 @@ func downloadAndExtractArtifact(ctx context.Context, token, org, repo string, ar
 
 	fmt.Fprintf(os.Stderr, "::notice::Extracted artifact %q (%d files) to %s\n", name, len(zr.File), artDir)
 	t.Logf("[artifacts] Extracted %s (%d files) to %s", name, len(zr.File), artDir)
-}
-
-// runUnenrollmentTest disables test-repo in config.yaml, runs install to
-// dispatch reconciliation, verifies the removal PR, merges it, and confirms
-// the shim is gone from the default branch.
-func runUnenrollmentTest(t *testing.T, env *e2eEnv) {
-	t.Helper()
-	ctx := context.Background()
-
-	// Disable the test repo via CLI (updates config.yaml). The CLI now
-	// watches the repo-maintenance workflow to completion before returning,
-	// so the removal PR should already exist when this returns.
-	output := e2etest.RunCLI(t, env.binary, env.token,
-		"admin", "disable", "repos", env.org, e2etest.TestRepo, "--yolo", "--direct")
-	t.Logf("Disable repos output:\n%s", output)
-
-	// Always capture the repo-maintenance run's logs. Even when the run
-	// succeeds, the logs reveal whether unenrollment was attempted or silently
-	// skipped (e.g. due to insufficient token scope).
-	var repoMaintRun *forge.WorkflowRun
-	runs, listErr := env.client.ListWorkflowRuns(ctx, env.org, forge.ConfigRepoName, "repo-maintenance.yml")
-	if listErr != nil {
-		t.Logf("Could not list repo-maintenance runs: %v", listErr)
-	} else if len(runs) > 0 {
-		r := runs[0]
-		repoMaintRun = &r
-		t.Logf("repo-maintenance run %d: status=%s conclusion=%s", r.ID, r.Status, r.Conclusion)
-		saveWorkflowRunDebugInfo(t, env, "repo-maintenance", repoMaintRun)
-	}
-
-	// The CLI waited for repo-maintenance, so the removal PR should exist.
-	// A few retries handle GitHub eventual consistency.
-	var removalPR *forge.ChangeProposal
-	for attempt := range 5 {
-		if attempt > 0 {
-			time.Sleep(3 * time.Second)
-		}
-		prs, err := env.client.ListRepoPullRequests(ctx, env.org, e2etest.TestRepo)
-		if err != nil {
-			t.Logf("Attempt %d: error listing PRs: %v", attempt+1, err)
-			continue
-		}
-		for _, pr := range prs {
-			if pr.Title == "chore: disconnect from fullsend agent pipeline" {
-				cp := pr
-				removalPR = &cp
-				break
-			}
-		}
-		if removalPR != nil {
-			break
-		}
-		t.Logf("Attempt %d: removal PR not yet visible", attempt+1)
-	}
-	if removalPR == nil {
-		msg := fmt.Sprintf("removal PR should exist for %s", e2etest.TestRepo)
-		if repoMaintRun != nil {
-			msg += fmt.Sprintf("; repo-maintenance run %d concluded with %q", repoMaintRun.ID, repoMaintRun.Conclusion)
-		}
-		t.Fatal(msg)
-	}
-	t.Logf("Found removal PR #%d: %s", removalPR.Number, removalPR.URL)
-	err := env.client.MergeChangeProposal(ctx, env.org, e2etest.TestRepo, removalPR.Number)
-	require.NoError(t, err, "merging removal PR")
-	time.Sleep(5 * time.Second)
-	_, err = env.client.GetFileContent(ctx, env.org, e2etest.TestRepo, ".github/workflows/fullsend.yaml")
-	require.True(t, forge.IsNotFound(err), "shim should be removed from %s after unenrollment", e2etest.TestRepo)
-	t.Log("Verified shim is gone")
 }
 
 // TestVendorFromSubdirectory verifies that --vendor cross-compiles

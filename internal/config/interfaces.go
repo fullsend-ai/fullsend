@@ -92,6 +92,7 @@ type ConfigWriter interface {
 	SetKillSwitch(bool)
 	SetAgents([]AgentEntry)
 	SetAllowedRemoteResources([]string)
+	SetStatusNotifications(*StatusNotificationConfig)
 	Marshal() ([]byte, error)
 	Validate() error
 }
@@ -194,6 +195,11 @@ func (c *orgConfig) SetInference(i InferenceConfig) { c.Inference = i }
 // SetDefaultRuntime replaces the default agent runtime.
 func (c *orgConfig) SetDefaultRuntime(rt string) { c.Defaults.Runtime = rt }
 
+// SetStatusNotifications sets the status notification configuration.
+func (c *orgConfig) SetStatusNotifications(sn *StatusNotificationConfig) {
+	c.Defaults.StatusNotifications = sn
+}
+
 // SetRepo adds or replaces a per-repo configuration entry.
 // Callers should use this method instead of mutating the map returned
 // by RepoMap() to keep mutations on the writer interface.
@@ -264,6 +270,18 @@ func (c *perRepoConfig) AgentEntries() []AgentEntry {
 			if oi.entry.Name != "" {
 				merged.Name = oi.entry.Name
 			}
+			// Per-agent settings merge field by field; an empty value
+			// inherits the parent's (there is no way to unset a parent's
+			// value from the overlay short of restating the entry).
+			if oi.entry.Runtime != "" {
+				merged.Runtime = oi.entry.Runtime
+			}
+			if oi.entry.Model != "" {
+				merged.Model = oi.entry.Model
+			}
+			if oi.entry.Effort != "" {
+				merged.Effort = oi.entry.Effort
+			}
 		}
 		result = append(result, merged)
 	}
@@ -277,6 +295,10 @@ func (c *perRepoConfig) AgentEntries() []AgentEntry {
 
 	return result
 }
+
+// LocalAgentEntries returns only this layer's own agents: entries (what
+// Marshal writes), as opposed to the merged set from AgentEntries.
+func (c *perRepoConfig) LocalAgentEntries() []AgentEntry { return c.Agents }
 
 // IsKillSwitchActive reports whether the kill switch is engaged.
 // KillSwitch is a *bool: nil falls through to parent, non-nil
@@ -508,6 +530,11 @@ func (c *perRepoConfig) SetInferenceProject(project string) { c.ensureInference(
 // SetInferenceRegion sets the GCP region for inference.
 func (c *perRepoConfig) SetInferenceRegion(region string) { c.ensureInference().Region = region }
 
+// SetStatusNotifications sets the status notification configuration.
+func (c *perRepoConfig) SetStatusNotifications(sn *StatusNotificationConfig) {
+	c.Notifications = sn
+}
+
 // SetInferenceWIFProvider sets the WIF provider resource name.
 func (c *perRepoConfig) SetInferenceWIFProvider(wifProvider string) {
 	c.ensureInference().WIFProvider = wifProvider
@@ -522,6 +549,12 @@ func (c *perRepoConfig) ensureInference() *PerRepoInferenceConfig {
 }
 
 // --- LoadConfig / LoadConfigWriter factories ---
+
+// Layer file names of a per-repo config directory (ADR 0069).
+const (
+	OverlayConfigFile = "config.yaml"
+	BaseConfigFile    = "config.base.yaml"
+)
 
 // LoadOpts controls how LoadConfig handles a missing config.yaml.
 type LoadOpts struct {
@@ -609,8 +642,8 @@ func LoadConfigWriter(dir string, opts LoadOpts) (ConfigWriter, error) {
 // Returns data and existence flags for each file. Genuine I/O errors
 // (not "file not found") are returned immediately.
 func readConfigFiles(dir string) (overlayData []byte, haveOverlay bool, baseData []byte, haveBase bool, err error) {
-	overlayData, overlayErr := os.ReadFile(filepath.Join(dir, "config.yaml"))
-	baseData, baseErr := os.ReadFile(filepath.Join(dir, "config.base.yaml"))
+	overlayData, overlayErr := os.ReadFile(filepath.Join(dir, OverlayConfigFile))
+	baseData, baseErr := os.ReadFile(filepath.Join(dir, BaseConfigFile))
 
 	if overlayErr != nil && !os.IsNotExist(overlayErr) {
 		return nil, false, nil, false, fmt.Errorf("reading config: %w", overlayErr)
@@ -619,6 +652,17 @@ func readConfigFiles(dir string) (overlayData []byte, haveOverlay bool, baseData
 		return nil, false, nil, false, fmt.Errorf("reading base config: %w", baseErr)
 	}
 	return overlayData, overlayErr == nil, baseData, baseErr == nil, nil
+}
+
+// ParsePerRepoConfigWriterLayered parses overlay and optional base YAML
+// bytes into a PerRepoConfigWriter with the parent chain
+// overlay → base → code defaults. When baseData is nil the result is
+// equivalent to ParsePerRepoConfigWriter (parent = code defaults only).
+// This is the preferred entry point when both layers are available as
+// raw bytes (e.g. fetched from a forge API) rather than on the local
+// filesystem (where LoadConfigWriter should be used instead).
+func ParsePerRepoConfigWriterLayered(overlayData []byte, baseData []byte) (PerRepoConfigWriter, error) {
+	return loadPerRepoLayers(overlayData, true, baseData, len(baseData) > 0)
 }
 
 // loadPerRepoLayers parses per-repo config layers and wires the parent

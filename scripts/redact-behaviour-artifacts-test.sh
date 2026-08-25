@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # redact-behaviour-artifacts-test.sh — Tests for redact-behaviour-artifacts.sh
 #
-# Run from repo root: bash .github/scripts/redact-behaviour-artifacts-test.sh
+# Run from repo root: bash scripts/redact-behaviour-artifacts-test.sh
 
 set -euo pipefail
 

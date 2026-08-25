@@ -57,7 +57,7 @@ feature:
   PreToolUse/PostToolUse phases with Claude tool names as the canonical
   vocabulary. Claude's `GenerateClaudeSettings` is rendered from `HookPlan`
   so the two cannot diverge. The stdin/stdout/exit-code wire protocol is
-  documented in [runtimes.md](../runtimes.md#sandbox-hook-contract).
+  documented in [runtimes.md](../contributing/runtime-implementation.md#sandbox-hook-contract).
 - The bootstrap extension is `runtime.SandboxHooksBootstrap` (carrying
   `security.SandboxHookConfig`). Every runtime's `Bootstrap` SHOULD honour it
   by installing the scripts (`installHookScripts`, any directory) and wiring
@@ -95,7 +95,7 @@ feature:
 > PostToolUse contract v2 — scripts read `tool_response` (fallback
 > `tool_result`), replace via `hookSpecificOutput.updatedToolOutput`, and
 > enforce unicode → canary → suppress → redact in `posttool_chain.py`. See
-> [runtimes.md](../runtimes.md#sandbox-hook-contract).
+> [runtimes.md](../contributing/runtime-implementation.md#sandbox-hook-contract).
 
 > **Done ([#608](https://github.com/fullsend-ai/fullsend/issues/608)):**
 > The canonical Claude tool-name vocabulary is recorded once in
@@ -112,4 +112,4 @@ feature:
 > as a forbidden tool (`tool_blocked`, `critical`). MCP names are matched
 > verbatim. The pi adapter's maps are held to canonical-or-legacy names
 > (`ls` → `LS`), a deliberate relaxation of "canonical only". See
-> [runtimes.md](../runtimes.md#sandbox-hook-contract).
+> [runtimes.md](../contributing/runtime-implementation.md#sandbox-hook-contract).

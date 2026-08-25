@@ -1,10 +1,13 @@
 package repos
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"regexp"
 	"testing"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
@@ -30,7 +33,8 @@ jobs:
     uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@v2.3.0
 `
 
-func populateInstalledRepo(fc *forge.FakeClient, owner, repo, ref, mintURL, region string) {
+func populateInstalledRepo(t testing.TB, fc *forge.FakeClient, owner, repo, ref, mintURL, region string) {
+	t.Helper()
 	fc.VariableValues[owner+"/"+repo+"/FULLSEND_MINT_URL"] = mintURL
 	fc.VariableValues[owner+"/"+repo+"/FULLSEND_GCP_REGION"] = region
 
@@ -40,20 +44,30 @@ func populateInstalledRepo(fc *forge.FakeClient, owner, repo, ref, mintURL, regi
 	fc.Secrets[owner+"/"+repo+"/FULLSEND_GCP_PROJECT_ID"] = true
 	fc.Secrets[owner+"/"+repo+"/FULLSEND_GCP_WIF_PROVIDER"] = true
 
-	workflow := fmt.Sprintf(`name: fullsend
-on:
-  workflow_dispatch:
-jobs:
-  dispatch:
-    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@%s
-`, ref)
-	fc.FileContents[owner+"/"+repo+"/.github/workflows/fullsend.yml"] = []byte(workflow)
-	addThinCallerFiles(fc, owner, repo)
+	// Generate scaffold files from the same templates that status
+	// compares against, so content-drift detection is accurate.
+	files, err := BuildScaffoldFiles(InstallConfig{
+		Owner:       owner,
+		Repo:        repo,
+		Forge:       ForgeGitHub,
+		Roles:       config.PerRepoDefaultRoles(),
+		MintURL:     mintURL,
+		UpstreamRef: ref,
+		UpstreamTag: ref,
+	})
+	if err != nil {
+		t.Fatalf("populateInstalledRepo: BuildScaffoldFiles: %v", err)
+	}
+
+	fullName := owner + "/" + repo
+	for _, f := range files {
+		fc.FileContents[fullName+"/"+f.Path] = f.Content
+	}
 }
 
 func TestProbeRepoState_Installed(t *testing.T) {
 	fc := forge.NewFakeClient()
-	populateInstalledRepo(fc, "acme", "api", "v2.3.0", "https://mint.example.com", "us-east1")
+	populateInstalledRepo(t, fc, "acme", "api", "v2.3.0", "https://mint.example.com", "us-east1")
 
 	state, err := ProbeRepoState(context.Background(), fc, "acme", "api", ForgeGitHub, defaultForgeConfig)
 	if err != nil {
@@ -104,9 +118,9 @@ func TestStatus_AllInstalled_NoDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
-	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -141,7 +155,7 @@ func TestStatus_RepoNotInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 	// web-frontend has no variables — not installed.
 
@@ -170,9 +184,9 @@ func TestStatus_MintURLDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
-	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://old-mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -206,9 +220,9 @@ func TestStatus_RefDrift(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
-	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.1.0",
+	populateInstalledRepo(t, fc, "acme-corp", "web-frontend", "v2.1.0",
 		"https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -238,7 +252,7 @@ func TestStatus_RegionDrift_NoLongerReported(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-west1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -263,7 +277,7 @@ func TestStatus_MultipleDrifts(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.1.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.1.0",
 		"https://old.example.com", "us-west1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -344,9 +358,9 @@ func TestStatus_RepoFilter(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
-	populateInstalledRepo(fc, "acme-corp", "web-frontend", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "web-frontend", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"acme-corp/api-server"})
@@ -366,7 +380,7 @@ func TestStatus_RepoFilterCaseInsensitive(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"ACME-CORP/API-SERVER"})
@@ -425,7 +439,7 @@ func TestStatus_GlobExpansion(t *testing.T) {
 		},
 	}
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -458,9 +472,9 @@ func TestStatus_PerRepoOverride(t *testing.T) {
 		},
 	}
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
-	populateInstalledRepo(fc, "acme-corp", "legacy", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "legacy", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -814,8 +828,8 @@ func TestStatus_MultiOrg(t *testing.T) {
 		},
 	}
 
-	populateInstalledRepo(fc, "org-a", "repo1", "v2.3.0", "https://mint.example.com", "us-central1")
-	populateInstalledRepo(fc, "org-b", "repo2", "v2.3.0", "https://mint.example.com", "us-central1")
+	populateInstalledRepo(t, fc, "org-a", "repo1", "v2.3.0", "https://mint.example.com", "us-central1")
+	populateInstalledRepo(t, fc, "org-b", "repo2", "v2.3.0", "https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
@@ -858,7 +872,7 @@ func TestStatus_DefaultMintURL_NoDrift(t *testing.T) {
 		},
 	}
 
-	populateInstalledRepo(fc, "org", "repo", "v2.3.0", DefaultPublicMintURL, "us-central1")
+	populateInstalledRepo(t, fc, "org", "repo", "v2.3.0", DefaultPublicMintURL, "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
@@ -880,7 +894,7 @@ func TestStatus_EmptyExpectedRef_NoDrift(t *testing.T) {
 		},
 	}
 
-	populateInstalledRepo(fc, "org", "repo", "v2.3.0", "https://mint.example.com", "us-central1")
+	populateInstalledRepo(t, fc, "org", "repo", "v2.3.0", "https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
@@ -910,7 +924,7 @@ func TestStatus_SHADriftDetection(t *testing.T) {
 			},
 		}
 
-		populateInstalledRepo(fc, "org", "repo", sha, "https://mint.example.com", "us-central1")
+		populateInstalledRepo(t, fc, "org", "repo", sha, "https://mint.example.com", "us-central1")
 
 		result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 		if err != nil {
@@ -937,7 +951,7 @@ func TestStatus_SHADriftDetection(t *testing.T) {
 			},
 		}
 
-		populateInstalledRepo(fc, "org", "repo", "oldsha000000000000000000000000000000000",
+		populateInstalledRepo(t, fc, "org", "repo", "oldsha000000000000000000000000000000000",
 			"https://mint.example.com", "us-central1")
 
 		result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -963,7 +977,7 @@ func TestStatus_SHADriftDetection(t *testing.T) {
 			},
 		}
 
-		populateInstalledRepo(fc, "org", "repo", "stalesha000000000000000000000000000000",
+		populateInstalledRepo(t, fc, "org", "repo", "stalesha000000000000000000000000000000",
 			"https://mint.example.com", "us-central1")
 
 		result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
@@ -993,7 +1007,7 @@ func TestStatus_SymbolicRefMatch_NoDrift(t *testing.T) {
 		},
 	}
 
-	populateInstalledRepo(fc, "org", "repo", "v0", "https://mint.example.com", "us-central1")
+	populateInstalledRepo(t, fc, "org", "repo", "v0", "https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
@@ -1022,7 +1036,7 @@ func TestStatus_DifferentSymbolicRefs_Drift(t *testing.T) {
 		},
 	}
 
-	populateInstalledRepo(fc, "org", "repo", "v0", "https://mint.example.com", "us-central1")
+	populateInstalledRepo(t, fc, "org", "repo", "v0", "https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
 	if err != nil {
@@ -1055,7 +1069,7 @@ func TestStatus_Concurrency(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		repo := fmt.Sprintf("repo-%d", i)
 		m.GitHub.Repos = append(m.GitHub.Repos, RepoEntry{Name: "org/" + repo})
-		populateInstalledRepo(fc, "org", repo, "v2.3.0", "https://mint.example.com", "us-central1")
+		populateInstalledRepo(t, fc, "org", repo, "v2.3.0", "https://mint.example.com", "us-central1")
 	}
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 2, nil)
@@ -1075,7 +1089,7 @@ func TestStatus_RepoFilterAllUnmatched(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
 	_, err := Status(context.Background(), m, newTestClientFactory(fc), 4, []string{"org/nonexistent"})
@@ -1088,7 +1102,7 @@ func TestStatus_RepoFilterPartialUnmatched(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()
 
-	populateInstalledRepo(fc, "acme-corp", "api-server", "v2.3.0",
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
 		"https://mint.example.com", "us-central1")
 
 	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4,
@@ -1104,5 +1118,434 @@ func TestStatus_RepoFilterPartialUnmatched(t *testing.T) {
 	}
 	if result.Warnings[0] != `--repo filter "org/nonexistent" matched no manifest entries` {
 		t.Errorf("warning = %q, want match message", result.Warnings[0])
+	}
+}
+
+func TestStatus_DetectsContentDrift_Workflow(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v2.3.0",
+			Repos:       []RepoEntry{{Name: "org/repo"}},
+		},
+	}
+
+	// Populate with correct variables and secrets, but write a stale
+	// workflow whose template content differs from what BuildScaffoldFiles
+	// would produce. The ref matches the manifest — only the template
+	// body is outdated.
+	fc.VariableValues["org/repo/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["org/repo/FULLSEND_GCP_REGION"] = "us-central1"
+	if fc.Secrets == nil {
+		fc.Secrets = make(map[string]bool)
+	}
+	fc.Secrets["org/repo/FULLSEND_GCP_PROJECT_ID"] = true
+	fc.Secrets["org/repo/FULLSEND_GCP_WIF_PROVIDER"] = true
+
+	staleWorkflow := fmt.Sprintf(`name: fullsend
+on:
+  workflow_dispatch:
+jobs:
+  dispatch:
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@%s
+`, "v2.3.0")
+	fc.FileContents["org/repo/.github/workflows/fullsend.yml"] = []byte(staleWorkflow)
+
+	// Also add a correct thin caller so only the workflow drifts.
+	files, err := BuildScaffoldFiles(InstallConfig{
+		Owner:       "org",
+		Repo:        "repo",
+		Forge:       ForgeGitHub,
+		Roles:       config.PerRepoDefaultRoles(),
+		MintURL:     "https://mint.example.com",
+		UpstreamRef: "v2.3.0",
+		UpstreamTag: "v2.3.0",
+	})
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles: %v", err)
+	}
+	for _, f := range files {
+		if f.Path == ".fullsend/config.yaml" {
+			fc.FileContents["org/repo/"+f.Path] = f.Content
+			continue
+		}
+		// Only install non-workflow scaffold files (thin callers).
+		if f.Path != ".github/workflows/fullsend.yaml" {
+			fc.FileContents["org/repo/"+f.Path] = f.Content
+		}
+	}
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !result.Repos[0].Installed {
+		t.Fatal("repo should be installed")
+	}
+
+	found := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == ".github/workflows/fullsend.yml" &&
+			d.Expected == "current template" &&
+			d.Actual == "installed content differs" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected content drift for workflow, got drifts: %v", result.Repos[0].Drifts)
+	}
+}
+
+func TestStatus_DetectsContentDrift_ThinCaller(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v2.3.0",
+			Repos:       []RepoEntry{{Name: "org/repo"}},
+		},
+	}
+
+	// Install correct scaffold content first, then overwrite one
+	// thin caller with stale content.
+	populateInstalledRepo(t, fc, "org", "repo", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+
+	// Overwrite thin caller with outdated content.
+	fc.FileContents["org/repo/.github/workflows/prioritize.yml"] = []byte("name: outdated-thin-caller\n")
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	found := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == ".github/workflows/prioritize.yml" &&
+			d.Expected == "current template" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected content drift for thin caller, got drifts: %v", result.Repos[0].Drifts)
+	}
+}
+
+func TestStatus_DetectsOrphanFile(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v2.3.0",
+			Repos:       []RepoEntry{{Name: "org/repo"}},
+		},
+	}
+
+	populateInstalledRepo(t, fc, "org", "repo", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+
+	// Add an extra workflow file that is no longer in the expected
+	// template set — this simulates a file left behind from an older
+	// scaffold version.
+	fc.FileContents["org/repo/.github/workflows/fullsend.yml"] = []byte("name: old-workflow\n")
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	found := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == ".github/workflows/fullsend.yml" &&
+			d.Actual == "orphan file (no longer in template)" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected orphan file drift for .github/workflows/fullsend.yml, got drifts: %v",
+			result.Repos[0].Drifts)
+	}
+}
+
+func TestStatus_DetectsOrphanVariable(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v2.3.0",
+			Repos:       []RepoEntry{{Name: "org/repo"}},
+		},
+	}
+
+	populateInstalledRepo(t, fc, "org", "repo", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+
+	// Add an extra FULLSEND_-prefixed variable that is not in the
+	// managed set — simulating a variable from an older feature.
+	fc.VariableValues["org/repo/FULLSEND_OLD_FEATURE"] = "stale"
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	found := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == "FULLSEND_OLD_FEATURE" &&
+			d.Actual == "orphan variable (not in managed set)" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected orphan variable drift for FULLSEND_OLD_FEATURE, got drifts: %v",
+			result.Repos[0].Drifts)
+	}
+}
+
+func TestStatus_OrphanCheckError_ReportsStatusError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v2.3.0",
+			Repos:       []RepoEntry{{Name: "org/repo"}},
+		},
+	}
+
+	populateInstalledRepo(t, fc, "org", "repo", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+
+	fc.Errors["ListRepoVariables"] = fmt.Errorf("API rate limit")
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Repos[0].Error == "" {
+		t.Fatal("expected status error from orphan variable check")
+	}
+}
+
+func TestStatus_NoContentDrift_WhenContentMatches(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := newTestManifest()
+
+	// populateInstalledRepo uses BuildScaffoldFiles, so content
+	// should match exactly — no content drift expected.
+	populateInstalledRepo(t, fc, "acme-corp", "api-server", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+	populateInstalledRepo(t, fc, "acme-corp", "web-frontend", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Summary.Drifted != 0 {
+		t.Errorf("drifted = %d, want 0", result.Summary.Drifted)
+	}
+
+	for _, s := range result.Repos {
+		for _, d := range s.Drifts {
+			if d.Expected == "current template" {
+				t.Errorf("%s/%s: unexpected content drift: %+v", s.Owner, s.Repo, d)
+			}
+		}
+	}
+}
+
+func TestStatus_ContentDrift_BranchRef(t *testing.T) {
+	// For branch-ref targets like fullsend_ref: main, template changes
+	// are the primary signal (the ref string never changes). Verify
+	// that content drift is detected even when the ref matches.
+	fc := forge.NewFakeClient()
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "main",
+			Repos:       []RepoEntry{{Name: "org/repo"}},
+		},
+	}
+
+	fc.VariableValues["org/repo/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["org/repo/FULLSEND_GCP_REGION"] = "us-central1"
+	if fc.Secrets == nil {
+		fc.Secrets = make(map[string]bool)
+	}
+	fc.Secrets["org/repo/FULLSEND_GCP_PROJECT_ID"] = true
+	fc.Secrets["org/repo/FULLSEND_GCP_WIF_PROVIDER"] = true
+
+	// Write a workflow with the correct ref but outdated template body.
+	staleWorkflow := `name: fullsend
+on:
+  workflow_dispatch:
+jobs:
+  dispatch:
+    uses: fullsend-ai/fullsend/.github/workflows/reusable-dispatch.yml@main
+`
+	fc.FileContents["org/repo/.github/workflows/fullsend.yml"] = []byte(staleWorkflow)
+
+	// Add correct thin callers from templates.
+	files, err := BuildScaffoldFiles(InstallConfig{
+		Owner:       "org",
+		Repo:        "repo",
+		Forge:       ForgeGitHub,
+		Roles:       config.PerRepoDefaultRoles(),
+		MintURL:     "https://mint.example.com",
+		UpstreamRef: "main",
+		UpstreamTag: "main",
+	})
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles: %v", err)
+	}
+	for _, f := range files {
+		if f.Path == ".github/workflows/fullsend.yaml" || f.Path == ".fullsend/config.yaml" {
+			continue
+		}
+		fc.FileContents["org/repo/"+f.Path] = f.Content
+	}
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	found := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Expected == "current template" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected content drift for branch-ref target, got drifts: %v", result.Repos[0].Drifts)
+	}
+}
+
+func TestStatus_ContentDrift_RefDifference_NoFalsePositive(t *testing.T) {
+	// When the ref differs between manifest and installed, ref drift
+	// is reported separately. Content drift should NOT be reported if
+	// the template structure is the same (only the ref differs).
+	fc := forge.NewFakeClient()
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v2.4.0",
+			Repos:       []RepoEntry{{Name: "org/repo"}},
+		},
+	}
+
+	// Install with v2.3.0 — same template, different ref.
+	populateInstalledRepo(t, fc, "org", "repo", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Ref drift should be reported.
+	hasRefDrift := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == "fullsend_ref" {
+			hasRefDrift = true
+		}
+	}
+	if !hasRefDrift {
+		t.Error("expected fullsend_ref drift when refs differ")
+	}
+
+	// Content drift should NOT be reported because the template
+	// structure is the same — only the ref string differs.
+	for _, d := range result.Repos[0].Drifts {
+		if d.Expected == "current template" {
+			t.Errorf("unexpected content drift when only ref differs: %+v", d)
+		}
+	}
+}
+
+func TestStatus_NoContentDrift_IndependentInstalledContent(t *testing.T) {
+	// This test constructs installed scaffold content independently
+	// (NOT via a second BuildScaffoldFiles call) to verify that the
+	// ref normalization and content comparison in
+	// checkScaffoldContentDrift work correctly end-to-end.
+	//
+	// The other no-drift tests use populateInstalledRepo which calls
+	// BuildScaffoldFiles for both installed and expected sides, making
+	// them tautological for content-drift verification.
+	fc := forge.NewFakeClient()
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v2.3.0",
+			Repos:       []RepoEntry{{Name: "org/repo"}},
+		},
+	}
+
+	fc.VariableValues["org/repo/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["org/repo/FULLSEND_GCP_REGION"] = "us-central1"
+	if fc.Secrets == nil {
+		fc.Secrets = make(map[string]bool)
+	}
+	fc.Secrets["org/repo/FULLSEND_GCP_PROJECT_ID"] = true
+	fc.Secrets["org/repo/FULLSEND_GCP_WIF_PROVIDER"] = true
+
+	// Render expected scaffold files (this is what ExpectedScaffoldContent
+	// calls internally).
+	expectedFiles, err := BuildScaffoldFiles(InstallConfig{
+		Owner:       "org",
+		Repo:        "repo",
+		Forge:       ForgeGitHub,
+		Roles:       config.PerRepoDefaultRoles(),
+		MintURL:     "https://mint.example.com",
+		UpstreamRef: "v2.3.0",
+		UpstreamTag: "v2.3.0",
+	})
+	if err != nil {
+		t.Fatalf("BuildScaffoldFiles: %v", err)
+	}
+
+	// Independently construct installed content by taking the rendered
+	// bytes and replacing @v2.3.0 in uses: lines with a SHA-annotated
+	// format. This simulates a repo installed with a resolved SHA while
+	// the manifest still references the tag. The replaceShimRef
+	// normalization should make both sides equivalent.
+	shaRef := "abc1234567890def1234567890abc1234567890de # v2.3.0"
+	usesRefPattern := regexp.MustCompile(`(@)v2\.3\.0([ \t]*(?:#.*)?)?\b`)
+
+	for _, f := range expectedFiles {
+		content := usesRefPattern.ReplaceAll(f.Content, []byte("@"+shaRef))
+		// Verify we actually changed something for non-config files
+		// that contain uses: lines (workflow + thin callers).
+		if f.Path != ".fullsend/config.yaml" && bytes.Equal(content, f.Content) {
+			// Not all scaffold files contain uses: lines; skip the
+			// assertion for those.
+			if bytes.Contains(f.Content, []byte("uses:")) {
+				t.Errorf("regex did not modify %s — test may be vacuous", f.Path)
+			}
+		}
+		fc.FileContents["org/repo/"+f.Path] = content
+	}
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, d := range result.Repos[0].Drifts {
+		if d.Expected == "current template" {
+			t.Errorf("unexpected content drift with independently constructed content: %+v", d)
+		}
 	}
 }

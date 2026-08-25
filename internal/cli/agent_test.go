@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net"
@@ -1201,7 +1202,7 @@ allowed_remote_resources:
 
 func TestNewAgentCmd_HasSubcommands(t *testing.T) {
 	cmd := newAgentCmd()
-	assert.Len(t, cmd.Commands(), 4)
+	assert.Len(t, cmd.Commands(), 5)
 	names := make([]string, len(cmd.Commands()))
 	for i, c := range cmd.Commands() {
 		names[i] = c.Name()
@@ -1211,4 +1212,131 @@ func TestNewAgentCmd_HasSubcommands(t *testing.T) {
 	assert.Contains(t, names, "update")
 	assert.Contains(t, names, "remove")
 	assert.NotContains(t, names, "migrate-customizations", "should not exist — removed per ADR-0064")
+}
+
+func TestRunAgentRemove_DropsSettingsWithTheEntry(t *testing.T) {
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, `agents:
+  - source: harness/lint.yaml
+    model: sonnet
+  - source: harness/review.yaml
+    effort: high
+`)
+	require.NoError(t, runAgentRemove(dir, "lint", ui.New(os.Stdout)))
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	require.Len(t, cfg.AgentEntries(), 1)
+	_, found := config.AgentSettingsFor(cfg.AgentEntries(), "lint")
+	assert.False(t, found)
+	review, found := config.AgentSettingsFor(cfg.AgentEntries(), "review")
+	require.True(t, found)
+	assert.Equal(t, "high", review.Effort, "other entries keep their settings")
+}
+
+func TestRunAgentSet(t *testing.T) {
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, `runtime: pi
+agents:
+  - source: harness/lint.yaml
+`)
+	var out bytes.Buffer
+
+	// A built-in agent gets a name-only entry.
+	require.NoError(t, runAgentSet(dir, "code", agentSetFlags{runtime: "claude", runtimeSet: true, model: "sonnet", modelSet: true}, ui.New(&out)))
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	code, found := config.AgentSettingsFor(cfg.AgentEntries(), "code")
+	require.True(t, found)
+	assert.Equal(t, config.AgentEntry{Name: "code", Runtime: "claude", Model: "sonnet"}, code)
+
+	// A second call changes only the flags given; "" clears.
+	require.NoError(t, runAgentSet(dir, "code", agentSetFlags{effort: "high", effortSet: true, model: "", modelSet: true}, ui.New(&out)))
+	cfg, err = loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	code, _ = config.AgentSettingsFor(cfg.AgentEntries(), "code")
+	assert.Equal(t, config.AgentEntry{Name: "code", Runtime: "claude", Effort: "high"}, code)
+
+	// A custom agent's settings land on its sourced entry.
+	require.NoError(t, runAgentSet(dir, "lint", agentSetFlags{model: "haiku", modelSet: true}, ui.New(&out)))
+	cfg, err = loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	lint, _ := config.AgentSettingsFor(cfg.AgentEntries(), "lint")
+	assert.Equal(t, "harness/lint.yaml", lint.Source)
+	assert.Equal(t, "haiku", lint.Model)
+	assert.Len(t, cfg.AgentEntries(), 2)
+
+	// Validation guards the write: unknown built-in, bad values, no flags.
+	err = runAgentSet(dir, "coder", agentSetFlags{model: "sonnet", modelSet: true}, ui.New(&out))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `did you mean "code"`)
+	err = runAgentSet(dir, "triage", agentSetFlags{effort: "turbo", effortSet: true}, ui.New(&out))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `invalid effort "turbo"`)
+	require.Error(t, runAgentSet(dir, "triage", agentSetFlags{}, ui.New(&out)))
+	cfg, err = loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	_, found = config.AgentSettingsFor(cfg.AgentEntries(), "triage")
+	assert.False(t, found, "failed sets write nothing")
+}
+
+func TestRunAgentSet_BaseLayerAgentGetsOverlayEntry(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - source: harness/lint.yaml
+    model: opus
+`), 0o644))
+	writePerRepoConfig(t, dir, "")
+	require.NoError(t, runAgentSet(dir, "lint", agentSetFlags{effort: "medium", effortSet: true}, ui.New(os.Stdout)))
+
+	// The overlay gains a name-only entry that merges onto the base one;
+	// the base file is untouched.
+	overlay, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	assert.Contains(t, string(overlay), "name: lint")
+	assert.NotContains(t, string(overlay), "harness/lint.yaml")
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	lint, found := config.AgentSettingsFor(cfg.AgentEntries(), "lint")
+	require.True(t, found)
+	assert.Equal(t, "harness/lint.yaml", lint.Source)
+	assert.Equal(t, "opus", lint.Model, "base model kept (unset flag inherits)")
+	assert.Equal(t, "medium", lint.Effort)
+}
+
+func TestAgentSetCmd_ExecutesAndTracksChangedFlags(t *testing.T) {
+	dir := t.TempDir()
+	writePerRepoConfig(t, dir, "")
+	cmd := newAgentSetCmd()
+	cmd.SetArgs([]string{"review", "--fullsend-dir", dir, "--effort", "low"})
+	cmd.SetOut(&bytes.Buffer{})
+	require.NoError(t, cmd.Execute())
+	cfg, err := loadAgentConfig(filepath.Join(dir, "config.yaml"))
+	require.NoError(t, err)
+	review, found := config.AgentSettingsFor(cfg.AgentEntries(), "review")
+	require.True(t, found)
+	assert.Equal(t, config.AgentEntry{Name: "review", Effort: "low"}, review, "only the flag given is set")
+
+	// No flags is an error before anything is written.
+	cmd = newAgentSetCmd()
+	cmd.SetArgs([]string{"review", "--fullsend-dir", dir})
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	require.Error(t, cmd.Execute())
+}
+
+func TestRunAgentSet_RejectsOrgConfig(t *testing.T) {
+	dir := t.TempDir()
+	writeOrgConfig(t, dir, "")
+	err := runAgentSet(dir, "triage", agentSetFlags{model: "sonnet", modelSet: true}, ui.New(os.Stdout))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "per-repo configs")
+}
+
+func TestLocalAgentEntries_FallsBackToMergedForOtherReaders(t *testing.T) {
+	t.Parallel()
+	org, err := config.ParseOrgConfig([]byte("version: \"1\"\ndispatch:\n  platform: github\ndefaults:\n  roles: [triage]\nrepos: {}\nagents:\n  - source: harness/lint.yaml\n"))
+	require.NoError(t, err)
+	assert.Len(t, localAgentEntries(org), 1, "readers without a local view return their entries")
 }

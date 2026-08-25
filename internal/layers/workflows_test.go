@@ -176,7 +176,7 @@ func TestWorkflowsLayer_Install_TriageWorkflowContent(t *testing.T) {
 func TestWorkflowsLayer_Install_CombinedVendorCommit(t *testing.T) {
 	client := forge.NewFakeClient()
 	ensureFakeConfigRepo(client)
-	collectFn := func(_ context.Context, _ *ui.Printer, owner, repo string) ([]forge.TreeFile, int, error) {
+	collectFn := func(_ context.Context, _ forge.Client, _ *ui.Printer, owner, repo string) ([]forge.TreeFile, int, error) {
 		assert.Equal(t, "test-org", owner)
 		assert.Equal(t, forge.ConfigRepoName, repo)
 		return []forge.TreeFile{

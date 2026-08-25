@@ -46,6 +46,7 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 		WorkspaceRoot: filepath.Dir(configDir),
 		OrgAllowlist:  allowlist,
 		FetchPolicy:   policy,
+		Config:        harness.BuildConfigMap(cfg),
 	}
 
 	var out []TriggeredHarness

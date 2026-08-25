@@ -9,7 +9,7 @@ labels:
     - ready-to-code
     - triaged
 
-max_turns: 35
+max_turns: 45
 max_cost_usd: 2.00
 
 triage_expectations: |

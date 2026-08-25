@@ -122,3 +122,58 @@ repos: {}
 		assert.Contains(t, err.Error(), "invalid runtime")
 	}
 }
+
+func TestResolveForAgent(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.ParsePerRepoConfig([]byte(`# fullsend per-repo configuration
+version: "1"
+runtime: pi
+agents:
+  - name: code
+    runtime: claude
+  - name: fix
+    model: sonnet
+`))
+	require.NoError(t, err)
+	agents := cfg.AgentEntries()
+
+	// The agents: entry's runtime wins over the repo-wide key.
+	backend, perAgent, err := ResolveForAgent(agents, cfg.(config.PerRepoConfigReader).ConfigRuntime(), "code")
+	require.NoError(t, err)
+	assert.Equal(t, "claude", backend.Runtime.Name())
+	assert.True(t, perAgent)
+
+	// An entry without runtime falls back to the repo-wide key; so does a
+	// missing entry or a missing agent name.
+	for _, agent := range []string{"fix", "triage", ""} {
+		backend, perAgent, err = ResolveForAgent(agents, "pi", agent)
+		require.NoError(t, err, agent)
+		assert.Equal(t, "pi", backend.Runtime.Name(), agent)
+		assert.False(t, perAgent, agent)
+	}
+
+	// No entries and no repo-wide value: the code default.
+	backend, perAgent, err = ResolveForAgent(nil, "", "code")
+	require.NoError(t, err)
+	assert.Equal(t, "claude", backend.Runtime.Name())
+	assert.False(t, perAgent)
+}
+
+func TestResolveForAgent_RejectsStubRuntimes(t *testing.T) {
+	t.Parallel()
+	// A per-agent value is validated like the repo-wide key: stub runtimes
+	// (opencode) and unknown names cannot be activated through config.
+	for _, name := range []string{"opencode", "invalid"} {
+		agents := []config.AgentEntry{{Name: "code", Runtime: name}}
+		_, _, err := ResolveForAgent(agents, "pi", "code")
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "agents.code")
+		assert.Contains(t, err.Error(), "invalid runtime")
+
+		backend, _, err := ResolveForAgent(agents, "pi", "triage")
+		require.NoError(t, err)
+		assert.Equal(t, "pi", backend.Runtime.Name(), "other agents unaffected")
+	}
+	_, _, err := ResolveForAgent(nil, "opencode", "code")
+	require.Error(t, err, "repo-wide stub runtime is rejected too")
+}

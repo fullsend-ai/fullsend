@@ -55,7 +55,7 @@ type ConvergeConfig struct {
 // installation component during convergence.
 type ComponentAction struct {
 	Component string // e.g., "workflow", "thin-caller:<path>", "var:MINT_URL", "ref"
-	Action    string // "none", "add", "update", "upgrade", "error"
+	Action    string // "none", "add", "update", "upgrade", "orphan", "error"
 	Detail    string // human-readable detail
 }
 
@@ -290,9 +290,19 @@ func Converge(ctx context.Context, cfg ConvergeConfig,
 			}
 			resolved.ForgeConfig = fc
 
-			expectedVars := map[string]string{}
-			if resolved.MintURL != "" {
-				expectedVars["FULLSEND_MINT_URL"] = resolved.MintURL
+			// Build expected values for all static variables so
+			// ProbeComponents can detect value drift — not just
+			// FULLSEND_MINT_URL but also FULLSEND_GCP_REGION,
+			// FULLSEND_REVIEW_CLIENT_ID, and the guard variable.
+			expectedVars, varValErr := staticExpectedVarValues(InstallConfig{
+				Forge:             resolved.Forge,
+				MintURL:           resolved.MintURL,
+				InferenceRegion:   cfg.InferenceRegion,
+				ReviewAppClientID: cfg.ReviewAppClientID,
+			}, resolved.MintURL)
+			if varValErr != nil {
+				discoveries[idx] = convergeDiscovery{repo: rr, resolved: resolved, err: varValErr}
+				return
 			}
 			probed, probeErr := ProbeComponents(ctx, fc.Client, rr.Owner, rr.Repo, resolved.Forge, fc, expectedVars)
 			if probeErr != nil {
@@ -539,8 +549,9 @@ func convergeRepo(ctx context.Context,
 		return cr
 	}
 
-	// 2c: Collect all scaffold file changes (ref upgrade + missing components)
-	// and commit them as a single atomic operation.
+	// 2c: Collect all scaffold file changes (ref upgrade + missing
+	// components + content drift) and commit as a single atomic
+	// operation.
 	var allScaffoldFiles []forge.TreeFile
 
 	refFiles, refActions := convergeRefFiles(ctx, resolved, cfg, refResolver, progress)
@@ -558,6 +569,12 @@ func convergeRepo(ctx context.Context,
 		return cr
 	}
 	allScaffoldFiles = append(allScaffoldFiles, refFiles...)
+
+	// Track paths already covered by ref upgrade to avoid duplicates.
+	refFileSet := make(map[string]bool, len(refFiles))
+	for _, f := range refFiles {
+		refFileSet[f.Path] = true
+	}
 
 	scaffoldNeedsRepair := false
 	for _, c := range d.components {
@@ -581,7 +598,38 @@ func convergeRepo(ctx context.Context,
 			return cr
 		}
 		allScaffoldFiles = append(allScaffoldFiles, repairFiles...)
+		for _, f := range repairFiles {
+			refFileSet[f.Path] = true
+		}
 	}
+
+	// 2c-ii: Content drift — detect scaffold files that exist but
+	// whose content differs from the current template (e.g., template
+	// structure changed between releases while the ref stayed the
+	// same). This is the gap that caused #6576: converge only checked
+	// presence, not content, so stale-but-present files were skipped.
+	contentDriftFiles, contentDriftActions := convergeContentDriftFiles(
+		ctx, resolved, cfg, refResolver, refFileSet,
+		DriftConfig{
+			InferenceRegion:   cfg.InferenceRegion,
+			ReviewAppClientID: cfg.ReviewAppClientID,
+			RunnerTags:        gitlabRunnerTags(cfg.Manifest),
+		},
+		progress,
+	)
+	cr.Actions = append(cr.Actions, contentDriftActions...)
+
+	var contentErrors []string
+	for _, a := range contentDriftActions {
+		if a.Action == "error" {
+			contentErrors = append(contentErrors, a.Detail)
+		}
+	}
+	if len(contentErrors) > 0 {
+		cr.Error = fmt.Errorf("convergence errors: %s", strings.Join(contentErrors, "; "))
+		return cr
+	}
+	allScaffoldFiles = append(allScaffoldFiles, contentDriftFiles...)
 
 	// 2d: Commit all scaffold file changes in one atomic commit.
 	// Variable/secret writes above are not rolled back on commit failure;
@@ -602,7 +650,7 @@ func convergeRepo(ctx context.Context,
 	for _, a := range cr.Actions {
 		if a.Action == "error" {
 			errDetails = append(errDetails, a.Detail)
-		} else if a.Action != "none" {
+		} else if a.Action != "none" && a.Action != "orphan" {
 			hasAction = true
 		}
 	}
@@ -866,7 +914,10 @@ func convergeRefFiles(ctx context.Context,
 	if cfg.DryRun {
 		dryRef := targetRef
 		dryTag := ""
-		if !isSHARef(targetRef) && isSHARef(currentRef) {
+		// Only resolve to SHA for semver tags. Branch refs are used
+		// directly to match resolveTargetRef and avoid non-idempotent
+		// SHA pinning. See #6553.
+		if !isSHARef(targetRef) && isSHARef(currentRef) && isSemver(targetRef) {
 			if resolver != nil {
 				if sha := resolver.Resolve(ctx, targetRef); sha != "" && sha != targetRef {
 					dryRef = sha
@@ -929,10 +980,16 @@ func convergeRefFiles(ctx context.Context,
 	}
 
 	// Determine new ref based on pinning style.
+	//
+	// SHA pinning is preserved only for semver tag targets (e.g.
+	// v1.0.0 → v2.0.0). For branch targets like "main", the branch
+	// ref is written directly — resolving a branch to its HEAD SHA
+	// makes the write non-idempotent because each convergence commit
+	// shifts the branch HEAD. See #6553.
 	var newRef, newTag string
 	if isSHARef(targetRef) {
 		newRef = targetRef
-	} else if isSHARef(currentRef) {
+	} else if isSHARef(currentRef) && isSemver(targetRef) {
 		var sha string
 		if resolver != nil {
 			sha = resolver.Resolve(ctx, targetRef)
@@ -1170,6 +1227,175 @@ func convergeScaffoldFiles(ctx context.Context,
 	return repairFiles, actions
 }
 
+// convergeContentDriftFiles detects scaffold files that exist on the forge
+// but whose content differs from the current template output. It
+// renders expected scaffold files using the same inputs as the full
+// install path, then compares each file against the installed version
+// using CheckFileContentDrift (shared with the status path).
+//
+// Files already covered by ref upgrade or missing-component repair
+// (tracked by coveredPaths) are skipped to avoid duplicates. Both the
+// template path and installed path are checked against coveredPaths
+// because extension differences (.yml vs .yaml) can cause them to
+// diverge.
+func convergeContentDriftFiles(ctx context.Context,
+	resolved ResolvedConfig,
+	cfg ConvergeConfig,
+	refResolver *RefResolver,
+	coveredPaths map[string]bool,
+	dcfg DriftConfig,
+	progress ProgressFunc) ([]forge.TreeFile, []ComponentAction) {
+
+	repoFullName := resolved.Owner + "/" + resolved.Repo
+	var actions []ComponentAction
+
+	targetRef := resolved.FullsendRef
+	if targetRef == "" && cfg.UpstreamRef == "" {
+		// No ref configured — cannot render expected content.
+		return nil, actions
+	}
+
+	rref := resolveTargetRef(ctx, resolved.FullsendRef, cfg.UpstreamRef, cfg.UpstreamTag, refResolver)
+	ref, tag, manifestRef := rref.ref, rref.tag, rref.manifestRef
+
+	// Use the shared driftInstallConfig builder, then overlay the
+	// converge-specific resolved ref and tag.
+	installCfg := driftInstallConfig(resolved, dcfg)
+	installCfg.Roles = defaultRoles(cfg.Roles)
+	installCfg.UpstreamRef = ref
+	installCfg.UpstreamTag = tag
+
+	if manifestRef != "" && refResolver != nil {
+		scaffoldFiles, fetchErr := FetchRemoteScaffold(
+			ctx, refResolver.client,
+			manifestRef, ref, resolved.Forge,
+			gitlabRunnerTags(cfg.Manifest),
+		)
+		if fetchErr == nil {
+			installCfg.PrebuiltScaffoldFiles = scaffoldFiles
+		} else {
+			progress(repoFullName, "content-drift",
+				fmt.Sprintf("remote scaffold fetch failed, using embedded templates: %v", fetchErr))
+		}
+	}
+
+	expectedFiles, buildErr := BuildScaffoldFiles(installCfg)
+	if buildErr != nil {
+		actions = append(actions, ComponentAction{
+			Component: "scaffold",
+			Action:    "error",
+			Detail:    fmt.Sprintf("failed to build expected scaffold for content drift check: %v", buildErr),
+		})
+		return nil, actions
+	}
+
+	// Content drift detection — shared between dry-run and live paths.
+	drifted, driftErr := CheckFileContentDrift(
+		ctx, resolved.ForgeConfig.Client,
+		resolved.Owner, resolved.Repo,
+		resolved.ForgeConfig, resolved.Forge,
+		expectedFiles,
+	)
+	if driftErr != nil {
+		actions = append(actions, ComponentAction{
+			Component: "scaffold",
+			Action:    "error",
+			Detail:    fmt.Sprintf("content drift check failed: %v", driftErr),
+		})
+		return nil, actions
+	}
+
+	var repairFiles []forge.TreeFile
+	for _, df := range drifted {
+		if coveredPaths[df.Path] || coveredPaths[df.InstalledPath] {
+			continue
+		}
+		if cfg.DryRun {
+			actions = append(actions, ComponentAction{
+				Component: df.Path,
+				Action:    "update",
+				Detail:    fmt.Sprintf("would update %s (content differs from template)", df.Path),
+			})
+		} else {
+			repairFiles = append(repairFiles, forge.TreeFile{
+				Path:    df.Path,
+				Content: df.Expected,
+				Mode:    "100644",
+			})
+			actions = append(actions, ComponentAction{
+				Component: df.Path,
+				Action:    "update",
+				Detail:    fmt.Sprintf("updated %s (content differs from template)", df.Path),
+			})
+		}
+	}
+
+	if cfg.DryRun && len(actions) > 0 {
+		progress(repoFullName, "dry-run",
+			fmt.Sprintf("Would repair %d files with content drift", len(actions)))
+	} else if len(repairFiles) > 0 {
+		progress(repoFullName, "repair",
+			fmt.Sprintf("Repairing %d files with content drift", len(repairFiles)))
+	}
+
+	// Orphan file detection: check for managed scaffold files that
+	// exist on the forge but are no longer produced by the current
+	// template. Orphans are reported but not deleted — removal is a
+	// destructive action that requires explicit user intent (uninstall).
+	// Runs in both dry-run and live modes so that --dry-run previews
+	// the same orphan information as the live path and repos status.
+	orphanFiles, orphanErr := CheckOrphanFiles(
+		ctx, resolved.ForgeConfig.Client,
+		resolved.Owner, resolved.Repo,
+		resolved.ForgeConfig, resolved.Forge,
+		expectedFiles,
+	)
+	if orphanErr != nil {
+		actions = append(actions, ComponentAction{
+			Component: "scaffold",
+			Action:    "error",
+			Detail:    fmt.Sprintf("orphan file check failed: %v", orphanErr),
+		})
+		return repairFiles, actions
+	}
+	for _, o := range orphanFiles {
+		if coveredPaths[o.Path] {
+			continue
+		}
+		actions = append(actions, ComponentAction{
+			Component: o.Path,
+			Action:    "orphan",
+			Detail:    fmt.Sprintf("orphan file %s exists on forge but is no longer in template", o.Path),
+		})
+	}
+
+	// Orphan variable detection: check for FULLSEND_-prefixed variables
+	// on the forge that are not in the managed variable set. Runs in
+	// both dry-run and live modes for consistency.
+	orphanVars, orphanVarErr := CheckOrphanVars(
+		ctx, resolved.ForgeConfig.Client,
+		resolved.Owner, resolved.Repo,
+		installCfg, resolved.MintURL,
+	)
+	if orphanVarErr != nil {
+		actions = append(actions, ComponentAction{
+			Component: "variables",
+			Action:    "error",
+			Detail:    fmt.Sprintf("orphan variable check failed: %v", orphanVarErr),
+		})
+		return repairFiles, actions
+	}
+	for _, o := range orphanVars {
+		actions = append(actions, ComponentAction{
+			Component: "var:" + o.Name,
+			Action:    "orphan",
+			Detail:    fmt.Sprintf("orphan variable %s exists on forge but is not in managed set", o.Name),
+		})
+	}
+
+	return repairFiles, actions
+}
+
 // resolvedRef holds the result of resolving a manifest's fullsend_ref
 // into a concrete ref, tag, and manifest ref for scaffold generation.
 type resolvedRef struct {
@@ -1181,6 +1407,12 @@ type resolvedRef struct {
 // resolveTargetRef resolves the target ref for scaffold generation.
 // It centralises the ref-resolution logic shared by convergeRepo,
 // convergeScaffoldFiles, and migrateRepo.
+//
+// Only semver tag refs (vX.Y.Z) are resolved to SHAs for pinning.
+// Branch refs like "main" are used as-is because their HEAD moves
+// with each commit, making SHA resolution non-idempotent — each
+// convergence commit shifts the branch, causing the next run to
+// resolve a different SHA and re-converge. See #6553.
 func resolveTargetRef(ctx context.Context, fullsendRef, upstreamRef, upstreamTag string, resolver *RefResolver) resolvedRef {
 	ref := fullsendRef
 	tag := upstreamTag
@@ -1190,10 +1422,16 @@ func resolveTargetRef(ctx context.Context, fullsendRef, upstreamRef, upstreamTag
 		ref = upstreamRef
 	} else if ref != "" {
 		manifestRef = ref
-		tag = ref
-		if resolver != nil {
-			if sha := resolver.Resolve(ctx, ref); sha != ref {
-				ref = sha
+		// Only SHA-pin semver tags. Branch names are used directly
+		// so that both convergeScaffoldFiles (new components) and
+		// convergeRefFiles (existing components) produce the same
+		// ref form, and repeated runs are idempotent.
+		if isSemver(ref) {
+			tag = ref
+			if resolver != nil {
+				if sha := resolver.Resolve(ctx, ref); sha != ref {
+					ref = sha
+				}
 			}
 		}
 	}
