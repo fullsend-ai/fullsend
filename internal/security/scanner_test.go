@@ -140,6 +140,25 @@ func TestSecretRedactor(t *testing.T) {
 		assert.True(t, hasFinding(result, "github_server_token"))
 	})
 
+	t.Run("google oauth access token redacted", func(t *testing.T) {
+		// Bare ya29. bearer tokens are what WIF-provisioned runs print
+		// from gcloud auth print-access-token — no surrounding context.
+		result := r.Scan("token: ya29.a0AfB_byDEMOtoken1234567890abcdefghij")
+		assert.False(t, result.Safe)
+		assert.NotContains(t, result.Sanitized, "a0AfB_byDEMO")
+		assert.True(t, hasFinding(result, "google_oauth_token"))
+	})
+
+	t.Run("bare JWT redacted", func(t *testing.T) {
+		// Segments concatenated so the fixture itself does not trip the
+		// gitleaks pre-commit hook.
+		jwt := "eyJhbGciOiJSUzI1NiJ9" + "." + "eyJzdWIiOiIxMjM0NTY3ODkwIn0" + "." + "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+		result := r.Scan("curl -H output: " + jwt)
+		assert.False(t, result.Safe)
+		assert.NotContains(t, result.Sanitized, "eyJzdWIiOiIxMjM0NTY3ODkwIn0")
+		assert.True(t, hasFinding(result, "jwt"))
+	})
+
 	t.Run("openai key redacted", func(t *testing.T) {
 		result := r.Scan("key=sk-proj-abc123def456ghi789jkl012mno345pqr678")
 		assert.False(t, result.Safe)
