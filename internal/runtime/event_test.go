@@ -14,8 +14,9 @@ func TestAgentEventInterfaceSatisfied(t *testing.T) {
 		ResultEvent{NumTurns: 5, TotalCostUSD: 0.42},
 		ErrorEvent{ErrorType: "overloaded", Message: "rate limited"},
 		RetryEvent{Attempt: 1, MaxRetries: 3, DelayMs: 1000, Error: "timeout"},
+		ToolResultEvent{ID: "toolu_01abc", Result: "file contents"},
 	)
-	if len(events) != 8 {
-		t.Errorf("expected 8 event types, got %d", len(events))
+	if len(events) != 9 {
+		t.Errorf("expected 9 event types, got %d", len(events))
 	}
 }

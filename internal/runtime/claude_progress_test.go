@@ -787,6 +787,125 @@ func TestParseClaudeStreamToolUse(t *testing.T) {
 	}
 }
 
+func TestParseClaudeStreamToolUseCarriesID(t *testing.T) {
+	lines := []string{
+		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01AbCdEf","name":"Read"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"file_path\":\"/src/main.go\"}"}}}`,
+		`{"type":"stream_event","event":{"type":"content_block_stop","index":0}}`,
+	}
+	events := collectEvents(t, strings.Join(lines, "\n"))
+	var tools []ToolUseEvent
+	for _, e := range events {
+		if te, ok := e.(ToolUseEvent); ok {
+			tools = append(tools, te)
+		}
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool event, got %d", len(tools))
+	}
+	if tools[0].ID != "toolu_01AbCdEf" {
+		t.Errorf("expected tool ID toolu_01AbCdEf, got %q", tools[0].ID)
+	}
+}
+
+func TestParseClaudeStreamAssistantFallbackToolUseCarriesID(t *testing.T) {
+	input := `{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_02XyZ","name":"Bash","input":{"command":"ls"}}]}}`
+	events := collectEvents(t, input)
+	var tools []ToolUseEvent
+	for _, e := range events {
+		if te, ok := e.(ToolUseEvent); ok {
+			tools = append(tools, te)
+		}
+	}
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool event, got %d", len(tools))
+	}
+	if tools[0].ID != "toolu_02XyZ" {
+		t.Errorf("expected tool ID toolu_02XyZ, got %q", tools[0].ID)
+	}
+}
+
+func collectToolResults(t *testing.T, input string) []ToolResultEvent {
+	t.Helper()
+	var results []ToolResultEvent
+	for _, e := range collectEvents(t, input) {
+		if tr, ok := e.(ToolResultEvent); ok {
+			results = append(results, tr)
+		}
+	}
+	return results
+}
+
+func TestParseClaudeStreamToolResultStringContent(t *testing.T) {
+	input := `{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_01DULm","type":"tool_result","content":"main.go\nutil.go\n"}]}}`
+	results := collectToolResults(t, input)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 tool result event, got %d", len(results))
+	}
+	if results[0].ID != "toolu_01DULm" {
+		t.Errorf("expected ID toolu_01DULm, got %q", results[0].ID)
+	}
+	if results[0].Result != "main.go\nutil.go\n" {
+		t.Errorf("expected raw result text, got %q", results[0].Result)
+	}
+}
+
+func TestParseClaudeStreamToolResultArrayContent(t *testing.T) {
+	input := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_03Arr","content":[{"type":"text","text":"first block"},{"type":"image","source":{"type":"base64","data":"aGk="}},{"type":"text","text":"second block"}]}]}}`
+	results := collectToolResults(t, input)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 tool result event, got %d", len(results))
+	}
+	if results[0].ID != "toolu_03Arr" {
+		t.Errorf("expected ID toolu_03Arr, got %q", results[0].ID)
+	}
+	if results[0].Result != "first block\nsecond block" {
+		t.Errorf("expected text blocks joined by newline with image skipped, got %q", results[0].Result)
+	}
+}
+
+func TestParseClaudeStreamToolResultFlatContent(t *testing.T) {
+	// Older/flat shape: content at the top level, no "message" nesting —
+	// the same dual-shape contract assistantMessage supports.
+	input := `{"type":"user","content":[{"type":"tool_result","tool_use_id":"toolu_04Flat","content":"flat shape"}]}`
+	results := collectToolResults(t, input)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 tool result event, got %d", len(results))
+	}
+	if results[0].ID != "toolu_04Flat" {
+		t.Errorf("expected ID toolu_04Flat, got %q", results[0].ID)
+	}
+	if results[0].Result != "flat shape" {
+		t.Errorf("expected flat-shape result, got %q", results[0].Result)
+	}
+}
+
+func TestParseClaudeStreamUserTextContentIgnored(t *testing.T) {
+	// User messages can carry plain text (e.g. runner-composed feedback
+	// prompts); only tool_result blocks produce events.
+	input := `{"type":"user","message":{"role":"user","content":[{"type":"text","text":"please fix the validation errors"}]}}`
+	events := collectEvents(t, input)
+	if len(events) != 0 {
+		t.Fatalf("expected 0 events for text-only user message, got %d: %#v", len(events), events)
+	}
+}
+
+func TestParseClaudeStreamToolResultEmptyContent(t *testing.T) {
+	// A tool_result with empty content still marks completion; the event
+	// is emitted with its ID and an empty Result.
+	input := `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_05Empty","content":""}]}}`
+	results := collectToolResults(t, input)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 tool result event, got %d", len(results))
+	}
+	if results[0].ID != "toolu_05Empty" {
+		t.Errorf("expected ID toolu_05Empty, got %q", results[0].ID)
+	}
+	if results[0].Result != "" {
+		t.Errorf("expected empty result, got %q", results[0].Result)
+	}
+}
+
 func TestParseClaudeStreamUnknownToolShowsNameNoContext(t *testing.T) {
 	lines := []string{
 		`{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","name":"Skill"}}}`,
