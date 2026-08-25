@@ -69,6 +69,9 @@ runner_env:                          # ⚠ Deprecated: use env.runner instead
 # ── Timeouts ──────────────────────────────────────────────────
 timeout_minutes: 20
 sandbox_timeout_seconds: 300         # 30-600
+max_cost_usd: 5.00                   # Hard cost cap in USD, checked against aggregated
+                                     # total_cost_usd across validation_loop retries
+                                     # (default: 0 = unlimited)
 
 # ── Remote resources ──────────────────────────────────────────
 allowed_remote_resources:
@@ -139,6 +142,8 @@ Most fields are self-explanatory from the inline comments above. This section ex
 **`allow_runtime_fetch`** — When `true`, the agent can fetch remote resources (skills, plugins, profiles) at runtime rather than only at harness resolution time. Fetched URLs must still be covered by `allowed_remote_resources`.
 
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
+
+**`max_cost_usd`** — Hard cost cap in USD, checked against the run's aggregated `total_cost_usd` (summed across `validation_loop` retries). `0` (default) means unlimited. Claude Code only reports cost once, in the final result event of a completed iteration, so this halts the run before starting another (already over-budget) iteration — it cannot interrupt one long iteration still in progress. `metrics.json` records `over_budget: true` when this cap stopped the run, distinguishing "halted at budget" from a crash.
 
 **`api_servers`** — Host-side HTTP servers that run outside the sandbox and are exposed to it via port forwarding. Use these to give an agent access to APIs that require credentials the sandbox should not hold -- the server script runs on the trusted runner with full env access, while the sandbox connects to `localhost:<port>`.
 

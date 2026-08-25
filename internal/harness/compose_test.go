@@ -86,6 +86,47 @@ model: opus
 	assert.Empty(t, h.Base)
 }
 
+func TestLoadWithBase_LocalBase_MaxCostUSDInherit(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/base.md
+role: test
+max_cost_usd: 2.5
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+agent: agents/child.md
+role: test
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+	assert.InDelta(t, 2.5, h.MaxCostUSD, 0.0001)
+}
+
+func TestLoadWithBase_LocalBase_MaxCostUSDChildOverride(t *testing.T) {
+	dir := t.TempDir()
+
+	writeTestHarness(t, dir, "base.yaml", `
+agent: agents/base.md
+role: test
+max_cost_usd: 2.5
+`)
+
+	path := writeTestHarness(t, dir, "child.yaml", `
+base: base.yaml
+agent: agents/child.md
+role: test
+max_cost_usd: 5
+`)
+
+	h, _, err := LoadWithBase(context.Background(), path, ComposeOpts{})
+	require.NoError(t, err)
+	assert.InDelta(t, 5.0, h.MaxCostUSD, 0.0001)
+}
+
 func TestLoadWithBase_LocalBase_SkillsConcat(t *testing.T) {
 	dir := t.TempDir()
 

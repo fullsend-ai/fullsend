@@ -584,6 +584,9 @@ func mergeBaseIntoChild(base, child *Harness) {
 	if child.TimeoutMinutes == 0 {
 		child.TimeoutMinutes = base.TimeoutMinutes
 	}
+	if child.MaxCostUSD == 0 {
+		child.MaxCostUSD = base.MaxCostUSD
+	}
 	if child.SandboxTimeoutSeconds == 0 {
 		child.SandboxTimeoutSeconds = base.SandboxTimeoutSeconds
 	}
