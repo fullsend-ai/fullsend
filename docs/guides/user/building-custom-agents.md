@@ -521,7 +521,7 @@ jobs:
           ISSUE_SOURCE: ${{ inputs.issue_source || 'github' }}
           REPO_FULL_NAME: ${{ github.repository }}
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}  # install-time only, not managed by sync
+          CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}  # set at install time, updated during convergence
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/output"
