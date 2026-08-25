@@ -66,10 +66,12 @@ def parse_iso(iso: str) -> datetime | None:
 
 
 def to_z(dt: datetime) -> str:
-    """UTC timestamp for GitHub search / JSON — seconds precision, Z suffix.
+    """UTC timestamp for GitHub search / JSON — whole seconds, Z suffix.
 
-    GitHub search documents YYYY-MM-DDTHH:MM:SS+00:00 (not fractional
-    seconds). Keep Z; both Z and +00:00 are accepted today.
+    We emit second precision (matching the documented search example form
+    YYYY-MM-DDTHH:MM:SS+00:00) for stable, readable --merged-at ranges.
+    Z and +00:00 are both accepted by gh search today; fractional seconds
+    are also accepted empirically, but we still normalize to whole seconds.
     """
     return dt.astimezone(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -87,10 +89,19 @@ def window_bounds(
 ) -> tuple[datetime, datetime, bool]:
     """Return (since_ts, until_ts, until_clamped) in UTC for the forum window.
 
+    since_ts is always 08:00 America/New_York on --since (calendar date only).
+    Hosts rotate week to week and typically have no local copy of last week's
+    gather, so we deliberately do not chain from a previous window_end_utc.
+
     until_ts is always min(ET end-of-day for until_day, now). That clamps
     any future --until (not only "today") so the gather never pretends to
     cover time that has not happened yet. until_clamped is True when that
     min chose now instead of the calendar end-of-day.
+
+    Half-open filtering (see in_window) only removes the exact 08:00 ET
+    shared boundary. If last week's host ran late (until=now mid-morning),
+    a short post-08:00 band can still appear in both weeks' JSON — hosts
+    dedupe against last week's bullets in the standing Google Doc.
     """
     since_d = parse_ymd(since_day)
     until_d = parse_ymd(until_day)
@@ -108,8 +119,9 @@ def window_bounds(
 def in_window(iso: str, since_ts: datetime, until_ts: datetime) -> bool:
     """True if event is after since_ts and at/before until_ts (half-open).
 
-    Exclusive lower bound avoids double-counting events at the shared
-    Tuesday 08:00 ET boundary across consecutive weekly gathers.
+    Exclusive lower bound avoids double-counting the exact shared Tuesday
+    08:00 ET instant. It does not remove late-run overlap when last week's
+    until was clamped past 08:00 — see window_bounds / SKILL.md.
     """
     dt = parse_iso(iso)
     if dt is None:

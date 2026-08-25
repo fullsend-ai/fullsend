@@ -43,6 +43,10 @@ calls go through `gather.py` only — do not grant bare `gh api` in
 Tuesday morning before the forum (or when the host asks). Window is
 **after the previous Tuesday forum through this Tuesday**.
 
+The **fullsend-user-forum-host** role rotates: a different teammate often
+pulls this skill down locally each week with no local copy of last week's
+gather JSON. Do not rely on persisting `window_end_utc` across machines.
+
 Standing agenda:
 [Notes — fullsend community meeting](https://docs.google.com/document/d/1kXRvb7QJIlv4MoSnTzIM5uthURckhN0Duy8JFar5roQ)
 
@@ -62,13 +66,19 @@ Do these in order. Do not draft bullets until ranking is done.
 - `gather.sh` / `gather.py` interpret `--since` as **08:00 America/New_York**
   on that date and `--until` as end of that day ET, **clamped to now** when
   that end-of-day is still in the future (not only when until is "today" —
-  a future `--until` also clamps). The filter is **half-open**: events
-  exactly at the `--since` 08:00 ET instant are excluded (`since < t ≤ until`)
-  so consecutive Tuesday windows do not double-count. JSON includes
-  `until_clamped: true/false` so you can see when the requested calendar day
-  was truncated. Default `--until` is today's date in America/New_York (not
-  the host machine's local calendar). Dates must be strict `YYYY-MM-DD`
-  (ISO week-dates like `2026-W33-2` are rejected).
+  a future `--until` also clamps). The filter is **half-open** at the lower
+  bound (`since < t ≤ until`): that only excludes the exact `--since`
+  08:00 ET instant so two runs that share that calendar boundary do not
+  both claim the same timestamp. It does **not** remove late-run overlap —
+  if last week's host ran at 10:00 ET with `--until` clamped to then, the
+  08:00–10:00 band can still appear in both weeks' gather JSON. Hosts
+  rotate and usually have no local previous gather; **dedupe against last
+  week's bullets in the standing Google Doc** (canonical shared artifact),
+  not against a file on disk. JSON includes `until_clamped: true/false` so
+  you can see when the requested calendar day was truncated. Default
+  `--until` is today's date in America/New_York (not the host machine's
+  local calendar). Dates must be strict `YYYY-MM-DD` (ISO week-dates like
+  `2026-W33-2` are rejected).
 - Search and filter use the same UTC timestamp bounds (not bare calendar
   dates), so ET evening after UTC midnight is not dropped.
 - Releases published **after** the last forum are in-scope even if they
