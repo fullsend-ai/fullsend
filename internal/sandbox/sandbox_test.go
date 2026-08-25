@@ -1372,6 +1372,192 @@ fi
 	assert.Contains(t, err.Error(), "***")
 }
 
+// TestEnsureProvider_RetriesOnConcurrentModification verifies that
+// updateProvider retries when openshell returns a concurrent modification
+// (resource_version conflict) error during provider update.
+func TestEnsureProvider_RetriesOnConcurrentModification(t *testing.T) {
+	dir := t.TempDir()
+	markerDir := filepath.Join(dir, "markers")
+	require.NoError(t, os.MkdirAll(markerDir, 0o755))
+
+	// Fake openshell: create returns AlreadyExists to trigger update path.
+	// First 2 update calls fail with concurrent modification error,
+	// third update call succeeds.
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$2" = "create" ]; then
+  echo "code: 'Some entity that we attempted to create already exists', message: \"provider already exists\"" >&2
+  exit 1
+elif [ "$2" = "update" ]; then
+  echo x > "%s/update.$$"
+  count=0
+  for f in "%s"/update.*; do
+    [ -e "$f" ] && count=$((count + 1))
+  done
+  if [ "$count" -lt 3 ]; then
+    echo "code: 'The operation was aborted', message: \"provider was modified concurrently (current resource_version: $count)\"" >&2
+    exit 1
+  fi
+  exit 0
+fi
+exit 0
+`, markerDir, markerDir)
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := EnsureProvider(context.Background(), "vertex-ai", "vertex-ai", map[string]string{"TOKEN": "tok"}, nil, false)
+	assert.NoError(t, err, "should succeed after retrying concurrent modification errors")
+
+	// Verify that 3 update attempts were made.
+	entries, readErr := os.ReadDir(markerDir)
+	require.NoError(t, readErr)
+	assert.Len(t, entries, 3, "should have made 3 update attempts")
+}
+
+// TestEnsureProvider_ConcurrentModification_MaxRetriesExhausted verifies
+// that updateProvider propagates the error when all retries are exhausted.
+func TestEnsureProvider_ConcurrentModification_MaxRetriesExhausted(t *testing.T) {
+	dir := t.TempDir()
+	markerDir := filepath.Join(dir, "markers")
+	require.NoError(t, os.MkdirAll(markerDir, 0o755))
+
+	// Fake openshell: create returns AlreadyExists, update always fails
+	// with concurrent modification.
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$2" = "create" ]; then
+  echo "code: 'Some entity that we attempted to create already exists', message: \"provider already exists\"" >&2
+  exit 1
+elif [ "$2" = "update" ]; then
+  echo x > "%s/update.$$"
+  echo "code: 'The operation was aborted', message: \"provider was modified concurrently (current resource_version: 1)\"" >&2
+  exit 1
+fi
+exit 0
+`, markerDir)
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := EnsureProvider(context.Background(), "vertex-ai", "vertex-ai", map[string]string{"TOKEN": "tok"}, nil, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "retries exhausted after 3 attempts")
+	assert.Contains(t, err.Error(), "provider was modified concurrently")
+
+	// All 3 retry attempts should have been made.
+	entries, readErr := os.ReadDir(markerDir)
+	require.NoError(t, readErr)
+	assert.Len(t, entries, 3, "should exhaust all retry attempts")
+}
+
+// TestEnsureProvider_ConcurrentModification_NoRetryOnOtherUpdateErrors
+// verifies that non-concurrency update errors are not retried.
+func TestEnsureProvider_ConcurrentModification_NoRetryOnOtherUpdateErrors(t *testing.T) {
+	dir := t.TempDir()
+	markerDir := filepath.Join(dir, "markers")
+	require.NoError(t, os.MkdirAll(markerDir, 0o755))
+
+	// Fake openshell: create returns AlreadyExists, update fails with
+	// a non-concurrency error.
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$2" = "create" ]; then
+  echo "code: 'Some entity that we attempted to create already exists', message: \"provider already exists\"" >&2
+  exit 1
+elif [ "$2" = "update" ]; then
+  echo x > "%s/update.$$"
+  echo "gateway unavailable" >&2
+  exit 1
+fi
+exit 0
+`, markerDir)
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := EnsureProvider(context.Background(), "vertex-ai", "vertex-ai", nil, nil, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "provider update")
+	assert.NotContains(t, err.Error(), "retries exhausted",
+		"non-concurrency errors should not be retried")
+
+	// Should have only attempted once.
+	entries, readErr := os.ReadDir(markerDir)
+	require.NoError(t, readErr)
+	assert.Len(t, entries, 1, "should not retry on non-concurrency errors")
+}
+
+// TestEnsureProvider_ConcurrentModification_ContextCancelled verifies that
+// context cancellation during the update retry backoff returns the context
+// error.
+func TestEnsureProvider_ConcurrentModification_ContextCancelled(t *testing.T) {
+	dir := t.TempDir()
+	markerDir := filepath.Join(dir, "markers")
+	require.NoError(t, os.MkdirAll(markerDir, 0o755))
+
+	// Fake openshell: create returns AlreadyExists, update always fails
+	// with concurrent modification so retries never succeed.
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$2" = "create" ]; then
+  echo "code: 'Some entity that we attempted to create already exists', message: \"provider already exists\"" >&2
+  exit 1
+elif [ "$2" = "update" ]; then
+  echo x > "%s/update.$$"
+  echo "code: 'The operation was aborted', message: \"provider was modified concurrently (current resource_version: 1)\"" >&2
+  exit 1
+fi
+exit 0
+`, markerDir)
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	// Cancel the context shortly after the first update attempt so the
+	// select picks up ctx.Done() during the backoff sleep. The update
+	// retry base backoff is 100ms, so 80ms is enough for one update
+	// attempt to run but not enough for the backoff to complete.
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+
+	err := EnsureProvider(ctx, "vertex-ai", "vertex-ai", nil, nil, false)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.DeadlineExceeded,
+		"should return context error when cancelled during retry sleep")
+
+	// Should have made only 1 update attempt before the context expired
+	// during the backoff sleep.
+	entries, readErr := os.ReadDir(markerDir)
+	require.NoError(t, readErr)
+	assert.Len(t, entries, 1, "should stop retrying when context is cancelled")
+}
+
+// TestEnsureProvider_ConcurrentModification_SecretRedaction verifies that
+// secrets are redacted in error messages from concurrent modification retries.
+func TestEnsureProvider_ConcurrentModification_SecretRedaction(t *testing.T) {
+	dir := t.TempDir()
+
+	// Fake openshell: create returns AlreadyExists, update always fails
+	// with concurrent modification and includes the secret in output.
+	script := `#!/bin/sh
+if [ "$2" = "create" ]; then
+  echo "code: 'Some entity that we attempted to create already exists', message: \"provider already exists\"" >&2
+  exit 1
+elif [ "$2" = "update" ]; then
+  echo "provider was modified concurrently supersecret" >&2
+  exit 1
+fi
+exit 0
+`
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := EnsureProvider(context.Background(), "vertex-ai", "vertex-ai",
+		map[string]string{"TOKEN": "supersecret"}, nil, false)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "supersecret",
+		"secret must be redacted in concurrent modification error")
+	assert.Contains(t, err.Error(), "***")
+}
+
 func TestEnsureProvider_RejectsReservedCredentialKeys(t *testing.T) {
 	tests := []struct {
 		key     string
