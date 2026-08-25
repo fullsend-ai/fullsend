@@ -158,7 +158,8 @@ before the size budget — truncating first could split a secret past
 recognition), enforces a 256 KiB ordered-suffix budget (the ending survives — the
 final answer is what consumers judge) plus an 8 KiB per-tool-result
 bound (tail-kept, redacted before the cut), with exact dropped-byte
-accounting across content, tool names, summaries, and responses, and emits
+accounting across content, tool names, summaries, responses, and part
+ids, and emits
 `gen_ai.output.messages` JSON following the GenAI output-messages schema,
 including the schema-required `finish_reason` from the iteration outcome. `attachContent` records the
 content and its marker attributes on the span before either

@@ -188,6 +188,10 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 			return err
 		}
 		if isPrefix {
+			// Lines beyond streamBufSize are skipped whole. For user
+			// lines this loses any tool_result they carry (e.g. results
+			// holding base64 image blocks) — the event is never emitted
+			// and content capture cannot mark the loss.
 			for isPrefix && err == nil {
 				_, isPrefix, err = br.ReadLine()
 			}

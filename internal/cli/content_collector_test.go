@@ -374,34 +374,36 @@ func TestContentCollector_EvictedToolResultsAreStillScanned(t *testing.T) {
 func TestContentCollector_BoundaryToolResultKeepsResponseTail(t *testing.T) {
 	// A tool_call_response at the suffix boundary is tail-cut on its
 	// response — like text, and unlike tool_call (whose name+summary
-	// would be misrepresented by a cut). The id survives the trim.
+	// would be misrepresented by a cut). The id survives the trim and
+	// its 9 bytes occupy budget first: "final" (5) leaves 15, the id
+	// takes 9, so 6 response bytes fit.
 	c := newContentCollector(20)
 	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_cut", Result: "0123456789ABCDEFGHIJ"})
 	c.Handle(agentruntime.TextEvent{Text: "final"})
 
 	res := c.Result("stop")
 	require.True(t, res.Truncated)
-	assert.Equal(t, 5, res.DroppedBytes,
-		"exactly the response bytes beyond the budget are dropped")
+	assert.Equal(t, 14, res.DroppedBytes,
+		"exactly the response bytes that did not fit next to the id are dropped")
 
 	msgs := decodeOutputMessages(t, res.OutputMessages)
 	part := partAt(t, msgs, 0)
 	assert.Equal(t, "tool_call_response", part["type"])
 	assert.Equal(t, "toolu_cut", part["id"])
-	assert.Equal(t, "56789ABCDEFGHIJ", part["response"])
+	assert.Equal(t, "EFGHIJ", part["response"])
 	assert.Equal(t, "final", partAt(t, msgs, 1)["content"])
 }
 
 func TestContentCollector_DroppedToolResultCountsResponseBytes(t *testing.T) {
 	// When no budget remains at the boundary, the whole response part
-	// drops and its response bytes land in DroppedBytes exactly.
+	// drops and its response and id bytes land in DroppedBytes exactly.
 	c := newContentCollector(5)
 	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_drop", Result: "0123456789"})
 	c.Handle(agentruntime.TextEvent{Text: "final"})
 
 	res := c.Result("stop")
 	require.True(t, res.Truncated)
-	assert.Equal(t, 10, res.DroppedBytes)
+	assert.Equal(t, 20, res.DroppedBytes)
 	msgs := decodeOutputMessages(t, res.OutputMessages)
 	require.Len(t, msgs[0]["parts"].([]any), 1)
 	assert.Equal(t, "final", partAt(t, msgs, 0)["content"])
@@ -432,6 +434,55 @@ func TestContentCollector_PreTrimRedactsGiantToolResult(t *testing.T) {
 	assert.Equal(t, "toolu_giant", part["id"])
 	assert.True(t, strings.HasSuffix(part["response"].(string), tail),
 		"the response ending must survive the pre-trim")
+}
+
+func TestContentCollector_IDBytesCountTowardBudget(t *testing.T) {
+	// Ids are serialized into the attribute, so they count toward the
+	// budget like every other part byte — uncounted ids would let the
+	// attribute grow past the budget in aggregate.
+	c := newContentCollector(30)
+	c.Handle(agentruntime.ToolResultEvent{ID: "12345678901234567890", Result: "0123456789"})
+	c.Handle(agentruntime.TextEvent{Text: "end"})
+
+	res := c.Result("stop")
+	require.True(t, res.Truncated)
+	assert.Equal(t, 3, res.DroppedBytes,
+		"the id's 20 bytes count: only 7 response bytes fit next to it")
+
+	msgs := decodeOutputMessages(t, res.OutputMessages)
+	part := partAt(t, msgs, 0)
+	assert.Equal(t, "3456789", part["response"])
+	assert.Equal(t, "12345678901234567890", part["id"],
+		"a kept boundary part keeps its id intact")
+}
+
+func TestContentCollector_SecretBearingIDDropped(t *testing.T) {
+	// Ids pass the same redaction scan as every other stream-derived
+	// string; a finding drops the id entirely — never substitutes, since
+	// a rewritten id could falsely collide.
+	secret := "ghp_" + strings.Repeat("h", 36)
+	c := newContentCollector(4096)
+	c.Handle(agentruntime.ToolResultEvent{ID: secret, Result: "clean output"})
+
+	res := c.Result("stop")
+	assert.NotContains(t, res.OutputMessages, secret)
+	assert.NotEmpty(t, res.Findings)
+	msgs := decodeOutputMessages(t, res.OutputMessages)
+	part := partAt(t, msgs, 0)
+	assert.NotContains(t, part, "id", "a secret-bearing id is dropped, not rewritten")
+	assert.Equal(t, "clean output", part["response"])
+}
+
+func TestContentCollector_ZeroContentPartsDoNotAccumulate(t *testing.T) {
+	// Parts with no content-bearing bytes are refused at Handle: they
+	// would contribute nothing to the output (the empty-result rule) yet
+	// accumulate unboundedly, invisible to the size-based eviction.
+	c := newContentCollector(4096)
+	for i := 0; i < 100; i++ {
+		c.Handle(agentruntime.ToolResultEvent{ID: "toolu_x", Result: ""})
+		c.Handle(agentruntime.ToolUseEvent{ID: "toolu_y"})
+	}
+	assert.Empty(t, c.parts, "zero-content parts must not accumulate")
 }
 
 func TestContentCollector_OversizedIDDropped(t *testing.T) {

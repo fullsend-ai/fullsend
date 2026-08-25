@@ -14,17 +14,19 @@ import (
 
 // maxContentBytes bounds the conversation content attached to one agent
 // span (one iteration), measured on the raw part bytes before JSON
-// encoding. A 255KB attribute was accepted whole by the pilot backend in
-// live validation; larger is unproven, so the total stays put and tool
-// results are bounded per part instead.
+// encoding — the marshaled attribute additionally carries per-part JSON
+// syntax and escaping, so a budget-binding iteration serializes larger
+// than this value. A 255KB attribute was accepted whole by the pilot
+// backend in live validation; beyond that is unproven, so the total
+// stays put and tool results are bounded per part instead.
 const maxContentBytes = 256 * 1024
 
-// maxToolIDBytes bounds a tool call/result id. Ids are structural bytes
-// outside the size accounting, which is only safe while they stay
-// structural-sized: the stream decodes them unbounded and Level 3 lifts
-// the SDK attribute cap. Real ids run tens of bytes; anything beyond
-// this is malformed and gets dropped — never truncated, since a
-// truncated id could falsely collide with another call's.
+// maxToolIDBytes bounds a tool call/result id. The stream decodes ids
+// unbounded and Level 3 lifts the SDK attribute cap; real ids run tens
+// of bytes, so anything beyond this is malformed and gets dropped —
+// never truncated, since a truncated id could falsely collide with
+// another call's. Id bytes that pass the bound still count toward the
+// size budget like every other serialized part byte.
 const maxToolIDBytes = 256
 
 // maxToolResultBytes bounds one tool result's response within the
@@ -105,8 +107,19 @@ type contentPart struct {
 	Response string `json:"response,omitempty"`
 }
 
-func partSize(p contentPart) int {
+// contentBytes counts a part's content-bearing bytes. A part with none
+// contributes nothing to the output and is never kept.
+func contentBytes(p contentPart) int {
 	return len(p.Content) + len(p.Name) + len(p.Summary) + len(p.Response)
+}
+
+// partSize is the part's budget footprint: content-bearing bytes plus
+// id bytes, since the id serializes into the attribute like everything
+// else. JSON syntax and escaping added at marshal time remain uncounted
+// — the budget is measured on raw part bytes, as documented on
+// maxContentBytes.
+func partSize(p contentPart) int {
+	return contentBytes(p) + len(p.ID)
 }
 
 // boundedID drops an id that exceeds maxToolIDBytes; the part survives
@@ -132,8 +145,8 @@ type contentResult struct {
 	// OutputMessages is the gen_ai.output.messages JSON string, empty
 	// when the iteration produced no content.
 	OutputMessages string
-	// DroppedBytes counts raw content bytes removed by the size budget
-	// (content, tool name, summary, and tool response bytes alike).
+	// DroppedBytes counts raw part bytes removed by the size budget
+	// (content, tool name, summary, tool response, and id bytes alike).
 	DroppedBytes int
 	// Truncated reports whether the budget cut or dropped anything.
 	Truncated bool
@@ -186,10 +199,7 @@ func (c *contentCollector) Handle(evt agentruntime.AgentEvent) {
 	case agentruntime.ThinkingEvent:
 		c.appendText("reasoning", e.Text)
 	case agentruntime.ToolUseEvent:
-		p := contentPart{Type: "tool_call", ID: boundedID(e.ID), Name: e.Name, Summary: e.Summary}
-		c.parts = append(c.parts, p)
-		c.total += partSize(p)
-		c.evictOverflow()
+		c.appendPart(contentPart{Type: "tool_call", ID: boundedID(e.ID), Name: e.Name, Summary: e.Summary})
 	case agentruntime.ToolResultEvent:
 		p := contentPart{Type: "tool_call_response", ID: boundedID(e.ID), Response: e.Result}
 		if len(p.Response) > maxToolResultBytes {
@@ -201,10 +211,21 @@ func (c *contentCollector) Handle(evt agentruntime.AgentEvent) {
 			c.evicted += len(p.Response) - len(kept)
 			p.Response = kept
 		}
-		c.parts = append(c.parts, p)
-		c.total += partSize(p)
-		c.evictOverflow()
+		c.appendPart(p)
 	}
+}
+
+// appendPart admits one discrete part. Parts with no content-bearing
+// bytes are refused: they would contribute nothing to the output (an
+// empty result produces no part) yet accumulate unboundedly, invisible
+// to the size-based eviction.
+func (c *contentCollector) appendPart(p contentPart) {
+	if contentBytes(p) == 0 {
+		return
+	}
+	c.parts = append(c.parts, p)
+	c.total += partSize(p)
+	c.evictOverflow()
 }
 
 func (c *contentCollector) appendText(kind, text string) {
@@ -241,6 +262,7 @@ func (c *contentCollector) evictOverflow() {
 		c.redact(c.parts[0].Name, &c.findings)
 		c.redact(c.parts[0].Summary, &c.findings)
 		c.redact(c.parts[0].Response, &c.findings)
+		c.redact(c.parts[0].ID, &c.findings)
 		c.evicted += head
 		c.total -= head
 		c.parts = c.parts[1:]
@@ -294,7 +316,8 @@ func (c *contentCollector) Result(finishReason string) contentResult {
 		p.Name = c.redact(p.Name, &res.Findings)
 		p.Summary = c.redact(p.Summary, &res.Findings)
 		p.Response = c.redact(p.Response, &res.Findings)
-		if partSize(p) == 0 {
+		p.ID = c.redactID(p.ID, &res.Findings)
+		if contentBytes(p) == 0 {
 			continue // sanitized away entirely; the finding is recorded
 		}
 		redacted = append(redacted, p)
@@ -317,10 +340,13 @@ func (c *contentCollector) Result(finishReason string) contentResult {
 			continue
 		}
 		res.Truncated = true
-		if !full && p.Type != "tool_call" && remaining > 0 {
-			bulk := bulkField(&p)
-			tail := tailToRuneBoundary(*bulk, remaining)
-			res.DroppedBytes += size - len(tail)
+		bulk := bulkField(&p)
+		// Bytes the part carries besides its bulk field (its id, for
+		// tool_call_response parts) must fit before any bulk tail can.
+		nonBulk := size - len(*bulk)
+		if !full && p.Type != "tool_call" && remaining > nonBulk {
+			tail := tailToRuneBoundary(*bulk, remaining-nonBulk)
+			res.DroppedBytes += size - nonBulk - len(tail)
 			if tail != "" {
 				*bulk = tail
 				kept = append(kept, p)
@@ -364,6 +390,21 @@ func (c *contentCollector) redact(text string, findings *[]security.Finding) str
 		return ""
 	}
 	return text
+}
+
+// redactID scans a part id like every other stream-derived string; on
+// any finding the id is dropped entirely — a substituted id could
+// falsely collide with another call's.
+func (c *contentCollector) redactID(id string, findings *[]security.Finding) string {
+	if id == "" {
+		return id
+	}
+	scanned := c.pipeline.Scan(id)
+	*findings = append(*findings, scanned.Findings...)
+	if len(scanned.Findings) > 0 {
+		return ""
+	}
+	return id
 }
 
 // tailToRuneBoundary keeps at most the last n bytes of s, starting on a
