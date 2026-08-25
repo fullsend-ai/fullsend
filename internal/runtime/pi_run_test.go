@@ -27,16 +27,16 @@ func TestTranslatePiModel(t *testing.T) {
 	assert.Equal(t, "anthropic-vertex/claude-opus-4-8", translatePiModel("claude-opus-4-8"), "bare ids get the provider prefix")
 	assert.Equal(t, "anthropic/claude-sonnet-4-6", translatePiModel("anthropic/claude-sonnet-4-6"), "provider/id passes through")
 
-	// xai/ normalisation: "xai/grok-4.6" becomes "xai-vertex/xai/grok-4.6"
+	// xai/ normalization: "xai/grok-4.6" becomes "xai-vertex/xai/grok-4.6"
 	// so the provider gate in buildPiRunCommand fires correctly.
-	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("xai/grok-4.6"), "xai/ is normalised to xai-vertex/xai/")
-	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("xai-vertex/xai/grok-4.6"), "already-normalised three-segment spec passes through")
+	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("xai/grok-4.6"), "xai/ is normalized to xai-vertex/xai/")
+	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("xai-vertex/xai/grok-4.6"), "already-normalized three-segment spec passes through")
 
 	// Case-insensitive, because the gate in buildPiRunCommand is: a spec that
-	// escapes normalisation reaches pi's built-in xai provider with
+	// escapes normalization reaches pi's built-in xai provider with
 	// XAI_API_KEY still set, which is the failure #6571 exists to close.
 	for _, spec := range []string{"XAI/grok-4.6", "Xai/grok-4.6", "xAI/grok-4.6"} {
-		assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel(spec), "case-varied short form is still normalised: %s", spec)
+		assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel(spec), "case-varied short form is still normalized: %s", spec)
 	}
 	for _, spec := range []string{"XAI-VERTEX/xai/grok-4.6", "Xai-Vertex/XAI/grok-4.6"} {
 		assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel(spec), "case-varied long form is canonicalised: %s", spec)
@@ -211,11 +211,11 @@ func TestBuildPiRunCommand_XaiVertex(t *testing.T) {
 	m := &piManifest{AgentName: "triage", Model: "opus", Tools: []string{"bash"}}
 	params := piTestParams()
 
-	// Short form: xai/grok-4.6 is normalised to xai-vertex/xai/grok-4.6.
+	// Short form: xai/grok-4.6 is normalized to xai-vertex/xai/grok-4.6.
 	params.Model = "xai/grok-4.6"
 	cmd := buildPiRunCommand(params, m)
 
-	assert.Contains(t, cmd, "--model 'xai-vertex/xai/grok-4.6'", "normalised model spec")
+	assert.Contains(t, cmd, "--model 'xai-vertex/xai/grok-4.6'", "normalized model spec")
 	assert.Contains(t, cmd, "-e '"+sandbox.SandboxPiExtensionsDir+"/xai-vertex'", "xai-vertex extension is loaded")
 	assert.Contains(t, cmd, "&& unset XAI_API_KEY", "XAI_API_KEY is unset")
 	assert.Contains(t, cmd, `&& export XAI_VERTEX_PROJECT_ID="${XAI_VERTEX_PROJECT_ID:-${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}}"`,
@@ -231,7 +231,7 @@ func TestBuildPiRunCommand_XaiVertex(t *testing.T) {
 	assert.Contains(t, cmd, "&& unset XAI_API_KEY")
 
 	// Case variants must all reach the gate. A short form that escapes
-	// normalisation would load no extension and leave XAI_API_KEY set,
+	// normalization would load no extension and leave XAI_API_KEY set,
 	// silently sending traffic to xAI's native API instead of Vertex.
 	for _, spec := range []string{"Xai-Vertex/xai/grok-4.6", "XAI/grok-4.6", "Xai/grok-4.6"} {
 		params.Model = spec

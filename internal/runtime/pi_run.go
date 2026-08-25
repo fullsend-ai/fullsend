@@ -24,6 +24,10 @@ import (
 const (
 	piDefaultProvider = "anthropic-vertex"
 	piDefaultModel    = "opus"
+	// piXaiVertexProvider is the provider prefix for the xai-vertex extension:
+	// used by translatePiModel to normalize short-form xai/ specs and by
+	// buildPiRunCommand to gate extension loading and env hygiene.
+	piXaiVertexProvider = "xai-vertex"
 	// piProviderEnv replaces the provider prefix applied to bare model ids.
 	// The model itself is resolved once by the CLI (--model, FULLSEND_MODEL,
 	// or the FULLSEND_PI_MODEL alias on pi; #6526) and arrives in
@@ -40,11 +44,6 @@ var piModelAliases = map[string]string{
 	"haiku":  "claude-haiku-4-5",
 }
 
-// piXaiVertexProvider is the provider prefix for the xai-vertex extension.
-// Used by translatePiModel to normalise short-form xai/ specs and by
-// buildPiRunCommand to gate the extension loading and env hygiene.
-const piXaiVertexProvider = "xai-vertex"
-
 // translatePiModel resolves the harness/agent model (already overridden by
 // the CLI when --model/FULLSEND_MODEL/FULLSEND_PI_MODEL apply) into pi's
 // --model value: aliases map to catalog ids, bare ids get the provider
@@ -53,7 +52,7 @@ const piXaiVertexProvider = "xai-vertex"
 // Special case: the xai-vertex extension's model ids carry a publisher
 // segment ("xai/grok-4.6") because pi sends Model.id on the wire verbatim
 // and Vertex wants the publisher-qualified name. Both the short "xai/..."
-// spec and a bare id under FULLSEND_PI_PROVIDER=xai-vertex are normalised
+// spec and a bare id under FULLSEND_PI_PROVIDER=xai-vertex are normalized
 // to the three-segment "xai-vertex/xai/..." form. Without that, strings.Cut
 // yields provider "xai" (or a two-segment spec the extension does not
 // register), the gate in buildPiRunCommand never fires, and the run falls
@@ -61,7 +60,7 @@ const piXaiVertexProvider = "xai-vertex"
 //
 // Matching is case-insensitive throughout, because the gate uses
 // strings.EqualFold for the same reason: pi resolves provider prefixes
-// case-insensitively, so "XAI/grok-4.6" must not slip past normalisation
+// case-insensitively, so "XAI/grok-4.6" must not slip past normalization
 // and reach the built-in provider with XAI_API_KEY still set.
 func translatePiModel(model string) string {
 	provider := strings.TrimSpace(os.Getenv(piProviderEnv))
@@ -72,7 +71,7 @@ func translatePiModel(model string) string {
 	if model == "" {
 		model = piDefaultModel
 	}
-	if spec, ok := normaliseXaiVertexModel(provider, model); ok {
+	if spec, ok := normalizeXaiVertexModel(provider, model); ok {
 		return spec
 	}
 	if strings.Contains(model, "/") {
@@ -84,7 +83,7 @@ func translatePiModel(model string) string {
 	return provider + "/" + model
 }
 
-// normaliseXaiVertexModel renders the canonical three-segment spec for the
+// normalizeXaiVertexModel renders the canonical three-segment spec for the
 // xai-vertex provider, or reports false when the input is not for it.
 //
 // Three inputs reach this provider, and all must land on the same spec:
@@ -98,7 +97,7 @@ func translatePiModel(model string) string {
 // id plus the provider env var. Left alone it would render the two-segment
 // "xai-vertex/grok-4.6", which the extension does not register — pi then
 // substitutes a fallback model with the wrong wire id and only warns.
-func normaliseXaiVertexModel(provider, model string) (string, bool) {
+func normalizeXaiVertexModel(provider, model string) (string, bool) {
 	const wirePrefix = "xai/"
 	head, rest, hasSlash := strings.Cut(model, "/")
 	switch {

@@ -150,6 +150,10 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
 # https://github.com/fullsend-ai/pi-xai-vertex/tags, then refresh the
 # SHA256 from:
 #   sha256sum <(curl -fsSL https://github.com/fullsend-ai/pi-xai-vertex/archive/refs/tags/v<ver>.tar.gz)
+# Each extension chmods its own subtree (a single recursive chmod of the parent
+# would re-walk earlier extensions on every rebuild), so the last install also
+# locks the parent directory itself, non-recursively -- its mode is then
+# explicit rather than inherited from the build umask.
 ARG PI_XAI_VERTEX_VERSION=0.2.0
 ARG PI_XAI_VERTEX_SHA256=b00c67a2a9c0b51df40718c761b405546ebc8f1d849656f6858869fe7058c0ca
 RUN curl -fsSL --retry 3 --retry-delay 5 \
@@ -164,7 +168,8 @@ RUN curl -fsSL --retry 3 --retry-delay 5 \
     && npm ci --omit=dev --omit=peer --ignore-scripts --no-audit --no-fund \
     && find node_modules -type d -empty -delete \
     && npm cache clean --force \
-    && chmod -R a+rX,a-w "${PI_EXTENSIONS_DIR}/xai-vertex"
+    && chmod -R a+rX,a-w "${PI_EXTENSIONS_DIR}/xai-vertex" \
+    && chmod a+rX,a-w "${PI_EXTENSIONS_DIR}"
 
 # ---------------------------------------------------------------------------
 # ProtectAI DeBERTa-v3 ONNX model and ONNX Runtime — REMOVED (#6522).
