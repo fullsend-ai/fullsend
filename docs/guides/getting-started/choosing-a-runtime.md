@@ -21,7 +21,7 @@ Fullsend supports multiple agent runtimes. A runtime is the program that runs in
 
 1. **Next step — Configuring GitHub.** `fullsend github setup <owner/repo>` asks which runtime to use when run from a terminal; press Enter to keep `claude`. Passing `--runtime` skips the prompt. The setup PR it opens records the choice in `.fullsend/config.yaml` and describes how to change it. Nothing runs on this page — continue with [Configuring GitHub](configuring-github.md).
 2. **Later — changing it.** Edit `runtime:` in the repo's `.fullsend/config.yaml` (the setup PR shows the key), or re-run `fullsend github setup <owner/repo> --runtime <claude|pi>`. Fleets managed through `repos.yaml` set `defaults.runtime` (or a per-entry `runtime`) — `fullsend repos set-default defaults.runtime pi` — and run `fullsend repos install`; see [fullsend repos](../../cli/repos.md).
-3. **Per run — trying without changing the repo.** `fullsend run --runtime pi --model google-vertex/gemini-2.5-flash`, or the `FULLSEND_RUNTIME` / `FULLSEND_MODEL` / `FULLSEND_EFFORT` environment variables (flag beats environment beats config). In CI the same names work as repository variables. Reference: [fullsend run](../../cli/run.md) and [Runtimes — selecting and overriding](../../runtimes.md#selecting-and-overriding).
+3. **Per run — trying without changing the repo.** `fullsend run --runtime pi --model google-vertex/gemini-2.5-flash`, or the `FULLSEND_RUNTIME` / `FULLSEND_MODEL` / `FULLSEND_EFFORT` environment variables (flag beats environment beats config). In CI the same names work as repository variables. Reference: [fullsend run](../../cli/run.md) and [Runtimes — selecting and overriding](../../runtimes.md#selecting-a-runtime-and-model).
 
 ## Where to see what ran
 

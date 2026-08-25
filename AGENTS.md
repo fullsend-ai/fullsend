@@ -27,6 +27,7 @@ Detailed guidance lives in `docs/contributing/` and topic-specific guides under 
 
 | File | When to read |
 |------|-------------|
+| [Runtime Implementation](docs/contributing/runtime-implementation.md) | Adding or changing a `runtime.Runtime` backend — covers the security feature matrix every runtime must fill in, the runtime interfaces, the sandbox hook contract and wire protocol, and the sandbox workspace layout |
 | [Go Code](docs/contributing/go-code.md) | Changing Go code under `cmd/` or `internal/` — covers mint sync, coverage, vet, e2e tests, concurrency testing, suite-timeout policy, WASM binary size constraints, and preferring `go run` for the CLI |
 | [Mintcore Architecture](docs/contributing/mintcore.md) | Changing `internal/mintcore/`, `cmd/mint-wasm/`, `cmd/mint/`, or `internal/mint/` — covers platform accessors, load-site construction, and WASM-safe wiring |
 | [Behaviour Testing](docs/guides/dev/behaviour-testing.md) | Modifying behaviour test repo provisioning, fork handling, or workflow dispatch — covers forge API constraints (`auto_init`, fork name derivation, Actions readiness, CI timeout budgeting) |
