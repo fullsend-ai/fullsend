@@ -233,6 +233,7 @@ export default defineConfig({
           link: "/guides/",
           items: [
             { text: "Bring Your Own Agent", link: "/guides/user/bring-your-own-agent" },
+            { text: "Scheduled Agent Example", link: "/guides/user/scheduled-agent-example" },
             { text: "CEL Triggers Reference", link: "/guides/user/cel-triggers-reference" },
             { text: "Bugfix Workflow", link: "/guides/user/bugfix-workflow" },
             { text: "Configuring Agent Behavior", link: "/guides/user/customizing-agents" },

@@ -2,6 +2,8 @@
 
 This guide shows how to create a custom poller in your own repository that invokes fullsend [harness](../../glossary.md#harness) agents directly, bypassing the standard GitHub event trigger flow.
 
+> **Looking for a simpler nightly schedule?** If you just need to run an agent on a cron schedule without polling an external system, see [Scheduled Agent Example](scheduled-agent-example.md).
+
 ## Use Case
 
 Custom pollers are useful when you want to:

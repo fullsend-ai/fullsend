@@ -652,9 +652,14 @@ When configured with `FALLBACK_MINT_URL`, the standalone mint serves custom role
 | `fullsend run` fails locally | Missing GCP credentials or sandbox image — see [Running agents locally](running-agents-locally.md) |
 | Integrity hash mismatch | Remote content changed — run `fullsend agent update <name>` to re-pin |
 
+## Scheduling agents
+
+The standard dispatch workflow triggers agents from GitHub events (issue opened, label added, etc.). To run an agent on a recurring schedule — nightly builds, weekly audits, periodic scans — see [Scheduled Agent Example](scheduled-agent-example.md).
+
 ## See also
 
 - [fullsend-ai/agents](https://github.com/fullsend-ai/agents) — reference implementation used throughout this guide
+- [Scheduled Agent Example](scheduled-agent-example.md) — run agents on a cron schedule (nightly, weekly, etc.)
 - [CEL Triggers Reference](cel-triggers-reference.md) — dispatch flow, NormalizedEvent fields, transition kinds, and trigger patterns
 - [Configuring with Skills](customizing-with-skills.md) — creating and managing skills; [authoring augmentations](customizing-with-skills.md#authoring-skills-that-augment-defaults)
 - [`author-fullsend-augmentations` skill](../../../skills/author-fullsend-augmentations/SKILL.md) — discovery-driven guide for writing skills and sub-agents that complement shipped defaults
