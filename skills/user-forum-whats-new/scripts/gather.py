@@ -39,10 +39,17 @@ except ZoneInfoNotFoundError as e:
     raise SystemExit(1) from e
 
 SEARCH_LIMIT = 1000
+# Fail fast on hung gh network / credential prompts (four calls in fetch_into).
+GH_TIMEOUT_SEC = 120
 REPOS = (
     ("fullsend-ai/fullsend", "rel-fullsend.json", "prs-fullsend.json"),
     ("fullsend-ai/agents", "rel-agents.json", "prs-agents.json"),
 )
+
+
+def parse_ymd(day: str) -> date:
+    """Strict YYYY-MM-DD (rejects ISO week-date / ordinal forms)."""
+    return datetime.strptime(day, "%Y-%m-%d").date()
 
 
 def parse_iso(iso: str) -> datetime | None:
@@ -85,8 +92,8 @@ def window_bounds(
     cover time that has not happened yet. until_clamped is True when that
     min chose now instead of the calendar end-of-day.
     """
-    since_d = date.fromisoformat(since_day)
-    until_d = date.fromisoformat(until_day)
+    since_d = parse_ymd(since_day)
+    until_d = parse_ymd(until_day)
     since_ts = datetime.combine(since_d, time(8, 0), tzinfo=ET).astimezone(UTC)
     until_end_et = datetime.combine(until_d, time(23, 59, 59, 999999), tzinfo=ET).astimezone(UTC)
     now_utc = now if now is not None else datetime.now(UTC)
@@ -99,10 +106,15 @@ def window_bounds(
 
 
 def in_window(iso: str, since_ts: datetime, until_ts: datetime) -> bool:
+    """True if event is after since_ts and at/before until_ts (half-open).
+
+    Exclusive lower bound avoids double-counting events at the shared
+    Tuesday 08:00 ET boundary across consecutive weekly gathers.
+    """
     dt = parse_iso(iso)
     if dt is None:
         return False
-    return since_ts <= dt <= until_ts
+    return since_ts < dt <= until_ts
 
 
 def flatten_gh_slurp(data: Any) -> list[Any]:
@@ -236,6 +248,7 @@ def fetch_into(tmp: Path, since_ts: datetime, until_ts: datetime) -> None:
                 ],
                 check=True,
                 stdout=out,
+                timeout=GH_TIMEOUT_SEC,
             )
         with (tmp / prs_name).open("w", encoding="utf-8") as out:
             subprocess.run(
@@ -261,6 +274,7 @@ def fetch_into(tmp: Path, since_ts: datetime, until_ts: datetime) -> None:
                 ],
                 check=True,
                 stdout=out,
+                timeout=GH_TIMEOUT_SEC,
             )
 
 
@@ -330,13 +344,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     since = args.since
     until = args.until or today_et()
-    date_ok = len(since) == 10 and len(until) == 10
     try:
-        date.fromisoformat(since)
-        date.fromisoformat(until)
+        parse_ymd(since)
+        parse_ymd(until)
     except ValueError:
-        date_ok = False
-    if not date_ok:
         sys.stderr.write("error: dates must be YYYY-MM-DD\n")
         return 2
 
@@ -355,6 +366,9 @@ def main(argv: list[str] | None = None) -> int:
             fetch_into(tmp, since_ts, until_ts)
         except FileNotFoundError:
             sys.stderr.write("error: gh CLI required\n")
+            return 1
+        except subprocess.TimeoutExpired as e:
+            sys.stderr.write(f"error: gh command timed out after {GH_TIMEOUT_SEC}s: {e.cmd}\n")
             return 1
         except subprocess.CalledProcessError as e:
             sys.stderr.write(f"error: gh command failed: {e}\n")

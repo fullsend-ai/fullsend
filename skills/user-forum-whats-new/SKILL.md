@@ -62,10 +62,13 @@ Do these in order. Do not draft bullets until ranking is done.
 - `gather.sh` / `gather.py` interpret `--since` as **08:00 America/New_York**
   on that date and `--until` as end of that day ET, **clamped to now** when
   that end-of-day is still in the future (not only when until is "today" —
-  a future `--until` also clamps). JSON includes `until_clamped: true/false`
-  so you can see when the requested calendar day was truncated. Default
-  `--until` is today's date in America/New_York (not the host machine's
-  local calendar).
+  a future `--until` also clamps). The filter is **half-open**: events
+  exactly at the `--since` 08:00 ET instant are excluded (`since < t ≤ until`)
+  so consecutive Tuesday windows do not double-count. JSON includes
+  `until_clamped: true/false` so you can see when the requested calendar day
+  was truncated. Default `--until` is today's date in America/New_York (not
+  the host machine's local calendar). Dates must be strict `YYYY-MM-DD`
+  (ISO week-dates like `2026-W33-2` are rejected).
 - Search and filter use the same UTC timestamp bounds (not bare calendar
   dates), so ET evening after UTC midnight is not dropped.
 - Releases published **after** the last forum are in-scope even if they
