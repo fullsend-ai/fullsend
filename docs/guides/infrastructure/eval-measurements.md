@@ -53,7 +53,7 @@ fullsend eval-measure   (same GHA job, fail-open, after run)
 | `run-telemetry.jsonl` | Every run | OTLP JSON TracesData lines (local source of truth for spans) |
 | `eval-measurements.jsonl` | Every measured run | One JSON object per score (`name`, `label`, `value`, `explanation`, `trace_id`, …). On `label: skip`, `value` is unused (serialized as `0`; ignore it). |
 | Remote agent spans | OTEL configured | Same spans the local file holds |
-| Remote scores | OTEL configured | Child span `fullsend.eval_measure` + event `gen_ai.evaluation.result` ([GenAI evaluation event — semantic-conventions-genai](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/reference/reports/gen-ai-evaluation-result-event.md); low-stability / reference) correlated by TraceID / parent span ID |
+| Remote scores | OTEL configured | Child span `fullsend.eval_measure` + **span event** `gen_ai.evaluation.result` ([normative GenAI events](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-events.md#event-gen_aievaluationresult); [library support matrix](https://github.com/open-telemetry/semantic-conventions-genai/blob/main/reference/reports/gen-ai-evaluation-result-event.md)) correlated by TraceID / parent span ID. Attribute names follow the convention; the convention’s carrier is a **log record** — fullsend uses a span event because only a traces OTLP exporter is configured (log-side consumers will not auto-discover these; a logs-path emit is follow-up). |
 
 Orgs choose Phoenix, MLflow, Jaeger, or another collector independently.
 Any OTLP backend can **correlate** scores to the agent run by TraceID.
@@ -260,9 +260,12 @@ file is written when telemetry/manifest is missing, no traces match, or
 every candidate row is already in the ledger.
 
 When `OTEL_EXPORTER_OTLP_ENDPOINT` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`
-is set, newly written scores also export as OTLP span events
+is set, newly written scores also export as OTLP **span events**
 (`fullsend.eval_measure` + `gen_ai.evaluation.result`) on the same
-`trace_id`. Export is fail-open and does not rewrite `run-telemetry.jsonl`.
+`trace_id`. Attribute names follow the GenAI convention; the convention’s
+carrier is a log record — fullsend uses the traces path because only a
+traces exporter is configured (see artifact table). Export is fail-open and
+does not rewrite `run-telemetry.jsonl`.
 The idempotency ledger keys local rows; a remote OTLP failure after a
 successful local write will not retry that row on the next run (remote is
 best-effort once). Re-export offline by clearing the ledger or pointing at

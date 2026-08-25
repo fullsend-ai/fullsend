@@ -22,17 +22,26 @@ import (
 // GenAI evaluation event / attribute names.
 //
 // Attribute names follow OpenTelemetry GenAI semantic conventions
-// (pin consulted for this ship:
-// https://github.com/open-telemetry/semantic-conventions-genai/blob/main/reference/reports/gen-ai-evaluation-result-event.md
-// — GenAI events moved out of the main semconv docs site; treat as
-// low-stability / reference-implementation). Semconv remains unstable
-// across minor versions (see gen_ai.system → gen_ai.provider.name);
-// bump measurement versions when attribute names change.
+// (normative pin consulted for this ship:
+// https://github.com/open-telemetry/semantic-conventions-genai/blob/main/docs/gen-ai/gen-ai-events.md#event-gen_aievaluationresult
+// — GenAI events live in semantic-conventions-genai; treat as low-stability.
+// Supporting-library matrix only:
+// https://github.com/open-telemetry/semantic-conventions-genai/blob/main/reference/reports/gen-ai-evaluation-result-event.md).
+// Semconv remains unstable across minor versions (see gen_ai.system →
+// gen_ai.provider.name); bump measurement versions when attribute names change.
+//
+// Carrier deviation (deliberate): the convention defines
+// gen_ai.evaluation.result as a log-record / Event-API event (SHOULD parent
+// to the GenAI operation span, or set gen_ai.response.id when span id is
+// unavailable). Fullsend emits it as a span event via span.AddEvent on a
+// short fullsend.eval_measure child over the traces OTLP path, because only
+// a traces exporter is configured today — log-side consumers will not
+// auto-discover these scores. A conforming log-record emit is follow-up
+// work when a logs exporter exists; this PR does not add one.
 //
 // Post-hoc attach: the scored GenAI operation span is already flushed, so
-// we emit a short child span (fullsend.eval_measure) remote-parented to
-// that SpanID and AddEvent the evaluation result. Any OTLP backend can
-// correlate by TraceID; vendor score UIs (Assessments panels, etc.) may
+// the child span is remote-parented to that SpanID. Any OTLP traces backend
+// can correlate by TraceID; vendor score UIs (Assessments panels, etc.) may
 // still need a collector/consumer mapping — fullsend does not call those
 // APIs.
 const (
