@@ -13,12 +13,14 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__))
 
 from gather import (  # noqa: E402
+    GH_TIMEOUT_SEC,
     SEARCH_LIMIT,
     build_output,
     classify,
     flatten_gh_slurp,
     in_window,
     parse_iso,
+    parse_ymd,
     search_merged_at_range,
     to_z,
     today_et,
@@ -75,6 +77,13 @@ class TestInWindow(unittest.TestCase):
     def test_before_08_et_excluded(self):
         # 07:00 EDT = 11:00 UTC
         self.assertFalse(in_window("2026-08-11T11:00:00Z", self.since_ts, self.until_ts))
+
+    def test_exactly_08_et_excluded_half_open(self):
+        # 08:00 EDT = 12:00 UTC == since_ts; exclusive lower bound
+        self.assertFalse(in_window("2026-08-11T12:00:00Z", self.since_ts, self.until_ts))
+
+    def test_just_after_08_et_included(self):
+        self.assertTrue(in_window("2026-08-11T12:00:01Z", self.since_ts, self.until_ts))
 
     def test_release_afternoon_included(self):
         self.assertTrue(in_window("2026-08-11T18:26:33Z", self.since_ts, self.until_ts))
@@ -361,6 +370,14 @@ class TestHelpers(unittest.TestCase):
     def test_search_limit_constant(self):
         self.assertEqual(SEARCH_LIMIT, 1000)
 
+    def test_gh_timeout_constant(self):
+        self.assertGreaterEqual(GH_TIMEOUT_SEC, 30)
+
+    def test_parse_ymd_rejects_week_date(self):
+        with self.assertRaises(ValueError):
+            parse_ymd("2026-W33-2")
+        self.assertEqual(parse_ymd("2026-08-11").isoformat(), "2026-08-11")
+
     def test_today_et_format(self):
         self.assertRegex(today_et(), r"^\d{4}-\d{2}-\d{2}$")
 
@@ -436,6 +453,7 @@ class TestHelpers(unittest.TestCase):
         src = inspect.getsource(fetch_into)
         self.assertIn('"--slurp"', src)
         self.assertIn('"--paginate"', src)
+        self.assertIn("timeout=GH_TIMEOUT_SEC", src)
 
     def test_flatten_gh_slurp_pages(self):
         flat = [{"tag_name": "v1"}, {"tag_name": "v2"}]
