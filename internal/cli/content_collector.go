@@ -19,6 +19,14 @@ import (
 // results are bounded per part instead.
 const maxContentBytes = 256 * 1024
 
+// maxToolIDBytes bounds a tool call/result id. Ids are structural bytes
+// outside the size accounting, which is only safe while they stay
+// structural-sized: the stream decodes them unbounded and Level 3 lifts
+// the SDK attribute cap. Real ids run tens of bytes; anything beyond
+// this is malformed and gets dropped — never truncated, since a
+// truncated id could falsely collide with another call's.
+const maxToolIDBytes = 256
+
 // maxToolResultBytes bounds one tool result's response within the
 // suffix budget. Measured on three real review-agent runs (2026-08-25,
 // main thread): uncapped results total 222-389KB per iteration —
@@ -101,6 +109,15 @@ func partSize(p contentPart) int {
 	return len(p.Content) + len(p.Name) + len(p.Summary) + len(p.Response)
 }
 
+// boundedID drops an id that exceeds maxToolIDBytes; the part survives
+// without correlation rather than carrying a malformed identifier.
+func boundedID(id string) string {
+	if len(id) > maxToolIDBytes {
+		return ""
+	}
+	return id
+}
+
 // contentMessage is one message in the gen_ai.output.messages array.
 // finish_reason is REQUIRED by the schema's OutputMessage definition.
 type contentMessage struct {
@@ -169,12 +186,12 @@ func (c *contentCollector) Handle(evt agentruntime.AgentEvent) {
 	case agentruntime.ThinkingEvent:
 		c.appendText("reasoning", e.Text)
 	case agentruntime.ToolUseEvent:
-		p := contentPart{Type: "tool_call", ID: e.ID, Name: e.Name, Summary: e.Summary}
+		p := contentPart{Type: "tool_call", ID: boundedID(e.ID), Name: e.Name, Summary: e.Summary}
 		c.parts = append(c.parts, p)
 		c.total += partSize(p)
 		c.evictOverflow()
 	case agentruntime.ToolResultEvent:
-		p := contentPart{Type: "tool_call_response", ID: e.ID, Response: e.Result}
+		p := contentPart{Type: "tool_call_response", ID: boundedID(e.ID), Response: e.Result}
 		if len(p.Response) > maxToolResultBytes {
 			// Redact before the cap cut — the same invariant as every
 			// other cut: trimming raw bytes first could split a secret at

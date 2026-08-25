@@ -12,7 +12,7 @@ For implementation details, see the
 |-------|-----------------|----------------------|
 | 1 | `run-telemetry.jsonl` file in the run output directory | None |
 | 2 | OTLP/HTTP export to a remote backend (metadata only) | `OTEL_EXPORTER_OTLP_*ENDPOINT` |
-| 3 | Conversation content (assistant text, reasoning, tool calls) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
+| 3 | Conversation content (assistant text, reasoning, tool calls and results) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
 
 All levels produce metadata (timing, token counts, tool names, errors).
 Level 3 adds the agent's conversation content to spans — enabled by one

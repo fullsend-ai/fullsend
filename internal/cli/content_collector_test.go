@@ -434,6 +434,27 @@ func TestContentCollector_PreTrimRedactsGiantToolResult(t *testing.T) {
 		"the response ending must survive the pre-trim")
 }
 
+func TestContentCollector_OversizedIDDropped(t *testing.T) {
+	// Ids ride outside the size accounting as structural bytes, which is
+	// only safe while they stay structural-sized: the stream decodes ids
+	// unbounded and Level 3 lifts the SDK attribute cap, so an id beyond
+	// any legitimate format is treated as malformed and dropped — never
+	// truncated, since a truncated id could falsely collide. The part
+	// itself survives, uncorrelated.
+	huge := strings.Repeat("x", maxToolIDBytes+1)
+	c := newContentCollector(4096)
+	c.Handle(agentruntime.ToolUseEvent{ID: huge, Name: "Bash", Summary: "ls"})
+	c.Handle(agentruntime.ToolResultEvent{ID: huge, Result: "output"})
+
+	msgs := decodeOutputMessages(t, c.Result("stop").OutputMessages)
+	parts := msgs[0]["parts"].([]any)
+	require.Len(t, parts, 2)
+	for _, p := range parts {
+		assert.NotContains(t, p.(map[string]any), "id",
+			"an oversized id must be dropped, not serialized")
+	}
+}
+
 func TestContentCollector_CapsOversizedToolResult(t *testing.T) {
 	// A single tool result larger than maxToolResultBytes keeps only its
 	// tail — measured on real review runs, uncapped results overflow the
