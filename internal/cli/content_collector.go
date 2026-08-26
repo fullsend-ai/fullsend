@@ -253,6 +253,9 @@ func (c *contentCollector) Handle(evt agentruntime.AgentEvent) {
 		c.appendPart(contentPart{Type: "tool_call", ID: boundedID(e.ID), Name: e.Name, Summary: e.Summary})
 	case agentruntime.ToolResultEvent:
 		p := contentPart{Type: "tool_call_response", ID: boundedID(e.ID), Response: e.Result, IsError: e.IsError}
+		// A parser-side partial flatten (non-text blocks skipped) is a
+		// cut like any other: the part must not read as a whole result.
+		p.Truncated = e.Partial
 		if len(p.Response) > maxToolResultBytes {
 			// Redact before the cap cut — the same invariant as every
 			// other cut: trimming raw bytes first could split a secret at
@@ -448,6 +451,16 @@ func (c *contentCollector) Result(finishReason string) contentResult {
 
 	if len(kept) == 0 {
 		return res
+	}
+	for _, p := range kept {
+		// A kept part marked truncated (parser-side partial flatten, or
+		// a cap cut in an otherwise under-budget iteration) must surface
+		// on the span marker too — it is the only cheap filter for
+		// affected spans. No byte count is fabricated for it.
+		if p.Truncated {
+			res.Truncated = true
+			break
+		}
 	}
 	for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
 		kept[i], kept[j] = kept[j], kept[i]

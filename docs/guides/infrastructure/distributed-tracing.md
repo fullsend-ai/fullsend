@@ -106,8 +106,9 @@ Truncation is marked via `fullsend.content.truncated` on the span and
 `fullsend.truncated` on each cut part. Two cases are absent rather than
 truncated: stream lines beyond 1 MiB are skipped whole by the parser,
 and results whose content is entirely non-text (for example images)
-produce no part. A failed call with empty output does survive, as a
-`tool_call_response` part carrying `is_error`. The SDK's span attribute length cap is
+produce no part. A result that mixed text with non-text blocks keeps
+its text and is marked `fullsend.truncated`; a failed call with empty
+output survives as a `tool_call_response` part carrying `is_error`. The SDK's span attribute length cap is
 lifted while capture is on; an explicit
 `OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` still wins and will cut content
 mid-JSON — fullsend warns on stderr at startup.

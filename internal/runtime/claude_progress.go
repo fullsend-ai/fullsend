@@ -425,38 +425,49 @@ func parseClaudeStream(r io.Reader, onEvent func(AgentEvent)) error {
 				if item.Type != "tool_result" {
 					continue
 				}
+				text, partial := toolResultText(item.Content)
 				onEvent(ToolResultEvent{
 					ID:      item.ToolUseID,
-					Result:  toolResultText(item.Content),
+					Result:  text,
 					IsError: item.IsError,
+					Partial: partial,
 				})
 			}
 		}
 	}
 }
 
-// toolResultText flattens a tool_result block's content. The wire carries
-// it either as a plain JSON string or as an array of content blocks, of
-// which only text blocks contribute; they are joined with newlines.
-func toolResultText(raw json.RawMessage) string {
+// toolResultText flattens a tool_result block's content. The wire
+// carries it either as a plain JSON string or as an array of content
+// blocks, of which only text blocks contribute; they are joined with
+// newlines. partial reports that non-text blocks (or undecodable
+// content) were skipped — the returned text is a fragment of what the
+// wire carried.
+func toolResultText(raw json.RawMessage) (text string, partial bool) {
+	if len(raw) == 0 {
+		// An absent content key carried nothing to skip.
+		return "", false
+	}
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		return s
+		return s, false
 	}
 	var blocks []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	}
 	if err := json.Unmarshal(raw, &blocks); err != nil {
-		return ""
+		return "", true
 	}
 	var texts []string
 	for _, b := range blocks {
 		if b.Type == "text" {
 			texts = append(texts, b.Text)
+		} else {
+			partial = true
 		}
 	}
-	return strings.Join(texts, "\n")
+	return strings.Join(texts, "\n"), partial
 }
 
 // progressParser reads NDJSON from Claude Code's stream-json output and emits

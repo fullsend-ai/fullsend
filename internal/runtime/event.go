@@ -49,12 +49,16 @@ func (ToolUseEvent) agentEvent() {}
 // ToolResultEvent carries the result of a completed tool invocation.
 // ID is the tool call identifier from the runtime stream (matches
 // ToolUseEvent.ID); Result is the raw result text; IsError reports a
-// failed call, as set on the wire. Only the Claude runtime emits it
-// today — see the runtime support matrix in docs/runtimes.md.
+// failed call, as set on the wire; Partial reports that non-text
+// content (for example image blocks) was skipped while flattening, so
+// Result is a fragment of what the wire carried. Only the Claude
+// runtime emits it today — see the runtime support matrix in
+// docs/runtimes.md.
 type ToolResultEvent struct {
 	ID      string
 	Result  string
 	IsError bool
+	Partial bool
 }
 
 func (ToolResultEvent) agentEvent() {}

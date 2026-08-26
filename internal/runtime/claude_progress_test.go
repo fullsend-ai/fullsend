@@ -862,6 +862,25 @@ func TestParseClaudeStreamToolResultArrayContent(t *testing.T) {
 	if results[0].Result != "first block\nsecond block" {
 		t.Errorf("expected text blocks joined by newline with image skipped, got %q", results[0].Result)
 	}
+	if !results[0].Partial {
+		t.Errorf("skipping the image block loses content — the event must say so")
+	}
+}
+
+func TestParseClaudeStreamToolResultPureTextNotPartial(t *testing.T) {
+	for name, input := range map[string]string{
+		"string content":     `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_s","content":"plain"}]}}`,
+		"text-only array":    `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_a","content":[{"type":"text","text":"only text"}]}]}}`,
+		"absent content key": `{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_n","is_error":true}]}}`,
+	} {
+		results := collectToolResults(t, input)
+		if len(results) != 1 {
+			t.Fatalf("%s: expected 1 event, got %d", name, len(results))
+		}
+		if results[0].Partial {
+			t.Errorf("%s: nothing was skipped; Partial must be false", name)
+		}
+	}
 }
 
 func TestParseClaudeStreamToolResultFlatContent(t *testing.T) {

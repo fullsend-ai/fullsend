@@ -542,6 +542,24 @@ func TestContentCollector_CoalescedAfterPreTrimStillScanned(t *testing.T) {
 	assert.NotEmpty(t, res.Findings)
 }
 
+func TestContentCollector_PartialResultCarriesTruncatedMarker(t *testing.T) {
+	// A result whose non-text blocks were skipped at the parser is a
+	// fragment; the part reuses the same marker every other cut sets.
+	c := newContentCollector(4096)
+	c.Handle(agentruntime.ToolResultEvent{ID: "toolu_mix", Result: "the text half", Partial: true})
+
+	res := c.Result("stop")
+	msgs := decodeOutputMessages(t, res.OutputMessages)
+	part := partAt(t, msgs, 0)
+	assert.Equal(t, true, part["fullsend.truncated"],
+		"a partial result must not read as a whole one")
+	assert.Equal(t, "the text half", part["response"])
+	assert.True(t, res.Truncated,
+		"the span-level marker must fire too — it is the only cheap filter for affected spans")
+	assert.Zero(t, res.DroppedBytes,
+		"the parser never measured the skipped blocks; no byte count is fabricated")
+}
+
 func TestContentCollector_ErroredEmptyResultKept(t *testing.T) {
 	// A failed call with empty output is signal, not absence: the part
 	// survives with is_error and its schema-required response key, even
