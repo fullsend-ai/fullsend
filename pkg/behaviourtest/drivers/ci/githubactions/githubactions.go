@@ -16,7 +16,7 @@ import (
 
 const (
 	pollInterval   = 15 * time.Second
-	dispatchWait   = 12 * time.Minute
+	dispatchWait   = 18 * time.Minute
 	dispatchPoll   = 5 * time.Second
 	dispatchMaxTry = 48
 
