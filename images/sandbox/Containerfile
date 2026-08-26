@@ -1,7 +1,9 @@
 # Containerfile — base sandbox image for fullsend agent execution.
 #
 # Pre-installs all runtime dependencies needed by any fullsend agent:
-#   - Claude Code (npm, version-pinned via CLAUDE_CODE_VERSION ARG)
+#   - Claude Code (npm, version-pinned via CLAUDE_CODE_VERSION ARG; replaces
+#     the unpinned copy the OpenShell base image ships, and the build asserts
+#     `claude --version` matches the pin — see #6612)
 #   - pi (npm, version-pinned via PI_VERSION ARG; opt-in runtime, see
 #     #6464) + the pi-anthropic-vertex extension
 #     (tag + SHA256 pinned under /usr/local/share/pi-extensions)
@@ -51,6 +53,24 @@ RUN apt-get update \
 # a customManagers regex entry in renovate.json.
 ARG CLAUDE_CODE_VERSION=2.1.243
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+
+# The OpenShell base image bundles its own Claude Code at /usr/local/bin/claude
+# (installed upstream with the unpinned `curl claude.ai/install.sh`, so it is
+# whatever was current when the base was built — 2.1.156 on the base pinned
+# above), and /usr/local/bin precedes npm's global bin (/usr/bin) on the
+# sandbox PATH. The pinned install above was therefore never the `claude` that
+# ran (#6612). Point /usr/local/bin/claude at the pinned install and prove at
+# build time that `claude` on PATH reports CLAUDE_CODE_VERSION, so a base image
+# change cannot silently bring the shadow back.
+RUN NPM_CLAUDE="$(npm prefix -g)/bin/claude" \
+    && test -x "${NPM_CLAUDE}" \
+    && rm -f /usr/local/bin/claude \
+    && ln -s "${NPM_CLAUDE}" /usr/local/bin/claude \
+    && GOT="$(claude --version | awk '{print $1}')" \
+    && if [ "${GOT}" != "${CLAUDE_CODE_VERSION}" ]; then \
+         echo "claude on PATH reports ${GOT}, expected CLAUDE_CODE_VERSION=${CLAUDE_CODE_VERSION}" >&2; \
+         exit 1; \
+       fi
 
 # ---------------------------------------------------------------------------
 # Install pi (earendil-works/pi) — pinned version, same supply-chain rationale
