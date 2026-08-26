@@ -291,7 +291,7 @@ func givenURLSourcedCustomHarness(w *world.World, name, doc string, opts urlHarn
 	// The Contents API uses an authenticated token, but production
 	// FetchAgentHarness fetches the raw URL unauthenticated. If the
 	// repo is not truly public or the edge cache hasn't propagated,
-	// this catches the mismatch early instead of hanging for 12+ minutes.
+	// this catches the mismatch early instead of hanging for 18+ minutes.
 	if err := verifyRawURLAccessible(rawURL); err != nil {
 		return fmt.Errorf("raw URL not accessible (repo may not be public or edge cache not propagated): %w", err)
 	}
