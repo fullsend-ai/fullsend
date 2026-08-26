@@ -26,6 +26,11 @@ FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 
 _PREFIX_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("openai_key", re.compile(r"sk-(?:proj-)?[A-Za-z0-9_-]{20,}")),
+    # Before github_pat: dots in the class cover the 2026 JWT-wrapped
+    # installation-token format whole (mirrors the Go redactor's
+    # github_server_token); the combined pattern below would otherwise
+    # stop at the first dot and leave payload+signature in the clear.
+    ("github_server_token", re.compile(r"ghs_[A-Za-z0-9_.\-]{36,}")),
     ("github_pat", re.compile(r"(?:ghp|github_pat|gho|ghu|ghs|ghr)_[A-Za-z0-9_]{16,}")),
     ("slack_token", re.compile(r"xox[baprs]-[A-Za-z0-9\-]{10,}")),
     ("google_api_key", re.compile(r"AIza[A-Za-z0-9_-]{35}")),
@@ -38,7 +43,13 @@ _PREFIX_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("stripe_key", re.compile(r"(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{10,}")),
     ("sendgrid_key", re.compile(r"SG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}")),
     ("gitlab_pat", re.compile(r"gl(?:pat|rt|ptt|dt|ft|soat|cs)-[A-Za-z0-9_-]{20,}")),
-    ("google_oauth_token", re.compile(r"ya29\.[A-Za-z0-9_-]{30,}")),
+    # Mirrors the Go redactor: the literal c. alternative covers
+    # service-account tokens, whose one-char first segment would
+    # otherwise defeat the length quantifier.
+    ("google_oauth_token", re.compile(r"ya29\.(?:c\.)?[A-Za-z0-9_-]{20,}")),
+    # Bare three-segment JWTs (and OIDC/WIF STS tokens) carry no
+    # surrounding context for the structural patterns to anchor on.
+    ("jwt", re.compile(r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}")),
     ("aws_sts_key", re.compile(r"ASIA[A-Z0-9]{16}")),
     ("hf_token", re.compile(r"hf_[A-Za-z0-9]{20,}")),
     ("npm_token", re.compile(r"npm_[A-Za-z0-9]{36}")),

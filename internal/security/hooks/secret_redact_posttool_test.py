@@ -319,6 +319,45 @@ class TestVerifyRound(unittest.TestCase):
         for leaked in (glpat, glrt, ya29, asia):
             self.assertNotIn(leaked, text)
 
+    def test_service_account_token_redacted(self):
+        # WIF-provisioned runs mint ya29.c.<blob> tokens; the one-char c
+        # segment must not defeat the match (mirrors the Go redactor).
+        ya29c = "ya29.c." + "b0Aaekm1K8sVq9dNfP2xJ3hT7wY5uZ4rQ6mE8oL1iC0aS"
+        _, stdout, _ = run_hook(f"got token {ya29c} from the metadata server\n")
+        self.assertTrue(stdout)
+        self.assertNotIn(ya29c, json.loads(stdout)["tool_result"])
+
+    def test_ghs_wrapped_jwt_fully_redacted(self):
+        # GitHub's 2026 installation-token format wraps a JWT: the whole
+        # token must mask, not just the ghs_ prefix and header segment
+        # (mirrors the Go redactor's github_server_token).
+        token = (
+            "ghs_12345_"
+            + "eyJhbGciOiJSUzI1NiJ9"
+            + "."
+            + "eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+            + "."
+            + "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+        )
+        _, stdout, _ = run_hook(f"Token: {token}\n")
+        self.assertTrue(stdout)
+        text = json.loads(stdout)["tool_result"]
+        self.assertNotIn("eyJzdWIiOiIxMjM0NTY3ODkwIn0", text)
+        self.assertNotIn("dBjftJeZ4CVP", text)
+
+    def test_bare_jwt_redacted(self):
+        # Segments concatenated so the fixture does not trip gitleaks.
+        jwt = (
+            "eyJhbGciOiJSUzI1NiJ9"
+            + "."
+            + "eyJzdWIiOiIxMjM0NTY3ODkwIn0"
+            + "."
+            + "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+        )
+        _, stdout, _ = run_hook(f"curl output: {jwt}\n")
+        self.assertTrue(stdout)
+        self.assertNotIn(jwt, json.loads(stdout)["tool_result"])
+
     def test_short_prefixed_fakes_still_untouched(self):
         _, stdout, _ = run_hook(
             'Token: "ghs_maskable"\n"token": "glpat-new"\nGitToken: "ghp_test123"\n'
