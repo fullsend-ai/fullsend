@@ -97,7 +97,7 @@ See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) a
 
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
-| `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are omitted from both the narrative body and the posted inline comments. Does not affect the verdict — see [Verdict semantics](#verdict-semantics). | `low` | `info`, `low`, `medium`, `high`, `critical` |
+| `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are omitted from both the narrative body and the posted inline comments. Does not affect how the agent determines its initial verdict — see [Verdict semantics](#verdict-semantics). Post-script filtering may still cause a verdict downgrade (see below). | `low` | `info`, `low`, `medium`, `high`, `critical` |
 
 Set this in the harness's `env.sandbox` (the upstream default lives in
 `harness/review.yaml`). To override per repo or org, use `base:`
@@ -110,11 +110,11 @@ no separate configuration is needed.
 The review agent omits findings below the threshold from its output. The
 post-script also filters the structured `findings` array as
 defense-in-depth. When filtering removes all remaining **actionable**
-findings from a `request-changes` verdict, the post-script downgrades
-the verdict to `comment` (applying the `requires-manual-review` label).
-Non-actionable findings (observations, confirmations) do not prevent the
-downgrade — only actionable findings with concrete remediations sustain a
-`request-changes` verdict through the filter.
+findings from a `request-changes` or `reject` verdict, the post-script
+downgrades the verdict to `comment` (applying the `requires-manual-review`
+label). Non-actionable findings (observations, confirmations) do not
+prevent the downgrade — only actionable findings with concrete
+remediations sustain a `request-changes` verdict through the filter.
 
 ## Source
 
