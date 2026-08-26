@@ -149,6 +149,24 @@ func TestSecretRedactor(t *testing.T) {
 		assert.True(t, hasFinding(result, "google_oauth_token"))
 	})
 
+	t.Run("google service-account token redacted", func(t *testing.T) {
+		// WIF-provisioned runs mint ya29.c.<blob> tokens; the 1-char c
+		// segment must not defeat the match.
+		result := r.Scan("got ya29.c.b0Aaekm1K8sVq9dNfP2xJ3hT7wY5uZ4rQ6mE8oL1iC0aS")
+		assert.False(t, result.Safe)
+		assert.NotContains(t, result.Sanitized, "b0Aaekm1K8sVq9dNfP2xJ3hT")
+		assert.True(t, hasFinding(result, "google_oauth_token"))
+	})
+
+	t.Run("google oauth token does not swallow adjacent prose", func(t *testing.T) {
+		// A dot inside the character class would run the match through
+		// sentence punctuation into the following word.
+		result := r.Scan("Use ya29.a0AfB_byDEMOtoken1234567890abcdefghij.Endpoint next")
+		assert.False(t, result.Safe)
+		assert.Contains(t, result.Sanitized, "Endpoint",
+			"the match must stop at the token, not consume dot-joined prose")
+	})
+
 	t.Run("bare JWT redacted", func(t *testing.T) {
 		// Segments concatenated so the fixture itself does not trip the
 		// gitleaks pre-commit hook.

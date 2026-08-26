@@ -207,7 +207,11 @@ func defaultPrefixPatterns() []secretPattern {
 		{"github_refresh_token", `ghr_[a-zA-Z0-9_]{36,}`},
 		{"slack_token", `xox[baprs]-[a-zA-Z0-9-]{10,}`},
 		{"google_api_key", `AIza[a-zA-Z0-9_-]{35}`},
-		{"google_oauth_token", `ya29\.[a-zA-Z0-9._\-]{20,}`},
+		// No dot in the class (like google_api_key above, a dot would run
+		// the match through punctuation into adjacent prose); the literal
+		// c. alternative covers service-account tokens, whose 1-char
+		// first segment would otherwise defeat the {20,} quantifier.
+		{"google_oauth_token", `ya29\.(?:c\.)?[a-zA-Z0-9_\-]{20,}`},
 		{"aws_access_key", `AKIA[A-Z0-9]{16}`},
 		{"stripe_live", `sk_live_[a-zA-Z0-9]{24,}`},
 		{"stripe_test", `sk_test_[a-zA-Z0-9]{24,}`},
