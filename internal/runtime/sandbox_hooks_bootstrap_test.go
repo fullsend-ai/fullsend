@@ -140,7 +140,38 @@ func TestAppendHookEnv_ExecFailure(t *testing.T) {
 	hooks := security.SandboxHookConfigFromHarness(&harness.Harness{})
 	err := appendHookEnv("sb", hooks)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "TIRITH_REQUIRED")
+	assert.Contains(t, err.Error(), "appending hook env")
+}
+
+func TestAppendHookEnv_EgressAllowlist(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	sentinelPath := filepath.Join(t.TempDir(), "unused.tar.gz")
+	fakeOpenshellBootstrap(t, logPath, sentinelPath)
+
+	h := &harness.Harness{Security: &harness.SecurityConfig{SandboxHooks: &harness.SandboxHooks{
+		SSRFEgressAllowlist: "gitlab.internal:443,other.host:8443",
+	}}}
+	require.NoError(t, appendHookEnv("sb", security.SandboxHookConfigFromHarness(h)))
+
+	logBytes, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	log := string(logBytes)
+	assert.Contains(t, log, "FULLSEND_EGRESS_ALLOWLIST=gitlab.internal:443,other.host:8443")
+}
+
+func TestAppendHookEnv_EgressAllowlistEmpty(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "openshell.log")
+	sentinelPath := filepath.Join(t.TempDir(), "unused.tar.gz")
+	fakeOpenshellBootstrap(t, logPath, sentinelPath)
+
+	h := &harness.Harness{Security: &harness.SecurityConfig{SandboxHooks: &harness.SandboxHooks{}}}
+	require.NoError(t, appendHookEnv("sb", security.SandboxHookConfigFromHarness(h)))
+
+	// No egress allowlist → only tirith env is written (TIRITH_REQUIRED).
+	logBytes, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	log := string(logBytes)
+	assert.NotContains(t, log, "FULLSEND_EGRESS_ALLOWLIST")
 }
 
 func TestClaudeRuntime_Bootstrap_HooksChmodFailure(t *testing.T) {

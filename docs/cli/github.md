@@ -40,6 +40,15 @@ fullsend github setup <owner/repo> \
   --inference-wif-provider "<WIF_PROVIDER>"
 ```
 
+**Re-running per-repo setup** (for example after a fullsend upgrade) refreshes the managed
+workflow files but never rewrites an existing `.fullsend/config.yaml` on its own: `agents:` entries and
+their per-agent settings, allowlists and hand-written comments stay as they are, the runtime prompt is skipped,
+and the setup PR reports the runtime the file already selects. Passing a flag that targets a
+config key — `--runtime`, `--agents`, `--mint-url`, `--inference-*` — changes that key on the
+existing file and keeps the rest (the file is re-serialized, so comments are not preserved in
+that case). `--config` rewrites `config.base.yaml` and keeps the existing overlay. A
+`config.yaml` that no longer parses fails the re-run rather than being regenerated.
+
 ### Flags
 
 | Flag | Default | Description |

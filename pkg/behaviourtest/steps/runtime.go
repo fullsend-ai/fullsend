@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/cucumber/godog"
+	"gopkg.in/yaml.v3"
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/artifacts"
@@ -35,8 +36,17 @@ func registerRuntimeSteps(sc *godog.ScenarioContext) {
 	sc.Step(`^a pi agent "([^"]+)" defined as:$`, func(ctx context.Context, name, doc string) (context.Context, error) {
 		return ctx, givenPiAgent(world.FromContext(ctx), name, doc)
 	})
+	sc.Step(`^the repository agents are configured with:$`, func(ctx context.Context, doc string) (context.Context, error) {
+		return ctx, givenRepositoryAgentSettings(world.FromContext(ctx), doc)
+	})
 	sc.Step(`^the run selected the "([^"]+)" runtime$`, func(ctx context.Context, name string) (context.Context, error) {
 		return ctx, assertRunSelectedRuntime(world.FromContext(ctx), name)
+	})
+	sc.Step(`^the run selected the "([^"]+)" runtime from "([^"]+)"$`, func(ctx context.Context, name, source string) (context.Context, error) {
+		return ctx, assertRunSelectedRuntimeFrom(world.FromContext(ctx), name, source)
+	})
+	sc.Step(`^the run requested model "([^"]+)" from "([^"]+)" and the provider reported a "([^"]+)" model$`, func(ctx context.Context, requested, source, reported string) (context.Context, error) {
+		return ctx, assertRunModelFrom(world.FromContext(ctx), requested, source, reported)
 	})
 	sc.Step(`^the run metrics report tokens$`, func(ctx context.Context) (context.Context, error) {
 		return ctx, assertRunMetricsReportTokens(world.FromContext(ctx))
@@ -162,6 +172,68 @@ func readPerRepoConfig(w *world.World, cfgPath string) (config.PerRepoConfigWrit
 	return cfg, nil
 }
 
+// givenRepositoryAgentSettings commits per-agent runtime/model/effort (a
+// YAML mapping of agent name → settings) into the enrolled repo's
+// .fullsend/config.yaml as agents: entries — on the entry with that name
+// when present, else as a name-only entry for a built-in agent — and
+// records the pre-scenario agents list so CleanupScenario restores it.
+// The entries are validated the way `fullsend run` validates them, so a
+// scenario cannot commit a config the runner would refuse.
+func givenRepositoryAgentSettings(w *world.World, doc string) error {
+	if w.Org == "" || w.RepoName == "" {
+		return fmt.Errorf("no repo configured; call 'Given the enrolled test repository' before runtime operations")
+	}
+	var settings map[string]struct {
+		Runtime string `yaml:"runtime"`
+		Model   string `yaml:"model"`
+		Effort  string `yaml:"effort"`
+	}
+	if err := yaml.Unmarshal([]byte(doc), &settings); err != nil {
+		return fmt.Errorf("parsing agent settings docstring: %w", err)
+	}
+	if len(settings) == 0 {
+		return fmt.Errorf("agent settings docstring must hold at least one agent")
+	}
+	if !w.AgentsOverridden {
+		if err := snapshotAgents(w); err != nil {
+			return err
+		}
+	}
+	cfgPath := filepath.Join(".fullsend", "config.yaml")
+	cfg, err := readPerRepoConfig(w, cfgPath)
+	if err != nil {
+		return err
+	}
+	agents := cfg.AgentEntries()
+	for name, st := range settings {
+		// Only the settings given change; the entry's other values stay.
+		current, _ := config.AgentSettingsFor(agents, name)
+		runtimeName, model, effort := current.Runtime, current.Model, current.Effort
+		if st.Runtime != "" {
+			runtimeName = st.Runtime
+		}
+		if st.Model != "" {
+			model = st.Model
+		}
+		if st.Effort != "" {
+			effort = st.Effort
+		}
+		agents = config.UpsertAgentSettings(agents, name, runtimeName, model, effort)
+	}
+	cfg.SetAgents(agents)
+	if err := config.ValidateAgentEntries(cfg.AgentEntries(), cfg.AllowedResources()); err != nil {
+		return fmt.Errorf("agent settings: %w", err)
+	}
+	merged, err := cfg.Marshal()
+	if err != nil {
+		return err
+	}
+	if err := w.SCM.CommitFile(context.Background(), w.Org, w.RepoName, cfgPath, "behaviour: set agent settings", merged); err != nil {
+		return fmt.Errorf("updating config: %w", err)
+	}
+	return nil
+}
+
 // RestoreRuntime puts the install-time runtime back. Exported so
 // CleanupScenario can call it during scenario teardown.
 func RestoreRuntime(w *world.World) error {
@@ -190,7 +262,21 @@ func RestoreRuntime(w *world.World) error {
 
 // runMetrics is the subset of the runner's metrics.json the steps read.
 type runMetrics struct {
-	Runtime    string `json:"runtime"`
+	Runtime string `json:"runtime"`
+	// RuntimeSource is where the runner says the runtime came from: a
+	// flag/variable name, the config file path, or that path suffixed
+	// with ` agents.<agent>` when the per-agent entry decided.
+	RuntimeSource string `json:"runtime_source"`
+	// Model is what the provider reported; RequestedModel is what the
+	// runner handed the runtime after overrides, and OverrideSource says
+	// where that came from (flag, variable, harness, or the config path
+	// suffixed with ` agents.<agent>`).
+	Model          string `json:"model"`
+	RequestedModel string `json:"requested_model"`
+	OverrideSource string `json:"override_source"`
+	// NumTurns is 0 when the agent process produced no events (for pi,
+	// metrics.model is the resolved id echoed back, not a provider reply).
+	NumTurns   int `json:"num_turns"`
 	TokenUsage struct {
 		Input  int `json:"input"`
 		Output int `json:"output"`
@@ -222,6 +308,51 @@ func assertRunSelectedRuntime(w *world.World, want string) error {
 	}
 	if m.Runtime != want {
 		return fmt.Errorf("metrics.json runtime = %q, want %q", m.Runtime, want)
+	}
+	return nil
+}
+
+// assertRunSelectedRuntimeFrom additionally requires the runner's
+// runtime_source to end with source — e.g. "agents.triage" —
+// proving which config entry decided, not just which runtime ran.
+func assertRunSelectedRuntimeFrom(w *world.World, want, source string) error {
+	m, err := readRunMetrics(w)
+	if err != nil {
+		return err
+	}
+	if m.Runtime != want {
+		return fmt.Errorf("metrics.json runtime = %q, want %q", m.Runtime, want)
+	}
+	if !strings.HasSuffix(m.RuntimeSource, source) {
+		return fmt.Errorf("metrics.json runtime_source = %q, want it to end with %q", m.RuntimeSource, source)
+	}
+	return nil
+}
+
+// assertRunModelFrom checks the model chain the runner recorded: the
+// requested model (after overrides) and its source, and that the model
+// the provider actually reported contains the expected family name —
+// e.g. requested "haiku" from "agents.pi-smoke", reported
+// "claude-haiku-…". Proves the per-agent model reached the runtime.
+func assertRunModelFrom(w *world.World, requested, source, reported string) error {
+	m, err := readRunMetrics(w)
+	if err != nil {
+		return err
+	}
+	if m.RequestedModel != requested {
+		return fmt.Errorf("metrics.json requested_model = %q, want %q", m.RequestedModel, requested)
+	}
+	if !strings.HasSuffix(m.OverrideSource, source) {
+		return fmt.Errorf("metrics.json override_source = %q, want it to end with %q", m.OverrideSource, source)
+	}
+	if !strings.Contains(m.Model, reported) {
+		return fmt.Errorf("metrics.json model = %q, want it to contain %q", m.Model, reported)
+	}
+	// The runtime records the resolved id before the first reply, so a
+	// run that never reached the provider still carries model; require
+	// turns so the assertion means the model actually answered.
+	if m.NumTurns <= 0 {
+		return fmt.Errorf("metrics.json num_turns = %d, want > 0 (model %q was resolved but never answered)", m.NumTurns, m.Model)
 	}
 	return nil
 }

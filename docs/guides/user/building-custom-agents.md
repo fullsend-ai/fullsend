@@ -35,7 +35,7 @@ A custom agent is composed of six parts:
   skills/          # Knowledge documents mounted into the sandbox
 ```
 
-Register agents in `config.yaml` with a local `source:` path. For agents that extend a default, use `base:` composition to inherit from the upstream harness and override only what differs. See [Bring Your Own Agent](bring-your-own-agent.md) for the config-driven approach and [Configuring agent behavior](customizing-agents.md) for harness field reference.
+Register agents in `config.yaml` with a local `source:` path. For agents that extend a default, use `base:` composition to inherit from the upstream harness and override only what differs. See [Bring Your Own Agent](bring-your-own-agent.md) for the config-driven approach and [Harness Field Reference](../../reference/harness-reference.md) for the complete harness YAML reference.
 
 The key security invariant: agents run inside an untrusted [sandbox](../../glossary.md#sandbox) with no credentials. Pre-scripts fetch data *before* the sandbox starts; post-scripts act on agent output *after* the sandbox exits. Agents never have direct write access to external systems. See the [security threat model](../../problems/security-threat-model.md) for the full trust model.
 
@@ -184,7 +184,7 @@ timeout_minutes: 20
 # max_runtime_fetches: 10
 ```
 
-See [Configuring agent behavior — Harness YAML Structure](customizing-agents.md#harness-yaml-structure) for the full field reference (including optional `security`, `providers`, `plugins`, and runtime fetch blocks).
+See [Harness Field Reference](../../reference/harness-reference.md) for the full field reference (including optional `security`, `providers`, `plugins`, and runtime fetch blocks).
 
 The key pattern to understand is how data flows into the sandbox through `host_files`:
 
@@ -427,7 +427,7 @@ The post-script runs on the trusted runner with full credentials, but reads outp
 
 ## Step 6: Create skills (optional)
 
-[Skills](../../glossary.md#skill) are Markdown documents mounted into the sandbox that provide domain knowledge the agent can reference. See [Configuring agent behavior — Adding a Skill](customizing-agents.md#adding-a-skill) for how to create one.
+[Skills](../../glossary.md#skill) are Markdown documents mounted into the sandbox that provide domain knowledge the agent can reference. See [Configuring Agent Behavior — Adding a skill](customizing-agents.md#adding-a-skill) for how to create one.
 
 Place your skill at `.fullsend/skills/my-skill/SKILL.md`, then reference it in both the agent frontmatter (`skills: [my-skill]`) and the harness (`skills: [skills/my-skill]`).
 
@@ -521,7 +521,7 @@ jobs:
           ISSUE_SOURCE: ${{ inputs.issue_source || 'github' }}
           REPO_FULL_NAME: ${{ github.repository }}
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.FULLSEND_GCP_PROJECT_ID }}
-          CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}  # install-time only, not managed by sync
+          CLOUD_ML_REGION: ${{ vars.FULLSEND_GCP_REGION }}  # value drift is detected and repaired by convergence
         run: |
           set -euo pipefail
           mkdir -p "$GITHUB_WORKSPACE/output"

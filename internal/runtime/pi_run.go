@@ -14,9 +14,10 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/ui"
 )
 
-// Model selection for pi. Harness `model:` is validated by validModelName
-// (no "/"), so the Claude-style aliases the fleet uses are mapped onto pi's
-// `provider/id` form here. The ids are pi 0.84.2's Anthropic catalog
+// Model selection for pi. The fleet's harnesses name Claude-style aliases
+// (opus, sonnet, ...), which are mapped onto pi's `provider/id` form here; a
+// harness or agents: entry may also give `provider/id` directly. The
+// ids are pi 0.84.2's Anthropic catalog
 // (packages/ai/src/providers/data/anthropic.json), which the vendored
 // anthropic-vertex extension registers verbatim; whether Vertex accepts each
 // id is a lifecycle-test item (docs/runtimes.md). Both the provider and the
@@ -92,9 +93,9 @@ func translatePiModel(model string) string {
 //	"xai-vertex/xai/grok-4.6"  (any case)  -> "xai-vertex/xai/grok-4.6"
 //	"grok-4.6" with FULLSEND_PI_PROVIDER=xai-vertex -> "xai-vertex/xai/grok-4.6"
 //
-// The third matters because harness `model:` cannot contain a slash
-// (validModelName), so selecting this provider from a harness means a bare
-// id plus the provider env var. Left alone it would render the two-segment
+// The third matters because a harness may still select this provider with
+// a bare id plus the provider env var (the only way before harness `model:`
+// accepted "/", #6570). Left alone it would render the two-segment
 // "xai-vertex/grok-4.6", which the extension does not register — pi then
 // substitutes a fallback model with the wrong wire id and only warns.
 func normalizeXaiVertexModel(provider, model string) (string, bool) {

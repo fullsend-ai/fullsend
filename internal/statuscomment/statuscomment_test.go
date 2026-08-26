@@ -285,6 +285,71 @@ func TestPostCompletion_Failure(t *testing.T) {
 	assert.Contains(t, fc.UpdatedComments[0].Body, "❌ Failure")
 }
 
+func TestPostCompletionWithDetail_FailureShowsErrorMessage(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n := newTestNotifier(fc, cfg)
+
+	require.NoError(t, n.PostStart(context.Background(), "Coding issue #99"))
+
+	completionTime := fixedTime().Add(5 * time.Minute)
+	n.now = func() time.Time { return completionTime }
+
+	err := n.PostCompletionWithDetail(context.Background(), "Coding issue #99", "failure",
+		"Fix iteration 6 exceeds bot cap of 5")
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	assert.Contains(t, fc.UpdatedComments[0].Body, "❌ Failure (Fix iteration 6 exceeds bot cap of 5)")
+}
+
+func TestPostCompletionWithDetail_FailureWithoutDetail(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n := newTestNotifier(fc, cfg)
+
+	require.NoError(t, n.PostStart(context.Background(), "Coding issue #99"))
+
+	completionTime := fixedTime().Add(5 * time.Minute)
+	n.now = func() time.Time { return completionTime }
+
+	err := n.PostCompletionWithDetail(context.Background(), "Coding issue #99", "failure", "")
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	body := fc.UpdatedComments[0].Body
+	assert.Contains(t, body, "❌ Failure")
+	// Ensure no parenthesized detail appears when detail is empty.
+	assert.NotContains(t, body, "Failure (")
+}
+
+func TestPostCompletionWithDetail_FailureDetailSanitized(t *testing.T) {
+	fc := forge.NewFakeClient()
+	cfg := config.StatusNotificationConfig{
+		Comment: config.CommentNotificationConfig{Start: "enabled", Completion: "enabled"},
+	}
+	n := newTestNotifier(fc, cfg)
+
+	require.NoError(t, n.PostStart(context.Background(), "Working"))
+
+	completionTime := fixedTime().Add(3 * time.Minute)
+	n.now = func() time.Time { return completionTime }
+
+	// Error messages with newlines should be collapsed to a single line.
+	err := n.PostCompletionWithDetail(context.Background(), "Working", "failure",
+		"pre-script failed\nexit status 1")
+	require.NoError(t, err)
+
+	require.Len(t, fc.UpdatedComments, 1)
+	body := fc.UpdatedComments[0].Body
+	assert.Contains(t, body, "❌ Failure (pre-script failed exit status 1)")
+	assert.NotContains(t, body, "\n❌") // No newline break in the status label.
+}
+
 func TestPostCompletion_UnknownStatus(t *testing.T) {
 	fc := forge.NewFakeClient()
 	cfg := config.StatusNotificationConfig{

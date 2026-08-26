@@ -48,9 +48,9 @@ The **Runtime** line shows which runtime was selected and the config source it w
 
 ## Runtime selection
 
-The runtime for a run is resolved once, in this order: `--runtime` flag, `FULLSEND_RUNTIME`, the per-repo `runtime:` in `config.yaml` / `.fullsend/config.yaml`, then the built-in `claude`. The same order applies to the model (`--model`, `FULLSEND_MODEL`, harness `model:`, agent frontmatter; `FULLSEND_PI_MODEL` is a lower-precedence alias on pi) and to effort (`--effort`, `FULLSEND_EFFORT`, harness `effort:`). `FULLSEND_FALLBACK_MODELS=a,b` becomes Claude Code's `--fallback-model`; pi ignores it with a warning.
+The runtime for a run is resolved once, in this order: `--runtime` flag, `FULLSEND_RUNTIME`, `runtime:` on the agent's `agents:` entry in `config.yaml` / `.fullsend/config.yaml`, the repo-wide `runtime:` there, then the built-in `claude`. The same order applies to the model (`--model`, `FULLSEND_MODEL`, `model:` on the agent's `agents:` entry, harness `model:`, agent frontmatter; `FULLSEND_PI_MODEL` is a lower-precedence alias on pi) and to effort (`--effort`, `FULLSEND_EFFORT`, `effort:` on the agent's `agents:` entry, harness `effort:`). `<agent>` is the name given to `fullsend run` (`triage`, `code`, …); see [Runtimes — per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort). `FULLSEND_FALLBACK_MODELS=a,b` becomes Claude Code's `--fallback-model`; pi ignores it with a warning.
 
-The plan block prints `Runtime: <name> (from <source>)` and, when an override applied, `Model: <value> (from <source>)`; stderr carries `runtime: selected "<name>" from <source>` (and `model: requested "<value>" from <source>`) for scripts. An invalid override (unknown runtime, unknown effort level) fails before the sandbox is created.
+The plan block prints `Runtime: <name> (from <source>)` and, when an override applied, `Model: <value> (from <source>)`; stderr carries `runtime: selected "<name>" from <source>` (and `model: requested "<value>" from <source>`) for scripts. A value from the config file is labelled with the file path, suffixed ` agents.<name>` when the agent's entry decided. An invalid override (unknown runtime, unknown effort level, an `agents:` entry that names no agent) fails before the sandbox is created.
 
 ```bash
 # try a repo's triage on pi with Gemini Flash, without touching its config
@@ -76,8 +76,8 @@ Each run produces artifacts in the output directory:
 | `model` | Model the provider reported using |
 | `requested_runtime` | Runtime selected for the run (config file, or a `--runtime`/`FULLSEND_RUNTIME` override) |
 | `requested_model` | Model the harness/agent requested |
-| `override_source` | Where `requested_model` came from (`--model flag`, `FULLSEND_MODEL`, `FULLSEND_PI_MODEL`, `harness`, `default`) |
-| `runtime_source` | Where `requested_runtime` came from (`--runtime flag`, `FULLSEND_RUNTIME`, the config file path, or `default (config not found)`) |
+| `override_source` | Where `requested_model` came from (`--model flag`, `FULLSEND_MODEL`, `FULLSEND_PI_MODEL`, `<config path> agents.<name>`, `harness`, `default`) |
+| `runtime_source` | Where `requested_runtime` came from (`--runtime flag`, `FULLSEND_RUNTIME`, the config file path — suffixed ` agents.<name>` when the agent's entry decided — or `default (config not found)`) |
 | `total_cost_usd` | Total inference cost |
 | `num_turns` | Number of conversation turns |
 | `iterations` | Number of retry iterations |

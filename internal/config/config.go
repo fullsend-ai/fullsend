@@ -26,10 +26,60 @@ var validConfigAgentName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 // explicitly set to false the agent is suppressed — this allows
 // disabling built-in scaffold agents without removing their role.
 // A suppression-only entry (Enabled=false, no Source) is valid.
+//
+// Runtime, Model and Effort tune how the agent runs (ADR 0091): they
+// override the repo-wide runtime: key and the harness model:/effort:
+// for this agent, beneath the per-run --runtime/--model/--effort flags
+// and FULLSEND_* variables. An enabled entry may carry them without a
+// Source — an override-only entry — when Name is a built-in agent
+// (ValidAgentNames) or matches a sourced entry in a parent layer; the
+// built-in keeps resolving through the agents-repo fallback.
 type AgentEntry struct {
 	Name    string `yaml:"name,omitempty"`
-	Source  string `yaml:"source"`
+	Source  string `yaml:"source,omitempty"`
 	Enabled *bool  `yaml:"enabled,omitempty"`
+	Runtime string `yaml:"runtime,omitempty"`
+	Model   string `yaml:"model,omitempty"`
+	Effort  string `yaml:"effort,omitempty"`
+}
+
+// HasSettings reports whether the entry tunes runtime, model or effort.
+func (a AgentEntry) HasSettings() bool {
+	return a.Runtime != "" || a.Model != "" || a.Effort != ""
+}
+
+// IsOverrideOnly reports whether the entry only tunes an agent defined
+// elsewhere: enabled, no source, at least one setting.
+func (a AgentEntry) IsOverrideOnly() bool {
+	return a.Source == "" && a.IsEnabled() && a.HasSettings()
+}
+
+// AgentSettingsFor returns the entry for name (case-insensitive) from an
+// effective (merged) agent list, and whether one exists. Callers read
+// Runtime/Model/Effort from it.
+func AgentSettingsFor(agents []AgentEntry, name string) (AgentEntry, bool) {
+	lower := strings.ToLower(name)
+	for i := len(agents) - 1; i >= 0; i-- {
+		if strings.ToLower(agents[i].DerivedName()) == lower {
+			return agents[i], true
+		}
+	}
+	return AgentEntry{}, false
+}
+
+// UpsertAgentSettings sets runtime/model/effort for name on a layer's
+// local agent list: on the entry with that name when present, else as a
+// new override-only entry. An empty value clears that setting. Returns
+// the updated list.
+func UpsertAgentSettings(agents []AgentEntry, name, runtime, model, effort string) []AgentEntry {
+	lower := strings.ToLower(name)
+	for i := range agents {
+		if strings.ToLower(agents[i].DerivedName()) == lower {
+			agents[i].Runtime, agents[i].Model, agents[i].Effort = runtime, model, effort
+			return agents
+		}
+	}
+	return append(agents, AgentEntry{Name: name, Runtime: runtime, Model: model, Effort: effort})
 }
 
 // UnmarshalYAML implements yaml.Unmarshaler so that a plain string
@@ -206,6 +256,50 @@ func ValidProviders() []string {
 func ValidRuntimes() []string {
 	return []string{"claude", "pi", "dummy"}
 }
+
+// validModelRef matches a provider-qualified model reference: one or more
+// segments of [A-Za-z0-9_.@-]+ joined by single forward slashes. It
+// replaced the harness-local single-segment rule (#6570) and is shared
+// between config validation and harness validation so both accept the
+// same model identifier syntax.
+//
+// Examples: "opus", "sonnet", "google-vertex/gemini-3.7-flash",
+// "xai-vertex/xai/grok-4.6".
+//
+// Rejected: "/leading", "trailing/", "a//b", empty string.
+var validModelRef = regexp.MustCompile(`^[a-zA-Z0-9_.@-]+(/[a-zA-Z0-9_.@-]+)*$`)
+
+// ValidModelRef reports whether ref is a well-formed model reference
+// (single segment or provider/id form). Exported for use by harness
+// validation and per-run override validation.
+func ValidModelRef(ref string) bool {
+	return validModelRef.MatchString(ref)
+}
+
+// ValidAgentNames returns the built-in agents fullsend dispatches by name —
+// the names an agents: entry may tune without a source.
+// These are the names passed to `fullsend run <agent>` and used by
+// workflow stages. They are NOT harness role: values — "code" and
+// "fix" both carry role: coder.
+func ValidAgentNames() []string {
+	return []string{"triage", "code", "review", "fix", "retro", "prioritize"}
+}
+
+// validEffortLevels are the reasoning effort levels accepted by the claude
+// CLI's --effort flag (the version pinned by CLAUDE_CODE_VERSION in
+// images/sandbox/Containerfile). The CLI also documents an "ultracode"
+// value, deliberately excluded here: it starts the session in ultracode
+// (multi-agent workflow) mode rather than selecting a reasoning effort
+// level. The list lives in config (not harness) so config validation and
+// harness validation share one source of truth without an import cycle
+// (harness imports config).
+var validEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
+
+// ValidEffortLevels returns the accepted effort values, in documentation order.
+func ValidEffortLevels() []string { return slices.Clone(validEffortLevels) }
+
+// ValidEffort reports whether level is an accepted effort value.
+func ValidEffort(level string) bool { return slices.Contains(validEffortLevels, level) }
 
 // DefaultAgentRoles returns the standard set of agent roles installed
 // when no custom roles are specified. The fix stage reuses the coder
@@ -384,6 +478,24 @@ func (c *orgConfig) Validate() error {
 // urlutil.MatchingAllowedPrefixInList for consistency with runtime
 // resolution (case-insensitive scheme, percent-decoding, dot-segment
 // cleaning).
+// validateAgentSettings checks an entry's runtime/model/effort values.
+func validateAgentSettings(i int, entry AgentEntry) error {
+	label := entry.Name
+	if label == "" {
+		label = entry.Source
+	}
+	if entry.Runtime != "" && !slices.Contains(ValidRuntimes(), entry.Runtime) {
+		return fmt.Errorf("agents[%d] (%s): invalid runtime %q: must be one of %s", i, label, entry.Runtime, strings.Join(ValidRuntimes(), ", "))
+	}
+	if entry.Model != "" && !ValidModelRef(entry.Model) {
+		return fmt.Errorf("agents[%d] (%s): invalid model %q: must be a model id or provider/id (segments of a-z, A-Z, 0-9, _, -, ., @ joined by /)", i, label, entry.Model)
+	}
+	if entry.Effort != "" && !ValidEffort(entry.Effort) {
+		return fmt.Errorf("agents[%d] (%s): invalid effort %q: must be one of %s", i, label, entry.Effort, strings.Join(ValidEffortLevels(), ", "))
+	}
+	return nil
+}
+
 func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 	// seen tracks agent names for duplicate detection. Each state
 	// (enabled/disabled) is tracked independently so that exactly one
@@ -420,8 +532,38 @@ func ValidateAgentEntries(agents []AgentEntry, allowlist []string) error {
 		if !entry.IsEnabled() && entry.Name == "" {
 			return fmt.Errorf("agents[%d]: disabled agent entry must have an explicit name", i)
 		}
+		if err := validateAgentSettings(i, entry); err != nil {
+			return err
+		}
 		if entry.Source == "" {
-			return fmt.Errorf("agents[%d]: enabled agent entry must have a source", i)
+			// Override-only entry: tunes a built-in agent by name. A custom
+			// agent registered in a parent layer is tuned through the keyed
+			// merge (the merged entry carries the parent's source), so by the
+			// time an entry reaches validation without one it must be built in.
+			if !entry.HasSettings() {
+				return fmt.Errorf("agents[%d]: enabled agent entry must have a source (or, to tune a built-in agent, a name plus runtime, model or effort)", i)
+			}
+			if entry.Name == "" {
+				return fmt.Errorf("agents[%d]: agent entry without a source must name the agent it tunes", i)
+			}
+			if !validConfigAgentName.MatchString(entry.Name) {
+				return fmt.Errorf("agents[%d] (%s): name is invalid, must start with alphanumeric and contain only [a-zA-Z0-9_-]", i, entry.Name)
+			}
+			lowerName := strings.ToLower(entry.Name)
+			if !slices.Contains(ValidAgentNames(), lowerName) {
+				hint := ""
+				if suggestion, ok := roleAliasHints[lowerName]; ok {
+					hint = fmt.Sprintf(" (did you mean %q?)", suggestion)
+				}
+				return fmt.Errorf("agents[%d] (%s): entry without a source tunes a built-in agent, but %q is not one%s: built-in agents are %s; give a custom agent its source", i, entry.Name, entry.Name, hint, strings.Join(ValidAgentNames(), ", "))
+			}
+			if prev, exists := seen[lowerName]; exists && prev.seenEnabled {
+				return fmt.Errorf("agents[%d] (%s): duplicate agent name (case-insensitive)", i, entry.Name)
+			}
+			prev := seen[lowerName]
+			prev.seenEnabled = true
+			seen[lowerName] = prev
+			continue
 		}
 
 		name := entry.DerivedName()
@@ -596,6 +738,11 @@ const perRepoConfigHeader = `# fullsend per-repo configuration
 # The "runtime" key selects which agent runtime runs the agents, claude
 # (default when unset) or pi. For one run, the 'fullsend run --runtime'
 # flag wins, then FULLSEND_RUNTIME, then this file. See docs/runtimes.md.
+#
+# An entry in the agents list can set runtime, model and effort for one
+# agent (an entry with just a name tunes a built-in agent); those win over
+# the repo-wide runtime key and the harness, and per-run flags/variables
+# still win over them. See docs/runtimes.md.
 `
 
 // NewPerRepoConfig creates a new perRepoConfig with the given roles.
@@ -827,7 +974,9 @@ func (c *perRepoConfig) Validate() error {
 	// Agents are validated against the resolved allowlist (including
 	// parent resources) so that URL agents covered by a parent or
 	// default prefix pass validation.
-	if err := ValidateAgentEntries(c.Agents, c.AllowedResources()); err != nil {
+	// The merged set is validated so an overlay entry that only tunes an
+	// agent registered in the base layer sees that agent's source.
+	if err := ValidateAgentEntries(c.AgentEntries(), c.AllowedResources()); err != nil {
 		return err
 	}
 	if err := validateCreateIssues(c.CreateIssues); err != nil {
@@ -849,6 +998,12 @@ func (c *perRepoConfig) Validate() error {
 		}
 	}
 	return nil
+}
+
+// roleAliasHints maps common mistakes to the correct agent name,
+// used in validation error messages.
+var roleAliasHints = map[string]string{
+	"coder": "code",
 }
 
 func validateCreateIssues(cfg *CreateIssuesConfig) error {

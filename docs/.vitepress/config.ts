@@ -232,18 +232,36 @@ export default defineConfig({
           collapsed: true,
           link: "/guides/",
           items: [
-            { text: "Bring Your Own Agent", link: "/guides/user/bring-your-own-agent" },
-            { text: "CEL Triggers Reference", link: "/guides/user/cel-triggers-reference" },
             { text: "Bugfix Workflow", link: "/guides/user/bugfix-workflow" },
-            { text: "Configuring Agent Behavior", link: "/guides/user/customizing-agents" },
-            { text: "Configuring with AGENTS.md", link: "/guides/user/customizing-with-agents-md" },
-            { text: "Configuring with Skills", link: "/guides/user/customizing-with-skills" },
+            { text: "Issue Commands", link: "/guides/user/issues-commands" },
             {
-              text: "Building custom agents from scratch (deprecated)",
-              link: "/guides/user/building-custom-agents",
+              text: "Customizing Agents",
+              collapsed: true,
+              items: [
+                { text: "Overview", link: "/guides/user/customizing-overview" },
+                {
+                  text: "Configuring with AGENTS.md",
+                  link: "/guides/user/customizing-with-agents-md",
+                },
+                { text: "Configuring with Skills", link: "/guides/user/customizing-with-skills" },
+                {
+                  text: "Configuring Agent Behavior",
+                  link: "/guides/user/customizing-agents",
+                },
+                { text: "Bring Your Own Agent", link: "/guides/user/bring-your-own-agent" },
+                {
+                  text: "Custom Agent Identity",
+                  link: "/guides/user/custom-agent-identity",
+                },
+                { text: "Harness Field Reference", link: "/reference/harness-reference" },
+                { text: "CEL Triggers Reference", link: "/guides/user/cel-triggers-reference" },
+                {
+                  text: "Building custom agents (deprecated)",
+                  link: "/guides/user/building-custom-agents",
+                },
+              ],
             },
             { text: "Running Agents Locally", link: "/guides/user/running-agents-locally" },
-            { text: "Issue Commands", link: "/guides/user/issues-commands" },
             { text: "Jira Integration", link: "/guides/user/jira-integration" },
             { text: "How To Emit Traces", link: "/guides/user/how-to-emit-traces" },
             { text: "Tracing with MLflow", link: "/guides/user/tracing-with-mlflow" },
@@ -256,6 +274,13 @@ export default defineConfig({
             { text: "Vision", link: "/vision" },
             { text: "Architecture", link: "/architecture" },
             { text: "Glossary", link: "/glossary" },
+          ],
+        },
+        {
+          text: "Reference",
+          collapsed: true,
+          items: [
+            { text: "Harness Field Reference", link: "/reference/harness-reference" },
           ],
         },
         {

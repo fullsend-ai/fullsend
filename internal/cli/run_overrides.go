@@ -116,10 +116,22 @@ func validateRuntimeName(name string) error {
 
 // resolveBackend returns the runtime backend for the run and a human-readable
 // source: the override (flag/env) when set, else the config file path (or the
-// built-in default when no config exists).
-func resolveBackend(o runOverrides, configPath string) (agentruntime.Backend, string, error) {
+// built-in default when no config exists). When agentName is non-empty and
+// no flag/env override is set, the agents: entry's runtime from the
+// config file takes precedence over the repo-wide runtime: key.
+func resolveBackend(o runOverrides, configPath, agentName string) (agentruntime.Backend, string, error) {
+	rc, err := loadRunConfig(configPath)
+	if err != nil {
+		return agentruntime.Backend{}, rc.source, err
+	}
+	return resolveBackendFrom(o, rc, agentName)
+}
+
+// resolveBackendFrom is resolveBackend over an already loaded config, so a
+// run loads config.yaml once for runtime selection and agent settings.
+func resolveBackendFrom(o runOverrides, rc runConfig, agentName string) (agentruntime.Backend, string, error) {
 	if o.runtime == "" {
-		return backendFromConfigFile(configPath)
+		return rc.backend(agentName)
 	}
 	backend, err := agentruntime.Resolve(o.runtime)
 	if err != nil {

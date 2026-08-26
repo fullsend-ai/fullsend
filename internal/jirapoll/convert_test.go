@@ -563,6 +563,24 @@ func TestExtractCommand(t *testing.T) {
 			wantCommand:     "",
 			wantInstruction: "",
 		},
+		{
+			name:            "trailing period",
+			body:            "/fs-fix.",
+			wantCommand:     "/fs-fix",
+			wantInstruction: "",
+		},
+		{
+			name:            "trailing ellipsis",
+			body:            "/fs-triage...",
+			wantCommand:     "/fs-triage",
+			wantInstruction: "",
+		},
+		{
+			name:            "trailing punctuation with instruction",
+			body:            "/fs-fix. please rebase",
+			wantCommand:     "/fs-fix",
+			wantInstruction: "please rebase",
+		},
 	}
 
 	for _, tc := range tests {

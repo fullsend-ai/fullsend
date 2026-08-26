@@ -210,7 +210,7 @@ jobs:
 
           COMMAND=""
           if [[ -n "${COMMENT_BODY:-}" ]]; then
-            COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $1}')"
+            COMMAND="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $1}' | sed 's/[.,;:!?]*$//')"
           fi
 
           case "${EVENT_NAME}" in
@@ -246,7 +246,7 @@ jobs:
                 /fs-retro|/fullsend)
                   if [[ "${COMMENT_USER_TYPE}" != "Bot" ]] && is_authorized; then
                     if [[ "${COMMAND}" == "/fullsend" ]]; then
-                      SECOND_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}')"
+                      SECOND_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}' | sed 's/[.,;:!?]*$//')"
                       if [[ "${SECOND_WORD}" == "retro" ]]; then
                         STAGE="retro"
                       fi
@@ -457,9 +457,11 @@ jobs:
             echo "::error::config.yaml: disabled agent entry without a name field — add 'name:' to identify which agent to disable"
             exit 1
           fi
-          BAD_SOURCE=$(yq '.agents[] | select(type == "!!map" and .enabled != false and (.source == null or .source == "")) | line' .fullsend/config.yaml 2>/dev/null || echo "")
+          # An enabled entry may omit source when it only tunes a built-in
+          # agent by name (runtime/model/effort; ADR 0091).
+          BAD_SOURCE=$(yq '.agents[] | select(type == "!!map" and .enabled != false and (.source == null or .source == "") and (.runtime == null and .model == null and .effort == null)) | line' .fullsend/config.yaml 2>/dev/null || echo "")
           if [[ -n "$BAD_SOURCE" ]]; then
-            echo "::error::config.yaml: enabled agent entry without a source field"
+            echo "::error::config.yaml: enabled agent entry without a source field (an entry with only a name must set runtime, model or effort to tune a built-in agent)"
             exit 1
           fi
           DUPES_ENABLED=$(yq '.agents[] | select(type == "!!map" and .enabled != false) | (.name // "") | select(. != "") | downcase' .fullsend/config.yaml 2>/dev/null | sort | uniq -d)
@@ -688,6 +690,7 @@ jobs:
           OTEL_EXPORTER_OTLP_CERTIFICATE: ${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}
           OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
           OTEL_SDK_DISABLED: ${{ vars.OTEL_SDK_DISABLED }}
+          OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: ${{ vars.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT }}
         with:
           agent: triage
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -818,6 +821,7 @@ jobs:
           OTEL_EXPORTER_OTLP_CERTIFICATE: ${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}
           OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
           OTEL_SDK_DISABLED: ${{ vars.OTEL_SDK_DISABLED }}
+          OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: ${{ vars.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT }}
         with:
           agent: code
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -938,6 +942,7 @@ jobs:
           OTEL_EXPORTER_OTLP_CERTIFICATE: ${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}
           OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
           OTEL_SDK_DISABLED: ${{ vars.OTEL_SDK_DISABLED }}
+          OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: ${{ vars.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT }}
         with:
           agent: review
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -1091,6 +1096,7 @@ jobs:
             COMMENT_BODY="$(echo "${EVENT_PAYLOAD}" | jq -r '.comment.body // empty')"
             if [[ -n "${COMMENT_BODY}" ]]; then
               INSTRUCTION="${COMMENT_BODY#/fs-fix}"
+              INSTRUCTION="$(printf '%s\n' "${INSTRUCTION}" | sed 's/^[.,;:!?]*//')"
               INSTRUCTION="${INSTRUCTION#"${INSTRUCTION%%[![:space:]]*}"}"
             fi
             if [[ -z "${INSTRUCTION}" && -n "${INPUT_INSTRUCTION}" ]]; then
@@ -1209,6 +1215,7 @@ jobs:
           OTEL_EXPORTER_OTLP_CERTIFICATE: ${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}
           OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
           OTEL_SDK_DISABLED: ${{ vars.OTEL_SDK_DISABLED }}
+          OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: ${{ vars.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT }}
         with:
           agent: fix
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -1312,6 +1319,7 @@ jobs:
           OTEL_EXPORTER_OTLP_CERTIFICATE: ${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}
           OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
           OTEL_SDK_DISABLED: ${{ vars.OTEL_SDK_DISABLED }}
+          OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: ${{ vars.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT }}
         with:
           agent: retro
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -1400,6 +1408,7 @@ jobs:
           OTEL_EXPORTER_OTLP_CERTIFICATE: ${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}
           OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
           OTEL_SDK_DISABLED: ${{ vars.OTEL_SDK_DISABLED }}
+          OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: ${{ vars.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT }}
         with:
           agent: prioritize
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}
@@ -1725,6 +1734,7 @@ jobs:
           OTEL_EXPORTER_OTLP_CERTIFICATE: ${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}
           OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
           OTEL_SDK_DISABLED: ${{ vars.OTEL_SDK_DISABLED }}
+          OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: ${{ vars.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT }}
           JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
           JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
           JIRA_BASE_URL: ${{ inputs.jira_base_url || vars.JIRA_BASE_URL }}

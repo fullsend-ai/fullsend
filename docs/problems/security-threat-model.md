@@ -467,3 +467,4 @@ Issue [#1685](https://github.com/fullsend-ai/fullsend/issues/1685) explores usin
 6. **Immutable agent policy** — agent rules cannot be modified through the channels agents operate on
 7. **No agent self-modification** — agents cannot change their own configuration, permissions, or system prompts
 8. **Verify, don't trust** — system state must be checked independently of agent self-reports (see [agent self-report unreliability](#cross-cutting-concern-agent-self-report-unreliability))
+9. **Telemetry content boundary** — fullsend's content-handling guarantees (redaction at assembly, size bounds, opt-in gating) apply to its own extraction and redaction pipeline only; the agent runtime's native OTel instrumentation inside the sandbox is out of scope, like any other in-sandbox capability

@@ -466,3 +466,31 @@ func TestCommitLocalHarnessResources_InvalidYAML(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parsing harness YAML")
 }
+
+func TestCommitLocalHarnessResources_CommitsScaffoldProfilesAndProviders(t *testing.T) {
+	scm := &fakeURLSCM{files: map[string][]byte{}}
+	w := &world.World{Org: "org", RepoName: "repo", SCM: scm}
+	err := commitLocalHarnessResources(context.Background(), w, "pi-override",
+		"agent: agents/pi-override.md\nrole: triage\nprofiles:\n  - profiles/fullsend-vertex-ai.yaml\nproviders:\n  - providers/vertex-ai.yaml\n")
+	require.NoError(t, err)
+
+	// The real scaffold files are committed, not placeholders: these grant
+	// the sandbox its Vertex egress.
+	profile := string(scm.files["org/repo/.fullsend/profiles/fullsend-vertex-ai.yaml"])
+	assert.Contains(t, profile, "*.googleapis.com")
+	provider := string(scm.files["org/repo/.fullsend/providers/vertex-ai.yaml"])
+	assert.Contains(t, provider, "type: fullsend-vertex-ai")
+
+	// An entry the scaffold does not ship is an error, not a silent gap.
+	err = commitLocalHarnessResources(context.Background(), w, "bad",
+		"agent: agents/bad.md\nrole: triage\nproviders:\n  - providers/nope.yaml\n")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "providers/nope.yaml")
+
+	// URL entries are left to the harness resolver.
+	scm2 := &fakeURLSCM{files: map[string][]byte{}}
+	w2 := &world.World{Org: "org", RepoName: "repo", SCM: scm2}
+	require.NoError(t, commitLocalHarnessResources(context.Background(), w2, "url",
+		"agent: https://example.com/a.md\nrole: triage\nprofiles:\n  - https://example.com/p.yaml#sha256=abc\n"))
+	assert.Empty(t, scm2.files)
+}

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -2477,4 +2479,229 @@ repos:
 	require.NotNil(t, ci)
 	assert.Contains(t, ci.AllowTargets.Repos, "acme/api")
 	assert.Contains(t, ci.AllowTargets.Repos, "fullsend-ai/fullsend")
+}
+
+func TestValidModelRef(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		ref  string
+		want bool
+	}{
+		{"opus", true},
+		{"sonnet", true},
+		{"claude-opus-4-6", true},
+		{"claude-sonnet-4-6@20250514", true},
+		{"google-vertex/gemini-3.7-flash", true},
+		{"xai-vertex/xai/grok-4.6", true},
+		{"anthropic-vertex/claude-opus-4-6", true},
+		{"", false},
+		{"/leading", false},
+		{"trailing/", false},
+		{"a//b", false},
+		{"has space", false},
+		{"has$special", false},
+	} {
+		t.Run(tc.ref, func(t *testing.T) {
+			assert.Equal(t, tc.want, ValidModelRef(tc.ref), "ValidModelRef(%q)", tc.ref)
+		})
+	}
+}
+
+func TestValidAgentNames(t *testing.T) {
+	names := ValidAgentNames()
+	assert.Contains(t, names, "triage")
+	assert.Contains(t, names, "code")
+	assert.Contains(t, names, "review")
+	assert.Contains(t, names, "fix")
+	assert.Contains(t, names, "retro")
+	assert.Contains(t, names, "prioritize")
+	// "coder" is NOT a valid agent name (it's a role name); the
+	// validation should hint "did you mean code" for it.
+	assert.NotContains(t, names, "coder")
+}
+
+func TestValidEffort(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, []string{"low", "medium", "high", "xhigh", "max"}, ValidEffortLevels())
+	for _, level := range ValidEffortLevels() {
+		assert.True(t, ValidEffort(level), level)
+	}
+	assert.False(t, ValidEffort(""))
+	assert.False(t, ValidEffort("turbo"))
+	assert.False(t, ValidEffort("High"))
+}
+
+// --- per-agent settings on agents: entries (ADR 0091) ---
+
+func parseAgentSettingsConfig(t *testing.T, doc string) PerRepoConfigReader {
+	t.Helper()
+	cfg, err := ParsePerRepoConfig([]byte("# fullsend per-repo configuration\nversion: \"1\"\n" + doc))
+	require.NoError(t, err)
+	return cfg.(PerRepoConfigReader)
+}
+
+func TestAgentSettings_ParseAndValidate(t *testing.T) {
+	t.Parallel()
+	cfg := parseAgentSettingsConfig(t, `runtime: pi
+agents:
+  - name: triage
+    model: xai-vertex/xai/grok-4.6
+  - name: code
+    runtime: claude
+    model: sonnet
+    effort: high
+  - source: harness/lint.yaml
+    model: haiku
+`)
+	require.NoError(t, cfg.(ConfigWriter).Validate())
+	assert.Equal(t, "pi", cfg.ConfigRuntime())
+
+	triage, ok := AgentSettingsFor(cfg.AgentEntries(), "triage")
+	require.True(t, ok)
+	assert.Equal(t, "xai-vertex/xai/grok-4.6", triage.Model)
+	assert.Empty(t, triage.Runtime, "repo-wide runtime applies")
+	assert.True(t, triage.IsOverrideOnly())
+
+	code, ok := AgentSettingsFor(cfg.AgentEntries(), "Code")
+	require.True(t, ok, "lookup is case-insensitive")
+	assert.Equal(t, AgentEntry{Name: "code", Runtime: "claude", Model: "sonnet", Effort: "high"}, code)
+
+	lint, ok := AgentSettingsFor(cfg.AgentEntries(), "lint")
+	require.True(t, ok)
+	assert.Equal(t, "harness/lint.yaml", lint.Source, "a sourced custom agent carries settings too")
+	assert.Equal(t, "haiku", lint.Model)
+	assert.False(t, lint.IsOverrideOnly())
+
+	_, ok = AgentSettingsFor(cfg.AgentEntries(), "review")
+	assert.False(t, ok)
+}
+
+func TestAgentSettings_Validate(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, doc, want string
+	}{
+		{"unknown built-in with hint", "agents:\n  - name: coder\n    model: sonnet\n", `did you mean "code"`},
+		{"unknown custom without source", "agents:\n  - name: lint\n    model: sonnet\n", "give a custom agent its source"},
+		{"name-only entry without settings", "agents:\n  - name: triage\n", "must have a source"},
+		{"settings without a name", "agents:\n  - model: sonnet\n", "must name the agent"},
+		{"invalid model", "agents:\n  - name: triage\n    model: bad//id\n", `invalid model "bad//id"`},
+		{"leading slash model", "agents:\n  - name: triage\n    model: /leading\n", "invalid model"},
+		{"invalid runtime", "agents:\n  - name: triage\n    runtime: opencode\n", `invalid runtime "opencode"`},
+		{"invalid effort", "agents:\n  - name: triage\n    effort: turbo\n", `invalid effort "turbo"`},
+		{"invalid effort on sourced entry", "agents:\n  - source: harness/lint.yaml\n    effort: turbo\n", `invalid effort "turbo"`},
+		{"duplicate built-in tuning", "agents:\n  - name: triage\n    model: sonnet\n  - name: Triage\n    model: haiku\n", "duplicate agent name"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := parseAgentSettingsConfig(t, tc.doc)
+			err := cfg.(ConfigWriter).Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.want)
+		})
+	}
+	for _, model := range []string{"opus", "claude-haiku-4-5@20251001", "google-vertex/gemini-3.7-flash", "xai-vertex/xai/grok-4.6"} {
+		cfg := parseAgentSettingsConfig(t, "agents:\n  - name: triage\n    model: "+model+"\n")
+		assert.NoError(t, cfg.(ConfigWriter).Validate(), model)
+	}
+}
+
+func TestAgentSettings_MarshalRoundTrip(t *testing.T) {
+	t.Parallel()
+	cfg := NewPerRepoConfig([]string{"triage"}, "")
+	cfg.SetAgents(UpsertAgentSettings(nil, "code", "claude", "sonnet", "high"))
+	cfg.SetAgents(UpsertAgentSettings(cfg.AgentEntries(), "triage", "", "xai-vertex/xai/grok-4.6", ""))
+	require.NoError(t, cfg.Validate())
+	data, err := cfg.Marshal()
+	require.NoError(t, err)
+	s := string(data)
+	assert.Contains(t, s, "name: code")
+	assert.Contains(t, s, "runtime: claude")
+	assert.NotContains(t, s, "source: \"\"", "override-only entries carry no source key")
+
+	back, err := ParsePerRepoConfig(data)
+	require.NoError(t, err)
+	code, ok := AgentSettingsFor(back.AgentEntries(), "code")
+	require.True(t, ok)
+	assert.Equal(t, AgentEntry{Name: "code", Runtime: "claude", Model: "sonnet", Effort: "high"}, code)
+
+	// Upsert replaces settings on the existing entry; empty clears.
+	cfg.SetAgents(UpsertAgentSettings(cfg.AgentEntries(), "CODE", "", "haiku", ""))
+	code, _ = AgentSettingsFor(cfg.AgentEntries(), "code")
+	assert.Equal(t, AgentEntry{Name: "code", Model: "haiku"}, code)
+	assert.Len(t, cfg.AgentEntries(), 2)
+}
+
+func TestAgentSettings_LayeredMerge(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte(`# fullsend per-repo configuration
+version: "1"
+runtime: pi
+agents:
+  - source: harness/lint.yaml
+    model: opus
+    effort: high
+  - name: triage
+    model: opus
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - name: lint
+    effort: medium
+  - name: Triage
+    runtime: claude
+  - name: code
+    model: sonnet
+`), 0o644))
+	cfg, err := LoadConfigWriter(dir, LoadOpts{})
+	require.NoError(t, err)
+	// An overlay entry that only tunes a base-registered custom agent is
+	// valid: the merged entry carries the base's source.
+	require.NoError(t, cfg.Validate())
+	agents := cfg.AgentEntries()
+
+	lint, ok := AgentSettingsFor(agents, "lint")
+	require.True(t, ok)
+	assert.Equal(t, "harness/lint.yaml", lint.Source)
+	assert.Equal(t, "opus", lint.Model, "base model inherited (empty overlay value does not unset)")
+	assert.Equal(t, "medium", lint.Effort, "overlay wins per field")
+
+	triage, ok := AgentSettingsFor(agents, "triage")
+	require.True(t, ok)
+	assert.Equal(t, "claude", triage.Runtime)
+	assert.Equal(t, "opus", triage.Model)
+
+	code, ok := AgentSettingsFor(agents, "code")
+	require.True(t, ok)
+	assert.Equal(t, "sonnet", code.Model)
+
+	// A bad entry in the base layer is caught by Validate on the overlay.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte("# fullsend per-repo configuration\nversion: \"1\"\nagents:\n  - name: coder\n    model: sonnet\n"), 0o644))
+	cfg, err = LoadConfigWriter(dir, LoadOpts{})
+	require.NoError(t, err)
+	err = cfg.Validate()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `did you mean "code"`)
+}
+
+func TestAgentSettings_DisabledEntryStillValid(t *testing.T) {
+	t.Parallel()
+	cfg := parseAgentSettingsConfig(t, "agents:\n  - name: retro\n    enabled: false\n")
+	require.NoError(t, cfg.(ConfigWriter).Validate())
+	assert.True(t, IsAgentExplicitlyDisabled(cfg.AgentEntries(), "retro"))
+}
+
+func TestPerRepoConfig_LocalAgentEntries(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.base.yaml"), []byte("# fullsend per-repo configuration\nversion: \"1\"\nagents:\n  - source: harness/lint.yaml\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("# fullsend per-repo configuration\nversion: \"1\"\nagents:\n  - name: code\n    model: sonnet\n"), 0o644))
+	cfg, err := LoadConfig(dir, LoadOpts{})
+	require.NoError(t, err)
+	local := cfg.(interface{ LocalAgentEntries() []AgentEntry }).LocalAgentEntries()
+	assert.Equal(t, []AgentEntry{{Name: "code", Model: "sonnet"}}, local, "only the overlay's own entries")
+	assert.Len(t, cfg.AgentEntries(), 2, "merged view includes the base")
 }

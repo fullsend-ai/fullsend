@@ -44,3 +44,15 @@ func (c SandboxHookConfig) TirithRequired() bool {
 	}
 	return boolDefault(sh.Tirith.Enabled, true)
 }
+
+// SSRFEgressAllowlist returns the comma-separated egress allowlist, or
+// empty when unset.  The allowlist tells the SSRF hook which hosts may
+// bypass the DNS-failure fail-closed check (the L7 egress proxy will
+// resolve and enforce the network policy for those hosts).
+func (c SandboxHookConfig) SSRFEgressAllowlist() string {
+	sh := c.sandboxHooks()
+	if sh == nil {
+		return ""
+	}
+	return sh.SSRFEgressAllowlist
+}

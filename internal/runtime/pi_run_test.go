@@ -43,9 +43,9 @@ func TestTranslatePiModel(t *testing.T) {
 	}
 
 	// A bare id under FULLSEND_PI_PROVIDER=xai-vertex must still get the
-	// publisher segment. Harness `model:` cannot contain a slash
-	// (validModelName), so this is the only way a harness reaches Grok --
-	// and the two-segment "xai-vertex/grok-4.6" is a model the extension
+	// publisher segment. Before harness `model:` accepted "/" (#6570) this
+	// was the only way a harness reached Grok, and it stays supported --
+	// the two-segment "xai-vertex/grok-4.6" is a model the extension
 	// does not register, which pi silently substitutes a fallback for.
 	t.Setenv(piProviderEnv, piXaiVertexProvider)
 	assert.Equal(t, "xai-vertex/xai/grok-4.6", translatePiModel("grok-4.6"), "bare id gets the publisher segment too")
@@ -249,9 +249,9 @@ func TestBuildPiRunCommand_XaiVertex(t *testing.T) {
 		"XAI_API_KEY is unset after .env is sourced")
 }
 
-// TestTranslatePiModel_XaiVertexBareIDFromHarness covers the harness path:
-// validModelName forbids "/" in harness `model:`, so a harness selecting
-// this provider must use a bare id plus FULLSEND_PI_PROVIDER.
+// TestTranslatePiModel_XaiVertexBareIDFromHarness covers the legacy harness
+// path: a bare id plus FULLSEND_PI_PROVIDER, which predates harness `model:`
+// accepting "/" (#6570) and must keep working.
 func TestTranslatePiModel_XaiVertexBareIDFromHarness(t *testing.T) {
 	t.Setenv(piProviderEnv, piXaiVertexProvider)
 	for _, bare := range []string{"grok-4.6", "grok-4.5"} {

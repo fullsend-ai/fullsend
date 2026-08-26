@@ -2915,6 +2915,32 @@ func TestPostScriptEnv_NoSchemaAppendedWhenNoValidationLoop(t *testing.T) {
 	}
 }
 
+func TestAgentTimedOut(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		elapsed time.Duration
+		timeout time.Duration
+		want    bool
+	}{
+		{"at timeout boundary", 30 * time.Minute, 30 * time.Minute, true},
+		{"over timeout", 31 * time.Minute, 30 * time.Minute, true},
+		{"exactly 90 percent", 27 * time.Minute, 30 * time.Minute, true},
+		{"just under 90 percent", 26*time.Minute + 59*time.Second, 30 * time.Minute, false},
+		{"well under timeout", 5 * time.Minute, 30 * time.Minute, false},
+		{"zero elapsed", 0, 30 * time.Minute, false},
+		{"custom timeout at boundary", 31*time.Minute + 30*time.Second, 35 * time.Minute, true},
+		{"custom timeout under", 20 * time.Minute, 35 * time.Minute, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := agentTimedOut(tt.elapsed, tt.timeout)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 // writeValScript creates a validation script at dir/name that exits 0 if a
 // marker file named "pass" exists in the script's working directory, and
 // exits 1 otherwise. Returns the absolute path to the script.
@@ -5228,7 +5254,7 @@ repos:
   widget:
     enabled: true
 `)
-	backend, err := resolveBackendFromConfigData(data)
+	backend, err := resolveBackendFromConfigData(data, "")
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", backend.Runtime.Name())
 }
@@ -5241,7 +5267,7 @@ func TestResolveBackendFromConfigData_PerRepoConfig(t *testing.T) {
 	data, err := cfg.Marshal()
 	require.NoError(t, err)
 
-	backend, err := resolveBackendFromConfigData(data)
+	backend, err := resolveBackendFromConfigData(data, "")
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", backend.Runtime.Name())
 }
@@ -5249,7 +5275,7 @@ func TestResolveBackendFromConfigData_PerRepoConfig(t *testing.T) {
 func TestResolveBackendFromConfigData_Invalid(t *testing.T) {
 	t.Parallel()
 
-	_, err := resolveBackendFromConfigData([]byte("not: [valid: yaml"))
+	_, err := resolveBackendFromConfigData([]byte("not: [valid: yaml"), "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parsing config for runtime selection")
 }
@@ -5267,7 +5293,7 @@ repos:
   widget:
     enabled: true
 `)
-	_, err := resolveBackendFromConfigData(data)
+	_, err := resolveBackendFromConfigData(data, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolving runtime")
 }
@@ -5289,7 +5315,7 @@ func TestIsOrgConfigData(t *testing.T) {
 func TestBackendFromConfigFile_MissingUsesDefault(t *testing.T) {
 	t.Parallel()
 
-	backend, source, err := backendFromConfigFile(filepath.Join(t.TempDir(), "missing.yaml"))
+	backend, source, err := backendFromConfigFile(filepath.Join(t.TempDir(), "missing.yaml"), "")
 	require.NoError(t, err)
 	assert.Equal(t, "default (config not found)", source)
 	assert.Equal(t, "claude", backend.Runtime.Name())
@@ -5306,7 +5332,7 @@ func TestBackendFromConfigFile_PerRepoConfig(t *testing.T) {
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, data, 0o644))
 
-	backend, _, err := backendFromConfigFile(path)
+	backend, _, err := backendFromConfigFile(path, "")
 	require.NoError(t, err)
 	assert.Equal(t, "dummy", backend.Runtime.Name())
 }
@@ -5322,7 +5348,7 @@ func TestBackendFromConfigFile_PerRepoNestedConfig(t *testing.T) {
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".fullsend"), 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".fullsend", "config.yaml"), data, 0o644))
 
-	backend, source, err := backendFromConfigFile(filepath.Join(dir, "config.yaml"))
+	backend, source, err := backendFromConfigFile(filepath.Join(dir, "config.yaml"), "")
 	require.NoError(t, err)
 	assert.Contains(t, source, ".fullsend")
 	assert.Equal(t, "dummy", backend.Runtime.Name())
@@ -5337,7 +5363,7 @@ func TestBackendFromConfigFile_ReadError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.yaml")
 	require.NoError(t, os.Mkdir(path, 0o755))
 
-	_, _, err := backendFromConfigFile(path)
+	_, _, err := backendFromConfigFile(path, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading config.yaml for runtime selection")
 }
@@ -5359,7 +5385,7 @@ repos:
 	path := filepath.Join(dir, "config.yaml")
 	require.NoError(t, os.WriteFile(path, data, 0o644))
 
-	_, _, err := backendFromConfigFile(path)
+	_, _, err := backendFromConfigFile(path, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "resolving runtime")
 }
@@ -5972,4 +5998,43 @@ func TestRunCommand_HasEventFileFlag(t *testing.T) {
 	flag := cmd.Flags().Lookup("event-file")
 	require.NotNil(t, flag)
 	assert.Equal(t, "", flag.DefValue)
+}
+
+func TestResolveAgentSource_OverrideOnlyEntryUsesAgentsRepoFallback(t *testing.T) {
+	dir := t.TempDir()
+	printer := ui.New(io.Discard)
+	cfg, err := config.ParsePerRepoConfig([]byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - name: triage
+    runtime: pi
+    model: sonnet
+`))
+	require.NoError(t, err)
+
+	// A name-only entry registers no harness: the built-in resolves through
+	// the agents-repo fallback, and without a client that is reported —
+	// never "read .fullsend: is a directory" from an empty source path.
+	_, _, err = resolveAgentSource(context.Background(), dir, "triage", nil, cfg, harness.ComposeOpts{}, printer)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config entry has no source")
+	assert.Contains(t, err.Error(), "agents-repo fallback unavailable")
+	assert.NotContains(t, err.Error(), "is a directory")
+
+	// A sourced entry next to it resolves locally as before.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "harness"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "harness", "lint.yaml"), []byte("agent: agents/lint.md\nrole: triage\nslug: x-lint\n"), 0o644))
+	cfg, err = config.ParsePerRepoConfig([]byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - name: triage
+    model: sonnet
+  - source: harness/lint.yaml
+    model: haiku
+`))
+	require.NoError(t, err)
+	path, deps, err := resolveAgentSource(context.Background(), dir, "lint", nil, cfg, harness.ComposeOpts{}, printer)
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(dir, "harness", "lint.yaml"), path)
+	assert.Nil(t, deps)
 }

@@ -41,7 +41,7 @@
 # version tags and on changes to images/runner/. UBI images pull anonymously
 # from registry.access.redhat.com — no Red Hat subscription required.
 # registry.access.redhat.com/ubi10/go-toolset:latest
-FROM registry.access.redhat.com/ubi10/go-toolset@sha256:a7e505b797c95c8e618a364de3a8c0383882935a12a1222a376d667c65d119b8 AS build
+FROM registry.access.redhat.com/ubi10/go-toolset@sha256:a0602888416e6cdbe9561da576303f6ec83d63c5da04acb54cb72f4f907ee864 AS build
 
 USER 0
 WORKDIR /src

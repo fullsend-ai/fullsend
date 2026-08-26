@@ -57,23 +57,36 @@ func installHookScripts(sandboxName, hooksDir string, hooks security.SandboxHook
 	return nil
 }
 
+// appendEnvVar appends a single "echo 'export K=V'" fragment to buf,
+// escaping single quotes in the value.
+func appendEnvVar(buf *strings.Builder, key, value string) {
+	escaped := strings.ReplaceAll(value, "'", "'\\''")
+	if buf.Len() > 0 {
+		buf.WriteString(" && ")
+	}
+	fmt.Fprintf(buf, "echo 'export %s=%s' >> %s/.env", key, escaped, sandbox.SandboxWorkspace)
+}
+
 // appendHookEnv appends the hook-related environment (TIRITH_FAIL_ON,
-// TIRITH_REQUIRED) to the sandbox workspace .env so the scripts see it
-// regardless of which runtime invokes them.
+// TIRITH_REQUIRED, FULLSEND_EGRESS_ALLOWLIST) to the sandbox workspace
+// .env so the scripts see it regardless of which runtime invokes them.
+// All env vars are written in a single sandbox exec call.
 func appendHookEnv(sandboxName string, hooks security.SandboxHookConfig) error {
+	var buf strings.Builder
 	if failOn := hooks.TirithFailOn(); failOn != "" {
-		escapedFailOn := strings.ReplaceAll(failOn, "'", "'\\''")
-		envCmd := fmt.Sprintf("echo 'export TIRITH_FAIL_ON=%s' >> %s/.env",
-			escapedFailOn, sandbox.SandboxWorkspace)
-		if _, _, _, err := sandbox.Exec(sandboxName, envCmd, 10*time.Second); err != nil {
-			return fmt.Errorf("setting TIRITH_FAIL_ON: %w", err)
-		}
+		appendEnvVar(&buf, "TIRITH_FAIL_ON", failOn)
 	}
 	if hooks.TirithRequired() {
-		envCmd := fmt.Sprintf("echo 'export TIRITH_REQUIRED=1' >> %s/.env", sandbox.SandboxWorkspace)
-		if _, _, _, err := sandbox.Exec(sandboxName, envCmd, 10*time.Second); err != nil {
-			return fmt.Errorf("setting TIRITH_REQUIRED: %w", err)
-		}
+		appendEnvVar(&buf, "TIRITH_REQUIRED", "1")
+	}
+	if allowlist := hooks.SSRFEgressAllowlist(); allowlist != "" {
+		appendEnvVar(&buf, "FULLSEND_EGRESS_ALLOWLIST", allowlist)
+	}
+	if buf.Len() == 0 {
+		return nil
+	}
+	if _, _, _, err := sandbox.Exec(sandboxName, buf.String(), 10*time.Second); err != nil {
+		return fmt.Errorf("appending hook env: %w", err)
 	}
 	return nil
 }

@@ -14,7 +14,7 @@ Download the latest binary from [GitHub Releases](https://github.com/fullsend-ai
 
 | Command group | Description |
 |--------------|-------------|
-| [`fullsend agent`](agent.md) | Manage agent registrations — add, list, update, remove |
+| [`fullsend agent`](agent.md) | Manage agent registrations — add, list, set, update, remove |
 | [`fullsend github`](github.md) | Configure GitHub orgs and repos — setup, enrollment, day-2 operations |
 | [`fullsend inference`](inference.md) | Manage GCP Workload Identity Federation for Agent Platform access |
 | [`fullsend mint`](mint.md) | Deploy and manage the OIDC token mint service |

@@ -185,6 +185,7 @@ jobs:
           OTEL_EXPORTER_OTLP_CERTIFICATE: ${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}
           OTEL_RESOURCE_ATTRIBUTES: ${{ vars.OTEL_RESOURCE_ATTRIBUTES }}
           OTEL_SDK_DISABLED: ${{ vars.OTEL_SDK_DISABLED }}
+          OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: ${{ vars.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT }}
         with:
           agent: review
           fullsend-dir: ${{ inputs.install_mode == 'per-repo' && '.fullsend' || '' }}

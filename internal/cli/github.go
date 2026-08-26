@@ -290,22 +290,65 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 	}
 
+	// --- Existing per-repo config (re-run) ---
+	// A re-run must not rewrite what the repo already configured
+	// (agents: entries and their settings, allowlists, hand-written comments): the
+	// existing .fullsend/config.yaml is kept verbatim unless a flag that
+	// targets a config key was passed, in which case only that key is
+	// changed on the loaded config. Managed workflow files still refresh.
+	existingCfg, err := loadExistingPerRepoConfig(ctx, client, owner, repo)
+	if err != nil {
+		if !cfg.dryRun {
+			return err
+		}
+		// Dry runs may lack credentials for the repo; report and plan as
+		// a first install rather than failing before printing the plan.
+		printer.StepWarn("Could not read existing .fullsend/config.yaml (planning as a first install): " + err.Error())
+		existingCfg = nil
+	}
+	configFlagsChanged := setupConfigFlagsChanged(cfg)
+	keepExistingConfig := existingCfg != nil && !configFlagsChanged
+
 	// Runtime: --runtime wins; otherwise ask once on an interactive
-	// terminal (Enter keeps claude). Presets carry their own value.
-	if cfg.runtime == "" && presetData == nil && !cfg.dryRun {
+	// terminal (Enter keeps claude) — but only on a first install. On a
+	// re-run the existing config's runtime stays unless --runtime is
+	// given, so an Enter cannot flip a pi repo back to claude. Presets
+	// carry their own value.
+	if cfg.runtime == "" && presetData == nil && !cfg.dryRun && existingCfg == nil {
 		choice, err := promptRuntime(printer, os.Stdin, stdinIsInteractive())
 		if err != nil {
 			return err
 		}
 		cfg.runtime = choice
 	}
+	effectiveRuntime := cfg.runtime
+	if effectiveRuntime == "" && existingCfg != nil {
+		effectiveRuntime = existingCfg.ConfigRuntime()
+	}
 	if cfg.runtime == "pi" {
 		printer.StepWarn("runtime pi needs a sandbox image that carries pi (fullsend-sandbox/fullsend-code built from fullsend main after #6467); harnesses pinning an older image will fail at preflight")
 	}
 
 	// --- Build config files ---
+	// cfgYAML stays nil when the existing overlay is kept verbatim, and
+	// .fullsend/config.yaml is then left out of the scaffold files.
 	var cfgYAML []byte
-	if presetData == nil {
+	switch {
+	case keepExistingConfig:
+		printer.StepInfo("Keeping existing .fullsend/config.yaml unchanged (pass --runtime, --agents, --mint-url or --inference-* to change a key)")
+	case existingCfg != nil:
+		// Re-run with config-targeting flags: change only those keys on
+		// the loaded config so everything else the repo set survives.
+		changed := applySetupFlagsToConfig(cfg, existingCfg, roles)
+		if err := existingCfg.Validate(); err != nil {
+			return fmt.Errorf("invalid config: %w", err)
+		}
+		cfgYAML, err = existingCfg.Marshal()
+		if err != nil {
+			return fmt.Errorf("marshaling per-repo config: %w", err)
+		}
+		printer.StepInfo("Updating existing .fullsend/config.yaml: " + strings.Join(changed, ", ") + " (other keys kept; comments are not preserved)")
+	case presetData == nil:
 		// No preset: generate a per-repo config.yaml. Only
 		// explicitly-set flags are written to the overlay; unset
 		// values fall through overlay → base → code defaults
@@ -337,7 +380,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		if err != nil {
 			return fmt.Errorf("marshaling per-repo config: %w", err)
 		}
-	} else {
+	default:
 		// Preset provided: base layer carries the preset's values.
 		// Flag-specified values go into the overlay so the base
 		// layer remains identical to the fetched preset (ADR 0069).
@@ -377,11 +420,13 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 			Mode:    "100644",
 		})
 	}
-	files = append(files, forge.TreeFile{
-		Path:    ".fullsend/config.yaml",
-		Content: cfgYAML,
-		Mode:    "100644",
-	})
+	if cfgYAML != nil {
+		files = append(files, forge.TreeFile{
+			Path:    ".fullsend/config.yaml",
+			Content: cfgYAML,
+			Mode:    "100644",
+		})
+	}
 
 	// Mint/inference values are stored in config.yaml (ADR 0069
 	// Decision 1). Repo variables/secrets are ALSO written for backward
@@ -493,7 +538,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 	}
 
-	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets, scaffoldOptions{direct: cfg.direct, signOffTrailer: signOffTrailer, runtime: cfg.runtime}); err != nil {
+	if err := applyPerRepoScaffold(ctx, client, printer, owner, repo, files, repoVars, repoSecrets, scaffoldOptions{direct: cfg.direct, signOffTrailer: signOffTrailer, runtime: effectiveRuntime}); err != nil {
 		return err
 	}
 
@@ -514,6 +559,97 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 // base layer via the layered accessor chain (ADR 0069 Decision 1).
 // Returns nil when no relevant flags were changed, signaling the
 // caller to use the stub overlay YAML with human-readable comments.
+// setupConfigFlags are the flags that target a key in .fullsend/config.yaml.
+// Any of them being passed explicitly turns a re-run from "keep the file"
+// into "change that key on the existing file".
+var setupConfigFlags = []string{"runtime", "agents", "mint-url", "inference-provider", "inference-project", "inference-region", "inference-wif-provider"}
+
+// setupConfigFlagsChanged reports whether any config-targeting flag was
+// passed explicitly (cobra's Changed, recorded in changedFlags — value
+// comparison cannot tell --agents' non-empty default from a request).
+func setupConfigFlagsChanged(cfg githubSetupConfig) bool {
+	for _, name := range setupConfigFlags {
+		if cfg.changedFlags[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// loadExistingPerRepoConfig reads the repo's current .fullsend/config.yaml
+// (and config.base.yaml when present) so the parsed config carries the
+// full parent chain: overlay → base → code defaults. This ensures
+// ValidateAgentEntries sees the merged agent set — an overlay entry that
+// tunes a custom agent registered only in config.base.yaml would
+// otherwise fail with "is not a built-in agent".
+// Returns (nil, nil) when config.yaml does not exist (first install)
+// and an error when it exists but cannot be parsed — a re-run must not
+// silently regenerate over a file the repo edited.
+func loadExistingPerRepoConfig(ctx context.Context, client forge.Client, owner, repo string) (config.PerRepoConfigWriter, error) {
+	data, err := client.GetFileContent(ctx, owner, repo, ".fullsend/config.yaml")
+	if err != nil {
+		if forge.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading existing .fullsend/config.yaml: %w", err)
+	}
+	if !config.IsPerRepoYAML(data) {
+		return nil, fmt.Errorf("existing .fullsend/config.yaml in %s/%s is not a per-repo config; fix or remove it before re-running setup", owner, repo)
+	}
+
+	// Fetch the base layer when present so validation sees the merged
+	// agent set (an overlay entry tuning a base-registered custom agent
+	// needs the base's source to pass ValidateAgentEntries).
+	var baseData []byte
+	baseContent, baseErr := client.GetFileContent(ctx, owner, repo, ".fullsend/config.base.yaml")
+	if baseErr == nil {
+		baseData = baseContent
+	} else if !forge.IsNotFound(baseErr) {
+		return nil, fmt.Errorf("reading existing .fullsend/config.base.yaml: %w", baseErr)
+	}
+
+	parsed, err := config.ParsePerRepoConfigWriterLayered(data, baseData)
+	if err != nil {
+		return nil, fmt.Errorf("existing .fullsend/config.yaml in %s/%s: %w — fix or remove it before re-running setup", owner, repo, err)
+	}
+	return parsed, nil
+}
+
+// applySetupFlagsToConfig sets the keys targeted by explicitly passed
+// flags on an existing config and returns the names of the keys changed.
+func applySetupFlagsToConfig(cfg githubSetupConfig, w config.PerRepoConfigWriter, roles []string) []string {
+	var changed []string
+	if cfg.changedFlags["runtime"] {
+		w.SetRuntime(cfg.runtime)
+		changed = append(changed, "runtime")
+	}
+	if cfg.changedFlags["agents"] {
+		w.SetRoles(roles)
+		changed = append(changed, "roles")
+	}
+	if cfg.changedFlags["mint-url"] {
+		w.SetMintURL(cfg.mintURL)
+		changed = append(changed, "mint_url")
+	}
+	if cfg.changedFlags["inference-provider"] {
+		w.SetInferenceProvider(cfg.inferenceProvider)
+		changed = append(changed, "inference.provider")
+	}
+	if cfg.changedFlags["inference-project"] {
+		w.SetInferenceProject(cfg.inferenceProject)
+		changed = append(changed, "inference.project")
+	}
+	if cfg.changedFlags["inference-region"] {
+		w.SetInferenceRegion(cfg.inferenceRegion)
+		changed = append(changed, "inference.region")
+	}
+	if cfg.changedFlags["inference-wif-provider"] {
+		w.SetInferenceWIFProvider(cfg.inferenceWIFProvider)
+		changed = append(changed, "inference.wif_provider")
+	}
+	return changed
+}
+
 func buildPresetOverlay(cfg githubSetupConfig) config.PerRepoConfigWriter {
 	flagNames := []string{"mint-url", "inference-provider", "inference-project", "inference-region", "inference-wif-provider"}
 	anyChanged := false

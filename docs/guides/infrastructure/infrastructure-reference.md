@@ -233,7 +233,7 @@ Secrets and variables are deployed at different scopes depending on the installa
 - `FULLSEND_GCP_WIF_PROVIDER` — WIF provider resource name
 
 **.fullsend repo variables (inference):**
-- `FULLSEND_GCP_REGION` — GCP region for inference (install-time only, not managed by convergence)
+- `FULLSEND_GCP_REGION` — GCP region for inference (value drift is detected and repaired by convergence)
 
 **.fullsend repo variable (dot-repo fix):**
 - `FULLSEND_MINT_URL` — Duplicate of org variable (dot-prefixed repos can't read org-level variables)
@@ -248,7 +248,7 @@ Secrets and variables are deployed at different scopes depending on the installa
 
 **Target repo variables:**
 - `FULLSEND_MINT_URL`
-- `FULLSEND_GCP_REGION` (install-time only, not managed by convergence)
+- `FULLSEND_GCP_REGION` (value drift is detected and repaired by convergence)
 - `FULLSEND_PER_REPO_INSTALL` — Flag indicating per-repo mode (set to "true")
 - `FULLSEND_REVIEW_CLIENT_ID` — OAuth client ID of the review agent's GitHub App (best-effort, conditional on successful lookup)
 

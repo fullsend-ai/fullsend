@@ -28,6 +28,28 @@ Feature: pi runtime runs an agent unattended
         event.entity.kind == "work_item"
         && event.transition.kind == "label_changed"
         && event.transition.label.name == "ready-for-pi-smoke"
+      # Vertex reaches the sandbox the way the fleet harnesses wire it:
+      # egress is granted by the vertex-ai provider (ADR-0065; the per-repo
+      # scaffold ships these provider/profile files), credentials arrive as
+      # host files, and the project/region env is inlined here because the
+      # scaffold ships no gcp-vertex.env. ${VAR} expands from the runner
+      # environment set by setup-gcp.
+      profiles:
+        - profiles/fullsend-vertex-ai.yaml
+      providers:
+        - providers/vertex-ai.yaml
+      host_files:
+        - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+          dest: /tmp/.gcp-credentials.json
+        - src: ${GCP_OIDC_TOKEN_FILE}
+          dest: /sandbox/workspace/.gcp-oidc-token
+          optional: true
+      env:
+        sandbox:
+          ANTHROPIC_VERTEX_PROJECT_ID: ${ANTHROPIC_VERTEX_PROJECT_ID}
+          GOOGLE_CLOUD_PROJECT: ${ANTHROPIC_VERTEX_PROJECT_ID}
+          CLOUD_ML_REGION: ${CLOUD_ML_REGION}
+          GOOGLE_APPLICATION_CREDENTIALS: /tmp/.gcp-credentials.json
       """
     And a pi agent "pi-smoke" defined as:
       """

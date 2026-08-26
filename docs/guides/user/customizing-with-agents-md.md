@@ -148,5 +148,7 @@ prompt injection before the agent starts.
 
 ## See also
 
+- [Customizing Agents](customizing-overview.md) — overview of all customization approaches
+- [Configuring with Skills](customizing-with-skills.md) — agent-specific domain knowledge
 - [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)
   — `AGENTS.md` configuration keeps you in "configured default agent" territory

@@ -1,10 +1,10 @@
 # Go Code
 
 **Mint function:** The mint Cloud Function source lives in two places that must stay in sync:
-- `internal/mint/main.go` — the source of truth (has its own `go.mod`, tests run from `internal/mint/`)
-- `internal/dispatch/gcf/mintsrc/main.go.embed` — the embedded copy deployed as a GCP Cloud Function
+- `internal/mint/` — the source of truth (has its own `go.mod`, tests run from `internal/mint/`)
+- `internal/dispatch/gcf/mintsrc/` — the embedded copies (`.embed` suffix) deployed as a GCP Cloud Function
 
-When changing `internal/mint/main.go`, always copy it to `internal/dispatch/gcf/mintsrc/main.go.embed`. If `go.mod` or `go.sum` changed, sync those to `go.mod.embed` and `go.sum.embed` too.
+When changing **any** non-test `.go` file in `internal/mint/`, copy it to the corresponding `.embed` file in `internal/dispatch/gcf/mintsrc/`. If `go.mod` or `go.sum` changed, sync those to `go.mod.embed` and `go.sum.embed` too. The `lint-mint-embed-sync` pre-commit hook checks all files — not just `main.go`.
 
 **Standalone mint:** `cmd/mint/` is a standalone HTTP server variant of the token mint that serves the same purpose as the GCF mint (`internal/mint/`) but runs without GCP infrastructure. Both use the shared `internal/mintcore/` library for token minting logic; they differ only in deployment model (filesystem PEM vs Secret Manager, JWKS vs STS verification). It supports custom role permissions via `CUSTOM_ROLE_PERMISSIONS` and a fallback proxy to an upstream mint. It has its own `go.mod` and tests run from `cmd/mint/`.
 
@@ -18,6 +18,20 @@ The `internal/mintcore/` module is shared between the mint and devmint. Its file
 1. **Create the `.embed` copy:** Place it in `internal/dispatch/gcf/mintsrc/mintcore/` (required for all files — `lint-mint-embed-sync` enforces this).
 2. **Register in `embeddedMintFiles`:** If the file will be included in the GCF bundle — either no build tag (e.g., `config.go`) or `//go:build !js` (e.g., `sts_verifier.go`, `gcp_pem.go`, `wif.go`) — add it to `embeddedMintFiles` in `internal/dispatch/gcf/provisioner.go` and to the `go:embed` directive.
 3. **Add to `gcfSkip`:** If the file should NOT be in the GCF bundle — Worker-only files (`//go:build js`) or standalone-mint-only files — add it to the `gcfSkip` map in `TestEmbeddedMintSource_MatchesOriginal` in `provisioner_test.go` instead of `embeddedMintFiles`. The five current entries are `env_js.go`, `fetch_js.go`, `http_client_js.go`, and `pem_js.go` (Worker-only, `//go:build js`) and `file_pem.go` (standalone-mint-only, `//go:build !js`).
+
+**Verifying embed sync:** After modifying any file under `internal/mint/` or `internal/mintcore/`, run the lint script to verify all copies are in sync:
+
+```bash
+./hack/lint-mint-embed-sync
+```
+
+You can also run the embed test to catch desyncs:
+
+```bash
+go test -race -count=1 -run TestEmbeddedMintSource ./internal/dispatch/gcf/
+```
+
+Both checks run in CI, but running them locally before committing catches desyncs early and avoids wasted CI iterations.
 
 **Dispatch workflows:** See [Workflow Contracts](workflow-contracts.md) for dispatch sync rules, secret/input threading across installation-mode chains, and review instructions.
 
@@ -41,7 +55,7 @@ The `make wasm-build` target enforces these limits automatically — run it afte
 - **Construct concrete verifiers at the load site** (see `cmd/mint/main.go`, `internal/mint/main.go`, `cmd/mint-wasm/main.go`). Each load site creates the appropriate `OIDCVerifier` — `NewJWKSVerifier` for standalone/Worker/devmint, `NewSTSVerifier` for the Cloud Function — and passes it directly into `NewHandler`. Runtime constants such as the OIDC audience live in `mintconsts.OIDCAudience` and are applied inside the verifier constructors, so load sites do not need to thread configuration through closures or factories.
 - **`mintEnv` and `mintHTTP` are package-internal accessors** in `internal/mintcore/`. `NewHandler` reads configuration via `mintEnv(key)` and all HTTP calls go through `mintHTTP(req)`. On native platforms (`//go:build !js`), `mintEnv` delegates to `os.Getenv` and `mintHTTP` uses a cached `*http.Client` with 30-second timeout. On WASM (`//go:build js`), the CF Worker calls `RegisterEnv` and `RegisterHTTP` once during `mintcoreInitMint` to supply JS callbacks. **Do not** pass HTTP clients from entrypoints into verifier configs or handler constructors — call `mintHTTP(req)` directly at use sites inside `internal/mintcore`. Tests override the HTTP function with `SetMintHTTPForTest(t, fake)` and use `t.Setenv` for environment variables.
 
-When making changes to Go code under `cmd/` or `internal/`:
+When making changes to Go code under `cmd/`, `internal/`, or `pkg/`:
 
 1. **Unit tests:** Run `make go-test` (or `go test ./...`) and fix any failures before committing.
 2. **Coverage:** CI enforces thresholds via [Codecov](https://about.codecov.io/) (see [`.codecov.yml`](../../.codecov.yml)). **Patch coverage** on changed lines must meet **80%** (with a 5% tolerance). **Project coverage** must not drop more than **1%** below the base branch. `make go-test` alone does **not** enforce these thresholds — you must verify coverage locally before committing. See [Verifying patch coverage locally](#verifying-patch-coverage-locally) below for the exact commands.
@@ -58,7 +72,10 @@ of `codecov/patch` failures on first push.
 
 ### Step-by-step
 
-1. **Identify changed Go files** (excluding tests and generated code):
+1. **Identify changed Go files** (excluding tests and generated code).
+   **Stage new files first** (`git add`) — `git diff --name-only` only
+   sees tracked or staged files, so an unstaged new file would be
+   invisible and the check would silently skip it.
 
    ```bash
    git diff --name-only main -- '*.go' | grep -v '_test.go'

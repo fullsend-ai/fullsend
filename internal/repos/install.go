@@ -240,40 +240,90 @@ func Install(ctx context.Context, cfg InstallConfig,
 	return result, nil
 }
 
+// DriftConfig holds additional fields beyond ResolvedConfig that are
+// needed to build a complete InstallConfig for drift detection. These
+// fields come from the manifest or CLI flags and are not part of the
+// per-repo resolved config.
+type DriftConfig struct {
+	// InferenceRegion is the GCP region for inference. Only available
+	// from CLI flags on repos install; empty on the status path.
+	InferenceRegion string
+
+	// ReviewAppClientID is the OAuth client ID of the review agent's
+	// GitHub App. Only available from CLI flags on repos install.
+	ReviewAppClientID string
+
+	// RunnerTags is a list of GitLab CI runner tags from the manifest's
+	// GitLab platform section.
+	RunnerTags []string
+}
+
+// driftInstallConfig constructs the InstallConfig used by both the
+// status and converge paths for content drift checking. This is the
+// single source of truth for input construction — callers may overlay
+// converge-specific fields (resolved ref, PrebuiltScaffoldFiles) on
+// the returned value but must not build InstallConfig from scratch.
+func driftInstallConfig(resolved ResolvedConfig, dcfg DriftConfig) InstallConfig {
+	ref := resolved.FullsendRef
+	return InstallConfig{
+		Owner:             resolved.Owner,
+		Repo:              resolved.Repo,
+		Forge:             resolved.Forge,
+		Roles:             defaultRoles(nil),
+		MintURL:           resolved.MintURL,
+		UpstreamRef:       ref,
+		UpstreamTag:       ref,
+		Runtime:           resolved.Runtime,
+		InferenceRegion:   dcfg.InferenceRegion,
+		ReviewAppClientID: dcfg.ReviewAppClientID,
+		RunnerTags:        dcfg.RunnerTags,
+	}
+}
+
 // ExpectedScaffoldContent renders the scaffold files that a fresh install
 // would produce for the given resolved config. The status path uses this
 // to compare against installed files for content drift detection — when
 // the rendered template differs from the installed file, the repo's
 // scaffold is stale even if the ref string matches.
 //
-// The converge path builds equivalent files via BuildScaffoldFiles with
-// additional context (upstream SHA resolution, remote scaffold fetch,
-// runner tags). Both paths share BuildScaffoldFiles as the underlying
-// renderer.
-//
-// Limitation: this function omits InstallConfig fields that the converge
-// path populates at runtime (RunnerTags, PrebuiltScaffoldFiles,
-// VendorBinary). Currently only GitHub is wired, so the omission has no
-// effect. When GitLab status support is added or vendor-mode status is
-// needed, these fields will need to be resolved here as well.
+// When fullsend_ref pins a version that differs from the running binary,
+// the refResolver fetches remote scaffold templates from the pinned ref
+// so the baseline matches the pinned version, not the embedded templates.
+// This mirrors the converge path's FetchRemoteScaffold logic. Both paths
+// share driftInstallConfig as the underlying input builder and
+// BuildScaffoldFiles as the renderer.
 //
 // Returns (nil, nil) when FullsendRef is empty — there is no expected
 // ref to compare against.
-func ExpectedScaffoldContent(resolved ResolvedConfig) ([]forge.TreeFile, error) {
-	ref := resolved.FullsendRef
-	if ref == "" {
+func ExpectedScaffoldContent(ctx context.Context, resolved ResolvedConfig, dcfg DriftConfig, refResolver *RefResolver) ([]forge.TreeFile, error) {
+	if resolved.FullsendRef == "" {
 		return nil, nil
 	}
+	installCfg := driftInstallConfig(resolved, dcfg)
 
-	installCfg := InstallConfig{
-		Owner:       resolved.Owner,
-		Repo:        resolved.Repo,
-		Forge:       resolved.Forge,
-		Roles:       defaultRoles(nil),
-		MintURL:     resolved.MintURL,
-		UpstreamRef: ref,
-		UpstreamTag: ref,
-		Runtime:     resolved.Runtime,
+	// When the manifest pins a fullsend_ref, fetch remote scaffold
+	// templates so the baseline matches the pinned version's templates
+	// rather than the running binary's embedded templates. This is the
+	// same logic the converge path uses in convergeContentDriftFiles.
+	manifestRef := resolved.FullsendRef
+	if manifestRef != "" && refResolver != nil {
+		ref := manifestRef
+		if isSemver(manifestRef) {
+			if sha := refResolver.Resolve(ctx, manifestRef); sha != manifestRef {
+				ref = sha
+				installCfg.UpstreamRef = ref
+			}
+		}
+		scaffoldFiles, fetchErr := FetchRemoteScaffold(
+			ctx, refResolver.client,
+			manifestRef, ref, resolved.Forge,
+			dcfg.RunnerTags,
+		)
+		if fetchErr == nil {
+			installCfg.PrebuiltScaffoldFiles = scaffoldFiles
+		}
+		// On fetch failure, fall back to embedded templates — same
+		// best-effort semantics as the converge path.
 	}
 
 	return BuildScaffoldFiles(installCfg)
@@ -335,35 +385,80 @@ func BuildScaffoldFiles(cfg InstallConfig) ([]forge.TreeFile, error) {
 	return files, nil
 }
 
-func installVarsForForge(cfg InstallConfig, mintURL string) (map[string]string, error) {
+// ManagedVar describes a repository variable with its expected value and
+// whether it is dynamic (mutated at runtime). Static variables are
+// value-checked during drift detection; dynamic variables are
+// presence-checked only.
+type ManagedVar struct {
+	Name    string
+	Value   string
+	Dynamic bool // true = presence-only (value mutated at runtime)
+}
+
+// managedVarsForForge returns the managed variables for a given forge,
+// each annotated with whether the variable is dynamic. This is the
+// single source of truth for variable classification — callers use the
+// Dynamic flag to decide whether to compare values during drift
+// detection, without maintaining a separate hardcoded list.
+func managedVarsForForge(cfg InstallConfig, mintURL string) ([]ManagedVar, error) {
 	switch cfg.Forge {
 	case ForgeGitHub:
-		vars := map[string]string{
-			forge.PerRepoGuardVar: "true",
-			"FULLSEND_MINT_URL":   mintURL,
+		vars := []ManagedVar{
+			{Name: forge.PerRepoGuardVar, Value: "true"},
+			{Name: "FULLSEND_MINT_URL", Value: mintURL},
 		}
 		if cfg.InferenceRegion != "" {
-			vars["FULLSEND_GCP_REGION"] = cfg.InferenceRegion
+			vars = append(vars, ManagedVar{Name: "FULLSEND_GCP_REGION", Value: cfg.InferenceRegion})
 		}
 		if cfg.ReviewAppClientID != "" {
-			vars["FULLSEND_REVIEW_CLIENT_ID"] = cfg.ReviewAppClientID
+			vars = append(vars, ManagedVar{Name: "FULLSEND_REVIEW_CLIENT_ID", Value: cfg.ReviewAppClientID})
 		}
 		return vars, nil
 	case ForgeGitLab:
 		now := time.Now().UTC().Format(time.RFC3339)
-		vars := map[string]string{
-			forge.PerRepoGuardVar:        "true",
-			"FULLSEND_LAST_POLL_AT_FAST": now,
-			"FULLSEND_LAST_POLL_AT_FULL": now,
-			"FULLSEND_LABEL_STATE":       "{}",
+		vars := []ManagedVar{
+			{Name: forge.PerRepoGuardVar, Value: "true"},
+			{Name: "FULLSEND_LAST_POLL_AT_FAST", Value: now, Dynamic: true},
+			{Name: "FULLSEND_LAST_POLL_AT_FULL", Value: now, Dynamic: true},
+			{Name: "FULLSEND_LABEL_STATE", Value: "{}", Dynamic: true},
 		}
 		if cfg.InferenceRegion != "" {
-			vars["FULLSEND_GCP_REGION"] = cfg.InferenceRegion
+			vars = append(vars, ManagedVar{Name: "FULLSEND_GCP_REGION", Value: cfg.InferenceRegion})
 		}
 		return vars, nil
 	default:
 		return nil, fmt.Errorf("unsupported forge %q for variable configuration", cfg.Forge)
 	}
+}
+
+// staticExpectedVarValues returns a map of variable names to expected
+// values for all static (non-dynamic) managed variables. This is used
+// by the converge and status discovery phases to pass expected values
+// to ProbeComponents for value-level drift detection.
+func staticExpectedVarValues(cfg InstallConfig, mintURL string) (map[string]string, error) {
+	managed, err := managedVarsForForge(cfg, mintURL)
+	if err != nil {
+		return nil, err
+	}
+	vals := make(map[string]string)
+	for _, v := range managed {
+		if !v.Dynamic && v.Value != "" {
+			vals[v.Name] = v.Value
+		}
+	}
+	return vals, nil
+}
+
+func installVarsForForge(cfg InstallConfig, mintURL string) (map[string]string, error) {
+	managed, err := managedVarsForForge(cfg, mintURL)
+	if err != nil {
+		return nil, err
+	}
+	vars := make(map[string]string, len(managed))
+	for _, v := range managed {
+		vars[v.Name] = v.Value
+	}
+	return vars, nil
 }
 
 // installSecretsForForge returns the inference secrets to write.
@@ -382,10 +477,10 @@ func installSecretsForForge(cfg InstallConfig, wifProvider string) map[string]st
 }
 
 // requiredVariables lists the per-repo variables that must exist for a
-// complete installation. FULLSEND_GCP_REGION is
-// excluded because it is install-time-only and may not be present when
-// secrets are reused. Shared by install, checkInstallComponents, and
-// uninstall.
+// complete installation. FULLSEND_GCP_REGION is excluded because it is
+// conditionally set (only when --inference-region is provided) and may
+// not be present when secrets are reused. Shared by install,
+// checkInstallComponents, and uninstall.
 var requiredVariables = []string{"FULLSEND_MINT_URL"}
 
 // requiredSecrets lists the per-repo secrets that must exist for a

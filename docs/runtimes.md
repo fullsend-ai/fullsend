@@ -69,24 +69,92 @@ override variables themselves.
 ```mermaid
 flowchart LR
   F["--runtime / --model<br/>(flag)"] --> E["FULLSEND_RUNTIME<br/>FULLSEND_MODEL"]
-  E --> C["config.yaml runtime:<br/>harness model:"]
+  E --> R["config.yaml<br/>agents: entry for the agent"]
+  R --> C["config.yaml runtime:<br/>harness model:"]
   C --> A["agent frontmatter<br/>model:"]
   A --> D["default<br/>claude · opus"]
   classDef s fill:#e3e9fb,stroke:#2d5be3,color:#1b2230;
   classDef d fill:#eceee8,stroke:#a9afa4,color:#1b2230;
-  class F,E,C,A s;
+  class F,E,R,C,A s;
   class D d;
 ```
 
-| Setting | Flag | Env | Config |
-|---|---|---|---|
-| Runtime | `--runtime` | `FULLSEND_RUNTIME` | `runtime:` in `.fullsend/config.yaml` |
-| Model | `--model` | `FULLSEND_MODEL` (`FULLSEND_PI_MODEL` is a lower-precedence alias on pi) | harness `model:`, then agent frontmatter `model:` |
-| Effort | `--effort` | `FULLSEND_EFFORT` | harness `effort:` |
+| Setting | Flag | Env | Config (per-agent) | Config (repo-wide) |
+|---|---|---|---|---|
+| Runtime | `--runtime` | `FULLSEND_RUNTIME` | `runtime:` on the agent's `agents:` entry | `runtime:` in `.fullsend/config.yaml` (repo default) |
+| Model | `--model` | `FULLSEND_MODEL` (`FULLSEND_PI_MODEL` is a lower-precedence alias on pi) | `model:` on the agent's `agents:` entry | harness `model:`, then agent frontmatter `model:` |
+| Effort | `--effort` | `FULLSEND_EFFORT` | `effort:` on the agent's `agents:` entry | harness `effort:` |
 
 In CI these are repository variables of the same name, plain or role-prefixed
-(`TRIAGE_FULLSEND_MODEL`), so a repo can switch one role's model without a pull request. Harness
-`env.runner` does **not** reach the `fullsend` process.
+(`TRIAGE_FULLSEND_MODEL`), so a repo can switch one role's model without a pull request. For
+**durable** per-agent configuration that lives in the repository and is reviewable, use
+the agent's `agents:` entry in `.fullsend/config.yaml` instead. Harness `env.runner` does **not** reach the
+`fullsend` process.
+
+### Per-agent runtime, model and effort
+
+The `agents:` list is the per-agent place in `config.yaml`: an entry names an agent and can set
+its `runtime`, `model` and `effort`. A built-in agent (`triage`, `code`, `review`, `fix`, `retro`,
+`prioritize`) is tuned with a name-only entry; a custom agent carries the settings on its
+`source:` entry.
+
+```yaml
+runtime: pi                    # repo default for agents that set none
+agents:
+  - name: triage
+    model: xai-vertex/xai/grok-4.6
+  - name: code
+    runtime: claude
+    model: sonnet
+    effort: high
+  - source: https://raw.githubusercontent.com/acme/agents/<sha>/harness/lint.yaml#sha256=…
+    model: haiku
+```
+
+Or from the CLI, which validates the entry before writing it:
+
+1. `fullsend agent set code --fullsend-dir .fullsend --runtime claude --model sonnet --effort high`
+2. `fullsend agent list --fullsend-dir .fullsend` shows the settings next to each agent —
+   `code  (built-in)  [runtime=claude model=sonnet effort=high]`, or the `source:` path for a custom
+   agent.
+3. The next `fullsend run code` names the entry as the source —
+   `Runtime: claude (from <config path> agents.code)` — and a `--runtime`/`--model` flag on that
+   run still wins.
+
+An invalid value is refused before the write — `invalid effort "turbo": must be one of low, medium,
+high, xhigh, max` — and the same check runs on every `fullsend run`, so a hand-edited entry fails the
+run before a sandbox starts rather than being skipped.
+
+A `source:` entry needs no `name:` — the agent's name is derived from the source file
+(`harness/lint.yaml` → `lint`, ADR 0058), and that is the name the settings, `fullsend run lint`
+and `fullsend agent set lint` all use; add `name:` only to override it.
+
+Names are agent names as passed to `fullsend run <agent>` — **not** harness `role:` values (`code`
+and `fix` both carry `role: coder`) — matched case-insensitively. A name-only entry for anything
+that is not a built-in agent fails validation (`coder` gets a "did you mean `code`" hint); a custom
+agent gets its settings on its own entry.
+
+Precedence: flag > env var > the agent's `agents:` entry > repo-wide `runtime:` / harness
+`model:` `effort:` > default. Entries merge per field across the layered config (`config.yaml`
+over `config.base.yaml`), so a preset base can tune agents too. `fullsend run` validates the
+whole `agents:` list in every layer (names, runtime, model syntax, effort) and fails the run with
+an error naming the file and entry rather than silently skipping a mistyped entry or handing a
+bad value to the runtime.
+
+A value that came from here shows up as `<config path> agents.<name>` wherever the selection is
+surfaced (plan block, stderr, `metrics.json` — see below); the path is the effective config file.
+
+`provider/id` is pi's model form. The syntax is accepted for every runtime (model ids are not a
+closed set), but an entry that pairs `runtime: claude` with a `provider/id` model gets a warning
+in the plan block — Claude Code expects an alias (`opus`, `sonnet`, …) or an Anthropic model id.
+
+**Migrating from repository variables.** A repo that carries `<ROLE>_FULLSEND_MODEL` /
+`<ROLE>_FULLSEND_RUNTIME` variables can move them onto `agents:` entries one-to-one: the variable
+prefix is the agent name (`CODE_FULLSEND_RUNTIME=claude` → `- name: code` / `runtime: claude`).
+Delete the variable afterwards — while it exists it still wins, so the config entry would be
+silently shadowed. Bump the workflow's fullsend pin to a version that carries per-agent settings
+*before* adding them: an older pinned CLI rejects an enabled `agents:` entry without a `source`,
+whereas a current CLI validates the settings on every run.
 
 Set the runtime per repo with `fullsend github setup <owner/repo> --runtime pi`. Repos on pi need a
 sandbox image that carries `PI_VERSION`.
@@ -99,14 +167,15 @@ On pi, a model is `provider/id` — aliases and bare ids still work, and the pro
 `FULLSEND_PI_PROVIDER` (default `anthropic-vertex`). pi reaches Claude, Gemini **and** Grok, each
 through its own provider; see [Pi › Models and providers](runtimes/pi.md#models-and-providers).
 
-Because harness `model:` cannot contain `/` (`validModelName` is `^[a-zA-Z0-9_.@-]+$`), a harness
-selects a pi provider with a bare `model:` plus `FULLSEND_PI_PROVIDER`.
+Harness `model:` and `agents:` entry `model:` values accept provider-qualified `provider/id` syntax
+(e.g. `google-vertex/gemini-3.7-flash`). On pi, a harness can also select a provider with a bare
+`model:` plus `FULLSEND_PI_PROVIDER`.
 
 ## Where the selection appears
 
 | Surface | What it shows |
 |---|---|
-| Run plan block | `Runtime: <name> (from <source>)` next to Model and Effort |
+| Run plan block | `Runtime: <name> (from <source>)` next to Model and Effort; `<source>` is the flag, the variable, or `<config path>` (suffixed ` agents.<name>` when the agent's entry decided) |
 | stderr | `runtime: selected "<name>" from <source>` |
 | Status comment / `::notice::` | `Runtime · Model: <requested → reported> · Effort · Cost` |
 | OTel span | `fullsend.runtime`, next to `gen_ai.request.model` |

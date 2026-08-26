@@ -2,8 +2,11 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -20,6 +23,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/evalmeasure"
 	agentruntime "github.com/fullsend-ai/fullsend/internal/runtime"
 	"github.com/fullsend-ai/fullsend/internal/security"
+	"github.com/fullsend-ai/fullsend/internal/telemetry"
 )
 
 func TestTelemetryExitCode(t *testing.T) {
@@ -921,4 +925,210 @@ func TestTranscriptErrorMessage(t *testing.T) {
 	got = transcriptErrorMessage(agentruntime.TranscriptError{ErrorMessage: worst})
 	assert.Equal(t, strings.Repeat(": ", 1999)+":"+"… (truncated)", got,
 		"worst-case sanitized growth stays whole")
+}
+
+func TestAttachContent_SetsContentAndMarkerAttrs(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	_, span := tp.Tracer("test").Start(context.Background(), "agent")
+	attachContent(span, contentResult{
+		OutputMessages: `[{"role":"assistant","parts":[{"type":"text","content":"hi"}]}]`,
+		DroppedBytes:   7,
+		Truncated:      true,
+		Findings:       []security.Finding{{Severity: "high"}},
+	})
+	span.End()
+
+	ended := rec.Ended()
+	require.Len(t, ended, 1)
+	attrs := make(map[attribute.Key]attribute.Value)
+	for _, kv := range ended[0].Attributes() {
+		attrs[kv.Key] = kv.Value
+	}
+	require.Contains(t, attrs, attribute.Key("gen_ai.output.messages"))
+	assert.Contains(t, attrs[attribute.Key("gen_ai.output.messages")].AsString(), `"type":"text"`)
+	assert.Equal(t, int64(7), attrs[attribute.Key("fullsend.content.dropped_bytes")].AsInt64())
+	assert.True(t, attrs[attribute.Key("fullsend.content.truncated")].AsBool())
+	assert.Equal(t, int64(1), attrs[attribute.Key("fullsend.content.redactions")].AsInt64())
+}
+
+func TestAttachContent_EmptyResultAddsNothing(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	_, span := tp.Tracer("test").Start(context.Background(), "agent")
+	attachContent(span, contentResult{})
+	span.End()
+
+	ended := rec.Ended()
+	require.Len(t, ended, 1)
+	assert.Empty(t, ended[0].Attributes(), "no content must mean no attributes at all")
+}
+
+func TestAttachContent_MarkersSurviveWhenAllContentDropped(t *testing.T) {
+	// A budget that drops every part must still leave its trace: the
+	// documented "a consumer can always tell partial from complete"
+	// invariant depends on the markers being attached even when no
+	// content attribute is.
+	rec := tracetest.NewSpanRecorder()
+	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+
+	_, span := tp.Tracer("test").Start(context.Background(), "agent")
+	attachContent(span, contentResult{Truncated: true, DroppedBytes: 9})
+	span.End()
+
+	ended := rec.Ended()
+	require.Len(t, ended, 1)
+	attrs := make(map[attribute.Key]attribute.Value)
+	for _, kv := range ended[0].Attributes() {
+		attrs[kv.Key] = kv.Value
+	}
+	assert.NotContains(t, attrs, attribute.Key("gen_ai.output.messages"))
+	assert.True(t, attrs[attribute.Key("fullsend.content.truncated")].AsBool())
+	assert.Equal(t, int64(9), attrs[attribute.Key("fullsend.content.dropped_bytes")].AsInt64())
+}
+
+func TestBoundedStringAttr_CapsAtMaxSpanAttrValueLen(t *testing.T) {
+	// With the Level 3 gate lifting the provider-wide SDK cap, free-text
+	// attributes that used to rely on it must be bounded at the call
+	// site instead.
+	v := boundedStringAttr("k", strings.Repeat("x", telemetry.MaxSpanAttrValueLen*3))
+	assert.LessOrEqual(t, len(v.Value.AsString()), telemetry.MaxSpanAttrValueLen)
+
+	small := boundedStringAttr("k", "tiny")
+	assert.Equal(t, "tiny", small.Value.AsString())
+}
+
+func TestAgentSpanEndAttrs_ModelBoundedWithoutSDKCap(t *testing.T) {
+	// gen_ai.request.model comes from the sandboxed agent's stream-json
+	// output (untrusted, bounded only by the 1 MiB line buffer); it must
+	// not depend on the SDK cap the content gate lifts.
+	m := agentruntime.RunMetrics{Model: strings.Repeat("m", telemetry.MaxSpanAttrValueLen*2)}
+	for _, kv := range agentSpanEndAttrs(1, 0, "claude", "claude", &m) {
+		if kv.Key == "gen_ai.request.model" {
+			assert.LessOrEqual(t, len(kv.Value.AsString()), telemetry.MaxSpanAttrValueLen)
+			return
+		}
+	}
+	t.Fatal("gen_ai.request.model attribute not found")
+}
+
+func TestContentEventHandler_NilCollectorKeepsDefaultRenderer(t *testing.T) {
+	assert.Nil(t, contentEventHandler(func(agentruntime.AgentEvent) {}, nil),
+		"gate off must leave OnEvent nil so the runtime's default renderer runs")
+}
+
+func TestContentEventHandler_TeesToRendererAndCollector(t *testing.T) {
+	var rendered []agentruntime.AgentEvent
+	c := newContentCollector(4096)
+	handler := contentEventHandler(func(e agentruntime.AgentEvent) { rendered = append(rendered, e) }, c)
+	require.NotNil(t, handler)
+
+	handler(agentruntime.TextEvent{Text: "hello"})
+	handler(agentruntime.TokensEvent{InputTokens: 1})
+
+	assert.Len(t, rendered, 2, "every event must still reach the renderer")
+	assert.Contains(t, c.Result("stop").OutputMessages, "hello", "content events must reach the collector")
+}
+
+func TestNewContentCollectorIfEnabled_FollowsGate(t *testing.T) {
+	t.Setenv(telemetry.ContentCaptureEnvVar, "")
+	assert.Nil(t, newContentCollectorIfEnabled(), "gate off => nil collector")
+
+	t.Setenv(telemetry.ContentCaptureEnvVar, "true")
+	assert.NotNil(t, newContentCollectorIfEnabled(), "gate on => live collector")
+}
+
+// TestContentCapture_EndToEndFileSink drives the REAL telemetry.Setup —
+// file exporter plus the lifted attribute cap — and asserts that content
+// larger than the metadata-mode 8192 cap survives byte-intact into
+// run-telemetry.jsonl. This is the integration the unit tests cannot see:
+// spanLimits and attachContent must agree or the SDK silently cuts the
+// content JSON mid-value.
+func TestContentCapture_EndToEndFileSink(t *testing.T) {
+	t.Setenv("OTEL_SDK_DISABLED", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
+	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
+	t.Setenv(telemetry.ContentCaptureEnvVar, "true")
+
+	dir := t.TempDir()
+	tracer, cleanup := telemetry.Setup(dir, "test")
+
+	c := newContentCollectorIfEnabled()
+	require.NotNil(t, c)
+	big := strings.Repeat("all work and no play makes claude a dull agent. ", 400) // ~19KB > 8192
+	c.Handle(agentruntime.TextEvent{Text: big})
+
+	_, span := tracer.Start(context.Background(), "agent")
+	res := c.Result("stop")
+	attachContent(span, res)
+	span.End()
+	cleanup(context.Background())
+
+	raw, err := os.ReadFile(filepath.Join(dir, telemetry.TelemetryFile))
+	require.NoError(t, err)
+	require.NotEmpty(t, raw)
+	content := string(raw)
+	require.Contains(t, content, "gen_ai.output.messages")
+	assert.Contains(t, content, "dull agent",
+		"content must reach the file sink")
+	// The whole redacted content must survive — no SDK truncation at 8192.
+	var decoded []map[string]any
+	require.NoError(t, json.Unmarshal([]byte(res.OutputMessages), &decoded),
+		"assembled content must be valid JSON")
+	assert.Greater(t, len(res.OutputMessages), telemetry.MaxSpanAttrValueLen,
+		"fixture must exceed the metadata-mode cap for this test to prove anything")
+	escaped, err := json.Marshal(res.OutputMessages)
+	require.NoError(t, err)
+	assert.Contains(t, content, string(escaped[1:len(escaped)-1]),
+		"the full content JSON must appear byte-intact in the file sink")
+}
+
+// TestContentCapture_GateOffProducesNoContent is the negative control: with
+// the gate off the collector is nil, OnEvent stays nil (default renderer),
+// and nothing content-shaped reaches the file sink.
+func TestContentCapture_GateOffProducesNoContent(t *testing.T) {
+	t.Setenv("OTEL_SDK_DISABLED", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	t.Setenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "")
+	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
+	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
+	t.Setenv(telemetry.ContentCaptureEnvVar, "")
+
+	dir := t.TempDir()
+	tracer, cleanup := telemetry.Setup(dir, "test")
+
+	c := newContentCollectorIfEnabled()
+	require.Nil(t, c, "gate off must mean no collector")
+	c.Handle(agentruntime.TextEvent{Text: "would-be content"}) // nil-safe no-op
+
+	_, span := tracer.Start(context.Background(), "agent")
+	attachContent(span, c.Result("stop"))
+	span.End()
+	cleanup(context.Background())
+
+	raw, err := os.ReadFile(filepath.Join(dir, telemetry.TelemetryFile))
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "gen_ai.output.messages")
+	assert.NotContains(t, string(raw), "would-be content")
+	assert.NotContains(t, string(raw), "fullsend.content.")
+}
+
+func TestAgentSpanStartAttrs_AgentNameBoundedWithoutSDKCap(t *testing.T) {
+	// gen_ai.agent.name comes from the CLI argument (unbounded); like the
+	// other free-text attributes it must not depend on the SDK cap the
+	// content gate lifts.
+	for _, kv := range agentSpanStartAttrs(1, strings.Repeat("n", telemetry.MaxSpanAttrValueLen*2)) {
+		if kv.Key == "gen_ai.agent.name" {
+			assert.LessOrEqual(t, len(kv.Value.AsString()), telemetry.MaxSpanAttrValueLen)
+			return
+		}
+	}
+	t.Fatal("gen_ai.agent.name attribute not found")
 }

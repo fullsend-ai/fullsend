@@ -673,9 +673,25 @@ func TestValidate_ModelValid(t *testing.T) {
 		"claude-sonnet-4-6@default",
 		"claude-sonnet-4-6@20250514",
 		"claude-opus-4-1@20250805",
+		"google-vertex/gemini-3.7-flash",
+		"xai-vertex/xai/grok-4.6",
+		"anthropic-vertex/claude-opus-4-6",
 	} {
 		h := &Harness{Agent: "agents/test.md", Role: "test", Model: model}
 		require.NoError(t, h.Validate(), "model %q should be valid", model)
+	}
+}
+
+func TestValidate_ModelInvalid_MalformedSlash(t *testing.T) {
+	for _, model := range []string{
+		"/leading",
+		"trailing/",
+		"a//b",
+	} {
+		h := &Harness{Agent: "agents/test.md", Role: "test", Model: model}
+		err := h.Validate()
+		require.Error(t, err, "model %q should be invalid", model)
+		assert.Contains(t, err.Error(), "invalid characters")
 	}
 }
 

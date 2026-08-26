@@ -552,6 +552,24 @@ func TestSandboxHookConfig_Tirith(t *testing.T) {
 	assert.Equal(t, "medium", cfg.TirithFailOn())
 }
 
+func TestSandboxHookConfig_SSRFEgressAllowlist(t *testing.T) {
+	// Unset harness → empty allowlist.
+	cfg := SandboxHookConfigFromHarness(nil)
+	assert.Empty(t, cfg.SSRFEgressAllowlist())
+
+	// Harness with no allowlist → empty.
+	h := &harness.Harness{Security: &harness.SecurityConfig{SandboxHooks: &harness.SandboxHooks{}}}
+	cfg = SandboxHookConfigFromHarness(h)
+	assert.Empty(t, cfg.SSRFEgressAllowlist())
+
+	// Harness with allowlist → returned.
+	h = &harness.Harness{Security: &harness.SecurityConfig{SandboxHooks: &harness.SandboxHooks{
+		SSRFEgressAllowlist: "gitlab.internal:443,other.host:8443",
+	}}}
+	cfg = SandboxHookConfigFromHarness(h)
+	assert.Equal(t, "gitlab.internal:443,other.host:8443", cfg.SSRFEgressAllowlist())
+}
+
 func countPhase(plan []HookGroup, phase HookPhase) int {
 	n := 0
 	for _, g := range plan {

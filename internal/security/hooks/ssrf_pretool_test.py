@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import socket
+from unittest import mock
 
 import pytest
 
@@ -981,3 +983,215 @@ class TestProcessToolCallWebFetchUnchanged:
         }
         result = hook.process_tool_call(tool_input)
         assert result is not None
+
+
+# ---------------------------------------------------------------------------
+# Egress allowlist tests
+# ---------------------------------------------------------------------------
+
+
+class TestEgressAllowlistParsing:
+    """Unit tests for _parse_egress_allowlist."""
+
+    def test_empty_env(self, hook):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            assert hook._parse_egress_allowlist() == set()
+
+    def test_single_entry(self, hook):
+        with mock.patch.dict(os.environ, {"FULLSEND_EGRESS_ALLOWLIST": "host.internal:443"}):
+            result = hook._parse_egress_allowlist()
+            assert ("host.internal", 443) in result
+
+    def test_multiple_entries(self, hook):
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "a.internal:443,b.internal:8443"},
+        ):
+            result = hook._parse_egress_allowlist()
+            assert ("a.internal", 443) in result
+            assert ("b.internal", 8443) in result
+
+    def test_trailing_dot_stripped(self, hook):
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "host.internal.:443"},
+        ):
+            result = hook._parse_egress_allowlist()
+            assert ("host.internal", 443) in result
+
+    def test_host_only_no_port(self, hook):
+        with mock.patch.dict(os.environ, {"FULLSEND_EGRESS_ALLOWLIST": "host.internal"}):
+            result = hook._parse_egress_allowlist()
+            assert ("host.internal", 0) in result
+
+    def test_whitespace_trimmed(self, hook):
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": " a.internal:443 , b.internal:8443 "},
+        ):
+            result = hook._parse_egress_allowlist()
+            assert ("a.internal", 443) in result
+            assert ("b.internal", 8443) in result
+
+    def test_ipv6_brackets_stripped(self, hook):
+        with mock.patch.dict(os.environ, {"FULLSEND_EGRESS_ALLOWLIST": "[::1]:443"}):
+            result = hook._parse_egress_allowlist()
+            assert ("::1", 443) in result
+            assert ("[::1]", 443) not in result
+
+    def test_ipv6_full_address_brackets_stripped(self, hook):
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "[2001:db8::1]:8443"},
+        ):
+            result = hook._parse_egress_allowlist()
+            assert ("2001:db8::1", 8443) in result
+
+    def test_wildcard_entries_ignored(self, hook, capsys):
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "*.internal:443,exact.host:8443"},
+        ):
+            result = hook._parse_egress_allowlist()
+            assert len(result) == 1
+            assert ("exact.host", 8443) in result
+            captured = capsys.readouterr()
+            assert "wildcard entry '*.internal:443'" in captured.err
+
+    def test_malformed_port_warns(self, hook, capsys):
+        with mock.patch.dict(
+            os.environ,
+            {"FULLSEND_EGRESS_ALLOWLIST": "host.internal:notaport,good.host:443"},
+        ):
+            result = hook._parse_egress_allowlist()
+            assert len(result) == 1
+            assert ("good.host", 443) in result
+            captured = capsys.readouterr()
+            assert "malformed port" in captured.err
+            assert "host.internal:notaport" in captured.err
+
+
+class TestEgressAllowlistValidateUrl:
+    """Verify validate_url respects the egress allowlist on DNS failure."""
+
+    def test_allowlisted_host_with_dns_failure_is_allowed(self, hook):
+        """An allowlisted host should pass validation even when DNS fails."""
+        url = "https://internal.host/api/v4/projects"
+        with (
+            mock.patch("socket.getaddrinfo", side_effect=socket.gaierror("no DNS")),
+            mock.patch.dict(os.environ, {"FULLSEND_EGRESS_ALLOWLIST": "internal.host:443"}),
+        ):
+            result = hook.validate_url(url)
+            assert result is None  # allowed
+
+    def test_allowlisted_host_with_dns_timeout_is_allowed(self, hook):
+        """An allowlisted host should pass validation even when DNS times out."""
+        url = "https://internal.host/api/v4/projects"
+        with (
+            mock.patch("socket.getaddrinfo", side_effect=TimeoutError("timed out")),
+            mock.patch.dict(os.environ, {"FULLSEND_EGRESS_ALLOWLIST": "internal.host:443"}),
+        ):
+            result = hook.validate_url(url)
+            assert result is None  # allowed
+
+    def test_allowlisted_host_still_blocks_dangerous_scheme(self, hook):
+        """Allowlisting skips DNS only — scheme checks still apply."""
+        url = "file://internal.host/etc/passwd"
+        with mock.patch.dict(os.environ, {"FULLSEND_EGRESS_ALLOWLIST": "internal.host:443"}):
+            result = hook.validate_url(url)
+            assert result is not None  # blocked
+            assert "Blocked scheme" in result
+
+    def test_allowlisted_host_still_blocks_blocked_hostname(self, hook):
+        """Allowlisting does not override the hostname blocklist."""
+        url = "https://metadata.google.internal/something"
+        with (
+            mock.patch("socket.getaddrinfo", side_effect=socket.gaierror("no DNS")),
+            mock.patch.dict(
+                os.environ,
+                {"FULLSEND_EGRESS_ALLOWLIST": "metadata.google.internal:443"},
+            ),
+        ):
+            result = hook.validate_url(url)
+            assert result is not None  # blocked
+            assert "Blocked hostname" in result
+
+    def test_non_allowlisted_host_dns_failure_still_blocks(self, hook):
+        """Non-allowlisted hosts with DNS failure must still fail closed."""
+        url = "https://evil.internal.corp/steal"
+        with mock.patch("socket.getaddrinfo", side_effect=socket.gaierror("no DNS")):
+            result = hook.validate_url(url)
+            assert result is not None
+            assert "fail-closed" in result
+
+    def test_allowlisted_host_wrong_port_still_blocks(self, hook):
+        """Allowlist entry for port 443 does not apply to port 8080."""
+        url = "https://internal.host:8080/api"
+        with (
+            mock.patch("socket.getaddrinfo", side_effect=socket.gaierror("no DNS")),
+            mock.patch.dict(os.environ, {"FULLSEND_EGRESS_ALLOWLIST": "internal.host:443"}),
+        ):
+            result = hook.validate_url(url)
+            assert result is not None
+            assert "fail-closed" in result
+
+    def test_allowlisted_host_wildcard_port(self, hook):
+        """Allowlist entry without port acts as wildcard for any port."""
+        url = "https://internal.host:8080/api"
+        with (
+            mock.patch("socket.getaddrinfo", side_effect=socket.gaierror("no DNS")),
+            mock.patch.dict(os.environ, {"FULLSEND_EGRESS_ALLOWLIST": "internal.host"}),
+        ):
+            result = hook.validate_url(url)
+            assert result is None  # allowed
+
+    def test_allowlisted_host_dns_resolves_to_private_still_blocks(self, hook):
+        """When DNS succeeds, the rebinding check still applies for allowlisted hosts."""
+        url = "https://internal.host/api"
+        with (
+            mock.patch(
+                "socket.getaddrinfo",
+                return_value=[(socket.AF_INET, 1, 0, "", ("10.0.0.1", 0))],
+            ),
+            mock.patch.dict(os.environ, {"FULLSEND_EGRESS_ALLOWLIST": "internal.host:443"}),
+        ):
+            result = hook.validate_url(url)
+            assert result is not None
+            assert "rebinding" in result.lower() or "blocked" in result.lower()
+
+    def test_allowlisted_http_default_port(self, hook):
+        """HTTP URL with no explicit port matches allowlist entry on port 80."""
+        url = "http://internal.host/api"
+        with (
+            mock.patch("socket.getaddrinfo", side_effect=socket.gaierror("no DNS")),
+            mock.patch.dict(os.environ, {"FULLSEND_EGRESS_ALLOWLIST": "internal.host:80"}),
+        ):
+            result = hook.validate_url(url)
+            assert result is None  # allowed
+
+    def test_no_allowlist_dns_failure_still_blocks(self, hook):
+        """Without FULLSEND_EGRESS_ALLOWLIST, DNS failure always blocks."""
+        url = "https://internal.host/api"
+        with mock.patch("socket.getaddrinfo", side_effect=socket.gaierror("no DNS")):
+            # Ensure env var is not set.
+            env = dict(os.environ)
+            env.pop("FULLSEND_EGRESS_ALLOWLIST", None)
+            with mock.patch.dict(os.environ, env, clear=True):
+                result = hook.validate_url(url)
+                assert result is not None
+                assert "fail-closed" in result
+
+    def test_ipv6_bracket_allowlist_entry_matches(self, hook):
+        """IPv6 allowlist entry with brackets matches urlparse().hostname (no brackets)."""
+        # urlparse("https://[::1]:443/").hostname returns "::1" (no brackets),
+        # so a bracket-notation allowlist entry must strip brackets to match.
+        url = "https://internal.host/api"
+        with (
+            mock.patch("socket.getaddrinfo", side_effect=socket.gaierror("no DNS")),
+            mock.patch.dict(
+                os.environ,
+                {"FULLSEND_EGRESS_ALLOWLIST": "[internal.host]:443"},
+            ),
+        ):
+            result = hook.validate_url(url)
+            assert result is None  # allowed

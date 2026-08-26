@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 )
 
@@ -168,4 +169,37 @@ func TestAssertPiTranscriptHasToolCall(t *testing.T) {
 	assert.True(t, isPiSessionFile([]byte(header)))
 	assert.False(t, isPiSessionFile([]byte(`{"type":"assistant"}`+"\n")))
 	assert.False(t, isPiSessionFile(nil))
+}
+
+func TestGivenRepositoryAgentSettings_WritesEntriesAndSnapshotsAgents(t *testing.T) {
+	t.Parallel()
+	existing := perRepoDummyConfig + "agents:\n  - source: harness/lint.yaml\n    effort: high\n"
+	scmDriver := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte(existing)}}
+	w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver}
+
+	require.NoError(t, givenRepositoryAgentSettings(w, "triage:\n  runtime: claude\ncode:\n  runtime: dummy\nlint:\n  model: haiku\n"))
+	assert.True(t, w.AgentsOverridden)
+	assert.Equal(t, []config.AgentEntry{{Source: "harness/lint.yaml", Effort: "high"}}, w.AgentsOriginal,
+		"pre-scenario agents are remembered for cleanup")
+	assert.Equal(t, filepath.Join(".fullsend", "config.yaml"), scmDriver.lastPath)
+	written, err := config.ParsePerRepoConfig(scmDriver.lastContent)
+	require.NoError(t, err)
+	assert.Equal(t, "dummy", written.(config.PerRepoConfigReader).ConfigRuntime(), "repo-wide key untouched")
+	lint, ok := config.AgentSettingsFor(written.AgentEntries(), "lint")
+	require.True(t, ok)
+	assert.Equal(t, config.AgentEntry{Source: "harness/lint.yaml", Effort: "high", Model: "haiku"}, lint, "settings land on the sourced entry")
+	triage, ok := config.AgentSettingsFor(written.AgentEntries(), "triage")
+	require.True(t, ok)
+	assert.Equal(t, config.AgentEntry{Name: "triage", Runtime: "claude"}, triage, "built-ins get a name-only entry")
+}
+
+func TestGivenRepositoryAgentSettings_RejectsWhatTheRunnerWouldReject(t *testing.T) {
+	t.Parallel()
+	for _, doc := range []string{"coder:\n  runtime: dummy\n", "triage:\n  runtime: opencode\n", "triage:\n  effort: turbo\n", ""} {
+		scmDriver := &recordingSCM{fakeCleanupSCM: fakeCleanupSCM{fileContent: []byte(perRepoDummyConfig)}}
+		w := &world.World{Org: "org", RepoOwner: "org", RepoName: "repo", SCM: scmDriver}
+		err := givenRepositoryAgentSettings(w, doc)
+		require.Error(t, err, "doc %q", doc)
+		assert.False(t, scmDriver.commitFileCalled, "doc %q", doc)
+	}
 }

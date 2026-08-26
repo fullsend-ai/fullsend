@@ -30,8 +30,9 @@ through fullsend's table, and a bare id gets the provider from `FULLSEND_PI_PROV
 > and a bare id under `FULLSEND_PI_PROVIDER=xai-vertex`, case-insensitively, so both land on the
 > canonical spec.
 
-Because harness `model:` cannot contain `/` (`validModelName` is `^[a-zA-Z0-9_.@-]+$`), a harness
-selects a pi provider with a bare `model:` plus `FULLSEND_PI_PROVIDER`.
+Harness `model:` and `agents:` entry `model:` values accept the `provider/id` form directly
+(`xai-vertex/xai/grok-4.6`); a harness can also select a provider with a bare `model:` plus
+`FULLSEND_PI_PROVIDER`.
 
 ### Each provider has its own GCP project
 
@@ -69,9 +70,65 @@ endpoints answer `FAILED_PRECONDITION` — so region variables are deliberately 
 | Extra knobs | `FULLSEND_PI_PROVIDER` (prefix for bare ids), `FULLSEND_PI_BASH_ALLOWLIST=enforce` |
 | Not supported | Sub-agents, fallback chains, `plugins:`, Bedrock/Azure providers |
 
-**Running it locally?** See [Run a minimal agent on the pi
-runtime](../guides/user/running-agents-locally.md#run-a-minimal-agent-on-the-pi-runtime) — no fleet repo
-required.
+## Running it locally
+
+Complete [Running agents locally](../guides/user/running-agents-locally.md) first — the CLI,
+OpenShell, credentials and the fleet clone are the same. Every example there runs on pi by adding
+`--runtime pi` to the same command:
+
+```bash
+fullsend run triage \
+  --fullsend-dir /tmp/fullsend-agents/ \
+  --target-repo /tmp/target-repo/ \
+  --env-file fullsend-gcp.env \
+  --env-file fullsend-triage.env \
+  --runtime pi
+```
+
+The plan block confirms the selection — overridden values carry their source, harness defaults
+print bare — and `metrics.json` records the same (`runtime`, `runtime_source`, `requested_model`,
+`override_source`):
+
+```
+    Model: opus
+    Effort: high
+    Runtime: pi (from --runtime flag)
+...
+runtime: selected "pi" from --runtime flag
+...
+→ Agent: claude-opus-4-6 (v0.84.2)
+→ Result: stop
+  ✓ Agent exited with code 0 (131.9s)
+```
+
+Pick a model the same way — on pi the model name is also the provider choice, and the same Vertex
+credentials cover Gemini:
+
+```bash
+fullsend run triage ... --runtime pi --model google-vertex/gemini-3.7-flash
+```
+
+To keep an agent on pi (or off it) without passing flags every time, set `runtime:`/`model:` on
+its `agents:` entry in `config.yaml` — see [per-agent settings](../runtimes.md#per-agent-runtime-model-and-effort).
+
+What a local pi run needs, beyond the guide:
+
+- **fullsend v0.37.0+** — the first release that carries the pi runtime; the release download
+  and the container image both work as-is.
+- **A sandbox image that includes pi** — `ghcr.io/fullsend-ai/fullsend-sandbox` v0.37.0+ (the image
+  bakes `PI_VERSION`). A stale image fails preflight with `pi preflight: pi --version exited 127`;
+  `podman pull ghcr.io/fullsend-ai/fullsend-sandbox:latest` fixes it.
+- **Platforms** — verified end to end on macOS Apple Silicon (podman machine, Homebrew `openshell`)
+  and Fedora with rootless Podman; the guide's platform notes apply unchanged.
+- **`review` and `retro`** complete with schema-valid results but in a single context — pi has no
+  sub-agent tool, so the parallel reviewer roster is not exercised (see [Not yet exercised](#not-yet-exercised)).
+- **Knobs** — `FULLSEND_PI_PROVIDER` sets the provider for bare model ids (default
+  `anthropic-vertex`); `FULLSEND_PI_BASH_ALLOWLIST=enforce` makes the Bash first-token allowlist
+  block instead of warn.
+- **Security hooks are fail-closed** — a missing or modified hook adapter stops the run with exit
+  97 by design; repo-owned `.pi/` content is never loaded.
+- **Debugging** — `--debug='*'` (the `=` is required); sandbox-side failures land in `pi-debug.log`
+  inside the run directory, next to the transcripts, not in the runner's output.
 
 ## Behaviour differences worth knowing
 
@@ -91,9 +148,10 @@ required.
 ## Not yet exercised
 
 `runtime: pi` is selectable and has been run end to end, but no **fleet lifecycle** run on Vertex is
-recorded yet. Pilot on a disposable org with `triage`/`prioritize` before `code`/`fix`. `review` and
-`retro` are unsupported — they need sub-agents, and would run in a single context without per-persona
-models. `extension_error` events are not mapped.
+recorded yet. Pilot on a disposable repo with `triage`/`prioritize` before `code`/`fix`. `review` and
+`retro` run to schema-valid results, but in a **single context**: pi has no sub-agent tool, so the
+parallel persona roster and its per-persona models are never exercised — treat them as unsupported
+for that purpose. `extension_error` events are not mapped.
 
 ## Troubleshooting
 
@@ -108,6 +166,22 @@ table above, not a shared one.
 **403 `PERMISSION_DENIED` on a Vertex call.** The credentials work but the model is not enabled in
 that project's Model Garden, or the provider resolved a different project than you expect.
 
+**`[pi-anthropic-vertex] disabled: set GOOGLE_CLOUD_PROJECT ...`.** The sandbox environment comes
+from the harness (`host_files`, `env.sandbox`), not from `--env-file`, which only reaches the runner
+process (ADR 0055). Files sourced from `.env.d/` need `export` on each line. The fleet harnesses
+already wire this; a custom harness must too.
+
+**The run used Claude instead of pi.** The runtime falls back to `claude` when neither the config's
+`runtime:` (repo-wide or on the agent's `agents:` entry) nor `--runtime`/`FULLSEND_RUNTIME` selects
+pi; the plan block's `Runtime:` line and stderr's `runtime: selected ...` show which one ran and why.
+
+**`--debug "..."` fails with `accepts 1 arg(s)`.** `--debug` takes an optional value: write
+`--debug='*'` (with `=`).
+
+**The agent fails with nothing in the terminal.** Sandbox-side pi failures land in `pi-debug.log`
+inside the run directory, next to the transcripts; kept sandboxes must be removed manually
+(`openshell sandbox delete <name>`).
+
 **The model says it is a different model than you selected.** Do not trust the reply — a model
 asked about itself will often repeat whatever the conversation history said. `metrics.json` records
 the model that actually served the run, and the session JSONL under `transcripts/` records the
@@ -116,5 +190,5 @@ provider and model per message.
 ## See also
 
 - [Agent runtimes](../runtimes.md) — choosing and selecting a runtime
-- [Running agents locally](../guides/user/running-agents-locally.md#run-a-minimal-agent-on-the-pi-runtime) — a local pi run, no fleet repo required
+- [Running agents locally](../guides/user/running-agents-locally.md) — the local-run flow that [Running it locally](#running-it-locally) builds on
 - [pi runtime internals](../contributing/runtime-implementation.md#pi-runtime-internals-6464) — verification provenance and what to re-check on a version bump

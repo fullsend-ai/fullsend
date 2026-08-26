@@ -207,8 +207,17 @@ test: lint-all go-test script-test lint-eval-cases
 e2e-test:
 	go test -tags e2e -v -count=1 -timeout 30m ./e2e/admin/
 
+# Capabilities the runner declares for @requires:capability:<name> scenarios.
+# Declared here rather than in the e2e workflow so a PR that adds a gated
+# scenario exercises it on its own CI run (E2E Tests runs on
+# pull_request_target, whose workflow file comes from main). runtime-pi:
+# fullsend-sandbox:latest ships pi since v0.37.0; each pi scenario costs one
+# small haiku run on the pool repo's Vertex WIF. Override to skip them:
+#   BEHAVIOUR_CAPABILITIES= make behaviour-test
+BEHAVIOUR_CAPABILITIES ?= runtime-pi
+
 behaviour-test:
-	go test -tags behaviour -race -v -count=1 -timeout 45m ./e2e/behaviour/
+	BEHAVIOUR_CAPABILITIES="$(BEHAVIOUR_CAPABILITIES)" go test -tags behaviour -race -v -count=1 -timeout 45m ./e2e/behaviour/
 
 # Functional agent evals — run agents against ephemeral GitHub repos and judge results.
 # Required env: EVAL_ORG (GitHub org for ephemeral repos), plus GCP creds for Vertex AI.

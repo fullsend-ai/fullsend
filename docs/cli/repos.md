@@ -77,7 +77,7 @@ fullsend repos migrate <org> --project <gcp-project>
 
 ## `repos install`
 
-Converge repos to the desired state defined in a manifest. This is the primary command for managing per-repo installations — it handles adding repos to the manifest, provisioning new repos, repairing component drift (workflow, thin callers, variables, secrets), and upgrading scaffold refs.
+Converge repos to the desired state defined in a manifest. This is the primary command for managing per-repo installations — it handles adding repos to the manifest, provisioning new repos, repairing component drift (workflow, thin callers, variables, secrets), repairing scaffold content drift, and upgrading scaffold refs.
 
 When the manifest file does not exist and positional repo arguments are
 provided, `repos install` bootstraps a new manifest (`version: 1`),
@@ -88,7 +88,7 @@ required in this case. This enables a greenfield setup without running
 Runs in two phases:
 
 1. **Manifest add** — repos specified as positional arguments that are not already in the manifest are added (`--forge` is required when the target platform cannot be inferred). Per-repo overrides (`--inference-region`, `--fullsend-ref`, `--mint-url`, `--allowed-remote-resources`, `--runtime`) are written to the manifest entry.
-2. **Converge** — all manifest repos are converged through a unified probe → diff → apply pipeline. Repos with no components are freshly installed (scaffold files, variables, secrets). Repos with existing components are checked for drift (workflow, thin callers, variables, secrets — repaired automatically) and scaffold ref drift (upgraded automatically).
+2. **Converge** — all manifest repos are converged through a unified probe → diff → apply pipeline. Repos with no components are freshly installed (scaffold files, variables, secrets). Repos with existing components are checked for drift (workflow, thin callers, variables, secrets — repaired automatically), scaffold content drift (repaired automatically), and scaffold ref drift (upgraded automatically).
 
 ```bash
 fullsend repos install -f repos.yaml
@@ -132,7 +132,7 @@ fullsend repos install group/project --forge gitlab --gitlab-bot-token glpat-xxx
 
 ### Common workflows
 
-Converge all repos from a manifest (provision new, repair component drift, upgrade refs):
+Converge all repos from a manifest (provision new, repair component drift, repair scaffold content drift, upgrade refs):
 
 ```bash
 fullsend repos install -f repos.yaml
@@ -189,7 +189,7 @@ fullsend repos status --repo "acme/*" --json
 - **REPO** — `owner/repo` name
 - **REF** — Current workflow ref. Named refs (tags, branches) display as-is (e.g., `v2.3.0`, `main`). When the ref is a commit SHA, shows a truncated 7-character SHA with the expected ref in parentheses (e.g., `6f8b968 (main)`).
 - **STATUS** — `installed`, `not installed`, or `error`
-- **DRIFT** — Fields that differ from the manifest or scaffold files whose template content has changed, or `none`
+- **DRIFT** — Fields that differ from the manifest, scaffold files whose template content has changed, orphan files or variables no longer in the managed set, or `none`
 
 **JSON output** (`--json`) returns the full `StatusResult` object with per-repo details and aggregate summary counts.
 

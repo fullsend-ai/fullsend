@@ -1235,6 +1235,105 @@ func TestStatus_DetectsContentDrift_ThinCaller(t *testing.T) {
 	}
 }
 
+func TestStatus_DetectsOrphanFile(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v2.3.0",
+			Repos:       []RepoEntry{{Name: "org/repo"}},
+		},
+	}
+
+	populateInstalledRepo(t, fc, "org", "repo", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+
+	// Add an extra workflow file that is no longer in the expected
+	// template set — this simulates a file left behind from an older
+	// scaffold version.
+	fc.FileContents["org/repo/.github/workflows/fullsend.yml"] = []byte("name: old-workflow\n")
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	found := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == ".github/workflows/fullsend.yml" &&
+			d.Actual == "orphan file (no longer in template)" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected orphan file drift for .github/workflows/fullsend.yml, got drifts: %v",
+			result.Repos[0].Drifts)
+	}
+}
+
+func TestStatus_DetectsOrphanVariable(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v2.3.0",
+			Repos:       []RepoEntry{{Name: "org/repo"}},
+		},
+	}
+
+	populateInstalledRepo(t, fc, "org", "repo", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+
+	// Add an extra FULLSEND_-prefixed variable that is not in the
+	// managed set — simulating a variable from an older feature.
+	fc.VariableValues["org/repo/FULLSEND_OLD_FEATURE"] = "stale"
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	found := false
+	for _, d := range result.Repos[0].Drifts {
+		if d.Field == "FULLSEND_OLD_FEATURE" &&
+			d.Actual == "orphan variable (not in managed set)" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected orphan variable drift for FULLSEND_OLD_FEATURE, got drifts: %v",
+			result.Repos[0].Drifts)
+	}
+}
+
+func TestStatus_OrphanCheckError_ReportsStatusError(t *testing.T) {
+	fc := forge.NewFakeClient()
+	m := &Manifest{
+		Version: 1,
+		GitHub: &PlatformConfig{
+			MintURL:     "https://mint.example.com",
+			FullsendRef: "v2.3.0",
+			Repos:       []RepoEntry{{Name: "org/repo"}},
+		},
+	}
+
+	populateInstalledRepo(t, fc, "org", "repo", "v2.3.0",
+		"https://mint.example.com", "us-central1")
+
+	fc.Errors["ListRepoVariables"] = fmt.Errorf("API rate limit")
+
+	result, err := Status(context.Background(), m, newTestClientFactory(fc), 4, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Repos[0].Error == "" {
+		t.Fatal("expected status error from orphan variable check")
+	}
+}
+
 func TestStatus_NoContentDrift_WhenContentMatches(t *testing.T) {
 	fc := forge.NewFakeClient()
 	m := newTestManifest()

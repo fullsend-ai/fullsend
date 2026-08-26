@@ -77,7 +77,8 @@ And the agent will output issues.out with:
 Every scenario runs the stage under the dummy runtime selected at install time (`github setup … --runtime dummy`). The runtime layer gets two kinds of coverage without leasing extra repos or adding wall time:
 
 - **Core (every run):** `Then the run selected the "dummy" runtime` reads the `runtime` field the runner writes into `metrics.json`, proving the repo's `.fullsend/config.yaml` `runtime:` reached backend selection. Use it in one representative scenario per stage; the artifact is already downloaded for the other assertions.
-- **Runtime-specific (gated):** `Given the repository runtime is "<name>"` commits `runtime: <name>` to the leased repo's config for this scenario only (CleanupScenario restores `dummy` — slots are reused, so never set it any other way; the step refuses if the slot is not on `dummy` to begin with). The custom-harness step commits only a placeholder for a relative `agent:` path, which a real runtime cannot act on, so follow it with `And a pi agent "<name>" defined as:` and a docstring holding the full agent file (frontmatter + body) — `{{fixture:fixtures/<stage>/<file>.json}}` inlines a result fixture so the model has a concrete, deterministic file to write (the custom harness carries no post-script, so nothing validates it; the assertions are on the transcript and metrics). Then the scenario dispatches the harness and asserts on artifacts: `the run selected the "pi" runtime`, `the pi session transcript records at least one tool call` (the agent used a tool through pi; with security enabled the run refuses to start without the intact hook adapter, so the call was mediated by it — the step does not inspect hook output), `the run metrics report tokens`. Such scenarios cost a real model run on the pool repo's repo-scoped Vertex WIF and must be tagged `@requires:capability:runtime-<name>` so they stay off until the runner declares the capability (for pi: after `fullsend-sandbox:latest` ships `PI_VERSION`). See `features/runtime/pi.feature`.
+- **Runtime-specific (gated):** `Given the repository runtime is "<name>"` commits `runtime: <name>` to the leased repo's config for this scenario only (CleanupScenario restores `dummy` — slots are reused, so never set it any other way; the step refuses if the slot is not on `dummy` to begin with). The custom-harness step commits only a placeholder for a relative `agent:` path, which a real runtime cannot act on, so follow it with `And a pi agent "<name>" defined as:` and a docstring holding the full agent file (frontmatter + body) — `{{fixture:fixtures/<stage>/<file>.json}}` inlines a result fixture so the model has a concrete, deterministic file to write (the custom harness carries no post-script, so nothing validates it; the assertions are on the transcript and metrics). Then the scenario dispatches the harness and asserts on artifacts: `the run selected the "pi" runtime`, `the pi session transcript records at least one tool call` (the agent used a tool through pi; with security enabled the run refuses to start without the intact hook adapter, so the call was mediated by it — the step does not inspect hook output), `the run metrics report tokens`. Such scenarios cost a real model run on the pool repo's repo-scoped Vertex WIF and must be tagged `@requires:capability:runtime-<name>` so they only run where the runner declares the capability; `make behaviour-test` declares `runtime-pi` by default (a `Makefile` variable, so a PR adding a gated scenario exercises it on its own `pull_request_target` run — the workflow file itself comes from `main`); `BEHAVIOUR_CAPABILITIES= make behaviour-test` skips them. See `features/runtime/pi.feature`.
+- **Per-agent (every run):** `Given the repository agents are configured with:` with a YAML docstring (`triage:\n  runtime: dummy`) sets runtime/model/effort on the leased repo's `agents:` entries (a name-only entry for a built-in, the sourced entry for a custom agent; only the settings given change) — validated the way `fullsend run` validates them — and CleanupScenario restores the pre-scenario `agents:` list. Pair it with `the repository runtime is "<real runtime>"` and pin every agent the scenario can dispatch (triage hands off to `code` via `ready-to-code`) back to `dummy`, then assert `the run selected the "dummy" runtime from "agents.triage"`, which also checks `runtime_source` in `metrics.json` ends with that entry — proof the per-agent entry decided, at dummy cost. The gated second scenario in the same file leaves the repo on `dummy` and puts one custom agent on pi with `model: haiku` from its entry (the harness says `opus`); `the run requested model "haiku" from "agents.<name>" and the provider reported a "haiku" model` checks `requested_model`, `override_source`, the reported `model` and `num_turns` in `metrics.json`. See `features/runtime/agent-settings.feature`.
 
 Do not add runtime coverage to `e2e/admin` (org-mode install, deprecated per ADR 0044) or behind new `fullsend admin` flags.
 
@@ -249,6 +250,37 @@ TEST_ACTOR_OUTSIDER_PAT=...   # outsider human-like actor PAT (no org write on b
 `ENVIRONMENT` is `dev` or `stage`. Local runs default to `dev` when unset. CI sets it to match the GitHub Environment on the behaviour job (`dev` on pull requests and the merge queue, `stage` on push to `main`).
 
 Triage scenarios apply the `ready-for-triage` label (not `/fs-triage` comments) because the per-repo shim ignores `issue_comment` events from bot users and CI uses minted e2e installation tokens.
+
+### Test actor account permission scope
+
+The three test actor accounts (`fstest-write`, `fstest-triage`, `fstest-outsider`) simulate human collaborators at different permission levels. Their access is deliberately contained so that exfiltrated PATs cannot modify production repositories.
+
+| Property | fstest-write | fstest-triage | fstest-outsider |
+|----------|-------------|---------------|-----------------|
+| fullsend-ai org member | No | No | No |
+| Permission on `fullsend-ai/fullsend` | Read | Read | Read |
+| Permission on `fullsend-ai/agents` | Read | Read | Read |
+| Write access | Pool-org `test-repo-NN` repos only | Pool-org `test-repo-NN` repos only | None (outsider) |
+
+**Blast-radius containment:** All three accounts hold classic PATs. Because the accounts are not members of the `fullsend-ai` org and have only read permission on production repositories (`fullsend-ai/fullsend`, `fullsend-ai/agents`), a compromised PAT cannot push commits, merge PRs, or modify settings on any production repo. Write capability is scoped exclusively to disposable `test-repo-NN` infrastructure in the pool org, which is ephemeral and rebuilt each CI run.
+
+**Re-verification guidance:** Re-verify account permissions whenever:
+
+- A new test actor account is added
+- An existing account is granted additional repository or org access
+- The pool-org infrastructure changes (new orgs, new repo naming)
+
+To verify, check org membership and repository permissions via the GitHub API:
+
+```bash
+# Check org membership (expect 404 for non-members)
+gh api orgs/fullsend-ai/members/fstest-write --silent && echo "member" || echo "not a member"
+
+# Check repo permission (expect "read" or "pull")
+gh api repos/fullsend-ai/fullsend/collaborators/fstest-write/permission --jq '.permission'
+```
+
+Last verified: 2026-08-10 ([PR #6028 review](https://github.com/fullsend-ai/fullsend/pull/6028#pullrequestreview-3117093403)).
 
 For the reusable test GitHub Apps (`fullsend-test-*`) used by temporary and test mints, see [Test GitHub Apps](e2e-testing.md#test-github-apps) in the e2e testing guide.
 

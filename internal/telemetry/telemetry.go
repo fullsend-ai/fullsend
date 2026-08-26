@@ -79,8 +79,11 @@ func validateEndpoints(endpoint, tracesEndpoint string) error {
 	return nil
 }
 
-// MaxSpanAttrValueLen bounds every span attribute value recorded through
-// this provider. The SDK applies the limit to span attributes only —
+// MaxSpanAttrValueLen bounds span attribute values recorded through this
+// provider in metadata-only mode. When the Level 3 content gate is on,
+// spanLimits lifts the provider-wide cap (a capped cut would corrupt the
+// content JSON mid-value), so free-text values that relied on this cap
+// are bounded at their call sites instead (internal/cli boundedStringAttr). The SDK applies the limit to span attributes only —
 // event messages are bounded at their call site — counting characters,
 // not bytes (a multibyte value can reach four bytes per character on the
 // wire), and it repairs invalid UTF-8 only when it truncates: values at
@@ -104,27 +107,65 @@ const MaxSpanAttrValueLen = 8192
 func spanLimits() sdktrace.SpanLimits {
 	limits := sdktrace.NewSpanLimits()
 	if limits.AttributeValueLengthLimit < 0 && !attrValueLenConfigured() {
+		if ContentCaptureEnabled() {
+			// Level 3 puts JSON-string content attributes on spans. The
+			// default cap would cut such a value mid-string and corrupt
+			// the JSON; the content collector's byte budget is the size
+			// bound, so the SDK cap stays unlimited. An operator's
+			// explicit limit env var still wins above.
+			return limits
+		}
 		limits.AttributeValueLengthLimit = MaxSpanAttrValueLen
 	}
 	return limits
 }
 
 // attrValueLenConfigured reports whether the SDK honored an operator's
-// attribute value-length limit. It mirrors the SDK's firstInt resolution
+// attribute value-length limit.
+func attrValueLenConfigured() bool {
+	_, ok := operatorAttrValueLimit()
+	return ok
+}
+
+// operatorAttrValueLimit resolves the operator's attribute value-length
+// limit env vars to the value the SDK honored, reporting ok=false when no
+// operator setting took effect. It mirrors the SDK's firstInt resolution
 // exactly (sdk/trace/internal/env, v1.44.0): the first non-empty variable
 // decides alone — if its value fails strconv.Atoi, the SDK falls back to
 // its default without consulting the second variable, so a discarded
 // override is not a setting here either.
-func attrValueLenConfigured() bool {
+func operatorAttrValueLimit() (int, bool) {
 	for _, key := range []string{"OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT"} {
 		v := os.Getenv(key)
 		if v == "" {
 			continue
 		}
-		_, err := strconv.Atoi(v)
-		return err == nil
+		n, err := strconv.Atoi(v)
+		return n, err == nil
 	}
-	return false
+	return 0, false
+}
+
+// warnContentCaptureAttrLimit warns on stderr when the Level 3 content
+// gate is on but an operator's finite attribute value-length limit is
+// configured. The operator limit wins over the gate's cap lift
+// (spanLimits), so the SDK will cut any gen_ai.output.messages value over
+// the limit mid-JSON — in both sinks, with no fullsend.content.truncated
+// marker (that marker reflects only collector-side cuts) — silently
+// breaking the documented consumer contract. Telemetry never fails a run
+// (ADR 0050), so the collision is surfaced, not fatal. An explicit -1
+// (unlimited) cannot cut and is not a conflict.
+func warnContentCaptureAttrLimit() {
+	if !ContentCaptureEnabled() {
+		return
+	}
+	if limit, ok := operatorAttrValueLimit(); ok && limit >= 0 {
+		fmt.Fprintf(os.Stderr,
+			"fullsend: content capture is enabled but the operator attribute value length limit (%d) is set; "+
+				"gen_ai.output.messages values over the limit will be cut mid-JSON (unparseable, and "+
+				"fullsend.content.truncated will not flag the cut) — raise the limit or unset it to keep content parseable\n",
+			limit)
+	}
 }
 
 // Setup creates a TracerProvider with file and (optionally) OTLP exporters.
@@ -144,6 +185,8 @@ func Setup(dir string, serviceVersion string) (trace.Tracer, func(context.Contex
 	if err != nil {
 		return tracenoop.NewTracerProvider().Tracer(""), noop
 	}
+
+	warnContentCaptureAttrLimit()
 
 	res := buildResource(serviceVersion)
 	opts := []sdktrace.TracerProviderOption{

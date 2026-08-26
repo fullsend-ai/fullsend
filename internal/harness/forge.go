@@ -458,14 +458,24 @@ func BuildConfigMap(cfg config.ConfigReader) map[string]any {
 	if agents := pr.AgentEntries(); len(agents) > 0 {
 		anyAgents := make([]any, len(agents))
 		for i, a := range agents {
-			agentMap := map[string]any{
-				"source": a.Source,
+			agentMap := map[string]any{}
+			if a.Source != "" {
+				agentMap["source"] = a.Source
 			}
 			if a.Name != "" {
 				agentMap["name"] = a.Name
 			}
 			if a.Enabled != nil {
 				agentMap["enabled"] = *a.Enabled
+			}
+			if a.Runtime != "" {
+				agentMap["runtime"] = a.Runtime
+			}
+			if a.Model != "" {
+				agentMap["model"] = a.Model
+			}
+			if a.Effort != "" {
+				agentMap["effort"] = a.Effort
 			}
 			anyAgents[i] = agentMap
 		}

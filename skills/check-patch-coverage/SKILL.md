@@ -49,7 +49,34 @@ PKGS=$(echo "$CHANGED_GO" | xargs -I{} dirname {} | sort -u | sed 's|^|./|')
 echo "$PKGS"
 ```
 
-### 3. Run tests with a cover profile
+### 3. Check for packages with no test files
+
+Before running coverage, check whether each affected package actually
+contains test files. Go's `go test -coverprofile` only attributes
+coverage to the package under test — a package with zero `_test.go`
+files produces no coverage data at all, and Codecov will report 0%
+for every changed line.
+
+```bash
+MISSING_TESTS=""
+for pkg_dir in $PKGS; do
+  dir="${pkg_dir#./}"
+  if ! ls "$dir"/*_test.go >/dev/null 2>&1; then
+    echo "⚠  Package $dir has no test files — codecov/patch will report 0% coverage."
+    echo "   Create a _test.go file with direct unit tests for new/modified exported functions."
+    MISSING_TESTS="$MISSING_TESTS $dir"
+  fi
+done
+```
+
+If any packages were flagged: **stop and create test files** in those
+packages before continuing. The 80% threshold cannot be met when no
+coverage profile is generated for a package. Treat this as a coverage
+gap regardless of the threshold — add at least one `_test.go` file
+with direct unit tests for the new or modified exported functions,
+then re-run from step 1.
+
+### 4. Run tests with a cover profile
 
 ```bash
 go test -coverprofile=coverage.out -count=1 $PKGS
@@ -57,20 +84,25 @@ go test -coverprofile=coverage.out -count=1 $PKGS
 
 If tests fail, fix them first — coverage is meaningless on broken code.
 
-### 4. Check per-function coverage on changed files
+### 5. Check per-function coverage on changed files
 
 For each changed file, inspect coverage:
 
 ```bash
 for f in $CHANGED_GO; do
   echo "=== $f ==="
-  go tool cover -func=coverage.out | grep "$f" || echo "(no coverage data)"
+  go tool cover -func=coverage.out | grep "$f" \
+    || echo "⚠  No coverage data for $f — this file's package may lack test files. See step 3."
 done
 ```
 
+If any file shows no coverage data, go back to step 3 and verify
+the package has test files. A `(no coverage data)` result means
+Codecov will report 0% for that file's changed lines.
+
 Each output line shows `file:line: function  coverage%`.
 
-### 5. Assess against the 80% threshold
+### 6. Assess against the 80% threshold
 
 Look at the functions you added or modified:
 
@@ -81,9 +113,9 @@ Look at the functions you added or modified:
   - Modified functions where you added new branches or error paths
   - Functions at 0% that contain logic (not just simple getters/setters)
 
-After adding tests, re-run from step 3 and re-check.
+After adding tests, re-run from step 4 and re-check.
 
-### 6. Visual inspection (optional, for complex cases)
+### 7. Visual inspection (optional, for complex cases)
 
 If function-level coverage is borderline or the function has complex
 branching:

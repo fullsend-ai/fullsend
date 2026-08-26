@@ -1614,3 +1614,46 @@ func TestValidateOverlayForgeConfig_SecondIndex(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "overlays[1].pre_script must be a local path, not a URL")
 }
+
+func TestBuildConfigMap_AgentSettings(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.ParsePerRepoConfig([]byte(`# fullsend per-repo configuration
+version: "1"
+runtime: pi
+agents:
+  - name: triage
+    model: xai-vertex/xai/grok-4.6
+  - source: harness/lint.yaml
+    runtime: claude
+    effort: high
+`))
+	require.NoError(t, err)
+	m := BuildConfigMap(cfg)
+	require.NotNil(t, m)
+	assert.Equal(t, []any{
+		map[string]any{"name": "triage", "model": "xai-vertex/xai/grok-4.6"},
+		map[string]any{"source": "harness/lint.yaml", "runtime": "claude", "effort": "high"},
+	}, m["agents"])
+}
+
+func TestRegisteredAgents_SkipsOverrideOnlyEntries(t *testing.T) {
+	t.Parallel()
+	cfg, err := config.ParsePerRepoConfig([]byte(`# fullsend per-repo configuration
+version: "1"
+agents:
+  - name: triage
+    model: sonnet
+  - source: harness/lint.yaml
+    model: haiku
+  - name: retro
+    enabled: false
+`))
+	require.NoError(t, err)
+	registered, err := RegisteredAgents(cfg)
+	require.NoError(t, err)
+	// Only the sourced custom harness is a registered agent; the built-in
+	// tuning entry and the disable-only entry are not enumerated.
+	require.Len(t, registered, 1)
+	assert.Equal(t, "lint", registered[0].Name)
+	assert.Equal(t, "haiku", registered[0].Entry.Model)
+}

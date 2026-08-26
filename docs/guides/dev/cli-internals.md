@@ -76,6 +76,10 @@ fullsend
 ├── agent                                    # Manage agent registrations in config
 │   ├── add          <url-or-path>            # Register an agent (URL auto-pinned)
 │   ├── list                                  # List registered agents
+│   ├── set          <name>                   # Set an agent's runtime, model or effort (per-repo)
+│   │   ├── --runtime <claude|pi>            #   Runtime for this agent
+│   │   ├── --model <alias|id|provider/id>   #   Model for this agent
+│   │   └── --effort <level>                 #   Effort level for this agent
 │   ├── update       <name> [sha]             # Re-pin URL agent to new commit SHA
 │   └── remove       <name>                   # Unregister agent from config
 ├── lock             [agent-name]              # Pin remote deps to lock.yaml

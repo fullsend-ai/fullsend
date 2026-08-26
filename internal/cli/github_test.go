@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -1490,4 +1492,231 @@ func TestRunGitHubSetupPerRepo_InvalidRuntime(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid runtime")
+}
+
+// existingPerRepoConfigForRerun is a customized config as a repo would have
+// after editing it by hand: a non-default runtime, per-agent settings, a
+// custom agent, and a comment that a struct round-trip would drop.
+const existingPerRepoConfigForRerun = `# fullsend per-repo configuration
+# hand-written note: triage runs Grok on pi, code stays on Claude Code
+version: "1"
+runtime: pi
+roles:
+  - triage
+  - coder
+agents:
+  - source: harness/lint.yaml
+  - name: triage
+    model: xai-vertex/xai/grok-4.6
+  - name: code
+    runtime: claude
+    model: sonnet
+`
+
+func newRerunSetupClient(t *testing.T, existing string) *forge.FakeClient {
+	t.Helper()
+	client := forge.NewFakeClient()
+	client.AuthenticatedUser = "acme"
+	client.Repos = []forge.Repository{{FullName: "acme/widget", DefaultBranch: "main"}}
+	client.TokenScopes = []string{"repo", "workflow"}
+	client.Secrets = map[string]bool{
+		"acme/widget/FULLSEND_GCP_PROJECT_ID":   true,
+		"acme/widget/FULLSEND_GCP_WIF_PROVIDER": true,
+	}
+	if existing != "" {
+		client.FileContents = map[string][]byte{"acme/widget/.fullsend/config.yaml": []byte(existing)}
+	}
+	return client
+}
+
+func committedScaffoldFile(client *forge.FakeClient, path string) ([]byte, bool) {
+	for _, batch := range client.CommittedFilesToBranch {
+		for _, f := range batch.Files {
+			if f.Path == path {
+				return f.Content, true
+			}
+		}
+	}
+	return nil, false
+}
+
+func TestRunGitHubSetupPerRepo_Rerun_KeepsExistingConfigVerbatim(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := newRerunSetupClient(t, existingPerRepoConfigForRerun)
+	var out bytes.Buffer
+	printer := ui.New(&out)
+
+	// No config-targeting flag: the scaffold refreshes the managed files
+	// but leaves .fullsend/config.yaml out entirely, so the agents: entries,
+	// the runtime and the hand-written comment survive.
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags: map[string]bool{},
+	})
+	require.NoError(t, err)
+	_, present := committedScaffoldFile(client, ".fullsend/config.yaml")
+	assert.False(t, present, "existing config.yaml must not be rewritten on a flag-less re-run")
+	assert.NotEmpty(t, client.CommittedFilesToBranch, "managed scaffold files are still delivered")
+	assert.Contains(t, out.String(), "Keeping existing .fullsend/config.yaml")
+	assert.NotContains(t, out.String(), "runtime?", "no runtime prompt on a re-run")
+}
+
+func TestRunGitHubSetupPerRepo_Rerun_ChangesOnlyTheFlaggedKey(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := newRerunSetupClient(t, existingPerRepoConfigForRerun)
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		runtime:      "claude",
+		changedFlags: map[string]bool{"runtime": true},
+	})
+	require.NoError(t, err)
+	content, present := committedScaffoldFile(client, ".fullsend/config.yaml")
+	require.True(t, present, "--runtime targets config.yaml, so it is rewritten")
+	cfg, err := config.ParsePerRepoConfig(content)
+	require.NoError(t, err)
+	pr := cfg.(config.PerRepoConfigReader)
+	assert.Equal(t, "claude", pr.ConfigRuntime(), "flagged key changed")
+	assert.Equal(t, []string{"triage", "coder"}, pr.ConfigRoles(), "roles kept (--agents not passed, despite its default)")
+	require.Len(t, pr.AgentEntries(), 3, "custom agent and per-agent settings kept")
+	triage, ok := config.AgentSettingsFor(pr.AgentEntries(), "triage")
+	require.True(t, ok, "agent settings kept")
+	assert.Equal(t, "xai-vertex/xai/grok-4.6", triage.Model)
+	code, ok := config.AgentSettingsFor(pr.AgentEntries(), "code")
+	require.True(t, ok)
+	assert.Equal(t, "sonnet", code.Model)
+}
+
+func TestRunGitHubSetupPerRepo_Rerun_InvalidExistingConfigFails(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := newRerunSetupClient(t, "version: \"1\"\nagents: {not: a, list: here}\n")
+	printer := ui.New(&discardWriter{})
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		changedFlags: map[string]bool{},
+	})
+	require.Error(t, err, "a broken existing config is never silently regenerated")
+	assert.Contains(t, err.Error(), "existing .fullsend/config.yaml")
+	assert.Empty(t, client.CommittedFilesToBranch)
+}
+
+func TestRunGitHubSetupPerRepo_Rerun_PresetKeepsExistingOverlay(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	client := newRerunSetupClient(t, existingPerRepoConfigForRerun)
+	printer := ui.New(&discardWriter{})
+	preset := filepath.Join(t.TempDir(), "preset.yaml")
+	require.NoError(t, os.WriteFile(preset, []byte("# fullsend per-repo configuration\nversion: \"1\"\ninference:\n  region: europe-west1\n"), 0o644))
+
+	err := runGitHubSetupPerRepo(context.Background(), client, printer, githubSetupConfig{
+		target:       "acme/widget",
+		agents:       strings.Join(config.PerRepoDefaultRoles(), ","),
+		configPreset: preset,
+		changedFlags: map[string]bool{"config": true},
+	})
+	require.NoError(t, err)
+	_, present := committedScaffoldFile(client, ".fullsend/config.yaml")
+	assert.False(t, present, "--config rewrites config.base.yaml; the existing overlay is kept")
+	_, basePresent := committedScaffoldFile(client, ".fullsend/config.base.yaml")
+	assert.True(t, basePresent)
+}
+
+func TestApplySetupFlagsToConfig_EveryFlag(t *testing.T) {
+	t.Parallel()
+	w := config.NewPerRepoConfig([]string{"triage"}, "")
+	changed := applySetupFlagsToConfig(githubSetupConfig{
+		runtime: "pi", agents: "triage,coder", mintURL: "https://mint.fullsend.sh",
+		inferenceProvider: "vertex", inferenceProject: "proj", inferenceRegion: "europe-west1",
+		inferenceWIFProvider: "projects/1/locations/global/workloadIdentityPools/p/providers/x",
+		changedFlags:         map[string]bool{"runtime": true, "agents": true, "mint-url": true, "inference-provider": true, "inference-project": true, "inference-region": true, "inference-wif-provider": true},
+	}, w, []string{"triage", "coder"})
+	assert.Equal(t, []string{"runtime", "roles", "mint_url", "inference.provider", "inference.project", "inference.region", "inference.wif_provider"}, changed)
+	assert.Equal(t, "pi", w.ConfigRuntime())
+	assert.Equal(t, []string{"triage", "coder"}, w.ConfigRoles())
+	assert.Equal(t, "https://mint.fullsend.sh", w.ConfigMintURL())
+	assert.Equal(t, "vertex", w.ConfigInferenceProvider())
+	assert.Equal(t, "proj", w.ConfigInferenceProject())
+	assert.Equal(t, "europe-west1", w.ConfigInferenceRegion())
+	assert.Equal(t, "projects/1/locations/global/workloadIdentityPools/p/providers/x", w.ConfigInferenceWIFProvider())
+
+	// Nothing flagged: nothing changes.
+	before, _ := w.Marshal()
+	assert.Empty(t, applySetupFlagsToConfig(githubSetupConfig{changedFlags: map[string]bool{}}, w, nil))
+	after, _ := w.Marshal()
+	assert.Equal(t, string(before), string(after))
+	assert.False(t, setupConfigFlagsChanged(githubSetupConfig{changedFlags: map[string]bool{"dry-run": true}}))
+	assert.True(t, setupConfigFlagsChanged(githubSetupConfig{changedFlags: map[string]bool{"inference-region": true}}))
+}
+
+func TestLoadExistingPerRepoConfig(t *testing.T) {
+	t.Parallel()
+	// Missing file: first install.
+	client := forge.NewFakeClient()
+	cfg, err := loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
+	require.NoError(t, err)
+	assert.Nil(t, cfg)
+
+	// Org-style content in the per-repo path is refused, as is a read error.
+	client.FileContents = map[string][]byte{"acme/widget/.fullsend/config.yaml": []byte("version: \"1\"\ndispatch:\n  platform: github\ndefaults:\n  roles: [triage]\nrepos: {}\n")}
+	_, err = loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a per-repo config")
+	client.GetFileContentErrors = map[string]error{"acme/widget/.fullsend/config.yaml": fmt.Errorf("github api: 500")}
+	_, err = loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading existing .fullsend/config.yaml")
+}
+
+func TestLoadExistingPerRepoConfig_WithBaseLayer(t *testing.T) {
+	t.Parallel()
+	// An overlay entry tunes a custom agent registered only in the base
+	// layer. Without the base, ValidateAgentEntries would reject the
+	// overlay entry as "not a built-in agent".
+	baseYAML := `version: "1"
+agents:
+  - name: lint
+    source: https://raw.githubusercontent.com/acme/agents/main/harness/lint.yaml#sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+allowed_remote_resources:
+  - https://raw.githubusercontent.com/acme/agents/
+`
+	overlayYAML := `version: "1"
+agents:
+  - name: lint
+    effort: medium
+`
+	client := forge.NewFakeClient()
+	client.FileContents = map[string][]byte{
+		"acme/widget/.fullsend/config.yaml":      []byte(overlayYAML),
+		"acme/widget/.fullsend/config.base.yaml": []byte(baseYAML),
+	}
+	cfg, err := loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	// The merged agent list should carry the base's source on the lint entry.
+	agents := cfg.AgentEntries()
+	require.Len(t, agents, 1)
+	assert.Equal(t, "lint", agents[0].Name)
+	assert.Contains(t, agents[0].Source, "lint.yaml")
+	assert.Equal(t, "medium", agents[0].Effort)
+
+	// Verify validation passes on the merged set (it would fail without the base).
+	require.NoError(t, cfg.Validate())
+}
+
+func TestLoadExistingPerRepoConfig_BaseReadError(t *testing.T) {
+	t.Parallel()
+	client := forge.NewFakeClient()
+	client.FileContents = map[string][]byte{
+		"acme/widget/.fullsend/config.yaml": []byte("version: \"1\"\n"),
+	}
+	client.GetFileContentErrors = map[string]error{
+		"acme/widget/.fullsend/config.base.yaml": fmt.Errorf("github api: 500"),
+	}
+	_, err := loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading existing .fullsend/config.base.yaml")
 }

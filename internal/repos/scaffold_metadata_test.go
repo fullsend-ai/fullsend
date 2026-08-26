@@ -178,5 +178,6 @@ func TestRuntimeSection(t *testing.T) {
 	assert.Contains(t, RuntimeSection("pi"), "run on **pi**")
 	assert.Contains(t, def, "`runtime:` in `.fullsend/config.yaml`")
 	assert.Contains(t, def, "fullsend run --runtime")
+	assert.Contains(t, def, "`agents:` entry")
 	assert.True(t, strings.HasPrefix(def, "\n\n"), "section must be appended after the body with a paragraph break")
 }

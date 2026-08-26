@@ -12,10 +12,11 @@ For implementation details, see the
 |-------|-----------------|----------------------|
 | 1 | `run-telemetry.jsonl` file in the run output directory | None |
 | 2 | OTLP/HTTP export to a remote backend (metadata only) | `OTEL_EXPORTER_OTLP_*ENDPOINT` |
-| 3 | Content capture (prompts, completions, tool I/O) in spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` *(planned, not yet implemented)* |
+| 3 | Conversation content (assistant text, reasoning, tool calls) on `agent` spans | `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT=true` |
 
 All levels produce metadata (timing, token counts, tool names, errors).
-Level 3 adds prompt/completion content to spans.
+Level 3 adds the agent's conversation content to spans — enabled by one
+environment variable, exactly like Level 2's endpoint.
 
 ## Environment variables
 
@@ -66,15 +67,52 @@ unset OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
 | `TRACEPARENT` | W3C Trace Context parent | When present, the root span becomes `SpanKindConsumer`; when the sampled flag is unset (`-00`), OTLP export is suppressed but the local file is still written |
 | `TRACESTATE` | W3C Trace Context state | Propagated alongside `TRACEPARENT` |
 
-### Content capture (planned)
+### Content capture (Level 3)
 
-| Variable | Value | Effect |
-|----------|-------|--------|
-| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `true` | Includes prompts, completions, tool arguments, tool results, and reasoning text in spans |
+Fullsend assembles Level 3 content from the normalized event stream the
+console renders, redacts it through the security output pipeline, and
+attaches it to the per-iteration `agent` span. The agent runtime's own
+content-logging variables (`OTEL_LOG_USER_PROMPTS`,
+`OTEL_LOG_ASSISTANT_RESPONSES`, etc.) are never set.
 
-Content capture follows the [OTel GenAI semantic conventions](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-spans.md).
-When enabled, spans may contain proprietary source code, PII, or
-credentials visible in tool outputs.
+| Variable | Values that enable capture | Values that keep it off |
+|----------|---------------------------|-------------------------|
+| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | `true`, `span_only`, `span_and_event` (case-insensitive) | unset, `false`, `NO_CONTENT`, `event_only`, anything unrecognized |
+
+The variable name and accepted values follow the
+[OpenTelemetry GenAI instrumentation convention](https://github.com/open-telemetry/opentelemetry-python-contrib/tree/main/instrumentation-genai).
+Fullsend records content on span attributes only, so `event_only` stays
+off. An unrecognized value disables capture; telemetry never fails a run.
+
+**Captured:** assistant text, reasoning, and tool calls (name plus short
+summary) — including any sub-agent activity, unattributed — as the
+`gen_ai.output.messages` span attribute: a JSON string following the
+[GenAI output-messages schema](https://github.com/open-telemetry/semantic-conventions/blob/v1.37.0/docs/gen-ai/gen-ai-output-messages.json)
+with a `finish_reason` of `stop` or `error`.
+
+**Not captured:** model input (`gen_ai.input.messages`) and
+pre/post-script content. First-iteration runs have no meaningful
+runner-side input; retry iterations carry the injected validation
+feedback, a natural input-capture follow-up.
+
+> **Planned:** Tool results, once a parser extension adds them to the
+> normalized event stream — the next change after
+> [#6429](https://github.com/fullsend-ai/fullsend/pull/6429).
+
+**Redaction and size:** every part passes through security redaction
+(Unicode normalization, then secret masking) before reaching the span.
+Content is bounded at 256 KiB per iteration, kept as an ordered suffix;
+overflow drops the oldest content first. Truncation is marked via
+`fullsend.content.truncated`. The SDK's span attribute length cap is
+lifted while capture is on; an explicit
+`OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT` still wins and will cut content
+mid-JSON — fullsend warns on stderr at startup.
+
+**Sinks:** content rides the span to both `run-telemetry.jsonl` and the
+OTLP endpoint (when configured). Spans may contain proprietary source
+code, PII, or credentials; the organization enabling capture is
+responsible for its backend's access controls. For how MLflow displays
+the content, see [Tracing with MLflow](../user/tracing-with-mlflow.md).
 
 ## Span hierarchy
 
@@ -126,6 +164,10 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 | `fullsend.prescript.skipped` | `run` | Whether the pre-script signaled a skip |
 | `fullsend.prescript.skip_reason` | `run` | Human-readable skip reason from the pre-script |
 | `fullsend.transcript_error` | `agent` | Present (`true`) when the agent exited 0 but its transcript reported an error — the span's status is Error while `exit_code` keeps the raw process exit |
+| `gen_ai.output.messages` | `agent` | Level 3 only: the iteration's conversation content as a JSON string (see Content capture) |
+| `fullsend.content.truncated` | `agent` | Level 3 only: present (`true`) when the size budget cut or dropped content |
+| `fullsend.content.dropped_bytes` | `agent` | Level 3 only: exact content bytes removed by the size budget |
+| `fullsend.content.redactions` | `agent` | Level 3 only: number of security findings raised while redacting content at assembly (including findings from parts the size budget later dropped) |
 
 ### Common attributes
 
@@ -218,6 +260,7 @@ that hosts the fullsend caller workflows:
 | `OTEL_EXPORTER_OTLP_CERTIFICATE` | Variable | No | Path to a PEM CA bundle for backends behind a private CA. Commit the bundle into the config repo (e.g. `.fullsend/otel-ca.pem`) and set the variable to that checkout-relative path. |
 | `OTEL_RESOURCE_ATTRIBUTES` | Variable | No | Static `k=v,k=v` trace tags. The value is used verbatim; `${{ github.* }}` expressions evaluate only in workflow YAML, not in variables. |
 | `OTEL_SDK_DISABLED` | Variable | No | Set to `true` to disable all telemetry, including the local file exporter. |
+| `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` | Variable | No | Set to `true` to attach conversation content to `agent` spans (Level 3; see Content capture). |
 
 Installations scaffolded before OTEL support was added must also forward the
 secrets (add `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and
@@ -237,6 +280,7 @@ env:
   OTEL_EXPORTER_OTLP_HEADERS: "${{ secrets.OTEL_EXPORTER_OTLP_HEADERS }}"
   OTEL_RESOURCE_ATTRIBUTES: "${{ vars.OTEL_RESOURCE_ATTRIBUTES }}"
   OTEL_SDK_DISABLED: "${{ vars.OTEL_SDK_DISABLED }}"
+  OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT: "${{ vars.OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT }}"
   OTEL_EXPORTER_OTLP_CERTIFICATE: "${{ vars.OTEL_EXPORTER_OTLP_CERTIFICATE }}"
 ```
 

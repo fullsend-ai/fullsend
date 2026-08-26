@@ -5,18 +5,17 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/urlutil"
 )
 
 var (
 	validAgentName    = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
-	validModelName    = regexp.MustCompile(`^[a-zA-Z0-9_.@-]+$`)
 	validPluginName   = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 	validProviderName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 	// validRoleName mirrors mintcore.RolePattern — duplicated to avoid coupling harness→mintcore.
@@ -26,26 +25,16 @@ var (
 )
 
 // validEffortLevels are the reasoning effort levels accepted by the claude
-// CLI's --effort flag, verified against @anthropic-ai/claude-code 2.1.226
-// (the version pinned in images/sandbox/Containerfile). The CLI also accepts
-// the undocumented "ultracode" keyword, which is deliberately excluded here:
-// it opts sessions into multi-agent workflow orchestration rather than
-// selecting a reasoning effort level.
-var validEffortLevels = []string{"low", "medium", "high", "xhigh", "max"}
+// CLI's --effort flag. The canonical list lives in config.ValidEffortLevels
+// so harness effort:, per-run --effort/FULLSEND_EFFORT and agents: entry
+// effort all validate identically.
+var validEffortLevels = config.ValidEffortLevels()
 
 // validEffortLevel reports whether level is a recognized reasoning effort level
 // for the claude CLI's --effort flag.
 func validEffortLevel(level string) bool {
-	return slices.Contains(validEffortLevels, level)
+	return config.ValidEffort(level)
 }
-
-// ValidEffort reports whether level is an accepted effort value; exported so
-// per-run overrides (--effort, FULLSEND_EFFORT) are validated the same way
-// as the harness field.
-func ValidEffort(level string) bool { return validEffortLevel(level) }
-
-// ValidEffortLevels returns the accepted effort values, in documentation order.
-func ValidEffortLevels() []string { return slices.Clone(validEffortLevels) }
 
 // ValidPluginBasename reports whether name matches the allowed plugin name pattern.
 func ValidPluginBasename(name string) bool {
@@ -188,6 +177,7 @@ type LLMGuardConfig struct {
 type SandboxHooks struct {
 	Tirith                  *TirithConfig        `yaml:"tirith,omitempty"`
 	SSRFPreTool             *bool                `yaml:"ssrf_pretool,omitempty"`              // default: true
+	SSRFEgressAllowlist     string               `yaml:"ssrf_egress_allowlist,omitempty"`     // comma-separated host:port entries
 	SecretRedactPostTool    *bool                `yaml:"secret_redact_posttool,omitempty"`    // default: true
 	UnicodePostTool         *bool                `yaml:"unicode_posttool,omitempty"`          // default: true
 	ContextSuppressPostTool *bool                `yaml:"context_suppress_posttool,omitempty"` // default: true
@@ -462,8 +452,8 @@ func (h *Harness) Validate() error {
 			return fmt.Errorf("agent name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", agentBase)
 		}
 	}
-	if h.Model != "" && !validModelName.MatchString(h.Model) {
-		return fmt.Errorf("model %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -, ., @)", h.Model)
+	if h.Model != "" && !config.ValidModelRef(h.Model) {
+		return fmt.Errorf("model %q contains invalid characters (allowed: segments of a-z, A-Z, 0-9, _, -, ., @ joined by /)", h.Model)
 	}
 	if h.Effort != "" && !validEffortLevel(h.Effort) {
 		return fmt.Errorf("effort %q is not valid (allowed: %s)", h.Effort, strings.Join(validEffortLevels, ", "))
