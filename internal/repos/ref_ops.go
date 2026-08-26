@@ -80,8 +80,9 @@ func collectGitLabUpgradeTemplates(runnerTags []string, targetRef string) ([]for
 	var files []forge.TreeFile
 	for _, f := range installFiles {
 		// Skip the dispatch file — upgrade handles it via replaceShimRef.
-		// Skip the root pipeline file — users may have customized it
-		// (e.g. adding workflow:rules for push events).
+		// Skip the root pipeline file — CollectGitLabPerRepoInstallFiles
+		// already excludes it (#6602), but keep the guard for defense
+		// in depth.
 		if f.Path == ".gitlab/ci/fullsend-dispatch.yml" || f.Path == ".gitlab-ci.yml" {
 			continue
 		}

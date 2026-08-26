@@ -1108,7 +1108,6 @@ func TestBuildScaffoldFiles_GitLab(t *testing.T) {
 		paths[f.Path] = true
 	}
 	for _, expected := range []string{
-		".gitlab-ci.yml",
 		".gitlab/ci/fullsend-agent.yml",
 		".gitlab/ci/fullsend-dispatch.yml",
 		".gitlab/ci/fullsend-poll.yml",
@@ -1117,6 +1116,12 @@ func TestBuildScaffoldFiles_GitLab(t *testing.T) {
 		if !paths[expected] {
 			t.Errorf("missing expected scaffold file %q", expected)
 		}
+	}
+	// Root .gitlab-ci.yml must NOT be in install output — installing it
+	// would overwrite a consumer's existing CI pipeline configuration (#6602).
+	if paths[".gitlab-ci.yml"] {
+		t.Error(".gitlab-ci.yml must not be included in GitLab install output — " +
+			"it would overwrite existing CI config (#6602)")
 	}
 }
 

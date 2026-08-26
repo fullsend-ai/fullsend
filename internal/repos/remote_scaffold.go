@@ -12,6 +12,11 @@ import (
 // Remote scaffold template paths within the fullsend-ai/fullsend repo.
 const scaffoldGitHubShimPath = "internal/scaffold/fullsend-repo/templates/shim-per-repo.yaml"
 
+// scaffoldGitLabPaths lists the GitLab scaffold files fetched from the
+// remote fullsend-ai/fullsend repo for pinned-ref installs. The root
+// .gitlab-ci.yml is excluded because installing it would overwrite a
+// consumer's existing CI pipeline configuration (#6602). The sub-files
+// under .gitlab/ci/ are fullsend-owned and installed unconditionally.
 var scaffoldGitLabPaths = []struct {
 	repoPath string
 	outPath  string
@@ -19,7 +24,6 @@ var scaffoldGitLabPaths = []struct {
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-dispatch.yml", ".gitlab/ci/fullsend-dispatch.yml"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-agent.yml", ".gitlab/ci/fullsend-agent.yml"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-poll.yml", ".gitlab/ci/fullsend-poll.yml"},
-	{"internal/scaffold/fullsend-repo-gitlab/.gitlab-ci.yml", ".gitlab-ci.yml"},
 }
 
 // FetchRemoteScaffold fetches scaffold templates from fullsend-ai/fullsend

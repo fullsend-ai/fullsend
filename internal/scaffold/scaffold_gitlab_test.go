@@ -48,6 +48,25 @@ func TestCollectGitLabPerRepoInstallFiles_SkipsGitignore(t *testing.T) {
 	}
 }
 
+func TestCollectGitLabPerRepoInstallFiles_SkipsRootPipeline(t *testing.T) {
+	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	require.NoError(t, err)
+	for _, f := range files {
+		assert.NotEqual(t, ".gitlab-ci.yml", f.Path,
+			"install must not overwrite consumer .gitlab-ci.yml — "+
+				"sub-files under .gitlab/ci/ are fullsend-owned; "+
+				"adopters add include: directives themselves (#6602)")
+	}
+	// Sub-files must still be present.
+	paths := make([]string, len(files))
+	for i, f := range files {
+		paths[i] = f.Path
+	}
+	assert.Contains(t, paths, ".gitlab/ci/fullsend-dispatch.yml")
+	assert.Contains(t, paths, ".gitlab/ci/fullsend-agent.yml")
+	assert.Contains(t, paths, ".gitlab/ci/fullsend-poll.yml")
+}
+
 func TestGitLabPerRepoFileNotFound(t *testing.T) {
 	_, err := GitLabPerRepoFile("nonexistent-file.yml")
 	assert.Error(t, err)

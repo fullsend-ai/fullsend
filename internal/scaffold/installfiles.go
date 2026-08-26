@@ -106,6 +106,12 @@ func CollectPerRepoInstallFiles(vendored bool, upstreamRef, upstreamTag string) 
 // callers generate a config with roles and forge field instead.
 // The embedded root .gitignore is also excluded: installing it would
 // overwrite a consumer's existing ignore file with a one-line fragment.
+// The embedded root .gitlab-ci.yml is also excluded: installing it would
+// overwrite a consumer's existing CI pipeline configuration. The scaffold
+// sub-files (.gitlab/ci/fullsend-*.yml) are fullsend-owned and installed
+// unconditionally; adopters add the corresponding include: directives to
+// their own .gitlab-ci.yml. The upgrade path (collectGitLabUpgradeTemplates)
+// already skips .gitlab-ci.yml for the same reason.
 // The embed still ships for docs/tests; adopters (and the guide) add
 // output/ themselves. When --output-dir sits inside --target-repo
 // (GitLab layout), fullsend run omits that top-level directory from the
@@ -119,7 +125,7 @@ func CollectGitLabPerRepoInstallFiles(runnerTags []string, upstreamRef, upstream
 	fullsendVersion := ResolveFullsendVersion(upstreamRef, upstreamTag)
 	var files InstallFiles
 	err := WalkGitLabPerRepo(func(path string, content []byte) error {
-		if path == ".fullsend/config.yaml" || path == ".gitignore" {
+		if path == ".fullsend/config.yaml" || path == ".gitignore" || path == ".gitlab-ci.yml" {
 			return nil
 		}
 		rendered := strings.ReplaceAll(string(content), "__RUNNER_TAGS__", tagYAML)
