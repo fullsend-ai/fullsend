@@ -258,9 +258,11 @@ func exportOneScore(ctx context.Context, tr trace.Tracer, r EvaluationResult) er
 		attribute.String(AttrGenAIEvaluationName, r.Name),
 		attribute.String(AttrGenAIEvaluationScoreLabel, r.Label),
 		// Event attribute values are not truncated by SpanLimits (SDK
-		// applies AttributeValueLengthLimit to span attrs only); bound
-		// explanation at the call site using the same effective limit
-		// SpanLimits() applies for span attrs (honors OTEL_* overrides).
+		// applies AttributeValueLengthLimit to span attrs only). Bound
+		// explanation at the call site via FreeTextAttrValueLenLimit —
+		// operator OTEL_* overrides (incl. -1) or MaxSpanAttrValueLen —
+		// not content-capture-aware SpanLimits (Level 3 would leave it
+		// unbounded).
 		attribute.String(AttrGenAIEvaluationExplanation, truncateRunes(r.Explanation, eventAttrValueLenLimit())),
 		attribute.String(AttrFullsendMeasurementVersion, r.Version),
 	}
@@ -292,12 +294,13 @@ func truncateRunes(s string, max int) string {
 	return s
 }
 
-// eventAttrValueLenLimit mirrors telemetry.SpanLimits().AttributeValueLengthLimit
-// so event explanations honor the same OTEL_* override as agent span attrs.
-// SpanLimits already maps an unset env to MaxSpanAttrValueLen; a configured
-// negative sentinel means unlimited (truncateRunes no-ops).
+// eventAttrValueLenLimit bounds gen_ai.evaluation.explanation for OTLP.
+// Uses telemetry.FreeTextAttrValueLenLimit: operator OTEL_* limit when set
+// (including explicit -1 = unlimited), else MaxSpanAttrValueLen. Does not
+// reuse SpanLimits(), whose negative sentinel under Level 3 content capture
+// would leave explanations unbounded on the wire.
 func eventAttrValueLenLimit() int {
-	return telemetry.SpanLimits().AttributeValueLengthLimit
+	return telemetry.FreeTextAttrValueLenLimit()
 }
 
 func parseTraceID(hexID string) (trace.TraceID, error) {

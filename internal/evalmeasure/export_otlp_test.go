@@ -85,6 +85,7 @@ func clearOTLPEnv(t *testing.T) {
 	t.Setenv("TRACEPARENT", "")
 	t.Setenv("OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
 	t.Setenv("OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT", "")
+	t.Setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "")
 }
 
 func TestExportOTLPScores_NoopWithoutEndpoint(t *testing.T) {
@@ -408,6 +409,33 @@ func TestExportOTLPScores_HonorsOTELAttrValueLimit(t *testing.T) {
 	require.NotEmpty(t, got)
 	assert.LessOrEqual(t, len([]rune(got)), 64)
 	assert.Equal(t, 64, len([]rune(got)))
+}
+
+func TestExportOTLPScores_TruncatesUnderContentCapture(t *testing.T) {
+	// Level 3 content capture lifts SpanLimits to unlimited; event
+	// explanations must still hit FreeTextAttrValueLenLimit (8192 default).
+	sink := newScoreOTLPSink(t)
+	clearOTLPEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
+	t.Setenv("OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", "true")
+	orig := newScoreOTLPExporter
+	t.Cleanup(func() { newScoreOTLPExporter = orig })
+	newScoreOTLPExporter = func(ctx context.Context) (sdktrace.SpanExporter, error) {
+		return telemetry.NewOTLPExporter(ctx)
+	}
+	huge := strings.Repeat("z", telemetry.MaxSpanAttrValueLen+500)
+	require.Equal(t, -1, telemetry.SpanLimits().AttributeValueLengthLimit,
+		"precondition: content capture leaves SpanLimits unlimited")
+	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
+		Name: "trace_fitness", Label: LabelPass, Explanation: huge,
+		TraceID: "84d470ba2451ffeccfe09022d9b2aebd", SpanID: "77f8c0902eaeedcb",
+		Version: "em-001@1", Value: 1,
+	}}, "test-1.2.3")
+	require.NoError(t, err)
+	got := explanationFromSink(t, sink)
+	require.NotEmpty(t, got)
+	assert.Equal(t, telemetry.MaxSpanAttrValueLen, len([]rune(got)),
+		"explanation must stay capped when Level 3 lifts provider SpanLimits")
 }
 
 func TestExportOTLPScores_PartialIDFailureReportsCounts(t *testing.T) {

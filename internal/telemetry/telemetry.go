@@ -145,10 +145,24 @@ func validateEndpoints(endpoint, tracesEndpoint string) error {
 const MaxSpanAttrValueLen = 8192
 
 // SpanLimits returns the SDK span limits used by Setup (default 8KiB
-// attribute value length unless OTEL_*_ATTRIBUTE_VALUE_LENGTH_LIMIT is set).
-// Shared by score export so post-hoc evaluation events honor the same bound.
+// attribute value length unless OTEL_*_ATTRIBUTE_VALUE_LENGTH_LIMIT is set,
+// or unlimited when Level 3 content capture lifts the provider cap).
 func SpanLimits() sdktrace.SpanLimits {
 	return spanLimits()
+}
+
+// FreeTextAttrValueLenLimit is the call-site bound for free-text values the
+// SDK does not truncate (event attributes) or that must stay intact when
+// Level 3 content capture lifts SpanLimits. Honors an explicit operator
+// OTEL_SPAN_ATTRIBUTE_VALUE_LENGTH_LIMIT / OTEL_ATTRIBUTE_VALUE_LENGTH_LIMIT
+// (including -1 = unlimited); otherwise defaults to MaxSpanAttrValueLen.
+// Independent of ContentCaptureEnabled — that gate only lifts the provider
+// cap for content JSON span attrs.
+func FreeTextAttrValueLenLimit() int {
+	if n, ok := operatorAttrValueLimit(); ok {
+		return n
+	}
+	return MaxSpanAttrValueLen
 }
 
 // spanLimits returns the SDK span limits. NewSpanLimits collapses "env
