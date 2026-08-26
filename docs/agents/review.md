@@ -51,6 +51,27 @@ applied — the `pull_request_review` event triggers the [fix agent](fix.md) dir
 Stale outcome labels from prior review runs are removed before the new one is
 applied.
 
+### Verdict semantics
+
+The review verdict keys on **actionability**, not severity. A finding is
+actionable when it has a concrete remediation — a specific code change the
+author or fix agent can make. Informational findings (security analysis
+confirmations, observations, analysis notes) are not actionable regardless of
+their severity level.
+
+| Verdict | Condition |
+|---------|-----------|
+| `request-changes` | At least one finding has a concrete remediation (is actionable) |
+| `approve` | No findings have concrete remediations — all findings are informational |
+| `reject` | A blocking issue that cannot be fixed incrementally (unchanged) |
+
+Severity remains as metadata for humans to assess urgency and for the
+[fix agent](fix.md) to prioritize work order, but it does not determine the
+verdict. A low-severity finding with a concrete remediation ("rename this type
+to match codebase convention") produces `request-changes`, while a
+low-severity observation ("security analysis: no SSRF bypass identified")
+does not.
+
 The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
 `priority/high`) but these are informational -- they do not control agent
 behavior.
@@ -76,7 +97,7 @@ See [Configuring with AGENTS.md](../guides/user/customizing-with-agents-md.md) a
 
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
-| `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are omitted from both the narrative body and the posted inline comments. | `low` | `info`, `low`, `medium`, `high`, `critical` |
+| `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are omitted from both the narrative body and the posted inline comments. Does not affect the verdict — see [Verdict semantics](#verdict-semantics). | `low` | `info`, `low`, `medium`, `high`, `critical` |
 
 Set this in the harness's `env.sandbox` (the upstream default lives in
 `harness/review.yaml`). To override per repo or org, use `base:`
@@ -88,9 +109,12 @@ no separate configuration is needed.
 
 The review agent omits findings below the threshold from its output. The
 post-script also filters the structured `findings` array as
-defense-in-depth. When filtering removes all findings from a
-`request-changes` or `reject` verdict, the post-script downgrades the
-verdict to `comment` (applying the `requires-manual-review` label).
+defense-in-depth. When filtering removes all remaining **actionable**
+findings from a `request-changes` verdict, the post-script downgrades
+the verdict to `comment` (applying the `requires-manual-review` label).
+Non-actionable findings (observations, confirmations) do not prevent the
+downgrade — only actionable findings with concrete remediations sustain a
+`request-changes` verdict through the filter.
 
 ## Source
 
