@@ -54,6 +54,7 @@ the dedicated org-level `<org>/.fullsend` config repo is deprecated
 - Dispatch version-skew resolution: per-repo `reusable-dispatch.yml` inlines stage workflow jobs directly, eliminating `@v0` references to `reusable-{stage}.yml` ([ADR 0062](ADRs/0062-dispatch-version-skew.md)).
 - Ready-made configuration presets: `fullsend github setup --config <path-or-url>` installs a vendor preset as `.fullsend/config.base.yaml` and a stub `.fullsend/config.yaml` overlay in the target repository; mint URL, inference backend, and related settings live in configuration files resolved through accessor methods, not CLI flags. Shared-infrastructure presets will reduce per-adopter enrollment (target state): mint via `job_workflow_ref` trust per [ADR 0059](ADRs/0059-public-mint-mode-with-wildcard-allowlists.md); inference authorization model undecided ([ADR 0069](ADRs/0069-ready-made-configuration-presets.md)); enrollment remains required until follow-on ADRs land.
 - GitLab event dispatch: two-path model — native CI triggers (`merge_request_event`) for MR events, cron-based polling for issues/comments/labels. No external infrastructure (no webhook bridge). Bot PAT stored as a protected CI/CD variable. Per-repo only ([ADR 0067](ADRs/0067-gitlab-cron-polling-event-dispatch.md)).
+- Do not hold CI jobs open for human follow-ups. Session continuation starts a **new** ephemeral run whose runtime session is the prior JSONL transcript ([ADR 0092](ADRs/0092-resume-agent-sessions-from-jsonl-transcripts.md)).
 
 **Open questions:**
 
@@ -80,10 +81,12 @@ each target repository's **`.fullsend/`** directory
 - ~~How granular is network regulation? Allowlist of endpoints, or coarser controls?~~ Decided in [ADR 0065](ADRs/0065-provider-backed-policy-composition.md): network access is granted through provider profiles with per-endpoint allowlists.
 - Does the sandbox provide a pre-built environment (tools, language runtimes, repo clones), or does the agent set up its own workspace within the sandbox?
 - ~~Is the sandbox the same for all agent roles, or does each role get a differently-scoped sandbox?~~ Decided in [ADR 0020](ADRs/0020-composable-single-responsibility-agents-with-individual-sandboxes.md): each agent gets its own sandbox with policies designed for its responsibility.
+- Should a resumed run pin sandbox image and tooling so the rebuilt environment matches the prior run? (Filesystem state is not restored; [ADR 0092](ADRs/0092-resume-agent-sessions-from-jsonl-transcripts.md).)
 
 **Decided:**
 
 - Provider-backed policy composition: network access is granted through provider profiles declared in harness files. Policy files define only non-composable sandbox restrictions (filesystem, landlock, process). A single `base.yaml` replaces per-agent policy files in the scaffold. Inline `network_policies` continue to work but providers are the recommended approach ([ADR 0065](ADRs/0065-provider-backed-policy-composition.md)).
+- Session continuation restores a prior JSONL conversation tree into a **new** sandbox; filesystem and process state still do not persist ([ADR 0092](ADRs/0092-resume-agent-sessions-from-jsonl-transcripts.md)).
 
 ## Agent Harness
 
@@ -289,6 +292,10 @@ The existing design principle is that [the repo is the coordinator](problems/age
   `admin`) using source-native role resolution; the resolved role feeds the
   same authorization gate with no cross-system identity verification
   ([ADR 0054](ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)).
+- Session continuation: an authorized dispatch may start a new run whose
+  runtime session is a prior JSONL transcript for the same agent and work
+  item. Scratch remains the default. Exact slash-command UX is follow-on
+  ([ADR 0092](ADRs/0092-resume-agent-sessions-from-jsonl-transcripts.md)).
 
 **Open questions:**
 
@@ -305,6 +312,10 @@ The existing design principle is that [the repo is the coordinator](problems/age
   [ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md))?
 - How should concurrent agent runs that touch the same conversation thread be
   coordinated ([ADR 0086](ADRs/0086-conversation-surface-for-agent-participation.md))?
+- How does the operator select which transcript or turn to resume from
+  (latest run on the work item, explicit run ID, conversation-tree node)?
+  (Session continuation itself is
+  [ADR 0092](ADRs/0092-resume-agent-sessions-from-jsonl-transcripts.md).)
 
 ## Policy Store
 
@@ -349,7 +360,7 @@ Observability is a cross-cutting concern that touches every other component. Eac
 
 **Decided:**
 
-- JSONL reasoning trace exposure: raw JSONL conversation transcripts are extracted from sandboxes and stored with owner-scoped access. Credential scanning acts as an invariant check on [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md)'s isolation model. Agents handling data from protected sources beyond the target repo can opt in to JSONL suppression via configuration ([ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md)).
+- JSONL reasoning trace exposure: raw JSONL conversation transcripts are extracted from sandboxes and stored with owner-scoped access. Credential scanning acts as an invariant check on [ADR 0017](ADRs/0017-credential-isolation-for-sandboxed-agents.md)'s isolation model. Agents handling data from protected sources beyond the target repo can opt in to JSONL suppression via configuration ([ADR 0021](ADRs/0021-jsonl-reasoning-trace-exposure.md)). Those transcripts are also the payload for session continuation: a later run may replay one as its starting conversation ([ADR 0092](ADRs/0092-resume-agent-sessions-from-jsonl-transcripts.md)).
 - Event-driven stage dispatch remains traceable end-to-end in the GitHub Actions UI by using synchronous `workflow_call` dispatch (see [ADR 0041](ADRs/0041-synchronous-workflow-call-event-dispatch.md)).
 - Distributed tracing: framework-native OpenTelemetry instrumentation with zero-configuration baseline. Every run produces `run-telemetry.jsonl` locally; optional live OTLP export to any compatible backend. W3C trace context propagation links multi-agent pipelines into unified traces. OTEL GenAI semantic conventions enable LLM-aware backends ([ADR 0050](ADRs/0050-distributed-tracing-instrumentation.md)).
 - Eval measurements: the concept of scoring traces ([fail-open](glossary.md#fail-open)). [OTEL primary facts](glossary.md#otel-primary-facts) stay on the run trace (`run-telemetry.jsonl`); [OTEL derived products](glossary.md#otel-derived-products) are the scores (`eval-measurements.jsonl`) ([ADR 0087](ADRs/0087-eval-measurements-online-trace-scoring.md)). See [Eval Measurements](guides/infrastructure/eval-measurements.md).
@@ -707,7 +718,7 @@ event ──► DISPATCHER
 - **Credentials never cross the sandbox boundary.** They exist in the agent runner layer; the sandbox and everything inside it operate without them.
 - **Control flows inward (setup) then outward (teardown).** The harness configures the sandbox; the sandbox constrains the runtime. No inner layer can modify an outer layer.
 - **Validation gates output.** When configured, no unvalidated output crosses from runner to external system. Exhausted retries are a hard failure, not a fallback.
-- **The sandbox is ephemeral.** Created per-run, destroyed after extraction. No state carries between runs.
+- **The sandbox is ephemeral.** Created per-run, destroyed after extraction. Sandbox filesystem and process state do not carry between runs. A later run may receive a prior JSONL transcript as input ([ADR 0092](ADRs/0092-resume-agent-sessions-from-jsonl-transcripts.md)); that is not sandbox state.
 
 ### MVP embodiment: GitHub + GitHub Actions + OpenShell + Claude Code
 
