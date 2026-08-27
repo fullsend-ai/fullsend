@@ -44,7 +44,7 @@ func TestSetupGitLabBotToken(t *testing.T) {
 		assert.Equal(t, "glpat-test-token", token)
 
 		require.Len(t, fake.CreatedSecrets, 1)
-		assert.Equal(t, "FULLSEND_FORGE_TOKEN", fake.CreatedSecrets[0].Name)
+		assert.Equal(t, forge.SecretForgeToken, fake.CreatedSecrets[0].Name)
 	})
 
 	t.Run("falls back to provided token on API failure", func(t *testing.T) {
@@ -67,7 +67,7 @@ func TestSetupGitLabBotToken(t *testing.T) {
 		assert.Equal(t, "glpat-fallback", token)
 
 		require.Len(t, fake.CreatedSecrets, 1)
-		assert.Equal(t, "FULLSEND_FORGE_TOKEN", fake.CreatedSecrets[0].Name)
+		assert.Equal(t, forge.SecretForgeToken, fake.CreatedSecrets[0].Name)
 	})
 
 	t.Run("errors when API fails and no fallback token", func(t *testing.T) {
@@ -106,12 +106,12 @@ func TestSetupGitLabPipelineSchedules(t *testing.T) {
 		// Slash poll: every 5 minutes.
 		assert.Equal(t, "*/5 * * * *", fake.CreatedSchedules[0].Cron)
 		assert.Equal(t, "fullsend slash poll", fake.CreatedSchedules[0].Description)
-		assert.Equal(t, map[string]string{"FULLSEND_POLL_MODE": "slash"}, fake.CreatedSchedules[0].Variables)
+		assert.Equal(t, map[string]string{forge.VarPollMode: "slash"}, fake.CreatedSchedules[0].Variables)
 
 		// Event poll: offset cron to avoid collision with slash poll.
 		assert.Equal(t, "2,17,32,47 * * * *", fake.CreatedSchedules[1].Cron)
 		assert.Equal(t, "fullsend event poll", fake.CreatedSchedules[1].Description)
-		assert.Equal(t, map[string]string{"FULLSEND_POLL_MODE": "events"}, fake.CreatedSchedules[1].Variables)
+		assert.Equal(t, map[string]string{forge.VarPollMode: "events"}, fake.CreatedSchedules[1].Variables)
 	})
 }
 
@@ -229,7 +229,7 @@ func TestSetupGitLabBotToken_NilClient_FallbackToken(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "glpat-manual", token)
 	require.Len(t, fake.CreatedSecrets, 1)
-	assert.Equal(t, "FULLSEND_FORGE_TOKEN", fake.CreatedSecrets[0].Name)
+	assert.Equal(t, forge.SecretForgeToken, fake.CreatedSecrets[0].Name)
 }
 
 func TestSetupGitLabBotToken_NilClient_NoFallback(t *testing.T) {

@@ -177,6 +177,7 @@ type LLMGuardConfig struct {
 type SandboxHooks struct {
 	Tirith                  *TirithConfig        `yaml:"tirith,omitempty"`
 	SSRFPreTool             *bool                `yaml:"ssrf_pretool,omitempty"`              // default: true
+	SSRFEgressAllowlist     string               `yaml:"ssrf_egress_allowlist,omitempty"`     // comma-separated host:port entries
 	SecretRedactPostTool    *bool                `yaml:"secret_redact_posttool,omitempty"`    // default: true
 	UnicodePostTool         *bool                `yaml:"unicode_posttool,omitempty"`          // default: true
 	ContextSuppressPostTool *bool                `yaml:"context_suppress_posttool,omitempty"` // default: true

@@ -3,6 +3,7 @@ package repos
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -2227,5 +2228,113 @@ func TestConverge_StaticVariableValueCheck(t *testing.T) {
 	val := fc.VariableValues["acme/api/FULLSEND_GCP_REGION"]
 	if val != "us-central1" {
 		t.Errorf("FULLSEND_GCP_REGION = %q, want %q", val, "us-central1")
+	}
+}
+
+// TestConverge_OrphanProgressWarnings verifies that converge emits
+// progress warnings for orphan files and variables so that
+// repos install --dry-run surfaces the same findings as repos status.
+func TestConverge_OrphanProgressWarnings(t *testing.T) {
+	repoNames := []string{"acme/api"}
+	fc := newFakeClientForBatch(repoNames...)
+	markFullyInstalled(fc, "acme", "api")
+
+	// Populate scaffold content so there is no content drift.
+	populateScaffoldContent(t, fc, "acme", "api", "v1.0.0", "https://mint.example.com")
+
+	// Add an orphan file: a .yml-extension workflow that the current
+	// template does not produce (templates use .yaml).
+	fc.FileContents["acme/api/.github/workflows/fullsend.yml"] = []byte("old workflow")
+
+	// Add an orphan variable: a FULLSEND_-prefixed variable not in the
+	// managed set.
+	fc.VariableValues["acme/api/FULLSEND_OLD_FEATURE"] = "enabled"
+
+	m := newConvergeManifest(repoNames...)
+	sc := &fakeScaffoldCommit{}
+	cfg := convergeCfgWithDefaults(m)
+	cfg.DryRun = true
+
+	// Use a recording progress callback instead of noopProgress.
+	var mu sync.Mutex
+	type progressCall struct {
+		repo, phase, message string
+	}
+	var calls []progressCall
+	recordProgress := func(repo, phase, message string) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls = append(calls, progressCall{repo, phase, message})
+	}
+
+	result, err := Converge(context.Background(), cfg, newTestClientFactory(fc), sc.fn(), recordProgress)
+	if err != nil {
+		t.Fatalf("Converge() error: %v", err)
+	}
+
+	// Collect all results once for reuse below.
+	allResults := slices.Concat(result.Converged(), result.AlreadyCurrent(), result.Failed())
+
+	// Orphan actions should be recorded.
+	var orphanActions []ComponentAction
+	for _, r := range allResults {
+		for _, a := range r.Actions {
+			if a.Action == "orphan" {
+				orphanActions = append(orphanActions, a)
+			}
+		}
+	}
+	if len(orphanActions) == 0 {
+		t.Fatal("expected orphan actions, got none")
+	}
+
+	// Verify progress() was called with phase="warning" for orphan file.
+	var hasOrphanFileWarning bool
+	for _, c := range calls {
+		if c.phase == "warning" && strings.Contains(c.message, "Orphan file") {
+			hasOrphanFileWarning = true
+		}
+	}
+	if !hasOrphanFileWarning {
+		t.Error("expected progress warning for orphan file")
+		for _, c := range calls {
+			t.Logf("  progress: repo=%s phase=%s msg=%s", c.repo, c.phase, c.message)
+		}
+	}
+
+	// Verify progress() was called with phase="warning" for orphan variable.
+	var hasOrphanVarWarning bool
+	for _, c := range calls {
+		if c.phase == "warning" && strings.Contains(c.message, "Orphan variable") {
+			hasOrphanVarWarning = true
+		}
+	}
+	if !hasOrphanVarWarning {
+		t.Error("expected progress warning for orphan variable")
+		for _, c := range calls {
+			t.Logf("  progress: repo=%s phase=%s msg=%s", c.repo, c.phase, c.message)
+		}
+	}
+
+	// Verify orphan actions are NOT counted toward the converged flag.
+	// Line 653 excludes action=="orphan" from hasAction, so a repo
+	// with only orphan (and "none") actions should be "already current".
+	// This test has content drift too, so we check through the actions
+	// of whatever bucket the repo lands in.
+	var orphanCountsAsConverge bool
+	for _, r := range allResults {
+		onlyOrphansAndNone := true
+		for _, a := range r.Actions {
+			if a.Action != "orphan" && a.Action != "none" {
+				onlyOrphansAndNone = false
+				break
+			}
+		}
+		if onlyOrphansAndNone && r.Converged {
+			orphanCountsAsConverge = true
+		}
+	}
+	if orphanCountsAsConverge {
+		t.Error("a repo with only orphan/none actions should not be marked converged")
 	}
 }

@@ -165,7 +165,7 @@ If the retro agent is enabled, trigger it on a merged PR and check the filed iss
 Check the GitHub Actions logs for agent runs in both the target repo and `.fullsend`:
 
 - Do log outputs contain sensitive values from the private repo?
-- Are the harness-level [secret redaction](../user/customizing-agents.md#harness-yaml-structure) and output scanning working as expected?
+- Are the harness-level [secret redaction](../../reference/harness-reference.md) and output scanning working as expected?
 
 > **Note:** Agent output goes through the harness-level `SecretRedactor` pipeline before being applied. This catches known secret patterns but cannot catch all forms of sensitive content — `AGENTS.md` instructions are your primary defense for context-specific information.
 

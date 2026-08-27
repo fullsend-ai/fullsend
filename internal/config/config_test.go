@@ -742,6 +742,13 @@ func TestPerRepoConfigMarshal_KillSwitchOmitted(t *testing.T) {
 	assert.NotContains(t, string(data), "kill_switch")
 }
 
+func TestPerRepoConfigHeaderPointsToUserDocs(t *testing.T) {
+	assert.NotContains(t, perRepoConfigHeader, "ADR",
+		"per-repo config header must not reference internal ADRs")
+	assert.Contains(t, perRepoConfigHeader, "https://fullsend.sh/",
+		"per-repo config header should link to user-facing docs")
+}
+
 func TestPerRepoConfig_RoundTrip(t *testing.T) {
 	original := NewPerRepoConfig([]string{"fullsend", "triage", "coder", "review", "fix"}, "")
 	data, err := original.Marshal()

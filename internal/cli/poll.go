@@ -11,6 +11,7 @@ import (
 
 	"github.com/fullsend-ai/fullsend/internal/config"
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/forge/gitlab"
 	"github.com/fullsend-ai/fullsend/internal/forge/jira"
 	"github.com/fullsend-ai/fullsend/internal/harnessdispatch"
@@ -46,9 +47,9 @@ func newPollCmd() *cobra.Command {
 				return fmt.Errorf("poll command supports --forge gitlab or --input-driver jira-poll (got forge=%q, input-driver=%q)", forgeFlag, inputDriver)
 			}
 
-			forgeToken := os.Getenv("FULLSEND_FORGE_TOKEN")
+			forgeToken := os.Getenv(forge.SecretForgeToken)
 			if forgeToken == "" {
-				return fmt.Errorf("FULLSEND_FORGE_TOKEN is required")
+				return fmt.Errorf("%s is required", forge.SecretForgeToken)
 			}
 
 			if projectPath == "" {
@@ -61,7 +62,7 @@ func newPollCmd() *cobra.Command {
 			// Resolve poll mode from flag or environment variable.
 			mode := modeFlag
 			if mode == "" {
-				mode = os.Getenv("FULLSEND_POLL_MODE")
+				mode = os.Getenv(forge.VarPollMode)
 			}
 			if mode != "" && mode != "slash" && mode != "events" {
 				return fmt.Errorf("invalid poll mode %q: must be \"slash\" or \"events\"", mode)

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/fullsend-ai/fullsend/internal/dispatch"
+	"github.com/fullsend-ai/fullsend/internal/forge"
 )
 
 // clearPollEnv clears every environment variable that newPollCmd/runJiraPoll
@@ -15,9 +16,9 @@ import (
 func clearPollEnv(t *testing.T) {
 	t.Helper()
 	for _, v := range []string{
-		"FULLSEND_FORGE_TOKEN", "CI_PROJECT_PATH",
+		forge.SecretForgeToken, "CI_PROJECT_PATH",
 		"CI_COMMIT_REF_NAME", "CI_DEFAULT_BRANCH", "CI_JOB_URL",
-		"FULLSEND_POLL_MODE",
+		forge.VarPollMode,
 		"JIRA_BASE_URL", "GITHUB_REPOSITORY",
 		"JIRA_TOKEN", "JIRA_USER_EMAIL",
 	} {
@@ -245,14 +246,14 @@ func TestPollCmd_GitLabMissingToken(t *testing.T) {
 	cmd := newPollCmd()
 	cmd.SetArgs([]string{"--forge", "gitlab", "--fullsend-dir", t.TempDir()})
 	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "FULLSEND_FORGE_TOKEN") {
-		t.Fatalf("expected FULLSEND_FORGE_TOKEN error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), forge.SecretForgeToken) {
+		t.Fatalf("expected %s error, got: %v", forge.SecretForgeToken, err)
 	}
 }
 
 func TestPollCmd_GitLabMissingProject(t *testing.T) {
 	clearPollEnv(t)
-	t.Setenv("FULLSEND_FORGE_TOKEN", "tok")
+	t.Setenv(forge.SecretForgeToken, "tok")
 	cmd := newPollCmd()
 	cmd.SetArgs([]string{"--forge", "gitlab", "--fullsend-dir", t.TempDir()})
 	err := cmd.Execute()
@@ -263,7 +264,7 @@ func TestPollCmd_GitLabMissingProject(t *testing.T) {
 
 func TestPollCmd_GitLabInvalidMode(t *testing.T) {
 	clearPollEnv(t)
-	t.Setenv("FULLSEND_FORGE_TOKEN", "tok")
+	t.Setenv(forge.SecretForgeToken, "tok")
 	t.Setenv("CI_PROJECT_PATH", "group/project")
 	t.Setenv("CI_COMMIT_REF_NAME", "main")
 	cmd := newPollCmd()
@@ -276,10 +277,10 @@ func TestPollCmd_GitLabInvalidMode(t *testing.T) {
 
 func TestPollCmd_GitLabModeFromEnv(t *testing.T) {
 	clearPollEnv(t)
-	t.Setenv("FULLSEND_FORGE_TOKEN", "tok")
+	t.Setenv(forge.SecretForgeToken, "tok")
 	t.Setenv("CI_PROJECT_PATH", "group/project")
 	t.Setenv("CI_COMMIT_REF_NAME", "main")
-	t.Setenv("FULLSEND_POLL_MODE", "invalid")
+	t.Setenv(forge.VarPollMode, "invalid")
 	cmd := newPollCmd()
 	cmd.SetArgs([]string{"--forge", "gitlab", "--project", "group/project", "--fullsend-dir", t.TempDir()})
 	err := cmd.Execute()

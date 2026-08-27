@@ -118,6 +118,64 @@ _SHELL_REENTRY = re.compile(r"\b(?:bash|sh|dash|zsh|ksh)\s+(?:-\S+\s+)*-c\b|\bev
 FINDINGS_PATH = "/sandbox/workspace/.security/findings.jsonl"
 
 
+def _parse_egress_allowlist() -> set[tuple[str, int]]:
+    """Parse FULLSEND_EGRESS_ALLOWLIST env var into a set of (hostname, port) tuples.
+
+    The env var contains comma-separated host:port entries, e.g.:
+        gitlab.cee.redhat.com:443,other.internal:8443
+
+    Entries without a port (e.g. ``host.internal``) use port ``0`` as a
+    wildcard sentinel, meaning any port matches during allowlist lookup.
+    """
+    raw = os.environ.get("FULLSEND_EGRESS_ALLOWLIST", "")
+    if not raw.strip():
+        return set()
+    entries: set[tuple[str, int]] = set()
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if "*" in entry:
+            print(
+                f"WARNING: wildcard entry '{entry}' in FULLSEND_EGRESS_ALLOWLIST "
+                "is not supported and will be ignored — use exact hostnames",
+                file=sys.stderr,
+            )
+            continue
+        if ":" in entry:
+            host, _, port_str = entry.rpartition(":")
+            try:
+                entries.add((host.strip("[]").lower().rstrip("."), int(port_str)))
+            except ValueError:
+                print(
+                    f"WARNING: malformed port in '{entry}' in FULLSEND_EGRESS_ALLOWLIST "
+                    "— entry ignored",
+                    file=sys.stderr,
+                )
+                continue
+        else:
+            # No port specified — allow on any port by using sentinel 0.
+            entries.add((entry.lower().rstrip("."), 0))
+    return entries
+
+
+def _is_host_allowlisted(hostname: str, port: int | None) -> bool:
+    """Return True if hostname:port is on the egress allowlist.
+
+    When *port* is ``None``, only wildcard (port ``0``) allowlist entries
+    match — an exact host:port entry will not be considered.
+    """
+    allowlist = _parse_egress_allowlist()
+    if not allowlist:
+        return False
+    hostname = hostname.lower().rstrip(".")
+    # Check exact host:port match.
+    if port is not None and (hostname, port) in allowlist:
+        return True
+    # Check host-only match (port 0 sentinel means any port).
+    return (hostname, 0) in allowlist
+
+
 def log_finding(scanner: str, name: str, severity: str, detail: str, action: str):
     """Append a finding to the JSONL audit log."""
     trace_id = os.environ.get("FULLSEND_TRACE_ID", "")
@@ -175,6 +233,15 @@ def validate_url(url: str) -> str | None:
     if ip_reason:
         return ip_reason
 
+    # Determine the effective port for the URL (used for allowlist matching
+    # and default-port inference when the URL omits an explicit port).
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port is None:
+        port = 443 if scheme == "https" else 80
+
     # DNS rebinding defense: resolve hostname and check resolved IPs
     prev_timeout = socket.getdefaulttimeout()
     try:
@@ -185,10 +252,18 @@ def validate_url(url: str) -> str | None:
             ip_reason = check_ip(resolved_ip)
             if ip_reason:
                 return f"DNS rebinding: {hostname} resolved to blocked {resolved_ip} ({ip_reason})"
-    except TimeoutError:
-        return f"DNS resolution timed out for {hostname} (fail-closed)"
-    except socket.gaierror:
-        return f"DNS resolution failed for {hostname} (fail-closed)"
+    except (TimeoutError, socket.gaierror):
+        # DNS resolution failed — allow if the host is on the egress
+        # allowlist (the L7 proxy will resolve and enforce the policy).
+        if not _is_host_allowlisted(hostname, port):
+            return f"DNS resolution failed for {hostname} (fail-closed)"
+        log_finding(
+            scanner="ssrf",
+            name="egress_allowlist_bypass",
+            severity="info",
+            detail=f"DNS failed for {hostname}:{port}; allowlisted — deferring to L7 proxy",
+            action="allow",
+        )
     finally:
         socket.setdefaulttimeout(prev_timeout)
 

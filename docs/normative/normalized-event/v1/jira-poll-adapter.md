@@ -94,8 +94,10 @@ When `source.system` is `jira`, projection supplements the GitHub-shaped
 | `GITHUB_ISSUE_URL` | Omit or empty — not a GitHub issue |
 | `status-number` | `entity.id` (numeric Jira id) |
 
-Harnesses and pre-scripts that require forge URLs MUST use `FULLSEND_WORK_ITEM_*`
-for Jira-sourced runs.
+Harnesses and pre-scripts that require forge-agnostic work item URLs SHOULD use
+`FULLSEND_WORK_ITEM_*` rather than forge-specific variables like
+`GITHUB_ISSUE_URL`. The dispatch workflow sets `FULLSEND_WORK_ITEM_URL` to
+`entity.url` for both GitHub and Jira events.
 
 ## Example
 

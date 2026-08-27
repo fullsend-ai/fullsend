@@ -1,0 +1,33 @@
+---
+# Fullsend CI pipeline — include directives and stage declarations.
+#
+# This file is managed by fullsend. Do not edit it directly.
+# The root .gitlab-ci.yml includes this file via:
+#   include:
+#     - local: '.gitlab/ci/fullsend-pipeline.yml'
+#
+# The workflow: block lives in the root .gitlab-ci.yml because GitLab
+# does not merge multiple workflow: definitions across includes.
+
+include:
+  - local: '.gitlab/ci/fullsend-dispatch.yml'
+    rules:
+      - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  - local: '.gitlab/ci/fullsend-poll.yml'
+    rules:
+      - if: $CI_PIPELINE_SOURCE == "schedule"
+  # The generic agent template (fullsend-agent.yml) is NOT included here —
+  # it is included by the dynamically generated child pipeline YAML from
+  # the MR dispatch path (mr-dispatch-pipeline.yml). The cron-poller path
+  # creates standalone pipelines via the API, which run .gitlab-ci.yml
+  # with STAGE set — the agent template is included via rules below.
+  # Including it in the root pipeline without a STAGE variable would add
+  # a job that never matches (STAGE is unset in root context).
+  - local: '.gitlab/ci/fullsend-agent.yml'
+    rules:
+      - if: $CI_PIPELINE_SOURCE == "api" && $STAGE
+
+stages:
+  - dispatch
+  - poll
+  - agent

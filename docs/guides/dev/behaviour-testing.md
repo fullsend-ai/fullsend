@@ -251,6 +251,37 @@ TEST_ACTOR_OUTSIDER_PAT=...   # outsider human-like actor PAT (no org write on b
 
 Triage scenarios apply the `ready-for-triage` label (not `/fs-triage` comments) because the per-repo shim ignores `issue_comment` events from bot users and CI uses minted e2e installation tokens.
 
+### Test actor account permission scope
+
+The three test actor accounts (`fstest-write`, `fstest-triage`, `fstest-outsider`) simulate human collaborators at different permission levels. Their access is deliberately contained so that exfiltrated PATs cannot modify production repositories.
+
+| Property | fstest-write | fstest-triage | fstest-outsider |
+|----------|-------------|---------------|-----------------|
+| fullsend-ai org member | No | No | No |
+| Permission on `fullsend-ai/fullsend` | Read | Read | Read |
+| Permission on `fullsend-ai/agents` | Read | Read | Read |
+| Write access | Pool-org `test-repo-NN` repos only | Pool-org `test-repo-NN` repos only | None (outsider) |
+
+**Blast-radius containment:** All three accounts hold classic PATs. Because the accounts are not members of the `fullsend-ai` org and have only read permission on production repositories (`fullsend-ai/fullsend`, `fullsend-ai/agents`), a compromised PAT cannot push commits, merge PRs, or modify settings on any production repo. Write capability is scoped exclusively to disposable `test-repo-NN` infrastructure in the pool org, which is ephemeral and rebuilt each CI run.
+
+**Re-verification guidance:** Re-verify account permissions whenever:
+
+- A new test actor account is added
+- An existing account is granted additional repository or org access
+- The pool-org infrastructure changes (new orgs, new repo naming)
+
+To verify, check org membership and repository permissions via the GitHub API:
+
+```bash
+# Check org membership (expect 404 for non-members)
+gh api orgs/fullsend-ai/members/fstest-write --silent && echo "member" || echo "not a member"
+
+# Check repo permission (expect "read" or "pull")
+gh api repos/fullsend-ai/fullsend/collaborators/fstest-write/permission --jq '.permission'
+```
+
+Last verified: 2026-08-10 ([PR #6028 review](https://github.com/fullsend-ai/fullsend/pull/6028#pullrequestreview-3117093403)).
+
 For the reusable test GitHub Apps (`fullsend-test-*`) used by temporary and test mints, see [Test GitHub Apps](e2e-testing.md#test-github-apps) in the e2e testing guide.
 
 See [behaviour-drivers.md](behaviour-drivers.md) for driver configuration and [ADR 0066](../../ADRs/0066-behaviour-tests-with-gherkin-and-drivers.md) for the decision record.

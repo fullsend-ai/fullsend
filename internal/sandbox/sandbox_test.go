@@ -1617,6 +1617,60 @@ exit 0
 	assert.Len(t, entries, 3, "should have made 3 attempts")
 }
 
+// TestEnsureProvider_RetriesConcurrentUpdateConflict verifies that when the
+// provider already exists and the gateway rejects the update because another
+// run modified it concurrently, EnsureProvider retries the create+update
+// cycle instead of failing the run.
+func TestEnsureProvider_RetriesConcurrentUpdateConflict(t *testing.T) {
+	dir := t.TempDir()
+	markerDir := filepath.Join(dir, "markers")
+	require.NoError(t, os.MkdirAll(markerDir, 0o755))
+
+	// Fake openshell: create always reports the provider exists; update
+	// fails with the optimistic-concurrency error until the 3rd attempt.
+	script := fmt.Sprintf(`#!/bin/sh
+if [ "$2" = "create" ]; then
+  echo "Error: × code: 'Some entity that we attempted to create already exists', message: \"provider already exists\"" >&2
+  exit 1
+fi
+if [ "$2" = "update" ]; then
+  echo x > "%s/attempt.$$"
+  count=0
+  for f in "%s"/attempt.*; do
+    [ -e "$f" ] && count=$((count + 1))
+  done
+  if [ "$count" -lt 3 ]; then
+    echo "Error:   × code: 'The operation was aborted', message: \"provider was modified" >&2
+    echo "  │ concurrently (current resource_version: 2)\"" >&2
+    exit 1
+  fi
+  exit 0
+fi
+exit 0
+`, markerDir, markerDir)
+	fakePath := filepath.Join(dir, "openshell")
+	require.NoError(t, os.WriteFile(fakePath, []byte(script), 0o755))
+	t.Setenv("PATH", dir)
+
+	err := EnsureProvider(context.Background(), "vertex-ai", "vertex-ai", nil, nil, false)
+	assert.NoError(t, err, "should succeed after retrying the conflicting update")
+
+	entries, readErr := os.ReadDir(markerDir)
+	require.NoError(t, readErr)
+	assert.Len(t, entries, 3, "should have retried the update 3 times")
+}
+
+func TestIsTransientProviderErr(t *testing.T) {
+	t.Parallel()
+	wrapped := "provider update \"vertex-ai\" failed: exit status 1 (output: Error:   × code: 'The operation was aborted', message: \"provider was modified\n  │ concurrently (current resource_version: 2)\"\n)"
+	assert.False(t, isTransientProviderErr(nil))
+	assert.True(t, isTransientProviderErr(fmt.Errorf("x: unsupported provider type or profile: p")))
+	assert.True(t, isTransientProviderErr(errors.New(wrapped)), "must match across the CLI's line wrap")
+	assert.True(t, isTransientProviderErr(errors.New("provider was modified concurrently")))
+	assert.False(t, isTransientProviderErr(fmt.Errorf("status: PermissionDenied")))
+	assert.False(t, isTransientProviderErr(fmt.Errorf("provider was modified by an operator")))
+}
+
 // TestEnsureProvider_NoRetryOnOtherErrors verifies that non-transient
 // errors are not retried.
 func TestEnsureProvider_NoRetryOnOtherErrors(t *testing.T) {

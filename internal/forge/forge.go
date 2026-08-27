@@ -19,6 +19,47 @@ const ConfigRepoName = ".fullsend"
 // per-org enrollment from overriding a per-repo installation.
 const PerRepoGuardVar = "FULLSEND_PER_REPO_INSTALL"
 
+// Repo management variable and secret names.
+//
+// These constants cover every FULLSEND_* name used by repos install,
+// repos status, repos converge, uninstall, and the GitLab poller.
+// Using constants instead of bare string literals ensures that
+// additions, renames, or typos are caught at compile time.
+const (
+	// Managed variables — GitHub.
+	VarMintURL        = "FULLSEND_MINT_URL"
+	VarGCPRegion      = "FULLSEND_GCP_REGION"
+	VarReviewClientID = "FULLSEND_REVIEW_CLIENT_ID"
+
+	// Managed variables — GitLab.
+	VarLastPollAtFast     = "FULLSEND_LAST_POLL_AT_FAST"
+	VarLastPollAtFull     = "FULLSEND_LAST_POLL_AT_FULL"
+	VarLabelState         = "FULLSEND_LABEL_STATE"
+	VarDispatchedKeysFast = "FULLSEND_DISPATCHED_KEYS_FAST"
+	VarDispatchedKeysFull = "FULLSEND_DISPATCHED_KEYS_FULL"
+	VarFailedKeysFast     = "FULLSEND_FAILED_KEYS_FAST"
+	VarFailedKeysFull     = "FULLSEND_FAILED_KEYS_FULL"
+
+	// Secrets — both forges.
+	SecretGCPProjectID   = "FULLSEND_GCP_PROJECT_ID"
+	SecretGCPWIFProvider = "FULLSEND_GCP_WIF_PROVIDER"
+
+	// Secrets — GitLab only.
+	SecretForgeToken = "FULLSEND_FORGE_TOKEN"
+
+	// Legacy uninstall-only variables — GitLab.
+	VarLegacyBotTokenSecret = "FULLSEND_BOT_TOKEN_SECRET"
+	VarLegacySA             = "FULLSEND_SA"
+	VarLegacyWIFProvider    = "FULLSEND_WIF_PROVIDER"
+	VarLegacyForge          = "FULLSEND_FORGE"
+
+	// Poll/CI runtime variables.
+	VarDispatchHMAC   = "FULLSEND_DISPATCH_HMAC"
+	VarPollJobURL     = "FULLSEND_POLL_JOB_URL"
+	VarPollMode       = "FULLSEND_POLL_MODE"
+	VarGitLabBotToken = "FULLSEND_GITLAB_BOT_TOKEN"
+)
+
 // ErrNotFound indicates a requested resource was not found on the forge.
 var ErrNotFound = errors.New("not found")
 

@@ -75,6 +75,21 @@ The mint exchanges GitHub OIDC tokens for scoped GitHub App installation tokens.
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Agent → Mint Role Mapping
+
+Each dispatch stage mints a token for a specific **mint role**. The `code` and `fix` agents both use the **coder** role (same GitHub App, same PEM, same permissions). All other built-in agents use the role matching their name. `scribe` is a mint role without a built-in dispatch stage.
+
+To change permissions for the `code` or `fix` agent, update the `coder` role.
+
+| Agent | Mint Role |
+|-------|-----------|
+| triage | triage |
+| code | coder |
+| fix | coder |
+| review | review |
+| retro | retro |
+| prioritize | prioritize |
+
 ### Role Permissions Matrix
 
 The mint enforces minimum permission sets per role. Tokens cannot exceed these scopes.
@@ -87,9 +102,11 @@ Custom roles can be registered via the standalone mint's `CUSTOM_ROLE_PERMISSION
 | **scribe** | read | — | write | — | — | — | — | — | read |
 | **coder** | write | write | write | — | read | — | — | — | read |
 | **review** | read | write | write | — | read | — | — | — | read |
-| **fix** | write | write | write | — | — | — | — | — | read |
 | **retro** | read | write | write | read | — | — | — | — | read |
 | **prioritize** | read | — | write | — | — | — | — | write | read |
+| **e2e** | write | write | write | write | — | write | write | — | read |
+
+The **e2e** role also grants: `administration` (write), `members` (write), `secrets` (write), `organization_actions_variables` (write), `organization_administration` (write). These permissions are omitted from the table above because no other role uses them.
 
 ### Mint Security Controls
 
@@ -249,19 +266,20 @@ Secrets and variables are deployed at different scopes depending on the installa
 **Target repo variables:**
 - `FULLSEND_MINT_URL`
 - `FULLSEND_GCP_REGION` (value drift is detected and repaired by convergence)
-- `FULLSEND_PER_REPO_INSTALL` — Flag indicating per-repo mode (set to "true")
 - `FULLSEND_REVIEW_CLIENT_ID` — OAuth client ID of the review agent's GitHub App (best-effort, conditional on successful lookup)
 
 #### GitLab
 
 **Target repo CI/CD variables (protected):**
 - `FULLSEND_FORGE_TOKEN` — Project access token for bot identity (stored as protected CI/CD variable)
-- `FULLSEND_FORGE` — Set to `"gitlab"`
-- `FULLSEND_PER_REPO_INSTALL` — Flag indicating per-repo mode (set to `"true"`)
 - `FULLSEND_LAST_POLL_AT_FAST` — Timestamp of last slash poll run (name predates the slash/events terminology split; used by the slash-command schedule)
 - `FULLSEND_LAST_POLL_AT_FULL` — Timestamp of last event poll run (name predates the slash/events terminology split; used by the event-discovery schedule)
 - `FULLSEND_POLL_MODE` — Pipeline schedule variable (`"slash"` or `"events"`); set automatically per schedule during install, not a project-level CI/CD variable
 - `FULLSEND_LABEL_STATE` — JSON object tracking label sync state
+- `FULLSEND_DISPATCHED_KEYS_FAST` — JSON map of recently dispatched event keys (slash-command schedule)
+- `FULLSEND_DISPATCHED_KEYS_FULL` — JSON map of recently dispatched event keys (event-discovery schedule)
+- `FULLSEND_FAILED_KEYS_FAST` — JSON map of event keys to failure counts (slash-command schedule)
+- `FULLSEND_FAILED_KEYS_FULL` — JSON map of event keys to failure counts (event-discovery schedule)
 
 **Inference variables (required when inference is configured):**
 - `FULLSEND_GCP_PROJECT_ID` — GCP project ID for inference (stored as a CI/CD secret, protected + masked)

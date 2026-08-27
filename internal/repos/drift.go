@@ -158,17 +158,15 @@ func CheckOrphanFiles(ctx context.Context, client forge.Client,
 }
 
 // OrphanVar describes a repository variable with the FULLSEND_ prefix
-// (or the guard variable) that exists on the forge but is not in the
-// current managed variable set.
+// that exists on the forge but is not in the current managed variable set.
 type OrphanVar struct {
 	Name string
 }
 
-// CheckOrphanVars lists all repository variables on the forge and
-// returns those with the FULLSEND_ prefix (or the guard variable name)
-// that are not in the managed variable set for the given forge. These
-// are orphan variables — leftover from a previous installation or a
-// removed feature.
+// CheckOrphanVars lists all repository variables on the forge and returns
+// those with the FULLSEND_ prefix that are not in the managed variable set
+// for the given forge. These are orphan variables — leftover from a
+// previous installation or a removed feature.
 //
 // The managed set is computed using the FULL superset of possible
 // managed variables — conditional fields (InferenceRegion,
@@ -197,6 +195,13 @@ func CheckOrphanVars(ctx context.Context, client forge.Client,
 		managedNames[v.Name] = true
 	}
 
+	// On GitLab, secrets are stored as masked CI/CD variables, so
+	// ListRepoVariables returns them. Exclude required secrets from
+	// orphan detection — they are not orphans.
+	for _, s := range requiredSecretsForForge(cfg.Forge) {
+		managedNames[s] = true
+	}
+
 	forgeVars, err := client.ListRepoVariables(ctx, owner, repo)
 	if err != nil {
 		return nil, fmt.Errorf("listing repo variables: %w", err)
@@ -204,7 +209,7 @@ func CheckOrphanVars(ctx context.Context, client forge.Client,
 
 	var orphans []OrphanVar
 	for name := range forgeVars {
-		if !strings.HasPrefix(name, "FULLSEND_") && name != forge.PerRepoGuardVar {
+		if !strings.HasPrefix(name, "FULLSEND_") {
 			continue
 		}
 		if managedNames[name] {

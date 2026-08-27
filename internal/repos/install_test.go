@@ -84,9 +84,9 @@ func TestInstall_FreshInstall_Direct(t *testing.T) {
 		t.Error("expected scaffold commit function to be called")
 	}
 
-	// Verify repository variables were set (guard + mint URL + region).
-	if len(fc.Variables) != 3 {
-		t.Errorf("expected 3 variables, got %d", len(fc.Variables))
+	// Verify repository variables were set (mint URL + region).
+	if len(fc.Variables) != 2 {
+		t.Errorf("expected 2 variables, got %d", len(fc.Variables))
 	}
 	varMap := make(map[string]string)
 	for _, v := range fc.Variables {
@@ -603,9 +603,13 @@ func TestCheckInstallComponents_SecretCheckError(t *testing.T) {
 func TestCheckInstallComponents_GitLab_MissingSecrets(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
-	fc.VariableValues["acme/api/FULLSEND_LAST_POLL_AT_FAST"] = "2026-01-01T00:00:00Z"
-	fc.VariableValues["acme/api/FULLSEND_LAST_POLL_AT_FULL"] = "2026-01-01T00:00:00Z"
-	fc.VariableValues["acme/api/FULLSEND_LABEL_STATE"] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
 
 	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
 	if err != nil {
@@ -619,11 +623,16 @@ func TestCheckInstallComponents_GitLab_MissingSecrets(t *testing.T) {
 func TestCheckInstallComponents_GitLab_FullyInstalled(t *testing.T) {
 	fc := forge.NewFakeClient()
 	fc.FileContents["acme/api/.gitlab/ci/fullsend-dispatch.yml"] = []byte("include:")
-	fc.VariableValues["acme/api/FULLSEND_LAST_POLL_AT_FAST"] = "2026-01-01T00:00:00Z"
-	fc.VariableValues["acme/api/FULLSEND_LAST_POLL_AT_FULL"] = "2026-01-01T00:00:00Z"
-	fc.VariableValues["acme/api/FULLSEND_LABEL_STATE"] = "{}"
-	fc.Secrets["acme/api/FULLSEND_GCP_PROJECT_ID"] = true
-	fc.Secrets["acme/api/FULLSEND_GCP_WIF_PROVIDER"] = true
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFast] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLastPollAtFull] = "2026-01-01T00:00:00Z"
+	fc.VariableValues["acme/api/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["acme/api/"+forge.VarFailedKeysFull] = "{}"
+	fc.Secrets["acme/api/"+forge.SecretGCPProjectID] = true
+	fc.Secrets["acme/api/"+forge.SecretGCPWIFProvider] = true
+	fc.Secrets["acme/api/"+forge.SecretForgeToken] = true
 
 	installed, err := checkInstallComponents(context.Background(), fc, "acme", "api", ForgeGitLab, GitLabForgeConfig(), nil)
 	if err != nil {
@@ -691,17 +700,21 @@ func TestInstallVarsForForge_GitLab(t *testing.T) {
 		t.Fatalf("installVarsForForge(GitLab) error = %v", err)
 	}
 	requiredKeys := []string{
-		"FULLSEND_LAST_POLL_AT_FAST",
-		"FULLSEND_LAST_POLL_AT_FULL",
-		"FULLSEND_LABEL_STATE",
+		forge.VarLastPollAtFast,
+		forge.VarLastPollAtFull,
+		forge.VarLabelState,
+		forge.VarDispatchedKeysFast,
+		forge.VarDispatchedKeysFull,
+		forge.VarFailedKeysFast,
+		forge.VarFailedKeysFull,
 	}
 	for _, k := range requiredKeys {
 		if _, ok := vars[k]; !ok {
 			t.Errorf("missing required GitLab variable %q", k)
 		}
 	}
-	// GitLab vars should NOT include GitHub-specific or dead marker vars.
-	for _, k := range []string{"FULLSEND_MINT_URL", "FULLSEND_GCP_REGION", "FULLSEND_FORGE"} {
+	// GitLab vars should NOT include GitHub-specific, dead marker, or guard vars.
+	for _, k := range []string{forge.VarMintURL, forge.VarGCPRegion, forge.VarLegacyForge, forge.PerRepoGuardVar} {
 		if _, ok := vars[k]; ok {
 			t.Errorf("GitLab vars should not include %q", k)
 		}
@@ -836,7 +849,7 @@ func TestRequiredVarsForForge(t *testing.T) {
 }
 
 func TestRequiredSecretsForForge(t *testing.T) {
-	secrets := requiredSecretsForForge()
+	secrets := requiredSecretsForForge(ForgeGitHub)
 	if len(secrets) == 0 {
 		t.Fatal("expected non-empty required secrets")
 	}
@@ -1107,8 +1120,10 @@ func TestBuildScaffoldFiles_GitLab(t *testing.T) {
 	for _, f := range files {
 		paths[f.Path] = true
 	}
+	// .gitlab-ci.yml is no longer in static scaffold — the install flow
+	// merges fullsend entries into the existing file dynamically.
 	for _, expected := range []string{
-		".gitlab-ci.yml",
+		".gitlab/ci/fullsend-pipeline.yml",
 		".gitlab/ci/fullsend-agent.yml",
 		".gitlab/ci/fullsend-dispatch.yml",
 		".gitlab/ci/fullsend-poll.yml",
@@ -1117,6 +1132,10 @@ func TestBuildScaffoldFiles_GitLab(t *testing.T) {
 		if !paths[expected] {
 			t.Errorf("missing expected scaffold file %q", expected)
 		}
+	}
+	if paths[".gitlab-ci.yml"] {
+		t.Error(".gitlab-ci.yml should not be in static scaffold — " +
+			"root file is merged dynamically by Install")
 	}
 }
 

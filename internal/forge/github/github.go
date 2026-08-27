@@ -208,7 +208,7 @@ func (c *LiveClient) do(ctx context.Context, method, path string, body any) (*ht
 				half := base / 2
 				delay := half + time.Duration(rand.Int64N(int64(half)+1))
 				select {
-				case <-time.After(delay):
+				case <-c.afterFunc(delay):
 				case <-ctx.Done():
 					return nil, ctx.Err()
 				}
@@ -3180,14 +3180,14 @@ func (c *LiveClient) UpdatePullRequestBranch(ctx context.Context, owner, repo st
 // through so the caller can retry the merge (which will get another 409 if
 // the update still hasn't landed).
 func (c *LiveClient) awaitBranchUpdate(ctx context.Context, owner, repo string, number int, oldSHA string) error {
-	deadline := time.After(mergeRetryPollTimeout)
+	deadline := c.afterFunc(mergeRetryPollTimeout)
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline:
 			return nil // timed out; let the caller retry the merge
-		case <-time.After(mergeRetryPollInterval):
+		case <-c.afterFunc(mergeRetryPollInterval):
 			newSHA, err := c.GetPullRequestHeadSHA(ctx, owner, repo, number)
 			if err != nil {
 				continue // transient error; keep polling

@@ -97,6 +97,17 @@ if [ -d "${OPENSHELL_CONFIG}" ]; then
   OPENSHELL_MOUNT=(-v "${OPENSHELL_STAGING}:/root/.config/openshell:ro,z")
 fi
 
+# Bind-mount the host's gitlab-runner binary into the container so that
+# artifact upload/download and cache stages work with the custom executor.
+# Without this, GitLab Runner's generated upload_artifacts_on_success script
+# checks for `gitlab-runner --version` inside the container, fails to find it,
+# and silently disables artifact upload — breaking downstream jobs that depend
+# on artifacts.
+GITLAB_RUNNER_MOUNT=()
+if [ -x /usr/local/bin/gitlab-runner ]; then
+  GITLAB_RUNNER_MOUNT=(-v /usr/local/bin/gitlab-runner:/usr/local/bin/gitlab-runner:ro)
+fi
+
 echo "Creating container: ${CONTAINER_NAME}"
 # Record the name before creating it: if prepare.sh dies between create and
 # the write, cleanup.sh has no way to find the container and it leaks.
@@ -112,6 +123,7 @@ podman create \
   -v "${BUILDS_DIR}:${BUILDS_DIR}:z" \
   -v "${CACHE_DIR}:${CACHE_DIR}:z" \
   "${OPENSHELL_MOUNT[@]}" \
+  "${GITLAB_RUNNER_MOUNT[@]}" \
   -- "${IMAGE}" \
   sleep infinity
 

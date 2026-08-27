@@ -16,10 +16,10 @@ var scaffoldGitLabPaths = []struct {
 	repoPath string
 	outPath  string
 }{
+	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-pipeline.yml", ".gitlab/ci/fullsend-pipeline.yml"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-dispatch.yml", ".gitlab/ci/fullsend-dispatch.yml"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-agent.yml", ".gitlab/ci/fullsend-agent.yml"},
 	{"internal/scaffold/fullsend-repo-gitlab/.gitlab/ci/fullsend-poll.yml", ".gitlab/ci/fullsend-poll.yml"},
-	{"internal/scaffold/fullsend-repo-gitlab/.gitlab-ci.yml", ".gitlab-ci.yml"},
 }
 
 // FetchRemoteScaffold fetches scaffold templates from fullsend-ai/fullsend

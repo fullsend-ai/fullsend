@@ -143,11 +143,44 @@ func TestRunCommand_RejectsNegativeMaxResources(t *testing.T) {
 	assert.Contains(t, err.Error(), "--max-resources must be >= 1")
 }
 
+// neutralizeAgentsRepoFallback ensures fixture-based runAgent tests are
+// hermetic with respect to ambient GitHub credentials. Without this,
+// runAgent may resolve a token from $GH_TOKEN, $GITHUB_TOKEN, or
+// `gh auth token` (keyring), construct a non-nil forge client, and
+// silently fetch live harness content from fullsend-ai/agents instead
+// of using the test's local fixture. Even without credentials, the
+// unauthenticated forge client can reach the public agents repo.
+//
+// This helper neutralizes both credential sources and the network
+// fallback path so tests exercise only their local fixtures
+// regardless of the developer's environment. See #5569.
+func neutralizeAgentsRepoFallback(t *testing.T) {
+	t.Helper()
+	// Blank credential env vars so resolveToken() does not pick up
+	// ambient tokens.
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
+	// Point GH_CONFIG_DIR to an empty directory so the third
+	// resolveToken() fallback (`gh auth token`) finds no keyring
+	// state.
+	t.Setenv("GH_CONFIG_DIR", t.TempDir())
+	// Override the agents-repo URL prefix so that even if an
+	// unauthenticated forge client is constructed (gh.New("")),
+	// the fetch step in tryAgentsRepoFallback fails immediately
+	// rather than hitting the real raw.githubusercontent.com.
+	orig := defaultAgentsRepoURLPrefix
+	defaultAgentsRepoURLPrefix = "https://127.0.0.1:1/agents-repo-blocked-by-test/"
+	t.Cleanup(func() { defaultAgentsRepoURLPrefix = orig })
+}
+
 // useFakeOpenshell prepends testdata/ to PATH so the stub openshell binary
 // is found instead of a real installation, causing tests to fail fast at
-// sandbox.CheckGateway instead of actually running agents.
+// sandbox.CheckGateway instead of actually running agents. Also
+// neutralizes ambient GitHub credentials to prevent the agents-repo
+// fallback from bypassing local fixtures (#5569).
 func useFakeOpenshell(t *testing.T) {
 	t.Helper()
+	neutralizeAgentsRepoFallback(t)
 	testdataDir, err := filepath.Abs("testdata")
 	require.NoError(t, err)
 	origPath := os.Getenv("PATH")
@@ -156,9 +189,11 @@ func useFakeOpenshell(t *testing.T) {
 
 // useFakeOpenshellProviders uses a stub that passes CheckGateway and handles
 // provider/profile/sandbox commands, allowing tests to exercise the full
-// provider/profile orchestration block in runAgent.
+// provider/profile orchestration block in runAgent. Also neutralizes
+// ambient GitHub credentials (#5569).
 func useFakeOpenshellProviders(t *testing.T) {
 	t.Helper()
+	neutralizeAgentsRepoFallback(t)
 	stubDir, err := filepath.Abs(filepath.Join("testdata", "providers-stub"))
 	require.NoError(t, err)
 	origPath := os.Getenv("PATH")
@@ -2912,6 +2947,32 @@ func TestPostScriptEnv_NoSchemaAppendedWhenNoValidationLoop(t *testing.T) {
 	for _, e := range env {
 		assert.False(t, strings.HasPrefix(e, "FULLSEND_OUTPUT_SCHEMA="),
 			"FULLSEND_OUTPUT_SCHEMA should not be set when ValidationLoop is nil")
+	}
+}
+
+func TestAgentTimedOut(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		elapsed time.Duration
+		timeout time.Duration
+		want    bool
+	}{
+		{"at timeout boundary", 30 * time.Minute, 30 * time.Minute, true},
+		{"over timeout", 31 * time.Minute, 30 * time.Minute, true},
+		{"exactly 90 percent", 27 * time.Minute, 30 * time.Minute, true},
+		{"just under 90 percent", 26*time.Minute + 59*time.Second, 30 * time.Minute, false},
+		{"well under timeout", 5 * time.Minute, 30 * time.Minute, false},
+		{"zero elapsed", 0, 30 * time.Minute, false},
+		{"custom timeout at boundary", 31*time.Minute + 30*time.Second, 35 * time.Minute, true},
+		{"custom timeout under", 20 * time.Minute, 35 * time.Minute, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := agentTimedOut(tt.elapsed, tt.timeout)
+			assert.Equal(t, tt.want, got)
+		})
 	}
 }
 

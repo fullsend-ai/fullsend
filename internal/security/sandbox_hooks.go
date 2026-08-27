@@ -12,7 +12,8 @@ import (
 // mechanism. A nil internal hook config uses the same defaults as an unset
 // harness security block.
 type SandboxHookConfig struct {
-	hooks *harness.SandboxHooks
+	hooks            *harness.SandboxHooks
+	forgeEgressEntry string // optional "host:port" to auto-merge into the egress allowlist
 }
 
 // SandboxHookConfigFromHarness extracts sandbox hook settings from a harness.
@@ -43,4 +44,30 @@ func (c SandboxHookConfig) TirithRequired() bool {
 		return true
 	}
 	return boolDefault(sh.Tirith.Enabled, true)
+}
+
+// SSRFEgressAllowlist returns the comma-separated egress allowlist, or
+// empty when unset.  The allowlist tells the SSRF hook which hosts may
+// bypass the DNS-failure fail-closed check (the L7 egress proxy will
+// resolve and enforce the network policy for those hosts).
+func (c SandboxHookConfig) SSRFEgressAllowlist() string {
+	sh := c.sandboxHooks()
+	if sh == nil {
+		return ""
+	}
+	return sh.SSRFEgressAllowlist
+}
+
+// WithForgeEgressEntry returns a copy of c with the forge egress entry
+// set. The entry is a "host:port" string merged into the egress
+// allowlist at bootstrap time.
+func (c SandboxHookConfig) WithForgeEgressEntry(entry string) SandboxHookConfig {
+	c.forgeEgressEntry = entry
+	return c
+}
+
+// ForgeEgressEntry returns the forge-specific "host:port" egress entry
+// set by the CLI layer, or empty when none was configured.
+func (c SandboxHookConfig) ForgeEgressEntry() string {
+	return c.forgeEgressEntry
 }

@@ -111,6 +111,17 @@ type stubClient struct {
 	createRepoErr    error
 	createRepoCalled atomic.Int32
 
+	deleteRepoErr    error
+	deleteRepoCalled atomic.Int32
+
+	// forkExists controls whether GetRepo returns success for fork
+	// repos (names ending in "-fork"). When false (default), fork
+	// repos return ErrNotFound, preventing fork cleanup from
+	// interfering with source-repo-focused tests.
+	forkExists       bool
+	forkDeleteErr    error
+	forkDeleteCalled atomic.Int32
+
 	// installed controls whether GetFileContent returns valid
 	// post-install files. When false, all paths return ErrNotFound.
 	installed bool
@@ -125,9 +136,15 @@ type stubClient struct {
 	getWorkflowCalled atomic.Int32
 }
 
-func (s *stubClient) GetRepo(_ context.Context, _, _ string) (*forge.Repository, error) {
+func (s *stubClient) GetRepo(_ context.Context, _, repo string) (*forge.Repository, error) {
 	if s.ensureDelay > 0 {
 		time.Sleep(s.ensureDelay)
+	}
+	if strings.HasSuffix(repo, "-fork") {
+		if !s.forkExists {
+			return nil, forge.ErrNotFound
+		}
+		return &forge.Repository{}, nil
 	}
 	return &forge.Repository{}, s.getRepoErr
 }
@@ -137,7 +154,29 @@ func (s *stubClient) CreateRepo(_ context.Context, _, _, _ string, _ bool) (*for
 	if s.createRepoErr != nil {
 		return nil, s.createRepoErr
 	}
+	// Simulate eventual consistency: the repo is available after create,
+	// so subsequent GetRepo calls should succeed.
+	s.getRepoErr = nil
 	return &forge.Repository{}, nil
+}
+
+func (s *stubClient) DeleteRepo(_ context.Context, _, repo string) error {
+	if strings.HasSuffix(repo, "-fork") {
+		s.forkDeleteCalled.Add(1)
+		if s.forkDeleteErr != nil {
+			return s.forkDeleteErr
+		}
+		s.forkExists = false
+		return nil
+	}
+	s.deleteRepoCalled.Add(1)
+	if s.deleteRepoErr != nil {
+		return s.deleteRepoErr
+	}
+	// Simulate eventual consistency: the repo is gone after delete,
+	// so subsequent GetRepo calls should return ErrNotFound.
+	s.getRepoErr = forge.ErrNotFound
+	return nil
 }
 
 func (s *stubClient) GetFileContent(_ context.Context, _, _, path string) ([]byte, error) {
@@ -231,19 +270,23 @@ func TestEnsurer_CreatesRepoWhenMissing(t *testing.T) {
 	assert.Equal(t, int32(1), sc.createRepoCalled.Load())
 }
 
-func TestEnsurer_SkipsCreateWhenRepoExists(t *testing.T) {
+func TestEnsurer_DeletesAndRecreatesExistingRepo(t *testing.T) {
+	speedUpValidateRetries(t)
 	sc := &stubClient{installed: true}
 	e := &repoEnsurer{
-		e2eCfg:  e2etest.EnvConfig{},
+		e2eCfg:  e2etest.EnvConfig{MintURL: "https://mint.test"},
 		client:  sc,
+		binary:  "/usr/bin/fullsend",
+		token:   "tok",
 		runCLI:  noopCLI,
+		settle:  noopSettle,
 		logf:    t.Logf,
 		ensured: make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-03")
 	require.NoError(t, err)
-	assert.Equal(t, int32(0), sc.createRepoCalled.Load(), "should not create existing repo")
+	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load(), "should delete existing repo to reset history")
 }
 
 func TestEnsurer_InstallsWhenValidationFails(t *testing.T) {
@@ -570,7 +613,8 @@ func TestDoEnsure_EnsureRepoExistsError_Propagated(t *testing.T) {
 	assert.Contains(t, err.Error(), "network timeout")
 }
 
-func TestDoEnsure_AlreadyInstalledReVendors(t *testing.T) {
+func TestDoEnsure_AlwaysInstallsAfterReset(t *testing.T) {
+	speedUpValidateRetries(t)
 	sc := &stubClient{installed: true}
 	cliCalled := false
 	e := &repoEnsurer{
@@ -582,13 +626,15 @@ func TestDoEnsure_AlreadyInstalledReVendors(t *testing.T) {
 			cliCalled = true
 			return "", nil
 		},
+		settle:  noopSettle,
 		logf:    t.Logf,
 		ensured: make(map[string]struct{}),
 	}
 
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-revendor")
 	require.NoError(t, err)
-	assert.True(t, cliCalled, "CLI should be called to re-vendor even when validation passes")
+	assert.True(t, cliCalled, "CLI should be called to install after repo reset")
+	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load(), "existing repo should be deleted for reset")
 }
 
 // --- awaitWorkflowReady unit tests ---
@@ -643,7 +689,8 @@ func TestDoEnsure_SettleCalledAfterInstall(t *testing.T) {
 	assert.True(t, settleCalled, "settle should be called after install")
 }
 
-func TestDoEnsure_SettleNotCalledWhenAlreadyInstalled(t *testing.T) {
+func TestDoEnsure_SettleAlwaysCalledAfterReset(t *testing.T) {
+	speedUpValidateRetries(t)
 	sc := &stubClient{installed: true}
 	settleCalled := false
 	e := &repoEnsurer{
@@ -662,9 +709,9 @@ func TestDoEnsure_SettleNotCalledWhenAlreadyInstalled(t *testing.T) {
 		ensured: make(map[string]struct{}),
 	}
 
-	err := e.EnsureRepo(context.Background(), "org", "test-repo-no-settle")
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-settle-after-reset")
 	require.NoError(t, err)
-	assert.False(t, settleCalled, "settle should not be called when already installed")
+	assert.True(t, settleCalled, "settle should always be called after repo reset")
 }
 
 func TestDoEnsure_SettleError_Propagated(t *testing.T) {
@@ -692,4 +739,281 @@ func TestDoEnsure_SettleError_Propagated(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "waiting for Actions readiness")
 	assert.Contains(t, err.Error(), "Actions not ready")
+}
+
+// --- resetRepo unit tests ---
+
+func TestResetRepo_DeletesExistingRepo(t *testing.T) {
+	sc := &stubClient{} // GetRepo returns success (repo exists)
+	e := &repoEnsurer{client: sc, logf: t.Logf}
+
+	err := e.resetRepo(context.Background(), "org", "repo", "org/repo")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load(), "should delete existing repo")
+}
+
+func TestResetRepo_SkipsDeleteWhenRepoMissing(t *testing.T) {
+	sc := &stubClient{getRepoErr: forge.ErrNotFound}
+	e := &repoEnsurer{client: sc, logf: t.Logf}
+
+	err := e.resetRepo(context.Background(), "org", "repo", "org/repo")
+	require.NoError(t, err)
+	assert.Equal(t, int32(0), sc.deleteRepoCalled.Load(), "should not delete missing repo")
+}
+
+func TestResetRepo_PropagatesGetRepoError(t *testing.T) {
+	sc := &stubClient{getRepoErr: assert.AnError}
+	e := &repoEnsurer{client: sc, logf: t.Logf}
+
+	err := e.resetRepo(context.Background(), "org", "repo", "org/repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking repo")
+}
+
+func TestResetRepo_PropagatesDeleteError(t *testing.T) {
+	sc := &stubClient{deleteRepoErr: fmt.Errorf("permission denied")}
+	e := &repoEnsurer{client: sc, logf: t.Logf}
+
+	err := e.resetRepo(context.Background(), "org", "repo", "org/repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deleting repo")
+	assert.Contains(t, err.Error(), "permission denied")
+	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load())
+}
+
+func TestResetRepo_DeleteNotFound_IsIdempotent(t *testing.T) {
+	sc := &stubClient{deleteRepoErr: forge.ErrNotFound}
+	e := &repoEnsurer{client: sc, logf: t.Logf}
+
+	err := e.resetRepo(context.Background(), "org", "repo", "org/repo")
+	require.NoError(t, err, "ErrNotFound from delete should be treated as success (race-safe)")
+}
+
+// --- resetRepo fork cleanup tests ---
+
+func TestResetRepo_DeletesForkBeforeSource(t *testing.T) {
+	speedUpResetRetries(t)
+	sc := &stubClient{forkExists: true}
+	e := &repoEnsurer{client: sc, logf: t.Logf}
+
+	err := e.resetRepo(context.Background(), "org", "repo", "org/repo")
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), sc.forkDeleteCalled.Load(), "fork should be deleted before source reset")
+	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load(), "source should be deleted")
+}
+
+func TestResetRepo_SkipsForkDeleteWhenForkMissing(t *testing.T) {
+	sc := &stubClient{} // forkExists defaults to false
+	e := &repoEnsurer{client: sc, logf: t.Logf}
+
+	err := e.resetRepo(context.Background(), "org", "repo", "org/repo")
+	require.NoError(t, err)
+	assert.Equal(t, int32(0), sc.forkDeleteCalled.Load(), "fork should not be deleted when absent")
+	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load(), "source should still be deleted")
+}
+
+func TestResetRepo_PropagatesForkDeleteError(t *testing.T) {
+	sc := &stubClient{
+		forkExists:    true,
+		forkDeleteErr: fmt.Errorf("permission denied"),
+	}
+	e := &repoEnsurer{client: sc, logf: t.Logf}
+
+	err := e.resetRepo(context.Background(), "org", "repo", "org/repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deleting fork repo")
+	assert.Contains(t, err.Error(), "permission denied")
+	assert.Equal(t, int32(1), sc.forkDeleteCalled.Load())
+}
+
+func TestResetRepo_ForkDeleteNotFound_ContinuesToSource(t *testing.T) {
+	speedUpResetRetries(t)
+	sc := &stubClient{
+		forkExists:    true,
+		forkDeleteErr: forge.ErrNotFound,
+	}
+	e := &repoEnsurer{client: sc, logf: t.Logf}
+
+	err := e.resetRepo(context.Background(), "org", "repo", "org/repo")
+	require.NoError(t, err, "ErrNotFound from fork delete should not block source reset")
+	assert.Equal(t, int32(1), sc.deleteRepoCalled.Load(), "source should still be deleted")
+}
+
+// speedUpResetRetries sets resetRetryDelay to zero for fast tests
+// and returns a cleanup function that restores the original value.
+func speedUpResetRetries(t *testing.T) {
+	t.Helper()
+	orig := resetRetryDelay
+	resetRetryDelay = 0
+	t.Cleanup(func() { resetRetryDelay = orig })
+}
+
+// countingRepoClient returns different GetRepo results after a
+// configurable number of calls. Used to test awaitDeletion and
+// awaitCreation retry behaviour.
+type countingRepoClient struct {
+	forge.Client
+	mu           sync.Mutex
+	getRepoCalls int
+	switchAfter  int   // after this many calls, switch to switchedErr
+	initialErr   error // returned for calls 1..switchAfter
+	switchedErr  error // returned for calls switchAfter+1..
+}
+
+func (c *countingRepoClient) GetRepo(_ context.Context, _, _ string) (*forge.Repository, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.getRepoCalls++
+	if c.getRepoCalls > c.switchAfter {
+		return &forge.Repository{}, c.switchedErr
+	}
+	return &forge.Repository{}, c.initialErr
+}
+
+// --- awaitDeletion unit tests ---
+
+func TestAwaitDeletion_ConfirmsImmediately(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &countingRepoClient{
+		switchAfter: 0,
+		initialErr:  forge.ErrNotFound,
+		switchedErr: forge.ErrNotFound,
+	}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	err := e.awaitDeletion(context.Background(), "org", "repo", "org/repo")
+	require.NoError(t, err)
+	assert.Equal(t, 1, client.getRepoCalls, "should confirm on first poll")
+}
+
+func TestAwaitDeletion_RetriesUntilConfirmed(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &countingRepoClient{
+		switchAfter: 3,
+		initialErr:  nil,               // repo still visible for 3 calls
+		switchedErr: forge.ErrNotFound, // then confirmed deleted
+	}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	err := e.awaitDeletion(context.Background(), "org", "repo", "org/repo")
+	require.NoError(t, err)
+	assert.Equal(t, 4, client.getRepoCalls, "should retry until 404 confirmed")
+}
+
+func TestAwaitDeletion_ProceedsAfterMaxAttempts(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &countingRepoClient{
+		switchAfter: resetMaxAttempts + 1, // never switches
+		initialErr:  nil,                  // repo stays visible
+	}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	err := e.awaitDeletion(context.Background(), "org", "repo", "org/repo")
+	require.NoError(t, err, "should not error when max attempts exhausted")
+	assert.Equal(t, resetMaxAttempts, client.getRepoCalls)
+}
+
+func TestAwaitDeletion_PropagatesNonNotFoundError(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &countingRepoClient{
+		switchAfter: 0,
+		initialErr:  assert.AnError,
+		switchedErr: assert.AnError,
+	}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	err := e.awaitDeletion(context.Background(), "org", "repo", "org/repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking deletion")
+}
+
+func TestAwaitDeletion_ContextCancellation(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &countingRepoClient{
+		switchAfter: resetMaxAttempts + 1, // never switches
+		initialErr:  nil,                  // repo stays visible
+	}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	err := e.awaitDeletion(ctx, "org", "repo", "org/repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context cancelled")
+}
+
+// --- awaitCreation unit tests ---
+
+func TestAwaitCreation_ConfirmsImmediately(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &countingRepoClient{
+		switchAfter: 0,
+		initialErr:  nil, // repo visible immediately
+		switchedErr: nil,
+	}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	err := e.awaitCreation(context.Background(), "org", "repo", "org/repo")
+	require.NoError(t, err)
+	assert.Equal(t, 1, client.getRepoCalls, "should confirm on first poll")
+}
+
+func TestAwaitCreation_RetriesUntilVisible(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &countingRepoClient{
+		switchAfter: 2,
+		initialErr:  forge.ErrNotFound, // not visible for 2 calls
+		switchedErr: nil,               // then visible
+	}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	err := e.awaitCreation(context.Background(), "org", "repo", "org/repo")
+	require.NoError(t, err)
+	assert.Equal(t, 3, client.getRepoCalls, "should retry until repo visible")
+}
+
+func TestAwaitCreation_FailsAfterMaxAttempts(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &countingRepoClient{
+		switchAfter: resetMaxAttempts + 1, // never switches
+		initialErr:  forge.ErrNotFound,    // never visible
+		switchedErr: forge.ErrNotFound,
+	}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	err := e.awaitCreation(context.Background(), "org", "repo", "org/repo")
+	require.Error(t, err, "should error when repo never becomes visible")
+	assert.Contains(t, err.Error(), "not visible after")
+}
+
+func TestAwaitCreation_PropagatesNonNotFoundError(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &countingRepoClient{
+		switchAfter: 0,
+		initialErr:  assert.AnError,
+		switchedErr: assert.AnError,
+	}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	err := e.awaitCreation(context.Background(), "org", "repo", "org/repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking creation")
+}
+
+func TestAwaitCreation_ContextCancellation(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &countingRepoClient{
+		switchAfter: resetMaxAttempts + 1,
+		initialErr:  forge.ErrNotFound,
+		switchedErr: forge.ErrNotFound,
+	}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	err := e.awaitCreation(ctx, "org", "repo", "org/repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context cancelled")
 }

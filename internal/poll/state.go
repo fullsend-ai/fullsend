@@ -32,9 +32,9 @@ func (p *Poller) readWatermark(ctx context.Context, owner, repo string) (time.Ti
 // Slash-command-only mode uses a faster polling cadence with its own variable.
 func (p *Poller) watermarkVarName() string {
 	if p.slashCommandsOnly {
-		return "FULLSEND_LAST_POLL_AT_FAST"
+		return forge.VarLastPollAtFast
 	}
-	return "FULLSEND_LAST_POLL_AT_FULL"
+	return forge.VarLastPollAtFull
 }
 
 // updateWatermark persists the given timestamp as the poll watermark.
@@ -50,7 +50,7 @@ func (p *Poller) updateWatermark(ctx context.Context, owner, repo string, t time
 //   - error
 func (p *Poller) detectNewLabels(ctx context.Context, owner, repo string, issues []Issue) (map[int][]string, LabelState, map[int][]string, error) {
 	// Read persisted label state from CI variable.
-	raw, err := p.client.GetCIVariable(ctx, owner, repo, "FULLSEND_LABEL_STATE")
+	raw, err := p.client.GetCIVariable(ctx, owner, repo, forge.VarLabelState)
 	if err != nil && !errors.Is(err, forge.ErrNotFound) {
 		return nil, nil, nil, err
 	}
@@ -119,7 +119,7 @@ func (p *Poller) persistLabelState(ctx context.Context, owner, repo string, stat
 	if err != nil {
 		return err
 	}
-	return p.client.UpdateCIVariable(ctx, owner, repo, "FULLSEND_LABEL_STATE", string(data), true)
+	return p.client.UpdateCIVariable(ctx, owner, repo, forge.VarLabelState, string(data), true)
 }
 
 // isIssueClosed checks whether the given issue is closed.
@@ -135,9 +135,9 @@ func (p *Poller) isIssueClosed(ctx context.Context, owner, repo string, iid int)
 // dispatchedKeysVarName returns the per-mode CI variable name for dispatched keys.
 func (p *Poller) dispatchedKeysVarName() string {
 	if p.slashCommandsOnly {
-		return "FULLSEND_DISPATCHED_KEYS_FAST"
+		return forge.VarDispatchedKeysFast
 	}
-	return "FULLSEND_DISPATCHED_KEYS_FULL"
+	return forge.VarDispatchedKeysFull
 }
 
 // readDispatchedKeys reads the map of recently-dispatched event keys
@@ -180,9 +180,9 @@ func (p *Poller) persistDispatchedKeys(ctx context.Context, owner, repo string, 
 // failedKeysVarName returns the CI variable name for failed event retry counts.
 func (p *Poller) failedKeysVarName() string {
 	if p.slashCommandsOnly {
-		return "FULLSEND_FAILED_KEYS_FAST"
+		return forge.VarFailedKeysFast
 	}
-	return "FULLSEND_FAILED_KEYS_FULL"
+	return forge.VarFailedKeysFull
 }
 
 // readFailedKeys reads the map of event keys to failure counts.

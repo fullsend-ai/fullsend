@@ -52,7 +52,7 @@ python3 skills/nextwork/scripts/nextwork.py [ITEMS...] [OPTIONS]
 | `--apply` | Perform trivial actions: `assign:self` first when suggested on actionable unassigned items; post exact `/fs-triage`, `/fs-code`, `/fs-review`, `/fs-fix` comments; remove orphaned `blocked` labels on **Issues** only (`remove-label:blocked`). Never steals assignment from others and never auto-merges. Requires `--confirmed`. |
 | `--take-over REFS` | Assign the listed refs (comma-separated or repeatable) to `--user` **exclusively** (adds `--user`, then removes every other assignee) on **open** items only, then classify them as owned. Skill-mediated — ask the user before using this; confirmation must cover exclusive ownership. Requires `--confirmed`. |
 | `--link-blocker DEPENDENT=BLOCKER` | Repeatable. Persist a real GitHub `blockedBy` dependency (DEPENDENT is blocked by BLOCKER, both as `owner/repo#N`). Idempotent if the link already exists. **Both sides must be open Issues** — GitHub's blocked-by relationship is issue-only on the dependent **and** the blocker (a PR cannot appear on either side). Requires `--confirmed`. |
-| `--resolve-threads` | Resolve **bot-only** unresolved review threads on classified PRs using the `resolveReviewThread` GraphQL mutation. Only threads where **all** comments are from `fullsend-ai-review[bot]` are resolved; threads with any human comment are left open (they require a human decision). Requires `--confirmed`. |
+| `--resolve-threads` | Resolve **bot-only** unresolved review threads on classified PRs using the `resolveReviewThread` GraphQL mutation. Only threads where **all** comments are from `fullsend-ai-review` are resolved; threads with any human comment are left open (they require a human decision). Requires `--confirmed`. |
 | `--confirmed` | Required together with `--apply` / `--take-over` / `--link-blocker` / `--resolve-threads`. Code-level confirmation gate so mutating flags cannot fire from a premature/misparsed first pass. Invalid alone. |
 | `--decisions-only` | Filter output to non-trivial decisions only (statuses in the "Decision?" = No/Decision column below) |
 | `--stale-hours N` | Default 6. Hours after which a **stuck in-flight** agent-status start, or a **never-started** launch label/`/fs-*` command, becomes an actionable re-trigger |
@@ -85,7 +85,7 @@ like production dispatch: first whitespace token of the first comment line.
 | `waiting_triage` | `ready-for-triage` / `/fs-triage` with no matching completed Triage yet; **or** non-terminal triage agent-status; **or** no control labels yet (issue **creation** is the initial triage launch clock). A terminal Triage **or** sticky `<!-- fullsend:triage-agent -->` (when status is absent) at/after the launch signal clears the wait. | `needs_triage` (`/fs-triage`) — when the launch signal (including `created_at`) or stuck start is stale |
 | `waiting_code` | `ready-to-code` / `/fs-code`; **or** non-terminal code agent-status | `trigger_code` (`/fs-code`) |
 | `waiting_review` | `ready-for-review` / `/fs-review` / review-required (or missing decision after other checks); when no explicit `/fs-*` comment exists, uses `updated_at` as the launch clock (same imprecise fallback as code/triage label-only waits) | `trigger_review` (`/fs-review`) — also when head commits are newer than the last terminal Review |
-| `waiting_fix` | Unresolved review threads all from `fullsend-ai-review[bot]`; **or** non-terminal fix agent-status | `trigger_fix` (`/fs-fix`) |
+| `waiting_fix` | Unresolved review threads all from `fullsend-ai-review`; **or** non-terminal fix agent-status | `trigger_fix` (`/fs-fix`) |
 | `waiting_agent` | Non-terminal agent-status comment whose role could not be mapped | _(no re-trigger)_ |
 | `waiting_ci` | Required checks still running | _(no re-trigger)_ |
 | `waiting_merge_queue` | PR is already enqueued in the merge queue | _(no re-trigger)_ |
@@ -250,7 +250,7 @@ like production dispatch: first whitespace token of the first comment line.
   `id` (GraphQL node ID for mutations), `path` (file path), `line` (line
   number, nullable), `body` (first comment body, truncated), `author`
   (first commenter), `authors` (all commenters), `created_at`, and
-  `bot_only` (true when all authors are `fullsend-ai-review[bot]`).
+  `bot_only` (true when all authors are `fullsend-ai-review`).
   `--resolve-threads` uses `id` to call `resolveReviewThread`.
 - Item GraphQL fetches use soft page caps (not full pagination): last 50
   comments, first 20 `blockedBy`, first 50 `subIssues`, first 50

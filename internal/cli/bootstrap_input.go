@@ -29,7 +29,7 @@ func (b *harnessBootstrapWithHooks) SandboxHookConfig() security.SandboxHookConf
 	return b.hooks
 }
 
-func newHarnessBootstrap(h *harness.Harness, sandboxName, agentName string) runtime.BootstrapInput {
+func newHarnessBootstrap(h *harness.Harness, sandboxName, agentName, forgeEgressEntry string) runtime.BootstrapInput {
 	base := &harnessBootstrap{
 		sandboxName: sandboxName,
 		agentPath:   h.Agent,
@@ -40,8 +40,12 @@ func newHarnessBootstrap(h *harness.Harness, sandboxName, agentName string) runt
 	if !h.SecurityEnabled() {
 		return base
 	}
+	hooks := security.SandboxHookConfigFromHarness(h)
+	if forgeEgressEntry != "" {
+		hooks = hooks.WithForgeEgressEntry(forgeEgressEntry)
+	}
 	return &harnessBootstrapWithHooks{
 		harnessBootstrap: base,
-		hooks:            security.SandboxHookConfigFromHarness(h),
+		hooks:            hooks,
 	}
 }

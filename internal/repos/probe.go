@@ -172,7 +172,7 @@ func ProbeComponents(ctx context.Context, client forge.Client, owner, repo, forg
 	}
 
 	// Required secrets (existence check only — values cannot be read back).
-	for _, secretName := range requiredSecretsForForge() {
+	for _, secretName := range requiredSecretsForForge(forgeName) {
 		exists, err := client.RepoSecretExists(ctx, owner, repo, secretName)
 		if err != nil {
 			return nil, fmt.Errorf("checking secret %s: %w", secretName, err)

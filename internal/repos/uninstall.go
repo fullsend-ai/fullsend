@@ -12,34 +12,34 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
 )
 
-var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables, []string{"FULLSEND_GCP_REGION", "FULLSEND_REVIEW_CLIENT_ID"})
+var uninstallVariables = slices.Concat([]string{forge.PerRepoGuardVar}, requiredVariables, []string{forge.VarGCPRegion, forge.VarReviewClientID})
 
 var uninstallSecrets = requiredSecrets
 
 var gitlabUninstallVars = []string{
 	forge.PerRepoGuardVar,
-	"FULLSEND_BOT_TOKEN_SECRET",
-	"FULLSEND_DISPATCHED_KEYS_FAST",
-	"FULLSEND_DISPATCHED_KEYS_FULL",
-	"FULLSEND_FAILED_KEYS_FAST",
-	"FULLSEND_FAILED_KEYS_FULL",
-	"FULLSEND_FORGE",
-	"FULLSEND_FORGE_TOKEN",
-	"FULLSEND_GCP_REGION",
-	"FULLSEND_LABEL_STATE",
-	"FULLSEND_LAST_POLL_AT_FAST",
-	"FULLSEND_LAST_POLL_AT_FULL",
-	"FULLSEND_SA",
-	"FULLSEND_WIF_PROVIDER",
+	forge.VarLegacyBotTokenSecret,
+	forge.VarDispatchedKeysFast,
+	forge.VarDispatchedKeysFull,
+	forge.VarFailedKeysFast,
+	forge.VarFailedKeysFull,
+	forge.VarLegacyForge,
+	forge.SecretForgeToken,
+	forge.VarGCPRegion,
+	forge.VarLabelState,
+	forge.VarLastPollAtFast,
+	forge.VarLastPollAtFull,
+	forge.VarLegacySA,
+	forge.VarLegacyWIFProvider,
 }
 
 var gitlabUninstallSecrets = []string{
-	"FULLSEND_GCP_PROJECT_ID",
-	"FULLSEND_GCP_WIF_PROVIDER",
+	forge.SecretGCPProjectID,
+	forge.SecretGCPWIFProvider,
 }
 
 var gitlabScaffoldPaths = []string{
-	".gitlab-ci.yml",
+	".gitlab/ci/fullsend-pipeline.yml",
 	".gitlab/ci/fullsend-agent.yml",
 	".gitlab/ci/fullsend-dispatch.yml",
 	".gitlab/ci/fullsend-poll.yml",
@@ -213,6 +213,37 @@ func uninstallRepoResources(ctx context.Context, cfg ResolvedConfig, progress Pr
 	}
 	result.WorkflowDeleted = true
 	progress(fullName, "workflow", "Scaffold files deleted")
+
+	// For GitLab, clean fullsend entries from the root .gitlab-ci.yml.
+	// The root file is user-owned: we remove only fullsend's include
+	// directive and workflow:rules entries rather than deleting the
+	// entire file. If the file is empty after cleanup, delete it.
+	if cfg.Forge == ForgeGitLab {
+		cleaned, cleanErr := unmergeGitLabRootCI(ctx, client, owner, repo)
+		if cleanErr != nil {
+			// Best-effort: log and continue. The fullsend-owned files
+			// are already deleted, so the root include will be broken
+			// but harmless.
+			progress(fullName, "workflow", fmt.Sprintf("Warning: could not clean .gitlab-ci.yml: %v", cleanErr))
+		} else if cleaned == nil {
+			// File is empty after cleanup — delete it.
+			_, delErr := client.DeleteFiles(ctx, owner, repo, deleteMsg, []string{".gitlab-ci.yml"})
+			if delErr != nil {
+				progress(fullName, "workflow", fmt.Sprintf("Warning: could not delete empty .gitlab-ci.yml: %v", delErr))
+			}
+		} else {
+			// Write the cleaned file back. Use a tree commit with the
+			// updated content.
+			updateFiles := []forge.TreeFile{{
+				Path:    ".gitlab-ci.yml",
+				Content: cleaned,
+				Mode:    "100644",
+			}}
+			if _, commitErr := client.CommitFiles(ctx, owner, repo, "chore: remove fullsend entries from .gitlab-ci.yml [skip ci]", updateFiles); commitErr != nil {
+				progress(fullName, "workflow", fmt.Sprintf("Warning: could not update .gitlab-ci.yml: %v", commitErr))
+			}
+		}
+	}
 
 	forgeVars := UninstallVarsForForge(cfg.Forge)
 	forgeSecrets := UninstallSecretsForForge(cfg.Forge)

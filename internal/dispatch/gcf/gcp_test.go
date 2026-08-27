@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -2423,6 +2424,64 @@ func TestLiveGCFClient_GetServiceRevisionInfo_ShortRevisionName(t *testing.T) {
 		assert.Equal(t, "my-svc-00042-abc", info.TrafficRevisionShort)
 		assert.Equal(t, "org-x", info.TrafficEnvVars["ALLOWED_ORGS"])
 		assert.Equal(t, 3, callCount)
+	})
+}
+
+// --- waitForIAMOperation ---
+
+func TestLiveGCFClient_waitForIAMOperation(t *testing.T) {
+	t.Run("done immediately", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			t.Fatal("should not reach server when operation is already done")
+		}))
+		defer srv.Close()
+
+		body := strings.NewReader(`{"name":"operations/op-1","done":true}`)
+		err := newTestClient(srv).waitForIAMOperation(context.Background(), body)
+		require.NoError(t, err)
+	})
+
+	t.Run("done with error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			t.Fatal("should not reach server when operation is already done")
+		}))
+		defer srv.Close()
+
+		body := strings.NewReader(`{"name":"operations/op-1","done":true,"error":{"message":"quota exceeded"}}`)
+		err := newTestClient(srv).waitForIAMOperation(context.Background(), body)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "quota exceeded")
+	})
+
+	t.Run("not done with empty name returns error", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			t.Fatal("should not reach server when operation has no name")
+		}))
+		defer srv.Close()
+
+		body := strings.NewReader(`{"done":false}`)
+		err := newTestClient(srv).waitForIAMOperation(context.Background(), body)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "IAM operation returned no name and is not done")
+	})
+
+	t.Run("not done with name polls until done", func(t *testing.T) {
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			w.WriteHeader(http.StatusOK)
+			if callCount == 1 {
+				fmt.Fprintln(w, `{"done":false}`)
+			} else {
+				fmt.Fprintln(w, `{"done":true}`)
+			}
+		}))
+		defer srv.Close()
+
+		body := strings.NewReader(`{"name":"operations/iam-poll-op","done":false}`)
+		err := newTestClient(srv).waitForIAMOperation(context.Background(), body)
+		require.NoError(t, err)
+		assert.Equal(t, 2, callCount)
 	})
 }
 

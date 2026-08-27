@@ -13,6 +13,7 @@ func TestGitLabPerRepoFilesExist(t *testing.T) {
 		".gitignore",
 		".gitlab-ci.yml",
 		".fullsend/config.yaml",
+		".gitlab/ci/fullsend-pipeline.yml",
 		".gitlab/ci/fullsend-dispatch.yml",
 		".gitlab/ci/fullsend-poll.yml",
 		".gitlab/ci/fullsend-agent.yml",
@@ -46,6 +47,24 @@ func TestCollectGitLabPerRepoInstallFiles_SkipsGitignore(t *testing.T) {
 		assert.NotEqual(t, ".gitignore", f.Path,
 			"install must not overwrite consumer .gitignore with the scaffold fragment")
 	}
+}
+
+func TestCollectGitLabPerRepoInstallFiles_SkipsRootPipeline(t *testing.T) {
+	files, err := CollectGitLabPerRepoInstallFiles(nil, "", "")
+	require.NoError(t, err)
+	for _, f := range files {
+		assert.NotEqual(t, ".gitlab-ci.yml", f.Path,
+			"install must not overwrite consumer .gitlab-ci.yml — "+
+				"root file is merged dynamically by the install flow")
+	}
+	// Pipeline wrapper must still be present.
+	var hasPipeline bool
+	for _, f := range files {
+		if f.Path == ".gitlab/ci/fullsend-pipeline.yml" {
+			hasPipeline = true
+		}
+	}
+	assert.True(t, hasPipeline, "pipeline wrapper must be in install files")
 }
 
 func TestGitLabPerRepoFileNotFound(t *testing.T) {
@@ -460,13 +479,18 @@ func TestGitLabRootPipelineContent(t *testing.T) {
 	content, err := GitLabPerRepoFile(".gitlab-ci.yml")
 	require.NoError(t, err)
 	s := string(content)
-	assert.Contains(t, s, "stages:")
-	assert.Contains(t, s, "- dispatch")
-	assert.Contains(t, s, "- poll")
-	assert.NotContains(t, s, "- generate")
-	assert.Contains(t, s, "- agent")
-	assert.Contains(t, s, "fullsend-dispatch.yml")
-	assert.Contains(t, s, "fullsend-poll.yml")
+	// Root file now includes only the pipeline wrapper and workflow block.
+	// Stage declarations and component includes are in fullsend-pipeline.yml.
+	assert.Contains(t, s, "fullsend-pipeline.yml",
+		"root must include the fullsend pipeline wrapper")
+	assert.NotContains(t, s, "stages:",
+		"stages moved to fullsend-pipeline.yml")
+	assert.NotContains(t, s, "fullsend-dispatch.yml",
+		"component includes moved to fullsend-pipeline.yml")
+	assert.NotContains(t, s, "fullsend-poll.yml",
+		"component includes moved to fullsend-pipeline.yml")
+	assert.NotContains(t, s, "fullsend-agent.yml",
+		"component includes moved to fullsend-pipeline.yml")
 	// Auto-cancel disabled to prevent queued agent pipelines from being killed
 	assert.Contains(t, s, "auto_cancel")
 	assert.Contains(t, s, "on_new_commit: none")
@@ -474,8 +498,6 @@ func TestGitLabRootPipelineContent(t *testing.T) {
 	// Requires API source + protected branch + STAGE variable
 	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "api"`)
 	assert.NotContains(t, s, `$STAGE != ""`)
-	// Agent template included for API-triggered pipelines
-	assert.Contains(t, s, "fullsend-agent.yml")
 	// push pipelines intentionally excluded — documented in workflow comment
 	assert.Contains(t, s, "Push-triggered pipelines are intentionally excluded")
 	// no catch-all rule — workflow:rules is open-ended so adopters
@@ -483,6 +505,29 @@ func TestGitLabRootPipelineContent(t *testing.T) {
 	assert.NotContains(t, s, "- when: never")
 	// parent_pipeline rule removed (child pipelines don't inherit workflow:rules)
 	assert.NotContains(t, s, `$CI_PIPELINE_SOURCE == "parent_pipeline"`)
+}
+
+func TestGitLabPipelineWrapperContent(t *testing.T) {
+	content, err := GitLabPerRepoFile(".gitlab/ci/fullsend-pipeline.yml")
+	require.NoError(t, err)
+	s := string(content)
+	// Pipeline wrapper contains includes and stages moved from root.
+	assert.Contains(t, s, "fullsend-dispatch.yml")
+	assert.Contains(t, s, "fullsend-poll.yml")
+	assert.Contains(t, s, "fullsend-agent.yml")
+	assert.Contains(t, s, "stages:")
+	assert.Contains(t, s, "- dispatch")
+	assert.Contains(t, s, "- poll")
+	assert.Contains(t, s, "- agent")
+	assert.NotContains(t, s, "- generate")
+	// Pipeline wrapper must NOT define a workflow: YAML key (stays in root).
+	// The comment text mentions "workflow:" for documentation, so we check
+	// for the YAML key pattern rather than the bare string.
+	assert.NotContains(t, s, "\nworkflow:",
+		"pipeline wrapper must not define workflow: key — it stays in root")
+	// Must start with YAML document start marker.
+	assert.True(t, strings.HasPrefix(s, "---\n"),
+		"must start with YAML document start marker (---)")
 }
 
 func TestGitLabRunnerTagsPlaceholder(t *testing.T) {

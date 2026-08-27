@@ -1,10 +1,10 @@
 # Go Code
 
 **Mint function:** The mint Cloud Function source lives in two places that must stay in sync:
-- `internal/mint/main.go` — the source of truth (has its own `go.mod`, tests run from `internal/mint/`)
-- `internal/dispatch/gcf/mintsrc/main.go.embed` — the embedded copy deployed as a GCP Cloud Function
+- `internal/mint/` — the source of truth (has its own `go.mod`, tests run from `internal/mint/`)
+- `internal/dispatch/gcf/mintsrc/` — the embedded copies (`.embed` suffix) deployed as a GCP Cloud Function
 
-When changing `internal/mint/main.go`, always copy it to `internal/dispatch/gcf/mintsrc/main.go.embed`. If `go.mod` or `go.sum` changed, sync those to `go.mod.embed` and `go.sum.embed` too.
+When changing **any** non-test `.go` file in `internal/mint/`, copy it to the corresponding `.embed` file in `internal/dispatch/gcf/mintsrc/`. If `go.mod` or `go.sum` changed, sync those to `go.mod.embed` and `go.sum.embed` too. The `lint-mint-embed-sync` pre-commit hook checks all files — not just `main.go`.
 
 **Standalone mint:** `cmd/mint/` is a standalone HTTP server variant of the token mint that serves the same purpose as the GCF mint (`internal/mint/`) but runs without GCP infrastructure. Both use the shared `internal/mintcore/` library for token minting logic; they differ only in deployment model (filesystem PEM vs Secret Manager, JWKS vs STS verification). It supports custom role permissions via `CUSTOM_ROLE_PERMISSIONS` and a fallback proxy to an upstream mint. It has its own `go.mod` and tests run from `cmd/mint/`.
 
@@ -18,6 +18,20 @@ The `internal/mintcore/` module is shared between the mint and devmint. Its file
 1. **Create the `.embed` copy:** Place it in `internal/dispatch/gcf/mintsrc/mintcore/` (required for all files — `lint-mint-embed-sync` enforces this).
 2. **Register in `embeddedMintFiles`:** If the file will be included in the GCF bundle — either no build tag (e.g., `config.go`) or `//go:build !js` (e.g., `sts_verifier.go`, `gcp_pem.go`, `wif.go`) — add it to `embeddedMintFiles` in `internal/dispatch/gcf/provisioner.go` and to the `go:embed` directive.
 3. **Add to `gcfSkip`:** If the file should NOT be in the GCF bundle — Worker-only files (`//go:build js`) or standalone-mint-only files — add it to the `gcfSkip` map in `TestEmbeddedMintSource_MatchesOriginal` in `provisioner_test.go` instead of `embeddedMintFiles`. The five current entries are `env_js.go`, `fetch_js.go`, `http_client_js.go`, and `pem_js.go` (Worker-only, `//go:build js`) and `file_pem.go` (standalone-mint-only, `//go:build !js`).
+
+**Verifying embed sync:** After modifying any file under `internal/mint/` or `internal/mintcore/`, run the lint script to verify all copies are in sync:
+
+```bash
+./hack/lint-mint-embed-sync
+```
+
+You can also run the embed test to catch desyncs:
+
+```bash
+go test -race -count=1 -run TestEmbeddedMintSource ./internal/dispatch/gcf/
+```
+
+Both checks run in CI, but running them locally before committing catches desyncs early and avoids wasted CI iterations.
 
 **Dispatch workflows:** See [Workflow Contracts](workflow-contracts.md) for dispatch sync rules, secret/input threading across installation-mode chains, and review instructions.
 
@@ -58,7 +72,10 @@ of `codecov/patch` failures on first push.
 
 ### Step-by-step
 
-1. **Identify changed Go files** (excluding tests and generated code):
+1. **Identify changed Go files** (excluding tests and generated code).
+   **Stage new files first** (`git add`) — `git diff --name-only` only
+   sees tracked or staged files, so an unstaged new file would be
+   invisible and the check would silently skip it.
 
    ```bash
    git diff --name-only main -- '*.go' | grep -v '_test.go'
@@ -175,6 +192,31 @@ This applies to all `require` functions (`require.NoError`, `require.Equal`, `re
 
 Stubs that implement an interface with no-ops or stateless pass-throughs hold no mutable state, so the race detector has nothing to detect. Even stubs that use `atomic.Int64` counters are invisible to `-race` because atomics are correctly synchronized by definition. The point of a race test is to exercise the **real type's fields** — only a real constructor backed by a thread-safe fake can trigger the detector on unsynchronized production code.
 
+## Context-aware blocking
+
+Functions that accept `context.Context` must not use `time.Sleep` or other
+unconditionally-blocking calls. Use `select` to respect cancellation:
+
+```go
+// Good — respects context cancellation.
+select {
+case <-ctx.Done():
+    return ctx.Err()
+case <-time.After(backoff):
+}
+
+// Bad — blocks unconditionally, ignores cancellation.
+time.Sleep(backoff)
+```
+
+This applies to retry loops, polling intervals, and any deliberate delay.
+For retry patterns specifically, check whether the package already provides
+an injectable sleep function (e.g., `sandbox.RetrySleepFn`) for testability.
+
+For blocking syscalls like `syscall.Flock(LOCK_EX)` that cannot be
+interrupted, add a comment documenting the worst-case blocking duration
+and why it is acceptable.
+
 ## Error handling and naming conventions
 
 ### Use typed constants over string literals
@@ -232,6 +274,51 @@ This matches the pattern in `internal/cli/tracker_client.go` and `internal/cli/f
 ### Consistent error message content
 
 When multiple code paths produce errors for the same condition across different forges or providers, ensure they mention the same remediation options. For example, if one "no token found" error suggests both the environment variable and the `--token` flag, other forge-specific token errors should do the same — so users see consistent guidance regardless of which code path triggers.
+
+## Go pitfalls
+
+### `Timeout() bool` interface and `context.DeadlineExceeded`
+
+`context.DeadlineExceeded` implements `interface{ Timeout() bool }` and returns `true`. This means any timeout detection that uses an interface type assertion will incorrectly classify context deadline errors as timeouts:
+
+```go
+// WRONG — matches context.DeadlineExceeded, which is not a transient
+// network timeout but an intentional cancellation by the caller.
+var te interface{ Timeout() bool }
+if errors.As(err, &te) && te.Timeout() {
+    return true // retries context deadlines — incorrect
+}
+```
+
+Context deadline and cancellation errors represent intentional cancellation by the caller (e.g., a request timeout set by the application, a user-initiated cancel). They should never be classified as transient or retried — the caller chose to stop waiting, and retrying re-creates the same deadline.
+
+**Always guard against context errors before checking `Timeout()`:**
+
+```go
+// CORRECT — context errors are excluded before the Timeout() check.
+if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+    return false
+}
+var te interface{ Timeout() bool }
+if errors.As(err, &te) && te.Timeout() {
+    return true // only matches genuine network timeouts (e.g. net/http.Client.Timeout)
+}
+```
+
+See [`forge.IsTransient`](../../internal/forge/forge.go) for the canonical example of the correct pattern.
+
+**When reviewing PRs:** Flag any `Timeout() bool` interface assertion without a preceding `errors.Is(err, context.DeadlineExceeded)` guard as a medium-severity finding. The fix is to add the context-error check before the `Timeout()` check.
+
+## Injectable function variables (test seams)
+
+Package-level variables that hold function values for test overriding must:
+
+- Use an `XxxFn` suffix (e.g., `BuildWASMFn`, `RetrySleepFn`, `WranglerWhoamiFn`). Both exported (`XxxFn`) and unexported (`xxxFn`) variables follow this suffix pattern
+- Default to the real implementation
+- Include a doc comment following Go convention (starting with the variable name) that contains an "Override in tests to..." sentence describing the override behavior
+- Be restored in a `t.Cleanup` callback when overridden
+
+Examples: `internal/sandbox/sandbox.go` (`RetrySleepFn`), `internal/dispatch/cf/provisioner.go` (`BuildWASMFn`, `CopyWASMExecFn`).
 
 ## Running the fullsend CLI
 

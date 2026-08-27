@@ -62,8 +62,7 @@ about it" (Reach 2.0), instead of guessing from the issue text alone.
 The prioritize agent can be triggered automatically by a scheduler workflow
 that polls a GitHub Project board for unscored issues. This scheduler
 is **not managed by fullsend** — it is bespoke org-level automation that you
-create manually in your `{org}/.fullsend` repo (required for cross-repo
-mint token access).
+create manually in your `{org}/.fullsend` repo.
 
 #### Prerequisites
 
@@ -77,40 +76,69 @@ mint token access).
   `prioritize.yml` thin caller via `workflow_dispatch` input. If the input
   is not provided, the thin caller falls back to
   `vars.FULLSEND_PROJECT_NUMBER` (repo or org-level variable).
-- The following variables set on the repo that hosts the scheduler:
+- The following variables and secrets set on the repo that hosts the scheduler:
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `FULLSEND_PROJECT_NUMBER` | Yes | — | GitHub Project number to poll for issues |
-| `FULLSEND_MINT_URL` | Yes | — | Mint service URL for token minting |
-| `FULLSEND_PRIORITIZE_REPOS` | **Yes** | — | Comma-separated bare repo names (no org prefix, no spaces) the mint token can access. Must include every repo whose issues appear on the project board. The minted token has write access to all listed repos — keep this list as narrow as possible. Example: `my-repo,other-repo` |
-| `PRIORITIZE_WIP_LIMIT` | No | `5` | Max concurrent dispatch jobs per run |
+| Variable / Secret | Type | Required | Description |
+|-------------------|------|----------|-------------|
+| `FULLSEND_PRIORITIZE_CLIENT_ID` | Variable | Yes | Client ID of the GitHub App with project board access (`organization_projects: write`) |
+| `FULLSEND_PRIORITIZE_APP_PRIVATE_KEY` | Secret | Yes | Private key for the prioritize GitHub App |
+| `FULLSEND_FULLSEND_CLIENT_ID` | Variable | Yes | Client ID of the GitHub App with cross-repo dispatch access (`actions: write`) |
+| `FULLSEND_FULLSEND_APP_PRIVATE_KEY` | Secret | Yes | Private key for the fullsend GitHub App |
 
 #### Example workflow
 
 Create this as `.github/workflows/prioritize-scheduler.yml` in your
-`{org}/.fullsend` repo. Replace `<your-ref>` with the fullsend version
-ref and `<your-runner>` with your runner label.
+`{org}/.fullsend` repo. Replace `<your-project-number>`, `<your-repos>`,
+and `<your-runner>` with your org-specific values.
 
-The scheduler needs two mint roles: `prioritize` for reading the project
-board (`organization_projects`) and `fullsend` for cross-repo workflow
-dispatch (`actions: write`). See the
-[role permissions table](../guides/infrastructure/infrastructure-reference.md#role-permissions-matrix)
-for details.
+The scheduler uses two GitHub App tokens, kept separate for
+least-privilege: the **prioritize** app has only project board access
+(`organization_projects: write`) and the **fullsend** app has cross-repo
+workflow dispatch (`actions: write`). Combining them into a single app
+would give every per-repo prioritize run more permissions than it needs.
+See the
+[Role Permissions Matrix](../guides/infrastructure/infrastructure-reference.md#role-permissions-matrix)
+for the full permission breakdown.
+
+All operational configuration (project number, target repos, score field,
+thresholds) is self-contained in the workflow file via `||` fallback
+expressions — the only repository variables and secrets needed are the
+GitHub App credentials listed in Prerequisites above. Input descriptions
+document the defaults; the `||` fallbacks in the `env` block and the
+`repositories` field are the single source of truth (input `default`
+values only apply to `workflow_dispatch`, not `schedule` triggers).
 
 ```yaml
 ---
 name: Prioritize Scheduler
 
 on:
-  # Uncomment the schedule trigger once your project board and
-  # FULLSEND_PRIORITIZE_REPOS are configured.
-  # schedule:
-  #   - cron: '*/10 * * * *'
+  schedule:
+    - cron: '*/10 * * * *'
   workflow_dispatch:
     inputs:
+      project_number:
+        description: "GitHub Project number to poll (default: <your-project-number>)"
+        required: false
+        type: string
+      repos:
+        description: "Comma-separated repo names to dispatch to (default: <your-repos>)"
+        required: false
+        type: string
+      score_field:
+        description: "Project board field name for the RICE score (default: RICE Score)"
+        required: false
+        type: string
+      workflow:
+        description: "Workflow filename to dispatch on target repos (default: prioritize.yml)"
+        required: false
+        type: string
+      stale_threshold:
+        description: "Re-score issues whose RICE score is older than this (default: 7d)"
+        required: false
+        type: string
       wip_limit:
-        description: "Max number of prioritize jobs to dispatch"
+        description: "Max number of prioritize jobs to dispatch (default: 5)"
         required: false
         type: number
 
@@ -126,42 +154,55 @@ jobs:
     permissions:
       actions: write
       contents: read
-      id-token: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4  # pin to SHA per your org policy
 
-      - name: Mint prioritize token (project board access)
+      - name: Generate prioritize token (project board access)
         id: prioritize-token
-        uses: fullsend-ai/fullsend/.github/actions/mint-token@<your-ref>
+        uses: actions/create-github-app-token@v3
         with:
-          role: prioritize
-          repos: ${{ vars.FULLSEND_PRIORITIZE_REPOS }}
-          mint_url: ${{ vars.FULLSEND_MINT_URL }}
+          client-id: ${{ vars.FULLSEND_PRIORITIZE_CLIENT_ID }}
+          private-key: ${{ secrets.FULLSEND_PRIORITIZE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
 
-      - name: Mint fullsend token (cross-repo dispatch)
+      - name: Generate fullsend token (cross-repo dispatch)
         id: dispatch-token
-        uses: fullsend-ai/fullsend/.github/actions/mint-token@<your-ref>
+        uses: actions/create-github-app-token@v3
         with:
-          role: fullsend
-          repos: ${{ vars.FULLSEND_PRIORITIZE_REPOS }}
-          mint_url: ${{ vars.FULLSEND_MINT_URL }}
+          client-id: ${{ vars.FULLSEND_FULLSEND_CLIENT_ID }}
+          private-key: ${{ secrets.FULLSEND_FULLSEND_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ inputs.repos || '<your-repos>' }}
 
       - name: Find issues and dispatch prioritize runs
         env:
           GH_TOKEN: ${{ steps.prioritize-token.outputs.token }}
           DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
           ORG: ${{ github.repository_owner }}
-          PROJECT_NUMBER: ${{ vars.FULLSEND_PROJECT_NUMBER }}
-          WIP_LIMIT: ${{ inputs.wip_limit || vars.PRIORITIZE_WIP_LIMIT || '5' }}
+          PROJECT_NUMBER: ${{ inputs.project_number || '<your-project-number>' }}
+          SCORE_FIELD: ${{ inputs.score_field || 'RICE Score' }}
+          STALE_THRESHOLD: ${{ inputs.stale_threshold || '7d' }}
+          WORKFLOW: ${{ inputs.workflow || 'prioritize.yml' }}
+          WIP_LIMIT: ${{ inputs.wip_limit || '5' }}
         run: |
           set -euo pipefail
 
-          if [[ -z "${PROJECT_NUMBER}" ]]; then
-            echo "::notice::FULLSEND_PROJECT_NUMBER is not set; skipping."
-            exit 0
-          fi
+          # Parse stale threshold into seconds
+          parse_threshold() {
+            local val="${1%[dh]}"
+            local unit="${1: -1}"
+            if [[ -z "${val}" || ! "${val}" =~ ^[1-9][0-9]*$ ]]; then
+              echo "ERROR: invalid threshold '${1}' (use Nd or Nh, e.g. 7d)" >&2; exit 1
+            fi
+            case "${unit}" in
+              d) echo $(( val * 86400 )) ;;
+              h) echo $(( val * 3600 )) ;;
+              *) echo "ERROR: unsupported threshold unit '${unit}' (use Nd or Nh)" >&2; exit 1 ;;
+            esac
+          }
+          THRESHOLD_SECONDS=$(parse_threshold "${STALE_THRESHOLD}")
 
           # Fetch project metadata
           PROJECT_ID=$(gh project view "${PROJECT_NUMBER}" \
@@ -174,10 +215,10 @@ jobs:
 
           SCORE_FIELD_ID=$(gh project field-list "${PROJECT_NUMBER}" \
             --owner "${ORG}" --format json \
-            | jq -r '.fields[] | select(.name == "RICE Score") | .id')
+            | jq -r --arg sf "${SCORE_FIELD}" '.fields[] | select(.name == $sf) | .id')
 
           if [[ -z "${SCORE_FIELD_ID}" ]]; then
-            echo "ERROR: 'RICE Score' field not found on project."
+            echo "ERROR: '${SCORE_FIELD}' field not found on project."
             echo "Run scripts/setup-prioritize.sh to create it."
             exit 1
           fi
@@ -200,6 +241,7 @@ jobs:
                         fieldValues(first: 20) { nodes {
                           ... on ProjectV2ItemFieldNumberValue {
                             field { ... on ProjectV2Field { id } }
+                            updatedAt
                           }
                         } }
                         content { ... on Issue { url number state } }
@@ -235,9 +277,42 @@ jobs:
             ] | .[:$limit]')
 
           COUNT=$(echo "${UNSCORED}" | jq 'length')
-          if [[ "${COUNT}" -eq 0 ]]; then
-            echo "All issues scored. Nothing to do."
-            exit 0
+          if [[ "${COUNT}" -gt 0 ]]; then
+            echo "Found ${COUNT} unscored issue(s) to dispatch."
+          else
+            echo "All issues scored. Checking for stale scores..."
+
+            NOW_EPOCH=$(date +%s)
+
+            UNSCORED=$(echo "${ALL_ITEMS}" | jq -r \
+              --arg fid "${SCORE_FIELD_ID}" \
+              --argjson limit "${WIP_LIMIT}" \
+              --argjson threshold "${THRESHOLD_SECONDS}" \
+              --argjson now "${NOW_EPOCH}" '
+              [.[]
+               | select(.content.state == "OPEN")
+               | select(.content.url != null)
+               | {
+                   url: .content.url,
+                   number: .content.number,
+                   updatedAt: ([.fieldValues.nodes[]
+                                | select(.field.id == $fid)
+                                | .updatedAt] | first)
+                 }
+               | select(.updatedAt != null)
+               | select(($now - (.updatedAt | fromdateiso8601)) > $threshold)
+              ]
+              | sort_by(.updatedAt)
+              | .[:$limit]')
+
+            STALE_COUNT=$(echo "${UNSCORED}" | jq 'length')
+
+            if [[ "${STALE_COUNT}" -eq 0 ]]; then
+              echo "No stale scores found. Nothing to do."
+              exit 0
+            fi
+
+            echo "Found ${STALE_COUNT} stale issue(s) to re-score."
           fi
 
           DISPATCHED=0
@@ -260,7 +335,9 @@ jobs:
               --argjson number "${ISSUE_NUMBER}" \
               '{issue: {html_url: $url, number: $number}}')
 
-            if GH_TOKEN="${DISPATCH_TOKEN}" gh workflow run prioritize.yml \
+            echo "Dispatching prioritize for ${SOURCE_REPO}#${ISSUE_NUMBER}..."
+
+            if GH_TOKEN="${DISPATCH_TOKEN}" gh workflow run "${WORKFLOW}" \
               --repo "${SOURCE_REPO}" \
               -f event_type="schedule" \
               -f source_repo="${SOURCE_REPO}" \
@@ -277,9 +354,15 @@ jobs:
 ```
 
 The scheduler dispatches `prioritize.yml` to `${SOURCE_REPO}` (the repo that
-owns the issue), not to the scheduler's own repo. `FULLSEND_PRIORITIZE_REPOS`
-must list every target repo so the minted token has sufficient scope for
-cross-repo dispatch.
+owns the issue), not to the scheduler's own repo. The `repos` input (passed
+to `create-github-app-token` via the `repositories` field) must list every
+target repo so the generated token has sufficient scope for cross-repo
+dispatch.
+
+When all issues are already scored, the scheduler checks for **stale scores**
+— issues whose RICE Score field was last updated longer ago than
+`stale_threshold` (default: 7 days). Stale issues are re-dispatched for
+re-scoring, sorted oldest-first, up to `wip_limit`.
 
 ## Source
 

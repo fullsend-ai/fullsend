@@ -376,6 +376,19 @@ func newInstalledFakeGitLabClient(repos ...string) *forge.FakeClient {
 		for _, p := range gitlabScaffoldPaths {
 			client.FileContents[r+"/"+p] = []byte("content")
 		}
+		// The root .gitlab-ci.yml is user-owned but contains fullsend
+		// entries that the uninstall path cleans up via unmerge.
+		client.FileContents[r+"/.gitlab-ci.yml"] = []byte("---\n" +
+			"include:\n" +
+			"  - local: '.gitlab/ci/fullsend-pipeline.yml'\n" +
+			"\n" +
+			"workflow:\n" +
+			"  auto_cancel:\n" +
+			"    on_new_commit: none\n" +
+			"  rules:\n" +
+			"    - if: $CI_PIPELINE_SOURCE == \"merge_request_event\"\n" +
+			"    - if: $CI_PIPELINE_SOURCE == \"schedule\" && $CI_COMMIT_REF_PROTECTED == \"true\"\n" +
+			"    - if: $CI_PIPELINE_SOURCE == \"api\" && $CI_COMMIT_REF_PROTECTED == \"true\" && $STAGE\n")
 	}
 	return client
 }

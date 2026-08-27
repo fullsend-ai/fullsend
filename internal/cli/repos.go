@@ -464,7 +464,7 @@ GCP infrastructure (WIF, mint) must be provisioned separately via
 			opts.repoFilter = args
 			opts.gitlabToken = getGitLabToken(cmd)
 			if opts.gitlabBotToken == "" {
-				opts.gitlabBotToken = os.Getenv("FULLSEND_GITLAB_BOT_TOKEN")
+				opts.gitlabBotToken = os.Getenv(forge.VarGitLabBotToken)
 			}
 			return runReposInstall(cmd.Context(), opts)
 		},

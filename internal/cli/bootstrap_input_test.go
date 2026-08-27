@@ -18,7 +18,7 @@ func TestNewHarnessBootstrap_WithoutSecurity(t *testing.T) {
 			Enabled: &disabled,
 		},
 	}
-	boot := newHarnessBootstrap(h, "sandbox-1", "test")
+	boot := newHarnessBootstrap(h, "sandbox-1", "test", "")
 
 	_, ok := boot.(agentruntime.SandboxHooksBootstrap)
 	assert.False(t, ok)
@@ -38,7 +38,7 @@ func TestNewHarnessBootstrap_WithSecurity(t *testing.T) {
 			},
 		},
 	}
-	boot := newHarnessBootstrap(h, "sandbox-1", "test")
+	boot := newHarnessBootstrap(h, "sandbox-1", "test", "")
 
 	hooksBoot, ok := boot.(agentruntime.SandboxHooksBootstrap)
 	require.True(t, ok)
@@ -47,4 +47,18 @@ func TestNewHarnessBootstrap_WithSecurity(t *testing.T) {
 	assert.True(t, hooksBoot.SandboxHookConfig().TirithRequired())
 	assert.Equal(t, []string{"plugins/p"}, boot.PluginDirs())
 	assert.Equal(t, harness.SkillSources(h.Skills), boot.SkillDirs())
+}
+
+func TestNewHarnessBootstrap_WithForgeEgressEntry(t *testing.T) {
+	h := &harness.Harness{
+		Agent: "agents/test.md",
+		Security: &harness.SecurityConfig{
+			SandboxHooks: &harness.SandboxHooks{},
+		},
+	}
+	boot := newHarnessBootstrap(h, "sandbox-1", "test", "gitlab.company.com:443")
+
+	hooksBoot, ok := boot.(agentruntime.SandboxHooksBootstrap)
+	require.True(t, ok)
+	assert.Equal(t, "gitlab.company.com:443", hooksBoot.SandboxHookConfig().ForgeEgressEntry())
 }

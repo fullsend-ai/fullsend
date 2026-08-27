@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"syscall"
@@ -52,8 +53,11 @@ const (
 	retryMaxBackoff          = 15 * time.Second
 
 	// providerRetries is the number of times EnsureProvider retries on
-	// transient "unsupported provider type or profile" errors caused by
-	// concurrent ImportProfile processes deleting and reimporting profiles.
+	// transient errors caused by concurrent fullsend runs sharing a
+	// gateway: "unsupported provider type or profile" (a concurrent
+	// ImportProfile deleting and reimporting a changed profile) and the
+	// gateway's optimistic-concurrency rejection of a provider update
+	// ("provider was modified concurrently").
 	providerRetries      = 3
 	providerRetryBackoff = 500 * time.Millisecond
 )
@@ -309,9 +313,12 @@ var reservedCredentialKeys = map[string]bool{
 // into the child process environment, where openshell reads them directly.
 // See https://docs.nvidia.com/openshell/latest/sandboxes/manage-providers#bare-key-form
 //
-// Transient "unsupported provider type or profile" errors are retried with
-// short backoff. These occur when a concurrent ImportProfile process
-// temporarily removes a profile during its delete+reimport cycle.
+// Transient errors from concurrent runs on the same gateway are retried with
+// short backoff: "unsupported provider type or profile" occurs when a
+// concurrent ImportProfile process temporarily removes a profile during its
+// delete+reimport cycle, and "provider was modified concurrently" when two
+// runs update the same provider at once (the gateway rejects the stale
+// resource_version; the update is idempotent, so retrying is safe).
 func EnsureProvider(ctx context.Context, name, providerType string, credentials, config map[string]string, fromURL bool) error {
 	if fromURL {
 		for k := range credentials {
@@ -329,9 +336,8 @@ func EnsureProvider(ctx context.Context, name, providerType string, credentials,
 		if lastErr == nil {
 			return nil
 		}
-		// Retry only on "unsupported provider type or profile" — this is
-		// the transient error from the ImportProfile race.
-		if !isUnsupportedProviderErr(lastErr) {
+		// Retry only on the transient concurrency errors.
+		if !isTransientProviderErr(lastErr) {
 			return lastErr
 		}
 		if attempt < providerRetries-1 {
@@ -345,16 +351,30 @@ func EnsureProvider(ctx context.Context, name, providerType string, credentials,
 	return fmt.Errorf("retries exhausted after %d attempts: %w", providerRetries, lastErr)
 }
 
-// isUnsupportedProviderErr reports whether err contains the openshell
-// error message indicating a missing or not-yet-imported profile.
+// isTransientProviderErr reports whether err is one of the openshell
+// errors produced by concurrent runs racing on the same gateway: a missing
+// or not-yet-reimported profile, or an optimistic-concurrency rejection of
+// a provider update ("provider was modified concurrently (current
+// resource_version: N)").
 //
 // NOTE: This matches literal text from the openshell CLI's stderr output.
 // If openshell changes its error wording in a future version, this check
 // will silently stop matching and retries will no longer trigger. Update
-// the substring if the upstream message changes.
-func isUnsupportedProviderErr(err error) bool {
-	return err != nil && strings.Contains(strings.ToLower(err.Error()), "unsupported provider type or profile")
+// the substrings if the upstream messages change.
+func isTransientProviderErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "unsupported provider type or profile") ||
+		providerModifiedConcurrentlyRe.MatchString(msg)
 }
+
+// providerModifiedConcurrentlyRe matches openshell's optimistic-concurrency
+// error. The CLI wraps the message across lines with a box-drawing gutter
+// (`"provider was modified` / `│ concurrently (current resource_version: 2)"`),
+// so the two words are matched across any non-word characters.
+var providerModifiedConcurrentlyRe = regexp.MustCompile(`provider was modified\W+concurrently`)
 
 // tryCreateProvider performs a single attempt to create (or update) a
 // provider via openshell. Extracted from EnsureProvider to support retry.

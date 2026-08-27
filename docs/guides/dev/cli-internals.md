@@ -382,7 +382,10 @@ Vendoring commit messages use title + body (upload and stale delete). `github st
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │
 │  │ ImportProfile()   │ Import openshell provider profiles       │
-│  │                   │ (from resolved openshell.profiles)       │
+│  │                   │ (from resolved openshell.profiles;       │
+│  │                   │  on GitLab, a fullsend-gitlab-forge      │
+│  │                   │  profile is auto-generated from the      │
+│  │                   │  forge host URL — see #6615)             │
 │  └──────┬───────────┘                                           │
 │         ▼                                                       │
 │  ┌──────────────────┐                                           │

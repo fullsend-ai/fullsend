@@ -1,0 +1,403 @@
+package repos
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestMergeGitLabCI_NoExistingFile(t *testing.T) {
+	result, err := MergeGitLabCI(nil)
+	require.NoError(t, err)
+	s := string(result)
+
+	assert.Contains(t, s, "fullsend-pipeline.yml")
+	assert.Contains(t, s, "workflow:")
+	assert.Contains(t, s, "auto_cancel:")
+	assert.Contains(t, s, "on_new_commit: none")
+	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "merge_request_event"`)
+	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "schedule"`)
+	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "api"`)
+}
+
+func TestMergeGitLabCI_EmptyFile(t *testing.T) {
+	result, err := MergeGitLabCI([]byte(""))
+	require.NoError(t, err)
+	assert.Contains(t, string(result), "fullsend-pipeline.yml")
+}
+
+func TestMergeGitLabCI_ExistingWithoutWorkflow(t *testing.T) {
+	existing := []byte(`---
+stages:
+  - build
+  - test
+
+build:
+  stage: build
+  script:
+    - make build
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	s := string(result)
+
+	// Original content preserved.
+	assert.Contains(t, s, "stages:")
+	assert.Contains(t, s, "- build")
+	assert.Contains(t, s, "- test")
+	assert.Contains(t, s, "make build")
+
+	// Fullsend entries added.
+	assert.Contains(t, s, "fullsend-pipeline.yml")
+	assert.Contains(t, s, "workflow:")
+	assert.Contains(t, s, "auto_cancel:")
+	assert.Contains(t, s, "on_new_commit: none")
+	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "merge_request_event"`)
+}
+
+func TestMergeGitLabCI_ExistingWithWorkflowRules(t *testing.T) {
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/existing.yml'
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: always
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	s := string(result)
+
+	// Original include preserved.
+	assert.Contains(t, s, "existing.yml")
+
+	// Fullsend include appended.
+	assert.Contains(t, s, "fullsend-pipeline.yml")
+
+	// Original workflow rule preserved.
+	assert.Contains(t, s, `$CI_COMMIT_BRANCH == "main"`)
+
+	// Merge request rule already exists — should not be duplicated.
+	count := strings.Count(s, `$CI_PIPELINE_SOURCE == "merge_request_event"`)
+	assert.Equal(t, 1, count, "merge_request_event rule should not be duplicated")
+
+	// Missing fullsend rules appended.
+	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "schedule"`)
+	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "api"`)
+
+	// auto_cancel added.
+	assert.Contains(t, s, "auto_cancel:")
+	assert.Contains(t, s, "on_new_commit: none")
+}
+
+func TestMergeGitLabCI_ExistingWithAutoCancel(t *testing.T) {
+	existing := []byte(`---
+workflow:
+  auto_cancel:
+    on_new_commit: interruptible
+  rules:
+    - if: $CI_COMMIT_BRANCH
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	s := string(result)
+
+	// User's auto_cancel value preserved (not overwritten to "none").
+	assert.Contains(t, s, "on_new_commit: interruptible")
+	assert.NotContains(t, s, "on_new_commit: none")
+}
+
+func TestMergeGitLabCI_Idempotent(t *testing.T) {
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	s := string(result)
+
+	// Should not duplicate entries.
+	assert.Equal(t, 1, strings.Count(s, "fullsend-pipeline.yml"))
+	assert.Equal(t, 1, strings.Count(s, `$CI_PIPELINE_SOURCE == "merge_request_event"`))
+	assert.Equal(t, 1, strings.Count(s, `$CI_PIPELINE_SOURCE == "schedule"`))
+	assert.Equal(t, 1, strings.Count(s, `$CI_PIPELINE_SOURCE == "api"`))
+}
+
+func TestMergeGitLabCI_SingleIncludeScalar(t *testing.T) {
+	existing := []byte(`---
+include: 'other.yml'
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	s := string(result)
+
+	// Original scalar include preserved (wrapped in sequence).
+	assert.Contains(t, s, "other.yml")
+	// Fullsend include appended.
+	assert.Contains(t, s, "fullsend-pipeline.yml")
+}
+
+func TestUnmergeGitLabCI_FullsendOnly(t *testing.T) {
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+	result, err := UnmergeGitLabCI(existing)
+	require.NoError(t, err)
+
+	// File should be empty (nil) after removing all fullsend content.
+	assert.Nil(t, result, "file should be nil when only fullsend content remains")
+}
+
+func TestUnmergeGitLabCI_FullsendOnlyWithName(t *testing.T) {
+	// Simulates uninstalling a file generated by newGitLabCI(), which
+	// includes workflow.name. The name key should also be removed so
+	// the file is fully cleaned up (returns nil).
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  name: 'fullsend $CI_PIPELINE_SOURCE $STAGE $RESOURCE_KEY'
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+	result, err := UnmergeGitLabCI(existing)
+	require.NoError(t, err)
+
+	assert.Nil(t, result, "file should be nil when only fullsend content remains (including name)")
+}
+
+func TestUnmergeGitLabCI_PreservesUserWorkflowName(t *testing.T) {
+	// A user-provided workflow.name that does not start with the
+	// fullsend prefix should be preserved during unmerge.
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  name: 'my custom pipeline'
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+	result, err := UnmergeGitLabCI(existing)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	s := string(result)
+
+	// User's workflow name preserved.
+	assert.Contains(t, s, "my custom pipeline")
+	// Fullsend content removed.
+	assert.NotContains(t, s, "fullsend-pipeline.yml")
+}
+
+func TestUnmergeGitLabCI_MixedContent(t *testing.T) {
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/existing.yml'
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+stages:
+  - build
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+	result, err := UnmergeGitLabCI(existing)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	s := string(result)
+
+	// User content preserved.
+	assert.Contains(t, s, "existing.yml")
+	assert.Contains(t, s, "stages:")
+	assert.Contains(t, s, "- build")
+	assert.Contains(t, s, `$CI_COMMIT_BRANCH == "main"`)
+
+	// Fullsend content removed.
+	assert.NotContains(t, s, "fullsend-pipeline.yml")
+	assert.NotContains(t, s, `$CI_PIPELINE_SOURCE == "merge_request_event"`)
+	assert.NotContains(t, s, `$CI_PIPELINE_SOURCE == "schedule"`)
+	assert.NotContains(t, s, `$CI_PIPELINE_SOURCE == "api"`)
+}
+
+func TestUnmergeGitLabCI_Empty(t *testing.T) {
+	result, err := UnmergeGitLabCI(nil)
+	require.NoError(t, err)
+	assert.Nil(t, result)
+}
+
+func TestUnmergeGitLabCI_PreservesUserAutoCancel(t *testing.T) {
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  auto_cancel:
+    on_new_commit: interruptible
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`)
+	result, err := UnmergeGitLabCI(existing)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	s := string(result)
+
+	// User's auto_cancel value preserved.
+	assert.Contains(t, s, "on_new_commit: interruptible")
+	// User's rule preserved.
+	assert.Contains(t, s, `$CI_COMMIT_BRANCH == "main"`)
+	// Fullsend rules removed.
+	assert.NotContains(t, s, `$CI_PIPELINE_SOURCE == "merge_request_event"`)
+}
+
+func TestUnmergeGitLabCI_RemovesSingleInclude(t *testing.T) {
+	// When fullsend include is the only one in a scalar form.
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+stages:
+  - build
+`)
+	result, err := UnmergeGitLabCI(existing)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	s := string(result)
+
+	assert.NotContains(t, s, "fullsend-pipeline.yml")
+	assert.NotContains(t, s, "include:")
+	assert.Contains(t, s, "stages:")
+}
+
+func TestUnmergeGitLabCI_NoFullsendContent(t *testing.T) {
+	existing := []byte(`---
+stages:
+  - build
+
+build:
+  script:
+    - make
+`)
+	result, err := UnmergeGitLabCI(existing)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	s := string(result)
+
+	// All original content preserved.
+	assert.Contains(t, s, "stages:")
+	assert.Contains(t, s, "- build")
+	assert.Contains(t, s, "make")
+}
+
+func TestMergeGitLabCI_InvalidYAML(t *testing.T) {
+	_, err := MergeGitLabCI([]byte(":\n  invalid: [yaml\n"))
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing existing")
+}
+
+func TestMergeGitLabCI_WorkflowNotMapping(t *testing.T) {
+	existing := []byte(`---
+workflow: "simple"
+`)
+	_, err := MergeGitLabCI(existing)
+	assert.Error(t, err, "workflow: as scalar should be an error")
+}
+
+func TestMergeGitLabCI_WorkflowWithoutRules(t *testing.T) {
+	existing := []byte(`---
+workflow:
+  name: "my project"
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	s := string(result)
+
+	// Workflow name preserved.
+	assert.Contains(t, s, "my project")
+	// Rules added.
+	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "merge_request_event"`)
+	// auto_cancel added.
+	assert.Contains(t, s, "auto_cancel:")
+}
+
+func TestMergeGitLabCI_WorkflowRulesNotSequence(t *testing.T) {
+	// Edge case: workflow.rules as a scalar (unusual but possible).
+	existing := []byte(`---
+workflow:
+  rules: "always"
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	// Should not crash, rules left as-is since not a sequence.
+	assert.Contains(t, string(result), "workflow:")
+}
+
+func TestMergeGitLabCI_IncludeAsMappingEntry(t *testing.T) {
+	// Single include as a mapping (not in a sequence).
+	existing := []byte(`---
+include:
+  local: 'other.yml'
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	s := string(result)
+	assert.Contains(t, s, "other.yml")
+	assert.Contains(t, s, "fullsend-pipeline.yml")
+}
+
+func TestMergeGitLabCI_PreservesComments(t *testing.T) {
+	existing := []byte(`---
+# My project CI configuration
+stages:
+  - build
+  - test
+
+# Build job
+build:
+  stage: build
+  script:
+    - make build
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	s := string(result)
+
+	// Comments should be preserved by yaml.Node API.
+	assert.Contains(t, s, "# My project CI configuration")
+	assert.Contains(t, s, "# Build job")
+}

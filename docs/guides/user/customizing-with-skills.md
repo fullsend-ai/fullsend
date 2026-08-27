@@ -171,7 +171,7 @@ For the full procedure, use the contributor skill
 `skills/author-fullsend-augmentations/`).
 
 Bring Your Own Agent covers the same decision frame in
-[Tuning agents with augmentation skills](bring-your-own-agent.md#tuning-agents-with-augmentation-skills).
+[Tuning agents with augmentation skills](customizing-agents.md#tuning-agents-with-augmentation-skills).
 
 > **Planned:** Per-file overrides inside skill directories
 > ([#6158](https://github.com/fullsend-ai/fullsend/issues/6158)) will make
@@ -187,8 +187,9 @@ Bring Your Own Agent covers the same decision frame in
 
 ## See also
 
+- [Customizing Agents](customizing-overview.md) — overview of all customization approaches
 - [Bring Your Own Agent](bring-your-own-agent.md) — building, registering, and
-  [tuning existing agents](bring-your-own-agent.md#tuning-agents-with-augmentation-skills)
+  [tuning existing agents](customizing-agents.md#tuning-agents-with-augmentation-skills)
 - [`author-fullsend-augmentations`](../../../skills/author-fullsend-augmentations/SKILL.md)
   — discovery-driven authoring procedure for augmentations and sub-agents
 - [Default, derived, and custom agents](../../agents/topics/default-vs-custom.md)

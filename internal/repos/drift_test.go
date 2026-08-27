@@ -215,8 +215,7 @@ func TestCheckOrphanFiles_DetectsOrphan(t *testing.T) {
 func TestCheckOrphanVars_NoOrphans(t *testing.T) {
 	fc := forge.NewFakeClient()
 	// Only managed variables exist.
-	fc.VariableValues["owner/repo/FULLSEND_PER_REPO_INSTALL"] = "true"
-	fc.VariableValues["owner/repo/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["owner/repo/"+forge.VarMintURL] = "https://mint.example.com"
 
 	cfg := InstallConfig{Forge: ForgeGitHub, MintURL: "https://mint.example.com"}
 	orphans, err := CheckOrphanVars(
@@ -233,8 +232,7 @@ func TestCheckOrphanVars_NoOrphans(t *testing.T) {
 
 func TestCheckOrphanVars_DetectsOrphan(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.VariableValues["owner/repo/FULLSEND_PER_REPO_INSTALL"] = "true"
-	fc.VariableValues["owner/repo/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["owner/repo/"+forge.VarMintURL] = "https://mint.example.com"
 	// This variable is not in the managed set for GitHub.
 	fc.VariableValues["owner/repo/FULLSEND_OLD_FEATURE"] = "enabled"
 
@@ -254,10 +252,31 @@ func TestCheckOrphanVars_DetectsOrphan(t *testing.T) {
 	}
 }
 
+func TestCheckOrphanVars_PerRepoGuardVarFlaggedAsOrphan(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.VariableValues["owner/repo/"+forge.VarMintURL] = "https://mint.example.com"
+	// Guard variable from a previous install should be flagged as orphan.
+	fc.VariableValues["owner/repo/"+forge.PerRepoGuardVar] = "true"
+
+	cfg := InstallConfig{Forge: ForgeGitHub, MintURL: "https://mint.example.com"}
+	orphans, err := CheckOrphanVars(
+		context.Background(), fc, "owner", "repo",
+		cfg, "https://mint.example.com",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 1 {
+		t.Fatalf("expected 1 orphan var, got %d", len(orphans))
+	}
+	if orphans[0].Name != forge.PerRepoGuardVar {
+		t.Errorf("orphan name = %q, want %q", orphans[0].Name, forge.PerRepoGuardVar)
+	}
+}
+
 func TestCheckOrphanVars_IgnoresNonFullsendVars(t *testing.T) {
 	fc := forge.NewFakeClient()
-	fc.VariableValues["owner/repo/FULLSEND_PER_REPO_INSTALL"] = "true"
-	fc.VariableValues["owner/repo/FULLSEND_MINT_URL"] = "https://mint.example.com"
+	fc.VariableValues["owner/repo/"+forge.VarMintURL] = "https://mint.example.com"
 	// Non-FULLSEND variable should be ignored.
 	fc.VariableValues["owner/repo/MY_CUSTOM_VAR"] = "value"
 
@@ -271,5 +290,65 @@ func TestCheckOrphanVars_IgnoresNonFullsendVars(t *testing.T) {
 	}
 	if len(orphans) != 0 {
 		t.Errorf("expected 0 orphan vars (non-FULLSEND ignored), got %d", len(orphans))
+	}
+}
+
+func TestCheckOrphanVars_GitLabSecretsNotFlagged(t *testing.T) {
+	fc := forge.NewFakeClient()
+	// Set all managed GitLab variables.
+	fc.VariableValues["owner/repo/"+forge.VarLastPollAtFast] = "2025-01-01T00:00:00Z"
+	fc.VariableValues["owner/repo/"+forge.VarLastPollAtFull] = "2025-01-01T00:00:00Z"
+	fc.VariableValues["owner/repo/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["owner/repo/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["owner/repo/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["owner/repo/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["owner/repo/"+forge.VarFailedKeysFull] = "{}"
+	// On GitLab, secrets are stored as CI/CD variables and returned by
+	// ListRepoVariables — they must not be flagged as orphans.
+	fc.VariableValues["owner/repo/"+forge.SecretGCPProjectID] = "my-project"
+	fc.VariableValues["owner/repo/"+forge.SecretGCPWIFProvider] = "projects/123/locations/global/workloadIdentityPools/pool/providers/prov"
+	fc.VariableValues["owner/repo/"+forge.SecretForgeToken] = "glpat-secret"
+
+	cfg := InstallConfig{Forge: ForgeGitLab}
+	orphans, err := CheckOrphanVars(
+		context.Background(), fc, "owner", "repo",
+		cfg, "",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 0 {
+		t.Errorf("expected 0 orphan vars, got %d: %v", len(orphans), orphans)
+	}
+}
+
+func TestCheckOrphanVars_GitLabDetectsGenuineOrphan(t *testing.T) {
+	fc := forge.NewFakeClient()
+	fc.VariableValues["owner/repo/"+forge.VarLastPollAtFast] = "2025-01-01T00:00:00Z"
+	fc.VariableValues["owner/repo/"+forge.VarLastPollAtFull] = "2025-01-01T00:00:00Z"
+	fc.VariableValues["owner/repo/"+forge.VarLabelState] = "{}"
+	fc.VariableValues["owner/repo/"+forge.VarDispatchedKeysFast] = "{}"
+	fc.VariableValues["owner/repo/"+forge.VarDispatchedKeysFull] = "{}"
+	fc.VariableValues["owner/repo/"+forge.VarFailedKeysFast] = "{}"
+	fc.VariableValues["owner/repo/"+forge.VarFailedKeysFull] = "{}"
+	fc.VariableValues["owner/repo/"+forge.SecretGCPProjectID] = "my-project"
+	fc.VariableValues["owner/repo/"+forge.SecretGCPWIFProvider] = "projects/123/..."
+	fc.VariableValues["owner/repo/"+forge.SecretForgeToken] = "glpat-secret"
+	// A genuinely unknown variable should be flagged.
+	fc.VariableValues["owner/repo/FULLSEND_BOGUS"] = "value"
+
+	cfg := InstallConfig{Forge: ForgeGitLab}
+	orphans, err := CheckOrphanVars(
+		context.Background(), fc, "owner", "repo",
+		cfg, "",
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(orphans) != 1 {
+		t.Fatalf("expected 1 orphan var, got %d: %v", len(orphans), orphans)
+	}
+	if orphans[0].Name != "FULLSEND_BOGUS" {
+		t.Errorf("orphan name = %q, want %q", orphans[0].Name, "FULLSEND_BOGUS")
 	}
 }

@@ -2031,7 +2031,7 @@ func (c *LiveGCFClient) waitForIAMOperation(ctx context.Context, body io.Reader)
 		return nil
 	}
 	if op.Name == "" {
-		return nil
+		return fmt.Errorf("IAM operation returned no name and is not done")
 	}
 	if !operationNamePattern.MatchString(op.Name) {
 		return fmt.Errorf("invalid IAM operation name format: %q", op.Name)

@@ -554,3 +554,142 @@ func hasFinding(r ScanResult, name string) bool {
 	}
 	return false
 }
+
+// unresolvableTestHost is a hostname guaranteed not to resolve, used across
+// egress-allowlist tests to trigger the DNS-failure code path.
+const unresolvableTestHost = "this-host-does-not-exist-fullsend-test.invalid"
+
+func TestParseEgressAllowlist(t *testing.T) {
+	t.Run("empty string", func(t *testing.T) {
+		m := ParseEgressAllowlist("")
+		assert.Empty(t, m)
+	})
+
+	t.Run("single entry", func(t *testing.T) {
+		m := ParseEgressAllowlist("host.internal:443")
+		assert.True(t, m["host.internal:443"])
+	})
+
+	t.Run("multiple entries", func(t *testing.T) {
+		m := ParseEgressAllowlist("a.internal:443,b.internal:8443")
+		assert.True(t, m["a.internal:443"])
+		assert.True(t, m["b.internal:8443"])
+	})
+
+	t.Run("trailing dot stripped", func(t *testing.T) {
+		m := ParseEgressAllowlist("host.internal.:443")
+		assert.True(t, m["host.internal:443"])
+	})
+
+	t.Run("host only no port", func(t *testing.T) {
+		m := ParseEgressAllowlist("host.internal")
+		assert.True(t, m["host.internal:0"])
+	})
+
+	t.Run("whitespace trimmed", func(t *testing.T) {
+		m := ParseEgressAllowlist(" a.internal:443 , b.internal:8443 ")
+		assert.True(t, m["a.internal:443"])
+		assert.True(t, m["b.internal:8443"])
+	})
+
+	t.Run("case insensitive", func(t *testing.T) {
+		m := ParseEgressAllowlist("Host.Internal:443")
+		assert.True(t, m["host.internal:443"])
+	})
+
+	t.Run("ipv6 brackets stripped", func(t *testing.T) {
+		m := ParseEgressAllowlist("[::1]:443")
+		assert.True(t, m["::1:443"])
+		assert.False(t, m["[::1]:443"])
+	})
+
+	t.Run("ipv6 full address brackets stripped", func(t *testing.T) {
+		m := ParseEgressAllowlist("[2001:db8::1]:8443")
+		assert.True(t, m["2001:db8::1:8443"])
+	})
+
+	t.Run("wildcard entries skipped", func(t *testing.T) {
+		m := ParseEgressAllowlist("*.internal:443,host.ok:8443")
+		assert.False(t, m["*.internal:443"])
+		assert.False(t, m[".internal:443"])
+		assert.True(t, m["host.ok:8443"])
+	})
+}
+
+func TestSSRFValidator_EgressAllowlist(t *testing.T) {
+	t.Run("allowlisted host with DNS failure is allowed", func(t *testing.T) {
+		v := NewSSRFValidatorWithAllowlist(unresolvableTestHost + ":443")
+		r := v.ValidateURL("https://"+unresolvableTestHost+"/api", true)
+		assert.True(t, r.Safe)
+		assert.Empty(t, r.Findings)
+	})
+
+	t.Run("non-allowlisted host DNS failure still blocks", func(t *testing.T) {
+		v := NewSSRFValidatorWithAllowlist("other.host:443")
+		r := v.ValidateURL("https://"+unresolvableTestHost+"/", true)
+		assert.False(t, r.Safe)
+		assert.True(t, hasFinding(r, "dns_failure"))
+	})
+
+	t.Run("allowlisted host wrong port still blocks", func(t *testing.T) {
+		v := NewSSRFValidatorWithAllowlist(unresolvableTestHost + ":8443")
+		r := v.ValidateURL("https://"+unresolvableTestHost+"/api", true)
+		assert.False(t, r.Safe)
+		assert.True(t, hasFinding(r, "dns_failure"))
+	})
+
+	t.Run("allowlisted host wildcard port", func(t *testing.T) {
+		v := NewSSRFValidatorWithAllowlist(unresolvableTestHost)
+		r := v.ValidateURL("https://"+unresolvableTestHost+":8080/api", true)
+		assert.True(t, r.Safe)
+	})
+
+	t.Run("allowlisted host blocked scheme still blocks", func(t *testing.T) {
+		v := NewSSRFValidatorWithAllowlist("internal.host:443")
+		r := v.ValidateURL("file:///etc/passwd", true)
+		assert.False(t, r.Safe)
+	})
+
+	t.Run("allowlisted host blocked hostname still blocks", func(t *testing.T) {
+		v := NewSSRFValidatorWithAllowlist("metadata.google.internal:443")
+		r := v.ValidateURL("https://metadata.google.internal/something", true)
+		assert.False(t, r.Safe)
+	})
+
+	t.Run("empty allowlist does not change behavior", func(t *testing.T) {
+		v := NewSSRFValidatorWithAllowlist("")
+		r := v.ValidateURL("https://"+unresolvableTestHost+"/", true)
+		assert.False(t, r.Safe)
+		assert.True(t, hasFinding(r, "dns_failure"))
+	})
+
+	t.Run("allowlist does not skip DNS check when DNS succeeds", func(t *testing.T) {
+		// localhost resolves to 127.0.0.1 — still blocked even if allowlisted.
+		v := NewSSRFValidatorWithAllowlist("localhost:80")
+		r := v.ValidateURL("http://localhost/secret", true)
+		assert.False(t, r.Safe)
+	})
+
+	t.Run("raw private IP still caught with allowlist", func(t *testing.T) {
+		v := NewSSRFValidatorWithAllowlist("10.0.0.1:80")
+		r := v.ValidateURL("http://10.0.0.1/internal", false)
+		assert.False(t, r.Safe)
+		assert.True(t, hasFinding(r, "blocked_ip"))
+	})
+
+	t.Run("ipv6 bracket allowlist entry matches url.Hostname", func(t *testing.T) {
+		// url.Parse().Hostname() strips brackets from IPv6 addresses, so
+		// allowlist entries with brackets must also be stored without them.
+		v := NewSSRFValidatorWithAllowlist("[" + unresolvableTestHost + "]:443")
+		r := v.ValidateURL("https://"+unresolvableTestHost+"/api", true)
+		assert.True(t, r.Safe)
+		assert.Empty(t, r.Findings)
+	})
+
+	t.Run("allowlisted host wildcard port is allowed", func(t *testing.T) {
+		v := NewSSRFValidatorWithAllowlist(unresolvableTestHost)
+		r := v.ValidateURL("https://"+unresolvableTestHost+":8080/api", true)
+		assert.True(t, r.Safe)
+		assert.Empty(t, r.Findings)
+	})
+}

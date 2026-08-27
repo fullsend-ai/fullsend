@@ -38,10 +38,10 @@ func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo, forge
 			continue
 		}
 		switch c.Name {
-		case "var:FULLSEND_MINT_URL":
+		case "var:" + forge.VarMintURL:
 			hasRequiredVar = true
 			state.MintURL = c.Actual
-		case "var:FULLSEND_LAST_POLL_AT_FAST", "var:FULLSEND_LAST_POLL_AT_FULL", "var:FULLSEND_LABEL_STATE":
+		case "var:" + forge.VarLastPollAtFast, "var:" + forge.VarLastPollAtFull, "var:" + forge.VarLabelState:
 			hasRequiredVar = true
 		case "workflow":
 			state.FullsendRef = c.Actual
@@ -53,7 +53,7 @@ func ProbeRepoState(ctx context.Context, client forge.Client, owner, repo, forge
 	}
 	state.Installed = true
 
-	region, _, regionErr := client.GetRepoVariable(ctx, owner, repo, "FULLSEND_GCP_REGION")
+	region, _, regionErr := client.GetRepoVariable(ctx, owner, repo, forge.VarGCPRegion)
 	if regionErr == nil {
 		state.InferenceRegion = region
 	}
@@ -140,7 +140,7 @@ func Status(ctx context.Context, manifest *Manifest, clients ForgeClientFactory,
 	// Build the drift config from the manifest. InferenceRegion and
 	// ReviewAppClientID are CLI flags on the install command and are
 	// not available in the status path, so value drift for
-	// FULLSEND_GCP_REGION and FULLSEND_REVIEW_CLIENT_ID can only be
+	// GCP region and review client ID can only be
 	// detected by repos install, not repos status. RunnerTags come
 	// from the manifest's GitLab platform section.
 	dcfg := DriftConfig{
@@ -237,7 +237,7 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 	// Extract display values from probe results.
 	workflowPresent := false
 	for _, c := range components {
-		if c.Name == "var:FULLSEND_MINT_URL" {
+		if c.Name == "var:"+forge.VarMintURL {
 			status.MintURL = c.Actual
 		}
 		if c.Name == "workflow" {
@@ -303,9 +303,9 @@ func checkRepoStatus(ctx context.Context, cfg ResolvedConfig, dcfg DriftConfig, 
 	}
 
 	// Read display-only variable not covered by required vars.
-	region, _, regionErr := client.GetRepoVariable(ctx, owner, repo, "FULLSEND_GCP_REGION")
+	region, _, regionErr := client.GetRepoVariable(ctx, owner, repo, forge.VarGCPRegion)
 	if regionErr != nil {
-		status.Error = fmt.Sprintf("reading variable FULLSEND_GCP_REGION for %s/%s: %v", owner, repo, regionErr)
+		status.Error = fmt.Sprintf("reading variable %s for %s/%s: %v", forge.VarGCPRegion, owner, repo, regionErr)
 		return status
 	}
 	status.Region = region
