@@ -189,8 +189,8 @@ func NewLiveGCFClient(quotaProject string) *LiveGCFClient {
 	return &LiveGCFClient{Client: c}
 }
 
-// CreateServiceAccount creates a new service account.
-// Retries on HTTP 429 (quota exhaustion) with exponential backoff.
+// CreateServiceAccount creates a new service account. Retries on HTTP 429
+// (quota exhaustion) with exponential backoff via iamRetryDelay.
 func (c *LiveGCFClient) CreateServiceAccount(ctx context.Context, projectID, saName, displayName string) error {
 	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/serviceAccounts",
 		url.PathEscape(projectID))
@@ -228,19 +228,20 @@ func (c *LiveGCFClient) CreateServiceAccount(ctx context.Context, projectID, saN
 			continue
 		}
 
-		defer resp.Body.Close()
-
 		if resp.StatusCode == http.StatusConflict {
+			resp.Body.Close()
 			return nil // already exists
 		}
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
 			return fmt.Errorf("unexpected status %d creating service account: %s", resp.StatusCode, gcp.ExtractErrorMessage(body))
 		}
+		resp.Body.Close()
 		return nil
 	}
 
-	return fmt.Errorf("creating service account: exhausted retries")
+	return fmt.Errorf("creating service account: quota exhausted after %d attempts", iamQuotaRetries)
 }
 
 // DeleteServiceAccount permanently deletes a service account.
@@ -264,8 +265,8 @@ func (c *LiveGCFClient) DeleteServiceAccount(ctx context.Context, projectID, saE
 	return nil
 }
 
-// CreateWIFPool creates a new WIF pool.
-// Retries on HTTP 429 (quota exhaustion) with exponential backoff.
+// CreateWIFPool creates a new WIF pool. Retries on HTTP 429 (quota
+// exhaustion) with exponential backoff via iamRetryDelay.
 func (c *LiveGCFClient) CreateWIFPool(ctx context.Context, projectNumber, poolID, displayName string) error {
 	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools?workloadIdentityPoolId=%s",
 		url.PathEscape(projectNumber), url.QueryEscape(poolID))
@@ -313,7 +314,7 @@ func (c *LiveGCFClient) CreateWIFPool(ctx context.Context, projectNumber, poolID
 		return nil
 	}
 
-	return fmt.Errorf("creating WIF pool: exhausted retries")
+	return fmt.Errorf("creating WIF pool: quota exhausted after %d attempts", iamQuotaRetries)
 }
 
 // DeleteWIFPool permanently deletes a WIF pool and all its providers.
@@ -341,8 +342,8 @@ func (c *LiveGCFClient) DeleteWIFPool(ctx context.Context, projectNumber, poolID
 	return nil
 }
 
-// CreateWIFProvider creates a WIF OIDC provider.
-// Retries on HTTP 429 (quota exhaustion) with exponential backoff.
+// CreateWIFProvider creates a WIF OIDC provider. Retries on HTTP 429
+// (quota exhaustion) with exponential backoff via iamRetryDelay.
 func (c *LiveGCFClient) CreateWIFProvider(ctx context.Context, projectNumber, poolID, providerID string, cfg OIDCProviderConfig) error {
 	reqURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools/%s/providers?workloadIdentityPoolProviderId=%s",
 		url.PathEscape(projectNumber), url.PathEscape(poolID), url.QueryEscape(providerID))
@@ -416,7 +417,7 @@ func (c *LiveGCFClient) CreateWIFProvider(ctx context.Context, projectNumber, po
 		return nil
 	}
 
-	return fmt.Errorf("creating WIF provider: exhausted retries")
+	return fmt.Errorf("creating WIF provider: quota exhausted after %d attempts", iamQuotaRetries)
 }
 
 // GetWIFProvider reads an existing WIF OIDC provider's configuration.
@@ -455,8 +456,8 @@ func (c *LiveGCFClient) GetWIFProvider(ctx context.Context, projectNumber, poolI
 }
 
 // UpdateWIFProvider patches an existing WIF OIDC provider's attribute condition
-// and allowed audiences.
-// Retries on HTTP 429 (quota exhaustion) with exponential backoff.
+// and allowed audiences. Retries on HTTP 429 (quota exhaustion) with exponential
+// backoff via iamRetryDelay.
 func (c *LiveGCFClient) UpdateWIFProvider(ctx context.Context, projectNumber, poolID, providerID string, cfg OIDCProviderConfig) error {
 	patchURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools/%s/providers/%s?updateMask=attributeCondition,oidc.allowedAudiences",
 		url.PathEscape(projectNumber), url.PathEscape(poolID), url.PathEscape(providerID))
@@ -509,7 +510,7 @@ func (c *LiveGCFClient) UpdateWIFProvider(ctx context.Context, projectNumber, po
 		return nil
 	}
 
-	return fmt.Errorf("updating WIF provider: exhausted retries")
+	return fmt.Errorf("updating WIF provider: quota exhausted after %d attempts", iamQuotaRetries)
 }
 
 // undeleteWIFProvider restores a soft-deleted WIF provider.
@@ -810,8 +811,8 @@ func (c *LiveGCFClient) DisableWIFProvider(ctx context.Context, projectNumber, p
 // var so tests can override. Uses exponential backoff via iamRetryDelay.
 var iamQuotaRetries = 5
 
-// enableWIFProvider sets a WIF provider's disabled state to false.
-// Retries on HTTP 429 (quota exhaustion) with exponential backoff.
+// enableWIFProvider sets a WIF provider's disabled state to false. Retries on
+// HTTP 429 (quota exhaustion) with exponential backoff via iamRetryDelay.
 func (c *LiveGCFClient) enableWIFProvider(ctx context.Context, projectNumber, poolID, providerID string) error {
 	patchURL := fmt.Sprintf("https://iam.googleapis.com/v1/projects/%s/locations/global/workloadIdentityPools/%s/providers/%s?updateMask=disabled",
 		url.PathEscape(projectNumber), url.PathEscape(poolID), url.PathEscape(providerID))
@@ -855,7 +856,7 @@ func (c *LiveGCFClient) enableWIFProvider(ctx context.Context, projectNumber, po
 		return err
 	}
 
-	return fmt.Errorf("enabling WIF provider: exhausted retries")
+	return fmt.Errorf("enabling WIF provider: quota exhausted after %d attempts", iamQuotaRetries)
 }
 
 // DeleteWIFProvider permanently deletes a WIF provider.

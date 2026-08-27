@@ -2840,6 +2840,54 @@ func TestLiveGCFClient_CreateWIFProvider_RetriesOn429(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, 2, callCount)
 	})
+
+	t.Run("exhausts retries on persistent 429", func(t *testing.T) {
+		origRetries := iamQuotaRetries
+		iamQuotaRetries = 3
+		t.Cleanup(func() { iamQuotaRetries = origRetries })
+
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			w.WriteHeader(http.StatusTooManyRequests)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).CreateWIFProvider(context.Background(), "123", "pool", "gh-oidc", OIDCProviderConfig{
+			IssuerURI:        "https://token.actions.githubusercontent.com",
+			AllowedAudiences: []string{"fullsend-mint"},
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "quota exhausted")
+		assert.Equal(t, 3, callCount, "should attempt exactly iamQuotaRetries times")
+	})
+
+	t.Run("context cancellation during backoff", func(t *testing.T) {
+		origDelay2 := iamRetryDelay
+		iamRetryDelay = func(_ int) time.Duration { return 5 * time.Second }
+		t.Cleanup(func() { iamRetryDelay = origDelay2 })
+
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			w.WriteHeader(http.StatusTooManyRequests)
+		}))
+		defer srv.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+		}()
+
+		err := newTestClient(srv).CreateWIFProvider(ctx, "123", "pool", "gh-oidc", OIDCProviderConfig{
+			IssuerURI:        "https://token.actions.githubusercontent.com",
+			AllowedAudiences: []string{"fullsend-mint"},
+		})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+		assert.Equal(t, 1, callCount, "should stop after first 429 when context is cancelled")
+	})
 }
 
 func TestLiveGCFClient_CreateWIFPool_RetriesOn429(t *testing.T) {
@@ -2864,6 +2912,48 @@ func TestLiveGCFClient_CreateWIFPool_RetriesOn429(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, 2, callCount)
 	})
+
+	t.Run("exhausts retries on persistent 429", func(t *testing.T) {
+		origRetries := iamQuotaRetries
+		iamQuotaRetries = 3
+		t.Cleanup(func() { iamQuotaRetries = origRetries })
+
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			w.WriteHeader(http.StatusTooManyRequests)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).CreateWIFPool(context.Background(), "123", "pool", "Pool")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "quota exhausted")
+		assert.Equal(t, 3, callCount, "should attempt exactly iamQuotaRetries times")
+	})
+
+	t.Run("context cancellation during backoff", func(t *testing.T) {
+		origDelay2 := iamRetryDelay
+		iamRetryDelay = func(_ int) time.Duration { return 5 * time.Second }
+		t.Cleanup(func() { iamRetryDelay = origDelay2 })
+
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			w.WriteHeader(http.StatusTooManyRequests)
+		}))
+		defer srv.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+		}()
+
+		err := newTestClient(srv).CreateWIFPool(ctx, "123", "pool", "Pool")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+		assert.Equal(t, 1, callCount, "should stop after first 429 when context is cancelled")
+	})
 }
 
 func TestLiveGCFClient_CreateServiceAccount_RetriesOn429(t *testing.T) {
@@ -2887,6 +2977,48 @@ func TestLiveGCFClient_CreateServiceAccount_RetriesOn429(t *testing.T) {
 		err := newTestClient(srv).CreateServiceAccount(context.Background(), "proj", "sa", "SA")
 		require.NoError(t, err)
 		assert.Equal(t, 2, callCount)
+	})
+
+	t.Run("exhausts retries on persistent 429", func(t *testing.T) {
+		origRetries := iamQuotaRetries
+		iamQuotaRetries = 3
+		t.Cleanup(func() { iamQuotaRetries = origRetries })
+
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			w.WriteHeader(http.StatusTooManyRequests)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).CreateServiceAccount(context.Background(), "proj", "sa", "SA")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "quota exhausted")
+		assert.Equal(t, 3, callCount, "should attempt exactly iamQuotaRetries times")
+	})
+
+	t.Run("context cancellation during backoff", func(t *testing.T) {
+		origDelay2 := iamRetryDelay
+		iamRetryDelay = func(_ int) time.Duration { return 5 * time.Second }
+		t.Cleanup(func() { iamRetryDelay = origDelay2 })
+
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			w.WriteHeader(http.StatusTooManyRequests)
+		}))
+		defer srv.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+		}()
+
+		err := newTestClient(srv).CreateServiceAccount(ctx, "proj", "sa", "SA")
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+		assert.Equal(t, 1, callCount, "should stop after first 429 when context is cancelled")
 	})
 }
 
@@ -2913,6 +3045,52 @@ func TestLiveGCFClient_UpdateWIFProvider_RetriesOn429(t *testing.T) {
 		})
 		require.NoError(t, err)
 		assert.Equal(t, 2, callCount)
+	})
+
+	t.Run("exhausts retries on persistent 429", func(t *testing.T) {
+		origRetries := iamQuotaRetries
+		iamQuotaRetries = 3
+		t.Cleanup(func() { iamQuotaRetries = origRetries })
+
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			w.WriteHeader(http.StatusTooManyRequests)
+		}))
+		defer srv.Close()
+
+		err := newTestClient(srv).UpdateWIFProvider(context.Background(), "123", "pool", "prov", OIDCProviderConfig{
+			AttributeCondition: "assertion.repository_owner == 'my-org'",
+		})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "quota exhausted")
+		assert.Equal(t, 3, callCount, "should attempt exactly iamQuotaRetries times")
+	})
+
+	t.Run("context cancellation during backoff", func(t *testing.T) {
+		origDelay2 := iamRetryDelay
+		iamRetryDelay = func(_ int) time.Duration { return 5 * time.Second }
+		t.Cleanup(func() { iamRetryDelay = origDelay2 })
+
+		callCount := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			callCount++
+			w.WriteHeader(http.StatusTooManyRequests)
+		}))
+		defer srv.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			cancel()
+		}()
+
+		err := newTestClient(srv).UpdateWIFProvider(ctx, "123", "pool", "prov", OIDCProviderConfig{
+			AttributeCondition: "assertion.repository_owner == 'my-org'",
+		})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.Canceled)
+		assert.Equal(t, 1, callCount, "should stop after first 429 when context is cancelled")
 	})
 }
 
