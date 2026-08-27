@@ -176,14 +176,25 @@ func boundedID(id string) string {
 // contentMessage is one message in the gen_ai.output.messages array.
 // finish_reason is REQUIRED by the schema's OutputMessage definition.
 //
-// The whole iteration is deliberately shaped as ONE assistant message:
-// parts keep stream order, and the iteration has exactly one meaningful
-// finish_reason. The GenAI convention's worked example instead places
-// client-executed tool results under a role:"tool" message in
-// gen_ai.input.messages; splitting this record that way would
-// interleave many messages, each requiring a finish_reason with no
-// per-message meaning. The deviation is schema-valid —
-// ToolCallResponsePart is admitted in output messages.
+// The whole iteration is deliberately shaped as ONE assistant message,
+// a knowing deviation from the convention on two separate counts:
+//
+//   - role placement: the convention's worked example puts
+//     client-executed tool results under a role:"tool" message in
+//     gen_ai.input.messages; here they ride in the assistant output
+//     record. Schema-valid — ToolCallResponsePart is admitted in
+//     output messages.
+//   - cardinality: the registry note on gen_ai.output.messages says
+//     each message corresponds to exactly one generation
+//     (choice/candidate); this record packs an iteration's many
+//     generations into one message, which that note forbids
+//     independently of part-type admission.
+//
+// Rationale for both: parts keep stream order, and the iteration has
+// exactly one meaningful finish_reason — per-generation messages would
+// each require a finish_reason with no independent meaning. If a
+// consumer ever needs per-generation messages, that is a deliberate
+// carrier change, not a reinterpretation of this shape.
 type contentMessage struct {
 	Role         string        `json:"role"`
 	Parts        []contentPart `json:"parts"`
