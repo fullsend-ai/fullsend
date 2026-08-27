@@ -236,6 +236,11 @@ func (e *repoEnsurer) awaitDeletion(ctx context.Context, org, repoName, target s
 	e.logf("[ensure] waiting for %s deletion to propagate", target)
 	delay := resetRetryDelay
 	for attempt := 1; attempt <= resetMaxAttempts; attempt++ {
+		// Check before poll/backoff: with delay=0 (tests), select on
+		// time.After(0) vs ctx.Done() is non-deterministic.
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("context cancelled while waiting for %s deletion: %w", target, err)
+		}
 		_, err := e.client.GetRepo(ctx, org, repoName)
 		if err != nil {
 			if forge.IsNotFound(err) {
@@ -290,6 +295,11 @@ func (e *repoEnsurer) awaitCreation(ctx context.Context, org, repoName, target s
 	e.logf("[ensure] waiting for %s creation to propagate", target)
 	delay := resetRetryDelay
 	for attempt := 1; attempt <= resetMaxAttempts; attempt++ {
+		// Check before poll/backoff: with delay=0 (tests), select on
+		// time.After(0) vs ctx.Done() is non-deterministic.
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("context cancelled while waiting for %s creation: %w", target, err)
+		}
 		_, err := e.client.GetRepo(ctx, org, repoName)
 		if err == nil {
 			e.logf("[ensure] %s creation confirmed after %d attempt(s)", target, attempt)
