@@ -58,6 +58,40 @@ curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v${OPENSHELL_VERSI
 openshell --version
 ```
 
+> **macOS Apple Silicon caveat (v0.0.115):** The OpenShell 0.0.115 macOS
+> release binaries are dynamically linked against a Nix store path that
+> only exists on the upstream build host
+> ([NVIDIA/OpenShell#2977](https://github.com/NVIDIA/OpenShell/pull/2977)).
+> Both `openshell` and `openshell-gateway` fail at launch with
+> `Library not loaded: /nix/store/…/libiconv.2.dylib`. Linux binaries
+> are unaffected.
+>
+> **Recommended:** use v0.0.113 on Apple Silicon until a fixed upstream
+> release ships. v0.0.113 already has the ≥ 0.0.111 lifecycle semantics
+> fullsend requires:
+>
+> ```bash
+> export OPENSHELL_VERSION=0.0.113
+> curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v${OPENSHELL_VERSION}/install.sh | OPENSHELL_VERSION=v${OPENSHELL_VERSION} sh
+> ```
+>
+> **Workaround** if you need v0.0.115 specifically — re-point the
+> library reference and re-sign:
+>
+> ```bash
+> for b in openshell openshell-gateway; do
+>   install_name_tool -change \
+>     /nix/store/x66vl94b37qshkwsbcwsa6izzl36467a-libiconv-115.100.1/lib/libiconv.2.dylib \
+>     /usr/lib/libiconv.2.dylib \
+>     "$(brew --prefix)/Cellar/openshell/0.0.115/bin/$b"
+>   codesign --force -s - "$(brew --prefix)/Cellar/openshell/0.0.115/bin/$b"
+> done
+> brew services restart nvidia/openshell/openshell
+> ```
+>
+> Remove this caveat once the pin moves to a release whose macOS
+> binaries have no `/nix/store` references.
+
 ## Get Google Cloud Platform credentials
 
 Fullsend uses GCP's VertexAI to run inference, so you need a GCP project. After authenticating on `gcloud` run:
