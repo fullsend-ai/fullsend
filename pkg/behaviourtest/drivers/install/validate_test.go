@@ -65,6 +65,48 @@ func TestValidatePerRepoPostInstall_MissingShim(t *testing.T) {
 	assert.Contains(t, err.Error(), "fullsend.yaml")
 }
 
+func TestValidatePerRepoPostInstallNonVendored_OK(t *testing.T) {
+	client := forge.NewFakeClient()
+	org, repo := "acme", "test-repo"
+	perRepoCfg := config.NewPerRepoConfig(config.PerRepoDefaultRoles(), org+"/"+repo)
+	perRepoCfg.SetRuntime("dummy")
+	cfg, err := perRepoCfg.Marshal()
+	require.NoError(t, err)
+
+	// Non-vendored: only shim + config required, no marker or binary.
+	client.FileContents = map[string][]byte{
+		org + "/" + repo + "/.github/workflows/fullsend.yaml": []byte("name: fullsend"),
+		org + "/" + repo + "/.fullsend/config.yaml":           cfg,
+	}
+
+	err = ValidatePerRepoPostInstallNonVendored(context.Background(), client, org, repo)
+	require.NoError(t, err)
+}
+
+func TestValidatePerRepoPostInstallNonVendored_MissingShim(t *testing.T) {
+	speedUpValidateRetries(t)
+	client := forge.NewFakeClient()
+	err := ValidatePerRepoPostInstallNonVendored(context.Background(), client, "acme", "test-repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fullsend.yaml")
+}
+
+func TestValidatePerRepoPostInstallNonVendored_WrongRuntime(t *testing.T) {
+	client := forge.NewFakeClient()
+	org, repo := "acme", "test-repo"
+	cfg, err := config.NewPerRepoConfig(nil, org+"/"+repo).Marshal()
+	require.NoError(t, err)
+
+	client.FileContents = map[string][]byte{
+		org + "/" + repo + "/.github/workflows/fullsend.yaml": []byte("name: fullsend"),
+		org + "/" + repo + "/.fullsend/config.yaml":           cfg,
+	}
+
+	err = ValidatePerRepoPostInstallNonVendored(context.Background(), client, org, repo)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "want dummy")
+}
+
 func TestValidatePerRepoPostInstall_WrongRuntime(t *testing.T) {
 	client := forge.NewFakeClient()
 	org, repo := "acme", "test-repo"

@@ -81,3 +81,33 @@ func ValidatePerRepoPostInstall(ctx context.Context, client forge.Client, org, r
 	}
 	return nil
 }
+
+// ValidatePerRepoPostInstallNonVendored checks that a non-vendored
+// per-repo install left the expected workflow shim and config. Unlike
+// ValidatePerRepoPostInstall it does not require vendored assets
+// (marker file and binary) because non-vendored installs reference a
+// remote fullsend-ref instead.
+func ValidatePerRepoPostInstallNonVendored(ctx context.Context, client forge.Client, org, repo string) error {
+	shimPath := ".github/workflows/fullsend.yaml"
+	if _, err := getFileWithRetry(ctx, client, org, repo, shimPath); err != nil {
+		return fmt.Errorf("post-install: missing %s on %s/%s: %w", shimPath, org, repo, err)
+	}
+
+	cfgPath := filepath.Join(".fullsend", "config.yaml")
+	cfgData, err := getFileWithRetry(ctx, client, org, repo, cfgPath)
+	if err != nil {
+		return fmt.Errorf("post-install: reading %s: %w", cfgPath, err)
+	}
+	cfgW, err := config.ParsePerRepoConfigWriter(cfgData)
+	if err != nil {
+		return fmt.Errorf("post-install: parsing %s: %w", cfgPath, err)
+	}
+	if err := cfgW.Validate(); err != nil {
+		return fmt.Errorf("post-install: invalid %s: %w", cfgPath, err)
+	}
+	cfg := cfgW.(config.PerRepoConfigReader)
+	if cfg.ConfigRuntime() != "dummy" {
+		return fmt.Errorf("post-install: %s runtime is %q, want dummy", cfgPath, cfg.ConfigRuntime())
+	}
+	return nil
+}

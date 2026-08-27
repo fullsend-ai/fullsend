@@ -15,6 +15,7 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/forge"
 	"github.com/fullsend-ai/fullsend/internal/layers"
 	"github.com/fullsend-ai/fullsend/internal/scaffold"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install/common"
 	"github.com/fullsend-ai/fullsend/pkg/e2etest"
 )
 
@@ -665,6 +666,65 @@ func TestDoEnsure_SettleNotCalledWhenAlreadyInstalled(t *testing.T) {
 	err := e.EnsureRepo(context.Background(), "org", "test-repo-no-settle")
 	require.NoError(t, err)
 	assert.False(t, settleCalled, "settle should not be called when already installed")
+}
+
+func TestEnsurer_NonVendoredMode_UsesNonVendoredValidation(t *testing.T) {
+	// Non-vendored mode should pass validation without vendored
+	// marker and binary files.
+	speedUpValidateRetries(t)
+	// Override GetFileContent to return only shim + config (no marker/binary).
+	nonVendoredFiles := map[string][]byte{
+		".github/workflows/fullsend.yaml": []byte("# shim"),
+		".fullsend/config.yaml":           []byte(validPerRepoConfig),
+	}
+
+	var cliCalls [][]string
+	e := &repoEnsurer{
+		e2eCfg: e2etest.EnvConfig{MintURL: "https://mint.test"},
+		client: &stubClientWithCustomFiles{
+			stubClient: stubClient{},
+			files:      nonVendoredFiles,
+		},
+		binary: "/usr/bin/fullsend",
+		token:  "tok",
+		setupOpts: common.GitHubSetupOpts{
+			Vendor:      false,
+			FullsendRef: "main",
+		},
+		runCLI: func(binary, token string, args ...string) (string, error) {
+			cliCalls = append(cliCalls, args)
+			return "", nil
+		},
+		settle:  noopSettle,
+		logf:    t.Logf,
+		ensured: make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-nonvendored")
+	require.NoError(t, err)
+
+	// CLI should have been called for "github setup" with --fullsend-ref.
+	require.Len(t, cliCalls, 1)
+	assert.Equal(t, "github", cliCalls[0][0])
+	assert.Equal(t, "setup", cliCalls[0][1])
+	assert.Contains(t, cliCalls[0], "--fullsend-ref")
+	assert.Contains(t, cliCalls[0], "main")
+	assert.NotContains(t, cliCalls[0], "--vendor")
+}
+
+// stubClientWithCustomFiles is a test double that returns custom file
+// contents instead of using the global installedStubFiles map.
+type stubClientWithCustomFiles struct {
+	stubClient
+	files map[string][]byte
+}
+
+func (s *stubClientWithCustomFiles) GetFileContent(_ context.Context, _, _, path string) ([]byte, error) {
+	clean := strings.TrimPrefix(path, "./")
+	if content, ok := s.files[clean]; ok {
+		return content, nil
+	}
+	return nil, forge.ErrNotFound
 }
 
 func TestDoEnsure_SettleError_Propagated(t *testing.T) {
