@@ -268,8 +268,10 @@ traces exporter is configured (see artifact table). Export is fail-open and
 does not rewrite `run-telemetry.jsonl`.
 The idempotency ledger keys local rows; a remote OTLP failure after a
 successful local write will not retry that row on the next run (remote is
-best-effort once). Re-export offline by clearing the ledger or pointing at
-a fresh out dir.
+best-effort once). Re-export offline by pointing at a fresh out dir, or by
+clearing **both** `eval-measure-ledger.txt` and `eval-measurements.jsonl` —
+clearing only the ledger re-appends duplicate rows to the JSONL
+(`AppendMeasurements` is `O_APPEND` with no dedup).
 
 Managed measure assumes one platform `run-telemetry.jsonl` per runDir (each
 `fullsend run` creates a unique `output/fs-<slug>-<hash>/`). If inbound
