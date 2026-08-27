@@ -2,6 +2,7 @@ package install
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -1016,4 +1017,192 @@ func TestAwaitCreation_ContextCancellation(t *testing.T) {
 	err := e.awaitCreation(ctx, "org", "repo", "org/repo")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "context cancelled")
+}
+
+// --- awaitActorAccess unit tests ---
+
+// actorClient wraps a forge.Client with a commit-author identity and a
+// collaborator-permission answer that flips after a configurable number
+// of lookups.
+type actorClient struct {
+	forge.Client
+	mu          sync.Mutex
+	authorLogin string
+	authorErr   error
+	userLogin   string
+	userErr     error
+	lookups     int
+	roleAfter   int   // lookups before a role resolves (0 = immediately)
+	lookupErr   error // returned instead of ErrNotFound while unresolved
+	role        string
+	lookedUp    []string
+}
+
+func (c *actorClient) LatestCommitAuthorLogin(_ context.Context, _, _ string) (string, error) {
+	return c.authorLogin, c.authorErr
+}
+
+func (c *actorClient) GetAuthenticatedUser(_ context.Context) (string, error) {
+	return c.userLogin, c.userErr
+}
+
+func (c *actorClient) GetCollaboratorPermission(_ context.Context, _, _, username string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lookups++
+	c.lookedUp = append(c.lookedUp, username)
+	if c.lookups > c.roleAfter {
+		return c.role, nil
+	}
+	if c.lookupErr != nil {
+		return "", c.lookupErr
+	}
+	return "", forge.ErrNotFound
+}
+
+func TestAwaitActorAccess_ProbesCommitAuthorAndConfirmsImmediately(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &actorClient{authorLogin: "fullsend-ai-e2e[bot]", userErr: errors.New("403 for installation tokens"), role: "write"}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	require.NoError(t, e.awaitActorAccess(context.Background(), "org", "repo", "org/repo"))
+	assert.Equal(t, []string{"fullsend-ai-e2e[bot]"}, client.lookedUp)
+}
+
+func TestAwaitActorAccess_RetriesUntilRoleResolves(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &actorClient{authorLogin: "fullsend-ai-e2e[bot]", roleAfter: 3, role: "write"}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	require.NoError(t, e.awaitActorAccess(context.Background(), "org", "repo", "org/repo"))
+	assert.Equal(t, 4, client.lookups)
+}
+
+func TestAwaitActorAccess_FailsAfterMaxAttempts(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &actorClient{authorLogin: "fullsend-ai-e2e[bot]", roleAfter: actorAccessMaxAttempts + 1}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	err := e.awaitActorAccess(context.Background(), "org", "repo", "org/repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "org/repo resolves no role for fullsend-ai-e2e[bot] after 7 attempts")
+	assert.Equal(t, actorAccessMaxAttempts, client.lookups)
+}
+
+func TestAwaitActorAccess_FallsBackToAuthenticatedUserForPATs(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &actorClient{authorLogin: "", userLogin: "wayne", role: "admin"}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	require.NoError(t, e.awaitActorAccess(context.Background(), "org", "repo", "org/repo"))
+	assert.Equal(t, []string{"wayne"}, client.lookedUp)
+}
+
+func TestAwaitActorAccess_SkipsWhenIdentityUnknown(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &actorClient{authorLogin: "", userErr: errors.New("403")}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	require.NoError(t, e.awaitActorAccess(context.Background(), "org", "repo", "org/repo"))
+	assert.Equal(t, 0, client.lookups, "no identity, no probe")
+}
+
+func TestAwaitActorAccess_PropagatesNonNotFoundErrors(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &actorClient{authorLogin: "fullsend-ai-e2e[bot]", roleAfter: 5, lookupErr: errors.New("github api: 403 rate limit")}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	err := e.awaitActorAccess(context.Background(), "org", "repo", "org/repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking fullsend-ai-e2e[bot] access to org/repo: github api: 403 rate limit")
+	assert.Equal(t, 1, client.lookups)
+}
+
+func TestAwaitActorAccess_PropagatesAuthorLookupError(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &actorClient{authorErr: errors.New("boom")}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	err := e.awaitActorAccess(context.Background(), "org", "repo", "org/repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "resolving actor login for org/repo: boom")
+}
+
+func TestAwaitActorAccess_SkipsClientsWithoutPermissionLookup(t *testing.T) {
+	e := &repoEnsurer{client: &countingRepoClient{}, logf: t.Logf}
+	require.NoError(t, e.awaitActorAccess(context.Background(), "org", "repo", "org/repo"))
+}
+
+func TestAwaitActorAccess_HonoursContextCancellation(t *testing.T) {
+	client := &actorClient{authorLogin: "fullsend-ai-e2e[bot]", roleAfter: actorAccessMaxAttempts + 1}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := e.awaitActorAccess(ctx, "org", "repo", "org/repo")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+// actorStubClient gives the doEnsure stub an identity and a permission
+// answer, recording when the permission probe ran relative to settle.
+type actorStubClient struct {
+	*stubClient
+	mu       sync.Mutex
+	probed   int
+	probeErr error
+}
+
+func (c *actorStubClient) LatestCommitAuthorLogin(_ context.Context, _, _ string) (string, error) {
+	return "fullsend-ai-e2e[bot]", nil
+}
+
+func (c *actorStubClient) GetCollaboratorPermission(_ context.Context, _, _, _ string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.probed++
+	if c.probeErr != nil {
+		return "", c.probeErr
+	}
+	return "write", nil
+}
+
+func TestDoEnsure_ProbesActorAccessAfterSettle(t *testing.T) {
+	speedUpResetRetries(t)
+	sc := &actorStubClient{stubClient: &stubClient{installed: true}}
+	var order []string
+	e := &repoEnsurer{
+		e2eCfg:  e2etest.EnvConfig{},
+		client:  sc,
+		runCLI:  noopCLI,
+		logf:    t.Logf,
+		ensured: make(map[string]struct{}),
+		settle: func(context.Context, forge.Client, string, string, string, func(string, ...any)) error {
+			order = append(order, "settle")
+			sc.mu.Lock()
+			require.Equal(t, 0, sc.probed, "the actor probe must not run before settle")
+			sc.mu.Unlock()
+			return nil
+		},
+	}
+
+	require.NoError(t, e.EnsureRepo(context.Background(), "org", "test-repo-01"))
+	assert.Equal(t, []string{"settle"}, order)
+	assert.Equal(t, 1, sc.probed)
+}
+
+func TestDoEnsure_ActorAccessErrorSurfaces(t *testing.T) {
+	speedUpResetRetries(t)
+	sc := &actorStubClient{stubClient: &stubClient{installed: true}, probeErr: errors.New("github api: 403 rate limit")}
+	e := &repoEnsurer{
+		e2eCfg:  e2etest.EnvConfig{},
+		client:  sc,
+		runCLI:  noopCLI,
+		logf:    t.Logf,
+		ensured: make(map[string]struct{}),
+	}
+
+	err := e.EnsureRepo(context.Background(), "org", "test-repo-01")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking fullsend-ai-e2e[bot] access to org/test-repo-01: github api: 403 rate limit")
 }
