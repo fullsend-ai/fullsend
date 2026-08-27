@@ -151,6 +151,14 @@ func (e *repoEnsurer) doEnsure(ctx context.Context, org, repoName string) error 
 		return err
 	}
 
+	// Step 2b: wait for the App installation's permission graph to
+	// settle for the new repo ID. GitHub's permission consistency is
+	// a separate domain from repo visibility; dispatch's
+	// GetCollaboratorPermission can 404 until propagation completes.
+	if err := e.awaitPermissionPropagation(ctx, org, repoName, target); err != nil {
+		return err
+	}
+
 	// Step 3: the repo is always freshly created (step 1 deleted any
 	// prior version), so fullsend is never pre-installed. Run the full
 	// install flow and settle for Actions readiness.
@@ -315,6 +323,58 @@ func (e *repoEnsurer) awaitCreation(ctx context.Context, org, repoName, target s
 		}
 	}
 	return fmt.Errorf("repo %s not visible after %d attempts following creation", target, resetMaxAttempts)
+}
+
+// awaitPermissionPropagation polls GetCollaboratorPermission with
+// exponential backoff until the authenticated user's permission is
+// visible on the newly created repo. After a repo is deleted and
+// recreated, the GitHub App installation's permission graph for the
+// new repo ID is a separate consistency domain from repo visibility.
+// Without this wait, dispatch's collaborator-permission lookup can
+// 404, causing the actor to be treated as unauthorized (RoleNone)
+// and the harness matrix to be empty.
+//
+// When the forge client does not implement GitHubExtensions (e.g., a
+// GitLab backend), the check is skipped — permission propagation is a
+// GitHub-specific concern.
+func (e *repoEnsurer) awaitPermissionPropagation(ctx context.Context, org, repoName, target string) error {
+	gh, ok := e.client.(forge.GitHubExtensions)
+	if !ok {
+		e.logf("[ensure] %s: client does not support permission checks, skipping", target)
+		return nil
+	}
+
+	login, err := e.client.GetAuthenticatedUser(ctx)
+	if err != nil {
+		return fmt.Errorf("resolving bot login for permission wait on %s: %w", target, err)
+	}
+
+	e.logf("[ensure] waiting for %s permission to propagate for %s", target, login)
+	delay := resetRetryDelay
+	for attempt := 1; attempt <= resetMaxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("context cancelled while waiting for %s permission: %w", target, err)
+		}
+		role, permErr := gh.GetCollaboratorPermission(ctx, org, repoName, login)
+		if permErr == nil {
+			e.logf("[ensure] %s permission confirmed for %s: role=%s (attempt %d)", target, login, role, attempt)
+			return nil
+		}
+		if !forge.IsNotFound(permErr) {
+			return fmt.Errorf("checking permission on %s for %s: %w", target, login, permErr)
+		}
+		if attempt < resetMaxAttempts {
+			e.logf("[ensure] %s permission not yet visible for %s, attempt %d/%d — backing off %v",
+				target, login, attempt, resetMaxAttempts, delay)
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("context cancelled while waiting for %s permission: %w", target, ctx.Err())
+			case <-time.After(delay):
+			}
+			delay *= 2
+		}
+	}
+	return fmt.Errorf("permission for %s on %s not visible after %d attempts", login, target, resetMaxAttempts)
 }
 
 // installFullsend runs inference provision (when a GCP project is

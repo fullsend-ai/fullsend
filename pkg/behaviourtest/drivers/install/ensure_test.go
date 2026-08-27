@@ -134,6 +134,14 @@ type stubClient struct {
 	// When nil and installed is true, GetWorkflow returns a valid Workflow.
 	getWorkflowErr    error
 	getWorkflowCalled atomic.Int32
+
+	// authenticatedUser is the login returned by GetAuthenticatedUser.
+	// Defaults to "test-bot[bot]" when empty.
+	authenticatedUser string
+
+	// collaboratorRole is the role returned by GetCollaboratorPermission.
+	// Defaults to "admin" when empty (immediate success).
+	collaboratorRole string
 }
 
 func (s *stubClient) GetRepo(_ context.Context, _, repo string) (*forge.Repository, error) {
@@ -200,6 +208,32 @@ func (s *stubClient) GetWorkflow(_ context.Context, _, _, _ string) (*forge.Work
 		return nil, forge.ErrNotFound
 	}
 	return &forge.Workflow{ID: 1, Name: "fullsend", Path: ".github/workflows/fullsend.yaml", State: "active"}, nil
+}
+
+func (s *stubClient) GetAuthenticatedUser(_ context.Context) (string, error) {
+	if s.authenticatedUser != "" {
+		return s.authenticatedUser, nil
+	}
+	return "test-bot[bot]", nil
+}
+
+// GitHubExtensions methods — needed so the type assertion in
+// awaitPermissionPropagation succeeds for stubClient.
+
+func (s *stubClient) ListOrgInstallations(_ context.Context, _ string) ([]forge.Installation, error) {
+	return nil, nil
+}
+
+func (s *stubClient) GetAppClientID(_ context.Context, _ string) (string, error) {
+	return "", forge.ErrNotFound
+}
+
+func (s *stubClient) GetCollaboratorPermission(_ context.Context, _, _, _ string) (string, error) {
+	role := s.collaboratorRole
+	if role == "" {
+		role = "admin"
+	}
+	return role, nil
 }
 
 func TestNewRepoEnsurer_ReturnsNonNil(t *testing.T) {
@@ -1016,4 +1050,136 @@ func TestAwaitCreation_ContextCancellation(t *testing.T) {
 	err := e.awaitCreation(ctx, "org", "repo", "org/repo")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "context cancelled")
+}
+
+// --- awaitPermissionPropagation unit tests ---
+
+// countingPermissionClient returns different GetCollaboratorPermission
+// results after a configurable number of calls. It also implements
+// GitHubExtensions so the type assertion in awaitPermissionPropagation
+// succeeds.
+type countingPermissionClient struct {
+	forge.Client
+	mu              sync.Mutex
+	permCalls       int
+	switchAfter     int    // after this many calls, switch to switchedRole
+	initialErr      error  // returned for calls 1..switchAfter
+	switchedRole    string // returned for calls switchAfter+1..
+	switchedErr     error  // returned for calls switchAfter+1..
+	authenticatedAs string // login returned by GetAuthenticatedUser
+}
+
+func (c *countingPermissionClient) GetAuthenticatedUser(_ context.Context) (string, error) {
+	if c.authenticatedAs != "" {
+		return c.authenticatedAs, nil
+	}
+	return "test-bot[bot]", nil
+}
+
+func (c *countingPermissionClient) ListOrgInstallations(_ context.Context, _ string) ([]forge.Installation, error) {
+	return nil, nil
+}
+
+func (c *countingPermissionClient) GetAppClientID(_ context.Context, _ string) (string, error) {
+	return "", forge.ErrNotFound
+}
+
+func (c *countingPermissionClient) GetCollaboratorPermission(_ context.Context, _, _, _ string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.permCalls++
+	if c.permCalls > c.switchAfter {
+		return c.switchedRole, c.switchedErr
+	}
+	return "", c.initialErr
+}
+
+func TestAwaitPermissionPropagation_ImmediateSuccess(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &countingPermissionClient{
+		switchAfter:  0,
+		switchedRole: "write",
+	}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	err := e.awaitPermissionPropagation(context.Background(), "org", "repo", "org/repo")
+	require.NoError(t, err)
+	assert.Equal(t, 1, client.permCalls, "should confirm on first poll")
+}
+
+func TestAwaitPermissionPropagation_RetriesUntilConfirmed(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &countingPermissionClient{
+		switchAfter:  3,
+		initialErr:   forge.ErrNotFound, // 404 for 3 calls
+		switchedRole: "write",           // then found
+	}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	err := e.awaitPermissionPropagation(context.Background(), "org", "repo", "org/repo")
+	require.NoError(t, err)
+	assert.Equal(t, 4, client.permCalls, "should retry until permission visible")
+}
+
+func TestAwaitPermissionPropagation_FailsAfterMaxAttempts(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &countingPermissionClient{
+		switchAfter: resetMaxAttempts + 1, // never switches
+		initialErr:  forge.ErrNotFound,    // always 404
+	}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	err := e.awaitPermissionPropagation(context.Background(), "org", "repo", "org/repo")
+	require.Error(t, err, "should error when permission never becomes visible")
+	assert.Contains(t, err.Error(), "not visible after")
+	assert.Contains(t, err.Error(), "test-bot[bot]")
+}
+
+func TestAwaitPermissionPropagation_PropagatesNonNotFoundError(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &countingPermissionClient{
+		switchAfter: 0,
+		initialErr:  assert.AnError,
+		switchedErr: assert.AnError,
+	}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	err := e.awaitPermissionPropagation(context.Background(), "org", "repo", "org/repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checking permission")
+}
+
+func TestAwaitPermissionPropagation_ContextCancellation(t *testing.T) {
+	speedUpResetRetries(t)
+	client := &countingPermissionClient{
+		switchAfter: resetMaxAttempts + 1,
+		initialErr:  forge.ErrNotFound,
+	}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	err := e.awaitPermissionPropagation(ctx, "org", "repo", "org/repo")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "context cancelled")
+}
+
+// noGHExtClient satisfies forge.Client but does NOT implement
+// GitHubExtensions. Used to verify awaitPermissionPropagation skips
+// the check for non-GitHub forges.
+type noGHExtClient struct {
+	forge.Client
+}
+
+func (c *noGHExtClient) GetAuthenticatedUser(_ context.Context) (string, error) {
+	return "bot", nil
+}
+
+func TestAwaitPermissionPropagation_SkipsWhenNoGitHubExtensions(t *testing.T) {
+	client := &noGHExtClient{}
+	e := &repoEnsurer{client: client, logf: t.Logf}
+
+	err := e.awaitPermissionPropagation(context.Background(), "org", "repo", "org/repo")
+	require.NoError(t, err, "should skip gracefully when client lacks GitHubExtensions")
 }
