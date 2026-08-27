@@ -2280,6 +2280,126 @@ func TestRunPerRepoInstall_AlreadyInstalledUpgrade(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestRunPerRepoInstall_AlreadyInstalled_PreservesExistingConfig verifies
+// that re-onboarding an already-installed repo preserves the existing
+// per-repo config (custom agents, runtime, roles) instead of overwriting
+// it with scaffold defaults (#6678).
+func TestRunPerRepoInstall_AlreadyInstalled_PreservesExistingConfig(t *testing.T) {
+	existingConfig := `# fullsend per-repo configuration
+version: "1"
+runtime: pi
+roles:
+  - triage
+  - coder
+agents:
+  - source: harness/lint.yaml
+  - name: triage
+    model: xai-vertex/xai/grok-4.6
+`
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: "widget", FullName: "acme/widget", DefaultBranch: "main"},
+	}
+	// Mark repo as already installed via the FULLSEND_MINT_URL variable.
+	client.VariableValues = map[string]string{
+		"acme/widget/FULLSEND_MINT_URL": "https://mint.example.com/v1/token",
+	}
+	// Provide the existing config.yaml so loadExistingPerRepoConfig finds it.
+	client.FileContents = map[string][]byte{
+		"acme/widget/.fullsend/config.yaml": []byte(existingConfig),
+	}
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.Direct = true
+
+	err := runPerRepoInstall(context.Background(), cfg)
+	require.NoError(t, err)
+
+	// Find .fullsend/config.yaml in the committed scaffold files.
+	var cfgContent []byte
+	for _, batch := range client.CommittedFiles {
+		for _, f := range batch.Files {
+			if f.Path == ".fullsend/config.yaml" {
+				cfgContent = f.Content
+			}
+		}
+	}
+	require.NotEmpty(t, cfgContent, "expected .fullsend/config.yaml in committed files")
+
+	// Parse and verify the custom config survived.
+	parsed, parseErr := config.ParsePerRepoConfig(cfgContent)
+	require.NoError(t, parseErr)
+	assert.Equal(t, "pi", parsed.ConfigRuntime(), "custom runtime must be preserved")
+	assert.Equal(t, []string{"triage", "coder"}, parsed.ConfigRoles(), "custom roles must be preserved")
+
+	agents := parsed.AgentEntries()
+	var agentNames []string
+	for _, a := range agents {
+		agentNames = append(agentNames, a.DerivedName())
+	}
+	assert.Contains(t, agentNames, "lint", "custom agent 'lint' must be preserved")
+
+	triageEntry, ok := config.AgentSettingsFor(agents, "triage")
+	require.True(t, ok, "triage agent settings must be preserved")
+	assert.Equal(t, "xai-vertex/xai/grok-4.6", triageEntry.Model, "per-agent model must be preserved")
+}
+
+// TestRunPerRepoInstall_AlreadyInstalled_RuntimeOverride verifies that
+// passing --runtime on a re-onboarding run updates the runtime in the
+// existing config while preserving everything else.
+func TestRunPerRepoInstall_AlreadyInstalled_RuntimeOverride(t *testing.T) {
+	existingConfig := `# fullsend per-repo configuration
+version: "1"
+runtime: pi
+roles:
+  - triage
+  - coder
+agents:
+  - source: harness/lint.yaml
+`
+	client := forge.NewFakeClient()
+	client.Repos = []forge.Repository{
+		{Name: "widget", FullName: "acme/widget", DefaultBranch: "main"},
+	}
+	client.VariableValues = map[string]string{
+		"acme/widget/FULLSEND_MINT_URL": "https://mint.example.com/v1/token",
+	}
+	client.FileContents = map[string][]byte{
+		"acme/widget/.fullsend/config.yaml": []byte(existingConfig),
+	}
+
+	cfg := perRepoTestBase()
+	cfg.testClient = client
+	cfg.Direct = true
+	cfg.Runtime = "claude" // explicit --runtime override
+
+	err := runPerRepoInstall(context.Background(), cfg)
+	require.NoError(t, err)
+
+	var cfgContent []byte
+	for _, batch := range client.CommittedFiles {
+		for _, f := range batch.Files {
+			if f.Path == ".fullsend/config.yaml" {
+				cfgContent = f.Content
+			}
+		}
+	}
+	require.NotEmpty(t, cfgContent)
+
+	parsed, parseErr := config.ParsePerRepoConfig(cfgContent)
+	require.NoError(t, parseErr)
+	assert.Equal(t, "claude", parsed.ConfigRuntime(), "runtime must be updated by --runtime flag")
+	assert.Equal(t, []string{"triage", "coder"}, parsed.ConfigRoles(), "custom roles must be preserved")
+
+	agents := parsed.AgentEntries()
+	var agentNames []string
+	for _, a := range agents {
+		agentNames = append(agentNames, a.DerivedName())
+	}
+	assert.Contains(t, agentNames, "lint", "custom agent must be preserved even with --runtime")
+}
+
 func TestRunPerRepoInstall_DryRun(t *testing.T) {
 	client := forge.NewFakeClient()
 

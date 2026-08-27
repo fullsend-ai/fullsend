@@ -737,6 +737,26 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		printer.StepInfo(fmt.Sprintf("Setting up new per-repo installation for %s/%s", owner, repo))
 	}
 
+	// Preserve existing per-repo config on re-onboarding so custom agent
+	// configurations (agents, roles, runtime, etc.) are not overwritten
+	// with scaffold defaults (#6678). When the repo already has a
+	// config.yaml, load it and pass it through to BuildScaffoldFiles;
+	// only apply the --runtime flag on top when it was explicitly
+	// provided.
+	var existingPerRepoCfg config.PerRepoConfigWriter
+	if alreadyInstalled {
+		cfg, cfgErr := loadExistingPerRepoConfig(ctx, client, owner, repo)
+		if cfgErr != nil {
+			printer.StepWarn(fmt.Sprintf("Could not read existing config, generating fresh: %v", cfgErr))
+		} else if cfg != nil {
+			if c.Runtime != "" {
+				cfg.SetRuntime(c.Runtime)
+			}
+			existingPerRepoCfg = cfg
+			printer.StepInfo("Keeping existing .fullsend/config.yaml (custom agent configuration preserved)")
+		}
+	}
+
 	// Phase 1: Discover existing infrastructure (read-only, safe for dry-run).
 	var mintFound bool
 	var appsFound bool
@@ -859,9 +879,10 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			printer.Blank()
 		}
 		// BuildScaffoldFiles only reads Owner, Repo, Roles, Runtime,
-		// VendorBinary, UpstreamRef, UpstreamTag. Extra fields are included to stay aligned
-		// with the non-dry-run installCfg; Skip* flags are omitted because
-		// they control Install() flow, not scaffold file generation.
+		// VendorBinary, UpstreamRef, UpstreamTag, PerRepoConfig. Extra
+		// fields are included to stay aligned with the non-dry-run
+		// installCfg; Skip* flags are omitted because they control
+		// Install() flow, not scaffold file generation.
 		dryRunFiles, dryRunErr := repos.BuildScaffoldFiles(repos.InstallConfig{
 			Owner:            owner,
 			Repo:             repo,
@@ -876,6 +897,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 			WIFProvider:      inferenceWIFProvider,
 			VendorBinary:     vendor,
 			Direct:           c.Direct,
+			PerRepoConfig:    existingPerRepoCfg,
 		})
 		if dryRunErr != nil {
 			return fmt.Errorf("generating scaffold files for dry run: %w", dryRunErr)
@@ -1101,6 +1123,7 @@ func runPerRepoInstall(ctx context.Context, c perRepoInstallConfig) error {
 		VendorBinary:          vendor,
 		Direct:                c.Direct,
 		SkipScaffoldAndConfig: vendor,
+		PerRepoConfig:         existingPerRepoCfg,
 	}
 
 	progressFn := func(_ string, phase, msg string) {
