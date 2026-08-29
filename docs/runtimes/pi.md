@@ -292,121 +292,105 @@ deny-list — is in
 
 ## Sub-agents
 
-The `Agent` tool (registered under its legacy alias `Task` as well) is provided by a
-runner-owned pi extension, `fullsend-agent.js`, so skills written for Claude Code's sub-agent
-roster — `pr-review`, `retro-analysis` — dispatch unchanged.
-
-**Contract.** Same parameters as Claude Code's tool:
+The `Agent` tool (registered under its legacy alias `Task` as well) comes from a runner-owned pi
+extension, `fullsend-agent.js`, so skills written for Claude Code's sub-agent roster — `pr-review`,
+`retro-analysis` — dispatch unchanged. Each child is its own `pi --print` process.
 
 | Parameter | Meaning |
 |---|---|
-| `prompt` (required) | The whole task. The child starts with no memory of the conversation, so the prompt must carry its context package |
+| `prompt` (required) | The whole task. The child starts with no memory of the conversation, so the prompt must carry its own context package |
 | `description` | Short label; shows in the run log |
-| `model` | `opus`, `sonnet`, `haiku`, a Claude id (`claude-sonnet-4-6@default` — the `@suffix` is dropped) or a `provider/id` spec this run can serve. That is a closed set, not a provider check: the specs in the run's model table, the parent's own spec, and the ids listed for a provider with no model-table entry (`google-vertex`, and the vendored `xai-vertex` extension's `xai/grok-4.6`). An id the model invented is rejected even under an allowed provider. Omitted → the parent's model. A `:<thinking level>` suffix (pi's `provider/id:high` shorthand) is dropped, so it cannot override the child's thinking level |
-| `subagent_type` | `Explore` gives a read-only child (`read`, `grep`, `find`, `ls`, intersected with the parent's set — a child never reaches past its parent); anything else or omitted gives the parent's tool set |
+| `model` | A model this run can serve (see below). Omitted → the parent's model |
+| `subagent_type` | `Explore` gives a read-only child (`read`, `grep`, `find`, `ls`, intersected with the parent's set); anything else, or omitted, gives the parent's tool set |
 | `run_in_background` | Accepted and ignored — a child always runs to completion inside the call |
 
-The result is the child's final assistant message, trimmed and capped at 64 KB with a
-`[truncated]` marker. The call is an error when the child's stream reports `stopReason`
-`error`/`aborted`, when it exits non-zero, times out (15 minutes) or never emits `agent_end`.
+The call returns the child's final assistant message, trimmed and capped at 64 KB with a
+`[truncated]` marker.
 
-A model the run cannot serve is **rejected with the accepted forms** rather than passed through:
-an invented Claude id would otherwise reach pi's built-in `anthropic` provider, which has no
-credentials in the sandbox, and the dispatch would be lost to a confusing auth error. The same
-applies inside a provider the run *can* reach — `anthropic-vertex/claude-sonnet-4-20250514`,
-`google-vertex/gemini-9` or `xai/grok-9` is refused rather than sent on as an unknown model. A
-Grok spec is normalized to the three-segment `xai-vertex/xai/<id>` first (as the runner does for
-the parent) and then checked against that same closed set, so the short `xai/` form is neither
-more nor less permissive than the long one.
+### Choosing a model
 
-**Parallel dispatch** is several `Agent` calls in one assistant message — pi runs sibling tool
-calls from one message concurrently. At most four children run at once; the rest queue. The
-runtime note appended to the agent's system prompt says so, so a skill that asks for "dispatch
-these in parallel" gets it.
+For a run that reaches all three Vertex providers:
 
-**What a child inherits.** Each child is a `pi --print --mode json` process started with the same
-posture as the parent: `--no-approve`, `--no-extensions` with an explicit `-e` list, no prompt
-templates or themes, its own `--session-dir`, and a `--tools` allowlist (or `--no-builtin-tools`
-when that allowlist is empty). The `-e` list is the
-vendored provider extensions present in the image plus the hook adapter when security is enabled,
-so **PreToolUse/PostToolUse hooks and the Bash allowlist apply inside sub-agents too** — as they do
-on Claude Code, where the same hooks run on `Agent` calls. Children never receive the Agent
-extension itself and refuse to register it if they somehow did (`FULLSEND_SUBAGENT_DEPTH`), so
-there is no recursion.
+| `model` | The child runs on |
+|---|---|
+| `sonnet` (also `opus`, `haiku`) | Claude on Vertex, whatever provider the parent runs on |
+| `claude-sonnet-4-6` | the same — a bare Claude id resolves through that alias table, and a persona-style `@default` suffix is dropped |
+| `google-vertex/gemini-3.7-flash` | Gemini, on pi's built-in provider |
+| `xai/grok-4.6` | Grok on Vertex — normalized to `xai-vertex/xai/grok-4.6`, as the runner does for the parent |
 
-What a child does **not** inherit:
+Anything else is **rejected, with the accepted forms listed in the error**, so the orchestrator can
+correct itself instead of losing the dispatch. The accepted set is closed — the run's model table,
+the parent's own spec, and the ids registered for a provider that has no table entry — rather than a
+provider-prefix check, so an id the model invented (`google-vertex/gemini-9`,
+`anthropic-vertex/claude-sonnet-4-20250514`) is refused even under a provider the run can reach. A
+trailing `:<thinking level>` is dropped rather than passed through.
 
-- **Harness `extensions:`.** The declared extension directories are loaded for the parent only. A
-  child's `-e` list is fixed at `Bootstrap` (providers plus the hook adapter), so a tool a harness
-  extension registers is not available inside a sub-agent.
-- **The parent's system prompt.** Children get `--append-system-prompt` with a short sub-agent role
-  note instead of the parent's `APPEND_SYSTEM.md`, which is the orchestrator persona and tells it to
-  make several `Agent` calls in one message — advice a child cannot act on.
-- **Provider credentials it does not use.** The child's environment is rebuilt per resolved
-  provider with the same rules the runner applies to the parent, so a Claude child under a Grok
-  parent does not carry a stray `ANTHROPIC_API_KEY` or an ambient `GOOGLE_CLOUD_PROJECT`.
+### Running children in parallel
 
-**Prompt delivery.** The prompt goes over the child's stdin, not on its command line. Unterminated,
-pi reads a leading `-` as an unknown option, a leading `--` as an unknown flag and a leading `@`
-as a file argument. pi *does* honour a `--` end-of-options terminator, but that is not a way out:
-after it an `@`-prefixed positional is still taken as a file argument, and argv is capped by the
-kernel well below the size of a real context package either way. In `--print` mode pi reads a
-non-TTY stdin to EOF and uses it as the initial message, whatever it starts with and however
-long it is.
+Put several `Agent` calls in one assistant message: pi runs sibling tool calls from one message
+concurrently. At most four children run at once and the rest queue. The runtime note appended to the
+agent's system prompt says so, so a skill that asks for "dispatch these in parallel" gets it.
 
-**Stopping a child.** A child that times out (15 minutes), is aborted, or is caught by
-`session_shutdown` gets `SIGTERM`, escalated to `SIGKILL` after a 3-second grace. `SIGTERM` is
-deliberate: pi's `bash` tool runs commands in their own process groups and reaps them from its own
-`SIGTERM` handler, so an immediate `SIGKILL` would orphan them. Children are not `detached`, so a
-process-group kill or a `SIGTERM` to the parent takes them with it — a bare `SIGKILL` of the
-parent alone does not, since nothing is left to run the stop sequence.
+### What a child inherits, and what it does not
 
-**`.env` is the same trust class here as everywhere else.** A rewritten `/sandbox/workspace/.env`
-that exports `FULLSEND_SUBAGENT_DEPTH` disables the tool for that iteration — the extension reads
-it as "this process is a child" and registers nothing. That is the same exposure as any other
-`.env`-settable knob; what `.env` cannot do is change the manifest, the Agent extension or the hook
-adapter. All three are SHA-256-checked before `.env` is sourced and the manifest again after it,
-and because those checks all happen at launch they are repeated while the iteration runs.
+A child starts with the parent's posture — `--no-approve`, `--no-extensions` with an explicit `-e`
+list, no prompt templates or themes, its own session dir, and a `--tools` allowlist
+(`--no-builtin-tools` when that allowlist is empty). It inherits:
 
-Immediately before **every** dispatch, and while holding the concurrency slot the dispatch will
-run in, the Agent extension re-hashes two things: the manifest, against the bytes it loaded
-(`manifest changed since load; refusing to dispatch`), and every `agent.extensions` entry that
-lives in the config dir — today the hook adapter — against the digest `Bootstrap` recorded for it
-in `agent.extensionDigests` (`hook adapter changed since load; refusing to dispatch`). The adapter
-needs its own digest because nothing else re-verifies it after launch: a parent with `write` can
-replace the file mid-iteration, and a rewritten adapter simply omits the manifest check below, so
-every child dispatched afterwards would come up unhooked. The digest map travels inside the
-manifest, so the manifest's own digest covers it. The vendored provider extensions under
-`/usr/local/share/pi-extensions` carry no digest — the image installs them root-owned and
-read-only outside the config dir, so there is nothing there to rewrite.
+- **The sandbox hooks.** Its `-e` list carries the vendored provider extensions and the hook adapter,
+  so PreToolUse/PostToolUse hooks and the Bash allowlist apply inside sub-agents too — as they do on
+  Claude Code, where the same hooks run on `Agent` calls.
+- **The parent's tool set**, minus `Agent`/`Task`: a child cannot dispatch children of its own.
 
-The hook adapter in turn verifies the manifest against the digest the runner exported
-(`FULLSEND_PI_MANIFEST_SHA256`) whenever it loads — which for a sub-agent is minutes in, so a
-parent that rewrites `hooks.groups` mid-iteration cannot dispatch a child whose adapter comes up
-with no hooks in it.
+It does not inherit:
 
-**Thinking level.** Children run at `--thinking medium`, not the parent's `high`: a full
-`pr-review` roster at `high` overran the 20-minute review budget. Override with
-`FULLSEND_PI_SUBAGENT_THINKING=<off|minimal|low|medium|high|xhigh|max>`; an unrecognised value
-warns and falls back to `medium`.
+- **Harness pi plugins.** A child's `-e` list is fixed at bootstrap, so a tool one of your
+  declared pi extensions (the pi-format `plugins:` entries) registers is not available inside a sub-agent.
+- **The parent's system prompt.** Children get a short sub-agent role note instead of the
+  orchestrator persona, whose "make several `Agent` calls in one message" advice a child cannot act
+  on.
+- **Provider credentials it does not use.** The environment is rebuilt for the provider the child
+  resolved to, so a Claude child under a Grok parent carries no stray `ANTHROPIC_API_KEY`.
 
-**Where the output lands.** A child's session file is extracted as
-`transcripts/<agent>-sub<seq>-<basename>.jsonl` (the sequence number is the call's, so children
-with the same session basename do not collide), and one JSON line per child — model, usage, stop
-reason, duration — as `transcripts/<agent>-subagents-usage.jsonl`. The runner folds that file into
-`metrics.json`: the totals include the children, and `per_model_usage` attributes them per model
-spec, with the parent's own iteration as one entry so the breakdown sums to the totals
-([`fullsend run` § metrics.json](../cli/run.md#per-model-usage)). The parent entry is recorded on every
-iteration that ran with the `Agent` tool enabled, dispatching or not, because iterations are
-summed. A record with no model spec is bucketed under `unknown`. The usage file is consumed as it is
-read (renamed to `usage.jsonl.read`), so a retry cannot count the same children twice. The run log
-carries a `[fullsend-agent] #<seq> <model> start "<description>"` / `done <ms> <stopReason>` pair
-per child.
+### Thinking level
 
-**Turning it off.** The tool is enabled when the agent's definition has no `tools:` frontmatter (the
-default set, as under Claude Code) or lists `Agent`/`Task`. An agent that lists tools without them
-gets no Agent tool and the older runtime note telling it to execute sub-agent definitions itself,
-in order.
+Children run at `--thinking medium`, not the parent's `high`: a full `pr-review` roster at `high`
+overran the 20-minute review budget. Override with
+`FULLSEND_PI_SUBAGENT_THINKING=<off|minimal|low|medium|high|xhigh|max>`; an unrecognised value warns
+and falls back to `medium`.
+
+### Where the output lands
+
+- **Transcripts** — `transcripts/<agent>-sub<seq>-<basename>.jsonl`, one per child. The sequence
+  number is the call's, so children sharing a session basename do not collide.
+- **Usage** — one JSON line per child (model, usage, stop reason, duration) in
+  `transcripts/<agent>-subagents-usage.jsonl`.
+- **`metrics.json`** — the totals include the children, and `per_model_usage` attributes them per
+  model spec, with the parent's own iteration as one entry so the breakdown sums to the totals
+  ([`fullsend run` § metrics.json](../cli/run.md#per-model-usage)). A record with no model spec is
+  bucketed under `unknown`.
+- **Run log** — `[fullsend-agent] #<seq> <model> start "<description>"` and
+  `[fullsend-agent] #<seq> done <ms>ms <stopReason>` per child.
+
+### Turning it off
+
+The tool is enabled when the agent's definition has no `tools:` frontmatter (the default set, as
+under Claude Code) or lists `Agent`/`Task`. An agent that lists tools without them gets no `Agent`
+tool, and the runtime note telling it to execute sub-agent definitions itself, in order.
+
+### Troubleshooting sub-agents
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `model "<spec>": ...; use opus, sonnet, haiku, or one of ...` | The `model` argument is not one this run can serve | Use one of the forms the message lists, or omit `model` to inherit the parent's |
+| `manifest changed since load; refusing to dispatch` | `fullsend-manifest.json` changed after the extension read it | Runner-owned config was rewritten inside the sandbox — treat it as tampering, not a transient |
+| `hook adapter changed since load; refusing to dispatch` | `fullsend-hooks.js` changed after bootstrap recorded its digest | The same: the child would otherwise have come up unhooked |
+| A child call fails after 15 minutes | The per-child deadline; the child is signalled and reaped | Narrow the child's prompt, or split the task across more children |
+| A child call reports `error` or `aborted` | The child's own run failed — model error, non-zero exit, or no `agent_end` | Read that child's transcript under `transcripts/<agent>-sub<seq>-*.jsonl` |
+
+How children are launched and kept honest — prompt delivery, the stop sequence, the per-dispatch
+digest re-checks — is in
+[Runtime Implementation § Pi sub-agents](../contributing/runtime-implementation.md#pi-sub-agents-the-agent-tool-contract).
 
 ## Not yet exercised
 
