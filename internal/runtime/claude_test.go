@@ -27,13 +27,15 @@ type bootstrapInput struct {
 	agentName   string
 	skillDirs   []string
 	pluginDirs  []string
+	extensions  []ExtensionInput
 }
 
-func (b bootstrapInput) SandboxName() string  { return b.sandboxName }
-func (b bootstrapInput) AgentPath() string    { return b.agentPath }
-func (b bootstrapInput) AgentName() string    { return b.agentName }
-func (b bootstrapInput) SkillDirs() []string  { return b.skillDirs }
-func (b bootstrapInput) PluginDirs() []string { return b.pluginDirs }
+func (b bootstrapInput) SandboxName() string          { return b.sandboxName }
+func (b bootstrapInput) AgentPath() string            { return b.agentPath }
+func (b bootstrapInput) AgentName() string            { return b.agentName }
+func (b bootstrapInput) SkillDirs() []string          { return b.skillDirs }
+func (b bootstrapInput) PluginDirs() []string         { return b.pluginDirs }
+func (b bootstrapInput) Extensions() []ExtensionInput { return b.extensions }
 
 func TestBootstrap_EmptyAgentPath(t *testing.T) {
 	err := ClaudeRuntime{}.Bootstrap(bootstrapInput{sandboxName: "test"})

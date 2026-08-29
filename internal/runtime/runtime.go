@@ -41,7 +41,11 @@ type RunParams struct {
 	RepoDir        string
 	FullsendDir    string
 	PluginDirs     []string
-	Debug          string
+	// Extensions are the harness's declared pi extensions (host paths), the
+	// same list Bootstrap received. PiRuntime.Run re-hashes them to render
+	// the sandbox preflight; other runtimes ignore them.
+	Extensions []ExtensionInput
+	Debug      string
 	// HooksSettingsPath, if set, is passed as --settings so Claude Code
 	// loads the runner's hook wiring regardless of its working directory.
 	HooksSettingsPath string

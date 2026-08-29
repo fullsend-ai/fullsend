@@ -136,7 +136,7 @@ func TestPiRuntimeBootstrap_WritesConfigAndManifest(t *testing.T) {
 	log, err := os.ReadFile(logPath)
 	require.NoError(t, err)
 	logStr := string(log)
-	assert.Contains(t, logStr, "mkdir -p '"+cfg+"/skills' '"+cfg+"/sessions' '"+cfg+"/hooks'")
+	assert.Contains(t, logStr, "mkdir -p '"+cfg+"/skills' '"+cfg+"/extensions' '"+cfg+"/sessions' '"+cfg+"/hooks'")
 	assert.Contains(t, logStr, "pi --version")
 	assert.Contains(t, logStr, cfg+"/hooks/tirith_check.py", "hook scripts are installed under the pi config dir")
 	// Skills go through the tar path; the archive lands under skills/.

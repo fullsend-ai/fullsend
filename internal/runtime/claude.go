@@ -106,6 +106,15 @@ func (r ClaudeRuntime) Bootstrap(input BootstrapInput) error {
 		}
 	}
 
+	// Mirror of the pi runtime's `plugins:` warning: extensions are pi
+	// code and have no Claude Code equivalent, so they are named and skipped
+	// rather than silently dropped.
+	for _, e := range input.Extensions() {
+		if e.Path != "" {
+			fmt.Fprintf(os.Stderr, "Extension %q: skipped — the Claude Code runtime has no pi extensions (see docs/runtimes.md)\n", e.SandboxName())
+		}
+	}
+
 	hooksInput, ok := input.(SandboxHooksBootstrap)
 	if !ok {
 		return nil

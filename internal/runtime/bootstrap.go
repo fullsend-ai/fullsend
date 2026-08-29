@@ -1,6 +1,9 @@
 package runtime
 
-import "fmt"
+import (
+	"fmt"
+	"path/filepath"
+)
 
 // BootstrapInput is the portable contract every runtime needs to provision
 // agent content into the sandbox. Implementations live outside this package
@@ -17,6 +20,28 @@ type BootstrapInput interface {
 	AgentName() string
 	SkillDirs() []string
 	PluginDirs() []string
+	// Extensions returns the harness's declared pi extensions (ADR 0094).
+	// Only the pi runtime loads them; other runtimes warn and skip.
+	Extensions() []ExtensionInput
+}
+
+// ExtensionInput is one declared pi extension: a host directory to upload,
+// the sandbox name it is uploaded as, and the CLI args and environment the
+// harness gave it. Name is optional — the path basename is used when empty.
+type ExtensionInput struct {
+	Name string
+	Path string
+	Args []string
+	Env  map[string]string
+}
+
+// SandboxName is the directory name the extension takes in the sandbox:
+// Name when set, else the path basename.
+func (e ExtensionInput) SandboxName() string {
+	if e.Name != "" {
+		return e.Name
+	}
+	return filepath.Base(e.Path)
 }
 
 // validateAgentNameMatch returns an error when requestedName and

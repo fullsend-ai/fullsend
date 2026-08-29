@@ -62,3 +62,31 @@ func TestNewHarnessBootstrap_WithForgeEgressEntry(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "gitlab.company.com:443", hooksBoot.SandboxHookConfig().ForgeEgressEntry())
 }
+
+func TestNewHarnessBootstrap_CarriesExtensions(t *testing.T) {
+	t.Parallel()
+	h := &harness.Harness{
+		Agent:   "/fs/agents/code.md",
+		Skills:  []harness.SkillEntry{{Source: "/fs/skills/a"}},
+		Plugins: []string{"/fs/plugins/p"},
+		Extensions: []harness.ExtensionSpec{
+			{Path: "/fs/extensions/go-diagnostics"},
+			{Path: "/fs/extensions/pi-fff", Args: []string{"--fff-mode", "override"}, Env: map[string]string{"FFF_MULTIGREP": "1"}},
+		},
+	}
+	boot := newHarnessBootstrap(h, "sb", "code", "")
+	assert.Equal(t, []string{"/fs/skills/a"}, boot.SkillDirs())
+	assert.Equal(t, []string{"/fs/plugins/p"}, boot.PluginDirs())
+	assert.Equal(t, []agentruntime.ExtensionInput{
+		{Name: "go-diagnostics", Path: "/fs/extensions/go-diagnostics"},
+		{Name: "pi-fff", Path: "/fs/extensions/pi-fff", Args: []string{"--fff-mode", "override"}, Env: map[string]string{"FFF_MULTIGREP": "1"}},
+	}, boot.Extensions())
+
+	// The security-enabled wrapper exposes the same list.
+	_, hooked := boot.(agentruntime.SandboxHooksBootstrap)
+	require.True(t, hooked, "security defaults on, so the hooks wrapper is returned")
+
+	// No extensions: nil, not an empty slice, so runtimes can len() it.
+	assert.Nil(t, newHarnessBootstrap(&harness.Harness{Agent: "a.md"}, "sb", "code", "").Extensions())
+	assert.Nil(t, extensionInputs(nil))
+}

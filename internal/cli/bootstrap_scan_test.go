@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -8,6 +9,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fullsend-ai/fullsend/internal/runtime"
+	"github.com/fullsend-ai/fullsend/internal/security"
 )
 
 // captureStderr redirects os.Stderr to a pipe, runs fn, and returns
@@ -35,13 +39,147 @@ type scanBootstrap struct {
 	agentPath   string
 	skillDirs   []string
 	pluginDirs  []string
+	extensions  []runtime.ExtensionInput
 }
 
-func (b scanBootstrap) SandboxName() string  { return b.sandboxName }
-func (b scanBootstrap) AgentPath() string    { return b.agentPath }
-func (b scanBootstrap) AgentName() string    { return "" }
-func (b scanBootstrap) SkillDirs() []string  { return b.skillDirs }
-func (b scanBootstrap) PluginDirs() []string { return b.pluginDirs }
+func (b scanBootstrap) SandboxName() string                  { return b.sandboxName }
+func (b scanBootstrap) AgentPath() string                    { return b.agentPath }
+func (b scanBootstrap) AgentName() string                    { return "" }
+func (b scanBootstrap) SkillDirs() []string                  { return b.skillDirs }
+func (b scanBootstrap) PluginDirs() []string                 { return b.pluginDirs }
+func (b scanBootstrap) Extensions() []runtime.ExtensionInput { return b.extensions }
+
+// writeScanExtension builds an extension directory with a planted
+// injection string in a nested source file, a binary file that must be
+// skipped, and a benign entry point.
+func writeScanExtension(t *testing.T, dir string, planted bool) string {
+	t.Helper()
+	ext := filepath.Join(dir, "my-ext")
+	require.NoError(t, os.MkdirAll(filepath.Join(ext, "node_modules", "dep"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(ext, "index.js"), []byte("export default function () {}"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(ext, "dep.bin"), append([]byte("\x00\x01\x02binary"), make([]byte, 64)...), 0o644))
+	content := "// helper\n"
+	if planted {
+		content = "// " + criticalInjectionSnippet + "\n"
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(ext, "node_modules", "dep", "helper.js"), []byte(content), 0o644))
+	return ext
+}
+
+func TestScanRuntimeContent_ExtensionCriticalFailClosed(t *testing.T) {
+	dir := t.TempDir()
+	agentPath := filepath.Join(dir, "agent.md")
+	require.NoError(t, os.WriteFile(agentPath, []byte("benign agent"), 0o644))
+	ext := writeScanExtension(t, dir, true)
+
+	err := scanRuntimeContent(scanBootstrap{
+		agentPath:  agentPath,
+		extensions: []runtime.ExtensionInput{{Name: "my-ext", Path: ext}},
+	}, true)
+	require.Error(t, err, "a planted injection anywhere in the tree (node_modules included) blocks")
+	assert.Contains(t, err.Error(), `extension "`+ext+`": blocked`)
+	assert.Contains(t, err.Error(), "node_modules/dep/helper.js")
+}
+
+func TestScanRuntimeContent_ExtensionCriticalFailOpen(t *testing.T) {
+	dir := t.TempDir()
+	agentPath := filepath.Join(dir, "agent.md")
+	require.NoError(t, os.WriteFile(agentPath, []byte("benign agent"), 0o644))
+	ext := writeScanExtension(t, dir, true)
+
+	output := captureStderr(t, func() {
+		err := scanRuntimeContent(scanBootstrap{
+			agentPath:  agentPath,
+			extensions: []runtime.ExtensionInput{{Name: "my-ext", Path: ext}},
+		}, false)
+		require.NoError(t, err)
+	})
+	assert.Contains(t, output, "WARNING: extension")
+	assert.Contains(t, output, "[critical]")
+}
+
+func TestScanRuntimeContent_ExtensionBenignAndBinarySkipped(t *testing.T) {
+	dir := t.TempDir()
+	agentPath := filepath.Join(dir, "agent.md")
+	require.NoError(t, os.WriteFile(agentPath, []byte("benign agent"), 0o644))
+	ext := writeScanExtension(t, dir, false)
+
+	output := captureStderr(t, func() {
+		err := scanRuntimeContent(scanBootstrap{
+			agentPath:  agentPath,
+			extensions: []runtime.ExtensionInput{{Name: "my-ext", Path: ext}, {Name: "", Path: ""}},
+		}, true)
+		require.NoError(t, err)
+	})
+	assert.NotContains(t, output, "WARNING")
+
+	// A missing directory is reported (fail closed) rather than skipped.
+	err := scanRuntimeContent(scanBootstrap{
+		agentPath:  agentPath,
+		extensions: []runtime.ExtensionInput{{Name: "gone", Path: filepath.Join(dir, "gone")}},
+	}, true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot scan extension")
+	output = captureStderr(t, func() {
+		assert.NoError(t, scanRuntimeContent(scanBootstrap{
+			agentPath:  agentPath,
+			extensions: []runtime.ExtensionInput{{Name: "gone", Path: filepath.Join(dir, "gone")}},
+		}, false))
+	})
+	assert.Contains(t, output, "WARNING: could not scan extension")
+}
+
+// TestScanRuntimeContent_ExtensionScanBounds covers the two bounds on the
+// extension scan: a file over the byte limit is noted and skipped (its
+// content, planted injection included, is never handed to the pipeline),
+// and a tree with more files than the scan can cover is refused in either
+// fail_mode.
+func TestScanRuntimeContent_ExtensionScanBounds(t *testing.T) {
+	dir := t.TempDir()
+	agentPath := filepath.Join(dir, "agent.md")
+	require.NoError(t, os.WriteFile(agentPath, []byte("benign agent"), 0o644))
+
+	ext := filepath.Join(dir, "big-ext")
+	require.NoError(t, os.MkdirAll(ext, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(ext, "index.js"), []byte("export default function () {}"), 0o644))
+	pad := int(maxExtensionScanFileBytes)
+	bundle := append([]byte("// "+criticalInjectionSnippet+"\n"), make([]byte, pad)...)
+	for i := range bundle[len(bundle)-pad:] {
+		bundle[len(bundle)-pad+i] = 'x'
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(ext, "bundle.min.js"), bundle, 0o644))
+
+	output := captureStderr(t, func() {
+		require.NoError(t, scanRuntimeContent(scanBootstrap{
+			agentPath:  agentPath,
+			extensions: []runtime.ExtensionInput{{Name: "big-ext", Path: ext}},
+		}, true), "an oversized file is skipped, not a critical finding")
+	})
+	assert.Contains(t, output, "bundle.min.js")
+	assert.Contains(t, output, "over the")
+	assert.Contains(t, output, "1 file(s) skipped by the")
+
+	// More files than the scan covers: refused with the same error in both
+	// fail modes, so volume cannot buy an unscanned extension. The bound is
+	// a variable so this can be checked without writing 20 001 files.
+	restore := maxExtensionScanFiles
+	maxExtensionScanFiles = 4
+	t.Cleanup(func() { maxExtensionScanFiles = restore })
+
+	many := filepath.Join(dir, "many-ext")
+	require.NoError(t, os.MkdirAll(many, 0o755))
+	for i := 0; i <= maxExtensionScanFiles; i++ {
+		require.NoError(t, os.WriteFile(filepath.Join(many, fmt.Sprintf("f%05d.js", i)), []byte("//"), 0o644))
+	}
+	for _, failClosed := range []bool{true, false} {
+		err := scanRuntimeContent(scanBootstrap{
+			agentPath:  agentPath,
+			extensions: []runtime.ExtensionInput{{Name: "many-ext", Path: many}},
+		}, failClosed)
+		require.Errorf(t, err, "failClosed=%v", failClosed)
+		assert.ErrorIs(t, err, errExtensionScanUnbounded)
+	}
+}
 
 func TestScanRuntimeContent_EmptyAgentPath(t *testing.T) {
 	err := scanRuntimeContent(scanBootstrap{}, true)
@@ -225,4 +363,64 @@ func TestScanPluginDir_NonCriticalFindingDetails(t *testing.T) {
 
 	assert.Contains(t, output, "injection finding(s)")
 	assert.Contains(t, output, "[medium]")
+}
+
+// TestScanExtensionDir_RefusesNonRegularEntries pins the shared tree rule.
+// The Run-time preflight (runtime.piExtensionTreeHash and its POSIX-sh
+// twin) fails such a tree closed, so walking past a symlink here would only
+// mean the extension is uploaded unscanned and dies at exit 96 later.
+func TestScanExtensionDir_RefusesNonRegularEntries(t *testing.T) {
+	t.Parallel()
+	pipeline := security.InputPipeline()
+
+	t.Run("symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "index.js"), []byte("//"), 0o644))
+		require.NoError(t, os.Symlink("/etc/passwd", filepath.Join(dir, "link.js")))
+		for _, failClosed := range []bool{true, false} {
+			err := scanExtensionDir(pipeline, dir, failClosed)
+			require.Error(t, err, "fail_mode must not downgrade an inadmissible entry")
+			assert.ErrorIs(t, err, errExtensionScanRefused)
+			assert.Contains(t, err.Error(), "link.js")
+		}
+	})
+
+	t.Run("unreproducible name", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(dir, `a\b.js`), []byte("//"), 0o644))
+		err := scanExtensionDir(pipeline, dir, false)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, errExtensionScanRefused)
+	})
+
+	t.Run("clean tree still scans", func(t *testing.T) {
+		dir := t.TempDir()
+		require.NoError(t, os.MkdirAll(filepath.Join(dir, "lib"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "index.js"), []byte("//"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "lib", "a.js"), []byte("//"), 0o644))
+		require.NoError(t, scanExtensionDir(pipeline, dir, true))
+	})
+}
+
+// TestScanExtensionDir_OversizedFilesCountTowardCap: a file skipped by the
+// byte limit is never handed to the pipeline, so unless it counts towards
+// maxExtensionScanFiles a tree made of oversized blobs is both unbounded
+// and entirely unscanned. Not parallel: it lowers the package's limits.
+func TestScanExtensionDir_OversizedFilesCountTowardCap(t *testing.T) {
+	origBytes, origFiles := maxExtensionScanFileBytes, maxExtensionScanFiles
+	t.Cleanup(func() { maxExtensionScanFileBytes, maxExtensionScanFiles = origBytes, origFiles })
+	maxExtensionScanFileBytes, maxExtensionScanFiles = 8, 3
+
+	dir := t.TempDir()
+	for i := 0; i < 4; i++ {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("blob%d.bin", i)),
+			[]byte("way over the tiny limit"), 0o644))
+	}
+	err := scanExtensionDir(security.InputPipeline(), dir, false)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errExtensionScanUnbounded)
+
+	// Three of them stay under the cap.
+	require.NoError(t, os.Remove(filepath.Join(dir, "blob3.bin")))
+	require.NoError(t, scanExtensionDir(security.InputPipeline(), dir, true))
 }

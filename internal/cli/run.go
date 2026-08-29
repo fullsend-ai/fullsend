@@ -1120,6 +1120,9 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 	if len(h.Plugins) > 0 {
 		printer.KeyValue("Plugins", strings.Join(h.Plugins, ", "))
 	}
+	if len(h.Extensions) > 0 {
+		printer.KeyValue("Extensions", strings.Join(harness.ExtensionPaths(h.Extensions), ", "))
+	}
 	if h.AgentInput != "" {
 		printer.KeyValue("Agent input", h.AgentInput)
 	}
@@ -2183,6 +2186,7 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			RepoDir:           remoteRepositoryDir,
 			FullsendDir:       absFullsendDir,
 			PluginDirs:        pluginDirs,
+			Extensions:        extensionInputs(h.Extensions),
 			Debug:             debug,
 			HooksSettingsPath: hooksSettings,
 			Timeout:           timeout,
