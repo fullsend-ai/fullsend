@@ -104,6 +104,12 @@ func TestGitHubSetupCmd_Flags(t *testing.T) {
 	inferenceWIFFlag := cmd.Flags().Lookup("inference-wif-provider")
 	require.NotNil(t, inferenceWIFFlag, "expected --inference-wif-provider flag")
 
+	for _, name := range []string{"openai-audience", "openai-identity-provider-id", "openai-service-account-id"} {
+		f := cmd.Flags().Lookup(name)
+		require.NotNil(t, f, "expected --%s flag", name)
+		assert.Equal(t, "", f.DefValue)
+	}
+
 	signoffFlag := cmd.Flags().Lookup("signoff")
 	require.NotNil(t, signoffFlag, "expected --signoff flag")
 	assert.Equal(t, "false", signoffFlag.DefValue)
@@ -1719,4 +1725,43 @@ func TestLoadExistingPerRepoConfig_BaseReadError(t *testing.T) {
 	_, err := loadExistingPerRepoConfig(context.Background(), client, "acme", "widget")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading existing .fullsend/config.base.yaml")
+}
+
+func TestGitHubSetupCmd_OpenAIFlagsAllOrNone(t *testing.T) {
+	t.Setenv("GH_TOKEN", "test-token")
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"github", "setup", "acme/widget",
+		"--mint-url", "https://mint-test-abc123.run.app",
+		"--inference-project", "my-project",
+		"--inference-wif-provider", "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		"--openai-audience", "fullsend://acme",
+		"--dry-run"})
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be set together (missing identity_provider_id, service_account_id)")
+
+	// One empty flag is not a request to clear the block.
+	cmd = newRootCmd()
+	cmd.SetArgs([]string{"github", "setup", "acme/widget",
+		"--mint-url", "https://mint-test-abc123.run.app",
+		"--inference-project", "my-project",
+		"--inference-wif-provider", "projects/123456789/locations/global/workloadIdentityPools/fullsend-pool/providers/github-oidc",
+		"--openai-audience", "",
+		"--dry-run"})
+	err = cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pass all three empty to remove the block")
+}
+
+func TestBuildPresetOverlay_OpenAI(t *testing.T) {
+	cfg := githubSetupConfig{
+		changedFlags:             map[string]bool{"openai-audience": true, "openai-identity-provider-id": true, "openai-service-account-id": true},
+		openaiAudience:           " fullsend://acme ",
+		openaiIdentityProviderID: "idp_1",
+		openaiServiceAccountID:   "sa_1",
+	}
+	o := buildPresetOverlay(cfg)
+	require.NotNil(t, o)
+	assert.Equal(t, config.OpenAIWIFConfig{Audience: "fullsend://acme", IdentityProviderID: "idp_1", ServiceAccountID: "sa_1"}, o.ConfigInferenceOpenAI())
+	assert.True(t, setupConfigFlagsChanged(cfg), "the openai flags turn a re-run into a config change")
 }

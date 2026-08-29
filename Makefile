@@ -214,6 +214,10 @@ e2e-test:
 # fullsend-sandbox:latest ships pi since v0.37.0; each pi scenario costs one
 # small haiku run on the pool repo's Vertex WIF. Override to skip them:
 #   BEHAVIOUR_CAPABILITIES= make behaviour-test
+# runtime-pi-openai (features/runtime/pi-openai.feature) is deliberately not
+# declared: it needs an OpenAI organization mapped to the pool repositories
+# (docs/guides/infrastructure/openai-workload-identity.md). Add it here once
+# that exists: BEHAVIOUR_CAPABILITIES=runtime-pi,runtime-pi-openai
 BEHAVIOUR_CAPABILITIES ?= runtime-pi
 
 behaviour-test:

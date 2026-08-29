@@ -155,6 +155,11 @@ for transcripts and output, rsync for repo) → delete
 (`openshell sandbox delete`). The `--keep` flag prevents self-deletion after the
 entry command (`true`) exits; fullsend explicitly deletes after extraction.
 
+> **Note (see #6691):** OpenShell 0.0.111 made an exited main process leave the
+> sandbox terminal rather than Ready, so the entry command recorded above is now
+> `--detach -- sleep infinity` instead of `-- true`. The rest of the sequence,
+> and the reason `--keep` is passed, are unchanged.
+
 ## Consequences
 
 - Fullsend depends only on the OpenShell CLI, `ssh`, `scp`, and `rsync` — no

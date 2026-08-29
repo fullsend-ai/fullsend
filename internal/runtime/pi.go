@@ -50,6 +50,13 @@ const piVertexExtensionPath = sandbox.SandboxPiExtensionsDir + "/anthropic-verte
 // built-in xai provider cannot shadow this one (#6571).
 const piXaiVertexExtensionPath = sandbox.SandboxPiExtensionsDir + "/xai-vertex"
 
+// OpenAI on pi: unlike the Vertex providers, OpenAI uses a runner-exchanged
+// short-lived access token (WIF or a static OPENAI_API_KEY) delivered as a
+// credential placeholder through the run-scoped OpenShell provider, not
+// Vertex ADC. The model ids are two-segment ("openai/gpt-5.6-luna") and pass
+// through to pi's built-in openai provider unchanged. The provider constant
+// is piOpenAIProvider in pi_run.go.
+
 func (PiRuntime) Name() string { return "pi" }
 
 // System returns the OTEL GenAI gen_ai.system value. Pi is multi-provider

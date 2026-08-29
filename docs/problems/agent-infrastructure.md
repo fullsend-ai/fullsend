@@ -119,7 +119,7 @@ Many fullsend scenarios skew toward **ephemeral, task-scoped** execution (triage
 ## Open questions
 
 - What is the right level of isolation per agent (process, container, microVM, separate cluster)?
-- How do we provide agents with “resources to do their work” (clone, tools, APIs) without over-privileging them or creating a single high-value target? (Credential access decided in [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md); tool access restrictions decided in [ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md); other resource access remains open.)
+- How do we provide agents with “resources to do their work” (clone, tools, APIs) without over-privileging them or creating a single high-value target? (Credential access decided in [ADR 0017](../ADRs/0017-credential-isolation-for-sandboxed-agents.md), with [ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md) as the first inference credential delivered entirely through a gateway provider; tool access restrictions decided in [ADR 0027](../ADRs/0027-allowed-and-disallowed-tools-for-agents.md); other resource access remains open.)
 - Do we need a dedicated “agent runner” image or environment with a known, auditable tool set?
 - ~~How do we preserve end-to-end traceability for event-driven agent dispatch in GitHub Actions?~~ Decided in [ADR 0041](../ADRs/0041-synchronous-workflow-call-event-dispatch.md) (synchronous `workflow_call` dispatch for the event path).
 - How do we compare 3rd party vs internal vs build-our-own on concrete criteria: cost, time to first agent, compliance, and alignment with our security and coordination model?

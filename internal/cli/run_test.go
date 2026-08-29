@@ -2282,14 +2282,20 @@ func TestStripOIDCEnv(t *testing.T) {
 	}, result)
 }
 
-// TestOIDCDenyKeys_Completeness verifies that all four OIDC credential vars
-// are present in oidcDenyKeys (#5832).
+// TestOIDCDenyKeys_Completeness verifies that all OIDC credential vars
+// are present in oidcDenyKeys (#5832, #6689).
 func TestOIDCDenyKeys_Completeness(t *testing.T) {
 	expected := []string{
 		"ACTIONS_ID_TOKEN_REQUEST_URL",
 		"ACTIONS_ID_TOKEN_REQUEST_TOKEN",
 		"FULLSEND_GCP_OIDC_URL",
 		"FULLSEND_GCP_OIDC_AUTH_FILE",
+		// OpenAI WIF configuration (#6689)
+		"FULLSEND_OPENAI_AUDIENCE",
+		"FULLSEND_OPENAI_IDENTITY_PROVIDER_ID",
+		"FULLSEND_OPENAI_SERVICE_ACCOUNT_ID",
+		// The static key of a local run must not be expandable under any name.
+		"OPENAI_API_KEY",
 	}
 	for _, key := range expected {
 		assert.True(t, oidcDenyKeys[key], "oidcDenyKeys must include %s", key)

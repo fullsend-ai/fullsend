@@ -81,6 +81,7 @@ type PerRepoConfigReader interface {
 	ConfigInferenceProject() string
 	ConfigInferenceRegion() string
 	ConfigInferenceWIFProvider() string
+	ConfigInferenceOpenAI() OpenAIWIFConfig
 }
 
 // --- Write superset interfaces ---
@@ -120,6 +121,7 @@ type PerRepoConfigWriter interface {
 	SetInferenceProject(string)
 	SetInferenceRegion(string)
 	SetInferenceWIFProvider(string)
+	SetInferenceOpenAI(OpenAIWIFConfig)
 }
 
 // --- Compile-time assertions ---
@@ -495,6 +497,28 @@ func (c *perRepoConfig) ConfigInferenceWIFProvider() string {
 	return ""
 }
 
+// ConfigInferenceOpenAI returns the OpenAI WIF identifiers. Each of the
+// three resolves independently through the layers, like the other
+// inference scalars, so an overlay can restate one without the others.
+func (c *perRepoConfig) ConfigInferenceOpenAI() OpenAIWIFConfig {
+	var out OpenAIWIFConfig
+	if c.parent != nil {
+		out = c.parent.ConfigInferenceOpenAI()
+	}
+	if c.Inference != nil && c.Inference.OpenAI != nil {
+		if v := c.Inference.OpenAI.Audience; v != "" {
+			out.Audience = v
+		}
+		if v := c.Inference.OpenAI.IdentityProviderID; v != "" {
+			out.IdentityProviderID = v
+		}
+		if v := c.Inference.OpenAI.ServiceAccountID; v != "" {
+			out.ServiceAccountID = v
+		}
+	}
+	return out
+}
+
 // --- perRepoConfig setter methods ---
 
 // SetKillSwitch sets the kill switch state. Stores a *bool so that
@@ -538,6 +562,18 @@ func (c *perRepoConfig) SetStatusNotifications(sn *StatusNotificationConfig) {
 // SetInferenceWIFProvider sets the WIF provider resource name.
 func (c *perRepoConfig) SetInferenceWIFProvider(wifProvider string) {
 	c.ensureInference().WIFProvider = wifProvider
+}
+
+// SetInferenceOpenAI sets the OpenAI WIF identifiers; a zero value
+// removes the block.
+func (c *perRepoConfig) SetInferenceOpenAI(ids OpenAIWIFConfig) {
+	inf := c.ensureInference()
+	if ids.IsZero() {
+		inf.OpenAI = nil
+		return
+	}
+	cp := ids
+	inf.OpenAI = &cp
 }
 
 // ensureInference lazily initializes the Inference struct.

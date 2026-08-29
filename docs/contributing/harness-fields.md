@@ -81,7 +81,7 @@ field type follows specific merge semantics. The same rules apply during
 | `api_servers`    | Concatenated (base + child)                          | Absent (nil) = inherit |
 | `env`            | Sub-maps (`runner`, `sandbox`) merged independently; forge/child keys win (ADR-0055) | Absent (nil) = inherit |
 | `security`       | Child replaces base entirely (if non-nil)            | Absent (nil) = inherit |
-| `overlays`       | Concatenated (base + child); first-match-wins at resolution (ADR-0088) | Absent (nil) = inherit |
+| `overlays`       | Concatenated (base + child); all matching entries merged at resolution with later precedence (ADR-0088) | Absent (nil) = inherit |
 
 ## `ForgeConfig` struct
 
@@ -119,8 +119,8 @@ Unmarshal → validateForge → ResolveForge(platform) → Validate
 
 `overlays:` is the successor to deprecated `forge:` blocks. Each overlay
 entry has a `when:` CEL expression and the same override fields as
-`ForgeConfig`. The first entry whose `when` evaluates to true is merged;
-remaining entries are skipped (first-match-wins).
+`ForgeConfig`. All entries whose `when` evaluates to true are merged
+in order, with later matches taking precedence over earlier matches.
 
 ### Resolution pipeline
 

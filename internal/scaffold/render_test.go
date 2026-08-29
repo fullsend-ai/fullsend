@@ -16,7 +16,7 @@ func TestRenderThinCallerNotVendored(t *testing.T) {
 	})
 	require.NoError(t, err)
 	out := string(rendered)
-	assert.Contains(t, out, "uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@v0")
+	assert.Contains(t, out, "uses: fullsend-ai/fullsend/.github/workflows/reusable-triage.yml@main")
 	assertFreeOfRenderPlaceholders(t, out)
 	assert.NotContains(t, out, "distribution_mode")
 	assert.NotContains(t, out, "fullsend_ai_repo:")
@@ -238,6 +238,6 @@ func TestRenderFallbackToDefaultRef(t *testing.T) {
 	rendered, err := RenderTemplate(".github/workflows/triage.yml", raw, RenderOptions{})
 	require.NoError(t, err)
 	out := string(rendered)
-	assert.Contains(t, out, "@v0")
+	assert.Contains(t, out, "@main")
 	assert.NotContains(t, out, "fullsend_ai_ref:")
 }

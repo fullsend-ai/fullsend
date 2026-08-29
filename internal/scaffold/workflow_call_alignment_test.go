@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -1081,6 +1082,101 @@ func TestRoleCheckCaseBranches(t *testing.T) {
 				"triage must not be remapped")
 			assert.NotRegexp(t, `review\).*STAGE_ROLE=`, s,
 				"review must not be remapped")
+		})
+	}
+}
+
+// TestOpenAIVariableForwarding validates that the OpenAI WIF identifiers
+// (#6689, ADR 0092) reach the agent step of every stage the way the OTEL
+// variables do: repository/organization variables are visible inside a
+// reusable workflow without forwarding, but only an explicit `env:` entry
+// on the `fullsend run` step puts them in the runner's environment.
+func TestOpenAIVariableForwarding(t *testing.T) {
+	openAIVars := []string{
+		"FULLSEND_OPENAI_AUDIENCE",
+		"FULLSEND_OPENAI_IDENTITY_PROVIDER_ID",
+		"FULLSEND_OPENAI_SERVICE_ACCOUNT_ID",
+	}
+	forwardLine := func(v string) string {
+		return v + ": ${{ vars." + v + " }}"
+	}
+
+	stages := []string{"triage", "code", "review", "fix", "retro", "prioritize"}
+	for _, stage := range stages {
+		t.Run("reusable-"+stage+".yml", func(t *testing.T) {
+			content := string(loadRepoFile(fmt.Sprintf(".github/workflows/reusable-%s.yml", stage))(t))
+			for _, v := range openAIVars {
+				assert.Contains(t, content, forwardLine(v),
+					"reusable-%s.yml must inject %s into agent env", stage, v)
+			}
+		})
+	}
+
+	t.Run("reusable-dispatch.yml", func(t *testing.T) {
+		content := string(loadRepoFile(".github/workflows/reusable-dispatch.yml")(t))
+		stepMarkers := []string{
+			"Run triage agent",
+			"Run code agent",
+			"Run review agent",
+			"Run fix agent",
+			"Run retro agent",
+			"Run prioritize agent",
+			"Run harness agent",
+		}
+		for _, marker := range stepMarkers {
+			t.Run(marker, func(t *testing.T) {
+				section := extractStepSection(t, content, marker)
+				for _, v := range openAIVars {
+					assert.Contains(t, section, forwardLine(v),
+						"%q step must inject %s", marker, v)
+				}
+			})
+		}
+	})
+}
+
+// TestLayeredDirsMatchWorkspacePreparation pins the LAYERED_DIRS list in
+// every workspace-preparation step to scaffold.layeredDirs. The scaffold
+// skips these directories at install time on the promise that workspace
+// preparation materialises them from upstream at run time; providers/ was
+// on the skip list without being on the copy list, which left per-repo
+// installs with only a .gitkeep and no way to declare a provider by name
+// (#6689). profiles/ stays off the copy list on purpose: the run imports
+// every profile in .fullsend/profiles, and the scaffold's copies would
+// replace the canonical profiles the fleet resolves from fullsend-ai/agents
+// (fullsend-github-ro, fullsend-vertex-ai, ...). A profile a runner needs
+// for its own provider type — fullsend-openai — is imported from the
+// embedded scaffold by `fullsend run` instead.
+func TestLayeredDirsMatchWorkspacePreparation(t *testing.T) {
+	notLayered := map[string]bool{"profiles": true}
+	want := make([]string, 0, len(layeredDirs))
+	for _, d := range layeredDirs {
+		if d := strings.TrimSuffix(d, "/"); !notLayered[d] {
+			want = append(want, d)
+		}
+	}
+	sort.Strings(want)
+
+	files := []struct {
+		name    string
+		content func(t *testing.T) []byte
+	}{
+		{"actions/prepare-workspace/action.yml", loadRepoFile(".github/actions/prepare-workspace/action.yml")},
+	}
+	for _, stage := range []string{"triage", "code", "review", "fix", "retro", "prioritize", "dispatch"} {
+		files = append(files, struct {
+			name    string
+			content func(t *testing.T) []byte
+		}{"reusable-" + stage + ".yml", loadRepoFile(".github/workflows/reusable-" + stage + ".yml")})
+	}
+	re := regexp.MustCompile(`LAYERED_DIRS="([^"]*)"`)
+	for _, f := range files {
+		t.Run(f.name, func(t *testing.T) {
+			m := re.FindStringSubmatch(string(f.content(t)))
+			require.NotNil(t, m, "%s must define LAYERED_DIRS", f.name)
+			got := strings.Fields(m[1])
+			sort.Strings(got)
+			assert.Equal(t, want, got, "%s LAYERED_DIRS must match scaffold.layeredDirs", f.name)
 		})
 	}
 }

@@ -2474,3 +2474,14 @@ overlays:
 	require.NoError(t, err)
 	assert.Equal(t, "scripts/gh.sh", h.PreScript)
 }
+
+func TestParseProviderDef(t *testing.T) {
+	def, err := ParseProviderDef([]byte("name: openai\ntype: fullsend-openai\ncredentials:\n  OPENAI_API_KEY: \"\"\n"))
+	require.NoError(t, err)
+	assert.Equal(t, "openai", def.Name)
+	assert.Equal(t, "fullsend-openai", def.Type)
+	_, err = ParseProviderDef([]byte("type: x\n"))
+	require.Error(t, err)
+	_, err = ParseProviderDef([]byte("name: bad name\ntype: x\n"))
+	require.Error(t, err)
+}

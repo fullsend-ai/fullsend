@@ -1,0 +1,7 @@
+---
+name: openai
+type: fullsend-openai
+# The credential value is supplied by the runner in-process (WIF exchange
+# or static OPENAI_API_KEY) and must never be a literal or ${VAR} here.
+credentials:
+  OPENAI_API_KEY: ""

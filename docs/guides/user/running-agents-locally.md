@@ -53,7 +53,7 @@ fullsend is pinned to — the source of truth is
 in the fullsend repo at your release tag (also printed on Fullsend workflow runs).
 
 ```bash
-export OPENSHELL_VERSION=0.0.83  # check the pin file for the current version
+export OPENSHELL_VERSION=0.0.116  # check the pin file for the current version
 curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/v${OPENSHELL_VERSION}/install.sh | OPENSHELL_VERSION=v${OPENSHELL_VERSION} sh
 openshell --version
 ```
@@ -96,6 +96,39 @@ GOOGLE_APPLICATION_CREDENTIALS=fullsend-local-credentials.json
 instead of the native binary, keep the key file and env file in your
 working directory — the container mounts it as `/work` and resolves
 `GOOGLE_APPLICATION_CREDENTIALS` relative to it.
+
+## Get an OpenAI key (GPT on pi only)
+
+GPT models run on the [pi runtime](../../runtimes/pi.md) with the credential kept out of the
+sandbox by an OpenShell provider. In CI the runner obtains it from OpenAI with the job's GitHub
+identity ([OpenAI Workload Identity](../infrastructure/openai-workload-identity.md)); on your
+machine there is no such identity, so use an API key from the same OpenAI project. Put it in an
+environment file, like the GCP settings above — never in the harness YAML and never under
+`env.sandbox` (the runner refuses to export it into the sandbox):
+
+```bash
+# fullsend-openai.env
+OPENAI_API_KEY=sk-...
+```
+
+Then pick a GPT model when you run:
+
+```bash
+fullsend run triage --runtime pi --model openai/gpt-5.6-luna \
+  --env-file fullsend-openai.env --env-file fullsend-triage.env ...
+```
+
+A committed `inference.openai` block in the repository's `config.yaml` is ignored here while
+`OPENAI_API_KEY` is set (there is no GitHub OIDC endpoint to exchange with), so the same checkout
+works in CI and on your machine.
+
+The agent's harness must declare the provider (`providers: [openai]`; both the definition and the
+`fullsend-openai` profile are built into fullsend, nothing needs to be on disk) and a sandbox policy
+(`policy: policies/base.yaml` — the fleet's agents already have it; a custom harness needs it because
+the sandbox image's default policy leaves an uninspected route to `api.openai.com`, which the gateway
+refuses to carry the credential over). The sandbox only ever sees a placeholder; the provider holding
+your key belongs to this run, expires an hour after the run at the latest and is deleted when the run
+ends.
 
 ## Get a GitHub token
 

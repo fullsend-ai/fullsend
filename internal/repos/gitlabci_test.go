@@ -49,12 +49,16 @@ build:
 	assert.Contains(t, s, "- test")
 	assert.Contains(t, s, "make build")
 
-	// Fullsend entries added.
+	// Fullsend include added.
 	assert.Contains(t, s, "fullsend-pipeline.yml")
-	assert.Contains(t, s, "workflow:")
-	assert.Contains(t, s, "auto_cancel:")
-	assert.Contains(t, s, "on_new_commit: none")
-	assert.Contains(t, s, `$CI_PIPELINE_SOURCE == "merge_request_event"`)
+
+	// Fullsend stages appended to existing stages array.
+	assert.Contains(t, s, "- dispatch")
+	assert.Contains(t, s, "- poll")
+	assert.Contains(t, s, "- agent")
+
+	// No workflow block should be created when none existed.
+	assert.NotContains(t, s, "workflow:")
 }
 
 func TestMergeGitLabCI_ExistingWithWorkflowRules(t *testing.T) {
@@ -380,6 +384,286 @@ include:
 	assert.Contains(t, s, "fullsend-pipeline.yml")
 }
 
+func TestMergeGitLabCI_StagesAddedToExistingArray(t *testing.T) {
+	existing := []byte(`stages:
+  - build
+  - test
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	s := string(result)
+
+	// Original stages preserved.
+	assert.Contains(t, s, "- build")
+	assert.Contains(t, s, "- test")
+
+	// Fullsend stages appended.
+	assert.Contains(t, s, "- dispatch")
+	assert.Contains(t, s, "- poll")
+	assert.Contains(t, s, "- agent")
+}
+
+func TestMergeGitLabCI_StagesDeduplicatesExisting(t *testing.T) {
+	existing := []byte(`stages:
+  - build
+  - dispatch
+  - test
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	s := string(result)
+
+	// dispatch already present — should not be duplicated.
+	assert.Equal(t, 1, strings.Count(s, "- dispatch"), "dispatch stage should not be duplicated")
+
+	// Other fullsend stages added.
+	assert.Contains(t, s, "- poll")
+	assert.Contains(t, s, "- agent")
+}
+
+func TestMergeGitLabCI_NoWorkflowBlockCreatedWhenAbsent(t *testing.T) {
+	existing := []byte(`stages:
+  - build
+job1:
+  script: echo hi
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	s := string(result)
+
+	// Fullsend include added.
+	assert.Contains(t, s, "fullsend-pipeline.yml")
+
+	// No workflow block should be created — fullsend's jobs
+	// self-filter via their own rules:.
+	assert.NotContains(t, s, "workflow:")
+}
+
+func TestMergeGitLabCI_NoStagesKeyLeftAlone(t *testing.T) {
+	// When no stages: key exists, fullsend's stages come from the
+	// included pipeline file and do not need to be in the root.
+	existing := []byte(`job1:
+  script: echo hi
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	s := string(result)
+
+	// No stages: key added.
+	assert.NotContains(t, s, "stages:")
+}
+
+func TestMergeGitLabCI_StagesIdempotent(t *testing.T) {
+	existing := []byte(`stages:
+  - build
+  - dispatch
+  - poll
+  - agent
+`)
+	result, err := MergeGitLabCI(existing)
+	require.NoError(t, err)
+	s := string(result)
+
+	// All fullsend stages already present — no duplicates.
+	assert.Equal(t, 1, strings.Count(s, "- dispatch"))
+	assert.Equal(t, 1, strings.Count(s, "- poll"))
+	assert.Equal(t, 1, strings.Count(s, "- agent"))
+}
+
+func TestUnmergeGitLabCI_RemovesFullsendStages(t *testing.T) {
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+stages:
+  - build
+  - test
+  - dispatch
+  - poll
+  - agent
+`)
+	result, err := UnmergeGitLabCI(existing)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	s := string(result)
+
+	// Fullsend stages removed.
+	assert.NotContains(t, s, "- dispatch")
+	assert.NotContains(t, s, "- poll")
+	assert.NotContains(t, s, "- agent")
+
+	// User stages preserved.
+	assert.Contains(t, s, "- build")
+	assert.Contains(t, s, "- test")
+}
+
+func TestUnmergeGitLabCI_RemovesStagesKeyWhenEmpty(t *testing.T) {
+	existing := []byte(`---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+stages:
+  - dispatch
+  - poll
+  - agent
+`)
+	result, err := UnmergeGitLabCI(existing)
+	require.NoError(t, err)
+
+	// Everything was fullsend-only, file should be nil.
+	assert.Nil(t, result, "file should be nil when only fullsend content remains")
+}
+
+// --- HasFullsendEntries tests ---
+
+func TestHasFullsendEntries_AllPresent(t *testing.T) {
+	yaml := `---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+stages:
+  - build
+  - dispatch
+  - poll
+  - agent
+
+workflow:
+  auto_cancel:
+    on_new_commit: none
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`
+	assert.True(t, HasFullsendEntries([]byte(yaml)))
+}
+
+func TestHasFullsendEntries_MissingInclude(t *testing.T) {
+	yaml := `---
+stages:
+  - build
+  - dispatch
+  - poll
+  - agent
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $CI_COMMIT_REF_PROTECTED == "true"
+    - if: $CI_PIPELINE_SOURCE == "api" && $CI_COMMIT_REF_PROTECTED == "true" && $STAGE
+`
+	assert.False(t, HasFullsendEntries([]byte(yaml)))
+}
+
+func TestHasFullsendEntries_MissingStagesWhenKeyExists(t *testing.T) {
+	yaml := `---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+stages:
+  - build
+  - test
+`
+	assert.False(t, HasFullsendEntries([]byte(yaml)))
+}
+
+func TestHasFullsendEntries_NoStagesKey(t *testing.T) {
+	// When no stages: key exists, the included pipeline provides them.
+	// This is not drift.
+	yaml := `---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+`
+	assert.True(t, HasFullsendEntries([]byte(yaml)))
+}
+
+func TestHasFullsendEntries_MissingWorkflowRules(t *testing.T) {
+	yaml := `---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+`
+	assert.False(t, HasFullsendEntries([]byte(yaml)))
+}
+
+func TestHasFullsendEntries_NoWorkflowBlock(t *testing.T) {
+	// When no workflow: block exists, fullsend's jobs self-filter.
+	// This is not drift.
+	yaml := `---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+stages:
+  - dispatch
+  - poll
+  - agent
+`
+	assert.True(t, HasFullsendEntries([]byte(yaml)))
+}
+
+func TestHasFullsendEntries_EmptyFile(t *testing.T) {
+	assert.False(t, HasFullsendEntries([]byte("")))
+	assert.False(t, HasFullsendEntries(nil))
+}
+
+func TestHasFullsendEntries_InvalidYAML(t *testing.T) {
+	assert.False(t, HasFullsendEntries([]byte(":\n  invalid: [yaml\n")))
+}
+
+func TestHasFullsendEntries_WorkflowWithoutRules(t *testing.T) {
+	// workflow: exists but has no rules: key — MergeGitLabCI would
+	// add rules, so this is drift.
+	yaml := `---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+workflow:
+  name: "my project"
+`
+	assert.False(t, HasFullsendEntries([]byte(yaml)))
+}
+
+func TestHasFullsendEntries_PartialStagesMissing(t *testing.T) {
+	yaml := `---
+include:
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+stages:
+  - build
+  - dispatch
+  - poll
+`
+	// Missing "agent" stage.
+	assert.False(t, HasFullsendEntries([]byte(yaml)))
+}
+
+func TestHasFullsendEntries_IncludeAsScalar(t *testing.T) {
+	// Include as a plain scalar matching the fullsend path.
+	yaml := `---
+include: '.gitlab/ci/fullsend-pipeline.yml'
+`
+	assert.True(t, HasFullsendEntries([]byte(yaml)))
+}
+
+func TestHasFullsendEntries_IncludeWithExtraEntries(t *testing.T) {
+	// Fullsend include is present alongside user includes.
+	yaml := `---
+include:
+  - local: '.gitlab/ci/existing.yml'
+  - local: '.gitlab/ci/fullsend-pipeline.yml'
+
+stages:
+  - build
+  - dispatch
+  - poll
+  - agent
+`
+	assert.True(t, HasFullsendEntries([]byte(yaml)))
+}
+
 func TestMergeGitLabCI_PreservesComments(t *testing.T) {
 	existing := []byte(`---
 # My project CI configuration
@@ -400,4 +684,9 @@ build:
 	// Comments should be preserved by yaml.Node API.
 	assert.Contains(t, s, "# My project CI configuration")
 	assert.Contains(t, s, "# Build job")
+
+	// Fullsend stages added to existing array.
+	assert.Contains(t, s, "- dispatch")
+	assert.Contains(t, s, "- poll")
+	assert.Contains(t, s, "- agent")
 }

@@ -36,14 +36,13 @@ and update the others as needed.
 | `mergeHostFiles` | `internal/harness/compose.go` | Deduplicates host files by dest path (base + child) |
 | `mergeForgeBlocks` | `internal/harness/compose.go` | Merges `forge:` maps key-by-key across base and child |
 
-> **Note — overlay precedence exception.** When `overlays` are concatenated
-> during base composition, base entries are placed first. Because overlay
-> resolution uses first-match-wins semantics (`ResolveOverlays` stops at the
-> first matching `when` expression), base overlay entries take precedence over
-> child overlay entries with the same condition. This is an intentional
-> exception to the child-overrides-base convention used by scalar and map
-> merges, and matches the concatenation behavior for `plugins`, `providers`,
-> and `api_servers` lists.
+> **Note — overlay precedence during base composition.** When `overlays` are
+> concatenated during base composition, base entries are placed first and
+> child entries are appended. Because overlay resolution merges **all**
+> matching entries in order (later matches take precedence),
+> child overlay entries override base overlay entries with the same
+> condition. This follows the child-overrides-base convention used by
+> scalar and map merges.
 
 ### Validation and resolution side
 
@@ -52,7 +51,7 @@ and update the others as needed.
 | `validateForge` | `internal/harness/forge.go` | Validates `forge:` block keys and `ForgeConfig` field values |
 | `validateOverlays` | `internal/harness/forge.go` | Validates `overlays:` entries — CEL `when` expressions and `ForgeConfig` field values; enforces mutual exclusion with `forge:` |
 | `ResolveForge` | `internal/harness/forge.go` | Merges the selected forge platform's config into the harness and nils the forge map |
-| `ResolveOverlays` | `internal/harness/forge.go` | Evaluates overlay `when` expressions against event/runtime/config CEL environment; merges the first matching entry (first-match-wins) and nils the overlays list. When event is nil (CLI flows without event context), an empty map is substituted so overlays conditioned on `runtime.forge` or `config` can still match. Use `has(event.source)` to guard event field access in `when` expressions. |
+| `ResolveOverlays` | `internal/harness/forge.go` | Evaluates overlay `when` expressions against event/runtime/config CEL environment; merges all matching entries in order (later matches take precedence) and nils the overlays list. When event is nil (CLI flows without event context), an empty map is substituted so overlays conditioned on `runtime.forge` or `config` can still match. Use `has(event.source)` to guard event field access in `when` expressions. |
 
 ### How they correspond
 

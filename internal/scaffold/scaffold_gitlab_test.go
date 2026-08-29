@@ -177,6 +177,9 @@ func TestGitLabDispatchContent(t *testing.T) {
 	assert.Contains(t, s, "CEL:")
 	assert.Contains(t, s, "entity.kind")
 	assert.Contains(t, s, "transition.kind")
+	// [skip ci] / [ci skip] in MR title suppresses dispatch on merged-results pipelines
+	assert.Contains(t, s, `CI_MERGE_REQUEST_TITLE =~ /\[(skip ci|ci skip)\]/i`)
+	assert.Contains(t, s, "when: never")
 	// Child pipeline includes the generic agent template
 	assert.Contains(t, s, "fullsend-agent.yml")
 	assert.NotContains(t, s, "fullsend-${STAGE}.yml")
@@ -303,6 +306,9 @@ func TestGitLabAgentTemplateContent(t *testing.T) {
 	assert.Contains(t, s, `export GOCACHE="${RUNNER_TEMP:-/tmp}/go-cache"`)
 	// "latest" resolution via GitHub API
 	assert.Contains(t, s, "releases/latest")
+	// tar extraction uses --no-same-owner for non-root containers (#6720)
+	assert.Contains(t, s, "tar --no-same-owner")
+	assert.NotContains(t, s, "tar xzf /tmp/fullsend.tar.gz")
 }
 
 func TestGitLabAgentTemplateFixReviewBodyPreFetch(t *testing.T) {
@@ -473,6 +479,9 @@ func TestGitLabPollContent(t *testing.T) {
 	// non-root runners where /root/go is not writable (#6477).
 	assert.Contains(t, s, `export GOPATH="${RUNNER_TEMP:-/tmp}/go"`)
 	assert.Contains(t, s, `export GOCACHE="${RUNNER_TEMP:-/tmp}/go-cache"`)
+	// tar extraction uses --no-same-owner for non-root containers (#6720)
+	assert.Contains(t, s, "tar --no-same-owner")
+	assert.NotContains(t, s, "tar xzf /tmp/fullsend.tar.gz")
 }
 
 func TestGitLabRootPipelineContent(t *testing.T) {

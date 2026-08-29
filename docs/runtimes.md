@@ -7,7 +7,7 @@ sandbox, the credentials, and the verdict.
 | Runtime | Use it for | Status |
 |---|---|---|
 | **[`claude`](runtimes/claude.md)** | Production agent runs (Claude Code) | Default |
-| **[`pi`](runtimes/pi.md)** | Second runtime, opt-in per org/repo — Claude, Grok and Gemini | Supported for `triage`, `prioritize`, `code`, `fix` |
+| **[`pi`](runtimes/pi.md)** | Second runtime, opt-in per repo — Claude, Grok and Gemini on Vertex; GPT via OpenAI WIF (wired, not yet exercised live) | Supported for `triage`, `prioritize`, `code`, `fix` |
 | `dummy` | Behaviour tests — scripted ops, no inference | Internal |
 | `opencode` | Not yet functional | Stub |
 
@@ -49,7 +49,7 @@ sequenceDiagram
 
 | | Claude Code | pi |
 |---|---|---|
-| Models | Anthropic on Vertex | Claude, **Grok** and **Gemini** on Vertex |
+| Models | Anthropic on Vertex | Claude, **Grok** and **Gemini** on Vertex; **GPT** via OpenAI WIF (opt-in, [not yet exercised live](runtimes/pi.md#models-and-providers)) |
 | Sub-agents | Native (`Agent` tool) | Not wired — agents execute sub-agent definitions inline ([#6527](https://github.com/fullsend-ai/fullsend/issues/6527)) |
 | Fallback model chain | `FULLSEND_FALLBACK_MODELS`, tried in order | Ignored with a warning |
 | Roles | All | `review`/`retro` stay on Claude Code — they rely on sub-agent rosters |

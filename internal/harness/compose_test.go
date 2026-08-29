@@ -8329,10 +8329,10 @@ base: `+baseURL+`
 func TestLoadWithBase_OverlayConcatBothHaveOverlays(t *testing.T) {
 	dir := t.TempDir()
 
-	// With first-match-wins, cross-concern scenarios need combined entries.
+	// With merge-all-matching, all matching overlays are merged in order.
 	// Base overlays come first in the concatenated list; child appended after.
-	// The first matching entry wins — a child entry with a more-specific when
-	// shadows base entries.
+	// Both matching entries are merged — child entries override base entries
+	// for the same fields, following the child-overrides-base convention.
 	baseContent := `
 agent: agents/test.md
 role: fix
@@ -8357,10 +8357,10 @@ overlays:
 		Event:         map[string]any{"source": map[string]any{"system": "github"}},
 	})
 	require.NoError(t, err)
-	// Base overlay is first in concat order and matches → first-match-wins
-	assert.Equal(t, "scripts/base-gh.sh", h.PreScript)
-	// Child overlay not reached because base entry matched first
-	assert.Empty(t, h.PostScript)
+	// Both base and child overlays match; child comes later and overrides
+	assert.Equal(t, "scripts/child-gh.sh", h.PreScript)
+	// Child overlay's post_script is also applied
+	assert.Equal(t, "scripts/child-post.sh", h.PostScript)
 }
 
 func TestLoadWithBase_OverlayConcatOnlyBaseHasOverlays(t *testing.T) {

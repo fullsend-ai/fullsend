@@ -14,7 +14,9 @@ import (
 	gaci "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/ci/githubactions"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/env"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/install"
+	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm"
 	scmgh "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/github"
+	scmgl "github.com/fullsend-ai/fullsend/pkg/behaviourtest/drivers/scm/gitlab"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/suite"
 	"github.com/fullsend-ai/fullsend/pkg/behaviourtest/world"
 	"github.com/fullsend-ai/fullsend/pkg/e2etest"
@@ -79,9 +81,23 @@ func TestBehaviourSuite(t *testing.T) {
 		t.Logf("WARNING: GODOG_CONCURRENCY=%d exceeds driver capacity %d; excess workers will block in AllocateRepo", concurrency, driver.Capacity())
 	}
 
+	var scmDriver scm.Driver
+	switch cfg.SCM {
+	case "github":
+		scmDriver = scmgh.New(client)
+	case "gitlab":
+		// TODO: client is a GitHub forge.Client (from e2etest.NewLiveClient).
+		// When BEHAVIOUR_SCM=gitlab is used in CI, this must be replaced with
+		// a GitLab-backed forge.Client. Currently latent: no CI job sets
+		// BEHAVIOUR_SCM=gitlab and @skip:gitlab tag removal is still pending.
+		scmDriver = scmgl.New(client)
+	default:
+		t.Fatalf("unsupported BEHAVIOUR_SCM %q", cfg.SCM)
+	}
+
 	template := &world.World{
 		Config:       cfg,
-		SCM:          scmgh.New(client),
+		SCM:          scmDriver,
 		CI:           gaci.New(client, token),
 		Driver:       driver,
 		Org:          org,

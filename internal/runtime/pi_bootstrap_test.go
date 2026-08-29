@@ -37,7 +37,7 @@ if [ "$2" = "exec" ]; then
   case "$last" in
     "pi --version") echo "0.84.2"; exit 0 ;;
     cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + storeDir + `'/"$f"; exit $? ;;
-    *"pi --print --mode json"*) cat '` + streamFixture + `'; exit 0 ;;
+    *"--print --mode json"*) cat '` + streamFixture + `'; exit 0 ;;
   esac
   exit 0
 fi

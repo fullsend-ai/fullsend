@@ -47,7 +47,7 @@ full distribution model.
 ## Layered installs: pin upstream ref
 
 In layered mode (default), thin callers reference upstream reusable workflows at
-`fullsend-ai/fullsend@v0`. To test a specific upstream ref without vendoring,
+`fullsend-ai/fullsend@main`. To test a specific upstream ref without vendoring,
 change the `uses:` ref and matching `with:` inputs in the thin caller workflows.
 
 **Note**: for forks, change the `fullsend-ai/fullsend` portion to point to your fork.

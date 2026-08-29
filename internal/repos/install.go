@@ -201,16 +201,25 @@ func Install(ctx context.Context, cfg InstallConfig,
 	// into the existing .gitlab-ci.yml instead of overwriting it. The
 	// static scaffold skips .gitlab-ci.yml; we generate it dynamically
 	// by reading the existing file and merging fullsend entries.
+	//
+	// When the existing file already contains all fullsend entries,
+	// skip the write to avoid unnecessary YAML formatting churn.
 	if cfg.Forge == ForgeGitLab {
-		mergedRoot, mergeErr := mergeGitLabRootCI(ctx, client, cfg.Owner, cfg.Repo)
-		if mergeErr != nil {
-			return result, fmt.Errorf("merging .gitlab-ci.yml: %w", mergeErr)
+		existing, err := client.GetFileContent(ctx, cfg.Owner, cfg.Repo, ".gitlab-ci.yml")
+		if err != nil && !forge.IsNotFound(err) {
+			return result, fmt.Errorf("reading existing .gitlab-ci.yml: %w", err)
 		}
-		files = append(files, forge.TreeFile{
-			Path:    ".gitlab-ci.yml",
-			Content: mergedRoot,
-			Mode:    "100644",
-		})
+		if !HasFullsendEntries(existing) {
+			mergedRoot, mergeErr := MergeGitLabCI(existing)
+			if mergeErr != nil {
+				return result, fmt.Errorf("merging .gitlab-ci.yml: %w", mergeErr)
+			}
+			files = append(files, forge.TreeFile{
+				Path:    ".gitlab-ci.yml",
+				Content: mergedRoot,
+				Mode:    "100644",
+			})
+		}
 	}
 
 	// Step 5: Write repository variables. Variables and secrets are

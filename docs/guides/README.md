@@ -17,6 +17,7 @@ Guides for organization owners and repository administrators who manage fullsend
 
 - [Operations](getting-started/operations.md) — Enrollment, configuration updates, status checks, uninstall, and standalone commands
 - [Advanced setup](infrastructure/advanced-setup.md) — Alternative installation paths, setup flags, custom app sets, and manual WIF configuration
+- [OpenAI Workload Identity](infrastructure/openai-workload-identity.md) — Run GPT models on the pi runtime without a stored OpenAI key: console setup, repository variables, local runs, troubleshooting
 
 ## Infrastructure
 

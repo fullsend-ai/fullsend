@@ -674,9 +674,10 @@ func mergeBaseIntoChild(base, child *Harness) {
 	}
 
 	// Overlays: concatenated (base first, child appended) — same as plugins,
-	// providers, api_servers. Declaration order matters: ResolveOverlays uses
-	// first-match-wins semantics, so base entries (placed first) take
-	// precedence over child entries with the same when condition.
+	// providers, api_servers. Declaration order matters: ResolveOverlays
+	// merges all matching entries in order (later matches take precedence),
+	// so child entries (appended last) override base entries with the same
+	// when condition.
 	if base.Overlays != nil {
 		merged := make([]OverlayEntry, 0, len(base.Overlays)+len(child.Overlays))
 		merged = append(merged, base.Overlays...)

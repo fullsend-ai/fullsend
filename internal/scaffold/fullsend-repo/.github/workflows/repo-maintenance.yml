@@ -43,7 +43,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: fullsend-ai/fullsend
-          ref: v0
+          ref: __FULLSEND_AI_REF__
           path: .defaults
           sparse-checkout: |
             internal/scaffold/fullsend-repo/scripts/

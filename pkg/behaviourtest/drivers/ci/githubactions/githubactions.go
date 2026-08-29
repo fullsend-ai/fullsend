@@ -3,10 +3,12 @@ package githubactions
 import (
 	"archive/zip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,10 +17,37 @@ import (
 )
 
 const (
-	pollInterval   = 15 * time.Second
-	dispatchWait   = 12 * time.Minute
-	dispatchPoll   = 5 * time.Second
-	dispatchMaxTry = 48
+	pollInterval = 15 * time.Second
+	dispatchWait = 12 * time.Minute
+
+	// Dispatch detection uses exponential backoff: the poll interval
+	// starts at dispatchPollInit, doubles each iteration up to
+	// dispatchPollMax, and the total detection window is dispatchTimeout.
+	// This replaces the previous fixed dispatchPoll × dispatchMaxTry
+	// window to tolerate transient GitHub Actions dispatch latency.
+	dispatchPollInit = 2 * time.Second
+	dispatchPollMax  = 30 * time.Second
+	dispatchTimeout  = 5 * time.Minute
+
+	// countSettlePoll is the fixed poll interval used by
+	// CountHarnessDispatches while waiting for in-progress runs to
+	// reach a terminal state.
+	countSettlePoll = 5 * time.Second
+
+	// pollMinBudget is the least wait budget a harness poll is started
+	// with. A poll that would begin with less than this is skipped, so
+	// the driver never cuts its own last poll short and then reports the
+	// cutoff as a listing failure.
+	pollMinBudget = 5 * time.Second
+
+	// timeoutDiagnosticsBudget bounds the whole diagnostics pass made
+	// while building a harness-wait timeout message, and lookupBudget
+	// bounds each API call within it. The token may still be rate
+	// limited at that point; the wait already recorded the informative
+	// error, so one stalled lookup must not consume the budget of the
+	// others.
+	timeoutDiagnosticsBudget = 2 * time.Minute
+	lookupBudget             = 30 * time.Second
 
 	artifactRunPoll = 5 * time.Second
 	artifactRunWait = 5 * time.Minute
@@ -43,10 +72,25 @@ type Driver struct {
 	// time.After in New(). Tests inject an instant-return implementation
 	// to avoid sleeping on real wall-clock intervals.
 	afterFunc func(time.Duration) <-chan time.Time
+
+	// nowFunc is the clock used by the harness-wait deadlines. It
+	// defaults to time.Now in New(). Tests inject a stepping clock so
+	// the timeout branch — and the diagnostics it builds — can be
+	// exercised without waiting out dispatchWait on the wall clock.
+	nowFunc func() time.Time
 }
 
 func New(client forge.Client, token string) ci.Driver {
-	return &Driver{Client: client, Token: token, afterFunc: time.After}
+	return &Driver{Client: client, Token: token, afterFunc: time.After, nowFunc: time.Now}
+}
+
+// now returns the current time from nowFunc, falling back to time.Now
+// so that a zero-value Driver still works.
+func (d *Driver) now() time.Time {
+	if d.nowFunc != nil {
+		return d.nowFunc()
+	}
+	return time.Now()
 }
 
 // timerAfter returns a channel that fires after dur. It uses afterFunc
@@ -59,15 +103,27 @@ func (d *Driver) timerAfter(dur time.Duration) <-chan time.Time {
 	return time.After(dur)
 }
 
+// nextBackoff doubles current, capping at max.
+func nextBackoff(current, max time.Duration) time.Duration {
+	next := current * 2
+	if next > max {
+		return max
+	}
+	return next
+}
+
 func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile string, after time.Time, event string) (*forge.WorkflowRun, error) {
 	workflowFile = filepath.Base(workflowFile)
 	var triageRun *forge.WorkflowRun
-	for attempt := 0; attempt < dispatchMaxTry; attempt++ {
+	deadline := time.Now().Add(dispatchTimeout)
+	interval := dispatchPollInit
+	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-d.timerAfter(dispatchPoll):
+		case <-d.timerAfter(interval):
 		}
+		interval = nextBackoff(interval, dispatchPollMax)
 		runs, err := d.Client.ListWorkflowRuns(ctx, owner, repo, workflowFile)
 		if err != nil {
 			continue
@@ -87,7 +143,7 @@ func (d *Driver) WaitForWorkflow(ctx context.Context, owner, repo, workflowFile 
 		return nil, fmt.Errorf("workflow %s was not dispatched", workflowFile)
 	}
 
-	deadline := time.Now().Add(dispatchWait)
+	deadline = time.Now().Add(dispatchWait)
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
@@ -464,13 +520,16 @@ func isTerminalFailure(conclusion string) bool {
 	}
 }
 
-// listHarnessRunsAfter returns recent harness workflow runs created after the
-// given time. It queries only the harness workflow (fullsend.yaml) to avoid
-// false-positive fail-fast from unrelated workflow failures in the same repo.
-func (d *Driver) listHarnessRunsAfter(ctx context.Context, owner, repo string, after time.Time) []forge.WorkflowRun {
+// listHarnessRunsAfter returns harness workflow runs created at or after
+// the trigger time. The listing error is returned rather than swallowed:
+// during the #6647 flake the pool-org installation token was rate
+// limited for the whole wait, every poll's listing failed, and the wait
+// reported "no recent workflow runs found" for runs that existed.
+// Callers record the error and surface it in their timeout diagnostics.
+func (d *Driver) listHarnessRunsAfter(ctx context.Context, owner, repo string, after time.Time) ([]forge.WorkflowRun, error) {
 	runs, err := d.Client.ListWorkflowRuns(ctx, owner, repo, harnessWorkflowFile)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var matched []forge.WorkflowRun
 	for _, run := range runs {
@@ -480,12 +539,132 @@ func (d *Driver) listHarnessRunsAfter(ctx context.Context, owner, repo string, a
 		}
 		matched = append(matched, run)
 	}
-	return matched
+	return matched, nil
 }
 
-// formatRunDiagnostics builds a human-readable summary of recent workflow
-// runs for inclusion in error messages.
-func formatRunDiagnostics(runs []forge.WorkflowRun) string {
+// formatArtifactDiagnostics summarises, for a timeout error, why the
+// repo-level artifact lookup did not select the target artifact. Each
+// name match is classified against the trigger time the poll loop used,
+// so the message states which filter actually rejected it instead of
+// guessing: absent from the (100-item) listing, created before the
+// trigger time, unparseable created_at, or eligible — in which case the
+// listing did not cause the miss and the run diagnostics are the place
+// to look.
+func formatArtifactDiagnostics(arts []forge.RepositoryArtifact, targetName string, after time.Time) string {
+	if len(arts) == 0 {
+		return "no repository artifacts listed"
+	}
+	var matched int
+	var b strings.Builder
+	for _, art := range arts {
+		if art.Name != targetName {
+			continue
+		}
+		matched++
+		fmt.Fprintf(&b, "\n  artifact %d: run=%d created_at=%s ", art.ID, art.WorkflowRunID, art.CreatedAt)
+		artTime, err := time.Parse(time.RFC3339, art.CreatedAt)
+		switch {
+		case err != nil:
+			b.WriteString("(rejected: unparseable created_at)")
+		case artTime.Before(after):
+			fmt.Fprintf(&b, "(rejected: created before trigger time %s)", after.UTC().Format(time.RFC3339))
+		default:
+			b.WriteString("(eligible by trigger time; not explained by the listing — run lookup failed, run not completed or cancelled/skipped, or artifact appeared after the last poll; see the run diagnostics)")
+		}
+	}
+	if matched == 0 {
+		return fmt.Sprintf("artifact %q not among the %d listed artifacts (listing is capped at 100 newest)", targetName, len(arts))
+	}
+	return fmt.Sprintf("artifact %q listed %d time(s):%s", targetName, matched, b.String())
+}
+
+// harnessJobPlaceholder is the job name GitHub renders when the harness
+// matrix is empty, so the matrix job never expanded into a
+// "Harness run (<agent>)" job. Seeing it skipped means the harness was
+// never dispatched — no amount of waiting will produce an artifact.
+// describeAgentJob attributes the empty matrix through the Harness
+// dispatch job's own conclusion.
+const harnessJobPlaceholder = "Harness run (${{ matrix.agent }})"
+
+// harnessDispatchJobSuffix is the job that computes the harness matrix.
+// Its conclusion says whether an unexpanded matrix was a decision (the
+// job succeeded with an empty matrix) or a failure of the job itself.
+const harnessDispatchJobSuffix = "Harness dispatch"
+
+// describeAgentJob reports the state of the agent's harness job in a
+// run, for timeout diagnostics. It distinguishes the job having run
+// (with its conclusion), the matrix never having expanded (attributed
+// through the Harness dispatch job's own conclusion), and the job simply
+// not being present.
+func (d *Driver) describeAgentJob(ctx context.Context, owner, repo string, runID int, agent string) string {
+	jobs, err, cut := withLookupBudget(ctx, func(ctx context.Context) ([]forge.WorkflowJob, error) {
+		return d.Client.ListWorkflowRunJobs(ctx, owner, repo, runID)
+	})
+	if cut {
+		return "job lookup cut short by the diagnostics budget"
+	}
+	if err != nil {
+		return fmt.Sprintf("job lookup failed: %v", err)
+	}
+	if len(jobs) == 0 {
+		return "no jobs listed for run (not populated yet?)"
+	}
+	suffix := harnessJobSuffix(agent)
+	var placeholder, dispatch *forge.WorkflowJob
+	for i := range jobs {
+		j := &jobs[i]
+		switch {
+		case strings.HasSuffix(j.Name, suffix):
+			return fmt.Sprintf("agent job %q status=%s conclusion=%s", j.Name, j.Status, j.Conclusion)
+		case strings.HasSuffix(j.Name, harnessJobPlaceholder):
+			placeholder = j
+		case strings.HasSuffix(j.Name, harnessDispatchJobSuffix):
+			dispatch = j
+		}
+	}
+	if placeholder == nil {
+		return fmt.Sprintf("no %q job in run", suffix)
+	}
+	head := fmt.Sprintf("harness matrix not expanded (job %q conclusion=%s)", placeholder.Name, placeholder.Conclusion)
+	switch {
+	case placeholder.Conclusion == "cancelled":
+		// An empty matrix renders as a skipped placeholder; a cancelled
+		// one means the run ended before the job was evaluated, which
+		// says nothing about the matrix.
+		return head + ": the run was cancelled before the matrix was evaluated, not dispatched with an empty matrix; see the run"
+	case placeholder.Conclusion != "skipped":
+		// Neither shape we can attribute (e.g. failure, timed_out):
+		// report the observation only.
+		return head + fmt.Sprintf(": the matrix job concluded %s without expanding; see the run", placeholder.Conclusion)
+	case dispatch == nil:
+		return head + fmt.Sprintf(": no %q job in run to attribute it to", harnessDispatchJobSuffix)
+	case dispatch.Conclusion == "success":
+		return head + fmt.Sprintf(": the %q job succeeded with an empty matrix, so no harness was dispatched for this event (possible causes include no registered harness triggers, no trigger matching the event, the actor's role not resolving or not being authorized, or a kill switch); see that job's log", dispatch.Name)
+	default:
+		return head + fmt.Sprintf(": the %q job concluded %s; see its log", dispatch.Name, dispatch.Conclusion)
+	}
+}
+
+// withLookupBudget runs one diagnostics API call under its own
+// lookupBudget slice of the diagnostics envelope. cut reports that the
+// call's own context had expired when it returned a deadline error —
+// the same test pollErrors.record applies — so a deadline error raised
+// while the context was still live (an HTTP client timeout), or under a
+// context that was cancelled rather than expired, is not mistaken for
+// the driver's own cutoff.
+func withLookupBudget[T any](ctx context.Context, call func(context.Context) (T, error)) (v T, err error, cut bool) {
+	ctx, cancel := context.WithTimeout(ctx, lookupBudget)
+	defer cancel()
+	v, err = call(ctx)
+	cut = err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) && errors.Is(err, context.DeadlineExceeded)
+	return v, err, cut
+}
+
+// formatRunDiagnosticsWithJobs lists the harness runs after the trigger
+// time with the agent's job state for every completed run, so a timeout
+// caused by the harness never being dispatched reads as such instead of
+// as a mysteriously successful run with no artifact.
+func (d *Driver) formatRunDiagnosticsWithJobs(ctx context.Context, owner, repo, agent string, runs []forge.WorkflowRun) string {
 	if len(runs) == 0 {
 		return "no recent workflow runs found after trigger time"
 	}
@@ -494,8 +673,122 @@ func formatRunDiagnostics(runs []forge.WorkflowRun) string {
 	for _, r := range runs {
 		fmt.Fprintf(&b, "\n  run %d: status=%s conclusion=%s url=%s",
 			r.ID, r.Status, r.Conclusion, r.HTMLURL)
+		if r.Status == "completed" {
+			b.WriteString("; " + d.describeAgentJob(ctx, owner, repo, r.ID, agent))
+		}
 	}
 	return b.String()
+}
+
+// pollErrors tracks how often a call failed during a wait loop. The
+// loops keep polling through failures — a transient error must not end
+// a scenario — but the timeout message must say the wait was blind, not
+// that nothing existed. Calls cut short by the poll's own wait budget
+// are counted separately: they are the driver's doing, not an API
+// failure, and must never be presented as one.
+type pollErrors struct {
+	calls    int
+	failed   int
+	cutShort int
+	last     error
+}
+
+// record classifies the outcome of one call made under ctx.
+func (p *pollErrors) record(ctx context.Context, err error) {
+	p.calls++
+	if err == nil {
+		return
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) && errors.Is(err, context.DeadlineExceeded) {
+		p.cutShort++
+		return
+	}
+	p.failed++
+	p.last = err
+}
+
+// lastDelayRe strips the jittered retry delay the GitHub client embeds
+// in its exhausted-retry errors, so consecutive rate-limit errors
+// compare equal.
+var lastDelayRe = regexp.MustCompile(`\s*\(last delay: [^)]*\)`)
+
+func sameError(a, b error) bool {
+	return a != nil && b != nil && lastDelayRe.ReplaceAllString(a.Error(), "") == lastDelayRe.ReplaceAllString(b.Error(), "")
+}
+
+// describe renders the failure tail for a timeout message. current is
+// the error from the same lookup made while building the diagnostics;
+// when it repeats the last recorded error, the text is not printed
+// twice. what names the counted unit ("polls", "run lookups").
+func (p pollErrors) describe(current error, what string) string {
+	var b strings.Builder
+	if p.failed > 0 {
+		if sameError(current, p.last) {
+			fmt.Fprintf(&b, " (same error on %d of %d %s during the wait)", p.failed, p.calls, what)
+		} else {
+			fmt.Fprintf(&b, " (failed on %d of %d %s during the wait; last: %v)", p.failed, p.calls, what, p.last)
+		}
+	}
+	if p.cutShort > 0 {
+		fmt.Fprintf(&b, " (%d of %d %s cut short by the wait budget)", p.cutShort, p.calls, what)
+	}
+	return b.String()
+}
+
+// harnessTimeoutDiagnostics builds the diagnostic tail of a harness-wait
+// timeout error: the runs after the trigger time with the agent's job
+// state, the artifact-listing classification, and the errors recorded
+// during the wait. Lookups made here can fail the same way the polls
+// did (the token may still be rate limited), so each gets its own
+// lookupBudget inside the timeoutDiagnosticsBudget envelope, and a
+// lookup that is itself cut short reports the last poll error as the
+// headline rather than its own cutoff.
+func (d *Driver) harnessTimeoutDiagnostics(ctx context.Context, owner, repo, agent string, after time.Time, runsErrs, artifactErrs, lookupErrs pollErrors) string {
+	ctx, cancel := context.WithTimeout(ctx, timeoutDiagnosticsBudget)
+	defer cancel()
+
+	// Both single-call listings go first: the per-run job lookups that
+	// follow can each spend a lookupBudget, and the artifact
+	// classification must not be the section that gets starved.
+	runs, runsErr, runsCut := withLookupBudget(ctx, func(ctx context.Context) ([]forge.WorkflowRun, error) {
+		return d.listHarnessRunsAfter(ctx, owner, repo, after)
+	})
+	arts, artsErr, artsCut := withLookupBudget(ctx, func(ctx context.Context) ([]forge.RepositoryArtifact, error) {
+		return d.Client.ListRepositoryArtifacts(ctx, owner, repo, 100)
+	})
+
+	var b strings.Builder
+	switch {
+	case runsCut:
+		b.WriteString("run listing cut short by the diagnostics budget" + lastPollError(runsErrs))
+	case runsErr != nil:
+		fmt.Fprintf(&b, "run listing failed: %v%s", runsErr, runsErrs.describe(runsErr, "polls"))
+	default:
+		b.WriteString(d.formatRunDiagnosticsWithJobs(ctx, owner, repo, agent, runs))
+		b.WriteString(runsErrs.describe(nil, "polls"))
+	}
+	switch {
+	case artsCut:
+		b.WriteString("; artifact listing cut short by the diagnostics budget" + lastPollError(artifactErrs))
+	case artsErr != nil:
+		fmt.Fprintf(&b, "; artifact listing failed: %v%s", artsErr, artifactErrs.describe(artsErr, "polls"))
+	default:
+		b.WriteString("; " + formatArtifactDiagnostics(arts, "fullsend-"+agent, after))
+		b.WriteString(artifactErrs.describe(nil, "polls"))
+	}
+	if tail := lookupErrs.describe(nil, "lookups"); tail != "" {
+		b.WriteString("; run lookups" + tail)
+	}
+	return b.String()
+}
+
+// lastPollError renders the informative error recorded during the wait
+// for a lookup that the diagnostics budget cut short, if there is one.
+func lastPollError(p pollErrors) string {
+	if p.last == nil {
+		return ""
+	}
+	return fmt.Sprintf("; last poll error (%d of %d polls failed): %v", p.failed, p.calls, p.last)
 }
 
 // harnessJobSuffix returns the job name suffix used by the harness workflow
@@ -527,60 +820,89 @@ func (d *Driver) runHasAgentJob(ctx context.Context, owner, repo string, runID i
 // the named agent. It fails fast only when a workflow run that contains the
 // agent's "Harness run (<agent>)" job reaches a terminal failure conclusion.
 // Sibling workflow runs that do not schedule the agent's job are ignored.
+//
+// Listing failures never end the wait — the loop keeps polling — but they
+// are counted and reported on timeout so that a wait spent rate limited
+// is not mistaken for a harness that never ran (#6697).
 func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent string, after time.Time) (*forge.WorkflowRun, error) {
-	artifactName := "fullsend-" + agent
-	deadline := time.Now().Add(dispatchWait)
-	for time.Now().Before(deadline) {
+	deadline := d.now().Add(dispatchWait)
+	interval := dispatchPollInit
+	var artifactErrs, runsErrs, lookupErrs pollErrors
+	for {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-d.timerAfter(dispatchPoll):
+		case <-d.timerAfter(interval):
 		}
+		interval = nextBackoff(interval, dispatchPollMax)
+		// One clock reading decides both whether to poll and how much
+		// budget the poll gets, so the two cannot disagree.
+		remaining := deadline.Sub(d.now())
+		if remaining < pollMinBudget {
+			break
+		}
+		run, done, err := d.harnessPollOnce(ctx, remaining, owner, repo, agent, after, &artifactErrs, &runsErrs, &lookupErrs)
+		if done {
+			return run, err
+		}
+	}
 
-		// Quick-success: check for the agent's artifact (a completed
-		// harness job uploads fullsend-{agent}).
-		arts, err := d.Client.ListRepositoryArtifacts(ctx, owner, repo, 100)
-		if err == nil {
-			if art := selectRepositoryArtifactAfter(arts, artifactName, after); art != nil {
-				run, err := d.Client.GetWorkflowRun(ctx, owner, repo, art.WorkflowRunID)
-				if err == nil {
-					if run.Status == "completed" {
-						if run.Conclusion == "success" {
-							return run, nil
-						}
-						// Cancelled/skipped runs are concurrency-group
-						// noise — the superseding run will produce
-						// its own artifact. Keep polling.
-						if isConcurrencySuperseded(run.Conclusion) {
-							continue
-						}
-						return nil, fmt.Errorf("harness run for %q concluded with %q (run %d: %s)",
-							agent, run.Conclusion, run.ID, run.HTMLURL)
-					}
+	return nil, fmt.Errorf("harness agent %q did not complete successfully; %s",
+		agent, d.harnessTimeoutDiagnostics(ctx, owner, repo, agent, after, runsErrs, artifactErrs, lookupErrs))
+}
+
+// harnessPollOnce performs one WaitForHarnessAgent poll with its API
+// calls bounded by the remaining wait budget, so the client's rate-limit
+// retries (up to five, each waiting on Retry-After) cannot stretch a
+// poll past the deadline — attempt 1 of the #6647 flake ran 26 minutes
+// against a 12-minute dispatchWait. done reports whether the wait should
+// end with the returned run/error.
+func (d *Driver) harnessPollOnce(ctx context.Context, remaining time.Duration, owner, repo, agent string, after time.Time, artifactErrs, runsErrs, lookupErrs *pollErrors) (run *forge.WorkflowRun, done bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, remaining)
+	defer cancel()
+	artifactName := "fullsend-" + agent
+
+	// Quick-success: check for the agent's artifact (a completed
+	// harness job uploads fullsend-{agent}).
+	arts, err := d.Client.ListRepositoryArtifacts(ctx, owner, repo, 100)
+	artifactErrs.record(ctx, err)
+	if err == nil {
+		if art := selectRepositoryArtifactAfter(arts, artifactName, after); art != nil {
+			candidate, err := d.Client.GetWorkflowRun(ctx, owner, repo, art.WorkflowRunID)
+			lookupErrs.record(ctx, err)
+			if err == nil && candidate.Status == "completed" {
+				if candidate.Conclusion == "success" {
+					return candidate, true, nil
 				}
-			}
-		}
-
-		// Fail-fast: check recent harness runs for terminal failures,
-		// but only attribute failure to runs that actually scheduled
-		// this agent's harness job.
-		recentRuns := d.listHarnessRunsAfter(ctx, owner, repo, after)
-		for _, r := range recentRuns {
-			if r.Status != "completed" || !isTerminalFailure(r.Conclusion) {
-				continue
-			}
-			hasJob, _, _ := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
-			if hasJob {
-				return nil, fmt.Errorf("harness agent %q: workflow run %d concluded with %q before producing artifact (url=%s)",
-					agent, r.ID, r.Conclusion, r.HTMLURL)
+				// Cancelled/skipped runs are concurrency-group noise —
+				// the superseding run will produce its own artifact.
+				// Keep polling without a fail-fast scan this round.
+				if isConcurrencySuperseded(candidate.Conclusion) {
+					return nil, false, nil
+				}
+				return nil, true, fmt.Errorf("harness run for %q concluded with %q (run %d: %s)",
+					agent, candidate.Conclusion, candidate.ID, candidate.HTMLURL)
 			}
 		}
 	}
 
-	// Timeout: include diagnostics about recent workflow runs.
-	recentRuns := d.listHarnessRunsAfter(ctx, owner, repo, after)
-	return nil, fmt.Errorf("harness agent %q did not complete successfully; %s",
-		agent, formatRunDiagnostics(recentRuns))
+	// Fail-fast: check recent harness runs for terminal failures,
+	// but only attribute failure to runs that actually scheduled
+	// this agent's harness job.
+	recentRuns, err := d.listHarnessRunsAfter(ctx, owner, repo, after)
+	runsErrs.record(ctx, err)
+	for _, r := range recentRuns {
+		if r.Status != "completed" || !isTerminalFailure(r.Conclusion) {
+			continue
+		}
+		hasJob, _, err := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
+		lookupErrs.record(ctx, err)
+		if hasJob {
+			return nil, true, fmt.Errorf("harness agent %q: workflow run %d concluded with %q before producing artifact (url=%s)",
+				agent, r.ID, r.Conclusion, r.HTMLURL)
+		}
+	}
+	return nil, false, nil
 }
 
 // WaitForFailedHarnessAgent waits for the named agent's harness run to
@@ -594,73 +916,93 @@ func (d *Driver) WaitForHarnessAgent(ctx context.Context, owner, repo, agent str
 // jobs (named e.g. "Code"/"Fix") and custom-harness matrix jobs (named
 // "Harness run (<agent>)"). The job-name scan is a fallback for
 // custom-harness runs that failed before uploading the artifact.
+//
+// Listing failures are recorded and reported on timeout, as in
+// WaitForHarnessAgent.
 func (d *Driver) WaitForFailedHarnessAgent(ctx context.Context, owner, repo, agent string, after time.Time) (*forge.WorkflowRun, error) {
-	artifactName := "fullsend-" + agent
-	deadline := time.Now().Add(dispatchWait)
-	var lastJobErr error
-	for time.Now().Before(deadline) {
+	deadline := d.now().Add(dispatchWait)
+	interval := dispatchPollInit
+	var artifactErrs, runsErrs, lookupErrs pollErrors
+	for {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-d.timerAfter(dispatchPoll):
+		case <-d.timerAfter(interval):
 		}
+		interval = nextBackoff(interval, dispatchPollMax)
+		remaining := deadline.Sub(d.now())
+		if remaining < pollMinBudget {
+			break
+		}
+		run, done, err := d.failedHarnessPollOnce(ctx, remaining, owner, repo, agent, after, &artifactErrs, &runsErrs, &lookupErrs)
+		if done {
+			return run, err
+		}
+	}
 
-		// Artifact-first: resolve the agent's run from its artifact and
-		// inspect the run conclusion.
-		arts, err := d.Client.ListRepositoryArtifacts(ctx, owner, repo, 100)
-		if err == nil {
-			if art := selectRepositoryArtifactAfter(arts, artifactName, after); art != nil {
-				run, err := d.Client.GetWorkflowRun(ctx, owner, repo, art.WorkflowRunID)
-				if err == nil && run.Status == "completed" {
-					if isTerminalFailure(run.Conclusion) {
-						return run, nil
-					}
-					if run.Conclusion == "success" {
-						return nil, fmt.Errorf("harness agent %q run %d concluded successfully; expected failure (url=%s)",
-							agent, run.ID, run.HTMLURL)
-					}
+	return nil, fmt.Errorf("harness agent %q did not complete with a failure; %s",
+		agent, d.harnessTimeoutDiagnostics(ctx, owner, repo, agent, after, runsErrs, artifactErrs, lookupErrs))
+}
+
+// failedHarnessPollOnce performs one WaitForFailedHarnessAgent poll with
+// its API calls bounded by the remaining wait budget. done reports
+// whether the wait should end with the returned run/error.
+func (d *Driver) failedHarnessPollOnce(ctx context.Context, remaining time.Duration, owner, repo, agent string, after time.Time, artifactErrs, runsErrs, lookupErrs *pollErrors) (run *forge.WorkflowRun, done bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, remaining)
+	defer cancel()
+	artifactName := "fullsend-" + agent
+
+	// Artifact-first: resolve the agent's run from its artifact and
+	// inspect the run conclusion.
+	arts, err := d.Client.ListRepositoryArtifacts(ctx, owner, repo, 100)
+	artifactErrs.record(ctx, err)
+	if err == nil {
+		if art := selectRepositoryArtifactAfter(arts, artifactName, after); art != nil {
+			candidate, err := d.Client.GetWorkflowRun(ctx, owner, repo, art.WorkflowRunID)
+			lookupErrs.record(ctx, err)
+			if err == nil && candidate.Status == "completed" {
+				if isTerminalFailure(candidate.Conclusion) {
+					return candidate, true, nil
+				}
+				if candidate.Conclusion == "success" {
+					return nil, true, fmt.Errorf("harness agent %q run %d concluded successfully; expected failure (url=%s)",
+						agent, candidate.ID, candidate.HTMLURL)
 				}
 			}
 		}
+	}
 
-		// Fallback: a custom-harness run can fail before uploading the
-		// artifact; attribute the failure through its matrix job name.
-		// Scans every completed run regardless of overall conclusion —
-		// not just runs already known to have failed — so a run whose
-		// agent job succeeded despite the artifact lookup missing it
-		// still fails fast instead of running out the full timeout.
-		lastJobErr = nil
-		recentRuns := d.listHarnessRunsAfter(ctx, owner, repo, after)
-		for i := range recentRuns {
-			run := recentRuns[i]
-			if run.Status != "completed" {
-				continue
-			}
-			hasJob, job, err := d.runHasAgentJob(ctx, owner, repo, run.ID, agent)
-			if err != nil {
-				lastJobErr = err
-				continue
-			}
-			if !hasJob {
-				continue
-			}
-			if isTerminalFailure(job.Conclusion) {
-				return &run, nil
-			}
-			if job.Conclusion == "success" {
-				return nil, fmt.Errorf("harness agent %q job in run %d concluded successfully; expected failure (url=%s)",
-					agent, run.ID, run.HTMLURL)
-			}
-			// Skipped/cancelled jobs are concurrency noise — keep polling.
+	// Fallback: a custom-harness run can fail before uploading the
+	// artifact; attribute the failure through its matrix job name.
+	// Scans every completed run regardless of overall conclusion —
+	// not just runs already known to have failed — so a run whose
+	// agent job succeeded despite the artifact lookup missing it
+	// still fails fast instead of running out the full timeout.
+	recentRuns, err := d.listHarnessRunsAfter(ctx, owner, repo, after)
+	runsErrs.record(ctx, err)
+	for i := range recentRuns {
+		r := recentRuns[i]
+		if r.Status != "completed" {
+			continue
 		}
+		hasJob, job, err := d.runHasAgentJob(ctx, owner, repo, r.ID, agent)
+		lookupErrs.record(ctx, err)
+		if err != nil {
+			continue
+		}
+		if !hasJob {
+			continue
+		}
+		if isTerminalFailure(job.Conclusion) {
+			return &r, true, nil
+		}
+		if job.Conclusion == "success" {
+			return nil, true, fmt.Errorf("harness agent %q job in run %d concluded successfully; expected failure (url=%s)",
+				agent, r.ID, r.HTMLURL)
+		}
+		// Skipped/cancelled jobs are concurrency noise — keep polling.
 	}
-
-	recentRuns := d.listHarnessRunsAfter(ctx, owner, repo, after)
-	diag := formatRunDiagnostics(recentRuns)
-	if lastJobErr != nil {
-		diag += fmt.Sprintf("; last job-listing error: %v", lastJobErr)
-	}
-	return nil, fmt.Errorf("harness agent %q did not complete with a failure; %s", agent, diag)
+	return nil, false, nil
 }
 
 // CountHarnessDispatches returns the number of harness workflow runs that
@@ -695,7 +1037,7 @@ func (d *Driver) CountHarnessDispatches(ctx context.Context, owner, repo, agent 
 		select {
 		case <-ctx.Done():
 			return 0, ctx.Err()
-		case <-time.After(dispatchPoll):
+		case <-time.After(countSettlePoll):
 		}
 	}
 }

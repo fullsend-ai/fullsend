@@ -29,6 +29,11 @@ const (
 	// used by translatePiModel to normalize short-form xai/ specs and by
 	// buildPiRunCommand to gate extension loading and env hygiene.
 	piXaiVertexProvider = "xai-vertex"
+	// piOpenAIProvider is the lowercase provider name used as a gate in
+	// buildPiRunCommand. Unlike Vertex providers, OpenAI models use pi's
+	// built-in openai provider, which reads OPENAI_API_KEY from the env —
+	// the run-scoped OpenShell provider injects a short-lived placeholder.
+	piOpenAIProvider = "openai"
 	// piProviderEnv replaces the provider prefix applied to bare model ids.
 	// The model itself is resolved once by the CLI (--model, FULLSEND_MODEL,
 	// or the FULLSEND_PI_MODEL alias on pi; #6526) and arrives in
@@ -160,6 +165,12 @@ func piThinkingFor(effort string) (string, bool) {
 // extension would give a hookless iteration that looks healthy.
 const piHooksMissingExit = 97
 
+// piConfigTamperedExit is the exit code of the config-dir integrity guard
+// for the openai provider (auth.json or models.json present). Distinct from
+// piHooksMissingExit so Run can name the actual cause instead of reporting a
+// hook-adapter problem.
+const piConfigTamperedExit = 98
+
 // buildPiRunCommand renders the in-sandbox command line. Security-relevant
 // flags: --no-approve and defaultProjectTrust "never" keep repo-owned .pi/
 // out; --no-extensions with explicit -e means only the runner-vetted
@@ -180,15 +191,39 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 		model = m.Model
 	}
 	modelSpec := translatePiModel(model)
+	// pi matches the provider prefix case-insensitively, so the gates must
+	// too or "Anthropic-Vertex/..." would run on Vertex with the unset
+	// skipped.
+	provider, _, _ := strings.Cut(modelSpec, "/")
+	vertex := strings.EqualFold(provider, piDefaultProvider)
+	xaiVertex := strings.EqualFold(provider, piXaiVertexProvider)
+	openai := strings.EqualFold(provider, piOpenAIProvider)
 
 	parts := []string{"cd " + shellQuote(params.RepoDir)}
+	// Resolve the pi binary before the agent-writable .env is sourced and
+	// make the name read-only: .env could otherwise define a pi() function
+	// or put its own pi first on PATH and run agent code after the guards,
+	// and a readonly assignment attempt aborts the sourcing shell instead.
+	// The launch below uses the path, which no function or alias can shadow.
+	parts = append(parts, "&& "+piBinaryPin())
 	if hooksEnabled {
 		// Before .env: that file is agent-writable and could otherwise
 		// shadow the guard's tools with functions or a PATH entry.
 		parts = append(parts, "&& "+piHooksGuard(hooksExt, r.piManifestPath()))
 	}
+	if openai {
+		// Same reason: check the config dir before .env can shadow `test`,
+		// then seed pi's auth.json with the placeholder the environment
+		// carries before .env can replace OPENAI_API_KEY with another
+		// provider's placeholder.
+		parts = append(parts, "&& "+piOpenAIConfigGuard(r.ConfigDir()), "&& "+PiOpenAIAuthSeed(r.ConfigDir()))
+	}
 	parts = append(parts,
 		"&& . "+shellQuote(envFile),
+		// .env is agent-writable; re-pin the runner-owned locations and the
+		// offline switches after it so a rewritten .env cannot move pi's
+		// config dir out from under the guards below.
+		"&& "+strings.Join(r.EnvExports(), " && "),
 		"&& export "+piManifestEnv+"="+shellQuote(r.piManifestPath()),
 		"&& export "+piRuntimeEnv+"=pi",
 		// pi's built-in google-vertex (Gemini) provider resolves credentials
@@ -198,12 +233,6 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 		// so mirror it and Gemini on Vertex is just a model name.
 		`&& export GOOGLE_CLOUD_LOCATION="${GOOGLE_CLOUD_LOCATION:-$CLOUD_ML_REGION}"`,
 	)
-	// pi matches the provider prefix case-insensitively, so the gate must
-	// too or "Anthropic-Vertex/..." would run on Vertex with the unset
-	// skipped.
-	provider, _, _ := strings.Cut(modelSpec, "/")
-	vertex := strings.EqualFold(provider, piDefaultProvider)
-	xaiVertex := strings.EqualFold(provider, piXaiVertexProvider)
 	if vertex {
 		// Claude-on-Vertex: the bundled Anthropic SDK would send a stray
 		// ANTHROPIC_API_KEY to Google as X-Api-Key and honour
@@ -238,8 +267,30 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 			`&& export XAI_VERTEX_PROJECT_ID="${XAI_VERTEX_PROJECT_ID:-${ANTHROPIC_VERTEX_PROJECT_ID:-$GOOGLE_CLOUD_PROJECT}}"`,
 		)
 	}
+	if openai {
+		// OpenAI via runner-exchanged WIF or static OPENAI_API_KEY: the
+		// run-scoped OpenShell provider injects OPENAI_API_KEY as a
+		// placeholder, which the seed above put in auth.json for pi to
+		// re-read per request. Unset OPENAI_BASE_URL and AZURE_OPENAI_API_KEY
+		// so a stray .env cannot redirect traffic or inject a different
+		// credential, and clear OPENAI_API_KEY itself so pi's resolution
+		// cannot fall through to a value .env planted in the environment.
+		// NODE_OPTIONS/NODE_PATH would let .env load code into pi before
+		// it starts; with the credential endpoint-bound at the gateway that
+		// code could only sabotage this run, but there is no reason to
+		// allow it.
+		parts = append(parts, "&& unset OPENAI_BASE_URL AZURE_OPENAI_API_KEY OPENAI_API_KEY NODE_OPTIONS NODE_PATH")
+		// Config-dir integrity guard, second pass: .env itself could have
+		// written auth.json or models.json just now. `unset -f` is a special
+		// builtin, which a sourced function cannot shadow, so it restores the
+		// real `test` before the check; the first pass (before .env) already
+		// caught anything written between iterations. This runs for the
+		// openai provider even when hooks are disabled, because the threat is
+		// credential leak, not tool misuse.
+		parts = append(parts, "&& unset -f test command grep tr sed printf pi", "&& "+piOpenAIConfigGuard(r.ConfigDir()))
+	}
 	parts = append(parts,
-		"&& pi",
+		`&& "$`+piBinaryVar+`"`,
 		"--print",
 		"--mode json",
 		"--no-approve",
@@ -256,6 +307,9 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 	if xaiVertex {
 		parts = append(parts, "-e "+shellQuote(piXaiVertexExtensionPath))
 	}
+	// The openai provider needs no -e extension and deliberately no
+	// --api-key: that flag outranks auth.json in pi's resolution order and
+	// would pin the iteration to the placeholder it launched with.
 	if hooksEnabled {
 		parts = append(parts, "-e "+shellQuote(hooksExt))
 	}
@@ -298,6 +352,93 @@ func buildPiRunCommand(params RunParams, m *piManifest) string {
 
 // piManifestEnv tells the hook extension where the manifest is.
 const piManifestEnv = "FULLSEND_PI_MANIFEST"
+
+// piBinaryVar holds the absolute path of the pi binary, resolved before
+// .env is sourced and marked read-only.
+const piBinaryVar = "FULLSEND_PI_BIN"
+
+// piBinaryPin is the POSIX sh fragment that records where pi is. `command
+// -v` is a builtin; `readonly` is a special builtin, so a later assignment
+// in a sourced file is an error: under a POSIX sh such as dash (what
+// `sh -c` is in the sandbox image) it aborts the sourcing shell, and under
+// any shell the assignment fails and the pinned value stands.
+func piBinaryPin() string {
+	return `readonly ` + piBinaryVar + `="$(command -v pi)" && test -n "$` + piBinaryVar + `" || { echo 'fullsend: pi not found on PATH' >&2; exit 127; }`
+}
+
+// piPlaceholderPrefix is the namespace of OpenShell gateway placeholders,
+// assembled from two parts on purpose: OpenShell 0.0.110+ resets any
+// model request whose body contains the contiguous prefix (it is treated
+// as credential-bearing traffic), so a source file that spelled it out
+// could not be read by an agent running inside a sandbox.
+const piPlaceholderPrefix = "openshell:resolve:env" + ":"
+
+// piOpenAIAuthFile is the pi credential file the runner owns for the
+// openai provider: pi's AuthStorage re-reads it whenever its revision
+// changes and resolves the key per request (packages/coding-agent/src/core/
+// auth-storage.ts, model-registry.ts at 0.84.3), which is what lets a
+// running iteration follow a credential refresh. OpenShell 0.0.115 pins a
+// revision-scoped placeholder (`v<opaque>_KEY` under piPlaceholderPrefix) to the
+// value of the generation it was issued for, and refuses the unrevisioned
+// alias for an endpoint-bound credential (crates/openshell-core/src/
+// secrets.rs resolve_placeholder; both verified against a live gateway on
+// 2026-08-27), so the process environment cannot carry a placeholder that
+// follows a refresh — a file pi re-reads can.
+const piOpenAIAuthFile = "auth.json"
+
+// piOpenAIAuthShape is the whole-file shape (whitespace removed) the config
+// guard accepts for auth.json besides pi's own empty `{}`: exactly one
+// openai api_key entry whose key is a gateway placeholder for OPENAI_API_KEY.
+const piOpenAIAuthShape = `[{]"openai":[{]"type":"api_key","key":"` + piPlaceholderPrefix + `[A-Za-z0-9_]*OPENAI_API_KEY"[}][}]`
+
+// PiOpenAIAuthSeed is the POSIX sh fragment that writes the placeholder the
+// sandbox environment carries for OPENAI_API_KEY into pi's auth.json under
+// configDir (atomically, via rename — pi locks and re-reads the file). It
+// runs at iteration start, before the agent-writable .env is sourced, and
+// the runner re-runs it through `sandbox exec` after every credential
+// refresh, once the sandbox has observed the new generation: an exec'd
+// shell's environment holds the current placeholder, so the runner never
+// needs to know the opaque revision. A value that is not a gateway
+// placeholder fails the run: a real key in the sandbox environment would
+// mean the provider path was bypassed, and forwarding it would defeat the
+// design.
+func PiOpenAIAuthSeed(configDir string) string {
+	dir := shellQuote(configDir)
+	final := shellQuote(configDir + "/" + piOpenAIAuthFile)
+	tmp := shellQuote(configDir + "/" + piOpenAIAuthFile + ".fullsend")
+	return `case "${OPENAI_API_KEY:-}" in ` + piPlaceholderPrefix + `*OPENAI_API_KEY) ;; *) echo 'fullsend: OPENAI_API_KEY in the sandbox is not a gateway placeholder (openai provider not attached, or a real key reached the sandbox); refusing to run the openai provider' >&2; exit 1 ;; esac` +
+		` && case "$OPENAI_API_KEY" in *[!A-Za-z0-9_:]*) echo 'fullsend: OPENAI_API_KEY placeholder has unexpected characters; refusing to run the openai provider' >&2; exit 1 ;; esac` +
+		` && command -p mkdir -p ` + dir +
+		` && printf '{"openai":{"type":"api_key","key":"%s"}}\n' "$OPENAI_API_KEY" > ` + tmp +
+		` && command -p mv -f ` + tmp + ` ` + final
+}
+
+// piOpenAIConfigGuard is the POSIX sh fragment that fails closed when the
+// pi config directory carries models.json, or an auth.json that is anything
+// but pi's own empty `{}` or the runner-seeded openai placeholder entry
+// (piOpenAIAuthShape). models.json is the only way to change pi's openai
+// base URL (no env override exists), and a redirect to another allowed
+// REST host is the placeholder-leak vector described in ADR 0025; any
+// other auth.json content would supply a different key or provider. pi
+// 0.84.3 writes an empty auth.json (`{}`) on every start
+// (AuthStorage.ensureFileExists), so the file's presence proves nothing —
+// only its content does. The comparison strips whitespace and matches the
+// whole file, and additionally rejects any `\u00` JSON escape (pi never
+// writes escaped keys; a planted `"open\u0061i"` would otherwise slip a
+// substring check). Run emits the guard twice: before the agent-writable
+// .env is sourced (nothing can shadow the builtins yet) and after it, behind
+// `unset -f test command grep tr` (`unset` is a special builtin, so a
+// function .env defined cannot stand in); `command -p` uses the default
+// PATH, so a PATH swap cannot either. It applies whether or not hooks are
+// enabled.
+func piOpenAIConfigGuard(configDir string) string {
+	auth := shellQuote(configDir + "/" + piOpenAIAuthFile)
+	models := shellQuote(configDir + "/models.json")
+	return fmt.Sprintf(
+		`{ ! test -f %s && { ! test -s %s || { ! command -p grep -q '\\u00' %s && command -p tr -d ' \n\t\r' < %s | command -p grep -qxE '([{][}]|%s)'; }; } || { echo 'fullsend: pi config dir has models.json or an auth.json that is not the runner-seeded openai placeholder; refusing to run the openai provider (placeholder-leak risk)' >&2; exit %d; }; }`,
+		models, auth, auth, auth, piOpenAIAuthShape, piConfigTamperedExit,
+	)
+}
 
 // piHooksGuard is the POSIX sh fragment run before pi when hooks are
 // expected: the adapter must exist and be byte-identical to the embedded
@@ -412,6 +553,9 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 	}
 	if exitCode == piHooksMissingExit && params.HooksSettingsPath != "" {
 		return exitCode, fmt.Errorf("pi hook adapter or manifest missing or modified in %s; refusing to run unhooked (was Bootstrap run, or did the agent change it?)", r.ConfigDir())
+	}
+	if exitCode == piConfigTamperedExit {
+		return exitCode, fmt.Errorf("pi config dir %s has models.json or an openai entry in auth.json; refusing to run the openai provider because either can redirect or replace the runner's credential (pi's own empty auth.json is fine; did the agent write there between iterations?)", r.ConfigDir())
 	}
 
 	if exitCode == 0 && lastResult != nil && lastResult.IsError {

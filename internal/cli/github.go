@@ -58,20 +58,25 @@ type githubSetupConfig struct {
 	inferenceRegion      string
 	inferenceProvider    string
 	inferenceWIFProvider string
-	skipAppSetup         bool
-	publicApps           bool
-	appSet               string
-	enrollAll            bool
-	enrollNone           bool
-	vendor               bool
-	fullsendBinary       string
-	fullsendSource       string
-	dryRun               bool
-	direct               bool
-	runtime              string
-	configPreset         string // --config: local path or HTTPS URL to a preset
-	configHash           string // --config-hash: SHA-256 hex digest for preset validation
-	signoff              bool   // --signoff: add Signed-off-by trailer to scaffold commits
+	// OpenAI Workload Identity identifiers (ADR 0092), written to
+	// inference.openai in .fullsend/config.yaml; all three or none.
+	openaiAudience           string
+	openaiIdentityProviderID string
+	openaiServiceAccountID   string
+	skipAppSetup             bool
+	publicApps               bool
+	appSet                   string
+	enrollAll                bool
+	enrollNone               bool
+	vendor                   bool
+	fullsendBinary           string
+	fullsendSource           string
+	dryRun                   bool
+	direct                   bool
+	runtime                  string
+	configPreset             string // --config: local path or HTTPS URL to a preset
+	configHash               string // --config-hash: SHA-256 hex digest for preset validation
+	signoff                  bool   // --signoff: add Signed-off-by trailer to scaffold commits
 
 	// changedFlags records which flags were explicitly set on the
 	// command line (populated by RunE before calling the setup
@@ -181,6 +186,9 @@ values (mint URL, WIF provider, project ID) are provided as flags.`,
 	cmd.Flags().StringVar(&cfg.inferenceProject, "inference-project", "", "GCP project ID for inference")
 	cmd.Flags().StringVar(&cfg.inferenceRegion, "inference-region", "", "GCP region for inference (resolved to global if unset)")
 	cmd.Flags().StringVar(&cfg.inferenceWIFProvider, "inference-wif-provider", "", "full WIF provider resource name")
+	cmd.Flags().StringVar(&cfg.openaiAudience, "openai-audience", "", "OpenAI Workload Identity audience (GPT on pi; with --openai-identity-provider-id and --openai-service-account-id)")
+	cmd.Flags().StringVar(&cfg.openaiIdentityProviderID, "openai-identity-provider-id", "", "OpenAI Workload Identity provider ID")
+	cmd.Flags().StringVar(&cfg.openaiServiceAccountID, "openai-service-account-id", "", "OpenAI service account ID the provider maps this repository to")
 	cmd.Flags().BoolVar(&cfg.skipAppSetup, "skip-app-setup", false, "skip GitHub App creation/setup")
 	cmd.Flags().BoolVar(&cfg.publicApps, "public", false, "create public (unlisted) GitHub Apps")
 	cmd.Flags().StringVar(&cfg.appSet, "app-set", appsetup.DefaultAppSet, "app set name prefix for GitHub Apps")
@@ -242,6 +250,9 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		if err := validateWIFProvider(cfg.inferenceWIFProvider); err != nil {
 			return err
 		}
+	}
+	if err := validateOpenAISetupFlags(cfg); err != nil {
+		return err
 	}
 
 	roles, err := parseAgentRoles(cfg.agents)
@@ -371,6 +382,9 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 		}
 		if cfg.changedFlags["inference-wif-provider"] {
 			perRepoCfg.SetInferenceWIFProvider(cfg.inferenceWIFProvider)
+		}
+		if openaiFlagsChanged(cfg) {
+			perRepoCfg.SetInferenceOpenAI(cfg.openaiIDs())
 		}
 		if err := perRepoCfg.Validate(); err != nil {
 			return fmt.Errorf("invalid config: %w", err)
@@ -562,7 +576,7 @@ func runGitHubSetupPerRepo(ctx context.Context, client forge.Client, printer *ui
 // setupConfigFlags are the flags that target a key in .fullsend/config.yaml.
 // Any of them being passed explicitly turns a re-run from "keep the file"
 // into "change that key on the existing file".
-var setupConfigFlags = []string{"runtime", "agents", "mint-url", "inference-provider", "inference-project", "inference-region", "inference-wif-provider"}
+var setupConfigFlags = []string{"runtime", "agents", "mint-url", "inference-provider", "inference-project", "inference-region", "inference-wif-provider", "openai-audience", "openai-identity-provider-id", "openai-service-account-id"}
 
 // setupConfigFlagsChanged reports whether any config-targeting flag was
 // passed explicitly (cobra's Changed, recorded in changedFlags — value
@@ -647,11 +661,15 @@ func applySetupFlagsToConfig(cfg githubSetupConfig, w config.PerRepoConfigWriter
 		w.SetInferenceWIFProvider(cfg.inferenceWIFProvider)
 		changed = append(changed, "inference.wif_provider")
 	}
+	if openaiFlagsChanged(cfg) {
+		w.SetInferenceOpenAI(cfg.openaiIDs())
+		changed = append(changed, "inference.openai")
+	}
 	return changed
 }
 
 func buildPresetOverlay(cfg githubSetupConfig) config.PerRepoConfigWriter {
-	flagNames := []string{"mint-url", "inference-provider", "inference-project", "inference-region", "inference-wif-provider"}
+	flagNames := []string{"mint-url", "inference-provider", "inference-project", "inference-region", "inference-wif-provider", "openai-audience", "openai-identity-provider-id", "openai-service-account-id"}
 	anyChanged := false
 	for _, name := range flagNames {
 		if cfg.changedFlags[name] {
@@ -679,7 +697,54 @@ func buildPresetOverlay(cfg githubSetupConfig) config.PerRepoConfigWriter {
 	if cfg.changedFlags["inference-wif-provider"] {
 		o.SetInferenceWIFProvider(cfg.inferenceWIFProvider)
 	}
+	if openaiFlagsChanged(cfg) {
+		o.SetInferenceOpenAI(cfg.openaiIDs())
+	}
 	return o
+}
+
+// openaiSetupFlags are the three flags that together set inference.openai.
+var openaiSetupFlags = []string{"openai-audience", "openai-identity-provider-id", "openai-service-account-id"}
+
+func openaiFlagsChanged(cfg githubSetupConfig) bool {
+	for _, name := range openaiSetupFlags {
+		if cfg.changedFlags[name] {
+			return true
+		}
+	}
+	return false
+}
+
+func (cfg githubSetupConfig) openaiIDs() config.OpenAIWIFConfig {
+	return config.OpenAIWIFConfig{
+		Audience:           strings.TrimSpace(cfg.openaiAudience),
+		IdentityProviderID: strings.TrimSpace(cfg.openaiIdentityProviderID),
+		ServiceAccountID:   strings.TrimSpace(cfg.openaiServiceAccountID),
+	}
+}
+
+// validateOpenAISetupFlags enforces all-three-or-none: a run needs the
+// complete trio, and a partial block in config.yaml would only fail later,
+// at the first GPT run. Passing all three empty explicitly clears the block.
+func validateOpenAISetupFlags(cfg githubSetupConfig) error {
+	if !openaiFlagsChanged(cfg) {
+		return nil
+	}
+	ids := cfg.openaiIDs()
+	if ids.IsZero() {
+		// Clearing the block is deliberate only when all three flags were
+		// passed (empty); a single empty flag is a mistake.
+		for _, name := range openaiSetupFlags {
+			if !cfg.changedFlags[name] {
+				return fmt.Errorf("--openai-audience, --openai-identity-provider-id and --openai-service-account-id must be set together (pass all three empty to remove the block)")
+			}
+		}
+		return nil
+	}
+	if missing := ids.Missing(); len(missing) > 0 {
+		return fmt.Errorf("--openai-audience, --openai-identity-provider-id and --openai-service-account-id must be set together (missing %s)", strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 // runGitHubSetupPerOrg sets up fullsend for an entire organization.
@@ -702,6 +767,9 @@ func runGitHubSetupPerOrg(ctx context.Context, client forge.Client, printer *ui.
 		if err := validateWIFProvider(cfg.inferenceWIFProvider); err != nil {
 			return err
 		}
+	}
+	if err := validateOpenAISetupFlags(cfg); err != nil {
+		return err
 	}
 
 	if cfg.enrollAll && cfg.enrollNone {

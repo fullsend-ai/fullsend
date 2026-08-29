@@ -1124,7 +1124,7 @@ func TestResolveOverlays_SingleMatch(t *testing.T) {
 	assert.Nil(t, h.Overlays)
 }
 
-func TestResolveOverlays_FirstMatchWins(t *testing.T) {
+func TestResolveOverlays_AllMatchingMerged(t *testing.T) {
 	h := &Harness{
 		Agent: "agents/test.md",
 		Role:  "fix",
@@ -1136,10 +1136,10 @@ func TestResolveOverlays_FirstMatchWins(t *testing.T) {
 	event := map[string]any{"source": map[string]any{"system": "github"}}
 	err := h.ResolveOverlays(event, "", nil)
 	require.NoError(t, err)
-	assert.Equal(t, "a.sh", h.PreScript, "first-match-wins: first entry should be applied")
+	assert.Equal(t, "b.sh", h.PreScript, "merge-all-matching: later entry should override earlier")
 }
 
-func TestResolveOverlays_FirstMatchWinsSkipsLater(t *testing.T) {
+func TestResolveOverlays_AllMatchingMergedSkills(t *testing.T) {
 	h := &Harness{
 		Agent:  "agents/test.md",
 		Role:   "fix",
@@ -1152,9 +1152,136 @@ func TestResolveOverlays_FirstMatchWinsSkipsLater(t *testing.T) {
 	event := map[string]any{"source": map[string]any{"system": "github"}}
 	err := h.ResolveOverlays(event, "", nil)
 	require.NoError(t, err)
-	require.Len(t, h.Skills, 2, "only first matching overlay should be applied")
+	require.Len(t, h.Skills, 3, "all matching overlays should be applied")
 	assert.Equal(t, "skills/base", h.Skills[0].Source)
 	assert.Equal(t, "skills/gh", h.Skills[1].Source)
+	assert.Equal(t, "skills/extra", h.Skills[2].Source)
+}
+
+// TestResolveOverlays_BaseComposition_ChildOverridesBase verifies that when
+// base overlays are concatenated before child overlays during base composition,
+// a child overlay can override specific values from a base overlay while
+// preserving base-only keys. This is the scenario described in issue #6686.
+func TestResolveOverlays_BaseComposition_ChildOverridesBase(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			// Base overlay (placed first during base composition)
+			{When: `runtime.forge == "jira"`, ForgeConfig: ForgeConfig{
+				RunnerEnv: map[string]string{
+					"JIRA_TOKEN": "base-token",
+					"JIRA_URL":   "base-url",
+				},
+			}},
+			// Child overlay (appended during base composition)
+			{When: `runtime.forge == "jira"`, ForgeConfig: ForgeConfig{
+				RunnerEnv: map[string]string{
+					"JIRA_TOKEN": "child-override",
+				},
+			}},
+		},
+	}
+	err := h.ResolveOverlays(nil, "jira", nil)
+	require.NoError(t, err)
+	// Child overlay overrides base; base-only keys preserved.
+	assert.Equal(t, "child-override", h.RunnerEnv["JIRA_TOKEN"])
+	assert.Equal(t, "base-url", h.RunnerEnv["JIRA_URL"])
+}
+
+// TestResolveOverlays_MergeAllMatching_MixedConditions verifies that
+// overlays with different conditions that both match are both applied,
+// with later values taking precedence for scalar fields.
+func TestResolveOverlays_MergeAllMatching_MixedConditions(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Role:      "fix",
+		PreScript: "scripts/common.sh",
+		Overlays: []OverlayEntry{
+			{When: `runtime.forge == "github"`, ForgeConfig: ForgeConfig{
+				PreScript: "scripts/gh.sh",
+				RunnerEnv: map[string]string{"GH_TOKEN": "tok"},
+			}},
+			{When: `config.tracker == "jira"`, ForgeConfig: ForgeConfig{
+				RunnerEnv: map[string]string{"JIRA_TOKEN": "jira-tok"},
+			}},
+		},
+	}
+	event := map[string]any{"source": map[string]any{"system": "jira"}}
+	config := map[string]any{"tracker": "jira"}
+	err := h.ResolveOverlays(event, "github", config)
+	require.NoError(t, err)
+	// Both overlays match: first sets PreScript and GH_TOKEN, second adds JIRA_TOKEN
+	assert.Equal(t, "scripts/gh.sh", h.PreScript)
+	assert.Equal(t, "tok", h.RunnerEnv["GH_TOKEN"])
+	assert.Equal(t, "jira-tok", h.RunnerEnv["JIRA_TOKEN"])
+}
+
+// TestResolveOverlays_NonMatchingSkipped verifies that non-matching overlays
+// are skipped while matching ones are still applied.
+func TestResolveOverlays_NonMatchingSkipped(t *testing.T) {
+	h := &Harness{
+		Agent: "agents/test.md",
+		Role:  "fix",
+		Overlays: []OverlayEntry{
+			{When: `runtime.forge == "github"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gh.sh"}},
+			{When: `runtime.forge == "gitlab"`, ForgeConfig: ForgeConfig{PreScript: "scripts/gl.sh"}},
+			{When: `runtime.forge == "github"`, ForgeConfig: ForgeConfig{PostScript: "scripts/post-gh.sh"}},
+		},
+	}
+	err := h.ResolveOverlays(nil, "github", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "scripts/gh.sh", h.PreScript, "first matching overlay sets PreScript")
+	assert.Equal(t, "scripts/post-gh.sh", h.PostScript, "third matching overlay sets PostScript")
+}
+
+// TestResolveOverlays_ListFieldsAccumulate verifies that list fields
+// (Providers, OpenShell.Profiles) accumulate across multiple matching overlays
+// without deduplication, unlike Skills which deduplicates via mergeSkills.
+// This documents the current merge-all-matching behavior for list fields.
+func TestResolveOverlays_ListFieldsAccumulate(t *testing.T) {
+	h := &Harness{
+		Agent:     "agents/test.md",
+		Role:      "fix",
+		Providers: []string{"providers/base"},
+		OpenShell: &OpenShellConfig{
+			Profiles: []string{"profiles/base"},
+		},
+		Skills: []SkillEntry{
+			{Source: "skills/base"},
+		},
+		Overlays: []OverlayEntry{
+			{When: `runtime.forge == "github"`, ForgeConfig: ForgeConfig{
+				Providers: []string{"providers/gh", "providers/common"},
+				OpenShell: &OpenShellConfig{Profiles: []string{"profiles/gh"}},
+				Skills:    []SkillEntry{{Source: "skills/gh"}},
+			}},
+			{When: `runtime.forge == "github"`, ForgeConfig: ForgeConfig{
+				Providers: []string{"providers/common"},
+				OpenShell: &OpenShellConfig{Profiles: []string{"profiles/gh"}},
+				Skills:    []SkillEntry{{Source: "skills/gh"}, {Source: "skills/extra"}},
+			}},
+		},
+	}
+	err := h.ResolveOverlays(nil, "github", nil)
+	require.NoError(t, err)
+
+	// Providers accumulate without deduplication: base + overlay1 + overlay2
+	assert.Equal(t, []string{
+		"providers/base", "providers/gh", "providers/common",
+		"providers/common",
+	}, h.Providers, "providers accumulate across overlays without dedup")
+
+	// OpenShell.Profiles accumulate without deduplication
+	assert.Equal(t, []string{
+		"profiles/base", "profiles/gh", "profiles/gh",
+	}, h.OpenShell.Profiles, "openshell profiles accumulate across overlays without dedup")
+
+	// Skills are deduplicated via mergeSkills (by basename)
+	require.Len(t, h.Skills, 3, "skills are deduplicated by basename across overlays")
+	assert.Equal(t, "skills/base", h.Skills[0].Source)
+	assert.Equal(t, "skills/gh", h.Skills[1].Source)
+	assert.Equal(t, "skills/extra", h.Skills[2].Source)
 }
 
 func TestResolveOverlays_NoMatchUnchanged(t *testing.T) {

@@ -83,7 +83,7 @@ stages:
           echo "${FS_CHECKSUM_LINE}" \
             | sed "s|fullsend_${FS_VER}_linux_${FS_ARCH}.tar.gz|/tmp/fullsend.tar.gz|" \
             | sha256sum -c -
-          tar xzf /tmp/fullsend.tar.gz -C /usr/local/bin fullsend
+          tar --no-same-owner -xzf /tmp/fullsend.tar.gz -C /usr/local/bin fullsend
           rm -f /tmp/fullsend.tar.gz /tmp/checksums.txt
           ;;
         *)

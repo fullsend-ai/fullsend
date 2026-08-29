@@ -4,7 +4,53 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 )
+
+// Runtime secrets are exact credential values the runner learned during
+// this process — an access token it exchanged, for example — that no
+// prefix or structural pattern can be trusted to match (the OpenAI WIF
+// token is contractually opaque, #6689). Scan masks them before any
+// pattern runs. Values shorter than minRuntimeSecretLen are ignored so a
+// trivial string can never blank out ordinary output.
+const minRuntimeSecretLen = 8
+
+var (
+	runtimeSecretsMu sync.RWMutex
+	runtimeSecrets   []string
+)
+
+// RegisterRuntimeSecret adds an exact value to the process-wide redaction
+// set and reports whether it is now registered. Registering the same value
+// twice is a no-op; a value below the minimum length is refused (false) so
+// the caller can decide not to use a credential it cannot redact.
+func RegisterRuntimeSecret(value string) bool {
+	if len(value) < minRuntimeSecretLen {
+		return false
+	}
+	runtimeSecretsMu.Lock()
+	defer runtimeSecretsMu.Unlock()
+	for _, v := range runtimeSecrets {
+		if v == value {
+			return true
+		}
+	}
+	runtimeSecrets = append(runtimeSecrets, value)
+	return true
+}
+
+func runtimeSecretSnapshot() []string {
+	runtimeSecretsMu.RLock()
+	defer runtimeSecretsMu.RUnlock()
+	return append([]string(nil), runtimeSecrets...)
+}
+
+// resetRuntimeSecrets clears the registry; tests only.
+func resetRuntimeSecrets() {
+	runtimeSecretsMu.Lock()
+	defer runtimeSecretsMu.Unlock()
+	runtimeSecrets = nil
+}
 
 // SecretRedactor scans text for API keys, tokens, credentials, and
 // sensitive patterns, replacing them with masked versions. Adapted from
@@ -32,6 +78,24 @@ func (s *SecretRedactor) Name() string { return "secret_redactor" }
 func (s *SecretRedactor) Scan(text string) ScanResult {
 	result := ScanResult{Safe: true, Sanitized: text}
 	current := text
+
+	// Exact runtime values first: they are the highest-confidence match
+	// and must not be partially consumed by a looser pattern.
+	for _, secret := range runtimeSecretSnapshot() {
+		if !strings.Contains(current, secret) {
+			continue
+		}
+		// No prefix is informative for an opaque value, so mask it whole.
+		const masked = "***"
+		result.Findings = append(result.Findings, Finding{
+			Scanner:  "secret_redactor",
+			Name:     "runtime_secret",
+			Severity: "critical",
+			Detail:   "Redacted runtime_secret -> " + masked,
+		})
+		current = strings.ReplaceAll(current, secret, masked)
+		result.Safe = false
+	}
 
 	// Prefix-based patterns (full match is the secret).
 	// Use ReplaceAll to catch duplicate occurrences of the same secret.

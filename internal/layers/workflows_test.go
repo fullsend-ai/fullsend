@@ -264,7 +264,7 @@ func TestWorkflowsLayer_Install_PinnedSHA(t *testing.T) {
 	assert.Contains(t, triageContent, "@abc123def456abc123def456abc123def456abcd")
 	assert.Contains(t, triageContent, "# v0.19.0")
 	assert.NotContains(t, triageContent, "fullsend_ai_ref:")
-	assert.NotContains(t, triageContent, "@v0")
+	assert.NotContains(t, triageContent, "@main")
 }
 
 func TestWorkflowsLayer_Install_ManagedHeaders(t *testing.T) {

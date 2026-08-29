@@ -297,6 +297,7 @@ export default defineConfig({
             { text: "Tracing Reference", link: "/guides/infrastructure/distributed-tracing" },
             { text: "Eval Measurements", link: "/guides/infrastructure/eval-measurements" },
             { text: "Advanced Setup", link: "/guides/infrastructure/advanced-setup" },
+            { text: "OpenAI Workload Identity", link: "/guides/infrastructure/openai-workload-identity" },
             {
               text: "Layered Config Reference",
               link: "/guides/infrastructure/layered-config-reference",

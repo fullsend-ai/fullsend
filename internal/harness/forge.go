@@ -30,8 +30,8 @@ type ForgeConfig struct {
 
 // OverlayEntry is a CEL-guarded conditional config block (ADR 0088).
 // Each entry carries a CEL expression in When and the same override fields
-// as ForgeConfig. The first entry whose When evaluates to true is merged
-// into the harness; remaining entries are skipped (first-match-wins).
+// as ForgeConfig. All entries whose When evaluates to true are merged
+// into the harness in order (later matches override earlier matches).
 // The When expression is evaluated against the overlay CEL environment:
 // event (normevent map), runtime.forge (platform string), and config
 // (per-repo config map).
@@ -251,12 +251,13 @@ func (h *Harness) validateOverlays() error {
 }
 
 // ResolveOverlays evaluates each overlay's When expression against the
-// overlay CEL environment (event, runtime.forge, config) and merges the
-// first matching entry into the harness (first-match-wins, ADR 0088).
-// After resolution, h.Overlays is set to nil (consumed). When h.Overlays
-// is empty, this is a no-op. When event is nil, an empty map is passed
-// to CEL so overlays conditioned only on runtime.forge or config can still
-// match (e.g., CLI run/lock flows that don't have an event context).
+// overlay CEL environment (event, runtime.forge, config) and merges all
+// matching entries into the harness in order (later matches take
+// precedence over earlier matches). After resolution, h.Overlays is set
+// to nil (consumed). When h.Overlays is empty, this is a no-op. When
+// event is nil, an empty map is passed to CEL so overlays conditioned
+// only on runtime.forge or config can still match (e.g., CLI run/lock
+// flows that don't have an event context).
 //
 // CEL evaluation errors are treated as non-matching: the error is logged
 // and evaluation continues to the next entry. This matches the
@@ -294,7 +295,6 @@ func (h *Harness) ResolveOverlays(event map[string]any, forgePlatform string, co
 		if matched {
 			fc := entry.ForgeConfig
 			mergeForgeConfig(h, &fc)
-			break
 		}
 	}
 	h.Overlays = nil

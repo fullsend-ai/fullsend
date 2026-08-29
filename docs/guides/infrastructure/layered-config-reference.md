@@ -84,6 +84,9 @@ the overlay → base → code defaults chain.
 | `inference.project` | `string` (nested) | Scalar override | `""` (empty) |
 | `inference.region` | `string` (nested) | Scalar override | `"global"` |
 | `inference.wif_provider` | `string` (nested) | Scalar override | `""` (empty) |
+| `inference.openai.audience` | `string` (nested) | Scalar override | `""` (empty) |
+| `inference.openai.identity_provider_id` | `string` (nested) | Scalar override | `""` (empty) |
+| `inference.openai.service_account_id` | `string` (nested) | Scalar override | `""` (empty) |
 | `create_issues` | `*CreateIssuesConfig` | Replace whole object if set | `nil` |
 | `status_notifications` | `*StatusNotificationConfig` | Replace whole object if set | `nil` |
 
@@ -139,8 +142,8 @@ unset (`""`) falls through to parent, then to code default
 
 **`inference`** groups inference backend settings under a single YAML key
 (`inference:`) using the `PerRepoInferenceConfig` struct. Each subfield
-(`provider`, `project`, `region`, `wif_provider`) resolves independently
-through scalar override semantics:
+(`provider`, `project`, `region`, `wif_provider`, and the three under
+`openai`) resolves independently through scalar override semantics:
 
 - **`inference.provider`**: Inference provider identifier (e.g. `"vertex"`).
   Unset (`""`) falls through to parent, then to code default `"vertex"`.
@@ -150,10 +153,15 @@ through scalar override semantics:
   through to parent, then to code default `"global"`.
 - **`inference.wif_provider`**: Full WIF provider resource name. Unset (`""`)
   falls through to parent (no code default — must be provided by the installer).
+- **`inference.openai.{audience,identity_provider_id,service_account_id}`**:
+  the OpenAI Workload Identity identifiers for GPT on pi (ADR 0092), written
+  by `fullsend github setup --openai-*`. Each resolves independently through
+  the layers; a run needs all three from one source. The `FULLSEND_OPENAI_*`
+  runner variables, when any is set, replace the resolved block entirely.
 
 The `inference` pointer itself (`*PerRepoInferenceConfig`) uses nil to mean
 "no local inference settings" — if the entire `inference:` key is omitted
-from YAML, all four subfields fall through to the parent layer. If the key
+from YAML, all subfields fall through to the parent layer. If the key
 is present, each subfield is checked independently.
 
 Example:

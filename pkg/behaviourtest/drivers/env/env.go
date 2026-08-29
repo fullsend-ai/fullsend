@@ -59,7 +59,7 @@ func (c RunnerConfig) Validate() error {
 	if c.InstallMode != "per-repo" {
 		return fmt.Errorf("behaviour tests v1 only support BEHAVIOUR_INSTALL_MODE=per-repo, got %q", c.InstallMode)
 	}
-	if c.SCM != "github" {
+	if c.SCM != "github" && c.SCM != "gitlab" {
 		return fmt.Errorf("unsupported BEHAVIOUR_SCM %q", c.SCM)
 	}
 	if c.CI != "githubactions" {

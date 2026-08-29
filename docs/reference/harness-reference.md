@@ -84,7 +84,7 @@ api_servers:                         # Host-side REST proxies exposed to sandbox
     env:                             # Env vars for the server process
       API_KEY: "${API_KEY}"
 
-# ── Conditional overrides (CEL-guarded, first-match-wins) ────
+# ── Conditional overrides (CEL-guarded, merge-all-matching) ──
 overlays:
 - when: 'event.source.system == "jira" && runtime.forge == "github"'
   pre_script: scripts/pre-jira-on-gh.sh
@@ -162,10 +162,11 @@ Most fields are self-explanatory from the inline comments above. This section ex
 
 ## Field merge rules (for `base` and `overlays`)
 
-Overlays use first-match-wins: exactly one overlay (or none) applies to any
-given event. When an agent needs config from multiple concerns (e.g.
-JIRA-specific scripts *and* GitHub-specific runner env), create a combined
-entry. More-specific entries go first; broader fallbacks go last.
+Overlays use merge-all-matching: every overlay whose `when` evaluates to true
+is applied in declaration order, with later matches taking precedence over
+earlier ones for scalar fields. Cross-concern scenarios (e.g. JIRA-specific
+scripts *and* GitHub-specific runner env) can use separate overlay entries.
+More-specific entries go last so they override broader defaults.
 
 | Field type | Behavior |
 |-----------|----------|

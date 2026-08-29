@@ -42,6 +42,16 @@ func TestValidate_AcceptsDevAndStage(t *testing.T) {
 	}
 }
 
+func TestValidate_AcceptsGitLabSCM(t *testing.T) {
+	cfg := RunnerConfig{
+		SCM:         "gitlab",
+		CI:          "githubactions",
+		InstallMode: "per-repo",
+		Environment: "dev",
+	}
+	require.NoError(t, cfg.Validate())
+}
+
 func TestValidate_RejectsUnknownEnvironment(t *testing.T) {
 	cfg := RunnerConfig{
 		SCM:         "github",

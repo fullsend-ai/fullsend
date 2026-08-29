@@ -25,6 +25,12 @@ Accepted
 > [Harness Field Reference](../contributing/harness-fields.md). Update
 > that document (not this ADR) when overlay behavior evolves.
 
+> **Note (2026-08-27):** The matching semantics have been revised from
+> first-match-wins to merge-all-matching (later entries take precedence).
+> See [Harness Field Reference — Overlay resolution](../contributing/harness-fields.md#overlay-resolution-adr-0088)
+> and [#6686](https://github.com/fullsend-ai/fullsend/issues/6686) for
+> the current behavior.
+
 ## Context
 
 [ADR 0045](0045-forge-portable-harness-schema.md) added a `forge:` block to

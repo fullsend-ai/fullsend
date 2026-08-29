@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -254,6 +256,86 @@ func ImportProfile(ctx context.Context, id, profilePath string) error {
 	return nil
 }
 
+// ProfileExists reports whether the gateway lists a provider profile with
+// the given id (`openshell provider list-profiles`). ImportProfile trusts a
+// local content cache, which goes stale when the gateway is recreated or
+// the cache was written against another gateway; callers that must have
+// the profile present check here and ForgetProfileCache before importing
+// again.
+func ProfileExists(ctx context.Context, id string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, providerTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "openshell", "provider", "list-profiles", "-o", "json").CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("listing provider profiles: %w (output: %s)", err, strings.TrimSpace(string(out)))
+	}
+	return profileListed(out, id), nil
+}
+
+// profileListed matches id against `provider list-profiles -o json` (an
+// array of objects with an "id" field at OpenShell 0.0.115). Output that is
+// not JSON is read as the human table, whose first column is the id.
+func profileListed(out []byte, id string) bool {
+	var profiles []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(bytes.TrimSpace(out), &profiles); err == nil {
+		for _, p := range profiles {
+			if p.ID == id {
+				return true
+			}
+		}
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == id {
+			return true
+		}
+	}
+	return false
+}
+
+// EffectivePolicy returns the policy the sandbox is enforcing, as YAML, from
+// `openshell policy get <name> --full` (the composed policy, including the
+// gateway's provider entries). The CLI's metadata header is removed.
+func EffectivePolicy(ctx context.Context, name string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, providerTimeout)
+	defer cancel()
+	// stdout only: the CLI prints the header and the YAML there, and a
+	// stray stderr line (an update notice, a gateway warning) must not end
+	// up inside the document.
+	cmd := exec.CommandContext(ctx, "openshell", "policy", "get", name, "--full")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("reading the effective policy of sandbox %q: %w (stderr: %s)", name, err, strings.TrimSpace(stderr.String()))
+	}
+	return StripPolicyHeader(out), nil
+}
+
+// StripPolicyHeader removes the `Version:/Hash:/Status:` metadata block that
+// `openshell policy get` prints before the first `---` document marker. Output
+// without a marker is returned unchanged.
+func StripPolicyHeader(out []byte) []byte {
+	for _, marker := range []string{"\n---\n", "\n---\r\n"} {
+		if i := bytes.Index(out, []byte(marker)); i >= 0 {
+			return out[i+len(marker):]
+		}
+	}
+	if bytes.HasPrefix(out, []byte("---\n")) {
+		return out[4:]
+	}
+	return out
+}
+
+// ForgetProfileCache drops ImportProfile's content cache for a profile id so
+// the next ImportProfile re-sends it.
+func ForgetProfileCache(id string) {
+	os.Remove(profileFileCachePath(id)) //nolint:errcheck
+}
+
 // reservedCredentialKeys are env var names that must not be used as provider
 // credential keys. Credential keys become env vars in the openshell child
 // process; allowing security-sensitive names would let a URL-fetched provider
@@ -329,10 +411,57 @@ func EnsureProvider(ctx context.Context, name, providerType string, credentials,
 	}
 
 	args, extraEnv, secrets := buildProviderArgs(name, providerType, credentials, config, fromURL)
+	updateArgs := buildProviderUpdateArgs(name, credentials, config, fromURL)
+	return ensureProviderArgs(ctx, name, args, updateArgs, extraEnv, secrets)
+}
 
+// EnsureProviderLiteral creates or updates a provider whose credential
+// values were resolved in process — a token the runner exchanged or read
+// from its own environment — and must be passed to openshell verbatim.
+// Unlike EnsureProvider, values are never run through os.ExpandEnv: an
+// opaque access token may legitimately contain `$`, and expanding it would
+// mangle the credential silently (#6689). Values still travel by bare-key
+// form in the child process environment, never on the command line.
+func EnsureProviderLiteral(ctx context.Context, name, providerType string, credentials map[string]string) error {
+	for k := range credentials {
+		if reservedCredentialKeys[strings.ToUpper(k)] {
+			return fmt.Errorf("provider %q: credential key %q is a reserved environment variable name", name, k)
+		}
+	}
+	args, extraEnv, secrets := buildProviderArgsLiteral(name, providerType, credentials)
+	updateArgs := buildProviderUpdateArgsLiteral(name, credentials)
+	return ensureProviderArgs(ctx, name, args, updateArgs, extraEnv, secrets)
+}
+
+// UpdateProviderLiteral replaces the credential values of an existing
+// provider with in-process values (no expansion), the refresh counterpart
+// of EnsureProviderLiteral. OpenShell propagates the new generation to
+// running sandboxes within seconds; old placeholders keep resolving by
+// credential key.
+func UpdateProviderLiteral(ctx context.Context, name string, credentials map[string]string) error {
+	_, extraEnv, secrets := literalCredentialArgs(credentials)
+	return updateProvider(ctx, name, buildProviderUpdateArgsLiteral(name, credentials), extraEnv, secrets)
+}
+
+// UpdateProviderLiteralWithExpiry replaces credential values and records
+// their expiry in one `provider update`, so the new value never carries the
+// old expiry between two calls.
+func UpdateProviderLiteralWithExpiry(ctx context.Context, name string, credentials map[string]string, expiresAt time.Time) error {
+	args := buildProviderUpdateArgsLiteral(name, credentials)
+	_, extraEnv, secrets := literalCredentialArgs(credentials)
+	for _, k := range sortedKeys(credentials) {
+		args = append(args, "--credential-expires-at", k+"="+expiresAt.UTC().Format(time.RFC3339))
+	}
+	return updateProvider(ctx, name, args, extraEnv, secrets)
+}
+
+// ensureProviderArgs runs the create-with-retry loop shared by
+// EnsureProvider and EnsureProviderLiteral. updateArgs is used when the
+// provider already exists.
+func ensureProviderArgs(ctx context.Context, name string, args, updateArgs, extraEnv, secrets []string) error {
 	var lastErr error
 	for attempt := range providerRetries {
-		lastErr = tryCreateProvider(ctx, name, args, extraEnv, secrets, credentials, config, fromURL)
+		lastErr = tryCreateProvider(ctx, name, args, updateArgs, extraEnv, secrets)
 		if lastErr == nil {
 			return nil
 		}
@@ -378,7 +507,7 @@ var providerModifiedConcurrentlyRe = regexp.MustCompile(`provider was modified\W
 
 // tryCreateProvider performs a single attempt to create (or update) a
 // provider via openshell. Extracted from EnsureProvider to support retry.
-func tryCreateProvider(ctx context.Context, name string, args, extraEnv, secrets []string, credentials, config map[string]string, fromURL bool) error {
+func tryCreateProvider(ctx context.Context, name string, args, updateArgs, extraEnv, secrets []string) error {
 	createCtx, cancel := context.WithTimeout(ctx, providerTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(createCtx, "openshell", args...)
@@ -390,7 +519,7 @@ func tryCreateProvider(ctx context.Context, name string, args, extraEnv, secrets
 		if strings.Contains(strings.ToLower(outStr), "provider already exists") {
 			// Provider exists from a prior run — update it with current credentials.
 			// Pass original ctx (not createCtx) so updateProvider gets a fresh timeout.
-			return updateProvider(ctx, name, credentials, config, extraEnv, secrets, fromURL)
+			return updateProvider(ctx, name, updateArgs, extraEnv, secrets)
 		}
 		// Redact known credential values from error output.
 		for _, s := range secrets {
@@ -401,9 +530,10 @@ func tryCreateProvider(ctx context.Context, name string, args, extraEnv, secrets
 	return nil
 }
 
-// updateProvider runs openshell provider update for an already-existing provider.
-func updateProvider(ctx context.Context, name string, credentials, config map[string]string, extraEnv, secrets []string, fromURL bool) error {
-	args := buildProviderUpdateArgs(name, credentials, config, fromURL)
+// updateProvider runs openshell provider update for an already-existing
+// provider with pre-built args (see buildProviderUpdateArgs and
+// buildProviderUpdateArgsLiteral).
+func updateProvider(ctx context.Context, name string, args, extraEnv, secrets []string) error {
 	ctx, cancel := context.WithTimeout(ctx, providerTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "openshell", args...)
@@ -425,7 +555,7 @@ func buildProviderUpdateArgs(name string, credentials, config map[string]string,
 	args := []string{"provider", "update", name}
 	credKeys := sortedKeys(credentials)
 	for _, k := range credKeys {
-		expanded := os.ExpandEnv(credentials[k])
+		expanded := expandProviderValue(credentials[k])
 		if expanded != "" {
 			args = append(args, "--credential", k)
 		} else {
@@ -438,7 +568,7 @@ func buildProviderUpdateArgs(name string, credentials, config map[string]string,
 	for _, k := range cfgKeys {
 		v := config[k]
 		if !fromURL {
-			v = os.ExpandEnv(v)
+			v = expandProviderValue(v)
 		}
 		args = append(args, "--config", k+"="+v)
 	}
@@ -458,7 +588,7 @@ func buildProviderArgs(name, providerType string, credentials, config map[string
 
 	credKeys := sortedKeys(credentials)
 	for _, k := range credKeys {
-		expanded := os.ExpandEnv(credentials[k])
+		expanded := expandProviderValue(credentials[k])
 		if expanded != "" {
 			secrets = append(secrets, expanded)
 			extraEnv = append(extraEnv, fmt.Sprintf("%s=%s", k, expanded))
@@ -473,12 +603,95 @@ func buildProviderArgs(name, providerType string, credentials, config map[string
 	for _, k := range cfgKeys {
 		v := config[k]
 		if !fromURL {
-			v = os.ExpandEnv(v)
+			v = expandProviderValue(v)
 		}
 		args = append(args, "--config", k+"="+v)
 	}
 
 	return args, extraEnv, secrets
+}
+
+// buildProviderArgsLiteral is buildProviderArgs for in-process credential
+// values: no os.ExpandEnv, no config, bare-key form with the value in the
+// child environment only. An empty value uses the inline KEY= form.
+func buildProviderArgsLiteral(name, providerType string, credentials map[string]string) (args, extraEnv, secrets []string) {
+	args = []string{"provider", "create",
+		"--name", name,
+		"--type", providerType,
+	}
+	credArgs, extraEnv, secrets := literalCredentialArgs(credentials)
+	return append(args, credArgs...), extraEnv, secrets
+}
+
+// buildProviderUpdateArgsLiteral is buildProviderUpdateArgs for in-process
+// credential values (no expansion).
+func buildProviderUpdateArgsLiteral(name string, credentials map[string]string) []string {
+	args := []string{"provider", "update", name}
+	credArgs, _, _ := literalCredentialArgs(credentials)
+	return append(args, credArgs...)
+}
+
+func literalCredentialArgs(credentials map[string]string) (args, extraEnv, secrets []string) {
+	for _, k := range sortedKeys(credentials) {
+		v := credentials[k]
+		if v == "" {
+			args = append(args, "--credential", k+"=")
+			continue
+		}
+		secrets = append(secrets, v)
+		extraEnv = append(extraEnv, k+"="+v)
+		args = append(args, "--credential", k)
+	}
+	return args, extraEnv, secrets
+}
+
+// SetProviderCredentialExpiry records when a provider credential stops
+// being valid (`openshell provider update --credential-expires-at`). The
+// gateway then fails placeholder resolution closed after that instant, which
+// is the backstop for a run-scoped provider whose runner died before the
+// deferred DeleteProvider ran (#6689).
+func SetProviderCredentialExpiry(ctx context.Context, name, key string, expiresAt time.Time) error {
+	ctx, cancel := context.WithTimeout(ctx, providerTimeout)
+	defer cancel()
+	args := []string{"provider", "update", name,
+		"--credential-expires-at", key + "=" + expiresAt.UTC().Format(time.RFC3339),
+	}
+	out, err := exec.CommandContext(ctx, "openshell", args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("provider %q: setting credential expiry for %s failed: %w (output: %s)", name, key, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// deniedExpansionKeys are runner environment variables that a provider
+// definition's ${VAR} syntax must never expand — the runner's own
+// credentials (the CLI registers its oidcDenyKeys at start-up). Expansion
+// yields an empty string for them, the same outcome as an unset variable.
+var (
+	deniedExpansionMu   sync.RWMutex
+	deniedExpansionKeys = map[string]bool{}
+)
+
+// DenyExpansionKeys marks environment variable names that provider
+// definitions may not expand.
+func DenyExpansionKeys(keys ...string) {
+	deniedExpansionMu.Lock()
+	defer deniedExpansionMu.Unlock()
+	for _, k := range keys {
+		deniedExpansionKeys[k] = true
+	}
+}
+
+// expandProviderValue is os.ExpandEnv minus the denied keys.
+func expandProviderValue(v string) string {
+	deniedExpansionMu.RLock()
+	defer deniedExpansionMu.RUnlock()
+	return os.Expand(v, func(k string) string {
+		if deniedExpansionKeys[k] {
+			return ""
+		}
+		return os.Getenv(k)
+	})
 }
 
 func sortedKeys(m map[string]string) []string {
@@ -774,6 +987,48 @@ func CreateWithRetry(name string, providers []string, image, policy string, maxA
 	return fmt.Errorf("sandbox creation failed after %d attempts: %w", maxAttempts, lastErr)
 }
 
+// terminalSandboxPhases lists sandbox phases that will never transition to
+// Ready on their own. When one is detected during polling, createOnce returns
+// immediately instead of burning the full timeout. "Error" is the phase
+// OpenShell 0.0.111+ reports once the main process exits; "Completed" is
+// reserved for the pending upstream exit-zero mapping (NVIDIA/OpenShell#2884)
+// and is inert until that lands.
+var terminalSandboxPhases = []string{"Error", "Completed"}
+
+// readySandboxPhase is the phase createOnce waits for.
+const readySandboxPhase = "Ready"
+
+// sandboxPhaseRe matches the "Phase:" field of `openshell sandbox get` output.
+// The escape sequences cover the case where OpenShell is forced to colorize
+// despite writing to a pipe; they are interleaved with the separating
+// whitespace because either the label or the value (or both) may be wrapped.
+var sandboxPhaseRe = regexp.MustCompile(`(?m)^[ \t]*(?:\x1b\[[0-9;]*m)*Phase:(?:[ \t]|\x1b\[[0-9;]*m)*([A-Za-z]+)`)
+
+// sandboxPhase extracts the reported phase from `openshell sandbox get`
+// output, or "" when no phase field is present.
+func sandboxPhase(output string) string {
+	m := sandboxPhaseRe.FindStringSubmatch(output)
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
+
+// terminalSandboxPhase returns the sandbox phase when it is terminal, or ""
+// otherwise. Matching is anchored to the "Phase:" field rather than searching
+// the whole output, so an unrelated occurrence of a phase name elsewhere in
+// the get output (the sandbox name, labels, annotations, or the printed
+// policy YAML) cannot be mistaken for a terminal phase.
+func terminalSandboxPhase(output string) string {
+	phase := sandboxPhase(output)
+	for _, terminal := range terminalSandboxPhases {
+		if phase == terminal {
+			return phase
+		}
+	}
+	return ""
+}
+
 // createOnce creates a persistent OpenShell sandbox and waits for it to be
 // ready. If providers are given, they are passed as --provider flags. If image
 // is non-empty, it is passed as --from to start the sandbox from a container
@@ -798,19 +1053,28 @@ func createOnce(name string, providers []string, image, policy string, timeout t
 	for _, p := range providers {
 		args = append(args, "--provider", p)
 	}
-	// Without a command, sandbox create starts an interactive shell and
-	// blocks until it exits. Pass `true` so it returns immediately.
-	args = append(args, "--", "true")
+	// Keep a long-running process inside the sandbox so it stays alive
+	// for subsequent sandbox exec calls. Prior to OpenShell 0.0.111 the
+	// `true` command worked because an exited main process left the
+	// sandbox Ready; starting with 0.0.111 an exited process makes the
+	// sandbox terminal. --detach returns immediately while sleep infinity
+	// continues running in the background.
+	args = append(args, "--detach", "--", "sleep", "infinity")
 
 	cmd := exec.CommandContext(ctx, "openshell", args...)
 	cmd.Stdin = nil
 	out, err := cmd.CombinedOutput()
+	createOutput := strings.TrimSpace(string(out))
 
 	if err != nil {
 		check := exec.CommandContext(ctx, "openshell", "sandbox", "get", name)
 		if checkErr := check.Run(); checkErr != nil {
-			return fmt.Errorf("sandbox create failed: %s", string(out))
+			// Wrap err too: when openshell cannot execute at all the
+			// combined output is empty and it is the only diagnostic.
+			return fmt.Errorf("sandbox create failed: %w (output: %s)", err, createOutput)
 		}
+		// Sandbox exists despite the create error — continue to the
+		// polling loop, but preserve createOutput for diagnostics.
 	}
 
 	// Wait for sandbox to be fully ready (image pull can take a while).
@@ -824,8 +1088,30 @@ func createOnce(name string, providers []string, image, policy string, timeout t
 		checkErr := check.Run()
 		lastOutput = stdoutBuf.String()
 		lastStderr = stderrBuf.String()
-		if checkErr == nil && strings.Contains(lastOutput, "Ready") {
-			return nil
+		// Both checks read the anchored "Phase:" field rather than
+		// searching the whole output, which also carries the sandbox
+		// name, labels, annotations and the printed policy YAML — an
+		// unanchored search there could abort a healthy creation or
+		// report a provisioning sandbox as ready.
+		//
+		// When no phase field parses at all the output shape has
+		// changed, and anchoring alone would time out every healthy
+		// creation. Fall back to the historical substring check in that
+		// case only: it cannot reintroduce the decoy problem, because a
+		// decoy requires a phase field to be present and say otherwise.
+		if checkErr == nil {
+			switch phase := sandboxPhase(lastOutput); {
+			case phase == readySandboxPhase:
+				return nil
+			case phase == "" && strings.Contains(lastOutput, readySandboxPhase):
+				return nil
+			}
+			// Detect terminal phases and fail immediately instead of
+			// polling through the full timeout.
+			if phase := terminalSandboxPhase(lastOutput); phase != "" {
+				return fmt.Errorf("sandbox %q entered terminal phase %q (will not become Ready)\ncreate output: %s\nstdout: %s\nstderr: %s",
+					name, phase, createOutput, lastOutput, lastStderr)
+			}
 		}
 		time.Sleep(readyPoll)
 	}
@@ -836,8 +1122,41 @@ func createOnce(name string, providers []string, image, policy string, timeout t
 
 	containerLogs := collectPodmanLogs(name)
 
-	return fmt.Errorf("sandbox %q not ready after %s\nstdout: %s\nstderr: %s\nsupervisor logs: %s\ngateway logs: %s\ncontainer logs: %s",
-		name, timeout, lastOutput, lastStderr, supervisorLogs, gatewayLogs, containerLogs)
+	return fmt.Errorf("sandbox %q not ready after %s\ncreate output: %s\nstdout: %s\nstderr: %s\nsupervisor logs: %s\ngateway logs: %s\ncontainer logs: %s",
+		name, timeout, createOutput, lastOutput, lastStderr, supervisorLogs, gatewayLogs, containerLogs)
+}
+
+// ErrProviderNotFound is returned by DeleteProvider when the gateway has no
+// provider of that name — already gone, which callers treat as done.
+var ErrProviderNotFound = errors.New("provider not found")
+
+// DeleteProvider deletes a named provider from the gateway. Run-scoped
+// providers (e.g. openai-<suffix>) must be cleaned up regardless of
+// --keep-sandbox so a live-token provider does not outlive the run (#6689).
+// The 0.0.115 CLI reports a missing provider as "! Provider <name> not
+// found" with exit 0; that and any non-zero "not found" variant surface as
+// ErrProviderNotFound. A provider a sandbox still references cannot be
+// deleted (FAILED_PRECONDITION) and is reported as an error.
+func DeleteProvider(name string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), providerTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "openshell", "provider", "delete", name).CombinedOutput()
+	lower := strings.ToLower(string(out))
+	lname := strings.ToLower(name)
+	for _, form := range []string{
+		"provider " + lname + " not found",
+		"provider '" + lname + "' not found",
+		"provider " + lname + " does not exist",
+		"provider '" + lname + "' does not exist",
+	} {
+		if strings.Contains(lower, form) {
+			return ErrProviderNotFound
+		}
+	}
+	if err != nil {
+		return fmt.Errorf("provider delete %q failed: %w (output: %s)", name, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // Delete deletes a sandbox, returning any error for the caller to log.

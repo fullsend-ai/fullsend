@@ -8,12 +8,12 @@ import (
 
 // Driver abstracts SCM operations for behaviour tests.
 //
-// Concurrency: the github.Driver implementation is an immutable wrapper
-// around forge.Client (which is itself safe for concurrent use) and
-// holds no unsynchronized mutable fields. Sharing a single Driver
-// across goroutines via World.Clone is safe by design for
-// GODOG_CONCURRENCY>1. TestConcurrentAccess in package
-// github exercises the real driver under -race with a FakeClient.
+// Concurrency: the github.Driver and gitlab.Driver implementations are
+// immutable wrappers around forge.Client (which is itself safe for
+// concurrent use) and hold no unsynchronized mutable fields. Sharing a
+// single Driver across goroutines via World.Clone is safe by design for
+// GODOG_CONCURRENCY>1. TestConcurrentAccess in packages github and
+// gitlab exercises the real driver under -race with a FakeClient.
 //
 // If a future implementation adds mutable state (caches, counters,
 // buffers), it must synchronize access or be deep-copied per scenario

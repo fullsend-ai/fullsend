@@ -1,0 +1,37 @@
+---
+id: fullsend-openai
+display_name: Fullsend OpenAI
+description: OpenAI Responses API for the pi runtime (runner-exchanged, run-scoped access token)
+category: inference
+credentials:
+  - name: api_token
+    description: Short-lived OpenAI access token
+    env_vars: [OPENAI_API_KEY]
+    required: true
+    auth_style: bearer
+    header_name: authorization
+    refresh:
+      strategy: external
+# The endpoint uses explicit allow rules instead of an `access:` preset on
+# purpose: pi 0.84.3's openai provider only ever calls POST /v1/responses,
+# and a preset (read-only/read-write) would also admit GET /v1/models and
+# every other path on the host.
+endpoints:
+  - host: api.openai.com
+    port: 443
+    path: /v1/responses
+    protocol: rest
+    enforcement: enforce
+    # OpenShell 0.0.110+ resets any inspected request body that contains the
+    # literal placeholder prefix, whether or not a credential follows it
+    # (NVIDIA/OpenShell#2904) — an agent that has read text mentioning the
+    # prefix could not call the model. Model bodies never legitimately carry
+    # a placeholder, so let this endpoint forward bodies uninspected; the
+    # bearer header is still injected and the method/path rules still apply.
+    allow_uninspected_credentials: true
+    rules:
+      - allow:
+          method: POST
+          path: /v1/responses
+binaries:
+  - "**/node"

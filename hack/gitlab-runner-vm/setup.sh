@@ -40,7 +40,7 @@ if [ -f "${_openshell_version_sh}" ]; then
   # shellcheck source=../../.github/scripts/openshell-version.sh
   source "${_openshell_version_sh}"
 fi
-OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.0.83}"
+OPENSHELL_VERSION="${OPENSHELL_VERSION:-0.0.116}"
 
 EXECUTOR_DIR="${HOME}/gitlab-runner-executor"
 BUILDS_DIR="${HOME}/builds"
@@ -410,7 +410,7 @@ configure_gateway() {
       # bare stub here would permanently drop the packaged defaults (without
       # compute_drivers the gateway auto-detects Kubernetes before Podman).
       # Seed from the packaged default so the values track the installed RPM;
-      # the literal fallback mirrors v0.0.83's gateway.toml.default.
+      # the literal fallback mirrors the packaged gateway.toml.default.
       local packaged_default=/usr/share/openshell-gateway/gateway.toml.default
       if [ -f "${packaged_default}" ]; then
         install -m 0644 "${packaged_default}" "${gateway_toml}"

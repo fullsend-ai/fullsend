@@ -2,7 +2,9 @@ package harnessdispatch
 
 import (
 	"context"
-	"log"
+	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -11,6 +13,11 @@ import (
 	"github.com/fullsend-ai/fullsend/internal/harness"
 	"github.com/fullsend-ai/fullsend/internal/normevent"
 )
+
+// annotationWriter is the destination for GitHub Actions workflow command
+// annotations (::error::, ::warning::). Defaults to os.Stderr; tests
+// replace it to capture output.
+var annotationWriter io.Writer = os.Stderr
 
 // TriggeredHarness pairs a registered agent with its loaded harness.
 type TriggeredHarness struct {
@@ -53,7 +60,7 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 	for _, agent := range registered {
 		resolved, err := harness.ResolveRegisteredPath(ctx, configDir, agent.Entry, allowlist, composeOpts)
 		if err != nil {
-			log.Printf("harness dispatch: skipping agent %s: resolve failed: %v", agent.Name, err)
+			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping agent %s: resolve failed: %v\n", agent.Name, err)
 			continue
 		}
 		// Use LoadWithBase to handle harnesses with base: composition
@@ -66,7 +73,7 @@ func ListTriggeredHarnesses(ctx context.Context, configDir string, cfg config.Co
 		}
 		h, _, err := harness.LoadWithBase(ctx, resolved.Path, loadOpts)
 		if err != nil {
-			log.Printf("harness dispatch: skipping agent %s: load failed: %v", agent.Name, err)
+			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping agent %s: load failed: %v\n", agent.Name, err)
 			continue
 		}
 		if strings.TrimSpace(h.Trigger) == "" {
@@ -87,7 +94,7 @@ func MatchHarnesses(candidates []TriggeredHarness, event *normevent.Event) ([]Tr
 	for _, c := range candidates {
 		ok, err := harness.EvaluateTrigger(c.Harness.Trigger, eventMap)
 		if err != nil {
-			log.Printf("harness dispatch: trigger eval failed for %s: %v", c.Name, err)
+			fmt.Fprintf(annotationWriter, "::error::harness dispatch: skipping agent %s: trigger eval failed: %v\n", c.Name, err)
 			continue
 		}
 		if ok {

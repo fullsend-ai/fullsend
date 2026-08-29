@@ -22,6 +22,7 @@ through fullsend's table, and a bare id gets the provider from `FULLSEND_PI_PROV
 | Claude | `anthropic-vertex/claude-opus-4-6` | vendored extension |
 | Gemini | `google-vertex/gemini-3.7-flash` | pi built-in |
 | Grok | `xai-vertex/xai/grok-4.6` | vendored extension |
+| GPT | `openai/gpt-5.6-luna` | pi built-in |
 
 > **Grok's spec has three segments on purpose.** pi sends the model id on the wire verbatim and
 > Vertex wants the publisher-qualified `xai/grok-4.6`, so the id keeps its slash. Use the full
@@ -29,6 +30,24 @@ through fullsend's table, and a bare id gets the provider from `FULLSEND_PI_PROV
 > provider, which talks to xAI's own API and wants `XAI_API_KEY`. fullsend normalises the short form
 > and a bare id under `FULLSEND_PI_PROVIDER=xai-vertex`, case-insensitively, so both land on the
 > canonical spec.
+
+> **GPT via OpenAI** needs no API key in CI: the runner exchanges the job's GitHub identity for a
+> short-lived OpenAI token (set three repository variables — see [OpenAI Workload
+> Identity](../guides/infrastructure/openai-workload-identity.md); GitHub Actions only) and keeps it
+> in a provider that belongs to this run, refreshed before it expires and removed when the run
+> ends. Locally, put `OPENAI_API_KEY` in an env file for the runner ([Running agents
+> locally](../guides/user/running-agents-locally.md#get-an-openai-key-gpt-on-pi-only)). Declare
+> `providers: [openai]` on the harness; the sandbox can then reach `api.openai.com` for the
+> Responses API and nothing else, and never sees the credential
+> ([ADR 0092](../ADRs/0092-openai-wif-credential-delivery.md)). A custom harness must carry a
+> `policy:` (the fleet's `policies/base.yaml`); without one the image's default policy leaves an
+> uninspected route to `api.openai.com` and the run stops before the agent starts. **Exercised so
+> far:** the local static-key path end to end on 2026-08-27 (OpenShell 0.0.115, pi 0.84.3,
+> `gpt-5.6-luna`: placeholder in the sandbox, pi reading it from the runner-seeded `auth.json`, tool
+> calls through the hook adapter, run-scoped provider deleted at the end, expired in place under
+> `--keep-sandbox`), plus the placeholder-generation experiments recorded in the ADR. The WIF path
+> has no live run yet; `features/runtime/pi-openai.feature` stays gated on `runtime-pi-openai`
+> until an OpenAI organization is mapped to the pool repositories.
 
 Harness `model:` and `agents:` entry `model:` values accept the `provider/id` form directly
 (`xai-vertex/xai/grok-4.6`); a harness can also select a provider with a bare `model:` plus
@@ -64,7 +83,7 @@ endpoints answer `FAILED_PRECONDITION` — so region variables are deliberately 
 
 | | |
 |---|---|
-| Credentials | Same WIF `external_account` + refreshed OIDC token as Claude Code. `ANTHROPIC_*` unset on the Claude provider, `XAI_API_KEY` unset on the Grok one, so a stray key cannot shadow a Vertex provider |
+| Credentials | Same WIF `external_account` + refreshed OIDC token as Claude Code for Vertex providers. `ANTHROPIC_*` unset on the Claude provider, `XAI_API_KEY` unset on the Grok one; `OPENAI_BASE_URL`/`AZURE_OPENAI_API_KEY` unset on the OpenAI one. OpenAI uses a runner-exchanged WIF token (ADR 0092) |
 | Unattended | No approval prompts, stdin closed, bounded retries; a missing credential exits 1 |
 | Artifacts | `output.jsonl`, `transcripts/<agent>-<ts>_<id>.jsonl`, `metrics.json` with `runtime: pi`, plus `pi-debug.log` with `--debug` |
 | Extra knobs | `FULLSEND_PI_PROVIDER` (prefix for bare ids), `FULLSEND_PI_BASH_ALLOWLIST=enforce` |

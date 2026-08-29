@@ -137,8 +137,8 @@ func (a AgentEntry) DerivedName() string {
 const (
 	// DefaultUpstreamRepo is the canonical fullsend repository for layered workflow calls.
 	DefaultUpstreamRepo = "fullsend-ai/fullsend"
-	// DefaultUpstreamRef is the default tag for layered upstream workflow calls.
-	DefaultUpstreamRef = "v0"
+	// DefaultUpstreamRef is the default ref for layered upstream workflow calls.
+	DefaultUpstreamRef = "main"
 	// DefaultGHRunner is the default GitHub Actions runner image for scaffold workflows.
 	DefaultGHRunner = "ubuntu-24.04"
 )
@@ -165,6 +165,51 @@ type PerRepoInferenceConfig struct {
 	Project     string `yaml:"project,omitempty"`
 	Region      string `yaml:"region,omitempty"`
 	WIFProvider string `yaml:"wif_provider,omitempty"`
+	// OpenAI holds the OpenAI Workload Identity Federation identifiers
+	// (ADR 0092). They are not secrets: the mapping they name only
+	// trusts a GitHub OIDC token whose claims match, and the run prints
+	// them. The FULLSEND_OPENAI_* runner variables, when set, take
+	// precedence over this block.
+	OpenAI *OpenAIWIFConfig `yaml:"openai,omitempty"`
+}
+
+// OpenAIWIFConfig identifies the OpenAI Workload Identity provider and
+// service-account mapping a run exchanges its GitHub OIDC token with.
+type OpenAIWIFConfig struct {
+	Audience           string `yaml:"audience,omitempty"`
+	IdentityProviderID string `yaml:"identity_provider_id,omitempty"`
+	ServiceAccountID   string `yaml:"service_account_id,omitempty"`
+}
+
+// Trimmed returns the identifiers with surrounding whitespace removed, so a
+// whitespace-only YAML value counts as unset.
+func (c OpenAIWIFConfig) Trimmed() OpenAIWIFConfig {
+	return OpenAIWIFConfig{
+		Audience:           strings.TrimSpace(c.Audience),
+		IdentityProviderID: strings.TrimSpace(c.IdentityProviderID),
+		ServiceAccountID:   strings.TrimSpace(c.ServiceAccountID),
+	}
+}
+
+// IsZero reports whether no identifier is set.
+func (c OpenAIWIFConfig) IsZero() bool {
+	return c.Audience == "" && c.IdentityProviderID == "" && c.ServiceAccountID == ""
+}
+
+// Missing lists the identifiers still unset, in a fixed order, so a
+// partially configured block can be reported precisely.
+func (c OpenAIWIFConfig) Missing() []string {
+	var missing []string
+	if c.Audience == "" {
+		missing = append(missing, "audience")
+	}
+	if c.IdentityProviderID == "" {
+		missing = append(missing, "identity_provider_id")
+	}
+	if c.ServiceAccountID == "" {
+		missing = append(missing, "service_account_id")
+	}
+	return missing
 }
 
 // StatusNotificationConfig controls status comments and reactions posted

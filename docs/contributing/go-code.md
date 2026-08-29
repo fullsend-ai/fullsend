@@ -320,6 +320,30 @@ Package-level variables that hold function values for test overriding must:
 
 Examples: `internal/sandbox/sandbox.go` (`RetrySleepFn`), `internal/dispatch/cf/provisioner.go` (`BuildWASMFn`, `CopyWASMExecFn`).
 
+## Secure HTTP clients
+
+**Scope.** These requirements apply to any client whose target URL is derived from **untrusted configuration, user input, or remote content** — that is where SSRF lives. A client that talks to a **fixed first-party endpoint supplied by the sandbox/runner bootstrap** is out of scope for the SSRF hardening below. For example, `internal/cli/fetchskill.go` POSTs to the runner-side fetch service on the host, which is bound to `0.0.0.0` per ADR 0046, bearer-token authenticated, and reached over a private address. The runner injects `FULLSEND_FETCH_URL` and `FULLSEND_FETCH_TOKEN` as reserved keys that harness YAML cannot shadow, so this is a deliberate trusted channel rather than an arbitrary configuration URL. Such clients should still set a timeout and bound the response body, but do not need IP filtering, proxy disabling, or an HTTPS-only rule. The current `fetchskill.go` client sets a timeout but does not yet bound its decoded response body; that gap is not an example to copy.
+
+**Prefer the shared, SSRF-hardened fetcher `internal/fetch.FetchURL` over constructing a raw `http.Client`.** Pass it a `fetch.FetchPolicy` (see `fetch.DefaultPolicy` for the GitHub-content defaults) rather than re-implementing the protections. `internal/fetch/fetch.go` is the canonical reference.
+
+`FetchURL` has a deliberately narrow envelope — reach for it only when all of these hold, otherwise it will reject the request or can't express what you need:
+
+- **The legitimate host set is known up front.** `FetchURL` requires a non-empty `AllowedDomains` allowlist — an empty allowlist rejects *every* URL (`isAllowedDomain` returns false), so the allowlist is mandatory, not optional.
+- **GET, HTTP 200, no custom headers.** It issues a `GET`, accepts only a 200 response, and sends no request headers — so it cannot carry authentication, use another method, or handle non-200 status codes.
+- **Whole body buffered, port 443.** It reads the entire body into memory and defaults `AllowedPorts` to `{"443"}`.
+
+When the fetch falls outside that envelope you must build a custom client. Common reasons: **the legitimate host set is not knowable up front** (e.g. `internal/repos/manifest.go`'s `LoadManifest` accepts any user-supplied `https://` host, so no allowlist covers it — this is why `fetchManifestURL`/`safeDialContext` exist and deliberately do *not* use `FetchURL`), authenticated requests, non-GET methods, non-200 handling, streaming, or a client reused across many calls. The complete worked pattern is `LoadManifest`'s initial HTTPS-only gate together with `fetchManifestURL`/`safeDialContext`; the fetch functions enforce the remaining controls and HTTPS-only redirects, but do not independently reject a non-HTTPS initial URL. A custom in-scope client **must** apply all of these properties:
+
+- **HTTPS only.** Reject `http://` inputs, and validate the scheme on redirects too — a `CheckRedirect` that lets an `https://` origin bounce to `http://` reopens the hole.
+- **Reject internal/reserved IPs, on every connection.** Inside a custom `DialContext`, resolve the host the transport actually asks for (split the `addr` it passes you, resolve it, check every IP with `netutil.CheckIP` / `netutil.IsInternal`), then dial one of those validated IPs — never re-dial the hostname. Validating and dialing the exact same IP is the DNS-rebinding defense. Do this **per connection**, the way `safeDialContext` does, so a redirect to a different host is resolved and validated before that connection. `fetch.FetchURL`'s single up-front resolution and pinning is safe because it blocks redirects outright (its `CheckRedirect` returns `http.ErrUseLastResponse`); it cannot validate a redirect to a different host, so never copy that pattern into a client that follows redirects.
+- **Keep the original hostname on the request.** Only the dial *address* changes to the validated IP — the `http.Request` URL, and therefore SNI and certificate verification, must still carry the original hostname, or TLS verification breaks. Build the request from the original URL and let `DialContext` swap the address, exactly as `fetch.FetchURL` does (`http.NewRequestWithContext(ctx, …, rawURL, …)` while its `DialContext` dials the IP). **Never** rewrite the request URL to the IP, and never reach for `InsecureSkipVerify` to paper over the resulting cert failure.
+- **Disable proxies.** Set `Transport.Proxy = nil` so `HTTP(S)_PROXY` env vars can't redirect the request.
+- **Bound the time.** Set an explicit timeout (30s is the repo default) via `context.WithTimeout` and/or `http.Client.Timeout`.
+- **Bound the size.** Wrap the response body in `io.LimitReader(body, max+1)` and error if the read exceeds `max` (1 MB is the manifest default; pick a limit appropriate to the payload). Never `io.ReadAll` — or `json.NewDecoder` — an unbounded body.
+- **Constrain redirects.** Block them (as `fetch.FetchURL` does) or cap the hop count; and if you allow any hop, re-run the checks above against each redirect target — both the scheme check and, via per-connection dialing, the internal-IP check — not just the scheme.
+
+When the set of legitimate hosts *is* known, add a domain allowlist too, even on the custom path.
+
 ## Running the fullsend CLI
 
 **Audience:** contributors and agents working from a **repo checkout**. Do not

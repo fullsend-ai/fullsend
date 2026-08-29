@@ -83,6 +83,27 @@ type ProviderDef struct {
 	Config      map[string]string `yaml:"config,omitempty"` // e.g. OPENAI_BASE_URL
 }
 
+// ParseProviderDef parses and validates one provider definition document.
+func ParseProviderDef(data []byte) (ProviderDef, error) {
+	var def ProviderDef
+	if err := yaml.Unmarshal(data, &def); err != nil {
+		return ProviderDef{}, fmt.Errorf("parsing provider definition: %w", err)
+	}
+	if def.Name == "" {
+		return ProviderDef{}, fmt.Errorf("name is required")
+	}
+	if !validProviderName.MatchString(def.Name) {
+		return ProviderDef{}, fmt.Errorf("name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", def.Name)
+	}
+	if def.Type == "" {
+		return ProviderDef{}, fmt.Errorf("type is required")
+	}
+	if !validProviderName.MatchString(def.Type) {
+		return ProviderDef{}, fmt.Errorf("type %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", def.Type)
+	}
+	return def, nil
+}
+
 // LoadProviderDefs reads YAML files from a providers/ directory and returns
 // the parsed definitions. Returns nil (no error) if the directory does not exist.
 // When only is non-nil, only files whose stem (filename without extension)
@@ -109,21 +130,9 @@ func LoadProviderDefs(dir string, only ...map[string]struct{}) ([]ProviderDef, e
 		if err != nil {
 			return nil, fmt.Errorf("reading provider file %s: %w", e.Name(), err)
 		}
-		var def ProviderDef
-		if err := yaml.Unmarshal(data, &def); err != nil {
-			return nil, fmt.Errorf("parsing provider file %s: %w", e.Name(), err)
-		}
-		if def.Name == "" {
-			return nil, fmt.Errorf("provider file %s: name is required", e.Name())
-		}
-		if !validProviderName.MatchString(def.Name) {
-			return nil, fmt.Errorf("provider file %s: name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", e.Name(), def.Name)
-		}
-		if def.Type == "" {
-			return nil, fmt.Errorf("provider file %s: type is required", e.Name())
-		}
-		if !validProviderName.MatchString(def.Type) {
-			return nil, fmt.Errorf("provider file %s: type %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", e.Name(), def.Type)
+		def, err := ParseProviderDef(data)
+		if err != nil {
+			return nil, fmt.Errorf("provider file %s: %w", e.Name(), err)
 		}
 		if filter != nil {
 			if _, ok := filter[def.Name]; !ok {

@@ -4,10 +4,13 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,12 +38,115 @@ func newTestDriver(client forge.Client) *Driver {
 func TestDispatchDetectionWindow_AtLeast4Minutes(t *testing.T) {
 	t.Parallel()
 
-	// The dispatch detection window is dispatchMaxTry × dispatchPoll.
+	// The dispatch detection window is dispatchTimeout.
 	// It must be at least 4 minutes to tolerate slow GitHub webhook
-	// delivery. See issue #5503.
-	window := time.Duration(dispatchMaxTry) * dispatchPoll
-	assert.GreaterOrEqual(t, window, 4*time.Minute,
-		"dispatch detection window (%v) should be at least 4 minutes", window)
+	// delivery. See issues #5503 and #6668.
+	assert.GreaterOrEqual(t, dispatchTimeout, 4*time.Minute,
+		"dispatch detection window (%v) should be at least 4 minutes", dispatchTimeout)
+}
+
+func TestNextBackoff(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		current time.Duration
+		max     time.Duration
+		want    time.Duration
+	}{
+		{2 * time.Second, 30 * time.Second, 4 * time.Second},
+		{4 * time.Second, 30 * time.Second, 8 * time.Second},
+		{8 * time.Second, 30 * time.Second, 16 * time.Second},
+		{16 * time.Second, 30 * time.Second, 30 * time.Second},
+		{30 * time.Second, 30 * time.Second, 30 * time.Second},
+		{1 * time.Second, 1 * time.Second, 1 * time.Second},
+	}
+	for _, tt := range tests {
+		got := nextBackoff(tt.current, tt.max)
+		assert.Equal(t, tt.want, got,
+			"nextBackoff(%v, %v)", tt.current, tt.max)
+	}
+}
+
+// delayedRunsClient wraps FakeClient so ListWorkflowRuns returns no
+// runs for the first N calls, then returns the configured runs.
+// Used to verify exponential backoff intervals during dispatch polling.
+type delayedRunsClient struct {
+	*forge.FakeClient
+	mu       sync.Mutex
+	calls    int
+	delayFor int
+	runs     []forge.WorkflowRun
+}
+
+func (c *delayedRunsClient) ListWorkflowRuns(_ context.Context, _, _, _ string) ([]forge.WorkflowRun, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	if c.calls <= c.delayFor {
+		return nil, nil
+	}
+	return append([]forge.WorkflowRun(nil), c.runs...), nil
+}
+
+func TestDispatchPollingBackoff(t *testing.T) {
+	t.Parallel()
+
+	// Track intervals passed to afterFunc to verify exponential growth.
+	var mu sync.Mutex
+	var intervals []time.Duration
+	recordingAfter := func(d time.Duration) <-chan time.Time {
+		mu.Lock()
+		intervals = append(intervals, d)
+		mu.Unlock()
+		ch := make(chan time.Time, 1)
+		ch <- time.Now()
+		return ch
+	}
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	successRun := forge.WorkflowRun{
+		ID: 1, Status: "completed", Conclusion: "success",
+		CreatedAt: "2026-01-02T00:00:00Z", Event: "issues",
+	}
+	fake := forge.NewFakeClient()
+	// Seed GetWorkflowRun so the completion-wait loop succeeds.
+	fake.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/success": &successRun,
+	}
+	client := &delayedRunsClient{
+		FakeClient: fake,
+		delayFor:   4, // return no runs for first 4 calls
+		runs:       []forge.WorkflowRun{successRun},
+	}
+
+	d := &Driver{Client: client, afterFunc: recordingAfter}
+	run, err := d.WaitForWorkflow(context.Background(), "org", "repo", "test.yaml", after, "issues")
+	require.NoError(t, err)
+	require.NotNil(t, run)
+	assert.Equal(t, 1, run.ID)
+
+	mu.Lock()
+	defer mu.Unlock()
+	// The dispatch detection phase runs 5 polls (4 empty + 1 successful).
+	// After detection the completion-wait loop uses pollInterval, so only
+	// check the first 5 intervals for exponential growth.
+	dispatchIntervals := intervals[:5]
+	assert.Equal(t, dispatchPollInit, dispatchIntervals[0],
+		"first interval should be dispatchPollInit")
+	for i := 1; i < len(dispatchIntervals); i++ {
+		assert.GreaterOrEqual(t, dispatchIntervals[i], dispatchIntervals[i-1],
+			"interval[%d] (%v) should be >= interval[%d] (%v)",
+			i, dispatchIntervals[i], i-1, dispatchIntervals[i-1])
+		assert.LessOrEqual(t, dispatchIntervals[i], dispatchPollMax,
+			"interval[%d] (%v) should be <= max (%v)",
+			i, dispatchIntervals[i], dispatchPollMax)
+	}
+	// Verify specific exponential progression: 2s, 4s, 8s, 16s, 30s.
+	assert.Equal(t, 2*time.Second, dispatchIntervals[0])
+	assert.Equal(t, 4*time.Second, dispatchIntervals[1])
+	assert.Equal(t, 8*time.Second, dispatchIntervals[2])
+	assert.Equal(t, 16*time.Second, dispatchIntervals[3])
+	assert.Equal(t, 30*time.Second, dispatchIntervals[4])
 }
 
 func TestSelectWorkflowRun_ReturnsFailedRun(t *testing.T) {
@@ -1201,6 +1307,7 @@ func TestNew_SetsAfterFunc(t *testing.T) {
 	driver, ok := d.(*Driver)
 	require.True(t, ok, "New should return *Driver")
 	assert.NotNil(t, driver.afterFunc, "afterFunc should be set by New")
+	assert.NotNil(t, driver.nowFunc, "nowFunc should be set by New")
 	assert.Equal(t, "tok", driver.Token)
 }
 
@@ -1334,21 +1441,465 @@ func TestWaitForHarnessAgent_NoRealSleep(t *testing.T) {
 		"poll loop should not sleep on real wall-clock intervals")
 }
 
-func TestFormatRunDiagnostics_Empty(t *testing.T) {
-	t.Parallel()
-	assert.Equal(t, "no recent workflow runs found after trigger time",
-		formatRunDiagnostics(nil))
+// steppingClock returns a nowFunc that advances by step on every call,
+// so deadline-based waits reach their timeout branch deterministically
+// without sleeping. The first call returns start.
+func steppingClock(start time.Time, step time.Duration) func() time.Time {
+	var calls atomic.Int64
+	return func() time.Time {
+		n := calls.Add(1) - 1
+		return start.Add(time.Duration(n) * step)
+	}
 }
 
-func TestFormatRunDiagnostics_WithRuns(t *testing.T) {
+// newTimeoutTestDriver returns a Driver whose harness waits time out
+// after a handful of polls: instant timers plus a clock that advances one
+// minute per reading.
+func newTimeoutTestDriver(client forge.Client) *Driver {
+	return &Driver{
+		Client:    client,
+		afterFunc: instantAfter,
+		nowFunc:   steppingClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), time.Minute),
+	}
+}
+
+var errRateLimited = errors.New("github api: 403 retryable error after 5 attempts on GET /repos/org/repo/actions/workflows/fullsend.yaml/runs (last delay: 54s)")
+
+// TestWaitForHarnessAgent_TimeoutReportsListingErrors covers the #6647
+// attempt-1 shape: every listing call fails (rate limited) for the whole
+// wait. The timeout must say so instead of "no recent workflow runs".
+func TestWaitForHarnessAgent_TimeoutReportsListingErrors(t *testing.T) {
 	t.Parallel()
 
-	runs := []forge.WorkflowRun{
-		{ID: 1, Status: "completed", Conclusion: "failure", HTMLURL: "https://example.com/1"},
-		{ID: 2, Status: "in_progress", HTMLURL: "https://example.com/2"},
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.Errors = map[string]error{
+		"ListWorkflowRuns":        errRateLimited,
+		"ListRepositoryArtifacts": errRateLimited,
 	}
-	got := formatRunDiagnostics(runs)
-	assert.Contains(t, got, "recent workflow runs (2)")
-	assert.Contains(t, got, "run 1: status=completed conclusion=failure")
-	assert.Contains(t, got, "run 2: status=in_progress")
+
+	d := newTimeoutTestDriver(client)
+	_, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
+	require.Error(t, err)
+	msg := err.Error()
+	assert.Contains(t, msg, `harness agent "triage" did not complete successfully`)
+	assert.NotContains(t, msg, "no recent workflow runs found")
+	assert.Contains(t, msg, "run listing failed: "+errRateLimited.Error())
+	assert.Contains(t, msg, "artifact listing failed: "+errRateLimited.Error())
+	// Both listings failed on every poll; the wait made at least one.
+	assertAllPollsFailed(t, msg, "run listing failed")
+	assertAllPollsFailed(t, msg, "artifact listing failed")
+}
+
+// assertAllPollsFailed checks that the "(failed on N of M polls ...)"
+// tail following prefix reports N == M > 0 and carries the 403 text.
+func assertAllPollsFailed(t *testing.T, msg, prefix string) {
+	t.Helper()
+	re := regexp.MustCompile(regexp.QuoteMeta(prefix) + `: .*?403.*?\(same error on (\d+) of (\d+) polls during the wait\)`)
+	m := re.FindStringSubmatch(msg)
+	require.NotNil(t, m, "no poll-failure tail after %q in: %s", prefix, msg)
+	assert.Equal(t, m[1], m[2], "every poll should have failed")
+	assert.NotEqual(t, "0", m[1], "the wait should have polled at least once")
+}
+
+// TestWaitForHarnessAgent_TimeoutReportsUnexpandedMatrix covers the #6647
+// attempt-2 shape: the Harness dispatch job produced an empty matrix, so
+// the only run after the trigger time concluded "success" with the
+// harness matrix job skipped under its unexpanded name and no artifact
+// was ever uploaded.
+func TestWaitForHarnessAgent_TimeoutReportsUnexpandedMatrix(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID: 300, Status: "completed", Conclusion: "success",
+			CreatedAt: "2026-01-01T00:00:02Z",
+			HTMLURL:   "https://github.com/org/repo/actions/runs/300",
+		},
+	}
+	client.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		300: {
+			{ID: 1, Name: "dispatch / Route", Status: "completed", Conclusion: "success"},
+			{ID: 2, Name: "dispatch / Harness dispatch", Status: "completed", Conclusion: "success"},
+			{ID: 3, Name: "dispatch / Harness run (${{ matrix.agent }})", Status: "completed", Conclusion: "skipped"},
+		},
+	}
+
+	d := newTimeoutTestDriver(client)
+	_, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "local-ping", after)
+	require.Error(t, err)
+	msg := err.Error()
+	assert.Contains(t, msg, "run 300: status=completed conclusion=success")
+	assert.Contains(t, msg, `harness matrix not expanded (job "dispatch / Harness run (${{ matrix.agent }})" conclusion=skipped): the "dispatch / Harness dispatch" job succeeded with an empty matrix`)
+	assert.Contains(t, msg, "no repository artifacts listed")
+	assert.NotContains(t, msg, "failed on", "no listing errors occurred")
+	assert.NotContains(t, msg, "cut short", "no poll ran with an exhausted budget")
+}
+
+func TestDescribeAgentJob(t *testing.T) {
+	t.Parallel()
+
+	placeholder := forge.WorkflowJob{ID: 3, Name: "dispatch / Harness run (${{ matrix.agent }})", Status: "completed", Conclusion: "skipped"}
+	cases := []struct {
+		name string
+		jobs []forge.WorkflowJob
+		err  error
+		want string
+	}{
+		{name: "lookup error", err: errRateLimited, want: "job lookup failed: " + errRateLimited.Error()},
+		{name: "no jobs yet", jobs: []forge.WorkflowJob{}, want: "no jobs listed for run (not populated yet?)"},
+		{name: "agent job present", jobs: []forge.WorkflowJob{{Name: "dispatch / Harness run (triage)", Status: "completed", Conclusion: "failure"}},
+			want: `agent job "dispatch / Harness run (triage)" status=completed conclusion=failure`},
+		{name: "no agent job, no placeholder", jobs: []forge.WorkflowJob{{Name: "dispatch / Route", Status: "completed", Conclusion: "success"}},
+			want: `no "Harness run (triage)" job in run`},
+		{name: "placeholder, dispatch succeeded", jobs: []forge.WorkflowJob{{Name: "dispatch / Harness dispatch", Status: "completed", Conclusion: "success"}, placeholder},
+			want: `harness matrix not expanded (job "dispatch / Harness run (${{ matrix.agent }})" conclusion=skipped): the "dispatch / Harness dispatch" job succeeded with an empty matrix, so no harness was dispatched for this event (possible causes include no registered harness triggers, no trigger matching the event, the actor's role not resolving or not being authorized, or a kill switch); see that job's log`},
+		{name: "placeholder, dispatch failed", jobs: []forge.WorkflowJob{{Name: "dispatch / Harness dispatch", Status: "completed", Conclusion: "failure"}, placeholder},
+			want: `harness matrix not expanded (job "dispatch / Harness run (${{ matrix.agent }})" conclusion=skipped): the "dispatch / Harness dispatch" job concluded failure; see its log`},
+		{name: "placeholder, no dispatch job", jobs: []forge.WorkflowJob{placeholder},
+			want: `harness matrix not expanded (job "dispatch / Harness run (${{ matrix.agent }})" conclusion=skipped): no "Harness dispatch" job in run to attribute it to`},
+		{name: "placeholder cancelled before expansion", jobs: []forge.WorkflowJob{
+			{Name: "dispatch / Harness dispatch", Status: "completed", Conclusion: "success"},
+			{Name: "dispatch / Harness run (${{ matrix.agent }})", Status: "completed", Conclusion: "cancelled"}},
+			want: `harness matrix not expanded (job "dispatch / Harness run (${{ matrix.agent }})" conclusion=cancelled): the run was cancelled before the matrix was evaluated, not dispatched with an empty matrix; see the run`},
+		{name: "placeholder failed without expanding", jobs: []forge.WorkflowJob{
+			{Name: "dispatch / Harness dispatch", Status: "completed", Conclusion: "success"},
+			{Name: "dispatch / Harness run (${{ matrix.agent }})", Status: "completed", Conclusion: "failure"}},
+			want: `harness matrix not expanded (job "dispatch / Harness run (${{ matrix.agent }})" conclusion=failure): the matrix job concluded failure without expanding; see the run`},
+		{name: "placeholder timed out without expanding", jobs: []forge.WorkflowJob{
+			{Name: "dispatch / Harness run (${{ matrix.agent }})", Status: "completed", Conclusion: "timed_out"}},
+			want: `harness matrix not expanded (job "dispatch / Harness run (${{ matrix.agent }})" conclusion=timed_out): the matrix job concluded timed_out without expanding; see the run`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			client := forge.NewFakeClient()
+			client.WorkflowRunJobs = map[int][]forge.WorkflowJob{7: tc.jobs}
+			if tc.err != nil {
+				client.Errors = map[string]error{"ListWorkflowRunJobs": tc.err}
+			}
+			d := newTestDriver(client)
+			assert.Equal(t, tc.want, d.describeAgentJob(context.Background(), "org", "repo", 7, "triage"))
+		})
+	}
+}
+
+// TestWaitForHarnessAgent_TimeoutReportsAgentJobAndArtifactRejection
+// checks the per-run agent job state and the artifact classification
+// against the trigger time.
+func TestWaitForHarnessAgent_TimeoutReportsAgentJobAndArtifactRejection(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.WorkflowRuns = map[string]*forge.WorkflowRun{
+		"org/repo/fullsend.yaml": {
+			ID: 400, Status: "completed", Conclusion: "success",
+			CreatedAt: "2026-01-01T12:00:05Z",
+			HTMLURL:   "https://github.com/org/repo/actions/runs/400",
+		},
+	}
+	client.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		400: {{ID: 1, Name: "dispatch / Harness run (triage)", Status: "completed", Conclusion: "success"}},
+	}
+	client.RepositoryArtifacts = map[string][]forge.RepositoryArtifact{
+		"org/repo": {
+			{ID: 50, Name: "fullsend-triage", CreatedAt: "2026-01-01T11:59:59Z", WorkflowRunID: 399},
+			{ID: 51, Name: "fullsend-other", CreatedAt: "2026-01-01T12:00:30Z", WorkflowRunID: 400},
+			{ID: 52, Name: "fullsend-triage", CreatedAt: "2026-01-01T12:00:30Z", WorkflowRunID: 400},
+		},
+	}
+	// The eligible artifact's run lookup fails on every poll: the wait
+	// times out and the diagnostics must name the lookup failure.
+	client.Errors = map[string]error{"GetWorkflowRun": errRateLimited}
+
+	d := newTimeoutTestDriver(client)
+	_, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", after)
+	require.Error(t, err)
+	msg := err.Error()
+	assert.Contains(t, msg, `agent job "dispatch / Harness run (triage)" status=completed conclusion=success`)
+	assert.Contains(t, msg, `artifact "fullsend-triage" listed 2 time(s)`)
+	assert.Contains(t, msg, "artifact 50: run=399 created_at=2026-01-01T11:59:59Z (rejected: created before trigger time 2026-01-01T12:00:00Z)")
+	assert.Contains(t, msg, "artifact 52: run=400 created_at=2026-01-01T12:00:30Z (eligible by trigger time; not explained by the listing")
+	assert.Regexp(t, `; run lookups \(failed on (\d+) of (\d+) lookups during the wait; last: .*403`, msg)
+	assert.NotContains(t, msg, "cut short")
+}
+
+// TestWaitForHarnessAgent_PollsBoundedByRemainingBudget verifies each
+// poll's API calls carry a deadline no later than the wait deadline, so
+// client-side retries cannot overrun dispatchWait.
+func TestWaitForHarnessAgent_PollsBoundedByRemainingBudget(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var mu sync.Mutex
+	var remaining []time.Duration
+	client := &deadlineRecordingClient{
+		FakeClient: forge.NewFakeClient(),
+		onCall: func(ctx context.Context) {
+			dl, ok := ctx.Deadline()
+			mu.Lock()
+			defer mu.Unlock()
+			if !ok {
+				remaining = append(remaining, -1)
+				return
+			}
+			remaining = append(remaining, time.Until(dl))
+		},
+	}
+
+	d := &Driver{Client: client, afterFunc: instantAfter, nowFunc: steppingClock(start, time.Minute)}
+	_, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", start)
+	require.Error(t, err)
+	mu.Lock()
+	defer mu.Unlock()
+	// Two listings per poll, then two diagnostics lookups at the end.
+	require.GreaterOrEqual(t, len(remaining), 4)
+	const slack = time.Second
+	polls, diag := remaining[:len(remaining)-2], remaining[len(remaining)-2:]
+	for i, r := range polls {
+		assert.GreaterOrEqual(t, r, pollMinBudget-slack, "poll call %d started with less than the minimum budget", i)
+		assert.LessOrEqual(t, r, dispatchWait+slack, "poll call %d exceeded the wait budget", i)
+	}
+	// Each iteration reads the clock once, so consecutive polls have
+	// strictly less budget.
+	for i := 2; i < len(polls); i += 2 {
+		assert.Less(t, polls[i], polls[i-2], "poll budget should shrink each iteration")
+	}
+	for i, r := range diag {
+		assert.Greater(t, r, time.Duration(0), "diagnostics lookup %d must carry a deadline", i)
+		assert.LessOrEqual(t, r, lookupBudget+slack, "diagnostics lookup %d exceeded lookupBudget", i)
+	}
+}
+
+// deadlineRecordingClient wraps FakeClient and reports the context of
+// each artifact and run listing call.
+type deadlineRecordingClient struct {
+	*forge.FakeClient
+	onCall func(ctx context.Context)
+}
+
+func (c *deadlineRecordingClient) ListRepositoryArtifacts(ctx context.Context, owner, repo string, perPage int) ([]forge.RepositoryArtifact, error) {
+	c.onCall(ctx)
+	return c.FakeClient.ListRepositoryArtifacts(ctx, owner, repo, perPage)
+}
+
+func (c *deadlineRecordingClient) ListWorkflowRuns(ctx context.Context, owner, repo, workflowFile string) ([]forge.WorkflowRun, error) {
+	c.onCall(ctx)
+	return c.FakeClient.ListWorkflowRuns(ctx, owner, repo, workflowFile)
+}
+
+// blockingClient wraps FakeClient so listing calls block until their
+// context expires, returning the context error — the shape of a lookup
+// the driver's own budget cuts short.
+type blockingClient struct {
+	*forge.FakeClient
+}
+
+func (c *blockingClient) ListWorkflowRuns(ctx context.Context, _, _, _ string) ([]forge.WorkflowRun, error) {
+	<-ctx.Done()
+	return nil, fmt.Errorf("http GET runs: %w", ctx.Err())
+}
+
+func (c *blockingClient) ListRepositoryArtifacts(ctx context.Context, _, _ string, _ int) ([]forge.RepositoryArtifact, error) {
+	<-ctx.Done()
+	return nil, fmt.Errorf("http GET artifacts: %w", ctx.Err())
+}
+
+// TestHarnessTimeoutDiagnostics_CutShortVsLiveDeadlineError covers the
+// attempt-1 shape at diagnostics time. A lookup cut short by the budget
+// must headline the informative poll error rather than the driver's own
+// cutoff; a deadline error returned while the lookup context is still
+// live is a real failure and must be reported as such.
+func TestHarnessTimeoutDiagnostics_CutShortVsLiveDeadlineError(t *testing.T) {
+	t.Parallel()
+
+	var runsErrs, artifactErrs pollErrors
+	for i := 0; i < 3; i++ {
+		runsErrs.record(context.Background(), errRateLimited)
+		artifactErrs.record(context.Background(), errRateLimited)
+	}
+
+	t.Run("cut short by budget", func(t *testing.T) {
+		t.Parallel()
+		// The parent deadline propagates into the diagnostics envelope
+		// and each lookup slice, so the blocking client returns as a
+		// budget cutoff without waiting out lookupBudget.
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		d := newTestDriver(&blockingClient{FakeClient: forge.NewFakeClient()})
+		got := d.harnessTimeoutDiagnostics(ctx, "org", "repo", "triage", time.Now(), runsErrs, artifactErrs, pollErrors{})
+		assert.Contains(t, got, "run listing cut short by the diagnostics budget; last poll error (3 of 3 polls failed): "+errRateLimited.Error())
+		assert.Contains(t, got, "artifact listing cut short by the diagnostics budget; last poll error (3 of 3 polls failed): "+errRateLimited.Error())
+		assert.NotContains(t, got, "listing failed: http GET")
+	})
+
+	t.Run("cut short with no poll error still names the cutoff", func(t *testing.T) {
+		t.Parallel()
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		d := newTestDriver(&blockingClient{FakeClient: forge.NewFakeClient()})
+		got := d.harnessTimeoutDiagnostics(ctx, "org", "repo", "triage", time.Now(), pollErrors{}, pollErrors{}, pollErrors{})
+		assert.Equal(t, "run listing cut short by the diagnostics budget; artifact listing cut short by the diagnostics budget", got)
+	})
+
+	t.Run("deadline error under live context is a real failure", func(t *testing.T) {
+		t.Parallel()
+		timeout := fmt.Errorf("http GET: %w", context.DeadlineExceeded) // e.g. an HTTP client timeout
+		client := forge.NewFakeClient()
+		client.Errors = map[string]error{
+			"ListWorkflowRuns":        timeout,
+			"ListRepositoryArtifacts": timeout,
+		}
+		d := newTestDriver(client)
+		got := d.harnessTimeoutDiagnostics(context.Background(), "org", "repo", "triage", time.Now(), runsErrs, artifactErrs, pollErrors{})
+		assert.Contains(t, got, "run listing failed: "+timeout.Error()+" (failed on 3 of 3 polls during the wait; last: "+errRateLimited.Error()+")")
+		assert.Contains(t, got, "artifact listing failed: "+timeout.Error()+" (failed on 3 of 3 polls during the wait; last: "+errRateLimited.Error()+")")
+		assert.NotContains(t, got, "cut short")
+	})
+}
+
+func TestWaitForFailedHarnessAgent_TimeoutReportsListingErrors(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	client := forge.NewFakeClient()
+	client.Errors = map[string]error{
+		"ListWorkflowRuns":        errRateLimited,
+		"ListRepositoryArtifacts": errRateLimited,
+	}
+
+	d := newTimeoutTestDriver(client)
+	_, err := d.WaitForFailedHarnessAgent(context.Background(), "org", "repo", "triage", after)
+	require.Error(t, err)
+	msg := err.Error()
+	assert.Contains(t, msg, `harness agent "triage" did not complete with a failure`)
+	assert.NotContains(t, msg, "no recent workflow runs found")
+	assert.Contains(t, msg, "run listing failed: "+errRateLimited.Error())
+	assert.Contains(t, msg, "artifact listing failed: "+errRateLimited.Error())
+	assert.Contains(t, msg, "same error on")
+	assert.Contains(t, msg, "polls during the wait")
+}
+
+func TestPollErrors_KeepsInformativeErrorOverBudgetCutoff(t *testing.T) {
+	t.Parallel()
+
+	live := context.Background()
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	var p pollErrors
+	p.record(live, nil)
+	p.record(live, errRateLimited)
+	p.record(expired, fmt.Errorf("http GET: %w", context.DeadlineExceeded))
+	assert.Equal(t, 3, p.calls)
+	assert.Equal(t, 1, p.failed)
+	assert.Equal(t, 1, p.cutShort)
+	assert.ErrorIs(t, p.last, errRateLimited)
+	assert.Equal(t, " (failed on 1 of 3 polls during the wait; last: "+errRateLimited.Error()+") (1 of 3 polls cut short by the wait budget)", p.describe(nil, "polls"))
+	assert.Equal(t, " (same error on 1 of 3 polls during the wait) (1 of 3 polls cut short by the wait budget)", p.describe(errRateLimited, "polls"))
+
+	// A deadline error under a live context is a real failure (e.g. an
+	// HTTP client timeout), not a budget cutoff — and so is one under a
+	// context that was cancelled rather than expired.
+	var q pollErrors
+	q.record(live, context.DeadlineExceeded)
+	cancelled, cancelNow := context.WithCancel(context.Background())
+	cancelNow()
+	q.record(cancelled, fmt.Errorf("http GET: %w", context.DeadlineExceeded))
+	assert.Equal(t, 2, q.failed)
+	assert.Equal(t, 0, q.cutShort)
+
+	// Jittered retry delays do not defeat the same-error collapse.
+	var r pollErrors
+	r.record(live, errors.New("github api: 403 retryable error after 5 attempts on GET /x (last delay: 54.2s)"))
+	assert.Equal(t, " (same error on 1 of 1 polls during the wait)",
+		r.describe(errors.New("github api: 403 retryable error after 5 attempts on GET /x (last delay: 31.7s)"), "polls"))
+
+	assert.Empty(t, pollErrors{}.describe(nil, "polls"))
+}
+
+func TestFormatArtifactDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	after := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	assert.Equal(t, "no repository artifacts listed", formatArtifactDiagnostics(nil, "fullsend-agent", after))
+
+	notFound := formatArtifactDiagnostics([]forge.RepositoryArtifact{
+		{ID: 1, Name: "fullsend-other", CreatedAt: "2026-01-01T12:00:00Z"},
+		{ID: 2, Name: "fullsend-another", CreatedAt: "2026-01-01T12:00:00Z"},
+	}, "fullsend-agent", after)
+	assert.Equal(t, `artifact "fullsend-agent" not among the 2 listed artifacts (listing is capped at 100 newest)`, notFound)
+
+	classified := formatArtifactDiagnostics([]forge.RepositoryArtifact{
+		{ID: 10, Name: "fullsend-agent", CreatedAt: "2026-01-01T11:59:59Z", WorkflowRunID: 99},
+		{ID: 11, Name: "fullsend-agent", CreatedAt: "not-a-time", WorkflowRunID: 100},
+		{ID: 12, Name: "fullsend-agent", CreatedAt: "2026-01-01T12:00:30Z", WorkflowRunID: 101},
+		{ID: 13, Name: "fullsend-other", CreatedAt: "2026-01-01T12:00:30Z", WorkflowRunID: 101},
+	}, "fullsend-agent", after)
+	assert.Contains(t, classified, `artifact "fullsend-agent" listed 3 time(s):`)
+	assert.Contains(t, classified, "artifact 10: run=99 created_at=2026-01-01T11:59:59Z (rejected: created before trigger time 2026-01-01T12:00:00Z)")
+	assert.Contains(t, classified, "artifact 11: run=100 created_at=not-a-time (rejected: unparseable created_at)")
+	assert.Contains(t, classified, "artifact 12: run=101 created_at=2026-01-01T12:00:30Z (eligible by trigger time; not explained by the listing")
+	assert.NotContains(t, classified, "artifact 13")
+}
+
+// TestWaitForHarnessAgent_SkipsPollBelowMinimumBudget drives the clock so
+// the first poll would start with only 3s of budget: it must be skipped
+// and the wait must go straight to diagnostics (whose two lookups are
+// the only calls made).
+func TestWaitForHarnessAgent_SkipsPollBelowMinimumBudget(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	readings := []time.Time{start, start.Add(dispatchWait - 3*time.Second)}
+	var idx atomic.Int64
+	clock := func() time.Time {
+		i := int(idx.Add(1) - 1)
+		if i >= len(readings) {
+			return readings[len(readings)-1]
+		}
+		return readings[i]
+	}
+
+	var mu sync.Mutex
+	var calls int
+	client := &deadlineRecordingClient{
+		FakeClient: forge.NewFakeClient(),
+		onCall: func(context.Context) {
+			mu.Lock()
+			calls++
+			mu.Unlock()
+		},
+	}
+	d := &Driver{Client: client, afterFunc: instantAfter, nowFunc: clock}
+	_, err := d.WaitForHarnessAgent(context.Background(), "org", "repo", "triage", start)
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "cut short")
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 2, calls, "only the two diagnostics listings should run")
+}
+
+func TestFormatRunDiagnosticsWithJobs(t *testing.T) {
+	t.Parallel()
+
+	client := forge.NewFakeClient()
+	client.WorkflowRunJobs = map[int][]forge.WorkflowJob{
+		1: {{Name: "dispatch / Harness run (triage)", Status: "completed", Conclusion: "failure"}},
+	}
+	d := newTestDriver(client)
+	ctx := context.Background()
+
+	assert.Equal(t, "no recent workflow runs found after trigger time", d.formatRunDiagnosticsWithJobs(ctx, "org", "repo", "triage", nil))
+
+	got := d.formatRunDiagnosticsWithJobs(ctx, "org", "repo", "triage", []forge.WorkflowRun{
+		{ID: 1, Status: "completed", Conclusion: "failure", HTMLURL: "https://github.com/org/repo/actions/runs/1"},
+		{ID: 2, Status: "in_progress", HTMLURL: "https://github.com/org/repo/actions/runs/2"},
+	})
+	assert.Equal(t, "recent workflow runs (2):"+
+		"\n  run 1: status=completed conclusion=failure url=https://github.com/org/repo/actions/runs/1; agent job \"dispatch / Harness run (triage)\" status=completed conclusion=failure"+
+		"\n  run 2: status=in_progress conclusion= url=https://github.com/org/repo/actions/runs/2", got)
 }
