@@ -47,10 +47,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "out-dir: %v\n", err)
 		os.Exit(1)
 	}
-	// Only wipe ledger/measurements inside the chosen out-dir (temp by
-	// default), never beside a live run-telemetry.jsonl by accident.
-	_ = os.Remove(filepath.Join(out, evalmeasure.LedgerFile))
-	_ = os.Remove(filepath.Join(out, evalmeasure.MeasurementsFile))
+	if err := ensureCleanScoreOutput(out); err != nil {
+		fmt.Fprintf(os.Stderr, "out-dir: %v\n", err)
+		os.Exit(1)
+	}
 
 	var mu sync.Mutex
 	var reqs []*coltracepb.ExportTraceServiceRequest
@@ -134,6 +134,21 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "PASS: %d score(s), %d OTLP event(s)\n", len(results), len(events))
+}
+
+// ensureCleanScoreOutput rejects an existing score artifact rather than
+// deleting it. The proof tool writes a fresh derived-data pair so it cannot
+// erase or append duplicate measurements in an operator's live run directory.
+func ensureCleanScoreOutput(out string) error {
+	for _, name := range []string{evalmeasure.LedgerFile, evalmeasure.MeasurementsFile} {
+		path := filepath.Join(out, name)
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("%s already exists; choose a fresh out-dir", path)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("stat %s: %w", path, err)
+		}
+	}
+	return nil
 }
 
 type eventView struct {

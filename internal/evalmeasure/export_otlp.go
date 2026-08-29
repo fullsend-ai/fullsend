@@ -82,8 +82,9 @@ var newScoreOTLPExporter = func(ctx context.Context) (sdktrace.SpanExporter, err
 // parent TraceID are skipped (same rule as parentSampledProcessor — avoid
 // orphaning score spans on a TraceID that never left the box). Other
 // TraceIDs in the batch are unaffected. Fail-open: returns an error for the
-// caller to warn on; never writes primary telemetry files. Rows with
-// empty/zero IDs are skipped. Pure ID failures report "N/M scores
+// caller to warn on; never writes primary telemetry files. Skip rows that
+// lack a parent SpanID are omitted; pass/fail rows with missing or malformed
+// IDs report a warning. Pure ID failures report "N/M scores
 // exported" so operators can tell partial from total failure; a
 // ForceFlush/export transport error uses a distinct "failed for all N"
 // message (row construction is not treated as delivery).
@@ -111,11 +112,16 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVe
 	capExp := &capturingExporter{base: exp}
 
 	// Batch so N scores share one (or few) HTTP exports under the budget.
+	// Size the queue for this bounded, already-materialized result set. The
+	// SDK's default queue is 2,048 and drops spans once full; blocking instead
+	// would use context.TODO internally and could violate this function's
+	// fail-open wall-clock budget.
+	queueSize := len(results)
 	tp := sdktrace.NewTracerProvider(
 		sdktrace.WithResource(telemetry.BuildResource(serviceVersion)),
 		sdktrace.WithSampler(sdktrace.AlwaysSample()),
 		sdktrace.WithRawSpanLimits(telemetry.SpanLimits()),
-		sdktrace.WithSpanProcessor(sdktrace.NewBatchSpanProcessor(capExp)),
+		sdktrace.WithSpanProcessor(sdktrace.NewBatchSpanProcessor(capExp, sdktrace.WithMaxQueueSize(queueSize))),
 	)
 	// Shutdown shares the same export budget (remaining deadline on ctx),
 	// not an extra Background timeout stacked on top.
@@ -138,8 +144,9 @@ func ExportOTLPScores(ctx context.Context, results []EvaluationResult, serviceVe
 			// suppressed; do not orphan a score span on that TraceID.
 			continue
 		}
-		if strings.TrimSpace(r.TraceID) == "" || strings.TrimSpace(r.SpanID) == "" {
-			// Same silent skip as exportOneScore (no parent to correlate).
+		if r.Label == LabelSkip && (strings.TrimSpace(r.TraceID) == "" || strings.TrimSpace(r.SpanID) == "") {
+			// EM-001 can legitimately skip when it cannot find the root run
+			// span. There is no parent to correlate remotely.
 			continue
 		}
 		attempted++
@@ -221,11 +228,6 @@ func (c *capturingExporter) Shutdown(ctx context.Context) error {
 }
 
 func exportOneScore(ctx context.Context, tr trace.Tracer, r EvaluationResult) error {
-	if strings.TrimSpace(r.TraceID) == "" || strings.TrimSpace(r.SpanID) == "" {
-		// EM-001 skip rows can omit span_id when the root run span is missing.
-		// Local JSONL still records them; OTLP needs a parent to correlate.
-		return nil
-	}
 	tid, err := parseTraceID(r.TraceID)
 	if err != nil {
 		return fmt.Errorf("trace_id %q: %w", r.TraceID, err)

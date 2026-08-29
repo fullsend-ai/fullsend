@@ -224,6 +224,19 @@ func TestExportOTLPScores_EmptySpanIDSkipped(t *testing.T) {
 	assert.Empty(t, sink.allSpans())
 }
 
+func TestExportOTLPScores_EmptySpanIDPassReportsFailure(t *testing.T) {
+	sink := newScoreOTLPSink(t)
+	clearOTLPEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
+	err := ExportOTLPScores(context.Background(), []EvaluationResult{{
+		Name: "trace_fitness", Label: LabelPass, TraceID: "84d470ba2451ffeccfe09022d9b2aebd", SpanID: "",
+	}}, "test-1.2.3")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "0/1 scores exported")
+	assert.Contains(t, err.Error(), "1 failed")
+	assert.Empty(t, sink.allSpans())
+}
+
 func TestExportOTLPScores_ZeroTraceID(t *testing.T) {
 	sink := newScoreOTLPSink(t)
 	clearOTLPEnv(t)
@@ -463,6 +476,33 @@ func TestExportOTLPScores_PartialIDFailureReportsCounts(t *testing.T) {
 	assert.Contains(t, err.Error(), "1/2 scores exported")
 	assert.Contains(t, err.Error(), "1 failed")
 	assert.NotEmpty(t, sink.allSpans(), "good row must still export")
+}
+
+func TestExportOTLPScores_ExportsMoreThanDefaultQueueSize(t *testing.T) {
+	sink := newScoreOTLPSink(t)
+	clearOTLPEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", sink.srv.URL)
+
+	const count = 2049
+	results := make([]EvaluationResult, count)
+	for i := range results {
+		results[i] = EvaluationResult{
+			Name: "trace_fitness", Label: LabelPass,
+			TraceID: "84d470ba2451ffeccfe09022d9b2aebd", SpanID: "77f8c0902eaeedcb",
+			Version: "em-001@1", Value: 1,
+		}
+	}
+
+	require.NoError(t, ExportOTLPScores(context.Background(), results, "test-1.2.3"))
+	var got int
+	for _, req := range sink.allSpans() {
+		for _, rs := range req.GetResourceSpans() {
+			for _, ss := range rs.GetScopeSpans() {
+				got += len(ss.GetSpans())
+			}
+		}
+	}
+	assert.Equal(t, count, got)
 }
 
 func explanationFromSink(t *testing.T, sink *scoreOTLPSink) string {
