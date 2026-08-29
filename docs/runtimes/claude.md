@@ -38,7 +38,7 @@ unsupported and ignores it.
 
 | | |
 |---|---|
-| Roles | All, including `review` and `retro` — they need sub-agents |
+| Roles | All, including `review` and `retro` — they need sub-agents (pi covers these too, through a fullsend extension: [pi § Sub-agents](pi.md#sub-agents)) |
 | Credentials | WIF `external_account` + a refreshed OIDC token; `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL` and `ANTHROPIC_VERTEX_BASE_URL` are unset so a stray key cannot redirect traffic |
 | Unattended | `--dangerously-skip-permissions`; hooks wired from the harness, never from agent-writable files |
 | Artifacts | `output.jsonl`, transcripts, `metrics.json` with `runtime: claude`, and `claude-debug.log` with `--debug` |
@@ -51,8 +51,7 @@ These are the places Claude Code differs from pi — useful when comparing a run
 - **The agent definition *replaces* the system prompt.** `--agent` makes the agent `.md` body the
   system prompt outright. pi appends it to its own default instead, so an agent that relies on
   Claude Code's exact framing can read differently there.
-- **Native sub-agents** via the `Agent` tool, which is why `review` and `retro` are Claude-only
-  today.
+- **Native sub-agents** via the `Agent` tool. This is no longer Claude-only: pi serves the same `Agent`/`Task` contract from a runner-owned extension that runs each child as its own `pi` process ([pi § Sub-agents](pi.md#sub-agents)). What stays Claude-specific is that the sub-agents are *native* — no child process, no separate session dir, no per-child provider hygiene.
 - **A `CLAUDE.md` bridge is injected** when the repo has `AGENTS.md` but no `CLAUDE.md`, because
   Claude Code auto-loads only the former. pi reads `AGENTS.md` natively and needs no bridge.
 - **`tools:` is enforced unreliably** (≥ 2.1.119); pi enforces its `--tools` allowlist strictly. In
