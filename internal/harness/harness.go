@@ -326,6 +326,7 @@ type Harness struct {
 	Policy                 string                  `yaml:"policy,omitempty"`
 	Skills                 []SkillEntry            `yaml:"skills,omitempty"`
 	Plugins                []string                `yaml:"plugins,omitempty"`
+	Extensions             []ExtensionSpec         `yaml:"extensions,omitempty"` // pi extensions from the harness repo (ADR 0094)
 	Providers              []string                `yaml:"providers,omitempty"`
 	OpenShell              *OpenShellConfig        `yaml:"openshell,omitempty"`
 	HostFiles              []HostFile              `yaml:"host_files,omitempty"`
@@ -487,6 +488,9 @@ func (h *Harness) Validate() error {
 		if !validPluginName.MatchString(pluginBase) {
 			return fmt.Errorf("plugins[%d] name %q contains invalid characters (allowed: a-z, A-Z, 0-9, _, -)", i, pluginBase)
 		}
+	}
+	if err := h.validateExtensions(); err != nil {
+		return err
 	}
 	for i, p := range h.Providers {
 		if IsURL(p) || filepath.IsAbs(p) || IsProviderPath(p) {
@@ -652,6 +656,11 @@ func (h *Harness) ResolveRelativeTo(baseDir string) error {
 			return err
 		}
 	}
+	for i := range h.Extensions {
+		if h.Extensions[i].Path, err = resolve(fmt.Sprintf("extensions[%d]", i), h.Extensions[i].Path); err != nil {
+			return err
+		}
+	}
 	for i, hf := range h.HostFiles {
 		if !strings.Contains(hf.Src, "${") {
 			if h.HostFiles[i].Src, err = resolve(fmt.Sprintf("host_files[%d].src", i), hf.Src); err != nil {
@@ -797,6 +806,27 @@ func (h *Harness) ValidateFilesExist() error {
 	for i, p := range h.Plugins {
 		if err := check(fmt.Sprintf("plugins[%d]", i), p); err != nil {
 			return err
+		}
+	}
+	for i, e := range h.Extensions {
+		field := fmt.Sprintf("extensions[%d]", i)
+		info, err := os.Stat(e.Path)
+		if err != nil {
+			return fmt.Errorf("%s: %w", field, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("%s: %q must be a directory (pi loads index.js/index.ts/index.mjs/index.cjs, or the package.json \"pi.extensions\"/\"main\" entries, from it)", field, e.Path)
+		}
+		// pi exits 1 with `Failed to load extension "<path>"` when it cannot
+		// resolve an entry point, and loads nothing at all from a directory
+		// that turned into package layout, so the harness author learns here
+		// rather than from a failed run or a missing tool.
+		problem, err := extensionDirLoadProblem(e.Path)
+		if err != nil {
+			return fmt.Errorf("%s: %w", field, err)
+		}
+		if problem != "" {
+			return extensionNotLoadableError(field, e.Path, problem)
 		}
 	}
 	for i, hf := range h.HostFiles {

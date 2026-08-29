@@ -46,6 +46,7 @@ per-overlay:
 | `image`            | Container images are platform-neutral              |
 | `api_servers`      | REST proxies abstract forge details                |
 | `plugins`          | MCP plugins are forge-agnostic; can be local paths or URLs (ADR-0038) |
+| `extensions`       | pi extensions are forge-agnostic; harness-repo directories only (ADR-0094). **Top level only** — not a `ForgeConfig` field, so it is not settable under `forge:` or `overlays:` (an `extensions:` key there is ignored, not an error) |
 | `agent_input`      | Agent prompt input is forge-agnostic               |
 | `timeout_minutes`  | Timeouts are operational, not forge-specific        |
 | `sandbox_timeout_seconds` | Sandbox-level timeout, not forge-specific   |
@@ -78,6 +79,7 @@ field type follows specific merge semantics. The same rules apply during
 | `openshell`      | `profiles` concatenated (top-level/base + forge/child) | Absent (nil) = inherit; empty `profiles: []` = no forge-specific additions |
 | `host_files`     | Concatenated (base + child); deduplicated by `dest` path (child wins) | Absent (nil) = inherit |
 | `plugins`        | Concatenated (base + child)                          | Absent (nil) = inherit |
+| `extensions`     | Concatenated (base + child); each entry keeps its own `args`/`env` | Absent (nil) = inherit |
 | `api_servers`    | Concatenated (base + child)                          | Absent (nil) = inherit |
 | `env`            | Sub-maps (`runner`, `sandbox`) merged independently; forge/child keys win (ADR-0055) | Absent (nil) = inherit |
 | `security`       | Child replaces base entirely (if non-nil)            | Absent (nil) = inherit |

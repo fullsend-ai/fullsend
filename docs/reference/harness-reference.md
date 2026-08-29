@@ -26,11 +26,17 @@ providers:                           # Network access via provider profiles
   - vertex-ai                       # References providers/vertex-ai.yaml
   - github                          # References providers/github.yaml
 
-# ── Skills & plugins ──────────────────────────────────────────
+# ── Skills, plugins & extensions ──────────────────────────────
 skills:
   - skills/my-skill                  # Local path or URL with #sha256=...
 plugins:
-  - plugins/gopls-lsp                # Local path or URL with #sha256=...
+  - plugins/gopls-lsp                # Local path or URL with #sha256=... (Claude Code only)
+extensions:                          # pi extensions from this repo (pi runtime only; ADR 0094)
+  - extensions/go-diagnostics        # Directory with index.js/index.ts, or package.json "pi.extensions" (a "pi" object wins outright)
+  - path: extensions/pi-fff          # Object form only when a flag or env is needed
+    args: ["--fff-mode", "override"] # Flags the extension registers with pi.registerFlag
+    env:
+      FFF_MULTIGREP: "1"
 openshell:                           # OpenShell sandbox profiles
   profiles:
     - https://example.com/profile.yaml#sha256=abc...
@@ -138,6 +144,8 @@ Most fields are self-explanatory from the inline comments above. This section ex
 
 **`allow_runtime_fetch`** — When `true`, the agent can fetch remote resources (skills, plugins, profiles) at runtime rather than only at harness resolution time. Fetched URLs must still be covered by `allowed_remote_resources`.
 
+**`extensions`** — pi extension directories shipped in the harness repository (the same trust as `skills`/`plugins`/`scripts`: relative paths only, fetched content-addressed from a URL-sourced base, injection-scanned). Each entry must be a directory pi can load an entry point from. If `package.json` carries a `pi` **object**, that object decides on its own: pi loads only what `pi.extensions` names and never looks at `index.*` or `main`, so `{"pi": {}}` or a `pi.extensions` whose entries do not resolve loads *nothing* (silently, with pi exiting 0) and is rejected here. Glob entries (`*`, `?`, `[...]`) are matched against the tree, so a pattern selecting nothing is rejected as well; `**` patterns are accepted unevaluated, braces are literal (pi does not expand them), and a leading `!` is a *disable* pattern, so a `pi.extensions` made only of `!` entries is rejected. Otherwise the directory must not contain an `extensions/`, `prompts/`, `skills/` or `themes/` entry — a plain file of that name counts, and either also makes pi read the directory as a package and ignore `index.js` — and must have a `package.json` `main` pointing at an existing file, or `index.js`/`index.ts`/`index.mjs`/`index.cjs`. A `pi.extensions` or `main` entry that escapes the directory (absolute, or `..`) is rejected, in a nested `package.json` as well as the top one: pi resolves both against their own package root with no containment check, so either would load code the sandbox preflight never hashes. A UTF-8 byte-order mark on `package.json` is stripped before parsing, the way pi strips it, so it cannot hide the `pi` object. The tree may hold only regular files and directories, with names free of newlines, carriage returns and backslashes — the same rule the sandbox preflight applies. URLs, `npm:`/`git:`/`ssh:` sources, `..` segments, duplicate basenames and the runner's own sandbox names (`fullsend-hooks`, `anthropic-vertex`, `xai-vertex`) are rejected at validation. `args` are pi CLI flags the extension registers with `pi.registerFlag`, checked against pi's own parser: every dash-prefixed element must be `--flag` or `--flag=value`, pi's own option names are rejected, and a value may not start with `-` or `@` in either spelling. A bare word is allowed exactly once, directly after a `--flag` written without `=` — pi consumes at most one value per flag and none after `--flag=value`, and reads every other bare word as **prompt text** prepended to the agent's prompt. `env` keys must match `^[A-Z_][A-Z0-9_]*$` and may not name the interpreter environment (`PATH`, `HOME`, `LD_*`, `DYLD_*`, `PYTHON*`, `NODE_*`, `SSL_*`, …), a credential- or proxy-shaped name (`*_API_KEY`, `*_TOKEN`, `*_SECRET*`, `*_PROXY`), a loader or trust-store name (`JITI_*`, `IFS`, `CDPATH`, `PROMPT_COMMAND`, `JAVA_TOOL_OPTIONS`, `RUBYOPT`, `PERL5OPT`, `HOSTALIASES`, `OPENSSL_CONF`, `SSLKEYLOGFILE`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `GOPROXY`, `GOFLAGS`, `GIT_*`), or a runner/provider family (`PI_*`, `FULLSEND_*`, `TIRITH_*`, `GOOGLE_*`, `GCLOUD_*`, `CLOUDSDK_*`, `ANTHROPIC_*`, `XAI_*`, `OPENAI_*`, `AZURE_*`, `AWS_*`, `CLOUD_ML_REGION`). `extensions` is a top-level field only: it is not part of `ForgeConfig`, so it cannot be set (or overridden) under `forge:` or `overlays:` — an `extensions:` key in either place is silently ignored. Only the pi runtime loads them; Claude Code and the dummy runtime warn and skip. See [Pi § Extensions](../runtimes/pi.md#extensions).
+
 **`max_runtime_fetches`** — Caps the number of runtime fetches per run. Only meaningful when `allow_runtime_fetch` is `true`.
 
 **`api_servers`** — Host-side HTTP servers that run outside the sandbox and are exposed to it via port forwarding. Use these to give an agent access to APIs that require credentials the sandbox should not hold -- the server script runs on the trusted runner with full env access, while the sandbox connects to `localhost:<port>`.
@@ -173,7 +181,7 @@ More-specific entries go last so they override broader defaults.
 | Scalars (`model`, `pre_script`, `policy`, `image`, etc.) | Child wins if non-empty |
 | `skills` | Merged with deduplication by basename (child overrides base) |
 | `providers`, `openshell.profiles` | Concatenated (base + child); also applies per matched overlay |
-| `plugins`, `api_servers` | Concatenated (base + child) |
+| `plugins`, `extensions`, `api_servers` | Concatenated (base + child) |
 | `host_files` | Concatenated; child overrides by `dest` |
 | `env`, `runner_env` (deprecated) | Merged; child keys win |
 | `validation_loop`, `security` | Child replaces entirely |
