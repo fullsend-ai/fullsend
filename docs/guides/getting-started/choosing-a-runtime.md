@@ -28,7 +28,7 @@ Fullsend supports multiple agent runtimes. A runtime is the program that runs in
 After a run completes, the selected runtime and model appear in several places:
 
 - **Run plan block** — `Runtime: <name> (from <source>)` printed at the start of every `fullsend run`
-- **Status comment** — the terminal status comment on the issue/PR includes a footer with runtime, model, effort, and cost
+- **Status comment** — the terminal status comment on the issue/PR includes a footer with runtime, model, effort, and cost (see [Cost data contract](../infrastructure/distributed-tracing.md#cost-data-contract) for how cost is sourced and aggregated)
 - **metrics.json** — `runtime`, `requested_runtime`, `runtime_source`, `requested_model`, and `override_source` fields record what was selected and why
 - **stderr** — `runtime: selected "<name>" from <source>` for script consumers
 

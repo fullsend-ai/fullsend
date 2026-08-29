@@ -156,7 +156,7 @@ and are recognized by LLM-aware backends for GenAI dashboards.
 |-----------|------------|-------------|
 | `fullsend.work_item_id` | `run` | Work item identity (e.g. `owner/repo#123`); primary cross-run correlation key |
 | `fullsend.agent` | `run` | Agent name |
-| `fullsend.cost_usd` | `run` (aggregated), `agent` | Cost in USD, rounded to cents |
+| `fullsend.cost_usd` | `run` (aggregated), `agent` | Cost in USD, rounded to cents (see [Cost data contract](#cost-data-contract)) |
 | `fullsend.tool_calls` | `run` (aggregated), `agent` | Number of tool invocations |
 | `fullsend.num_turns` | `run` | Total conversation turns across all iterations |
 | `fullsend.iterations` | `run` | Number of agent iterations (validation loop included) |
@@ -186,6 +186,86 @@ Set on every span via the OTel resource:
 | `service.version` | CLI version string |
 
 Additional resource attributes from `OTEL_RESOURCE_ATTRIBUTES` are merged in.
+
+## Cost data contract
+
+Fullsend does not calculate inference cost from token counts or maintain a
+model-price table. Each runtime reports a USD cost value and fullsend
+records it as-is. This section defines the source, aggregation, rounding,
+and display behavior of that value across every output surface.
+
+### Runtime cost extraction
+
+Each runtime extracts cost differently from its agent process:
+
+| Runtime | Source | Extraction |
+|---------|--------|------------|
+| `claude` | Claude Code stream JSON | Reads `result.total_cost_usd` from the final result event — a single value covering the entire iteration |
+| `pi` | Pi assistant message stream | Sums `usage.cost.total` across all assistant messages in the iteration |
+| `opencode` | OpenCode step stream | Sums `step_finish.part.cost` across all step-finish events in the iteration |
+
+The runtime-reported value includes whatever the provider prices — input
+tokens, output tokens, cache-creation tokens, cache-read tokens, and
+reasoning tokens. Fullsend has no visibility into the provider's pricing
+breakdown; it accepts the reported total.
+
+Token counts (including `cache_creation_input_tokens` and
+`cache_read_input_tokens`) are recorded as separate telemetry attributes.
+They are not inputs to any fullsend-side cost calculation.
+
+### Cross-iteration aggregation
+
+When a run has multiple iterations (validation loop retries), the runner
+sums raw costs:
+
+```
+run_total_cost_usd = sum(iteration.total_cost_usd for each completed iteration)
+```
+
+This sum is the single aggregate cost for the run, used by every
+downstream surface.
+
+### Rounding and precision by surface
+
+The raw aggregate is a floating-point sum. Different output surfaces
+apply different precision:
+
+| Surface | Value | Precision | Example |
+|---------|-------|-----------|---------|
+| `metrics.json` `total_cost_usd` | Raw aggregate | Full float64 | `0.8234567` |
+| `fullsend.cost_usd` on `agent` spans | Per-iteration | Rounded to cents: `round(value × 100) / 100` | `0.41` |
+| `fullsend.cost_usd` on the root `run` span | Aggregate | Rounded to cents: `round(value × 100) / 100` | `0.82` |
+| Console (per-iteration) | Per-iteration | Four decimal places (`$%.4f`) | `$0.4117` |
+| Status comment footer | Aggregate | Two decimal places (`$%.2f`) | `$0.82` |
+
+The root span's rounded cost is computed by rounding the raw aggregate
+sum. Because rounding happens after summing, the root span value can
+differ from the sum of individually rounded agent-span values. For
+example, two iterations at `$0.414` and `$0.415` round individually to
+`$0.41` and `$0.42` (sum `$0.83`), but the aggregate `$0.829` rounds to
+`$0.83` — or, with different fractional values, the aggregate may round
+differently than the sum of parts.
+
+### No pricing-table fallback
+
+If a runtime does not report cost (returns zero or the field is absent),
+fullsend records zero. There is no fallback cost calculation from token
+counts. A missing runtime cost propagates as `$0.00` on all surfaces.
+
+### Distinction from backend-derived cost estimates
+
+Tracing backends may display their own cost estimates alongside
+`fullsend.cost_usd`. These are independent calculations:
+
+- **MLflow** estimates cost from token counts against its internal model
+  table. This estimate excludes cache-creation and cache-read token
+  pricing, which can dominate agent-run cost. See
+  [Tracing with MLflow — Cost column caveat](../user/tracing-with-mlflow.md#cost-column-caveat).
+- Other LLM-aware backends may apply similar token-based estimates.
+
+The authoritative cost for a fullsend run is always `fullsend.cost_usd`
+(on spans) or `total_cost_usd` (in `metrics.json`). Backend-derived
+estimates are informational and may diverge.
 
 ## Output file format
 
@@ -311,3 +391,4 @@ that is where the real quality signal lives. See
 - [How To Emit Traces](../user/how-to-emit-traces.md): step-by-step setup guide
 - [Tracing Development Guide](../dev/tracing.md): implementation details for contributors
 - [Eval Measurements](./eval-measurements.md): online scoring of wild-run traces
+- [fullsend run — metrics.json](../../cli/run.md#metricsjson-fields): CLI reference for `total_cost_usd` and other output fields
