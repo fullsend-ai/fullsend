@@ -8,16 +8,45 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/fullsend-ai/fullsend/internal/sandbox"
 )
 
+// piSubagentSessionDir matches a sub-agent's session directory in a remote
+// path: fullsend-agent.js gives child <seq> its own `--session-dir
+// <sessionsDir>/agent-<seq>`, so the sequence number is recoverable from
+// the path and the child transcript can be named after the call that made
+// it rather than colliding with the parent's on basename alone.
+var piSubagentSessionDir = regexp.MustCompile(`/agent-(\d+)/`)
+
+// piSubagentTranscriptName renders the local name of a session file found
+// under the sessions dir: <agentLabel>-sub<seq>-<basename> for a child,
+// <agentLabel>-<basename> for the parent's own session.
+func piSubagentTranscriptName(agentLabel, remotePath string) string {
+	base := filepath.Base(remotePath)
+	if m := piSubagentSessionDir.FindStringSubmatch(remotePath); m != nil {
+		return fmt.Sprintf("%s-sub%s-%s", agentLabel, m[1], base)
+	}
+	return fmt.Sprintf("%s-%s", agentLabel, base)
+}
+
+// piSubagentUsageLocalName is the extracted name of the Agent extension's
+// usage file. It sits next to the transcripts so a run's sub-agent cost is
+// auditable from the artifacts alone, not only through metrics.json.
+func piSubagentUsageLocalName(agentLabel string) string {
+	return agentLabel + "-subagents-usage.jsonl"
+}
+
 // ExtractTranscripts downloads pi's session JSONL files (written under the
 // runner-owned sessions dir, possibly nested by working directory) into
 // outputDir as <agentLabel>-<basename>, with the same path containment as
-// the Claude handler.
+// the Claude handler. Sub-agent sessions (sessions/agent-<seq>/, written by
+// the children fullsend-agent.js spawns) are saved as
+// <agentLabel>-sub<seq>-<basename>, and the extension's usage file
+// alongside them.
 func (r PiRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir string) error {
 	if err := os.MkdirAll(outputDir, 0o755); err != nil {
 		return fmt.Errorf("creating output dir: %w", err)
@@ -27,6 +56,35 @@ func (r PiRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir string)
 		return fmt.Errorf("opening output root: %w", err)
 	}
 	defer root.Close()
+
+	// The usage file lives beside the sessions dir, not inside it, so the
+	// find below never sees it. Its absence is the ordinary case (no
+	// sub-agent was dispatched, or the Agent tool is off).
+	// Run renames it to <name>.read when it folds the cost into the metrics
+	// (piSubagentUsageReadCommand), so that is the usual name here; the
+	// un-renamed one is what is left when Run never got that far.
+	read := r.piAgentUsagePath() + piSubagentUsageReadSuffix
+	if remote, _, _, uerr := sandbox.Exec(sandboxName,
+		fmt.Sprintf("if [ -s %s ]; then echo %s; elif [ -s %s ]; then echo %s; fi",
+			shellQuote(read), shellQuote(read), shellQuote(r.piAgentUsagePath()), shellQuote(r.piAgentUsagePath())),
+		10*time.Second,
+	); uerr == nil && strings.TrimSpace(remote) != "" {
+		remotePath := strings.TrimSpace(remote)
+		localName := piSubagentUsageLocalName(agentLabel)
+		// Through the same containment as the transcripts: this name is
+		// built from agentLabel too, and agentLabel is the caller's.
+		localPath, createErr := reserveContainedFile(root, outputDir, localName)
+		switch {
+		case createErr != nil:
+			fmt.Fprintf(os.Stderr, "  [%s] Skipping the sub-agent usage file (path rejected): %s: %v\n", agentLabel, localName, createErr)
+		default:
+			if dlErr := sandbox.DownloadFile(sandboxName, remotePath, localPath); dlErr != nil {
+				fmt.Fprintf(os.Stderr, "  [%s] Failed to copy the sub-agent usage file: %v\n", agentLabel, dlErr)
+			} else {
+				fmt.Fprintf(os.Stderr, "  [%s] Saved sub-agent usage: %s\n", agentLabel, localName)
+			}
+		}
+	}
 
 	stdout, _, _, err := sandbox.Exec(sandboxName,
 		fmt.Sprintf("find %s -name '*.jsonl' 2>/dev/null || true", shellQuote(r.piSessionsDir())),
@@ -45,15 +103,12 @@ func (r PiRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir string)
 		if remotePath == "" {
 			continue
 		}
-		localName := fmt.Sprintf("%s-%s", agentLabel, filepath.Base(remotePath))
-		f, createErr := root.Create(localName)
+		localName := piSubagentTranscriptName(agentLabel, remotePath)
+		localPath, createErr := reserveContainedFile(root, outputDir, localName)
 		if createErr != nil {
 			fmt.Fprintf(os.Stderr, "  [%s] Skipping (path rejected): %s: %v\n", agentLabel, localName, createErr)
 			continue
 		}
-		f.Close()
-		localPath := filepath.Join(outputDir, localName)
-		os.Remove(localPath)
 		if dlErr := sandbox.DownloadFile(sandboxName, remotePath, localPath); dlErr != nil {
 			fmt.Fprintf(os.Stderr, "  [%s] Failed to copy transcript: %v\n", agentLabel, dlErr)
 			continue
@@ -61,6 +116,25 @@ func (r PiRuntime) ExtractTranscripts(sandboxName, agentLabel, outputDir string)
 		fmt.Fprintf(os.Stderr, "  [%s] Saved transcript: %s\n", agentLabel, localName)
 	}
 	return nil
+}
+
+// reserveContainedFile checks localName against an os.Root opened on
+// outputDir and returns the path to download to. Every name this file
+// builds embeds the caller-supplied agentLabel, so none of them may be
+// joined onto outputDir unchecked: root.Create refuses a name that would
+// traverse out of the directory or follow a symlink out of it, and
+// sandbox.DownloadFile takes a plain path, so the check has to happen
+// before the download rather than inside it. The reservation is removed
+// again because the downloader wants to create the file itself.
+func reserveContainedFile(root *os.Root, outputDir, localName string) (string, error) {
+	f, err := root.Create(localName)
+	if err != nil {
+		return "", err
+	}
+	f.Close()
+	localPath := filepath.Join(outputDir, localName)
+	os.Remove(localPath)
+	return localPath, nil
 }
 
 // ExtractDebugLog downloads pi's stderr capture written when --debug is set.

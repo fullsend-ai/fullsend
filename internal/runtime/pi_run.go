@@ -807,6 +807,27 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 		return exitCode, fmt.Errorf("a pi extension directory under %s is missing or was modified since Bootstrap uploaded it; refusing to load it (did the agent or the extension itself write there between iterations? extensions must not write into their own directory)", r.piExtensionsDir())
 	}
 
+	if m.Agent != nil && m.Agent.Enabled {
+		// Children are separate pi processes, so none of their tokens
+		// reached the stream just parsed; the extension's usage file is the
+		// only record of what they spent. A read failure is not fatal —
+		// losing the breakdown must not fail an iteration that succeeded.
+		if usage, _, _, uerr := sandbox.Exec(params.SandboxName, piSubagentUsageReadCommand(m.Agent.UsageFile), 10*time.Second); uerr != nil {
+			printer.StepWarn("Could not read the sub-agent usage file: " + sanitizeOutput(uerr.Error()))
+		} else {
+			// Unconditional: the parent's own entry belongs in the
+			// breakdown even when this iteration dispatched nothing, or
+			// per_model_usage stops summing to the totals across a retry.
+			n, skipped := foldPiSubagentUsage([]byte(usage), modelSpec, metrics)
+			if n > 0 {
+				printer.StepInfo(fmt.Sprintf("%d sub-agent call(s) folded into the run metrics", n))
+			}
+			if skipped > 0 {
+				printer.StepWarn(fmt.Sprintf("%d unreadable line(s) in the sub-agent usage file were skipped; their cost is missing from the run metrics", skipped))
+			}
+		}
+	}
+
 	if exitCode == 0 && lastResult != nil && lastResult.IsError {
 		msg := lastResult.ErrorMessage
 		if msg == "" {
@@ -820,11 +841,15 @@ func (r PiRuntime) Run(ctx context.Context, params RunParams, printer *ui.Printe
 
 // ClearIterationArtifacts terminates processes the previous iteration left
 // running (see killStrayProcesses), then removes its outputs and sessions
-// so transcripts and output files are per-iteration.
+// so transcripts and output files are per-iteration. The sessions glob also
+// takes the sub-agent session dirs (sessions/agent-<seq>/); the Agent
+// extension's usage file lives outside them and is named explicitly, or a
+// retry would re-count the first iteration's children.
 func (r PiRuntime) ClearIterationArtifacts(sandboxName string) error {
 	clearStrayProcesses(sandbox.Exec, sandboxName, os.Stderr)
-	clearCmd := fmt.Sprintf("rm -rf %s/output/* %s/* %s",
-		shellQuote(r.WorkspaceDir()), shellQuote(r.piSessionsDir()), shellQuote(r.WorkspaceDir()+"/"+piDebugLogFile))
+	clearCmd := fmt.Sprintf("rm -rf %s/output/* %s/* %s %s %s",
+		shellQuote(r.WorkspaceDir()), shellQuote(r.piSessionsDir()), shellQuote(r.WorkspaceDir()+"/"+piDebugLogFile),
+		shellQuote(r.piAgentUsagePath()), shellQuote(r.piAgentUsagePath()+piSubagentUsageReadSuffix))
 	_, _, _, err := sandbox.Exec(sandboxName, clearCmd, 10*time.Second)
 	return err
 }

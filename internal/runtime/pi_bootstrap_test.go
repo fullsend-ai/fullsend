@@ -24,6 +24,15 @@ import (
 // under storeDir keyed by the remote path, answers `pi --version` and `cat
 // <remote>` execs from that store, and streams streamFixture for the pi run
 // command. Everything else succeeds silently.
+// piFakeUsageFile is where the fake serves the Agent extension's usage
+// file from: Run reads it with a `mv` + `head -c` fragment
+// (piSubagentUsageReadCommand), which the store's remote-path keying cannot
+// express. A test that wants sub-agent usage writes this file; absent, the
+// read is empty, as for a run that dispatched no sub-agent. The fake
+// renames it away once read, the way the real command does, so a test can
+// observe that a second read folds nothing.
+const piFakeUsageFile = "subagent-usage.jsonl"
+
 func fakeOpenshellPi(t *testing.T, logPath, storeDir, streamFixture string) {
 	t.Helper()
 	require.NoError(t, os.MkdirAll(storeDir, 0o755))
@@ -39,6 +48,7 @@ if [ "$2" = "exec" ]; then
   case "$last" in
     "pi --version") echo "0.84.2"; exit 0 ;;
     "command -v pi"*) printf '%s\n' /usr/bin/pi '/usr/local/share/pi-extensions/anthropic-vertex'; exit 0 ;;
+    *usage.jsonl*mv*) u='` + storeDir + `'/` + piFakeUsageFile + `; if [ -f "$u" ]; then cat "$u"; mv -f "$u" "$u.read"; fi; exit 0 ;;
     cat\ *) f=$(printf '%s' "${last#cat }" | tr -d "'" | tr '/' '_'); cat '` + storeDir + `'/"$f"; exit $? ;;
     *"--print --mode json"*) cat '` + streamFixture + `'; exit 0 ;;
   esac
@@ -261,6 +271,89 @@ func TestPiRuntimeRun_StreamsFixtureAndReportsMetrics(t *testing.T) {
 	assert.Contains(t, string(teed), `"type":"agent_end"`)
 }
 
+// TestPiRuntimeRun_FoldsSubagentUsage: a child's tokens never reach the
+// parent's --mode json stream, so Run reads the Agent extension's usage
+// file after the iteration and adds it to the run metrics, with the
+// per-model breakdown that makes the totals attributable.
+func TestPiRuntimeRun_FoldsSubagentUsage(t *testing.T) {
+	t.Setenv("FULLSEND_PI_MODEL", "")
+	t.Setenv(piProviderEnv, "")
+	t.Setenv(piAgentThinkingEnv, "")
+	work := t.TempDir()
+	store := filepath.Join(work, "store")
+	fixture, err := filepath.Abs(filepath.Join("testdata", "pi", "basic_run.ndjson"))
+	require.NoError(t, err)
+	fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), store, fixture)
+
+	// No tools: frontmatter → the Agent tool is on, so Run reads the file.
+	require.NoError(t, PiRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "sb", agentPath: writeAgentFile(t, "---\nname: review\nmodel: opus\n---\nReview."), agentName: "review",
+	}))
+	require.NoError(t, os.WriteFile(filepath.Join(store, piFakeUsageFile), []byte(
+		`{"seq":1,"model":"anthropic-vertex/claude-sonnet-4-6","usage":{"input":300,"output":40,"cacheRead":10,"cacheWrite":5,"cost":0.2},"stopReason":"stop","isError":false}`+"\n"+
+			`{"seq":2,"model":"anthropic-vertex/claude-sonnet-4-6","usage":{"input":100,"output":10,"cost":0.1},"stopReason":"error","isError":true}`+"\n"), 0o644))
+
+	var metrics RunMetrics
+	exit, err := PiRuntime{}.Run(context.Background(), RunParams{
+		SandboxName: "sb", AgentBaseName: "review", RepoDir: "/sandbox/workspace/repo",
+		Timeout: 30 * time.Second, OnEvent: func(AgentEvent) {},
+	}, ui.New(os.Stderr), time.Now(), &metrics)
+	require.NoError(t, err)
+	assert.Equal(t, 0, exit)
+
+	require.NotNil(t, metrics.PerModelUsage)
+	parent := metrics.PerModelUsage["anthropic-vertex/claude-opus-4-6"]
+	child := metrics.PerModelUsage["anthropic-vertex/claude-sonnet-4-6"]
+	assert.Equal(t, 1, parent.Requests, "the parent's own iteration is one request, keyed by its full model spec")
+	assert.Equal(t, 2, child.Requests, "a failed sub-agent still spent tokens")
+	assert.InDelta(t, 0.3, child.CostUSD, 1e-9)
+	assert.InDelta(t, parent.CostUSD+child.CostUSD, metrics.TotalCostUSD, 1e-9, "the breakdown sums to the run total")
+	assert.Equal(t, parent.InputTokens+child.InputTokens, metrics.InputTokens)
+	assert.Equal(t, parent.CacheReadInputTokens+10, metrics.CacheReadInputTokens)
+	assert.Equal(t, parent.CacheCreationInputTokens+5, metrics.CacheCreationInputTokens)
+	assert.Equal(t, "claude-opus-4-6", metrics.Model, "the reported model stays the bare parent id")
+
+	// The read consumes the file, so a retry iteration whose
+	// ClearIterationArtifacts failed cannot count the same children twice.
+	var again RunMetrics
+	_, err = PiRuntime{}.Run(context.Background(), RunParams{
+		SandboxName: "sb", AgentBaseName: "review", RepoDir: "/sandbox/workspace/repo",
+		Timeout: 30 * time.Second, OnEvent: func(AgentEvent) {},
+	}, ui.New(os.Stderr), time.Now(), &again)
+	require.NoError(t, err)
+	assert.NotContains(t, again.PerModelUsage, "anthropic-vertex/claude-sonnet-4-6", "the children were already folded")
+	assert.Len(t, again.PerModelUsage, 1, "only the parent's own iteration")
+}
+
+// Without sub-agent usage the totals are exactly what the stream reported,
+// and the breakdown is the parent's single entry.
+func TestPiRuntimeRun_NoSubagentUsageLeavesMetricsAlone(t *testing.T) {
+	t.Setenv("FULLSEND_PI_MODEL", "")
+	t.Setenv(piProviderEnv, "")
+	work := t.TempDir()
+	fixture, err := filepath.Abs(filepath.Join("testdata", "pi", "basic_run.ndjson"))
+	require.NoError(t, err)
+	fakeOpenshellPi(t, filepath.Join(work, "openshell.log"), filepath.Join(work, "store"), fixture)
+	require.NoError(t, PiRuntime{}.Bootstrap(bootstrapInput{
+		sandboxName: "sb", agentPath: writeAgentFile(t, "---\nname: review\nmodel: opus\n---\nReview."), agentName: "review",
+	}))
+
+	var metrics RunMetrics
+	_, err = PiRuntime{}.Run(context.Background(), RunParams{
+		SandboxName: "sb", AgentBaseName: "review", RepoDir: "/sandbox/workspace/repo",
+		Timeout: 30 * time.Second, OnEvent: func(AgentEvent) {},
+	}, ui.New(os.Stderr), time.Now(), &metrics)
+	require.NoError(t, err)
+	assert.InDelta(t, 0.015, metrics.TotalCostUSD, 0.001)
+	// The parent's own entry is still recorded: iterations are summed, so
+	// an iteration missing from the breakdown makes the run's
+	// per_model_usage stop matching its totals.
+	require.Len(t, metrics.PerModelUsage, 1)
+	parent := metrics.PerModelUsage["anthropic-vertex/claude-opus-4-6"]
+	assert.Equal(t, 1, parent.Requests)
+	assert.InDelta(t, metrics.TotalCostUSD, parent.CostUSD, 1e-9, "no children means the parent entry is the whole breakdown")
+}
+
 func TestPiRuntimeRun_ExitZeroWithStreamErrorReturnsOne(t *testing.T) {
 	t.Setenv("FULLSEND_PI_MODEL", "")
 	work := t.TempDir()
@@ -460,6 +553,111 @@ exit 0
 	assert.Empty(t, PiRuntime{}.ParseTranscriptErrors(out), "clean sessions produce no error annotations")
 }
 
+// TestPiRuntime_ExtractTranscripts_Children covers the sub-agent artifacts:
+// a child session under sessions/agent-<seq>/ is saved under a name that
+// carries the sequence number (so several children with the same session
+// basename do not collide), and the Agent extension's usage file comes down
+// beside the transcripts.
+func TestPiRuntime_ExtractTranscripts_Children(t *testing.T) {
+	work := t.TempDir()
+	logPath := filepath.Join(work, "openshell.log")
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+echo "$@" >> '` + logPath + `'
+if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    if\ [\ -s\ *) printf '%s\n' '/sandbox/pi-config/subagents/usage.jsonl.read'; exit 0 ;;
+    find\ *) printf '%s\n' '/sandbox/pi-config/sessions/2026-08-29T10-00-00_parent.jsonl' '/sandbox/pi-config/sessions/agent-1/2026-08-29T10-01-00_kid.jsonl' '/sandbox/pi-config/sessions/agent-12/repo/2026-08-29T10-01-00_kid.jsonl'; exit 0 ;;
+  esac
+  exit 0
+fi
+if [ "$2" = "download" ]; then
+  case "$4" in
+    *usage.jsonl) printf '{"seq":1,"model":"anthropic-vertex/claude-sonnet-4-6","usage":{"input":1,"output":2,"cost":0.1}}\n' > "$5/$(basename "$4")" ;;
+    *) printf '{"type":"message","message":{"role":"assistant","stopReason":"stop"}}\n' > "$5/$(basename "$4")" ;;
+  esac
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out := filepath.Join(work, "transcripts")
+	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "review", out))
+	entries, err := os.ReadDir(out)
+	require.NoError(t, err)
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	assert.ElementsMatch(t, []string{
+		"review-2026-08-29T10-00-00_parent.jsonl",
+		"review-sub1-2026-08-29T10-01-00_kid.jsonl",
+		"review-sub12-2026-08-29T10-01-00_kid.jsonl",
+		"review-subagents-usage.jsonl",
+	}, names, "children are named after the Agent call that spawned them, so equal basenames do not collide")
+	log, err := os.ReadFile(logPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(log), "download sb /sandbox/pi-config/subagents/usage.jsonl.read",
+		"Run consumed the usage file by renaming it; extraction has to follow the rename")
+	assert.Empty(t, PiRuntime{}.ParseTranscriptErrors(out), "clean child sessions produce no error annotations")
+}
+
+// TestPiRuntime_ExtractTranscripts_UsageFileIsContained checks the usage
+// file's local name goes through the same os.Root containment as the
+// transcripts. Both names are built from agentLabel, which is the caller's,
+// so joining either onto outputDir unchecked would let a label write
+// outside the artifact directory.
+func TestPiRuntime_ExtractTranscripts_UsageFileIsContained(t *testing.T) {
+	work := t.TempDir()
+	binDir := t.TempDir()
+	script := `#!/bin/sh
+if [ "$2" = "exec" ]; then
+  for last; do :; done
+  case "$last" in
+    if\ [\ -s\ *) printf '%s\n' '/sandbox/pi-config/subagents/usage.jsonl.read'; exit 0 ;;
+    find\ *) printf '%s\n' '/sandbox/pi-config/sessions/2026-08-29T10-00-00_parent.jsonl'; exit 0 ;;
+  esac
+  exit 0
+fi
+if [ "$2" = "download" ]; then
+  printf 'downloaded\n' > "$5/$(basename "$4")"
+  exit 0
+fi
+exit 0
+`
+	require.NoError(t, os.WriteFile(filepath.Join(binDir, "openshell"), []byte(script), 0o755))
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	out := filepath.Join(work, "artifacts", "transcripts")
+	require.NoError(t, PiRuntime{}.ExtractTranscripts("sb", "../../escaped", out),
+		"a rejected name is reported and skipped, not an extraction failure")
+
+	// The usage file and a session transcript go through the same check,
+	// and both names are built from the label, so neither may land outside
+	// the output dir.
+	for _, name := range []string{"escaped-subagents-usage.jsonl", "escaped-2026-08-29T10-00-00_parent.jsonl"} {
+		assert.NoFileExists(t, filepath.Join(work, name),
+			"a label that traverses out of the output dir must not place %s there", name)
+		assert.NoFileExists(t, filepath.Join(work, "artifacts", name))
+	}
+	entries, err := os.ReadDir(out)
+	require.NoError(t, err)
+	assert.Empty(t, entries, "the rejected names leave nothing behind either")
+}
+
+func TestPiSubagentTranscriptName(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "review-s.jsonl", piSubagentTranscriptName("review", "/sandbox/pi-config/sessions/s.jsonl"))
+	assert.Equal(t, "review-sub3-s.jsonl", piSubagentTranscriptName("review", "/sandbox/pi-config/sessions/agent-3/s.jsonl"))
+	assert.Equal(t, "review-sub3-s.jsonl", piSubagentTranscriptName("review", "/sandbox/pi-config/sessions/agent-3/nested/s.jsonl"),
+		"pi may nest a session under its working directory")
+	assert.Equal(t, "review-agent-x.jsonl", piSubagentTranscriptName("review", "/sandbox/pi-config/sessions/agent-x.jsonl"),
+		"only a directory named agent-<digits> marks a child")
+}
+
 // TestPiAgentTool_ManifestBlock covers the `agent` manifest block Bootstrap
 // writes for the fullsend-agent.js extension: enabled/disabled cases, the
 // model alias table, the extension list from the sandbox probe, and the
@@ -603,7 +801,8 @@ func TestPiRuntimeClearIterationArtifacts(t *testing.T) {
 	require.NoError(t, PiRuntime{}.ClearIterationArtifacts("sb"))
 	log, err := os.ReadFile(logPath)
 	require.NoError(t, err)
-	assert.Contains(t, string(log), "rm -rf '/sandbox/workspace'/output/* '/sandbox/pi-config/sessions'/* '/sandbox/workspace/pi-debug.log'")
+	assert.Contains(t, string(log), "rm -rf '/sandbox/workspace'/output/* '/sandbox/pi-config/sessions'/* '/sandbox/workspace/pi-debug.log' '/sandbox/pi-config/subagents/usage.jsonl'",
+		"the sessions glob takes the sub-agent session dirs; their usage file sits outside it and is named")
 	// Stray processes from the previous iteration are swept before the
 	// files go, so nothing keeps writing into the cleared directories.
 	sweep := strings.Index(string(log), "ps -o pid= -o ppid=")
