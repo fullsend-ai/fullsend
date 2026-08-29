@@ -545,6 +545,15 @@ func runAgent(ctx context.Context, agentName, fullsendDir, outputBase, targetRep
 			return fmt.Errorf("converting event to map: %w", mapErr)
 		}
 	}
+	// Fallback: extract _normalized_event from the dispatch event-payload
+	// channel when --event-file is not provided. The Go dispatch path
+	// (ProjectExecutionRef) embeds the complete normalized event in the
+	// legacy event_payload as _normalized_event (#6748). Try the on-disk
+	// dispatch file first (per-org path), then GITHUB_EVENT_PATH (per-repo
+	// workflow_call path where event_payload is nested in inputs).
+	if eventMap == nil {
+		eventMap = extractNormalizedEventFromDispatch(absFullsendDir)
+	}
 
 	composeOpts := harness.ComposeOpts{
 		WorkspaceRoot: absFullsendDir,
@@ -4356,6 +4365,83 @@ func prHeadSHAFromEventPath(path string) string {
 		return ""
 	}
 	return payload.PullRequest.Head.SHA
+}
+
+// extractNormalizedEventFromDispatch recovers the complete normalized event
+// embedded by ProjectExecutionRef in the legacy event_payload channel (#6748).
+//
+// It checks two locations in order:
+//  1. <fullsendDir>/dispatch/event-payload.json — written by the per-org
+//     reusable-dispatch workflow before invoking the action.
+//  2. GITHUB_EVENT_PATH → inputs.event_payload — the per-repo workflow_call
+//     path where event_payload is a nested JSON string inside the
+//     workflow_dispatch event file.
+//
+// In both cases, the function looks for a top-level "_normalized_event" key
+// that was added by buildEventPayload. If found, the value is validated via
+// normevent.ParseJSON and converted to a map for CEL evaluation. Returns nil
+// if the normalized event is absent or invalid (best-effort; overlays fall
+// back to the empty-map behavior documented in ResolveOverlays).
+func extractNormalizedEventFromDispatch(fullsendDir string) map[string]any {
+	// Try 1: on-disk dispatch event-payload.json (per-org path).
+	if m := extractNormalizedEventFromFile(filepath.Join(fullsendDir, "dispatch", "event-payload.json")); m != nil {
+		return m
+	}
+	// Try 2: GITHUB_EVENT_PATH → inputs.event_payload (per-repo path).
+	ghEventPath := os.Getenv("GITHUB_EVENT_PATH")
+	if ghEventPath == "" {
+		return nil
+	}
+	data, err := os.ReadFile(ghEventPath)
+	if err != nil {
+		return nil
+	}
+	var wrapper struct {
+		Inputs struct {
+			EventPayload string `json:"event_payload"`
+		} `json:"inputs"`
+	}
+	if err := json.Unmarshal(data, &wrapper); err != nil || wrapper.Inputs.EventPayload == "" {
+		return nil
+	}
+	return extractNormalizedEventFromPayload([]byte(wrapper.Inputs.EventPayload))
+}
+
+// extractNormalizedEventFromFile reads a JSON file and extracts _normalized_event.
+func extractNormalizedEventFromFile(path string) map[string]any {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	return extractNormalizedEventFromPayload(data)
+}
+
+// extractNormalizedEventFromPayload extracts and validates the _normalized_event
+// field from a legacy event-payload JSON blob.
+func extractNormalizedEventFromPayload(payload []byte) map[string]any {
+	var raw map[string]any
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return nil
+	}
+	normRaw, ok := raw["_normalized_event"]
+	if !ok {
+		return nil
+	}
+	// Re-serialize and validate through normevent.ParseJSON so we get
+	// the same validation as --event-file, then convert to map.
+	normBytes, err := json.Marshal(normRaw)
+	if err != nil {
+		return nil
+	}
+	ev, err := normevent.ParseJSON(normBytes)
+	if err != nil {
+		return nil
+	}
+	m, err := ev.ToMap()
+	if err != nil {
+		return nil
+	}
+	return m
 }
 
 // emitDiagnostic prints a harness lint diagnostic with severity-appropriate formatting.

@@ -6041,6 +6041,111 @@ func TestRunCommand_HasEventFileFlag(t *testing.T) {
 	assert.Equal(t, "", flag.DefValue)
 }
 
+func TestExtractNormalizedEventFromPayload_Valid(t *testing.T) {
+	payload := []byte(`{
+		"issue": {"number": 42, "html_url": "https://example.com/issues/42"},
+		"_normalized_event": {
+			"repo": "org/repo",
+			"entity": {"kind": "work_item", "id": 42, "key": "PROJ-42", "url": "https://example.com/issues/42"},
+			"transition": {"kind": "label_changed", "label": {"name": "ready-to-code", "action": "added"}},
+			"actor": {"id": "user1", "kind": "human", "role": "write", "is_entity_author": false},
+			"state": {"labels": ["ready-to-code"]},
+			"source": {"system": "jira", "raw_type": "comment"}
+		}
+	}`)
+	m := extractNormalizedEventFromPayload(payload)
+	require.NotNil(t, m)
+	src, ok := m["source"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "jira", src["system"])
+}
+
+func TestExtractNormalizedEventFromPayload_Missing(t *testing.T) {
+	// Legacy payload without _normalized_event should return nil.
+	payload := []byte(`{"issue": {"number": 42, "html_url": "https://example.com/issues/42"}}`)
+	assert.Nil(t, extractNormalizedEventFromPayload(payload))
+}
+
+func TestExtractNormalizedEventFromPayload_Invalid(t *testing.T) {
+	// Invalid _normalized_event (missing required fields) should return nil.
+	payload := []byte(`{"_normalized_event": {"repo": ""}}`)
+	assert.Nil(t, extractNormalizedEventFromPayload(payload))
+}
+
+func TestExtractNormalizedEventFromFile_Valid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "event-payload.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{
+		"issue": {"number": 42, "html_url": "https://example.com/issues/42"},
+		"_normalized_event": {
+			"repo": "org/repo",
+			"entity": {"kind": "work_item", "id": 42, "key": "PROJ-42", "url": "https://example.com/issues/42"},
+			"transition": {"kind": "label_changed", "label": {"name": "ready-to-code", "action": "added"}},
+			"actor": {"id": "user1", "kind": "human", "role": "write", "is_entity_author": false},
+			"state": {"labels": ["ready-to-code"]},
+			"source": {"system": "jira", "raw_type": "comment"}
+		}
+	}`), 0o644))
+	m := extractNormalizedEventFromFile(path)
+	require.NotNil(t, m)
+	src, ok := m["source"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "jira", src["system"])
+}
+
+func TestExtractNormalizedEventFromFile_NoFile(t *testing.T) {
+	assert.Nil(t, extractNormalizedEventFromFile("/nonexistent/path"))
+}
+
+func TestExtractNormalizedEventFromDispatch_DispatchFile(t *testing.T) {
+	dir := t.TempDir()
+	dispatchDir := filepath.Join(dir, "dispatch")
+	require.NoError(t, os.MkdirAll(dispatchDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dispatchDir, "event-payload.json"), []byte(`{
+		"issue": {"number": 10, "html_url": "https://example.com/issues/10"},
+		"_normalized_event": {
+			"repo": "org/repo",
+			"entity": {"kind": "work_item", "id": 10, "key": "PROJ-10", "url": "https://example.com/issues/10"},
+			"transition": {"kind": "comment_added", "comment": {"body": "/fs-code", "command": "/fs-code"}},
+			"actor": {"id": "user1", "kind": "human", "role": "write", "is_entity_author": false},
+			"state": {"labels": ["ready-to-code"]},
+			"source": {"system": "jira", "raw_type": "comment"}
+		}
+	}`), 0o644))
+	m := extractNormalizedEventFromDispatch(dir)
+	require.NotNil(t, m)
+	src, ok := m["source"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "jira", src["system"])
+}
+
+func TestExtractNormalizedEventFromDispatch_GHEventPath(t *testing.T) {
+	dir := t.TempDir()
+	// No dispatch file — fall through to GITHUB_EVENT_PATH.
+	ghEventFile := filepath.Join(dir, "gh-event.json")
+	innerPayload := `{"issue":{"number":10},"_normalized_event":{"repo":"org/repo","entity":{"kind":"work_item","id":10,"key":"PROJ-10","url":"https://example.com/issues/10"},"transition":{"kind":"label_changed","label":{"name":"ready-to-code","action":"added"}},"actor":{"id":"u1","kind":"human","role":"write","is_entity_author":false},"state":{"labels":["ready-to-code"]},"source":{"system":"jira","raw_type":"comment"}}}`
+	wrapper, err := json.Marshal(map[string]any{
+		"inputs": map[string]any{
+			"event_payload": innerPayload,
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(ghEventFile, wrapper, 0o644))
+	t.Setenv("GITHUB_EVENT_PATH", ghEventFile)
+
+	m := extractNormalizedEventFromDispatch(dir)
+	require.NotNil(t, m)
+	src, ok := m["source"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "jira", src["system"])
+}
+
+func TestExtractNormalizedEventFromDispatch_NeitherSource(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("GITHUB_EVENT_PATH", "")
+	assert.Nil(t, extractNormalizedEventFromDispatch(dir))
+}
+
 func TestResolveAgentSource_OverrideOnlyEntryUsesAgentsRepoFallback(t *testing.T) {
 	dir := t.TempDir()
 	printer := ui.New(io.Discard)

@@ -1,6 +1,7 @@
 package harnessdispatch
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -55,4 +56,48 @@ func TestBuildPullRequestPayload_NoChangeProposal(t *testing.T) {
 	}
 	pr := buildPullRequestPayload(ev)
 	assert.Equal(t, 7, pr["number"])
+}
+
+func TestBuildEventPayload_ContainsNormalizedEvent(t *testing.T) {
+	ev := mustEvent(t, "jira-fs-triage-comment.json")
+	payload, err := buildEventPayload(ev)
+	require.NoError(t, err)
+
+	// Legacy fields should still be present.
+	assert.Contains(t, payload, "issue")
+	assert.Contains(t, payload, "comment")
+
+	// The complete normalized event should be embedded.
+	normRaw, ok := payload["_normalized_event"]
+	require.True(t, ok, "_normalized_event must be present")
+
+	normMap, ok := normRaw.(map[string]any)
+	require.True(t, ok, "_normalized_event must be a map")
+
+	// Verify source.system is preserved (the field lost before #6748).
+	src, ok := normMap["source"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "jira", src["system"])
+
+	// Verify entity.key is preserved.
+	ent, ok := normMap["entity"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "PROJ-123", ent["key"])
+}
+
+func TestBuildEventPayload_NormalizedEventRoundTrips(t *testing.T) {
+	// Verify the embedded _normalized_event can be re-parsed as a valid
+	// NormalizedEvent — the same path fullsend run takes.
+	ev := mustEvent(t, "ready-to-code-labeled.json")
+	payload, err := buildEventPayload(ev)
+	require.NoError(t, err)
+
+	normBytes, err := json.Marshal(payload["_normalized_event"])
+	require.NoError(t, err)
+
+	roundTripped, err := normevent.ParseJSON(normBytes)
+	require.NoError(t, err)
+	assert.Equal(t, ev.Repo, roundTripped.Repo)
+	assert.Equal(t, ev.Source.System, roundTripped.Source.System)
+	assert.Equal(t, ev.Entity.Kind, roundTripped.Entity.Kind)
 }

@@ -74,6 +74,16 @@ func buildEventPayload(event *normevent.Event) (map[string]any, error) {
 		}
 	}
 
+	// Embed the complete normalized event so fullsend run can recover it
+	// for CEL overlay resolution without a separate --event-file or
+	// workflow input. The underscore prefix distinguishes it from legacy
+	// GitHub-shaped fields that downstream consumers rely on (#6748).
+	normMap, err := event.ToMap()
+	if err != nil {
+		return nil, fmt.Errorf("converting normalized event to map: %w", err)
+	}
+	out["_normalized_event"] = normMap
+
 	return out, nil
 }
 

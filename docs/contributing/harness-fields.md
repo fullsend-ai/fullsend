@@ -129,8 +129,9 @@ Unmarshal → validateForge → validateOverlays →
 ResolveForge(platform) → ResolveOverlays(event, forgePlatform, config) → Validate
 ```
 
-When `event` is nil (CLI flows without event context like `fullsend run`
-or `fullsend lock`), `ResolveOverlays` substitutes an empty map so
+When `event` is nil (CLI flows without event context, such as
+`fullsend lock` or `fullsend run` when no event can be recovered),
+`ResolveOverlays` substitutes an empty map so
 overlays conditioned on `runtime.forge` or `config` can still evaluate
 and match. Overlays that reference `event` fields should use `has()` to
 guard field access (e.g., `has(event.source) && event.source.system == "jira"`).
